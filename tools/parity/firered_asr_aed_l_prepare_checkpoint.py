@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+#!/usr/bin/env -S uv run --frozen --project tools/parity/firered_asr_aed_l --python 3.12 python
 """Safely bridge the pinned FireRedASR-AED-L checkpoint to safetensors.
 
 This sidecar is VAST-only for the real 4.7 GB checkpoint. It uses PyTorch's
@@ -107,8 +107,8 @@ def guard_paths(checkpoint: Path, output: Path, audit_output: Path, *, reject_ex
     for path in (output, audit_output):
         if path.exists() and not path.is_file():
             raise ValueError(f"output target is not a regular file: {path}")
-        if path.parent.exists() and path.parent.is_symlink():
-            raise ValueError(f"output parent must not be a symlink: {path.parent}")
+        if path.parent.is_symlink():
+            raise ValueError(f"output path parent must not be a symlink: {path.parent}")
         if reject_existing and path.exists():
             raise ValueError(f"refusing to overwrite existing output target: {path}")
     if output.exists() and checkpoint.exists() and os.path.samefile(output, checkpoint):
@@ -198,6 +198,46 @@ def load_checkpoint(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def publish_bytes_no_clobber(path: Path, payload: bytes) -> tuple[int, int]:
+    """Publish bytes through a same-directory temp and atomic no-clobber link."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        raise ValueError(f"refusing to overwrite existing output target: {path}")
+    if path.parent.is_symlink():
+        raise ValueError(f"output path ancestor must not be a symlink: {path.parent}")
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(payload)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        try:
+            os.link(temporary_path, path)
+        except OSError:
+            raise
+        identity = (path.stat().st_dev, path.stat().st_ino)
+        try:
+            temporary_path.unlink()
+        except OSError:
+            try:
+                if path.exists() and (path.stat().st_dev, path.stat().st_ino) == identity:
+                    path.unlink()
+            finally:
+                raise
+        return identity
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def publish_json_no_clobber(path: Path, value: Any) -> tuple[int, int]:
+    return publish_bytes_no_clobber(
+        path,
+        (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
 
 
 def validate_preparation_manifest(main_manifest: dict[str, Any], preparation: dict[str, Any], prepared_path: Path) -> None:
@@ -297,7 +337,7 @@ def validate_preparation_manifest(main_manifest: dict[str, Any], preparation: di
     if state.get("shared_storage") is not False or state.get("duplicate_names") is not False:
         raise ValueError("shared/duplicate audit must be explicitly false")
     future = preparation.get("future_gate")
-    if not isinstance(future, dict) or set(future) != {"reference", "status", "blocker", "fp32_atol", "fp32_atol_status"} or future.get("status") != "BLOCKED_NOT_RUN" or future.get("fp32_atol") != 0.01 or future.get("fp32_atol_status") != "PREREGISTERED_NOT_RUN" or not isinstance(future.get("reference"), str) or not future["reference"] or not isinstance(future.get("blocker"), str) or not future["blocker"]:
+    if not isinstance(future, dict) or set(future) != {"reference", "status", "blocker", "fp32_atol", "fp32_atol_status"} or future.get("reference") != "tools/parity/firered_asr_aed_l_reference.py" or future.get("status") != "BLOCKED_NOT_RUN" or future.get("fp32_atol") != 0.01 or future.get("fp32_atol_status") != "PREREGISTERED_NOT_RUN" or not isinstance(future.get("blocker"), str) or not future["blocker"]:
         raise ValueError("future reference gate status mismatch")
 
 
@@ -306,16 +346,10 @@ def prepare(checkpoint: Path, output: Path, audit_output: Path) -> dict[str, Any
     identity = require_checkpoint_identity(checkpoint)
     archive_members = inventory_archive(checkpoint)
     prepared, audit = load_checkpoint(checkpoint)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent, delete=False) as temporary:
-        temporary_path = Path(temporary.name)
-    try:
-        from safetensors.torch import save_file
+    from safetensors.torch import save
 
-        save_file(prepared, str(temporary_path))
-        os.replace(temporary_path, output)
-    finally:
-        temporary_path.unlink(missing_ok=True)
+    prepared_payload = save(prepared)
+    output_identity = publish_bytes_no_clobber(output, prepared_payload)
     if not output.is_file() or output.is_symlink():
         raise ValueError("prepared output is not a regular file")
     result = {
@@ -329,14 +363,21 @@ def prepare(checkpoint: Path, output: Path, audit_output: Path) -> dict[str, Any
         "audit": audit,
         "output": {"path": str(output), "bytes": output.stat().st_size, "sha256": sha256_file(output)},
         "future_gate": {
-            "reference": "independent upstream importer required",
+            "reference": "tools/parity/firered_asr_aed_l_reference.py",
             "status": "BLOCKED_NOT_RUN",
-            "blocker": "the locked tools/parity environment has no pinned FireRedASR upstream package/import project; no local mirror oracle is permitted",
+            "blocker": "independent upstream capture is VAST-only and has not run; its exact dependency closure and source/API compatibility must be authenticated before parity",
             "fp32_atol": 0.01,
             "fp32_atol_status": "PREREGISTERED_NOT_RUN",
         },
     }
-    write_json(audit_output, result)
+    try:
+        publish_json_no_clobber(audit_output, result)
+    except Exception:
+        # Remove only the prepared destination created above.  A concurrent
+        # creator cannot be mistaken for ours because the inode is checked.
+        if output.exists() and (output.stat().st_dev, output.stat().st_ino) == output_identity:
+            output.unlink()
+        raise
     return result
 
 
@@ -437,6 +478,25 @@ def self_test() -> None:
             raise AssertionError("symlink audit target accepted")
         finally:
             audit_output.unlink(missing_ok=True)
+        published = root / "published.json"
+        publish_json_no_clobber(published, {"status": "synthetic"})
+        assert published.is_file() and not list(root.glob("*.tmp"))
+        try:
+            publish_json_no_clobber(published, {"status": "sentinel"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("sidecar clobber accepted")
+        assert json.loads(published.read_text(encoding="utf-8"))["status"] == "synthetic"
+        race_sentinel = root / "race-sentinel.bin"
+        race_sentinel.write_bytes(b"keep")
+        try:
+            publish_bytes_no_clobber(race_sentinel, b"replace")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("prepared output race sentinel was overwritten")
+        assert race_sentinel.read_bytes() == b"keep"
         prepared_path = root / "prepared.safetensors"
         prepared_path.write_bytes(b"prepared")
         prepared_digest = sha256_file(prepared_path)
@@ -459,7 +519,7 @@ def self_test() -> None:
             "checkpoint": {"repository": MODEL_REPOSITORY, "revision": MODEL_REVISION, "bytes": CHECKPOINT_BYTES, "sha256": CHECKPOINT_SHA256, "archive_members": [{"name": "archive/data.pkl", "bytes": 1, "crc32": 0}]},
             "output": {"path": str(prepared_path), "bytes": prepared_path.stat().st_size, "sha256": prepared_digest},
             "audit": {"envelope_keys": ["args", "model_state_dict"], "args_fields": ["sos_id"], "state_dict": {"tensor_count": 1, "tensors": [{"name": "x", "shape": [1], "dtype": "torch.float32", "numel": 1, "sha256": "0" * 64}], "stripped": [], "shared_storage": False, "duplicate_names": False}},
-            "future_gate": {"reference": "independent upstream importer required", "status": "BLOCKED_NOT_RUN", "blocker": "not available in synthetic self-test", "fp32_atol": 0.01, "fp32_atol_status": "PREREGISTERED_NOT_RUN"},
+            "future_gate": {"reference": "tools/parity/firered_asr_aed_l_reference.py", "status": "BLOCKED_NOT_RUN", "blocker": "independent upstream capture is VAST-only and has not run; synthetic self-test deliberately does not import a model", "fp32_atol": 0.01, "fp32_atol_status": "PREREGISTERED_NOT_RUN"},
         }
         validate_preparation_manifest(main_manifest, preparation_manifest, prepared_path)
         inspection_path = root / "inspection.json"

@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2317
 # VAST-only FireRedASR-AED-L inspection and safe checkpoint preparation.
 # No runtime execution, parity claim, or publication.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
-# The source contract is authenticated, while exact checkpoint geometry and
-# token dictionary binding remain blocked until the VAST checkpoint review.
+# The pinned source/release contract and VAST checkpoint identity are recorded;
+# native conversion/runtime/parity remain fail-closed pending operator work.
 INSPECTOR="$ROOT/tools/parity/firered_asr_aed_l_inspect.py"
 PREPARER="$ROOT/tools/parity/firered_asr_aed_l_prepare_checkpoint.py"
+REFERENCE="$ROOT/tools/parity/firered_asr_aed_l_reference.py"
+AUDITOR="$ROOT/tools/parity/firered_asr_aed_l_audit.py"
+FIRERED_PROJECT="$ROOT/tools/parity/firered_asr_aed_l"
+# The dedicated lock selects the official CPU-only wheel index:
+# https://download.pytorch.org/whl/cpu (no CUDA/NVIDIA/Triton closure).
 REPOSITORY="FireRedTeam/FireRedASR-AED-L"
 REVISION="e57f5960d03cff1071ff7acbb409314d1e70ed3d"
 SOURCE_URL="https://github.com/FireRedTeam/FireRedASR.git"
 SOURCE_REVISION="834635e4cf277ed8ca92049fc375b17c3dc20748"
+KALDI_NATIVE_FBANK_URL="https://github.com/csukuangfj/kaldi-native-fbank.git"
+KALDI_NATIVE_FBANK_REVISION="f68c6b43f739697d7ab02ff6debacee130e1d541"
 WORK="/dev/shm/vokra-firered-asr-aed-l-inspection"
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_DISK_KIB=$((32 * 1024 * 1024))
@@ -32,13 +40,22 @@ self_test() {
     '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' \
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
     'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' \
-    'checkpoint geometry' 'token dictionary binding' 'PREPARED' 'archive_members' \
+    'source-authenticated frontend' 'SentencePiece/TokenDict' 'PREPARED' 'archive_members' \
     'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
+    'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' \
+    'firered_asr_aed_l_audit.py' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'installed_distributions' 'native_payloads' 'publisher' 'owner_approval' 'dependency audit' \
+    'NamedTemporaryFile' 'os.link' 'manifest-with-preparation.json' \
+    'manifest-with-reference.json' 'final no-clobber manifest' \
+    'kaldiio==2.18.0' 'kaldi-native-fbank==1.15' \
+    'f68c6b43f739697d7ab02ff6debacee130e1d541' 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' \
+    'uv lock --check' 'source/kaldi-native-fbank' 'setup.py' \
+    'forbidden CUDA dependency row' 'download.pytorch.org/whl/cpu' 'license hash is not authenticated' \
+    '--no-sync' 'FIRERED_PROJECT' 'firered_asr_aed_l/pyproject.toml' 'firered_asr_aed_l/uv.lock' \
     "cargo fmt --manifest-path \"\$ROOT/Cargo.toml\" --all -- --check" \
     "cargo metadata --manifest-path \"\$ROOT/Cargo.toml\" --locked --no-deps --format-version 1"; do
     if ! grep -Fq -- "$token" "$path"; then log "self-test FAIL: missing token $token"; fail=1; fi
   done
-  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -55,7 +72,7 @@ PY
     log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
     fail=1
   fi
-  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
 from huggingface_hub import RepoFile, RepoFolder
 
 def classify_entry(entry):
@@ -87,11 +104,67 @@ PY
     log 'self-test FAIL: RepoFile/RepoFolder class-identity regression'
     fail=1
   fi
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
+import sys
+from pathlib import Path
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+audit = source.index('dependency-audit.json')
+snapshot = source.index('snapshot_download')
+if audit >= snapshot:
+    raise SystemExit("dependency audit must precede model snapshot")
+if source.index('BLOCKED_UNREVIEWED_TRANSITIVE; owner review') < audit:
+    raise SystemExit("dependency audit status gate is missing")
+print("FireRed dependency gate ordering self-test: PASS")
+PY
+  then
+    log 'self-test FAIL: dependency audit/model snapshot ordering regression'
+    fail=1
+  fi
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
+import sys
+from pathlib import Path
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+final = source.index('\nfinal_manifest="$work_dir/evidence/manifest-with-reference.json"')
+link = source.index('os.link(temporary, ' + 'final_path)')
+if link <= final or "open(manifest_path, " + '"w"' in source:
+    raise SystemExit("final reference merge is not a distinct no-clobber publication")
+print("FireRed final manifest publication self-test: PASS")
+PY
+  then
+    log 'self-test FAIL: final reference manifest no-clobber regression'
+    fail=1
+  fi
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+import os, tempfile
+from pathlib import Path
+with tempfile.TemporaryDirectory(prefix="firered-final-manifest-") as directory:
+    root = Path(directory); destination = root / "final.json"; destination.write_text("sentinel", encoding="utf-8")
+    temporary = root / ".final.json.tmp"; temporary.write_text("replacement", encoding="utf-8")
+    try:
+        os.link(temporary, destination)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("final manifest race sentinel was overwritten")
+    assert destination.read_text(encoding="utf-8") == "sentinel"
+    temporary.unlink()
+    assert not list(root.glob("*.tmp"))
+print("FireRed final manifest race self-test: PASS")
+PY
+  then
+    log 'self-test FAIL: final reference manifest race sentinel regression'
+    fail=1
+  fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'; fail=1
   fi
-  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" --self-test >/dev/null || fail=1
-  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
+  # Self-tests only exercise stdlib/synthetic validation.  Avoid syncing the
+  # VAST-only native-fbank git dependency here; production commands below use
+  # the normal frozen project sync on Linux VAST.
+  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" --self-test >/dev/null || fail=1
+  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
+  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python "$REFERENCE" --self-test >/dev/null || fail=1
+  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python "$AUDITOR" --self-test >/dev/null || fail=1
   (( fail == 0 )) || return 1
   log 'self-test PASS'
 }
@@ -113,6 +186,8 @@ if (( self )); then [[ "$work_dir" == "$WORK" ]] || die '--self-test accepts no 
 [[ -f "$ROOT/Cargo.toml" && -d "$ROOT/.git" ]] || die 'not a Vokra checkout'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
 [[ -f "$ROOT/tools/parity/pyproject.toml" && -f "$ROOT/tools/parity/uv.lock" ]] || die 'locked parity project missing'
+[[ -f "$FIRERED_PROJECT/pyproject.toml" && -f "$FIRERED_PROJECT/uv.lock" ]] || die 'dedicated FireRed uv project missing'
+[[ -f "$AUDITOR" ]] || die 'dedicated FireRed dependency auditor missing'
 mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
 [[ "$mem_kib" =~ ^[0-9]+$ ]] || die 'invalid memory value'
 (( mem_kib >= MIN_MEM_KIB )) || die '128 GiB memory guard failed'
@@ -127,6 +202,69 @@ mkdir -p "$work_dir/model" "$work_dir/source" "$work_dir/evidence"
 work_dir="$(cd "$work_dir" && pwd)"
 export CARGO_BUILD_JOBS=1
 export UV_CACHE_DIR
+
+# Gate every toolchain, lock, source, and license invariant before the model
+# snapshot is requested.  A failure here must not spend model bandwidth.
+{
+  echo 'gate=cargo'
+  cargo fmt --manifest-path "$ROOT/Cargo.toml" --all -- --check
+  cargo metadata --manifest-path "$ROOT/Cargo.toml" --locked --no-deps --format-version 1 >/dev/null
+} > "$work_dir/evidence/validation.log" 2>&1 || die 'rooted Cargo gate failed'
+UV_CACHE_DIR="$UV_CACHE_DIR" uv lock --check --project "$FIRERED_PROJECT" --python 3.12 >> "$work_dir/evidence/validation.log" 2>&1 || die 'dedicated FireRed uv.lock is stale or unavailable'
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python - \
+  "$FIRERED_PROJECT/uv.lock" "$REFERENCE" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1 || die 'FireRed dependency/license lock gate failed'
+import sys
+from pathlib import Path
+
+lock = Path(sys.argv[1]).read_text(encoding="utf-8")
+reference = Path(sys.argv[2]).read_text(encoding="utf-8")
+for forbidden in ('name = "cuda-', 'name = "nvidia-', 'name = "triton"'):
+    if forbidden in lock:
+        raise SystemExit(f"forbidden CUDA dependency row: {forbidden}")
+for required in (
+    'name = "torch"',
+    'source = { registry = "https://download.pytorch.org/whl/cpu" }',
+    'name = "kaldi-native-fbank"',
+    'f68c6b43f739697d7ab02ff6debacee130e1d541',
+    'name = "kaldiio"',
+    'version = "2.18.0"',
+):
+    if required not in lock:
+        raise SystemExit(f"missing locked FireRed dependency identity: {required}")
+if 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' not in reference:
+    raise SystemExit("kaldi-native-fbank license hash is not authenticated")
+print("FireRed dependency/license lock gate: PASS")
+PY
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - <<'PY' || die 'locked FireRed project is missing exact upstream frontend dependencies: require kaldiio==2.18.0 and kaldi-native-fbank==1.15'
+import kaldi_native_fbank
+import kaldiio
+import sentencepiece
+import torch
+from importlib.metadata import version
+assert version("kaldi-native-fbank") == "1.15"
+assert version("kaldiio") == "2.18.0"
+print("FireRedASR upstream dependency preflight: PASS")
+PY
+# shellcheck disable=SC2129
+git clone --filter=blob:none --no-checkout "$SOURCE_URL" "$work_dir/source/repo" >> "$work_dir/evidence/validation.log" 2>&1
+git -C "$work_dir/source/repo" checkout --detach "$SOURCE_REVISION" >> "$work_dir/evidence/validation.log" 2>&1
+git clone --filter=blob:none --no-checkout "$KALDI_NATIVE_FBANK_URL" "$work_dir/source/kaldi-native-fbank" >> "$work_dir/evidence/validation.log" 2>&1
+git -C "$work_dir/source/kaldi-native-fbank" checkout --detach "$KALDI_NATIVE_FBANK_REVISION" >> "$work_dir/evidence/validation.log" 2>&1
+[[ -f "$work_dir/source/kaldi-native-fbank/LICENSE" && -f "$work_dir/source/kaldi-native-fbank/setup.py" ]] || die 'pinned kaldi-native-fbank source/build files are incomplete'
+[[ "$(sha256sum "$work_dir/source/kaldi-native-fbank/LICENSE" | awk '{print $1}')" == "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" ]] || die 'pinned kaldi-native-fbank LICENSE hash mismatch'
+# License/native closure is a separate, gate-first audit.  An inventory is
+# useful evidence, but it is not approval: until every transitive row is
+# reviewed the worker must stop before requesting the model snapshot.
+# shellcheck disable=SC2317
+set +e
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$FIRERED_PROJECT" --python 3.12 python "$AUDITOR" \
+  --lock "$FIRERED_PROJECT/uv.lock" --project "$work_dir/source/kaldi-native-fbank" \
+  --output "$work_dir/evidence/dependency-audit.json" >> "$work_dir/evidence/validation.log" 2>&1
+audit_rc=$?
+set -e
+(( audit_rc == 2 )) || die 'FireRed dependency closure auditor failed unexpectedly'
+die 'FireRed dependency closure is BLOCKED_UNREVIEWED_TRANSITIVE; owner review is required before model snapshot'
+# shellcheck disable=SC2129
 {
   echo 'status=BLOCKED'
   echo 'evidence_stage=INSPECTION_ONLY'
@@ -135,12 +273,10 @@ export UV_CACHE_DIR
   echo 'metal_status=BLOCKED_BY_CPU'
   echo 'parity_status=NOT_RUN'
   echo 'publication=NO_UPLOAD'
-  cargo fmt --manifest-path "$ROOT/Cargo.toml" --all -- --check
-  cargo metadata --manifest-path "$ROOT/Cargo.toml" --locked --no-deps --format-version 1 >/dev/null
-} > "$work_dir/evidence/validation.log" 2>&1
+} >> "$work_dir/evidence/validation.log" 2>&1
 
 # shellcheck disable=SC2129
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/server_tree.json" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - "$work_dir/server_tree.json" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1
 import json, sys
 from pathlib import Path
 from huggingface_hub import HfApi, RepoFile, RepoFolder
@@ -172,18 +308,25 @@ while pending:
         if not isinstance(size,int) or isinstance(size,bool) or size<0 or not isinstance(blob,str): raise RuntimeError(f"invalid identity {item_path}")
         rows.append({"path":item_path,"type":"file","size":size,"git_blob_sha1":blob,"lfs_sha256":lfs_sha})
 if len({x["path"] for x in rows}) != len(rows): raise RuntimeError("duplicate server path")
-Path(sys.argv[1]).write_text(json.dumps({"repository":repo,"revision":rev,"resolved_revision":info.sha,"files":sorted(rows,key=lambda x:x["path"])},indent=2,sort_keys=True)+"\n")
+payload = (json.dumps({"repository":repo,"revision":rev,"resolved_revision":info.sha,"files":sorted(rows,key=lambda x:x["path"])},indent=2,sort_keys=True)+"\n").encode()
+target = Path(sys.argv[1])
+if target.exists() or target.is_symlink(): raise RuntimeError(f"server tree output exists: {target}")
+with __import__("tempfile").NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent, delete=False) as stream:
+    temporary = Path(stream.name)
+    stream.write(payload); stream.flush(); __import__("os").fsync(stream.fileno())
+try:
+    __import__("os").link(temporary, target)
+finally:
+    temporary.unlink(missing_ok=True)
 PY
 # shellcheck disable=SC2129
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$REPOSITORY" "$REVISION" "$work_dir/model" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - "$REPOSITORY" "$REVISION" "$work_dir/model" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1
 import sys
 from huggingface_hub import snapshot_download
 print(snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3]))
 PY
-git clone --filter=blob:none --no-checkout "$SOURCE_URL" "$work_dir/source/repo" >> "$work_dir/evidence/validation.log" 2>&1
-git -C "$work_dir/source/repo" checkout --detach "$SOURCE_REVISION" >> "$work_dir/evidence/validation.log" 2>&1
 set +e
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --snapshot "$work_dir/model" --server-tree "$work_dir/server_tree.json" --source "$work_dir/source/repo" --evidence "$work_dir/evidence" >> "$work_dir/evidence/validation.log" 2>&1
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python "$INSPECTOR" --snapshot "$work_dir/model" --server-tree "$work_dir/server_tree.json" --source "$work_dir/source/repo" --evidence "$work_dir/evidence" >> "$work_dir/evidence/validation.log" 2>&1
 inspect_rc=$?
 set -e
 [[ "$inspect_rc" == 2 ]] || die "inspector must exit 2, got $inspect_rc"
@@ -194,22 +337,24 @@ grep -Fq '"publication": "NO_UPLOAD"' "$work_dir/evidence/manifest.json" || die 
 grep -Fq '"inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE"' "$work_dir/evidence/manifest.json" || die 'inspection did not complete authenticated evidence'
 prepared_path="$work_dir/evidence/firered-asr-aed-l.prepared.safetensors"
 preparation_manifest="$work_dir/evidence/firered-asr-aed-l.prepared.safetensors.manifest.json"
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" \
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python "$PREPARER" \
   --ckpt "$work_dir/model/model.pth.tar" \
   --output "$prepared_path" \
   --audit-output "$preparation_manifest" >> "$work_dir/evidence/validation.log" 2>&1
 [[ -s "$prepared_path" ]] || die 'prepared safetensors missing'
 [[ -s "$preparation_manifest" ]] || die 'preparation manifest missing'
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" \
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python "$PREPARER" \
   --validate-manifest \
   --inspection-manifest "$work_dir/evidence/manifest.json" \
   --preparation-manifest "$preparation_manifest" \
   --prepared "$prepared_path" >> "$work_dir/evidence/validation.log" 2>&1
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - \
-  "$work_dir/evidence/manifest.json" "$preparation_manifest" <<'PY'
+combined_manifest="$work_dir/evidence/manifest-with-preparation.json"
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - \
+  "$work_dir/evidence/manifest.json" "$preparation_manifest" "$combined_manifest" <<'PY'
 import json
 import sys
 from pathlib import Path
+import os, tempfile
 
 def reject_duplicate_pairs(pairs):
     result = {}
@@ -219,14 +364,33 @@ def reject_duplicate_pairs(pairs):
         result[key] = value
     return result
 
-manifest_path, preparation_path = map(Path, sys.argv[1:])
+manifest_path, preparation_path, combined_path = map(Path, sys.argv[1:])
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
 preparation = json.loads(preparation_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
 manifest["preparation"] = preparation
-manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+payload = (json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+if combined_path.exists() or combined_path.is_symlink(): raise RuntimeError("combined manifest output exists")
+with tempfile.NamedTemporaryFile(prefix=f".{combined_path.name}.", suffix=".tmp", dir=combined_path.parent, delete=False) as stream:
+    temporary = Path(stream.name)
+    stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+try:
+    os.link(temporary, combined_path)
+finally:
+    temporary.unlink(missing_ok=True)
 PY
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/evidence/manifest.json" <<'PY'
-import json, re, sys
+reference_path="$work_dir/evidence/upstream_reference.json"
+final_manifest="$work_dir/evidence/manifest-with-reference.json"
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python "$REFERENCE" \
+  --source "$work_dir/source/repo" \
+  --checkpoint "$work_dir/model/model.pth.tar" \
+  --cmvn "$work_dir/model/cmvn.ark" \
+  --output "$reference_path" >> "$work_dir/evidence/validation.log" 2>&1 \
+  || die 'independent upstream reference capture failed; inspect validation.log for the exact pinned dependency/source/API blocker'
+[[ -s "$reference_path" ]] || die 'upstream reference manifest missing'
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - \
+  "$combined_manifest" "$reference_path" "$final_manifest" <<'PY'
+import json, os, re, sys, tempfile
+from pathlib import Path
 def reject_duplicate_pairs(pairs):
     result = {}
     for key, value in pairs:
@@ -234,7 +398,11 @@ def reject_duplicate_pairs(pairs):
             raise ValueError(f"duplicate JSON object key: {key!r}")
         result[key] = value
     return result
-manifest = json.loads(open(sys.argv[1], encoding="utf-8").read(), object_pairs_hook=reject_duplicate_pairs)
+manifest_path = sys.argv[1]
+reference_path = sys.argv[2]
+final_path = sys.argv[3]
+manifest = json.loads(open(manifest_path, encoding="utf-8").read(), object_pairs_hook=reject_duplicate_pairs)
+reference = json.loads(open(reference_path, encoding="utf-8").read(), object_pairs_hook=reject_duplicate_pairs)
 assert manifest["status"] == "BLOCKED"
 assert manifest["evidence_stage"] == "INSPECTION_ONLY"
 assert manifest["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
@@ -248,7 +416,7 @@ assert preparation["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
 assert preparation["parity_status"] == "NOT_RUN"
 assert preparation["future_gate"]["status"] == "BLOCKED_NOT_RUN"
 assert preparation["future_gate"]["fp32_atol_status"] == "PREREGISTERED_NOT_RUN"
-assert "no pinned FireRedASR upstream package/import project" in preparation["future_gate"]["blocker"]
+assert "independent upstream capture" in preparation["future_gate"]["blocker"]
 state_audit = preparation["audit"]["state_dict"]
 assert state_audit["tensor_count"] > 0
 assert state_audit["tensor_count"] == len(state_audit["tensors"])
@@ -271,5 +439,64 @@ for record in records:
     assert isinstance(record["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
     assert isinstance(record["markers"], list) and record["markers"]
 assert "INSPECTION_ERROR" not in json.dumps(manifest)
+assert reference["format"] == "vokra-firered-asr-aed-l-upstream-reference-v1"
+assert reference["status"] == "REFERENCE_CAPTURED"
+assert reference["publication"] == "NO_UPLOAD"
+assert reference["model"] == {"repository": "FireRedTeam/FireRedASR-AED-L", "revision": "e57f5960d03cff1071ff7acbb409314d1e70ed3d"}
+assert reference["checkpoint"] == {"repository": "FireRedTeam/FireRedASR-AED-L", "revision": "e57f5960d03cff1071ff7acbb409314d1e70ed3d", "bytes": 4678597714, "sha256": "12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3"}
+assert reference["source"]["revision"] == "834635e4cf277ed8ca92049fc375b17c3dc20748"
+assert reference["dependencies"] == {
+    "python": "3.12",
+    "kaldiio": {"version": "2.18.0", "source": "pypi"},
+    "kaldi-native-fbank": {
+        "repository": "https://github.com/csukuangfj/kaldi-native-fbank.git",
+        "revision": "f68c6b43f739697d7ab02ff6debacee130e1d541",
+        "version": "1.15",
+        "license": "Apache-2.0",
+        "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    },
+}
+source_records = reference["source"]["records"]
+assert isinstance(source_records, list) and len(source_records) == 7
+assert len({record["path"] for record in source_records}) == len(source_records)
+assert {record["path"] for record in source_records} == {
+    "fireredasr/data/asr_feat.py",
+    "fireredasr/models/fireredasr_aed.py",
+    "fireredasr/models/module/conformer_encoder.py",
+    "fireredasr/models/module/transformer_decoder.py",
+    "fireredasr/tokenizer/aed_tokenizer.py",
+    "fireredasr/data/token_dict.py",
+    "README.md",
+}
+for record in source_records:
+    assert set(record) == {"path", "role", "sha256", "markers"}
+    assert isinstance(record["path"], str) and record["path"]
+    assert isinstance(record["role"], str) and record["role"]
+    assert re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
+    assert isinstance(record["markers"], list) and record["markers"]
+    assert all(isinstance(marker, str) and marker for marker in record["markers"])
+assert len(reference["tensor_mapping"]) == 940
+assert reference["reference"]["status"] == "REFERENCE_CAPTURED"
+assert reference["reference"]["encoder"] is not None
+assert reference["reference"]["decoder_logits"] is not None
+assert reference["parity"]["status"] == "NOT_RUN"
+manifest["upstream_reference"] = reference
+payload = (json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+if final_path.exists() or final_path.is_symlink(): raise RuntimeError("final no-clobber manifest already exists")
+if Path(final_path).parent.is_symlink(): raise RuntimeError("final manifest parent is a symlink")
+with tempfile.NamedTemporaryFile(prefix=f".{Path(final_path).name}.", suffix=".tmp", dir=Path(final_path).parent, delete=False) as stream:
+    temporary = Path(stream.name)
+    stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+linked = False
+try:
+    os.link(temporary, final_path)
+    linked = True
+finally:
+    try:
+        temporary.unlink()
+    except OSError:
+        if linked and Path(final_path).is_file() and os.stat(final_path).st_ino == os.stat(temporary).st_ino:
+            Path(final_path).unlink()
+        raise
 PY
-die 'FireRedASR inspection and preparation evidence preserved; conversion/runtime/parity remain blocked'
+die 'FireRedASR inspection, preparation and independent upstream reference evidence preserved as final no-clobber manifest; native conversion/runtime/parity remain blocked'

@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+#!/usr/bin/env -S uv run --frozen --project tools/parity/firered_asr_aed_l --python 3.12 python
 """VAST-only FireRedASR-AED-L inspection with no checkpoint conversion."""
 from __future__ import annotations
 import argparse, hashlib, io, json, os, platform, re, subprocess, sys, tarfile, tempfile, zipfile
@@ -62,6 +62,15 @@ SOURCE_CONTRACT_MARKERS = {
         "eos_penalty=1.0",
     ),
     "fireredasr/data/asr_feat.py": (
+        "class CMVN:",
+        "stats = kaldiio.load_mat(kaldi_cmvn_file)",
+        "dim = stats.shape[-1] - 1",
+        "means = stats[0, :dim] / count",
+        "variance = stats[1, :dim] / count - means * means",
+        "variance = np.maximum(variance, floor)",
+        "inverse_std = 1.0 / np.sqrt(variance)",
+        "return dim, means, inverse_std",
+        "return (x - self.means) * self.inverse_std_variances",
         "kaldi_native_fbank",
         "KaldifeatFbank(num_mel_bins=80, frame_length=25,",
         "frame_shift=10, dither=0.0",
@@ -105,6 +114,28 @@ def git_blob_sha1(path: Path) -> str:
 
 def digest_bytes(data: bytes, algorithm: str = "sha256") -> str:
     return hashlib.new(algorithm, data).hexdigest()
+
+
+def publish_json_no_clobber(path: Path, value: Any) -> None:
+    """Publish an evidence manifest without a rename-overwrite race."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or path.exists():
+        raise ValueError(f"refusing to overwrite evidence manifest: {path}")
+    if path.parent.is_symlink():
+        raise ValueError(f"evidence manifest path ancestor is a symlink: {path.parent}")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False, mode="w", encoding="utf-8") as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(value, sort_keys=True, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        temporary.unlink()
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -388,7 +419,21 @@ def parse_cmvn(raw: str, size: int, sha: str) -> dict[str, Any]:
         rows.append([float(item) for item in fields])
     if len(rows) != 2 or not all(value == value and abs(value) != float("inf") for row in rows for value in row) or rows[0][-1] != 1183022220.0 or rows[1][-1] != 0.0:
         raise ValueError("cmvn.txt numeric structure mismatch")
-    return {"bytes": size, "sha256": sha, "rows": 2, "columns": 81, "count": rows[0][-1], "terminal_second": rows[1][-1]}
+    count = rows[0][-1]
+    means = [value / count for value in rows[0][:-1]]
+    variance = [max(rows[1][index] / count - means[index] * means[index], 1e-20) for index in range(80)]
+    inverse_std = [1.0 / (value ** 0.5) for value in variance]
+    return {
+        "bytes": size,
+        "sha256": sha,
+        "rows": 2,
+        "columns": 81,
+        "count": count,
+        "terminal_second": rows[1][-1],
+        "mean": means,
+        "inverse_std": inverse_std,
+        "variance_floor": 1e-20,
+    }
 
 
 def require_readme_markers(card: str) -> tuple[str, ...]:
@@ -398,7 +443,7 @@ def require_readme_markers(card: str) -> tuple[str, ...]:
     return README_MARKERS
 
 def base_manifest() -> dict[str, Any]:
-    return {"format": "vokra-firered-asr-aed-l-inspection-v1", "status": "BLOCKED", "inspection_status": "PENDING", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "environment": {"python": sys.version, "platform": platform.platform()}, "model": {"repository": REPOSITORY, "revision": REVISION, "license": MODEL_LICENSE, "files": ARTIFACTS, "total_bytes": TOTAL_BYTES}, "source": {"origin": SOURCE_URL, "revision": SOURCE_REVISION}, "blockers": ["checkpoint container/tensor manifest and exact geometry require authenticated VAST review", "source-level Conformer/AED topology is authenticated; exact checkpoint geometry and frontend/CMVN values remain unresolved", "official beam-search settings are source-authenticated; token dictionary binding/tokenizer contract remains unresolved", "independent CPU numerical parity is not run", "complete Metal graph is not implemented", "training data and dependency provenance require review"]}
+    return {"format": "vokra-firered-asr-aed-l-inspection-v1", "status": "BLOCKED", "inspection_status": "PENDING", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "environment": {"python": sys.version, "platform": platform.platform()}, "model": {"repository": REPOSITORY, "revision": REVISION, "license": MODEL_LICENSE, "files": ARTIFACTS, "total_bytes": TOTAL_BYTES}, "source": {"origin": SOURCE_URL, "revision": SOURCE_REVISION}, "blockers": ["checkpoint tensor-to-native field mapping and converter/runtime consumption require the VAST preparation/reference evidence", "source-authenticated frontend and CMVN rules require a native implementation and parity consumer", "source-authenticated SentencePiece/TokenDict rendering and checkpoint special ids require native tokenizer binding", "independent CPU numerical parity is not run", "complete Metal graph is not implemented", "training data and dependency provenance require review"]}
 
 def inspect(args: argparse.Namespace) -> int:
     manifest = base_manifest()
@@ -437,7 +482,7 @@ def inspect(args: argparse.Namespace) -> int:
         manifest["inspection_status"] = "INSPECTION_ERROR"
         manifest.setdefault("blockers", []).append(f"inspection error: {type(error).__name__}: {error}")
     Path(args.evidence).mkdir(parents=True, exist_ok=True)
-    (Path(args.evidence) / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    publish_json_no_clobber(Path(args.evidence) / "manifest.json", manifest)
     return 2
 
 def self_test() -> None:
@@ -499,6 +544,18 @@ def self_test() -> None:
         try: archive_inventory(archive)
         except ValueError: pass
         else: raise AssertionError("traversal archive accepted")
+        evidence = Path(directory) / "published-evidence"
+        evidence.mkdir()
+        manifest_path = evidence / "manifest.json"
+        publish_json_no_clobber(manifest_path, {"status": "synthetic"})
+        assert manifest_path.is_file() and not list(evidence.glob("*.tmp"))
+        try:
+            publish_json_no_clobber(manifest_path, {"status": "sentinel"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("evidence manifest clobber accepted")
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["status"] == "synthetic"
         import torch
         nested = {"outer": [{"weights": torch.tensor([1.0, 2.0]), "meta": ("ok", 3)}]}
         rows = summarize(nested)

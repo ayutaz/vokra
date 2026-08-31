@@ -60,32 +60,30 @@
 //! > 互換ではない、独自 hparam)
 //!
 //! i.e. **the release has its own hyper-parameters and is not
-//! shape-compatible with Whisper**. Three concrete pieces are therefore
-//! missing before a real transcription can be produced, and none of them
-//! is a kernel:
+//! shape-compatible with Whisper**. The remaining execution contract has
+//! four concrete gaps, and none of them is a kernel:
 //!
-//! 1. **No hyper-parameter transcription.** The converter stamps *no*
-//!    `vokra.firered_asr_aed_l.*` group at all — only arch / name /
-//!    category / provenance / schema. Nothing in this repository
-//!    transcribes the mel-band count, the encoder or decoder depth /
-//!    width / head count / FFN width, or the vocabulary size. Borrowing
-//!    Whisper's numbers is precisely what the audit ticket forbids, and
-//!    a mis-guessed head count produces a *shape-valid* token sequence
-//!    that is quietly wrong with no crash to catch it.
-//! 2. **No tensor-name manifest.** The converter's own docstring defers
-//!    real-weight binding to "a follow-up wave gated on the upstream
-//!    tensor-name manifest fetch", and the names appearing in its test
-//!    module are synthetic placeholders invented for a round-trip
-//!    fixture — not a transcription of a real checkpoint. This binder
-//!    consequently must not hard-require any particular tensor name (see
-//!    [`KEY_REQUIRED_TENSORS`] for the opt-in that lets a *producer*
-//!    declare them once they are known).
-//! 3. **No tokenizer.** An AED decoder emits token ids; rendering them
-//!    as Mandarin text needs the upstream vocabulary, and the converter
-//!    stamps no [`KEY_TOKENIZER_MODEL`] blob (the mechanism the
-//!    `whisper` binder uses). [`FireredAsrAed::has_tokenizer`] reports
-//!    whether a given GGUF carries one; today's converter never writes
-//!    it.
+//! 1. **The native frontend is not fully wired.** [`native`] now contains
+//!    source-faithful CMVN, positional encoding, and Conv2d subsampling
+//!    helpers. The complete fbank/CMVN input path, tensor binding, masks, and
+//!    encoder graph still remain fail-closed until the VAST tensor evidence is
+//!    consumed by a native model handle.
+//! 2. **No native tensor-name consumer.** The independent upstream dumper
+//!    authenticates all 940 names against `named_parameters()` /
+//!    `named_buffers()` and records their roles. The converter/binder still
+//!    has no Rust field mapping that consumes that sidecar, so a best-guess
+//!    walk could bind wrong weights with valid shapes.
+//! 3. **No tokenizer blob binding.** The source-authenticated
+//!    SentencePiece/TokenDict contract and 7832-entry dictionary are known,
+//!    but the converter stamps no [`KEY_TOKENIZER_MODEL`] blob. This binder
+//!    cannot render decoder ids as Mandarin text until a native mapping is
+//!    added. [`FireredAsrAed::has_tokenizer`] reports blob presence.
+//! 4. **Native graph gap.** The pinned Conformer source uses its Conv2d
+//!    subsampling stem, relative-position attention, and source-faithful
+//!    inference-only Conformer block; [`native`] exposes those exact
+//!    CPU/Metal-dispatched building blocks. The fbank input and strict
+//!    940-field model graph are not yet wired, so this binder remains
+//!    fail-closed.
 //!
 //! The upstream config is additionally awkward to reach: the handoff for
 //! the sibling LLM release
@@ -96,13 +94,10 @@
 //! shares that posture is **not** verified anywhere in this repository,
 //! and this module does not assert that it does.
 //!
-//! So: the blocker is **geometry and vocabulary, not kernels**. The
-//! audit ticket's §Converter section records "既存 op で処理可能? yes /
-//! 使う既存 op: Whisper primitives 全流用可 (encoder + decoder +
-//! cross-attn + `beam_search` + `stft` / `mel_filterbank`)" — once the
-//! geometry is transcribed, the body composes from primitives Vokra
-//! already carries. That is why this module ships the entire surround as
-//! real and defers exactly one thing.
+//! So: the remaining blockers are the full native frontend/field consumer,
+//! tokenizer blob, and complete 940-field Conformer/AED graph. The reusable
+//! native blocks are present, but their equivalence is not claimed until an
+//! independent VAST parity run consumes the authenticated checkpoint.
 //!
 //! # Loud-partial classification
 //!
@@ -124,12 +119,10 @@
 //!     mis-merged GGUF fails at **load** time naming the first missing
 //!     tensor rather than surprising a forward halfway through.
 //!   - The optional all-or-nothing [`FireredAsrAedConfig`] group
-//!     (`vokra.firered_asr_aed_l.*`) — the flip-the-switch contract a
-//!     future converter extension or the [`SIDECAR_PATH`] sidecar must
-//!     stamp. Absent → [`FireredAsrAed::config`] is `None` and the
-//!     checkpoint still binds (that is the state of every GGUF today's
-//!     converter produces, and refusing it would re-open the very gap
-//!     this module closes). Partially stamped → loud
+//!     (`vokra.firered_asr_aed_l.*`) — now stamped by the VAST converter for
+//!     the authenticated release geometry. Absent → [`FireredAsrAed::config`]
+//!     is `None` and a minimal inspection fixture still binds. Partially
+//!     stamped → loud
 //!     [`VokraError::ModelLoad`] naming the missing key. A `0` sentinel
 //!     or an indivisible `d_model % n_head` → loud.
 //!   - Sample-rate guarding: [`FireredAsrAed::transcribe_tokens`]
@@ -141,7 +134,7 @@
 //!
 //! - **Loud-partial (this WP)**: [`FireredAsrAed::transcribe_tokens`]
 //!   and the [`AsrEngine`] trait path return
-//!   [`VokraError::UnsupportedOp`] naming the three blockers above plus
+//!   [`VokraError::UnsupportedOp`] naming the four remaining gaps above plus
 //!   the primary sources, so a reader diagnosing the gap has fully
 //!   specified places to walk. **No fabricated token ids or text are
 //!   ever emitted** (FR-EX-08 — no silent partial output).
@@ -222,6 +215,14 @@ use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::tasks::Transcription;
 use vokra_core::{BackendKind, LicenseClass, Result, VokraError};
+
+mod native;
+
+pub use native::{
+    FIRERED_ASR_AED_HOT_OPS, FireRedCmvn, FireRedConformerBlock, FireRedConformerBlockWeights,
+    FireRedConformerConvolution, FireRedConformerFeedForward, FireRedConv2dSubsampling,
+    FireRedRelativeAttention, relative_positional_encoding,
+};
 
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of
@@ -315,10 +316,9 @@ pub const SIDECAR_PATH: &str = "tools/parity/firered_asr_aed_l_prepare_checkpoin
 // `vokra.firered_asr_aed_l.*` — the optional, all-or-nothing hyper-parameter
 // group.
 //
-// NOT stamped by today's converter. These keys are the contract a future
-// converter extension (or `SIDECAR_PATH`) must satisfy; declaring them here is
-// what lets `from_gguf` verify a stamped group instead of silently defaulting
-// one half of it (FR-EX-08).
+// The VAST converter stamps this group from the authenticated release
+// inspection. Declaring it here lets `from_gguf` verify the complete group
+// instead of silently defaulting one half of it (FR-EX-08).
 // ---------------------------------------------------------------------------
 
 /// Sample rate the checkpoint expects, in Hz. Load-bearing: the binder
@@ -366,13 +366,22 @@ pub const KEY_DEC_N_HEAD: &str = "vokra.firered_asr_aed_l.decoder.n_head";
 /// Transformer decoder feed-forward inner width.
 pub const KEY_DEC_FFN_DIM: &str = "vokra.firered_asr_aed_l.decoder.ffn_dim";
 
+/// Conformer depthwise-convolution kernel width.
+pub const KEY_ENC_KERNEL_SIZE: &str = "vokra.firered_asr_aed_l.encoder.kernel_size";
+
+/// Authenticated decoder/special-token ids from the checkpoint args.
+pub const KEY_BLANK_ID: &str = "vokra.firered_asr_aed_l.blank_id";
+pub const KEY_SOS_ID: &str = "vokra.firered_asr_aed_l.sos_id";
+pub const KEY_EOS_ID: &str = "vokra.firered_asr_aed_l.eos_id";
+pub const KEY_PAD_ID: &str = "vokra.firered_asr_aed_l.pad_id";
+
 /// The hyper-parameter group in canonical read order — **all-or-nothing**.
 ///
 /// [`FireredAsrAedConfig::from_gguf`] returns `Ok(None)` when *no* key is
 /// present and a loud [`VokraError::ModelLoad`] when only *some* are:
 /// silently defaulting the missing half would build a wrong-shaped
 /// encoder or decoder that still runs (FR-EX-08).
-pub const FIREREDASRAED_SPEC_KEYS: [&str; 11] = [
+pub const FIREREDASRAED_SPEC_KEYS: [&str; 16] = [
     KEY_SAMPLE_RATE,
     KEY_N_MELS,
     KEY_VOCAB_SIZE,
@@ -384,6 +393,11 @@ pub const FIREREDASRAED_SPEC_KEYS: [&str; 11] = [
     KEY_DEC_D_MODEL,
     KEY_DEC_N_HEAD,
     KEY_DEC_FFN_DIM,
+    KEY_ENC_KERNEL_SIZE,
+    KEY_BLANK_ID,
+    KEY_SOS_ID,
+    KEY_EOS_ID,
+    KEY_PAD_ID,
 ];
 
 /// Optional `Array<String>` metadata key: the exact tensor names the
@@ -395,13 +409,16 @@ pub const FIREREDASRAED_SPEC_KEYS: [&str; 11] = [
 /// **load-time** failure instead of a surprise halfway through a
 /// forward.
 ///
-/// Absent → skipped entirely. That is deliberate and is the *only*
-/// honest posture available today: the converter defers real-weight
-/// binding to an upstream tensor-name manifest fetch that has not
-/// happened, so this binder has no transcribed name list of its own to
-/// require, and inventing one would re-open the unloadable-checkpoint
-/// gap this module exists to close.
+/// Absent → skipped for minimal inspection fixtures. The VAST converter
+/// supplies this array from the audited prepared artifact; the binder still
+/// treats the names as an input manifest and does not guess field mappings.
 pub const KEY_REQUIRED_TENSORS: &str = "vokra.firered_asr_aed_l.required_tensors";
+
+/// Optional Array<String> declaration carrying the exact prepared tensor
+/// contract (`name|dtype-tag|dim,dim,...`).  The converter emits this beside
+/// [`KEY_REQUIRED_TENSORS`]; the binder compares every row with the GGUF
+/// tensor descriptor and rejects missing, extra, shape, or dtype drift.
+pub const KEY_TENSOR_MANIFEST: &str = "vokra.firered_asr_aed_l.tensor_manifest";
 
 // ---------------------------------------------------------------------------
 // Metadata read helpers.
@@ -457,13 +474,16 @@ fn read_required_tensors(gguf: &GgufFile) -> Result<Option<Vec<String>>> {
         )));
     }
     let mut out = Vec::with_capacity(arr.values.len());
+    let mut seen = std::collections::BTreeSet::new();
     for (i, v) in arr.values.iter().enumerate() {
         match v {
-            GgufMetadataValue::String(s) => out.push(s.clone()),
+            GgufMetadataValue::String(s) if !s.is_empty() && seen.insert(s.clone()) => {
+                out.push(s.clone())
+            }
             other => {
                 return Err(VokraError::ModelLoad(format!(
                     "firered-asr-aed-l: GGUF metadata `{KEY_REQUIRED_TENSORS}[{i}]` \
-                     is not a string (got {:?})",
+                     is not a unique non-empty string (got {:?})",
                     other.value_type()
                 )));
             }
@@ -478,6 +498,117 @@ fn read_required_tensors(gguf: &GgufFile) -> Result<Option<Vec<String>>> {
         )));
     }
     Ok(Some(out))
+}
+
+/// Validates the converter's strict name/dtype/shape sidecar against the
+/// actual GGUF tensor table.  The sidecar is intentionally a flat string
+/// array so it remains a zero-dependency GGUF metadata value; it is not a
+/// substitute for checking the descriptors themselves.
+fn validate_tensor_manifest(gguf: &GgufFile, required: Option<&[String]>) -> Result<()> {
+    let Some(value) = gguf.get(KEY_TENSOR_MANIFEST) else {
+        if required.is_some_and(|names| names.len() == 940) {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: `{KEY_TENSOR_MANIFEST}` is required when the authenticated 940-tensor declaration is present"
+            )));
+        }
+        return Ok(());
+    };
+    let array = value.as_array().ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: `{KEY_TENSOR_MANIFEST}` must be Array<String>, got {:?}",
+            value.value_type()
+        ))
+    })?;
+    if array.element_type != GgufValueType::String || array.values.is_empty() {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: `{KEY_TENSOR_MANIFEST}` must be a non-empty Array<String>"
+        )));
+    }
+    if array.values.len() != gguf.tensors().len() {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: tensor manifest count {} does not match GGUF tensor count {}",
+            array.values.len(),
+            gguf.tensors().len()
+        )));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for (index, value) in array.values.iter().enumerate() {
+        let GgufMetadataValue::String(encoded) = value else {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: `{KEY_TENSOR_MANIFEST}[{index}]` is not a string"
+            )));
+        };
+        let mut fields = encoded.splitn(3, '|');
+        let Some(name) = fields.next().filter(|name| !name.is_empty()) else {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: `{KEY_TENSOR_MANIFEST}[{index}]` has an empty name"
+            )));
+        };
+        let dtype = fields.next().and_then(|tag| tag.parse::<u32>().ok());
+        let dims = fields.next();
+        let Some(dtype) = dtype else {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: `{KEY_TENSOR_MANIFEST}[{index}]` has an invalid dtype tag"
+            )));
+        };
+        if required.is_some_and(|names| names.len() == 940) && dtype != 0 {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: authenticated FireRedASR-AED-L tensor `{name}` has dtype tag {dtype}; prepared release requires F32"
+            )));
+        }
+        let Some(dims) = dims else {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: `{KEY_TENSOR_MANIFEST}[{index}]` has no shape"
+            )));
+        };
+        let dims: Result<Vec<u64>> = if dims.is_empty() {
+            Ok(Vec::new())
+        } else {
+            dims.split(',')
+                .map(|dim| {
+                    dim.parse::<u64>().map_err(|_| {
+                        VokraError::ModelLoad(format!(
+                            "firered-asr-aed-l: `{KEY_TENSOR_MANIFEST}[{index}]` has invalid shape"
+                        ))
+                    })
+                })
+                .collect()
+        };
+        let dims = dims?;
+        if !seen.insert(name.to_owned()) {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: duplicate tensor `{name}` in `{KEY_TENSOR_MANIFEST}`"
+            )));
+        }
+        let actual = gguf.tensor_info(name).ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: tensor `{name}` in `{KEY_TENSOR_MANIFEST}` is extra or missing from GGUF"
+            ))
+        })?;
+        if actual.dtype.tag() != dtype || actual.dimensions != dims {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: tensor `{name}` shape/dtype mismatch: manifest tag {dtype}, dims {dims:?}; GGUF tag {}, dims {:?}",
+                actual.dtype.tag(),
+                actual.dimensions
+            )));
+        }
+    }
+    for actual in gguf.tensors() {
+        if !seen.contains(&actual.name) {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: GGUF tensor `{}` is extra and absent from `{KEY_TENSOR_MANIFEST}`",
+                actual.name
+            )));
+        }
+    }
+    if let Some(required) = required {
+        if required.len() != seen.len() || required.iter().any(|name| !seen.contains(name)) {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: `{KEY_REQUIRED_TENSORS}` and `{KEY_TENSOR_MANIFEST}` disagree"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -567,11 +698,10 @@ impl FireredAsrAedDecoderConfig {
 /// FireRedASR-AED-L hyper-parameters, read from the optional
 /// all-or-nothing `vokra.firered_asr_aed_l.*` group.
 ///
-/// **Absent from every GGUF today's converter produces.** The struct is
-/// the flip-the-switch contract: once [`CONVERTER_PATH`] or
-/// [`SIDECAR_PATH`] transcribes a real checkpoint's topology and stamps
-/// these eleven keys, [`FireredAsrAed::config`] starts returning `Some`
-/// and the sample-rate guard becomes enforceable.
+/// The VAST converter stamps these sixteen geometry and special-id keys for the authenticated
+/// release. A hand-built inspection fixture may omit the group, in which case
+/// [`FireredAsrAed::config`] remains `None` and the sample-rate guard cannot
+/// invent an expected rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FireredAsrAedConfig {
     /// Sample rate the checkpoint expects, in Hz ([`KEY_SAMPLE_RATE`]).
@@ -580,10 +710,17 @@ pub struct FireredAsrAedConfig {
     pub n_mels: u32,
     /// Decoder output-head vocabulary size ([`KEY_VOCAB_SIZE`]).
     pub vocab_size: u32,
+    /// Decoder special-token ids, copied from authenticated checkpoint args.
+    pub blank_id: u32,
+    pub sos_id: u32,
+    pub eos_id: u32,
+    pub pad_id: u32,
     /// Acoustic encoder geometry.
     pub encoder: FireredAsrAedEncoderConfig,
     /// Transformer decoder geometry.
     pub decoder: FireredAsrAedDecoderConfig,
+    /// Conformer depthwise-convolution kernel width.
+    pub kernel_size: u32,
 }
 
 impl FireredAsrAedConfig {
@@ -593,9 +730,11 @@ impl FireredAsrAedConfig {
     /// encoder-decoder and therefore safe to assert **without** a
     /// FireRedASR-specific transcription:
     ///
-    /// 1. every field must be `> 0` — a `0` is the classic
+    /// 1. every geometry field must be `> 0` — a `0` is the classic
     ///    half-populated-metadata sentinel, and a zero width / depth /
-    ///    vocabulary collapses the whole pipeline;
+    ///    vocabulary collapses the whole pipeline. Special-token ids are
+    ///    allowed to be zero (the authenticated blank id) but must be inside
+    ///    the vocabulary range;
     /// 2. `d_model % n_head == 0` on **both** stacks — multi-head
     ///    attention splits the model width across heads, so an
     ///    indivisible pair can only come from a mis-stamp.
@@ -622,6 +761,7 @@ impl FireredAsrAedConfig {
             (KEY_DEC_D_MODEL, self.decoder.d_model),
             (KEY_DEC_N_HEAD, self.decoder.n_head),
             (KEY_DEC_FFN_DIM, self.decoder.ffn_dim),
+            (KEY_ENC_KERNEL_SIZE, self.kernel_size),
         ] {
             if value == 0 {
                 return Err(VokraError::ModelLoad(format!(
@@ -632,6 +772,25 @@ impl FireredAsrAedConfig {
                      still runs (FR-EX-08)."
                 )));
             }
+        }
+        for (key, value) in [
+            (KEY_BLANK_ID, self.blank_id),
+            (KEY_SOS_ID, self.sos_id),
+            (KEY_EOS_ID, self.eos_id),
+            (KEY_PAD_ID, self.pad_id),
+        ] {
+            if value >= self.vocab_size {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l: `{key}` = {value} is outside vocabulary size `{KEY_VOCAB_SIZE}` = {}",
+                    self.vocab_size
+                )));
+            }
+        }
+        if self.kernel_size % 2 == 0 {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: `{KEY_ENC_KERNEL_SIZE}` = {} must be odd for symmetric Conformer padding",
+                self.kernel_size
+            )));
         }
         for (stack, d_key, d, h_key, h) in [
             (
@@ -665,7 +824,7 @@ impl FireredAsrAedConfig {
     /// Reads the group from a parsed GGUF.
     ///
     /// Returns `Ok(None)` when **no** key of the group is present — the
-    /// state of every GGUF today's converter produces. Returns a loud
+    /// state of minimal inspection fixtures. Returns a loud
     /// [`VokraError::ModelLoad`] when the group is only partially
     /// stamped, when a value has the wrong type, or when
     /// [`Self::validate`] fails.
@@ -682,6 +841,10 @@ impl FireredAsrAedConfig {
             sample_rate: read_u32_key(gguf, KEY_SAMPLE_RATE)?,
             n_mels: read_u32_key(gguf, KEY_N_MELS)?,
             vocab_size: read_u32_key(gguf, KEY_VOCAB_SIZE)?,
+            blank_id: read_u32_key(gguf, KEY_BLANK_ID)?,
+            sos_id: read_u32_key(gguf, KEY_SOS_ID)?,
+            eos_id: read_u32_key(gguf, KEY_EOS_ID)?,
+            pad_id: read_u32_key(gguf, KEY_PAD_ID)?,
             encoder: FireredAsrAedEncoderConfig {
                 n_layer: read_u32_key(gguf, KEY_ENC_N_LAYER)?,
                 d_model: read_u32_key(gguf, KEY_ENC_D_MODEL)?,
@@ -694,6 +857,7 @@ impl FireredAsrAedConfig {
                 n_head: read_u32_key(gguf, KEY_DEC_N_HEAD)?,
                 ffn_dim: read_u32_key(gguf, KEY_DEC_FFN_DIM)?,
             },
+            kernel_size: read_u32_key(gguf, KEY_ENC_KERNEL_SIZE)?,
         };
         cfg.validate()?;
         Ok(Some(cfg))
@@ -789,10 +953,10 @@ impl FireredAsrAedWeights {
                      manifest ({count} tensors present). FireRedASR-AED-L GGUFs \
                      carry the upstream safetensors names verbatim (see \
                      `{CONVERTER_PATH}`), so a miss means either a mis-produced \
-                     GGUF or a stale name in the caller. Note that no in-repo \
-                     source transcribes the real upstream names yet — the \
-                     converter defers that to an upstream manifest fetch \
-                     (FR-EX-08 — no silent zero-shape fallback).",
+                     GGUF or a stale name in the caller. The converter preserves \
+                     audited upstream names verbatim, but this runtime has not \
+                     mapped every name to a native field yet (FR-EX-08 — no \
+                     silent zero-shape fallback).",
                     count = self.tensors.len()
                 ))
             })
@@ -838,13 +1002,13 @@ impl FireredAsrAedWeights {
 /// FireRedASR-vs-Whisper-vs-Canary asymmetry.
 ///
 /// Both entry points are loud-partials today; see the module doc for
-/// exactly which three pieces are missing and why guessing them would be
+/// exactly which four pieces are missing and why guessing them would be
 /// silent-wrong.
 #[derive(Debug)]
 pub struct FireredAsrAed {
-    /// The `vokra.firered_asr_aed_l.*` group when stamped. `None` for
-    /// every GGUF today's converter produces — see
-    /// [`FireredAsrAedConfig`].
+    /// The `vokra.firered_asr_aed_l.*` group when stamped. The VAST converter
+    /// stamps it for the authenticated release; minimal inspection fixtures
+    /// may omit it — see [`FireredAsrAedConfig`].
     cfg: Option<FireredAsrAedConfig>,
     weights: FireredAsrAedWeights,
     weight_license: LicenseClass,
@@ -924,15 +1088,15 @@ impl FireredAsrAed {
         // 2. Tensor manifest with the non-emptiness gate, then the
         //    optional producer-declared required-tensor check.
         let weights = FireredAsrAedWeights::from_gguf(file)?;
-        if let Some(required) = read_required_tensors(file)? {
-            weights.require_all(&required)?;
+        let required = read_required_tensors(file)?;
+        if let Some(required) = required.as_ref() {
+            weights.require_all(required)?;
         }
+        validate_tensor_manifest(file, required.as_deref())?;
 
-        // 3. The optional all-or-nothing hyper-parameter group. `None`
-        //    here is the normal state today (the converter stamps no
-        //    `vokra.firered_asr_aed_l.*` keys) and must NOT be a load
-        //    failure — refusing it would re-open the
-        //    unloadable-checkpoint gap this module closes.
+        // 3. The optional all-or-nothing hyper-parameter group. `None` is
+        //    accepted for minimal inspection fixtures; the VAST converter
+        //    stamps the authenticated release geometry.
         let cfg = FireredAsrAedConfig::from_gguf(file)?;
 
         // 4. Provenance surfacing. The converter stamps `apache-2.0` →
@@ -944,8 +1108,8 @@ impl FireredAsrAed {
             .and_then(LicenseClass::from_class_str)
             .unwrap_or(LicenseClass::Unknown);
 
-        // 5. Tokenizer presence — surfaced, never required. Today's
-        //    converter writes no tokenizer blob; that is loud-partial
+        // 5. Tokenizer presence — surfaced, never required. The current
+        //    converter does not embed a tokenizer blob; that is loud-partial
         //    blocker (3) and is reported in the forward's error.
         let has_tokenizer = file.get(KEY_TOKENIZER_MODEL).is_some();
 
@@ -971,8 +1135,8 @@ impl FireredAsrAed {
     /// The `vokra.firered_asr_aed_l.*` hyper-parameter group, when
     /// stamped.
     ///
-    /// `None` for every GGUF today's converter produces — see
-    /// [`FireredAsrAedConfig`] for the flip-the-switch contract.
+    /// `None` for minimal inspection fixtures; converted release artifacts
+    /// carry the authenticated geometry group.
     // Deliberately not `const fn`: `Option::as_ref` in a const context is
     // newer than this workspace's MSRV floor is worth betting on, and no
     // caller needs a const config accessor.
@@ -1039,8 +1203,8 @@ impl FireredAsrAed {
     /// # Loud-partial (this WP)
     ///
     /// Returns [`VokraError::UnsupportedOp`]. FireRedASR-AED-L's
-    /// hyper-parameters, tensor names and vocabulary are not
-    /// primary-source-transcribable from anything in this repository —
+    /// exact native frontend/weight mapping and vocabulary are not yet
+    /// independently authenticated —
     /// see [`forward_loud_partial`] for the full message and the
     /// flip-the-switch recipe. **No fabricated token ids are ever
     /// emitted** (FR-EX-08).
@@ -1124,7 +1288,7 @@ impl AsrEngine for FireredAsrAed {
 
 /// Rejects PCM offered at a rate the stamped config does not expect.
 ///
-/// A `None` config (every GGUF today's converter produces) cannot decide
+/// A `None` config (as in a minimal inspection fixture) cannot decide
 /// the question, so the guard passes — the forward's loud-partial fires
 /// immediately afterwards either way, and inventing an expected rate
 /// would be exactly the fabrication this module refuses.
@@ -1152,7 +1316,7 @@ fn check_sample_rate(cfg: Option<&FireredAsrAedConfig>, sample_rate: u32) -> Res
 /// [`FireredAsrAed::transcribe_tokens`] and the [`AsrEngine`] path until
 /// the FireRedASR-AED-L forward lands.
 ///
-/// Names all three blockers, reports which of them the GGUF at hand has
+/// Names all remaining blockers, reports which of them the GGUF at hand has
 /// already cleared, and cites every primary source, so a reader
 /// diagnosing the gap has fully specified places to walk. Mirror of the
 /// `firered_vad` / `emotion2vec` / `panns` / RMVPE loud-partial-message
@@ -1165,8 +1329,10 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
              (sample_rate={sr} Hz, n_mels={mels}, vocab_size={vocab}, encoder \
              n_layer={el} d_model={ed} n_head={eh} -> head_dim={ehd} \
              ffn_dim={eff}, decoder n_layer={dl} d_model={dd} n_head={dh} -> \
-             head_dim={dhd} ffn_dim={dff}), so blocker (1) is already cleared for \
-             it — blocker (2) still stands, and blocker (3) is reported below",
+             head_dim={dhd} ffn_dim={dff}), so the source geometry is authenticated \
+             but the native frontend remains unimplemented as a complete graph; \
+             reusable helpers exist — blockers (2)-(4) are \
+             reported below",
             sr = c.sample_rate,
             mels = c.n_mels,
             vocab = c.vocab_size,
@@ -1182,9 +1348,9 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
             dff = c.decoder.ffn_dim,
         ),
         None => format!(
-            "the `vokra.firered_asr_aed_l.*` group is NOT stamped on this GGUF (the \
-             normal state today — `{CONVERTER_PATH}` writes only arch / name / \
-             category / provenance / schema), so blocker (1) applies in full"
+            "the `vokra.firered_asr_aed_l.*` group is NOT stamped on this GGUF \
+             (this is a minimal inspection fixture; the VAST converter stamps \
+             the authenticated release geometry), so gap (1) applies in full"
         ),
     };
     let tokenizer_status = if has_tokenizer {
@@ -1200,31 +1366,27 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
     };
     VokraError::UnsupportedOp(format!(
         "firered-asr-aed-l transcribe (loud-partial): the FireRedASR-AED-L forward \
-         is deferred; three pieces must land before real token ids can be emitted. \
-         (1) MISSING HYPER-PARAMETER TRANSCRIPTION: the all-or-nothing \
-         `vokra.firered_asr_aed_l.*` group ({keys:?}) — {spec_status}. Nothing in \
-         this repository transcribes the mel-band count, the encoder or decoder \
-         depth / width / head count / FFN width, or the vocabulary size, and the \
-         audit ticket `{AUDIT_TICKET_PATH}` records that this release is NOT \
-         shape-compatible with Whisper and carries its own hparams — so borrowing \
-         `whisper`'s numbers is exactly the silent-wrong failure this refuses. \
-         `{KEY_ENC_N_HEAD}` / `{KEY_DEC_N_HEAD}` in particular are invisible in the \
-         weight shapes whenever QKV is packed into one projection, so they cannot \
-         be recovered from the tensor manifest at all. \
-         (2) MISSING TENSOR-NAME MANIFEST: `{CONVERTER_PATH}` copies every float \
-         tensor under its verbatim upstream safetensors name and defers real-weight \
-         binding to an upstream tensor-name manifest fetch that has not happened; \
-         the names in its test module are synthetic round-trip placeholders, not a \
-         transcription. A best-guess weight walk would bind the wrong tensors into \
-         the right shapes and emit a plausible token sequence with no crash to \
-         catch it. \
+         is deferred; four pieces must land before real token ids can be emitted. \
+         (1) FRONTEND CONTRACT: the all-or-nothing `vokra.firered_asr_aed_l.*` \
+         group ({keys:?}) — {spec_status}. The pinned source and VAST evidence \
+             authenticate the 80-bin fbank/CMVN rules, and reusable native \
+             frontend helpers now exist, but the complete native frontend tap \
+             remains outside this runtime contract. \
+         (2) MISSING NATIVE TENSOR MAPPING: `{CONVERTER_PATH}` copies every float \
+         tensor under its verbatim prepared safetensors name and stamps the full \
+         required manifest. The independent upstream dumper authenticates each \
+         name's parameter/buffer role, but no native Rust field mapping consumes \
+         that evidence yet. \
          (3) MISSING TOKENIZER: an AED decoder emits token ids in a \
-         `{KEY_VOCAB_SIZE}`-wide id space, and rendering them as Mandarin text \
-         needs the upstream vocabulary — {tokenizer_status}. \
-         The blocker throughout is GEOMETRY and VOCABULARY, not kernels: \
-         `{AUDIT_TICKET_PATH}` records that the existing encoder / decoder / \
-         cross-attention / beam-search / STFT / mel-filterbank primitives cover \
-         this topology once the geometry is known. \
+         `{KEY_VOCAB_SIZE}`-wide id space. The source-authenticated \
+         SentencePiece/TokenDict and dictionary still need a native GGUF \
+         binding — {tokenizer_status}. \
+             (4) NATIVE OPERATOR GAP: the pinned Conformer uses a Conv2d \
+             subsampling stem, relative-position attention, and a \
+             source-faithful inference-only Conformer block; CPU/Metal helper \
+             routes now exist, but the complete Conformer graph and its 940-field \
+             binding remain unimplemented and must be parity-\
+             tested before this model can run. \
          Output once real: decoder token ids per utterance, rendered to text only \
          once a tokenizer blob rides along. \
          Primary sources: HF release {hf}, family reference code {code}, in-repo \
@@ -1252,11 +1414,11 @@ mod tests {
     //! # What "round-trip" means here
     //!
     //! On a real checkpoint this would be `transcribe_tokens(...)`
-    //! returning decoder token ids, but FireRedASR-AED-L's
-    //! hyper-parameters, tensor names and vocabulary are not
-    //! primary-source-transcribable from anything in this repository
-    //! (see the module doc). Fabricating a token sequence would violate
-    //! CLAUDE.md 教訓 (a)「loud-partial は fake-complete より honest」.
+    //! returning decoder token ids. The VAST evidence pins the release
+    //! geometry and tensor identity, but the native frontend/decoder and
+    //! tokenizer are still deliberately fail-closed; fabricating a token
+    //! sequence would violate CLAUDE.md 教訓 (a)「loud-partial は
+    //! fake-complete より honest」.
     //!
     //! The round-trip semantics we *can* honestly test:
     //!
@@ -1282,7 +1444,7 @@ mod tests {
     /// A synthetic hyper-parameter group. **NOT** FireRedASR-AED-L's real
     /// values — see the module-test doc. `d_model` / `n_head` pairs are
     /// chosen divisible so the happy path passes `validate`.
-    const FIXTURE_SPEC: [(&str, u32); 11] = [
+    const FIXTURE_SPEC: [(&str, u32); 16] = [
         (KEY_SAMPLE_RATE, 16_000),
         (KEY_N_MELS, 80),
         (KEY_VOCAB_SIZE, 7_000),
@@ -1294,6 +1456,11 @@ mod tests {
         (KEY_DEC_D_MODEL, 128),
         (KEY_DEC_N_HEAD, 2),
         (KEY_DEC_FFN_DIM, 512),
+        (KEY_ENC_KERNEL_SIZE, 33),
+        (KEY_BLANK_ID, 0),
+        (KEY_SOS_ID, 3),
+        (KEY_EOS_ID, 4),
+        (KEY_PAD_ID, 2),
     ];
 
     /// A representative tensor name. FireRedASR-AED-L GGUFs carry the
@@ -1328,11 +1495,22 @@ mod tests {
         GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
     }
 
-    /// A GGUF in the state today's converter actually produces: arch +
-    /// provenance + tensors, and NO `vokra.firered_asr_aed_l.*` group and
-    /// no tokenizer blob.
+    /// A minimal inspection GGUF: arch + provenance + tensors, with no
+    /// optional release contract or tokenizer blob.
     fn converter_shaped_gguf() -> GgufFile {
         finish(&base_builder(Some(LicenseClass::Permissive)))
+    }
+
+    fn manifest_gguf(entry: &str) -> GgufFile {
+        let mut b = base_builder(Some(LicenseClass::Permissive));
+        b.add_metadata(
+            KEY_TENSOR_MANIFEST,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::String,
+                values: vec![GgufMetadataValue::String(entry.to_owned())],
+            }),
+        );
+        finish(&b)
     }
 
     /// A GGUF with the full synthetic hyper-parameter group stamped.
@@ -1342,6 +1520,25 @@ mod tests {
             b.add_u32(key, value);
         }
         finish(&b)
+    }
+
+    #[test]
+    fn tensor_manifest_binds_exact_shape_and_dtype() {
+        let good = manifest_gguf("encoder.blocks.0.attn.qkv_proj.weight|0|2,3");
+        FireredAsrAed::from_gguf(&good).expect("exact tensor manifest must bind");
+
+        for bad in [
+            "encoder.blocks.0.attn.qkv_proj.weight|0|2,4",
+            "encoder.blocks.0.attn.qkv_proj.weight|1|2,3",
+            "encoder.blocks.0.attn.qkv_proj.bias|0|2,3",
+        ] {
+            let error = FireredAsrAed::from_gguf(&manifest_gguf(bad))
+                .expect_err("shape, dtype, and name drift must fail closed");
+            assert!(
+                matches!(error, VokraError::ModelLoad(_)),
+                "strict manifest error must be ModelLoad: {error:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1406,8 +1603,8 @@ mod tests {
     fn spec_key_group_is_well_formed() {
         assert_eq!(
             FIREREDASRAED_SPEC_KEYS.len(),
-            11,
-            "the all-or-nothing group is eleven keys wide"
+            16,
+            "the all-or-nothing group includes geometry and special-token ids"
         );
         for key in FIREREDASRAED_SPEC_KEYS {
             assert!(
@@ -1540,9 +1737,9 @@ mod tests {
         );
         assert!(
             m.config().is_none(),
-            "today's converter stamps no `vokra.firered_asr_aed_l.*` group, and an \
-             absent group must NOT be a load failure — refusing it would re-open \
-             the unloadable-checkpoint gap this module closes"
+            "a minimal inspection fixture may omit the optional contract group, \
+             and an absent group must NOT be a load failure — refusing it would \
+             re-open the inspection/binding gap this module closes"
         );
         assert!(
             !m.has_tokenizer(),
@@ -1730,6 +1927,11 @@ mod tests {
         assert_eq!(cfg.sample_rate, 16_000);
         assert_eq!(cfg.n_mels, 80);
         assert_eq!(cfg.vocab_size, 7_000);
+        assert_eq!(cfg.kernel_size, 33);
+        assert_eq!(
+            (cfg.blank_id, cfg.sos_id, cfg.eos_id, cfg.pad_id),
+            (0, 3, 4, 2)
+        );
         assert_eq!(cfg.encoder.head_dim(), 64, "256 / 4");
         assert_eq!(cfg.decoder.head_dim(), 64, "128 / 2");
         cfg.validate().expect("the fixture group is valid");
@@ -1813,15 +2015,15 @@ mod tests {
                 );
                 assert!(msg.contains("loud-partial"), "posture label: {msg}");
 
-                // Blocker (1): the hyper-parameter group, named as a group
-                // and reported as unstamped for this GGUF.
+                // Gap (1): the frontend contract, named as a group and
+                // reported as unstamped for this minimal fixture.
                 assert!(
-                    msg.contains("MISSING HYPER-PARAMETER TRANSCRIPTION"),
-                    "blocker (1) must be named: {msg}"
+                    msg.contains("FRONTEND CONTRACT"),
+                    "gap (1) must be named: {msg}"
                 );
                 assert!(
                     msg.contains("is NOT stamped on this GGUF"),
-                    "blocker (1) must report this GGUF's actual state: {msg}"
+                    "gap (1) must report this GGUF's actual state: {msg}"
                 );
                 assert!(
                     msg.contains(KEY_ENC_N_HEAD) && msg.contains(KEY_DEC_N_HEAD),
@@ -1831,8 +2033,8 @@ mod tests {
 
                 // Blocker (2): the tensor-name manifest.
                 assert!(
-                    msg.contains("MISSING TENSOR-NAME MANIFEST"),
-                    "blocker (2) must be named: {msg}"
+                    msg.contains("MISSING NATIVE TENSOR MAPPING"),
+                    "gap (2) must be named: {msg}"
                 );
 
                 // Blocker (3): the tokenizer, reported as absent here.
@@ -1845,10 +2047,13 @@ mod tests {
                     "blocker (3) must report this GGUF's actual state: {msg}"
                 );
 
-                // The honest diagnosis: geometry, not kernels.
+                // The honest diagnosis: the authenticated topology still has
+                // an explicit native operator gap.
                 assert!(
-                    msg.contains("GEOMETRY and VOCABULARY, not kernels"),
-                    "the message must say what class of work is missing: {msg}"
+                    msg.contains("NATIVE OPERATOR GAP")
+                        && msg.contains("Conv2d")
+                        && msg.contains("relative-position attention"),
+                    "the message must name the exact missing operator class: {msg}"
                 );
 
                 // Every primary source is cited so the reader has anchors.
@@ -1875,12 +2080,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 12 — A stamped group flips blocker (1) in the message but does
-    //           NOT flip the gate.
+    // Test 12 — A stamped group reports authenticated geometry but does not
+    //           flip the native frontend/operator gate.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn stamped_group_reports_blocker_one_cleared_but_still_defers() {
+    fn stamped_group_reports_native_gaps_but_still_defers() {
         let m = FireredAsrAed::from_gguf(&spec_stamped_gguf()).expect("bind");
         let pcm = vec![0.0_f32; 1_600];
         let Err(err) = m.transcribe_tokens(&pcm, 16_000) else {
@@ -1893,19 +2098,19 @@ mod tests {
                     "the message must report the stamped group: {msg}"
                 );
                 assert!(
-                    msg.contains("blocker (1) is already cleared"),
-                    "the message must credit the cleared blocker: {msg}"
+                    msg.contains("source geometry is authenticated")
+                        && msg.contains("native frontend remains unimplemented"),
+                    "the message must distinguish source evidence from native work: {msg}"
                 );
                 assert!(
-                    msg.contains("blocker (2) still stands"),
+                    msg.contains("blockers (2)-(4) are reported below"),
                     "the message must keep the remaining blockers explicit: {msg}"
                 );
                 // This fixture stamps no tokenizer, so blocker (3) must
-                // still be reported in full — a cleared blocker (1) never
-                // implies a cleared blocker (3).
+                // still be reported in full.
                 assert!(
                     msg.contains("blocker (3) applies in full"),
-                    "a cleared blocker (1) must not silently clear blocker (3): {msg}"
+                    "the missing tokenizer must remain explicit: {msg}"
                 );
                 // The stamped geometry is echoed so a reader can sanity-check it.
                 assert!(
@@ -2021,8 +2226,8 @@ mod tests {
                 // Blockers (1) and (2) are untouched by a tokenizer, so the
                 // gate itself must not move.
                 assert!(
-                    msg.contains("MISSING HYPER-PARAMETER TRANSCRIPTION")
-                        && msg.contains("MISSING TENSOR-NAME MANIFEST"),
+                    msg.contains("FRONTEND CONTRACT")
+                        && msg.contains("MISSING NATIVE TENSOR MAPPING"),
                     "the remaining blockers must stay explicit: {msg}"
                 );
             }

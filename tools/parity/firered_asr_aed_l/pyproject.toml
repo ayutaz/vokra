@@ -1,0 +1,27 @@
+[project]
+name = "vokra-firered-asr-aed-l-reference"
+version = "0.1.0"
+description = "VAST-only FireRedASR-AED-L upstream reference and checkpoint bridge"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "huggingface-hub==1.29.0",
+    "kaldiio==2.18.0",
+    # The PyPI release does not provide the required CPython 3.12 Linux
+    # artifact. Build the exact official Apache-2.0 source on VAST.
+    "kaldi-native-fbank @ git+https://github.com/csukuangfj/kaldi-native-fbank.git@f68c6b43f739697d7ab02ff6debacee130e1d541",
+    "numpy==2.5.2",
+    "sentencepiece==0.2.2",
+    "torch==2.13.0",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
