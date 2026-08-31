@@ -79,18 +79,39 @@ fn error_metrics(actual: &[f32], expected: &[f32], label: &str) -> (f32, f64) {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn compare_metal_with_cpu(
-    prefix: &str,
-    gguf_path: &Path,
-    text_tokens: &[u32],
-    expected_codes: &[u32],
+struct BarkCpuParityInputs<'a> {
+    prefix: &'a str,
+    gguf_path: &'a Path,
+    text_tokens: &'a [u32],
+    expected_codes: &'a [u32],
     frames: usize,
-    official_packet: &BarkGeneratedCodes,
-    metal_generated: &BarkGeneratedCodes,
-    metal_official_pcm: &[f32],
-    metal_end_to_end_pcm: &[f32],
-    expected_pcm: &[f32],
-) {
+    official_packet: &'a BarkGeneratedCodes,
+    expected_pcm: &'a [f32],
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct BarkMetalParityOutputs<'a> {
+    generated: &'a BarkGeneratedCodes,
+    official_pcm: &'a [f32],
+    end_to_end_pcm: &'a [f32],
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn compare_metal_with_cpu(inputs: BarkCpuParityInputs<'_>, metal: BarkMetalParityOutputs<'_>) {
+    let BarkCpuParityInputs {
+        prefix,
+        gguf_path,
+        text_tokens,
+        expected_codes,
+        frames,
+        official_packet,
+        expected_pcm,
+    } = inputs;
+    let BarkMetalParityOutputs {
+        generated: metal_generated,
+        official_pcm: metal_official_pcm,
+        end_to_end_pcm: metal_end_to_end_pcm,
+    } = metal;
     let cpu_model = BarkModel::open_mapped_with_backend(gguf_path, BackendKind::Cpu)
         .expect("strict CPU mapping for direct Bark Metal-vs-CPU comparison");
     assert_eq!(
@@ -220,16 +241,20 @@ fn run_variant(prefix: &str) {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if backend == BackendKind::Metal {
         compare_metal_with_cpu(
-            prefix,
-            &gguf_path,
-            &text_tokens,
-            &expected_codes,
-            frames,
-            &official_packet,
-            &generated,
-            &decoded,
-            &end_to_end,
-            &expected_pcm,
+            BarkCpuParityInputs {
+                prefix,
+                gguf_path: &gguf_path,
+                text_tokens: &text_tokens,
+                expected_codes: &expected_codes,
+                frames,
+                official_packet: &official_packet,
+                expected_pcm: &expected_pcm,
+            },
+            BarkMetalParityOutputs {
+                generated: &generated,
+                official_pcm: &decoded,
+                end_to_end_pcm: &end_to_end,
+            },
         );
     }
 }

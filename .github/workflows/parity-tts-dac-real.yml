@@ -217,8 +217,8 @@ jobs:
           bash -n scripts/verify/apple-silicon-zonos-inspection.sh
           bash scripts/verify/apple-silicon-dia-1-6b.sh --self-test
           bash scripts/verify/apple-silicon-zonos-inspection.sh --self-test
-          rg -q 'INSPECTION_ONLY' crates/vokra-convert/src/models/dia.rs
-          rg -q 'INSPECTION_ONLY' crates/vokra-convert/src/models/zonos.rs
+          grep -Fq -- 'INSPECTION_ONLY' crates/vokra-convert/src/models/dia.rs
+          grep -Fq -- 'INSPECTION_ONLY' crates/vokra-convert/src/models/zonos.rs
           echo '::notice title=tts-dac inspection-only::Dia/Zonos PR contract verified; no checkpoint was downloaded and no converter/parity result is claimed.'
 
   parity:
