@@ -1298,6 +1298,713 @@ impl NcsnppAttentionWeights {
     }
 }
 
+/// Fixed resampling modes used by the source `ResnetBlockBigGANpp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NcsnppResample {
+    /// Keep the spatial extent unchanged.
+    None,
+    /// Apply source `upsample_2d(..., factor=2)` before the first convolution.
+    Up,
+    /// Apply source `downsample_2d(..., factor=2)` before the first convolution.
+    Down,
+}
+
+/// Validated weights for one source BigGAN++ residual block.
+///
+/// Convolution tensors use PyTorch layout `[out, in, kernel_h, kernel_w]` and
+/// the time projection uses PyTorch linear layout `[out, temb]`.  The latter
+/// is transposed only at dispatch time to satisfy the row-major GEMM seam.
+/// The block intentionally owns no checkpoint names: those belong to the
+/// authenticated manifest/binder above this primitive.
+#[derive(Debug, Clone)]
+pub struct NcsnppBigGanBlockWeights {
+    in_channels: usize,
+    out_channels: usize,
+    conv0: Vec<f32>,
+    conv0_bias: Vec<f32>,
+    norm0_gamma: Vec<f32>,
+    norm0_beta: Vec<f32>,
+    conv1: Vec<f32>,
+    conv1_bias: Vec<f32>,
+    norm1_gamma: Vec<f32>,
+    norm1_beta: Vec<f32>,
+    skip: Option<Vec<f32>>,
+    skip_bias: Option<Vec<f32>>,
+    time_projection: Option<Vec<f32>>,
+    time_bias: Option<Vec<f32>>,
+    temb_dim: Option<usize>,
+}
+
+impl NcsnppBigGanBlockWeights {
+    /// Constructs a block's tensors from source/PyTorch layouts.
+    ///
+    /// `time_projection` and `time_bias` must either both be present or both
+    /// be absent.  A time projection is required when `forward` receives a
+    /// time embedding.  The optional 1×1 skip projection and its bias are
+    /// required by the source whenever the channel count changes or the block
+    /// resamples (`conv1x1` has `bias=True` in the pinned source).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        in_channels: usize,
+        out_channels: usize,
+        temb_dim: Option<usize>,
+        norm0_gamma: Vec<f32>,
+        norm0_beta: Vec<f32>,
+        conv0: Vec<f32>,
+        conv0_bias: Vec<f32>,
+        norm1_gamma: Vec<f32>,
+        norm1_beta: Vec<f32>,
+        conv1: Vec<f32>,
+        conv1_bias: Vec<f32>,
+        skip: Option<Vec<f32>>,
+        skip_bias: Option<Vec<f32>>,
+        time_projection: Option<Vec<f32>>,
+        time_bias: Option<Vec<f32>>,
+    ) -> Result<Self> {
+        if in_channels == 0 || out_channels == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN block channels must be non-zero".to_owned(),
+            ));
+        }
+        let conv0_len = out_channels
+            .checked_mul(in_channels)
+            .and_then(|value| value.checked_mul(9))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("sgmse BigGAN conv0 shape overflows usize".to_owned())
+            })?;
+        let conv1_len = out_channels
+            .checked_mul(out_channels)
+            .and_then(|value| value.checked_mul(9))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("sgmse BigGAN conv1 shape overflows usize".to_owned())
+            })?;
+        let skip_len = out_channels.checked_mul(in_channels).ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse BigGAN skip shape overflows usize".to_owned())
+        })?;
+        if norm0_gamma.len() != in_channels
+            || norm0_beta.len() != in_channels
+            || conv0.len() != conv0_len
+            || conv0_bias.len() != out_channels
+            || norm1_gamma.len() != out_channels
+            || norm1_beta.len() != out_channels
+            || conv1.len() != conv1_len
+            || conv1_bias.len() != out_channels
+            || skip
+                .as_ref()
+                .is_some_and(|weights| weights.len() != skip_len)
+            || skip_bias
+                .as_ref()
+                .is_some_and(|bias| bias.len() != out_channels)
+            || skip.is_some() != skip_bias.is_some()
+            || time_projection.is_some() != time_bias.is_some()
+            || temb_dim.is_none() != time_projection.is_none()
+        {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN block tensor shape or time-projection pairing is invalid".to_owned(),
+            ));
+        }
+        if let Some(width) = temb_dim {
+            let expected_time_projection = out_channels.checked_mul(width).ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "sgmse BigGAN time projection shape overflows usize".to_owned(),
+                )
+            })?;
+            if width == 0
+                || time_projection
+                    .as_ref()
+                    .is_none_or(|weights| weights.len() != expected_time_projection)
+                || time_bias
+                    .as_ref()
+                    .is_none_or(|bias| bias.len() != out_channels)
+            {
+                return Err(VokraError::InvalidArgument(
+                    "sgmse BigGAN time projection shape is invalid".to_owned(),
+                ));
+            }
+        }
+        let all_values = norm0_gamma
+            .iter()
+            .chain(&norm0_beta)
+            .chain(&conv0)
+            .chain(&conv0_bias)
+            .chain(&norm1_gamma)
+            .chain(&norm1_beta)
+            .chain(&conv1)
+            .chain(&conv1_bias)
+            .chain(skip.as_deref().unwrap_or(&[]))
+            .chain(skip_bias.as_deref().unwrap_or(&[]))
+            .chain(time_projection.as_deref().unwrap_or(&[]))
+            .chain(time_bias.as_deref().unwrap_or(&[]));
+        if all_values.any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN block contains a non-finite parameter".to_owned(),
+            ));
+        }
+        Ok(Self {
+            in_channels,
+            out_channels,
+            conv0,
+            conv0_bias,
+            norm0_gamma,
+            norm0_beta,
+            conv1,
+            conv1_bias,
+            norm1_gamma,
+            norm1_beta,
+            skip,
+            skip_bias,
+            time_projection,
+            time_bias,
+            temb_dim,
+        })
+    }
+
+    /// Constructs a block without a time projection for the source's
+    /// optional `temb=None` call path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn without_time_embedding(
+        in_channels: usize,
+        out_channels: usize,
+        norm0_gamma: Vec<f32>,
+        norm0_beta: Vec<f32>,
+        conv0: Vec<f32>,
+        conv0_bias: Vec<f32>,
+        norm1_gamma: Vec<f32>,
+        norm1_beta: Vec<f32>,
+        conv1: Vec<f32>,
+        conv1_bias: Vec<f32>,
+        skip: Option<Vec<f32>>,
+        skip_bias: Option<Vec<f32>>,
+    ) -> Result<Self> {
+        Self::new(
+            in_channels,
+            out_channels,
+            None,
+            norm0_gamma,
+            norm0_beta,
+            conv0,
+            conv0_bias,
+            norm1_gamma,
+            norm1_beta,
+            conv1,
+            conv1_bias,
+            skip,
+            skip_bias,
+            None,
+            None,
+        )
+    }
+}
+
+/// Checkpoint-independent source BigGAN++ residual block.
+#[derive(Debug, Clone)]
+pub struct NcsnppBigGanBlock {
+    config: NcsnppV2Config,
+    weights: NcsnppBigGanBlockWeights,
+    resample: NcsnppResample,
+}
+
+impl NcsnppBigGanBlock {
+    /// Creates a source-exact block after validating its graph configuration
+    /// and the required skip projection contract.
+    pub fn new(
+        config: NcsnppV2Config,
+        weights: NcsnppBigGanBlockWeights,
+        resample: NcsnppResample,
+    ) -> Result<Self> {
+        config.validate()?;
+        if config != NcsnppV2Config::source_default() {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN block source configuration drifted from pinned NCSN++ v2 defaults"
+                    .to_owned(),
+            ));
+        }
+        let needs_skip = weights.in_channels != weights.out_channels
+            || !matches!(resample, NcsnppResample::None);
+        if weights.skip.is_some() != weights.skip_bias.is_some()
+            || needs_skip != weights.skip.is_some()
+        {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN skip projection does not match channel/resample contract".to_owned(),
+            ));
+        }
+        Ok(Self {
+            config,
+            weights,
+            resample,
+        })
+    }
+
+    /// Source block channel count before resampling.
+    #[must_use]
+    pub fn in_channels(&self) -> usize {
+        self.weights.in_channels
+    }
+
+    /// Source block channel count after the first convolution.
+    #[must_use]
+    pub fn out_channels(&self) -> usize {
+        self.weights.out_channels
+    }
+
+    /// Runs source `ResnetBlockBigGANpp` on channel-major `[C,H,W]` buffers.
+    ///
+    /// The learned operations (GroupNorm, SiLU, Conv2d, and time projection)
+    /// are all dispatched through `Compute`. FIR resampling is fixed, with no
+    /// learned state, and is kept as explicit scalar glue until a dedicated
+    /// backend FIR seam exists. Unsupported selected backends therefore return
+    /// their `Compute` error at the first learned operation; no CPU fallback is
+    /// attempted.
+    pub fn forward(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        height: usize,
+        width: usize,
+        temb: Option<&[f32]>,
+        output: &mut [f32],
+    ) -> Result<()> {
+        self.config.validate()?;
+        if self.config != NcsnppV2Config::source_default() {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN block source configuration drifted from pinned NCSN++ v2 defaults"
+                    .to_owned(),
+            ));
+        }
+        let input_plane = checked_product(height, width, "sgmse BigGAN input plane")?;
+        let input_len =
+            checked_product(self.weights.in_channels, input_plane, "sgmse BigGAN input")?;
+        if height == 0 || width == 0 || input.len() != input_len {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN input shape is invalid".to_owned(),
+            ));
+        }
+        if input.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN input contains a non-finite value".to_owned(),
+            ));
+        }
+        let (resampled_height, resampled_width) = match self.resample {
+            NcsnppResample::None => (height, width),
+            NcsnppResample::Up => (
+                height.checked_mul(2).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "sgmse BigGAN upsample height overflows usize".to_owned(),
+                    )
+                })?,
+                width.checked_mul(2).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "sgmse BigGAN upsample width overflows usize".to_owned(),
+                    )
+                })?,
+            ),
+            NcsnppResample::Down => (height / 2, width / 2),
+        };
+        if resampled_height == 0 || resampled_width == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN downsample input must be at least 2x2".to_owned(),
+            ));
+        }
+        let resampled_plane = checked_product(
+            resampled_height,
+            resampled_width,
+            "sgmse BigGAN resampled plane",
+        )?;
+        let resampled_input_len = checked_product(
+            self.weights.in_channels,
+            resampled_plane,
+            "sgmse BigGAN resampled input",
+        )?;
+        let output_len = checked_product(
+            self.weights.out_channels,
+            resampled_plane,
+            "sgmse BigGAN output",
+        )?;
+        if output.len() != output_len {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN output shape is invalid".to_owned(),
+            ));
+        }
+        if temb.is_some_and(|values| values.iter().any(|value| !value.is_finite())) {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN time embedding contains a non-finite value".to_owned(),
+            ));
+        }
+        if self.weights.temb_dim.is_some() != temb.is_some() {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN time embedding presence does not match block weights".to_owned(),
+            ));
+        }
+        if let (Some(expected), Some(values)) = (self.weights.temb_dim, temb) {
+            if values.len() != expected {
+                return Err(VokraError::InvalidArgument(
+                    "sgmse BigGAN time embedding width is invalid".to_owned(),
+                ));
+            }
+        }
+        let mut norm0 = vec![0.0; input.len()];
+        let groups0 = self.config.group_norm_groups(self.weights.in_channels)?;
+        compute.group_norm_groups_f32(
+            input,
+            &mut norm0,
+            self.weights.in_channels,
+            input_plane,
+            groups0,
+            &self.weights.norm0_gamma,
+            &self.weights.norm0_beta,
+            self.config.group_norm_eps,
+        )?;
+        let mut activated0 = vec![0.0; input.len()];
+        compute.silu_f32(&norm0, &mut activated0)?;
+        let mut h_input = vec![0.0; resampled_input_len];
+        if matches!(self.resample, NcsnppResample::None) {
+            h_input.copy_from_slice(&activated0);
+        } else {
+            fir_resample_fixed(
+                &activated0,
+                self.weights.in_channels,
+                height,
+                width,
+                self.resample,
+                &mut h_input,
+            )?;
+        }
+        let mut h = vec![0.0; output_len];
+        compute.conv2d_f32(
+            &h_input,
+            self.weights.in_channels,
+            resampled_height,
+            resampled_width,
+            &self.weights.conv0,
+            self.weights.out_channels,
+            3,
+            3,
+            Some(&self.weights.conv0_bias),
+            (1, 1),
+            (1, 1),
+            (1, 1),
+            1,
+            &mut h,
+        )?;
+        if let (Some(projection), Some(bias), Some(values)) = (
+            self.weights.time_projection.as_ref(),
+            self.weights.time_bias.as_ref(),
+            temb,
+        ) {
+            let mut activated_temb = vec![0.0; values.len()];
+            compute.silu_f32(values, &mut activated_temb)?;
+            let projection_transposed_len = checked_product(
+                values.len(),
+                self.weights.out_channels,
+                "sgmse BigGAN transposed time projection",
+            )?;
+            let mut projection_transposed = vec![0.0; projection_transposed_len];
+            for out_channel in 0..self.weights.out_channels {
+                for time_index in 0..values.len() {
+                    projection_transposed[time_index * self.weights.out_channels + out_channel] =
+                        projection[out_channel * values.len() + time_index];
+                }
+            }
+            let mut projected = vec![0.0; self.weights.out_channels];
+            compute.gemm_f32(
+                1,
+                self.weights.out_channels,
+                values.len(),
+                &activated_temb,
+                &projection_transposed,
+                Some(bias),
+                &mut projected,
+            )?;
+            for channel in 0..self.weights.out_channels {
+                let base = channel * resampled_plane;
+                for value in &mut h[base..base + resampled_plane] {
+                    *value += projected[channel];
+                }
+            }
+        }
+        let mut norm1 = vec![0.0; output_len];
+        let groups1 = self.config.group_norm_groups(self.weights.out_channels)?;
+        compute.group_norm_groups_f32(
+            &h,
+            &mut norm1,
+            self.weights.out_channels,
+            resampled_plane,
+            groups1,
+            &self.weights.norm1_gamma,
+            &self.weights.norm1_beta,
+            self.config.group_norm_eps,
+        )?;
+        let mut activated1 = vec![0.0; output_len];
+        compute.silu_f32(&norm1, &mut activated1)?;
+        compute.conv2d_f32(
+            &activated1,
+            self.weights.out_channels,
+            resampled_height,
+            resampled_width,
+            &self.weights.conv1,
+            self.weights.out_channels,
+            3,
+            3,
+            Some(&self.weights.conv1_bias),
+            (1, 1),
+            (1, 1),
+            (1, 1),
+            1,
+            &mut h,
+        )?;
+        let skip_weights = self.weights.skip.as_ref().ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse BigGAN skip projection is missing".to_owned())
+        });
+        let skip_bias = self.weights.skip_bias.as_ref().ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse BigGAN skip projection bias is missing".to_owned())
+        });
+        let mut skip = vec![0.0; output_len];
+        let mut skip_input = vec![0.0; resampled_input_len];
+        if matches!(self.resample, NcsnppResample::None) {
+            skip_input.copy_from_slice(input);
+        } else {
+            fir_resample_fixed(
+                input,
+                self.weights.in_channels,
+                height,
+                width,
+                self.resample,
+                &mut skip_input,
+            )?;
+        }
+        if self.weights.in_channels == self.weights.out_channels
+            && matches!(self.resample, NcsnppResample::None)
+        {
+            skip.copy_from_slice(&skip_input);
+        } else {
+            compute.conv2d_f32(
+                &skip_input,
+                self.weights.in_channels,
+                resampled_height,
+                resampled_width,
+                skip_weights?,
+                self.weights.out_channels,
+                1,
+                1,
+                Some(skip_bias?),
+                (1, 1),
+                (0, 0),
+                (1, 1),
+                1,
+                &mut skip,
+            )?;
+        }
+        let scale = 2.0f32.sqrt().recip();
+        for ((dst, &residual), &shortcut) in output.iter_mut().zip(&h).zip(&skip) {
+            *dst = (residual + shortcut) * scale;
+        }
+        if output.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "sgmse BigGAN output contains a non-finite value".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn checked_product(left: usize, right: usize, what: &str) -> Result<usize> {
+    left.checked_mul(right)
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{what} overflows usize")))
+}
+
+/// Returns `ceil(n / divisor)` without overflowing `n + divisor - 1`.
+fn ceil_div_nonzero(n: usize, divisor: usize, what: &str) -> Result<usize> {
+    if n == 0 || divisor == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "{what} requires non-zero dimensions"
+        )));
+    }
+    n.checked_sub(1)
+        .and_then(|value| value.checked_div(divisor))
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{what} overflows usize")))
+}
+
+/// Source `upfirdn2d` with the fixed normalized `[1,3,3,1]` separable kernel.
+///
+/// The source uses zero extension, not reflection. Upsampling uses a 2×2
+/// zero-inserted lattice, kernel gain `factor²`, and symmetric pad `(2,1)`;
+/// downsampling uses no insertion, kernel gain `1`, and symmetric pad `(1,1)`.
+fn fir_resample_fixed(
+    input: &[f32],
+    channels: usize,
+    height: usize,
+    width: usize,
+    mode: NcsnppResample,
+    output: &mut [f32],
+) -> Result<()> {
+    if channels == 0 || height == 0 || width == 0 {
+        return Err(VokraError::InvalidArgument(
+            "sgmse FIR input dimensions must be non-zero".to_owned(),
+        ));
+    }
+    let input_plane = checked_product(height, width, "sgmse FIR input plane")?;
+    if input.len() != checked_product(channels, input_plane, "sgmse FIR input")?
+        || input.iter().any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "sgmse FIR input shape or values are invalid".to_owned(),
+        ));
+    }
+    let (up, down, pad_before, pad_after, out_height, out_width, gain) = match mode {
+        NcsnppResample::None => {
+            if output.len() != input.len() {
+                return Err(VokraError::InvalidArgument(
+                    "sgmse FIR identity output shape is invalid".to_owned(),
+                ));
+            }
+            output.copy_from_slice(input);
+            return Ok(());
+        }
+        NcsnppResample::Up => (
+            2usize,
+            1usize,
+            2usize,
+            1usize,
+            height.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("sgmse FIR upsample height overflows usize".to_owned())
+            })?,
+            width.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("sgmse FIR upsample width overflows usize".to_owned())
+            })?,
+            4.0f32,
+        ),
+        NcsnppResample::Down => (
+            1usize,
+            2usize,
+            1usize,
+            1usize,
+            height / 2,
+            width / 2,
+            1.0f32,
+        ),
+    };
+    if out_height == 0 || out_width == 0 {
+        return Err(VokraError::InvalidArgument(
+            "sgmse FIR downsample output dimensions are zero".to_owned(),
+        ));
+    }
+    let out_plane = checked_product(out_height, out_width, "sgmse FIR output plane")?;
+    if output.len() != checked_product(channels, out_plane, "sgmse FIR output")? {
+        return Err(VokraError::InvalidArgument(
+            "sgmse FIR output shape is invalid".to_owned(),
+        ));
+    }
+    // `_setup_kernel([1, 3, 3, 1])` first forms the 2-D outer product and
+    // normalizes its sum (64).  These are the equivalent separable 1-D taps;
+    // using 1/64 here would normalize twice and violate source constant gain.
+    const TAPS: [f32; 4] = [1.0 / 8.0, 3.0 / 8.0, 3.0 / 8.0, 1.0 / 8.0];
+    let up_height = height.checked_mul(up).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse FIR expanded height overflows usize".to_owned())
+    })?;
+    let up_width = width.checked_mul(up).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse FIR expanded width overflows usize".to_owned())
+    })?;
+    let padded_height = up_height
+        .checked_add(pad_before)
+        .and_then(|value| value.checked_add(pad_after))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse FIR padded height overflows usize".to_owned())
+        })?;
+    let padded_width = up_width
+        .checked_add(pad_before)
+        .and_then(|value| value.checked_add(pad_after))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse FIR padded width overflows usize".to_owned())
+        })?;
+    let convolution_height = padded_height.checked_sub(4).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse FIR padded height is smaller than kernel".to_owned())
+    })? + 1;
+    let convolution_width = padded_width.checked_sub(4).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse FIR padded width is smaller than kernel".to_owned())
+    })? + 1;
+    let expected_out_height =
+        ceil_div_nonzero(convolution_height, down, "sgmse FIR output height sampling")?;
+    let expected_out_width =
+        ceil_div_nonzero(convolution_width, down, "sgmse FIR output width sampling")?;
+    if expected_out_height != out_height || expected_out_width != out_width {
+        return Err(VokraError::InvalidArgument(
+            "sgmse FIR source shape formula mismatch".to_owned(),
+        ));
+    }
+    let last_conv_y = out_height
+        .checked_sub(1)
+        .and_then(|index| index.checked_mul(down))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse FIR last height sample overflows usize".to_owned())
+        })?;
+    let last_conv_x = out_width
+        .checked_sub(1)
+        .and_then(|index| index.checked_mul(down))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse FIR last width sample overflows usize".to_owned())
+        })?;
+    if last_conv_y >= convolution_height || last_conv_x >= convolution_width {
+        return Err(VokraError::InvalidArgument(
+            "sgmse FIR last sampled convolution index is out of bounds".to_owned(),
+        ));
+    }
+    for channel in 0..channels {
+        let input_base = channel * input_plane;
+        let output_base = channel * out_plane;
+        for out_y in 0..out_height {
+            for out_x in 0..out_width {
+                let conv_y = out_y.checked_mul(down).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "sgmse FIR height sample overflows usize".to_owned(),
+                    )
+                })?;
+                let conv_x = out_x.checked_mul(down).ok_or_else(|| {
+                    VokraError::InvalidArgument("sgmse FIR width sample overflows usize".to_owned())
+                })?;
+                let mut value = 0.0f32;
+                for ky in 0..4 {
+                    for kx in 0..4 {
+                        let padded_y = conv_y.checked_add(ky).ok_or_else(|| {
+                            VokraError::InvalidArgument(
+                                "sgmse FIR padded height sample overflows usize".to_owned(),
+                            )
+                        })?;
+                        let padded_x = conv_x.checked_add(kx).ok_or_else(|| {
+                            VokraError::InvalidArgument(
+                                "sgmse FIR padded width sample overflows usize".to_owned(),
+                            )
+                        })?;
+                        if padded_y < pad_before
+                            || padded_x < pad_before
+                            || padded_y >= pad_before + up_height
+                            || padded_x >= pad_before + up_width
+                        {
+                            continue;
+                        }
+                        let expanded_y = padded_y - pad_before;
+                        let expanded_x = padded_x - pad_before;
+                        if expanded_y % up != 0 || expanded_x % up != 0 {
+                            continue;
+                        }
+                        let source_y = expanded_y / up;
+                        let source_x = expanded_x / up;
+                        let source = input[input_base + source_y * width + source_x];
+                        value += source * TAPS[ky] * TAPS[kx] * gain;
+                    }
+                }
+                if !value.is_finite() {
+                    return Err(VokraError::InvalidArgument(
+                        "sgmse FIR produced a non-finite value".to_owned(),
+                    ));
+                }
+                output[output_base + out_y * out_width + out_x] = value;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl NcsnppV2Config {
     /// Defaults transcribed from `ncsnpp.py` at the pinned revision.
     #[must_use]
@@ -2179,5 +2886,287 @@ mod tests {
             (stochastic[0] - deterministic[0]).abs() > 1.0e-6,
             "final predictor must use a positive terminal epsilon interval"
         );
+    }
+
+    fn synthetic_biggan_weights(
+        in_channels: usize,
+        out_channels: usize,
+        temb_dim: Option<usize>,
+        resample: NcsnppResample,
+    ) -> NcsnppBigGanBlockWeights {
+        let needs_skip = in_channels != out_channels || !matches!(resample, NcsnppResample::None);
+        let skip = needs_skip.then(|| vec![0.0; in_channels * out_channels]);
+        let skip_bias = needs_skip.then(|| vec![0.0; out_channels]);
+        let time_projection = temb_dim.map(|width| vec![0.0; out_channels * width]);
+        let time_bias = temb_dim.map(|_| vec![0.0; out_channels]);
+        NcsnppBigGanBlockWeights::new(
+            in_channels,
+            out_channels,
+            temb_dim,
+            vec![1.0; in_channels],
+            vec![0.0; in_channels],
+            vec![0.0; in_channels * out_channels * 9],
+            vec![0.0; out_channels],
+            vec![1.0; out_channels],
+            vec![0.0; out_channels],
+            vec![0.0; out_channels * out_channels * 9],
+            vec![0.0; out_channels],
+            skip,
+            skip_bias,
+            time_projection,
+            time_bias,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn biggan_identity_skip_preserves_source_rescale() {
+        let block = NcsnppBigGanBlock::new(
+            NcsnppV2Config::source_default(),
+            synthetic_biggan_weights(4, 4, None, NcsnppResample::None),
+            NcsnppResample::None,
+        )
+        .unwrap();
+        let input = [
+            1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0, 9.0, 10.0, -11.0, 12.0, 13.0, -14.0, 15.0,
+            -16.0,
+        ];
+        let mut output = [0.0; 16];
+        block
+            .forward(&Compute::cpu(), &input, 2, 2, None, &mut output)
+            .unwrap();
+        for (&actual, &expected) in output.iter().zip(input.iter()) {
+            assert!((actual - expected / 2.0f32.sqrt()).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn biggan_up_and_down_paths_have_source_shapes() {
+        let config = NcsnppV2Config::source_default();
+        let input = vec![0.25; 4 * 2 * 4];
+        let up = NcsnppBigGanBlock::new(
+            config.clone(),
+            synthetic_biggan_weights(4, 4, None, NcsnppResample::Up),
+            NcsnppResample::Up,
+        )
+        .unwrap();
+        let mut up_output = vec![0.0; 4 * 4 * 8];
+        up.forward(&Compute::cpu(), &input, 2, 4, None, &mut up_output)
+            .unwrap();
+        assert!(up_output.iter().all(|value| value.is_finite()));
+
+        let down = NcsnppBigGanBlock::new(
+            config,
+            synthetic_biggan_weights(4, 4, None, NcsnppResample::Down),
+            NcsnppResample::Down,
+        )
+        .unwrap();
+        let mut down_output = vec![0.0; 4 * 1 * 2];
+        down.forward(&Compute::cpu(), &input, 2, 4, None, &mut down_output)
+            .unwrap();
+        assert_eq!(down_output.len(), 8);
+        assert!(down_output.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn fir_impulse_matches_normalized_source_kernel() {
+        let mut up = vec![0.0; 16];
+        fir_resample_fixed(&[1.0, 0.0, 0.0, 0.0], 1, 2, 2, NcsnppResample::Up, &mut up).unwrap();
+        // `_setup_kernel` normalizes the 2-D outer product once, so the
+        // separable taps are [1/8, 3/8, 3/8, 1/8].  With source pad (2, 1)
+        // and upsampling gain four, the first impulse samples are 9/16,
+        // 9/16, 3/16 horizontally and vertically.
+        assert!((up[0] - 9.0 / 16.0).abs() < 1.0e-8);
+        assert!((up[1] - 9.0 / 16.0).abs() < 1.0e-8);
+        assert!((up[2] - 3.0 / 16.0).abs() < 1.0e-8);
+        assert!((up[4] - 9.0 / 16.0).abs() < 1.0e-8);
+        assert_eq!(up[15], 0.0);
+
+        let mut up_constant = vec![0.0; 8 * 8];
+        fir_resample_fixed(&[1.0; 16], 1, 4, 4, NcsnppResample::Up, &mut up_constant).unwrap();
+        assert!((up_constant[3 * 8 + 3] - 1.0).abs() < 1.0e-7);
+
+        let mut down = vec![0.0; 4];
+        fir_resample_fixed(
+            &[
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            1,
+            4,
+            4,
+            NcsnppResample::Down,
+            &mut down,
+        )
+        .unwrap();
+        assert!((down[0] - 9.0 / 64.0).abs() < 1.0e-8);
+        assert!(down[1..].iter().all(|&value| value == 0.0));
+
+        let mut down_constant = vec![0.0; 4 * 4];
+        fir_resample_fixed(
+            &[1.0; 64],
+            1,
+            8,
+            8,
+            NcsnppResample::Down,
+            &mut down_constant,
+        )
+        .unwrap();
+        assert!((down_constant[1 * 4 + 1] - 1.0).abs() < 1.0e-7);
+    }
+
+    #[test]
+    fn biggan_time_projection_is_dispatched_and_affects_output() {
+        let mut weights = synthetic_biggan_weights(4, 4, Some(4), NcsnppResample::None);
+        for channel in 0..4 {
+            weights.time_projection.as_mut().unwrap()[channel * 4 + channel] = 1.0;
+            weights.conv1[channel * 4 * 9 + channel * 9 + 4] = 1.0;
+        }
+        let block = NcsnppBigGanBlock::new(
+            NcsnppV2Config::source_default(),
+            weights,
+            NcsnppResample::None,
+        )
+        .unwrap();
+        let input = vec![0.0; 4 * 2 * 2];
+        let mut with_time = vec![0.0; input.len()];
+        let mut zero_time = vec![0.0; input.len()];
+        block
+            .forward(
+                &Compute::cpu(),
+                &input,
+                2,
+                2,
+                Some(&[1.0, 2.0, 3.0, 4.0]),
+                &mut with_time,
+            )
+            .unwrap();
+        block
+            .forward(
+                &Compute::cpu(),
+                &input,
+                2,
+                2,
+                Some(&[0.0; 4]),
+                &mut zero_time,
+            )
+            .unwrap();
+        assert!(
+            with_time
+                .iter()
+                .zip(&zero_time)
+                .any(|(left, right)| { (left - right).abs() > 1.0e-6 })
+        );
+    }
+
+    #[test]
+    fn biggan_skip_projection_bias_is_applied() {
+        let mut weights = synthetic_biggan_weights(4, 8, None, NcsnppResample::None);
+        for (channel, bias) in weights.skip_bias.as_mut().unwrap().iter_mut().enumerate() {
+            *bias = channel as f32 + 1.0;
+        }
+        let block = NcsnppBigGanBlock::new(
+            NcsnppV2Config::source_default(),
+            weights,
+            NcsnppResample::None,
+        )
+        .unwrap();
+        let input = vec![0.0; 4 * 2 * 2];
+        let mut output = vec![0.0; 8 * 2 * 2];
+        block
+            .forward(&Compute::cpu(), &input, 2, 2, None, &mut output)
+            .unwrap();
+        for channel in 0..8 {
+            let expected = (channel as f32 + 1.0) / 2.0f32.sqrt();
+            assert!(
+                output[channel * 4..channel * 4 + 4]
+                    .iter()
+                    .all(|&value| (value - expected).abs() < 1.0e-6)
+            );
+        }
+    }
+
+    #[test]
+    fn biggan_rejects_bad_shapes_non_finite_values_and_uncovered_backend() {
+        let block = NcsnppBigGanBlock::new(
+            NcsnppV2Config::source_default(),
+            synthetic_biggan_weights(4, 4, None, NcsnppResample::None),
+            NcsnppResample::None,
+        )
+        .unwrap();
+        let mut output = vec![0.0; 16];
+        assert!(
+            block
+                .forward(&Compute::cpu(), &[0.0; 15], 2, 2, None, &mut output)
+                .is_err()
+        );
+        let mut input = vec![0.0; 16];
+        input[0] = f32::NAN;
+        assert!(
+            block
+                .forward(&Compute::cpu(), &input, 2, 2, None, &mut output)
+                .is_err()
+        );
+        assert!(
+            NcsnppBigGanBlockWeights::without_time_embedding(
+                4,
+                8,
+                vec![1.0; 4],
+                vec![0.0; 4],
+                vec![0.0; 4 * 8 * 9],
+                vec![0.0; 8],
+                vec![1.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8 * 8 * 9],
+                vec![0.0; 8],
+                Some(vec![0.0; 4 * 8]),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            NcsnppBigGanBlockWeights::without_time_embedding(
+                4,
+                8,
+                vec![1.0; 4],
+                vec![0.0; 4],
+                vec![0.0; 4 * 8 * 9],
+                vec![0.0; 8],
+                vec![1.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8 * 8 * 9],
+                vec![0.0; 8],
+                None,
+                Some(vec![0.0; 8]),
+            )
+            .is_err()
+        );
+        assert!(
+            NcsnppBigGanBlockWeights::without_time_embedding(
+                4,
+                4,
+                vec![1.0; 4],
+                vec![0.0; 4],
+                vec![0.0; 4 * 4 * 9],
+                vec![0.0; 4],
+                vec![1.0; 4],
+                vec![0.0; 4],
+                vec![0.0; 4 * 4 * 9],
+                vec![0.0; 4],
+                None,
+                None,
+            )
+            .is_ok()
+        );
+        let backend_error = match Compute::for_backend(
+            vokra_core::backend::BackendKind::Vulkan,
+            &[HotOp::Conv2d],
+        ) {
+            Ok(_) => panic!("uncovered Vulkan Conv2d must refuse explicitly"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            backend_error,
+            VokraError::UnsupportedOp(_) | VokraError::BackendUnavailable(_)
+        ));
     }
 }
