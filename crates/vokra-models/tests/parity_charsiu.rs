@@ -12,6 +12,9 @@ use vokra_models::align::charsiu::Charsiu;
 
 const PCM_BYTES: &[u8] = include_bytes!("fixtures/charsiu/pcm_400.f32.bin");
 const LOGITS_BYTES: &[u8] = include_bytes!("fixtures/charsiu/logits_1x42.f32.bin");
+// Registered from the historical independent VAST measurement (7.629e-6);
+// do not widen this bound to match an observed result.
+const FP32_ATOL: f32 = 0.0002;
 
 fn decode_f32(bytes: &[u8]) -> Vec<f32> {
     assert_eq!(
@@ -53,21 +56,21 @@ fn canonical_checkpoint_matches_transformers_logits() {
         }
     }
     eprintln!(
-        "[parity_charsiu] frames={frames} logits={} max_abs={max_abs:.9e} index={max_index} \
-         rust={:.9e} transformers={:.9e}",
+        "CHARSIU_OFFICIAL_PARITY_METRICS frames={frames} logits={} max_abs={max_abs:.9} index={max_index} \
+         rust={:.9} transformers={:.9} atol={FP32_ATOL:.9}",
         got.len(),
         got[max_index],
         expected[max_index]
     );
 
-    // This is an implementation target, not a reported result.  The final
-    // documented parity number is taken from the VAST run above; widening
-    // this bound requires a new independent measurement and review.
-    const ATOL: f32 = 2.0e-4;
     assert!(
-        max_abs <= ATOL,
+        max_abs <= FP32_ATOL,
         "Charsiu logits exceed the independent Transformers parity gate: \
-         max_abs={max_abs:.9e} at {max_index}, atol={ATOL:.9e}"
+         max_abs={max_abs:.9e} at {max_index}, atol={FP32_ATOL:.9e}"
+    );
+    eprintln!(
+        "CHARSIU_OFFICIAL_PARITY PASS max_abs={max_abs:.9} atol={FP32_ATOL:.9} \
+         frames={frames} reference=transformers.Wav2Vec2ForCTC fixture=official_canned_pcm"
     );
 }
 
