@@ -103,6 +103,10 @@ jobs:
           #     only for this fail-closed, non-executable inventory. The same
           #     inventory pins modelscope==1.20.0; its crafted-module advisory
           #     is likewise an exact exception, never permission to execute it.
+          #     It also inventories onnx==1.16.0; the nine ONNX advisories below
+          #     cover that immutable, non-executable dependency. No ONNX lock,
+          #     sync, model download, or runtime route is enabled by these
+          #     exceptions.
           # Those trees only dump independent reference tensors on VAST.
           # torch and Transformers appear nowhere else in the repository:
           # the Rust runtime carries no dependencies (check-zero-deps.sh)
@@ -133,7 +137,16 @@ jobs:
             GHSA-wrfc-pvp9-mr9g,
             GHSA-98h9-4798-4q5v,
             GHSA-7wx4-6vff-v64p,
-            GHSA-fhhq-h4hg-549x
+            GHSA-fhhq-h4hg-549x,
+            GHSA-6rq9-53c3-f7vj,
+            GHSA-h36j-8vv3-cj52,
+            GHSA-hqmj-h5c6-369m,
+            GHSA-3r9x-f23j-gc73,
+            GHSA-538c-55jv-c5g9,
+            GHSA-q56x-g2fj-4rj6,
+            GHSA-cmw6-hcpp-c6jp,
+            GHSA-p433-9wv8-28xj,
+            GHSA-hwpq-hmq9-wj77
           vulnerability-check: true
           retry-on-snapshot-warnings: true
           show-openssf-scorecard: true
