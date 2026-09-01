@@ -570,6 +570,44 @@ and `49261078` remain intentionally retained for direct Scaleway transfer;
 unrelated running instance `49466383` was not touched. This management-only
 record does not alter the code tested at `8b63dea7`.
 
+### 2026-09-01 exact-head full-gate and HTDemucs digest closure
+
+Disposable VAST instance `49520227` checked out clean exact commit
+`aa7b010efec1661b32c5fb6f5323f31b816a3a02` from incremental bundle SHA-256
+`f52a9f5dbd6249229cb71edb7d4412ea5223baa6c60d7c80f21dfe9622eff92c`.
+The instance exposed 40 effective CPU cores, 257,826 MiB CPU RAM, a 200-GB
+disk and an RTX 3080 Ti. The fail-closed controller has SHA-256
+`fb80902efdac0bac925d8bc9867fc2a35484989728805cd10d6ca47ca19144e9`.
+All 16 recorded stages matched their expected exits: diff/format/static API
+gates, 7,803 passed, zero failed and 75 ignored workspace tests across 310
+result groups, strict all-target/all-feature Clippy, cargo-deny, cargo-audit,
+the expected-exit-2 HTDemucs inspection and manifest validation. The COMPLETE,
+NO_UPLOAD summary SHA-256 is
+`240e609f38dc5f9df98c26272eec6dafe5fafcfce1d2b5b5a537c7e08ac9f21e`.
+
+The corrected HTDemucs manifest preserves authenticated canonical member order
+`f7e0c4bc`, `d12395a8`, `92cfc3b6`, `04573f0d`, `5c90dfd2`; all five members
+report `SAFE_LOADED`, and the ensemble reports
+`FULL_WEIGHT_DIGESTS_AUTHENTICATED`. Its recovered manifest SHA-256 is
+`710b18ee6249943bc550670b7155cae567c15648bd7c0c903434fcc372b95a68`.
+This closes the earlier digest and ordering evidence defects, not the model
+row: the manifest remains `status=BLOCKED`, `runtime_status=NOT_IMPLEMENTED`,
+`cpu_status=UNSUPPORTED`, `metal_status=BLOCKED_BY_CPU` and
+`parity_status=NOT_RUN`. Dataset provenance, dependency/license review,
+weight provenance/license review, native implementation and independent parity
+remain required. No conversion or upload occurred.
+
+Only 1.2 MB of logs and JSON was recovered under
+`/private/tmp/vokra-gates-aa7b010e/`; no checkpoint, GGUF or model payload was
+copied to the maintainer Mac. The VAST gate environment explicitly recorded
+`VOKRA_PUBLISH_ON_VAST=1`, and the before/after dependency metadata matched.
+Project dependency changes remain `uv add`-managed; locked execution uses
+`uv run --frozen` or `uv sync --frozen`, while `uv pip --system` remains only
+the disposable stock-image bootstrap exception. Instance `49520227` was
+destroyed and read back absent. Stopped packet instances `49168183` and
+`49261078` remain retained for direct Scaleway transfer; unrelated active
+training instance `49466383` was not touched.
+
 ## Execution order
 
 ### Wave A: close the three prepared Apple-hardware evidence gaps
