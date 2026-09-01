@@ -2997,7 +2997,7 @@ mod tests {
             NcsnppResample::Down,
         )
         .unwrap();
-        let mut down_output = vec![0.0; 4 * 1 * 2];
+        let mut down_output = vec![0.0; 4 * 2];
         down.forward(&Compute::cpu(), &input, 2, 4, None, &mut down_output)
             .unwrap();
         assert_eq!(down_output.len(), 8);
@@ -3047,7 +3047,7 @@ mod tests {
             &mut down_constant,
         )
         .unwrap();
-        assert!((down_constant[1 * 4 + 1] - 1.0).abs() < 1.0e-7);
+        assert!((down_constant[5] - 1.0).abs() < 1.0e-7);
     }
 
     #[test]
