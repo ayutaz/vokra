@@ -36,6 +36,17 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(routed, {"whisper", "moonshine"})
         self.assertEqual(bound, {"snac"})
 
+    def test_engine_parser_resolves_bound_arch_constants(self):
+        source = '''
+const ARCH_OWSM_V4_MEDIUM_1B: &str = "owsm-v4-medium-1b";
+const BOUND_ARCHES: &[BoundArch] = &[
+    BoundArch { arch: ARCH_OWSM_V4_MEDIUM_1B, reason: "partial" },
+];
+'''
+        routed, bound = audit.parse_engine_arches(source)
+        self.assertEqual(routed, {"owsm-v4-medium-1b"})
+        self.assertEqual(bound, {"owsm-v4-medium-1b"})
+
     def test_public_artifact_blockers_preserve_live_file_failures(self):
         cases = (
             (
@@ -109,9 +120,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "vokra/owsm-v4-medium-1b",
             "abc",
             ("owsm-v4-medium-1b.gguf",),
-            "owsm_v4_medium_1b",
+            "owsm-v4-medium-1b",
         )
-        coverage = audit.classify(record, {"owsm_v4_medium_1b"}, set())
+        coverage = audit.classify(record, {"owsm-v4-medium-1b"}, set())
         self.assertEqual(coverage.cpu_code, "partial")
         self.assertEqual(coverage.metal_code, "blocked-by-cpu")
         self.assertIn("released-artifact CPU forward is incomplete", coverage.reason)
