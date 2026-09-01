@@ -54,6 +54,11 @@ ALGORITHM_SOURCE_FIXED_FILES = {
     "sampler_corrector": "sgmse/sampling/correctors.py",
 }
 LOCKED_DISTRIBUTION_BLOCKER = "BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION"
+# The first VAST wave is an inspection, not a parity run.  Keep the missing
+# independent reference explicit in the JSON evidence instead of allowing a
+# safe-loaded checkpoint to look like a numerical validation.
+REFERENCE_BLOCKER = "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE"
+EMA_SELECTION_BLOCKER = "BLOCKED_EMA_SELECTION_UNVERIFIED"
 TYPED_TENSOR_CONTRACT_FORMAT = "vokra-sgmse-typed-role-manifest-v1"
 # Filled only by a later commit after VAST reviews the real checkpoint.  The
 # inspector must not let a caller self-authorize rows and a matching digest.
@@ -385,15 +390,20 @@ def safe_load_manifest(path: Path) -> dict[str, Any]:
     container_path, state_dict = candidates[0]
     tensors, unsupported, finite = tensor_manifest(state_dict, "")
     result["container_path"] = container_path
-    result["ema_extraction"] = (
-        "top_level_state_dict" if container_path == "<root>" else f"safe_tensor_map:{container_path}"
-    )
+    # A tensor map is safe to inspect, but its being stored in a file named
+    # ``score_model_ema.ckpt`` does not prove that the selected map is the EMA
+    # branch.  Keep this distinction explicit until the pinned loader route is
+    # reviewed on VAST.
+    result["ema_extraction"] = "UNVERIFIED"
+    result["ema_container_path"] = container_path
     result["tensor_manifest"] = tensors
     result["tensor_count"] = len(tensors)
     result["parameter_count"] = sum(item["count"] for item in tensors.values())
     result["unsupported_objects"] = unsupported
     result["all_finite"] = finite
-    if not tensors:
+    if unsupported:
+        result["safe_load_status"] = "BLOCKED_UNSUPPORTED_OBJECTS"
+    elif not tensors:
         result["safe_load_status"] = "BLOCKED_EMPTY_TENSOR_MANIFEST"
     elif not finite:
         result["safe_load_status"] = "BLOCKED_NONFINITE_TENSOR"
@@ -611,6 +621,49 @@ def companion_identity(companion_dir: Path) -> tuple[dict[str, Any], list[str]]:
     return companions, blockers
 
 
+def reference_evidence(
+    algorithm_source: dict[str, Any], speechbrain_source: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Describe the independent reference boundary without executing a model.
+
+    The locked SpeechBrain distribution is known to omit the executable
+    ``ScoreModel`` integration required by the checkpoint's hyperparams.  The
+    VAST inspector still records the pinned upstream source inventory so a
+    later owner-reviewed reference run has an exact route to start from, but
+    it must not call a self-authored mirror or claim parity today.
+    """
+    algorithm_roles = algorithm_source.get("files_by_role")
+    executable_files = speechbrain_source.get("executable_files")
+    source_ready = (
+        isinstance(algorithm_roles, dict)
+        and all(algorithm_roles.get(role) for role in ALGORITHM_SOURCE_ROLES)
+        and isinstance(executable_files, dict)
+        and all(executable_files.get(relative) for relative in EXECUTABLE_SPEECHBRAIN_FILES)
+    )
+    evidence: dict[str, Any] = {
+        "status": REFERENCE_BLOCKER,
+        "implementation": "pinned upstream source only; no local mirror",
+        "execution": "NOT_RUN",
+        "fixture_generation": "NOT_RUN",
+        "source_route": {
+            "algorithm_roles": sorted(algorithm_roles) if isinstance(algorithm_roles, dict) else [],
+            "speechbrain_executable_files": sorted(executable_files)
+            if isinstance(executable_files, dict)
+            else [],
+        },
+        "reason": (
+            "this inspection-only worker did not execute an independent "
+            "reference import or generate numerical fixtures"
+        ),
+    }
+    blockers = [
+        f"{REFERENCE_BLOCKER}: independent upstream reference was not executed"
+    ]
+    if not source_ready:
+        blockers.append(f"{REFERENCE_BLOCKER}: pinned source inventory is incomplete")
+    return evidence, blockers
+
+
 def inspect(
     ckpt: Path,
     hyperparams: Path,
@@ -650,11 +703,17 @@ def inspect(
     blockers.extend(speechbrain_blockers)
     companions, companion_blockers = companion_identity(companion_dir)
     blockers.extend(companion_blockers)
+    reference, reference_blockers = reference_evidence(
+        algorithm_inventory, speechbrain_source
+    )
+    blockers.extend(reference_blockers)
     loaded: dict[str, Any] = {}
     if ckpt.is_file() and checkpoint.get("size") == CHECKPOINT_SIZE and checkpoint.get("sha256") == CHECKPOINT_SHA256:
         loaded = safe_load_manifest(ckpt)
         if loaded.get("safe_load_status") != "SAFE_LOADED":
             blockers.append(f"checkpoint safe-load: {loaded.get('safe_load_status')}")
+        else:
+            blockers.append(f"{EMA_SELECTION_BLOCKER}: safe-loaded tensor map was not selected by a reviewed EMA loader")
     else:
         loaded = {
             "safe_load_status": "BLOCKED_CHECKPOINT_IDENTITY",
@@ -672,6 +731,8 @@ def inspect(
             "status": tensor_contract_status(loaded),
             "source": "safe_load.tensor_manifest",
             "tensor_count": loaded.get("tensor_count"),
+            "reviewed_manifest_sha256": REVIEWED_TENSOR_MANIFEST_SHA256,
+            "typed_required_roles": loaded.get("typed_required_roles"),
             # Role assignment is intentionally absent until the pinned source
             # and this exact safe-loaded manifest are reviewed on VAST.  A raw
             # tensor list, including the historical 647-tensor list, cannot
@@ -686,6 +747,7 @@ def inspect(
         "companions": companions,
         "algorithm_source": {**algorithm_source, **algorithm_inventory},
         "speechbrain_source": speechbrain_source,
+        "reference": reference,
         "safe_load": loaded,
         "blockers": blockers,
         "runtime_status": "INSPECTION_ONLY",
@@ -748,6 +810,16 @@ def self_test() -> None:
     assert tensor_contract_status({"safe_load_status": "BLOCKED_WEIGHTS_ONLY"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
     assert tensor_contract_status({"safe_load_status": "SAFE_LOADED"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
     assert tensor_contract_status({"safe_load_status": "SAFE_LOADED", "tensor_manifest": {"x": {}}}) == "SAFE_LOADED_MANIFEST"
+    blocked_reference, reference_blockers = reference_evidence(
+        {"files_by_role": {"score_model": []}},
+        {"executable_files": {"speechbrain/inference/enhancement.py": {}}},
+    )
+    assert blocked_reference["status"] == REFERENCE_BLOCKER
+    assert blocked_reference["execution"] == "NOT_RUN"
+    assert blocked_reference["fixture_generation"] == "NOT_RUN"
+    assert reference_blockers and all(REFERENCE_BLOCKER in item for item in reference_blockers)
+    assert tensor_contract_status({"safe_load_status": "BLOCKED_UNSUPPORTED_OBJECTS"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
+    assert EMA_SELECTION_BLOCKER == "BLOCKED_EMA_SELECTION_UNVERIFIED"
     required_roles = ["fourier_frequencies", "stage:0:input:0:weight"]
     typed_rows = [
         {"name": "source.frequency", "role": required_roles[0], "dtype": "torch.float32", "shape": [128]},

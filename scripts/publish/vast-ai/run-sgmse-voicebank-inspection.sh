@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # VAST/Linux-only SGMSE-VoiceBank authentication wave. It downloads the
-# exact HF snapshot and pinned upstream implementation, records safe-load and
-# tensor evidence, and never emits a safetensors/GGUF or uploads anything.
+# exact HF snapshot and pinned upstream implementation, records safe-load,
+# tensor and reference-boundary evidence, and never emits a safetensors/GGUF or
+# uploads anything.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +55,8 @@ self_test() {
     'sgmse/sampling/predictors.py' 'sgmse/sampling/correctors.py' 'reverse_diffusion' 'ald' \
     'CorrectorRegistry' 'sampler_predictor' 'sampler_corrector' \
     'BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION' \
+    'BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE' '"reference"' 'NOT_RUN' \
+    'BLOCKED_EMA_SELECTION_UNVERIFIED' '"ema_extraction": "UNVERIFIED"' \
     'importlib.metadata' \
     'vokra-sgmse-typed-role-manifest-v1' 'typed_bindings' 'bind_typed_manifest' \
     'verdict=BLOCKED' 'blocker_exit=2' 'git status --porcelain'; do
@@ -160,6 +163,7 @@ locked_speechbrain_version="$(UV_CACHE_DIR="$SGMSE_UV_CACHE_DIR" uv run --frozen
   echo "locked_speechbrain_version=$locked_speechbrain_version"
   echo 'runtime_status=INSPECTION_ONLY'
   echo 'parity_status=INSPECTION_ONLY'
+  echo 'reference_status=BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE'
   echo 'publication=NO_UPLOAD'
   cargo fmt --all -- --check
   cargo metadata --no-deps --format-version 1
@@ -197,9 +201,12 @@ grep -Fq '"runtime_status": "INSPECTION_ONLY"' "$work_dir/evidence/sgmse_voiceba
 if ! grep -Fq '"blockers": []' "$work_dir/evidence/sgmse_voicebank_manifest.json"; then
   grep -Fq 'BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION' \
     "$work_dir/evidence/sgmse_voicebank_manifest.json" || die 'locked SpeechBrain dependency blocker is missing'
+  grep -Fq '"status": "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE"' \
+    "$work_dir/evidence/sgmse_voicebank_manifest.json" || die 'independent reference blocker is missing'
   {
     echo 'runtime_status=INSPECTION_ONLY'
     echo 'parity_status=INSPECTION_ONLY'
+    echo 'reference_status=BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE'
     echo 'verdict=BLOCKED'
     echo 'blocker_exit=2'
     echo 'native_manifest_gate=AUTHENTICATED_MANIFEST_REQUIRED'
