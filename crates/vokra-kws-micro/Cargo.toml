@@ -10,7 +10,8 @@
 # loudly when none is. What is still missing is the join to an upstream
 # checkpoint: nothing builds a `ChainConfig` from a loaded `Model`, because
 # authenticated TFLite topology → typed ChainConfig binding and real parity remain pending
-# even though the sidecar now emits Q8_0 carriers and affine metadata. See
+# even though the sidecar now emits dense I8 tensors and affine metadata
+# (legacy Q8_0 remains load-compatible). See
 # `src/lib.rs`'s crate docs.
 # `publish = false` until that lands — the crate cannot yet load the
 # microWakeWord models (Apache 2.0, https://github.com/kahrendt/microWakeWord)

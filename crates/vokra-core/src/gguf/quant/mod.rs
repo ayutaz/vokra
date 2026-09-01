@@ -54,9 +54,9 @@ pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Ve
             actual: bytes.len() as u64,
         });
     }
-    if dtype == GgmlType::I32 {
+    if matches!(dtype, GgmlType::I8 | GgmlType::I32) {
         return Err(GgufError::DtypeMismatch {
-            name: "<dequant i32>".to_owned(),
+            name: format!("<dequant {}>", dtype.tag()),
             expected: GgmlType::F32.tag(),
             actual: dtype.tag(),
         });
@@ -64,7 +64,7 @@ pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Ve
     Ok(match dtype {
         GgmlType::F32 => decode_f32(bytes),
         GgmlType::F16 => decode_f16(bytes),
-        GgmlType::I32 => unreachable!("I32 rejected above"),
+        GgmlType::I8 | GgmlType::I32 => unreachable!("integer dtype rejected above"),
         GgmlType::BF16 => decode_bf16(bytes),
         GgmlType::Q8_0 => q8_0::dequantize(bytes, n_elements),
         GgmlType::Q4K => q4_k::dequantize(bytes, n_elements),

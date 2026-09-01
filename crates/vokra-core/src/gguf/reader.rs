@@ -291,6 +291,39 @@ impl GgufFile {
             .collect())
     }
 
+    /// Returns a dense signed-I8 tensor as exact little-endian byte values.
+    ///
+    /// GGML_TYPE_I8 is a scalar dense storage type: each element occupies one
+    /// wire byte and no dequantization is implied. Decoding through
+    /// `i8::from_le_bytes` keeps the signed interpretation explicit and safe
+    /// on every host endianness.
+    pub fn tensor_i8(&self, name: &str) -> Result<Vec<i8>, GgufError> {
+        let info = self
+            .tensor_info(name)
+            .ok_or_else(|| GgufError::MissingTensor(name.to_owned()))?;
+        if info.dtype != GgmlType::I8 {
+            return Err(GgufError::DtypeMismatch {
+                name: name.to_owned(),
+                expected: GgmlType::I8.tag(),
+                actual: info.dtype.tag(),
+            });
+        }
+        let n = usize::try_from(info.element_count()?).map_err(|_| GgufError::Overflow)?;
+        let bytes = self.tensor_bytes(info);
+        if bytes.len() != n {
+            return Err(GgufError::TensorSizeMismatch {
+                name: name.to_owned(),
+                expected: n as u64,
+                actual: bytes.len() as u64,
+            });
+        }
+        Ok(bytes
+            .iter()
+            .copied()
+            .map(|byte| i8::from_le_bytes([byte]))
+            .collect())
+    }
+
     /// Returns a dense BF16 tensor as raw little-endian `u16` bit patterns.
     ///
     /// Unlike [`GgufFile::tensor_f32`], this preserves BF16 storage and does
@@ -780,6 +813,35 @@ mod tests {
             Err(GgufError::DtypeMismatch {
                 expected: 0,
                 actual: 26,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tensor_i8_roundtrips_exact_signed_wire_bytes() {
+        let payload = [0u8, 1, 0x7f, 0x80, 0xff, 0xa5];
+        let mut b = GgufBuilder::new();
+        b.add_tensor("i8", GgmlType::I8, vec![3, 2], payload.to_vec())
+            .unwrap();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.tensor_i8("i8").unwrap(),
+            vec![0, 1, 127, -128, -1, -91]
+        );
+        assert!(matches!(
+            file.tensor_i32("i8"),
+            Err(GgufError::DtypeMismatch {
+                expected: 26,
+                actual: 24,
+                ..
+            })
+        ));
+        assert!(matches!(
+            file.tensor_f32("i8"),
+            Err(GgufError::DtypeMismatch {
+                expected: 0,
+                actual: 24,
                 ..
             })
         ));

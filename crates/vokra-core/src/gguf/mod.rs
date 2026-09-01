@@ -125,7 +125,7 @@ pub enum GgufError {
     /// A metadata value type tag was outside the range `0..=12`.
     UnsupportedValueType(u32),
     /// A tensor declared a ggml type tag Vokra does not load: the accepted set
-    /// is `F32` (0), `F16` (1), `I32` (26), `Q8_0` (8), `BF16` (30) and the K-quants
+    /// is `F32` (0), `F16` (1), `I8` (24), `I32` (26), `Q8_0` (8), `BF16` (30) and the K-quants
     /// `Q4_K` (12) / `Q5_K` (13) / `Q6_K` (14). Other quantized families
     /// (IQ2, Q2_K, …) are intentionally unsupported.
     UnsupportedDtype(u32),
@@ -229,7 +229,7 @@ impl fmt::Display for GgufError {
                 write!(
                     f,
                     "unsupported tensor dtype tag {t} \
-                     (accepted: F32=0, F16=1, BF16=30, Q8_0=8, Q4_K=12, Q5_K=13, Q6_K=14)"
+                     (accepted: F32=0, F16=1, I8=24, I32=26, BF16=30, Q8_0=8, Q4_K=12, Q5_K=13, Q6_K=14)"
                 )
             }
             Self::BlockSizeMisaligned {

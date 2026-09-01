@@ -3,7 +3,7 @@
 //! Reads a Vokra microWakeWord GGUF (emitted by the offline sidecar
 //! [`tools/parity/microwakeword/prepare_checkpoint.py`]) and yields a typed
 //! [`Model`] carrying the audio-frontend contract (from `vokra.kws.*`
-//! metadata) plus every dense F32, I32, or Q8_0 weight tensor.
+//! metadata) plus every dense F32, I8, I32, or legacy Q8_0 weight tensor.
 //!
 //! # What a `Model` can and cannot reach today
 //!
@@ -61,7 +61,7 @@
 //! # Tensors (shape-generic)
 //!
 //! Every tensor is bound generically as a [`Tensor`] (name + shape + typed
-//! F32, I32, or Q8_0 payload). Per-layer typed bindings (Conv2d / DwConv2d / Dense weight
+//! F32, I8, I32, or Q8_0 payload). Per-layer typed bindings (Conv2d / DwConv2d / Dense weight
 //! blocks, mirroring the `Conv1dW` pattern in
 //! `crates/vokra-vad-micro/src/weights.rs` — that module is private and
 //! `Conv1dW` is `pub(crate)`, so neither has a docs.rs page to link) are
@@ -70,7 +70,7 @@
 //! end-to-end parity evidence; the production authenticated entry point cannot
 //! be unlocked by caller data.
 //!
-//! Q8_0 and I32 tensors carry the source TFLite quantization vector in indexed metadata
+//! I8, Q8_0, and I32 tensors carry the source TFLite quantization vector in indexed metadata
 //! keys `vokra.kws.tensor.<ordinal>.name` (string), `.quant.scales` (float
 //! array), `.quant.zero_points` (signed-integer array), and
 //! `.quant.quantized_dimension` (I32). The indexed form avoids inventing a
@@ -334,6 +334,10 @@ pub struct TopologyManifest {
 pub enum TensorData {
     /// Native dense F32 values.
     F32(Vec<f32>),
+    /// Native dense signed-I8 source bytes. Affine metadata remains attached
+    /// separately so binders can verify the source quantization contract
+    /// without re-quantizing or padding these bytes.
+    I8(Vec<i8>),
     /// Q8_0 source-byte carrier and its decoded carrier view.
     Q8 {
         /// GGUF identity-carrier values (the exact source bytes widened to F32).
@@ -372,15 +376,15 @@ pub struct Tensor {
     pub quantization: Option<TensorQuantization>,
 }
 
-/// A parsed microWakeWord GGUF: audio-frontend contract + every dense F32, I32, or Q8_0
-/// weight tensor. Constructed via [`Model::from_bytes`] (owns a `Vec<u8>`
+/// A parsed microWakeWord GGUF: audio-frontend contract + every dense F32, I8,
+/// I32, or legacy Q8_0 weight tensor. Constructed via [`Model::from_bytes`] (owns a `Vec<u8>`
 /// copy of the input) or [`Model::from_gguf`] (borrows a prebuilt
 /// [`GgufFile`]).
 #[derive(Debug, Clone)]
 pub struct Model {
     /// Typed view of the `vokra.kws.*` metadata group.
     pub header: ModelHeader,
-    /// Every dense F32, I32, or Q8_0 tensor in the file, in GGUF declaration order.
+    /// Every dense F32, I8, I32, or Q8_0 tensor in the file, in GGUF declaration order.
     /// Per-layer typed bindings on top of this are not written yet (see the
     /// module docs); the shape-generic list is what shape audits (via
     /// `tests`) and any future binder walk.
@@ -407,8 +411,8 @@ impl Model {
     /// - `vokra.kws.threshold` outside `[0.0, 1.0]` or non-finite;
     /// - any zero-valued dimensioning key (`sample_rate` / `hop_ms` /
     ///   `window_ms` / `n_mels` / `feature_dim`);
-    /// - any tensor with a dtype other than [`GgmlType::F32`] or
-    ///   [`GgmlType::Q8_0`]; quantized tensors additionally require their
+    /// - any tensor with a dtype other than [`GgmlType::F32`], [`GgmlType::I8`],
+    ///   [`GgmlType::I32`], or [`GgmlType::Q8_0`]; quantized tensors additionally require their
     ///   indexed source-TFLite scale and zero-point metadata.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let gguf = GgufFile::parse(bytes.to_vec()).map_err(VokraError::from)?;
@@ -431,9 +435,12 @@ impl Model {
         let header = ModelHeader::from_gguf(gguf)?;
         let mut tensors = Vec::with_capacity(gguf.tensors().len());
         for (tensor_index, info) in gguf.tensors().iter().enumerate() {
-            if !matches!(info.dtype, GgmlType::F32 | GgmlType::I32 | GgmlType::Q8_0) {
+            if !matches!(
+                info.dtype,
+                GgmlType::F32 | GgmlType::I8 | GgmlType::I32 | GgmlType::Q8_0
+            ) {
                 return Err(VokraError::ModelLoad(format!(
-                    "tensor `{}` has dtype {:?}, expected F32, I32, or Q8_0",
+                    "tensor `{}` has dtype {:?}, expected F32, I8, I32, or Q8_0",
                     info.name, info.dtype
                 )));
             }
@@ -491,6 +498,24 @@ impl Model {
                         values: data,
                         raw: data_i8,
                     },
+                    quantization: Some(quantization),
+                });
+                continue;
+            }
+            if info.dtype == GgmlType::I8 {
+                let source_name = get_tensor_string(gguf, tensor_index, "name")?;
+                if source_name != info.name {
+                    return Err(VokraError::ModelLoad(format!(
+                        "tensor ordinal {tensor_index} is named `{}` but source name metadata is `{source_name}`",
+                        info.name
+                    )));
+                }
+                let quantization = get_tensor_quantization(gguf, tensor_index, info)?;
+                let data = gguf.tensor_i8(&info.name).map_err(VokraError::from)?;
+                tensors.push(Tensor {
+                    name: info.name.clone(),
+                    shape: info.dimensions.clone(),
+                    data: TensorData::I8(data),
                     quantization: Some(quantization),
                 });
                 continue;
@@ -1117,10 +1142,15 @@ fn bound_weight(model: &Model, tensor: &TopologyTensor) -> Result<Vec<i8>> {
         ));
     }
     match &stored.data {
+        TensorData::I8(values) if values.len() == shape_size(&tensor.shape, "weight")? => {
+            Ok(values.clone())
+        }
         TensorData::Q8 { raw, .. } if raw.len() == shape_size(&tensor.shape, "weight")? => {
             Ok(raw.clone())
         }
-        _ => Err(model_error("topology weight must be a Q8_0 tensor")),
+        _ => Err(model_error(
+            "topology weight must be a dense I8 or legacy Q8_0 tensor",
+        )),
     }
 }
 
@@ -1645,10 +1675,7 @@ mod tests {
                 Tensor {
                     name: "weight".into(),
                     shape: vec![1, 1],
-                    data: TensorData::Q8 {
-                        values: vec![1.0],
-                        raw: vec![1],
-                    },
+                    data: TensorData::I8(vec![1]),
                     quantization: Some(topology_quant(1.0, 0)),
                 },
                 Tensor {
@@ -2109,6 +2136,51 @@ mod tests {
                     .collect(),
             }
         );
+        assert_eq!(
+            tensor.quantization,
+            Some(TensorQuantization {
+                scales: vec![0.125],
+                zero_points: vec![-3],
+                quantized_dimension: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn loads_dense_i8_tensor_with_exact_source_bytes_and_quantization() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "i8_weight");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I64,
+                values: vec![GgufMetadataValue::I64(-3)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(0),
+        );
+        b.add_tensor(
+            "i8_weight",
+            GgmlType::I8,
+            vec![2, 3],
+            vec![0, 1, 127, 128, 255, 0xa5],
+        )
+        .expect("queue dense i8 tensor");
+        let model = Model::from_bytes(&b.to_bytes().expect("serialize i8 gguf"))
+            .expect("dense i8 gguf loads");
+        let tensor = model.tensor("i8_weight").expect("i8 tensor present");
+        assert_eq!(tensor.shape, vec![2, 3]);
+        assert_eq!(tensor.data, TensorData::I8(vec![0, 1, 127, -128, -1, -91]));
         assert_eq!(
             tensor.quantization,
             Some(TensorQuantization {
@@ -2702,8 +2774,8 @@ mod tests {
 
     #[test]
     fn rejects_every_non_f32_tensor_dtype() {
-        // The loader accepts F32 and the source-byte-carrier Q8_0 only. F16
-        // has its own focused test above; this sweep adds the other dtypes
+        // The loader accepts F32, dense I8, I32, and the legacy Q8_0 carrier.
+        // F16 has its own focused test above; this sweep adds the other dtypes
         // `GgmlType` can carry so the accepted set cannot silently widen.
         let cases: [(&str, GgmlType, Vec<u64>, usize); 3] = [
             ("bf16_weight", GgmlType::BF16, vec![4], 4 * 2),
@@ -2739,7 +2811,10 @@ mod tests {
         let mut b = GgufBuilder::new();
         add_valid_header(&mut b);
         b.add_string("vokra.provenance.license", "apache-2.0");
-        b.add_string("vokra.provenance.upstream_hf", "kahrendt/microWakeWord");
+        b.add_string(
+            "vokra.provenance.upstream_url",
+            "https://github.com/esphome/micro-wake-word-models",
+        );
         b.add_u32("some.unrelated.key", 1);
         let bytes = b.to_bytes().expect("serialize gguf");
         let m = Model::from_bytes(&bytes).expect("extra metadata must not break the bind");

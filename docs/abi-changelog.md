@@ -270,6 +270,27 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-09-01 — 0.3.0-dev (microWakeWord dense I8 GGUF wire support)
+
+The dense signed-I8 GGUF leg is additive within the current `0.3.0` prerelease
+line. `GGML_TYPE_I8 = 24` is a scalar one-byte-per-element storage type; it is
+kept distinct from Q8_0 so source tensors whose element counts are not 32-byte
+blocks retain their exact logical shape and bytes. The new accessor rejects
+float dequantization and the microWakeWord loader requires the indexed source
+name, shape, affine vectors, and exact byte count before binding. There is no C
+ABI or existing GGUF dtype change; legacy Q8_0 files remain supported.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-core::gguf` | `GgmlType::I8` | Added | `enum GgmlType { …, I8 = 24 }`; `block_size() = 1`, `type_size() = 1` | Additive public Rust enum variant and GGUF reader support; current pre-1.0 policy permits the variant addition, while unknown older readers reject tag 24 explicitly | yes | (this commit) |
+| `vokra-core::gguf::reader` | `GgufFile::tensor_i8` | Added | `pub fn tensor_i8(&self, name: &str) -> Result<Vec<i8>, GgufError>` | Exact signed-byte accessor; `tensor_f32` deliberately rejects I8 rather than widening it | no | (this commit) |
+| `vokra-kws-micro::model` | `TensorData::I8` | Added | `I8(Vec<i8>)` | Public model crate surface, outside the three-crate Rust snapshot scan; loader/binder remains production-closed pending independent topology/parity review | yes | (this commit) |
+
+The active `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is not
+rotated by this entry. `scripts/rust-public-api-list.sh --list` reports the
+new `tensor_i8` row and the changed `GgmlType` declaration; rotation remains
+the M5-13/IF-01 freeze owner's action under the policy above.
+
 ### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS explicit companion synthesis)
 
 The mapped Qwen3-TTS main now joins its generated sixteen-codebook frames to

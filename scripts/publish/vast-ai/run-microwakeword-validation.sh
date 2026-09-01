@@ -27,11 +27,11 @@ LICENSE_URL="https://github.com/esphome/micro-wake-word-models/raw/05b65922cc433
 COMPANION_URL="https://github.com/esphome/micro-wake-word-models/raw/05b65922cc433c9df13e98e32a7fe520758c837e/models/v2/hey_jarvis.json"
 MODEL_TARGET_GIT_BLOB="0075302434cc72a460ced0b8f6c09c69214e5cf0"
 MODEL_TARGET_SIZE=52272
+MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"
 MODEL_COMPANION_GIT_BLOB="e6733fe13852f04a5a3ae83e0d39b5726aee62cc"
 MODEL_COMPANION_SIZE=388
 LICENSE_GIT_BLOB="261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
 LICENSE_SIZE=11357
-MODEL_ARTIFACT_BYTES_SHA256=""
 REVIEWED_TOPOLOGY_SHA256=""
 PUBLICATION_STATUS="NO_UPLOAD"
 UV_CACHE_DIR_VALUE="${MICROWAKEWORD_UV_CACHE_DIR:-/tmp/vokra-microwakeword-uv-cache}"
@@ -66,6 +66,39 @@ run_authenticated_tensor_pipeline() {
     --expected-sha256 "$MODEL_ARTIFACT_BYTES_SHA256" \
     --tensor-manifest "$manifest_path" --tensor-manifest-sha256 "$manifest_sha256" \
     --output "$output_path"
+}
+
+# Candidate conversion is a separate VAST-only, NO_UPLOAD path. It consumes
+# fixed authenticated bytes and fixed raw inventory already materialized by the
+# operator; it never fetches arbitrary model URLs/names or unlocks production.
+candidate_conversion() {
+  [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Linux x86_64 VAST required"
+  [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
+  [[ "${VOKRA_CANDIDATE_CONVERSION:-0}" == 1 ]] || die "VOKRA_CANDIDATE_CONVERSION=1 is absent"
+  [[ "$#" == 4 ]] || die "--candidate requires input raw-inventory candidate-manifest output"
+  local input_path="$1" inventory_path="$2" manifest_path="$3" output_path="$4"
+  [[ -f "$input_path" && ! -L "$input_path" && -f "$inventory_path" && ! -L "$inventory_path" ]] || die "candidate inputs must be regular non-symlink files"
+  cd "$ROOT"
+  command -v realpath >/dev/null 2>&1 || die "missing tool: realpath"
+  input_path="$(realpath -e -- "$input_path")" || die "candidate input cannot be canonicalized"
+  inventory_path="$(realpath -e -- "$inventory_path")" || die "candidate inventory cannot be canonicalized"
+  local output_parent manifest_parent
+  output_parent="$(realpath -e -- "$(dirname -- "$output_path")")" || die "candidate output parent cannot be canonicalized"
+  manifest_parent="$(realpath -e -- "$(dirname -- "$manifest_path")")" || die "candidate manifest parent cannot be canonicalized"
+  output_path="$output_parent/$(basename -- "$output_path")"
+  manifest_path="$manifest_parent/$(basename -- "$manifest_path")"
+  [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
+  [[ -f "$PROJECT/uv.lock" ]] || die "dedicated uv.lock is absent"
+  [[ "$(sha256sum "$PROJECT/uv.lock" | awk '{print $1}')" == "$LOCK_SHA256" ]] || die "uv.lock identity mismatch"
+  [[ -f "$input_path" && ! -L "$input_path" && -f "$inventory_path" && ! -L "$inventory_path" ]] || die "candidate inputs must be regular non-symlink files"
+  [[ "$input_path" != "$ROOT"/* && "$inventory_path" != "$ROOT"/* ]] || die "candidate inputs must be outside checkout root"
+  [[ "$output_path" != "$ROOT"/* && "$manifest_path" != "$ROOT"/* ]] || die "candidate outputs must be outside checkout root"
+  [[ ! -e "$output_path" && ! -L "$output_path" && ! -e "$manifest_path" && ! -L "$manifest_path" ]] || die "candidate outputs must be absent"
+  [[ "$(sha256sum "$input_path" | awk '{print $1}')" == "$MODEL_ARTIFACT_BYTES_SHA256" ]] || die "AUTHENTICATED_PAYLOAD_SHA_REQUIRED"
+  UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python "$PROJECT/prepare_checkpoint.py" \
+    --candidate --input "$input_path" --raw-inventory "$inventory_path" \
+    --candidate-manifest "$manifest_path" --name hey_jarvis --output "$output_path"
+  echo "candidate conversion complete: dense GGML_TYPE_I8 logical tensors; NO_UPLOAD, CANDIDATE_UNREVIEWED" >&2
 }
 
 # Evidence-only VAST path. It is intentionally separate from production:
@@ -231,7 +264,7 @@ self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0 gate_line
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
   [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: inspector missing" >&2; fail=1; }
-  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256=""' 'REVIEWED_TOPOLOGY_SHA256=""'; do
+  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256=""'; do
     grep -Fq -- "$needle" "$self" || { echo "self-test FAIL: missing $needle" >&2; fail=1; }
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|--push|--upload|vokra-cli[[:space:]]+convert)([[:space:]]|$)' "$self" >/dev/null; then
@@ -348,6 +381,11 @@ PY
 if [[ "${1:-}" == "--self-test" ]]; then
   [[ $# == 1 ]] || die "--self-test accepts no arguments"
   self_test
+  exit 0
+fi
+if [[ "${1:-}" == "--candidate" ]]; then
+  shift
+  candidate_conversion "$@"
   exit 0
 fi
 if [[ "${1:-}" == "--inspect-only" ]]; then

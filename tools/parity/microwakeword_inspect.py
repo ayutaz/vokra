@@ -23,15 +23,17 @@ MODEL_REPOSITORY = "esphome/micro-wake-word-models"
 MODEL_REVISION = "05b65922cc433c9df13e98e32a7fe520758c837e"
 SOURCE_REPOSITORY = "https://github.com/kahrendt/microWakeWord"
 SOURCE_REVISION = "4665173cd35f1cff9a61e06fc427f124766c488e"
-MODEL_ARTIFACT_BYTES_SHA256: str | None = None
+# Recorded by the owner-approved VAST raw inventory.  This authenticates the
+# transport artifact only; topology/parity review is still intentionally closed.
+MODEL_ARTIFACT_BYTES_SHA256: str | None = "21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"
 LOCK_SHA256 = "984703d5bafdd6c88006bd381095961d42ef684d269d66194edbeda1fddf8dc2"
 PACKAGE_ROWS_SHA256 = "d9b806830227b4fdbdbe59ea5a20b529bfae40f6aa70e239b44a6238fabd5ad7"
 RESOLUTION_MARKERS_SHA256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
 LICENSE_ROWS_SHA256 = "4ee7351311d5d0bf69758093e88be7b4146fefdcbc80e026662bbdf58032272c"
 PACKAGE_COUNT = 1
 
-# These are Git object IDs (not file SHA-256 values).  The model bytes digest
-# remains intentionally unset until the VAST-only acquisition records it.
+# These are Git object IDs (not file SHA-256 values).  The model bytes digest is
+# pinned above from VAST evidence, while canonical topology remains unreviewed.
 SOURCE_MANIFEST = {
     "repository": SOURCE_REPOSITORY,
     "revision": SOURCE_REVISION,
@@ -67,9 +69,9 @@ MODEL_MANIFEST = {
 # approval: policy-sensitive rows keep the worker at exit 2.
 LICENSE_ROWS = [{"name": "microwakeword-prep", "version": "0.1.0", "license": "FIRST_PARTY", "evidence_field": "repository", "primary_source": "repository"}]
 BLOCKERS = [
-    "models/v2/hey_jarvis.tflite: artifact byte SHA-256 is pending VAST-only acquisition",
-    "hey_jarvis tensor manifest: authenticated VAST constant-buffer inspection is required",
-    "canonical topology: compiled REVIEWED_TOPOLOGY_SHA256 is unset",
+    "hey_jarvis raw inventory: evidence-only and not a reviewed canonical topology",
+    "candidate streaming manifest/GGUF: VAST-only NO_UPLOAD candidate path is unreviewed",
+    "canonical topology/parity: compiled REVIEWED_TOPOLOGY_SHA256 is unset",
 ]
 
 
@@ -157,11 +159,11 @@ def main() -> int:
             "repository": "esphome/micro-wake-word-models",
             "revision": "05b65922cc433c9df13e98e32a7fe520758c837e",
             "license": {"path": "LICENSE", "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64", "size": 11357},
-            "target": {"path": "models/v2/hey_jarvis.tflite", "git_blob": "0075302434cc72a460ced0b8f6c09c69214e5cf0", "size": 52272, "bytes_sha256": None},
+            "target": {"path": "models/v2/hey_jarvis.tflite", "git_blob": "0075302434cc72a460ced0b8f6c09c69214e5cf0", "size": 52272, "bytes_sha256": "21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"},
             "companion": {"path": "models/v2/hey_jarvis.json", "git_blob": "e6733fe13852f04a5a3ae83e0d39b5726aee62cc", "size": 388},
         }
         assert SOURCE_MANIFEST["license"] == {"path": "LICENSE", "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64", "size": 11357}
-        assert MODEL_MANIFEST["target"]["bytes_sha256"] is None
+        assert MODEL_MANIFEST["target"]["bytes_sha256"] == MODEL_ARTIFACT_BYTES_SHA256
         assert SOURCE_MANIFEST["roles"]["inference.py"] == "ec0634376accb8e7832205c117149f4acb3e6cf0"
         assert audit_lock()["package_count"] == PACKAGE_COUNT
         print("microwakeword inspector self-test: PASS")

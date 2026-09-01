@@ -1,16 +1,16 @@
 //! GGUF tensor dtype and tensor-info descriptors.
 //!
-//! The dense types `F32`, `F16`, and `I32` (M0), `Q8_0`, plus the K-quant
+//! The dense types `F32`, `F16`, `I8`, and `I32` (M0), `Q8_0`, plus the K-quant
 //! super-block types `Q4_K`, `Q5_K`, `Q6_K` (M1-02, FR-LD-07 / FR-QT-01) are
 //! accepted.
 //! The GGUF / ggml type tags are part of the on-disk format: `GGML_TYPE_F32 =
-//! 0`, `GGML_TYPE_F16 = 1`, `GGML_TYPE_I32 = 26`, `GGML_TYPE_Q8_0 = 8`, `GGML_TYPE_Q4_K = 12`,
+//! 0`, `GGML_TYPE_F16 = 1`, `GGML_TYPE_I8 = 24`, `GGML_TYPE_I32 = 26`, `GGML_TYPE_Q8_0 = 8`, `GGML_TYPE_Q4_K = 12`,
 //! `GGML_TYPE_Q5_K = 13`, `GGML_TYPE_Q6_K = 14`. The Q8_0 tag and block
 //! declaration are pinned to the official ggml source at commit
 //! `d4716378882593333721eb33f153144b6885caf2`, path `src/ggml-common.h`
 //! (`block_q8_0`):
 //! <https://github.com/ggml-org/ggml/blob/d4716378882593333721eb33f153144b6885caf2/src/ggml-common.h>.
-//! The dense I32 tag (`GGML_TYPE_I32 = 26`) is pinned to that revision's
+//! The dense I8 tag (`GGML_TYPE_I8 = 24`) and I32 tag (`GGML_TYPE_I32 = 26`) are pinned to that revision's
 //! official `src/ggml.h`; it is scalar little-endian storage, not a block
 //! quantization format.
 //! Container rules are pinned to that commit's `docs/gguf.md`.
@@ -23,7 +23,7 @@
 //!
 //! IQ2 / other i-quant families remain out of scope (FR-QT-01 marks them
 //! 極小デバイス用). A tensor declaring any tag other than `0`, `1`, `8`, `12`,
-//! `13`, `14`, `26`, or `30` is rejected with [`GgufError::UnsupportedDtype`] rather
+//! `13`, `14`, `24`, `26`, or `30` is rejected with [`GgufError::UnsupportedDtype`] rather
 //! than silently mishandled.
 
 use super::GgufError;
@@ -69,6 +69,10 @@ pub enum GgmlType {
     F32 = 0,
     /// IEEE-754 16-bit float, ggml type tag `1`. 2 bytes per element.
     F16 = 1,
+    /// Dense signed 8-bit integer, ggml type tag `24` (`GGML_TYPE_I8`).
+    /// One exact signed byte per element; this is not a block quantization
+    /// format and does not imply any affine scale.
+    I8 = 24,
     /// Signed little-endian 32-bit integer, ggml type tag `26`
     /// (`GGML_TYPE_I32`). Dense storage is one block and four bytes per
     /// element; it must not enter an `f32` dequantization path.
@@ -95,13 +99,14 @@ impl GgmlType {
     /// Converts an on-disk ggml type tag to a [`GgmlType`].
     ///
     /// Returns [`GgufError::UnsupportedDtype`] for any tag other than the dense
-    /// types (`0`, `1`, `26`, `30`) and the supported quantized types (`8`,
+    /// types (`0`, `1`, `24`, `26`, `30`) and the supported quantized types (`8`,
     /// `12`, `13`, `14`). Other quantized families (IQ2, Q2_K, …) remain
     /// intentionally unsupported.
     pub fn from_tag(tag: u32) -> Result<Self, GgufError> {
         match tag {
             0 => Ok(Self::F32),
             1 => Ok(Self::F16),
+            24 => Ok(Self::I8),
             26 => Ok(Self::I32),
             8 => Ok(Self::Q8_0),
             12 => Ok(Self::Q4K),
@@ -124,7 +129,7 @@ impl GgmlType {
     /// fixed super-blocks.
     pub fn block_size(self) -> usize {
         match self {
-            Self::F32 | Self::F16 | Self::I32 | Self::BF16 => 1,
+            Self::F32 | Self::F16 | Self::I8 | Self::I32 | Self::BF16 => 1,
             Self::Q8_0 => 32,
             Self::Q4K | Self::Q5K | Self::Q6K => QK_K,
         }
@@ -141,6 +146,7 @@ impl GgmlType {
         match self {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
+            Self::I8 => 1,
             Self::I32 => 4,
             Self::Q8_0 => 34,
             Self::Q4K => 144,
@@ -315,6 +321,7 @@ mod tests {
         for ty in [
             GgmlType::F32,
             GgmlType::F16,
+            GgmlType::I8,
             GgmlType::I32,
             GgmlType::Q8_0,
             GgmlType::BF16,
@@ -339,6 +346,19 @@ mod tests {
         assert_eq!(GgmlType::Q8_0.type_size(), 34);
         assert_eq!(GgmlType::Q8_0.payload_size(32).unwrap(), 34);
         assert_eq!(GgmlType::Q8_0.payload_size(64).unwrap(), 68);
+    }
+
+    #[test]
+    fn dense_i8_tag_and_wire_size_are_pinned() {
+        assert_eq!(GgmlType::I8.tag(), 24);
+        assert_eq!(GgmlType::from_tag(24).unwrap(), GgmlType::I8);
+        assert_eq!(GgmlType::I8.block_size(), 1);
+        assert_eq!(GgmlType::I8.type_size(), 1);
+        assert_eq!(GgmlType::I8.payload_size(6).unwrap(), 6);
+        assert_eq!(
+            GgmlType::I8.payload_size_for_dimensions(&[3, 2]).unwrap(),
+            6
+        );
     }
 
     #[test]

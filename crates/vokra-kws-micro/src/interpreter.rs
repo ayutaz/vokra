@@ -50,9 +50,9 @@
 //! runs end-to-end in [`crate::KwsMicro::detect`]. What is NOT yet real:
 //!
 //! 1. **A committed hey_jarvis chain** — the sidecar
-//!    (`tools/parity/microwakeword/prepare_checkpoint.py`) now emits Q8_0
-//!    source-byte carriers plus `(scale, zero_point)` metadata. A real
-//!    MC-MobileNet chain now has a typed binder, but the authenticated VAST
+//!    (`tools/parity/microwakeword/prepare_checkpoint.py`) now emits dense I8
+//!    source bytes plus `(scale, zero_point)` metadata; legacy Q8_0 remains
+//!    load-compatible. A real MC-MobileNet chain now has a typed binder, but the authenticated VAST
 //!    manifest and parity evidence are still required before real
 //!    hey_jarvis inference is claimed.
 //! 2. **Accuracy on a real `.tflite`** — needs a canned "hey jarvis" audio

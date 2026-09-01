@@ -16,8 +16,8 @@ attached via ``set_chain``; its typed topology is an explicitly untrusted
 validation seam, while canonical TFLite topology binding remains an
 owner-approved VAST task.
 
-The GGUF preserves source INT8 bytes in Q8_0 identity blocks, source INT32
-biases as dense I32, and stamps the complete TFLite quantization vectors. Operator topology and activation
+The GGUF preserves source INT8 bytes as dense GGML_TYPE_I8 logical tensors,
+source INT32 biases as dense I32, and stamps the complete TFLite quantization vectors. Operator topology and activation
 parameters remain a separate inspected contract for the runtime binder.
 
 # Contract — GGUF metadata keys (vokra.kws.* prefix)
@@ -50,15 +50,16 @@ category as a discriminator):
   ``apache-2.0`` posture. The sidecar emits these provenance keys inline so
   the artifact can be checked by the FR-OP-32 catalog-reality gate.
 
-# Tensor emission (Q8_0 source-byte carrier and I32 bias carrier)
+# Tensor emission (dense I8 source bytes and I32 bias carrier)
 
 The upstream TFLite is INT8-quantized for TFLite-Micro inference on
-Cortex-M55. Each INT8 source tensor is emitted as Q8_0 with exact source
-bytes and an identity FP16 block scale; complete scale/zero-point vectors and
-``quantized_dimension`` are metadata. INT32 bias values are emitted as raw
-little-endian GGML_TYPE_I32 (tag 26), with zero-point exactly zero. Q8_0
-payloads require only that the total element count is a multiple of 32; the
-writer fails closed rather than silently changing a declared shape.
+Cortex-M55. Each INT8 source tensor is emitted as one dense GGML_TYPE_I8
+(tag 24) tensor with exact source shape and bytes; complete scale/zero-point
+vectors and ``quantized_dimension`` are metadata. INT32 bias values are emitted
+as raw little-endian GGML_TYPE_I32 (tag 26), with zero-point exactly zero. The
+legacy Q8_0 writer remains available only for compatibility fixtures and rejects
+partial blocks; candidate/normal preparer output does not split or pad source
+tensors. Candidate output remains unreviewed and cannot open production binding.
 
 # NOT REFERENCED (clean-room)
 
@@ -160,10 +161,35 @@ DEFAULT_UPSTREAM_URL: str = (
 CANONICAL_MODEL_NAME = "hey_jarvis"
 CANONICAL_MODEL_REPOSITORY = "esphome/micro-wake-word-models"
 CANONICAL_MODEL_REVISION = "05b65922cc433c9df13e98e32a7fe520758c837e"
+# The model distributor is a GitHub repository, not a Hugging Face model
+# namespace. Keep this provenance value distinct from ``KEY_UPSTREAM``, which
+# identifies the exact raw model artifact above.
+PROVENANCE_UPSTREAM_URL = "https://github.com/esphome/micro-wake-word-models"
 CANONICAL_SOURCE_REPOSITORY = "https://github.com/kahrendt/microWakeWord"
 CANONICAL_SOURCE_REVISION = "4665173cd35f1cff9a61e06fc427f124766c488e"
 AUTHENTICATED_SHA_ENV = "MICROWAKEWORD_EXPECTED_SHA256"
 TENSOR_MANIFEST_SHA_ENV = "MICROWAKEWORD_TENSOR_MANIFEST_SHA256"
+
+# Owner-approved VAST evidence authenticates transport bytes only.  The
+# topology remains unreviewed, so these constants must never unlock the strict
+# production manifest path.
+AUTHENTICATED_MODEL_SHA256 = "21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"
+AUTHENTICATED_MODEL_SIZE = 52272
+AUTHENTICATED_RAW_INVENTORY_SHA256 = "ce57a719f60af3a494cbd8fb22ff30fdb405b0a3037b049333f25f5794749989"
+RAW_INVENTORY_FORMAT = "vokra-microwakeword-tflite-raw-inventory-v1"
+RAW_INVENTORY_AUTHORITY = "EVIDENCE_ONLY_UNREVIEWED"
+EXPECTED_STATE_NAMES = [
+    "stream/states", "stream_1/states", "stream_2/states",
+    "stream_3/states", "stream_4/states", "stream_5/states",
+]
+EXPECTED_STATE_SHAPES = {
+    "stream/states": [1, 2, 1, 40],
+    "stream_1/states": [1, 4, 1, 30],
+    "stream_2/states": [1, 8, 1, 60],
+    "stream_3/states": [1, 12, 1, 60],
+    "stream_4/states": [1, 20, 1, 60],
+    "stream_5/states": [1, 4, 1, 60],
+}
 
 # GGUF metadata key names — grouped so the ``add_metadata`` helper below
 # reads top-down.
@@ -186,12 +212,13 @@ KEY_SOURCE_REVISION = "vokra.kws.source_revision"
 # converter has a separate provenance helper for converter-owned artifacts).
 KEY_PROV_LICENSE = "vokra.provenance.license"
 KEY_PROV_CLASS = "vokra.provenance.license_class"
-KEY_PROV_UPSTREAM_HF = "vokra.provenance.upstream_hf"
+KEY_PROV_UPSTREAM_URL = "vokra.provenance.upstream_url"
 KEY_PROV_UPSTREAM_NAME = "vokra.provenance.upstream_name"
 
 GGUF_ALIGNMENT = 32
 GGUF_VERSION = 3
 GGML_TYPE_F32 = 0
+GGML_TYPE_I8 = 24
 GGML_TYPE_I32 = 26
 GGML_TYPE_Q8_0 = 8
 Q8_0_BLOCK_SIZE = 32
@@ -218,6 +245,318 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError(f"duplicate JSON key: {key}")
         result[key] = value
     return result
+
+
+EXPECTED_CANDIDATE_OPERATOR_SHA256 = (
+    "37e180afb9fd79a3057f3e95e78eaa31c2cf55e135df26aba44d1dd1b0aacaf6"
+)
+_CANDIDATE_OPERATOR_CODES = [
+    [129, 142, 142, 142, 142, 142, 142, 22, 143, 143, 143, 143, 143, 143,
+     2, 45, 144, 3, 2, 45, 144, 4, 3, 2, 45, 144, 4, 3, 2, 45, 144, 4,
+     3, 2, 45, 144, 4, 3, 2, 45, 144, 22, 9, 14, 114],
+    [142, 144, 142, 144, 142, 144, 142, 144, 142, 144, 142, 144],
+]
+
+
+def _candidate_operator_digest(document: dict[str, Any]) -> str:
+    operators = []
+    for subgraph_index, subgraph in enumerate(document.get("subgraphs", [])):
+        for operator in subgraph.get("operators", []):
+            operators.append({"subgraph_index": subgraph_index, **operator})
+    return hashlib.sha256(
+        json.dumps(operators, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _candidate_streaming_plan(document: dict[str, Any]) -> dict[str, Any]:
+    """Bind only the six resource states observed in evidence-only inventory."""
+    subgraphs = document.get("subgraphs")
+    if not isinstance(subgraphs, list) or len(subgraphs) != 2:
+        raise SystemExit("CANDIDATE_TOPOLOGY_REQUIRED: expected two subgraphs")
+    if any(
+        not isinstance(subgraph, dict)
+        or not isinstance(subgraph.get("operators"), list)
+        or not isinstance(subgraph.get("tensors"), list)
+        or any(not isinstance(operator, dict) for operator in subgraph["operators"])
+        or any(not isinstance(tensor, dict) for tensor in subgraph["tensors"])
+        for subgraph in subgraphs
+    ):
+        raise SystemExit("CANDIDATE_TOPOLOGY_REQUIRED: malformed subgraph evidence")
+    for subgraph in subgraphs:
+        indices = [tensor.get("index") for tensor in subgraph["tensors"]]
+        if any(not isinstance(index, int) or isinstance(index, bool) or index < 0 for index in indices):
+            raise SystemExit("CANDIDATE_TENSOR_REQUIRED: tensor index is malformed")
+        if len(indices) != len(set(indices)):
+            raise SystemExit("CANDIDATE_TENSOR_REQUIRED: duplicate tensor index")
+        tensor_count = len(indices)
+        for operator in subgraph["operators"]:
+            inputs = operator.get("inputs")
+            outputs = operator.get("outputs")
+            if (
+                not isinstance(inputs, list)
+                or not isinstance(outputs, list)
+                or any(not isinstance(index, int) or isinstance(index, bool) or index < 0 or index >= tensor_count for index in inputs + outputs)
+            ):
+                raise SystemExit("CANDIDATE_TOPOLOGY_REQUIRED: operator edge index is malformed")
+        for field in ("inputs", "outputs"):
+            boundary = subgraph.get(field)
+            if not isinstance(boundary, list) or any(
+                not isinstance(index, int) or isinstance(index, bool) or index < 0 or index >= tensor_count
+                for index in boundary
+            ):
+                raise SystemExit("CANDIDATE_TOPOLOGY_REQUIRED: subgraph edge index is malformed")
+    if [
+        [op.get("selected_code") for op in sg.get("operators", [])]
+        for sg in subgraphs
+    ] != _CANDIDATE_OPERATOR_CODES:
+        raise SystemExit("CANDIDATE_TOPOLOGY_REQUIRED: operator code sequence drifted")
+    if _candidate_operator_digest(document) != EXPECTED_CANDIDATE_OPERATOR_SHA256:
+        raise SystemExit("CANDIDATE_TOPOLOGY_REQUIRED: operator/options evidence drifted")
+    main_ops, init_ops = subgraphs[0]["operators"], subgraphs[1]["operators"]
+    if any(not isinstance(tensor.get("index"), int) for tensor in subgraphs[0]["tensors"] + subgraphs[1]["tensors"]):
+        raise SystemExit("CANDIDATE_TENSOR_REQUIRED: tensor indices are malformed")
+    if len({tensor["index"] for tensor in subgraphs[0]["tensors"]}) != len(subgraphs[0]["tensors"]) or len({tensor["index"] for tensor in subgraphs[1]["tensors"]}) != len(subgraphs[1]["tensors"]):
+        raise SystemExit("CANDIDATE_TENSOR_REQUIRED: duplicate tensor index")
+    main_tensors = {tensor["index"]: tensor for tensor in subgraphs[0].get("tensors", [])}
+    call_once = main_ops[0]
+    if (
+        call_once.get("official_name") != "CALL_ONCE"
+        or call_once.get("version") != 1
+        or call_once.get("inputs") != []
+        or call_once.get("outputs") != []
+    ):
+        raise SystemExit("CANDIDATE_STATE_REQUIRED: CALL_ONCE evidence drifted")
+    if call_once.get("builtin_options") != {
+        "decoded": {"init_subgraph_index": 1}, "table_present": True, "type": 103
+    }:
+        raise SystemExit("CANDIDATE_STATE_REQUIRED: CALL_ONCE options drifted")
+    handles = []
+    expected_handles = []
+    for ordinal, op in enumerate(main_ops[1:7]):
+        options = op.get("builtin_options", {}).get("decoded", {})
+        name = options.get("shared_name")
+        expected_name = EXPECTED_STATE_NAMES[ordinal]
+        if (
+            op.get("official_name") != "VAR_HANDLE"
+            or op.get("version") != 1
+            or name != expected_name
+            or op.get("builtin_options_type") != 111
+            or not op.get("builtin_options_table_present")
+            or options.get("container") != ""
+            or len(op.get("outputs", [])) != 1
+        ):
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: state handle evidence drifted")
+        handles.append({"name": name, "main_handle_tensor": op["outputs"][0]})
+        expected_handles.append(name)
+    if expected_handles != EXPECTED_STATE_NAMES:
+        raise SystemExit("CANDIDATE_STATE_REQUIRED: state order drifted")
+    init_by_name: dict[str, dict[str, Any]] = {}
+    for op_index in range(0, len(init_ops), 2):
+        handle, assign = init_ops[op_index], init_ops[op_index + 1]
+        name = handle.get("builtin_options", {}).get("decoded", {}).get("shared_name")
+        if (
+            handle.get("official_name") != "VAR_HANDLE"
+            or assign.get("official_name") != "ASSIGN_VARIABLE"
+            or handle.get("version") != 1
+            or assign.get("version") != 1
+            or len(handle.get("outputs", [])) != 1
+            or len(assign.get("inputs", [])) != 2
+            or assign["inputs"][0] != handle["outputs"][0]
+            or assign.get("outputs") != []
+            or assign.get("builtin_options_type") != 0
+            or assign.get("builtin_options_table_present")
+            or len(assign.get("mutating_variable_inputs", [])) != 0
+            or handle.get("builtin_options", {}).get("decoded", {}).get("container") != ""
+        ):
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: initializer plumbing drifted")
+        if not isinstance(name, str) or name in init_by_name:
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: initializer state name invalid")
+        init_by_name[name] = {
+            "init_handle_tensor": handle["outputs"][0],
+            "init_value_tensor": assign["inputs"][1],
+            "init_assign_operator": assign["index"],
+        }
+    state_plan = []
+    for handle in handles:
+        name = handle["name"]
+        if name not in init_by_name:
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: state lacks initializer")
+        initializer = init_by_name[name]
+        initial_tensor_index = initializer["init_value_tensor"]
+        init_tensors = subgraphs[1].get("tensors", [])
+        if not isinstance(initial_tensor_index, int) or not 0 <= initial_tensor_index < len(init_tensors):
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: initializer tensor is out of bounds")
+        initial_tensor = init_tensors[initial_tensor_index]
+        try:
+            initial_bytes = bytes.fromhex(initial_tensor.get("data_hex", ""))
+        except (TypeError, ValueError) as error:
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: initializer bytes are malformed") from error
+        initial_quantization = initial_tensor.get("quantization")
+        if (
+            initial_tensor.get("kind") != "constant"
+            or initial_tensor.get("dtype") != "int8"
+            or initial_tensor.get("shape") != EXPECTED_STATE_SHAPES[name]
+            or not isinstance(initial_tensor.get("data_hex"), str)
+            or any(byte != 0x80 for byte in initial_bytes)
+            or len(initial_bytes) != math.prod(EXPECTED_STATE_SHAPES[name])
+            or hashlib.sha256(initial_bytes).hexdigest() != initial_tensor.get("buffer_sha256")
+            or not isinstance(initial_quantization, dict)
+            or initial_quantization.get("quantized_dimension") != 0
+            or len(initial_quantization.get("scales", [])) != 1
+            or len(initial_quantization.get("zero_points", [])) != 1
+            or initial_quantization.get("zero_points") != [-128]
+        ):
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: initializer bytes are not persistent evidence")
+        reads = [
+            op for op in main_ops
+            if op.get("official_name") == "READ_VARIABLE"
+            and op.get("inputs") == [handle["main_handle_tensor"]]
+        ]
+        assigns = [
+            op for op in main_ops
+            if op.get("official_name") == "ASSIGN_VARIABLE"
+            and op.get("inputs", [None])[0] == handle["main_handle_tensor"]
+        ]
+        if len(reads) != 1 or len(assigns) != 1:
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: state read/write plumbing drifted")
+        read_tensor = main_tensors.get(reads[0]["outputs"][0])
+        if (
+            not isinstance(read_tensor, dict)
+            or read_tensor.get("dtype") != "int8"
+            or read_tensor.get("shape") != EXPECTED_STATE_SHAPES[name]
+            or read_tensor.get("quantization") != initial_tensor.get("quantization")
+            or len(reads[0].get("inputs", [])) != 1
+            or len(reads[0].get("outputs", [])) != 1
+            or reads[0].get("version") != 1
+            or reads[0].get("builtin_options_type") != 0
+            or reads[0].get("builtin_options_table_present")
+            or len(assigns[0].get("inputs", [])) != 2
+            or assigns[0].get("outputs") != []
+            or assigns[0].get("version") != 1
+            or assigns[0].get("builtin_options_type") != 0
+            or assigns[0].get("builtin_options_table_present")
+            or len(assigns[0].get("mutating_variable_inputs", [])) != 0
+        ):
+            raise SystemExit("CANDIDATE_STATE_REQUIRED: state read shape is absent")
+        state_plan.append({
+            **handle,
+            "main_read_tensor": reads[0]["outputs"][0],
+            "state_shape": read_tensor["shape"],
+            "state_dtype": read_tensor.get("dtype"),
+            "main_read_operator": reads[0]["index"],
+            "main_assign_value_tensor": assigns[0]["inputs"][1],
+            "main_assign_operator": assigns[0]["index"],
+            **initializer,
+            "initial_value_shape": initial_tensor.get("shape"),
+            "initial_value_dtype": initial_tensor.get("dtype"),
+            "initial_value_buffer_index": initial_tensor.get("buffer_index"),
+            "initial_value_buffer_sha256": initial_tensor.get("buffer_sha256"),
+            "initial_value_data_hex": initial_tensor.get("data_hex"),
+            "initial_value_quantization": initial_tensor.get("quantization"),
+        })
+    return {
+        "kind": "MC-MobileNet-streaming-resource-plan",
+        "state_count": 6,
+        "states": state_plan,
+        "call_once": {"subgraph_index": 0, "operator_index": 0, "init_subgraph_index": 1},
+    }
+
+
+def load_candidate_inventory(path: Path) -> tuple[dict[str, Any], str]:
+    """Load the fixed VAST evidence; caller paths cannot become authority."""
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit("CANDIDATE_RAW_INVENTORY_REQUIRED")
+    if sha256_of_file(path) != AUTHENTICATED_RAW_INVENTORY_SHA256:
+        raise SystemExit("CANDIDATE_RAW_INVENTORY_REQUIRED: evidence identity drifted")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_strict_object)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise SystemExit("CANDIDATE_RAW_INVENTORY_REQUIRED") from error
+    if (
+        not isinstance(document, dict)
+        or document.get("format") != RAW_INVENTORY_FORMAT
+        or document.get("authority") != RAW_INVENTORY_AUTHORITY
+        or document.get("source_sha256") != AUTHENTICATED_MODEL_SHA256
+        or document.get("source_size") != AUTHENTICATED_MODEL_SIZE
+        or document.get("subgraph_count") != 2
+        or document.get("tensor_count") != 82
+        or sum(len(sg.get("operators", [])) for sg in document.get("subgraphs", [])) != 57
+        or any(key in document for key in ("canonical_identity", "canonical_topology_sha256", "reviewed_topology_sha256"))
+    ):
+        raise SystemExit("CANDIDATE_RAW_INVENTORY_REQUIRED: source evidence identity is incomplete")
+    try:
+        _candidate_streaming_plan(document)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+        raise SystemExit("CANDIDATE_STATE_REQUIRED: malformed state/topology evidence") from error
+    return document, AUTHENTICATED_RAW_INVENTORY_SHA256
+
+
+def build_candidate_streaming_manifest(document: dict[str, Any], inventory_sha256: str) -> dict[str, Any]:
+    plan = _candidate_streaming_plan(document)
+    unquantized_i32 = any(
+        tensor.get("dtype") == "int32"
+        and not (tensor.get("quantization") or {}).get("scales")
+        for subgraph in document["subgraphs"]
+        for tensor in subgraph["tensors"]
+        if tensor.get("kind") == "constant"
+    )
+    payload = {
+        "schema": "vokra-microwakeword-candidate-streaming-v1",
+        "model_identity": {
+            "repository": CANONICAL_MODEL_REPOSITORY,
+            "revision": CANONICAL_MODEL_REVISION,
+            "path": "models/v2/hey_jarvis.tflite",
+            "bytes_sha256": document["source_sha256"],
+            "size": document["source_size"],
+        },
+        "source_identity": {
+            "repository": CANONICAL_SOURCE_REPOSITORY,
+            "revision": CANONICAL_SOURCE_REVISION,
+        },
+        "candidate_transport": {
+            "unquantized_i32_carrier": bool(unquantized_i32),
+            "unquantized_i32_policy": (
+                "GGUF I32 carrier uses synthetic scale=1, zero_point=0; transport-only, not production quantization authority"
+                if unquantized_i32 else None
+            ),
+        },
+        "tensor_storage_contract": {
+            "int8": "GGML_TYPE_I8_dense_exact_source_bytes",
+            "logical_shape": "preserved_source_shape",
+            "production_binding": "closed_until_reviewed_topology_and_independent_parity",
+        },
+        "source_sha256": document["source_sha256"],
+        "source_size": document["source_size"],
+        "operator_codes": document["operator_codes"],
+        "subgraphs": document["subgraphs"],
+        "buffer_ownership": document["buffer_ownership"],
+        "unreferenced_nonempty_buffer_indices": document["unreferenced_nonempty_buffer_indices"],
+    }
+    candidate_digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    tensor_contract = []
+    for subgraph_index, subgraph in enumerate(document["subgraphs"]):
+        for tensor in subgraph["tensors"]:
+            tensor_contract.append({"subgraph_index": subgraph_index, **tensor})
+    return {
+        "format": "vokra-microwakeword-tflite-candidate-streaming-manifest-v1",
+        "authority": "CANDIDATE_UNREVIEWED",
+        "source_sha256": document["source_sha256"],
+        "source_size": document["source_size"],
+        "raw_inventory_sha256": inventory_sha256,
+        "candidate_topology_sha256": candidate_digest,
+        "model_identity": payload["model_identity"],
+        "source_identity": payload["source_identity"],
+        "streaming_plan": plan,
+        "candidate_transport": payload["candidate_transport"],
+        "tensor_storage_contract": payload["tensor_storage_contract"],
+        "tensor_contract": tensor_contract,
+        "operator_codes": document["operator_codes"],
+        "subgraphs": document["subgraphs"],
+        "buffer_ownership": document["buffer_ownership"],
+        "unreferenced_nonempty_buffer_indices": document["unreferenced_nonempty_buffer_indices"],
+    }
 
 
 def _exact_finite_integer(value: Any, field: str, name: str) -> int:
@@ -762,6 +1101,21 @@ def _q8_0_payload(values: Any, name: str) -> bytes:
     return payload
 
 
+def _i8_payload(values: Any, name: str) -> bytes:
+    """Encode exact dense signed-I8 source bytes without quantization."""
+    flat = []
+    for value in _plain_values(values):
+        integer = _exact_finite_integer(value, "GGML I8 value", name)
+        if integer < -128 or integer > 127:
+            raise SystemExit(
+                f"tensor {name!r}: GGML I8 value {integer} is outside [-128, 127]"
+            )
+        flat.append(integer)
+    if not flat:
+        raise SystemExit(f"tensor {name!r}: GGML I8 tensor cannot be empty")
+    return struct.pack(f"<{len(flat)}b", *flat)
+
+
 def _f32_payload(values: Any) -> bytes:
     flat = _plain_values(values)
     return struct.pack(f"<{len(flat)}f", *(float(value) for value in flat))
@@ -790,7 +1144,10 @@ def write_gguf(
     n_mels: int,
     tflite_sha256: str,
     upstream_url: str,
-) -> None:
+    extra_metadata: dict[str, str] | None = None,
+    dense_i8: bool = False,
+    publish: bool = True,
+) -> bytes:
     """Emits a GGUF v3 file without re-quantizing source INT8 bytes."""
     metadata = [
         _gguf_kv_string(KEY_ARCH, ARCH),
@@ -809,11 +1166,16 @@ def write_gguf(
         _gguf_kv_string(KEY_SOURCE_REVISION, CANONICAL_SOURCE_REVISION),
         _gguf_kv_string(KEY_PROV_LICENSE, "apache-2.0"),
         _gguf_kv_string(KEY_PROV_CLASS, "Permissive"),
-        _gguf_kv_string(KEY_PROV_UPSTREAM_HF, "kahrendt/microWakeWord"),
+        _gguf_kv_string(KEY_PROV_UPSTREAM_URL, PROVENANCE_UPSTREAM_URL),
         _gguf_kv_string(KEY_PROV_UPSTREAM_NAME, model_name),
         _gguf_kv_u32("vokra.schema.version", 1),
         _gguf_kv_string("vokra.schema.producer", "microwakeword-sidecar 0.3.0"),
     ]
+    if extra_metadata:
+        for key, value in sorted(extra_metadata.items()):
+            if not key.startswith("vokra.kws.candidate."):
+                raise SystemExit("candidate metadata key is outside the reserved namespace")
+            metadata.append(_gguf_kv_string(key, value))
     tensor_payloads = []
     tensor_specs = []
     for ordinal, w in enumerate(weights):
@@ -826,8 +1188,12 @@ def write_gguf(
                 w["shape"],
                 w["name"],
             )
-            payload = _q8_0_payload(w["i8_data"], w["name"])
-            dtype = GGML_TYPE_Q8_0
+            if dense_i8:
+                payload = _i8_payload(w["i8_data"], w["name"])
+                dtype = GGML_TYPE_I8
+            else:
+                payload = _q8_0_payload(w["i8_data"], w["name"])
+                dtype = GGML_TYPE_Q8_0
             metadata.extend([
                 _gguf_kv_string(f"vokra.kws.tensor.{ordinal}.name", w["name"]),
                 _gguf_kv_f32_array(
@@ -895,7 +1261,129 @@ def write_gguf(
     for payload in tensor_payloads:
         body.extend(payload)
         body.extend(b"\x00" * ((-len(body)) % GGUF_ALIGNMENT))
-    _atomic_publish(output, bytes(body))
+    payload = bytes(body)
+    if publish:
+        _atomic_publish(output, payload)
+    return payload
+
+
+def _candidate_weights(document: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    """Build one dense-I8 logical tensor per authenticated INT8 constant.
+
+    GGML_TYPE_I8 is deliberately used here because real source tensors such as
+    hey_jarvis contain element counts that are not Q8_0 block multiples. The
+    source shape and every source byte remain unchanged; the candidate is still
+    unreviewed and cannot confer production binding authority.
+    """
+    weights: list[dict[str, Any]] = []
+    ordinal = 0
+
+    def checked_bytes(shape: Any, itemsize: int, raw_size: int, name: str) -> None:
+        if not isinstance(shape, list) or not shape or any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in shape
+        ):
+            raise SystemExit(f"CANDIDATE_TENSOR_REQUIRED: {name} shape is invalid")
+        elements = 1
+        for value in shape:
+            if elements > MAX_MANIFEST_CONSTANT_BYTES // itemsize // value:
+                raise SystemExit(f"CANDIDATE_TENSOR_REQUIRED: {name} shape overflows bounded size")
+            elements *= value
+        if elements * itemsize != raw_size:
+            raise SystemExit(
+                f"CANDIDATE_TENSOR_REQUIRED: {name} shape/itemsize does not explain constant bytes"
+            )
+
+    for subgraph_index, subgraph in enumerate(document["subgraphs"]):
+        for tensor in subgraph["tensors"]:
+            if tensor.get("kind") != "constant":
+                continue
+            if not isinstance(tensor.get("index"), int) or tensor["index"] < 0:
+                raise SystemExit("CANDIDATE_TENSOR_REQUIRED: constant tensor index is malformed")
+            raw_hex = tensor.get("data_hex")
+            if not isinstance(raw_hex, str) or len(raw_hex) % 2:
+                raise SystemExit("CANDIDATE_TENSOR_REQUIRED: constant bytes are missing")
+            try:
+                raw = bytes.fromhex(raw_hex)
+            except ValueError as error:
+                raise SystemExit("CANDIDATE_TENSOR_REQUIRED: constant bytes are malformed") from error
+            if len(raw) != tensor.get("buffer_size") or hashlib.sha256(raw).hexdigest() != tensor.get("buffer_sha256"):
+                raise SystemExit("CANDIDATE_TENSOR_REQUIRED: constant bytes are not authenticated")
+            shape = tensor.get("shape")
+            logical_name = f"subgraph.{subgraph_index}.tensor.{tensor['index']}.{tensor.get('name') or '<unnamed>'}"
+            dtype = tensor.get("dtype")
+            quant = tensor.get("quantization") or {}
+            if not isinstance(quant, dict):
+                raise SystemExit("CANDIDATE_TENSOR_REQUIRED: quantization record is malformed")
+            scales = quant.get("scales", [])
+            zero_points = quant.get("zero_points", [])
+            qdim = quant.get("quantized_dimension", -1)
+            if dtype == "int8":
+                checked_bytes(shape, 1, len(raw), logical_name)
+                signed = list(struct.unpack(f"<{len(raw)}b", raw))
+                weights.append({
+                    "name": logical_name, "shape": shape, "orig_dtype": "int8",
+                    "i8_data": signed, "scales": scales, "zero_points": zero_points,
+                    "quantized_dimension": qdim,
+                })
+                ordinal += 1
+            elif dtype == "int32":
+                checked_bytes(shape, 4, len(raw), logical_name)
+                if len(raw) % 4:
+                    raise SystemExit("CANDIDATE_TENSOR_REQUIRED: I32 bytes are not dense")
+                values = struct.unpack(f"<{len(raw) // 4}i", raw)
+                weights.append({
+                    "name": logical_name, "shape": shape, "orig_dtype": "int32",
+                    "i32_data": values, "scales": scales or [1.0],
+                    "zero_points": zero_points or [0], "quantized_dimension": qdim if scales else -1,
+                })
+                ordinal += 1
+            else:
+                raise SystemExit(f"CANDIDATE_TENSOR_REQUIRED: unsupported dtype {dtype!r}")
+    if not weights:
+        raise SystemExit("CANDIDATE_TENSOR_REQUIRED: no constants were authenticated")
+    return weights, ordinal
+
+
+def write_candidate_gguf(
+    output: Path,
+    document: dict[str, Any],
+    candidate_manifest: dict[str, Any],
+    *,
+    threshold: float,
+    sample_rate: int,
+    hop_ms: int,
+    window_ms: int,
+    n_mels: int,
+    publish: bool = True,
+) -> bytes:
+    weights, count = _candidate_weights(document)
+    return write_gguf(
+        output,
+        weights,
+        model_name=CANONICAL_MODEL_NAME,
+        threshold=threshold,
+        sample_rate=sample_rate,
+        hop_ms=hop_ms,
+        window_ms=window_ms,
+        n_mels=n_mels,
+        tflite_sha256=AUTHENTICATED_MODEL_SHA256,
+        upstream_url=DEFAULT_UPSTREAM_URL,
+        extra_metadata={
+            "vokra.kws.candidate.authority": "CANDIDATE_UNREVIEWED",
+            "vokra.kws.candidate.storage": "GGML_TYPE_I8_dense_exact_source_bytes",
+            "vokra.kws.candidate.logical_tensor_binding": "candidate_only_unreviewed",
+            "vokra.kws.candidate.production_completion": "reviewed_topology_and_independent_parity_required",
+            "vokra.kws.candidate.manifest_digest": hashlib.sha256(
+                json.dumps(candidate_manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "vokra.kws.candidate.topology_sha256": candidate_manifest["candidate_topology_sha256"],
+            "vokra.kws.candidate.streaming_state_count": str(candidate_manifest["streaming_plan"]["state_count"]),
+            "vokra.kws.candidate.constant_tensor_count": str(count),
+            "vokra.kws.candidate.i32_quant_authority": "transport_only_synthetic_scale" if candidate_manifest["candidate_transport"]["unquantized_i32_carrier"] else "source_quantization_preserved",
+        },
+        dense_i8=True,
+        publish=publish,
+    )
 
 
 def _atomic_publish(
@@ -930,6 +1418,56 @@ def _atomic_publish(
                 pass
 
 
+def _atomic_publish_pair(
+    first: Path, first_payload: bytes, second: Path, second_payload: bytes
+) -> None:
+    """Publish two related files without clobbering a concurrent creator.
+
+    If the second link loses a race, only the first inode created by this call
+    is removed; a pre-existing or concurrently-created destination is never
+    deleted.  This keeps candidate manifest/GGUF publication fail-closed as a
+    pair while retaining the no-clobber guarantee.
+    """
+    if first == second or first.exists() or first.is_symlink() or second.exists() or second.is_symlink():
+        raise SystemExit("candidate output pair destinations must be absent and distinct")
+    if not first.parent.is_dir() or not second.parent.is_dir():
+        raise SystemExit("candidate output pair parents must exist")
+    temporary: list[tuple[Path, Path, tuple[int, int]]] = []
+    linked: list[tuple[Path, tuple[int, int]]] = []
+    try:
+        for destination, payload in ((first, first_payload), (second, second_payload)):
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+            )
+            staged = Path(temporary_name)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            identity = (staged.stat().st_dev, staged.stat().st_ino)
+            temporary.append((staged, destination, identity))
+        for staged, destination, identity in temporary:
+            try:
+                os.link(staged, destination)
+            except FileExistsError as error:
+                raise SystemExit("candidate output pair was created concurrently; refusing overwrite") from error
+            linked.append((destination, identity))
+    except BaseException:
+        for destination, identity in linked:
+            try:
+                # lstat is intentional: a concurrent symlink must never be
+                # followed during rollback or mistaken for our staged inode.
+                current = destination.lstat()
+            except FileNotFoundError:
+                continue
+            if (current.st_dev, current.st_ino) == identity:
+                destination.unlink()
+        raise
+    finally:
+        for staged, _, _ in temporary:
+            staged.unlink(missing_ok=True)
+
+
 def _validate_output_destination(output: Path, input_path: Path | None) -> None:
     """Validate output/transport paths before importing or running TFLite."""
     if output.exists() or output.is_symlink():
@@ -957,6 +1495,51 @@ def _validate_cli_values(
     ):
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 0xFFFFFFFF:
             raise SystemExit(f"{option} must be a positive uint32")
+
+
+def _validate_candidate_environment() -> None:
+    if sys.platform != "linux" or os.uname().machine != "x86_64":
+        raise SystemExit("CANDIDATE_VAST_REQUIRED: Linux x86_64 is required")
+    if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
+        raise SystemExit("CANDIDATE_VAST_REQUIRED: VOKRA_PUBLISH_ON_VAST=1 is required")
+    if os.environ.get("VOKRA_CANDIDATE_CONVERSION") != "1":
+        raise SystemExit("CANDIDATE_CONVERSION_DISABLED: explicit candidate opt-in is required")
+
+
+def _run_candidate(args: argparse.Namespace) -> int:
+    _validate_candidate_environment()
+    if args.name != CANONICAL_MODEL_NAME:
+        raise SystemExit("CANDIDATE_SOURCE_REQUIRED: canonical model name is fixed")
+    if args.input is None or args.raw_inventory is None or args.candidate_manifest is None or args.output is None:
+        raise SystemExit("CANDIDATE_INPUT_REQUIRED: input, raw inventory, candidate manifest, and output are required")
+    if args.expected_sha256 and args.expected_sha256.lower() != AUTHENTICATED_MODEL_SHA256:
+        raise SystemExit("AUTHENTICATED_PAYLOAD_SHA_REQUIRED: candidate identity is fixed")
+    for path, label in ((args.input, "candidate input"), (args.raw_inventory, "candidate inventory")):
+        if path.is_symlink() or not path.is_file():
+            raise SystemExit(f"CANDIDATE_INPUT_REQUIRED: {label} must be a regular non-symlink file")
+    _validate_output_destination(args.output, args.input)
+    _validate_output_destination(args.candidate_manifest, args.input)
+    if args.candidate_manifest.resolve() in {args.raw_inventory.resolve(), args.output.resolve()}:
+        raise SystemExit("CANDIDATE_OUTPUT_REQUIRED: destinations must be disjoint")
+    if args.input.stat().st_size != AUTHENTICATED_MODEL_SIZE or sha256_of_file(args.input) != AUTHENTICATED_MODEL_SHA256:
+        raise SystemExit("AUTHENTICATED_PAYLOAD_SHA_REQUIRED: candidate bytes do not match fixed VAST evidence")
+    document, inventory_sha256 = load_candidate_inventory(args.raw_inventory)
+    candidate = build_candidate_streaming_manifest(document, inventory_sha256)
+    _validate_cli_values(args.threshold, args.sample_rate, args.hop_ms, args.window_ms, args.n_mels)
+    # Validate every source constant and fully construct both payloads before
+    # publishing either artifact, so a malformed tail/CLI cannot leave a
+    # misleading one-sided candidate.
+    _candidate_weights(document)
+    candidate_bytes = (json.dumps(candidate, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    gguf_bytes = write_candidate_gguf(
+        args.output, document, candidate,
+        threshold=args.threshold, sample_rate=args.sample_rate,
+        hop_ms=args.hop_ms, window_ms=args.window_ms, n_mels=args.n_mels,
+        publish=False,
+    )
+    _atomic_publish_pair(args.candidate_manifest, candidate_bytes, args.output, gguf_bytes)
+    print("Wrote unreviewed candidate GGUF; production authority remains closed", file=sys.stderr)
+    return 0
 
 
 def _self_test_read_string(blob: bytes, cursor: int) -> tuple[str, int]:
@@ -1035,8 +1618,114 @@ def _self_test_parse_gguf(blob: bytes) -> tuple[dict[str, Any], list[dict[str, A
 
 
 def self_test() -> None:
-    global REVIEWED_TOPOLOGY_SHA256
     """Exercise the direct writer and parse its wire output without model I/O."""
+    global REVIEWED_TOPOLOGY_SHA256
+    # Candidate gates are tested with synthetic documents only.  In particular,
+    # no local model or VAST artifact is needed to prove that source/topology/
+    # state/options tampering cannot enter the candidate path.
+    for tampered in (
+        {},
+        {"subgraphs": []},
+        {"subgraphs": [{"operators": []}, {"operators": []}]},
+    ):
+        try:
+            _candidate_streaming_plan(tampered)
+        except (SystemExit, KeyError, TypeError):
+            pass
+        else:
+            raise AssertionError("synthetic candidate topology tamper was accepted")
+    with tempfile.TemporaryDirectory(prefix="mww-candidate-gate-") as directory:
+        tampered_path = Path(directory) / "tampered.json"
+        tampered_path.write_text(
+            json.dumps({"format": RAW_INVENTORY_FORMAT, "source_sha256": "0" * 64}),
+            encoding="utf-8",
+        )
+        try:
+            load_candidate_inventory(tampered_path)
+        except SystemExit as error:
+            if "CANDIDATE_RAW_INVENTORY_REQUIRED" not in str(error):
+                raise AssertionError(f"wrong candidate source tamper error: {error}")
+        else:
+            raise AssertionError("synthetic candidate source tamper was accepted")
+    saved_vast = os.environ.pop("VOKRA_PUBLISH_ON_VAST", None)
+    saved_candidate = os.environ.pop("VOKRA_CANDIDATE_CONVERSION", None)
+    try:
+        try:
+            _validate_candidate_environment()
+        except SystemExit as error:
+            if "CANDIDATE_VAST_REQUIRED" not in str(error):
+                raise AssertionError(f"wrong candidate environment gate: {error}")
+        else:
+            raise AssertionError("candidate environment gate was bypassed")
+    finally:
+        if saved_vast is not None:
+            os.environ["VOKRA_PUBLISH_ON_VAST"] = saved_vast
+        if saved_candidate is not None:
+            os.environ["VOKRA_CANDIDATE_CONVERSION"] = saved_candidate
+    with tempfile.TemporaryDirectory(prefix="mww-candidate-pair-") as directory:
+        pair_dir = Path(directory)
+        first = pair_dir / "candidate.json"
+        second = pair_dir / "candidate.gguf"
+        _atomic_publish_pair(first, b"manifest", second, b"gguf")
+        assert first.read_bytes() == b"manifest" and second.read_bytes() == b"gguf"
+        race_first = pair_dir / "race.json"
+        race_second = pair_dir / "race.gguf"
+        race_second.write_bytes(b"sentinel")
+        race_first.symlink_to(race_second.name)
+        try:
+            _atomic_publish_pair(race_first, b"new-manifest", race_second, b"new-gguf")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("candidate race destination was overwritten")
+        assert race_first.is_symlink() and race_second.read_bytes() == b"sentinel"
+        race_first.unlink()
+        invalid_manifest = {"subgraphs": [{"tensors": [{"shape": [3], "dtype": "int8", "kind": "constant", "data_hex": "00", "buffer_size": 1, "buffer_sha256": hashlib.sha256(b"\x00").hexdigest()}], "operators": []}, {"tensors": [], "operators": []}]}
+        try:
+            _candidate_weights(invalid_manifest)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("candidate shape/byte mismatch was accepted")
+        candidate_raw = bytes([0x80, 0xFF, 0x00, 0x7F, 0x01, 0xA5])
+        candidate_doc = {
+            "subgraphs": [{
+                "tensors": [{
+                    "index": 4,
+                    "kind": "constant",
+                    "dtype": "int8",
+                    "name": "dense",
+                    "shape": [3, 2],
+                    "data_hex": candidate_raw.hex(),
+                    "buffer_size": len(candidate_raw),
+                    "buffer_sha256": hashlib.sha256(candidate_raw).hexdigest(),
+                    "quantization": {
+                        "scales": [0.125], "zero_points": [0],
+                        "quantized_dimension": -1,
+                    },
+                }],
+                "operators": [],
+            }]}
+        candidate_weights, candidate_count = _candidate_weights(candidate_doc)
+        if candidate_count != 1 or candidate_weights[0]["shape"] != [3, 2] or candidate_weights[0]["i8_data"] != [-128, -1, 0, 127, 1, -91]:
+            raise AssertionError("candidate dense-I8 logical shape or bytes changed")
+        bad_output = pair_dir / "bad.gguf"
+        bad_manifest = pair_dir / "bad.json"
+        try:
+            _validate_cli_values(float("nan"), 16000, 10, 32, 40)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("invalid candidate CLI value was accepted")
+        assert not bad_output.exists() and not bad_manifest.exists()
+    candidate_source = Path(__file__).read_text(encoding="utf-8")
+    candidate_run = candidate_source[candidate_source.index("def _run_candidate"):candidate_source.index("def _self_test_read_string")]
+    if not (
+        candidate_run.index("_validate_cli_values")
+        < candidate_run.index("gguf_bytes = write_candidate_gguf")
+        < candidate_run.index("_atomic_publish_pair")
+    ):
+        raise AssertionError("candidate pair publication occurs before complete validation")
     def expect_metadata_error(
         scales: list[float], zero_points: list[Any], qdim: Any, shape: list[int], text: str
     ) -> None:
@@ -1471,6 +2160,36 @@ def self_test() -> None:
             raise AssertionError("Q8 quantization metadata is not typed as expected")
         if metadata["vokra.kws.tensor.0.quant.quantized_dimension"] != (5, -1):
             raise AssertionError("Q8 quantized_dimension metadata is wrong")
+        if metadata[KEY_PROV_UPSTREAM_URL] != (8, PROVENANCE_UPSTREAM_URL):
+            raise AssertionError("GitHub distributor provenance URL is missing or wrong")
+        if any(key == "vokra.provenance.upstream_hf" for key in metadata):
+            raise AssertionError("obsolete Hugging Face provenance key was emitted")
+
+        dense_i8_output = directory_path / "dense-i8.gguf"
+        dense_i8_values = [-128, -1, 0, 1, 127, -91]
+        write_gguf(
+            dense_i8_output,
+            [{
+                "name": "dense_i8_weight",
+                "shape": [3, 2],
+                "orig_dtype": "int8",
+                "i8_data": dense_i8_values,
+                "scales": [0.125],
+                "zero_points": [0],
+                "quantized_dimension": -1,
+            }],
+            dense_i8=True,
+            **writer_args,
+        )
+        _, dense_i8_tensors, dense_i8_offset = _self_test_parse_gguf(dense_i8_output.read_bytes())
+        if dense_i8_tensors != [{
+            "name": "dense_i8_weight", "dimensions": [2, 3],
+            "dtype": GGML_TYPE_I8, "offset": 0,
+        }]:
+            raise AssertionError(f"dense I8 shape/tag changed: {dense_i8_tensors}")
+        dense_i8_payload = dense_i8_output.read_bytes()[dense_i8_offset : dense_i8_offset + len(dense_i8_values)]
+        if dense_i8_payload != struct.pack("<6b", *dense_i8_values):
+            raise AssertionError("dense I8 source bytes changed")
 
         i32_output = directory_path / "i32.gguf"
         bias_values = [-(1 << 31), (1 << 24) + 1, (1 << 31) - 1]
@@ -1521,12 +2240,17 @@ def self_test() -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Extract kahrendt/microWakeWord TFLite → Vokra GGUF Q8_0 sidecar."
+        description="Extract kahrendt/microWakeWord TFLite → Vokra GGUF dense-I8 sidecar."
     )
     ap.add_argument(
         "--self-test",
         action="store_true",
         help="Exercise and wire-parse a synthetic GGUF without model I/O.",
+    )
+    ap.add_argument(
+        "--candidate",
+        action="store_true",
+        help="VAST-only, NO_UPLOAD candidate conversion from fixed raw inventory.",
     )
     ap.add_argument(
         "--input",
@@ -1547,6 +2271,16 @@ def main() -> int:
     ap.add_argument(
         "--tensor-manifest-sha256",
         help=f"Authenticated tensor-manifest SHA-256 (or {TENSOR_MANIFEST_SHA_ENV}).",
+    )
+    ap.add_argument(
+        "--raw-inventory",
+        type=Path,
+        help="Fixed owner-approved raw inventory for --candidate (not production authority).",
+    )
+    ap.add_argument(
+        "--candidate-manifest",
+        type=Path,
+        help="No-clobber candidate streaming manifest output for --candidate.",
     )
     ap.add_argument("--output", type=Path,
                     help="Output .gguf path.")
@@ -1570,6 +2304,9 @@ def main() -> int:
         self_test()
         print("prepare_checkpoint.py self-test: PASS", file=sys.stderr)
         return 0
+
+    if args.candidate:
+        return _run_candidate(args)
 
     if args.output is None:
         raise SystemExit("--output is required unless --self-test is used")
@@ -1637,6 +2374,7 @@ def main() -> int:
             n_mels=args.n_mels,
             tflite_sha256=tflite_sha256,
             upstream_url=upstream_url,
+            dense_i8=True,
         )
         out_size = args.output.stat().st_size
         print(f"Wrote {args.output} ({out_size:,} bytes, {n_weights} tensors, "
