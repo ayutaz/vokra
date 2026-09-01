@@ -3,7 +3,7 @@
 `audit_closure.py` is a stdlib-only collector for the pinned Linux x86_64
 Python 3.12 dependency closure used by the independent LiteRT reference. It
 first inventories every `.dist-info` under site-packages and requires the
-inventory to exactly match the eight external lock packages (the virtual
+inventory to exactly match the seven external lock packages (the virtual
 project is excluded). It then records installed distribution metadata, the exact `RECORD` identity, bounded
 case-insensitive `LICENSE`/`LICENCE`/`COPYING`/`NOTICE`/`COPYRIGHT` candidates,
 and native payload hashes with `readelf` `NEEDED` facts when available.
@@ -17,8 +17,9 @@ license, or grant publication permission. Reports are
 `EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED` when collection succeeds and always
 set `fixture_generation_permitted=false` and `publication_permitted=false`.
 Any missing/unknown package, duplicate row, symlink, path escape, oversize
-file, or missing license candidate is recorded as a fail-closed collection
-failure.
+file, or absence of both bounded METADATA license declarations and wheel-local
+license candidates is recorded as a fail-closed collection failure. A missing
+wheel-local candidate alone is a collected fact, not a collector failure.
 
 Run the real collection only on a clean Linux x86_64 VAST checkout after the
 worker's frozen sync:

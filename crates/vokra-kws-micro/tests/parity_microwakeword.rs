@@ -28,7 +28,7 @@
 //!
 //! ```text
 //! # 0. On VAST, complete the isolated dependency/native-license audit.
-//! #    The current result is BLOCKED_UNREVIEWED_TRANSITIVE; do not proceed
+//! #    The current result is BLOCKED_PENDING_VAST_EVIDENCE; do not proceed
 //! #    until inspect.py reports fixture_generation_permitted=true.
 //! cd tools/parity/microwakeword-reference
 //! uv run --no-project --offline --python 3.12 python inspect.py
@@ -125,14 +125,13 @@ const OUTPUT_SCALE: f32 = 1.0 / 256.0;
 const DEPENDENCY_EVIDENCE_SCHEMA: &str = "microwakeword-reference-dependency-evidence-v1";
 const DEPENDENCY_EVIDENCE_STATUS: &str = "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED";
 const REFERENCE_PROJECT_SHA256: &str =
-    "2b114885d54470c8397528b37572e3632202ca0b9d65ac349ec7e7da4e331f03";
+    "2438d719428e497cc7f101429ba31fb5016e72737659d55aa0269d0824b1183d";
 const REFERENCE_LOCK_SHA256: &str =
-    "da75839f6195c27c32a15f097a40450c18b317ad78e9036ec2a1618472b85555";
+    "736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3";
 const REFERENCE_DISTRIBUTIONS: &[(&str, &str)] = &[
-    ("ai-edge-litert", "2.2.0"),
+    ("ai-edge-litert", "2.1.5"),
     ("backports-strenum", "1.3.1"),
     ("flatbuffers", "25.12.19"),
-    ("ml-dtypes", "0.6.0"),
     ("numpy", "2.5.2"),
     ("protobuf", "7.36.1"),
     ("tqdm", "4.70.0"),
@@ -256,7 +255,6 @@ fn verify_distribution_versions(value: &JsonValue, label: &str) {
             "ai-edge-litert",
             "backports-strenum",
             "flatbuffers",
-            "ml-dtypes",
             "numpy",
             "protobuf",
             "tqdm",

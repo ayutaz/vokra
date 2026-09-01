@@ -10,19 +10,18 @@ supported-markers = [
 
 [[package]]
 name = "ai-edge-litert"
-version = "2.2.0"
+version = "2.1.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backports-strenum", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flatbuffers", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "ml-dtypes", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "protobuf", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "tqdm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "typing-extensions", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/bc/c4788c401cbe1bb082cb09220b1e35ae8a8f89451b494f4e151a8c93bf4f/ai_edge_litert-2.2.0-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:4e151f07229b2f714f9b34ea42a9cacffc98953b1f6e832adee4479f6b81f50a", size = 21258447, upload-time = "2026-08-13T02:13:57.891Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/20/a76ba29b1c4c3009b5c64f4ec7f5fe5165104fe15481bd79b55927948541/ai_edge_litert-2.1.5-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:f1c6d8db4382890881baeb8ed13c0802ada022e0b104b0db8fccf31353899ee0", size = 17570644, upload-time = "2026-05-15T23:05:33.664Z" },
 ]
 
 [[package]]
@@ -40,18 +39,6 @@ version = "25.12.19"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl", hash = "sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4", size = 26661, upload-time = "2025-12-19T23:16:13.622Z" },
-]
-
-[[package]]
-name = "ml-dtypes"
-version = "0.6.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/12/72/307d7c4bd0600601c7133fba5cb78af7db968152951c1cd473abb1cda782/ml_dtypes-0.6.0.tar.gz", hash = "sha256:5e60251d32ced5598972e4d5e06a2f044341f9291402551a3f6f0ec44f9299b0", size = 3032327, upload-time = "2026-08-13T14:14:40.215Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/f9/7d76c1eae866f5d4636401b31b6d6dd90e4b4ced1fa7cfdfcca9c60e4bd3/ml_dtypes-0.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3b4a480aa8fd54a1805b8ac10f3f91763926a74f73c0c364c10f9231854f4170", size = 409890, upload-time = "2026-08-13T14:14:04.248Z" },
 ]
 
 [[package]]
@@ -103,6 +90,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ai-edge-litert", specifier = "==2.2.0" },
+    { name = "ai-edge-litert", specifier = "==2.1.5" },
     { name = "numpy", specifier = "==2.5.2" },
 ]

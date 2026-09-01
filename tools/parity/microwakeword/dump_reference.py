@@ -72,7 +72,7 @@ concern — it is the ground truth for the INT8 forward.
 
     cd tools/parity/microwakeword-reference
     # VAST must first complete inspect.py's dependency/native-license audit.
-    # The current result is BLOCKED_UNREVIEWED_TRANSITIVE; do not generate
+    # The current result is BLOCKED_PENDING_VAST_EVIDENCE; do not generate
     # fixtures until the audit report explicitly permits it.
     uv run --no-project --offline --python 3.12 python inspect.py
     # Only after the VAST audit is PASS, and only with the owner-provided
@@ -164,13 +164,12 @@ FRAMES_PER_INVOCATION = INPUT_SHAPE[1]
 
 DEPENDENCY_EVIDENCE_SCHEMA = "microwakeword-reference-dependency-evidence-v1"
 DEPENDENCY_EVIDENCE_STATUS = "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED"
-EXPECTED_REFERENCE_PROJECT_SHA256 = "2b114885d54470c8397528b37572e3632202ca0b9d65ac349ec7e7da4e331f03"
-EXPECTED_REFERENCE_LOCK_SHA256 = "da75839f6195c27c32a15f097a40450c18b317ad78e9036ec2a1618472b85555"
+EXPECTED_REFERENCE_PROJECT_SHA256 = "2438d719428e497cc7f101429ba31fb5016e72737659d55aa0269d0824b1183d"
+EXPECTED_REFERENCE_LOCK_SHA256 = "736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3"
 EXPECTED_REFERENCE_DISTRIBUTIONS = {
-    "ai-edge-litert": "2.2.0",
+    "ai-edge-litert": "2.1.5",
     "backports-strenum": "1.3.1",
     "flatbuffers": "25.12.19",
-    "ml-dtypes": "0.6.0",
     "numpy": "2.5.2",
     "protobuf": "7.36.1",
     "tqdm": "4.70.0",
@@ -244,7 +243,9 @@ def _canonical_json_sha256(value: Any) -> str:
 
 def _require_exact_versions(value: Any, label: str) -> dict[str, str]:
     if not isinstance(value, dict) or set(value) != set(EXPECTED_REFERENCE_DISTRIBUTIONS):
-        raise SystemExit(f"{label} must contain exactly the eight audited distributions")
+        raise SystemExit(
+            f"{label} must contain exactly {len(EXPECTED_REFERENCE_DISTRIBUTIONS)} audited distributions"
+        )
     result: dict[str, str] = {}
     for name, expected in EXPECTED_REFERENCE_DISTRIBUTIONS.items():
         actual = value.get(name)
@@ -252,6 +253,17 @@ def _require_exact_versions(value: Any, label: str) -> dict[str, str]:
             raise SystemExit(f"{label}.{name} version drift: {actual!r} != {expected!r}")
         result[name] = actual
     return result
+
+
+def _metadata_license_declarations_present(metadata: dict[str, Any]) -> bool:
+    fields = ("license", "license_expression", "license_classifiers")
+    return all(isinstance(metadata.get(field), list) for field in fields) and any(
+        isinstance(value, str)
+        and value.strip()
+        and value.strip().casefold() != "unknown"
+        for field in fields
+        for value in metadata[field]
+    )
 
 
 def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
@@ -331,7 +343,10 @@ def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     inventory_sha256 = _require_sha(inventory["sha256"], "dependency evidence installed_inventory.sha256")
     inventory_entries = inventory["entries"]
     if not isinstance(inventory_entries, list) or len(inventory_entries) != len(EXPECTED_REFERENCE_DISTRIBUTIONS):
-        raise SystemExit("dependency evidence installed inventory must contain exactly eight entries")
+        raise SystemExit(
+            "dependency evidence installed inventory must contain exactly "
+            f"{len(EXPECTED_REFERENCE_DISTRIBUTIONS)} entries"
+        )
     inventory_names: set[str] = set()
     for entry in inventory_entries:
         if not isinstance(entry, dict):
@@ -361,7 +376,10 @@ def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
 
     installed = evidence["installed_distributions"]
     if not isinstance(installed, list) or len(installed) != len(EXPECTED_REFERENCE_DISTRIBUTIONS):
-        raise SystemExit("dependency evidence must contain exactly eight installed distributions")
+        raise SystemExit(
+            "dependency evidence must contain exactly "
+            f"{len(EXPECTED_REFERENCE_DISTRIBUTIONS)} installed distributions"
+        )
     seen: set[str] = set()
     versions: dict[str, str] = {}
     required = (
@@ -392,12 +410,39 @@ def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         if row["inventory_sha256"] != inventory_sha256:
             raise SystemExit(f"dependency evidence inventory digest mismatch: {name}")
         metadata = row["metadata"]
-        if not isinstance(metadata, dict) or metadata.get("name") != [name] or metadata.get("version") != [version]:
+        if not isinstance(metadata, dict):
             raise SystemExit(f"dependency evidence installed metadata/record malformed: {name}")
+        _exact_keys(
+            metadata,
+            (
+                "path",
+                "bytes",
+                "sha256",
+                "name",
+                "version",
+                "license",
+                "license_expression",
+                "license_file",
+                "classifiers",
+                "license_classifiers",
+            ),
+            f"dependency evidence metadata.{name}",
+        )
+        if metadata.get("name") != [name] or metadata.get("version") != [version]:
+            raise SystemExit(f"dependency evidence installed metadata name/version drift: {name}")
+        if not isinstance(metadata["bytes"], int) or metadata["bytes"] <= 0:
+            raise SystemExit(f"dependency evidence metadata byte count malformed: {name}")
+        _require_sha(metadata["sha256"], f"dependency evidence metadata.{name}.sha256")
+        declaration_fields = ("license", "license_expression", "license_classifiers")
+        for field in (*declaration_fields, "license_file", "classifiers"):
+            if not isinstance(metadata[field], list) or not all(isinstance(item, str) for item in metadata[field]):
+                raise SystemExit(f"dependency evidence metadata declaration malformed: {name}.{field}")
         record = row["record"]
         if not isinstance(record, dict):
             raise SystemExit(f"dependency evidence installed record malformed: {name}")
         _exact_keys(record, ("path", "bytes", "sha256", "entries", "entries_count", "entries_sha256"), f"dependency evidence record.{name}")
+        if not isinstance(record["path"], str) or not record["path"] or not isinstance(record["bytes"], int) or record["bytes"] <= 0:
+            raise SystemExit(f"dependency evidence RECORD identity malformed: {name}")
         entries = record["entries"]
         if not isinstance(entries, list) or not entries or record["entries_count"] != len(entries):
             raise SystemExit(f"dependency evidence installed RECORD is empty/malformed: {name}")
@@ -405,8 +450,48 @@ def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         entries_sha256 = _require_sha(record["entries_sha256"], f"dependency evidence record.{name}.entries_sha256")
         if entries_sha256 != _canonical_json_sha256(entries):
             raise SystemExit(f"dependency evidence RECORD entries digest mismatch: {name}")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise SystemExit(f"dependency evidence RECORD entry malformed: {name}")
+            keys = set(entry)
+            required_entry_keys = {"row", "declared", "actual", "validation", "errors"}
+            if keys not in (required_entry_keys, required_entry_keys | {"resolved_path"}):
+                raise SystemExit(f"dependency evidence RECORD entry keys drift: {name}")
+            if not isinstance(entry["row"], int) or entry["row"] <= 0:
+                raise SystemExit(f"dependency evidence RECORD row number malformed: {name}")
+            declared = entry["declared"]
+            if not isinstance(declared, dict) or set(declared) != {"path", "hash", "size"}:
+                raise SystemExit(f"dependency evidence RECORD declaration malformed: {name}")
+            if not isinstance(declared["path"], str) or not declared["path"]:
+                raise SystemExit(f"dependency evidence RECORD path malformed: {name}")
+            declared_hash = declared["hash"]
+            if declared_hash is not None:
+                if not isinstance(declared_hash, dict) or set(declared_hash) != {"algorithm", "value", "status"}:
+                    raise SystemExit(f"dependency evidence RECORD hash declaration malformed: {name}")
+                if not isinstance(declared_hash["status"], str) or not isinstance(declared_hash["algorithm"], (str, type(None))) or not isinstance(declared_hash["value"], (str, type(None))):
+                    raise SystemExit(f"dependency evidence RECORD hash declaration types malformed: {name}")
+            declared_size = declared["size"]
+            if declared_size is not None:
+                if not isinstance(declared_size, dict) or set(declared_size) != {"value", "status"}:
+                    raise SystemExit(f"dependency evidence RECORD size declaration malformed: {name}")
+                if not isinstance(declared_size["status"], str) or not isinstance(declared_size["value"], (int, str, type(None))):
+                    raise SystemExit(f"dependency evidence RECORD size declaration types malformed: {name}")
+            actual = entry["actual"]
+            if actual is not None:
+                if not isinstance(actual, dict) or set(actual) != {"sha256", "bytes"}:
+                    raise SystemExit(f"dependency evidence RECORD actual identity malformed: {name}")
+                _require_sha(actual["sha256"], f"dependency evidence RECORD actual.{name}.sha256")
+                if not isinstance(actual["bytes"], int) or actual["bytes"] < 0:
+                    raise SystemExit(f"dependency evidence RECORD actual byte count malformed: {name}")
+            if entry["validation"] not in {"MATCH", "EMPTY_DECLARATION", "FAIL", "MALFORMED_ROW", "OVERSIZE"}:
+                raise SystemExit(f"dependency evidence RECORD validation status malformed: {name}")
+            if not isinstance(entry["errors"], list) or not all(isinstance(error, str) for error in entry["errors"]):
+                raise SystemExit(f"dependency evidence RECORD errors malformed: {name}")
+            if "resolved_path" in entry and (not isinstance(entry["resolved_path"], str) or not entry["resolved_path"]):
+                raise SystemExit(f"dependency evidence RECORD resolved path malformed: {name}")
         candidates = row["license_candidates"]
-        if not isinstance(candidates, list) or not candidates:
+        metadata_declared = _metadata_license_declarations_present(metadata)
+        if not isinstance(candidates, list) or (not candidates and not metadata_declared):
             raise SystemExit(f"dependency evidence installed payload evidence malformed: {name}")
         for candidate in candidates:
             if not isinstance(candidate, dict):
@@ -474,7 +559,18 @@ def _synthetic_dependency_evidence() -> dict[str, Any]:
     inventory_entries = [
         {
             "path": f"lib/python3.12/site-packages/{name}-{version}.dist-info",
-            "metadata": {"name": [name], "version": [version]},
+            "metadata": {
+                "path": f"lib/python3.12/site-packages/{name}-{version}.dist-info/METADATA",
+                "bytes": 1,
+                "sha256": "0" * 64,
+                "name": [name],
+                "version": [version],
+                "license": ["BSD-3-Clause"],
+                "license_expression": [],
+                "license_file": ["LICENSE"],
+                "classifiers": ["License :: OSI Approved :: BSD License"],
+                "license_classifiers": ["License :: OSI Approved :: BSD License"],
+            },
             "normalized_name": name,
             "name": name,
             "version": version,
@@ -485,7 +581,20 @@ def _synthetic_dependency_evidence() -> dict[str, Any]:
     ]
     inventory_sha256 = _canonical_json_sha256(inventory_entries)
     lock_rows: list[dict[str, Any]] = []
-    record_entries = [{"path": "METADATA", "validation": "MATCH"}]
+    record_entries = [
+        {
+            "row": 1,
+            "declared": {
+                "path": "METADATA",
+                "hash": {"algorithm": "sha256", "value": "0" * 64, "status": "VALID"},
+                "size": {"value": 1, "status": "VALID"},
+            },
+            "actual": {"sha256": "0" * 64, "bytes": 1},
+            "resolved_path": "lib/python3.12/site-packages/METADATA",
+            "validation": "MATCH",
+            "errors": [],
+        }
+    ]
     record = {
         "path": "RECORD",
         "bytes": 1,
@@ -499,7 +608,7 @@ def _synthetic_dependency_evidence() -> dict[str, Any]:
             "expected_name": name,
             "expected_version": version,
             "status": DEPENDENCY_EVIDENCE_STATUS,
-            "metadata": {"name": [name], "version": [version]},
+            "metadata": dict(inventory_entries[0]["metadata"] | {"name": [name], "version": [version]}),
             "record": record,
             "license_candidates": [{"path": "LICENSE", "bytes": 1, "sha256": "0" * 64}],
             "native_payloads": [],
@@ -537,7 +646,7 @@ def _synthetic_dependency_evidence() -> dict[str, Any]:
     }
 
 
-def require_reference_dependency_gate() -> None:
+def require_reference_dependency_gate(dependency_evidence: dict[str, Any]) -> None:
     """Refuse fixture generation until the isolated dependency audit is PASS."""
     inspector_path = Path(__file__).parent.parent / "microwakeword-reference" / "inspect.py"
     project_path = inspector_path.parent / "pyproject.toml"
@@ -547,7 +656,11 @@ def require_reference_dependency_gate() -> None:
         raise SystemExit(f"reference dependency inspector unavailable: {inspector_path}")
     inspector = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(inspector)
-    report = inspector.inspect_documents(project_path.read_bytes(), lock_path.read_bytes())
+    report = inspector.inspect_documents(
+        project_path.read_bytes(),
+        lock_path.read_bytes(),
+        dependency_evidence=dependency_evidence,
+    )
     if report.get("status") != "PASS" or not report.get("fixture_generation_permitted", False):
         raise SystemExit(
             "reference fixture generation is blocked by dependency/license gate: "
@@ -993,10 +1106,38 @@ def self_test() -> int:
     empty_success["installed_distributions"][0]["license_candidates"] = []
     try:
         validate_dependency_evidence(empty_success)
+    except SystemExit as error:
+        raise AssertionError("METADATA-declared empty license candidates were rejected") from error
+    empty_failure = json.loads(json.dumps(empty_success))
+    for field in ("license", "license_expression", "license_classifiers"):
+        empty_failure["installed_distributions"][0]["metadata"][field] = []
+    try:
+        validate_dependency_evidence(empty_failure)
     except SystemExit:
         pass
     else:
-        raise AssertionError("fabricated empty dependency evidence was accepted")
+        raise AssertionError("empty license evidence without METADATA declaration was accepted")
+    only_file_failure = json.loads(json.dumps(empty_success))
+    for field in ("license", "license_expression", "license_classifiers"):
+        only_file_failure["installed_distributions"][0]["metadata"][field] = []
+    assert only_file_failure["installed_distributions"][0]["metadata"]["license_file"] == ["LICENSE"]
+    try:
+        validate_dependency_evidence(only_file_failure)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("License-File-only evidence was accepted")
+    unknown_failure = json.loads(json.dumps(empty_success))
+    unknown_failure["installed_distributions"][0]["license_candidates"] = []
+    unknown_failure["installed_distributions"][0]["metadata"]["license"] = ["  UNKNOWN  "]
+    unknown_failure["installed_distributions"][0]["metadata"]["license_expression"] = []
+    unknown_failure["installed_distributions"][0]["metadata"]["license_classifiers"] = []
+    try:
+        validate_dependency_evidence(unknown_failure)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("UNKNOWN metadata license declaration was accepted")
     inventory_tamper = json.loads(json.dumps(evidence))
     inventory_tamper["installed_inventory"]["entries"][0]["version"] = "9.9.9"
     try:
@@ -1187,7 +1328,7 @@ def main() -> int:
     require_regular_tflite(args.tflite_path)
     dependency_evidence, dependency_evidence_sha256 = load_dependency_evidence(args.dependency_evidence)
     dependency_contract = validate_dependency_evidence(dependency_evidence)
-    require_reference_dependency_gate()
+    require_reference_dependency_gate(dependency_evidence)
     reference_environment = require_reference_runtime(dependency_contract["versions"])
     global np
     import numpy as np

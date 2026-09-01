@@ -35,16 +35,15 @@ MAX_RECORD_BYTES = 16 << 20
 MAX_NATIVE_BYTES = 2 << 30
 MAX_RECORD_ENTRIES = 1_000_000
 
-EXPECTED_PROJECT_SHA256 = "2b114885d54470c8397528b37572e3632202ca0b9d65ac349ec7e7da4e331f03"
-EXPECTED_LOCK_SHA256 = "da75839f6195c27c32a15f097a40450c18b317ad78e9036ec2a1618472b85555"
+EXPECTED_PROJECT_SHA256 = "2438d719428e497cc7f101429ba31fb5016e72737659d55aa0269d0824b1183d"
+EXPECTED_LOCK_SHA256 = "736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3"
 # Keep this list in lock-step with the independent reference project's reviewed
 # lock.  The project itself is virtual (package=false), so it is not expected
 # to appear in site-packages.
 EXPECTED_VERSIONS = {
-    "ai-edge-litert": "2.2.0",
+    "ai-edge-litert": "2.1.5",
     "backports-strenum": "1.3.1",
     "flatbuffers": "25.12.19",
-    "ml-dtypes": "0.6.0",
     "numpy": "2.5.2",
     "protobuf": "7.36.1",
     "tqdm": "4.70.0",
@@ -189,6 +188,17 @@ def _metadata_evidence(path: Path) -> dict[str, Any]:
     }
 
 
+def _metadata_license_declarations_present(metadata: dict[str, Any]) -> bool:
+    fields = ("license", "license_expression", "license_classifiers")
+    return all(isinstance(metadata.get(field), list) for field in fields) and any(
+        isinstance(value, str)
+        and value.strip()
+        and value.strip().casefold() != "unknown"
+        for field in fields
+        for value in metadata[field]
+    )
+
+
 def _record_evidence(
     path: Path, environment_root: Path, site_packages: Path
 ) -> tuple[dict[str, Any], list[tuple[str, Path]], list[str]]:
@@ -292,7 +302,7 @@ def _record_evidence(
             entries.append(entry)
     except csv.Error as error:
         failures.append(f"invalid RECORD CSV: {error}")
-    canonical_entries = json.dumps(entries, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    canonical_entries = json.dumps(entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return (
         {
             "path": path.name,
@@ -490,8 +500,8 @@ def collect_distribution(
                 result["native_payloads"].append(
                     {"path": relative_name, "bytes": size, "sha256": digest, "readelf": _readelf_needed(path)}
                 )
-    if not result["license_candidates"]:
-        result["failures"].append("no bounded license candidate")
+    if not result["license_candidates"] and not _metadata_license_declarations_present(metadata):
+        result["failures"].append("no bounded license candidate or METADATA license declaration")
     if result["failures"]:
         result["status"] = "COLLECTION_FAILED_FAIL_CLOSED"
     return result
@@ -558,7 +568,7 @@ def _lock_evidence(lock: dict[str, Any], project: dict[str, Any]) -> tuple[dict[
     selected, closure_failures = _selected_closure(rows, PROJECT_NAME)
     failures.extend(closure_failures)
     direct = _project_dependencies(project)
-    if direct != {"ai-edge-litert": "2.2.0", "numpy": "2.5.2"}:
+    if direct != {"ai-edge-litert": "2.1.5", "numpy": "2.5.2"}:
         failures.append("direct dependency set/version drift")
     if project.get("project", {}).get("requires-python") != "==3.12.*":
         failures.append("Python 3.12 contract drift")
@@ -734,6 +744,27 @@ def self_test() -> int:
         runner_entry = next(item for item in result["record"]["entries"] if item["declared"]["path"] == "../../../bin/runner")
         assert runner_entry["validation"] == "MATCH"
         assert runner_entry["resolved_path"] == "bin/runner"
+
+        metadata_only_rows = [row for row in rows if "LICENCE.txt" not in row[0]]
+        _write_record(dist / "RECORD", metadata_only_rows)
+        metadata_only = collect_distribution(root, site, "tqdm", "4.70.0", inventory["tqdm"], inventory_sha256)
+        assert metadata_only["status"] == "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED"
+        assert metadata_only["license_candidates"] == []
+        metadata_without_declaration = dict(inventory["tqdm"])
+        metadata_without_declaration["metadata"] = dict(inventory["tqdm"]["metadata"])
+        for field in ("license", "license_expression", "license_classifiers"):
+            metadata_without_declaration["metadata"][field] = []
+        metadata_missing = collect_distribution(
+            root, site, "tqdm", "4.70.0", metadata_without_declaration, inventory_sha256
+        )
+        assert metadata_missing["status"] == "COLLECTION_FAILED_FAIL_CLOSED"
+        assert any("no bounded license candidate or METADATA" in failure for failure in metadata_missing["failures"])
+        unknown_metadata = dict(inventory["tqdm"])
+        unknown_metadata["metadata"] = dict(inventory["tqdm"]["metadata"])
+        for field in ("license", "license_expression", "license_classifiers"):
+            unknown_metadata["metadata"][field] = ["  UNKNOWN  "] if field == "license" else []
+        unknown_result = collect_distribution(root, site, "tqdm", "4.70.0", unknown_metadata, inventory_sha256)
+        assert unknown_result["status"] == "COLLECTION_FAILED_FAIL_CLOSED"
 
         mismatch_rows = list(rows)
         mismatch_rows[0] = (mismatch_rows[0][0], mismatch_rows[0][1], str(len(metadata) + 1))

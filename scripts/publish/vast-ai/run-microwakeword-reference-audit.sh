@@ -7,8 +7,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/microwakeword-reference"
 COLLECTOR="$PROJECT/audit_closure.py"
-PROJECT_SHA256="2b114885d54470c8397528b37572e3632202ca0b9d65ac349ec7e7da4e331f03"
-LOCK_SHA256="da75839f6195c27c32a15f097a40450c18b317ad78e9036ec2a1618472b85555"
+PROJECT_SHA256="2438d719428e497cc7f101429ba31fb5016e72737659d55aa0269d0824b1183d"
+LOCK_SHA256="736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3"
 
 die() { echo "run-microwakeword-reference-audit: $*" >&2; exit 2; }
 

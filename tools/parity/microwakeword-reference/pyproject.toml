@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Independent ai_edge_litert oracle for authenticated microWakeWord streaming fixtures"
 requires-python = "==3.12.*"
 dependencies = [
-  "ai-edge-litert==2.2.0",
+  "ai-edge-litert==2.1.5",
   "numpy==2.5.2",
 ]
 
