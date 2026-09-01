@@ -344,6 +344,15 @@ run_self_test() {
   if "$script_path" --unknown-self-test-flag >/dev/null 2>&1; then
     log "self-test FAIL: unknown argument accepted"; fail=1
   fi
+  cases=$((cases + 1))
+  set +e
+  VOKRA_SCRATCH="$tmp/missing-approval-scratch" VOKRA_PUBLISH_ON_VAST=1 "$script_path" \
+    --work-dir "$tmp/missing-approval-work" >"$tmp/missing-approval.log" 2>&1
+  local missing_approval_rc=$?
+  set -e
+  if [[ $missing_approval_rc -ne 2 || -e "$tmp/missing-approval-scratch" || -e "$tmp/missing-approval-work" ]]; then
+    log "self-test FAIL: missing approval did not stop before work/cache creation"; fail=1
+  fi
   if "$script_path" --work-dir -bad >/dev/null 2>&1 || "$script_path" --approval-evidence -bad >/dev/null 2>&1; then
     log "self-test FAIL: leading-dash option value accepted"; fail=1
   fi
