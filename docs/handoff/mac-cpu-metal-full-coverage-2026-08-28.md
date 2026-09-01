@@ -2124,6 +2124,59 @@ quoted Python dictionaries and unquoted dict-like fields. Hermetic stdout and
 stderr regressions cover those formats before any replacement instance is
 created.
 
+On 2026-09-01 a direct raw CLI inventory was used outside that wrapper. Its
+DNS-error request URL exposed the configured API key, and the successful raw
+response exposed per-instance Jupyter tokens. No credential value is copied
+into this repository. `vastai reset api-key` returned HTTP 410, so the main key
+must be reset from the Vast.ai Keys console and the local CLI setting updated;
+the raw inventory path must not be used again without field projection and
+redaction. The unrelated `cutetts-s1-train` instance was not modified.
+
+## OWSM v4 medium 1B authenticated inspection (2026-09-01)
+
+The 4-GB-plus checkpoint was never downloaded or executed on the maintainer
+Mac. Disposable VAST instance `49489749` provided 528,202,656 KiB RAM, a
+125-GiB `/dev/shm` tmpfs, 200 GB disk and 80 logical CPUs. It checked out the
+clean public PR head
+`82d4361ca4217317adfd6dda1b26999066ca2f94`, provisioned the repository-pinned
+Rust 1.98.0 / uv 0.12.5 / Python 3.12.14 toolchain, and passed the OWSM worker
+self-test before acquisition. No host-specific `vast-agents-guide.md` or
+`AGENTS.md` existed in the container.
+
+The fixed worker authenticated `espnet/owsm_v4_medium_1B` revision
+`e10985c8f1d592e905c24d2ac2b2c53e3feb24dc` and ESPnet source revision
+`cccc29023d43a3f504e28df7d1324bb4eb6daedd`. The checkpoint facts are:
+
+- path
+  `exp/s2t_train_conv2d8_size1024_e18_d18_mel128_raw_bpe50000/valid.total_count.ave_5best.pth`;
+- 4,089,134,806 bytes;
+- SHA-256
+  `b02d79f29a4daa31dd49ce145d9bb4cda0a1b68cdad91ae0af170ec3a4e92e09`;
+- 1,172 tensors.
+
+The inspection exited 2 by contract and produced
+`status=BLOCKED`,
+`inspection_status=AUTHENTICATED_EVIDENCE_COMPLETE`,
+`evidence_stage=INSPECTION_ONLY`,
+`runtime_status=NOT_IMPLEMENTED_FAIL_CLOSED`,
+`cpu_status=UNSUPPORTED`,
+`metal_status=BLOCKED_BY_CPU` and `publication=NO_UPLOAD`. The recovered
+manifest is 5,001,928 bytes with SHA-256
+`82de20eea3cf3a247624c76cd8e108e562addda0c8582577515cf88abb3053d9`;
+the 4,146-byte validation log is
+`4df29428ea8ce381311c5e407d937b6a517750f4edcbc88b8c606cdef82dc93b`.
+Both hashes matched remote and the recovered two-file evidence directory
+passed the credential-pattern scan. The checkpoint and source tree remained
+on VAST. Instance `49489749` was then destroyed, and a fresh account inventory
+confirmed that it was absent.
+
+This evidence authenticates the tensor/configuration inventory but does not
+close the row. Native ESPnet S2T frontend, subsampling, E-Branchformer encoder,
+decoder, joint CTC/attention beam search, special-token semantics and
+independent CPU numerical parity remain required. Dataset provenance and the
+reference dependency closure also remain fail-closed. Metal stays blocked by
+CPU completion.
+
 ## Final branch exit gates
 
 - [ ] Live audit: CPU `partial=0`, `no-runtime-binder=0`, Metal
