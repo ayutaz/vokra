@@ -12,6 +12,7 @@ use vokra_models::bigvgan::{BigVGan, BigVGanVariant};
 const GGUF_ENV: &str = "VOKRA_BIGVGAN_BASE_GGUF";
 const REFERENCE_ENV: &str = "VOKRA_BIGVGAN_REFERENCE";
 const CPU_ATOL: f32 = 2.0e-5;
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 const METAL_ATOL: f32 = 0.01;
 
 #[test]
