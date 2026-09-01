@@ -17,7 +17,7 @@
   uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
   ```
 
-## Authoritative current snapshot (2026-08-31)
+## Authoritative current snapshot (2026-09-01)
 
 The authoritative runtime implementation/code snapshot is
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0` on
@@ -31,17 +31,22 @@ mergeable and non-draft with 109 passing checks, 13 expected skips, and no
 failures or pending checks. GitHub `main` remains
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. The source-level Metal inventory
 correction is `8f0d8572d46fe9972bfdd88241efa937e17e63ac`. The repeated live
-public-artifact audit at that commit reports 194 repositories, 193
-GGUF-bearing repositories and 198 GGUF files: CPU `full=131`, `partial=42`,
-`no-runtime-binder=20`, `not-artifact=1`; Metal `full=131`,
+public-artifact audit at current clean local head
+`8b63dea72350a45a4c831d661ad707a9c664b565` reports 194 repositories, 193
+GGUF-bearing repositories and 198 GGUF files: CPU `full=131`, `partial=43`,
+`no-runtime-binder=19`, `not-artifact=1`; Metal `full=131`,
 `blocked-by-cpu=62`, `not-artifact=1`. There are zero source-level
 CPU-complete/Metal-unsupported rows. GigaAM v3 and GigaAM Multilingual now have
 complete conservative Metal code routes, but both still require authenticated
 Apple CPU/Metal evidence and therefore remain in the prepared Scaleway set.
+The OWSM structural binder accounts for the one-row shift from no-binder to
+partial; all 62 CPU-blocked GGUF repositories remain open. The remote PR head
+is still `5bb06a42`; the seven code-bearing commits through `8b63dea7` require
+exact-head full-workspace VAST closure before push.
 
-Five models are ready for authenticated Apple execution: GigaAM v3, GigaAM
-Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2 and BiCodec. Their immutable
-VAST-to-Scaleway inputs are:
+Six models are ready for authenticated Apple execution: GigaAM v3, GigaAM
+Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec and Voice Gender
+Classifier. Their immutable inputs are:
 
 - Wave A at exact code `bc9d1db2bbf230f09ce4f3f68003a1c11f80e0e1`:
   `/root/scratchpad/apple-transfer-bc9d1db2`, 4.9 GB, 30 regular files, no
@@ -60,6 +65,9 @@ VAST-to-Scaleway inputs are:
   `a77004b9a85aa1619abb9413de2d7158d6603d8097f1eeebb83a4bb8bd26637c`
   and reference-manifest SHA-256 is
   `8d159e0e8b19cc7ad88a925f072ae56cf870a180e3e7b2acecb82023b103c696`.
+- Voice Gender Classifier local Apple packet:
+  `/private/tmp/voice-gender-apple-packet-f74374ab.tar.gz`; SHA-256
+  `f755fbdc3a2146ca41942501d80415eff573f1dc8e56201ee474d93d4d3d7261`.
 
 VAST instances `49168183` (500 GB retained storage) and `49261078` (200 GB)
 both report `cur_state=stopped`, `intended_status=stopped` and
@@ -2176,6 +2184,43 @@ decoder, joint CTC/attention beam search, special-token semantics and
 independent CPU numerical parity remain required. Dataset provenance and the
 reference dependency closure also remain fail-closed. Metal stays blocked by
 CPU completion.
+
+## Exact-head OWSM / HTDemucs / SGMSE evidence (2026-09-01)
+
+Disposable VAST instance `49511760` authenticated clean exact commit
+`8b63dea72350a45a4c831d661ad707a9c664b565` from bundle SHA-256
+`e2246d3680373c5bbcdefb81260f361b0f31a3704d17530ca26e165131dcfb20`.
+All eight fixed inspection/reference stages matched their expected exit codes;
+the summary SHA-256 is
+`a3f1f6bf92bc8ad5a631699d64eda365d9c7b6195e32e58aa404f94ef1b62553`
+and publication remained `NO_UPLOAD`.
+
+- OWSM's 1,172-tensor payload manifest has file SHA-256
+  `04515dbd3dc7b0c65b6d59ae7e038564b45cf07a36573a12c60a7147b3941cdf`.
+  It proves deterministic logical-byte handling for the one non-contiguous
+  tensor `frontend.logmel.melmat`, then stops at
+  `BLOCKED_WRITER_CONTRACT`; it does not claim a runtime or parity PASS.
+- HTDemucs safely loaded the exact five fixed ensemble members, bound its
+  allowlist to `demucs/htdemucs.py` git blob
+  `5d2eaaa1eb2620a5d2147eb86361e9964fb94528`, and retained the digest,
+  license/provenance and native-runtime blockers. Manifest SHA-256 is
+  `365179b0127f2ae579b767b4b30e2ef225eb88037068bfef6a20fa1305b3533c`.
+- SGMSE safely loaded 647 finite tensors and produced an independent six-plane
+  upstream reference. Inspection-manifest SHA-256 is
+  `335bb8c3213af0566bd4fc9ea076dc139b51434fd00f352623925b3e0cf550ba`;
+  reference-manifest file SHA-256 is
+  `e0b0e061c144161a935cdbb5864e1c2db9504b7845c2c4bf620767b90e3bf5b9`.
+  The construction evidence covers 438 named modules, 77 NCSN++ module-list
+  entries and all 647 state-dict rows. Exact native role mapping and CPU/Metal
+  parity remain open.
+
+Only 7.3 MB of JSON/log evidence was recovered at
+`/private/tmp/vokra-model-contract-evidence-8b63dea7/`; no model or fixture
+payload was copied locally. Instance `49511760` was destroyed and confirmed
+absent from a fresh account inventory. Project dependency changes remain
+`uv add`-managed; VAST's `uv pip --system` is a disposable stock-image
+bootstrap exception and does not alter `pyproject.toml` or `uv.lock`. This
+management-only record does not alter the code tested at `8b63dea7`.
 
 ## Final branch exit gates
 

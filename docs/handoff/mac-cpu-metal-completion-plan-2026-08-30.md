@@ -21,7 +21,7 @@ worker.  Scaleway Apple Silicon is the macOS arm64 CPU/Metal worker.  Uploading
 or withdrawing a Hugging Face artifact remains a separate irreversible action:
 no `--push`, repo deletion or public replacement is authorized by this plan.
 
-## Audited baseline (reconciled 2026-08-31)
+## Audited baseline (reconciled 2026-09-01)
 
 The active branch is workspace `0.3.0`; immediately before this documentation
 refresh its remote head was
@@ -31,14 +31,20 @@ runtime/VAST checkpoint `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and
 evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`
 remain historical workspace `0.2.0` evidence.
 
-The live read-only Hugging Face audit was repeated at clean branch commit
-`8f0d8572d46fe9972bfdd88241efa937e17e63ac` on 2026-08-31. It returned 194
-public repositories, 193 GGUF-bearing repositories and 198 GGUF files:
+The latest live read-only Hugging Face audit was repeated at clean local branch
+commit `8b63dea72350a45a4c831d661ad707a9c664b565` on 2026-09-01. It returned
+194 public repositories, 193 GGUF-bearing repositories and 198 GGUF files:
 
 | Dimension | Complete | Remaining |
 |---|---:|---:|
-| Mac CPU | 131 | 42 partial + 20 no-runtime-binder + 1 non-artifact |
+| Mac CPU | 131 | 43 partial + 19 no-runtime-binder + 1 non-artifact |
 | Apple Metal | 131 | 62 blocked by CPU + 1 non-artifact |
+
+The total number of CPU-open GGUF repositories remains 62. OWSM v4 medium 1B
+moved from `no-runtime-binder` to `partial` because its strict structural binder
+is now present; this is a classification change, not a CPU or Metal PASS. The
+remote PR head remains `5bb06a42` until the seven code-bearing commits through
+`8b63dea7` receive their exact-head full-workspace VAST closure and are pushed.
 
 `vokra/sber-gigaam-multilingual`, `vokra/sber-gigaam-v3` and OmniASR-CTC-1B
 are now classified as complete Metal code routes.  The two GigaAM graphs route
@@ -55,8 +61,8 @@ flat list:
 | Class | Count | Required route |
 |---|---:|---|
 | Public-artifact-specific blocker | 27 | 22 replacement/contract repairs and 5 artifact-specific missing binders; VAST no-upload conversion/parity, then separately authorized publication |
-| Bound but incomplete runtime | 18 | Complete the native forward/composite contract, then VAST CPU parity and Scaleway Metal parity |
-| Generic no-runtime-binder | 15 | Implement converter/binder/native runtime from pinned primary sources, then the full parity chain |
+| Bound but incomplete runtime | 19 | Complete the native forward/composite contract, then VAST CPU parity and Scaleway Metal parity |
+| Generic no-runtime-binder | 14 | Implement converter/binder/native runtime from pinned primary sources, then the full parity chain |
 | Routed but intentionally partial | 2 | Complete the CSM and Ultravox companion/runtime boundaries |
 | Non-artifact repository | 1 | Produce a gated GGUF or withdraw the repository under separate authorization |
 
@@ -508,6 +514,61 @@ owner's exact destructive confirmation, redundant instances `49447911`,
 all four read back absent.  Only stopped packet instances `49168183` and
 `49261078` remain for their recorded direct Scaleway transfer.  Unrelated
 running instance `49466383` is outside this campaign and was not touched.
+
+### 2026-09-01 exact-head model-contract evidence
+
+Disposable VAST instance `49511760` checked out the clean exact local commit
+`8b63dea72350a45a4c831d661ad707a9c664b565` from incremental bundle SHA-256
+`e2246d3680373c5bbcdefb81260f361b0f31a3704d17530ca26e165131dcfb20`.
+The bundle requires the current remote PR base `5bb06a42`. The worker ran eight
+fixed stages: OWSM, HTDemucs and SGMSE inspection self-tests and real
+inspections, plus the SGMSE reference self-test and real reference. Every
+stage matched its expected exit code; the run summary has SHA-256
+`a3f1f6bf92bc8ad5a631699d64eda365d9c7b6195e32e58aa404f94ef1b62553`
+and records `status=COMPLETE` and `publication=NO_UPLOAD`.
+
+- OWSM authenticated all 1,172 F32 tensors. Its structural manifest SHA-256 is
+  `82de20eea3cf3a247624c76cd8e108e562addda0c8582577515cf88abb3053d9`
+  and its payload-manifest file SHA-256 is
+  `04515dbd3dc7b0c65b6d59ae7e038564b45cf07a36573a12c60a7147b3941cdf`.
+  The payload contract has canonical manifest digest
+  `f695e97891b9351a2a9e91ac33a631119b1973cdd7857c1bacc9c2b27dfb5f6b`.
+  Exactly one source tensor, `frontend.logmel.melmat`, is non-contiguous; its
+  logical F32 values were canonicalized to copied little-endian C-order bytes.
+  The result deliberately remains `BLOCKED_WRITER_CONTRACT`. No GGUF was
+  written and the native frontend/encoder/decoder/search/parity work is open.
+- HTDemucs' five fixed ensemble members all report `SAFE_LOADED`; tensor counts
+  are 525 for `5c90dfd2` and 533 for each of `f7e0c4bc`, `d12395a8`,
+  `92cfc3b6` and `04573f0d`. The exact safe-global allowlist is `BOUND` to
+  `demucs/htdemucs.py` git blob `5d2eaaa1eb2620a5d2147eb86361e9964fb94528`.
+  The recovered manifest SHA-256 is
+  `365179b0127f2ae579b767b4b30e2ef225eb88037068bfef6a20fa1305b3533c`.
+  Full-weight digest review, license/provenance review and the native runtime
+  remain blockers; safe loading alone does not promote the public row.
+- SGMSE safely loaded all 647 finite checkpoint tensors with 65,590,822
+  parameters. Its inspection manifest SHA-256 is
+  `335bb8c3213af0566bd4fc9ea076dc139b51434fd00f352623925b3e0cf550ba`.
+  The independent pinned source run completed six F32 planes of shape
+  `[1, 1, 256, 64]`; its reference-manifest file SHA-256 is
+  `e0b0e061c144161a935cdbb5864e1c2db9504b7845c2c4bf620767b90e3bf5b9`
+  and status is `REFERENCE_COMPLETE_NO_UPLOAD`. Construction evidence binds
+  438 named modules, all 77 `dnn.all_modules` entries and all 647 state-dict
+  rows with canonical SHA-256
+  `695b9ef5b24685fbe41c73fa1b0041e3622cf5315cae7ec03aa799d5f468246e`.
+  Exact native NCSN++ tensor-role mapping, native score production, CPU parity
+  and Apple CPU/Metal parity remain open.
+
+Only logs and JSON evidence (7.3 MB) were recovered under
+`/private/tmp/vokra-model-contract-evidence-8b63dea7/`; no checkpoint, GGUF or
+F32 fixture payload was copied to the maintainer Mac. Project dependencies
+remain managed through `uv add` and locked execution uses `uv run --frozen` or
+`uv sync --frozen`. The `uv pip --system` use in VAST `provision.sh` is limited
+to bootstrapping a disposable stock image and does not mutate project
+dependency metadata. Instance `49511760` was destroyed after evidence recovery
+and a fresh inventory confirmed it absent. Stopped packet instances `49168183`
+and `49261078` remain intentionally retained for direct Scaleway transfer;
+unrelated running instance `49466383` was not touched. This management-only
+record does not alter the code tested at `8b63dea7`.
 
 ## Execution order
 
