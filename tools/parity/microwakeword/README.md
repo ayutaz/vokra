@@ -6,8 +6,10 @@
 > preparer emits dense I8/F32/I32 GGUF without an interpreter or NumPy. VAST
 > evidence has authenticated the fixed target bytes (SHA-256
 > `21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77`,
-> 52272 bytes) and a raw inventory. Normal production remains blocked because
-> reviewed topology authority and parity evidence are pending. The separate
+> 52272 bytes) and a raw inventory. The compiled reviewed topology authority
+> and stateful GGUF binder are now present, but normal production remains
+> blocked until the independent LiteRT stage-trace parity evidence is run on
+> VAST. The separate
 > `--inspect-only` mode records evidence only; the separate `--candidate` mode
 > may create a `CANDIDATE_UNREVIEWED`/`NO_UPLOAD` GGUF on VAST from fixed
 > inputs:
@@ -41,10 +43,10 @@ conversion. Bridges the upstream TFLite artefacts (INT8-quantized
 MC-MobileNet designed for Cortex-M55 / RP2040 / ESP32-S3 microcontrollers)
 to the Vokra GGUF shape the `vokra-kws-micro` forward scaffold can validate
 through its explicitly untrusted typed-topology seam (M5-03 IoT Tier-3 /
-NFR-PT-03). Production binding remains closed until independent topology review
-and parity set the compiled authority. The evidence-only raw inventory is
-unreviewed topology evidence; its six resource states are not a production
-binding.
+NFR-PT-03). The fixed reviewed `hey_jarvis` authority is available through
+the runtime's stateful binder, but the evidence-only raw inventory remains
+unreviewed transport evidence and does not itself authorize binding. A
+production parity claim still requires the independent VAST fixture.
 
 Companion to the sister crate [`vokra-vad-micro`](../../crates/vokra-vad-micro),
 which does the same job for Silero VAD (M5-03 案 1). The two produce
@@ -151,9 +153,9 @@ VAST acquisition records it.
 | ------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **1**   | `prepare_checkpoint.py` (VAST inspection-only dense I8); 40-band log-mel features  | Candidate format only; no production tensor binding                                                                                  |
 | **2**   | INT8 kernels + model loader                                           | `KwsMicro` scaffold surface                                                                                                         |
-| **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | Untrusted/synthetic `Model::bind_untrusted_topology` path; production authenticated artifact binding remains pending                  |
-| **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A/B require authenticated VAST artefacts; Path C (INT8-chain end-to-end) remains unmet                                        |
-| **3.5** | Sidecar dense I8 source bytes + per-tensor `(scale, zero_point)` metadata (implemented); dense I32 bias preservation (implemented) | Raw TFLite topology producer and typed binder are synthetic-tested; real artifact bind and parity remain pending |
+| **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | Untrusted/synthetic `Model::bind_untrusted_topology` plus the fixed reviewed stateful `bind_authenticated_streaming` surface |
+| **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A/B require authenticated VAST artefacts; Path C compares all 512 invocations and preserved stages, with the numerical verdict still VAST-gated |
+| **3.5** | Sidecar dense I8 source bytes + per-tensor `(scale, zero_point)` metadata (implemented); dense I32 bias preservation (implemented) | Reviewed conversion/binding contract is implemented; real fixture parity remains pending |
 
 The sidecar's source-byte carrier preserves exact INT8 values; its F32 view is
 **lossless** for a fixed
@@ -183,11 +185,11 @@ the full write-up):
     NOT validate against training-time `tf.signal` (that would require
     a `tensorflow` dep). Empirically the standard algorithm matches
     `tf.signal` at `1e-3` for the same parameters.
-- **Path C** (both env vars) — end-to-end INT8 chain parity. **UNMET**:
-  the dense I8/I32 tensors and affine metadata are implemented, but authenticated
-    model topology and independent reference fixtures remain pending the
-    VAST-only acquisition/license gate. The Rust test therefore still skips
-    with a clear defer message.
+- **Path C** (both env vars) — end-to-end INT8 chain parity over the full
+  512-invocation direct-int8 sequence, every preserved stage, and reset replay.
+  The reviewed binder and exact topology contract are implemented; the Rust
+  test still skips when the authenticated VAST artefacts are absent, and only
+  a green VAST run may change this from pending to a parity PASS.
 
 ## What this directory still does NOT do
 

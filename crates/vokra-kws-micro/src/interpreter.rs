@@ -996,6 +996,7 @@ pub struct HeyJarvisStreamingExecutor {
     concat: [Vec<i8>; HEY_JARVIS_STATE_COUNT],
     work_a: Vec<i8>,
     work_b: Vec<i8>,
+    last_trace: Vec<Vec<i8>>,
 }
 
 impl HeyJarvisStreamingExecutor {
@@ -1037,6 +1038,7 @@ impl HeyJarvisStreamingExecutor {
             concat: HEY_JARVIS_CONCAT_LENGTHS.map(|len| vec![0i8; len]),
             work_a: vec![0i8; 300],
             work_b: vec![0i8; 300],
+            last_trace: Vec::new(),
         })
     }
 
@@ -1045,16 +1047,30 @@ impl HeyJarvisStreamingExecutor {
         for state in &mut self.states {
             state.fill(HEY_JARVIS_STATE_QUANTIZED_ZERO);
         }
+        self.last_trace.clear();
     }
 
     /// Executes one 3×40 feature window and returns the quantised probability.
+    /// The normal path does not capture or allocate intermediate traces.
     pub fn run(&mut self, input: &[i8]) -> Result<&[i8]> {
+        self.run_inner(input, false)
+    }
+
+    /// Executes one invocation while capturing all eleven diagnostic stages.
+    /// This is intentionally opt-in: production streaming calls should use
+    /// [`Self::run`] so trace vectors never allocate on the hot path.
+    pub fn run_with_trace(&mut self, input: &[i8]) -> Result<&[i8]> {
+        self.run_inner(input, true)
+    }
+
+    fn run_inner(&mut self, input: &[i8], capture_trace: bool) -> Result<&[i8]> {
         if input.len() != HEY_JARVIS_INPUT_SIZE {
             return Err(VokraError::InvalidArgument(format!(
                 "HeyJarvisStreamingExecutor::run: input len {} != expected {HEY_JARVIS_INPUT_SIZE}",
                 input.len()
             )));
         }
+        self.last_trace.clear();
         let mut current_len = HEY_JARVIS_INPUT_SIZE;
         let mut current_slot: Option<u8> = None;
         let mut layer_idx = 0usize;
@@ -1083,6 +1099,9 @@ impl HeyJarvisStreamingExecutor {
                 &mut self.work_b[..out_len]
             };
             self.plan.layers[layer_idx].apply(&self.concat[state_idx][..concat_len], target)?;
+            if capture_trace {
+                self.last_trace.push(target.to_vec());
+            }
             current_len = out_len;
             current_slot = Some(target_slot);
             layer_idx += 1;
@@ -1094,9 +1113,15 @@ impl HeyJarvisStreamingExecutor {
                 if current_slot == Some(0) {
                     self.plan.layers[layer_idx]
                         .apply(&self.work_a[..current_len], &mut self.work_b[..op_out])?;
+                    if capture_trace {
+                        self.last_trace.push(self.work_b[..op_out].to_vec());
+                    }
                 } else {
                     self.plan.layers[layer_idx]
                         .apply(&self.work_b[..current_len], &mut self.work_a[..op_out])?;
+                    if capture_trace {
+                        self.last_trace.push(self.work_a[..op_out].to_vec());
+                    }
                 }
                 current_len = op_out;
                 current_slot = Some(op_target_slot);
@@ -1121,7 +1146,13 @@ impl HeyJarvisStreamingExecutor {
             &self.concat[final_state_idx][..concat_len],
             &mut self.work_a[..1],
         )?;
+        if capture_trace {
+            self.last_trace.push(self.work_a[..1].to_vec());
+        }
         self.plan.layers[10].apply(&self.work_a[..1], &mut self.work_b[..1])?;
+        if capture_trace {
+            self.last_trace.push(self.work_b[..1].to_vec());
+        }
         Ok(&self.work_b[..1])
     }
 
@@ -1138,6 +1169,17 @@ impl HeyJarvisStreamingExecutor {
                 "HeyJarvisStreamingExecutor: state index {index} out of range"
             ))
         })
+    }
+
+    /// Returns the eleven intermediate int8 stage payloads from the most
+    /// recent invocation (ops 17/21/22/26/27/31/32/36/37/42/43).
+    pub fn trace(&self) -> Result<&[Vec<i8>]> {
+        if self.last_trace.len() != 11 {
+            return Err(VokraError::InvalidArgument(
+                "HeyJarvisStreamingExecutor: trace unavailable before a successful run".into(),
+            ));
+        }
+        Ok(&self.last_trace)
     }
 }
 
@@ -1623,6 +1665,9 @@ mod tests {
         let input: Vec<i8> = (0..HEY_JARVIS_INPUT_SIZE).map(|v| v as i8).collect();
         assert_eq!(executor.run(&input).unwrap().len(), 1);
         assert_eq!(executor.state(0).unwrap(), &input[40..]);
+        assert!(executor.trace().is_err());
+        assert_eq!(executor.run_with_trace(&input).unwrap().len(), 1);
+        assert_eq!(executor.trace().unwrap().len(), 11);
         assert!(executor.state(99).is_err());
         executor.reset();
         assert!(executor

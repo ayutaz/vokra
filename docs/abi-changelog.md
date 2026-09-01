@@ -284,7 +284,7 @@ ABI or existing GGUF dtype change; legacy Q8_0 files remain supported.
 |---|---|---|---|---|---:|---|
 | `vokra-core::gguf` | `GgmlType::I8` | Added | `enum GgmlType { …, I8 = 24 }`; `block_size() = 1`, `type_size() = 1` | Additive public Rust enum variant and GGUF reader support; current pre-1.0 policy permits the variant addition, while unknown older readers reject tag 24 explicitly | yes | (this commit) |
 | `vokra-core::gguf::reader` | `GgufFile::tensor_i8` | Added | `pub fn tensor_i8(&self, name: &str) -> Result<Vec<i8>, GgufError>` | Exact signed-byte accessor; `tensor_f32` deliberately rejects I8 rather than widening it | no | (this commit) |
-| `vokra-kws-micro::model` | `TensorData::I8` | Added | `I8(Vec<i8>)` | Public model crate surface, outside the three-crate Rust snapshot scan; loader/binder remains production-closed pending independent topology/parity review | yes | (this commit) |
+| `vokra-kws-micro::model` | `TensorData::I8` | Added | `I8(Vec<i8>)` | Public model crate surface, outside the three-crate Rust snapshot scan; generic/candidate loading remains untrusted, while the fixed reviewed stateful binder is separately authenticated and its numerical parity remains VAST-gated | yes | (this commit) |
 
 The active `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is not
 rotated by this entry. `scripts/rust-public-api-list.sh --list` reports the
@@ -4236,6 +4236,22 @@ staged models is still pending and no artifact upload is implied. These are
 pre-1.0 Rust/GGUF additions only: the C ABI remains unchanged at **57 FUNC / 15
 TYPEDEF**. The source baseline for this advisory is
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`.
+
+### 2026-09-01 — microWakeWord reviewed stateful binder (pre-1.0 advisory)
+
+The `vokra-kws-micro` Rust surface now adds
+`model::Model::bind_authenticated_streaming()` and the
+`AuthenticatedHeyJarvisBinder` / `AuthenticatedHeyJarvisTrace` types. The
+entry point accepts no caller topology or digest: it authenticates the fixed
+`hey_jarvis` provenance, reviewed topology, all 20 compute weight/bias names,
+shapes, quantization vectors, and exact source payload SHA-256 values before
+returning a stateful eleven-layer INT8 executor. Its public result is the
+exact uint8 value after the model's final quantize, and the diagnostic seam
+exposes the eleven intermediate stages. The stateless
+`bind_authenticated_chain()` remains an explicit error because it cannot
+represent persistent streaming state. This is an implemented binding surface,
+not a numerical or Apple-hardware verdict: the 512-invocation LiteRT
+stage-trace parity run remains VAST-gated, and no publication is implied.
 
 ### Post-1.0 semver contract (rejection of the pre-1.0 free-change rule)
 

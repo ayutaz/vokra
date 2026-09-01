@@ -163,6 +163,16 @@ OUTPUT_SCALE = 1.0 / 256.0
 OUTPUT_ZERO_POINT = 0
 INVOCATION_COUNT = 4
 FRAMES_PER_INVOCATION = INPUT_SHAPE[1]
+STRESS_SEED = 4
+STRESS_INVOCATION_COUNT = 512
+STRESS_STAGE_TENSOR_INDICES = (47, 50, 51, 54, 55, 58, 59, 62, 63, 67, 68, 69)
+STRESS_STAGE_SHAPES = {
+    47: (1, 1, 1, 30), 50: (1, 1, 1, 30), 51: (1, 1, 1, 60),
+    54: (1, 1, 1, 60), 55: (1, 1, 1, 60), 58: (1, 1, 1, 60),
+    59: (1, 1, 1, 60), 62: (1, 1, 1, 60), 63: (1, 1, 1, 60),
+    67: (1, 1), 68: (1, 1), 69: (1, 1),
+}
+STRESS_STAGE_DTYPES = {index: ("uint8" if index == 69 else "int8") for index in STRESS_STAGE_TENSOR_INDICES}
 
 DEPENDENCY_EVIDENCE_SCHEMA = "microwakeword-reference-dependency-evidence-v1"
 DEPENDENCY_EVIDENCE_STATUS = "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED"
@@ -1122,6 +1132,86 @@ def run_tflite_sequence(
     }
 
 
+def build_stress_inputs() -> np.ndarray:
+    """Return the fixed direct-int8 stress sequence (no frontend involved)."""
+    import numpy as np
+
+    return np.random.default_rng(STRESS_SEED).integers(
+        -128, 128, (STRESS_INVOCATION_COUNT, *INPUT_SHAPE[1:]), dtype=np.int8
+    )
+
+
+def run_tflite_stress_trace(
+    interp: Any, stress_inputs: np.ndarray, verbose: bool = False
+) -> tuple[np.ndarray, dict[int, np.ndarray], dict[str, Any]]:
+    """Capture every reviewed intermediate tensor for every stress invocation."""
+    import numpy as np
+
+    if stress_inputs.shape != (STRESS_INVOCATION_COUNT, *INPUT_SHAPE[1:]) or stress_inputs.dtype != np.int8:
+        raise ValueError("stress input sequence shape/dtype drift")
+    input_details = interp.get_input_details()
+    output_details = interp.get_output_details()
+    if len(input_details) != 1 or len(output_details) != 1:
+        raise ValueError("authenticated model must expose exactly one input and output")
+    inp, out = input_details[0], output_details[0]
+    validate_tflite_contract(inp, out)
+    for index in STRESS_STAGE_TENSOR_INDICES:
+        value = np.ascontiguousarray(interp.get_tensor(index))
+        expected_shape = STRESS_STAGE_SHAPES[index]
+        expected_dtype = getattr(np, STRESS_STAGE_DTYPES[index])
+        if value.shape != expected_shape or value.dtype != expected_dtype:
+            raise ValueError(f"stress tensor {index} contract drift: {value.shape} {value.dtype}")
+    traces = {index: [] for index in STRESS_STAGE_TENSOR_INDICES}
+    outputs: list[np.ndarray] = []
+    for invocation, value in enumerate(stress_inputs):
+        input_tensor = value.reshape(INPUT_SHAPE)
+        interp.set_tensor(inp["index"], input_tensor)
+        interp.invoke()
+        for index in STRESS_STAGE_TENSOR_INDICES:
+            stage = np.ascontiguousarray(interp.get_tensor(index))
+            if stage.shape != STRESS_STAGE_SHAPES[index] or stage.dtype != getattr(np, STRESS_STAGE_DTYPES[index]):
+                raise ValueError(f"stress invocation {invocation} tensor {index} drift")
+            traces[index].append(stage.copy())
+        output = np.ascontiguousarray(interp.get_tensor(out["index"]))
+        outputs.append(output.copy())
+        if verbose and invocation % 64 == 0:
+            print(f"  stress invocation {invocation:03d}: output={int(output.reshape(-1)[0])}", file=sys.stderr)
+    output_array = np.stack(outputs, axis=0)
+    trace_arrays = {index: np.stack(values, axis=0) for index, values in traces.items()}
+    if output_array.shape != (STRESS_INVOCATION_COUNT, *OUTPUT_SHAPE):
+        raise ValueError(f"stress output aggregate shape drift: {output_array.shape}")
+    for index, value in trace_arrays.items():
+        expected_shape = (STRESS_INVOCATION_COUNT, *STRESS_STAGE_SHAPES[index])
+        if value.shape != expected_shape:
+            raise ValueError(f"stress tensor {index} aggregate shape drift: {value.shape}")
+    return (
+        output_array,
+        trace_arrays,
+        {"input_name": inp["name"], "output_name": out["name"], "stage_tensor_indices": list(STRESS_STAGE_TENSOR_INDICES)},
+    )
+
+
+def run_tflite_stress_outputs(interp: Any, stress_inputs: np.ndarray) -> np.ndarray:
+    """Run the same stress bytes through a normal non-preserving interpreter."""
+    import numpy as np
+
+    input_details = interp.get_input_details()
+    output_details = interp.get_output_details()
+    if len(input_details) != 1 or len(output_details) != 1:
+        raise ValueError("authenticated model must expose exactly one input and output")
+    inp, out = input_details[0], output_details[0]
+    validate_tflite_contract(inp, out)
+    outputs = []
+    for value in stress_inputs:
+        interp.set_tensor(inp["index"], value.reshape(INPUT_SHAPE))
+        interp.invoke()
+        output = np.ascontiguousarray(interp.get_tensor(out["index"]))
+        if output.shape != OUTPUT_SHAPE or output.dtype != np.uint8:
+            raise ValueError("normal stress output contract drift")
+        outputs.append(output.copy())
+    return np.stack(outputs)
+
+
 def artifact(path: Path, name: str, shape: tuple[int, ...], dtype: str, role: str) -> dict[str, Any]:
     payload = path.read_bytes()
     return {
@@ -1295,6 +1385,12 @@ def self_test() -> int:
     assert INPUT_ZERO_POINT == -128 and OUTPUT_ZERO_POINT == 0
     assert OUTPUT_SCALE == 0.00390625
     assert INVOCATION_COUNT >= 2 and FRAMES_PER_INVOCATION == 3
+    # Keep this gate dependency-free: the actual NumPy stress-input generator
+    # is exercised only by the VAST worker, while its fixed schema is pinned
+    # here without importing NumPy in the no-model self-test.
+    assert STRESS_INVOCATION_COUNT == 512
+    assert INPUT_SHAPE == (1, 3, 40)
+    assert STRESS_STAGE_TENSOR_INDICES[-1] == 69
     with tempfile.TemporaryDirectory(prefix="microwakeword-self-test-") as temporary:
         parent = Path(temporary)
         empty = parent / "empty"
@@ -1428,8 +1524,11 @@ def main() -> int:
 
     from ai_edge_litert.interpreter import Interpreter
 
-    def new_interpreter() -> Any:
-        fresh = Interpreter(model_path=str(args.tflite_path))
+    def new_interpreter(*, preserve_all_tensors: bool = False) -> Any:
+        fresh = Interpreter(
+            model_path=str(args.tflite_path),
+            experimental_preserve_all_tensors=preserve_all_tensors,
+        )
         fresh.allocate_tensors()
         return fresh
 
@@ -1437,6 +1536,18 @@ def main() -> int:
     replay_outputs, _ = run_tflite_sequence(new_interpreter(), feature_sequence, False)
     if not all(np.array_equal(a, b) for a, b in zip(raw_outputs, replay_outputs, strict=True)):
         raise SystemExit("fresh-interpreter reset replay mismatch")
+    stress_inputs = build_stress_inputs()
+    stress_outputs, stress_traces, stress_meta = run_tflite_stress_trace(
+        new_interpreter(preserve_all_tensors=True), stress_inputs, args.verbose
+    )
+    normal_stress_outputs = run_tflite_stress_outputs(new_interpreter(), stress_inputs)
+    if not np.array_equal(stress_outputs, normal_stress_outputs):
+        raise SystemExit("normal non-preserving interpreter stress output mismatch")
+    stress_replay_outputs, _, _ = run_tflite_stress_trace(
+        new_interpreter(preserve_all_tensors=True), stress_inputs, False
+    )
+    if not np.array_equal(stress_outputs, stress_replay_outputs):
+        raise SystemExit("fresh-interpreter stress replay mismatch")
     output_f32 = [((raw.astype(np.float32) - OUTPUT_ZERO_POINT) * OUTPUT_SCALE) for raw in raw_outputs]
     artefacts: list[dict[str, Any]] = [
         artifact(args.output_dir / "input_pcm.bin", "input_pcm", (WINDOW_SAMPLES,), "int16", "first frame for separate numpy/Rust frontend transcription"),
@@ -1456,6 +1567,12 @@ def main() -> int:
     concat_f32 = np.concatenate(output_f32, axis=0).astype(np.float32)
     dump_le(concat_f32, args.output_dir / "output_ref.bin")
     artefacts.append(artifact(args.output_dir / "output_ref.bin", "output_ref", (INVOCATION_COUNT, 1), "float32", "legacy aggregate of per-invocation dequantised outputs"))
+    dump_le(stress_inputs, args.output_dir / "stress_inputs.bin")
+    artefacts.append(artifact(args.output_dir / "stress_inputs.bin", "stress_inputs", (STRESS_INVOCATION_COUNT, *INPUT_SHAPE[1:]), "int8", "default_rng(4) direct-int8 stress sequence"))
+    for index in STRESS_STAGE_TENSOR_INDICES:
+        stage_path = args.output_dir / f"stress_stage_tensor_{index}.bin"
+        dump_le(stress_traces[index], stage_path)
+        artefacts.append(artifact(stage_path, f"stress_stage_tensor_{index}", (STRESS_INVOCATION_COUNT, *STRESS_STAGE_SHAPES[index]), STRESS_STAGE_DTYPES[index], f"preserved LiteRT tensor {index} per invocation"))
     manifest: dict[str, Any] = {
         "schema": "microwakeword-reference-v2",
         "status": "REFERENCE_COMPLETE",
@@ -1470,6 +1587,7 @@ def main() -> int:
         "pcm_synthesis": {"seed": PCM_SEED, "sine_hz": PCM_SINE_HZ, "sine_amplitude": PCM_SINE_AMPLITUDE, "noise_stddev": PCM_NOISE_STDDEV, "distinct_frame_schedule": "frequency += 37 Hz and seed += global frame index"},
         "authenticated_io": {"input": {"shape": list(INPUT_SHAPE), "dtype": "int8", "scale": INPUT_SCALE, "zero_point": INPUT_ZERO_POINT}, "output": {"shape": list(OUTPUT_SHAPE), "dtype": "uint8", "scale": OUTPUT_SCALE, "zero_point": OUTPUT_ZERO_POINT}},
         "persistent_sequence": {"invocation_count": INVOCATION_COUNT, "frames_per_invocation": FRAMES_PER_INVOCATION, "distinct_frames": True, "single_persistent_interpreter": True, "fresh_interpreter_reset_replay": {"status": "PASS", "invocation_count": INVOCATION_COUNT, "raw_outputs_match": True}},
+        "direct_int8_stress": {"seed": STRESS_SEED, "invocation_count": STRESS_INVOCATION_COUNT, "input_shape": list(INPUT_SHAPE), "input_dtype": INPUT_DTYPE_NAME, "stage_tensor_indices": list(STRESS_STAGE_TENSOR_INDICES), "stage_shapes": {str(index): list(STRESS_STAGE_SHAPES[index]) for index in STRESS_STAGE_TENSOR_INDICES}, "stage_dtypes": {str(index): STRESS_STAGE_DTYPES[index] for index in STRESS_STAGE_TENSOR_INDICES}, "preserve_all_tensors": True, "normal_interpreter_final_output_equal": True, "fresh_replay_equal": True, "trace_runner": stress_meta},
         "artefacts": artefacts,
         "tflite_topology": tflite_meta,
         "frontend_parity_boundary": "features_ref is a numpy transcription kept separate from the independent TFLite oracle",

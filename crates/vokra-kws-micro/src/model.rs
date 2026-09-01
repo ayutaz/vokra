@@ -16,10 +16,15 @@
 //! The generic join is [`Model::bind_untrusted_topology`]: it consumes an
 //! explicitly untrusted/synthetic [`TopologyManifest`] and checks every graph
 //! edge, shape, dtype, quantization vector, and GGUF constant before
-//! constructing a [`crate::interpreter::ChainConfig`]. Production authority
-//! is closed behind [`Model::bind_authenticated_chain`], which remains
-//! blocked until the reviewed VAST topology and parity evidence are compiled
-//! into this crate.
+//! constructing a [`crate::interpreter::ChainConfig`]. The fixed reviewed
+//! `hey_jarvis` authority is exposed by
+//! [`Model::bind_authenticated_streaming`], which returns a stateful binder
+//! only after exact provenance, topology, tensor quantization, and weight
+//! fingerprints pass. The older [`Model::bind_authenticated_chain`] remains
+//! fail-closed because a stateless [`crate::interpreter::ChainConfig`] cannot
+//! model the persistent streaming state or final uint8 quantize boundary.
+//! The binding surface still requires the authenticated VAST stage-trace
+//! fixture for a numerical production verdict.
 //!
 //! # Design rationale (why a two-layer parser, not a monolithic one)
 //!
@@ -107,7 +112,9 @@ use alloc::{
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufTensorInfo, GgufValueType};
 use vokra_core::{Result, VokraError};
 
-use crate::interpreter::{ChainConfig, LayerSpec};
+use crate::interpreter::{
+    ChainConfig, HeyJarvisStreamingExecutor, HeyJarvisStreamingPlan, LayerSpec,
+};
 use crate::kernels::ConvDims;
 
 /// The `vokra.kws.arch` discriminator the sidecar emits for microWakeWord
@@ -117,10 +124,26 @@ use crate::kernels::ConvDims;
 /// interchange. Downstream binders switch on this key.
 pub const EXPECTED_ARCH: &str = "microwakeword";
 
-/// Compiled review authority for the canonical TFLite topology. This remains
-/// unset until the official VAST artifact, GGUF bind, and independent parity
-/// evidence are reviewed together; a caller cannot supply or override it.
-pub const REVIEWED_TOPOLOGY_SHA256: Option<&str> = None;
+/// Compiled review authority for the canonical TFLite topology. A caller
+/// cannot supply or override this value.
+pub const REVIEWED_TOPOLOGY_SHA256: &str =
+    "e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621";
+
+const AUTHENTICATED_TFLITE_SHA256: &str =
+    "21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77";
+const AUTHENTICATED_MODEL_REPOSITORY: &str = "esphome/micro-wake-word-models";
+const AUTHENTICATED_MODEL_REVISION: &str = "05b65922cc433c9df13e98e32a7fe520758c837e";
+const AUTHENTICATED_SOURCE_REPOSITORY: &str = "https://github.com/kahrendt/microWakeWord";
+const AUTHENTICATED_SOURCE_REVISION: &str = "4665173cd35f1cff9a61e06fc427f124766c488e";
+const AUTHENTICATED_UPSTREAM: &str = "https://github.com/esphome/micro-wake-word-models/raw/05b65922cc433c9df13e98e32a7fe520758c837e/models/v2/hey_jarvis.tflite";
+const KEY_MODEL_REPOSITORY: &str = "vokra.kws.model_repository";
+const KEY_MODEL_REVISION: &str = "vokra.kws.model_revision";
+const KEY_SOURCE_REPOSITORY: &str = "vokra.kws.source_repository";
+const KEY_SOURCE_REVISION: &str = "vokra.kws.source_revision";
+const KEY_REVIEWED_TOPOLOGY: &str = "vokra.kws.reviewed.topology_sha256";
+const KEY_REVIEWED_AUTHORITY: &str = "vokra.kws.reviewed.authority";
+const KEY_CANDIDATE_AUTHORITY: &str = "vokra.kws.candidate.authority";
+const REVIEWED_AUTHORITY: &str = "VAST_REVIEWED_TOPOLOGY_PARITY";
 
 // --- Metadata key names (mirror the Python sidecar's `KEY_*` constants
 // byte-for-byte). Deliberately duplicated instead of imported from
@@ -169,6 +192,20 @@ pub struct ModelHeader {
     pub tflite_sha256: String,
     /// Upstream release URL (provenance audit).
     pub upstream: String,
+    /// Optional source repository metadata (required by authenticated binding).
+    pub model_repository: Option<String>,
+    /// Optional source revision metadata (required by authenticated binding).
+    pub model_revision: Option<String>,
+    /// Optional upstream implementation repository metadata.
+    pub source_repository: Option<String>,
+    /// Optional upstream implementation revision metadata.
+    pub source_revision: Option<String>,
+    /// Reviewed topology authority stamped by the reviewed converter.
+    pub reviewed_topology: Option<String>,
+    /// Closed reviewed-authority marker; caller self-stamps are insufficient.
+    pub reviewed_authority: Option<String>,
+    /// Candidate authority marker, which is explicitly rejected by production binding.
+    pub candidate_authority: Option<String>,
 }
 
 /// Quantization parameters carried by a source TFLite tensor.
@@ -860,18 +897,813 @@ impl Model {
         ChainConfig::new(layers)
     }
 
-    /// Production entry point for the reviewed canonical topology.
+    /// Returns the reviewed, stateful hey_jarvis executor.
     ///
-    /// No caller-supplied digest or topology can unlock this path. It remains
-    /// fail-closed until the repository compiles the reviewed topology digest
-    /// after VAST artifact binding and independent parity sign-off.
+    /// This is the only production binding entry point. The caller cannot
+    /// provide a topology or digest: the fixed authority, source provenance,
+    /// tensor identities, and quantisation vectors are all checked here
+    /// before any stateful execution is possible.
+    pub fn bind_authenticated_streaming(&self) -> Result<AuthenticatedHeyJarvisBinder> {
+        if self.header.model != "hey_jarvis"
+            || self.header.tflite_sha256 != AUTHENTICATED_TFLITE_SHA256
+            || self.header.upstream != AUTHENTICATED_UPSTREAM
+            || self.header.model_repository.as_deref() != Some(AUTHENTICATED_MODEL_REPOSITORY)
+            || self.header.model_revision.as_deref() != Some(AUTHENTICATED_MODEL_REVISION)
+            || self.header.source_repository.as_deref() != Some(AUTHENTICATED_SOURCE_REPOSITORY)
+            || self.header.source_revision.as_deref() != Some(AUTHENTICATED_SOURCE_REVISION)
+            || self.header.reviewed_topology.as_deref() != Some(REVIEWED_TOPOLOGY_SHA256)
+            || self.header.reviewed_authority.as_deref() != Some(REVIEWED_AUTHORITY)
+            || self.header.candidate_authority.is_some()
+            || self.header.sample_rate != 16_000
+            || self.header.hop_ms != 10
+            || self.header.window_ms != 32
+            || self.header.n_mels != 40
+            || self.header.feature_dim != 40
+        {
+            return Err(model_error("AUTHENTICATED_MODEL_PROVENANCE_REQUIRED"));
+        }
+        let layers = reviewed_hey_jarvis_layers(self)?;
+        let plan = HeyJarvisStreamingPlan::new(layers)?;
+        Ok(AuthenticatedHeyJarvisBinder {
+            executor: HeyJarvisStreamingExecutor::new(plan)?,
+        })
+    }
+
+    /// The old stateless API cannot represent the six persistent streaming
+    /// resources. Keep it fail-closed and point callers at the stateful API.
     pub fn bind_authenticated_chain(&self) -> Result<ChainConfig> {
         let _ = self;
-        if REVIEWED_TOPOLOGY_SHA256.is_none() {
-            return Err(model_error("AUTHENTICATED_TOPOLOGY_REQUIRED"));
-        }
-        Err(model_error("AUTHENTICATED_TOPOLOGY_REQUIRED"))
+        Err(model_error(
+            "STATEFUL_STREAMING_REQUIRED: use bind_authenticated_streaming",
+        ))
     }
+}
+
+/// Stateful public binder for the fixed authenticated hey_jarvis topology.
+///
+/// `step` consumes one complete `[1, 3, 40]` int8 invocation and returns the
+/// exact public uint8 output after TFLite's final `QUANTIZE` mapping
+/// (`int8 + 128`). No CPU fallback or caller-supplied graph is involved.
+#[derive(Debug)]
+pub struct AuthenticatedHeyJarvisBinder {
+    executor: HeyJarvisStreamingExecutor,
+}
+
+/// Diagnostic output from one authenticated invocation. Stage indices are
+/// ordered as `[47,50,51,54,55,58,59,62,63,67,68]`; stage 69 is `output`.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedHeyJarvisTrace {
+    /// Exact int8 bytes for each preserved compute stage.
+    pub stages: Vec<Vec<i8>>,
+    /// Exact public uint8 result after op 44 QUANTIZE.
+    pub output: u8,
+}
+
+impl AuthenticatedHeyJarvisBinder {
+    /// Executes one persistent invocation and returns the final uint8 byte.
+    pub fn step(&mut self, input: &[i8]) -> Result<u8> {
+        let output = self.executor.run(input)?;
+        let value = output
+            .first()
+            .copied()
+            .ok_or_else(|| model_error("AUTHENTICATED_OUTPUT_REQUIRED"))?;
+        Ok((value as i16 + 128) as u8)
+    }
+
+    /// Alias for callers that name complete model invocations `run`.
+    pub fn run(&mut self, input: &[i8]) -> Result<u8> {
+        self.step(input)
+    }
+
+    /// Executes one invocation and exposes the eleven diagnostic int8 stages.
+    pub fn step_with_trace(&mut self, input: &[i8]) -> Result<AuthenticatedHeyJarvisTrace> {
+        let value = self.executor.run_with_trace(input)?;
+        let output = value
+            .first()
+            .copied()
+            .ok_or_else(|| model_error("AUTHENTICATED_OUTPUT_REQUIRED"))?;
+        Ok(AuthenticatedHeyJarvisTrace {
+            stages: self.executor.trace()?.to_vec(),
+            output: (output as i16 + 128) as u8,
+        })
+    }
+
+    /// Resets all six persistent states to the authenticated quantised zero.
+    pub fn reset(&mut self) {
+        self.executor.reset();
+    }
+
+    /// Returns a read-only state snapshot for diagnostics.
+    pub fn state(&self, index: usize) -> Result<&[i8]> {
+        self.executor.state(index)
+    }
+}
+
+const REVIEWED_SCALE_FINGERPRINT_OFFSET: u64 = 1469598103934665603;
+const REVIEWED_SCALE_FINGERPRINT_PRIME: u64 = 1099511628211;
+
+// SHA-256 of the exact little-endian bytes in each authenticated source
+// constant. Metadata, shape, and quantisation checks alone are insufficient:
+// a caller must not be able to self-stamp those fields around arbitrary
+// weights. These values are copied from the reviewed raw inventory and are
+// intentionally compiled into the no_std binder.
+const REVIEWED_DATA_SHA256: &[(&str, &str)] = &[
+    (
+        "model/stream/conv2d/Conv2D",
+        "36e8bc6a3094e08371508f6b9c618d62b1744ca2f7c96c078315599602def94e",
+    ),
+    (
+        "model/depthwise_conv2d/depthwise",
+        "6edd9f6f9cc92cded36e6c4a580933f9c9f1b90562b46903b806f21902a1a54f",
+    ),
+    (
+        "model/depthwise_conv2d/depthwise1",
+        "d1b08c5e9d90b0a87ad8ed63aff4280f0cf3dc0900b62e47fe3f9aef78179090",
+    ),
+    (
+        "model/depthwise_conv2d/BiasAdd/ReadVariableOp",
+        "6edd9f6f9cc92cded36e6c4a580933f9c9f1b90562b46903b806f21902a1a54f",
+    ),
+    (
+        "model/conv2d_1/Conv2D",
+        "b025dfefc1bd9bd0bf4a1f89440ed8bf9dc1546a1952798bb74dcde93d262b4e",
+    ),
+    (
+        "model/batch_normalization/FusedBatchNormV3",
+        "1c7b711853417c6ffc6d365e980dd5f7f92fb1e889af0ea98a9c04cda17b4c9e",
+    ),
+    (
+        "model/depthwise_conv2d_1/depthwise",
+        "b60795261ff931762f81b7f714cce7fe55293f3dfc7ac1d7ab6949ab9407d162",
+    ),
+    (
+        "model/depthwise_conv2d_1/BiasAdd/ReadVariableOp",
+        "a7469a2fc5a656a89b87a88279da1c6aac90ef458c3cea3686ffb02f55dbf483",
+    ),
+    (
+        "model/conv2d_2/Conv2D",
+        "9bc5e17b65b9012cf75c9fc26d668c27935f1e0d42a00afd845250844d058e4e",
+    ),
+    (
+        "model/batch_normalization_1/FusedBatchNormV3",
+        "9d870bbfb9db76f879935b874d2afb1dc18980dbc63d5786447995496ffd4735",
+    ),
+    (
+        "model/depthwise_conv2d_2/depthwise",
+        "b04daef8b9832b4d57a715c3c181417c90cc1e61fd89962c3b4a3c6e62600f50",
+    ),
+    (
+        "model/depthwise_conv2d_2/BiasAdd/ReadVariableOp",
+        "9ad509a1d3718ef50955cc67ade31a50dcbae7f99dd71509c608bcd93ed38450",
+    ),
+    (
+        "model/conv2d_3/Conv2D",
+        "86bc3022b1631c12f24eb871106ac314bd1138ef5429ae4746e97cc159e94e0e",
+    ),
+    (
+        "model/batch_normalization_2/FusedBatchNormV3",
+        "5d0c262d3d1065521da887fcd4e61a9a921026a691d7ff14148afadf5925e264",
+    ),
+    (
+        "model/depthwise_conv2d_3/depthwise",
+        "7ea1845bcf3753511457a1f111cde7f1cb968fcb6fd549f6aad5761a85679122",
+    ),
+    (
+        "model/depthwise_conv2d_3/BiasAdd/ReadVariableOp",
+        "4738ea092dcb64afe13e468fb8dd836555e47e311121849ddccaa5a76d15e74f",
+    ),
+    (
+        "model/conv2d_4/Conv2D",
+        "eb07abeb9fcd536b11c9163538664b8d03a7f3a99a7907fd25f1b381f817d244",
+    ),
+    (
+        "model/batch_normalization_3/FusedBatchNormV3",
+        "cbb000186beaccc4da4e334a8620d3a2117aa10c467f12aa08f5414b02b58cb0",
+    ),
+    (
+        "model/dense/MatMul",
+        "c1c1798589a27cf83c4c449741f363266f474740c211c801b82125115f138613",
+    ),
+    (
+        "model/dense/BiasAdd/ReadVariableOp",
+        "d7503b51a01b1f988689edcf88b640f74e8106b33162ea5c95f41c7dce3ad384",
+    ),
+];
+
+const SHA256_K: [u32; 64] = [
+    0x428a_2f98,
+    0x7137_4491,
+    0xb5c0_fbcf,
+    0xe9b5_dba5,
+    0x3956_c25b,
+    0x59f1_11f1,
+    0x923f_82a4,
+    0xab1c_5ed5,
+    0xd807_aa98,
+    0x1283_5b01,
+    0x2431_85be,
+    0x550c_7dc3,
+    0x72be_5d74,
+    0x80de_b1fe,
+    0x9bdc_06a7,
+    0xc19b_f174,
+    0xe49b_69c1,
+    0xefbe_4786,
+    0x0fc1_9dc6,
+    0x240c_a1cc,
+    0x2de9_2c6f,
+    0x4a74_84aa,
+    0x5cb0_a9dc,
+    0x76f9_88da,
+    0x983e_5152,
+    0xa831_c66d,
+    0xb003_27c8,
+    0xbf59_7fc7,
+    0xc6e0_0bf3,
+    0xd5a7_9147,
+    0x06ca_6351,
+    0x1429_2967,
+    0x27b7_0a85,
+    0x2e1b_2138,
+    0x4d2c_6dfc,
+    0x5338_0d13,
+    0x650a_7354,
+    0x766a_0abb,
+    0x81c2_c92e,
+    0x9272_2c85,
+    0xa2bf_e8a1,
+    0xa81a_664b,
+    0xc24b_8b70,
+    0xc76c_51a3,
+    0xd192_e819,
+    0xd699_0624,
+    0xf40e_3585,
+    0x106a_a070,
+    0x19a4_c116,
+    0x1e37_6c08,
+    0x2748_774c,
+    0x34b0_bcb5,
+    0x391c_0cb3,
+    0x4ed8_aa4a,
+    0x5b9c_ca4f,
+    0x682e_6ff3,
+    0x748f_82ee,
+    0x78a5_636f,
+    0x84c8_7814,
+    0x8cc7_0208,
+    0x90be_fffa,
+    0xa450_6ceb,
+    0xbef9_a3f7,
+    0xc671_78f2,
+];
+
+fn sha256_hex(data: &[u8]) -> [u8; 64] {
+    let mut h: [u32; 8] = [
+        0x6a09_e667,
+        0xbb67_ae85,
+        0x3c6e_f372,
+        0xa54f_f53a,
+        0x510e_527f,
+        0x9b05_688c,
+        0x1f83_d9ab,
+        0x5be0_cd19,
+    ];
+    let mut padded = Vec::with_capacity(data.len() + 72);
+    padded.extend_from_slice(data);
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for block in padded.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for (i, word) in block.chunks_exact(4).take(16).enumerate() {
+            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut x) =
+            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = x
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(SHA256_K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            x = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(x);
+    }
+    let mut out = [0u8; 64];
+    for (i, word) in h.iter().enumerate() {
+        for (j, byte) in word.to_be_bytes().iter().enumerate() {
+            let nibble = |v: u8| if v < 10 { b'0' + v } else { b'a' + v - 10 };
+            out[i * 8 + j * 2] = nibble(byte >> 4);
+            out[i * 8 + j * 2 + 1] = nibble(byte & 0x0f);
+        }
+    }
+    out
+}
+
+fn reviewed_data_sha256(name: &str) -> Option<&'static str> {
+    REVIEWED_DATA_SHA256
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, expected)| *expected)
+}
+
+fn reviewed_scale_fingerprint(quantization: &TensorQuantization) -> u64 {
+    let mut hash = REVIEWED_SCALE_FINGERPRINT_OFFSET;
+    for value in &quantization.scales {
+        for byte in value.to_bits().to_le_bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(REVIEWED_SCALE_FINGERPRINT_PRIME);
+        }
+    }
+    for value in &quantization.zero_points {
+        for byte in value.to_le_bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(REVIEWED_SCALE_FINGERPRINT_PRIME);
+        }
+    }
+    for byte in quantization.quantized_dimension.to_le_bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(REVIEWED_SCALE_FINGERPRINT_PRIME);
+    }
+    hash
+}
+
+fn reviewed_quantization(
+    model: &Model,
+    name: &str,
+    source_shape: &[u64],
+    dtype: TopologyDtype,
+    quantized_dimension: i32,
+    scale_count: usize,
+    fingerprint: u64,
+) -> Result<TensorQuantization> {
+    let tensor = model
+        .tensor(name)
+        .ok_or_else(|| model_error("AUTHENTICATED_TENSOR_REQUIRED"))?;
+    if tensor.name != name
+        || tensor.shape != source_shape.iter().rev().copied().collect::<Vec<_>>()
+        || reviewed_scale_fingerprint(
+            tensor
+                .quantization
+                .as_ref()
+                .ok_or_else(|| model_error("AUTHENTICATED_QUANTIZATION_REQUIRED"))?,
+        ) != fingerprint
+    {
+        return Err(model_error("AUTHENTICATED_TENSOR_IDENTITY_REQUIRED"));
+    }
+    let quantization = tensor.quantization.clone().unwrap();
+    if quantization.quantized_dimension != quantized_dimension
+        || quantization.scales.len() != scale_count
+        || quantization.zero_points.len() != scale_count
+        || quantization.zero_points.iter().any(|value| *value != 0)
+        || quantization
+            .scales
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return Err(model_error("AUTHENTICATED_QUANTIZATION_REQUIRED"));
+    }
+    match (&tensor.data, dtype) {
+        (TensorData::I8(values), TopologyDtype::Int8)
+            if values.len() == shape_size(source_shape, "weight")? => {}
+        (TensorData::I32(values), TopologyDtype::Int32)
+            if values.len() == shape_size(source_shape, "bias")? => {}
+        _ => return Err(model_error("AUTHENTICATED_TENSOR_DTYPE_REQUIRED")),
+    }
+    Ok(quantization)
+}
+
+fn reviewed_weight(
+    model: &Model,
+    name: &str,
+    shape: &[u64],
+    qdim: i32,
+    scale_count: usize,
+    fingerprint: u64,
+) -> Result<(Vec<i8>, Vec<f32>)> {
+    let quant = reviewed_quantization(
+        model,
+        name,
+        shape,
+        TopologyDtype::Int8,
+        qdim,
+        scale_count,
+        fingerprint,
+    )?;
+    let values = match &model.tensor(name).unwrap().data {
+        TensorData::I8(values) => values.clone(),
+        _ => return Err(model_error("AUTHENTICATED_WEIGHT_REQUIRED")),
+    };
+    let bytes: Vec<u8> = values.iter().map(|value| *value as u8).collect();
+    let Some(expected) = reviewed_data_sha256(name) else {
+        return Err(model_error("AUTHENTICATED_WEIGHT_BYTES_REQUIRED"));
+    };
+    if sha256_hex(&bytes).as_slice() != expected.as_bytes() {
+        return Err(model_error("AUTHENTICATED_WEIGHT_BYTES_REQUIRED"));
+    }
+    Ok((values, quant.scales))
+}
+
+fn reviewed_bias(
+    model: &Model,
+    name: &str,
+    channels: usize,
+    fingerprint: u64,
+) -> Result<(Vec<i32>, Vec<f32>)> {
+    let shape = [channels as u64];
+    let quant = reviewed_quantization(
+        model,
+        name,
+        &shape,
+        TopologyDtype::Int32,
+        0,
+        channels,
+        fingerprint,
+    )?;
+    let values = match &model.tensor(name).unwrap().data {
+        TensorData::I32(values) => values.clone(),
+        _ => return Err(model_error("AUTHENTICATED_BIAS_REQUIRED")),
+    };
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for value in &values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let Some(expected) = reviewed_data_sha256(name) else {
+        return Err(model_error("AUTHENTICATED_BIAS_BYTES_REQUIRED"));
+    };
+    if sha256_hex(&bytes).as_slice() != expected.as_bytes() {
+        return Err(model_error("AUTHENTICATED_BIAS_BYTES_REQUIRED"));
+    }
+    Ok((values, quant.scales))
+}
+
+fn reviewed_conv_layer(
+    model: &Model,
+    depthwise: bool,
+    weight_name: &str,
+    weight_shape: &[u64],
+    weight_fingerprint: u64,
+    bias_name: &str,
+    channels: usize,
+    bias_fingerprint: u64,
+    dims: ConvDims,
+    input_scale: f32,
+    output_scale: f32,
+    input_zero_point: i8,
+    output_zero_point: i8,
+    fused_relu: bool,
+) -> Result<LayerSpec> {
+    let (weight_i8, weight_scales) = reviewed_weight(
+        model,
+        weight_name,
+        weight_shape,
+        if depthwise { 3 } else { 0 },
+        channels,
+        weight_fingerprint,
+    )?;
+    let (bias_i32, bias_scales) = reviewed_bias(model, bias_name, channels, bias_fingerprint)?;
+    if bias_scales.len() != weight_scales.len()
+        || bias_scales
+            .iter()
+            .zip(weight_scales.iter())
+            .any(|(bias, weight)| *bias != input_scale * *weight)
+    {
+        return Err(model_error("AUTHENTICATED_BIAS_SCALE_REQUIRED"));
+    }
+    let output_scales: Vec<f32> = weight_scales
+        .iter()
+        .map(|weight| input_scale * *weight / output_scale)
+        .collect();
+    if depthwise {
+        Ok(LayerSpec::DepthwiseConv2dPerChannel {
+            weight_i8,
+            bias_i32,
+            dims,
+            input_zero_point,
+            output_scales,
+            output_zero_point,
+            fused_relu,
+        })
+    } else {
+        Ok(LayerSpec::Conv2dPerChannel {
+            weight_i8,
+            bias_i32,
+            dims,
+            input_zero_point,
+            output_scales,
+            output_zero_point,
+            fused_relu,
+        })
+    }
+}
+
+fn reviewed_hey_jarvis_layers(model: &Model) -> Result<Vec<LayerSpec>> {
+    let mut layers = Vec::with_capacity(11);
+    layers.push(reviewed_conv_layer(
+        model,
+        false,
+        "model/stream/conv2d/Conv2D",
+        &[30, 5, 1, 40],
+        0xaa78e4ac67898062,
+        "model/depthwise_conv2d/depthwise",
+        30,
+        0x4f629143a210686d,
+        ConvDims {
+            in_h: 5,
+            in_w: 1,
+            in_c: 40,
+            out_c: 30,
+            kh: 5,
+            kw: 1,
+            stride_h: 3,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        0.10196078568696976,
+        1.4935686588287354,
+        -128,
+        -128,
+        true,
+    )?);
+    layers.push(reviewed_conv_layer(
+        model,
+        true,
+        "model/depthwise_conv2d/depthwise1",
+        &[1, 5, 1, 30],
+        0xbbc40ad89ea64faf,
+        "model/depthwise_conv2d/BiasAdd/ReadVariableOp",
+        30,
+        0x52a483cf5b15372d,
+        ConvDims {
+            in_h: 5,
+            in_w: 1,
+            in_c: 30,
+            out_c: 30,
+            kh: 5,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        1.4935686588287354,
+        1.2521613836288452,
+        -128,
+        -11,
+        false,
+    )?);
+    layers.push(reviewed_conv_layer(
+        model,
+        false,
+        "model/conv2d_1/Conv2D",
+        &[60, 1, 1, 30],
+        0xe7daf225d8e01ab6,
+        "model/batch_normalization/FusedBatchNormV3",
+        60,
+        0x6eb3b108212b2fa6,
+        ConvDims {
+            in_h: 1,
+            in_w: 1,
+            in_c: 30,
+            out_c: 60,
+            kh: 1,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        1.2521613836288452,
+        0.04090571776032448,
+        -11,
+        -128,
+        true,
+    )?);
+    layers.push(reviewed_conv_layer(
+        model,
+        true,
+        "model/depthwise_conv2d_1/depthwise",
+        &[1, 9, 1, 60],
+        0xd88d32aeedb51c50,
+        "model/depthwise_conv2d_1/BiasAdd/ReadVariableOp",
+        60,
+        0x04794afb8670a6a7,
+        ConvDims {
+            in_h: 9,
+            in_w: 1,
+            in_c: 60,
+            out_c: 60,
+            kh: 9,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        0.04090571776032448,
+        0.046389274299144745,
+        -128,
+        31,
+        false,
+    )?);
+    layers.push(reviewed_conv_layer(
+        model,
+        false,
+        "model/conv2d_2/Conv2D",
+        &[60, 1, 1, 60],
+        0x086d61784c93e919,
+        "model/batch_normalization_1/FusedBatchNormV3",
+        60,
+        0x196805c68cdff184,
+        ConvDims {
+            in_h: 1,
+            in_w: 1,
+            in_c: 60,
+            out_c: 60,
+            kh: 1,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        0.046389274299144745,
+        0.04309869930148125,
+        31,
+        -128,
+        true,
+    )?);
+    layers.push(reviewed_conv_layer(
+        model,
+        true,
+        "model/depthwise_conv2d_2/depthwise",
+        &[1, 13, 1, 60],
+        0x13fce733db57797c,
+        "model/depthwise_conv2d_2/BiasAdd/ReadVariableOp",
+        60,
+        0xe9a4fb75c557ea44,
+        ConvDims {
+            in_h: 13,
+            in_w: 1,
+            in_c: 60,
+            out_c: 60,
+            kh: 13,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        0.04309869930148125,
+        0.05681793391704559,
+        -128,
+        1,
+        false,
+    )?);
+    layers.push(reviewed_conv_layer(
+        model,
+        false,
+        "model/conv2d_3/Conv2D",
+        &[60, 1, 1, 60],
+        0x6b0e68e1c60b534f,
+        "model/batch_normalization_2/FusedBatchNormV3",
+        60,
+        0xaae253995956714c,
+        ConvDims {
+            in_h: 1,
+            in_w: 1,
+            in_c: 60,
+            out_c: 60,
+            kh: 1,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        0.05681793391704559,
+        0.03958584740757942,
+        1,
+        -128,
+        true,
+    )?);
+    layers.push(reviewed_conv_layer(
+        model,
+        true,
+        "model/depthwise_conv2d_3/depthwise",
+        &[1, 21, 1, 60],
+        0x8325c501bae2f110,
+        "model/depthwise_conv2d_3/BiasAdd/ReadVariableOp",
+        60,
+        0x286b64ba0f6036ba,
+        ConvDims {
+            in_h: 21,
+            in_w: 1,
+            in_c: 60,
+            out_c: 60,
+            kh: 21,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        0.03958584740757942,
+        0.1032278910279274,
+        -128,
+        -36,
+        false,
+    )?);
+    layers.push(reviewed_conv_layer(
+        model,
+        false,
+        "model/conv2d_4/Conv2D",
+        &[60, 1, 1, 60],
+        0xe4f34f0dccc50a59,
+        "model/batch_normalization_3/FusedBatchNormV3",
+        60,
+        0x8f578e1ec041ee9c,
+        ConvDims {
+            in_h: 1,
+            in_w: 1,
+            in_c: 60,
+            out_c: 60,
+            kh: 1,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        },
+        0.1032278910279274,
+        0.02834215760231018,
+        -36,
+        -128,
+        true,
+    )?);
+    let (weight_i8, weight_scales) = reviewed_weight(
+        model,
+        "model/dense/MatMul",
+        &[1, 300],
+        0,
+        1,
+        0x8a6dab8a536d2dab,
+    )?;
+    let (bias_i32, bias_scales) = reviewed_bias(
+        model,
+        "model/dense/BiasAdd/ReadVariableOp",
+        1,
+        0xaebf3c5502cd3c5f,
+    )?;
+    if bias_scales != vec![0.02834215760231018 * weight_scales[0]] {
+        return Err(model_error("AUTHENTICATED_BIAS_SCALE_REQUIRED"));
+    }
+    layers.push(LayerSpec::FullyConnectedPerChannel {
+        weight_i8,
+        bias_i32,
+        in_dim: 300,
+        out_dim: 1,
+        input_zero_point: -128,
+        output_scales: vec![0.02834215760231018 * weight_scales[0] / 0.17895515263080597],
+        output_zero_point: 30,
+        fused_relu: false,
+    });
+    layers.push(LayerSpec::Sigmoid {
+        size: 1,
+        input_scale: 0.17895515263080597,
+        input_zero_point: 30,
+        output_scale: 0.00390625,
+        output_zero_point: -128,
+    });
+    Ok(layers)
 }
 
 fn model_error(message: &str) -> VokraError {
@@ -1311,6 +2143,15 @@ impl ModelHeader {
         let feature_dim = require_nonzero_u32(gguf, KEY_FEATURE_DIM)?;
         let tflite_sha256 = get_str(gguf, KEY_TFLITE_SHA256)?.to_string();
         let upstream = get_str(gguf, KEY_UPSTREAM)?.to_string();
+        let optional_string = |key: &str| -> Result<Option<String>> {
+            gguf.get(key)
+                .map(|value| {
+                    value.as_str().map(ToString::to_string).ok_or_else(|| {
+                        VokraError::ModelLoad(format!("metadata key `{key}` is not a string"))
+                    })
+                })
+                .transpose()
+        };
         Ok(Self {
             model,
             threshold,
@@ -1321,6 +2162,13 @@ impl ModelHeader {
             feature_dim,
             tflite_sha256,
             upstream,
+            model_repository: optional_string(KEY_MODEL_REPOSITORY)?,
+            model_revision: optional_string(KEY_MODEL_REVISION)?,
+            source_repository: optional_string(KEY_SOURCE_REPOSITORY)?,
+            source_revision: optional_string(KEY_SOURCE_REVISION)?,
+            reviewed_topology: optional_string(KEY_REVIEWED_TOPOLOGY)?,
+            reviewed_authority: optional_string(KEY_REVIEWED_AUTHORITY)?,
+            candidate_authority: optional_string(KEY_CANDIDATE_AUTHORITY)?,
         })
     }
 }
@@ -1661,6 +2509,13 @@ mod tests {
                 feature_dim: 1,
                 tflite_sha256: "0".repeat(64),
                 upstream: "synthetic".into(),
+                model_repository: None,
+                model_revision: None,
+                source_repository: None,
+                source_revision: None,
+                reviewed_topology: None,
+                reviewed_authority: None,
+                candidate_authority: None,
             },
             tensors: vec![
                 Tensor {
@@ -1752,6 +2607,13 @@ mod tests {
                 feature_dim: 1,
                 tflite_sha256: "0".repeat(64),
                 upstream: "synthetic".into(),
+                model_repository: None,
+                model_revision: None,
+                source_repository: None,
+                source_revision: None,
+                reviewed_topology: None,
+                reviewed_authority: None,
+                candidate_authority: None,
             },
             tensors: vec![
                 Tensor {
@@ -1875,7 +2737,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_binding_is_closed_until_reviewed_topology_exists() {
+    fn stateless_authenticated_chain_remains_explicitly_closed() {
         let model = Model {
             header: ModelHeader {
                 model: "synthetic".into(),
@@ -1887,6 +2749,13 @@ mod tests {
                 feature_dim: 1,
                 tflite_sha256: "0".repeat(64),
                 upstream: "synthetic".into(),
+                model_repository: None,
+                model_revision: None,
+                source_repository: None,
+                source_revision: None,
+                reviewed_topology: None,
+                reviewed_authority: None,
+                candidate_authority: None,
             },
             tensors: Vec::new(),
         };
@@ -1894,7 +2763,15 @@ mod tests {
             .bind_authenticated_chain()
             .expect_err("caller data cannot unlock production binding");
         assert!(
-            matches!(error, VokraError::ModelLoad(message) if message == "AUTHENTICATED_TOPOLOGY_REQUIRED")
+            matches!(error, VokraError::ModelLoad(message) if message == "STATEFUL_STREAMING_REQUIRED: use bind_authenticated_streaming")
+        );
+    }
+
+    #[test]
+    fn reviewed_sha256_matches_nist_vector() {
+        assert_eq!(
+            core::str::from_utf8(&sha256_hex(b"abc")).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         );
     }
 

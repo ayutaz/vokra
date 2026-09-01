@@ -123,6 +123,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 import struct
 import sys
 import tempfile
@@ -140,8 +141,22 @@ ARCH: str = "microwakeword"
 
 # Closed production review authority. The caller-supplied manifest digest and
 # CLI SHA authenticate transport bytes only; neither can set this value.
-# It remains unset until the owner reviews a real VAST artifact and parity.
-REVIEWED_TOPOLOGY_SHA256: str | None = None
+# This value is compiled from the reviewed VAST topology evidence; the caller
+# cannot set or override it.
+REVIEWED_TOPOLOGY_SHA256: str = "e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"
+REVIEWED_AUTHORITY = "VAST_REVIEWED_TOPOLOGY_PARITY"
+REVIEWED_COMPUTE_TENSOR_NAMES = {
+    "model/stream/conv2d/Conv2D", "model/depthwise_conv2d/depthwise",
+    "model/depthwise_conv2d/depthwise1", "model/depthwise_conv2d/BiasAdd/ReadVariableOp",
+    "model/conv2d_1/Conv2D", "model/batch_normalization/FusedBatchNormV3",
+    "model/depthwise_conv2d_1/depthwise", "model/depthwise_conv2d_1/BiasAdd/ReadVariableOp",
+    "model/conv2d_2/Conv2D", "model/batch_normalization_1/FusedBatchNormV3",
+    "model/depthwise_conv2d_2/depthwise", "model/depthwise_conv2d_2/BiasAdd/ReadVariableOp",
+    "model/conv2d_3/Conv2D", "model/batch_normalization_2/FusedBatchNormV3",
+    "model/depthwise_conv2d_3/depthwise", "model/depthwise_conv2d_3/BiasAdd/ReadVariableOp",
+    "model/conv2d_4/Conv2D", "model/batch_normalization_3/FusedBatchNormV3",
+    "model/dense/MatMul", "model/dense/BiasAdd/ReadVariableOp",
+}
 
 # Standard microWakeWord front-end defaults (upstream v2 release,
 # owner-verifiable via ``strings <model>.tflite | grep -i mel``). Emitted
@@ -806,8 +821,6 @@ def load_tensor_manifest(
         raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
     canonical_identity = topology.get("canonical_identity")
     if not allow_untrusted:
-        if REVIEWED_TOPOLOGY_SHA256 is None:
-            raise SystemExit("AUTHENTICATED_TOPOLOGY_REQUIRED")
         if (
             canonical_digest != REVIEWED_TOPOLOGY_SHA256
             or canonical_identity != REVIEWED_TOPOLOGY_SHA256
@@ -1173,8 +1186,11 @@ def write_gguf(
     ]
     if extra_metadata:
         for key, value in sorted(extra_metadata.items()):
-            if not key.startswith("vokra.kws.candidate."):
-                raise SystemExit("candidate metadata key is outside the reserved namespace")
+            if not (
+                key.startswith("vokra.kws.candidate.")
+                or key.startswith("vokra.kws.reviewed.")
+            ):
+                raise SystemExit("conversion metadata key is outside the reserved namespace")
             metadata.append(_gguf_kv_string(key, value))
     tensor_payloads = []
     tensor_specs = []
@@ -1504,6 +1520,127 @@ def _validate_candidate_environment() -> None:
         raise SystemExit("CANDIDATE_VAST_REQUIRED: VOKRA_PUBLISH_ON_VAST=1 is required")
     if os.environ.get("VOKRA_CANDIDATE_CONVERSION") != "1":
         raise SystemExit("CANDIDATE_CONVERSION_DISABLED: explicit candidate opt-in is required")
+
+
+def _validate_reviewed_environment() -> None:
+    """Keep the production conversion exclusively on the reviewed VAST host."""
+    if sys.platform != "linux" or platform.machine() not in {"x86_64", "amd64"}:
+        raise SystemExit("REVIEWED_VAST_REQUIRED: Linux x86_64 is required")
+    if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
+        raise SystemExit("REVIEWED_VAST_REQUIRED: VOKRA_PUBLISH_ON_VAST=1 is required")
+    if os.environ.get("VOKRA_REVIEWED_CONVERSION") != "1":
+        raise SystemExit("REVIEWED_CONVERSION_DISABLED: explicit reviewed opt-in is required")
+
+
+def load_reviewed_inventory(path: Path) -> tuple[dict[str, Any], str]:
+    """Authenticate the fixed raw inventory and its reviewed topology identity."""
+    document, inventory_sha256 = load_candidate_inventory(path)
+    candidate = build_candidate_streaming_manifest(document, inventory_sha256)
+    if candidate["candidate_topology_sha256"] != REVIEWED_TOPOLOGY_SHA256:
+        raise SystemExit("REVIEWED_TOPOLOGY_REQUIRED")
+    return document, inventory_sha256
+
+
+def _reviewed_weights(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """Decode every authenticated persistent constant preserving source names."""
+    weights: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for subgraph in document["subgraphs"]:
+        for tensor in subgraph["tensors"]:
+            if tensor.get("kind") != "constant":
+                continue
+            name = tensor.get("name")
+            if name not in REVIEWED_COMPUTE_TENSOR_NAMES:
+                continue
+            shape = tensor.get("shape")
+            dtype = tensor.get("dtype")
+            raw_hex = tensor.get("data_hex")
+            if not isinstance(name, str) or not name or name in seen_names:
+                raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+            if not isinstance(raw_hex, str) or len(raw_hex) % 2:
+                raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+            try:
+                raw = bytes.fromhex(raw_hex)
+            except ValueError as error:
+                raise SystemExit("REVIEWED_TENSOR_REQUIRED") from error
+            if (
+                not isinstance(shape, list)
+                or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in shape)
+                or len(raw) != tensor.get("buffer_size")
+                or hashlib.sha256(raw).hexdigest() != tensor.get("buffer_sha256")
+            ):
+                raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+            quant = tensor.get("quantization")
+            if not isinstance(quant, dict):
+                raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+            if dtype == "int8":
+                scales, zero_points, qdim = quantization_parameters(
+                    {"name": name, "quantization_parameters": quant}, shape
+                )
+                values = list(struct.unpack(f"<{len(raw)}b", raw))
+                record = {"name": name, "shape": shape, "i8_data": values, "orig_dtype": dtype,
+                          "scales": scales, "zero_points": zero_points, "quantized_dimension": qdim}
+            elif dtype == "int32":
+                scales, zero_points, qdim = quantization_parameters(
+                    {"name": name, "quantization_parameters": quant}, shape, int32_bias=True
+                )
+                if len(raw) % 4:
+                    raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+                values = list(struct.unpack(f"<{len(raw) // 4}i", raw))
+                record = {"name": name, "shape": shape, "i32_data": values, "orig_dtype": dtype,
+                          "scales": scales, "zero_points": zero_points, "quantized_dimension": qdim}
+            elif dtype == "float32":
+                if len(raw) % 4:
+                    raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+                values = list(struct.unpack(f"<{len(raw) // 4}f", raw))
+                if any(not math.isfinite(value) for value in values):
+                    raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+                record = {"name": name, "shape": shape, "f32_data": values, "orig_dtype": dtype}
+            else:
+                raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+            seen_names.add(name)
+            weights.append(record)
+    if len(weights) != len(REVIEWED_COMPUTE_TENSOR_NAMES):
+        raise SystemExit("REVIEWED_TENSOR_REQUIRED")
+    return weights
+
+
+def _run_reviewed(args: argparse.Namespace) -> int:
+    """VAST-only production conversion from the exact reviewed raw inventory."""
+    _validate_reviewed_environment()
+    if args.input is None or args.raw_inventory is None or args.output is None:
+        raise SystemExit("REVIEWED_INPUT_REQUIRED: input, raw inventory, and output are required")
+    if args.name != CANONICAL_MODEL_NAME:
+        raise SystemExit("REVIEWED_SOURCE_REQUIRED")
+    if args.expected_sha256 and args.expected_sha256.lower() != AUTHENTICATED_MODEL_SHA256:
+        raise SystemExit("AUTHENTICATED_PAYLOAD_SHA_REQUIRED")
+    _validate_cli_values(args.threshold, args.sample_rate, args.hop_ms, args.window_ms, args.n_mels)
+    if (args.threshold, args.sample_rate, args.hop_ms, args.window_ms, args.n_mels) != (
+        DEFAULT_THRESHOLD, DEFAULT_SAMPLE_RATE, DEFAULT_HOP_MS, DEFAULT_WINDOW_MS, DEFAULT_N_MELS
+    ):
+        raise SystemExit("REVIEWED_FRONTEND_REQUIRED")
+    _validate_output_destination(args.output, args.input)
+    if args.raw_inventory.resolve() == args.output.resolve() or args.raw_inventory.resolve() == args.input.resolve():
+        raise SystemExit("REVIEWED_INPUT_REQUIRED")
+    if sha256_of_file(args.input) != AUTHENTICATED_MODEL_SHA256 or args.input.stat().st_size != AUTHENTICATED_MODEL_SIZE:
+        raise SystemExit("AUTHENTICATED_PAYLOAD_SHA_REQUIRED")
+    document, inventory_sha256 = load_reviewed_inventory(args.raw_inventory)
+    weights = _reviewed_weights(document)
+    payload = write_gguf(
+        args.output, weights, model_name=args.name, threshold=args.threshold,
+        sample_rate=args.sample_rate, hop_ms=args.hop_ms, window_ms=args.window_ms,
+        n_mels=args.n_mels, tflite_sha256=AUTHENTICATED_MODEL_SHA256,
+        upstream_url=DEFAULT_UPSTREAM_URL,
+        extra_metadata={
+            "vokra.kws.reviewed.authority": REVIEWED_AUTHORITY,
+            "vokra.kws.reviewed.topology_sha256": REVIEWED_TOPOLOGY_SHA256,
+            "vokra.kws.reviewed.raw_inventory_sha256": inventory_sha256,
+        }, dense_i8=True,
+    )
+    if not payload or sha256_of_file(args.output) == "":
+        raise SystemExit("REVIEWED_OUTPUT_REQUIRED")
+    print(f"Wrote reviewed production GGUF ({args.output.stat().st_size:,} bytes; NO_UPLOAD)", file=sys.stderr)
+    return 0
 
 
 def _run_candidate(args: argparse.Namespace) -> int:
@@ -1926,8 +2063,8 @@ def self_test() -> None:
         reviewed_digest = reviewed_document["topology"]["canonical_digest"]
         reviewed_document["topology"]["canonical_identity"] = reviewed_digest
         manifest_path.write_text(json.dumps(reviewed_document), encoding="utf-8")
-        # A matching caller self-stamp remains insufficient while the closed
-        # authority is unset.
+        # A matching caller self-stamp remains insufficient when it does not
+        # match the compiled closed authority.
         try:
             load_tensor_manifest(manifest_path, sha256_of_file(manifest_path), "0" * 64)
         except SystemExit as error:
@@ -1958,7 +2095,7 @@ def self_test() -> None:
                 raise AssertionError(f"compiled authority mismatch had wrong error: {error}")
         else:
             raise AssertionError("compiled authority mismatch was accepted")
-        REVIEWED_TOPOLOGY_SHA256 = None
+        REVIEWED_TOPOLOGY_SHA256 = "e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"
 
         invalid_manifest = directory_path / "invalid-tensor-manifest.json"
         invalid_manifest.write_text(
@@ -2253,6 +2390,11 @@ def main() -> int:
         help="VAST-only, NO_UPLOAD candidate conversion from fixed raw inventory.",
     )
     ap.add_argument(
+        "--reviewed",
+        action="store_true",
+        help="VAST-only reviewed production conversion from the exact raw inventory (NO_UPLOAD).",
+    )
+    ap.add_argument(
         "--input",
         type=Path,
         help="VAST-materialized canonical .tflite transport path (required).",
@@ -2307,6 +2449,8 @@ def main() -> int:
 
     if args.candidate:
         return _run_candidate(args)
+    if args.reviewed:
+        return _run_reviewed(args)
 
     if args.output is None:
         raise SystemExit("--output is required unless --self-test is used")

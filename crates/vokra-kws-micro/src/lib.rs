@@ -9,7 +9,7 @@
 //! its public surface, keeping one forward shared bit-identically between the
 //! std and no_std builds.
 //!
-//! ## Status: the forward and typed binder are real; real artifact binding is pending
+//! ## Status: reviewed stateful binding is implemented; VAST parity remains open
 //!
 //! [`KwsMicro::detect`] runs a real inference pass — 40-band log-mel feature
 //! extraction ([`features`]) → INT8 quantisation → an INT8 forward chain
@@ -25,13 +25,26 @@
 //! hide the misconfiguration behind a plausible-looking null result
 //! (FR-EX-08). [`KwsMicro::has_chain`] distinguishes the two states.
 //!
-//! ### The remaining gap
+//! ### Authenticated artifact boundary
 //!
 //! [`model::Model::bind_untrusted_topology`] validates a synthetic/untrusted
-//! [`model::TopologyManifest`] against GGUF constants. Production binding is
-//! closed behind [`model::Model::bind_authenticated_chain`], which remains
-//! blocked until the VAST manifest is reviewed and independent parity evidence
-//! is recorded; GGUF names alone cannot bind a graph safely.
+//! [`model::TopologyManifest`] against GGUF constants. The fixed reviewed
+//! `hey_jarvis` artifact can now be bound with
+//! [`model::Model::bind_authenticated_streaming`], which checks the compiled
+//! provenance, topology, tensor names/shapes/quantization, and weight/bias
+//! fingerprints before returning a stateful executor. The legacy
+//! [`model::Model::bind_authenticated_chain`] API remains fail-closed because
+//! [`interpreter::ChainConfig`] cannot represent the persistent streaming
+//! state or the public uint8 final-quantize boundary.
+//!
+//! This is an executable binding surface, not a completed numerical verdict:
+//! the exact 512-invocation stage-trace parity set must still be run on the
+//! authenticated VAST fixture before production parity is claimed. The
+//! [`KwsMicro`] convenience detector continues to own the feature-extractor +
+//! caller-attached [`interpreter::ChainConfig`] path; it does not silently
+//! construct or embed the stateful GGUF binder. Applications that need the
+//! reviewed `hey_jarvis` stream should retain the
+//! [`model::AuthenticatedHeyJarvisBinder`] returned by the model API.
 //!
 //! Upstream model: microWakeWord (Apache 2.0,
 //! <https://github.com/kahrendt/microWakeWord>).
@@ -350,17 +363,19 @@ impl KwsMicro {
     ///
     /// # Honest boundary
     ///
-    /// The pipeline above is real for whatever chain the caller attached.
-    /// What is not yet production-reachable is a chain built from a real
-    /// upstream checkpoint: [`model::Model::bind_authenticated_chain`] requires
-    /// the closed compiled review authority, while
-    /// [`model::Model::bind_untrusted_topology`] is synthetic/untrusted only.
+    /// The pipeline above is real for whatever chain the caller attached. For
+    /// the reviewed fixed `hey_jarvis` artifact, callers can instead use
+    /// [`model::Model::bind_authenticated_streaming`] to obtain the stateful
+    /// eleven-layer executor and its exact stage trace. That binder is not
+    /// automatically installed into `KwsMicro`: this type's public convenience
+    /// API remains the feature-extractor + caller-attached `ChainConfig` path.
     /// The sidecar now preserves Q8_0 source
     /// bytes, exact I32 bias values, affine metadata, and supported operator
     /// topology. Real
-    /// hey_jarvis accuracy verification additionally needs the owner-approved
+    /// hey_jarvis numerical verification additionally needs the owner-approved
     /// VAST artifact and fixtures. See the crate-level docs for the full
-    /// contract.
+    /// contract; a local synthetic chain must not be reported as production
+    /// model completion.
     pub fn detect(&mut self, frame: &[i16]) -> Result<KwsEvent> {
         // Unconfigured: `set_chain` was never called, so there is no chain
         // to run. Refuse loudly instead of returning `KwsEvent::Idle` — the

@@ -92,12 +92,9 @@
 //! This path integrity-checks every independent `ai_edge_litert` invocation:
 //! exact `[1,3,40]` int8 input bytes, exact `[1,1]` uint8 output bytes,
 //! affine dequantisation, model identity, and fresh-interpreter replay. It
-//! then reaches the explicit production binder boundary. The current
-//! `Model::bind_authenticated_chain` deliberately returns
-//! `AUTHENTICATED_TOPOLOGY_REQUIRED`; fixture verification therefore ends in
-//! a hard failure, never a parity PASS. A future stateful authenticated binder
-//! must implement the typed per-step/reset seam below. Artifact SHA
-//! recomputation remains an outer VAST evidence-gate responsibility.
+//! then binds the authenticated stateful executor and compares every stress
+//! invocation and preserved intermediate stage before reset/replay. Artifact
+//! SHA recomputation remains an outer VAST evidence-gate responsibility.
 
 use std::env;
 use std::fs;
@@ -389,6 +386,7 @@ fn verify_reference_manifest(root: &JsonValue) {
             "pcm_synthesis",
             "authenticated_io",
             "persistent_sequence",
+            "direct_int8_stress",
             "artefacts",
             "tflite_topology",
             "frontend_parity_boundary",
@@ -576,6 +574,63 @@ fn verify_reference_manifest(root: &JsonValue) {
         "fresh_interpreter_reset_replay"
     ));
 
+    let stress = field(root, "direct_int8_stress", "manifest");
+    exact_keys(
+        stress,
+        &[
+            "seed",
+            "invocation_count",
+            "input_shape",
+            "input_dtype",
+            "stage_tensor_indices",
+            "stage_shapes",
+            "stage_dtypes",
+            "preserve_all_tensors",
+            "normal_interpreter_final_output_equal",
+            "fresh_replay_equal",
+            "trace_runner",
+        ],
+        "direct_int8_stress",
+    );
+    assert_eq!(int_field(stress, "seed", "direct_int8_stress"), 4);
+    assert_eq!(
+        int_field(stress, "invocation_count", "direct_int8_stress"),
+        512
+    );
+    assert_eq!(
+        shape_field(stress, "input_shape", "direct_int8_stress"),
+        vec![1, 3, 40]
+    );
+    assert_eq!(
+        string_field(stress, "input_dtype", "direct_int8_stress"),
+        "int8"
+    );
+    assert!(bool_field(
+        stress,
+        "preserve_all_tensors",
+        "direct_int8_stress"
+    ));
+    assert!(bool_field(
+        stress,
+        "normal_interpreter_final_output_equal",
+        "direct_int8_stress"
+    ));
+    assert!(bool_field(
+        stress,
+        "fresh_replay_equal",
+        "direct_int8_stress"
+    ));
+    let stage_indices = field(stress, "stage_tensor_indices", "direct_int8_stress")
+        .as_array()
+        .expect("stage indices must be an array")
+        .iter()
+        .map(|value| value.as_u64().expect("stage index must be integer") as i64)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stage_indices,
+        vec![47, 50, 51, 54, 55, 58, 59, 62, 63, 67, 68, 69]
+    );
+
     let topology = field(root, "tflite_topology", "manifest");
     exact_keys(
         topology,
@@ -662,6 +717,29 @@ fn verify_reference_manifest(root: &JsonValue) {
             ]);
         }
         rows.push(("output_ref".to_string(), vec![4, 1], "float32", 16));
+        rows.push((
+            "stress_inputs".to_string(),
+            vec![512, 3, 40],
+            "int8",
+            512 * 120,
+        ));
+        for (index, shape, dtype) in [
+            (47, vec![512, 1, 1, 1, 30], "int8"),
+            (50, vec![512, 1, 1, 1, 30], "int8"),
+            (51, vec![512, 1, 1, 1, 60], "int8"),
+            (54, vec![512, 1, 1, 1, 60], "int8"),
+            (55, vec![512, 1, 1, 1, 60], "int8"),
+            (58, vec![512, 1, 1, 1, 60], "int8"),
+            (59, vec![512, 1, 1, 1, 60], "int8"),
+            (62, vec![512, 1, 1, 1, 60], "int8"),
+            (63, vec![512, 1, 1, 1, 60], "int8"),
+            (67, vec![512, 1, 1, 1], "int8"),
+            (68, vec![512, 1, 1, 1], "int8"),
+            (69, vec![512, 1, 1, 1], "uint8"),
+        ] {
+            let bytes = shape.iter().product::<usize>();
+            rows.push((format!("stress_stage_tensor_{index}"), shape, dtype, bytes));
+        }
         rows
     };
     let artefacts = field(root, "artefacts", "manifest")
@@ -1108,17 +1186,57 @@ fn parity_microwakeword_end_to_end_output() {
         "Path-C fixture contract verified for {INVOCATION_COUNT} persistent invocations; outputs={outputs:?}"
     );
 
-    match model.bind_authenticated_chain() {
-        Err(error)
-            if error
-                .to_string()
-                .contains("AUTHENTICATED_TOPOLOGY_REQUIRED") =>
-        {
-            panic!(
-                "Path-C UNRESOLVED: authenticated streaming binder is not exported; fixture verification cannot be a parity PASS: {error:?}"
+    let stress_inputs = fs::read(dir.join("stress_inputs.bin"))
+        .unwrap_or_else(|e| panic!("Path-C stress inputs read failed: {e:?}"));
+    assert_eq!(stress_inputs.len(), 512 * INPUT_BYTES);
+    let stage_indices = [47usize, 50, 51, 54, 55, 58, 59, 62, 63, 67, 68, 69];
+    let stage_sizes = [30usize, 30, 60, 60, 60, 60, 60, 60, 60, 1, 1, 1];
+    let stage_bytes: Vec<Vec<u8>> = stage_indices
+        .iter()
+        .enumerate()
+        .map(|(stage, index)| {
+            let bytes = fs::read(dir.join(format!("stress_stage_tensor_{index}.bin")))
+                .unwrap_or_else(|e| panic!("Path-C stage {index} read failed: {e:?}"));
+            assert_eq!(bytes.len(), 512 * stage_sizes[stage]);
+            bytes
+        })
+        .collect();
+    let mut binder = model
+        .bind_authenticated_streaming()
+        .unwrap_or_else(|e| panic!("Path-C authenticated streaming binder failed: {e:?}"));
+    for invocation in 0..512 {
+        let input = &stress_inputs[invocation * INPUT_BYTES..(invocation + 1) * INPUT_BYTES];
+        let input: Vec<i8> = input.iter().map(|value| *value as i8).collect();
+        let trace = binder
+            .step_with_trace(&input)
+            .unwrap_or_else(|e| panic!("Path-C stress invocation {invocation} failed: {e:?}"));
+        assert_eq!(trace.stages.len(), 11);
+        for stage in 0..11 {
+            let expected = &stage_bytes[stage]
+                [invocation * stage_sizes[stage]..(invocation + 1) * stage_sizes[stage]];
+            let actual: Vec<u8> = trace.stages[stage]
+                .iter()
+                .map(|value| *value as u8)
+                .collect();
+            assert_eq!(
+                &actual, expected,
+                "Path-C stage tensor {} invocation {} drift",
+                stage_indices[stage], invocation
             );
         }
-        Err(error) => panic!("Path-C authenticated binder failed unexpectedly: {error:?}"),
-        Ok(_) => panic!("Path-C requires a stateful streaming binder, not stateless ChainConfig"),
+        assert_eq!(
+            trace.output, stage_bytes[11][invocation],
+            "Path-C final QUANTIZE invocation {invocation} drift"
+        );
+    }
+    binder.reset();
+    for invocation in 0..INVOCATION_COUNT {
+        let output = binder
+            .step(&inputs[invocation])
+            .unwrap_or_else(|e| panic!("Path-C reset replay {invocation} failed: {e:?}"));
+        assert_eq!(
+            output, outputs[invocation],
+            "Path-C reset replay invocation {invocation} drift"
+        );
     }
 }

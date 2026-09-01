@@ -1,10 +1,11 @@
 # vokra-kws-micro
 
-> **2026-08-30 current-state boundary:** The phase/status and synthetic-chain
-> results below describe the current scaffold contract, not a claim that a
-> real `hey_jarvis.tflite` checkpoint has been acquired, converted, or accepted
-> through host parity. The Rust source and focused gates are authoritative for
-> behavior; current project completion and owner gates live in the M5 ledger.
+> **2026-09-01 current-state boundary:** The phase/status and synthetic-chain
+> results below do not claim a green real-weight host-parity result. The fixed
+> reviewed stateful binder and conversion contract are implemented, but the
+> authenticated 512-stage fixture verdict remains VAST-gated. The Rust source
+> and focused gates are authoritative for behavior; current project completion
+> and owner gates live in the M5 ledger.
 
 microWakeWord-style keyword-spotting (KWS) forward as a `#![no_std]`
 (+ `alloc`) subset. Sister crate to
@@ -19,13 +20,16 @@ identity proof.
 
 ## Status
 
-**Phase 3+ synthetic detect() and Phase 4 host-parity preflight.** Not
+**Phase 3+ reviewed stateful binder and Phase 4 host-parity preflight.** Not
 graduated to crates.io yet (`publish = false`). The sidecar preserves dense
 `GGML_TYPE_I8` source-byte carriers and exact `GGML_TYPE_I32` bias carriers,
-plus a fail-closed supported-topology manifest. `Model::bind_untrusted_topology`
-only consumes untrusted metadata; production authority, a real
-`hey_jarvis.tflite` bind, and end-to-end parity still require the fixed VAST
-worker, an independent LiteRT fixture, and the authenticated streaming binder.
+plus a fail-closed supported-topology manifest. The fixed reviewed
+`hey_jarvis` authority is now exposed by
+`Model::bind_authenticated_streaming()`, which checks exact provenance,
+topology, tensor quantization, and weight/bias fingerprints before returning a
+stateful executor. Candidate GGUFs and `bind_untrusted_topology` remain
+untrusted; the exact 512-invocation LiteRT stage-trace parity run is still
+VAST-gated, so this crate remains blocked from a production parity claim.
 
 - **Feature extractor (`src/features.rs`)** — 40-band log-mel front-end
     (Phase 1, WF1). Real; parity harness covers it.
@@ -37,7 +41,8 @@ worker, an independent LiteRT fixture, and the authenticated streaming binder.
     (Phase 2, WF1 Resume). Real; shape-generic F32/dense-I8/I32 tensor view
     with source affine metadata and exact I32 bias preservation. Candidate
     production carriers are dense `GGML_TYPE_I8` plus exact `GGML_TYPE_I32`;
-    this loader does not confer authenticated model authority.
+    this loader does not confer authority by itself; the fixed reviewed
+    `hey_jarvis` artifact must pass `bind_authenticated_streaming()`.
 - **Interpreter (`src/interpreter.rs`)** — `LayerSpec` + `ChainConfig`
     ping-pong chain executor (Phase 3, WF2). Real; unit-tested end-to-
     end with a synthetic 2-layer chain.
@@ -51,6 +56,12 @@ worker, an independent LiteRT fixture, and the authenticated streaming binder.
     (`tests/parity_microwakeword.rs`)** — Phase 4 (this doc). Env-gated
     reference comparison against a numpy log-mel transcription and the
     real upstream TFLite forward.
+- **Authenticated streaming binder (`src/model.rs`)** — binds only the fixed
+    reviewed `hey_jarvis` GGUF to the persistent 11-layer INT8 executor and
+    exposes the final uint8 quantize plus stage trace. It is directly usable by
+    callers holding a loaded `Model`; `KwsMicro` intentionally remains the
+    separate feature-extractor + caller-attached `ChainConfig` convenience API
+    and does not silently install model state.
 
 ## Design red lines (inherited from `vokra-vad-micro`)
 
@@ -164,12 +175,15 @@ variables are a clean skip, never a fabricated pass:
   transcription reference. This is a frontend result only, not end-to-end
   model parity.
 - **Path C** (both variables) — authenticated streaming INT8 chain parity over
-  every recorded invocation plus reset replay. The input contract is int8
+  every recorded invocation and every preserved intermediate stage, plus reset
+  replay. The input contract is int8
   `[1, 3, 40]` with scale `0.10196078568696976`, zero-point `-128`; the output
   contract is uint8 `[1, 1]` with scale `1/256`, zero-point `0`. Once fixture
   checks pass, a missing authenticated streaming binder is a hard failure;
-  Path C must never skip or report PASS in that state. The outer VAST gate must
-  recompute artifact hashes before any parity claim.
+  Path C must never skip or report PASS in that state. The binder is now
+  implemented, but only a green VAST fixture run can establish the numerical
+  production verdict. The outer VAST gate must recompute artifact hashes
+  before any parity claim.
 
 ## See also
 

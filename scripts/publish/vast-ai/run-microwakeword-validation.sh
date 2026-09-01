@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/microwakeword"
 INSPECTOR="$ROOT/tools/parity/microwakeword_inspect.py"
 TENSOR_MANIFEST_PRODUCER="$ROOT/tools/parity/microwakeword_tensor_manifest.py"
-LOCK_SHA256="984703d5bafdd6c88006bd381095961d42ef684d269d66194edbeda1fddf8dc2"
+LOCK_SHA256="736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3"
 PACKAGE_COUNT=1
 PACKAGE_ROWS_SHA256="d9b806830227b4fdbdbe59ea5a20b529bfae40f6aa70e239b44a6238fabd5ad7"
 LICENSE_ROWS_SHA256="4ee7351311d5d0bf69758093e88be7b4146fefdcbc80e026662bbdf58032272c"
@@ -32,7 +32,8 @@ MODEL_COMPANION_GIT_BLOB="e6733fe13852f04a5a3ae83e0d39b5726aee62cc"
 MODEL_COMPANION_SIZE=388
 LICENSE_GIT_BLOB="261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
 LICENSE_SIZE=11357
-REVIEWED_TOPOLOGY_SHA256=""
+REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"
+RAW_INVENTORY_SHA256="ce57a719f60af3a494cbd8fb22ff30fdb405b0a3037b049333f25f5794749989"
 PUBLICATION_STATUS="NO_UPLOAD"
 UV_CACHE_DIR_VALUE="${MICROWAKEWORD_UV_CACHE_DIR:-/tmp/vokra-microwakeword-uv-cache}"
 
@@ -99,6 +100,31 @@ candidate_conversion() {
     --candidate --input "$input_path" --raw-inventory "$inventory_path" \
     --candidate-manifest "$manifest_path" --name hey_jarvis --output "$output_path"
   echo "candidate conversion complete: dense GGML_TYPE_I8 logical tensors; NO_UPLOAD, CANDIDATE_UNREVIEWED" >&2
+}
+
+# Reviewed production conversion is intentionally a separate explicit mode.
+# It consumes only the fixed raw inventory and TFLite bytes already materialized
+# on VAST, stamps the compiled topology authority, and never uploads output.
+reviewed_conversion() {
+  [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Linux x86_64 VAST required"
+  [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
+  [[ "${VOKRA_REVIEWED_CONVERSION:-0}" == 1 ]] || die "VOKRA_REVIEWED_CONVERSION=1 is absent"
+  [[ "$#" == 3 ]] || die "--reviewed requires input raw-inventory output"
+  local input_path="$1" inventory_path="$2" output_path="$3"
+  [[ -f "$input_path" && ! -L "$input_path" && -f "$inventory_path" && ! -L "$inventory_path" ]] || die "reviewed inputs must be regular non-symlink files"
+  cd "$ROOT"
+  [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
+  [[ -f "$PROJECT/uv.lock" ]] || die "dedicated uv.lock is absent"
+  [[ "$(sha256sum "$PROJECT/uv.lock" | awk '{print $1}')" == "$LOCK_SHA256" ]] || die "uv.lock identity mismatch"
+  [[ "$(sha256sum "$input_path" | awk '{print $1}')" == "$MODEL_ARTIFACT_BYTES_SHA256" ]] || die "AUTHENTICATED_PAYLOAD_SHA_REQUIRED"
+  [[ "$(sha256sum "$inventory_path" | awk '{print $1}')" == "$RAW_INVENTORY_SHA256" ]] || die "REVIEWED_RAW_INVENTORY_REQUIRED"
+  [[ "$input_path" != "$ROOT"/* && "$inventory_path" != "$ROOT"/* && "$output_path" != "$ROOT"/* ]] || die "reviewed paths must be outside checkout root"
+  [[ ! -e "$output_path" && ! -L "$output_path" ]] || die "reviewed output must be absent"
+  export VOKRA_REVIEWED_CONVERSION=1
+  UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python "$PROJECT/prepare_checkpoint.py" \
+    --reviewed --input "$input_path" --raw-inventory "$inventory_path" \
+    --name hey_jarvis --expected-sha256 "$MODEL_ARTIFACT_BYTES_SHA256" --output "$output_path"
+  echo "reviewed production conversion complete: topology=$REVIEWED_TOPOLOGY_SHA256, NO_UPLOAD" >&2
 }
 
 # Evidence-only VAST path. It is intentionally separate from production:
@@ -264,7 +290,7 @@ self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0 gate_line
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
   [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: inspector missing" >&2; fail=1; }
-  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256=""'; do
+  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
     grep -Fq -- "$needle" "$self" || { echo "self-test FAIL: missing $needle" >&2; fail=1; }
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|--push|--upload|vokra-cli[[:space:]]+convert)([[:space:]]|$)' "$self" >/dev/null; then
@@ -386,6 +412,11 @@ fi
 if [[ "${1:-}" == "--candidate" ]]; then
   shift
   candidate_conversion "$@"
+  exit 0
+fi
+if [[ "${1:-}" == "--reviewed" ]]; then
+  shift
+  reviewed_conversion "$@"
   exit 0
 fi
 if [[ "${1:-}" == "--inspect-only" ]]; then
