@@ -9,6 +9,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 REFERENCE_TOOL="$VOKRA_ROOT/tools/parity/sgmse_dump_reference.py"
 VERIFY_TOOL="$VOKRA_ROOT/tools/parity/sgmse_verify_reference.py"
+NATIVE_PARITY_TOOL="$VOKRA_ROOT/tools/parity/sgmse_native_score_parity.py"
 INSPECTION_DIR="/workspace/vokra-sgmse-voicebank-inspection"
 OUTPUT_DIR="/workspace/vokra-sgmse-voicebank-reference"
 UV_CACHE_DIR_SGMSE="${SGMSE_UV_CACHE_DIR:-/tmp/vokra-sgmse-uv-cache}"
@@ -32,7 +33,8 @@ self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token
   for token in 'VOKRA_PUBLISH_ON_VAST=1' 'Linux' 'x86_64' 'CARGO_BUILD_JOBS=1' \
     'sgmse_dump_reference.py' 'vokra-sgmse-score-reference-v1' \
-    'sgmse_verify_reference.py' 'REFERENCE_MANIFEST_VERIFIED' \
+    'sgmse_verify_reference.py' 'sgmse_native_score_parity.py' \
+    'REFERENCE_MANIFEST_VERIFIED' \
     '5ebd87c6257537c3997c134b279d85cd7bebccce0e6d3fc68f7a36f15096aa51' \
     'REFERENCE_COMPLETE_NO_UPLOAD' 'BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE' \
     'SOURCE_ROUTE_VERIFIED_STRICT_LOAD' 'weights_only=True' 'strict=True' \
@@ -59,6 +61,11 @@ self_test() {
   if ! UV_CACHE_DIR="$UV_CACHE_DIR_SGMSE" uv run --frozen --no-sync --project "$PARITY_PROJECT" \
     --python 3.12 python "$REFERENCE_TOOL" --self-test >/dev/null; then
     log 'self-test FAIL: reference tool self-test failed'
+    fail=1
+  fi
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR_SGMSE" uv run --frozen --no-sync --project "$PARITY_PROJECT" \
+    --python 3.12 python "$NATIVE_PARITY_TOOL" --self-test >/dev/null; then
+    log 'self-test FAIL: native score parity tool self-test failed'
     fail=1
   fi
   if "$path" --self-test --output-dir /tmp/not-accepted >/dev/null 2>&1; then
