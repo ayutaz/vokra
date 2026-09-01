@@ -588,12 +588,13 @@ def build_manifest(
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="firered-audit-") as directory:
         lock = Path(directory) / "uv.lock"
-        extra_names = [f"synthetic-{index:02d}" for index in range(23)]
+        extra_names = [f"synthetic-{index:02d}" for index in range(22)]
         dependencies = ', '.join(
             [
                 '{ name = "synthetic" }',
                 '{ name = "setuptools" }',
                 '{ name = "kaldi-native-fbank" }',
+                '{ name = "kaldiio" }',
                 *(f'{{ name = "{name}" }}' for name in extra_names),
             ]
         )
@@ -609,7 +610,7 @@ version = "0.0.0"
 dependencies = [{dependencies}]
 [[package]]
 name = "setuptools"
-version = "80.9.0"
+version = "83.0.0"
 source = {{ registry = "https://pypi.org/simple" }}
 [[package]]
 name = "synthetic"
@@ -619,6 +620,10 @@ source = {{ registry = "https://example.invalid" }}
 name = "kaldi-native-fbank"
 version = "1.15"
 source = {{ registry = "https://pypi.org/simple" }}
+[[package]]
+name = "kaldiio"
+version = "2.18.1"
+source = {{ registry = "https://pypi.org/simple" }}
 {extra_packages}
 ''',
             encoding="utf-8",
@@ -627,8 +632,9 @@ source = {{ registry = "https://pypi.org/simple" }}
         rows = active_rows(lock)
         assert len(rows) == 27
         assert len({row["name"] for row in rows}) == 27
-        assert {"firered-asr-aed-l", "setuptools", "synthetic"}.issubset({row["name"] for row in rows})
-        assert next(row for row in rows if row["name"] == "setuptools")["version"] == "80.9.0"
+        assert {"firered-asr-aed-l", "setuptools", "synthetic", "kaldiio"}.issubset({row["name"] for row in rows})
+        assert next(row for row in rows if row["name"] == "setuptools")["version"] == "83.0.0"
+        assert next(row for row in rows if row["name"] == "kaldiio")["version"] == "2.18.1"
         manifest = build_manifest(lock, None)
         assert manifest["status"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
         assert manifest["publication"] == "NO_UPLOAD"

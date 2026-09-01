@@ -152,14 +152,14 @@ source = { git = "https://github.com/csukuangfj/kaldi-native-fbank.git?rev=f68c6
 
 [[package]]
 name = "kaldiio"
-version = "2.18.0"
+version = "2.18.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/11/40495ac1a47c7658e8d8381e0c3475f9f034503a2bbbbcfa71e8040fb522/kaldiio-2.18.0.tar.gz", hash = "sha256:01cb1d0152eafc60bdbd9abd5b297b08cd4b2ce7385c7a113b06212694225d42", size = 34446, upload-time = "2023-03-31T02:25:36.644Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8d/85/92435e8e62eb3d43eded9f24643fc2a6dbce031cebceed11528147c7873f/kaldiio-2.18.1.tar.gz", hash = "sha256:0283d197fac6ac683f7a9e6af8d18aad9dbd2c4a997f22e45294f2ac1ee3c432", size = 35570, upload-time = "2025-03-06T15:57:52.375Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/32/4fa7c71123f49866b09d462ccdb6bcdfac42e4062a5e83f28fca16593357/kaldiio-2.18.0-py3-none-any.whl", hash = "sha256:4dd811b598dd3491c3f9956602f02376afe128da61c20f3a9f115da0bff06256", size = 28217, upload-time = "2023-03-31T02:25:34.744Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/e3/6c3b42233225f398f7a72988b524f654ae818cca0d441db847a2761203e9/kaldiio-2.18.1-py3-none-any.whl", hash = "sha256:397a4cd18977acaae7acabfba6807ee0a6978c620064381a266eac15b3c1a0a0", size = 29330, upload-time = "2025-03-06T15:57:50.82Z" },
 ]
 
 [[package]]
@@ -230,11 +230,11 @@ wheels = [
 
 [[package]]
 name = "setuptools"
-version = "80.9.0"
+version = "83.0.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/18/5d/3bf57dcd21979b887f014ea83c24ae194cfcd12b9e0fda66b957c69d1fca/setuptools-80.9.0.tar.gz", hash = "sha256:f36b47402ecde768dbfafc46e8e4207b4360c654f1f3bb84475f0a28628fb19c", size = 1319958, upload-time = "2025-05-27T00:56:51.443Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/26/f5d29e25ffdb535afef2d35cdb55b325298f96debd670da4c325e08d70f4/setuptools-83.0.0.tar.gz", hash = "sha256:025bccbbf0fa05b6192bc64ae1e7b16e001fd6d6d4d5de03c97b1c1ade523bef", size = 1154254, upload-time = "2026-07-04T15:31:22.699Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/dc/17031897dae0efacfea57dfd3a82fdd2a2aeb58e0ff71b77b87e44edc772/setuptools-80.9.0-py3-none-any.whl", hash = "sha256:062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922", size = 1201486, upload-time = "2025-05-27T00:56:49.664Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl", hash = "sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3", size = 1008090, upload-time = "2026-07-04T15:31:20.885Z" },
 ]
 
 [[package]]
@@ -302,9 +302,9 @@ dependencies = [
 requires-dist = [
     { name = "huggingface-hub", specifier = "==1.29.0" },
     { name = "kaldi-native-fbank", git = "https://github.com/csukuangfj/kaldi-native-fbank.git?rev=f68c6b43f739697d7ab02ff6debacee130e1d541" },
-    { name = "kaldiio", specifier = "==2.18.0" },
+    { name = "kaldiio", specifier = "==2.18.1" },
     { name = "numpy", specifier = "==2.5.2" },
     { name = "sentencepiece", specifier = "==0.2.2" },
-    { name = "setuptools", specifier = "==80.9.0" },
+    { name = "setuptools", specifier = "==83.0.0" },
     { name = "torch", specifier = "==2.13.0", index = "https://download.pytorch.org/whl/cpu" },
 ]

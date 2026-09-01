@@ -216,7 +216,7 @@ def load_upstream(source_root: Path, checkpoint: Path) -> tuple[Any, Any, dict[s
     except Exception as error:  # pragma: no cover - exercised only on VAST
         raise RuntimeError(
             "pinned upstream FireRed import failed; requirements must provide "
-            "kaldiio==2.18.0 and kaldi-native-fbank==1.15: " + str(error)
+            "kaldiio==2.18.1 and kaldi-native-fbank==1.15: " + str(error)
         ) from error
 
     unsafe = list(torch.serialization.get_unsafe_globals_in_checkpoint(str(checkpoint)))
@@ -278,7 +278,7 @@ def capture_reference(model: Any, args: Any, source_root: Path, cmvn_path: Path)
     except Exception as error:  # pragma: no cover - exercised only on VAST
         raise RuntimeError(
             "pinned upstream frontend import failed; requirements must provide "
-            "kaldiio==2.18.0 and kaldi-native-fbank==1.15: " + str(error)
+            "kaldiio==2.18.1 and kaldi-native-fbank==1.15: " + str(error)
         ) from error
 
     # Fixed nonzero int16-range PCM; no external audio file is acquired.
@@ -443,7 +443,7 @@ def main() -> int:
         },
         "dependencies": {
             "python": "3.12",
-            "kaldiio": {"version": "2.18.0", "source": "pypi"},
+            "kaldiio": {"version": "2.18.1", "source": "pypi", "wheel_sha256": "397a4cd18977acaae7acabfba6807ee0a6978c620064381a266eac15b3c1a0a0"},
             "kaldi-native-fbank": KALDI_NATIVE_FBANK_SOURCE,
         },
         "args": {name: getattr(checkpoint_args, name) for name in EXPECTED_ARGS},

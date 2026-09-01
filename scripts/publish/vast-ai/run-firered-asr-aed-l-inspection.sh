@@ -89,7 +89,7 @@ self_test() {
     'firered_asr_aed_l_audit.py' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'OWNER_APPROVED' 'OWNER_REVIEW_REQUIRED' 'INVALID' 'distribution_evidence' 'distribution_evidence_sha256' 'lock_artifact' 'source_identity_aggregate' 'native_payloads' 'publisher_urls' 'publisher_url_aggregate' 'license_candidate_aggregate' 'native_payload_aggregate' 'review_ledger' 'exact_digest_gate' 'collection_protocol' 'owner_approval' 'owner-approval-v1' '--owner-approval' 'owner_approval_path' 'yousan' 'approved_at_utc' 'publisher_urls_sha256' 'license_candidates_sha256' 'native_payloads_sha256' 'scope_sha256' 'collection_failures' 'approved_mode' 'is_symlink' 'regular JSON' 'must not overlap' 'reject_duplicate_pairs' 'duplicate JSON key' 'exactly 27 active closure rows' 'native_source_license' 'source_revision_verified' 'source_url_verified' 'license_path' 'license_bytes' 'license_sha256_verified' 'approved_route_expected_artifacts' \
     'NamedTemporaryFile' 'os.link' 'manifest-with-preparation.json' \
     'manifest-with-reference.json' 'final no-clobber manifest' \
-    'kaldiio==2.18.0' 'kaldi-native-fbank==1.15' 'name = "setuptools"' 'version = "80.9.0"' 'specifier = "==80.9.0"' 'pkg_resources' 'setuptools<82' \
+    'kaldiio==2.18.1' 'kaldi-native-fbank==1.15' 'name = "setuptools"' 'version = "83.0.0"' 'specifier = "==83.0.0"' 'importlib.metadata' 'setuptools>=83' '397a4cd18977acaae7acabfba6807ee0a6978c620064381a266eac15b3c1a0a0' \
     'f68c6b43f739697d7ab02ff6debacee130e1d541' 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' \
     'uv lock --check' 'source/kaldi-native-fbank' 'setup.py' 'cmake' 'make' 'cc' 'c++' 'g++' 'native build toolchain' \
     'forbidden CUDA dependency row' 'download.pytorch.org/whl/cpu' 'license hash is not authenticated' \
@@ -296,10 +296,10 @@ for required in (
     'name = "kaldi-native-fbank"',
     'f68c6b43f739697d7ab02ff6debacee130e1d541',
     'name = "kaldiio"',
-    'version = "2.18.0"',
+    'version = "2.18.1"',
     'name = "setuptools"',
-    'version = "80.9.0"',
-    'specifier = "==80.9.0"',
+    'version = "83.0.0"',
+    'specifier = "==83.0.0"',
 ):
     if required not in lock:
         raise SystemExit(f"missing locked FireRed dependency identity: {required}")
@@ -307,20 +307,15 @@ if 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' not in ref
     raise SystemExit("kaldi-native-fbank license hash is not authenticated")
 print("FireRed dependency/license lock gate: PASS")
 PY
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - <<'PY' || die 'locked FireRed project is missing exact upstream frontend dependencies or pkg_resources compatibility: require kaldiio==2.18.0, kaldi-native-fbank==1.15 and setuptools==80.9.0 (<82)'
-import warnings
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - <<'PY' || die 'locked FireRed project is missing the audited exact frontend dependencies: require kaldiio==2.18.1, kaldi-native-fbank==1.15 and setuptools==83.0.0'
 import kaldi_native_fbank
 import kaldiio
 import sentencepiece
 import torch
 from importlib.metadata import version
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    import pkg_resources
 assert version("kaldi-native-fbank") == "1.15"
-assert version("kaldiio") == "2.18.0"
-assert version("setuptools") == "80.9.0"
-assert pkg_resources.get_distribution("setuptools").version == "80.9.0"
+assert version("kaldiio") == "2.18.1"
+assert version("setuptools") == "83.0.0"
 print("FireRedASR upstream dependency preflight: PASS")
 PY
 # shellcheck disable=SC2129
@@ -684,7 +679,7 @@ assert reference["checkpoint"] == {"repository": "FireRedTeam/FireRedASR-AED-L",
 assert reference["source"]["revision"] == "834635e4cf277ed8ca92049fc375b17c3dc20748"
 assert reference["dependencies"] == {
     "python": "3.12",
-    "kaldiio": {"version": "2.18.0", "source": "pypi"},
+    "kaldiio": {"version": "2.18.1", "source": "pypi", "wheel_sha256": "397a4cd18977acaae7acabfba6807ee0a6978c620064381a266eac15b3c1a0a0"},
     "kaldi-native-fbank": {
         "repository": "https://github.com/csukuangfj/kaldi-native-fbank.git",
         "revision": "f68c6b43f739697d7ab02ff6debacee130e1d541",

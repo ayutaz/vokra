@@ -5,11 +5,14 @@ description = "VAST-only FireRedASR-AED-L upstream reference and checkpoint brid
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "huggingface-hub==1.29.0",
-    "kaldiio==2.18.0",
-    # kaldiio 2.18.0 imports pkg_resources at runtime. Setuptools' runtime
-    # warning requires pinning below 81; 80.9.0 retains the compatibility
-    # module. Do not substitute an unreviewed pkg_resources package.
-    "setuptools==80.9.0",
+    # 2.18.1 is the first audited kaldiio release whose wheel no longer
+    # imports the removed pkg_resources module (PyPI wheel SHA256:
+    # 397a4cd18977acaae7acabfba6807ee0a6978c620064381a266eac15b3c1a0a0).
+    "kaldiio==2.18.1",
+    # GHSA-h35f-9h28-mq5c affects setuptools <83.0.0; keep the first patched
+    # release for the audited closure. Do not substitute an unreviewed
+    # pkg_resources package.
+    "setuptools==83.0.0",
     # The PyPI release does not provide the required CPython 3.12 Linux
     # artifact. Build the exact official Apache-2.0 source on VAST.
     "kaldi-native-fbank @ git+https://github.com/csukuangfj/kaldi-native-fbank.git@f68c6b43f739697d7ab02ff6debacee130e1d541",
