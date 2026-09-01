@@ -84,16 +84,24 @@ def canonical_tensor_bytes(tensor: Any, torch: Any, numpy: Any) -> tuple[bytes, 
         raise EvidenceError(f"non-F32 tensor: {tensor.dtype}")
     if getattr(tensor, "device", None) is None or tensor.device.type != "cpu":
         raise EvidenceError("tensor is not resident on CPU")
-    if not bool(tensor.is_contiguous()):
-        raise EvidenceError("non-contiguous tensor")
+    if getattr(tensor, "layout", None) != torch.strided:
+        raise EvidenceError("tensor does not use the dense strided layout")
     require_little_endian("=")
-    array = tensor.detach().numpy()
+    # ``Tensor.numpy()`` may expose the source storage order for a view.  Make
+    # the logical indexing order explicit first: ``contiguous()`` preserves
+    # the tensor's shape and values while materializing row-major (C-order)
+    # storage, including for legitimate transposed/sliced CPU views.
+    logical = tensor.detach().contiguous()
+    array = logical.numpy()
     if not array.flags.c_contiguous:
-        raise EvidenceError("NumPy view is non-contiguous")
+        raise EvidenceError("canonical NumPy materialization is non-contiguous")
     if array.dtype.kind != "f" or array.dtype.itemsize != 4:
         raise EvidenceError(f"unexpected NumPy dtype: {array.dtype}")
     require_little_endian(array.dtype.byteorder)
-    little = array.astype(numpy.dtype("<f4"), copy=False)
+    # Always copy into an explicitly little-endian C-order array.  This keeps
+    # the payload hash independent of both the source view's strides and any
+    # native-endian NumPy aliasing.
+    little = numpy.array(array, dtype=numpy.dtype("<f4"), order="C", copy=True)
     if little.dtype.byteorder not in ("<", "=") or not little.flags.c_contiguous:
         raise EvidenceError("canonical little-endian conversion drift")
     return little.tobytes(order="C"), "little"
@@ -352,7 +360,7 @@ def verify_manifest(path: Path) -> dict[str, Any]:
             raise EvidenceError("payload manifest row fields differ from the evidence schema")
         if row.get("source_dtype") != "torch.float32" or row.get("source_byte_order") != "little":
             raise EvidenceError("payload manifest source dtype/byte order mismatch")
-        if row.get("source_finite") is not True or row.get("source_contiguous") is not True:
+        if row.get("source_finite") is not True or not isinstance(row.get("source_contiguous"), bool):
             raise EvidenceError("payload manifest source tensor safety status mismatch")
         if not isinstance(row.get("canonical_payload_sha256"), str) or not re.fullmatch(
             r"[0-9a-f]{64}", row["canonical_payload_sha256"]
@@ -469,6 +477,10 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("structural name drift was accepted")
+        # ``source_contiguous`` records the source fact; canonicalization is
+        # still safe when that fact is false, so the manifest verifier must
+        # not turn this informational field back into a rejection gate.
+        rows[0]["source_contiguous"] = False
         payload = build_manifest(checkpoint, rows)
         write_atomic_no_replace(output, payload)
         assert verify_manifest(output)["blocked_evidence"]
@@ -487,14 +499,36 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("tampered manifest was accepted")
-        noncontiguous = root / "noncontiguous.pth"
-        torch.save({"x": torch.ones((2, 3), dtype=torch.float32).t()}, noncontiguous)
+        # A transposed view is a real-world non-contiguous CPU tensor.  The
+        # canonical bytes must follow its logical C-order values, not the
+        # underlying storage order exposed by a Fortran-order view.
+        base = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32)
+        noncontiguous = base.t()
+        assert not noncontiguous.is_contiguous()
+        payload_bytes, byte_order = canonical_tensor_bytes(noncontiguous, torch, numpy)
+        trusted_logical = torch.tensor(
+            [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]], dtype=torch.float32
+        ).numpy()
+        trusted_bytes = numpy.array(
+            trusted_logical, dtype=numpy.dtype("<f4"), order="C", copy=True
+        ).tobytes(order="C")
+        assert byte_order == "little"
+        assert payload_bytes == trusted_bytes
+        assert payload_bytes == bytes.fromhex(
+            "0000803f00008040000000400000a040000040400000c040"
+        )
+        assert sha256_bytes(payload_bytes) == sha256_bytes(trusted_bytes)
+        storage_order_bytes = noncontiguous.detach().numpy().tobytes(order="F")
+        assert storage_order_bytes != payload_bytes
+
+        noncontiguous_checkpoint = root / "noncontiguous.pth"
+        torch.save({"x": noncontiguous}, noncontiguous_checkpoint)
         try:
-            load_rows(noncontiguous, require_fixed_identity=False)
+            load_rows(noncontiguous_checkpoint, require_fixed_identity=False)
         except EvidenceError as error:
-            assert "non-contiguous" in str(error)
+            assert "expected 1172" in str(error)
         else:
-            raise AssertionError("non-contiguous tensor was accepted")
+            raise AssertionError("synthetic tensor count mismatch was accepted")
         nonf32 = root / "nonf32.pth"
         torch.save({"x": torch.ones((1,), dtype=torch.float16)}, nonf32)
         try:
