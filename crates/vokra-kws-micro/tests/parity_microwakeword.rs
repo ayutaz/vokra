@@ -630,6 +630,55 @@ fn verify_reference_manifest(root: &JsonValue) {
         stage_indices,
         vec![47, 50, 51, 54, 55, 58, 59, 62, 63, 67, 68, 69]
     );
+    let stage_shapes = field(stress, "stage_shapes", "direct_int8_stress");
+    exact_keys(
+        stage_shapes,
+        &[
+            "47", "50", "51", "54", "55", "58", "59", "62", "63", "67", "68", "69",
+        ],
+        "direct_int8_stress.stage_shapes",
+    );
+    for (index, expected_shape) in [
+        ("47", vec![1, 1, 1, 30]),
+        ("50", vec![1, 1, 1, 30]),
+        ("51", vec![1, 1, 1, 60]),
+        ("54", vec![1, 1, 1, 60]),
+        ("55", vec![1, 1, 1, 60]),
+        ("58", vec![1, 1, 1, 60]),
+        ("59", vec![1, 1, 1, 60]),
+        ("62", vec![1, 1, 1, 60]),
+        ("63", vec![1, 1, 1, 60]),
+        ("67", vec![1, 1]),
+        ("68", vec![1, 1]),
+        ("69", vec![1, 1]),
+    ] {
+        assert_eq!(
+            shape_field(stage_shapes, index, "direct_int8_stress.stage_shapes"),
+            expected_shape,
+            "direct_int8_stress.stage_shapes.{index} drift"
+        );
+    }
+    let stage_dtypes = field(stress, "stage_dtypes", "direct_int8_stress");
+    exact_keys(
+        stage_dtypes,
+        &[
+            "47", "50", "51", "54", "55", "58", "59", "62", "63", "67", "68", "69",
+        ],
+        "direct_int8_stress.stage_dtypes",
+    );
+    for index in [
+        "47", "50", "51", "54", "55", "58", "59", "62", "63", "67", "68",
+    ] {
+        assert_eq!(
+            string_field(stage_dtypes, index, "direct_int8_stress.stage_dtypes"),
+            "int8",
+            "direct_int8_stress.stage_dtypes.{index} drift"
+        );
+    }
+    assert_eq!(
+        string_field(stage_dtypes, "69", "direct_int8_stress.stage_dtypes"),
+        "uint8"
+    );
 
     let topology = field(root, "tflite_topology", "manifest");
     exact_keys(
@@ -733,9 +782,9 @@ fn verify_reference_manifest(root: &JsonValue) {
             (59, vec![512, 1, 1, 1, 60], "int8"),
             (62, vec![512, 1, 1, 1, 60], "int8"),
             (63, vec![512, 1, 1, 1, 60], "int8"),
-            (67, vec![512, 1, 1, 1], "int8"),
-            (68, vec![512, 1, 1, 1], "int8"),
-            (69, vec![512, 1, 1, 1], "uint8"),
+            (67, vec![512, 1, 1], "int8"),
+            (68, vec![512, 1, 1], "int8"),
+            (69, vec![512, 1, 1], "uint8"),
         ] {
             let bytes = shape.iter().product::<usize>();
             rows.push((format!("stress_stage_tensor_{index}"), shape, dtype, bytes));
