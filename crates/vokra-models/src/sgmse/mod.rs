@@ -1112,6 +1112,10 @@ pub struct NcsnppAttentionWeights {
 
 impl NcsnppAttentionWeights {
     /// Creates weights with row-major `[channels, channels]` matrices.
+    // Keep the positional projection contract aligned with the authenticated
+    // source/binder field order; a builder would obscure that mapping and
+    // change the public construction API.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         channels: usize,
         norm_groups: usize,
@@ -1737,10 +1741,10 @@ impl NcsnppBigGanBlock {
                 Some(bias),
                 &mut projected,
             )?;
-            for channel in 0..self.weights.out_channels {
+            for (channel, &projected_value) in projected.iter().enumerate() {
                 let base = channel * resampled_plane;
                 for value in &mut h[base..base + resampled_plane] {
-                    *value += projected[channel];
+                    *value += projected_value;
                 }
             }
         }
@@ -1985,8 +1989,8 @@ fn fir_resample_fixed(
                     VokraError::InvalidArgument("sgmse FIR width sample overflows usize".to_owned())
                 })?;
                 let mut value = 0.0f32;
-                for ky in 0..4 {
-                    for kx in 0..4 {
+                for (ky, &tap_y) in TAPS.iter().enumerate() {
+                    for (kx, &tap_x) in TAPS.iter().enumerate() {
                         let padded_y = conv_y.checked_add(ky).ok_or_else(|| {
                             VokraError::InvalidArgument(
                                 "sgmse FIR padded height sample overflows usize".to_owned(),
@@ -2012,7 +2016,7 @@ fn fir_resample_fixed(
                         let source_y = expanded_y / up;
                         let source_x = expanded_x / up;
                         let source = input[input_base + source_y * width + source_x];
-                        value += source * TAPS[ky] * TAPS[kx] * gain;
+                        value += source * tap_y * tap_x * gain;
                     }
                 }
                 if !value.is_finite() {
@@ -2070,7 +2074,7 @@ impl NcsnppV2Config {
             || self.ch_mult.is_empty()
             || !levels_have_resolution
             || !stage_capacity_fits
-            || self.ch_mult.iter().any(|&value| value == 0)
+            || self.ch_mult.contains(&0)
             || self.num_res_blocks == 0
             || self.num_res_blocks.checked_add(1).is_none()
             || !self.fourier_embedding
