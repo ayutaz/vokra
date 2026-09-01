@@ -758,6 +758,13 @@ def _run_reference_into(
         or model_evidence.get("parameter_count") != CHECKPOINT_PARAMETER_COUNT
     ):
         raise ValueError("strict model load count differs from reviewed checkpoint evidence")
+    # Imports and model construction can mutate Torch's precision policy and
+    # consume RNG state. Re-establish the forward-time contract immediately
+    # after those operations so fixture bytes are reproducible.
+    torch.use_deterministic_algorithms(True)
+    torch.set_float32_matmul_precision("highest")
+    torch.manual_seed(20260901)
+    np.random.seed(20260901)
     frequency_bins = 510 // 2 + 1
     # The pinned util/other.py pad_spec contract pads the time axis to a
     # multiple of 64; 64 is the smallest source-authenticated fixture block.
@@ -947,6 +954,13 @@ def self_test() -> None:
     assert "reviewed x_t,y,t route" in inspect.getsource(_run_reference_into)
     assert "torch.load(weights_only=True)" in inspect.getsource(load_score_model)
     assert '"bytes": int(tensor.numel()) * 4' in inspect.getsource(_run_reference_into)
+    reference_source = inspect.getsource(_run_reference_into)
+    model_load_end = reference_source.index("model, model_evidence = load_score_model")
+    forward_reassert = reference_source.index(
+        "torch.use_deterministic_algorithms(True)", model_load_end
+    )
+    fixture_randn = reference_source.index("real = torch.randn", forward_reassert)
+    assert model_load_end < forward_reassert < fixture_randn
     try:
         json.loads('{"duplicate": 1, "duplicate": 2}', object_pairs_hook=reject_duplicate_json)
     except ValueError:
