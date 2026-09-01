@@ -162,6 +162,15 @@ require_empty_directory() {
   [[ -z "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "result directory must be empty"
 }
 
+cpuinfo_field() {
+  local wanted="$1" cpuinfo_path="${2:-/proc/cpuinfo}"
+  awk -F: -v wanted="$wanted" '
+    { key = $1; gsub(/^[[:space:]]+/, "", key); gsub(/[[:space:]]+$/, "", key)
+      if (key == wanted) { value = $2; gsub(/^[[:space:]]+/, "", value); print value; exit }
+    }
+  ' "$cpuinfo_path"
+}
+
 require_path_c_sentinel() {
   local log_path="$1"
   local sentinel='Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4'
@@ -205,8 +214,8 @@ reviewed_validation() {
   cpu_count="$(nproc)" || die "unable to record nproc"
   [[ "$cpu_count" =~ ^[1-9][0-9]*$ ]] || die "invalid nproc evidence"
   [[ -r /proc/cpuinfo ]] || die "CPU evidence /proc/cpuinfo is unreadable"
-  cpu_model="$(awk -F: '$1 == "model name" {sub(/^[[:space:]]+/, "", $2); print $2; exit}' /proc/cpuinfo)"
-  cpu_flags="$(awk -F: '$1 == "flags" {sub(/^[[:space:]]+/, "", $2); print $2; exit}' /proc/cpuinfo)"
+  cpu_model="$(cpuinfo_field 'model name' /proc/cpuinfo)"
+  cpu_flags="$(cpuinfo_field flags /proc/cpuinfo)"
   [[ -n "$cpu_model" && -n "$cpu_flags" ]] || die "CPU model/ISA flags evidence is missing"
   rustc_version="$(rustc -Vv)" || die "unable to record rustc version"
   cargo_version="$(cargo -V)" || die "unable to record cargo version"
@@ -555,7 +564,7 @@ self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
   [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: inspector missing" >&2; fail=1; }
-  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "reviewed_validation" "--validate-reviewed" "requires raw-inventory dependency-evidence result-dir" "VOKRA_REVIEWED_VALIDATION" "VOKRA_KWS_REAL_GGUF" "VOKRA_KWS_REAL_FIXTURES" "uv sync" "--frozen" "--no-sync" "--locked" "paths_disjoint" "require_empty_directory" "require_path_c_sentinel" "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4" "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out" "open(\"x\"" "git_commit" "converter_lock_sha256" "reference_lock_sha256" "source_tflite_sha256" "dependency_evidence_sha256" "raw_inventory_sha256" "model_payload_transfer" "preserved_intermediate_stage_count" "final_output_tensor" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$DEPENDENCY_EVIDENCE_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
+  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "reviewed_validation" "--validate-reviewed" "requires raw-inventory dependency-evidence result-dir" "VOKRA_REVIEWED_VALIDATION" "VOKRA_KWS_REAL_GGUF" "VOKRA_KWS_REAL_FIXTURES" "uv sync" "--frozen" "--no-sync" "--locked" "paths_disjoint" "cpuinfo_field" "model name" "flags" "require_empty_directory" "require_path_c_sentinel" "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4" "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out" "open(\"x\"" "git_commit" "converter_lock_sha256" "reference_lock_sha256" "source_tflite_sha256" "dependency_evidence_sha256" "raw_inventory_sha256" "model_payload_transfer" "preserved_intermediate_stage_count" "final_output_tensor" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$DEPENDENCY_EVIDENCE_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
     grep -Fq -- "$needle" "$self" || { echo "self-test FAIL: missing $needle" >&2; fail=1; }
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|--push|--upload|vokra-cli[[:space:]]+convert)([[:space:]]|$)' "$self" >/dev/null; then
@@ -604,8 +613,14 @@ self_test() {
     echo 'self-test FAIL: reviewed validation contains publication' >&2
     fail=1
   fi
-  local worker_probe missing_sentinel_log bad_result_log good_sentinel_log cleanup_root cleanup_work existing_result
+  local worker_probe cpuinfo_fixture missing_sentinel_log bad_result_log good_sentinel_log cleanup_root cleanup_work existing_result
   worker_probe="$(mktemp -d /tmp/vokra-mww-worker-selftest.XXXXXX)"
+  cpuinfo_fixture="$worker_probe/cpuinfo"
+  printf 'model name\t: Synthetic VAST CPU\nflags\t\t: avx2 sse4_2\n' >"$cpuinfo_fixture"
+  [[ "$(cpuinfo_field 'model name' "$cpuinfo_fixture")" == 'Synthetic VAST CPU' && "$(cpuinfo_field flags "$cpuinfo_fixture")" == 'avx2 sse4_2' ]] || {
+    echo 'self-test FAIL: tab-padded /proc/cpuinfo keys were not parsed' >&2
+    fail=1
+  }
   mkdir "$worker_probe/nonempty"
   touch "$worker_probe/nonempty/stale"
   if (require_empty_directory "$worker_probe/nonempty") 2>/dev/null; then
