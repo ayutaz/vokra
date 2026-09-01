@@ -12,7 +12,9 @@
 > VAST. The separate
 > `--inspect-only` mode records evidence only; the separate `--candidate` mode
 > may create a `CANDIDATE_UNREVIEWED`/`NO_UPLOAD` GGUF on VAST from fixed
-> inputs:
+> inputs. The explicit `--validate-reviewed` mode runs the reviewed conversion,
+> independent stage-trace fixture generation, and package-scoped Path C on
+> VAST; it remains `NO_UPLOAD`:
 > `scripts/publish/vast-ai/run-microwakeword-validation.sh`.
 >
 > The dedicated lock SHA-256 is
@@ -92,10 +94,11 @@ reader parses on both host and thumbv8m targets.
   VAST-only. The local Mac path is deliberately terminally blocked; do not
   install, sync, acquire, or convert from this directory.
 
-The VAST worker's `VOKRA_INSPECT_ONLY=1 --inspect-only` mode is the only
-acquisition path. It uses the fixed repository revision/path, verifies the
-recorded model and license Git blobs plus sizes, hashes the downloaded model,
-and emits an evidence-only raw FlatBuffer inventory into the existing
+The VAST worker's `VOKRA_INSPECT_ONLY=1 --inspect-only` mode is the evidence-
+only acquisition path. The reviewed `--validate-reviewed` mode below is the
+separate production-validation acquisition path. Both use the fixed repository
+revision/path, verify the recorded model and license Git blobs plus sizes, and
+hash the downloaded model. The evidence-only path emits a raw FlatBuffer inventory into the existing
 `MICROWAKEWORD_INSPECTION_DIR`. The directory receives
 `hey_jarvis.raw-inventory.json`, the fixed companion JSON, LICENSE, and a
 summary containing their SHA-256 values; the model `.tflite` remains temporary
@@ -108,10 +111,50 @@ operator/options topology in a deterministic candidate manifest, and emits
 only a `CANDIDATE_UNREVIEWED` GGUF with `NO_UPLOAD`; it is VAST/platform/clean-
 checkout gated and does not set production authority. Production remains
 closed until independent topology review and parity set the compiled authority.
+After that evidence packet is available, `--validate-reviewed` is the only
+end-to-end production-validation route.
 
 The production preparer intentionally has no interpreter or numerical Python
 dependency. Reference generation in `dump_reference.py` remains a separate
 VAST-only research path and is not part of the production conversion lock.
+
+### Reviewed end-to-end VAST validation
+
+After the exact dependency evidence and raw inventory have been collected on
+VAST, an owner may run the authenticated Path C worker. The checkout must be a
+clean commit and the three input/result paths below must be absolute and
+outside the checkout. The model, reviewed GGUF, and fixtures are generated
+under a worker-owned temporary VAST directory and removed when the worker
+exits:
+
+```sh
+export VOKRA_PUBLISH_ON_VAST=1 VOKRA_REVIEWED_VALIDATION=1
+scripts/publish/vast-ai/run-microwakeword-validation.sh --validate-reviewed \
+  /root/scratchpad/<raw-inventory>.json \
+  /root/scratchpad/<dependency-evidence>.json \
+  /root/scratchpad/<validation-results>
+```
+
+The worker verifies the fixed TFLite revision, size, SHA-256 and Git blobs,
+installs both dedicated Python 3.12 locks with `uv sync --frozen` (network is
+allowed only for the pinned lock resolution; execution remains offline),
+creates the reviewed GGUF, emits the independent 512-invocation/stage trace,
+and runs `VOKRA_KWS_REAL_GGUF` + `VOKRA_KWS_REAL_FIXTURES` through the
+package-scoped Rust Path C test. The trace has 12 stage identities: 11
+preserved intermediate tensors plus final output tensor 69. On success or
+failure, the worker removes only its pattern-validated, worker-owned temporary
+root (which contains the GGUF and fixtures); caller paths are never recursively
+removed.
+
+The raw inventory and dependency evidence must already exist; the caller
+result directory must already exist and be empty. Worker-owned output collisions
+are impossible inside the fresh private root, while nonempty result directories
+are rejected. Only
+`microwakeword-validation.json` (filename/size/hash records) and `path-c.log`
+are result records; no model payload is uploaded or copied to the result
+directory. A successful worker run supplies the evidence needed to
+close the currently blocked parity status; this README does not claim that
+the run has already occurred.
 
 ## Historical conversion notes (not an execution procedure)
 
@@ -120,8 +163,9 @@ and direct `prepare_checkpoint.py` conversion. Those notes are retained only
 to explain the intended future sidecar shape. They are not runnable guidance:
 all conversion/reference execution and all source/model acquisition must be
 performed by an owner-approved VAST workflow after the dependency and license
-gate clears. The normal worker remains terminally blocked; only its explicit
-VAST `--candidate` path permits the unreviewed conversion described above.
+gate clears. The `--candidate` path remains unreviewed transport; the
+`--validate-reviewed` path is the reviewed conversion/parity workflow described
+above.
 
 The future GGUF is expected to carry `vokra.kws.arch = "microwakeword"`,
 `vokra.kws.model = "hey_jarvis"`, the 16 kHz / 40-band front-end metadata,
@@ -154,7 +198,7 @@ VAST acquisition records it.
 | **1**   | `prepare_checkpoint.py` (VAST inspection-only dense I8); 40-band log-mel features  | Candidate format only; no production tensor binding                                                                                  |
 | **2**   | INT8 kernels + model loader                                           | `KwsMicro` scaffold surface                                                                                                         |
 | **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | Untrusted/synthetic `Model::bind_untrusted_topology` plus the fixed reviewed stateful `bind_authenticated_streaming` surface |
-| **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A/B require authenticated VAST artefacts; Path C compares all 512 invocations and preserved stages, with the numerical verdict still VAST-gated |
+| **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A/B require authenticated VAST artefacts; Path C compares all 512 invocations across 11 preserved intermediates plus final tensor 69, with the numerical verdict still VAST-gated |
 | **3.5** | Sidecar dense I8 source bytes + per-tensor `(scale, zero_point)` metadata (implemented); dense I32 bias preservation (implemented) | Reviewed conversion/binding contract is implemented; real fixture parity remains pending |
 
 The sidecar's source-byte carrier preserves exact INT8 values; its F32 view is
@@ -186,7 +230,8 @@ the full write-up):
     a `tensorflow` dep). Empirically the standard algorithm matches
     `tf.signal` at `1e-3` for the same parameters.
 - **Path C** (both env vars) — end-to-end INT8 chain parity over the full
-  512-invocation direct-int8 sequence, every preserved stage, and reset replay.
+  512-invocation direct-int8 sequence, all 11 preserved intermediates plus
+  final output tensor 69, and reset replay.
   The reviewed binder and exact topology contract are implemented; the Rust
   test still skips when the authenticated VAST artefacts are absent, and only
   a green VAST run may change this from pending to a parity PASS.

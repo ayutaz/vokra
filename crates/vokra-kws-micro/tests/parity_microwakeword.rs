@@ -1239,4 +1239,7 @@ fn parity_microwakeword_end_to_end_output() {
             "Path-C reset replay invocation {invocation} drift"
         );
     }
+    eprintln!(
+        "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4"
+    );
 }
