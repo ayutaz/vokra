@@ -55,11 +55,18 @@ an exact locked `files.pythonhosted.org` release sdist when that lock row
 provides one (the lock artifact must contain exactly `url`, `hash`, `size`, and
 non-empty `upload-time`), then inspect bounded LICENSE/COPYING/NOTICE/COPYRIGHT
 members in memory; archive bytes are never extracted or executed. A missing
-locked sdist (currently the `dynet38` row) remains a structured factual blocker; there is
-no README, alternate release, or wheel fallback. The two fixed model
-revisions permit only their exact HF `LICENSE` paths. No weights, model
-imports, or Cargo are part of this audit, and `uv sync` is performed only by
-the separately authorized setup step above.
+locked sdist or an uninspectable archive remains a structured factual blocker;
+there is no README, alternate release, or wheel fallback. In the last recorded
+audit for this exact lock, the unresolved locked-sdist paths were
+`dynet38==2.2`, `gradio-client==2.5.0`, `qwen-omni-utils==0.0.9`,
+`soynlp==0.0.493`, and `tqdm==4.70.0`. The two fixed model revisions permit
+only their exact HF `LICENSE` paths. That audit also recorded HTTP 404 for
+both model LICENSE paths, so neither model identity may be promoted from that
+evidence. The signed 0.6B license row in `docs/license-audit.md` is not a
+replacement for the exact revision-bound file evidence, and the 1.7B row must
+have its own primary-source evidence; a family walk is not accepted. No
+weights, model imports, or Cargo are part of this audit, and `uv sync` is
+performed only by the separately authorized setup step above.
 The VAST host must provide `readelf`; the wrapper refuses to run without it.
 Any sdist or LICENSE redirect to a non-allowlisted path, archive traversal or
 link, size/hash mismatch, or non-license model response is rejected before
