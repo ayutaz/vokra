@@ -458,6 +458,13 @@ impl Qwen3AsrCheckpoint {
             }
         };
         require_string_value(file, KEY_MODEL_CATEGORY, CATEGORY)?;
+        // `StrictCheckpoint` classifies the weight license, but a permissive
+        // class alone is not the converter contract: this route is bound to
+        // the exact Apache-2.0/model-id provenance stamped by the Qwen3-ASR
+        // converter.  Keep both checks before exposing even a descriptor
+        // handle so another permissive artifact cannot enter this route.
+        require_string_value(file, chunks::KEY_PROVENANCE_LICENSE, "apache-2.0")?;
+        require_string_value(file, chunks::KEY_PROVENANCE_MODEL_ID, variant.model_name())?;
         require_string_value(file, KEY_UPSTREAM_HF, variant.upstream_hf())?;
         require_string_value(file, KEY_UPSTREAM_REVISION, variant.source_revision())?;
         require_string_value(file, KEY_SOURCE_REVISION, variant.source_revision())?;

@@ -84,8 +84,8 @@ oracle and also requires exact greedy ids; it never falls back to CPU.
 Run only through the VAST worker after provisioning:
 
 ```sh
-scripts/publish/vast-ai/run-qwen3-asr-validation.sh --variant 0.6b
-scripts/publish/vast-ai/run-qwen3-asr-validation.sh --variant 1.7b
+scripts/publish/vast-ai/run-qwen3-asr-validation.sh \
+  --variant all --approval-evidence /root/scratchpad/qwen3-asr-owner-approval.json
 ```
 
 The worker uses the committed two-second mono 16 kHz JFK-derived clip at
@@ -109,6 +109,7 @@ scripts/verify/apple-silicon-qwen3-asr.sh \
   --gguf-1.7b-sha256 <sha256-from-vast-evidence> \
   --reference-1.7b /remote/stage/reference-1.7b \
   --reference-1.7b-sha256 <manifest-sha256-from-vast-evidence> \
+  --approval-evidence /remote/stage/qwen3-asr-owner-approval.json \
   --evidence-dir /remote/evidence/qwen3-asr-metal
 ```
 
