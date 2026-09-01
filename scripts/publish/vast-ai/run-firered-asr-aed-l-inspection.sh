@@ -46,9 +46,9 @@ self_test() {
     'firered_asr_aed_l_audit.py' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'installed_distributions' 'native_payloads' 'publisher' 'owner_approval' 'dependency audit' \
     'NamedTemporaryFile' 'os.link' 'manifest-with-preparation.json' \
     'manifest-with-reference.json' 'final no-clobber manifest' \
-    'kaldiio==2.18.0' 'kaldi-native-fbank==1.15' \
+    'kaldiio==2.18.0' 'kaldi-native-fbank==1.15' 'name = "setuptools"' 'version = "80.9.0"' 'specifier = "==80.9.0"' 'pkg_resources' 'setuptools<82' \
     'f68c6b43f739697d7ab02ff6debacee130e1d541' 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' \
-    'uv lock --check' 'source/kaldi-native-fbank' 'setup.py' \
+    'uv lock --check' 'source/kaldi-native-fbank' 'setup.py' 'cmake' 'make' 'cc' 'c++' 'g++' 'native build toolchain' \
     'forbidden CUDA dependency row' 'download.pytorch.org/whl/cpu' 'license hash is not authenticated' \
     '--no-sync' 'FIRERED_PROJECT' 'firered_asr_aed_l/pyproject.toml' 'firered_asr_aed_l/uv.lock' \
     "cargo fmt --manifest-path \"\$ROOT/Cargo.toml\" --all -- --check" \
@@ -196,7 +196,12 @@ mkdir -p "$(dirname "$work_dir")"
 free_kib="$(df -Pk "$(dirname "$work_dir")" | awk 'NR == 2 {print $4}')"
 [[ "$free_kib" =~ ^[0-9]+$ ]] || die 'invalid disk value'
 (( free_kib >= MIN_DISK_KIB )) || die '32 GiB disk guard failed'
-for tool in cargo git uv awk find df findmnt sha256sum; do command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"; done
+# kaldi-native-fbank is a pinned git source and its uv build invokes CMake;
+# fail before any dependency download/build (and therefore before model
+# snapshot) if the native toolchain is absent.
+for tool in cargo git uv awk find df findmnt sha256sum cmake make cc c++ g++; do
+  command -v "$tool" >/dev/null 2>&1 || die "missing native/reference tool: $tool (run scripts/publish/vast-ai/provision.sh as root on Debian/VAST)"
+done
 [[ "$(findmnt -T "$(dirname "$work_dir")" -no FSTYPE)" == tmpfs ]] || die 'parent work filesystem must be tmpfs'
 mkdir -p "$work_dir/model" "$work_dir/source" "$work_dir/evidence"
 work_dir="$(cd "$work_dir" && pwd)"
@@ -228,6 +233,9 @@ for required in (
     'f68c6b43f739697d7ab02ff6debacee130e1d541',
     'name = "kaldiio"',
     'version = "2.18.0"',
+    'name = "setuptools"',
+    'version = "80.9.0"',
+    'specifier = "==80.9.0"',
 ):
     if required not in lock:
         raise SystemExit(f"missing locked FireRed dependency identity: {required}")
@@ -235,14 +243,20 @@ if 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' not in ref
     raise SystemExit("kaldi-native-fbank license hash is not authenticated")
 print("FireRed dependency/license lock gate: PASS")
 PY
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - <<'PY' || die 'locked FireRed project is missing exact upstream frontend dependencies: require kaldiio==2.18.0 and kaldi-native-fbank==1.15'
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - <<'PY' || die 'locked FireRed project is missing exact upstream frontend dependencies or pkg_resources compatibility: require kaldiio==2.18.0, kaldi-native-fbank==1.15 and setuptools==80.9.0 (<82)'
+import warnings
 import kaldi_native_fbank
 import kaldiio
 import sentencepiece
 import torch
 from importlib.metadata import version
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    import pkg_resources
 assert version("kaldi-native-fbank") == "1.15"
 assert version("kaldiio") == "2.18.0"
+assert version("setuptools") == "80.9.0"
+assert pkg_resources.get_distribution("setuptools").version == "80.9.0"
 print("FireRedASR upstream dependency preflight: PASS")
 PY
 # shellcheck disable=SC2129

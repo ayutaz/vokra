@@ -174,9 +174,10 @@ def build_manifest(lock_path: Path, project: Path | None) -> dict[str, Any]:
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="firered-audit-") as directory:
         lock = Path(directory) / "uv.lock"
-        lock.write_text('''version = 1\n[[package]]\nname = "firered-asr-aed-l"\nversion = "0.0.0"\ndependencies = [{ name = "synthetic" }]\n[[package]]\nname = "synthetic"\nversion = "1.2.3"\nsource = { registry = "https://example.invalid" }\n''', encoding="utf-8")
+        lock.write_text('''version = 1\n[[package]]\nname = "firered-asr-aed-l"\nversion = "0.0.0"\ndependencies = [{ name = "synthetic" }, { name = "setuptools" }]\n[[package]]\nname = "setuptools"\nversion = "80.9.0"\nsource = { registry = "https://pypi.org/simple" }\n[[package]]\nname = "synthetic"\nversion = "1.2.3"\nsource = { registry = "https://example.invalid" }\n''', encoding="utf-8")
         rows = active_rows(lock)
-        assert [row["name"] for row in rows] == ["firered-asr-aed-l", "synthetic"]
+        assert [row["name"] for row in rows] == ["firered-asr-aed-l", "setuptools", "synthetic"]
+        assert next(row for row in rows if row["name"] == "setuptools")["version"] == "80.9.0"
         manifest = build_manifest(lock, None)
         assert manifest["status"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
         assert manifest["publication"] == "NO_UPLOAD"

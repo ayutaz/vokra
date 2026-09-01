@@ -83,6 +83,13 @@ have_hf_shim()     {
 have_uv()          { command -v uv       >/dev/null 2>&1; }
 have_repo()        { [[ -d "$VOKRA_ROOT/.git" ]]; }
 have_vokra_cli()   { [[ -x "$VOKRA_ROOT/target/release/vokra-cli" ]]; }
+have_native_build_tools() {
+  command -v cmake >/dev/null 2>&1 \
+    && command -v make >/dev/null 2>&1 \
+    && command -v cc >/dev/null 2>&1 \
+    && command -v c++ >/dev/null 2>&1 \
+    && command -v g++ >/dev/null 2>&1
+}
 
 # --- Wave 12 pre-handle (vast.ai nvidia/cuda:13.0.0 image hardening) ---
 # Fixes four root causes reactively burned down in Waves 9-11:
@@ -111,6 +118,31 @@ harden_vast_docker_image() {
       return 0
     fi
     log "VOKRA_FORCE_HARDEN=1 set — attempting hardening as EUID=$EUID"
+  fi
+
+  # Fixed-source Python wheels such as kaldi-native-fbank may invoke CMake
+  # and a C++ compiler during `uv sync`.  The stock VAST image does not
+  # reliably include these even when Python and cargo are present. Install
+  # only the Debian build packages that are actually missing; the probes make
+  # reruns idempotent and the postcondition fails closed before any model
+  # snapshot can be requested.
+  if have_native_build_tools; then
+    log "native build toolchain already present (cmake/make/cc/c++/g++)"
+  else
+    log "native build toolchain incomplete — installing cmake, make, build-essential"
+    if ! apt-get update -qq; then
+      log "ERROR: apt package index refresh failed; cannot build pinned native dependencies"
+      return 1
+    fi
+    if ! apt-get install -y cmake make build-essential; then
+      log "ERROR: cmake/build-essential installation failed; cannot build pinned native dependencies"
+      return 1
+    fi
+    if ! have_native_build_tools; then
+      log "ERROR: cmake/make/cc/c++/g++ toolchain remains unavailable after apt install"
+      return 1
+    fi
+    log "native build toolchain ready (cmake/make/cc/c++/g++)"
   fi
 
   # Fix (A): remove HF mirror shim. Load-bearing: must fire before any
@@ -310,6 +342,13 @@ run_self_test() {
   if have_repo;        then echo "  [ok]   repo:         $VOKRA_ROOT is a git checkout"; else echo "  [need] repo:         $VOKRA_ROOT not a git checkout"; fi
   cases=$((cases + 1))
   if have_vokra_cli;   then echo "  [ok]   vokra-cli:    $VOKRA_ROOT/target/release/vokra-cli"; else echo "  [need] vokra-cli:    not built"; fi
+
+  cases=$((cases + 1))
+  if have_native_build_tools; then
+    echo "  [ok]   native-build: cmake/make/cc/c++/g++ present"
+  else
+    echo "  [need] native-build: cmake/make/cc/c++/g++ incomplete (rerun as root on Debian/VAST)"
+  fi
 
   # ~/.bashrc marker probe
   cases=$((cases + 1))
