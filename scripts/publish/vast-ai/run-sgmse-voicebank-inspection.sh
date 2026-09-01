@@ -48,6 +48,8 @@ self_test() {
     "$MODEL_REPOSITORY" "$MODEL_REVISION" "$SOURCE_REVISION" "$SPEECHBRAIN_URL" \
     "$SPEECHBRAIN_REVISION" "$SPEECHBRAIN_VERSION" "$SPEECHBRAIN_SDIST_SHA256" \
     "$SPEECHBRAIN_WHEEL_SHA256" "$EXPECTED_SHA256" \
+    '8748956d2e5afe9dfc8311188b4119dacc7c5293b0561e7cca7a21cf80e54caa' \
+    'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4' \
     '262593305' 'weights_only=True' 'unsafe pickle fallback' 'INSPECTION_ONLY' \
     'NO_UPLOAD' 'sgmse_prepare_checkpoint.py --self-test' '"blockers": []' \
     'README.md' '.gitattributes' 'hyperparams.yaml' \

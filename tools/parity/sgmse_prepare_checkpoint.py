@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import struct
 import subprocess
@@ -29,9 +30,11 @@ CHECKPOINT_SHA256 = "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f77
 SOURCE_REPOSITORY = "https://github.com/sp-uhh/sgmse.git"
 SOURCE_REVISION = "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
 SOURCE_LICENSE_SPDX = "mit"
+SOURCE_LICENSE_SHA256 = "8748956d2e5afe9dfc8311188b4119dacc7c5293b0561e7cca7a21cf80e54caa"
 SPEECHBRAIN_REPOSITORY = "https://github.com/speechbrain/speechbrain.git"
 SPEECHBRAIN_REVISION = "2b3f4f44351fd08a627c4ab307de5c420351bc19"
 SPEECHBRAIN_VERSION = "1.0.3"
+SPEECHBRAIN_LICENSE_SHA256 = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 SPEECHBRAIN_SDIST_SHA256 = "fcab3c6e90012cecb1eed40ea235733b550137e73da6bfa2340ba191ec714052"
 SPEECHBRAIN_WHEEL_SHA256 = "9859d4c1b1fb3af3b85523c0c89f52e45a04f305622ed55f31aa32dd2fba19e9"
 EXECUTABLE_SPEECHBRAIN_FILES = (
@@ -140,6 +143,33 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def write_manifest_no_replace(path: Path, payload: dict[str, Any]) -> None:
+    """Publish inspection evidence atomically without replacing prior evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        raise ValueError(f"inspection manifest already exists: {path}")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as error:
+            raise ValueError(f"inspection manifest appeared concurrently: {path}") from error
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def config_facts(text: str) -> tuple[dict[str, bool], list[str]]:
@@ -420,13 +450,15 @@ def source_identity(source_dir: Path) -> tuple[dict[str, Any], list[str]]:
     }
     blockers: list[str] = []
     license_path = source_dir / "LICENSE"
-    if not license_path.is_file():
+    if not license_path.is_file() or license_path.is_symlink():
         blockers.append(f"missing source license: {license_path}")
     else:
         result["license_sha256"] = sha256(license_path)
         result["license_text_is_mit"] = "MIT License" in license_path.read_text(encoding="utf-8", errors="replace")
         if not result["license_text_is_mit"]:
             blockers.append("source LICENSE does not contain the MIT notice")
+        if result["license_sha256"] != SOURCE_LICENSE_SHA256:
+            blockers.append("source LICENSE SHA-256 differs from the reviewed revision")
     try:
         commit = subprocess.run(
             ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
@@ -455,7 +487,7 @@ def speechbrain_source_identity(source_dir: Path) -> tuple[dict[str, Any], list[
     }
     blockers: list[str] = []
     license_path = source_dir / "LICENSE"
-    if not license_path.is_file():
+    if not license_path.is_file() or license_path.is_symlink():
         blockers.append(f"missing SpeechBrain license: {license_path}")
     else:
         license_text = license_path.read_text(encoding="utf-8", errors="replace")
@@ -464,6 +496,8 @@ def speechbrain_source_identity(source_dir: Path) -> tuple[dict[str, Any], list[
         result["license_text_is_apache"] = "Apache License" in license_text
         if not result["license_text_is_apache"]:
             blockers.append("SpeechBrain LICENSE does not contain the Apache notice")
+        if result["license_sha256"] != SPEECHBRAIN_LICENSE_SHA256:
+            blockers.append("SpeechBrain LICENSE SHA-256 differs from the reviewed revision")
     try:
         commit = subprocess.run(
             ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
@@ -481,7 +515,7 @@ def speechbrain_source_identity(source_dir: Path) -> tuple[dict[str, Any], list[
     files: dict[str, Any] = {}
     for relative in EXECUTABLE_SPEECHBRAIN_FILES:
         path = source_dir / relative
-        if not path.is_file():
+        if not path.is_file() or path.is_symlink():
             blockers.append(f"missing executable SpeechBrain source: {relative}")
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -614,7 +648,7 @@ def companion_identity(companion_dir: Path) -> tuple[dict[str, Any], list[str]]:
     blockers: list[str] = []
     for filename in COMPANION_FILES:
         path = companion_dir / filename
-        if not path.is_file():
+        if not path.is_file() or path.is_symlink():
             blockers.append(f"missing HF companion file: {path}")
             continue
         companions[filename] = {"size": path.stat().st_size, "sha256": sha256(path)}
@@ -676,7 +710,7 @@ def inspect(
     checkpoint: dict[str, Any] = {"filename": ckpt.name, "expected_filename": CHECKPOINT_NAME}
     if ckpt.name != CHECKPOINT_NAME:
         blockers.append(f"checkpoint filename {ckpt.name!r} != {CHECKPOINT_NAME!r}")
-    if ckpt.is_file():
+    if ckpt.is_file() and not ckpt.is_symlink():
         checkpoint["size"] = ckpt.stat().st_size
         checkpoint["sha256"] = sha256(ckpt)
         checkpoint["expected_size"] = CHECKPOINT_SIZE
@@ -687,7 +721,7 @@ def inspect(
         blockers.append(f"missing checkpoint: {ckpt}")
 
     config: dict[str, Any] = {"filename": hyperparams.name}
-    if hyperparams.is_file():
+    if hyperparams.is_file() and not hyperparams.is_symlink():
         text = hyperparams.read_text(encoding="utf-8")
         facts, missing = config_facts(text)
         config.update({"sha256": sha256(hyperparams), "facts": facts, "raw": text})
@@ -754,8 +788,11 @@ def inspect(
         "parity_status": "INSPECTION_ONLY",
         "publication": "NO_UPLOAD",
     }
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        write_manifest_no_replace(manifest_path, manifest)
+    except ValueError as error:
+        print(f"SGMSE inspection blocked; evidence was not replaced: {error}", file=sys.stderr)
+        return 2
     if blockers:
         print(f"SGMSE inspection blocked; evidence preserved at {manifest_path}", file=sys.stderr)
         return 2
@@ -770,7 +807,9 @@ def self_test() -> None:
     assert CHECKPOINT_SIZE == 262_593_305
     assert len(CHECKPOINT_SHA256) == 64
     assert SOURCE_REVISION == "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
+    assert SOURCE_LICENSE_SHA256 == "8748956d2e5afe9dfc8311188b4119dacc7c5293b0561e7cca7a21cf80e54caa"
     assert SPEECHBRAIN_REVISION == "2b3f4f44351fd08a627c4ab307de5c420351bc19"
+    assert SPEECHBRAIN_LICENSE_SHA256 == "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     assert SPEECHBRAIN_VERSION == "1.0.3"
     assert EXECUTABLE_SPEECHBRAIN_FILES[0].endswith("sgmse_plus.py")
     assert EXECUTABLE_SPEECHBRAIN_FILES[1].endswith("enhancement.py")
@@ -810,6 +849,16 @@ def self_test() -> None:
     assert tensor_contract_status({"safe_load_status": "BLOCKED_WEIGHTS_ONLY"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
     assert tensor_contract_status({"safe_load_status": "SAFE_LOADED"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
     assert tensor_contract_status({"safe_load_status": "SAFE_LOADED", "tensor_manifest": {"x": {}}}) == "SAFE_LOADED_MANIFEST"
+    with tempfile.TemporaryDirectory() as manifest_temporary:
+        manifest_path = Path(manifest_temporary) / "evidence" / "manifest.json"
+        write_manifest_no_replace(manifest_path, {"status": "INSPECTION_ONLY"})
+        try:
+            write_manifest_no_replace(manifest_path, {"status": "clobber"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("inspection evidence was overwritten")
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["status"] == "INSPECTION_ONLY"
     blocked_reference, reference_blockers = reference_evidence(
         {"files_by_role": {"score_model": []}},
         {"executable_files": {"speechbrain/inference/enhancement.py": {}}},
