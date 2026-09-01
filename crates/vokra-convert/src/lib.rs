@@ -13154,7 +13154,10 @@ pub use models::audioseal_real_weight::{
 // a caller who prefers `--model miocodec` via `convert_file_licensed`
 // and a caller who calls `convert_miocodec_file` directly land the
 // same bytes.
-pub use models::htdemucs_multi::{HtdemucsMultiReport, convert_htdemucs_multi_file};
+pub use models::htdemucs_multi::{
+    HTDEMUCS_6S_MEMBER_IDS, HTDEMUCS_FT_MEMBER_IDS, HtdemucsMultiReport, HtdemucsMultiVariant,
+    convert_htdemucs_multi_file, validate_htdemucs_multi_structure,
+};
 pub use models::miocodec::{MioCodecReport, convert_miocodec_file};
 // SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
 // (apache-2.0) — Qwen2 0.5B LLM backbone emitting NeuCodec audio

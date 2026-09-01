@@ -156,6 +156,18 @@ def json_load_unique(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
 
 
+def write_json_manifest(path: Path, payload: dict[str, Any]) -> None:
+    """Serialize an evidence manifest while retaining canonical source order.
+
+    Python dictionaries preserve insertion order, and the HT-Demucs member
+    maps are built from the canonical ``MEMBERS`` declaration above.  Sorting
+    JSON keys here would silently reorder ``members`` lexicographically and
+    make the serialized evidence fail the exact ensemble-order gate.
+    """
+
+    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+
+
 def require_exact_weight_directory(path: Path) -> Path:
     """Require the five named upstream members and reject flattened extras."""
     if not path.is_absolute() or path.is_symlink() or not path.is_dir():
@@ -797,6 +809,14 @@ def self_test() -> None:
     reordered_members = {model_id: safe_members[model_id] for model_id in reversed(list(MEMBERS))}
     assert aggregate_safe_load_status(valid_source, reordered_members) == "BLOCKED"
     assert aggregate_safe_load_status(mismatched_revision, safe_members) == "BLOCKED"
+    with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-manifest-") as directory:
+        manifest_path = Path(directory) / EVIDENCE_FILENAME
+        write_json_manifest(
+            manifest_path,
+            {"members": {model_id: safe_members[model_id] for model_id in MEMBERS}},
+        )
+        reloaded_manifest = json_load_unique(manifest_path)
+        assert list(reloaded_manifest["members"]) == list(MEMBERS)
     with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-error-") as directory:
         error_evidence = Path(directory)
         write_error_manifest(error_evidence, RuntimeError("self-test error"))
@@ -949,9 +969,7 @@ def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence
         "source_license": source.get("license", "BLOCKED"),
         "weight_provenance": "AUTHENTICATED_MEMBER_DIGESTS_ONLY_UNREVIEWED_LICENSE_AND_DATASET",
     }
-    (evidence / EVIDENCE_FILENAME).write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    write_json_manifest(evidence / EVIDENCE_FILENAME, payload)
     print(
         "HT-Demucs inspection blocked; see htdemucs manifest: " + "; ".join(payload["blockers"]),
         file=sys.stderr,
@@ -976,7 +994,7 @@ def write_error_manifest(evidence: Path, error: Exception) -> None:
         "error": str(error),
         "blockers": ["inspection error; source/weights are not authenticated", FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER],
     }
-    (evidence / EVIDENCE_FILENAME).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_manifest(evidence / EVIDENCE_FILENAME, manifest)
 
 
 def main() -> int:
