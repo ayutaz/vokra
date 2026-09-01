@@ -275,22 +275,34 @@ pub const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 /// converter's module-private const). FireRedASR-AED-L ships on HF, so
 /// provenance rides `upstream_hf` rather than `upstream_url`.
 pub const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+/// GGUF metadata key for the exact upstream model revision.
 pub const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+/// GGUF metadata key for the exact source bridge revision.
 pub const KEY_PROVENANCE_SOURCE_REVISION: &str = "vokra.provenance.source_revision";
+/// GGUF metadata key for the raw checkpoint byte count.
 pub const KEY_PROVENANCE_CHECKPOINT_BYTES: &str = "vokra.provenance.checkpoint_bytes";
+/// GGUF metadata key for the raw checkpoint SHA-256.
 pub const KEY_PROVENANCE_CHECKPOINT_SHA256: &str = "vokra.provenance.checkpoint_sha256";
+/// GGUF metadata key for the prepared artifact byte count.
 pub const KEY_PROVENANCE_PREPARED_BYTES: &str = "vokra.provenance.prepared_bytes";
+/// GGUF metadata key for the prepared artifact SHA-256.
 pub const KEY_PROVENANCE_PREPARED_SHA256: &str = "vokra.provenance.prepared_sha256";
 
 /// Exact release identity emitted by the FireRed converter. These constants
 /// gate the optional native operand load; metadata alone is not a cryptographic
 /// payload signature, so parity remains an independent VAST requirement.
+/// Exact upstream HuggingFace revision authenticated by the converter.
 pub const UPSTREAM_REVISION: &str = "e57f5960d03cff1071ff7acbb409314d1e70ed3d";
+/// Exact FireRed source bridge revision authenticated by the converter.
 pub const SOURCE_REVISION: &str = "834635e4cf277ed8ca92049fc375b17c3dc20748";
+/// Raw checkpoint size authenticated by the converter.
 pub const CHECKPOINT_BYTES: u64 = 4_678_597_714;
+/// Raw checkpoint SHA-256 authenticated by the converter.
 pub const CHECKPOINT_SHA256: &str =
     "12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3";
+/// Prepared safetensors byte count authenticated by the converter.
 pub const PREPARED_BYTES: u64 = 4_678_403_512;
+/// Prepared safetensors SHA-256 authenticated by the converter.
 pub const PREPARED_SHA256: &str =
     "5e8608d5a23af0761cb6bb52d08ee19a6476b8c324799eff3c63c9785cef583e";
 const EXPECTED_RAW_LICENSE: &str = "apache-2.0";
@@ -394,8 +406,11 @@ pub const KEY_ENC_KERNEL_SIZE: &str = "vokra.firered_asr_aed_l.encoder.kernel_si
 
 /// Authenticated decoder/special-token ids from the checkpoint args.
 pub const KEY_BLANK_ID: &str = "vokra.firered_asr_aed_l.blank_id";
+/// GGUF metadata key for the decoder SOS token id.
 pub const KEY_SOS_ID: &str = "vokra.firered_asr_aed_l.sos_id";
+/// GGUF metadata key for the decoder EOS token id.
 pub const KEY_EOS_ID: &str = "vokra.firered_asr_aed_l.eos_id";
+/// GGUF metadata key for the decoder padding token id.
 pub const KEY_PAD_ID: &str = "vokra.firered_asr_aed_l.pad_id";
 
 /// The hyper-parameter group in canonical read order — **all-or-nothing**.
@@ -427,6 +442,7 @@ pub const FIREREDASRAED_SPEC_KEYS: [&str; 16] = [
 /// inspection. These values are used by the strict semantic binder and stack
 /// geometry; they are not defaults for minimal inspection fixtures.
 pub const AUTHENTICATED_ENCODER_N_LAYER: u32 = 16;
+/// Authenticated encoder residual width.
 pub const AUTHENTICATED_ENCODER_D_MODEL: u32 = 1_280;
 
 /// Authenticated FireRed acoustic front-end band count.
@@ -435,18 +451,26 @@ pub const AUTHENTICATED_ENCODER_D_MODEL: u32 = 1_280;
 /// the pinned source/reference contract supplies exactly 80 fbank bands and
 /// the native encoder rejects any other feature width.
 pub const AUTHENTICATED_N_MELS: u32 = 80;
+/// Authenticated encoder attention-head count.
 pub const AUTHENTICATED_ENCODER_N_HEAD: u32 = 20;
+/// Authenticated encoder feed-forward inner width.
 pub const AUTHENTICATED_ENCODER_FFN_DIM: u32 = 5_120;
+/// Authenticated encoder depthwise-convolution kernel width.
 pub const AUTHENTICATED_ENCODER_KERNEL_SIZE: u32 = 33;
 
 /// Authenticated decoder geometry from the same FireRedASR-AED-L release.
 /// These constants are descriptor/binder authority, not fallback defaults for
 /// inspection fixtures.
 pub const AUTHENTICATED_DECODER_N_LAYER: u32 = 16;
+/// Authenticated decoder residual width.
 pub const AUTHENTICATED_DECODER_D_MODEL: u32 = 1_280;
+/// Authenticated decoder attention-head count.
 pub const AUTHENTICATED_DECODER_N_HEAD: u32 = 20;
+/// Authenticated decoder feed-forward inner width.
 pub const AUTHENTICATED_DECODER_FFN_DIM: u32 = 5_120;
+/// Authenticated decoder vocabulary width.
 pub const AUTHENTICATED_DECODER_VOCAB_SIZE: u32 = 7_832;
+/// Authenticated decoder positional-table length.
 pub const AUTHENTICATED_DECODER_MAX_POSITIONS: u32 = 5_000;
 
 /// SHA-256 of the canonical, source-order `(name|dtype|shape)` rows for the
@@ -464,46 +488,87 @@ pub const AUTHENTICATED_DECODER_DESCRIPTOR_SHA256: &str =
 /// Semantic role of an authenticated FireRed encoder tensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FireRedEncoderTensorRole {
+    /// First convolution kernel.
     StemConv0Weight,
+    /// First convolution bias.
     StemConv0Bias,
+    /// Second convolution kernel.
     StemConv2Weight,
+    /// Second convolution bias.
     StemConv2Bias,
+    /// Stem output projection kernel.
     StemOutputWeight,
+    /// Stem output projection bias.
     StemOutputBias,
+    /// Relative positional encoding table.
     PositionalEncoding,
+    /// First feed-forward pre-normalisation weight.
     Ffn1NormWeight,
+    /// First feed-forward pre-normalisation bias.
     Ffn1NormBias,
+    /// First feed-forward expansion kernel.
     Ffn1ExpandWeight,
+    /// First feed-forward expansion bias.
     Ffn1ExpandBias,
+    /// First feed-forward projection kernel.
     Ffn1ProjectWeight,
+    /// First feed-forward projection bias.
     Ffn1ProjectBias,
+    /// Relative-attention positional bias U.
     AttentionPosBiasU,
+    /// Relative-attention positional bias V.
     AttentionPosBiasV,
+    /// Relative-attention query projection kernel.
     AttentionQWeight,
+    /// Relative-attention key projection kernel.
     AttentionKWeight,
+    /// Relative-attention value projection kernel.
     AttentionVWeight,
+    /// Query normalisation weight.
     AttentionQNormWeight,
+    /// Query normalisation bias.
     AttentionQNormBias,
+    /// Key normalisation weight.
     AttentionKNormWeight,
+    /// Key normalisation bias.
     AttentionKNormBias,
+    /// Value normalisation weight.
     AttentionVNormWeight,
+    /// Value normalisation bias.
     AttentionVNormBias,
+    /// Attention output projection kernel.
     AttentionOutputWeight,
+    /// Attention positional projection kernel.
     AttentionLinearPosWeight,
+    /// Convolution pre-normalisation weight.
     ConvolutionPreNormWeight,
+    /// Convolution pre-normalisation bias.
     ConvolutionPreNormBias,
+    /// Convolution pointwise input kernel.
     ConvolutionPointwiseInWeight,
+    /// Convolution depthwise kernel.
     ConvolutionDepthwiseWeight,
+    /// Convolution post-depthwise normalisation weight.
     ConvolutionNormWeight,
+    /// Convolution post-depthwise normalisation bias.
     ConvolutionNormBias,
+    /// Convolution pointwise output kernel.
     ConvolutionPointwiseOutWeight,
+    /// Second feed-forward pre-normalisation weight.
     Ffn2NormWeight,
+    /// Second feed-forward pre-normalisation bias.
     Ffn2NormBias,
+    /// Second feed-forward expansion kernel.
     Ffn2ExpandWeight,
+    /// Second feed-forward expansion bias.
     Ffn2ExpandBias,
+    /// Second feed-forward projection kernel.
     Ffn2ProjectWeight,
+    /// Second feed-forward projection bias.
     Ffn2ProjectBias,
+    /// Final encoder layer-normalisation weight.
     LayerNormWeight,
+    /// Final encoder layer-normalisation bias.
     LayerNormBias,
 }
 
@@ -511,6 +576,7 @@ pub enum FireRedEncoderTensorRole {
 /// value binder is added.  The current binder retains descriptors only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FireRedEncoderNativeLayout {
+    /// Operand is consumed without reshaping or transposition.
     Direct,
     /// PyTorch Linear `[out, in]` transposed to Compute `[in, out]`.
     LinearOutInToComputeInOut,
@@ -529,34 +595,63 @@ pub enum FireRedEncoderNativeLayout {
 /// Semantic role of an authenticated FireRed decoder tensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FireRedDecoderTensorRole {
+    /// Target-token embedding table.
     TargetEmbedding,
+    /// Decoder positional encoding table.
     PositionalEncoding,
+    /// Self-attention pre-normalisation weight.
     SelfAttentionNormWeight,
+    /// Self-attention pre-normalisation bias.
     SelfAttentionNormBias,
+    /// Self-attention query projection kernel.
     SelfAttentionQWeight,
+    /// Self-attention query projection bias.
     SelfAttentionQBias,
+    /// Self-attention key projection kernel.
     SelfAttentionKWeight,
+    /// Self-attention value projection kernel.
     SelfAttentionVWeight,
+    /// Self-attention value projection bias.
     SelfAttentionVBias,
+    /// Self-attention output projection kernel.
     SelfAttentionOutputWeight,
+    /// Self-attention output projection bias.
     SelfAttentionOutputBias,
+    /// Cross-attention pre-normalisation weight.
     CrossAttentionNormWeight,
+    /// Cross-attention pre-normalisation bias.
     CrossAttentionNormBias,
+    /// Cross-attention query projection kernel.
     CrossAttentionQWeight,
+    /// Cross-attention query projection bias.
     CrossAttentionQBias,
+    /// Cross-attention key projection kernel.
     CrossAttentionKWeight,
+    /// Cross-attention value projection kernel.
     CrossAttentionVWeight,
+    /// Cross-attention value projection bias.
     CrossAttentionVBias,
+    /// Cross-attention output projection kernel.
     CrossAttentionOutputWeight,
+    /// Cross-attention output projection bias.
     CrossAttentionOutputBias,
+    /// Decoder MLP pre-normalisation weight.
     MlpNormWeight,
+    /// Decoder MLP pre-normalisation bias.
     MlpNormBias,
+    /// Decoder MLP expansion kernel.
     MlpExpandWeight,
+    /// Decoder MLP expansion bias.
     MlpExpandBias,
+    /// Decoder MLP projection kernel.
     MlpProjectWeight,
+    /// Decoder MLP projection bias.
     MlpProjectBias,
+    /// Target-output projection kernel.
     TargetProjection,
+    /// Final decoder output normalisation weight.
     OutputNormWeight,
+    /// Final decoder output normalisation bias.
     OutputNormBias,
 }
 
@@ -582,18 +677,26 @@ pub enum FireRedDecoderNativeLayout {
 /// One generated semantic descriptor in the authenticated decoder contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FireRedDecoderTensorSpec {
+    /// Semantic decoder role for this tensor.
     pub role: FireRedDecoderTensorRole,
+    /// Exact upstream tensor name.
     pub name: String,
+    /// Shape in the upstream checkpoint.
     pub source_shape: Vec<u64>,
+    /// Native operand layout required by the runtime.
     pub native_layout: FireRedDecoderNativeLayout,
 }
 
 /// One generated semantic descriptor in the authenticated encoder contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FireRedEncoderTensorSpec {
+    /// Semantic encoder role for this tensor.
     pub role: FireRedEncoderTensorRole,
+    /// Exact upstream tensor name.
     pub name: String,
+    /// Shape in the upstream checkpoint.
     pub source_shape: Vec<u64>,
+    /// Native operand layout required by the runtime.
     pub native_layout: FireRedEncoderNativeLayout,
 }
 
@@ -1696,8 +1799,11 @@ pub struct FireredAsrAedConfig {
     pub vocab_size: u32,
     /// Decoder special-token ids, copied from authenticated checkpoint args.
     pub blank_id: u32,
+    /// Decoder start-of-sequence token id.
     pub sos_id: u32,
+    /// Decoder end-of-sequence token id.
     pub eos_id: u32,
+    /// Decoder padding token id.
     pub pad_id: u32,
     /// Acoustic encoder geometry.
     pub encoder: FireredAsrAedEncoderConfig,

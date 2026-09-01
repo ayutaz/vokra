@@ -690,6 +690,7 @@ impl FireRedCmvn {
         Ok(())
     }
 
+    /// Returns the feature dimension represented by this transform.
     #[must_use]
     pub fn dim(&self) -> usize {
         self.means.len()
@@ -699,7 +700,9 @@ impl FireRedCmvn {
 /// FireRed's exact two-layer, unpadded stride-2 Conv2d subsampling stem.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedConv2dSubsampling {
+    /// Number of channels emitted by each convolution.
     pub out_channels: usize,
+    /// Width of the projected frame representation.
     pub d_model: usize,
 }
 
@@ -873,11 +876,14 @@ impl FireRedConv2dSubsampling {
 /// residual, is [`Self::forward_with_output`].
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedRelativeAttention {
+    /// Attention model width.
     pub d_model: usize,
+    /// Number of attention heads.
     pub n_head: usize,
 }
 
 impl FireRedRelativeAttention {
+    /// Computes unmasked relative-position attention scores and context.
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
@@ -1429,6 +1435,7 @@ fn rel_shift(x: &[f32], frames: usize, positions_count: usize) -> Result<Vec<f32
 /// half-step to the module result.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedConformerFeedForward {
+    /// Model width of the residual stream.
     pub d_model: usize,
     /// Source `d_inner` (already four times `d_model` for this release).
     pub inner_dim: usize,
@@ -1542,7 +1549,9 @@ impl FireRedConformerFeedForward {
 /// channel at a time, with no CPU fallback when the selected backend lacks it.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedConformerConvolution {
+    /// Model/channel width of the convolution path.
     pub d_model: usize,
+    /// Depthwise convolution kernel width.
     pub kernel_size: usize,
 }
 
@@ -1706,11 +1715,14 @@ impl FireRedConformerConvolution {
 /// stay auditable.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedConformerBlock {
+    /// Residual stream width.
     pub d_model: usize,
     /// Source `d_inner` width, not a multiplier. The pinned release uses
     /// `d_model = 1280` and `d_inner = 5120`.
     pub inner_dim: usize,
+    /// Number of relative-attention heads.
     pub n_head: usize,
+    /// Depthwise convolution kernel width.
     pub kernel_size: usize,
 }
 
@@ -1730,40 +1742,75 @@ pub struct FireRedConformerEncoder {
 /// binder; these fields do not invent a manifest.
 #[derive(Clone, Copy)]
 pub struct FireRedConformerBlockWeights<'a> {
+    /// First feed-forward layer-normalisation scale.
     pub ffn1_ln_gamma: &'a [f32],
+    /// First feed-forward layer-normalisation bias.
     pub ffn1_ln_beta: &'a [f32],
+    /// First feed-forward expansion matrix.
     pub ffn1_expand_w_t: &'a [f32],
+    /// First feed-forward expansion bias.
     pub ffn1_expand_b: &'a [f32],
+    /// First feed-forward projection matrix.
     pub ffn1_project_w_t: &'a [f32],
+    /// First feed-forward projection bias.
     pub ffn1_project_b: &'a [f32],
+    /// Relative positional encoding rows.
     pub attention_positions: &'a [f32],
+    /// Relative-attention query matrix.
     pub attention_q_w_t: &'a [f32],
+    /// Relative-attention key matrix.
     pub attention_k_w_t: &'a [f32],
+    /// Relative-attention value matrix.
     pub attention_v_w_t: &'a [f32],
+    /// Relative positional projection matrix.
     pub attention_linear_pos_w_t: &'a [f32],
+    /// Query normalisation scale.
     pub attention_q_norm_gamma: &'a [f32],
+    /// Query normalisation bias.
     pub attention_q_norm_beta: &'a [f32],
+    /// Key normalisation scale.
     pub attention_k_norm_gamma: &'a [f32],
+    /// Key normalisation bias.
     pub attention_k_norm_beta: &'a [f32],
+    /// Value normalisation scale.
     pub attention_v_norm_gamma: &'a [f32],
+    /// Value normalisation bias.
     pub attention_v_norm_beta: &'a [f32],
+    /// Relative-attention head bias U.
     pub attention_bias_u: &'a [f32],
+    /// Relative-attention head bias V.
     pub attention_bias_v: &'a [f32],
+    /// Attention output projection matrix.
     pub attention_output_w_t: &'a [f32],
+    /// Convolution pointwise input matrix.
     pub conv_pointwise_in_w: &'a [f32],
+    /// Convolution depthwise kernel.
     pub conv_depthwise_w: &'a [f32],
+    /// Depthwise convolution normalisation scale.
     pub conv_depthwise_ln_gamma: &'a [f32],
+    /// Depthwise convolution normalisation bias.
     pub conv_depthwise_ln_beta: &'a [f32],
+    /// Convolution pointwise output matrix.
     pub conv_pointwise_out_w: &'a [f32],
+    /// Convolution pre-normalisation scale.
     pub conv_pre_ln_gamma: &'a [f32],
+    /// Convolution pre-normalisation bias.
     pub conv_pre_ln_beta: &'a [f32],
+    /// Second feed-forward layer-normalisation scale.
     pub ffn2_ln_gamma: &'a [f32],
+    /// Second feed-forward layer-normalisation bias.
     pub ffn2_ln_beta: &'a [f32],
+    /// Second feed-forward expansion matrix.
     pub ffn2_expand_w_t: &'a [f32],
+    /// Second feed-forward expansion bias.
     pub ffn2_expand_b: &'a [f32],
+    /// Second feed-forward projection matrix.
     pub ffn2_project_w_t: &'a [f32],
+    /// Second feed-forward projection bias.
     pub ffn2_project_b: &'a [f32],
+    /// Final encoder layer-normalisation scale.
     pub final_ln_gamma: &'a [f32],
+    /// Final encoder layer-normalisation bias.
     pub final_ln_beta: &'a [f32],
 }
 
@@ -2076,12 +2123,19 @@ impl FireRedConformerEncoder {
 /// represented by the lack of a field, not by fabricated zeros.
 #[derive(Clone, Copy)]
 pub struct FireRedDecoderSelfAttentionWeights<'a> {
+    /// Query projection matrix in Compute layout.
     pub q_w_t: &'a [f32],
+    /// Query projection bias.
     pub q_b: &'a [f32],
+    /// Key projection matrix in Compute layout.
     pub k_w_t: &'a [f32],
+    /// Value projection matrix in Compute layout.
     pub v_w_t: &'a [f32],
+    /// Value projection bias.
     pub v_b: &'a [f32],
+    /// Output projection matrix in Compute layout.
     pub output_w_t: &'a [f32],
+    /// Output projection bias.
     pub output_b: &'a [f32],
 }
 
@@ -2090,12 +2144,19 @@ pub struct FireRedDecoderSelfAttentionWeights<'a> {
 /// unequal encoder/decoder widths are rejected by the native seam.
 #[derive(Clone, Copy)]
 pub struct FireRedDecoderCrossAttentionWeights<'a> {
+    /// Query projection matrix in Compute layout.
     pub q_w_t: &'a [f32],
+    /// Query projection bias.
     pub q_b: &'a [f32],
+    /// Key projection matrix in Compute layout.
     pub k_w_t: &'a [f32],
+    /// Value projection matrix in Compute layout.
     pub v_w_t: &'a [f32],
+    /// Value projection bias.
     pub v_b: &'a [f32],
+    /// Output projection matrix in Compute layout.
     pub output_w_t: &'a [f32],
+    /// Output projection bias.
     pub output_b: &'a [f32],
 }
 
@@ -2104,17 +2165,29 @@ pub struct FireRedDecoderCrossAttentionWeights<'a> {
 /// only path.
 #[derive(Clone, Copy)]
 pub struct FireRedDecoderLayerWeights<'a> {
+    /// Self-attention pre-normalisation scale.
     pub self_norm_gamma: &'a [f32],
+    /// Self-attention pre-normalisation bias.
     pub self_norm_beta: &'a [f32],
+    /// Self-attention projection operands.
     pub self_attention: FireRedDecoderSelfAttentionWeights<'a>,
+    /// Cross-attention pre-normalisation scale.
     pub cross_norm_gamma: &'a [f32],
+    /// Cross-attention pre-normalisation bias.
     pub cross_norm_beta: &'a [f32],
+    /// Cross-attention projection operands.
     pub cross_attention: FireRedDecoderCrossAttentionWeights<'a>,
+    /// MLP pre-normalisation scale.
     pub mlp_norm_gamma: &'a [f32],
+    /// MLP pre-normalisation bias.
     pub mlp_norm_beta: &'a [f32],
+    /// MLP expansion matrix.
     pub mlp_expand_w_t: &'a [f32],
+    /// MLP expansion bias.
     pub mlp_expand_b: &'a [f32],
+    /// MLP projection matrix.
     pub mlp_project_w_t: &'a [f32],
+    /// MLP projection bias.
     pub mlp_project_b: &'a [f32],
 }
 
@@ -2123,8 +2196,11 @@ pub struct FireRedDecoderLayerWeights<'a> {
 /// can pass them to the next step without re-projecting old tokens.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FireRedDecoderAttentionOutput {
+    /// Attention output rows.
     pub output: Vec<f32>,
+    /// Projected key cache rows.
     pub key_cache: Vec<f32>,
+    /// Projected value cache rows.
     pub value_cache: Vec<f32>,
 }
 
@@ -2134,11 +2210,14 @@ pub struct FireRedDecoderAttentionOutput {
 /// path when `query_frames == 1`.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedDecoderSelfAttention {
+    /// Decoder residual width.
     pub d_model: usize,
+    /// Number of attention heads.
     pub n_head: usize,
 }
 
 impl FireRedDecoderSelfAttention {
+    /// Runs causal self-attention and returns the updated K/V cache.
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2252,12 +2331,16 @@ impl FireRedDecoderSelfAttention {
 /// are encoder-frame-major.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedDecoderCrossAttention {
+    /// Decoder query width.
     pub d_model: usize,
+    /// Encoder memory width.
     pub source_dim: usize,
+    /// Number of attention heads.
     pub n_head: usize,
 }
 
 impl FireRedDecoderCrossAttention {
+    /// Runs masked cross-attention from decoder queries to encoder memory.
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2376,20 +2459,29 @@ impl FireRedDecoderCrossAttention {
 /// cache separately and does not mutate hidden state behind the caller's back.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedDecoderLayer {
+    /// Decoder residual width.
     pub d_model: usize,
+    /// Decoder MLP inner width.
     pub inner_dim: usize,
+    /// Number of decoder attention heads.
     pub n_head: usize,
+    /// Width of encoder memory presented to cross-attention.
     pub source_dim: usize,
 }
 
+/// Result of one decoder layer, including its updated self-attention cache.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FireRedDecoderLayerOutput {
+    /// Layer output rows.
     pub output: Vec<f32>,
+    /// Updated projected key cache.
     pub key_cache: Vec<f32>,
+    /// Updated projected value cache.
     pub value_cache: Vec<f32>,
 }
 
 impl FireRedDecoderLayer {
+    /// Runs one pre-norm decoder layer with self- and cross-attention.
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2634,12 +2726,16 @@ impl FireRedDecoderLayer {
 /// arbitrary scale.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedDecoderEmbedding {
+    /// Number of rows in the token embedding table.
     pub vocab_size: usize,
+    /// Decoder residual width.
     pub d_model: usize,
+    /// Number of positional rows available to decoding.
     pub max_positions: usize,
 }
 
 impl FireRedDecoderEmbedding {
+    /// Looks up and scales token embeddings, then adds positional rows.
     pub fn forward(
         &self,
         token_ids: &[usize],
@@ -2706,11 +2802,14 @@ impl FireRedDecoderEmbedding {
 /// Compute view `[d_model,vocab]`.
 #[derive(Debug, Clone, Copy)]
 pub struct FireRedDecoderOutputHead {
+    /// Decoder residual width.
     pub d_model: usize,
+    /// Number of output vocabulary rows.
     pub vocab_size: usize,
 }
 
 impl FireRedDecoderOutputHead {
+    /// Applies final LayerNorm and projects hidden rows to vocabulary logits.
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2765,13 +2864,19 @@ impl FireRedDecoderOutputHead {
 /// finished beams are immutable. Length normalisation is explicit and
 /// caller-controlled so this helper does not silently invent a search policy.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // Beam helpers are staged until the full PCM route lands.
 pub struct FireRedBeamState {
+    /// Generated token ids, excluding the initial SOS id.
     pub tokens: Vec<usize>,
+    /// Accumulated log probability of the beam.
     pub score: f32,
+    /// Whether EOS or the configured length limit has been reached.
     pub finished: bool,
 }
 
+#[allow(dead_code)] // Beam helpers are staged until the full PCM route lands.
 impl FireRedBeamState {
+    /// Creates an empty, unfinished beam with zero score.
     pub fn new() -> Self {
         Self {
             tokens: Vec::new(),
@@ -2780,6 +2885,7 @@ impl FireRedBeamState {
         }
     }
 
+    /// Appends one token and updates completion and score state.
     pub fn advance(
         &self,
         token: usize,
@@ -2832,6 +2938,7 @@ impl FireRedBeamState {
 /// Applies the source EOS score penalty before beam selection. The source
 /// default is `1.0`; values outside `(0, 1]` are rejected instead of silently
 /// changing search behavior.
+#[allow(dead_code)] // Used when the complete decoder search route is enabled.
 pub fn apply_fire_red_eos_penalty(
     token_scores: &mut [f32],
     eos_id: usize,

@@ -1,4 +1,4 @@
-//! FireRedASR-AED-L inspection-only dispatch contracts.
+//! FireRedASR-AED-L prepared-artifact and fail-closed dispatch contracts.
 
 use std::path::PathBuf;
 
@@ -25,22 +25,28 @@ fn aliases_dispatch_to_distinct_model_kind() {
 }
 
 #[test]
-fn direct_dispatch_and_license_dispatch_refuse_without_output() {
+fn direct_dispatch_and_license_dispatch_reject_unprepared_input_without_output() {
     let input = temp_path("input");
     let output = temp_path("output");
     std::fs::write(&input, b"arbitrary checkpoint").expect("input");
     std::fs::remove_file(&output).ok();
-    for result in [
-        convert_file(ModelKind::FireredAsrAedL, &input, &output),
-        convert_file_licensed(
-            ModelKind::FireredAsrAedL,
-            &input,
-            &output,
-            Some("apache-2.0"),
+    for (result, expected_error) in [
+        (
+            convert_file(ModelKind::FireredAsrAedL, &input, &output),
+            "VAST prepared safetensors artifact",
+        ),
+        (
+            convert_file_licensed(
+                ModelKind::FireredAsrAedL,
+                &input,
+                &output,
+                Some("apache-2.0"),
+            ),
+            "fixed Apache-2.0 weight license",
         ),
     ] {
-        let error = result.expect_err("FireRed conversion must be inspection-only");
-        assert!(error.to_string().contains("INSPECTION_ONLY"));
+        let error = result.expect_err("FireRed conversion must reject an unprepared artifact");
+        assert!(error.to_string().contains(expected_error));
         assert!(!output.exists());
     }
     std::fs::remove_file(input).ok();
