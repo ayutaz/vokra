@@ -27,10 +27,53 @@ UV_CACHE_DIR="${FIRERED_ASR_UV_CACHE_DIR:-/tmp/vokra-firered-asr-uv-cache}"
 
 log() { printf '[firered-asr-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
-usage() { echo 'usage: run-firered-asr-aed-l-inspection.sh [--work-dir DIR] | --self-test'; }
+usage() { echo 'usage: run-firered-asr-aed-l-inspection.sh [--work-dir DIR] [--owner-approval JSON] | --self-test'; }
+
+canonical_absent_candidate() {
+  local candidate="$1" parent suffix resolved
+  [[ "$candidate" == /* ]] || die 'path candidate must be absolute'
+  [[ "$candidate" != *'/../'* && "$candidate" != */.. ]] || die 'path candidate must not contain ..'
+  [[ ! -e "$candidate" && ! -L "$candidate" ]] || die "path candidate must be absent: $candidate"
+  parent="$(dirname "$candidate")"
+  suffix="$(basename "$candidate")"
+  while [[ ! -e "$parent" ]]; do
+    [[ "$parent" != / ]] || die "cannot resolve path parent: $candidate"
+    suffix="$(basename "$parent")/$suffix"
+    parent="$(dirname "$parent")"
+  done
+  [[ -d "$parent" && ! -L "$parent" ]] || die "path parent must be a non-symlink directory: $parent"
+  resolved="$(cd "$parent" && pwd -P)" || die "cannot canonicalize path parent: $parent"
+  printf '%s/%s\n' "$resolved" "$suffix"
+}
+
+canonical_existing_file() {
+  local candidate="$1" parent
+  [[ "$candidate" == /* ]] || die 'approval path must be absolute after argument resolution'
+  [[ -f "$candidate" && ! -L "$candidate" ]] || die 'approval must be an existing regular JSON file, not a symlink'
+  parent="$(cd "$(dirname "$candidate")" && pwd -P)" || die 'cannot canonicalize approval parent'
+  printf '%s/%s\n' "$parent" "$(basename "$candidate")"
+}
+
+paths_overlap() {
+  local left="$1" right="$2"
+  [[ "$left" == "$right" || "$left" == "$right"/* || "$right" == "$left"/* ]]
+}
 
 self_test() {
-  local path="${BASH_SOURCE[0]}" fail=0 token
+  local path="${BASH_SOURCE[0]}" fail=0 token path_test candidate
+  path_test="$(mktemp -d /tmp/firered-path-selftest.XXXXXX)" || { log 'self-test FAIL: mktemp failed'; return 1; }
+  candidate="$(canonical_absent_candidate "$path_test/nested/missing")" || fail=1
+  path_test="$(cd "$path_test" && pwd -P)" || fail=1
+  [[ "$candidate" == "$path_test/nested/missing" ]] || fail=1
+  mkdir "$path_test/existing"
+  if (canonical_absent_candidate "$path_test/existing") >/dev/null 2>&1; then fail=1; fi
+  ln -s missing "$path_test/dangling"
+  if (canonical_absent_candidate "$path_test/dangling") >/dev/null 2>&1; then fail=1; fi
+  paths_overlap "$path_test" "$path_test/nested" || fail=1
+  paths_overlap "$path_test/nested" "$path_test" || fail=1
+  if paths_overlap "$path_test" "/tmp/another-root"; then fail=1; fi
+  rm -rf "$path_test"
+  (( fail == 0 )) || { log 'self-test FAIL: path candidate/overlap contract'; return 1; }
   for token in \
     'FireRedTeam/FireRedASR-AED-L' 'e57f5960d03cff1071ff7acbb409314d1e70ed3d' \
     'FireRedASR.git' '834635e4cf277ed8ca92049fc375b17c3dc20748' \
@@ -43,7 +86,7 @@ self_test() {
     'pinned-source frontend' 'SentencePiece/TokenDict' 'PREPARED' 'archive_members' \
     'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
     'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' 'firered-asr-aed-l-reference-trace-v1' 'encoder_each_layer' 'decoder_each_layer' 'frontend_fbank_cmvn' \
-    'firered_asr_aed_l_audit.py' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'installed_distributions' 'native_payloads' 'publisher' 'owner_approval' 'dependency audit' \
+    'firered_asr_aed_l_audit.py' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'OWNER_APPROVED' 'OWNER_REVIEW_REQUIRED' 'INVALID' 'distribution_evidence' 'distribution_evidence_sha256' 'lock_artifact' 'source_identity_aggregate' 'native_payloads' 'publisher_urls' 'publisher_url_aggregate' 'license_candidate_aggregate' 'native_payload_aggregate' 'review_ledger' 'exact_digest_gate' 'collection_protocol' 'owner_approval' 'owner-approval-v1' '--owner-approval' 'owner_approval_path' 'yousan' 'approved_at_utc' 'publisher_urls_sha256' 'license_candidates_sha256' 'native_payloads_sha256' 'scope_sha256' 'collection_failures' 'approved_mode' 'is_symlink' 'regular JSON' 'must not overlap' 'reject_duplicate_pairs' 'duplicate JSON key' 'exactly 27 active closure rows' 'native_source_license' 'source_revision_verified' 'source_url_verified' 'license_path' 'license_bytes' 'license_sha256_verified' 'approved_route_expected_artifacts' \
     'NamedTemporaryFile' 'os.link' 'manifest-with-preparation.json' \
     'manifest-with-reference.json' 'final no-clobber manifest' \
     'kaldiio==2.18.0' 'kaldi-native-fbank==1.15' 'name = "setuptools"' 'version = "80.9.0"' 'specifier = "==80.9.0"' 'pkg_resources' 'setuptools<82' \
@@ -109,11 +152,17 @@ import sys
 from pathlib import Path
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 audit = source.index('dependency-audit.json')
-snapshot = source.index('snapshot_download')
+snapshot = source.index('\nfrom huggingface_hub import snapshot_download')
 if audit >= snapshot:
     raise SystemExit("dependency audit must precede model snapshot")
 if source.index('BLOCKED_UNREVIEWED_TRANSITIVE; owner review') < audit:
     raise SystemExit("dependency audit status gate is missing")
+if source.index('\n  audit_args+=(--owner-approval') >= snapshot:
+    raise SystemExit("approved owner artifact is not wired before model snapshot")
+if source.index('\nexpected_status = "OWNER_APPROVED" if approved_mode') >= snapshot:
+    raise SystemExit("approved packet verifier is not before model snapshot")
+if source.index("\n  die 'FireRed dependency closure is BLOCKED_UNREVIEWED_TRANSITIVE") >= snapshot:
+    raise SystemExit("no-approval block is not before model snapshot")
 print("FireRed dependency gate ordering self-test: PASS")
 PY
   then
@@ -170,16 +219,18 @@ PY
 }
 
 work_dir="$WORK"
+owner_approval_path=""
 self=0
 while (($#)); do
   case "$1" in
     --self-test) self=1; shift ;;
     --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2 ;;
+    --owner-approval) (($# >= 2)) || die '--owner-approval requires JSON'; owner_approval_path="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-if (( self )); then [[ "$work_dir" == "$WORK" ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
+if (( self )); then [[ "$work_dir" == "$WORK" && -z "$owner_approval_path" ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
 [[ "$(uname -s)" == Linux ]] || die 'Linux VAST required'
 [[ "$(uname -m)" == x86_64 ]] || die 'x86_64 VAST required'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
@@ -191,8 +242,21 @@ if (( self )); then [[ "$work_dir" == "$WORK" ]] || die '--self-test accepts no 
 mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
 [[ "$mem_kib" =~ ^[0-9]+$ ]] || die 'invalid memory value'
 (( mem_kib >= MIN_MEM_KIB )) || die '128 GiB memory guard failed'
+[[ "$work_dir" == /* ]] || die '--work-dir must be absolute'
+work_dir="$(canonical_absent_candidate "$work_dir")"
+root_path="$(cd "$ROOT" && pwd -P)" || die 'cannot canonicalize checkout root'
+if paths_overlap "$work_dir" "$root_path"; then
+  die '--work-dir must not overlap the checkout'
+fi
+if [[ -n "$owner_approval_path" ]]; then
+  [[ "$owner_approval_path" == /* ]] || owner_approval_path="$(cd "$(dirname "$owner_approval_path")" && pwd -P)/$(basename "$owner_approval_path")" || die 'cannot resolve --owner-approval path'
+  owner_approval_path="$(canonical_existing_file "$owner_approval_path")"
+  if paths_overlap "$owner_approval_path" "$root_path" || paths_overlap "$owner_approval_path" "$work_dir"; then
+    die '--owner-approval must not overlap the checkout or work directory'
+  fi
+fi
 mkdir -p "$(dirname "$work_dir")"
-[[ ! -e "$work_dir" || -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die 'work directory must be empty'
+mkdir "$work_dir" || die 'work directory candidate was created concurrently or is not absent'
 free_kib="$(df -Pk "$(dirname "$work_dir")" | awk 'NR == 2 {print $4}')"
 [[ "$free_kib" =~ ^[0-9]+$ ]] || die 'invalid disk value'
 (( free_kib >= MIN_DISK_KIB )) || die '32 GiB disk guard failed'
@@ -266,22 +330,178 @@ git clone --filter=blob:none --no-checkout "$KALDI_NATIVE_FBANK_URL" "$work_dir/
 git -C "$work_dir/source/kaldi-native-fbank" checkout --detach "$KALDI_NATIVE_FBANK_REVISION" >> "$work_dir/evidence/validation.log" 2>&1
 [[ -f "$work_dir/source/kaldi-native-fbank/LICENSE" && -f "$work_dir/source/kaldi-native-fbank/setup.py" ]] || die 'pinned kaldi-native-fbank source/build files are incomplete'
 [[ "$(sha256sum "$work_dir/source/kaldi-native-fbank/LICENSE" | awk '{print $1}')" == "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" ]] || die 'pinned kaldi-native-fbank LICENSE hash mismatch'
-# License/native closure is a separate, gate-first audit.  An inventory is
-# useful evidence, but it is not approval: until every transitive row is
-# reviewed the worker must stop before requesting the model snapshot.
+# License/native closure is a separate, gate-first audit. An inventory is
+# useful evidence, but it is not approval. In approved mode the owner artifact
+# is only passed through for exact validation; the worker never creates it.
 # shellcheck disable=SC2317
 set +e
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$FIRERED_PROJECT" --python 3.12 python "$AUDITOR" \
-  --lock "$FIRERED_PROJECT/uv.lock" --project "$work_dir/source/kaldi-native-fbank" \
-  --output "$work_dir/evidence/dependency-audit.json" >> "$work_dir/evidence/validation.log" 2>&1
+audit_args=(
+  --lock "$FIRERED_PROJECT/uv.lock"
+  --project "$work_dir/source/kaldi-native-fbank"
+  --output "$work_dir/evidence/dependency-audit.json"
+)
+if [[ -n "$owner_approval_path" ]]; then
+  audit_args+=(--owner-approval "$owner_approval_path")
+fi
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$FIRERED_PROJECT" --python 3.12 python "$AUDITOR" "${audit_args[@]}" >> "$work_dir/evidence/validation.log" 2>&1
 audit_rc=$?
 set -e
-(( audit_rc == 2 )) || die 'FireRed dependency closure auditor failed unexpectedly'
-die 'FireRed dependency closure is BLOCKED_UNREVIEWED_TRANSITIVE; owner review is required before model snapshot'
+if [[ -z "$owner_approval_path" ]]; then
+  (( audit_rc == 2 )) || die 'FireRed dependency closure auditor failed unexpectedly'
+else
+  (( audit_rc == 0 || audit_rc == 2 )) || die 'FireRed dependency closure auditor failed unexpectedly'
+fi
+# Treat the emitted audit as an immutable, machine-readable review packet. A
+# malformed or self-approved packet is rejected before the model snapshot
+# boundary; this worker never supplies an owner approval artifact itself.
+approved_mode=0
+[[ -n "$owner_approval_path" ]] && approved_mode=1
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/evidence/dependency-audit.json" "$FIRERED_PROJECT/uv.lock" "$approved_mode" "$owner_approval_path" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1 || die 'FireRed dependency audit review ledger/digest gate failed'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+def reject_duplicate_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
+lock_path = Path(sys.argv[2])
+approved_mode = sys.argv[3] == "1"
+owner_approval = manifest.get("owner_approval", {})
+expected_status = "OWNER_APPROVED" if approved_mode else "BLOCKED_UNREVIEWED_TRANSITIVE"
+if manifest.get("status") != expected_status or manifest.get("gate", {}).get("status") != expected_status:
+    raise SystemExit(f"dependency audit status mismatch for approved_mode={approved_mode}")
+if owner_approval.get("status") != ("VALIDATED" if approved_mode else "MISSING"):
+    raise SystemExit("owner approval status mismatch")
+expected_protocol = "OWNER_APPROVED" if approved_mode else "BLOCKED_NO_OWNER_APPROVAL"
+if manifest.get("collection_protocol", {}).get("status") != expected_protocol:
+    raise SystemExit("collection protocol status mismatch")
+collection_failures = manifest.get("collection_failures")
+if not isinstance(collection_failures, list):
+    raise SystemExit("collection failure report is malformed")
+if approved_mode:
+    approval_path = Path(sys.argv[4])
+    artifact = owner_approval.get("artifact", {})
+    if artifact.get("path") != str(approval_path) or artifact.get("bytes") != approval_path.stat().st_size or artifact.get("sha256") != hashlib.sha256(approval_path.read_bytes()).hexdigest():
+        raise SystemExit("owner approval artifact identity mismatch")
+    if collection_failures:
+        raise SystemExit("approved audit still has incomplete distribution evidence")
+else:
+    if owner_approval.get("artifact") is not None:
+        raise SystemExit("unapproved packet contains an approval artifact")
+closure = manifest.get("active_closure", {})
+rows = closure.get("rows")
+ledger = manifest.get("review_ledger", {})
+ledger_rows = ledger.get("rows")
+if not isinstance(rows, list) or len(rows) != 27 or len(rows) != closure.get("row_count"):
+    raise SystemExit("active closure row count is malformed")
+if not isinstance(ledger_rows, list) or len(ledger_rows) != 27 or ledger.get("row_count") != len(rows):
+    raise SystemExit("review ledger must cover exactly 27 active closure rows")
+if ledger.get("sha256") != digest(ledger_rows):
+    raise SystemExit("review ledger digest mismatch")
+if closure.get("row_digest") != digest(rows):
+    raise SystemExit("active closure digest mismatch")
+by_identity = {(row.get("name"), row.get("version"), row.get("row_sha256")) for row in rows}
+seen = set()
+for item in ledger_rows:
+    identity = (item.get("name"), item.get("version"), item.get("row_sha256"))
+    if identity not in by_identity or identity in seen:
+        raise SystemExit("review ledger row identity mismatch")
+    if item.get("review_status") != "OWNER_REVIEW_REQUIRED" or item.get("owner_decision") is not None:
+        raise SystemExit("review ledger contains an implicit owner decision")
+    seen.add(identity)
+if seen != by_identity:
+    raise SystemExit("review ledger row set is incomplete")
+distribution_evidence = manifest.get("distribution_evidence")
+if not isinstance(distribution_evidence, list) or len(distribution_evidence) != len(rows):
+    raise SystemExit("distribution evidence must cover every active closure row")
+if manifest.get("distribution_evidence_sha256") != digest(distribution_evidence):
+    raise SystemExit("distribution evidence digest mismatch")
+for item in distribution_evidence:
+    if item.get("installed") is not True or item.get("version_match") is not True or item.get("metadata") is None:
+        raise SystemExit(f"incomplete installed distribution evidence: {item.get('name')}")
+kaldi_rows = [item for item in distribution_evidence if item.get("name") == "kaldi-native-fbank"]
+if len(kaldi_rows) != 1:
+    raise SystemExit("kaldi-native-fbank source evidence row is missing or duplicated")
+source_license = kaldi_rows[0].get("native_source_license")
+if not isinstance(source_license, dict):
+    raise SystemExit("kaldi-native-fbank pinned source/LICENSE evidence is missing")
+if source_license not in kaldi_rows[0].get("license_candidates", []):
+    raise SystemExit("kaldi-native-fbank source/LICENSE is not included in license candidates")
+if {
+    source_license.get("kind"),
+    source_license.get("source_url"),
+    source_license.get("source_revision"),
+    source_license.get("license_path"),
+    source_license.get("license_sha256"),
+} != {
+    "pinned_source_license",
+    "https://github.com/csukuangfj/kaldi-native-fbank.git",
+    "f68c6b43f739697d7ab02ff6debacee130e1d541",
+    "LICENSE",
+    "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+}:
+    raise SystemExit("kaldi-native-fbank pinned source/LICENSE identity mismatch")
+if not isinstance(source_license.get("license_bytes"), int) or source_license["license_bytes"] <= 0:
+    raise SystemExit("kaldi-native-fbank LICENSE byte evidence is missing")
+if not all(source_license.get(key) is True for key in ("source_revision_verified", "source_url_verified", "license_sha256_verified")):
+    raise SystemExit("kaldi-native-fbank pinned source/LICENSE verification failed")
+for key in ("publisher_url_aggregate", "license_candidate_aggregate", "native_payload_aggregate"):
+    aggregate = manifest.get(key)
+    if not isinstance(aggregate, dict) or aggregate.get("sha256") != digest(aggregate.get("rows")):
+        raise SystemExit(f"{key} digest mismatch")
+gate = manifest.get("exact_digest_gate", {})
+scope = gate.get("scope")
+if not isinstance(scope, dict) or gate.get("scope_sha256") != digest(scope):
+    raise SystemExit("exact digest gate scope is malformed")
+lock_sha256 = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+lock_artifact = manifest.get("lock_artifact")
+if not isinstance(lock_artifact, dict) or lock_artifact.get("format") != "uv.lock" or lock_artifact.get("sha256") != lock_sha256:
+    raise SystemExit("immutable uv.lock artifact identity mismatch")
+if scope.get("lock_sha256") != lock_sha256:
+    raise SystemExit("exact digest gate lock identity mismatch")
+if scope.get("active_closure_sha256") != closure.get("row_digest"):
+    raise SystemExit("exact digest gate active closure mismatch")
+if scope.get("distribution_evidence_sha256") != manifest.get("distribution_evidence_sha256"):
+    raise SystemExit("exact digest gate distribution evidence mismatch")
+source_aggregate = manifest.get("source_identity_aggregate")
+if not isinstance(source_aggregate, dict) or source_aggregate.get("sha256") != digest(source_aggregate.get("rows")):
+    raise SystemExit("source identity aggregate digest mismatch")
+if scope.get("source_identity_aggregate_sha256") != source_aggregate.get("sha256"):
+    raise SystemExit("exact digest gate source identity mismatch")
+if scope.get("review_ledger_sha256") != ledger.get("sha256"):
+    raise SystemExit("exact digest gate review ledger mismatch")
+if scope.get("license_candidate_aggregate_sha256") != manifest["license_candidate_aggregate"]["sha256"]:
+    raise SystemExit("exact digest gate license aggregate mismatch")
+if scope.get("native_payload_aggregate_sha256") != manifest["native_payload_aggregate"]["sha256"]:
+    raise SystemExit("exact digest gate native aggregate mismatch")
+if scope.get("publisher_url_aggregate_sha256") != manifest["publisher_url_aggregate"]["sha256"]:
+    raise SystemExit("exact digest gate publisher aggregate mismatch")
+if not isinstance(scope.get("lock_sha256"), str) or len(scope["lock_sha256"]) != 64:
+    raise SystemExit("exact digest gate lock digest is malformed")
+print("FireRed dependency review ledger/exact digest gate: PASS")
+PY
+if [[ -z "$owner_approval_path" ]]; then
+  die 'FireRed dependency closure is BLOCKED_UNREVIEWED_TRANSITIVE; owner review is required before model snapshot'
+fi
 # shellcheck disable=SC2129
 {
-  echo 'status=BLOCKED'
-  echo 'evidence_stage=INSPECTION_ONLY'
+  if [[ -n "$owner_approval_path" ]]; then
+    echo 'status=OWNER_APPROVED'
+    echo 'evidence_stage=OWNER_APPROVED_PRE_MODEL'
+  else
+    echo 'status=BLOCKED'
+    echo 'evidence_stage=INSPECTION_ONLY'
+  fi
   echo 'runtime_status=NOT_IMPLEMENTED_FAIL_CLOSED'
   echo 'cpu_status=UNSUPPORTED'
   echo 'metal_status=BLOCKED_BY_CPU'

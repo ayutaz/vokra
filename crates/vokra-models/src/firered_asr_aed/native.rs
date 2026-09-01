@@ -160,9 +160,11 @@ impl FireRedRuntimeWeights {
     ) -> Result<Vec<f32>> {
         if frames < 7
             || features.len()
-                != frames.checked_mul(super::N_MELS as usize).ok_or_else(|| {
-                    VokraError::InvalidArgument("FireRed fbank shape overflow".to_owned())
-                })?
+                != frames
+                    .checked_mul(super::AUTHENTICATED_N_MELS as usize)
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument("FireRed fbank shape overflow".to_owned())
+                    })?
             || input_mask.len() != frames
             || !input_mask.iter().all(|&valid| valid)
         {
@@ -185,7 +187,7 @@ impl FireRedRuntimeWeights {
             compute,
             features,
             frames,
-            super::N_MELS as usize,
+            super::AUTHENTICATED_N_MELS as usize,
             conv0_w,
             conv0_b,
             conv1_w,

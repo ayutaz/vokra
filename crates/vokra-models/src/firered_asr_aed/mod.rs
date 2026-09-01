@@ -428,6 +428,13 @@ pub const FIREREDASRAED_SPEC_KEYS: [&str; 16] = [
 /// geometry; they are not defaults for minimal inspection fixtures.
 pub const AUTHENTICATED_ENCODER_N_LAYER: u32 = 16;
 pub const AUTHENTICATED_ENCODER_D_MODEL: u32 = 1_280;
+
+/// Authenticated FireRed acoustic front-end band count.
+///
+/// This is a FireRed-private geometry constant, not a generic mel default:
+/// the pinned source/reference contract supplies exactly 80 fbank bands and
+/// the native encoder rejects any other feature width.
+pub const AUTHENTICATED_N_MELS: u32 = 80;
 pub const AUTHENTICATED_ENCODER_N_HEAD: u32 = 20;
 pub const AUTHENTICATED_ENCODER_FFN_DIM: u32 = 5_120;
 pub const AUTHENTICATED_ENCODER_KERNEL_SIZE: u32 = 33;
@@ -1292,6 +1299,21 @@ fn validate_decoder_rows(rows: &[DecoderManifestRow]) -> Result<Vec<FireRedDecod
     Ok(expected)
 }
 
+fn validate_authenticated_encoder_geometry(config: &FireredAsrAedConfig) -> Result<()> {
+    if config.n_mels != AUTHENTICATED_N_MELS
+        || config.encoder.n_layer != AUTHENTICATED_ENCODER_N_LAYER
+        || config.encoder.d_model != AUTHENTICATED_ENCODER_D_MODEL
+        || config.encoder.n_head != AUTHENTICATED_ENCODER_N_HEAD
+        || config.encoder.ffn_dim != AUTHENTICATED_ENCODER_FFN_DIM
+        || config.kernel_size != AUTHENTICATED_ENCODER_KERNEL_SIZE
+    {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l: authenticated encoder geometry drift".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn bind_authenticated_encoder(
     file: &GgufFile,
     config: &FireredAsrAedConfig,
@@ -1302,16 +1324,7 @@ fn bind_authenticated_encoder(
             file.tensors().len()
         )));
     }
-    if config.encoder.n_layer != AUTHENTICATED_ENCODER_N_LAYER
-        || config.encoder.d_model != AUTHENTICATED_ENCODER_D_MODEL
-        || config.encoder.n_head != AUTHENTICATED_ENCODER_N_HEAD
-        || config.encoder.ffn_dim != AUTHENTICATED_ENCODER_FFN_DIM
-        || config.kernel_size != AUTHENTICATED_ENCODER_KERNEL_SIZE
-    {
-        return Err(VokraError::ModelLoad(
-            "firered-asr-aed-l: authenticated encoder geometry drift".to_owned(),
-        ));
-    }
+    validate_authenticated_encoder_geometry(config)?;
     let required = read_required_tensors(file)?.ok_or_else(|| {
         VokraError::ModelLoad(format!(
             "firered-asr-aed-l: `{KEY_REQUIRED_TENSORS}` is required for the authenticated encoder contract"
@@ -2640,6 +2653,43 @@ mod tests {
     /// together. It is a fixture, not a transcription.
     const FIXTURE_TENSOR: &str = "encoder.blocks.0.attn.qkv_proj.weight";
 
+    #[test]
+    fn authenticated_frontend_uses_fire_red_private_mel_geometry() {
+        assert_eq!(AUTHENTICATED_N_MELS, 80);
+    }
+
+    #[test]
+    fn authenticated_encoder_rejects_mel_metadata_drift() {
+        let mut config = FireredAsrAedConfig {
+            sample_rate: 16_000,
+            n_mels: AUTHENTICATED_N_MELS,
+            vocab_size: AUTHENTICATED_DECODER_VOCAB_SIZE,
+            blank_id: 0,
+            sos_id: 3,
+            eos_id: 4,
+            pad_id: 2,
+            encoder: FireredAsrAedEncoderConfig {
+                n_layer: AUTHENTICATED_ENCODER_N_LAYER,
+                d_model: AUTHENTICATED_ENCODER_D_MODEL,
+                n_head: AUTHENTICATED_ENCODER_N_HEAD,
+                ffn_dim: AUTHENTICATED_ENCODER_FFN_DIM,
+            },
+            decoder: FireredAsrAedDecoderConfig {
+                n_layer: AUTHENTICATED_DECODER_N_LAYER,
+                d_model: AUTHENTICATED_DECODER_D_MODEL,
+                n_head: AUTHENTICATED_DECODER_N_HEAD,
+                ffn_dim: AUTHENTICATED_DECODER_FFN_DIM,
+            },
+            kernel_size: AUTHENTICATED_ENCODER_KERNEL_SIZE,
+        };
+        config.n_mels = 40;
+        let error = validate_authenticated_encoder_geometry(&config)
+            .expect_err("encoder binding must reject drifted fbank width");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("geometry drift"))
+        );
+    }
+
     /// Builds a base FireRedASR-AED-L GGUF: arch + name + category +
     /// upstream slug, an optional weight-licence stamp, and one
     /// representative tensor so the non-emptiness gate passes.
@@ -3567,7 +3617,7 @@ mod tests {
         let model = FireredAsrAed::from_gguf(&converter_shaped_gguf()).expect("bind");
         assert_eq!(model.feature_backend(), BackendKind::Cpu);
         let error = model
-            .encode_features(&vec![0.0; 7 * N_MELS as usize], 7, &[true; 7])
+            .encode_features(&vec![0.0; 7 * AUTHENTICATED_N_MELS as usize], 7, &[true; 7])
             .expect_err("inspection-only binding must not execute without owned tensors");
         match error {
             VokraError::UnsupportedOp(message) => {

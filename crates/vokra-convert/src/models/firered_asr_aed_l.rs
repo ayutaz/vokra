@@ -235,6 +235,10 @@ fn publish_no_clobber(temp: &Path, destination: &Path) -> Result<(), ConvertErro
     Ok(())
 }
 
+/// Converts the exact VAST-prepared FireRedASR-AED-L safetensors artifact to
+/// GGUF while preserving the authenticated release provenance and tensor
+/// manifest. The optional license override is intentionally rejected; the
+/// converter accepts only the fixed upstream license contract.
 pub fn convert_firered_asr_aed_l_file(
     input: &Path,
     output: &Path,
