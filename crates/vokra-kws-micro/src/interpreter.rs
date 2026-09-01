@@ -599,6 +599,10 @@ pub struct HeyJarvisStreamingPlan {
 impl HeyJarvisStreamingPlan {
     /// Validates and stores the fixed conv/dwconv/pointwise/dense/logistic
     /// topology. The layer list must contain exactly eleven layers.
+    // These decimal constants are the exact source-authenticated f32
+    // quantization values. Keep their full spelling so the contract remains
+    // auditable; clippy's truncation suggestion would obscure that evidence.
+    #[allow(clippy::excessive_precision)]
     pub fn new(layers: Vec<LayerSpec>) -> Result<Self> {
         if layers.len() != HEY_JARVIS_LAYER_COUNT {
             return Err(VokraError::InvalidArgument(format!(
@@ -1534,6 +1538,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::excessive_precision)]
     fn synthetic_hey_jarvis_layers() -> Vec<LayerSpec> {
         let q = |n: usize| vec![1.0f32; n];
         let conv = |dims: ConvDims,
@@ -1779,20 +1784,20 @@ mod tests {
         }
 
         assert!(scheduler
-            .push_feature(&vec![8i8; HEY_JARVIS_FEATURE_SIZE])
+            .push_feature(&[8i8; HEY_JARVIS_FEATURE_SIZE])
             .unwrap()
             .is_none());
         assert!(scheduler
-            .push_feature(&vec![9i8; HEY_JARVIS_FEATURE_SIZE])
+            .push_feature(&[9i8; HEY_JARVIS_FEATURE_SIZE])
             .unwrap()
             .is_some());
         assert_eq!(scheduler.pending_feature_count(), 0);
         assert!(scheduler
-            .push_feature(&vec![10i8; HEY_JARVIS_FEATURE_SIZE])
+            .push_feature(&[10i8; HEY_JARVIS_FEATURE_SIZE])
             .unwrap()
             .is_none());
         assert!(scheduler
-            .push_feature(&vec![11i8; HEY_JARVIS_FEATURE_SIZE])
+            .push_feature(&[11i8; HEY_JARVIS_FEATURE_SIZE])
             .unwrap()
             .is_none());
         assert_eq!(scheduler.pending_feature_count(), 2);
@@ -1807,11 +1812,11 @@ mod tests {
                 .all(|&value| value == HEY_JARVIS_STATE_QUANTIZED_ZERO));
         }
         assert!(scheduler
-            .push_feature(&vec![12i8; HEY_JARVIS_FEATURE_SIZE])
+            .push_feature(&[12i8; HEY_JARVIS_FEATURE_SIZE])
             .unwrap()
             .is_none());
         assert!(scheduler
-            .push_feature(&vec![13i8; HEY_JARVIS_FEATURE_SIZE])
+            .push_feature(&[13i8; HEY_JARVIS_FEATURE_SIZE])
             .unwrap()
             .is_none());
     }

@@ -1364,6 +1364,10 @@ fn reviewed_bias(
     Ok((values, quant.scales))
 }
 
+// The argument list mirrors the reviewed TFLite layer table one-for-one;
+// grouping it would make the authenticated provenance less transparent.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::excessive_precision)]
 fn reviewed_conv_layer(
     model: &Model,
     depthwise: bool,
@@ -1424,6 +1428,9 @@ fn reviewed_conv_layer(
     }
 }
 
+// These decimal constants are source-authenticated f32 quantization values;
+// retain their full spelling for auditability rather than truncating them.
+#[allow(clippy::excessive_precision)]
 fn reviewed_hey_jarvis_layers(model: &Model) -> Result<Vec<LayerSpec>> {
     let mut layers = Vec::with_capacity(11);
     layers.push(reviewed_conv_layer(
@@ -1710,7 +1717,7 @@ fn model_error(message: &str) -> VokraError {
     VokraError::ModelLoad(message.into())
 }
 
-fn topology_tensor<'a>(topology: &'a TopologyManifest, index: u32) -> Result<&'a TopologyTensor> {
+fn topology_tensor(topology: &TopologyManifest, index: u32) -> Result<&TopologyTensor> {
     topology
         .tensors
         .iter()
@@ -2009,6 +2016,10 @@ fn bound_bias(model: &Model, tensor: &TopologyTensor) -> Result<Vec<i32>> {
     }
 }
 
+// This positional tuple is consumed by the fixed reviewed convolution
+// decoder; retaining it avoids introducing a second shape abstraction.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn conv_shape(
     input: &TopologyTensor,
     weight: &TopologyTensor,
@@ -2075,10 +2086,7 @@ fn conv_shape(
                 / stride_w)
                 + 1,
         ),
-        TopologyPadding::Same => (
-            (in_h + stride_h - 1) / stride_h,
-            (in_w + stride_w - 1) / stride_w,
-        ),
+        TopologyPadding::Same => (in_h.div_ceil(stride_h), in_w.div_ceil(stride_w)),
     };
     if output.shape[1] != out_h as u64 || output.shape[2] != out_w as u64 {
         return Err(model_error(label));
@@ -3005,11 +3013,11 @@ mod tests {
             TensorData::Q8 {
                 values: vec![7.0, -128.0]
                     .into_iter()
-                    .chain(std::iter::repeat(0.0).take(30))
+                    .chain(std::iter::repeat_n(0.0, 30))
                     .collect(),
                 raw: vec![7, -128]
                     .into_iter()
-                    .chain(std::iter::repeat(0).take(30))
+                    .chain(std::iter::repeat_n(0, 30))
                     .collect(),
             }
         );
