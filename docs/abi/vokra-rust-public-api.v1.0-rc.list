@@ -474,6 +474,8 @@ FN vokra-core::gguf::reader::tensor_bf16_bits|pub fn tensor_bf16_bits(&self, nam
 FN vokra-core::gguf::reader::tensor_bytes|pub fn tensor_bytes(&self, info: &GgufTensorInfo) -> &[u8] {
 FN vokra-core::gguf::reader::tensor_data|pub fn tensor_data(&self, name: &str) -> Option<&[u8]> {
 FN vokra-core::gguf::reader::tensor_f32|pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>, GgufError> {
+FN vokra-core::gguf::reader::tensor_i32|pub fn tensor_i32(&self, name: &str) -> Result<Vec<i32>, GgufError> {
+FN vokra-core::gguf::reader::tensor_i8|pub fn tensor_i8(&self, name: &str) -> Result<Vec<i8>, GgufError> {
 FN vokra-core::gguf::reader::tensor_info|pub fn tensor_info(&self, name: &str) -> Option<&GgufTensorInfo> {
 FN vokra-core::gguf::reader::tensors|pub fn tensors(&self) -> &[GgufTensorInfo] {
 FN vokra-core::gguf::reader::version|pub fn version(&self) -> u32 {
@@ -491,6 +493,7 @@ FN vokra-core::gguf::tensor::block_size|pub fn block_size(self) -> usize {
 FN vokra-core::gguf::tensor::byte_len|pub fn byte_len(&self) -> Result<u64, GgufError> {
 FN vokra-core::gguf::tensor::element_count|pub fn element_count(&self) -> Result<u64, GgufError> {
 FN vokra-core::gguf::tensor::from_tag|pub fn from_tag(tag: u32) -> Result<Self, GgufError> {
+FN vokra-core::gguf::tensor::payload_size_for_dimensions|pub fn payload_size_for_dimensions(self, dimensions: &[u64]) -> Result<u64, GgufError> {
 FN vokra-core::gguf::tensor::payload_size|pub fn payload_size(self, n_elements: u64) -> Result<u64, GgufError> {
 FN vokra-core::gguf::tensor::tag|pub fn tag(self) -> u32 {
 FN vokra-core::gguf::tensor::type_size|pub fn type_size(self) -> usize {
@@ -1052,6 +1055,12 @@ FN vokra-ops::openwakeword::openwakeword_dnn_classifier_forward|pub fn openwakew
 FN vokra-ops::openwakeword::openwakeword_embedding_forward|pub fn openwakeword_embedding_forward(
 FN vokra-ops::openwakeword::openwakeword_melspectrogram|pub fn openwakeword_melspectrogram(
 FN vokra-ops::openwakeword::validate|pub fn validate(&self) -> Result<()> {
+FN vokra-ops::ouve_sde::annealed_langevin_step|pub fn annealed_langevin_step(
+FN vokra-ops::ouve_sde::diffusion|pub fn diffusion(self, t: f32) -> Result<f32> {
+FN vokra-ops::ouve_sde::mean|pub fn mean(self, x0: f32, y: f32, t: f32) -> Result<f32> {
+FN vokra-ops::ouve_sde::new|pub fn new(theta: f32, sigma_min: f32, sigma_max: f32) -> Result<Self> {
+FN vokra-ops::ouve_sde::reverse_diffusion_step|pub fn reverse_diffusion_step(
+FN vokra-ops::ouve_sde::std|pub fn std(self, t: f32) -> Result<f32> {
 FN vokra-ops::preprocess::apply_frontend|pub fn apply_frontend(pcm: &[f32], in_rate: u32, spec: &FrontendSpec) -> Result<Vec<f32>> {
 FN vokra-ops::preprocess::dc_offset_remove|pub fn dc_offset_remove(pcm: &[f32]) -> Vec<f32> {
 FN vokra-ops::preprocess::pre_emphasis|pub fn pre_emphasis(pcm: &[f32], coeff: f32) -> Vec<f32> {
@@ -1296,6 +1305,7 @@ MOD vokra-ops::moe_expert_gemm|pub mod moe_expert_gemm;
 MOD vokra-ops::musicgen_delay_pattern|pub mod musicgen_delay_pattern;
 MOD vokra-ops::nsf|pub mod nsf;
 MOD vokra-ops::openwakeword|pub mod openwakeword;
+MOD vokra-ops::ouve_sde|pub mod ouve_sde;
 MOD vokra-ops::preprocess|pub mod preprocess;
 MOD vokra-ops::prosody|pub mod prosody;
 MOD vokra-ops::qwen3_tts_codec|pub mod qwen3_tts_codec;
@@ -1559,6 +1569,7 @@ STRUCT vokra-ops::openwakeword::OpenwakewordDenseWeights|pub struct Openwakeword
 STRUCT vokra-ops::openwakeword::OpenwakewordDnnClassifierWeights|pub struct OpenwakewordDnnClassifierWeights {
 STRUCT vokra-ops::openwakeword::OpenwakewordEmbeddingWeights|pub struct OpenwakewordEmbeddingWeights {
 STRUCT vokra-ops::openwakeword::OpenwakewordMelspecWeights|pub struct OpenwakewordMelspecWeights {
+STRUCT vokra-ops::ouve_sde::OuvEConfig|pub struct OuvEConfig {
 STRUCT vokra-ops::prosody::ProsodyControl|pub struct ProsodyControl {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodecConfig|pub struct Qwen3TtsCodecConfig {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodec|pub struct Qwen3TtsCodec {
@@ -1777,6 +1788,7 @@ USE vokra-ops::moe_dispatch::{MoeAssignment, MoeDispatchAttrs, MoeDispatchPlan, 
 USE vokra-ops::moe_expert_gemm::{MoeExpertWeights, moe_expert_gemm}|pub use moe_expert_gemm::{MoeExpertWeights, moe_expert_gemm};
 USE vokra-ops::nsf::sinegen_deterministic_f32|pub use nsf::sinegen_deterministic_f32;
 USE vokra-ops::openwakeword::{ OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights, OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights, openwakeword_classifier_forward, openwakeword_dnn_classifier_forward, openwakeword_embedding_forward, openwakeword_melspectrogram, }|pub use openwakeword::{ OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights, OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights, openwakeword_classifier_forward, openwakeword_dnn_classifier_forward, openwakeword_embedding_forward, openwakeword_melspectrogram, };
+USE vokra-ops::ouve_sde::{OuvEConfig, annealed_langevin_step, reverse_diffusion_step}|pub use ouve_sde::{OuvEConfig, annealed_langevin_step, reverse_diffusion_step};
 USE vokra-ops::preprocess::{apply_frontend, dc_offset_remove, pre_emphasis}|pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 USE vokra-ops::prosody::{ApplyProsody, ProsodyControl}|pub use prosody::{ApplyProsody, ProsodyControl};
 USE vokra-ops::qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode}|pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
