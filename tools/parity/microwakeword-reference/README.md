@@ -16,6 +16,8 @@ The collector does not import LiteRT or NumPy, inspect a model, classify a
 license, or grant publication permission. Reports are
 `EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED` when collection succeeds and always
 set `fixture_generation_permitted=false` and `publication_permitted=false`.
+The downstream Inspector may promote only the exact reviewed packet to an
+effective `PASS`; the raw collector flags remain unchanged in the manifest.
 Any missing/unknown package, duplicate row, symlink, path escape, oversize
 file, or absence of both bounded METADATA license declarations and wheel-local
 license candidates is recorded as a fail-closed collection failure. A missing

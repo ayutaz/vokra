@@ -86,8 +86,10 @@ concern — it is the ground truth for the INT8 forward.
 
     The dependency-evidence file is the successful collection report from
     the same clean VAST environment. The dumper rechecks its fixed schema,
-    hashes, platform, and installed distribution versions; it does not treat
-    that collection report as an owner license/publication approval.
+    hashes, platform, and installed distribution versions, then requires the
+    Inspector's exact-owner-reviewed audit decision. The manifest keeps the
+    raw collection status separate from the effective fixture decision;
+    publication remains prohibited.
 
     # Point the Rust parity harness at both artefacts (the GGUF was
     # produced by prepare_checkpoint.py in a separate step):
@@ -234,6 +236,10 @@ def _require_sha(value: Any, label: str) -> str:
     ):
         raise SystemExit(f"{label} must be lowercase SHA-256 hex")
     return value
+
+
+def _normalize_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).casefold()
 
 
 def _canonical_json_sha256(value: Any) -> str:
@@ -428,7 +434,14 @@ def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             ),
             f"dependency evidence metadata.{name}",
         )
-        if metadata.get("name") != [name] or metadata.get("version") != [version]:
+        metadata_names = metadata.get("name")
+        if (
+            not isinstance(metadata_names, list)
+            or len(metadata_names) != 1
+            or not isinstance(metadata_names[0], str)
+            or _normalize_distribution_name(metadata_names[0]) != name
+            or metadata.get("version") != [version]
+        ):
             raise SystemExit(f"dependency evidence installed metadata name/version drift: {name}")
         if not isinstance(metadata["bytes"], int) or metadata["bytes"] <= 0:
             raise SystemExit(f"dependency evidence metadata byte count malformed: {name}")
@@ -646,7 +659,7 @@ def _synthetic_dependency_evidence() -> dict[str, Any]:
     }
 
 
-def require_reference_dependency_gate(dependency_evidence_bytes: bytes) -> None:
+def require_reference_dependency_gate(dependency_evidence_bytes: bytes) -> dict[str, Any]:
     """Refuse fixture generation until the isolated dependency audit is PASS."""
     inspector_path = Path(__file__).parent.parent / "microwakeword-reference" / "inspect.py"
     project_path = inspector_path.parent / "pyproject.toml"
@@ -666,6 +679,33 @@ def require_reference_dependency_gate(dependency_evidence_bytes: bytes) -> None:
             "reference fixture generation is blocked by dependency/license gate: "
             + ", ".join(report.get("failures", ["unknown gate failure"]))
         )
+    return report
+
+
+def _effective_dependency_manifest(
+    raw_evidence: dict[str, Any],
+    audit_report: dict[str, Any],
+    dependency_contract: dict[str, Any],
+    evidence_path: Path,
+    evidence_sha256: str,
+) -> dict[str, Any]:
+    """Separate collector facts from the effective reviewed fixture decision."""
+    return {
+        "schema": DEPENDENCY_EVIDENCE_SCHEMA,
+        "collection_status": raw_evidence["status"],
+        "audit_status": audit_report["status"],
+        "review_status": audit_report["dependency_evidence_status"],
+        "publication_permitted": audit_report["publication_permitted"],
+        "fixture_generation_permitted": audit_report["fixture_generation_permitted"],
+        "collector_owner_review_required": raw_evidence["owner_review_required"],
+        "failures": audit_report["failures"],
+        "path": evidence_path.name,
+        "sha256": evidence_sha256,
+        "project_sha256": EXPECTED_REFERENCE_PROJECT_SHA256,
+        "uv_lock_sha256": EXPECTED_REFERENCE_LOCK_SHA256,
+        "platform": dependency_contract["platform"],
+        "installed_distributions": dependency_contract["versions"],
+    }
 
 
 def synth_pcm(invocation: int = 0, frame: int = 0) -> np.ndarray:
@@ -1102,6 +1142,40 @@ def self_test() -> int:
     validated = validate_dependency_evidence(evidence)
     assert validated["platform"]["system"] == "Linux"
     assert validated["versions"] == EXPECTED_REFERENCE_DISTRIBUTIONS
+    effective = _effective_dependency_manifest(
+        evidence,
+        {
+            "status": "PASS",
+            "dependency_evidence_status": "VALIDATED_EXACT_OWNER_REVIEWED",
+            "publication_permitted": False,
+            "fixture_generation_permitted": True,
+            "failures": [],
+        },
+        validated,
+        Path("dependency-evidence.json"),
+        "0" * 64,
+    )
+    assert effective["audit_status"] == "PASS"
+    assert effective["review_status"] == "VALIDATED_EXACT_OWNER_REVIEWED"
+    assert effective["fixture_generation_permitted"] is True
+    assert effective["publication_permitted"] is False
+    backports_name = json.loads(json.dumps(evidence))
+    backports_row = next(
+        row for row in backports_name["installed_distributions"] if row["expected_name"] == "backports-strenum"
+    )
+    backports_row["metadata"]["name"] = ["backports.strenum"]
+    validate_dependency_evidence(backports_name)
+    non_equivalent_name = json.loads(json.dumps(backports_name))
+    non_equivalent_row = next(
+        row for row in non_equivalent_name["installed_distributions"] if row["expected_name"] == "backports-strenum"
+    )
+    non_equivalent_row["metadata"]["name"] = ["backports.strenum-extra"]
+    try:
+        validate_dependency_evidence(non_equivalent_name)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("non-equivalent normalized distribution name was accepted")
     empty_success = json.loads(json.dumps(evidence))
     empty_success["installed_distributions"][0]["license_candidates"] = []
     try:
@@ -1328,7 +1402,7 @@ def main() -> int:
     require_regular_tflite(args.tflite_path)
     dependency_evidence, dependency_evidence_sha256, dependency_evidence_bytes = load_dependency_evidence(args.dependency_evidence)
     dependency_contract = validate_dependency_evidence(dependency_evidence)
-    require_reference_dependency_gate(dependency_evidence_bytes)
+    audit_report = require_reference_dependency_gate(dependency_evidence_bytes)
     reference_environment = require_reference_runtime(dependency_contract["versions"])
     global np
     import numpy as np
@@ -1405,20 +1479,13 @@ def main() -> int:
             "machine": reference_environment["machine"],
             "installed_distributions": reference_environment["installed_distributions"],
         },
-        "dependency_evidence": {
-            "schema": DEPENDENCY_EVIDENCE_SCHEMA,
-            "status": dependency_evidence["status"],
-            "publication_permitted": dependency_evidence["publication_permitted"],
-            "fixture_generation_permitted": dependency_evidence["fixture_generation_permitted"],
-            "owner_review_required": dependency_evidence["owner_review_required"],
-            "failures": dependency_evidence["failures"],
-            "path": args.dependency_evidence.name,
-            "sha256": dependency_evidence_sha256,
-            "project_sha256": EXPECTED_REFERENCE_PROJECT_SHA256,
-            "uv_lock_sha256": EXPECTED_REFERENCE_LOCK_SHA256,
-            "platform": dependency_contract["platform"],
-            "installed_distributions": dependency_contract["versions"],
-        },
+        "dependency_evidence": _effective_dependency_manifest(
+            dependency_evidence,
+            audit_report,
+            dependency_contract,
+            args.dependency_evidence,
+            dependency_evidence_sha256,
+        ),
     }
     manifest_path = args.output_dir / "manifest.json"
     if manifest_path.exists() or manifest_path.is_symlink():

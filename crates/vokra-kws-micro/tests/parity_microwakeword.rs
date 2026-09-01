@@ -124,6 +124,8 @@ const OUTPUT_BYTES: usize = 1;
 const OUTPUT_SCALE: f32 = 1.0 / 256.0;
 const DEPENDENCY_EVIDENCE_SCHEMA: &str = "microwakeword-reference-dependency-evidence-v1";
 const DEPENDENCY_EVIDENCE_STATUS: &str = "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED";
+const DEPENDENCY_AUDIT_STATUS: &str = "PASS";
+const DEPENDENCY_REVIEW_STATUS: &str = "VALIDATED_EXACT_OWNER_REVIEWED";
 const REFERENCE_PROJECT_SHA256: &str =
     "2438d719428e497cc7f101429ba31fb5016e72737659d55aa0269d0824b1183d";
 const REFERENCE_LOCK_SHA256: &str =
@@ -276,10 +278,12 @@ fn verify_dependency_evidence(value: &JsonValue) {
         value,
         &[
             "schema",
-            "status",
+            "collection_status",
+            "audit_status",
+            "review_status",
             "publication_permitted",
             "fixture_generation_permitted",
-            "owner_review_required",
+            "collector_owner_review_required",
             "failures",
             "path",
             "sha256",
@@ -295,22 +299,30 @@ fn verify_dependency_evidence(value: &JsonValue) {
         DEPENDENCY_EVIDENCE_SCHEMA
     );
     assert_eq!(
-        string_field(value, "status", "manifest.dependency_evidence"),
+        string_field(value, "collection_status", "manifest.dependency_evidence"),
         DEPENDENCY_EVIDENCE_STATUS
+    );
+    assert_eq!(
+        string_field(value, "audit_status", "manifest.dependency_evidence"),
+        DEPENDENCY_AUDIT_STATUS
+    );
+    assert_eq!(
+        string_field(value, "review_status", "manifest.dependency_evidence"),
+        DEPENDENCY_REVIEW_STATUS
     );
     assert!(!bool_field(
         value,
         "publication_permitted",
         "manifest.dependency_evidence"
     ));
-    assert!(!bool_field(
+    assert!(bool_field(
         value,
         "fixture_generation_permitted",
         "manifest.dependency_evidence"
     ));
     assert!(bool_field(
         value,
-        "owner_review_required",
+        "collector_owner_review_required",
         "manifest.dependency_evidence"
     ));
     assert!(matches!(
