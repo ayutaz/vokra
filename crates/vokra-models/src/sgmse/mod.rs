@@ -62,30 +62,50 @@ pub const SGMSE_STATUS: &str = "SOURCE_PLAN_ONLY";
 /// spelling or prefix is inferred here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SgmseTensorSlot {
+    /// Learned weight tensor.
     Weight,
+    /// Learned bias tensor.
     Bias,
+    /// Normalization scale (`gamma`) tensor.
     NormGamma,
+    /// Normalization offset (`beta`) tensor.
     NormBeta,
+    /// Time or noise-level embedding tensor.
     TimeEmbedding,
+    /// Attention query projection tensor.
     Query,
+    /// Attention key projection tensor.
     Key,
+    /// Attention value projection tensor.
     Value,
+    /// Attention or block output projection tensor.
     Output,
+    /// Source FIR resampling kernel tensor.
     FirKernel,
 }
 
 /// Typed assignment target for one authenticated checkpoint tensor.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SgmseTensorRole {
+    /// Gaussian Fourier frequency tensor.
     FourierFrequencies,
+    /// First noise-level conditioning projection tensor.
     SigmaFirstProjection,
+    /// Bias for the first noise-level conditioning projection.
     SigmaFirstBias,
+    /// Second noise-level conditioning projection tensor.
     SigmaSecondProjection,
+    /// Bias for the second noise-level conditioning projection.
     SigmaSecondBias,
+    /// One ordered NCSN++ stage and its parameter slot.
     NcsnppStage {
+        /// Zero-based ordinal of the stage in the source graph.
         stage_index: usize,
+        /// Source topology kind of the stage.
         kind: NcsnppStageKind,
+        /// Block ordinal within the stage.
         block: usize,
+        /// Parameter slot occupied by the tensor.
         slot: SgmseTensorSlot,
     },
 }
@@ -697,9 +717,11 @@ pub struct NcsnppV2Config {
     pub biggan_resblocks: bool,
     /// GroupNorm maximum groups; source uses `min(channels / 4, 32)`.
     pub group_norm_max_groups: usize,
+    /// Epsilon used by the source GroupNorm operations.
     pub group_norm_eps: f32,
     /// Source graph uses output-skip pyramid and input-skip pyramid paths.
     pub progressive_output_skip: bool,
+    /// Whether the source graph uses progressive input-skip pyramid paths.
     pub progressive_input_skip: bool,
     /// Source FIR resampling taps, retained as architecture metadata.
     pub fir_kernel: [usize; 4],
