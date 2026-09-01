@@ -69,13 +69,15 @@ Classifier. Their immutable inputs are:
   `/private/tmp/voice-gender-apple-packet-f74374ab.tar.gz`; SHA-256
   `f755fbdc3a2146ca41942501d80415eff573f1dc8e56201ee474d93d4d3d7261`.
 
-VAST instances `49168183` (500 GB retained storage) and `49261078` (200 GB)
-both report `cur_state=stopped`, `intended_status=stopped` and
-`actual_status=exited`. They consume no compute, but storage billing continues.
-Resume them only for direct transfer of the named packets; after Scaleway
-checks the manifests and the required small evidence is preserved, destroy
-both instances. The older `/root/scratchpad/apple-transfer-568dc192` packet is
-historical and superseded by the exact Wave A packet above.
+The three VAST packet identities above are now reproduction records, not live
+paths. On 2026-09-01 the owner chose to stop long-horizon storage billing;
+instances `49168183` (500 GB retained storage) and `49261078` (200 GB) were
+destroyed with all saved data, and both individual API read-backs returned
+`instances: null`. The Wave A, ReazonSpeech and BiCodec packets must be
+regenerated from their fixed revisions and hash contracts on new disposable
+VAST instances before a future Scaleway run. Do not attempt to restart either
+historical instance. The older `/root/scratchpad/apple-transfer-568dc192`
+packet is also historical and superseded by the exact Wave A contract above.
 
 The Scaleway stage has been reached, but no Scaleway instance, SSH access or
 Apple run exists yet. Use an official Apple Silicon M4-M host with 32 GiB RAM,
@@ -2256,8 +2258,9 @@ copied to the maintainer Mac. The VAST gate environment explicitly recorded
 Project dependency changes remain `uv add`-managed; locked execution uses
 `uv run --frozen` or `uv sync --frozen`, while `uv pip --system` remains only
 the disposable stock-image bootstrap exception. Instance `49520227` was
-destroyed and read back absent. Stopped packet instances `49168183` and
-`49261078` remain retained for direct Scaleway transfer; unrelated active
+destroyed and read back absent. Historical packet instances `49168183` and
+`49261078` were subsequently destroyed with all saved data and read back
+absent; their Apple packets require future VAST regeneration. Unrelated active
 training instance `49466383` was not touched.
 
 ## Final branch exit gates

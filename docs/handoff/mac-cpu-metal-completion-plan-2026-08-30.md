@@ -21,6 +21,20 @@ worker.  Scaleway Apple Silicon is the macOS arm64 CPU/Metal worker.  Uploading
 or withdrawing a Hugging Face artifact remains a separate irreversible action:
 no `--push`, repo deletion or public replacement is authorized by this plan.
 
+### Retained packet disposition (2026-09-01)
+
+The owner changed the Apple handoff policy because the Scaleway run is now far
+enough away that continued storage billing is not justified. VAST instances
+`49168183` and `49261078` were destroyed with all saved data; both individual
+API read-backs returned `instances: null`. The historical Wave A,
+ReazonSpeech and BiCodec packet paths and hashes below remain provenance for
+future reproduction, but the files no longer exist on VAST. When Apple work
+resumes, regenerate the exact artifacts, independent references and transfer
+packets on new disposable VAST instances, verify the same pinned contracts,
+transfer directly to Scaleway and destroy the instances. Do not try to restart
+either historical instance. This ends their combined `$0.096296/h` storage
+charge. Unrelated active instance `49466383` was not touched.
+
 ## Audited baseline (reconciled 2026-09-01)
 
 The active branch is workspace `0.3.0`; immediately before this documentation
@@ -148,8 +162,9 @@ The recovered JSON SHA-256 values are
 (Bark) and
 `ef2c7631d18d644750d1d485ef81f58368cd38f8c1ecb6a011d27ee144224f03`
 (Parler-TTS).  No checkpoint, model weight, Cargo command or upload was part of
-the job.  Instance `49232927` was destroyed after evidence recovery; retained
-Scaleway-transfer instance `49168183` remains stopped and unchanged.
+the job. Instance `49232927` was destroyed after evidence recovery. At that
+checkpoint Scaleway-transfer instance `49168183` was stopped and unchanged; it
+was later destroyed under the disposition recorded at the top of this plan.
 
 The following MOSS/Ultravox/NeuTTS dependency-audit correction checkpoint is
 clean at `f22bfdfd98c47218057bf435f2aef5dc49fb0057`.  MOSS now retains the raw
@@ -341,13 +356,13 @@ blockers remain open.
 
 After all small evidence archives were recovered and their remote/local
 SHA-256 values matched, disposable instance `49422639` was destroyed and the
-VAST API returned `instances: null` for that id. Retained transfer instances
-`49168183` and `49261078` remain intentionally stopped. A live 2026-09-01
-status read reported storage-only costs of `$0.074074/h` and `$0.022222/h`, or
-about `$0.096296/h` (`$2.31/day`) combined. They must stay stopped until the
-three retained packets are transferred directly to Scaleway and verified, then
-both must be destroyed. The unrelated running instance labeled
-`cutetts-s1-preprocess` was not touched.
+VAST API returned `instances: null` for that id. The same live read initially
+reported storage-only costs of `$0.074074/h` and `$0.022222/h` for transfer
+instances `49168183` and `49261078`, or about `$0.096296/h` (`$2.31/day`)
+combined. The owner subsequently chose regeneration over long-horizon storage;
+both instances and all three packets were destroyed and read back absent. The
+unrelated running instance `49466383`, labeled `cutetts-s1-train`, was not
+touched.
 
 The prepared Scaleway set is therefore six models: GigaAM v3, GigaAM
 Multilingual, OmniASR-CTC-1B, ReazonSpeech-NeMo-v2, BiCodec and Voice Gender
@@ -512,8 +527,9 @@ scan passed.  Instance `49497103` was destroyed after recovery.  With the
 owner's exact destructive confirmation, redundant instances `49447911`,
 `49469101`, `49494353` and `49495037` and their saved disks were also destroyed;
 all four read back absent.  Only stopped packet instances `49168183` and
-`49261078` remain for their recorded direct Scaleway transfer.  Unrelated
-running instance `49466383` is outside this campaign and was not touched.
+`49261078` remained at that checkpoint for their recorded direct Scaleway
+transfer; both were later destroyed with all saved data. Unrelated running
+instance `49466383` is outside this campaign and was not touched.
 
 ### 2026-09-01 exact-head model-contract evidence
 
@@ -565,10 +581,10 @@ remain managed through `uv add` and locked execution uses `uv run --frozen` or
 `uv sync --frozen`. The `uv pip --system` use in VAST `provision.sh` is limited
 to bootstrapping a disposable stock image and does not mutate project
 dependency metadata. Instance `49511760` was destroyed after evidence recovery
-and a fresh inventory confirmed it absent. Stopped packet instances `49168183`
-and `49261078` remain intentionally retained for direct Scaleway transfer;
-unrelated running instance `49466383` was not touched. This management-only
-record does not alter the code tested at `8b63dea7`.
+and a fresh inventory confirmed it absent. Packet instances `49168183` and
+`49261078` were still retained at that checkpoint, then later destroyed with
+all saved data; unrelated running instance `49466383` was not touched. This
+management-only record does not alter the code tested at `8b63dea7`.
 
 ### 2026-09-01 exact-head full-gate and HTDemucs digest closure
 
@@ -604,9 +620,9 @@ copied to the maintainer Mac. The VAST gate environment explicitly recorded
 Project dependency changes remain `uv add`-managed; locked execution uses
 `uv run --frozen` or `uv sync --frozen`, while `uv pip --system` remains only
 the disposable stock-image bootstrap exception. Instance `49520227` was
-destroyed and read back absent. Stopped packet instances `49168183` and
-`49261078` remain retained for direct Scaleway transfer; unrelated active
-training instance `49466383` was not touched.
+destroyed and read back absent. Historical packet instances `49168183` and
+`49261078` were subsequently destroyed with all saved data and read back
+absent; unrelated active training instance `49466383` was not touched.
 
 ## Execution order
 
@@ -700,9 +716,9 @@ minimum evidence attached to a wave is:
    repository was authorized.
 
 VAST instances are destroyed after their evidence and required Apple transfer
-are verified. The currently stopped/exited retained instances `49168183` and
-`49261078` may be resumed only for their recorded packet transfer; their
-storage charges continue until final destruction.
+are verified. No Vokra retained handoff currently exists: historical instances
+`49168183` and `49261078` and all saved packets were destroyed on 2026-09-01.
+Future Apple runs must regenerate their inputs on new disposable VAST workers.
 
 ## Final completion proof
 

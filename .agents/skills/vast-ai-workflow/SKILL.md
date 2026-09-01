@@ -58,16 +58,17 @@ storage 課金は継続し、再開時の GPU 確保は保証されません。D
 削除して課金を停止します。詳細は [Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
 と [Storage types](https://docs.vast.ai/guides/instances/storage/types) を参照してください。
 
-**現在の retained handoff (2026-08-31)**: instance `49168183`
-(`vokra-mac-coverage-771970dc`, 500 GB storage) と `49261078`
-(`vokra-htdemucs-inspection-20260830`, 200 GB storage) はいずれも
-`cur_state=stopped` / `intended_status=stopped` / `actual_status=exited` で、
-compute は動いていない。前者は Wave A の
-`apple-transfer-bc9d1db2` と ReazonSpeech の
-`apple-transfer-reazon-a59c48c8`、後者は BiCodec の
-`apple-transfer-bicodec-5cd97d12` を保持する。Scaleway へ直接転送するため
-だけにストレージを保持しており、storage 課金は継続する。再開はこの転送に
-限り、転送・manifest 検証・証拠回収後は両方を直ちに destroy する。
+**retained handoff の現状 (2026-09-01)**: owner は Scaleway 実行までの待機が
+長期化するため、instance `49168183` (`vokra-mac-coverage-771970dc`,
+500 GB storage) と `49261078` (`vokra-htdemucs-inspection-20260830`,
+200 GB storage) を保存データごと destroy する方針へ変更した。両方とも
+`vastai-safe.sh destroy instance <id> -y` の後、個別 API が
+`instances: null` を返した。`apple-transfer-bc9d1db2`、
+`apple-transfer-reazon-a59c48c8`、`apple-transfer-bicodec-5cd97d12` は
+VAST 上に存在しない。現在 Vokra 用の retained handoff はない。Apple 実機
+検証を再開するときは、固定 revision/hash 契約から VAST で artefact と
+reference packet を再生成し、新しい disposable instance から直接転送する。
+旧2件を restart target として扱わない。
 
 ## 2. Rent phase（vast.ai 側）
 

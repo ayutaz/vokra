@@ -212,6 +212,17 @@ FireRed preparation、3件の依存監査の小容量証跡を回収・照合し
 し、個別照会で `instances: null` を確認した。別作業の running instance
 `cutetts-s1-preprocess` には触れていない。
 
+**2026-09-01 retained-storage destruction supplement**: owner は Scaleway
+実行までの待機が長期化するため、上記 packet を将来 VAST で再生成する方針へ
+変更した。`49168183` と `49261078` は `-y` の明示確認付きで保存データごと
+destroy 済みであり、両方の個別 API 読み戻しは `instances: null` だった。
+したがって3つの `/root/scratchpad/apple-transfer-*` path は現在存在せず、
+旧 instance を再開・転送元として扱ってはならない。これにより合計
+`$0.096296/h` の storage-only 課金は終了する。必要時は記録済みの固定
+revision、artefact hash、manifest contract から新しい disposable VAST
+instance 上で変換・reference・packet を再生成し、Scaleway へ直接転送して
+destroy する。別作業の `49466383` (`cutetts-s1-train`) は変更していない。
+
 ## 3. int tensor 対応 (parakeet 系で発生した pattern)
 
 一部 checkpoint に `num_batches_tracked` (BatchNorm training-only int64 counter) 等の inference-inert int tensor が入っている。Vokra converter は F32/F16/BF16 のみ受け付けるため、**convert 前に strip する**:
