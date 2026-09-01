@@ -2267,6 +2267,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         }),
     },
     BoundArch {
+        arch: "sgmse_voicebank",
+        module: "vokra_models::sgmse",
+        entry: "SgmseModel::from_gguf → SOURCE_PLAN_ONLY/AUTHENTICATED_MANIFEST_REQUIRED",
+        probe: Some(|g: &GgufFile| vokra_models::sgmse::SgmseModel::from_gguf(g).map(|_| ())),
+    },
+    BoundArch {
         arch: "kyutai-stt",
         module: "vokra_models::kyutai_stt",
         entry: "KyutaiSttAsr::from_path → KyutaiSttAsr::transcribe",
@@ -3842,6 +3848,23 @@ mod tests {
             "chattts-arch",
             "vokra_models::chattts",
             "ChatTts::synthesize",
+        );
+    }
+
+    /// SGMSE is deliberately discoverable through its typed binder, while
+    /// the source-plan/authenticated-manifest gate remains visible instead of
+    /// being misreported as an unknown architecture.
+    #[test]
+    fn load_session_binds_sgmse_arch_fail_closed() {
+        let err = assert_bound_arch(
+            "sgmse_voicebank",
+            "sgmse-voicebank-arch",
+            "vokra_models::sgmse",
+            "SOURCE_PLAN_ONLY/AUTHENTICATED_MANIFEST_REQUIRED",
+        );
+        assert!(
+            err.contains("AUTHENTICATED_MANIFEST_REQUIRED"),
+            "SGMSE must retain its authenticated-manifest blocker: {err}"
         );
     }
 

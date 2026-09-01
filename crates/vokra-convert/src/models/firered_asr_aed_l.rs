@@ -513,7 +513,11 @@ mod tests {
         std::fs::write(&destination, b"racing-writer").expect("destination");
         let error = publish_no_clobber(&temporary, &destination)
             .expect_err("a destination created after validation must win");
-        assert!(error.to_string().contains("File exists"));
+        assert!(matches!(
+            error,
+            ConvertError::Io(ref io_error)
+                if io_error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
         assert_eq!(
             std::fs::read(&destination).expect("destination"),
             b"racing-writer"

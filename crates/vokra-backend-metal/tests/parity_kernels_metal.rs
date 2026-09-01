@@ -2828,7 +2828,7 @@ fn mixed_bf16_gemm_uses_raw_weights_and_one_final_readback() {
     // the row-major [k,n] weight indexing. The values include signed zero,
     // exact powers of two, and finite BF16 tail values without overflow.
     let (m, n, k) = (3usize, 5usize, 7usize);
-    let activation = rand_vec(0xBf16_2026, m * k);
+    let activation = rand_vec(0xbf16_2026, m * k);
     let pattern = [0x0000, 0x8000, 0x3f80, 0xbf80, 0x3f81, 0xbf81, 0x4000];
     let weights: Vec<u16> = (0..k * n).map(|i| pattern[i % pattern.len()]).collect();
     // This is the independent scalar oracle: widening is explicit and happens

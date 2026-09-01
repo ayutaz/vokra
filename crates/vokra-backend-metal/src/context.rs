@@ -3585,6 +3585,7 @@ impl MetalContext {
             unsafe { make_pipeline(device, klib.0, c"vokra_group_norm_f32") }?;
         // Multi-group NCSN++ normalization; explicit rather than reusing the
         // one-group SepFormer reduction.
+        // SAFETY: `device` is valid and `klib` owns the named function.
         let group_norm_groups_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_group_norm_groups_f32") }?;
         // SAFETY: as above.
@@ -4522,7 +4523,16 @@ impl MetalContext {
         beta: &[f32],
         eps: f32,
     ) -> Result<()> {
-        validate_group_norm_groups(input, out, channels, positions, groups, gamma, beta, eps)?;
+        validate_group_norm_groups(GroupNormGroupsArgs {
+            input,
+            out,
+            channels,
+            positions,
+            groups,
+            gamma,
+            beta,
+            eps,
+        })?;
         if out.is_empty() {
             return Ok(());
         }
@@ -11921,214 +11931,6 @@ fn validate_mixed_bf16_dims(
     Ok((mk, kn, mn))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        checked_i32, checked_u32, validate_conv_transpose2d, validate_conv2d,
-        validate_group_norm_groups, validate_mixed_bf16_dims, validate_ouve_host_buffers,
-        validate_ouve_params,
-    };
-
-    #[test]
-    fn device_dimension_conversions_fail_closed() {
-        assert!(checked_u32(usize::MAX, "test").is_err());
-        assert!(checked_i32(usize::MAX, "test").is_err());
-    }
-
-    #[test]
-    fn ouve_bounds_reject_invalid_parameters_and_shapes() {
-        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 0.01, None).is_ok());
-        assert!(validate_ouve_params(1.0, 0.5, 0.05, 0.5, 0.01, None).is_err());
-        assert!(validate_ouve_params(1.0, 0.05, 0.5, 1.1, 0.01, None).is_err());
-        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 0.0, None).is_err());
-        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 1.0, Some(-1.0)).is_err());
-        assert!(
-            validate_ouve_host_buffers(
-                &[0.0, 1.0],
-                &[0.0],
-                &[0.0, 1.0],
-                &[0.0, 1.0],
-                &[0.0, 1.0],
-                &[0.0, 1.0],
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn mixed_bf16_gemm_rejects_msl_u32_product_overflow() {
-        let max = u32::MAX as usize;
-        assert!(validate_mixed_bf16_dims(1, max, 1, "test").is_ok());
-        assert!(validate_mixed_bf16_dims(max, 1, 1, "test").is_ok());
-        assert!(validate_mixed_bf16_dims(2, max, 1, "test").is_err());
-        assert!(validate_mixed_bf16_dims(max, 1, 2, "test").is_err());
-        assert!(validate_mixed_bf16_dims(1, max, 2, "test").is_err());
-    }
-
-    #[test]
-    fn mixed_bf16_gemm_preserves_zero_k_dimension_semantics() {
-        assert_eq!(
-            validate_mixed_bf16_dims(2, 3, 0, "test").unwrap(),
-            (0, 0, 6)
-        );
-        assert!(validate_mixed_bf16_dims(u32::MAX as usize, 2, 0, "test").is_err());
-    }
-
-    #[test]
-    fn group_norm_groups_rejects_msl_u32_index_product_overflow() {
-        let max = u32::MAX as usize;
-        // Every individual dimension fits uint, but channels*positions does
-        // not. Empty buffers are intentional: product validation must happen
-        // before host slice-length checks and reject the launch fail-closed.
-        assert!(validate_group_norm_groups(&[], &[], 2, max, 2, &[], &[], 1e-6).is_err());
-        // The group product is checked independently as well; this case keeps
-        // the same boundary visible for the per-group MSL loop.
-        assert!(validate_group_norm_groups(&[], &[], 4, max, 2, &[], &[], 1e-6).is_err());
-    }
-
-    #[test]
-    fn conv2d_validates_grouped_dilated_asymmetric_shape() {
-        let input = [0.0; 12];
-        let weight = [0.0; 8];
-        let out = [0.0; 6];
-        assert_eq!(
-            validate_conv2d(
-                &input,
-                2,
-                2,
-                3,
-                &weight,
-                2,
-                2,
-                2,
-                Some(&[0.0; 2]),
-                (1, 1),
-                (0, 1),
-                (1, 2),
-                2,
-                &out,
-            )
-            .unwrap(),
-            (1, 3)
-        );
-    }
-
-    #[test]
-    fn conv_transpose2d_validates_output_padding_and_rejects_bad_shapes() {
-        let input = [0.0; 4];
-        let weight = [0.0; 8];
-        // Output shape follows
-        // `(in - 1) * stride + dilation * (kernel - 1) + 1
-        //  + output_padding - 2 * padding` per spatial axis:
-        // height = 3, width = 6, with two output channels => 36 values.
-        let out = [0.0; 36];
-        assert_eq!(
-            validate_conv_transpose2d(
-                &input,
-                2,
-                1,
-                2,
-                &weight,
-                2,
-                2,
-                2,
-                Some(&[0.0; 2]),
-                (2, 2),
-                (0, 0),
-                (1, 2),
-                (1, 1),
-                2,
-                &out,
-            )
-            .unwrap(),
-            (3, 6)
-        );
-        // ATen permits output_padding == stride when it remains smaller than
-        // dilation on that axis.
-        assert_eq!(
-            validate_conv_transpose2d(
-                &[0.0],
-                1,
-                1,
-                1,
-                &[0.0],
-                1,
-                1,
-                1,
-                None,
-                (1, 1),
-                (0, 0),
-                (2, 1),
-                (1, 0),
-                1,
-                &[0.0; 2],
-            )
-            .unwrap(),
-            (2, 1)
-        );
-        assert!(
-            validate_conv_transpose2d(
-                &input,
-                2,
-                1,
-                2,
-                &weight,
-                2,
-                2,
-                2,
-                None,
-                (2, 2),
-                (0, 0),
-                (1, 2),
-                (2, 0),
-                2,
-                &out,
-            )
-            .is_err()
-        );
-        // Once output_padding reaches both bounds on an axis, reject it.
-        assert!(
-            validate_conv_transpose2d(
-                &[0.0],
-                1,
-                1,
-                1,
-                &[0.0],
-                1,
-                1,
-                1,
-                None,
-                (1, 1),
-                (0, 0),
-                (2, 1),
-                (2, 0),
-                1,
-                &[0.0; 3],
-            )
-            .is_err()
-        );
-        assert!(
-            validate_conv2d(
-                &input,
-                2,
-                1,
-                2,
-                &weight,
-                2,
-                2,
-                2,
-                None,
-                (1, 1),
-                (0, 0),
-                (1, 1),
-                3,
-                &out,
-            )
-            .is_err()
-        );
-    }
-}
-
 fn validate_ouve_params(
     theta: f32,
     sigma_min: f32,
@@ -12374,16 +12176,28 @@ fn validate_group_norm(
     expect_len("group_norm beta", beta.len(), channels)
 }
 
-fn validate_group_norm_groups(
-    input: &[f32],
-    out: &[f32],
+struct GroupNormGroupsArgs<'a> {
+    input: &'a [f32],
+    out: &'a [f32],
     channels: usize,
     positions: usize,
     groups: usize,
-    gamma: &[f32],
-    beta: &[f32],
+    gamma: &'a [f32],
+    beta: &'a [f32],
     eps: f32,
-) -> Result<()> {
+}
+
+fn validate_group_norm_groups(args: GroupNormGroupsArgs<'_>) -> Result<()> {
+    let GroupNormGroupsArgs {
+        input,
+        out,
+        channels,
+        positions,
+        groups,
+        gamma,
+        beta,
+        eps,
+    } = args;
     if channels == 0 || positions == 0 || groups == 0 || channels % groups != 0 {
         return Err(VokraError::InvalidArgument(format!(
             "group_norm_groups requires non-zero channels/positions, positive groups dividing channels; got {channels}x{positions}, groups={groups}"
@@ -13205,5 +13019,236 @@ impl vokra_core::KvQuantDequantGemvOps for MetalContext {
         x: &[f32],
     ) -> Result<Vec<f32>> {
         self.dequant_gemv_f32(mode, blocks_bytes, n_rows, n_blocks_per_row, x)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{
+        GroupNormGroupsArgs, checked_i32, checked_u32, validate_conv_transpose2d, validate_conv2d,
+        validate_group_norm_groups, validate_mixed_bf16_dims, validate_ouve_host_buffers,
+        validate_ouve_params,
+    };
+
+    #[test]
+    fn device_dimension_conversions_fail_closed() {
+        assert!(checked_u32(usize::MAX, "test").is_err());
+        assert!(checked_i32(usize::MAX, "test").is_err());
+    }
+
+    #[test]
+    fn ouve_bounds_reject_invalid_parameters_and_shapes() {
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 0.01, None).is_ok());
+        assert!(validate_ouve_params(1.0, 0.5, 0.05, 0.5, 0.01, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 1.1, 0.01, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 0.0, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 1.0, Some(-1.0)).is_err());
+        assert!(
+            validate_ouve_host_buffers(
+                &[0.0, 1.0],
+                &[0.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn mixed_bf16_gemm_rejects_msl_u32_product_overflow() {
+        let max = u32::MAX as usize;
+        assert!(validate_mixed_bf16_dims(1, max, 1, "test").is_ok());
+        assert!(validate_mixed_bf16_dims(max, 1, 1, "test").is_ok());
+        assert!(validate_mixed_bf16_dims(2, max, 1, "test").is_err());
+        assert!(validate_mixed_bf16_dims(max, 1, 2, "test").is_err());
+        assert!(validate_mixed_bf16_dims(1, max, 2, "test").is_err());
+    }
+
+    #[test]
+    fn mixed_bf16_gemm_preserves_zero_k_dimension_semantics() {
+        assert_eq!(
+            validate_mixed_bf16_dims(2, 3, 0, "test").unwrap(),
+            (0, 0, 6)
+        );
+        assert!(validate_mixed_bf16_dims(u32::MAX as usize, 2, 0, "test").is_err());
+    }
+
+    #[test]
+    fn group_norm_groups_rejects_msl_u32_index_product_overflow() {
+        let max = u32::MAX as usize;
+        // Every individual dimension fits uint, but channels*positions does
+        // not. Empty buffers are intentional: product validation must happen
+        // before host slice-length checks and reject the launch fail-closed.
+        assert!(
+            validate_group_norm_groups(GroupNormGroupsArgs {
+                input: &[],
+                out: &[],
+                channels: 2,
+                positions: max,
+                groups: 2,
+                gamma: &[],
+                beta: &[],
+                eps: 1e-6,
+            })
+            .is_err()
+        );
+        // The group product is checked independently as well; this case keeps
+        // the same boundary visible for the per-group MSL loop.
+        assert!(
+            validate_group_norm_groups(GroupNormGroupsArgs {
+                input: &[],
+                out: &[],
+                channels: 4,
+                positions: max,
+                groups: 2,
+                gamma: &[],
+                beta: &[],
+                eps: 1e-6,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn conv2d_validates_grouped_dilated_asymmetric_shape() {
+        let input = [0.0; 12];
+        let weight = [0.0; 8];
+        let out = [0.0; 6];
+        assert_eq!(
+            validate_conv2d(
+                &input,
+                2,
+                2,
+                3,
+                &weight,
+                2,
+                2,
+                2,
+                Some(&[0.0; 2]),
+                (1, 1),
+                (0, 1),
+                (1, 2),
+                2,
+                &out,
+            )
+            .unwrap(),
+            (1, 3)
+        );
+    }
+
+    #[test]
+    fn conv_transpose2d_validates_output_padding_and_rejects_bad_shapes() {
+        let input = [0.0; 4];
+        let weight = [0.0; 8];
+        // Output shape follows
+        // `(in - 1) * stride + dilation * (kernel - 1) + 1
+        //  + output_padding - 2 * padding` per spatial axis:
+        // height = 3, width = 6, with two output channels => 36 values.
+        let out = [0.0; 36];
+        assert_eq!(
+            validate_conv_transpose2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                Some(&[0.0; 2]),
+                (2, 2),
+                (0, 0),
+                (1, 2),
+                (1, 1),
+                2,
+                &out,
+            )
+            .unwrap(),
+            (3, 6)
+        );
+        // ATen permits output_padding == stride when it remains smaller than
+        // dilation on that axis.
+        assert_eq!(
+            validate_conv_transpose2d(
+                &[0.0],
+                1,
+                1,
+                1,
+                &[0.0],
+                1,
+                1,
+                1,
+                None,
+                (1, 1),
+                (0, 0),
+                (2, 1),
+                (1, 0),
+                1,
+                &[0.0; 2],
+            )
+            .unwrap(),
+            (2, 1)
+        );
+        assert!(
+            validate_conv_transpose2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                None,
+                (2, 2),
+                (0, 0),
+                (1, 2),
+                (2, 0),
+                2,
+                &out,
+            )
+            .is_err()
+        );
+        // Once output_padding reaches both bounds on an axis, reject it.
+        assert!(
+            validate_conv_transpose2d(
+                &[0.0],
+                1,
+                1,
+                1,
+                &[0.0],
+                1,
+                1,
+                1,
+                None,
+                (1, 1),
+                (0, 0),
+                (2, 1),
+                (2, 0),
+                1,
+                &[0.0; 3],
+            )
+            .is_err()
+        );
+        assert!(
+            validate_conv2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                None,
+                (1, 1),
+                (0, 0),
+                (1, 1),
+                3,
+                &out,
+            )
+            .is_err()
+        );
     }
 }
