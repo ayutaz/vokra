@@ -3,11 +3,14 @@
 > **Current status (2026-09-01): BLOCKED.** The dedicated Python 3.12 lock
 > contains only the first-party preparer (zero external dependencies). The
 > stdlib raw FlatBuffer manifest carries authenticated constant bytes; the
-> preparer emits Q8_0/F32/I32 GGUF without an interpreter or NumPy. The VAST
-> normal production invocation still exits before acquisition because the
-> target byte SHA-256, reviewed topology authority, and parity evidence are
-> pending. The explicitly separate `--inspect-only` mode is VAST-gated and
-> records evidence only:
+> preparer emits dense I8/F32/I32 GGUF without an interpreter or NumPy. VAST
+> evidence has authenticated the fixed target bytes (SHA-256
+> `21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77`,
+> 52272 bytes) and a raw inventory. Normal production remains blocked because
+> reviewed topology authority and parity evidence are pending. The separate
+> `--inspect-only` mode records evidence only; the separate `--candidate` mode
+> may create a `CANDIDATE_UNREVIEWED`/`NO_UPLOAD` GGUF on VAST from fixed
+> inputs:
 > `scripts/publish/vast-ai/run-microwakeword-validation.sh`.
 >
 > The dedicated lock SHA-256 is
@@ -38,8 +41,10 @@ conversion. Bridges the upstream TFLite artefacts (INT8-quantized
 MC-MobileNet designed for Cortex-M55 / RP2040 / ESP32-S3 microcontrollers)
 to the Vokra GGUF shape the `vokra-kws-micro` forward scaffold can validate
 through its explicitly untrusted typed-topology seam (M5-03 IoT Tier-3 /
-NFR-PT-03). Production binding remains closed until an owner-reviewed VAST
-artifact and parity evidence set the compiled topology authority.
+NFR-PT-03). Production binding remains closed until independent topology review
+and parity set the compiled authority. The evidence-only raw inventory is
+unreviewed topology evidence; its six resource states are not a production
+binding.
 
 Companion to the sister crate [`vokra-vad-micro`](../../crates/vokra-vad-micro),
 which does the same job for Silero VAD (M5-03 案 1). The two produce
@@ -51,8 +56,8 @@ reader parses on both host and thumbv8m targets.
 
 - `prepare_checkpoint.py` — the authenticated conversion design. It consumes
   raw producer `data_hex` constants and emits
-  direct GGUF Q8_0 source-byte carriers plus exact dense GGUF I32 carriers for
-  affine bias tensors. Production conversion additionally
+  direct dense GGML_TYPE_I8 tensors preserving each source shape/byte plus exact
+  dense GGUF I32 carriers for affine bias tensors. Production conversion additionally
   refuses a topology whose `canonical_identity` is unset; the raw producer
   emits only a canonical evidence digest until VAST review closes that gate.
   It requires an independently hashed VAST tensor manifest proving which
@@ -95,8 +100,12 @@ summary containing their SHA-256 values; the model `.tflite` remains temporary
 and is cleaned up. The inventory records unsupported operators and multiple
 subgraphs for later review, but carries no canonical-topology or
 production-review authority. It performs no GGUF conversion, inference, Cargo
-build, or upload. Production remains closed until that evidence is reviewed
-and the compiled topology/artifact authorities are set.
+build, or upload. A separate `--candidate` worker path consumes the fixed
+artifact plus this raw inventory, records the six observed resource states and
+operator/options topology in a deterministic candidate manifest, and emits
+only a `CANDIDATE_UNREVIEWED` GGUF with `NO_UPLOAD`; it is VAST/platform/clean-
+checkout gated and does not set production authority. Production remains
+closed until independent topology review and parity set the compiled authority.
 
 The production preparer intentionally has no interpreter or numerical Python
 dependency. Reference generation in `dump_reference.py` remains a separate
@@ -109,7 +118,8 @@ and direct `prepare_checkpoint.py` conversion. Those notes are retained only
 to explain the intended future sidecar shape. They are not runnable guidance:
 all conversion/reference execution and all source/model acquisition must be
 performed by an owner-approved VAST workflow after the dependency and license
-gate clears. The current worker has no acquisition or conversion path.
+gate clears. The normal worker remains terminally blocked; only its explicit
+VAST `--candidate` path permits the unreviewed conversion described above.
 
 The future GGUF is expected to carry `vokra.kws.arch = "microwakeword"`,
 `vokra.kws.model = "hey_jarvis"`, the 16 kHz / 40-band front-end metadata,
@@ -139,19 +149,21 @@ VAST acquisition records it.
 
 | Phase   | Script / crate work                                                   | Runtime consumes                                                                                                                    |
 | ------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **1**   | `prepare_checkpoint.py` (direct Q8_0 GGUF); 40-band log-mel features  | `vokra-kws-micro::features` real                                                                                                    |
+| **1**   | `prepare_checkpoint.py` (VAST inspection-only dense I8); 40-band log-mel features  | Candidate format only; no production tensor binding                                                                                  |
 | **2**   | INT8 kernels + model loader                                           | `KwsMicro` scaffold surface                                                                                                         |
 | **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | Untrusted/synthetic `Model::bind_untrusted_topology` path; production authenticated artifact binding remains pending                  |
 | **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A/B require authenticated VAST artefacts; Path C (INT8-chain end-to-end) remains unmet                                        |
-| **3.5** | Sidecar Q8_0 carrier + per-tensor `(scale, zero_point)` metadata (implemented); dense I32 bias preservation (implemented) | Raw TFLite topology producer and typed binder are synthetic-tested; real artifact bind and parity remain pending |
+| **3.5** | Sidecar dense I8 source bytes + per-tensor `(scale, zero_point)` metadata (implemented); dense I32 bias preservation (implemented) | Raw TFLite topology producer and typed binder are synthetic-tested; real artifact bind and parity remain pending |
 
 The sidecar's source-byte carrier preserves exact INT8 values; its F32 view is
 **lossless** for a fixed
 `(scale, zero_point)` pair — the TFLite affine formula
-`f32 = scale * (int8 - zero_point)` recovers exact values. Phase 3.5 now
-provides the ~4× smaller Q8_0 carrier, matching the microcontroller SRAM
-budget the M5-03 opt-in Tier-3 target requires. It does not by itself
-establish topology binding or end-to-end parity.
+`f32 = scale * (int8 - zero_point)` recovers exact values. Dense I8 storage is
+used because the authenticated source contains tensors whose element counts
+are not Q8_0 block multiples; no source shape or byte is padded or split.
+Candidate tensors are still unreviewed transport output, not production
+authority, and do not establish topology binding, runtime conversion, or
+end-to-end parity.
 
 ## What Phase 4 does — and its honest boundary
 
@@ -172,7 +184,7 @@ the full write-up):
     a `tensorflow` dep). Empirically the standard algorithm matches
     `tf.signal` at `1e-3` for the same parameters.
 - **Path C** (both env vars) — end-to-end INT8 chain parity. **UNMET**:
-  the Q8_0/I32 carriers and affine metadata are implemented, but authenticated
+  the dense I8/I32 tensors and affine metadata are implemented, but authenticated
     model topology and independent reference fixtures remain pending the
     VAST-only acquisition/license gate. The Rust test therefore still skips
     with a clear defer message.

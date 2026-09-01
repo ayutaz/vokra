@@ -12,17 +12,20 @@ microWakeWord-style keyword-spotting (KWS) forward as a `#![no_std]`
 Tier-3 topology (**NFR-PT-03**): the numeric forward is lifted out of
 the std-heavy `vokra-models` so it cross-compiles for bare-metal
 **Cortex-M55** (`thumbv8m-none`), and the std `vokra-models`-side
-wrapper depends on this crate and re-exports it — one forward, shared
-bit-identically between the std and no_std builds.
+wrapper depends on this crate and re-exports it. The std and no_std
+builds share the same forward source; the checks below cover
+deterministic repeat calls, not a published cross-target binary
+identity proof.
 
 ## Status
 
-**Phase 3+ REAL detect() with typed topology binder and Phase 4 host-parity
-harness.** Not graduated to crates.io yet (`publish = false`). The sidecar
-emits Q8_0 source-byte carriers, exact dense I32 bias carriers, and a
-fail-closed supported topology manifest. `Model::bind_untrusted_topology` consumes that
-manifest, but a real `hey_jarvis.tflite` bind still requires VAST evidence and
-independent parity.
+**Phase 3+ synthetic detect() and Phase 4 host-parity preflight.** Not
+graduated to crates.io yet (`publish = false`). The sidecar preserves dense
+`GGML_TYPE_I8` source-byte carriers and exact `GGML_TYPE_I32` bias carriers,
+plus a fail-closed supported-topology manifest. `Model::bind_untrusted_topology`
+only consumes untrusted metadata; production authority, a real
+`hey_jarvis.tflite` bind, and end-to-end parity still require the fixed VAST
+worker, an independent LiteRT fixture, and the authenticated streaming binder.
 
 - **Feature extractor (`src/features.rs`)** — 40-band log-mel front-end
     (Phase 1, WF1). Real; parity harness covers it.
@@ -31,8 +34,10 @@ independent parity.
     tests.
 - **Model loader (`src/model.rs`)** — reads Vokra `vokra.kws.*` GGUF
     emitted by `tools/parity/microwakeword/prepare_checkpoint.py`
-    (Phase 2, WF1 Resume). Real; shape-generic F32/Q8_0/I32 tensor view with
-    source affine metadata and exact I32 bias preservation.
+    (Phase 2, WF1 Resume). Real; shape-generic F32/dense-I8/I32 tensor view
+    with source affine metadata and exact I32 bias preservation. Candidate
+    production carriers are dense `GGML_TYPE_I8` plus exact `GGML_TYPE_I32`;
+    this loader does not confer authenticated model authority.
 - **Interpreter (`src/interpreter.rs`)** — `LayerSpec` + `ChainConfig`
     ping-pong chain executor (Phase 3, WF2). Real; unit-tested end-to-
     end with a synthetic 2-layer chain.
@@ -60,7 +65,7 @@ independent parity.
 - **1:1 preservation** — microWakeWord is a dedicated subgraph, not
     lowered to generic audio-dialect ops.
 
-## Bit-identical std ↔ no_std by construction
+## Shared std/no_std source and deterministic smoke
 
 Two enforcement layers, cross-verified:
 
@@ -75,10 +80,10 @@ Two enforcement layers, cross-verified:
     0). Non-determinism (e.g. `HashMap` iteration, unseeded PRNG,
     environment read) would surface here.
 
-Together these guarantee: the std and no_std builds compile the same
-source, and that source produces deterministic outputs — therefore
-bit-identical by construction (there is no code path that runs
-different arithmetic under one feature and not the other).
+Together these establish shared source and deterministic repeat-call
+behavior for the tested build. They do not prove bit-identical artifacts
+across targets, compilers, or floating-point implementations; a separate
+cross-target parity result would be required for that claim.
 
 The Rust test harness itself requires `std`, so `cargo test` runs only
 the std build; the compile gate proves the no_std build is a subset of
@@ -116,51 +121,55 @@ question — the CI-side compile gate for this crate is not on yet
 new CI coverage). Actual **Cortex-M55 hardware verify** is also owner-
 only (M5-03 ADR: no FVP / real-hardware CI job for Tier-3).
 
-## Owner walkthrough — host parity harness
+## Owner workflow — VAST reference and parity preflight
 
-Env-gated: absent env vars ⇒ clean skip (never fabricated pass). See
-`tests/parity_microwakeword.rs`'s module doc for the full recipe and
-each test path's contract. Short form:
+Model acquisition, conversion, reference execution, and real Rust parity
+are not local maintainer walkthroughs. Local work is limited to the
+stdlib-only self-tests, static checks, and safe package-scoped checks; do not
+run a model, fetch a checkpoint, or synchronize the reference environment on
+the maintainer machine.
 
-```
-# 1. Convert canonical hey_jarvis to a Vokra GGUF (Phase 1 sidecar):
-cd tools/parity/microwakeword
-uv sync
-uv run python prepare_checkpoint.py \
-    --url    https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_jarvis.tflite \
-    --name   hey_jarvis \
-    --output ~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.gguf
+The ordered remote workflow is:
 
-# 2. Download the raw .tflite once (dumper needs it):
-curl -L -o ~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.tflite \
-    https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_jarvis.tflite
+1. Start from a clean checkout/bundle at the fixed worker commit. Run the
+   isolated dependency/license audit in
+   `tools/parity/microwakeword-reference/inspect.py` before any reference
+   environment sync. Its current transitive-license result is
+   `BLOCKED_UNREVIEWED_TRANSITIVE`, so fixture generation remains closed until
+   the bounded primary-source review is recorded.
+2. On the fixed clean VAST worker, use only the worker-reported absolute
+   candidate paths and authenticated model identity. Produce a `NO_UPLOAD`
+   candidate; the candidate is not a production artifact and arbitrary URL or
+   caller-supplied digest authority is forbidden.
+3. After the audit gate is cleared, generate the independent LiteRT fixture
+   from the pinned upstream model. It must retain quantized input bytes, raw
+   uint8 outputs, dequantized outputs, manifest hashes, and the fresh-interpreter
+   reset replay for the stateful multi-invocation sequence. The dumper's
+   mandatory dependency-evidence input must be the successful collection
+   report from that same VAST environment; it is provenance evidence, not an
+   owner license/publication approval.
+4. Collect the evidence archive, run the env-gated Rust paths in the same
+   controlled validation workflow, and destroy the VAST worker. Scaleway is
+   reserved for the separate final Apple CPU/Metal verification; reference
+   generation belongs on VAST.
 
-# 3. Dump reference artefacts (Phase 4 sidecar):
-uv run python dump_reference.py \
-    --tflite-path ~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.tflite \
-    --output-dir  ~/.cache/vokra-eval/fixtures/microwakeword \
-    --verbose
+The Rust harness has three explicit, ordered paths. Missing environment
+variables are a clean skip, never a fabricated pass:
 
-# 4. Point the Rust parity harness at both artefacts:
-export VOKRA_KWS_REAL_GGUF=~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.gguf
-export VOKRA_KWS_REAL_FIXTURES=~/.cache/vokra-eval/fixtures/microwakeword
-CARGO_BUILD_JOBS=1 cargo test -p vokra-kws-micro \
-    --test parity_microwakeword -- --nocapture
-```
-
-Path breakdown:
-
-- **Path A** (`VOKRA_KWS_REAL_GGUF`) — real GGUF load smoke: bind, walk
-    `vokra.kws.*` metadata, assert tensor manifest lower bound. A real
-    hey_jarvis result still requires the owner-reviewed VAST artifact.
-- **Path B** (`VOKRA_KWS_REAL_FIXTURES`) — log-mel feature extractor
-    parity at `atol = 1e-3` against the numpy reference. Real; validates
-    transcription faithfulness of the standard log-mel algorithm.
-- **Path C** (both) — end-to-end INT8 chain parity. **UNMET as of
-    Phase 4**; Q8_0 carriers and per-tensor `(scale, zero_point)` metadata
-    exist, but production topology authority and the Model → `ChainConfig`
-    binding remain pending. See `src/model.rs`'s
-    module doc for the boundary.
+- **Path A** (`VOKRA_KWS_REAL_GGUF`) — authenticated VAST artifact-load smoke:
+  verify the real file and `vokra.kws.*` metadata. A candidate or a manifest
+  alone cannot authorize production.
+- **Path B** (`VOKRA_KWS_REAL_FIXTURES`) — feature extractor parity at the
+  registered `atol = 5e-2` boundary against the independent upstream
+  transcription reference. This is a frontend result only, not end-to-end
+  model parity.
+- **Path C** (both variables) — authenticated streaming INT8 chain parity over
+  every recorded invocation plus reset replay. The input contract is int8
+  `[1, 3, 40]` with scale `0.10196078568696976`, zero-point `-128`; the output
+  contract is uint8 `[1, 1]` with scale `1/256`, zero-point `0`. Once fixture
+  checks pass, a missing authenticated streaming binder is a hard failure;
+  Path C must never skip or report PASS in that state. The outer VAST gate must
+  recompute artifact hashes before any parity claim.
 
 ## See also
 
@@ -168,8 +177,9 @@ Path breakdown:
     local).
 - Sister crate: [`vokra-vad-micro`](../vokra-vad-micro) — Silero VAD
     v5 no_std forward, the topology precedent this crate mirrors.
-- Offline sidecar: `tools/parity/microwakeword/` (TFLite → GGUF
-    conversion + reference dumper).
+- VAST-only sidecars: `tools/parity/microwakeword/` (candidate inspection and
+    conversion) plus `tools/parity/microwakeword-reference/` (independent
+    LiteRT fixture and dependency audit).
 - Upstream: <https://github.com/kahrendt/microWakeWord> (Apache-2.0).
 - Curated model mirror:
     <https://github.com/esphome/micro-wake-word-models> (Apache-2.0).
