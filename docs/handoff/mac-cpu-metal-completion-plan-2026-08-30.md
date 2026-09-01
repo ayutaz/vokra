@@ -349,6 +349,114 @@ Classifier. This does not change the live Hugging Face audit count before a
 separately authorized public replacement, and it does not make FireRed or the
 three blocked dependency families Apple-ready.
 
+## 2026-09-01 exact-head continuation checkpoint
+
+The next source wave and its Linux regression closure are clean at exact commit
+`3001362ff1d0b21a0055f925bb95b0e8e407b52f`, which was pushed to open PR #79
+as the VAST-tested base for this continuation.  The local branch and the VAST
+checkout both matched that commit with clean worktrees.  Later focused fixes
+are recorded below and require a new exact-head remote closure before their
+push can be treated as equivalent evidence.  No checkpoint was converted or
+executed on the maintainer Mac.
+
+VAST instance `49469101` ran the exact-head workspace gates.  The workspace
+test log contains 310 result groups and totals 7,796 passed, zero failed and 75
+ignored tests.  Strict all-target/all-feature Clippy, `cargo deny check
+licenses advisories bans` and `cargo audit` also exited zero.  The four logs
+passed a bounded credential-pattern scan before recovery and have the following
+SHA-256 values:
+
+- workspace tests:
+  `318aa433cc171e845ff7c24e67980f1ab201e44ee31e69dac9948f360e25fb73`
+- strict Clippy:
+  `7ef33bcb9ac37055e56bcbfade71a64236d0919492f0cb1e170a972747971304`
+- cargo-deny:
+  `3cf80bdc410003f3945b935691d26b6bf07dcdf648ce80b242447c564ff1991d`
+- cargo-audit:
+  `4dcc8a000d5f63fd15912dc615eaa80db14ecd5951106e0883f029ea45fccfc9`
+
+The recovered log copies live only under
+`/private/tmp/vokra-gates-3001362f/`; their local hashes match the remote
+values.  GitHub dependency-review subsequently identified a separate Python
+lock vulnerability in FireRed's exact `setuptools==80.9.0` pin
+(`GHSA-h35f-9h28-mq5c`, fixed in 83.0.0).  Commit `e1745690` replaces the
+incompatible closure with exact `kaldiio==2.18.1` and `setuptools==83.0.0`.
+The official KaldiIO wheel SHA-256 is pinned, it has no `pkg_resources`
+reference, and the lock, dependency-audit, upstream-reference and worker
+self-tests are green without loading a model.  No advisory allow-list bypass
+was used.  GitHub dependency-review must still confirm the pushed commit.
+
+Three additional evidence paths advanced without changing a public-artifact
+verdict:
+
+- microWakeWord Path C completed 512 streaming invocations, eleven named
+  intermediates, the final output and four reset replays at code checkpoint
+  `38b51165`.  The verified report SHA-256 is
+  `f805d84e7a34973d8db55ed1aaf0b138bccb48fb0b3e356907591bf5f25f6a26`.
+- FireRedASR-AED-L gained native encoder/decoder primitives and strict prepared
+  artifact contracts, but its independently pinned Python closure remains
+  `BLOCKED_UNREVIEWED_TRANSITIVE` for 27 rows.  No reference PASS is claimed
+  and the public row remains partial.
+- SGMSE-VoiceBank generated a real upstream NCSN++ score reference at
+  checkpoint `35679572`.  The six 64-frame F32 planes and manifest were
+  verified; the manifest SHA-256 is
+  `3dd740f473e547c3e44ad5156619ad37d6b3f34522a75bff20d14f68e815dc83`.
+  Commit `03d67143` adds a consumer that hard-pins that digest, verifies the
+  manifest's run-log and six artifact hashes, rejects non-finite/extra/tampered
+  inputs, and applies the unchanged FP32 `atol=0.01` gate to future native
+  score planes.  Commit `d8886ea3` wires that consumer into the VAST reference
+  worker behind an optional native-score directory, after the independent
+  reference verifier succeeds.  The consumer, worker self-test and recovered
+  real fixture pass locally without model execution.  This authenticates the
+  independent oracle and a future comparison path only.  Strict checkpoint
+  conversion, complete native graph binding, production of a native score
+  dump, native CPU parity and Apple CPU/Metal parity remain open.
+- Kyutai STT remains fail-closed.  The pinned primary contract uses
+  `dep_q=0`, while the shared Moshi API requires `dep_q>=1`; substituting one
+  would invent an unsupported codebook and `1/1/1` depth topology.  A dedicated
+  decoder-only runtime seam plus authenticated GGUF/Mimi/tokenizer provenance
+  and independent compound parity are still required.
+
+PR #79 also exposed four independent contract failures at the tested base:
+the FireRed GGUF prefix was absent from `docs/abi-changelog.md`, the
+`sgmse_voicebank` binder was absent from the CLI `BOUND_ARCHES` registry, the
+Metal group-normalization slice had two strict-Clippy defects, and a FireRed
+no-clobber test asserted the Unix-only text `File exists` on Windows.  These
+are fixed in commit `b05db741`: the ABI row matches all 16 converter metadata
+keys plus both string arrays, the SGMSE binder remains visibly fail-closed, the
+Metal validator uses a typed argument bundle and an explicit safety contract,
+and the no-clobber test checks `ErrorKind::AlreadyExists` portably.  The same
+commit closes two additional strict-Clippy findings without changing parity
+math: the existing test module moves after production items and the mixed-BF16
+seed keeps the identical numeric value with consistent hex casing.  Package-
+scoped Metal strict Clippy, the focused FireRed test, both registry/ABI shell
+gates, formatting and diff checks are green locally.  This commit and the
+preceding focused fixes still require a fresh exact-head VAST workspace run
+before push.
+
+The read-only live Hugging Face audit was repeated at `3001362f` after its ten
+offline unit tests passed.  It remains 194 public repositories, 193 GGUF
+repositories and 198 GGUF files: CPU `full=131`, `partial=42`,
+`no-runtime-binder=20`, `not-artifact=1`; Metal `full=131`,
+`blocked-by-cpu=62`, `not-artifact=1`.  There are still zero source-level
+CPU-complete/Metal-unsupported rows.  The campaign is therefore not at a
+Scaleway-only finish: all 63 CPU-open public rows still require the applicable
+source, artifact, dependency, publication and VAST legs before Apple hardware
+can provide their final Metal verdicts.
+
+Instance `49469101` now reports `cur_state=stopped`,
+`intended_status=stopped`, `actual_status=exited`.  The complete 404-KB
+independent-reference directory and all exact-head gate logs are hash-matched
+under `/private/tmp`, so its 200 GB remote state is no longer the sole copy and
+the instance is selected for destruction rather than indefinite retention.
+Instance `49447911` (`vokra-mac-coverage-5283966f`, 150 GB) is also redundant.
+Permanent destruction of both is pending the owner's explicit confirmation of
+the two instance IDs and loss of their saved data; the broad cleanup request
+was not accepted by the destructive-action safeguard.
+Retained packet instances `49168183` and `49261078` remain stopped for their
+recorded Scaleway transfer only.  Unrelated instance `49466383` is outside this
+campaign and must not be touched.
+
 ## Execution order
 
 ### Wave A: close the three prepared Apple-hardware evidence gaps
