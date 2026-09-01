@@ -3,9 +3,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HF_REPOSITORY="espnet/owsm_v4_medium_1B"; HF_REVISION="e10985c8f1d592e905c24d2ac2b2c53e3feb24dc"
 SOURCE_URL="https://github.com/espnet/espnet.git"; SOURCE_REVISION="cccc29023d43a3f504e28df7d1324bb4eb6daedd"
-INSPECTOR="$ROOT/tools/parity/owsm_v4_medium_1b_inspect.py"; MIN_MEM_KIB=$((128*1024*1024)); MIN_DISK_KIB=$((32*1024*1024))
+INSPECTOR="$ROOT/tools/parity/owsm_v4_medium_1b_inspect.py"; PREPARER="$ROOT/tools/parity/owsm_v4_medium_1b_prepare_checkpoint.py"; CHECKPOINT_RELATIVE="exp/s2t_train_conv2d8_size1024_e18_d18_mel128_raw_bpe50000/valid.total_count.ave_5best.pth"; MIN_MEM_KIB=$((128*1024*1024)); MIN_DISK_KIB=$((32*1024*1024))
 die(){ echo "owsm-v4-vast: ERROR: $*" >&2; exit 2; }
-self_test(){ local path="${BASH_SOURCE[0]}" token fail=0; for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" 'allow_pickle=False' 'weights_only=True' 'INSPECTION_ONLY' 'INSPECTION_ERROR' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'NO_UPLOAD' 'exit 2' 'CARGO_BUILD_JOBS=1' 'materialized_files' 'findmnt' 'README.md' 'cc-by-4.0' 'espnet/yodas_owsmv4' 'RepoFile' 'RepoFolder' 'classify_entry' 'OWSM_HF_TREE_SELF_TEST'; do if ! grep -Fq -- "$token" "$path" && ! grep -Fq -- "$token" "$INSPECTOR"; then echo "missing contract $token" >&2; fail=1; fi; done; if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$path" | grep -v 'grep -En' >/dev/null; then fail=1; fi; UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1; if ! OWSM_HF_TREE_SELF_TEST=1 UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+self_test(){ local path="${BASH_SOURCE[0]}" token fail=0; for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" 'allow_pickle=False' 'weights_only=True' 'canonical_payload_sha256' 'MISSING_OWSM_GGUF_WRITER_CONTRACT' 'structural-manifest' 'INSPECTION_ONLY' 'INSPECTION_ERROR' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'NO_UPLOAD' 'exit 2' 'CARGO_BUILD_JOBS=1' 'materialized_files' 'findmnt' 'README.md' 'cc-by-4.0' 'espnet/yodas_owsmv4' 'RepoFile' 'RepoFolder' 'classify_entry' 'OWSM_HF_TREE_SELF_TEST'; do if ! grep -Fq -- "$token" "$path" && ! grep -Fq -- "$token" "$INSPECTOR" && ! grep -Fq -- "$token" "$PREPARER"; then echo "missing contract $token" >&2; fail=1; fi; done; if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$path" | grep -v 'grep -En' >/dev/null; then fail=1; fi; UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1; UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" --self-test || fail=1; if ! OWSM_HF_TREE_SELF_TEST=1 UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
 from huggingface_hub import RepoFile, RepoFolder
 
 def classify_entry(entry):
@@ -76,5 +76,15 @@ assert p["inspection_status"]=="AUTHENTICATED_EVIDENCE_COMPLETE"
 assert p["evidence_stage"]=="INSPECTION_ONLY"
 assert p["runtime_status"]=="NOT_IMPLEMENTED_FAIL_CLOSED"
 assert p["publication"]=="NO_UPLOAD"
+PY
+set +e; uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" --checkpoint "$work/model/$CHECKPOINT_RELATIVE" --structural-manifest "$work/evidence/manifest.json" --output "$work/evidence/payload-manifest.json" >>"$work/evidence/validation.log" 2>&1; payload_rc=$?; set -e; [[ "$payload_rc" == 2 ]] || die 'payload preparer must remain blocked by the missing GGUF writer contract'; uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work/evidence/payload-manifest.json" <<'PY'
+import json,sys
+p=json.loads(open(sys.argv[1],encoding="utf-8").read())
+assert p["status"] == "BLOCKED_WRITER_CONTRACT"
+assert p["completed_evidence"] is False and p["blocked_evidence"] is True
+assert p["writer_contract"]["status"] == "MISSING_OWSM_GGUF_WRITER_CONTRACT"
+assert p["writer_contract"]["publication"] == "NO_UPLOAD"
+assert p["tensor_count"] == 1172
+assert len(p["tensors"]) == 1172
 PY
 exit 2
