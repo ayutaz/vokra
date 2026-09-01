@@ -293,25 +293,54 @@ def capture_reference(model: Any, args: Any, source_root: Path, cmvn_path: Path)
     features = torch.from_numpy(np.asarray(fbank)).float().unsqueeze(0)
     lengths = torch.tensor([features.shape[1]], dtype=torch.long)
 
-    taps: dict[str, Any] = {}
+    taps: dict[str, list[dict[str, Any]]] = {}
+
+    def first_tensor(value: Any, torch_module: Any) -> Any:
+        if isinstance(value, torch_module.Tensor):
+            return value
+        if isinstance(value, (tuple, list)):
+            for child in value:
+                found = first_tensor(child, torch_module)
+                if found is not None:
+                    return found
+        return None
 
     def capture(name: str):
         def hook(_module: Any, _inputs: Any, output: Any) -> None:
-            values = output[0] if isinstance(output, tuple) and output and isinstance(output[0], torch.Tensor) else output
-            if isinstance(values, torch.Tensor):
-                taps[name] = {"summary": tensor_summary(values), "values": tensor_values(values)}
+            values = first_tensor(output, torch)
+            if values is not None:
+                taps.setdefault(name, []).append(
+                    {"summary": tensor_summary(values), "values": tensor_values(values)}
+                )
 
         return hook
 
-    handles = [
-        model.encoder.register_forward_hook(capture("encoder")),
-        # ``batch_beam_search`` is an ordinary method and is called directly
-        # below; it does not pass through ``model.decoder.__call__``.  A
-        # module-level decoder hook would therefore never observe logits.
-        # Hook the projection that the pinned upstream method invokes at
-        # transformer_decoder.py's ``t_logit = self.tgt_word_prj(...)``.
-        model.decoder.tgt_word_prj.register_forward_hook(capture("decoder_logits")),
-    ]
+    # ``batch_beam_search`` is an ordinary method and is called directly
+    # below; it does not pass through ``model.decoder.__call__``.  Hooks are
+    # therefore attached to the exact source modules invoked by that method.
+    # Missing paths are hard failures: a trace with silently omitted stages is
+    # not sufficient to unlock a native implementation.
+    handles = []
+    stage_modules = [("encoder", model.encoder)]
+    try:
+        stage_modules.append(("encoder.input_preprocessor", model.encoder.input_preprocessor))
+        stage_modules.append(("encoder.positional_encoding", model.encoder.positional_encoding))
+        for index, layer in enumerate(model.encoder.layer_stack):
+            stage_modules.append((f"encoder.layer_stack.{index}", layer))
+        for index, layer in enumerate(model.decoder.layer_stack):
+            stage_modules.append((f"decoder.layer_stack.{index}", layer))
+        stage_modules.extend(
+            [
+                ("decoder.layer_norm_out", model.decoder.layer_norm_out),
+                # This projection is the logits tap in upstream
+                # transformer_decoder.py (`t_logit = self.tgt_word_prj(...)`).
+                ("decoder_logits", model.decoder.tgt_word_prj),
+            ]
+        )
+    except AttributeError as error:
+        raise RuntimeError(f"pinned upstream trace module path is missing: {error}") from error
+    for name, module in stage_modules:
+        handles.append(module.register_forward_hook(capture(name)))
     try:
         with torch.no_grad():
             enc_outputs, _, enc_mask = model.encoder(features, lengths)
@@ -321,6 +350,16 @@ def capture_reference(model: Any, args: Any, source_root: Path, cmvn_path: Path)
     finally:
         for handle in handles:
             handle.remove()
+    required_stage_names = [
+        "encoder",
+        "encoder.input_preprocessor",
+        *[f"encoder.layer_stack.{index}" for index in range(EXPECTED_ARGS["n_layers_enc"])],
+        *[f"decoder.layer_stack.{index}" for index in range(EXPECTED_ARGS["n_layers_dec"])],
+        "decoder_logits",
+    ]
+    missing_stages = [name for name in required_stage_names if not taps.get(name)]
+    if missing_stages:
+        raise RuntimeError(f"upstream trace did not observe required stages: {missing_stages!r}")
     if not hypotheses:
         raise RuntimeError("upstream decoder returned no hypothesis")
     first = hypotheses[0][0]
@@ -333,9 +372,39 @@ def capture_reference(model: Any, args: Any, source_root: Path, cmvn_path: Path)
         token_ids = [int(value) for value in token_ids]
     return {
         "pcm": {"sample_rate": 16000, "samples": len(samples), "dtype": "int16"},
-        "frontend": {"shape": list(np.asarray(fbank).shape), "dtype": str(np.asarray(fbank).dtype), "sha256": sha256_bytes(np.asarray(fbank, dtype=np.float32).tobytes())},
-        "encoder": taps.get("encoder"),
-        "decoder_logits": taps.get("decoder_logits"),
+        "frontend": {
+            "shape": list(np.asarray(fbank).shape),
+            "dtype": str(np.asarray(fbank).dtype),
+            "sha256": sha256_bytes(np.asarray(fbank, dtype=np.float32).tobytes()),
+            "values": np.asarray(fbank, dtype=np.float32).tolist(),
+        },
+        "trace": {
+            "schema": "firered-asr-aed-l-reference-trace-v1",
+            "encoder_stages": [
+                {"name": name, "invocations": taps.get(name, [])}
+                for name, _module in stage_modules
+                if name.startswith("encoder")
+            ],
+            "decoder_stages": [
+                {"name": name, "invocations": taps.get(name, [])}
+                for name, _module in stage_modules
+                if name.startswith("decoder")
+            ],
+            "required": {
+                "frontend_fbank_cmvn": True,
+                "encoder_input_preprocessor": True,
+                "encoder_each_layer": 16,
+                "encoder_final": True,
+                "decoder_each_layer": 16,
+                "decoder_logits_each_step": True,
+                "token_ids": True,
+            },
+        },
+        # Keep the final invocation under the historical key for consumers
+        # that only need a one-step observation; the complete sequence is in
+        # trace.decoder_stages.
+        "encoder": taps.get("encoder", [])[-1] if taps.get("encoder") else None,
+        "decoder_logits": taps.get("decoder_logits", [])[-1] if taps.get("decoder_logits") else None,
         "greedy": {"beam_size": 1, "nbest": 1, "decode_max_len": 32, "softmax_smoothing": 1.0, "length_penalty": 0.0, "eos_penalty": 1.0, "token_ids": token_ids},
         "status": "REFERENCE_CAPTURED",
     }
@@ -396,6 +465,23 @@ def self_test() -> None:
     assert KALDI_NATIVE_FBANK_SOURCE["version"] == "1.15"
     assert len(KALDI_NATIVE_FBANK_SOURCE["license_sha256"]) == 64
     assert len(CHECKPOINT_SHA256) == 64
+    assert EXPECTED_ARGS["sos_id"] == 3 and EXPECTED_ARGS["eos_id"] == 4
+    assert EXPECTED_ARGS["n_layers_enc"] == EXPECTED_ARGS["n_layers_dec"] == 16
+    assert EXPECTED_ARGS["idim"] == 80 and EXPECTED_ARGS["odim"] == 7832
+    trace_schema = {
+        "schema": "firered-asr-aed-l-reference-trace-v1",
+        "required": {
+            "frontend_fbank_cmvn": True,
+            "encoder_input_preprocessor": True,
+            "encoder_each_layer": 16,
+            "encoder_final": True,
+            "decoder_each_layer": 16,
+            "decoder_logits_each_step": True,
+            "token_ids": True,
+        },
+    }
+    assert trace_schema["required"]["encoder_each_layer"] == 16
+    assert trace_schema["required"]["decoder_each_layer"] == 16
     with tempfile.TemporaryDirectory(prefix="firered-reference-") as directory:
         root = Path(directory)
         output = root / "reference.json"

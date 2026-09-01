@@ -23,6 +23,19 @@ REPOSITORY = "FireRedTeam/FireRedASR-AED-L"
 MODEL_REVISION = "e57f5960d03cff1071ff7acbb409314d1e70ed3d"
 AUDIT_FORMAT = "vokra-firered-asr-aed-l-dependency-audit-v1"
 
+UNLOCK_REQUIREMENTS = (
+    {
+        "id": "owner_per_row_license_review",
+        "status": "OWNER_REVIEW_REQUIRED",
+        "evidence": "explicit owner approval for every active closure row, publisher, and native payload",
+    },
+    {
+        "id": "native_frontend_dependency_review",
+        "status": "OWNER_REVIEW_REQUIRED",
+        "evidence": "license/source review for kaldi-native-fbank and its transitive native payloads",
+    },
+)
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -154,6 +167,7 @@ def build_manifest(lock_path: Path, project: Path | None) -> dict[str, Any]:
         "native_source": native_source,
         "owner_approval": {"status": "MISSING", "required": "per-row license, publisher, and native payload review"},
         "gate": {"status": "BLOCKED_UNREVIEWED_TRANSITIVE", "reason": "all transitive closure rows require explicit owner approval before model snapshot"},
+        "unlock_requirements": list(UNLOCK_REQUIREMENTS),
     }
 
 
@@ -166,6 +180,10 @@ def self_test() -> None:
         manifest = build_manifest(lock, None)
         assert manifest["status"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
         assert manifest["publication"] == "NO_UPLOAD"
+        assert {item["id"] for item in manifest["unlock_requirements"]} == {
+            "owner_per_row_license_review",
+            "native_frontend_dependency_review",
+        }
         assert len(manifest["lock"]["sha256"]) == 64
         assert len(manifest["active_closure"]["row_digest"]) == 64
         assert all(len(row["row_sha256"]) == 64 for row in manifest["active_closure"]["rows"])

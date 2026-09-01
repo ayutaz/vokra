@@ -365,8 +365,8 @@ def inspect_source_contract(root: Path) -> dict[str, Any]:
     return {
         "status": "AUTHENTICATED_SOURCE_CONTRACT",
         "architecture": "ConformerEncoder + TransformerDecoder + batch_beam_search",
-        "frontend": "ASRFeatExtractor accepts the provided WAV sample_rate dynamically; exact KaldifeatFbank geometry is source-authenticated, while the official README normalizes release input to 16 kHz mono",
-        "tokenizer": "SentencePiece/TokenDict piece-to-id and detokenization mapping is source-authenticated; exact special ids and dictionary binding require checkpoint args plus authenticated dict",
+        "frontend": "ASRFeatExtractor accepts the provided WAV sample_rate dynamically; exact KaldifeatFbank geometry is pinned-source evidence, while the official README normalizes release input to 16 kHz mono",
+        "tokenizer": "SentencePiece/TokenDict piece-to-id and detokenization mapping is pinned-source evidence; exact special ids and dictionary binding require checkpoint args plus an independently checked dict",
         "records": records,
     }
 
@@ -442,8 +442,90 @@ def require_readme_markers(card: str) -> tuple[str, ...]:
         raise ValueError(f"model card markers missing: {missing}")
     return README_MARKERS
 
+def unlock_requirements() -> list[dict[str, Any]]:
+    """Machine-readable evidence still required to leave fail-closed state.
+
+    These are collection contracts, not inferred model facts.  The worker
+    records them even when inspection succeeds so a later VAST run cannot
+    mistake a complete inventory for a complete runtime implementation.
+    """
+    return [
+        {
+            "id": "dependency_license_review",
+            "status": "OWNER_REVIEW_REQUIRED",
+            "evidence": "dependency-audit.json with explicit per-row license/publisher/native-payload approval",
+        },
+        {
+            "id": "native_frontend_cpu_parity",
+            "status": "NOT_COLLECTED",
+            "evidence": "independent upstream fbank+CMVN outputs (including values, shape, dtype, sha256) and a native 80-bin implementation compared at FP32_ATOL=0.01",
+            "artifact": "frontend-parity.json (reference.reference.frontend.values)",
+        },
+        {
+            "id": "encoder_stage_cpu_parity",
+            "status": "NOT_COLLECTED",
+            "evidence": "fresh-process upstream and Vokra traces for input_preprocessor, positional encoding, final encoder output, and all 16 Conformer blocks, with first divergent stage retained",
+            "artifact": "encoder-trace-parity.json (reference.reference.trace, schema=firered-asr-aed-l-reference-trace-v1)",
+        },
+        {
+            "id": "decoder_beam_cpu_parity",
+            "status": "NOT_COLLECTED",
+            "evidence": "independent upstream decoder logits at every step, all 16 decoder-layer traces, and greedy/beam token ids compared against the native decoder",
+            "artifact": "decoder-trace-parity.json (reference.reference.trace, schema=firered-asr-aed-l-reference-trace-v1)",
+        },
+        {
+            "id": "tokenizer_binding",
+            "status": "NOT_COLLECTED",
+            "evidence": "exact train_bpe1000.model and dict.txt bytes/hash embedded under vokra.tokenizer.model with a round-trip id/text check",
+            "artifact": "tokenizer-binding.json",
+        },
+        {
+            "id": "metal_complete_graph_preflight",
+            "status": "BLOCKED_BY_CPU_PARITY",
+            "evidence": "Apple-silicon run of the same full encoder+decoder graph, backend coverage proof, and CPU-vs-Metal logits/token equality",
+            "artifact": "metal-preflight.json",
+        },
+    ]
+
+
 def base_manifest() -> dict[str, Any]:
-    return {"format": "vokra-firered-asr-aed-l-inspection-v1", "status": "BLOCKED", "inspection_status": "PENDING", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "environment": {"python": sys.version, "platform": platform.platform()}, "model": {"repository": REPOSITORY, "revision": REVISION, "license": MODEL_LICENSE, "files": ARTIFACTS, "total_bytes": TOTAL_BYTES}, "source": {"origin": SOURCE_URL, "revision": SOURCE_REVISION}, "blockers": ["checkpoint tensor-to-native field mapping and converter/runtime consumption require the VAST preparation/reference evidence", "source-authenticated frontend and CMVN rules require a native implementation and parity consumer", "source-authenticated SentencePiece/TokenDict rendering and checkpoint special ids require native tokenizer binding", "independent CPU numerical parity is not run", "complete Metal graph is not implemented", "training data and dependency provenance require review"]}
+    return {
+        "format": "vokra-firered-asr-aed-l-inspection-v1",
+        "status": "BLOCKED",
+        "inspection_status": "PENDING",
+        "evidence_stage": "INSPECTION_ONLY",
+        "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+        "runtime_status_scope": "full_pcm_transcription_only; feature-to-feature and feature-to-token primitives are parity-pending",
+        "cpu_status": "UNSUPPORTED",
+        "metal_status": "BLOCKED_BY_CPU",
+        "parity_status": "NOT_RUN",
+        "publication": "NO_UPLOAD",
+        "environment": {"python": sys.version, "platform": platform.platform()},
+        "model": {"repository": REPOSITORY, "revision": REVISION, "license": MODEL_LICENSE, "files": ARTIFACTS, "total_bytes": TOTAL_BYTES},
+        "source": {"origin": SOURCE_URL, "revision": SOURCE_REVISION},
+        "blockers": [
+            "checkpoint tensor-to-native field mapping and converter/runtime consumption require the VAST preparation/reference evidence",
+            "pinned-source frontend and CMVN rules require a native implementation and parity consumer",
+            "pinned-source SentencePiece/TokenDict rendering and checkpoint special ids require native tokenizer binding",
+            "independent CPU numerical parity is not run",
+            "complete Metal graph is not implemented",
+            "training data and dependency provenance require review",
+        ],
+        "vast_first_pass": {
+            "command": "VOKRA_PUBLISH_ON_VAST=1 bash scripts/publish/vast-ai/run-firered-asr-aed-l-inspection.sh --work-dir /dev/shm/vokra-firered-asr-aed-l-inspection",
+            "expected_artifacts": {
+                "final_manifest": "evidence/manifest-with-reference.json",
+                "upstream_reference": "evidence/upstream_reference.json",
+                "reference_trace_schema": "firered-asr-aed-l-reference-trace-v1",
+                "frontend_values": "upstream_reference.json.reference.frontend.values",
+                "encoder_stage_values": "upstream_reference.json.reference.trace.encoder_stages",
+                "decoder_stage_values": "upstream_reference.json.reference.trace.decoder_stages",
+                "token_ids": "upstream_reference.json.reference.greedy.token_ids",
+            },
+            "publication": "NO_UPLOAD",
+        },
+        "unlock_requirements": unlock_requirements(),
+    }
 
 def inspect(args: argparse.Namespace) -> int:
     manifest = base_manifest()
@@ -486,6 +568,16 @@ def inspect(args: argparse.Namespace) -> int:
     return 2
 
 def self_test() -> None:
+    requirement_ids = {item["id"] for item in unlock_requirements()}
+    assert requirement_ids == {
+        "dependency_license_review",
+        "native_frontend_cpu_parity",
+        "encoder_stage_cpu_parity",
+        "decoder_beam_cpu_parity",
+        "tokenizer_binding",
+        "metal_complete_graph_preflight",
+    }
+    assert all(item["status"] != "PASS" for item in unlock_requirements())
     positive_card = "\n".join(README_MARKERS)
     for bad in ("../x", "/x", "a\\b", "a\x00b", ""):
         try: safe_path(bad)
@@ -603,6 +695,11 @@ def self_test() -> None:
         assert rc == 2
         manifest = json.loads((manifest_dir / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["status"] == "BLOCKED" and manifest["evidence_stage"] == "INSPECTION_ONLY" and manifest["inspection_status"] == "INSPECTION_ERROR"
+        assert {item["id"] for item in manifest["unlock_requirements"]} == requirement_ids
+        first_pass = manifest["vast_first_pass"]
+        assert first_pass["publication"] == "NO_UPLOAD"
+        assert first_pass["expected_artifacts"]["reference_trace_schema"] == "firered-asr-aed-l-reference-trace-v1"
+        assert "run-firered-asr-aed-l-inspection.sh" in first_pass["command"]
         assert "AUTHENTICATED_EVIDENCE_COMPLETE" not in json.dumps(manifest)
     print("firered inspector self-test PASS")
 

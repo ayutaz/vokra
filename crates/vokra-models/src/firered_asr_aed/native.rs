@@ -1,12 +1,14 @@
 //! Native, checkpoint-independent FireRed AED building blocks.
 //!
 //! The loader deliberately keeps checkpoint name binding in `mod.rs`; these
-//! helpers only implement source-authenticated tensor semantics once a strict
-//! binder supplies the operands.  They dispatch every learned operation via
+//! helpers only implement descriptor-bound tensor semantics once the strict
+//! model constructor supplies the operands. They dispatch every learned operation via
 //! [`Compute`], so CPU and Metal use the same first-class seam and unsupported
 //! backends return an error before execution.
 
 use crate::compute::{Compute, HotOp};
+use std::collections::BTreeMap;
+use vokra_core::gguf::{GgmlType, GgufFile};
 use vokra_core::{Result, VokraError};
 
 /// Hot operations required by the FireRed AED encoder and decoder paths.
@@ -22,6 +24,510 @@ pub const FIRERED_ASR_AED_HOT_OPS: &[HotOp] = &[
     HotOp::Silu,
     HotOp::Softmax,
 ];
+
+/// Owned, source-bound FireRed tensors in the layouts consumed by the native
+/// kernels.
+///
+/// This is deliberately separate from the inspection binder in `mod.rs`:
+/// loading a tensor table is an opt-in operation, and callers that only need
+/// to inspect provenance or manifests do not pay the multi-gigabyte decode
+/// cost. The constructor accepts only the complete, compiled 940-tensor
+/// descriptor and rejects every missing, extra, non-F32, or non-finite
+/// value before returning a handle. The public model constructor additionally
+/// requires the exact converter provenance; this type is crate-private so it
+/// cannot bypass that gate. No synthesized tensor is ever installed.
+#[derive(Debug)]
+pub(crate) struct FireRedRuntimeWeights {
+    tensors: BTreeMap<String, Vec<f32>>,
+}
+
+impl FireRedRuntimeWeights {
+    /// Decodes the exact 940-tensor release into owned f32 values.
+    ///
+    /// Linear tensors are transposed once from the upstream PyTorch
+    /// `[out,in]` layout to the row-major Compute `[in,out]` layout. Conv
+    /// tensors and embeddings retain their source layout. This method is
+    /// intended for VAST/production hosts; tests should use the primitive
+    /// native APIs with small synthetic operands instead.
+    pub(crate) fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let encoder = super::expected_encoder_tensor_specs();
+        let decoder = super::expected_decoder_tensor_specs();
+        if file.tensors().len() != encoder.len() + decoder.len() {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l native operand bind requires {} tensors, got {}",
+                encoder.len() + decoder.len(),
+                file.tensors().len()
+            )));
+        }
+        let mut expected = BTreeMap::new();
+        for spec in encoder.iter() {
+            expected.insert(
+                spec.name.as_str(),
+                (
+                    &spec.source_shape,
+                    encoder_runtime_layout(spec.name.as_str(), spec.native_layout),
+                ),
+            );
+        }
+        for spec in decoder.iter() {
+            if expected
+                .insert(
+                    spec.name.as_str(),
+                    (&spec.source_shape, decoder_layout(spec.native_layout)),
+                )
+                .is_some()
+            {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l native operand bind has duplicate descriptor `{}`",
+                    spec.name
+                )));
+            }
+        }
+        if expected.len() != file.tensors().len() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l native operand descriptor count is not unique".to_owned(),
+            ));
+        }
+        let mut tensors = BTreeMap::new();
+        for info in file.tensors() {
+            let Some((shape, layout)) = expected.get(info.name.as_str()).copied() else {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l native operand bind found unexpected tensor `{}`",
+                    info.name
+                )));
+            };
+            if info.dtype != GgmlType::F32 {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l native operand tensor `{}` has dtype {:?}, expected F32",
+                    info.name, info.dtype
+                )));
+            }
+            if info.dimensions.as_slice() != shape.as_slice() {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l native operand tensor `{}` shape {:?}, expected {:?}",
+                    info.name, info.dimensions, shape
+                )));
+            }
+            let values = file.tensor_f32(&info.name).map_err(|error| {
+                VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l native operand tensor `{}` decode failed: {error}",
+                    info.name
+                ))
+            })?;
+            if values.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l native operand tensor `{}` contains a non-finite value",
+                    info.name
+                )));
+            }
+            let values = match layout {
+                NativeLayout::Transpose2d => transpose_2d(&values, shape)?,
+                NativeLayout::Direct => values,
+            };
+            tensors.insert(info.name.clone(), values);
+        }
+        if tensors.len() != file.tensors().len() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l native operand bind found duplicate tensor names".to_owned(),
+            ));
+        }
+        Ok(Self { tensors })
+    }
+
+    /// Borrows a source-name tensor after its load-time layout conversion.
+    pub(crate) fn tensor(&self, name: &str) -> Result<&[f32]> {
+        self.tensors.get(name).map(Vec::as_slice).ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "firered-asr-aed-l native operand tensor `{name}` is absent"
+            ))
+        })
+    }
+
+    /// Runs the descriptor-bound encoder stem and all sixteen Conformer blocks
+    /// on already-extracted `[frames, 80]` fbank/CMVN features.
+    ///
+    /// The upstream fbank implementation is Python/native-fbank code and is
+    /// intentionally not linked into the runtime. Consequently this method
+    /// takes the source feature matrix, not PCM. Padding masks are accepted
+    /// only when every input frame is valid; accepting a guessed downsampling
+    /// mask would create a silent alignment bug.
+    pub(crate) fn encode_features(
+        &self,
+        compute: &Compute,
+        features: &[f32],
+        frames: usize,
+        input_mask: &[bool],
+    ) -> Result<Vec<f32>> {
+        if frames < 7
+            || features.len()
+                != frames.checked_mul(super::N_MELS as usize).ok_or_else(|| {
+                    VokraError::InvalidArgument("FireRed fbank shape overflow".to_owned())
+                })?
+            || input_mask.len() != frames
+            || !input_mask.iter().all(|&valid| valid)
+        {
+            return Err(VokraError::InvalidArgument(
+                "firered-asr-aed-l encoder expects [frames,80] features and an all-valid input mask"
+                    .to_owned(),
+            ));
+        }
+        let stem = FireRedConv2dSubsampling {
+            out_channels: 32,
+            d_model: super::AUTHENTICATED_ENCODER_D_MODEL as usize,
+        };
+        let conv0_w = self.tensor("encoder.input_preprocessor.conv.0.weight")?;
+        let conv0_b = self.tensor("encoder.input_preprocessor.conv.0.bias")?;
+        let conv1_w = self.tensor("encoder.input_preprocessor.conv.2.weight")?;
+        let conv1_b = self.tensor("encoder.input_preprocessor.conv.2.bias")?;
+        let out_w = self.tensor("encoder.input_preprocessor.out.weight")?;
+        let out_b = self.tensor("encoder.input_preprocessor.out.bias")?;
+        let (hidden, stem_frames) = stem.forward(
+            compute,
+            features,
+            frames,
+            super::N_MELS as usize,
+            conv0_w,
+            conv0_b,
+            conv1_w,
+            conv1_b,
+            out_w,
+            out_b,
+        )?;
+        let mask = vec![true; stem_frames];
+        let positions = self.tensor("encoder.positional_encoding.pe")?;
+        let position_width = super::AUTHENTICATED_ENCODER_D_MODEL as usize;
+        let position_count = stem_frames
+            .checked_mul(2)
+            .and_then(|v| v.checked_sub(1))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("FireRed encoder position count overflow".to_owned())
+            })?;
+        let needed = position_count.checked_mul(position_width).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed encoder position shape overflow".to_owned())
+        })?;
+        let table_frames = positions.len().checked_div(position_width).ok_or_else(|| {
+            VokraError::ModelLoad(
+                "firered-asr-aed-l positional encoding width is invalid".to_owned(),
+            )
+        })?;
+        let table_values = table_frames.checked_mul(position_width).ok_or_else(|| {
+            VokraError::ModelLoad("firered-asr-aed-l positional table overflows".to_owned())
+        })?;
+        if table_frames % 2 != 1 || positions.len() != table_values {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l positional encoding table must be an odd [2*max-1,d] buffer"
+                    .to_owned(),
+            ));
+        }
+        let center = table_frames / 2;
+        let start = center
+            .checked_add(1)
+            .and_then(|v| v.checked_sub(stem_frames))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "FireRed encoder position window underflows authenticated table".to_owned(),
+                )
+            })?;
+        let end = start.checked_add(position_count).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed encoder position window overflows".to_owned())
+        })?;
+        if end > table_frames {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l positional encoding is shorter than the source window"
+                    .to_owned(),
+            ));
+        }
+        // The source buffer is [1, 9999, d_model] (the leading singleton is
+        // absent from the flattened GGUF payload). RelPositionalEncoding
+        // selects the centered [2*T-1, d_model] window for each input length.
+        let begin = start.checked_mul(position_width).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed encoder position offset overflows".to_owned())
+        })?;
+        let end_offset = begin.checked_add(needed).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed encoder position end overflows".to_owned())
+        })?;
+        let positions = &positions[begin..end_offset];
+        let mut layers = Vec::with_capacity(super::AUTHENTICATED_ENCODER_N_LAYER as usize);
+        for layer in 0..super::AUTHENTICATED_ENCODER_N_LAYER {
+            let prefix = format!("encoder.layer_stack.{layer}.");
+            layers.push(FireRedConformerBlockWeights {
+                ffn1_ln_gamma: self.tensor(&format!("{prefix}ffn1.net.0.weight"))?,
+                ffn1_ln_beta: self.tensor(&format!("{prefix}ffn1.net.0.bias"))?,
+                ffn1_expand_w_t: self.tensor(&format!("{prefix}ffn1.net.1.weight"))?,
+                ffn1_expand_b: self.tensor(&format!("{prefix}ffn1.net.1.bias"))?,
+                ffn1_project_w_t: self.tensor(&format!("{prefix}ffn1.net.4.weight"))?,
+                ffn1_project_b: self.tensor(&format!("{prefix}ffn1.net.4.bias"))?,
+                attention_positions: positions,
+                attention_q_w_t: self.tensor(&format!("{prefix}mhsa.w_qs.weight"))?,
+                attention_k_w_t: self.tensor(&format!("{prefix}mhsa.w_ks.weight"))?,
+                attention_v_w_t: self.tensor(&format!("{prefix}mhsa.w_vs.weight"))?,
+                attention_linear_pos_w_t: self
+                    .tensor(&format!("{prefix}mhsa.linear_pos.weight"))?,
+                attention_q_norm_gamma: self
+                    .tensor(&format!("{prefix}mhsa.layer_norm_q.weight"))?,
+                attention_q_norm_beta: self.tensor(&format!("{prefix}mhsa.layer_norm_q.bias"))?,
+                attention_k_norm_gamma: self
+                    .tensor(&format!("{prefix}mhsa.layer_norm_k.weight"))?,
+                attention_k_norm_beta: self.tensor(&format!("{prefix}mhsa.layer_norm_k.bias"))?,
+                attention_v_norm_gamma: self
+                    .tensor(&format!("{prefix}mhsa.layer_norm_v.weight"))?,
+                attention_v_norm_beta: self.tensor(&format!("{prefix}mhsa.layer_norm_v.bias"))?,
+                attention_bias_u: self.tensor(&format!("{prefix}mhsa.pos_bias_u"))?,
+                attention_bias_v: self.tensor(&format!("{prefix}mhsa.pos_bias_v"))?,
+                attention_output_w_t: self.tensor(&format!("{prefix}mhsa.fc.weight"))?,
+                conv_pointwise_in_w: self
+                    .tensor(&format!("{prefix}conv.pointwise_conv1.weight"))?,
+                conv_depthwise_w: self.tensor(&format!("{prefix}conv.depthwise_conv.weight"))?,
+                conv_depthwise_ln_gamma: self.tensor(&format!("{prefix}conv.batch_norm.weight"))?,
+                conv_depthwise_ln_beta: self.tensor(&format!("{prefix}conv.batch_norm.bias"))?,
+                conv_pointwise_out_w: self
+                    .tensor(&format!("{prefix}conv.pointwise_conv2.weight"))?,
+                conv_pre_ln_gamma: self.tensor(&format!("{prefix}conv.pre_layer_norm.weight"))?,
+                conv_pre_ln_beta: self.tensor(&format!("{prefix}conv.pre_layer_norm.bias"))?,
+                ffn2_ln_gamma: self.tensor(&format!("{prefix}ffn2.net.0.weight"))?,
+                ffn2_ln_beta: self.tensor(&format!("{prefix}ffn2.net.0.bias"))?,
+                ffn2_expand_w_t: self.tensor(&format!("{prefix}ffn2.net.1.weight"))?,
+                ffn2_expand_b: self.tensor(&format!("{prefix}ffn2.net.1.bias"))?,
+                ffn2_project_w_t: self.tensor(&format!("{prefix}ffn2.net.4.weight"))?,
+                ffn2_project_b: self.tensor(&format!("{prefix}ffn2.net.4.bias"))?,
+                final_ln_gamma: self.tensor(&format!("{prefix}layer_norm.weight"))?,
+                final_ln_beta: self.tensor(&format!("{prefix}layer_norm.bias"))?,
+            });
+        }
+        FireRedConformerEncoder::authenticated().forward(
+            compute,
+            &hidden,
+            stem_frames,
+            &mask,
+            &layers,
+        )
+    }
+
+    /// Runs the descriptor-bound incremental decoder on encoder memory.
+    ///
+    /// This is a feature-to-token primitive, not a PCM transcription API:
+    /// the caller must provide memory produced by [`Self::encode_features`]
+    /// and the exact special-token ids from the bound checkpoint metadata.
+    /// The returned vector contains generated ids (the supplied SOS id is
+    /// not included) and includes EOS when it is selected. Beam search is
+    /// deliberately not hidden behind this method; the pinned upstream
+    /// search policy still needs an independent trace before it can be
+    /// reproduced without guessing.
+    pub(crate) fn decode_greedy(
+        &self,
+        compute: &Compute,
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        sos_id: usize,
+        eos_id: usize,
+        max_len: usize,
+    ) -> Result<Vec<usize>> {
+        let d_model = super::AUTHENTICATED_DECODER_D_MODEL as usize;
+        let inner_dim = super::AUTHENTICATED_DECODER_FFN_DIM as usize;
+        let n_head = super::AUTHENTICATED_DECODER_N_HEAD as usize;
+        let vocab_size = super::AUTHENTICATED_DECODER_VOCAB_SIZE as usize;
+        let max_positions = super::AUTHENTICATED_DECODER_MAX_POSITIONS as usize;
+        if source_frames == 0
+            || memory.len()
+                != source_frames.checked_mul(d_model).ok_or_else(|| {
+                    VokraError::InvalidArgument("FireRed decoder memory shape overflow".to_owned())
+                })?
+            || source_mask.len() != source_frames
+            || !source_mask.iter().any(|&valid| valid)
+            || sos_id >= vocab_size
+            || eos_id >= vocab_size
+            || max_len == 0
+            || max_len > max_positions
+            || !all_finite(&[memory])
+        {
+            return Err(VokraError::InvalidArgument(
+                "firered-asr-aed-l greedy decoder memory, ids, or length is invalid".to_owned(),
+            ));
+        }
+        let embedding = self.tensor("decoder.tgt_word_emb.weight")?;
+        let positional = self.tensor("decoder.positional_encoding.pe")?;
+        let output_norm_gamma = self.tensor("decoder.layer_norm_out.weight")?;
+        let output_norm_beta = self.tensor("decoder.layer_norm_out.bias")?;
+        let projection = self.tensor("decoder.tgt_word_prj.weight")?;
+        let embedding_op = FireRedDecoderEmbedding {
+            vocab_size,
+            d_model,
+            max_positions,
+        };
+        let output_head = FireRedDecoderOutputHead {
+            d_model,
+            vocab_size,
+        };
+        let layer_op = FireRedDecoderLayer {
+            d_model,
+            inner_dim,
+            n_head,
+            source_dim: d_model,
+        };
+        let mut caches = vec![
+            (Vec::<f32>::new(), Vec::<f32>::new());
+            super::AUTHENTICATED_DECODER_N_LAYER as usize
+        ];
+        let mut cache_masks =
+            vec![Vec::<bool>::new(); super::AUTHENTICATED_DECODER_N_LAYER as usize];
+        let mut previous = sos_id;
+        let mut generated = Vec::with_capacity(max_len);
+        for step in 0..max_len {
+            let mut hidden = embedding_op.forward(&[previous], &[step], embedding, positional)?;
+            for layer in 0..super::AUTHENTICATED_DECODER_N_LAYER as usize {
+                let weights = self.decoder_layer_weights(layer)?;
+                let query_mask = [true];
+                let output = layer_op.forward(
+                    compute,
+                    &hidden,
+                    1,
+                    &query_mask,
+                    memory,
+                    source_frames,
+                    source_mask,
+                    &caches[layer].0,
+                    &caches[layer].1,
+                    &cache_masks[layer],
+                    weights,
+                )?;
+                hidden = output.output;
+                caches[layer] = (output.key_cache, output.value_cache);
+                cache_masks[layer].push(true);
+            }
+            let logits = output_head.forward(
+                compute,
+                &hidden,
+                1,
+                output_norm_gamma,
+                output_norm_beta,
+                projection,
+            )?;
+            let next = logits
+                .chunks_exact(vocab_size)
+                .next()
+                .and_then(|row| {
+                    row.iter()
+                        .enumerate()
+                        .max_by(|(left_id, left), (right_id, right)| {
+                            left.partial_cmp(right)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| right_id.cmp(left_id))
+                        })
+                        .map(|(id, _)| id)
+                })
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(
+                        "firered-asr-aed-l decoder produced no vocabulary logits".to_owned(),
+                    )
+                })?;
+            generated.push(next);
+            previous = next;
+            if next == eos_id {
+                break;
+            }
+        }
+        Ok(generated)
+    }
+
+    fn decoder_layer_weights(&self, layer: usize) -> Result<FireRedDecoderLayerWeights<'_>> {
+        if layer >= super::AUTHENTICATED_DECODER_N_LAYER as usize {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-asr-aed-l decoder layer {layer} is outside the authenticated stack"
+            )));
+        }
+        let prefix = format!("decoder.layer_stack.{layer}.");
+        Ok(FireRedDecoderLayerWeights {
+            self_norm_gamma: self.tensor(&format!("{prefix}self_attn_norm.weight"))?,
+            self_norm_beta: self.tensor(&format!("{prefix}self_attn_norm.bias"))?,
+            self_attention: FireRedDecoderSelfAttentionWeights {
+                q_w_t: self.tensor(&format!("{prefix}self_attn.w_qs.weight"))?,
+                q_b: self.tensor(&format!("{prefix}self_attn.w_qs.bias"))?,
+                k_w_t: self.tensor(&format!("{prefix}self_attn.w_ks.weight"))?,
+                v_w_t: self.tensor(&format!("{prefix}self_attn.w_vs.weight"))?,
+                v_b: self.tensor(&format!("{prefix}self_attn.w_vs.bias"))?,
+                output_w_t: self.tensor(&format!("{prefix}self_attn.fc.weight"))?,
+                output_b: self.tensor(&format!("{prefix}self_attn.fc.bias"))?,
+            },
+            cross_norm_gamma: self.tensor(&format!("{prefix}cross_attn_norm.weight"))?,
+            cross_norm_beta: self.tensor(&format!("{prefix}cross_attn_norm.bias"))?,
+            cross_attention: FireRedDecoderCrossAttentionWeights {
+                q_w_t: self.tensor(&format!("{prefix}cross_attn.w_qs.weight"))?,
+                q_b: self.tensor(&format!("{prefix}cross_attn.w_qs.bias"))?,
+                k_w_t: self.tensor(&format!("{prefix}cross_attn.w_ks.weight"))?,
+                v_w_t: self.tensor(&format!("{prefix}cross_attn.w_vs.weight"))?,
+                v_b: self.tensor(&format!("{prefix}cross_attn.w_vs.bias"))?,
+                output_w_t: self.tensor(&format!("{prefix}cross_attn.fc.weight"))?,
+                output_b: self.tensor(&format!("{prefix}cross_attn.fc.bias"))?,
+            },
+            mlp_norm_gamma: self.tensor(&format!("{prefix}mlp_norm.weight"))?,
+            mlp_norm_beta: self.tensor(&format!("{prefix}mlp_norm.bias"))?,
+            mlp_expand_w_t: self.tensor(&format!("{prefix}mlp.w_1.weight"))?,
+            mlp_expand_b: self.tensor(&format!("{prefix}mlp.w_1.bias"))?,
+            mlp_project_w_t: self.tensor(&format!("{prefix}mlp.w_2.weight"))?,
+            mlp_project_b: self.tensor(&format!("{prefix}mlp.w_2.bias"))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeLayout {
+    Direct,
+    Transpose2d,
+}
+
+fn decoder_layout(layout: super::FireRedDecoderNativeLayout) -> NativeLayout {
+    match layout {
+        super::FireRedDecoderNativeLayout::LinearOutInToComputeInOut
+        | super::FireRedDecoderNativeLayout::ProjectionRows => NativeLayout::Transpose2d,
+        _ => NativeLayout::Direct,
+    }
+}
+
+fn encoder_layout(layout: super::FireRedEncoderNativeLayout) -> NativeLayout {
+    match layout {
+        super::FireRedEncoderNativeLayout::LinearOutInToComputeInOut => NativeLayout::Transpose2d,
+        _ => NativeLayout::Direct,
+    }
+}
+
+fn encoder_runtime_layout(name: &str, layout: super::FireRedEncoderNativeLayout) -> NativeLayout {
+    if name == "encoder.input_preprocessor.out.weight" {
+        // FireRedConv2dSubsampling consumes the raw PyTorch projection and
+        // performs its one transpose inside the helper.
+        NativeLayout::Direct
+    } else {
+        encoder_layout(layout)
+    }
+}
+
+fn transpose_2d(values: &[f32], shape: &[u64]) -> Result<Vec<f32>> {
+    if shape.len() != 2 {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l linear tensor has non-2D shape {shape:?}"
+        )));
+    }
+    let rows = usize::try_from(shape[0])
+        .map_err(|_| VokraError::ModelLoad("linear row count overflow".to_owned()))?;
+    let cols = usize::try_from(shape[1])
+        .map_err(|_| VokraError::ModelLoad("linear column count overflow".to_owned()))?;
+    if values.len()
+        != rows
+            .checked_mul(cols)
+            .ok_or_else(|| VokraError::ModelLoad("linear shape overflow".to_owned()))?
+    {
+        return Err(VokraError::ModelLoad(
+            "linear tensor payload shape mismatch".to_owned(),
+        ));
+    }
+    let mut output = vec![0.0; values.len()];
+    for row in 0..rows {
+        for col in 0..cols {
+            output[col * rows + row] = values[row * cols + col];
+        }
+    }
+    Ok(output)
+}
 
 /// Builds the fixed sinusoidal relative-position slice used by upstream
 /// `RelPositionalEncoding.forward`.  The returned row-major buffer has shape
@@ -1206,7 +1712,7 @@ pub struct FireRedConformerBlock {
     pub kernel_size: usize,
 }
 
-/// Source-authenticated encoder stack orchestration for batch-one frame-major
+/// Pinned-source encoder stack orchestration for batch-one frame-major
 /// activations.  The layer weights are supplied by the strict GGUF binder;
 /// this type deliberately does not manufacture a checkpoint-name mapping.
 #[derive(Debug, Clone, Copy)]
@@ -1218,7 +1724,7 @@ pub struct FireRedConformerEncoder {
 }
 
 /// Borrowed checkpoint operands for one Conformer block.  Tensor names and
-/// dimensions remain the responsibility of the authenticated 940-field
+/// dimensions remain the responsibility of the exact 940-field
 /// binder; these fields do not invent a manifest.
 #[derive(Clone, Copy)]
 pub struct FireRedConformerBlockWeights<'a> {
@@ -2765,6 +3271,17 @@ fn transpose_channel_to_frame(input: &[f32], frames: usize, channels: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executable_linear_binding_transposes_only_two_dimensional_weights() {
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        assert_eq!(
+            transpose_2d(&values, &[2, 3]).unwrap(),
+            [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
+        );
+        assert!(transpose_2d(&values, &[6]).is_err());
+        assert!(transpose_2d(&values[..5], &[2, 3]).is_err());
+    }
 
     #[test]
     fn cmvn_matches_upstream_formula() {

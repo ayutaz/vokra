@@ -63,11 +63,10 @@
 //! shape-compatible with Whisper**. The remaining execution contract has
 //! four concrete gaps, and none of them is a kernel:
 //!
-//! 1. **The native frontend is not fully wired.** [`native`] now contains
-//!    source-faithful CMVN, positional encoding, and Conv2d subsampling
-//!    helpers. The complete fbank/CMVN input path, masks, and encoder graph
-//!    still remain fail-closed until the bound tensors are connected to those
-//!    native operators.
+//! 1. **The native PCM frontend is not fully wired.** [`native`] now contains
+//!    source-faithful CMVN, positional encoding, Conv2d subsampling, and
+//!    feature-to-feature encoder helpers. Exact fbank/CMVN parity, PCM masks,
+//!    and the full transcription route remain fail-closed.
 //! 2. **The encoder and decoder semantic descriptors are authenticated.** The
 //!    independent upstream dumper authenticates all 940 names against
 //!    `named_parameters()` / `named_buffers()` and records their roles. This
@@ -75,18 +74,16 @@
 //!    source shapes, F32 types, role layouts, and compiled descriptor digests.
 //!    It retains typed descriptors only; it does not pretend that decoder or
 //!    frontend execution is complete.
-//! 3. **No tokenizer blob binding.** The source-authenticated
+//! 3. **No tokenizer blob binding.** The pinned-source
 //!    SentencePiece/TokenDict contract and 7832-entry dictionary are known,
 //!    but the converter stamps no [`KEY_TOKENIZER_MODEL`] blob. This binder
 //!    cannot render decoder ids as Mandarin text until a native mapping is
 //!    added. [`FireredAsrAed::has_tokenizer`] reports blob presence.
-//! 4. **Native graph gap.** The pinned Conformer source uses its Conv2d
-//!    subsampling stem, relative-position attention, and source-faithful
-//!    inference-only Conformer block; [`native`] exposes those exact
-//!    CPU/Metal-dispatched building blocks. The fbank input and strict
-//!    940-field executable model graph are not yet wired; the semantic
-//!    encoder and decoder descriptor binders are complete but execution remains
-//!    fail-closed.
+//! 4. **Full transcription graph gap.** [`native`] exposes CPU/Metal-dispatched
+//!    encoder and decoder feature primitives, including incremental greedy
+//!    token generation. They are VAST numerical-parity-pending; exact beam
+//!    policy, PCM frontend, tokenizer rendering, and the full transcription
+//!    route remain fail-closed.
 //!
 //! The upstream config is additionally awkward to reach: the handoff for
 //! the sibling LLM release
@@ -97,11 +94,10 @@
 //! shares that posture is **not** verified anywhere in this repository,
 //! and this module does not assert that it does.
 //!
-//! So: the remaining blockers are the full native frontend connection,
-//! decoder/tokenizer, complete 940-field Conformer/AED execution graph, and
-//! independent VAST parity. The encoder/decoder descriptor binders and
-//! reusable native blocks are authenticated, but no runtime parity or
-//! transcription claim is made yet.
+//! So: the remaining blockers are exact native frontend parity,
+//! tokenizer/beam/transcription integration, and independent VAST parity.
+//! Feature-to-feature and feature-to-token primitives exist, but no complete
+//! PCM transcription claim is made yet.
 //!
 //! # Loud-partial classification
 //!
@@ -124,7 +120,7 @@
 //!     tensor rather than surprising a forward halfway through.
 //!   - The optional all-or-nothing [`FireredAsrAedConfig`] group
 //!     (`vokra.firered_asr_aed_l.*`) — now stamped by the VAST converter for
-//!     the authenticated release geometry. Absent → [`FireredAsrAed::config`]
+//!     the converter release geometry. Absent → [`FireredAsrAed::config`]
 //!     is `None` and a minimal inspection fixture still binds. Partially
 //!     stamped → loud
 //!     [`VokraError::ModelLoad`] naming the missing key. A `0` sentinel
@@ -215,6 +211,7 @@
 //! `[[feedback-python-uses-uv]]` + `[[feedback-python-3-12]]`); the
 //! runtime never touches ONNX or a pickle (FR-LD-05 / NFR-DS-02).
 
+use crate::compute::Compute;
 use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::tasks::Transcription;
@@ -278,6 +275,28 @@ pub const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 /// converter's module-private const). FireRedASR-AED-L ships on HF, so
 /// provenance rides `upstream_hf` rather than `upstream_url`.
 pub const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+pub const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+pub const KEY_PROVENANCE_SOURCE_REVISION: &str = "vokra.provenance.source_revision";
+pub const KEY_PROVENANCE_CHECKPOINT_BYTES: &str = "vokra.provenance.checkpoint_bytes";
+pub const KEY_PROVENANCE_CHECKPOINT_SHA256: &str = "vokra.provenance.checkpoint_sha256";
+pub const KEY_PROVENANCE_PREPARED_BYTES: &str = "vokra.provenance.prepared_bytes";
+pub const KEY_PROVENANCE_PREPARED_SHA256: &str = "vokra.provenance.prepared_sha256";
+
+/// Exact release identity emitted by the FireRed converter. These constants
+/// gate the optional native operand load; metadata alone is not a cryptographic
+/// payload signature, so parity remains an independent VAST requirement.
+pub const UPSTREAM_REVISION: &str = "e57f5960d03cff1071ff7acbb409314d1e70ed3d";
+pub const SOURCE_REVISION: &str = "834635e4cf277ed8ca92049fc375b17c3dc20748";
+pub const CHECKPOINT_BYTES: u64 = 4_678_597_714;
+pub const CHECKPOINT_SHA256: &str =
+    "12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3";
+pub const PREPARED_BYTES: u64 = 4_678_403_512;
+pub const PREPARED_SHA256: &str =
+    "5e8608d5a23af0761cb6bb52d08ee19a6476b8c324799eff3c63c9785cef583e";
+const EXPECTED_RAW_LICENSE: &str = "apache-2.0";
+const EXPECTED_WEIGHT_LICENSE: &str = "permissive";
+const EXPECTED_PROVENANCE_MODEL_ID: &str = "firered-asr-aed-l";
+const EXPECTED_PROVENANCE_SOURCE: &str = "FireRedTeam/FireRedASR-AED-L prepared F32 checkpoint";
 
 /// GGUF metadata key carrying an embedded tokenizer blob.
 ///
@@ -1967,6 +1986,10 @@ pub struct FireredAsrAed {
     decoder_specs: Option<Vec<FireRedDecoderTensorSpec>>,
     weight_license: LicenseClass,
     has_tokenizer: bool,
+    backend: BackendKind,
+    /// Decoded runtime tensors are opt-in. Inspection-only loads keep this
+    /// `None` so a manifest audit never allocates the 4.7 GB checkpoint.
+    runtime_weights: Option<native::FireRedRuntimeWeights>,
 }
 
 impl FireredAsrAed {
@@ -2050,16 +2073,16 @@ impl FireredAsrAed {
 
         // 3. The optional all-or-nothing hyper-parameter group. `None` is
         //    accepted for minimal inspection fixtures; the VAST converter
-        //    stamps the authenticated release geometry.
+        //    stamps the converter release geometry.
         let cfg = FireredAsrAedConfig::from_gguf(file)?;
 
-        // A 940-tensor file is the authenticated release shape and must
+        // A 940-tensor file is eligible for the compiled descriptor contract and must
         // carry the closed semantic encoder contract. Smaller inspection
         // fixtures remain manifest-only and non-executable.
         let encoder_specs = if weights.tensor_count() == 940 {
             let config = cfg.as_ref().ok_or_else(|| {
                 VokraError::ModelLoad(
-                    "firered-asr-aed-l: authenticated 940-tensor release requires encoder config"
+                    "firered-asr-aed-l: 940-tensor descriptor contract requires encoder config"
                         .to_owned(),
                 )
             })?;
@@ -2070,7 +2093,7 @@ impl FireredAsrAed {
         let decoder_specs = if weights.tensor_count() == 940 {
             let config = cfg.as_ref().ok_or_else(|| {
                 VokraError::ModelLoad(
-                    "firered-asr-aed-l: authenticated 940-tensor release requires decoder config"
+                    "firered-asr-aed-l: 940-tensor descriptor contract requires decoder config"
                         .to_owned(),
                 )
             })?;
@@ -2100,7 +2123,34 @@ impl FireredAsrAed {
             decoder_specs,
             weight_license,
             has_tokenizer,
+            backend: BackendKind::Cpu,
+            runtime_weights: None,
         })
+    }
+
+    /// Binds the exact converter-provenance release for an explicit backend
+    /// and decodes its complete 940 F32 tensor descriptor into native operand
+    /// layouts for feature primitives.
+    ///
+    /// This is intentionally a separate constructor from [`Self::from_gguf`]:
+    /// the latter remains a cheap inspection binder, while this method is the
+    /// explicit point at which a caller accepts the multi-gigabyte decode and
+    /// requests feature primitives (encoder and decoder). This is not a
+    /// complete ASR binding: PCM frontend, exact beam search, and tokenizer
+    /// rendering remain fail-closed until their independent VAST evidence is
+    /// installed. The metadata check is exact converter provenance plus a
+    /// complete descriptor bind; it is not a cryptographic payload signature,
+    /// and VAST numerical parity remains pending.
+    /// Backend coverage is checked before tensor decoding, and no backend ever
+    /// falls back to CPU.
+    pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        let _compute = Compute::for_backend(backend, FIRERED_ASR_AED_HOT_OPS)?;
+        require_exact_runtime_provenance(file)?;
+        let mut model = Self::from_gguf(file)?;
+        let runtime_weights = native::FireRedRuntimeWeights::from_gguf(file)?;
+        model.backend = backend;
+        model.runtime_weights = Some(runtime_weights);
+        Ok(model)
     }
 
     /// Opens and binds the model from a GGUF file on disk.
@@ -2112,6 +2162,80 @@ impl FireredAsrAed {
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let gguf = GgufFile::open(path)?;
         Self::from_gguf(&gguf)
+    }
+
+    /// Returns the explicitly selected backend for the encoder-feature path.
+    /// This does not claim that the complete ASR engine executes on that
+    /// backend; [`AsrEngine::transcribe`] remains fail-closed until frontend,
+    /// decoder, and tokenizer contracts are authenticated.
+    #[must_use]
+    pub const fn feature_backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Runs the descriptor-bound encoder on an already extracted fbank /
+    /// CMVN matrix. The runtime deliberately does not link Python's
+    /// `kaldi-native-fbank`, so PCM-to-feature extraction remains an explicit
+    /// caller responsibility until that frontend has an independent native
+    /// parity fixture. A handle created with [`Self::from_gguf`] is
+    /// inspection-only and returns a loud load error here.
+    pub fn encode_features(
+        &self,
+        features: &[f32],
+        frames: usize,
+        input_mask: &[bool],
+    ) -> Result<Vec<f32>> {
+        let weights = self.runtime_weights.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: feature tensor binding is absent; use from_gguf_with_backend after the exact-provenance 940-tensor artifact is available".to_owned(),
+            )
+        })?;
+        let compute = Compute::for_backend(self.backend, FIRERED_ASR_AED_HOT_OPS)?;
+        weights.encode_features(&compute, features, frames, input_mask)
+    }
+
+    /// Runs the descriptor-bound decoder on encoder memory and returns generated
+    /// token ids (excluding the supplied SOS id).
+    ///
+    /// This is intentionally a feature-to-token seam, not a complete
+    /// transcription route. PCM frontend extraction, exact tokenizer
+    /// binding, and upstream beam-search policy remain fail-closed. The
+    /// caller must supply the checkpoint's exact metadata special ids.
+    pub fn decode_features(
+        &self,
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        sos_id: usize,
+        eos_id: usize,
+        max_len: usize,
+    ) -> Result<Vec<usize>> {
+        let weights = self.runtime_weights.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: feature tensor binding is absent; use from_gguf_with_backend before decoding features".to_owned(),
+            )
+        })?;
+        let config = self.cfg.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: decoder special-token metadata is absent; refusing to guess SOS/EOS ids".to_owned(),
+            )
+        })?;
+        if config.sos_id as usize != sos_id || config.eos_id as usize != eos_id {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-asr-aed-l: decoder ids ({sos_id}, {eos_id}) do not match authenticated metadata ({}, {})",
+                config.sos_id, config.eos_id
+            )));
+        }
+        let compute = Compute::for_backend(self.backend, FIRERED_ASR_AED_HOT_OPS)?;
+        weights.decode_greedy(
+            &compute,
+            memory,
+            source_frames,
+            source_mask,
+            sos_id,
+            eos_id,
+            max_len,
+        )
     }
 
     /// The `vokra.firered_asr_aed_l.*` hyper-parameter group, when
@@ -2273,16 +2397,61 @@ impl AsrEngine for FireredAsrAed {
         )))
     }
 
-    /// Reports `Cpu`. This engine has no backend selector at all — every
-    /// transcription entry point is a loud partial (three named blockers),
-    /// so no forward executes on any device and the answer cannot
-    /// contradict where inference happened. When the forward lands, this
-    /// must start reporting the real backend rather than staying a
-    /// constant: that is the lie the trait's missing default exists to
-    /// prevent.
+    /// Reports the compatibility backend for the trait surface. No complete
+    /// ASR graph executes yet, so this must not be interpreted as a claim that
+    /// frontend, decoder, or tokenizer work ran on CPU/Metal. The selected
+    /// feature backend is available through
+    /// [`Self::feature_backend`].
     fn backend(&self) -> BackendKind {
-        BackendKind::Cpu
+        self.backend
     }
+}
+
+fn require_exact_runtime_provenance(file: &GgufFile) -> Result<()> {
+    let strings = [
+        (KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF),
+        (KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION),
+        (KEY_PROVENANCE_SOURCE_REVISION, SOURCE_REVISION),
+        (KEY_PROVENANCE_CHECKPOINT_SHA256, CHECKPOINT_SHA256),
+        (KEY_PROVENANCE_PREPARED_SHA256, PREPARED_SHA256),
+        (
+            vokra_core::gguf::chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            EXPECTED_WEIGHT_LICENSE,
+        ),
+        (
+            vokra_core::gguf::chunks::KEY_PROVENANCE_LICENSE,
+            EXPECTED_RAW_LICENSE,
+        ),
+        (
+            vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID,
+            EXPECTED_PROVENANCE_MODEL_ID,
+        ),
+        (
+            vokra_core::gguf::chunks::KEY_PROVENANCE_SOURCE,
+            EXPECTED_PROVENANCE_SOURCE,
+        ),
+    ];
+    for (key, expected) in strings {
+        let actual = file.get(key).and_then(GgufMetadataValue::as_str);
+        if actual != Some(expected) {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l native binding requires exact converter provenance `{key}` = `{expected}`, got {actual:?}; VAST numerical parity remains pending"
+            )));
+        }
+    }
+    let integers = [
+        (KEY_PROVENANCE_CHECKPOINT_BYTES, CHECKPOINT_BYTES),
+        (KEY_PROVENANCE_PREPARED_BYTES, PREPARED_BYTES),
+    ];
+    for (key, expected) in integers {
+        let actual = file.get(key).and_then(GgufMetadataValue::as_u64);
+        if actual != Some(expected) {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l native binding requires exact converter provenance `{key}` = {expected}, got {actual:?}; VAST numerical parity remains pending"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Rejects PCM offered at a rate the stamped config does not expect.
@@ -2349,7 +2518,7 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
         None => format!(
             "the `vokra.firered_asr_aed_l.*` group is NOT stamped on this GGUF \
              (this is a minimal inspection fixture; the VAST converter stamps \
-             the authenticated release geometry), so gap (1) applies in full"
+             the converter's release geometry), so gap (1) applies in full"
         ),
     };
     let tokenizer_status = if has_tokenizer {
@@ -2364,8 +2533,10 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
         )
     };
     VokraError::UnsupportedOp(format!(
-        "firered-asr-aed-l transcribe (loud-partial): the FireRedASR-AED-L forward \
-         is deferred; four pieces must land before real token ids can be emitted. \
+        "firered-asr-aed-l transcribe (loud-partial): the full PCM transcription \
+         route is deferred; frontend, tokenizer, beam policy, and VAST parity \
+         gates must land before this API emits real token ids. Feature-to-feature \
+         and feature-to-token primitives exist, but remain parity-pending. \
          (1) FRONTEND CONTRACT: the all-or-nothing `vokra.firered_asr_aed_l.*` \
          group ({keys:?}) — {spec_status}. The pinned source and VAST evidence \
              authenticate the 80-bin fbank/CMVN rules, and reusable native \
@@ -2374,19 +2545,19 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
          (2) EXECUTABLE ENCODER GRAPH: the strict binder now consumes the \
          authenticated 551-tensor encoder descriptor contract (including its \
          compiled descriptor digest), while `{CONVERTER_PATH}` preserves every \
-         float tensor name and stamps the full required manifest. The native \
-         descriptor binding is not yet a retained executable weight cache, so \
-         frontend-to-block dispatch remains closed. \
+         float tensor name and stamps the full required manifest. Feature \
+         dispatch exists after exact converter provenance binding, but VAST \
+         numerical parity is pending and PCM-to-feature transcription remains \
+         closed. \
          (3) MISSING TOKENIZER: an AED decoder emits token ids in a \
-         `{KEY_VOCAB_SIZE}`-wide id space. The source-authenticated \
+         `{KEY_VOCAB_SIZE}`-wide id space. The pinned-source \
          SentencePiece/TokenDict and dictionary still need a native GGUF \
          binding — {tokenizer_status}. \
              (4) NATIVE OPERATOR GAP: the pinned Conformer uses a Conv2d \
              subsampling stem, relative-position attention, and a \
-             source-faithful inference-only Conformer block; CPU/Metal helper \
-             routes now exist, but the complete Conformer graph and decoder \
-             execution remain unimplemented and must be parity-\
-             tested before this model can run. \
+             source-faithful inference-only Conformer block; CPU/Metal feature \
+             routes now exist, while exact fbank, beam policy, and full \
+             transcription integration remain parity-gated. \
          Output once real: decoder token ids per utterance, rendered to text only \
          once a tokenizer blob rides along. \
          Primary sources: HF release {hf}, family reference code {code}, in-repo \
@@ -3388,6 +3559,50 @@ mod tests {
                 );
             }
             other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inspection_binding_does_not_claim_executable_runtime_weights() {
+        let model = FireredAsrAed::from_gguf(&converter_shaped_gguf()).expect("bind");
+        assert_eq!(model.feature_backend(), BackendKind::Cpu);
+        let error = model
+            .encode_features(&vec![0.0; 7 * N_MELS as usize], 7, &[true; 7])
+            .expect_err("inspection-only binding must not execute without owned tensors");
+        match error {
+            VokraError::UnsupportedOp(message) => {
+                assert!(message.contains("feature tensor binding is absent"));
+                assert!(message.contains("from_gguf_with_backend"));
+            }
+            other => panic!("expected UnsupportedOp, got {other:?}"),
+        }
+        let error = model
+            .decode_features(
+                &vec![0.0; AUTHENTICATED_DECODER_D_MODEL as usize],
+                1,
+                &[true],
+                3,
+                4,
+                1,
+            )
+            .expect_err("inspection-only binding must not execute decoder operands");
+        assert!(
+            matches!(error, VokraError::UnsupportedOp(message) if message.contains("feature tensor binding is absent"))
+        );
+    }
+
+    #[test]
+    fn feature_binding_requires_exact_converter_provenance() {
+        let error =
+            FireredAsrAed::from_gguf_with_backend(&converter_shaped_gguf(), BackendKind::Cpu)
+                .expect_err("synthetic inspection fixture must not unlock feature operands");
+        match error {
+            VokraError::ModelLoad(message) => {
+                assert!(message.contains(KEY_PROVENANCE_UPSTREAM_HF));
+                assert!(message.contains("exact converter provenance"));
+                assert!(message.contains("VAST numerical parity remains pending"));
+            }
+            other => panic!("expected provenance ModelLoad, got {other:?}"),
         }
     }
 }

@@ -37,12 +37,12 @@ self_test() {
     'model.pth.tar' '12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3' \
     'train_bpe1000.model' '473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07' \
     'model_info' 'list_repo_tree' 'path_in_repo' 'git_blob_sha1' 'lfs_sha256' 'weights_only=True' \
-    '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' \
+    '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' 'runtime_status_scope' 'full_pcm_transcription_only' \
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
-    'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' \
-    'source-authenticated frontend' 'SentencePiece/TokenDict' 'PREPARED' 'archive_members' \
+    'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' 'unlock_requirements' 'vast_first_pass' 'expected_artifacts' \
+    'pinned-source frontend' 'SentencePiece/TokenDict' 'PREPARED' 'archive_members' \
     'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
-    'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' \
+    'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' 'firered-asr-aed-l-reference-trace-v1' 'encoder_each_layer' 'decoder_each_layer' 'frontend_fbank_cmvn' \
     'firered_asr_aed_l_audit.py' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'installed_distributions' 'native_payloads' 'publisher' 'owner_approval' 'dependency audit' \
     'NamedTemporaryFile' 'os.link' 'manifest-with-preparation.json' \
     'manifest-with-reference.json' 'final no-clobber manifest' \
@@ -367,6 +367,7 @@ def reject_duplicate_pairs(pairs):
 manifest_path, preparation_path, combined_path = map(Path, sys.argv[1:])
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
 preparation = json.loads(preparation_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
+preparation["runtime_status_scope"] = "full_pcm_transcription_only; feature-to-feature and feature-to-token primitives are parity-pending"
 manifest["preparation"] = preparation
 payload = (json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
 if combined_path.exists() or combined_path.is_symlink(): raise RuntimeError("combined manifest output exists")
@@ -406,6 +407,7 @@ reference = json.loads(open(reference_path, encoding="utf-8").read(), object_pai
 assert manifest["status"] == "BLOCKED"
 assert manifest["evidence_stage"] == "INSPECTION_ONLY"
 assert manifest["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
+assert manifest["runtime_status_scope"] == "full_pcm_transcription_only; feature-to-feature and feature-to-token primitives are parity-pending"
 assert manifest["publication"] == "NO_UPLOAD"
 assert manifest["inspection_status"] == "AUTHENTICATED_EVIDENCE_COMPLETE"
 preparation = manifest.get("preparation")
@@ -413,6 +415,7 @@ assert isinstance(preparation, dict)
 assert preparation["status"] == "PREPARED"
 assert preparation["publication"] == "NO_UPLOAD"
 assert preparation["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
+assert preparation["runtime_status_scope"] == "full_pcm_transcription_only; feature-to-feature and feature-to-token primitives are parity-pending"
 assert preparation["parity_status"] == "NOT_RUN"
 assert preparation["future_gate"]["status"] == "BLOCKED_NOT_RUN"
 assert preparation["future_gate"]["fp32_atol_status"] == "PREREGISTERED_NOT_RUN"
@@ -479,6 +482,24 @@ assert len(reference["tensor_mapping"]) == 940
 assert reference["reference"]["status"] == "REFERENCE_CAPTURED"
 assert reference["reference"]["encoder"] is not None
 assert reference["reference"]["decoder_logits"] is not None
+trace = reference["reference"]["trace"]
+assert trace["schema"] == "firered-asr-aed-l-reference-trace-v1"
+required = trace["required"]
+assert required == {
+    "frontend_fbank_cmvn": True,
+    "encoder_input_preprocessor": True,
+    "encoder_each_layer": 16,
+    "encoder_final": True,
+    "decoder_each_layer": 16,
+    "decoder_logits_each_step": True,
+    "token_ids": True,
+}
+encoder_stages = {item["name"]: item["invocations"] for item in trace["encoder_stages"]}
+decoder_stages = {item["name"]: item["invocations"] for item in trace["decoder_stages"]}
+assert all(encoder_stages.get(f"encoder.layer_stack.{index}") for index in range(16))
+assert all(decoder_stages.get(f"decoder.layer_stack.{index}") for index in range(16))
+assert decoder_stages.get("decoder_logits")
+assert reference["reference"]["frontend"].get("values")
 assert reference["parity"]["status"] == "NOT_RUN"
 manifest["upstream_reference"] = reference
 payload = (json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
