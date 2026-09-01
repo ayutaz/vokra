@@ -212,6 +212,10 @@ fn validate_unary_buffers(x: &[f32], score: &[f32], noise: &[f32], out: &[f32]) 
 /// This matches the upstream discretization convention: the forward drift is
 /// multiplied by `step`, then subtracted from the current state.  `out_mean`
 /// is the deterministic predictor state; `out` adds caller-provided noise.
+// This public buffer-oriented seam intentionally exposes all numerical inputs
+// and output buffers; keep the lint allowance local rather than changing the
+// established API shape.
+#[allow(clippy::too_many_arguments)]
 pub fn reverse_diffusion_step(
     config: OuvEConfig,
     x: &[f32],
@@ -266,6 +270,10 @@ pub fn reverse_diffusion_step(
 ///
 /// The source implementation uses `2 * (snr * std(t))²` as the step size and
 /// adds `sqrt(2 * step_size) * noise` after the deterministic score update.
+// This public buffer-oriented seam intentionally exposes all numerical inputs
+// and output buffers; keep the lint allowance local rather than changing the
+// established API shape.
+#[allow(clippy::too_many_arguments)]
 pub fn annealed_langevin_step(
     config: OuvEConfig,
     x: &[f32],
@@ -382,9 +390,14 @@ mod tests {
         assert!(CONFIG.diffusion(-0.1).is_err());
         let ratio_overflow = OuvEConfig::new(0.0, f32::MIN_POSITIVE, f32::MAX).unwrap();
         assert!(ratio_overflow.diffusion(1.0).is_err());
-        let exponent_overflow = OuvEConfig::new(f32::MAX, 0.05, 0.5).unwrap();
-        assert!(exponent_overflow.std(1.0).is_err());
-        assert!(exponent_overflow.mean(f32::MAX, -f32::MAX, 1.0).is_err());
+        let large_theta = OuvEConfig::new(f32::MAX, 0.05, 0.5).unwrap();
+        assert!(large_theta.std(1.0).is_err());
+        // exp(-theta * t) underflows to zero here; the pinned OU mean has the
+        // finite limiting value y, while non-finite outputs remain rejected.
+        assert_eq!(
+            large_theta.mean(f32::MAX, -f32::MAX, 1.0).unwrap(),
+            -f32::MAX
+        );
         let mut out = [0.0; 1];
         let mut mean = [0.0; 1];
         assert!(

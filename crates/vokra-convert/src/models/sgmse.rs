@@ -27,6 +27,9 @@ pub struct SgmseReport {
 /// Dependency-free representation of one row in the checkpoint-specific
 /// SGMSE contract.  The converter does not infer names: an authenticated VAST
 /// inspection must provide these exact rows and the required-role set.
+// Kept in production source as the future strict-binder contract, but unused
+// while conversion remains intentionally closed pending reviewed VAST roles.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SgmseManifestRow {
     pub name: String,
@@ -38,6 +41,9 @@ pub struct SgmseManifestRow {
 /// Validate the typed role/name/shape declaration before a future writer is
 /// allowed to emit GGUF. This deliberately accepts no catch-all/pass-through
 /// role and does not coerce unsupported dtypes.
+// Kept available for the future authenticated conversion path; the narrow
+// allow avoids hiding unrelated dead-code diagnostics in this crate.
+#[allow(dead_code)]
 pub fn validate_typed_manifest(
     rows: &[SgmseManifestRow],
     required_roles: &[String],
@@ -76,6 +82,7 @@ pub fn validate_typed_manifest(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn valid_role(role: &str) -> bool {
     matches!(
         role,
