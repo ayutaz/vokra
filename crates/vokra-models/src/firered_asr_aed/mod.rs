@@ -2634,11 +2634,10 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
             dhd = c.decoder.head_dim(),
             dff = c.decoder.ffn_dim,
         ),
-        None => format!(
-            "the `vokra.firered_asr_aed_l.*` group is NOT stamped on this GGUF \
+        None => "the `vokra.firered_asr_aed_l.*` group is NOT stamped on this GGUF \
              (this is a minimal inspection fixture; the VAST converter stamps \
              the converter's release geometry), so gap (1) applies in full"
-        ),
+            .to_owned(),
     };
     let tokenizer_status = if has_tokenizer {
         format!(
@@ -3754,7 +3753,7 @@ mod tests {
                 .expect_err("synthetic inspection fixture must not unlock feature operands");
         match error {
             VokraError::ModelLoad(message) => {
-                assert!(message.contains(KEY_PROVENANCE_UPSTREAM_HF));
+                assert!(message.contains(KEY_PROVENANCE_UPSTREAM_REVISION));
                 assert!(message.contains("exact converter provenance"));
                 assert!(message.contains("VAST numerical parity remains pending"));
             }

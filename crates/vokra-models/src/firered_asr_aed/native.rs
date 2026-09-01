@@ -315,6 +315,7 @@ impl FireRedRuntimeWeights {
     /// deliberately not hidden behind this method; the pinned upstream
     /// search policy still needs an independent trace before it can be
     /// reproduced without guessing.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_greedy(
         &self,
         compute: &Compute,
@@ -1261,6 +1262,7 @@ impl FireRedRelativeAttention {
     /// `[d_model, d_model]` in Compute's transposed (`[in, out]`) layout.
     /// Dropout is intentionally absent: this is an inference-only seam and
     /// upstream eval-mode dropout is identity.
+    #[allow(clippy::too_many_arguments)]
     pub fn forward_with_output(
         &self,
         compute: &Compute,
@@ -1561,6 +1563,7 @@ impl FireRedConformerConvolution {
     /// `pointwise_in_w`, `depthwise_w`, and `pointwise_out_w` use raw PyTorch
     /// Conv1d layout `[out_channels, in_channels, kernel]` (the pointwise
     /// kernels therefore have `kernel = 1`; depthwise has `in = out = 2d`).
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2218,6 +2221,7 @@ pub struct FireRedDecoderSelfAttention {
 
 impl FireRedDecoderSelfAttention {
     /// Runs causal self-attention and returns the updated K/V cache.
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2341,6 +2345,7 @@ pub struct FireRedDecoderCrossAttention {
 
 impl FireRedDecoderCrossAttention {
     /// Runs masked cross-attention from decoder queries to encoder memory.
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2482,6 +2487,7 @@ pub struct FireRedDecoderLayerOutput {
 
 impl FireRedDecoderLayer {
     /// Runs one pre-norm decoder layer with self- and cross-attention.
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2597,6 +2603,7 @@ impl FireRedDecoderLayer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn validate(
         &self,
         input: &[f32],
@@ -3022,6 +3029,7 @@ fn linear(
     Ok(output)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scaled_dot_product_attention(
     compute: &Compute,
     q: &[f32],
@@ -3107,7 +3115,7 @@ fn scaled_dot_product_attention(
         )?;
         for query in 0..query_frames {
             for key in 0..key_frames {
-                let causal_ok = causal_past.map_or(true, |past| key <= past + query);
+                let causal_ok = causal_past.is_none_or(|past| key <= past + query);
                 if !key_mask[key] || !causal_ok {
                     scores[score_start + query * key_frames + key] = -f32::MAX;
                 } else {
@@ -3126,7 +3134,7 @@ fn scaled_dot_product_attention(
             let start = (head * query_frames + query) * key_frames;
             let mut sum = 0.0f32;
             for key in 0..key_frames {
-                let causal_ok = causal_past.map_or(true, |past| key <= past + query);
+                let causal_ok = causal_past.is_none_or(|past| key <= past + query);
                 if !key_mask[key] || !causal_ok {
                     probabilities[start + key] = 0.0;
                 }
