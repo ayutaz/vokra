@@ -58,6 +58,7 @@
 
 #![allow(dead_code)]
 
+use std::io::Write;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -425,8 +426,66 @@ pub fn convert_nsnet2_file(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Parse(e.to_string()))?;
-    std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
+    // A replacement dry-run must never clobber an existing public artifact or
+    // a concurrent writer's result. The VAST worker supplies an absent work
+    // directory, while this helper also protects direct converter callers.
+    write_no_replace(output, &out_bytes).map_err(ConvertError::Io)?;
     Ok(report)
+}
+
+/// Publish bytes to an absent path without replacement, using a temporary
+/// sibling and a same-filesystem hard link as the portable std-only
+/// no-replace primitive. The link operation is atomic and fails if another
+/// writer has claimed `output`; cleanup runs for both conversion and publish
+/// errors.
+fn write_no_replace(output: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let name = output.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "output has no file name")
+    })?;
+    let mut temporary = None;
+    for attempt in 0..100u32 {
+        let candidate = parent.join(format!(
+            ".{}.vokra-nsnet2-{}-{}",
+            name.to_string_lossy(),
+            std::process::id(),
+            attempt
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let Some((temporary_path, mut temporary_file)) = temporary else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique NSNet2 temporary output",
+        ));
+    };
+
+    let operation = (|| {
+        temporary_file.write_all(bytes)?;
+        temporary_file.flush()?;
+        temporary_file.sync_all()?;
+        drop(temporary_file);
+        std::fs::hard_link(&temporary_path, output)
+    })();
+    let cleanup = std::fs::remove_file(&temporary_path);
+    match operation {
+        Err(error) => {
+            let _ = cleanup;
+            Err(error)
+        }
+        Ok(()) => cleanup,
+    }
 }
 
 fn transpose_f32_bytes(bytes: &[u8], rows: usize, cols: usize) -> Result<Vec<u8>, ConvertError> {
@@ -540,6 +599,36 @@ mod tests {
         buf.extend_from_slice(header.as_bytes());
         buf.extend_from_slice(&bf16);
         (buf, bf16)
+    }
+
+    #[test]
+    fn output_publish_is_atomic_and_no_replace() {
+        let directory = scratch_path("atomic-output-dir");
+        std::fs::create_dir(&directory).expect("create atomic output test directory");
+        let output = directory.join("model.gguf");
+        std::fs::write(&output, b"original").expect("write existing output");
+
+        let error = write_no_replace(&output, b"replacement")
+            .expect_err("existing output must reject replacement");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read(&output).expect("read existing output"),
+            b"original"
+        );
+
+        let fresh = directory.join("fresh.gguf");
+        write_no_replace(&fresh, b"complete payload").expect("publish fresh output");
+        assert_eq!(
+            std::fs::read(&fresh).expect("read fresh output"),
+            b"complete payload"
+        );
+        let entries = std::fs::read_dir(&directory)
+            .expect("read test directory")
+            .collect::<std::io::Result<Vec<_>>>()
+            .expect("collect test directory entries");
+        assert_eq!(entries.len(), 2, "temporary sibling must be cleaned up");
+
+        std::fs::remove_dir_all(&directory).expect("remove atomic output test directory");
     }
 
     /// Exact-manifest pin: official numeric initializer names are converted

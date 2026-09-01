@@ -220,6 +220,7 @@ run_self_test() {
   for required in \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$UPSTREAM_ARTIFACT_PATH" \
     "$ONNX_BYTES" "$ONNX_SHA256" "$MODEL_KIND" "$LICENSE_SPDX" \
+    "PINNED_ONNX_FILENAME" "PINNED_ONNX_BYTES" "PINNED_ONNX_SHA256" \
     "$PARITY_TEST" "$GGUF_ENV" "$WAV_ENV" "$REFERENCE_WAV_ENV" \
     "tools/parity/nsnet2_prepare_checkpoint.py" \
     "tools/parity/nsnet2_dump_reference.py" \
@@ -358,7 +359,11 @@ main() {
   workspace_log="$evidence_dir/workspace-test.log"
   clippy_log="$evidence_dir/workspace-clippy.log"
   summary_file="$evidence_dir/summary.txt"
-  mkdir -p "$input_dir" "$evidence_dir"
+  # Claim the previously absent work directory with mkdir (not mkdir -p): a
+  # concurrent creator must make this run fail rather than sharing its tree.
+  mkdir -p "$(dirname "$work_dir")"
+  mkdir "$work_dir"
+  mkdir "$input_dir" "$evidence_dir"
   exec > >(tee -a "$run_log") 2>&1
   # shellcheck disable=SC2154
   trap 'rc=$?; if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; exit "$rc"' EXIT

@@ -261,7 +261,10 @@ main() {
   require_file "corrected NSNet2 GGUF" "$gguf"
   require_file "NSNet2 input WAV" "$input"
   require_file "independent NSNet2 reference WAV" "$reference"
-  mkdir -p "$evidence_dir"
+  # The preflight requires an absent target; claim it atomically with mkdir so
+  # a concurrent creator cannot turn this evidence path into a shared tree.
+  mkdir -p "$(dirname "$evidence_dir")"
+  mkdir "$evidence_dir"
   gguf_sha="$(sha256_file "$gguf")"
   record_environment "$evidence_dir/environment.txt"
   {

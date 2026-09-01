@@ -70,12 +70,25 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import struct
 import sys
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 
 LOG_PREFIX = "nsnet2_prepare_checkpoint:"
+
+# The worker repeats this check before downloading, but keeping the identity
+# gate in the sidecar makes a direct invocation fail closed as well.  A
+# safetensors file made from an arbitrary ONNX graph is not an NSNet2
+# replacement artifact, even when it happens to contain similarly named
+# initializers.
+PINNED_ONNX_FILENAME = "nsnet2-20ms-baseline.onnx"
+PINNED_ONNX_BYTES = 10_752_263
+PINNED_ONNX_SHA256 = (
+    "88429b6253600be840ab816f46f466811d20078142fb12bff8cafe2b27bd4ca9"
+)
 
 # ONNX TensorProto.DataType numeric codes we accept as float weights (mirrors
 # the ``crates/vokra-convert/src/onnx.rs`` allow-list). NSNet2 today ships F32
@@ -135,6 +148,73 @@ def write_safetensors(path: Path, tensors: "OrderedDict[str, tuple[str, list[int
             fp.write(data)
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def require_pinned_onnx(path: Path) -> None:
+    """Authenticate the exact official ONNX before importing/parsing it."""
+
+    if path.name != PINNED_ONNX_FILENAME:
+        raise SystemExit(
+            f"{LOG_PREFIX} refusing unexpected ONNX filename {path.name!r}; "
+            f"expected {PINNED_ONNX_FILENAME!r}"
+        )
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"{LOG_PREFIX} input ONNX must be a regular non-symlink file: {path}")
+    actual_bytes = path.stat().st_size
+    if actual_bytes != PINNED_ONNX_BYTES:
+        raise SystemExit(
+            f"{LOG_PREFIX} ONNX byte-size mismatch: got {actual_bytes}, "
+            f"expected {PINNED_ONNX_BYTES}"
+        )
+    actual_sha = sha256_file(path)
+    if actual_sha != PINNED_ONNX_SHA256:
+        raise SystemExit(
+            f"{LOG_PREFIX} refusing unpinned ONNX SHA-256 {actual_sha}; "
+            f"expected {PINNED_ONNX_SHA256}"
+        )
+
+
+def publish_no_replace(
+    output: Path, tensors: "OrderedDict[str, tuple[str, list[int], bytes]]"
+) -> None:
+    """Write beside ``output`` and publish without replacing an existing file.
+
+    ``os.link`` is the POSIX no-replace primitive: unlike ``os.rename``, a
+    concurrent or pre-existing destination cannot be clobbered.  The VAST
+    worker runs on Linux, and the same behavior is available on macOS for
+    offline sidecar use.
+    """
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists() or output.is_symlink():
+        raise SystemExit(f"{LOG_PREFIX} refusing to overwrite existing output: {output}")
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=output.parent, prefix=f".{output.name}.", delete=False
+        ) as temporary:
+            temporary_name = temporary.name
+        write_safetensors(Path(temporary_name), tensors)
+        with open(temporary_name, "rb") as handle:
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary_name, output)
+        except FileExistsError as exc:
+            raise SystemExit(f"{LOG_PREFIX} refusing to replace concurrent output: {output}") from exc
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+
+
 def _initializer_bytes(init) -> bytes:
     """Extracts the raw little-endian tensor payload from an ONNX
     initializer. ONNX may store tensor data either as ``raw_data`` (already
@@ -172,21 +252,50 @@ def _initializer_shape(init) -> list[int]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="run hermetic writer/identity guards without loading a model",
+    )
+    ap.add_argument(
         "--onnx",
-        required=True,
+        required=False,
         type=Path,
         help="path to nsnet2-20ms-baseline.onnx (the NSNet2 upstream ONNX file)",
     )
     ap.add_argument(
         "--output",
-        required=True,
+        required=False,
         type=Path,
         help="path to write the flattened safetensors checkpoint",
     )
     args = ap.parse_args()
 
-    if not args.onnx.exists():
-        raise SystemExit(f"{LOG_PREFIX} input ONNX not found: {args.onnx}")
+    if args.self_test:
+        with tempfile.TemporaryDirectory(prefix="vokra-nsnet2-prep-selftest-") as root:
+            root_path = Path(root)
+            output = root_path / "nested" / "prepared.safetensors"
+            publish_no_replace(output, OrderedDict())
+            if not output.is_file() or output.read_bytes() != struct.pack("<Q", 2) + b"{}":
+                raise SystemExit(f"{LOG_PREFIX} self-test failed: empty publish")
+            output.write_bytes(b"keep")
+            try:
+                publish_no_replace(output, OrderedDict())
+            except SystemExit:
+                pass
+            else:
+                raise SystemExit(f"{LOG_PREFIX} self-test failed: overwrite accepted")
+            if output.read_bytes() != b"keep":
+                raise SystemExit(f"{LOG_PREFIX} self-test failed: existing output changed")
+        print(f"{LOG_PREFIX} self-test: OK")
+        return 0
+
+    if args.onnx is None or args.output is None:
+        ap.error("--onnx and --output are required unless --self-test is used")
+    require_pinned_onnx(args.onnx)
+    if args.output.exists() or args.output.is_symlink():
+        raise SystemExit(f"{LOG_PREFIX} refusing to overwrite existing output: {args.output}")
+    if args.output.resolve(strict=False) == args.onnx.resolve(strict=True):
+        raise SystemExit(f"{LOG_PREFIX} output must be distinct from the authenticated ONNX input")
 
     # ``onnx`` is a compile-time dep only for the offline prep script (not for
     # the Vokra runtime — FR-LD-05, NFR-DS-02). The import is deferred so an
@@ -270,8 +379,7 @@ def main() -> int:
             "write an empty safetensors"
         )
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    write_safetensors(args.output, tensors)
+    publish_no_replace(args.output, tensors)
     for name in dropped:
         print(f"dropped (unnamed initializer): {name}")
 
