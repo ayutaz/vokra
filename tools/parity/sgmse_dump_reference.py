@@ -17,6 +17,7 @@ import errno
 import hashlib
 import inspect
 import json
+import math
 import os
 import platform
 import shutil
@@ -36,9 +37,11 @@ CHECKPOINT_TENSOR_COUNT = 647
 CHECKPOINT_PARAMETER_COUNT = 65_590_822
 CHECKPOINT_LICENSE_SPDX = "apache-2.0"
 SOURCE_REVISION = "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
+SOURCE_REPOSITORY = "https://github.com/sp-uhh/sgmse.git"
 SOURCE_LICENSE_SPDX = "mit"
 SOURCE_LICENSE_SHA256 = "8748956d2e5afe9dfc8311188b4119dacc7c5293b0561e7cca7a21cf80e54caa"
 SPEECHBRAIN_REVISION = "2b3f4f44351fd08a627c4ab307de5c420351bc19"
+SPEECHBRAIN_REPOSITORY = "https://github.com/speechbrain/speechbrain.git"
 SPEECHBRAIN_LICENSE_SPDX = "apache-2.0"
 SPEECHBRAIN_LICENSE_SHA256 = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 PAD_SPEC_SOURCE_FILE = "sgmse/util/other.py"
@@ -101,6 +104,7 @@ pretrainer: !new:speechbrain.utils.parameter_transfer.Pretrainer
      score_model_ema: !ref <modules[score_model]>
 """
 REFERENCE_FORMAT = "vokra-sgmse-score-reference-v1"
+CONSTRUCTION_EVIDENCE_FORMAT = "vokra-sgmse-construction-evidence-v1"
 REFERENCE_BLOCKER = "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE"
 INSPECTION_EMA_BLOCKER = "BLOCKED_EMA_SELECTION_UNVERIFIED"
 EMA_ROUTE_STATUS = "SOURCE_ROUTE_VERIFIED_STRICT_LOAD"
@@ -529,6 +533,374 @@ def verify_algorithm_source(
     return verified
 
 
+def _class_identity(module: Any) -> str:
+    cls = module.__class__
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _source_identity(cls: type[Any], roots: tuple[tuple[Path, str, str], ...]) -> dict[str, Any]:
+    """Record where an instantiated module class came from.
+
+    Classes loaded from either pinned checkout receive a file hash.  Torch
+    framework classes are recorded as runtime classes because their source is
+    outside the two authenticated trees; they are never treated as SGMSE
+    implementation evidence.
+    """
+    qualified = f"{cls.__module__}.{cls.__qualname__}"
+    try:
+        source_file = inspect.getsourcefile(cls)
+    except (OSError, TypeError):
+        source_file = None
+    if source_file:
+        resolved = Path(source_file).resolve(strict=False)
+        for root, repository, revision in roots:
+            try:
+                relative = resolved.relative_to(root.resolve(strict=True)).as_posix()
+            except (OSError, ValueError):
+                continue
+            if relative and not Path(relative).is_absolute():
+                return {
+                    "kind": "pinned_checkout",
+                    "repository": repository,
+                    "revision": revision,
+                    "path": relative,
+                    "sha256": sha256(resolved),
+                }
+    # Only PyTorch framework classes may be represented without a pinned
+    # checkout file. A third-party/custom class outside both authenticated
+    # trees must stop the VAST run rather than being mislabeled as runtime.
+    if not qualified.startswith("torch."):
+        raise ValueError(f"module class is outside authenticated source trees: {qualified}")
+    return {"kind": "runtime", "module": qualified}
+
+
+def _direct_tensor_rows(module: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    parameters = []
+    for name, tensor in module.named_parameters(recurse=False):
+        parameters.append({
+            "name": name,
+            "shape": [int(axis) for axis in tensor.shape],
+            "dtype": str(tensor.dtype),
+        })
+    buffers = []
+    for name, tensor in module.named_buffers(recurse=False):
+        buffers.append({
+            "name": name,
+            "shape": [int(axis) for axis in tensor.shape],
+            "dtype": str(tensor.dtype),
+        })
+    return sorted(parameters, key=lambda row: row["name"]), sorted(
+        buffers, key=lambda row: row["name"]
+    )
+
+
+def collect_construction_evidence(
+    model: Any,
+    loaded: dict[str, Any],
+    algorithm_source: Path,
+    speechbrain_source: Path,
+    checkpoint: Path,
+    inspection_manifest: Path,
+) -> dict[str, Any]:
+    """Capture exact source construction facts without assigning native roles."""
+    import torch
+
+    roots = (
+        (algorithm_source, SOURCE_REPOSITORY, SOURCE_REVISION),
+        (speechbrain_source, SPEECHBRAIN_REPOSITORY, SPEECHBRAIN_REVISION),
+    )
+    named_modules = []
+    owner_rows: dict[str, tuple[str, str, str]] = {}
+    for path, module in model.named_modules():
+        parameters, buffers = _direct_tensor_rows(module)
+        for row in parameters:
+            full_name = f"{path}.{row['name']}" if path else row["name"]
+            owner_rows[full_name] = (path, "parameter", row["name"])
+        for row in buffers:
+            full_name = f"{path}.{row['name']}" if path else row["name"]
+            owner_rows[full_name] = (path, "buffer", row["name"])
+        named_modules.append({
+            "path": path,
+            "class": _class_identity(module),
+            "source": _source_identity(module.__class__, roots),
+            "direct_parameters": parameters,
+            "direct_buffers": buffers,
+        })
+    named_modules.sort(key=lambda row: row["path"])
+
+    state_rows = []
+    for name, tensor in sorted(model.state_dict().items()):
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError(f"state_dict entry is not a tensor: {name}")
+        owner = owner_rows.get(name)
+        if owner is None:
+            raise ValueError(f"state_dict entry has no direct module owner: {name}")
+        owner_path, owner_kind, owner_name = owner
+        state_rows.append({
+            "name": name,
+            "shape": [int(axis) for axis in tensor.shape],
+            "dtype": str(tensor.dtype),
+            "owner_path": owner_path,
+            "owner_kind": owner_kind,
+            "owner_name": owner_name,
+        })
+
+    all_modules = [
+        (path, module)
+        for path, module in model.named_modules()
+        if path.endswith("all_modules") and isinstance(module, torch.nn.ModuleList)
+    ]
+    if len(all_modules) != 1:
+        raise ValueError(f"expected exactly one NCSN++ all_modules ModuleList, found {len(all_modules)}")
+    all_modules_path, module_list = all_modules[0]
+    module_rows = []
+    for ordinal, module in enumerate(module_list):
+        parameters, buffers = _direct_tensor_rows(module)
+        module_rows.append({
+            "ordinal": ordinal,
+            "class": _class_identity(module),
+            "source": _source_identity(module.__class__, roots),
+            "direct_parameters": parameters,
+            "direct_buffers": buffers,
+        })
+    packet = {
+        "format": CONSTRUCTION_EVIDENCE_FORMAT,
+        "source": {
+            "repository": SOURCE_REPOSITORY,
+            "revision": SOURCE_REVISION,
+            "speechbrain_repository": SPEECHBRAIN_REPOSITORY,
+            "speechbrain_revision": SPEECHBRAIN_REVISION,
+        },
+        "checkpoint": {
+            "filename": checkpoint.name,
+            "size": checkpoint.stat().st_size,
+            "sha256": sha256(checkpoint),
+            "tensor_count": loaded.get("tensor_count"),
+            "state_tensor_numel": loaded.get("parameter_count"),
+        },
+        "inspection_manifest_sha256": sha256(inspection_manifest),
+        "state_dict": {
+            "count": len(state_rows),
+            "state_tensor_numel": sum(math.prod(row["shape"]) for row in state_rows),
+            "parameter_row_numel": sum(
+                math.prod(row["shape"])
+                for row in state_rows
+                if row["owner_kind"] == "parameter"
+            ),
+            "buffer_row_numel": sum(
+                math.prod(row["shape"])
+                for row in state_rows
+                if row["owner_kind"] == "buffer"
+            ),
+            # These are true model totals (deduplicated by PyTorch for shared
+            # aliases), kept separate from state_dict row totals above.
+            "parameter_numel": sum(int(tensor.numel()) for tensor in model.parameters()),
+            "buffer_numel": sum(int(tensor.numel()) for tensor in model.buffers()),
+            "rows": state_rows,
+        },
+        "named_modules": named_modules,
+        "ncsnpp_all_modules": {
+            "path": all_modules_path,
+            "count": len(module_rows),
+            "rows": module_rows,
+        },
+    }
+    packet["canonical_sha256"] = construction_evidence_sha256(packet)
+    return packet
+
+
+def construction_evidence_sha256(evidence: dict[str, Any]) -> str:
+    unsigned = {
+        key: value for key, value in evidence.items() if key != "canonical_sha256"
+    }
+    return hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_direct_rows(rows: Any, label: str) -> set[str]:
+    if not isinstance(rows, list):
+        raise ValueError(f"{label} rows are not a list")
+    names: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"name", "shape", "dtype"}:
+            raise ValueError(f"{label} row is malformed")
+        if not isinstance(row["name"], str) or not row["name"] or not isinstance(row["dtype"], str):
+            raise ValueError(f"{label} row identity is malformed")
+        if (
+            not isinstance(row["shape"], list)
+            or any(not isinstance(axis, int) or isinstance(axis, bool) or axis <= 0 for axis in row["shape"])
+        ):
+            raise ValueError(f"{label} row shape is malformed")
+        names.append(row["name"])
+    if names != sorted(names) or len(set(names)) != len(names):
+        raise ValueError(f"{label} rows are reordered or duplicated")
+    return set(names)
+
+
+def validate_construction_evidence(
+    evidence: Any,
+    *,
+    expected_checkpoint: dict[str, Any],
+    expected_inspection_sha256: str,
+) -> None:
+    """Validate the source construction packet before it is consumed offline."""
+    if not isinstance(evidence, dict) or set(evidence) != {
+        "format", "source", "checkpoint", "inspection_manifest_sha256",
+        "state_dict", "named_modules", "ncsnpp_all_modules",
+        "canonical_sha256",
+    }:
+        raise ValueError("construction evidence envelope is malformed")
+    if evidence["format"] != CONSTRUCTION_EVIDENCE_FORMAT:
+        raise ValueError("construction evidence format mismatch")
+    source = evidence["source"]
+    if not isinstance(source, dict) or source != {
+        "repository": SOURCE_REPOSITORY,
+        "revision": SOURCE_REVISION,
+        "speechbrain_repository": SPEECHBRAIN_REPOSITORY,
+        "speechbrain_revision": SPEECHBRAIN_REVISION,
+    }:
+        raise ValueError("construction source identity mismatch")
+    if evidence["inspection_manifest_sha256"] != expected_inspection_sha256:
+        raise ValueError("construction inspection identity mismatch")
+    if evidence["checkpoint"] != expected_checkpoint:
+        raise ValueError("construction checkpoint identity mismatch")
+    unsigned = {key: value for key, value in evidence.items() if key != "canonical_sha256"}
+    expected_digest = construction_evidence_sha256(unsigned)
+    if evidence["canonical_sha256"] != expected_digest:
+        raise ValueError("construction evidence canonical digest mismatch")
+
+    modules = evidence["named_modules"]
+    if not isinstance(modules, list) or not modules:
+        raise ValueError("construction named_modules are missing")
+    paths = []
+    module_by_path: dict[str, dict[str, Any]] = {}
+    for row in modules:
+        if not isinstance(row, dict) or set(row) != {
+            "path", "class", "source", "direct_parameters", "direct_buffers"
+        }:
+            raise ValueError("construction named_module row is malformed")
+        path = row["path"]
+        if not isinstance(path, str) or path in module_by_path:
+            raise ValueError("construction named_module paths are duplicated")
+        if not isinstance(row["class"], str) or not row["class"]:
+            raise ValueError("construction named_module class is malformed")
+        source = row["source"]
+        if (
+            not isinstance(source, dict)
+            or source.get("kind") == "runtime"
+            and (
+                set(source) != {"kind", "module"}
+                or source.get("module") != row["class"]
+                or not isinstance(source.get("module"), str)
+                or not source["module"].startswith("torch.")
+            )
+        ):
+            raise ValueError("construction named_module source/class identity is invalid")
+        _validate_direct_rows(row["direct_parameters"], f"module {path} parameters")
+        _validate_direct_rows(row["direct_buffers"], f"module {path} buffers")
+        paths.append(path)
+        module_by_path[path] = row
+    if paths != sorted(paths) or paths[0] != "":
+        raise ValueError("construction named_modules are reordered or lack the root")
+
+    all_modules = evidence["ncsnpp_all_modules"]
+    if not isinstance(all_modules, dict) or set(all_modules) != {"path", "count", "rows"}:
+        raise ValueError("construction all_modules packet is malformed")
+    all_path = all_modules["path"]
+    if not isinstance(all_path, str) or all_path not in module_by_path or not all_path.endswith("all_modules"):
+        raise ValueError("construction all_modules owner path is invalid")
+    all_rows = all_modules["rows"]
+    if not isinstance(all_rows, list) or all_modules["count"] != len(all_rows):
+        raise ValueError("construction all_modules count mismatch")
+    for ordinal, row in enumerate(all_rows):
+        if not isinstance(row, dict) or set(row) != {
+            "ordinal", "class", "source", "direct_parameters", "direct_buffers"
+        } or row["ordinal"] != ordinal:
+            raise ValueError("construction all_modules rows are missing, duplicated, or reordered")
+        if not isinstance(row["class"], str) or not row["class"]:
+            raise ValueError("construction all_modules class is malformed")
+        source = row["source"]
+        if (
+            not isinstance(source, dict)
+            or source.get("kind") == "runtime"
+            and (
+                set(source) != {"kind", "module"}
+                or source.get("module") != row["class"]
+                or not isinstance(source.get("module"), str)
+                or not source["module"].startswith("torch.")
+            )
+        ):
+            raise ValueError("construction all_modules source/class identity is invalid")
+        parameters = _validate_direct_rows(
+            row["direct_parameters"], f"all_modules[{ordinal}] parameters"
+        )
+        buffers = _validate_direct_rows(
+            row["direct_buffers"], f"all_modules[{ordinal}] buffers"
+        )
+        member_path = f"{all_path}.{ordinal}"
+        member = module_by_path.get(member_path)
+        if member is None or member["class"] != row["class"] or member["source"] != row["source"]:
+            raise ValueError("construction all_modules member path/class/source mismatch")
+        if (
+            _validate_direct_rows(member["direct_parameters"], f"module {member_path} parameters")
+            != parameters
+            or _validate_direct_rows(member["direct_buffers"], f"module {member_path} buffers")
+            != buffers
+        ):
+            raise ValueError("construction all_modules member parameter/buffer mismatch")
+
+    state = evidence["state_dict"]
+    if not isinstance(state, dict) or set(state) != {
+        "count", "state_tensor_numel", "parameter_row_numel", "buffer_row_numel",
+        "parameter_numel", "buffer_numel", "rows",
+    }:
+        raise ValueError("construction state_dict packet is malformed")
+    rows = state["rows"]
+    if not isinstance(rows, list) or state["count"] != len(rows) or rows != sorted(rows, key=lambda row: row.get("name", "")):
+        raise ValueError("construction state_dict rows are missing or reordered")
+    if len(rows) != expected_checkpoint["tensor_count"]:
+        raise ValueError("construction state_dict tensor count mismatch")
+    expected_names: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+            "name", "shape", "dtype", "owner_path", "owner_kind", "owner_name"
+        }:
+            raise ValueError("construction state_dict row is malformed")
+        name = row["name"]
+        if not isinstance(name, str) or name in expected_names:
+            raise ValueError("construction state_dict names are duplicated")
+        expected_names.add(name)
+        if row["owner_path"] not in module_by_path or row["owner_kind"] not in {"parameter", "buffer"}:
+            raise ValueError("construction state_dict owner is invalid")
+        owner = module_by_path[row["owner_path"]]
+        direct = owner["direct_parameters"] if row["owner_kind"] == "parameter" else owner["direct_buffers"]
+        matches = [item for item in direct if item["name"] == row["owner_name"]]
+        if len(matches) != 1 or matches[0]["shape"] != row["shape"] or matches[0]["dtype"] != row["dtype"]:
+            raise ValueError("construction state_dict owner/shape/dtype mismatch")
+        expected_full_name = f"{row['owner_path']}.{row['owner_name']}" if row["owner_path"] else row["owner_name"]
+        if expected_full_name != name:
+            raise ValueError("construction state_dict owner name mismatch")
+    state_tensor_numel = sum(
+        math.prod(row["shape"]) for row in rows
+    )
+    if state["state_tensor_numel"] != state_tensor_numel or state_tensor_numel != expected_checkpoint["state_tensor_numel"]:
+        raise ValueError("construction state_dict tensor numel differs from checkpoint evidence")
+    parameter_rows = sum(
+        math.prod(row["shape"]) for row in rows if row["owner_kind"] == "parameter"
+    )
+    buffer_rows = sum(
+        math.prod(row["shape"]) for row in rows if row["owner_kind"] == "buffer"
+    )
+    if state["parameter_row_numel"] != parameter_rows or state["buffer_row_numel"] != buffer_rows:
+        raise ValueError("construction state_dict parameter/buffer row totals mismatch")
+    if any(
+        not isinstance(state[key], int) or isinstance(state[key], bool) or state[key] < 0
+        for key in ("parameter_numel", "buffer_numel")
+    ) or state["parameter_numel"] > parameter_rows or state["buffer_numel"] > buffer_rows:
+        raise ValueError("construction true parameter/buffer totals are invalid")
+
+
 def load_score_model(
     algorithm_source: Path,
     speechbrain_source: Path,
@@ -758,6 +1130,17 @@ def _run_reference_into(
         or model_evidence.get("parameter_count") != CHECKPOINT_PARAMETER_COUNT
     ):
         raise ValueError("strict model load count differs from reviewed checkpoint evidence")
+    # Capture the source construction route after strict loading. This packet
+    # is evidence for a later offline mapping review only; it deliberately
+    # contains no Vokra role labels and cannot unlock REVIEWED_* constants.
+    model_evidence["construction_evidence"] = collect_construction_evidence(
+        model,
+        loaded_manifest,
+        source,
+        speechbrain_source,
+        checkpoint,
+        inspection_manifest,
+    )
     # Imports and model construction can mutate Torch's precision policy and
     # consume RNG state. Re-establish the forward-time contract immediately
     # after those operations so fixture bytes are reproducible.
@@ -954,6 +1337,86 @@ def self_test() -> None:
     assert "reviewed x_t,y,t route" in inspect.getsource(_run_reference_into)
     assert "torch.load(weights_only=True)" in inspect.getsource(load_score_model)
     assert '"bytes": int(tensor.numel()) * 4' in inspect.getsource(_run_reference_into)
+    assert CONSTRUCTION_EVIDENCE_FORMAT == "vokra-sgmse-construction-evidence-v1"
+    # A dependency-free packet model stands in for a tiny ModuleList. The
+    # actual collector runs only after the pinned model is loaded on VAST;
+    # these checks exercise the same strict packet contract locally.
+    toy_source = {"kind": "runtime", "module": "torch.nn.Module"}
+    toy_module_list_source = {
+        "kind": "runtime", "module": "torch.nn.modules.container.ModuleList"
+    }
+    toy_modules = [
+        {"path": "", "class": "torch.nn.Module", "source": toy_source, "direct_parameters": [], "direct_buffers": []},
+        {"path": "backbone", "class": "torch.nn.Module", "source": toy_source, "direct_parameters": [], "direct_buffers": []},
+        {"path": "backbone.all_modules", "class": "torch.nn.modules.container.ModuleList", "source": toy_module_list_source, "direct_parameters": [], "direct_buffers": []},
+        {"path": "backbone.all_modules.0", "class": "torch.nn.Module", "source": toy_source, "direct_parameters": [
+            {"name": "bias", "shape": [1], "dtype": "torch.float32"},
+            {"name": "weight", "shape": [1], "dtype": "torch.float32"},
+        ], "direct_buffers": []},
+    ]
+    toy_state_rows = [
+        {"name": "backbone.all_modules.0.bias", "shape": [1], "dtype": "torch.float32", "owner_path": "backbone.all_modules.0", "owner_kind": "parameter", "owner_name": "bias"},
+        {"name": "backbone.all_modules.0.weight", "shape": [1], "dtype": "torch.float32", "owner_path": "backbone.all_modules.0", "owner_kind": "parameter", "owner_name": "weight"},
+    ]
+    toy_packet = {
+        "format": CONSTRUCTION_EVIDENCE_FORMAT,
+        "source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "speechbrain_repository": SPEECHBRAIN_REPOSITORY, "speechbrain_revision": SPEECHBRAIN_REVISION},
+        "checkpoint": {"filename": CHECKPOINT_NAME, "size": CHECKPOINT_SIZE, "sha256": CHECKPOINT_SHA256, "tensor_count": 2, "state_tensor_numel": 2},
+        "inspection_manifest_sha256": "0" * 64,
+        "state_dict": {"count": 2, "state_tensor_numel": 2, "parameter_row_numel": 2, "buffer_row_numel": 0, "parameter_numel": 2, "buffer_numel": 0, "rows": toy_state_rows},
+        "named_modules": toy_modules,
+        "ncsnpp_all_modules": {"path": "backbone.all_modules", "count": 1, "rows": [{"ordinal": 0, "class": "torch.nn.Module", "source": toy_source, "direct_parameters": toy_modules[-1]["direct_parameters"], "direct_buffers": []}]},
+    }
+    toy_packet["canonical_sha256"] = construction_evidence_sha256(toy_packet)
+    validate_construction_evidence(
+        toy_packet,
+        expected_checkpoint=toy_packet["checkpoint"],
+        expected_inspection_sha256="0" * 64,
+    )
+    import copy
+    for variant, mutate in (
+        ("duplicate", lambda packet: packet["named_modules"].append(copy.deepcopy(packet["named_modules"][-1]))),
+        ("missing", lambda packet: packet["named_modules"].pop()),
+        ("extra", lambda packet: packet["named_modules"].append({"path": "z", "class": "toy.Extra", "source": toy_source, "direct_parameters": [], "direct_buffers": []})),
+        ("reordered module", lambda packet: packet["named_modules"].reverse()),
+        ("reordered parameter", lambda packet: packet["named_modules"][-1]["direct_parameters"].reverse()),
+        ("tampered parameter", lambda packet: packet["named_modules"][-1]["direct_parameters"][0].update(shape=[2])),
+    ):
+        candidate = copy.deepcopy(toy_packet)
+        mutate(candidate)
+        try:
+            validate_construction_evidence(
+                candidate,
+                expected_checkpoint=toy_packet["checkpoint"],
+                expected_inspection_sha256="0" * 64,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"toy construction {variant} mutation was accepted")
+    for variant, mutate in (
+        (
+            "arbitrary runtime class",
+            lambda packet: packet["named_modules"][0]["source"].update(module="evil.Custom"),
+        ),
+        (
+            "tampered runtime class",
+            lambda packet: packet["named_modules"][0].update(**{"class": "torch.nn.Linear"}),
+        ),
+    ):
+        candidate = copy.deepcopy(toy_packet)
+        mutate(candidate)
+        candidate["canonical_sha256"] = construction_evidence_sha256(candidate)
+        try:
+            validate_construction_evidence(
+                candidate,
+                expected_checkpoint=toy_packet["checkpoint"],
+                expected_inspection_sha256="0" * 64,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"toy construction {variant} was accepted")
     reference_source = inspect.getsource(_run_reference_into)
     model_load_end = reference_source.index("model, model_evidence = load_score_model")
     forward_reassert = reference_source.index(

@@ -25,6 +25,7 @@ from sgmse_dump_reference import (
     CHECKPOINT_SHA256,
     CHECKPOINT_SIZE,
     CHECKPOINT_TENSOR_COUNT,
+    CONSTRUCTION_EVIDENCE_FORMAT,
     EXPECTED_HYPERPARAM_FACTS,
     HYPERPARAMS_NAME,
     HYPERPARAMS_SHA256,
@@ -41,6 +42,7 @@ from sgmse_dump_reference import (
     SOURCE_LICENSE_SHA256,
     SOURCE_LICENSE_SPDX,
     SOURCE_REVISION,
+    SPEECHBRAIN_REPOSITORY,
     SPEECHBRAIN_LICENSE_SHA256,
     SPEECHBRAIN_LICENSE_SPDX,
     SPEECHBRAIN_REVISION,
@@ -48,6 +50,7 @@ from sgmse_dump_reference import (
     git_revision,
     path_overlaps,
     reject_duplicate_json,
+    validate_construction_evidence,
 )
 
 
@@ -137,6 +140,46 @@ def clean_revision(path: Path, expected: str, label: str) -> None:
     ).stdout
     if status.strip():
         raise ValueError(f"{label} checkout is dirty")
+
+
+def verify_construction_sources(
+    evidence: dict[str, Any], source_path: Path, speechbrain_path: Path
+) -> None:
+    """Verify source hashes for every custom class in the construction packet."""
+    roots = {
+        EXPECTED_SOURCE_REPOSITORY: (source_path, SOURCE_REVISION),
+        EXPECTED_SPEECHBRAIN_REPOSITORY: (speechbrain_path, SPEECHBRAIN_REVISION),
+    }
+    records = [(row["source"], row["class"]) for row in evidence["named_modules"]]
+    records.extend(
+        (row["source"], row["class"])
+        for row in evidence["ncsnpp_all_modules"]["rows"]
+    )
+    for record, class_identity in records:
+        if not isinstance(record, dict) or record.get("kind") not in {"runtime", "pinned_checkout"}:
+            raise ValueError("construction source record kind is invalid")
+        if record["kind"] == "runtime":
+            if (
+                set(record) != {"kind", "module"}
+                or not isinstance(record["module"], str)
+                or not record["module"].startswith("torch.")
+                or not isinstance(record.get("module"), str)
+            ):
+                raise ValueError("construction runtime source record is malformed")
+            if record["module"] != class_identity:
+                raise ValueError("construction runtime source/class identity mismatch")
+            continue
+        if set(record) != {"kind", "repository", "revision", "path", "sha256"}:
+            raise ValueError("construction pinned source record is malformed")
+        root_info = roots.get(record["repository"])
+        if root_info is None or record["revision"] != root_info[1]:
+            raise ValueError("construction pinned source revision is not authenticated")
+        relative = Path(record["path"])
+        if relative.is_absolute() or ".." in relative.parts or not record["path"]:
+            raise ValueError("construction pinned source path is unsafe")
+        path = root_info[0] / relative
+        if path.is_symlink() or not path.is_file() or sha256(path) != record["sha256"]:
+            raise ValueError("construction pinned source file hash mismatch")
 
 
 def verify_manifest(
@@ -251,6 +294,20 @@ def verify_manifest(
         raise ValueError("completion model constructor evidence mismatch")
     if model.get("load") != "torch.load(weights_only=True)+load_state_dict(strict=True)":
         raise ValueError("completion model load was not strict safe-load")
+    construction = model.get("construction_evidence")
+    checkpoint_identity = {
+        "filename": checkpoint["filename"],
+        "size": checkpoint["size"],
+        "sha256": checkpoint["sha256"],
+        "tensor_count": CHECKPOINT_TENSOR_COUNT,
+        "state_tensor_numel": CHECKPOINT_PARAMETER_COUNT,
+    }
+    validate_construction_evidence(
+        construction,
+        expected_checkpoint=checkpoint_identity,
+        expected_inspection_sha256=manifest["inspection_manifest_sha256"],
+    )
+    verify_construction_sources(construction, source_path, Path(speechbrain.get("path", "")))
     ema_route = manifest.get("ema_route")
     if not isinstance(ema_route, dict) or ema_route.get("status") != EMA_ROUTE_STATUS or ema_route.get("loadable") != "score_model_ema" or ema_route.get("unsafe_pickle_fallback") is not False:
         raise ValueError("completion EMA route evidence mismatch")
@@ -359,6 +416,9 @@ def self_test() -> None:
     }
     assert EXPECTED_SOURCE_REPOSITORY == "https://github.com/sp-uhh/sgmse.git"
     assert EXPECTED_SPEECHBRAIN_REPOSITORY == "https://github.com/speechbrain/speechbrain.git"
+    assert CONSTRUCTION_EVIDENCE_FORMAT == "vokra-sgmse-construction-evidence-v1"
+    assert "validate_construction_evidence" in verify_manifest.__code__.co_names
+    assert "verify_construction_sources" in verify_manifest.__code__.co_names
     assert HYPERPARAMS_SHA256 == "5ebd87c6257537c3997c134b279d85cd7bebccce0e6d3fc68f7a36f15096aa51"
     assert set(EXPECTED_ARTIFACTS) == {
         "input_noisy_real",

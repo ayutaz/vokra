@@ -40,6 +40,8 @@ self_test() {
     '5ebd87c6257537c3997c134b279d85cd7bebccce0e6d3fc68f7a36f15096aa51' \
     'REFERENCE_COMPLETE_NO_UPLOAD' 'BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE' \
     'SOURCE_ROUTE_VERIFIED_STRICT_LOAD' 'weights_only=True' 'strict=True' \
+    'construction_evidence' 'vokra-sgmse-construction-evidence-v1' \
+    'ncsnpp_all_modules' 'named_modules' 'canonical_sha256' \
     'score_model_ema.ckpt' 'NO_UPLOAD' 'fixture payload retained' \
     'run.log' 'torch_deterministic_algorithms' 'inspection-manifest' \
     'native-score-dir' \

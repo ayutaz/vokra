@@ -61,6 +61,8 @@ self_test() {
     'BLOCKED_EMA_SELECTION_UNVERIFIED' '"ema_extraction": "UNVERIFIED"' \
     'importlib.metadata' \
     'vokra-sgmse-typed-role-manifest-v1' 'typed_bindings' 'bind_typed_manifest' \
+    'source_mapping_review' 'vokra-sgmse-source-mapping-review-v1' \
+    'BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN' 'prohibited_derivations' \
     'verdict=BLOCKED' 'blocker_exit=2' 'git status --porcelain'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
@@ -205,6 +207,8 @@ if ! grep -Fq '"blockers": []' "$work_dir/evidence/sgmse_voicebank_manifest.json
     "$work_dir/evidence/sgmse_voicebank_manifest.json" || die 'locked SpeechBrain dependency blocker is missing'
   grep -Fq '"status": "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE"' \
     "$work_dir/evidence/sgmse_voicebank_manifest.json" || die 'independent reference blocker is missing'
+  grep -Fq 'BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN' \
+    "$work_dir/evidence/sgmse_voicebank_manifest.json" || die 'exact tensor mapping blocker is missing'
   {
     echo 'runtime_status=INSPECTION_ONLY'
     echo 'parity_status=INSPECTION_ONLY'

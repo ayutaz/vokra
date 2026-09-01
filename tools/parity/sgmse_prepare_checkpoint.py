@@ -62,6 +62,12 @@ LOCKED_DISTRIBUTION_BLOCKER = "BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRA
 # safe-loaded checkpoint to look like a numerical validation.
 REFERENCE_BLOCKER = "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE"
 EMA_SELECTION_BLOCKER = "BLOCKED_EMA_SELECTION_UNVERIFIED"
+# A raw safe-loaded name/shape list does not identify which NCSN++ ModuleList
+# entry owns a tensor.  Keep this separate from the generic authenticated
+# manifest gate so the next VAST run has a machine-readable request for the
+# missing source construction proof.
+TENSOR_MAPPING_BLOCKER = "BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN"
+SOURCE_MAPPING_REVIEW_FORMAT = "vokra-sgmse-source-mapping-review-v1"
 TYPED_TENSOR_CONTRACT_FORMAT = "vokra-sgmse-typed-role-manifest-v1"
 # Filled only by a later commit after VAST reviews the real checkpoint.  The
 # inspector must not let a caller self-authorize rows and a matching digest.
@@ -643,6 +649,64 @@ def algorithm_source_inventory(source_dir: Path) -> tuple[dict[str, Any], list[s
     return result, blockers
 
 
+def source_mapping_review(
+    loaded: dict[str, Any], algorithm_source: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Describe the source proof still needed to derive all typed bindings.
+
+    The source inventory proves file identity and broad implementation roles,
+    but it is not a state-dict mapping.  In particular, a ModuleList ordinal or
+    a tensor-name prefix is not sufficient to bind a parameter to the native
+    graph.  This function therefore emits a review packet, never candidate
+    rows, until an owner has supplied a source-authenticated one-to-one route.
+    Keeping the packet in the inspection manifest makes the next VAST run
+    actionable without allowing a caller to self-authorize a digest.
+    """
+    role_files = algorithm_source.get("files_by_role")
+    ncsnpp_files = role_files.get("ncsnpp", []) if isinstance(role_files, dict) else []
+    safe_manifest = loaded.get("tensor_manifest")
+    tensor_names = sorted(safe_manifest) if isinstance(safe_manifest, dict) else []
+    review = {
+        "format": SOURCE_MAPPING_REVIEW_FORMAT,
+        "status": TENSOR_MAPPING_BLOCKER,
+        "method": "NOT_DERIVED",
+        "checkpoint_tensor_count": loaded.get("tensor_count"),
+        "checkpoint_tensor_names_sha256": hashlib.sha256(
+            "\n".join(tensor_names).encode("utf-8")
+        ).hexdigest()
+        if tensor_names
+        else None,
+        "candidate_ncsnpp_source_files": ncsnpp_files,
+        "typed_bindings": None,
+        "reviewed_manifest_sha256": REVIEWED_TENSOR_MANIFEST_SHA256,
+        "reason": (
+            "pinned source inventory identifies implementation files but does "
+            "not prove a one-to-one state_dict-to-NCSN++ role assignment"
+        ),
+        "required_evidence": [
+            "clean checkout at the pinned SGMSE revision and exact role-file hashes",
+            "source-executed NCSNpp ModuleList construction with every parameter path",
+            "strict state_dict load of the fixed checkpoint EMA selection",
+            "one-to-one rows covering every safe-loaded tensor name, dtype, and shape",
+            "owner-reviewed canonical role/name/dtype/shape digest compiled into Vokra",
+        ],
+        "prohibited_derivations": [
+            "tensor-name prefix or substring guesses",
+            "ModuleList ordinal-only assignment",
+            "historical 647-tensor pass-through list",
+            "self-stamped or self-referential digest",
+        ],
+    }
+    blockers = [
+        f"{TENSOR_MAPPING_BLOCKER}: source construction has not yielded a reviewed one-to-one role map"
+    ]
+    if not ncsnpp_files:
+        blockers.append(
+            f"{TENSOR_MAPPING_BLOCKER}: no authenticated NCSN++ source candidate was inventoried"
+        )
+    return review, blockers
+
+
 def companion_identity(companion_dir: Path) -> tuple[dict[str, Any], list[str]]:
     companions: dict[str, Any] = {}
     blockers: list[str] = []
@@ -753,6 +817,10 @@ def inspect(
             "safe_load_status": "BLOCKED_CHECKPOINT_IDENTITY",
             "unsafe_pickle_fallback": False,
         }
+    mapping_review, mapping_blockers = source_mapping_review(
+        loaded, algorithm_inventory
+    )
+    blockers.extend(mapping_blockers)
 
     manifest = {
         "format": "vokra-sgmse-voicebank-inspection-v1",
@@ -772,6 +840,7 @@ def inspect(
             # tensor list, including the historical 647-tensor list, cannot
             # be treated as a typed graph assignment.
             "typed_bindings": loaded.get("typed_bindings"),
+            "source_mapping_review": mapping_review,
         },
         "model_repository": MODEL_REPOSITORY,
         "model_revision": MODEL_REVISION,
@@ -869,6 +938,18 @@ def self_test() -> None:
     assert reference_blockers and all(REFERENCE_BLOCKER in item for item in reference_blockers)
     assert tensor_contract_status({"safe_load_status": "BLOCKED_UNSUPPORTED_OBJECTS"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
     assert EMA_SELECTION_BLOCKER == "BLOCKED_EMA_SELECTION_UNVERIFIED"
+    assert TENSOR_MAPPING_BLOCKER == "BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN"
+    mapping_review, mapping_blockers = source_mapping_review(
+        {"safe_load_status": "SAFE_LOADED", "tensor_count": 647,
+         "tensor_manifest": {"a": {}}},
+        {"files_by_role": {"ncsnpp": [{"path": "sgmse/backbones/ncsnpp_v2.py"}]}},
+    )
+    assert mapping_review["format"] == SOURCE_MAPPING_REVIEW_FORMAT
+    assert mapping_review["status"] == TENSOR_MAPPING_BLOCKER
+    assert mapping_review["typed_bindings"] is None
+    assert mapping_blockers == [
+        f"{TENSOR_MAPPING_BLOCKER}: source construction has not yielded a reviewed one-to-one role map"
+    ]
     required_roles = ["fourier_frequencies", "stage:0:input:0:weight"]
     typed_rows = [
         {"name": "source.frequency", "role": required_roles[0], "dtype": "torch.float32", "shape": [128]},
