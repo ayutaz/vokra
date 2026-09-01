@@ -30,6 +30,11 @@ from sgmse_dump_reference import (
     HYPERPARAMS_SHA256,
     MODEL_REPOSITORY,
     MODEL_REVISION,
+    PAD_SPEC_MARKERS,
+    PAD_SPEC_SEMANTICS,
+    PAD_SPEC_SOURCE_FILE,
+    PAD_SPEC_SOURCE_SHA256,
+    REFERENCE_FRAMES,
     REFERENCE_FORMAT,
     EMA_ROUTE_STATUS,
     SCORE_MODEL_CONFIG,
@@ -54,8 +59,8 @@ EXPECTED_ARTIFACTS = {
     "score_real",
     "score_imag",
 }
-EXPECTED_SHAPE = [1, 1, 256, 16]
-EXPECTED_COUNT = 4_096
+EXPECTED_SHAPE = [1, 1, 256, REFERENCE_FRAMES]
+EXPECTED_COUNT = 16_384
 EXPECTED_BYTES = EXPECTED_COUNT * 4
 EXPECTED_SOURCE_REPOSITORY = "https://github.com/sp-uhh/sgmse.git"
 EXPECTED_SPEECHBRAIN_REPOSITORY = "https://github.com/speechbrain/speechbrain.git"
@@ -64,7 +69,7 @@ EXPECTED_INPUT = {
     "sample_rate": 16_000,
     "n_fft": 510,
     "frequency_bins": 256,
-    "frames": 16,
+    "frames": REFERENCE_FRAMES,
     "forward_signature": "(x_t, y, t)",
 }
 
@@ -197,6 +202,27 @@ def verify_manifest(
         raise ValueError("completion source evidence is missing")
     if source.get("repository") != EXPECTED_SOURCE_REPOSITORY:
         raise ValueError("completion SGMSE source repository mismatch")
+    source_path = Path(source.get("path", ""))
+    pad_spec = source.get("pad_spec")
+    if (
+        not isinstance(pad_spec, dict)
+        or pad_spec.get("path") != PAD_SPEC_SOURCE_FILE
+        or pad_spec.get("sha256") != PAD_SPEC_SOURCE_SHA256
+        or pad_spec.get("semantics") != PAD_SPEC_SEMANTICS
+        or pad_spec.get("markers") != {marker: True for marker in PAD_SPEC_MARKERS}
+    ):
+        raise ValueError("completion pad_spec source evidence mismatch")
+    pad_spec_path = source_path / PAD_SPEC_SOURCE_FILE
+    if (
+        pad_spec_path.is_symlink()
+        or not pad_spec_path.is_file()
+        or sha256(pad_spec_path) != PAD_SPEC_SOURCE_SHA256
+        or any(
+            marker not in pad_spec_path.read_text(encoding="utf-8", errors="replace")
+            for marker in PAD_SPEC_MARKERS
+        )
+    ):
+        raise ValueError("completion pad_spec source is missing or tampered")
     if source.get("revision") != SOURCE_REVISION or source.get("clean") is not True:
         raise ValueError("completion SGMSE source identity mismatch")
     if source.get("license_spdx") != SOURCE_LICENSE_SPDX or source.get("license_sha256") != SOURCE_LICENSE_SHA256:
@@ -312,7 +338,6 @@ def verify_manifest(
     if inspection_path.is_symlink() or not inspection_path.is_file() or sha256(inspection_path) != inspection.get("sha256"):
         raise ValueError("completion inspection manifest is missing or tampered")
 
-    source_path = Path(source.get("path", ""))
     speechbrain_path = Path(speechbrain.get("path", ""))
     clean_revision(source_path, SOURCE_REVISION, "SGMSE source")
     clean_revision(speechbrain_path, SPEECHBRAIN_REVISION, "SpeechBrain source")
@@ -320,14 +345,16 @@ def verify_manifest(
 
 
 def self_test() -> None:
-    assert EXPECTED_COUNT == 4_096
-    assert EXPECTED_BYTES == 16_384
+    assert REFERENCE_FRAMES == 64
+    assert EXPECTED_SHAPE == [1, 1, 256, 64]
+    assert EXPECTED_COUNT == 16_384
+    assert EXPECTED_BYTES == 65_536
     assert EXPECTED_INPUT == {
         "seed": 20260901,
         "sample_rate": 16_000,
         "n_fft": 510,
         "frequency_bins": 256,
-        "frames": 16,
+        "frames": REFERENCE_FRAMES,
         "forward_signature": "(x_t, y, t)",
     }
     assert EXPECTED_SOURCE_REPOSITORY == "https://github.com/sp-uhh/sgmse.git"

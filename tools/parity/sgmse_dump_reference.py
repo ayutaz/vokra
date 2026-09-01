@@ -41,6 +41,16 @@ SOURCE_LICENSE_SHA256 = "8748956d2e5afe9dfc8311188b4119dacc7c5293b0561e7cca7a21c
 SPEECHBRAIN_REVISION = "2b3f4f44351fd08a627c4ab307de5c420351bc19"
 SPEECHBRAIN_LICENSE_SPDX = "apache-2.0"
 SPEECHBRAIN_LICENSE_SHA256 = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+PAD_SPEC_SOURCE_FILE = "sgmse/util/other.py"
+PAD_SPEC_SOURCE_SHA256 = "092efb6e7da82d11c0afa555e5b124dd950e1216237e1c165a3aea8d4551ffd0"
+PAD_SPEC_MARKERS = (
+    "def pad_spec",
+    "T = Y.size(3)",
+    "if T%64 !=0:",
+    "num_pad = 64-T%64",
+)
+PAD_SPEC_SEMANTICS = "pad_spec_pads_time_axis_to_a_multiple_of_64"
+REFERENCE_FRAMES = 64
 HYPERPARAMS_NAME = "hyperparams.yaml"
 HYPERPARAMS_SHA256 = "5ebd87c6257537c3997c134b279d85cd7bebccce0e6d3fc68f7a36f15096aa51"
 HYPERPARAMS_RAW = """sample_rate: 16000
@@ -433,6 +443,17 @@ def require_source_file(
     }
 
 
+def verify_pad_spec_source(algorithm_source: Path) -> dict[str, Any]:
+    evidence = require_source_file(
+        algorithm_source,
+        PAD_SPEC_SOURCE_FILE,
+        PAD_SPEC_SOURCE_SHA256,
+        PAD_SPEC_MARKERS,
+    )
+    evidence["semantics"] = PAD_SPEC_SEMANTICS
+    return evidence
+
+
 def verify_ema_route(
     hyperparams: Path,
     speechbrain_source: Path,
@@ -718,6 +739,7 @@ def _run_reference_into(
         hyperparams, speechbrain_source, loaded_manifest, inspection
     )
     algorithm_files = verify_algorithm_source(source, inspection)
+    pad_spec_file = verify_pad_spec_source(source)
     # Pin the CPU execution knobs before importing or invoking the upstream
     # model.  The fixture remains an x86/VAST reference, but its environment is
     # explicit enough to diagnose a future platform-dependent drift.
@@ -737,7 +759,9 @@ def _run_reference_into(
     ):
         raise ValueError("strict model load count differs from reviewed checkpoint evidence")
     frequency_bins = 510 // 2 + 1
-    frames = 16
+    # The pinned util/other.py pad_spec contract pads the time axis to a
+    # multiple of 64; 64 is the smallest source-authenticated fixture block.
+    frames = REFERENCE_FRAMES
     # The pinned NCSN++ route accepts complex [batch, channel, frequency,
     # frame] tensors.  The source ScoreModel/Backbone contract fixes one
     # complex channel; do not silently squeeze or broadcast this dimension.
@@ -826,6 +850,7 @@ def _run_reference_into(
             "license_spdx": SOURCE_LICENSE_SPDX,
             "license_sha256": SOURCE_LICENSE_SHA256,
             "files": algorithm_files,
+            "pad_spec": pad_spec_file,
         },
         "speechbrain_source": {
             **speechbrain_tree,
@@ -914,6 +939,11 @@ def self_test() -> None:
     assert SCORE_MODEL_CONFIG["c_out"] == "1"
     assert SCORE_MODEL_CONFIG["c_skip"] == "0"
     assert SCORE_MODEL_CONFIG["N"] == 30
+    assert REFERENCE_FRAMES == 64
+    assert PAD_SPEC_SOURCE_FILE == "sgmse/util/other.py"
+    assert PAD_SPEC_SOURCE_SHA256 == "092efb6e7da82d11c0afa555e5b124dd950e1216237e1c165a3aea8d4551ffd0"
+    assert PAD_SPEC_SEMANTICS == "pad_spec_pads_time_axis_to_a_multiple_of_64"
+    assert PAD_SPEC_MARKERS[-1] == "num_pad = 64-T%64"
     assert "reviewed x_t,y,t route" in inspect.getsource(_run_reference_into)
     assert "torch.load(weights_only=True)" in inspect.getsource(load_score_model)
     assert '"bytes": int(tensor.numel()) * 4' in inspect.getsource(_run_reference_into)
