@@ -256,7 +256,7 @@ reviewed_validation() {
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --output "$companion_path" "$COMPANION_URL"
   verify_git_blob "$companion_path" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE"
 
-  uv run --project "$PROJECT" --offline --no-sync --python 3.12 python "$PROJECT/prepare_checkpoint.py" \
+  VOKRA_REVIEWED_CONVERSION=1 uv run --project "$PROJECT" --offline --no-sync --python 3.12 python "$PROJECT/prepare_checkpoint.py" \
     --reviewed --input "$tflite_path" --raw-inventory "$inventory_path" \
     --name hey_jarvis --expected-sha256 "$MODEL_ARTIFACT_BYTES_SHA256" --output "$output_path"
   uv run --project "$REFERENCE_PROJECT" --offline --no-sync --python 3.12 python "$PROJECT/dump_reference.py" \
@@ -605,7 +605,7 @@ self_test() {
   fi
   [[ -f "$root/tools/parity/microwakeword-reference/inspect.py" ]] || { echo 'self-test FAIL: reference inspector missing' >&2; fail=1; }
   validation_body="$(sed -n '/^reviewed_validation()/,/^}/p' "$self")"
-  if ! grep -Fq -- "uv sync --project \"\$PROJECT\" --frozen" <<<"$validation_body" || ! grep -Fq -- "cargo test --locked -p vokra-kws-micro --test parity_microwakeword" <<<"$validation_body"; then
+  if ! grep -Fq -- "uv sync --project \"\$PROJECT\" --frozen" <<<"$validation_body" || ! grep -Fq -- "VOKRA_REVIEWED_CONVERSION=1 uv run --project \"\$PROJECT\"" <<<"$validation_body" || ! grep -Fq -- "cargo test --locked -p vokra-kws-micro --test parity_microwakeword" <<<"$validation_body"; then
     echo 'self-test FAIL: reviewed validation lacks frozen sync and Path C' >&2
     fail=1
   fi
