@@ -205,7 +205,7 @@ def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def load_dependency_evidence(path: Path) -> tuple[dict[str, Any], str]:
+def load_dependency_evidence(path: Path) -> tuple[dict[str, Any], str, bytes]:
     """Load one regular evidence file and return its bytes digest.
 
     This parser is stdlib-only and runs before NumPy/LiteRT imports. It is a
@@ -220,7 +220,7 @@ def load_dependency_evidence(path: Path) -> tuple[dict[str, Any], str]:
         raise SystemExit(f"invalid dependency evidence JSON: {error}") from error
     if not isinstance(value, dict):
         raise SystemExit("dependency evidence root must be a JSON object")
-    return value, hashlib.sha256(payload).hexdigest()
+    return value, hashlib.sha256(payload).hexdigest(), payload
 
 
 def _exact_keys(value: dict[str, Any], expected: tuple[str, ...], label: str) -> None:
@@ -646,7 +646,7 @@ def _synthetic_dependency_evidence() -> dict[str, Any]:
     }
 
 
-def require_reference_dependency_gate(dependency_evidence: dict[str, Any]) -> None:
+def require_reference_dependency_gate(dependency_evidence_bytes: bytes) -> None:
     """Refuse fixture generation until the isolated dependency audit is PASS."""
     inspector_path = Path(__file__).parent.parent / "microwakeword-reference" / "inspect.py"
     project_path = inspector_path.parent / "pyproject.toml"
@@ -659,7 +659,7 @@ def require_reference_dependency_gate(dependency_evidence: dict[str, Any]) -> No
     report = inspector.inspect_documents(
         project_path.read_bytes(),
         lock_path.read_bytes(),
-        dependency_evidence=dependency_evidence,
+        dependency_evidence=dependency_evidence_bytes,
     )
     if report.get("status") != "PASS" or not report.get("fixture_generation_permitted", False):
         raise SystemExit(
@@ -1275,7 +1275,7 @@ def self_test() -> int:
         require_regular_tflite(source)
         evidence_path = parent / "dependency-evidence.json"
         evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
-        loaded, evidence_sha256 = load_dependency_evidence(evidence_path)
+        loaded, evidence_sha256, _ = load_dependency_evidence(evidence_path)
         validate_dependency_evidence(loaded)
         assert len(evidence_sha256) == 64
         evidence_link = parent / "dependency-evidence-link.json"
@@ -1326,9 +1326,9 @@ def main() -> int:
     except SystemExit as error:
         ap.error(str(error))
     require_regular_tflite(args.tflite_path)
-    dependency_evidence, dependency_evidence_sha256 = load_dependency_evidence(args.dependency_evidence)
+    dependency_evidence, dependency_evidence_sha256, dependency_evidence_bytes = load_dependency_evidence(args.dependency_evidence)
     dependency_contract = validate_dependency_evidence(dependency_evidence)
-    require_reference_dependency_gate(dependency_evidence)
+    require_reference_dependency_gate(dependency_evidence_bytes)
     reference_environment = require_reference_runtime(dependency_contract["versions"])
     global np
     import numpy as np

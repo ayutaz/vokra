@@ -116,6 +116,31 @@ must use those sources and the applicable current skill.
 | **SBOM generator（first-party、`scripts/sbom/generate_spdx.py`）** | Apache 2.0（Vokra 本体） | SBOM (SPDX 2.3) 生成 | ○ (build-only) | M4-15。第三者 SBOM crate（cargo-sbom / cargo-cyclonedx 等）は不採用 — `cargo tree` + python3 標準ライブラリのみで生成し root Cargo.lock 不変（NFR-DS-02、ADR M4-15 §(b)）。成果物に入るのは生成された SPDX JSON のみ |
 | **coremltools 9.0 / NumPy 2.3.2 / gguf 0.17.1** | BSD-3-Clause / BSD-3-Clause family / MIT | `tools/coreml` の Whisper GGUF → `.mlpackage` 開発者向け offline 変換 | ○ (developer-only) | Apple `coremltools` と NumPy は一次 LICENSE が BSD-3-Clause、`gguf` は ggml-org/llama.cpp の MIT。`uv.lock` + Python 3.12 で pin。生成・検証時だけ使用し、runtime / root Cargo.lock / 配布 binary / `.mlmodelc` に Python package code は入らない。coremltools の protobuf 推移依存も offline converter 内だけで、FR-LD-05 runtime 禁止には非到達。Vokra は package を再配布しないため NOTICE 追記は不要。 |
 
+### microWakeWord LiteRT reference-only closure (2026-09-01)
+
+The following seven Python distributions are pinned only for the independent
+Linux x86_64 CPython 3.12 reference worker. Their code and native payloads are
+not copied into Vokra runtime, fixtures, GGUFs, or published artifacts;
+`publication_permitted=false` remains mandatory. The exact installed evidence
+packet was collected on VAST (`2b24695d106665b5cbc17357b1a43ff03ab75235d35e7d3ed03e5c7c7a68069d`);
+the small evidence JSON was copied for owner review, and no model artifact was
+copied. The worker lock/project identities are recorded by `inspect.py`. No
+NOTICE addition is required because no dependency code is redistributed.
+
+| Distribution | Reference-only license evidence | Policy boundary |
+|---|---|---|
+| `ai-edge-litert 2.1.5` | Apache-2.0; tag `v2.1.5`, commit `9d26e89d88ef8785b6a1e54ec41ac8add215a125`, LICENSE blob `261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64`; google_tensor compiler source carries an Apache header; no TERMS path in the selected wheel | Accept for reference execution only; 2.2.0 is explicitly rejected for restrictive TERMS_OF_USE/use-redistribution-benchmark conditions |
+| `backports-strenum 1.3.1` | MIT metadata/pyproject plus bundled PSF license; commit `9cb063cdc2d2e94229e7fc66c9a989379e1bff68`; LICENSE blob `f42f8adbed845d6a8c3cb07b12ffd186f6c23bc4` | Reference-only; not redistributed |
+| `flatbuffers 25.12.19` | Apache-2.0; commit `7e163021e59cca4f8e1e35a7c828b5c6b7915953`; LICENSE blob `d645695673349e3947e8e5ae42332d0ac3164cd7` | Reference-only; not redistributed |
+| `numpy 2.5.2` | Permissive metadata expression; native payload evidence includes OpenBLAS, GCC runtime `GPL-3.0-or-later WITH GCC-exception-3.1`, and libquadmath `LGPL-2.1-or-later`; commit `48fecee5453aa1d31e6b79dcb3969dc1a6d1a891`; LICENSE blob `f37a12cc4cccf83af4517809791777e71c1df2a9` | Accepted only as an unredistributed developer/reference dependency; package/native code enters no fixture, runtime, or distribution |
+| `protobuf 7.36.1` | BSD-3-Clause; upstream v36.1 commit `f377bfefc5e2cfab68b816903c25b23e091c439d`; LICENSE blob `19b305b00060a774a9180fb916c14b49edb2008f` | Reference-only; not a runtime Cargo dependency |
+| `tqdm 4.70.0` | `MPL-2.0 AND MIT` (not simplified); commit `96f2e60e4584cdab57a23602e27043d0465254ad`; LICENCE blob `194caf554f8f10ba4cac8a81b631a61d0d81f60d` | Reference-only; not redistributed |
+| `typing-extensions 4.16.0` | PSF-2.0; commit `f29cd28d8ed7642cafb1d18daf5aa41be6a5c0aa`; LICENSE blob `f26bcf4d2de6eb136e31006ca3ab447d5e488adf` | Reference-only; not redistributed |
+
+This record is evidence and policy context, not a §3.1 model sign-off. The
+fixture gate remains bound to the exact reviewed installed fingerprints and
+the dumper remains `NO_UPLOAD`.
+
 **未確認 / 要検討**:
 - **G2P（実装済、M0）**: 実 8 言語 G2P は依頼者作 MIT crate `piper-plus-g2p`（piper-plus repo 内）を **out-of-workspace の opt-in 統合 crate `integrations/vokra-piper-g2p`**（root workspace 非 member・独自 `Cargo.lock`・git `rev` pin）から呼び出して提供。`piper-plus-g2p` の非 `vokra-*` 推移依存（jpreprocess/regex/serde 等）は zero-dep runtime（NFR-DS-02）に入らず、`vokra_piper_plus::Phonemizer` trait 境界で注入。text→音声 JA/EN 実動、**eSpeak-NG (GPL-3.0) 不使用**。in-runtime Rust 化・`phonemizer-rs`/`phonikud` は将来検討
 - **RVC 系 F0 抽出**: RMVPE は固定 `yxlllc/RMVPE` E2E0 の native CPU/Metal 実装を進行中だが、同 repo の code/weight terms は未記載のため公開物は fail-closed。FCPE / CREPE は各行の監査結果に従う。runtime から Python を呼ばない。
