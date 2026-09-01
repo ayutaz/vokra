@@ -141,6 +141,25 @@ This record is evidence and policy context, not a §3.1 model sign-off. The
 fixture gate remains bound to the exact reviewed installed fingerprints and
 the dumper remains `NO_UPLOAD`.
 
+### SGMSE VoiceBank reference-only Python dependencies (2026-09-01)
+
+The pinned upstream SGMSE reference route imports `torch_ema` and
+`torch_pesq`. They are present only in the `tools/parity` Python environment
+used by the VAST reference worker; neither package, its transitive Python
+dependencies, nor native payloads are copied into Vokra runtime, fixtures,
+GGUFs, or published artifacts. No NOTICE addition is required.
+
+| Distribution | Reference-only license evidence | Policy boundary |
+|---|---|---|
+| `torch-ema 0.3` | MIT; PyPI wheel SHA-256 `823ad8da5c10bc1eebcec739cc3f521aa9573229fe04e5673c304d29f1433279`; upstream repository is MIT | VAST reference-only; not redistributed |
+| `torch-pesq 0.1.2` | MIT; PyPI wheel SHA-256 `6f3fa836f6517f86652332c67b653164c16a95867beb3095dd0392b814efda45`; upstream `audiolabs` repository is MIT | VAST reference-only; do not substitute the distinct `pesq` package; not redistributed |
+| `torchtyping 0.1.5` | Apache-2.0; PyPI wheel SHA-256 `429d76e16b08a2409226320565d557d4ba3d0d6f544db3e5dc4cf690ffa2a3bd` | Transitive reference-only dependency of `torch-pesq`; not redistributed |
+| `typeguard 2.13.3` | MIT; PyPI wheel SHA-256 `5e3e3be01e887e7eafae5af63d1f36c849aaa94e3a0112097312aabfa16284f1` | Transitive reference-only dependency of `torch-pesq`; not redistributed |
+
+The exact pins are recorded in `tools/parity/pyproject.toml` and
+`tools/parity/uv.lock`. This dependency addition does not alter the zero-dep
+runtime boundary or authorize model publication.
+
 **未確認 / 要検討**:
 - **G2P（実装済、M0）**: 実 8 言語 G2P は依頼者作 MIT crate `piper-plus-g2p`（piper-plus repo 内）を **out-of-workspace の opt-in 統合 crate `integrations/vokra-piper-g2p`**（root workspace 非 member・独自 `Cargo.lock`・git `rev` pin）から呼び出して提供。`piper-plus-g2p` の非 `vokra-*` 推移依存（jpreprocess/regex/serde 等）は zero-dep runtime（NFR-DS-02）に入らず、`vokra_piper_plus::Phonemizer` trait 境界で注入。text→音声 JA/EN 実動、**eSpeak-NG (GPL-3.0) 不使用**。in-runtime Rust 化・`phonemizer-rs`/`phonikud` は将来検討
 - **RVC 系 F0 抽出**: RMVPE は固定 `yxlllc/RMVPE` E2E0 の native CPU/Metal 実装を進行中だが、同 repo の code/weight terms は未記載のため公開物は fail-closed。FCPE / CREPE は各行の監査結果に従う。runtime から Python を呼ばない。

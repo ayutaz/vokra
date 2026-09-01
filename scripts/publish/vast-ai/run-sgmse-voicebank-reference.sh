@@ -44,6 +44,10 @@ self_test() {
       fail=1
     fi
   done
+  if ! grep -Fq -- 'command -v ninja' "$path"; then
+    log 'self-test FAIL: missing native ninja preflight'
+    fail=1
+  fi
   if grep -Fq -- "mkdir -p \"\$OUTPUT_DIR\"" "$path"; then
     log 'self-test FAIL: wrapper pre-created output directory'
     fail=1
@@ -88,6 +92,7 @@ fi
 
 [[ "$(uname -s)" == Linux ]] || die 'SGMSE reference work is VAST/Linux-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
+command -v ninja >/dev/null 2>&1 || die 'ninja is missing; run provision.sh first'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'

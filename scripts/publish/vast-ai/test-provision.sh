@@ -19,6 +19,8 @@ fail() {
 if grep -Eq '(^|[[:space:]])uv[[:space:]]+add([[:space:]]|$)|uv[[:space:]]+run[[:space:]]+--with' "$provision"; then
   fail "provision.sh still contains a mutating/dynamic uv dependency command"
 fi
+grep -Fq 'command -v ninja' "$provision" || fail "native build probe omits ninja"
+grep -Fq 'ninja-build' "$provision" || fail "Debian native build install omits ninja-build"
 
 fixture="$tmp_dir/checkout"
 fake_bin="$tmp_dir/bin"

@@ -85,6 +85,7 @@ have_repo()        { [[ -d "$VOKRA_ROOT/.git" ]]; }
 have_vokra_cli()   { [[ -x "$VOKRA_ROOT/target/release/vokra-cli" ]]; }
 have_native_build_tools() {
   command -v cmake >/dev/null 2>&1 \
+    && command -v ninja >/dev/null 2>&1 \
     && command -v make >/dev/null 2>&1 \
     && command -v cc >/dev/null 2>&1 \
     && command -v c++ >/dev/null 2>&1 \
@@ -127,22 +128,22 @@ harden_vast_docker_image() {
   # reruns idempotent and the postcondition fails closed before any model
   # snapshot can be requested.
   if have_native_build_tools; then
-    log "native build toolchain already present (cmake/make/cc/c++/g++)"
+    log "native build toolchain already present (cmake/ninja/make/cc/c++/g++)"
   else
-    log "native build toolchain incomplete — installing cmake, make, build-essential"
+    log "native build toolchain incomplete — installing cmake, ninja-build, make, build-essential"
     if ! apt-get update -qq; then
       log "ERROR: apt package index refresh failed; cannot build pinned native dependencies"
       return 1
     fi
-    if ! apt-get install -y cmake make build-essential; then
-      log "ERROR: cmake/build-essential installation failed; cannot build pinned native dependencies"
+    if ! apt-get install -y cmake ninja-build make build-essential; then
+      log "ERROR: cmake/ninja-build/build-essential installation failed; cannot build pinned native dependencies"
       return 1
     fi
     if ! have_native_build_tools; then
-      log "ERROR: cmake/make/cc/c++/g++ toolchain remains unavailable after apt install"
+      log "ERROR: cmake/ninja/make/cc/c++/g++ toolchain remains unavailable after apt install"
       return 1
     fi
-    log "native build toolchain ready (cmake/make/cc/c++/g++)"
+    log "native build toolchain ready (cmake/ninja/make/cc/c++/g++)"
   fi
 
   # Fix (A): remove HF mirror shim. Load-bearing: must fire before any
@@ -345,9 +346,9 @@ run_self_test() {
 
   cases=$((cases + 1))
   if have_native_build_tools; then
-    echo "  [ok]   native-build: cmake/make/cc/c++/g++ present"
+    echo "  [ok]   native-build: cmake/ninja/make/cc/c++/g++ present"
   else
-    echo "  [need] native-build: cmake/make/cc/c++/g++ incomplete (rerun as root on Debian/VAST)"
+    echo "  [need] native-build: cmake/ninja/make/cc/c++/g++ incomplete (rerun as root on Debian/VAST)"
   fi
 
   # ~/.bashrc marker probe
