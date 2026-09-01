@@ -20,19 +20,26 @@ pub const ARCH: &str = "owsm-v4-medium-1b";
 pub const NAME: &str = "OWSM v4 medium 1B";
 /// Fixed Hugging Face repository and revision authenticated by VAST.
 pub const HF_REPOSITORY: &str = "espnet/owsm_v4_medium_1B";
+/// Full-length immutable Hugging Face revision used by the inspected source tree.
 pub const HF_REVISION: &str = "e10985c8f1d592e905c24d2ac2b2c53e3feb24dc";
 /// Fixed ESPnet source revision authenticated by VAST.
 pub const SOURCE_REVISION: &str = "cccc29023d43a3f504e28df7d1324bb4eb6daedd";
 /// Original PyTorch checkpoint identity from the inspection packet.
 pub const CHECKPOINT_SHA256: &str =
     "b02d79f29a4daa31dd49ce145d9bb4cda0a1b68cdad91ae0af170ec3a4e92e09";
+/// Number of checkpoint tensors in the authenticated structural inventory.
 pub const CHECKPOINT_TENSOR_COUNT: usize = 1172;
+/// SHA-256 of the complete VAST inspection manifest JSON.
 pub const INSPECTION_MANIFEST_SHA256: &str =
     "82de20eea3cf3a247624c76cd8e108e562addda0c8582577515cf88abb3053d9";
+/// SHA-256 of the VAST inspection validation log.
 pub const INSPECTION_LOG_SHA256: &str =
     "4df29428ea8ce381311c5e407d937b6a517750f4edcbc88b8c606cdef82dc93b";
+/// SHA-256 of the fixed BPE sidecar evidence recorded by inspection.
 pub const BPE_SHA256: &str = "7ddb01f03dab493c18ab69391e98744c090f897890d8b529b30cae52a8d9eef4";
+/// SHA-256 of the fixed global-MVN statistics sidecar evidence.
 pub const STATS_SHA256: &str = "00c22dba27594df1d8f74a491b20c6e6e8c17e92159f81dfd634f98c098654";
+/// SHA-256 of the fixed 50,002-entry token-list sidecar evidence.
 pub const TOKEN_LIST_SHA256: &str =
     "e19396ec012b0294a11fe85c35e36a1d903bc83e60ea602ddf6cc59b7c0e92f9";
 
@@ -65,22 +72,39 @@ const KEY_INSPECTION_LOG_SHA256: &str = "vokra.owsm_v4_medium_1b.inspection_log_
 /// Fixed topology read from converter-stamped GGUF metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwsmV4Medium1bConfig {
+    /// Input audio sample rate in hertz; the authenticated value is 16,000.
     pub sample_rate: u32,
+    /// Short-time Fourier transform size in input samples; authenticated as 512.
     pub n_fft: u32,
+    /// Analysis-window length in input samples; authenticated as 400.
     pub win_length: u32,
+    /// Analysis-hop length in input samples; authenticated as 160.
     pub hop_length: u32,
+    /// Number of log-mel feature bands; authenticated as 128.
     pub n_mels: u32,
+    /// Number of Transformer encoder blocks; authenticated as 18.
     pub encoder_layers: u32,
+    /// Encoder hidden width; authenticated as 1,024.
     pub encoder_dim: u32,
+    /// Number of attention heads in each encoder block; authenticated as 16.
     pub encoder_heads: u32,
+    /// Encoder feed-forward intermediate width; authenticated as 4,096.
     pub encoder_ffn: u32,
+    /// Encoder convolutional GLU intermediate width; authenticated as 4,096.
     pub encoder_cgmlp_dim: u32,
+    /// Encoder convolutional GLU kernel width in feature steps; authenticated as 31.
     pub encoder_cgmlp_kernel: u32,
+    /// Encoder fusion kernel width in feature steps; authenticated as 31.
     pub encoder_merge_kernel: u32,
+    /// Number of Transformer decoder blocks; authenticated as 18.
     pub decoder_layers: u32,
+    /// Decoder hidden width; authenticated as 1,024.
     pub decoder_dim: u32,
+    /// Number of attention heads in each decoder block; authenticated as 16.
     pub decoder_heads: u32,
+    /// Decoder feed-forward intermediate width; authenticated as 4,096.
     pub decoder_ffn: u32,
+    /// Decoder/CTC vocabulary cardinality; authenticated as 50,002 entries.
     pub vocab_size: u32,
 }
 
@@ -318,6 +342,10 @@ pub struct OwsmV4Medium1bWeights {
 }
 
 impl OwsmV4Medium1bWeights {
+    /// Validates the exact 1,172-name F32 structural inventory in a GGUF file.
+    ///
+    /// This binds names, shapes, dtypes, and count only; it does not claim
+    /// independent per-payload hash or numerical-forward authentication.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let expected = expected_tensor_manifest();
         if expected.len() != CHECKPOINT_TENSOR_COUNT {
@@ -372,6 +400,7 @@ impl OwsmV4Medium1bWeights {
         })
     }
 
+    /// Returns the number of structurally validated tensors in this handle.
     pub fn tensor_count(&self) -> usize {
         self.tensor_names.len()
     }
@@ -385,12 +414,18 @@ pub struct OwsmV4Medium1b {
 }
 
 impl OwsmV4Medium1b {
+    /// Opens a GGUF path and applies the strict OWSM metadata/inventory gate.
+    ///
+    /// No PCM input is executed while binding; transcription remains blocked
+    /// until the independent VAST execution contract is complete.
     pub fn from_gguf(path: impl AsRef<Path>) -> Result<Self> {
         let file =
             GgufFile::open(path).map_err(|error| VokraError::ModelLoad(error.to_string()))?;
         Self::from_file(&file)
     }
 
+    /// Applies the strict OWSM license, metadata, name, shape, and dtype gates
+    /// to an already parsed GGUF without running model inference.
     pub fn from_file(file: &GgufFile) -> Result<Self> {
         vokra_core::check_weight_license(file, &vokra_core::CompliancePolicy::strict())?;
         let config = OwsmV4Medium1bConfig::from_gguf(file)?;
@@ -398,10 +433,12 @@ impl OwsmV4Medium1b {
         Ok(Self { config, weights })
     }
 
+    /// Returns the immutable, structurally authenticated OWSM configuration.
     pub fn config(&self) -> &OwsmV4Medium1bConfig {
         &self.config
     }
 
+    /// Returns the number of structurally authenticated tensor entries.
     pub fn tensor_count(&self) -> usize {
         self.weights.tensor_count()
     }
