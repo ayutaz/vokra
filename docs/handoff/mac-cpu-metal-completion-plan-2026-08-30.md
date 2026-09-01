@@ -355,9 +355,10 @@ The next source wave and its Linux regression closure are clean at exact commit
 `3001362ff1d0b21a0055f925bb95b0e8e407b52f`, which was pushed to open PR #79
 as the VAST-tested base for this continuation.  The local branch and the VAST
 checkout both matched that commit with clean worktrees.  Later focused fixes
-are recorded below and require a new exact-head remote closure before their
-push can be treated as equivalent evidence.  No checkpoint was converted or
-executed on the maintainer Mac.
+are recorded below.  They received a second exact-head remote closure at code
+commit `910e49581e2fd5f5b1b42de102ec5c73a31c5745`; this documentation-only
+follow-up does not alter that tested source tree.  No checkpoint was converted
+or executed on the maintainer Mac.
 
 VAST instance `49469101` ran the exact-head workspace gates.  The workspace
 test log contains 310 result groups and totals 7,796 passed, zero failed and 75
@@ -385,6 +386,30 @@ The official KaldiIO wheel SHA-256 is pinned, it has no `pkg_resources`
 reference, and the lock, dependency-audit, upstream-reference and worker
 self-tests are green without loading a model.  No advisory allow-list bypass
 was used.  GitHub dependency-review must still confirm the pushed commit.
+
+The second exact-head run used disposable VAST instance `49485395` with 64
+effective x86_64 CPU cores and 128,791 MiB RAM.  The checkout was clean and
+matched `910e4958`; Rust 1.98.0, cargo-deny 0.20.2 and cargo-audit 0.22.2 were
+recorded before execution.  The workspace log contains 310 result groups and
+totals 7,797 passed, zero failed and 75 ignored tests.  Formatting,
+zero-dependency, forbidden-symbol, strict workspace/all-target/all-feature
+Clippy, `cargo deny check licenses advisories bans` and `cargo audit` all
+exited zero.  A bounded credential-pattern scan passed before recovery.  The
+principal log SHA-256 values are:
+
+- workspace tests:
+  `f6758271b940220650fa19387c1cfb765b3c0043b843939456e4fe0a3ce5c046`
+- strict Clippy:
+  `a01f1bcc3bb146e6e3f2ee1e02791e3a956223fba5e9dadb93afd14d68222ddc`
+- cargo-deny:
+  `3cf80bdc410003f3945b935691d26b6bf07dcdf648ce80b242447c564ff1991d`
+- cargo-audit:
+  `4dcc8a000d5f63fd15912dc615eaa80db14ecd5951106e0883f029ea45fccfc9`
+
+The recovered 708-KB evidence directory is
+`/private/tmp/vokra-gates-910e4958/`; every copied log matches its remote
+checksum.  Instance `49485395` was then destroyed with its saved disk, and a
+read-back returned `instances: null`.
 
 Three additional evidence paths advanced without changing a public-artifact
 verdict:
@@ -430,9 +455,8 @@ commit closes two additional strict-Clippy findings without changing parity
 math: the existing test module moves after production items and the mixed-BF16
 seed keeps the identical numeric value with consistent hex casing.  Package-
 scoped Metal strict Clippy, the focused FireRed test, both registry/ABI shell
-gates, formatting and diff checks are green locally.  This commit and the
-preceding focused fixes still require a fresh exact-head VAST workspace run
-before push.
+gates, formatting and diff checks are green locally.  The exact code commit is
+covered by the second VAST workspace run above.
 
 The read-only live Hugging Face audit was repeated at `3001362f` after its ten
 offline unit tests passed.  It remains 194 public repositories, 193 GGUF
