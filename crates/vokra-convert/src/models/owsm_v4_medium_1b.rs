@@ -1,13 +1,29 @@
 //! ESPnet OWSM v4 medium 1B inspection-only conversion boundary.
 //!
 //! The release is a PyTorch composite (ESPnet frontend/encoder/decoder,
-//! SentencePiece, and global-MVN statistics). Until VAST authenticates the
-//! complete fixed tree and safe checkpoint evidence, arbitrary inputs must
-//! not become runtime-looking GGUF.
+//! SentencePiece, and global-MVN statistics). VAST has authenticated the
+//! fixed source tree, checkpoint container, and the 1,172-name/shape/dtype
+//! structural inventory. Per-tensor payload mapping/hashes and normalization,
+//! the GGUF writer contract, frontend/decoder/tokenizer/CTC-attention
+//! execution, independent real-weight parity, and dependency/dataset review
+//! remain incomplete, so arbitrary inputs must not become runtime-looking
+//! GGUF.
 
 use std::path::Path;
 
 use crate::ConvertError;
+
+/// Fixed source identities authenticated by the VAST inspection packet.
+pub const HF_REPOSITORY: &str = "espnet/owsm_v4_medium_1B";
+pub const HF_REVISION: &str = "e10985c8f1d592e905c24d2ac2b2c53e3feb24dc";
+pub const SOURCE_REVISION: &str = "cccc29023d43a3f504e28df7d1324bb4eb6daedd";
+pub const CHECKPOINT_SHA256: &str =
+    "b02d79f29a4daa31dd49ce145d9bb4cda0a1b68cdad91ae0af170ec3a4e92e09";
+pub const CHECKPOINT_TENSOR_COUNT: usize = 1172;
+pub const INSPECTION_MANIFEST_SHA256: &str =
+    "82de20eea3cf3a247624c76cd8e108e562addda0c8582577515cf88abb3053d9";
+pub const INSPECTION_LOG_SHA256: &str =
+    "4df29428ea8ce381311c5e407d937b6a517750f4edcbc88b8c606cdef82dc93b";
 
 /// Compatibility report retained for the existing converter dispatch.
 #[derive(Debug, Default)]
@@ -22,17 +38,17 @@ pub struct OwsmV4Medium1bReport {
     pub bf16_passthrough: usize,
 }
 
-/// Refuse arbitrary safetensors and license relabels until the VAST
-/// inspection contract is authenticated. This function never reads input or
+/// Refuse arbitrary safetensors and license relabels while the post-inspection
+/// conversion contract remains incomplete. This function never reads input or
 /// creates output.
 pub fn convert_owsm_v4_medium_1b_file(
     _input: &Path,
     _output: &Path,
     _license: Option<&str>,
 ) -> Result<OwsmV4Medium1bReport, ConvertError> {
-    Err(ConvertError::Usage(
-        "OWSM v4 medium 1B conversion is INSPECTION_ONLY until VAST authenticates the fixed HF tree, safe PyTorch checkpoint, exact ESPnet config, SentencePiece/BPE, MVN stats, source identities, and CC-BY-4.0 contract".to_owned(),
-    ))
+    Err(ConvertError::Usage(format!(
+        "OWSM v4 medium 1B conversion is INSPECTION_ONLY: VAST authenticated {HF_REPOSITORY}@{HF_REVISION}, ESPnet source {SOURCE_REVISION}, checkpoint sha256 {CHECKPOINT_SHA256}, {CHECKPOINT_TENSOR_COUNT} tensors in the structural inventory, inspection manifest {INSPECTION_MANIFEST_SHA256}, and log {INSPECTION_LOG_SHA256}; conversion remains blocked pending per-tensor payload mapping/hashes and normalization, the GGUF writer contract, frontend/decoder/tokenizer/CTC-attention execution, independent real-weight parity, and dependency/dataset review"
+    )))
 }
 
 #[cfg(test)]
@@ -63,5 +79,16 @@ mod tests {
             .to_string();
             assert!(error.contains("INSPECTION_ONLY"), "{error}");
         }
+    }
+
+    #[test]
+    fn reviewed_source_identity_is_pinned() {
+        assert_eq!(HF_REPOSITORY, "espnet/owsm_v4_medium_1B");
+        assert_eq!(HF_REVISION.len(), 40);
+        assert_eq!(SOURCE_REVISION.len(), 40);
+        assert_eq!(CHECKPOINT_SHA256.len(), 64);
+        assert_eq!(INSPECTION_MANIFEST_SHA256.len(), 64);
+        assert_eq!(INSPECTION_LOG_SHA256.len(), 64);
+        assert_eq!(CHECKPOINT_TENSOR_COUNT, 1172);
     }
 }

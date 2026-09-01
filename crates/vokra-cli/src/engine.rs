@@ -19,6 +19,7 @@ use vokra_models::distil_whisper::DistilWhisperAsr;
 use vokra_models::hubert::HubertCtc;
 use vokra_models::kotoba_whisper::KotobaWhisperAsr;
 use vokra_models::moonshine::Moonshine;
+use vokra_models::owsm_v4_medium_1b::OwsmV4Medium1b;
 use vokra_models::parakeet::ParakeetAsr;
 use vokra_models::parakeet_ctc::ParakeetCtcAsr;
 use vokra_models::piper_plus::PiperPlusTts;
@@ -775,6 +776,8 @@ const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
 const ARCH_PARAKEET_TDT_1_1B: &str = "parakeet-tdt-1_1b";
 /// NVIDIA Parakeet-CTC-1.1B FastConformer + CTC ASR.
 const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
+/// ESPnet OWSM v4 medium 1B strict manifest binder (forward pending parity).
+const ARCH_OWSM_V4_MEDIUM_1B: &str = "owsm-v4-medium-1b";
 /// NVIDIA Nemotron-3.5-ASR-Streaming-0.6B causal FastConformer + RNN-T.
 const ARCH_NEMOTRON_ASR: &str = "nemotron_asr_streaming";
 /// StepFun omniASR-CTC-1B waveform-to-token transcription.
@@ -2242,6 +2245,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| {
             vokra_models::canary_qwen::CanaryQwenAsr::from_gguf(g).map(|_| ())
         }),
+    },
+    BoundArch {
+        arch: ARCH_OWSM_V4_MEDIUM_1B,
+        module: "vokra_models::owsm_v4_medium_1b",
+        entry: "OwsmV4Medium1b::from_gguf → transcribe (NotImplemented until VAST parity)",
+        probe: Some(|g: &GgufFile| OwsmV4Medium1b::from_file(g).map(|_| ())),
     },
     // `distil-whisper` and `kotoba-whisper` used to sit here as
     // `LoudPartialForward`. Both were false — each binder's `transcribe`

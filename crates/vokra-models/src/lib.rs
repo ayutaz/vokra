@@ -300,6 +300,11 @@ pub mod parakeet;
 // the encoder body, vokra_ops::ctc_decode for greedy / beam CTC decoding)
 // rather than duplicating.
 pub mod parakeet_ctc;
+// Wave D (2026-09-01): strict GGUF manifest binder for ESPnet OWSM v4
+// medium 1B. The fixed 1,172-tensor inventory and source provenance are
+// authenticated; frontend/decoder forward remains explicit NotImplemented
+// until an independent CPU reference/parity packet is available.
+pub mod owsm_v4_medium_1b;
 /// Native ReazonSpeech NeMo v2 Japanese long-form FastConformer + RNN-T ASR.
 pub mod reazonspeech_nemo_v2;
 // SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B — 1600+ language

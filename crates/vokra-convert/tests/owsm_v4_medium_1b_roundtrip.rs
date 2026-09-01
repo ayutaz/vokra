@@ -16,6 +16,8 @@ fn arbitrary_input_is_refused_and_output_is_not_created() {
             .unwrap_err()
             .to_string();
     assert!(error.contains("INSPECTION_ONLY"), "{error}");
+    assert!(error.contains("e10985c8f1d592e905c24d2ac2b2c53e3feb24dc"));
+    assert!(error.contains("1172 tensors"));
     assert!(!output.exists());
 }
 
