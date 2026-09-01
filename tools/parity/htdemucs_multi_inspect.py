@@ -198,12 +198,29 @@ def safe_globals(filename: str) -> list[Any]:
 
 def source_allows_safe_deserialization(source: dict[str, Any]) -> bool:
     """Bind the restricted-unpickler allowlist to the reviewed source role."""
+    role_blobs = source.get("role_blobs") if isinstance(source, dict) else None
     return (
-        source.get("status") == "CLEAN"
+        isinstance(source, dict)
+        and "status" not in source
+        and source.get("worktree_status") == "CLEAN"
         and source.get("revision") == UPSTREAM_REVISION
-        and source.get("role_blobs", {}).get(SAFE_GLOBAL_ALLOWLIST_SOURCE)
+        and isinstance(role_blobs, dict)
+        and role_blobs.get(SAFE_GLOBAL_ALLOWLIST_SOURCE)
         == SOURCE_ROLE_BLOBS[SAFE_GLOBAL_ALLOWLIST_SOURCE]
     )
+
+
+def aggregate_safe_load_status(source: dict[str, Any], members: dict[str, Any]) -> str:
+    """Summarize restricted loading only for the exact five-member contract."""
+    expected_ids = list(MEMBERS)
+    if not source_allows_safe_deserialization(source) or list(members) != expected_ids:
+        return "BLOCKED"
+    if any(
+        not isinstance(member, dict) or member.get("safe_load_status") != "SAFE_LOADED"
+        for member in members.values()
+    ):
+        return "BLOCKED"
+    return "SAFE_LOADED"
 
 
 def scan_unsafe_globals(path: Path, expected: frozenset[str]) -> list[str]:
@@ -701,20 +718,45 @@ def self_test() -> None:
         sha256 = lambda _path: "e57c48e6" + "0" * 56
         assert inspect_member(unsupported, unsupported_response)["safe_load_status"] == "BLOCKED_STATIC_GLOBALS"
         sha256 = real_sha256
-    assert source_allows_safe_deserialization(
-        {
-            "status": "CLEAN",
-            "revision": UPSTREAM_REVISION,
-            "role_blobs": {SAFE_GLOBAL_ALLOWLIST_SOURCE: SOURCE_ROLE_BLOBS[SAFE_GLOBAL_ALLOWLIST_SOURCE]},
-        }
-    )
-    assert not source_allows_safe_deserialization(
-        {
-            "status": "CLEAN",
-            "revision": UPSTREAM_REVISION,
-            "role_blobs": {SAFE_GLOBAL_ALLOWLIST_SOURCE: "0" * 40},
-        }
-    )
+    valid_source = {
+        "repository": UPSTREAM_URL,
+        "revision": UPSTREAM_REVISION,
+        "worktree_status": "CLEAN",
+        "role_blobs": {SAFE_GLOBAL_ALLOWLIST_SOURCE: SOURCE_ROLE_BLOBS[SAFE_GLOBAL_ALLOWLIST_SOURCE]},
+    }
+    assert source_allows_safe_deserialization(valid_source)
+    # ``source_inventory`` emits ``worktree_status``.  A legacy/fabricated
+    # packet carrying only the old ``status`` field must never unlock the
+    # restricted unpickler.
+    legacy_status = dict(valid_source)
+    legacy_status.pop("worktree_status")
+    legacy_status["status"] = "CLEAN"
+    assert not source_allows_safe_deserialization(legacy_status)
+    with_status = dict(valid_source)
+    with_status["status"] = "CLEAN"
+    assert not source_allows_safe_deserialization(with_status)
+    mismatched_revision = dict(valid_source)
+    mismatched_revision["revision"] = "0" * 40
+    assert not source_allows_safe_deserialization(mismatched_revision)
+    mismatched_blob = dict(valid_source)
+    mismatched_blob["role_blobs"] = {SAFE_GLOBAL_ALLOWLIST_SOURCE: "0" * 40}
+    assert not source_allows_safe_deserialization(mismatched_blob)
+    mismatched_worktree = dict(valid_source)
+    mismatched_worktree["worktree_status"] = "DIRTY"
+    assert not source_allows_safe_deserialization(mismatched_worktree)
+    safe_members = {
+        model_id: {"safe_load_status": "SAFE_LOADED"} for model_id in MEMBERS
+    }
+    assert aggregate_safe_load_status(valid_source, safe_members) == "SAFE_LOADED"
+    blocked_member = dict(safe_members)
+    blocked_member[next(iter(MEMBERS))] = {"safe_load_status": "BLOCKED_WEIGHTS_ONLY"}
+    assert aggregate_safe_load_status(valid_source, blocked_member) == "BLOCKED"
+    missing_member = dict(safe_members)
+    missing_member.pop(next(iter(MEMBERS)))
+    assert aggregate_safe_load_status(valid_source, missing_member) == "BLOCKED"
+    reordered_members = {model_id: safe_members[model_id] for model_id in reversed(list(MEMBERS))}
+    assert aggregate_safe_load_status(valid_source, reordered_members) == "BLOCKED"
+    assert aggregate_safe_load_status(mismatched_revision, safe_members) == "BLOCKED"
     with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-error-") as directory:
         error_evidence = Path(directory)
         write_error_manifest(error_evidence, RuntimeError("self-test error"))
@@ -835,7 +877,7 @@ def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence
         "variant_contracts": VARIANT_CONTRACTS,
         "member_order": {"htdemucs_ft": FT_MODELS, "htdemucs_6s": SIX_MODELS},
         "members": members,
-        "safe_load_status": "BLOCKED",
+        "safe_load_status": aggregate_safe_load_status(source, members),
         "blockers": sorted(set(blockers + [
             FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER,
             "native/runtime implementation is not available",
