@@ -104,6 +104,18 @@ const BOUND_ARCHES: &[BoundArch] = &[
                 self.assertEqual(coverage.metal_code, "blocked-by-cpu")
                 self.assertIn(reason_fragment, coverage.reason)
 
+    def test_owsm_manifest_binder_stays_cpu_partial_until_forward_exists(self):
+        record = audit.RepoRecord(
+            "vokra/owsm-v4-medium-1b",
+            "abc",
+            ("owsm-v4-medium-1b.gguf",),
+            "owsm_v4_medium_1b",
+        )
+        coverage = audit.classify(record, {"owsm_v4_medium_1b"}, set())
+        self.assertEqual(coverage.cpu_code, "partial")
+        self.assertEqual(coverage.metal_code, "blocked-by-cpu")
+        self.assertIn("released-artifact CPU forward is incomplete", coverage.reason)
+
     def test_classification_never_turns_partial_into_metal(self):
         routed = {
             "audiobox-aesthetics",

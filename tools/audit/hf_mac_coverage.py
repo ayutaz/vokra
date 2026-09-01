@@ -47,6 +47,9 @@ ROUTED_PARTIAL_ARCHES = {
     "magnet_small_10secs",
     "magnet_medium_30secs",
     "melodyflow_t24_30secs",
+    # OWSM's public binder is manifest-only: PCM frontend/decoder/tokenizer
+    # execution remains NotImplemented, so CPU and Metal must stay partial.
+    "owsm_v4_medium_1b",
     # The public GGUF contains only the MIT Whisper tower + projector.  Those
     # learned stages are native CPU/Metal, but the separately licensed Llama
     # companion/tokenizer/chat route is not yet a complete CLI engine.
