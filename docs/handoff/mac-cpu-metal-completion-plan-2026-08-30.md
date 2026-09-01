@@ -468,18 +468,46 @@ Scaleway-only finish: all 63 CPU-open public rows still require the applicable
 source, artifact, dependency, publication and VAST legs before Apple hardware
 can provide their final Metal verdicts.
 
-Instance `49469101` now reports `cur_state=stopped`,
-`intended_status=stopped`, `actual_status=exited`.  The complete 404-KB
-independent-reference directory and all exact-head gate logs are hash-matched
-under `/private/tmp`, so its 200 GB remote state is no longer the sole copy and
-the instance is selected for destruction rather than indefinite retention.
-Instance `49447911` (`vokra-mac-coverage-5283966f`, 150 GB) is also redundant.
-Permanent destruction of both is pending the owner's explicit confirmation of
-the two instance IDs and loss of their saved data; the broad cleanup request
-was not accepted by the destructive-action safeguard.
-Retained packet instances `49168183` and `49261078` remain stopped for their
-recorded Scaleway transfer only.  Unrelated instance `49466383` is outside this
-campaign and must not be touched.
+The subsequent source wave records the unresolved Qwen3-ASR license/dependency
+evidence without promoting it, hardens SGMSE inspection evidence, makes YuE
+XCodec Mini reject duplicate JSON identities during parsing, proves that the
+WeSpeaker approval gate precedes work-directory creation, and adds an OWSM v4
+medium 1B strict structural binder.  The OWSM binder matches all 1,172
+authenticated checkpoint tensor names, shapes and F32 dtypes, but deliberately
+returns `NotImplemented` for PCM transcription.  Per-tensor payload mapping,
+the native frontend/decoder/tokenizer/CTC-attention route and independent
+real-weight parity therefore remain open; this is not a CPU or Metal PASS.
+
+The first exact-bundle regression at code `b61f1d38` passed all 310 workspace
+result groups with 7,801 passed, zero failed and 75 ignored tests, then strict
+Clippy found 30 missing-doc findings on the new OWSM public surface.  No lint
+allowance was added.  Commit `63f137b9` documents the actual units, authenticated
+values and structural-only boundary.  Disposable VAST instance `49497103`
+then checked out that exact clean commit from bundle SHA-256
+`530fb6ac62be48ed4a64d4b5ba9005e25f065895285daa297d3a0531f9aab53c`
+and passed formatting, zero-dependency, forbidden-symbol, architecture
+handshake, Rust public-API, workspace tests, strict all-target/all-feature
+Clippy, `cargo deny check licenses advisories bans` and `cargo audit`.  The
+workspace totals remained 7,801 passed, zero failed and 75 ignored across 310
+result groups.  The four principal log SHA-256 values are:
+
+- workspace tests:
+  `ebf45c458bf671f931fafa7876c2926155d7cb443fbde0baaefec7749b8324ca`
+- strict Clippy:
+  `e29ac9019f2f3564c91e8828751b9e344caa8c80a1c2eb8027d8bf897b727353`
+- cargo-deny:
+  `3cf80bdc410003f3945b935691d26b6bf07dcdf648ce80b242447c564ff1991d`
+- cargo-audit:
+  `4dcc8a000d5f63fd15912dc615eaa80db14ecd5951106e0883f029ea45fccfc9`
+
+The recovered evidence is under
+`/private/tmp/vokra-gates-63f137b9.eYlt4B/`; its bounded credential-pattern
+scan passed.  Instance `49497103` was destroyed after recovery.  With the
+owner's exact destructive confirmation, redundant instances `49447911`,
+`49469101`, `49494353` and `49495037` and their saved disks were also destroyed;
+all four read back absent.  Only stopped packet instances `49168183` and
+`49261078` remain for their recorded direct Scaleway transfer.  Unrelated
+running instance `49466383` is outside this campaign and was not touched.
 
 ## Execution order
 
