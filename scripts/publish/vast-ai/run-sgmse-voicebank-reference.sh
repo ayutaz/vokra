@@ -20,12 +20,14 @@ die() { log "ERROR: $*"; return 2; }
 usage() {
   cat <<'EOF'
 usage: run-sgmse-voicebank-reference.sh [--inspection-dir <dir>] [--output-dir <absent-dir>]
+       [--native-score-dir <dir>]
        run-sgmse-voicebank-reference.sh --self-test
 
 VAST/Linux-only independent reference for the fixed SGMSE VoiceBank model.
 The pinned source is imported directly, the checkpoint uses weights_only=True,
 and deterministic score tensors are written under output-dir. No GGUF or
-publication action is performed.
+publication action is performed. When native-score-dir is supplied, its
+score_real.f32 and score_imag.f32 are compared against the completed fixture.
 EOF
 }
 
@@ -40,6 +42,7 @@ self_test() {
     'SOURCE_ROUTE_VERIFIED_STRICT_LOAD' 'weights_only=True' 'strict=True' \
     'score_model_ema.ckpt' 'NO_UPLOAD' 'fixture payload retained' \
     'run.log' 'torch_deterministic_algorithms' 'inspection-manifest' \
+    'native-score-dir' \
     'git status --porcelain' 'output-dir must be absent'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
@@ -81,11 +84,13 @@ self_test() {
 }
 
 self=0
+NATIVE_SCORE_DIR=""
 while (($#)); do
   case "$1" in
     --self-test) self=1; shift ;;
     --inspection-dir) (($# >= 2)) || die '--inspection-dir requires a path'; INSPECTION_DIR="$2"; shift 2 ;;
     --output-dir) (($# >= 2)) || die '--output-dir requires a path'; OUTPUT_DIR="$2"; shift 2 ;;
+    --native-score-dir) (($# >= 2)) || die '--native-score-dir requires a path'; NATIVE_SCORE_DIR="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -93,6 +98,7 @@ done
 if (( self )); then
   [[ "$INSPECTION_DIR" == "/workspace/vokra-sgmse-voicebank-inspection" ]] || die '--self-test accepts no other arguments'
   [[ "$OUTPUT_DIR" == "/workspace/vokra-sgmse-voicebank-reference" ]] || die '--self-test accepts no other arguments'
+  [[ -z "$NATIVE_SCORE_DIR" ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
@@ -141,4 +147,14 @@ UV_CACHE_DIR="$UV_CACHE_DIR_SGMSE" uv run --frozen --no-sync --project "$PARITY_
 verify_rc=$?
 set -e
 (( verify_rc == 0 )) || die "completion verifier failed: rc=$verify_rc"
+if [[ -n "$NATIVE_SCORE_DIR" ]]; then
+  set +e
+  UV_CACHE_DIR="$UV_CACHE_DIR_SGMSE" uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python \
+    "$NATIVE_PARITY_TOOL" \
+    --reference-dir "$OUTPUT_DIR" \
+    --native-dir "$NATIVE_SCORE_DIR"
+  parity_rc=$?
+  set -e
+  (( parity_rc == 0 )) || die "native score parity failed: rc=$parity_rc"
+fi
 log "reference complete and verified: evidence=$OUTPUT_DIR; fixture payload retained for native parity; no conversion or upload performed"
