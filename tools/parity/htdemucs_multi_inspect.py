@@ -39,6 +39,19 @@ MEMBERS = {
     "04573f0d": "04573f0d-f3cf25b2.th",
     "5c90dfd2": "5c90dfd2-34c22ccb.th",
 }
+MEMBER_IDS = {filename: model_id for model_id, filename in MEMBERS.items()}
+# Manager-reviewed from exact-head VAST evidence at
+# 8b63dea72350a45a4c831d661ad707a9c664b565; evidence summary SHA-256
+# a3f1f6bf92bc8ad5a631699d64eda365d9c7b6195e32e58aa404f94ef1b62553 and HT
+# manifest file SHA-256 365179b0127f2ae579b767b4b30e2ef225eb88037068bfef6a20fa1305b3533c.
+# These are evidence-recorded identities, not upstream-published checksums.
+EXPECTED_MEMBER_SHA256 = {
+    MEMBERS["f7e0c4bc"]: "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066",
+    MEMBERS["d12395a8"]: "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6",
+    MEMBERS["92cfc3b6"]: "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2",
+    MEMBERS["04573f0d"]: "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49",
+    MEMBERS["5c90dfd2"]: "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd",
+}
 FT_MODELS = ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"]
 SIX_MODELS = ["5c90dfd2"]
 SOURCE_ROLE_BLOBS = {
@@ -70,6 +83,7 @@ VARIANT_CONTRACTS = {
 }
 KNOWN_HEAD_BYTES = {"f7e0c4bc-ba3fe64a.th": 84_141_271, "5c90dfd2-34c22ccb.th": 54_996_327}
 FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER = "FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER"
+FULL_WEIGHT_DIGESTS_AUTHENTICATED = "FULL_WEIGHT_DIGESTS_AUTHENTICATED"
 EVIDENCE_FILENAME = "htdemucs_multi_manifest.json"
 PACKAGE_KEYS = ("klass", "args", "kwargs", "state", "training_args", "metrics")
 LEGACY_MAPPING_PATH = "training_args.dset.test_mapping"
@@ -480,26 +494,39 @@ def expected_member_url(filename: str) -> str:
     return f"{WEIGHT_ROOT}/{filename}"
 
 
-def inspect_member(path: Path, response: dict[str, Any] | None) -> dict[str, Any]:
+def inspect_member(path: Path, response: dict[str, Any] | None, expected_model_id: str) -> dict[str, Any]:
     digest = sha256(path)
     stem = path.name.removesuffix(".th")
     parts = stem.split("-", 1)
     prefix_check = len(parts) == 2 and digest.startswith(parts[1][:8])
+    canonical_model_id = MEMBER_IDS.get(path.name)
+    model_id_check = expected_model_id == canonical_model_id
+    expected_digest = EXPECTED_MEMBER_SHA256.get(path.name)
+    exact_digest_check = expected_digest is not None and digest == expected_digest
     result: dict[str, Any] = {
         "filename": path.name,
         "sha256": digest,
+        "expected_sha256": expected_digest,
+        "sha256_exact_match": exact_digest_check,
         "sha256_filename_prefix_match": prefix_check,
+        "model_id": expected_model_id,
         "source_url": expected_member_url(path.name),
     }
     blockers: list[str] = []
     if not prefix_check:
         blockers.append("filename SHA-256 prefix mismatch")
+    if not model_id_check:
+        blockers.append("member id mismatch")
+    if not exact_digest_check:
+        blockers.append("authenticated member SHA-256 digest mismatch")
     if not isinstance(response, dict):
         blockers.append("missing response identity packet")
     else:
         expected_url = expected_member_url(path.name)
         if response.get("filename") != path.name:
             blockers.append("response filename mismatch")
+        if response.get("model_id") != canonical_model_id:
+            blockers.append("response member id mismatch")
         for key in ("requested_url", "effective_url"):
             value = response.get(key)
             parsed = urlsplit(value) if isinstance(value, str) else None
@@ -516,7 +543,7 @@ def inspect_member(path: Path, response: dict[str, Any] | None) -> dict[str, Any
             blockers.append("response cache validator type mismatch")
         if any(response.get(key) is not None and not isinstance(response.get(key), str) for key in ("x_amz_version_id", "x_amz_meta_s3cmd_attrs")):
             blockers.append("response S3 evidence type mismatch")
-        if set(response) != {"filename", "requested_url", "effective_url", "status", "content_length", "etag", "last_modified", "x_amz_version_id", "x_amz_meta_s3cmd_attrs", "bytes", "sha256"}:
+        if set(response) != {"filename", "model_id", "requested_url", "effective_url", "status", "content_length", "etag", "last_modified", "x_amz_version_id", "x_amz_meta_s3cmd_attrs", "bytes", "sha256"}:
             blockers.append("response identity packet schema mismatch")
     if blockers:
         result["safe_load_status"] = "BLOCKED_RESPONSE_IDENTITY"
@@ -572,6 +599,8 @@ def inspect_member(path: Path, response: dict[str, Any] | None) -> dict[str, Any
 def self_test() -> None:
     global sha256
     assert all(re.fullmatch(r"[0-9a-f]{40}", blob) for blob in SOURCE_ROLE_BLOBS.values())
+    assert list(EXPECTED_MEMBER_SHA256) == MEMBER_ORDER
+    assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in EXPECTED_MEMBER_SHA256.values())
     assert parse_config("models: ['f7e0c4bc']\nweights: [[1.]]\n", ["f7e0c4bc"])["weights"] == [[1.0]]
     assert parse_config(
         "models: ['f7e0c4bc', 'd12395a8']\nweights: [[1., 0.], [0., 1.]]\n",
@@ -677,6 +706,7 @@ def self_test() -> None:
         sha256 = lambda _path: "0" * 64
         valid_response = {
             "filename": path.name,
+            "model_id": MEMBER_IDS[path.name],
             "requested_url": expected_member_url(path.name),
             "effective_url": expected_member_url(path.name),
             "status": 200,
@@ -688,35 +718,45 @@ def self_test() -> None:
             "bytes": path.stat().st_size,
             "sha256": "0" * 64,
         }
-        mismatch = inspect_member(path, valid_response)
+        mismatch = inspect_member(path, valid_response, MEMBER_IDS[path.name])
         assert mismatch["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
         assert "filename SHA-256 prefix mismatch" in mismatch["response_blockers"]
-        sha256 = lambda _path: "ba3fe64a" + "0" * 56
-        valid_response["sha256"] = "ba3fe64a" + "0" * 56
-        result = inspect_member(path, valid_response)
+        sha256 = lambda _path: EXPECTED_MEMBER_SHA256[_path.name]
+        valid_response["sha256"] = EXPECTED_MEMBER_SHA256[path.name]
+        result = inspect_member(path, valid_response, MEMBER_IDS[path.name])
+        assert result["sha256_exact_match"] is True
         assert result["safe_load_status"] == "BLOCKED_STATIC_GLOBALS"
+        assert inspect_member(path, valid_response, "d12395a8")["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        prefix_only = dict(valid_response)
+        prefix_only["sha256"] = "ba3fe64a" + "0" * 56
+        sha256 = lambda _path: prefix_only["sha256"]
+        assert inspect_member(path, prefix_only, MEMBER_IDS[path.name])["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        sha256 = lambda _path: EXPECTED_MEMBER_SHA256[_path.name]
         spoof = dict(valid_response)
         spoof["sha256"] = "0" * 64
-        assert inspect_member(path, spoof)["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        assert inspect_member(path, spoof, MEMBER_IDS[path.name])["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
         spoof = dict(valid_response)
         spoof["effective_url"] = expected_member_url(path.name) + "?spoof=1"
-        assert inspect_member(path, spoof)["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        assert inspect_member(path, spoof, MEMBER_IDS[path.name])["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
         spoof = dict(valid_response)
         spoof["status"] = 206
-        assert inspect_member(path, spoof)["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        assert inspect_member(path, spoof, MEMBER_IDS[path.name])["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
         spoof = dict(valid_response)
         spoof["content_length"] = path.stat().st_size + 1
-        assert inspect_member(path, spoof)["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        assert inspect_member(path, spoof, MEMBER_IDS[path.name])["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        spoof = dict(valid_response)
+        spoof["model_id"] = "d12395a8"
+        assert inspect_member(path, spoof, MEMBER_IDS[path.name])["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
         spoof = dict(valid_response)
         spoof["x_amz_version_id"] = 123
-        assert inspect_member(path, spoof)["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
-        assert inspect_member(path, None)["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        assert inspect_member(path, spoof, MEMBER_IDS[path.name])["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
+        assert inspect_member(path, None, MEMBER_IDS[path.name])["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
         unsupported = Path(directory) / MEMBERS["d12395a8"]
         torch.save({"unsupported": object()}, unsupported)
         unsupported_response = dict(valid_response)
-        unsupported_response.update({"filename": unsupported.name, "requested_url": expected_member_url(unsupported.name), "effective_url": expected_member_url(unsupported.name), "content_length": unsupported.stat().st_size, "bytes": unsupported.stat().st_size, "sha256": "e57c48e6" + "0" * 56})
-        sha256 = lambda _path: "e57c48e6" + "0" * 56
-        assert inspect_member(unsupported, unsupported_response)["safe_load_status"] == "BLOCKED_STATIC_GLOBALS"
+        unsupported_response.update({"filename": unsupported.name, "model_id": MEMBER_IDS[unsupported.name], "requested_url": expected_member_url(unsupported.name), "effective_url": expected_member_url(unsupported.name), "content_length": unsupported.stat().st_size, "bytes": unsupported.stat().st_size, "sha256": EXPECTED_MEMBER_SHA256[unsupported.name]})
+        sha256 = lambda _path: EXPECTED_MEMBER_SHA256[_path.name]
+        assert inspect_member(unsupported, unsupported_response, MEMBER_IDS[unsupported.name])["safe_load_status"] == "BLOCKED_STATIC_GLOBALS"
         sha256 = real_sha256
     valid_source = {
         "repository": UPSTREAM_URL,
@@ -829,7 +869,7 @@ def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence
             blockers.append(f"missing member {path}")
             continue
         if source_allows_safe_deserialization(source):
-            result = inspect_member(path, responses.get(filename))
+            result = inspect_member(path, responses.get(filename), signature)
         else:
             # Never deserialize an untrusted checkpoint.  The static global
             # list is meaningful only when the exact reviewed source role is
@@ -857,6 +897,18 @@ def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence
         if result.get("safe_load_status") != "SAFE_LOADED":
             blockers.append(f"{filename}: {result.get('safe_load_status')}")
 
+    all_exact_member_digests = list(members) == list(MEMBERS) and all(
+        isinstance(member := members.get(model_id), dict)
+        and member.get("model_id") == model_id
+        and member.get("filename") == filename
+        and member.get("source_url") == expected_member_url(filename)
+        and member.get("expected_sha256") == EXPECTED_MEMBER_SHA256[filename]
+        and member.get("sha256") == EXPECTED_MEMBER_SHA256[filename]
+        and member.get("sha256_exact_match") is True
+        for model_id, filename in MEMBERS.items()
+    )
+    if not all_exact_member_digests:
+        blockers.append(FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER)
     evidence.mkdir(parents=True, exist_ok=True)
     payload = {
         "format": "vokra-htdemucs-multi-inspection-v1",
@@ -878,8 +930,12 @@ def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence
         "member_order": {"htdemucs_ft": FT_MODELS, "htdemucs_6s": SIX_MODELS},
         "members": members,
         "safe_load_status": aggregate_safe_load_status(source, members),
+        "weight_digest_status": (
+            FULL_WEIGHT_DIGESTS_AUTHENTICATED
+            if all_exact_member_digests
+            else FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER
+        ),
         "blockers": sorted(set(blockers + [
-            FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER,
             "native/runtime implementation is not available",
             "dependency license audit is unreviewed",
             "weight license/provenance audit is unreviewed",
@@ -891,7 +947,7 @@ def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence
         "parity_status": "NOT_RUN",
         "publication": "NO_UPLOAD",
         "source_license": source.get("license", "BLOCKED"),
-        "weight_provenance": "OBSERVED_DIGESTS_ONLY_UNREVIEWED",
+        "weight_provenance": "AUTHENTICATED_MEMBER_DIGESTS_ONLY_UNREVIEWED_LICENSE_AND_DATASET",
     }
     (evidence / EVIDENCE_FILENAME).write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -916,6 +972,7 @@ def write_error_manifest(evidence: Path, error: Exception) -> None:
         "metal_status": "BLOCKED_BY_CPU",
         "parity_status": "NOT_RUN",
         "publication": "NO_UPLOAD",
+        "weight_digest_status": FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER,
         "error": str(error),
         "blockers": ["inspection error; source/weights are not authenticated", FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER],
     }

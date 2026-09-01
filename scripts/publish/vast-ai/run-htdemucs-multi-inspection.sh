@@ -2,8 +2,9 @@
 # VAST/Linux-only HT-Demucs ensemble inspection.  This worker downloads only
 # the five official registry members and pinned source configs, attempts safe
 # loading, and never converts, uploads, or publishes a product artifact.
-# A sha256_filename_prefix_match mismatch is a hard blocker; a matching weak
-# prefix never clears FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER.
+# Every member is bound to its exact model id, URL, response identity, and
+# authenticated full SHA-256 digest.  A filename prefix is retained as a
+# diagnostic only and never substitutes for the full digest contract.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +53,9 @@ self_test() {
     'htdemucs_multi_inspect.py' 'INSPECTION_ONLY' 'NOT_IMPLEMENTED' 'UNSUPPORTED' 'BLOCKED_BY_CPU' 'NOT_RUN' 'NO_UPLOAD' \
     'git status --porcelain' 'htdemucs_multi_inspect.py --self-test' \
     'response-packet' 'x-amz-version-id' 'x-amz-meta-s3cmd-attrs' \
-    'sha256_filename_prefix_match' 'FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER' \
+    'sha256_filename_prefix_match' 'sha256_exact_match' \
+    'FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER' 'FULL_WEIGHT_DIGESTS_AUTHENTICATED' \
+    'expected_sha256' 'response member id mismatch' \
     'inspection_status' 'COMPLETE' 'ERROR' 'variant_contracts' 'flattened 2,132-tensor' \
     'safe_global_allowlist' 'BLOCKED_SOURCE_ALLOWLIST' 'verdict=BLOCKED' 'blocker_exit=2'; do
     if ! grep -Fq -- "$token" "$path"; then
@@ -159,6 +162,13 @@ members = [
     "04573f0d-f3cf25b2.th",
     "5c90dfd2-34c22ccb.th",
 ]
+member_ids = {
+    "f7e0c4bc-ba3fe64a.th": "f7e0c4bc",
+    "d12395a8-e57c48e6.th": "d12395a8",
+    "92cfc3b6-ef3bcb9c.th": "92cfc3b6",
+    "04573f0d-f3cf25b2.th": "04573f0d",
+    "5c90dfd2-34c22ccb.th": "5c90dfd2",
+}
 rows = {}
 for member in members:
     meta = (response_dir / f"{member}.meta").read_text(encoding="utf-8").strip().split("\t")
@@ -181,6 +191,7 @@ for member in members:
             digest.update(chunk)
     rows[member] = {
         "filename": member,
+        "model_id": member_ids[member],
         "requested_url": f"https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/{member}",
         "effective_url": effective,
         "status": status,
@@ -227,8 +238,26 @@ for key, expected in required.items():
 if manifest.get("inspection_status") == "ERROR" or manifest.get("collection_status") == "FAILED":
     raise SystemExit("inspection error was treated as complete")
 blockers = manifest.get("blockers", [])
-if "FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER" not in blockers:
-    raise SystemExit("full weight digest blocker is missing")
+if manifest.get("weight_digest_status") != "FULL_WEIGHT_DIGESTS_AUTHENTICATED":
+    raise SystemExit(f"full weight digest authentication missing: {manifest.get('weight_digest_status')!r}")
+if "FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER" in blockers:
+    raise SystemExit("full weight digest blocker remained after exact authentication")
+expected_digests = {
+    "f7e0c4bc": ("f7e0c4bc-ba3fe64a.th", "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066"),
+    "d12395a8": ("d12395a8-e57c48e6.th", "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6"),
+    "92cfc3b6": ("92cfc3b6-ef3bcb9c.th", "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2"),
+    "04573f0d": ("04573f0d-f3cf25b2.th", "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49"),
+    "5c90dfd2": ("5c90dfd2-34c22ccb.th", "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd"),
+}
+members = manifest.get("members")
+if not isinstance(members, dict) or list(members) != list(expected_digests):
+    raise SystemExit("member digest manifest order/set mismatch")
+for model_id, (filename, digest) in expected_digests.items():
+    row = members.get(model_id)
+    if not isinstance(row, dict) or row.get("filename") != filename or row.get("model_id") != model_id:
+        raise SystemExit(f"member identity mismatch: {model_id}")
+    if row.get("sha256") != digest or row.get("expected_sha256") != digest or row.get("sha256_exact_match") is not True:
+        raise SystemExit(f"member exact digest mismatch: {model_id}")
 contracts = manifest.get("variant_contracts")
 expected_contracts = {
     "htdemucs_ft": {
@@ -252,7 +281,7 @@ PY
   echo 'cpu_status=UNSUPPORTED'
   echo 'metal_status=BLOCKED_BY_CPU'
   echo 'parity_status=NOT_RUN'
-  echo 'weight_digest_status=FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER'
+  echo 'weight_digest_status=FULL_WEIGHT_DIGESTS_AUTHENTICATED'
   echo 'verdict=BLOCKED'
   echo 'blocker_exit=2'
   echo 'native_blocker=see htdemucs_multi_manifest.json blockers and per-member safe-load status'
