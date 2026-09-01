@@ -41,13 +41,13 @@ def sha256(path: Path) -> str:
 
 
 def parse_manifest(path: Path) -> dict[str, Any]:
-    duplicate: list[str] = []
-
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in items:
             if key in result:
-                duplicate.append(key)
+                # Reject during object construction so a duplicate nested
+                # identity can never be observed as a last-wins value.
+                raise ValueError(f"duplicate JSON keys: {key}")
             result[key] = value
         return result
 
@@ -55,7 +55,7 @@ def parse_manifest(path: Path) -> dict[str, Any]:
         manifest = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"manifest is malformed: {exc}") from exc
-    if duplicate or not isinstance(manifest, dict) or set(manifest) != KEYS:
+    if not isinstance(manifest, dict) or set(manifest) != KEYS:
         raise ValueError("manifest key schema is not exact")
     return manifest
 

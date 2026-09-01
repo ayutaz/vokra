@@ -55,16 +55,17 @@ def sha256(data: bytes) -> str: return hashlib.sha256(data).hexdigest()
 def canonical(value: Any) -> str: return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
 def load_json(path: Path | str) -> Any:
     text = path.read_text(encoding="utf-8") if isinstance(path, Path) else path
-    duplicates: list[str] = []
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in items:
-            if key in result: duplicates.append(key)
+            if key in result:
+                # Reject while the parser is still visiting this object.  In
+                # particular, never construct a last-wins approval/manifest
+                # value before the caller's controlled gate path sees it.
+                raise ValueError(f"duplicate JSON keys: {key}")
             result[key] = value
         return result
-    value = json.loads(text, object_pairs_hook=pairs)
-    if duplicates: raise ValueError("duplicate JSON keys: " + ", ".join(sorted(set(duplicates))))
-    return value
+    return json.loads(text, object_pairs_hook=pairs)
 def unresolved(value: Any) -> bool:
     return value is None or not isinstance(value, str) or re.sub(r"\s+", "_", value.strip().casefold()) in PLACEHOLDERS
 def rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
