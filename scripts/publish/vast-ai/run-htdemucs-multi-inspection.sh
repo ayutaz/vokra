@@ -53,7 +53,8 @@ self_test() {
     'git status --porcelain' 'htdemucs_multi_inspect.py --self-test' \
     'response-packet' 'x-amz-version-id' 'x-amz-meta-s3cmd-attrs' \
     'sha256_filename_prefix_match' 'FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER' \
-    'inspection_status' 'COMPLETE' 'ERROR' 'verdict=BLOCKED' 'blocker_exit=2'; do
+    'inspection_status' 'COMPLETE' 'ERROR' 'variant_contracts' 'flattened 2,132-tensor' \
+    'safe_global_allowlist' 'BLOCKED_SOURCE_ALLOWLIST' 'verdict=BLOCKED' 'blocker_exit=2'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
@@ -228,6 +229,23 @@ if manifest.get("inspection_status") == "ERROR" or manifest.get("collection_stat
 blockers = manifest.get("blockers", [])
 if "FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER" not in blockers:
     raise SystemExit("full weight digest blocker is missing")
+contracts = manifest.get("variant_contracts")
+expected_contracts = {
+    "htdemucs_ft": {
+        "member_ids": ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"],
+        "source_count": 4,
+        "weights": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        "weight_semantics": "DECLARED_IDENTITY_MATRIX",
+    },
+    "htdemucs_6s": {
+        "member_ids": ["5c90dfd2"],
+        "source_count": 6,
+        "weights": [[1.0]],
+        "weight_semantics": "DERIVED_SINGLE_MEMBER_IDENTITY",
+    },
+}
+if contracts != expected_contracts:
+    raise SystemExit("variant member/matrix contract drifted")
 PY
 {
   echo 'runtime_status=NOT_IMPLEMENTED'

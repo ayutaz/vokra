@@ -52,7 +52,22 @@ SOURCE_ROLE_BLOBS = {
     "demucs/remote/htdemucs_ft.yaml": "ba5c69c272770f5e5db3dd5fcda75b94ba523250",
     "demucs/remote/htdemucs_6s.yaml": "651a0fa536038a3e6d650f7b2bcc0b50ff7a4be9",
 }
+SAFE_GLOBAL_ALLOWLIST_SOURCE = "demucs/htdemucs.py"
 MEMBER_ORDER = [MEMBERS[prefix] for prefix in ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d", "5c90dfd2"]]
+VARIANT_CONTRACTS = {
+    "htdemucs_ft": {
+        "member_ids": FT_MODELS,
+        "source_count": 4,
+        "weights": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        "weight_semantics": "DECLARED_IDENTITY_MATRIX",
+    },
+    "htdemucs_6s": {
+        "member_ids": SIX_MODELS,
+        "source_count": 6,
+        "weights": [[1.0]],
+        "weight_semantics": "DERIVED_SINGLE_MEMBER_IDENTITY",
+    },
+}
 KNOWN_HEAD_BYTES = {"f7e0c4bc-ba3fe64a.th": 84_141_271, "5c90dfd2-34c22ccb.th": 54_996_327}
 FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER = "FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER"
 EVIDENCE_FILENAME = "htdemucs_multi_manifest.json"
@@ -127,6 +142,26 @@ def json_load_unique(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
 
 
+def require_exact_weight_directory(path: Path) -> Path:
+    """Require the five named upstream members and reject flattened extras."""
+    if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+        raise ValueError("weights-dir must be an absolute non-symlink directory")
+    resolved = path.resolve(strict=True)
+    if resolved != path:
+        raise ValueError("weights-dir must be canonical")
+    entries = sorted(path.iterdir(), key=lambda item: item.name)
+    expected = sorted(MEMBER_ORDER)
+    if [item.name for item in entries] != expected:
+        raise ValueError(
+            "weights-dir must contain exactly the five pinned member files; "
+            "historical flattened 2,132-tensor artifacts and arbitrary inputs are rejected"
+        )
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_file() or entry.resolve(strict=True) != entry:
+            raise ValueError(f"weight member is not a regular canonical file: {entry.name}")
+    return resolved
+
+
 def expected_unsafe_globals(filename: str) -> frozenset[str]:
     try:
         return EXPECTED_UNSAFE_GLOBALS[filename]
@@ -159,6 +194,16 @@ def safe_globals(filename: str) -> list[Any]:
             ]
         )
     return values
+
+
+def source_allows_safe_deserialization(source: dict[str, Any]) -> bool:
+    """Bind the restricted-unpickler allowlist to the reviewed source role."""
+    return (
+        source.get("status") == "CLEAN"
+        and source.get("revision") == UPSTREAM_REVISION
+        and source.get("role_blobs", {}).get(SAFE_GLOBAL_ALLOWLIST_SOURCE)
+        == SOURCE_ROLE_BLOBS[SAFE_GLOBAL_ALLOWLIST_SOURCE]
+    )
 
 
 def scan_unsafe_globals(path: Path, expected: frozenset[str]) -> list[str]:
@@ -373,6 +418,7 @@ def source_inventory(source: Path) -> dict[str, Any]:
         "worktree_status": "CLEAN",
         "license": {"spdx": "MIT", "path": "LICENSE", "bytes": license_path.stat().st_size, "sha256": sha256(license_path)},
         "roles": roles,
+        "role_blobs": {item["path"]: item["git_blob_sha1"] for item in roles},
     }
 
 
@@ -655,6 +701,20 @@ def self_test() -> None:
         sha256 = lambda _path: "e57c48e6" + "0" * 56
         assert inspect_member(unsupported, unsupported_response)["safe_load_status"] == "BLOCKED_STATIC_GLOBALS"
         sha256 = real_sha256
+    assert source_allows_safe_deserialization(
+        {
+            "status": "CLEAN",
+            "revision": UPSTREAM_REVISION,
+            "role_blobs": {SAFE_GLOBAL_ALLOWLIST_SOURCE: SOURCE_ROLE_BLOBS[SAFE_GLOBAL_ALLOWLIST_SOURCE]},
+        }
+    )
+    assert not source_allows_safe_deserialization(
+        {
+            "status": "CLEAN",
+            "revision": UPSTREAM_REVISION,
+            "role_blobs": {SAFE_GLOBAL_ALLOWLIST_SOURCE: "0" * 40},
+        }
+    )
     with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-error-") as directory:
         error_evidence = Path(directory)
         write_error_manifest(error_evidence, RuntimeError("self-test error"))
@@ -663,11 +723,27 @@ def self_test() -> None:
         assert error_manifest["inspection_status"] == "ERROR"
         assert error_manifest["collection_status"] == "FAILED"
         assert error_manifest["publication"] == "NO_UPLOAD"
+    with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-weights-") as directory:
+        weight_dir = Path(directory).resolve(strict=True)
+        for filename in MEMBER_ORDER:
+            (weight_dir / filename).write_bytes(b"member")
+        assert require_exact_weight_directory(weight_dir) == weight_dir
+        (weight_dir / "flattened-2132-tensors.safetensors").write_bytes(b"legacy")
+        try:
+            require_exact_weight_directory(weight_dir)
+        except ValueError as error:
+            assert "flattened" in str(error)
+        else:
+            raise AssertionError("flattened historical artifact was accepted")
 
 
 def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence: Path) -> int:
     configs: dict[str, Any] = {}
     blockers: list[str] = []
+    try:
+        require_exact_weight_directory(weights_dir)
+    except (OSError, ValueError) as error:
+        blockers.append(f"weights directory identity: {error}")
     try:
         source = source_inventory(source_dir)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
@@ -710,7 +786,18 @@ def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence
         if not path.is_file():
             blockers.append(f"missing member {path}")
             continue
-        result = inspect_member(path, responses.get(filename))
+        if source_allows_safe_deserialization(source):
+            result = inspect_member(path, responses.get(filename))
+        else:
+            # Never deserialize an untrusted checkpoint.  The static global
+            # list is meaningful only when the exact reviewed source role is
+            # present; a source checkout failure is therefore a hard gate.
+            result = {
+                "filename": filename,
+                "source_url": expected_member_url(filename),
+                "safe_load_status": "BLOCKED_SOURCE_ALLOWLIST",
+                "safe_load_error": "restricted allowlist is not bound to the exact pinned source role",
+            }
         result["model_id"] = signature
         if filename in KNOWN_HEAD_BYTES:
             result["known_head_bytes"] = KNOWN_HEAD_BYTES[filename]
@@ -738,8 +825,14 @@ def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence
         "upstream_url": UPSTREAM_URL,
         "upstream_revision": UPSTREAM_REVISION,
         "source": source,
+        "safe_global_allowlist": {
+            "source_role": SAFE_GLOBAL_ALLOWLIST_SOURCE,
+            "source_role_git_blob_sha1": SOURCE_ROLE_BLOBS[SAFE_GLOBAL_ALLOWLIST_SOURCE],
+            "status": "BOUND" if source_allows_safe_deserialization(source) else "BLOCKED",
+        },
         "weight_root": WEIGHT_ROOT,
         "configs": configs,
+        "variant_contracts": VARIANT_CONTRACTS,
         "member_order": {"htdemucs_ft": FT_MODELS, "htdemucs_6s": SIX_MODELS},
         "members": members,
         "safe_load_status": "BLOCKED",

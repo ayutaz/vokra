@@ -14,9 +14,11 @@
 //! flatten or accept those files. The VAST inspector first authenticates the
 //! official ensemble contract without enabling an unsafe pickle fallback.
 //!
-//! Product GGUF output is disabled while the live 2,132-tensor bag's ensemble
-//! contract is unauthenticated. Inspection records member manifests, source
-//! hashes, and the official ordering/weight matrix only.
+//! Product GGUF output is disabled while the live member tensor manifests,
+//! weight terms, and dependency/source review remain unauthenticated.
+//! Inspection records member manifests, source hashes, and the official
+//! ordering/weight matrix only. A historical flattened 2,132-tensor bag is
+//! never treated as an ensemble.
 //!
 //! # License
 //!
@@ -47,9 +49,11 @@
 //!
 //! # Wiring status
 //!
-//! This is an inspection-only boundary; product conversion is disabled until
-//! the exact ensemble manifest is audited. The former pass-through skeleton
-//! is intentionally not a runtime contract.
+//! This module exposes the source-config structural contract so a later binder
+//! cannot accidentally reorder members or flatten the ensemble. Product
+//! conversion remains disabled until every member tensor manifest, weight
+//! license/provenance, and dependency/source review is complete. The former
+//! pass-through skeleton is intentionally not a runtime contract.
 //!
 //! A native Hybrid Transformer forward and product converter remain
 //! follow-up work, deferred to owner sign-off (see
@@ -58,6 +62,100 @@
 use std::path::Path;
 
 use crate::ConvertError;
+
+/// Exact source member ordering in `htdemucs_ft.yaml`, as recorded by the
+/// pinned upstream configuration. This is metadata only; it does not
+/// authenticate or load any checkpoint bytes.
+pub const HTDEMUCS_FT_MEMBER_IDS: &[&str] = &["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"];
+
+/// Exact member ordering in `htdemucs_6s.yaml`, as recorded by the pinned
+/// upstream configuration. The six-source model is one member, not a
+/// flattened or four-member ensemble.
+pub const HTDEMUCS_6S_MEMBER_IDS: &[&str] = &["5c90dfd2"];
+
+/// The two source-config variants that are proven by the pinned upstream
+/// files. No other member set is accepted by the structural contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtdemucsMultiVariant {
+    /// Four fine-tuned members combined with the declared 4x4 identity matrix.
+    FineTuned4,
+    /// One six-source member with the derived 1x1 identity matrix.
+    SixSource,
+}
+
+impl HtdemucsMultiVariant {
+    /// Returns the exact upstream configuration filename.
+    #[must_use]
+    pub const fn config_filename(self) -> &'static str {
+        match self {
+            Self::FineTuned4 => "htdemucs_ft.yaml",
+            Self::SixSource => "htdemucs_6s.yaml",
+        }
+    }
+
+    /// Returns the exact member IDs in upstream order.
+    #[must_use]
+    pub const fn member_ids(self) -> &'static [&'static str] {
+        match self {
+            Self::FineTuned4 => HTDEMUCS_FT_MEMBER_IDS,
+            Self::SixSource => HTDEMUCS_6S_MEMBER_IDS,
+        }
+    }
+
+    /// Returns the source count declared by the upstream model variant.
+    #[must_use]
+    pub const fn source_count(self) -> usize {
+        match self {
+            Self::FineTuned4 => 4,
+            Self::SixSource => 6,
+        }
+    }
+
+    /// Returns the row-major ensemble matrix and its dimensions.
+    ///
+    /// The matrix values are copied from the pinned YAML configuration: the
+    /// fine-tuned variant declares a 4x4 identity, while the single 6-source
+    /// member derives a 1x1 identity. No averaging or implicit reweighting is
+    /// allowed here.
+    #[must_use]
+    pub const fn ensemble_matrix(self) -> (&'static [f32], usize, usize) {
+        const FT: [f32; 16] = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        const SIX: [f32; 1] = [1.0];
+        match self {
+            Self::FineTuned4 => (&FT, 4, 4),
+            Self::SixSource => (&SIX, 1, 1),
+        }
+    }
+}
+
+/// Validates an ensemble member list and matrix against a pinned source
+/// configuration. This is deliberately a structural check only: it does not
+/// claim that checkpoint bytes, licenses, tensor roles, or numerical parity
+/// have been authenticated.
+pub fn validate_htdemucs_multi_structure(
+    variant: HtdemucsMultiVariant,
+    member_ids: &[&str],
+    matrix: &[f32],
+    matrix_rows: usize,
+    matrix_columns: usize,
+) -> Result<(), ConvertError> {
+    if member_ids != variant.member_ids() {
+        return Err(ConvertError::Usage(format!(
+            "HT-Demucs multi {} member order differs from pinned upstream configuration",
+            variant.config_filename()
+        )));
+    }
+    let (expected, rows, columns) = variant.ensemble_matrix();
+    if matrix_rows != rows || matrix_columns != columns || matrix != expected {
+        return Err(ConvertError::Usage(format!(
+            "HT-Demucs multi {} ensemble matrix differs from pinned upstream configuration",
+            variant.config_filename()
+        )));
+    }
+    Ok(())
+}
 
 /// Outcome of an HT-Demucs Multi conversion.
 ///
@@ -104,6 +202,62 @@ mod tests {
         .to_string();
         assert!(error.contains("INSPECTION_ONLY"), "{error}");
         assert!(error.contains("ensemble"), "{error}");
+    }
+
+    #[test]
+    fn source_configs_have_distinct_strict_member_contracts() {
+        let (matrix, rows, columns) = HtdemucsMultiVariant::FineTuned4.ensemble_matrix();
+        validate_htdemucs_multi_structure(
+            HtdemucsMultiVariant::FineTuned4,
+            HTDEMUCS_FT_MEMBER_IDS,
+            matrix,
+            rows,
+            columns,
+        )
+        .expect("pinned fine-tuned contract");
+
+        let (matrix, rows, columns) = HtdemucsMultiVariant::SixSource.ensemble_matrix();
+        validate_htdemucs_multi_structure(
+            HtdemucsMultiVariant::SixSource,
+            HTDEMUCS_6S_MEMBER_IDS,
+            matrix,
+            rows,
+            columns,
+        )
+        .expect("pinned six-source contract");
+        assert_ne!(
+            HtdemucsMultiVariant::FineTuned4.member_ids(),
+            HtdemucsMultiVariant::SixSource.member_ids()
+        );
+        assert_eq!(HtdemucsMultiVariant::FineTuned4.source_count(), 4);
+        assert_eq!(HtdemucsMultiVariant::SixSource.source_count(), 6);
+    }
+
+    #[test]
+    fn structure_rejects_reordered_or_flattened_members() {
+        let (matrix, rows, columns) = HtdemucsMultiVariant::FineTuned4.ensemble_matrix();
+        let mut reordered = HTDEMUCS_FT_MEMBER_IDS.to_vec();
+        reordered.swap(0, 1);
+        assert!(
+            validate_htdemucs_multi_structure(
+                HtdemucsMultiVariant::FineTuned4,
+                &reordered,
+                matrix,
+                rows,
+                columns,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_htdemucs_multi_structure(
+                HtdemucsMultiVariant::SixSource,
+                &["flattened-2132-tensors"],
+                &[1.0],
+                1,
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]

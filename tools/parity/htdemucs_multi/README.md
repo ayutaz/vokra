@@ -16,6 +16,14 @@ members and their complete SHA-256 values are copied from the authenticated
 inspection manifest. The manifest remains `INSPECTION_ONLY` and
 `NO_UPLOAD`; a digest match does not grant weight redistribution rights.
 
+The source-config contract is intentionally structural and exact: `htdemucs_ft`
+uses the ordered members `f7e0c4bc`, `d12395a8`, `92cfc3b6`, `04573f0d` with
+the declared 4x4 identity matrix; `htdemucs_6s` uses only `5c90dfd2` with the
+derived 1x1 identity matrix and six-source output width. A single flattened
+2,132-tensor artifact, an extra member, a reordered member, or an arbitrary
+weight file is rejected. This contract does not authenticate tensor roles or
+enable a Vokra runtime forward.
+
 The exact upstream `requirements_minimal.txt` bytes are retained as
 `upstream_requirements_minimal.snapshot` for authenticated provenance only;
 it is not an active Python manifest. The curated active `pyproject.toml`
@@ -70,6 +78,19 @@ The dumper then calls the pinned upstream `convert_audio` for the fixed
 operator fixture, preserving its 16 kHz mono to 44.1 kHz stereo numerics
 without a local resampler mirror.
 
-Until the lock and license audit are complete, every normal worker path exits
-2 before network, dependency resolution, checkpoint acquisition, or model
-execution.
+The inspection worker is intentionally a separate, no-upload evidence path:
+after its host and directory preflight it may acquire exactly the five fixed
+checkpoint URLs and scan them while the dependency/reference gate remains
+blocked. It does not import or execute the upstream model, convert a product,
+or upload anything. The report-only reference worker is the path that invokes
+the dependency/license and source gates before dependency resolution,
+checkpoint use, or model execution; it exits 2 until those gates are approved.
+Even for safe inspection, the inspector enumerates checkpoint unsafe globals
+before deserialization and permits only the exact reviewed set bound to the
+pinned `demucs/htdemucs.py` source blob; unknown globals and a missing/dirty
+source checkout block before `torch.load`. The restricted load uses
+`weights_only=True` and an inert class token, never `weights_only=False`.
+The next VAST first pass must therefore provide a clean Git checkout at the
+fixed revision, complete dependency/license evidence, and safe-loaded
+per-member name/shape/dtype manifests before any converter or native forward
+work can be considered.
