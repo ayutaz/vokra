@@ -23,7 +23,6 @@ from typing import Any
 
 REFERENCE_FORMAT = "vokra-sgmse-score-reference-v1"
 REFERENCE_STATUS = "REFERENCE_COMPLETE_NO_UPLOAD"
-REFERENCE_MANIFEST_SHA256 = "3dd740f473e547c3e44ad5156619ad37d6b3f34522a75bff20d14f68e815dc83"
 MODEL_REPOSITORY = "speechbrain/sgmse-voicebank"
 MODEL_REVISION = "8f4ff7b65284c49492a43349b8106e094ac0d365"
 SOURCE_REPOSITORY = "https://github.com/sp-uhh/sgmse.git"
@@ -47,6 +46,19 @@ REFERENCE_ARTIFACT_NAMES = {
     "score_imag",
 }
 NATIVE_ARTIFACT_NAMES = {f"{name}.f32" for name in SCORE_NAMES}
+# The manifest intentionally carries run-specific Vokra commit, host, and
+# absolute-path evidence, so its whole-file digest is not a stable identity.
+# These six payload digests were byte-identical across three exact VAST runs
+# and are the reviewed oracle for this consumer.  A manifest cannot authorize
+# a different payload merely by rewriting its own `sha256` field.
+REVIEWED_ARTIFACT_SHA256 = {
+    "input_condition_imag": "37d4a9e7d1793aaef270cdbaddf69464fe3286171661c8f75380bd6f6e305893",
+    "input_condition_real": "8fa96184edbec9c85856eebabd6ba6102fee3e30debaf7aee2fffffd1e9599ea",
+    "input_noisy_imag": "a355948bcbafb8b89a3975d40ee333129216e730e153d8ef26d5419ed07f90ba",
+    "input_noisy_real": "c62e324c7826c752b2a8b567d184bca31cd9e1dd6b1ac04885eb78f1ccf325fa",
+    "score_imag": "ea029f909ed9eae729b2b52e51807847aece53ee574435b3b3c0f3bb713b25d5",
+    "score_real": "f15e232711181167317c820b3e0c12f07fcad8f30cd431031d196aedabbda16b",
+}
 EXPECTED_INPUT = {
     "seed": 20260901,
     "sample_rate": 16_000,
@@ -120,18 +132,11 @@ def read_f32(path: Path, label: str, count: int) -> list[float]:
 
 
 def verify_reference(
-    reference_dir: Path, *, expected_manifest_sha256: str | None = None
+    reference_dir: Path,
 ) -> dict[str, Any]:
     """Verify the fixed reference contract and return its manifest."""
     manifest_path = reference_dir / "manifest.json"
     require_regular_file(manifest_path, "reference manifest")
-    expected_digest = (
-        REFERENCE_MANIFEST_SHA256
-        if expected_manifest_sha256 is None
-        else expected_manifest_sha256
-    )
-    if sha256(manifest_path) != expected_digest:
-        raise ValueError("reference manifest SHA256 does not match the reviewed VAST evidence")
     manifest = json.loads(
         manifest_path.read_text(encoding="utf-8"),
         object_pairs_hook=reject_duplicate_json,
@@ -201,11 +206,14 @@ def verify_reference(
     for name, metadata in artifacts.items():
         if not isinstance(metadata, dict) or metadata.get("shape") != REFERENCE_SHAPE or metadata.get("count") != REFERENCE_COUNT or metadata.get("bytes") != REFERENCE_BYTES or metadata.get("dtype") != "float32":
             raise ValueError(f"reference artifact metadata mismatch: {name}")
+        expected_sha256 = REVIEWED_ARTIFACT_SHA256.get(name)
+        if expected_sha256 is None or metadata.get("sha256") != expected_sha256:
+            raise ValueError(f"reference artifact {name} is not a reviewed VAST payload")
         filename = metadata.get("path")
         if filename != f"{name}.f32":
             raise ValueError(f"reference artifact path mismatch: {name}")
         artifact = reference_dir / filename
-        if artifact.stat().st_size != REFERENCE_BYTES or sha256(artifact) != metadata.get("sha256"):
+        if artifact.stat().st_size != REFERENCE_BYTES or sha256(artifact) != expected_sha256:
             raise ValueError(f"reference artifact hash mismatch: {name}")
     return manifest
 
@@ -213,17 +221,13 @@ def verify_reference(
 def compare_native(
     reference_dir: Path,
     native_dir: Path,
-    *,
-    expected_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Compare native score files against the authenticated VAST scores."""
     if not reference_dir.is_absolute() or not native_dir.is_absolute():
         raise ValueError("reference and native paths must be absolute")
     if paths_overlap(reference_dir, native_dir):
         raise ValueError("reference and native directories must be disjoint")
-    manifest = verify_reference(
-        reference_dir, expected_manifest_sha256=expected_manifest_sha256
-    )
+    manifest = verify_reference(reference_dir)
     require_exact_directory_files(native_dir, NATIVE_ARTIFACT_NAMES, "native score")
     metrics: dict[str, Any] = {}
     for name in SCORE_NAMES:
@@ -248,7 +252,14 @@ def self_test() -> None:
     assert REFERENCE_COUNT == 16_384
     assert REFERENCE_BYTES == 65_536
     assert FP32_ATOL == 0.01
-    assert REFERENCE_MANIFEST_SHA256 == "3dd740f473e547c3e44ad5156619ad37d6b3f34522a75bff20d14f68e815dc83"
+    assert set(REVIEWED_ARTIFACT_SHA256) == REFERENCE_ARTIFACT_NAMES
+    assert all(
+        len(digest) == 64
+        and digest.isascii()
+        and digest.islower()
+        and all(character in "0123456789abcdef" for character in digest)
+        for digest in REVIEWED_ARTIFACT_SHA256.values()
+    )
     try:
         json.loads('{"x": 1, "x": 2}', object_pairs_hook=reject_duplicate_json)
     except ValueError:
@@ -273,6 +284,14 @@ def self_test() -> None:
                 "bytes": REFERENCE_BYTES,
                 "sha256": sha256(path),
             }
+        # The fixture is synthetic and never leaves this self-test. Swap in
+        # local digests only to exercise the exact verification wiring;
+        # production calls retain the reviewed VAST constants above.
+        reviewed_digests = REVIEWED_ARTIFACT_SHA256.copy()
+        REVIEWED_ARTIFACT_SHA256.clear()
+        REVIEWED_ARTIFACT_SHA256.update(
+            {name: metadata["sha256"] for name, metadata in artifacts.items()}
+        )
         manifest = {
             "format": REFERENCE_FORMAT,
             "status": REFERENCE_STATUS,
@@ -307,27 +326,31 @@ def self_test() -> None:
         (reference / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         for name in SCORE_NAMES:
             (native / f"{name}.f32").write_bytes(b"\0" * REFERENCE_BYTES)
-        result = compare_native(
-            reference.resolve(),
-            native.resolve(),
-            expected_manifest_sha256=sha256(reference / "manifest.json"),
-        )
+        result = compare_native(reference.resolve(), native.resolve())
         assert result["status"] == "SGMSE_NATIVE_SCORE_PARITY_PASS"
+
+        # A rewritten manifest must not be able to bless altered reference
+        # bytes: changing both the payload and its self-declared digest still
+        # fails against the reviewed per-artifact allow-list.
+        score_reference = reference / "score_real.f32"
+        original_reference_score = score_reference.read_bytes()
+        score_reference.write_bytes(b"\x01" + original_reference_score[1:])
+        manifest["artifacts"]["score_real"]["sha256"] = sha256(score_reference)
+        (reference / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         try:
-            verify_reference(reference.resolve(), expected_manifest_sha256="0" * 64)
+            verify_reference(reference.resolve())
         except ValueError:
             pass
         else:
-            raise AssertionError("manifest digest mismatch was accepted")
+            raise AssertionError("rewritten manifest authorized altered reference values")
+        score_reference.write_bytes(original_reference_score)
+        manifest["artifacts"]["score_real"]["sha256"] = artifacts["score_real"]["sha256"]
+        (reference / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         run_log = reference / "run.log"
         original_log = run_log.read_bytes()
         run_log.write_bytes(original_log + b"tampered\n")
         try:
-            compare_native(
-                reference.resolve(),
-                native.resolve(),
-                expected_manifest_sha256=sha256(reference / "manifest.json"),
-            )
+            compare_native(reference.resolve(), native.resolve())
         except ValueError:
             pass
         else:
@@ -337,22 +360,14 @@ def self_test() -> None:
         original_score = native_score.read_bytes()
         native_score.write_bytes(struct.pack("<f", FP32_ATOL * 2) + original_score[4:])
         try:
-            compare_native(
-                reference.resolve(),
-                native.resolve(),
-                expected_manifest_sha256=sha256(reference / "manifest.json"),
-            )
+            compare_native(reference.resolve(), native.resolve())
         except ValueError:
             pass
         else:
             raise AssertionError("score tolerance mismatch was accepted")
         native_score.write_bytes(struct.pack("<f", math.nan) + original_score[4:])
         try:
-            compare_native(
-                reference.resolve(),
-                native.resolve(),
-                expected_manifest_sha256=sha256(reference / "manifest.json"),
-            )
+            compare_native(reference.resolve(), native.resolve())
         except ValueError:
             pass
         else:
@@ -360,15 +375,13 @@ def self_test() -> None:
         native_score.write_bytes(original_score)
         (native / "unexpected").write_bytes(b"")
         try:
-            compare_native(
-                reference.resolve(),
-                native.resolve(),
-                expected_manifest_sha256=sha256(reference / "manifest.json"),
-            )
+            compare_native(reference.resolve(), native.resolve())
         except ValueError:
             pass
         else:
             raise AssertionError("extra native output was accepted")
+        REVIEWED_ARTIFACT_SHA256.clear()
+        REVIEWED_ARTIFACT_SHA256.update(reviewed_digests)
     print("sgmse_native_score_parity self-test: OK")
 
 

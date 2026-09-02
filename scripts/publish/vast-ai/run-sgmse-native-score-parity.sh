@@ -88,6 +88,14 @@ run_self_test() {
     log 'self-test FAIL: native comparator self-test failed'
     fail=1
   fi
+  if grep -Fq -- 'REFERENCE_MANIFEST_SHA256' "$NATIVE_PARITY_TOOL"; then
+    log 'self-test FAIL: unstable whole-manifest digest pin remains'
+    fail=1
+  fi
+  if ! grep -Fq -- 'REVIEWED_ARTIFACT_SHA256' "$NATIVE_PARITY_TOOL"; then
+    log 'self-test FAIL: reviewed per-artifact digest gate is missing'
+    fail=1
+  fi
   # This deliberately reaches only host/argument guards: no path exists, no
   # reference is opened, no model is loaded, and no network command is run.
   if VOKRA_PUBLISH_ON_VAST=1 "$path" \
