@@ -7019,6 +7019,9 @@ impl MetalContext {
         if output.is_empty() {
             return Ok(());
         }
+        // SAFETY: `objc_autoreleasePoolPush` returns a token consumed by the
+        // matching pop below; all Objective-C objects created by this FIR
+        // dispatch remain within the pool's lexical operation scope.
         let pool = unsafe { sys::objc_autoreleasePoolPush() };
         let result = (|| {
             let input_buf = self.new_buffer_from_slice(input)?;
@@ -7060,6 +7063,8 @@ impl MetalContext {
             }
             Ok(())
         })();
+        // SAFETY: `pool` is the token returned by the matching push above, and
+        // no use of the pool token occurs after it is popped.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         result
     }
