@@ -19,11 +19,20 @@ DECODER_REVISION="a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256="836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
 OFFICIAL_SOURCE_REVISION="022e286b98fbec7e1e916cb940cdf532cd9f488e"
 MIN_NEW_TOKENS=2
+TRANSFORMERS_VERSION="5.10.4"
+TRANSFORMERS_COMPATIBILITY_STATUS="BLOCKED_UNVERIFIED_API_SMOKE"
 TEST_SOURCE="$VOKRA_ROOT/crates/vokra-models/tests/qwen3_tts_real.rs"
 TEST_NAME="qwen3_tts_real_metal_matches_cpu_and_official_reference"
 
 log() { printf '[qwen3-tts-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
+require_transformers_api_smoke() {
+  case "$TRANSFORMERS_COMPATIBILITY_STATUS" in
+    AUTHENTICATED_API_SMOKE) ;;
+    BLOCKED_UNVERIFIED_API_SMOKE) die 'Transformers API smoke is not authenticated; refusing reference imports and parity' ;;
+    *) die "unknown Transformers API smoke status: $TRANSFORMERS_COMPATIBILITY_STATUS" ;;
+  esac
+}
 variant_revision() {
   case "$1" in
     0.6b-base) printf '%s\n' 5d83992436eae1d760afd27aff78a71d676296fc ;;
@@ -206,6 +215,11 @@ run_self_test() {
   # shellcheck disable=SC2016
   grep -Fq 'require_absent_evidence_dir "$evidence" "$base06" "$custom06" "$base17" "$custom17" "$decoder" "$approval"' "$0" || return 1
   local script_path="${BASH_SOURCE[0]}" failed=0 required
+  local saved_status="$TRANSFORMERS_COMPATIBILITY_STATUS"
+  TRANSFORMERS_COMPATIBILITY_STATUS='BLOCKED_UNVERIFIED_API_SMOKE'; require_transformers_api_smoke && failed=1 || :
+  TRANSFORMERS_COMPATIBILITY_STATUS='AUTHENTICATED_API_SMOKE'; require_transformers_api_smoke || failed=1
+  TRANSFORMERS_COMPATIBILITY_STATUS='UNKNOWN_STATUS'; require_transformers_api_smoke && failed=1 || :
+  TRANSFORMERS_COMPATIBILITY_STATUS="$saved_status"
   for required in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'MIN_MEMORY_BYTES=32000000000' 'xcrun -f metal' \
     'Qwen/Qwen3-TTS-Tokenizer-12Hz' 'a87c50897bb00837eb857d0538b29d117541d7f6' \
     '022e286b98fbec7e1e916cb940cdf532cd9f488e' \
@@ -216,7 +230,11 @@ run_self_test() {
     'MIN_NEW_TOKENS=2' 'QWEN3_TTS_0_6B_BASE_GGUF' 'QWEN3_TTS_0_6B_BASE_DECODER_GGUF' 'QWEN3_TTS_0_6B_BASE_REFERENCE_DIR' \
     '--gguf-0.6b-base-sha256' '--gguf-0.6b-customvoice-sha256' '--gguf-1.7b-base-sha256' '--gguf-1.7b-customvoice-sha256' '--reference-0.6b-base-sha256' '--reference-0.6b-customvoice-sha256' '--reference-1.7b-base-sha256' '--reference-1.7b-customvoice-sha256' '--decoder-gguf-sha256' 'require_expected_sha256' 'require_distinct_reference_hashes' \
     "require_exact_test_result \"\$evidence/parity.log\" \"\$TEST_NAME\"" '0 failed; 0 ignored; 0 measured' \
-    'QWEN3_TTS_PARITY' 'codes_exact=PASS' 'QWEN3_TTS_METAL_CPU' 'MEASURED_NOT_GATED' 'upload, publish'; do
+    'QWEN3_TTS_PARITY' 'codes_exact=PASS' 'QWEN3_TTS_METAL_CPU' 'MEASURED_NOT_GATED' 'upload, publish' \
+    'TRANSFORMERS_VERSION="5.10.4"' 'previous_isolated_transformers_pin=transformers==4.57.3' \
+    'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w' 'transformers_security_patched_minimum=5.10.0' \
+    'transformers_compatibility_status=BLOCKED_UNVERIFIED_API_SMOKE' 'require_transformers_api_smoke' \
+    'AUTHENTICATED_API_SMOKE' 'UNKNOWN_STATUS'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing token: $required"; failed=1; }
   done
   if grep -En -- '(^|[[:space:]])(curl|wget|python3?|pip|git[[:space:]]+(clone|fetch|pull|push)|convert|upload|publish)([[:space:]]|$)' "$script_path" | grep -Ev 'does not download, convert|does not.*upload|does not.*publish|uv run.*python' >/dev/null; then
@@ -304,6 +322,7 @@ main() {
     -n "$ref_base17_sha" && -n "$ref_custom17_sha" ]] \
     || { usage; die 'all four GGUF/reference pairs, nine artifact SHA-256 values, decoder, approval evidence and evidence dir are required'; }
   [[ -f "$approval" && -s "$approval" && ! -L "$approval" ]] || die 'approval evidence must be a non-empty regular non-symlink file'
+  require_transformers_api_smoke
   [[ -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" && -f "$PARITY_PROJECT/pyproject.toml" && ! -L "$PARITY_PROJECT/pyproject.toml" && -f "$LICENSE_GATE" && ! -L "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && ! -L "$LICENSE_MANIFEST" ]] || die 'Qwen3-TTS gate inputs are missing or symlinked'
   local -a gate_args=(--lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" --manifest "$LICENSE_MANIFEST" --approval "$approval" --source-revision "$OFFICIAL_SOURCE_REVISION" --decoder-revision "$DECODER_REVISION" --decoder-checkpoint-sha256 "$DECODER_CHECKPOINT_SHA256")
   local variant
@@ -340,7 +359,7 @@ main() {
   require_exact_test_result "$evidence/parity.log" "$TEST_NAME"
   for marker in 'variant=0.6b-base backend=cpu' 'variant=0.6b-base backend=metal' 'variant=0.6b-customvoice backend=cpu' 'variant=0.6b-customvoice backend=metal' 'variant=1.7b-base backend=cpu' 'variant=1.7b-base backend=metal' 'variant=1.7b-customvoice backend=cpu' 'variant=1.7b-customvoice backend=metal'; do require_exact_marker "$evidence/parity.log" "QWEN3_TTS_PARITY $marker prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"; done
   for variant in 0.6b-base 0.6b-customvoice 1.7b-base 1.7b-customvoice; do require_exact_marker "$evidence/parity.log" "QWEN3_TTS_METAL_CPU variant=$variant codes_exact=PASS pcm=MEASURED_NOT_GATED"; done
-  { echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'cpu_reference=MEASURED_NOT_GATED'; echo 'metal_vs_cpu=MEASURED_NOT_GATED'; echo 'public_precontract_ggufs=NOT_USED'; echo 'upload=NOT_PERFORMED'; } > "$evidence/summary.txt"
+  { echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'previous_isolated_transformers_pin=transformers==4.57.3'; echo 'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w'; echo 'transformers_security_patched_minimum=5.10.0'; echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"; echo "transformers_compatibility_status=$TRANSFORMERS_COMPATIBILITY_STATUS"; echo 'cpu_reference=MEASURED_NOT_GATED'; echo 'metal_vs_cpu=MEASURED_NOT_GATED'; echo 'public_precontract_ggufs=NOT_USED'; echo 'upload=NOT_PERFORMED'; } > "$evidence/summary.txt"
   log 'MEASURED_NOT_GATED: pull evidence only, then remove staged artifacts or destroy the remote Apple host'
 }
 

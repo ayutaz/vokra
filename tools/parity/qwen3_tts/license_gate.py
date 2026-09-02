@@ -41,8 +41,8 @@ REGISTRY_PACKAGE_KEYS = (
     frozenset({"name", "version", "source", "dependencies", "resolution-markers", "wheels"}),
 )
 REQUIRES_DIST_KEYS = (frozenset({"name", "specifier"}), frozenset({"name", "specifier", "extras"}), frozenset({"name", "specifier", "marker"}), frozenset({"name", "specifier", "extras", "marker"}), frozenset({"name", "specifier", "index"}), frozenset({"name", "git"}))
-LOCK_SHA256 = "0963b74466aeff12229900ee4c11c0a0fdbde2bcc8881e60ad3753641a47abcf"
-PYPROJECT_SHA256 = "61260ea1e8ba4b71728bb77f05206b8f46a47548e51f17d8e06562d539b3f91e"
+LOCK_SHA256 = "662d92f45f5554be78bdf88934b7e7e0b59d01e3b5953558534b903119714f2a"
+PYPROJECT_SHA256 = "1d988815b5a7dd0560cf0c9f7d5d8b70cc765059933a6b48d1d84399af0b5857"
 FORBIDDEN_PACKAGES = ("gradio", "onnxruntime", "protobuf", "sox")
 PLACEHOLDER_SENTINELS = {"UNRESOLVED", "OWNER_REVIEW_REQUIRED", "PENDING_REVIEW", "REVIEW_REQUIRED"}
 VARIANTS = ("0.6b-base", "0.6b-customvoice", "1.7b-base", "1.7b-customvoice")

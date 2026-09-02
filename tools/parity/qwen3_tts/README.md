@@ -26,3 +26,9 @@ them unconditionally for voice-clone audio normalization; `gradio`,
 `onnxruntime`, `protobuf`, and `sox` demo/ONNX/SoX paths are excluded. The tool
 is offline after source and model snapshots are staged and never uploads or
 publishes.
+
+The isolated reference previously used `transformers==4.57.3`, which is
+affected by `GHSA-xrqw-3rrv-vx5w` (<5.10.0). The reviewed dependency is now
+`transformers==5.10.4`; source/API compatibility remains
+`BLOCKED_UNVERIFIED_API_SMOKE` until an authorized VAST model smoke test is
+completed. This dependency remediation does not claim API parity.

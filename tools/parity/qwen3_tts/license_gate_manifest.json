@@ -1,11 +1,11 @@
 {
   "gate_version": 1,
-  "pyproject_sha256": "61260ea1e8ba4b71728bb77f05206b8f46a47548e51f17d8e06562d539b3f91e",
-  "lock_sha256": "0963b74466aeff12229900ee4c11c0a0fdbde2bcc8881e60ad3753641a47abcf",
-  "package_rows_sha256": "b0bb5a4f9f119e42f62d0d3809a0331f210c9159e98cc5c46578fad14f972b22",
-  "review_rows_sha256": "bcb7a13a2a1e3873b6098bae3cca47818ef621125508f1fc5b0d3a465a4e1b0d",
+  "pyproject_sha256": "1d988815b5a7dd0560cf0c9f7d5d8b70cc765059933a6b48d1d84399af0b5857",
+  "lock_sha256": "662d92f45f5554be78bdf88934b7e7e0b59d01e3b5953558534b903119714f2a",
+  "package_rows_sha256": "5c72dec8fa3a5ac47878dcbed0f4d4f953b47fce94dda5a5572bff7cdb1e507b",
+  "review_rows_sha256": "5d75b3a65b2cfd626def7d2e9c3dda30b7250b819e03f13c589fd0bf5fccadc9",
   "component_rows_sha256": "8700cea9fac4646ae65925adbb0e11b4d41e859db4127c2abdb0ba518fe01019",
-  "approval_scope_sha256": "0dd63de64f49cca4a533315dc6ce9534ddd0ffbb7a1b088b67354ffccbf86eae",
+  "approval_scope_sha256": "434a8922c0a4c614a379f1000597401b4d49016368c35c703fb2967e612f6764",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -73,6 +73,34 @@
       "approval_digest": null
     },
     {
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "anyio",
+      "version": "4.14.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
       "name": "certifi",
       "version": "2026.7.22",
       "source": {
@@ -103,6 +131,20 @@
     {
       "name": "charset-normalizer",
       "version": "3.5.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
       "source": {
         "registry": "https://pypi.org/simple"
       },
@@ -185,6 +227,20 @@
       "approval_digest": null
     },
     {
+      "name": "h11",
+      "version": "0.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
       "name": "hf-xet",
       "version": "1.6.0",
       "source": {
@@ -199,8 +255,36 @@
       "approval_digest": null
     },
     {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
       "name": "huggingface-hub",
-      "version": "0.36.2",
+      "version": "1.29.0",
       "source": {
         "registry": "https://pypi.org/simple"
       },
@@ -297,8 +381,36 @@
       "approval_digest": null
     },
     {
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
       "name": "markupsafe",
       "version": "3.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "mdurl",
+      "version": "0.1.2",
       "source": {
         "registry": "https://pypi.org/simple"
       },
@@ -465,6 +577,20 @@
       "approval_digest": null
     },
     {
+      "name": "pygments",
+      "version": "2.21.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
       "name": "pyyaml",
       "version": "6.0.3",
       "source": {
@@ -495,6 +621,20 @@
     {
       "name": "requests",
       "version": "2.34.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "rich",
+      "version": "15.0.0",
       "source": {
         "registry": "https://pypi.org/simple"
       },
@@ -551,6 +691,20 @@
     {
       "name": "setuptools",
       "version": "84.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "shellingham",
+      "version": "1.5.4",
       "source": {
         "registry": "https://pypi.org/simple"
       },
@@ -690,7 +844,21 @@
     },
     {
       "name": "transformers",
-      "version": "4.57.3",
+      "version": "5.10.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "typer",
+      "version": "0.27.2",
       "source": {
         "registry": "https://pypi.org/simple"
       },

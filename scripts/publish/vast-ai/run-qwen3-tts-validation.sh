@@ -25,6 +25,8 @@ OFFICIAL_SOURCE_URL="https://github.com/QwenLM/Qwen3-TTS.git"
 OFFICIAL_SOURCE_REVISION="022e286b98fbec7e1e916cb940cdf532cd9f488e"
 REFERENCE_AUDIO_SHA256="241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
 MIN_NEW_TOKENS=2
+TRANSFORMERS_VERSION="5.10.4"
+TRANSFORMERS_COMPATIBILITY_STATUS="BLOCKED_UNVERIFIED_API_SMOKE"
 
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=100000000
@@ -213,6 +215,14 @@ preflight() {
   license_gate "$approval"
 }
 
+require_transformers_api_smoke() {
+  case "$TRANSFORMERS_COMPATIBILITY_STATUS" in
+    AUTHENTICATED_API_SMOKE) ;;
+    BLOCKED_UNVERIFIED_API_SMOKE) die 'Transformers API smoke is not authenticated; refusing reference imports and acquisition' ;;
+    *) die "unknown Transformers API smoke status: $TRANSFORMERS_COMPATIBILITY_STATUS" ;;
+  esac
+}
+
 download_snapshot() {
   local repo="$1" revision="$2" output="$3"
   if [[ -e "$output" ]]; then
@@ -284,6 +294,10 @@ run_self_test() {
     'qwen3_tts_real_metal_matches_cpu_and_official_reference' 'single-file checkpoint' '.cache/huggingface' \
     '--ignored --exact --nocapture' 'QWEN3_TTS_PARITY' 'codes_exact=PASS' \
     'pcm=MEASURED_NOT_GATED' 'corrected GGUFs' 'CARGO_BUILD_JOBS' 'license_gate.py' \
+    'TRANSFORMERS_VERSION="5.10.4"' 'previous_isolated_transformers_pin=transformers==4.57.3' \
+    'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w' 'transformers_security_patched_minimum=5.10.0' \
+    'transformers_compatibility_status=BLOCKED_UNVERIFIED_API_SMOKE' 'require_transformers_api_smoke' \
+    'AUTHENTICATED_API_SMOKE' 'UNKNOWN_STATUS' \
     'license_gate_manifest.json' '--no-project --offline --python 3.12' 'test result: ok. 1 passed' \
     '--gguf-0.6b-base-sha256' '--gguf-0.6b-customvoice-sha256' '--gguf-1.7b-base-sha256' \
     '--gguf-1.7b-customvoice-sha256' '--decoder-gguf-sha256' '--reference-0.6b-base-sha256' \
@@ -388,8 +402,7 @@ run_self_test() {
   rc=$?
   set -e
   [[ "$rc" -eq 2 ]] || { log "self-test blocked worker returned $rc, expected 2"; failed=1; }
-  grep -Fq 'uv run --no-cache --no-project --offline' "$trace" || { log "self-test blocked worker did not invoke the stdlib gate: $(sed -n l "$worker_log")"; failed=1; }
-  if grep -Eq 'uv sync|curl |cargo ' "$trace"; then log 'self-test reached sync/download/build after the gate'; failed=1; fi
+  [[ ! -s "$trace" ]] || { log "self-test blocked worker reached a gate, sync, download, or build: $(sed -n l "$worker_log")"; failed=1; }
   [[ ! -d "$sandbox/scratch" ]] || { log 'self-test worker created scratch output before the gate'; failed=1; }
   rm -rf -- "$sandbox" "$trace" "$worker_log"
   (( failed == 0 )) || return 1
@@ -435,9 +448,18 @@ main() {
       *) usage; die "unknown argument: $1" ;;
     esac
   done
-  if (( self_test == 1 )); then [[ "$selection" == all && -z "$work_dir" && -z "$approval" ]] || die '--self-test accepts no other arguments'; run_self_test; return; fi
+  if (( self_test == 1 )); then
+    [[ "$selection" == all && -z "$work_dir" && -z "$approval" ]] || die '--self-test accepts no other arguments'
+    local saved_status="$TRANSFORMERS_COMPATIBILITY_STATUS"
+    TRANSFORMERS_COMPATIBILITY_STATUS='BLOCKED_UNVERIFIED_API_SMOKE'; require_transformers_api_smoke && return 1 || :
+    TRANSFORMERS_COMPATIBILITY_STATUS='AUTHENTICATED_API_SMOKE'; require_transformers_api_smoke || return 1
+    TRANSFORMERS_COMPATIBILITY_STATUS='UNKNOWN_STATUS'; require_transformers_api_smoke && return 1 || :
+    TRANSFORMERS_COMPATIBILITY_STATUS="$saved_status"
+    run_self_test; return
+  fi
   case "$selection" in all) ;; *) die 'this four-variant validation requires --variant all' ;; esac
   [[ -n "$approval" ]] || { usage; die '--approval-evidence is required'; }
+  require_transformers_api_smoke
   preflight "$approval"; require_tooling; require_vast_host
   [[ -n "$work_dir" ]] || work_dir="$VOKRA_SCRATCH/qwen3-tts-validation-$(git -C "$VOKRA_ROOT" rev-parse --short=12 HEAD)"
   require_absent_work_dir "$work_dir" "$approval"
@@ -491,7 +513,7 @@ main() {
     require_exact_marker "$evidence/parity-cpu.log" "QWEN3_TTS_PARITY variant=$variant backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"
   done
   {
-    echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'nested_decoder_sha256=validated_in_reference'; echo "decoder_gguf_sha256=$(sha256_file "$decoder_gguf")"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"; echo 'public_precontract_artifacts=NOT_USED'; echo 'upload=NOT_PERFORMED'
+    echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'previous_isolated_transformers_pin=transformers==4.57.3'; echo 'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w'; echo 'transformers_security_patched_minimum=5.10.0'; echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"; echo "transformers_compatibility_status=$TRANSFORMERS_COMPATIBILITY_STATUS"; echo 'nested_decoder_sha256=validated_in_reference'; echo "decoder_gguf_sha256=$(sha256_file "$decoder_gguf")"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"; echo 'public_precontract_artifacts=NOT_USED'; echo 'upload=NOT_PERFORMED'
   } > "$evidence/summary.txt"
   (cd "$work_dir" && find evidence -type f -print0 | sort -z | xargs -0 sha256sum > evidence/SHA256SUMS)
   log 'MEASURED_NOT_GATED: pull evidence only, then destroy the VAST instance'

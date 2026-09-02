@@ -14,7 +14,11 @@ dependencies = [
     "soundfile==0.14.0",
     "torch==2.7.1",
     "torchaudio==2.11.0",
-    "transformers==4.57.3",
+    # The previous isolated reference pin was transformers==4.57.3; it is
+    # retained only as provenance. The security-remediated pin is not proof
+    # that the authenticated source API remains compatible without an
+    # authorized model smoke test (BLOCKED_UNVERIFIED_API_SMOKE).
+    "transformers==5.10.4",
 ]
 
 [tool.uv]

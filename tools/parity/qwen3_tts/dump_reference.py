@@ -36,6 +36,7 @@ SPEAKER = "Serena"
 DECODER_REPO = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,14 @@ COMMON_ASSETS = {
 
 def die(message: str) -> "None":
     raise SystemExit(f"qwen3_tts reference: {message}")
+
+
+def require_transformers_api_smoke() -> None:
+    if TRANSFORMERS_COMPATIBILITY_STATUS == "AUTHENTICATED_API_SMOKE":
+        return
+    if TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE":
+        die("Transformers API smoke is not authenticated; refusing official reference imports")
+    die(f"unknown Transformers API smoke status: {TRANSFORMERS_COMPATIBILITY_STATUS}")
 
 
 def sha256_file(path: Path) -> str:
@@ -183,6 +192,27 @@ def environment() -> dict[str, object]:
 
 def run_self_test() -> int:
     """Exercise the immutable packet contract without importing torch or weights."""
+    global TRANSFORMERS_COMPATIBILITY_STATUS
+    saved_status = TRANSFORMERS_COMPATIBILITY_STATUS
+    try:
+        TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
+        try:
+            require_transformers_api_smoke()
+        except SystemExit:
+            pass
+        else:
+            die("blocked Transformers API smoke status was accepted")
+        TRANSFORMERS_COMPATIBILITY_STATUS = "AUTHENTICATED_API_SMOKE"
+        require_transformers_api_smoke()
+        TRANSFORMERS_COMPATIBILITY_STATUS = "UNKNOWN_STATUS"
+        try:
+            require_transformers_api_smoke()
+        except SystemExit:
+            pass
+        else:
+            die("unknown Transformers API smoke status was accepted")
+    finally:
+        TRANSFORMERS_COMPATIBILITY_STATUS = saved_status
     if len(SOURCE_REVISION) != 40 or any(c not in "0123456789abcdef" for c in SOURCE_REVISION):
         die("official source revision is not an immutable SHA-1")
     if len(VARIANTS) != 4 or set(VARIANTS) != {"0.6b-base", "0.6b-customvoice", "1.7b-base", "1.7b-customvoice"}:
@@ -225,6 +255,7 @@ def main() -> int:
         if any(value is not None for value in (args.variant, args.model_dir, args.decoder_dir, args.source_dir, args.output, args.reference_audio)):
             die("--self-test accepts no model or output arguments")
         return run_self_test()
+    require_transformers_api_smoke()
     if args.variant is None or args.model_dir is None or args.decoder_dir is None or args.source_dir is None or args.output is None:
         die("--variant, --model-dir, --decoder-dir, --source-dir, and --output are required")
     variant = VARIANTS[args.variant]
