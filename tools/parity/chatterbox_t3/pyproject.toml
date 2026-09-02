@@ -11,7 +11,7 @@ dependencies = [
     "torch==2.6.0",
     "torchaudio==2.6.0",
     "tqdm==4.67.1",
-    "transformers==5.2.0",
+    "transformers==5.10.4",
 ]
 
 [tool.uv]
@@ -31,6 +31,9 @@ torchaudio = [{ index = "pytorch-cpu" }]
 # T3 loader deliberately omits the source's optional/full-pipeline packages
 # (mutable Perth master, S3 tokenizer, Diffusers, Gradio, etc.): it imports
 # only the authenticated T3/tokenizer modules and their actual dependencies.
+# The pinned upstream source metadata declares transformers==5.2.0.  The
+# advisory patched minimum is 5.10.0; this isolated environment pins the
+# current non-yanked 5.10.4 release above that floor (GHSA-xrqw-3rrv-vx5w).
 #
 # `huggingface-hub`, `einops`, and `tqdm` are direct import requirements of
 # the selected loader; their exact versions, plus all transitive versions and
@@ -47,6 +50,11 @@ source_exact_dependencies = [
     "transformers==5.2.0",
     "safetensors==0.5.3",
 ]
+source_declared_transformers = "5.2.0"
+isolated_transformers_security_floor = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_policy = "REJECT_VERSIONS_BELOW_ISOLATED_FLOOR"
 isolated_loader_dependencies = [
     "numpy==1.26.4",
     "huggingface-hub==1.27.0",
@@ -71,7 +79,7 @@ torchaudio_distribution = "2.6.0+cpu"
 status = "BLOCKED_UNRESOLVED"
 primary_metadata = "Version-specific PyPI JSON metadata, upstream license files, NumPy wheel notices, and the official PyTorch CPU index; reference-only acceptance is non-redistribution scoped"
 reviewed_packages = [
-    "annotated-doc", "anyio", "certifi", "click", "colorama", "einops", "filelock", "fsspec", "h11", "hf-xet", "httpcore", "httpx", "huggingface-hub", "idna", "jinja2", "markdown-it-py", "markupsafe", "mdurl", "mpmath", "networkx", "numpy", "packaging", "pygments", "pyyaml", "regex", "rich", "safetensors", "setuptools", "shellingham", "sympy", "tokenizers", "torch", "torchaudio", "tqdm", "transformers", "typer", "typer-slim", "typing-extensions",
+    "annotated-doc", "anyio", "certifi", "click", "colorama", "einops", "filelock", "fsspec", "h11", "hf-xet", "httpcore", "httpx", "huggingface-hub", "idna", "jinja2", "markdown-it-py", "markupsafe", "mdurl", "mpmath", "networkx", "numpy", "packaging", "pygments", "pyyaml", "regex", "rich", "safetensors", "setuptools", "shellingham", "sympy", "tokenizers", "torch", "torchaudio", "tqdm", "transformers", "typer", "typing-extensions",
 ]
 blockers = [
     "typing-extensions==4.16.0 upstream pyproject declares PSF-2.0, outside the repository Apache/MIT/BSD allowlist; owner policy clearance is required",
@@ -92,7 +100,7 @@ primary_evidence = [
     "https://github.com/python/typing_extensions/blob/4.16.0/LICENSE",
 ]
 license_conclusion_map = "version-keyed name==version mapping emitted by chatterbox_t3_reference.py from the authenticated package_rows"
-license_conclusion_count = 41
+license_conclusion_count = 40
 triton_status = "NOT_IN_LOCK; CPU index closure excludes Triton"
 cuda_status = "NOT_IN_LOCK; CPU index closure excludes NVIDIA CUDA distributions"
 soxr_status = "NOT_IN_LOCK"

@@ -25,6 +25,10 @@ from typing import Any
 SOURCE_REPOSITORY = "https://github.com/resemble-ai/chatterbox.git"
 SOURCE_REVISION = "5de7a54aa4e5e2baadb0182dde554908b48b85c2"
 SOURCE_PROJECT_VERSION = "0.1.7"
+SOURCE_DECLARED_TRANSFORMERS = "5.2.0"
+ISOLATED_TRANSFORMERS_SECURITY_FLOOR = "5.10.0"
+ISOLATED_TRANSFORMERS_PIN = "5.10.4"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
 BASE_REPOSITORY = "ResembleAI/chatterbox"
 BASE_REVISION = "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
 BASE_CHECKPOINT = "t3_mtl23ls_v3.safetensors"
@@ -53,8 +57,8 @@ SOURCE_ROLE_BLOBS = {
 
 REFERENCE_PROJECT = Path(__file__).with_name("chatterbox_t3")
 REFERENCE_LOCK = REFERENCE_PROJECT / "uv.lock"
-REFERENCE_LOCK_SHA256 = "83879e5e0a3d16c550df9a13134c9f3cbe44e5869afe54674c28be72b5cdec37"
-REFERENCE_PACKAGE_ROWS_SHA256 = "f5cfab32caf3cc2340b434c1e9e0d3f8dbbab73a519925fbb6f08457c03e7e98"
+REFERENCE_LOCK_SHA256 = "2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f"
+REFERENCE_PACKAGE_ROWS_SHA256 = "1feb25cd45b465dc7fb37dce07599c16218584211640357d541ba969917342d8"
 LOCK_CORE_VERSIONS = {
     "numpy": "1.26.4",
     "huggingface-hub": "1.27.0",
@@ -63,7 +67,7 @@ LOCK_CORE_VERSIONS = {
     "torch": "2.6.0",
     "torchaudio": "2.6.0",
     "tqdm": "4.67.1",
-    "transformers": "5.2.0",
+    "transformers": ISOLATED_TRANSFORMERS_PIN,
 }
 FORBIDDEN_REFERENCE_PACKAGES = {"diffusers", "resemble-perth", "s3tokenizer", "gradio"}
 LICENSE_AUDIT_STATUS = "BLOCKED_UNRESOLVED"
@@ -73,7 +77,7 @@ LICENSE_AUDIT_REVIEWED_PACKAGES = {
     "huggingface-hub", "idna", "jinja2", "markdown-it-py", "markupsafe",
     "mdurl", "mpmath", "networkx", "numpy", "packaging", "pygments", "pyyaml",
     "regex", "rich", "safetensors", "setuptools", "shellingham", "sympy",
-    "tokenizers", "torch", "torchaudio", "tqdm", "transformers", "typer", "typer-slim",
+    "tokenizers", "torch", "torchaudio", "tqdm", "transformers", "typer",
     "typing-extensions",
 }
 LICENSE_AUDIT_BLOCKERS = (
@@ -129,9 +133,8 @@ LICENSE_CONCLUSION_BY_NAME = {
     "torch": ("BSD-3-Clause; official CPU index", "https://download.pytorch.org/whl/cpu"),
     "torchaudio": ("BSD-3-Clause; official CPU index", "https://download.pytorch.org/whl/cpu"),
     "tqdm": ("MPL-2.0 AND MIT; reference-only accepted", "https://pypi.org/pypi/tqdm/4.67.1/json"),
-    "transformers": ("Apache-2.0", "https://pypi.org/pypi/transformers/5.2.0/json"),
+    "transformers": ("Apache-2.0", "https://pypi.org/pypi/transformers/5.10.4/json"),
     "typer": ("MIT", "https://pypi.org/pypi/typer/0.27.2/json"),
-    "typer-slim": ("MIT", "https://pypi.org/pypi/typer-slim/0.24.0/json"),
     "typing-extensions": ("PSF-2.0; unresolved under repository allowlist", "https://github.com/python/typing_extensions/blob/4.16.0/LICENSE"),
     "vokra-chatterbox-t3-reference": ("PROJECT_METADATA_ONLY", "tools/parity/chatterbox_t3/pyproject.toml"),
 }
@@ -328,6 +331,21 @@ def license_audit_identity(lock_record: dict[str, Any] | None = None) -> dict[st
         .get("chatterbox_t3_reference", {})
         .get("license_audit", {})
     )
+    reference_metadata = (
+        project.get("tool", {})
+        .get("vokra", {})
+        .get("chatterbox_t3_reference", {})
+    )
+    if reference_metadata.get("source_declared_transformers") != SOURCE_DECLARED_TRANSFORMERS:
+        raise RuntimeError("upstream source transformers declaration drifted")
+    if reference_metadata.get("isolated_transformers_security_floor") != ISOLATED_TRANSFORMERS_SECURITY_FLOOR:
+        raise RuntimeError("isolated transformers security floor drifted")
+    if reference_metadata.get("isolated_transformers_pin") != ISOLATED_TRANSFORMERS_PIN:
+        raise RuntimeError("isolated transformers pin drifted")
+    if reference_metadata.get("transformers_security_advisory") != TRANSFORMERS_SECURITY_ADVISORY:
+        raise RuntimeError("transformers security advisory identity drifted")
+    if reference_metadata.get("transformers_security_policy") != "REJECT_VERSIONS_BELOW_ISOLATED_FLOOR":
+        raise RuntimeError("transformers security policy drifted")
     if not isinstance(metadata, dict):
         raise RuntimeError("dedicated license audit metadata is missing")
     reviewed = metadata.get("reviewed_packages")
@@ -857,12 +875,16 @@ def main() -> int:
         lock = reference_lock_identity()
         assert lock["python"] == "==3.12.*"
         assert lock["core_versions"]["torch"] == "2.6.0"
-        assert lock["core_versions"]["transformers"] == "5.2.0"
+        assert lock["core_versions"]["transformers"] == ISOLATED_TRANSFORMERS_PIN
+        assert SOURCE_DECLARED_TRANSFORMERS == "5.2.0"
+        assert ISOLATED_TRANSFORMERS_SECURITY_FLOOR == "5.10.0"
+        assert ISOLATED_TRANSFORMERS_PIN == "5.10.4"
+        assert TRANSFORMERS_SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
         assert lock["cpu_index"] == "https://download.pytorch.org/whl/cpu"
         assert lock["cpu_distribution_versions"] == {"torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu"}
         assert lock["package_rows_sha256"] == REFERENCE_PACKAGE_ROWS_SHA256
         assert lock_rows_sha256(lock["package_rows"]) == REFERENCE_PACKAGE_ROWS_SHA256
-        assert len(lock["package_rows"]) == 41
+        assert len(lock["package_rows"]) == 40
         assert set(lock["excluded_packages"]) == FORBIDDEN_REFERENCE_PACKAGES
         assert "triton" not in lock["package_names"]
         assert not any(name.startswith("nvidia-") for name in lock["package_names"])
@@ -871,7 +893,7 @@ def main() -> int:
         assert audit["triton"].startswith("NOT_IN_LOCK")
         assert audit["cuda"].startswith("NOT_IN_LOCK")
         assert audit["soxr"] == "NOT_IN_LOCK"
-        assert len(audit["license_conclusions"]) == 41
+        assert len(audit["license_conclusions"]) == 40
         assert audit["license_conclusions"]["typing-extensions==4.16.0"]["license"].startswith("PSF-2.0")
         # Keep this self-test dependency-free on the maintainer machine.  The
         # actual tensor seam is exercised only by the VAST reference project;

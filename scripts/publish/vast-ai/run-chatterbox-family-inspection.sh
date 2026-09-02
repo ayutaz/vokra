@@ -6,7 +6,7 @@ ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 INSPECTOR="$ROOT/tools/parity/chatterbox_family_inspect.py"
 REFERENCE="$ROOT/tools/parity/chatterbox_t3_reference.py"
 REFERENCE_PROJECT="$ROOT/tools/parity/chatterbox_t3"
-REFERENCE_LOCK_SHA256="83879e5e0a3d16c550df9a13134c9f3cbe44e5869afe54674c28be72b5cdec37"
+REFERENCE_LOCK_SHA256="2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f"
 SOURCE_URL="https://github.com/resemble-ai/chatterbox.git"
 SOURCE_REV="5de7a54aa4e5e2baadb0182dde554908b48b85c2"
 WORK="${CHATTERBOX_WORK_DIR:-/dev/shm/vokra-chatterbox-family-inspection}"
@@ -31,7 +31,7 @@ license_audit_preflight(){
 }
 self_test(){
  local fail=0 token
- for token in 'ResembleAI/chatterbox' '5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18' 'ResembleAI/chatterbox-nano' '71ccd1d0081b430592cea481f4307e764e07bc64' 'ResembleAI/chatterbox-turbo' '749d1c1a46eb10492095d68fbcf55691ccf137cd' '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' 'chatterbox_t3/pyproject.toml' 'uv.lock' '--license-audit' 'BLOCKED_UNRESOLVED' 'https://download.pytorch.org/whl/cpu' '2.6.0+cpu' '83879e5e0a3d16c550df9a13134c9f3cbe44e5869afe54674c28be72b5cdec37' 'f5cfab32caf3cc2340b434c1e9e0d3f8dbbab73a519925fbb6f08457c03e7e98' 'package_rows' 'license_conclusions'; do
+ for token in 'ResembleAI/chatterbox' '5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18' 'ResembleAI/chatterbox-nano' '71ccd1d0081b430592cea481f4307e764e07bc64' 'ResembleAI/chatterbox-turbo' '749d1c1a46eb10492095d68fbcf55691ccf137cd' '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' 'chatterbox_t3/pyproject.toml' 'uv.lock' '--license-audit' 'BLOCKED_UNRESOLVED' 'https://download.pytorch.org/whl/cpu' '2.6.0+cpu' 'transformers==5.10.4' 'source_declared_transformers' 'isolated_transformers_security_floor' 'isolated_transformers_pin' 'GHSA-xrqw-3rrv-vx5w' '2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f' '1feb25cd45b465dc7fb37dce07599c16218584211640357d541ba969917342d8' 'package_rows' 'license_conclusions'; do
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test FAIL missing $token"; fail=1; }
  done
  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$0" <<'PY'
