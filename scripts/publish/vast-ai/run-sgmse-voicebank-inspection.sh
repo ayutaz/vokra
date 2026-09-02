@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 PREPARER="$VOKRA_ROOT/tools/parity/sgmse_prepare_checkpoint.py"
+REFERENCE_DUMPER="$VOKRA_ROOT/tools/parity/sgmse_dump_reference.py"
 MODEL_REPOSITORY="speechbrain/sgmse-voicebank"
 MODEL_REVISION="8f4ff7b65284c49492a43349b8106e094ac0d365"
 SOURCE_URL="https://github.com/sp-uhh/sgmse.git"
@@ -60,7 +61,10 @@ self_test() {
     'BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE' '"reference"' 'NOT_RUN' \
     'BLOCKED_EMA_SELECTION_UNVERIFIED' '"ema_extraction": "UNVERIFIED"' \
     'importlib.metadata' \
-    'vokra-sgmse-typed-role-manifest-v1' 'typed_bindings' 'bind_typed_manifest' \
+    'vokra-sgmse-typed-role-manifest-v2' 'INSPECTION_CANDIDATE' 'typed_bindings' 'candidate_bindings' \
+    'derive_typed_binding_candidates' 'progressive_output_norm' 'bind_typed_manifest' \
+    'sgmse_dump_reference.py --self-test' 'vokra-sgmse-typed-role-candidate-v1' \
+    'typed_candidate_contract' 'source_role_records' 'BLOCKED_SOURCE_STRUCTURAL_RECORDS_MISSING' \
     'source_mapping_review' 'vokra-sgmse-source-mapping-review-v1' \
     'BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN' 'prohibited_derivations' \
     'verdict=BLOCKED' 'blocker_exit=2' 'git status --porcelain'; do
@@ -109,6 +113,11 @@ self_test() {
   if ! UV_CACHE_DIR="$SGMSE_UV_CACHE_DIR" uv run --frozen --no-sync --project "$PARITY_PROJECT" \
     --python 3.12 python "$PREPARER" --self-test >/dev/null; then
     log 'self-test FAIL: preparer self-test failed'
+    fail=1
+  fi
+  if ! UV_CACHE_DIR="$SGMSE_UV_CACHE_DIR" uv run --frozen --no-sync --project "$PARITY_PROJECT" \
+    --python 3.12 python "$REFERENCE_DUMPER" --self-test >/dev/null; then
+    log 'self-test FAIL: reference dumper self-test failed'
     fail=1
   fi
   (( fail == 0 )) || return 1

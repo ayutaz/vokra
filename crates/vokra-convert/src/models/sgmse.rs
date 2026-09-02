@@ -98,6 +98,7 @@ fn valid_role(role: &str) -> bool {
             let _index = fields.next()?.parse::<usize>().ok()?;
             let kind = fields.next()?;
             let _block = fields.next()?.parse::<usize>().ok()?;
+            let module = fields.next()?;
             let slot = fields.next()?;
             if fields.next().is_some() || kind.is_empty() || slot.is_empty() {
                 return None;
@@ -114,20 +115,41 @@ fn valid_role(role: &str) -> bool {
                     | "middle"
                     | "output"
             );
-            let valid_slot = matches!(
-                slot,
-                "weight"
-                    | "bias"
-                    | "norm_gamma"
-                    | "norm_beta"
-                    | "time_embedding"
-                    | "query"
-                    | "key"
-                    | "value"
-                    | "output"
-                    | "fir_kernel"
-            );
-            if valid_kind && valid_slot {
+            let valid_module = match kind {
+                "input" => matches!(module, "input_projection"),
+                "residual" | "middle" | "downsample" | "upsample" => matches!(
+                    module,
+                    "residual_norm1"
+                        | "residual_conv1"
+                        | "residual_time_embedding"
+                        | "residual_norm2"
+                        | "residual_conv2"
+                        | "residual_skip"
+                ),
+                "attention" => matches!(
+                    module,
+                    "attention_norm"
+                        | "attention_query"
+                        | "attention_key"
+                        | "attention_value"
+                        | "attention_output"
+                ),
+                "progressive_output" => {
+                    matches!(module, "progressive_output" | "progressive_output_norm")
+                }
+                "progressive_input" => matches!(module, "progressive_input"),
+                "output" => matches!(module, "output_projection"),
+                _ => false,
+            };
+            let valid_slot = if matches!(
+                module,
+                "residual_norm1" | "residual_norm2" | "attention_norm" | "progressive_output_norm"
+            ) {
+                matches!(slot, "norm_gamma" | "norm_beta")
+            } else {
+                matches!(slot, "weight" | "bias")
+            };
+            if valid_kind && valid_module && valid_slot {
                 Some(())
             } else {
                 None
@@ -198,5 +220,29 @@ mod tests {
         extra[0].role = "arbitrary_passthrough".to_owned();
         assert!(validate_typed_manifest(&extra, &required).is_err());
         assert!(validate_typed_manifest(&[], &required).is_err());
+
+        let structural_roles = vec![
+            "stage:1:residual:1:residual_conv1:weight".to_owned(),
+            "stage:1:residual:1:residual_conv2:weight".to_owned(),
+            "stage:2:attention:0:attention_query:weight".to_owned(),
+            "stage:2:attention:0:attention_key:weight".to_owned(),
+        ];
+        let structural_rows = structural_roles
+            .iter()
+            .enumerate()
+            .map(|(index, role)| SgmseManifestRow {
+                name: format!("source.tensor.{index}"),
+                role: role.clone(),
+                dtype_tag: 0,
+                dimensions: vec![4, 4],
+            })
+            .collect::<Vec<_>>();
+        validate_typed_manifest(&structural_rows, &structural_roles).unwrap();
+        let mut tampered = structural_rows.clone();
+        tampered[0].role = "stage:1:residual:1:unknown:weight".to_owned();
+        assert!(validate_typed_manifest(&tampered, &structural_roles).is_err());
+        tampered = structural_rows;
+        tampered[0].role = "stage:1:residual:1:residual_norm1:weight".to_owned();
+        assert!(validate_typed_manifest(&tampered, &structural_roles).is_err());
     }
 }

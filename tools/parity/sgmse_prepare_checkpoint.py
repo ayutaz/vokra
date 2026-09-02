@@ -68,7 +68,8 @@ EMA_SELECTION_BLOCKER = "BLOCKED_EMA_SELECTION_UNVERIFIED"
 # missing source construction proof.
 TENSOR_MAPPING_BLOCKER = "BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN"
 SOURCE_MAPPING_REVIEW_FORMAT = "vokra-sgmse-source-mapping-review-v1"
-TYPED_TENSOR_CONTRACT_FORMAT = "vokra-sgmse-typed-role-manifest-v1"
+TYPED_TENSOR_CONTRACT_FORMAT = "vokra-sgmse-typed-role-manifest-v2"
+TYPED_CANDIDATE_STATUS = "INSPECTION_CANDIDATE"
 # Filled only by a later commit after VAST reviews the real checkpoint.  The
 # inspector must not let a caller self-authorize rows and a matching digest.
 REVIEWED_TENSOR_MANIFEST_SHA256: str | None = None
@@ -95,12 +96,51 @@ TYPED_STAGE_SLOTS = {
     "bias",
     "norm_gamma",
     "norm_beta",
-    "time_embedding",
-    "query",
-    "key",
-    "value",
-    "output",
-    "fir_kernel",
+}
+TYPED_STAGE_MODULES = {
+    "input": {"input_projection"},
+    "residual": {
+        "residual_norm1",
+        "residual_conv1",
+        "residual_time_embedding",
+        "residual_norm2",
+        "residual_conv2",
+        "residual_skip",
+    },
+    "attention": {
+        "attention_norm",
+        "attention_query",
+        "attention_key",
+        "attention_value",
+        "attention_output",
+    },
+    "downsample": {
+        "residual_norm1",
+        "residual_conv1",
+        "residual_time_embedding",
+        "residual_norm2",
+        "residual_conv2",
+        "residual_skip",
+    },
+    "upsample": {
+        "residual_norm1",
+        "residual_conv1",
+        "residual_time_embedding",
+        "residual_norm2",
+        "residual_conv2",
+        "residual_skip",
+    },
+    "progressive_output": {"progressive_output", "progressive_output_norm"},
+    "progressive_input": {"progressive_input"},
+    "middle": {
+        "residual_norm1",
+        "residual_conv1",
+        "residual_time_embedding",
+        "residual_norm2",
+        "residual_conv2",
+        "residual_skip",
+    },
+    "output": {"output_projection"},
 }
 LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS = {
     "speechbrain/integrations/models/sgmse_plus.py": {
@@ -219,15 +259,28 @@ def valid_typed_role(role: Any) -> bool:
     if not isinstance(role, str) or not role.startswith("stage:"):
         return False
     fields = role.split(":")
-    if len(fields) != 5:
+    if len(fields) != 6:
         return False
-    _, index, kind, block, slot = fields
-    return (
-        index.isdecimal()
-        and block.isdecimal()
-        and kind in TYPED_STAGE_KINDS
-        and slot in TYPED_STAGE_SLOTS
-    )
+    _, index, kind, block, module, slot = fields
+    if (
+        not index.isascii()
+        or not index.isdecimal()
+        or not block.isascii()
+        or not block.isdecimal()
+        or kind not in TYPED_STAGE_KINDS
+        or module not in TYPED_STAGE_MODULES.get(kind, set())
+        or slot not in TYPED_STAGE_SLOTS
+    ):
+        return False
+    norm_modules = {
+        "residual_norm1",
+        "residual_norm2",
+        "attention_norm",
+        "progressive_output_norm",
+    }
+    if module in norm_modules:
+        return slot in {"norm_gamma", "norm_beta"}
+    return slot in {"weight", "bias"}
 
 
 def validate_typed_manifest_rows(
@@ -241,6 +294,8 @@ def validate_typed_manifest_rows(
         raise ValueError("typed SGMSE required roles must be strings")
     if len(set(required_roles)) != len(required_roles) or len(rows) != len(required_roles):
         raise ValueError("typed SGMSE manifest role set is duplicate or incomplete")
+    if any(not valid_typed_role(role) for role in required_roles):
+        raise ValueError("typed SGMSE required roles contain an unknown structural role")
     expected = set(required_roles)
     names: set[str] = set()
     roles: set[str] = set()
@@ -251,8 +306,9 @@ def validate_typed_manifest_rows(
         role = row.get("role")
         shape = row.get("shape")
         dtype = row.get("dtype")
+        dimensions = row.get("dimensions")
         if (
-            set(row) != {"name", "role", "dtype", "shape"}
+            set(row) != {"name", "role", "dtype", "shape", "dimensions"}
             or not isinstance(name, str)
             or not name
             or any(ord(character) < 32 or ord(character) == 127 or character == "|" for character in name)
@@ -265,6 +321,12 @@ def validate_typed_manifest_rows(
             or not isinstance(shape, list)
             or not shape
             or any(not isinstance(axis, int) or isinstance(axis, bool) or axis <= 0 for axis in shape)
+            or not isinstance(dimensions, list)
+            or any(
+                not isinstance(axis, int) or isinstance(axis, bool) or axis <= 0
+                for axis in dimensions
+            )
+            or dimensions != list(reversed(shape))
         ):
             raise ValueError("typed SGMSE manifest row is duplicate, unknown, or malformed")
         names.add(name)
@@ -285,9 +347,10 @@ def typed_manifest_sha256(rows: Any, required_roles: Any) -> str:
     """Hash rows exactly as ``SgmseTensorManifest::canonical_sha256``.
 
     Framing is role bytes + NUL + exact name bytes + NUL + little-endian
-    GGML dtype tag + little-endian rank + little-endian dimensions, with rows
-    sorted by exact tensor name.  The digest is the only release authority;
-    callers cannot choose an expected value.
+    GGML dtype tag + little-endian rank + little-endian GGUF dimensions, with
+    rows sorted by exact tensor name.  Source ``shape`` is PyTorch outermost
+    first; explicit ``dimensions`` is its reversed GGUF order.  The digest is
+    the only release authority; callers cannot choose an expected value.
     """
     validate_typed_manifest_rows(rows, required_roles)
     canonical = bytearray()
@@ -297,11 +360,105 @@ def typed_manifest_sha256(rows: Any, required_roles: Any) -> str:
         canonical.extend(row["name"].encode("utf-8"))
         canonical.append(0)
         canonical.extend(struct.pack("<I", _dtype_tag(row["dtype"])))
-        shape = row["shape"]
-        canonical.extend(struct.pack("<Q", len(shape)))
-        for dimension in shape:
+        dimensions = row["dimensions"]
+        canonical.extend(struct.pack("<Q", len(dimensions)))
+        for dimension in dimensions:
             canonical.extend(struct.pack("<Q", dimension))
     return hashlib.sha256(canonical).hexdigest()
+
+
+def derive_typed_binding_candidates(
+    source_records: Any,
+    tensor_manifest: Any,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Derive a closed candidate map from source-construction records.
+
+    ``source_records`` must be emitted by the pinned NCSN++ construction walk:
+    each stage row carries the exact state name, structural
+    stage/module/slot, dtype, and shape observed from ``named_parameters``;
+    fixed Fourier/sigma rows use the closed ``fixed_role`` vocabulary.  This
+    helper does not guess from prefixes or ordinals and never turns a
+    candidate into an authority; the reviewed digest gate remains separate.
+    """
+    if not isinstance(source_records, list) or not source_records:
+        raise ValueError("typed SGMSE source construction records are empty")
+    if not isinstance(tensor_manifest, dict) or not tensor_manifest:
+        raise ValueError("typed SGMSE safe-loaded tensor manifest is empty")
+    rows: list[dict[str, Any]] = []
+    names: set[str] = set()
+    roles: set[str] = set()
+    for record in source_records:
+        if not isinstance(record, dict):
+            raise ValueError("typed SGMSE source record is not a complete structural row")
+        stage_keys = {
+            "name", "stage_index", "kind", "block", "module", "slot", "dtype", "shape"
+        }
+        fixed_keys = {"name", "fixed_role", "dtype", "shape"}
+        if set(record) not in (stage_keys, fixed_keys):
+            raise ValueError("typed SGMSE source record is not a complete structural row")
+        name = record["name"]
+        dtype = record["dtype"]
+        shape = record["shape"]
+        if (
+            not isinstance(name, str)
+            or not name
+            or any(ord(character) < 32 or ord(character) == 127 or character == "|" for character in name)
+            or name in names
+            or dtype not in {"torch.float32", "torch.float16", "torch.bfloat16"}
+            or not isinstance(shape, list)
+            or not shape
+            or any(not isinstance(axis, int) or isinstance(axis, bool) or axis <= 0 for axis in shape)
+        ):
+            raise ValueError("typed SGMSE source record is malformed or unknown")
+        if set(record) == fixed_keys:
+            role = record["fixed_role"]
+            if role not in TYPED_FIXED_ROLES:
+                raise ValueError("typed SGMSE source record has an unknown fixed role")
+        else:
+            stage_index = record["stage_index"]
+            kind = record["kind"]
+            block = record["block"]
+            module = record["module"]
+            slot = record["slot"]
+            if (
+                not isinstance(stage_index, int)
+                or isinstance(stage_index, bool)
+                or stage_index < 0
+                or not isinstance(block, int)
+                or isinstance(block, bool)
+                or block < 0
+                or not isinstance(kind, str)
+                or kind not in TYPED_STAGE_KINDS
+                or not isinstance(module, str)
+                or not isinstance(slot, str)
+                or module not in TYPED_STAGE_MODULES.get(kind, set())
+            ):
+                raise ValueError("typed SGMSE source record has unknown structural fields")
+            role = f"stage:{stage_index}:{kind}:{block}:{module}:{slot}"
+        if not valid_typed_role(role) or role in roles:
+            raise ValueError("typed SGMSE source records contain a duplicate or invalid role")
+        descriptor = tensor_manifest.get(name)
+        if (
+            not isinstance(descriptor, dict)
+            or descriptor.get("shape") != shape
+            or descriptor.get("dtype") != dtype
+        ):
+            raise ValueError(f"typed SGMSE source record descriptor mismatch for {name!r}")
+        names.add(name)
+        roles.add(role)
+        rows.append({
+            "name": name,
+            "role": role,
+            "dtype": dtype,
+            "shape": list(shape),
+            "dimensions": list(reversed(shape)),
+        })
+    if names != set(tensor_manifest):
+        raise ValueError("typed SGMSE candidates do not exactly cover the safe-loaded manifest")
+    rows.sort(key=lambda row: row["name"])
+    required_roles = sorted(roles)
+    validate_typed_manifest_rows(rows, required_roles)
+    return rows, required_roles
 
 
 def _bind_typed_manifest_rows(
@@ -657,8 +814,9 @@ def source_mapping_review(
     The source inventory proves file identity and broad implementation roles,
     but it is not a state-dict mapping.  In particular, a ModuleList ordinal or
     a tensor-name prefix is not sufficient to bind a parameter to the native
-    graph.  This function therefore emits a review packet, never candidate
-    rows, until an owner has supplied a source-authenticated one-to-one route.
+    graph.  This function therefore emits a review packet and candidate
+    contract request, never candidate rows, until an owner has supplied source
+    construction records for an authenticated one-to-one route.
     Keeping the packet in the inspection manifest makes the next VAST run
     actionable without allowing a caller to self-authorize a digest.
     """
@@ -668,8 +826,8 @@ def source_mapping_review(
     tensor_names = sorted(safe_manifest) if isinstance(safe_manifest, dict) else []
     review = {
         "format": SOURCE_MAPPING_REVIEW_FORMAT,
-        "status": TENSOR_MAPPING_BLOCKER,
-        "method": "NOT_DERIVED",
+        "status": TYPED_CANDIDATE_STATUS,
+        "method": "SOURCE_CONSTRUCTION_RECORDS_REQUIRED",
         "checkpoint_tensor_count": loaded.get("tensor_count"),
         "checkpoint_tensor_names_sha256": hashlib.sha256(
             "\n".join(tensor_names).encode("utf-8")
@@ -678,6 +836,8 @@ def source_mapping_review(
         else None,
         "candidate_ncsnpp_source_files": ncsnpp_files,
         "typed_bindings": None,
+        "candidate_bindings": None,
+        "candidate_required_roles": None,
         "reviewed_manifest_sha256": REVIEWED_TENSOR_MANIFEST_SHA256,
         "reason": (
             "pinned source inventory identifies implementation files but does "
@@ -687,6 +847,7 @@ def source_mapping_review(
             "clean checkout at the pinned SGMSE revision and exact role-file hashes",
             "source-executed NCSNpp ModuleList construction with every parameter path",
             "strict state_dict load of the fixed checkpoint EMA selection",
+            "source-construction records with stage, module, slot, dtype, and shape for every parameter",
             "one-to-one rows covering every safe-loaded tensor name, dtype, and shape",
             "owner-reviewed canonical role/name/dtype/shape digest compiled into Vokra",
         ],
@@ -945,20 +1106,27 @@ def self_test() -> None:
         {"files_by_role": {"ncsnpp": [{"path": "sgmse/backbones/ncsnpp_v2.py"}]}},
     )
     assert mapping_review["format"] == SOURCE_MAPPING_REVIEW_FORMAT
-    assert mapping_review["status"] == TENSOR_MAPPING_BLOCKER
+    assert mapping_review["status"] == TYPED_CANDIDATE_STATUS
     assert mapping_review["typed_bindings"] is None
+    assert mapping_review["candidate_bindings"] is None
     assert mapping_blockers == [
         f"{TENSOR_MAPPING_BLOCKER}: source construction has not yielded a reviewed one-to-one role map"
     ]
-    required_roles = ["fourier_frequencies", "stage:0:input:0:weight"]
+    required_roles = ["fourier_frequencies", "stage:0:input:0:input_projection:weight"]
     typed_rows = [
-        {"name": "source.frequency", "role": required_roles[0], "dtype": "torch.float32", "shape": [128]},
-        {"name": "source.input.weight", "role": required_roles[1], "dtype": "torch.float32", "shape": [4, 4]},
+        {"name": "source.frequency", "role": required_roles[0], "dtype": "torch.float32", "shape": [128], "dimensions": [128]},
+        {"name": "source.input.weight", "role": required_roles[1], "dtype": "torch.float32", "shape": [4, 4], "dimensions": [4, 4]},
     ]
     validate_typed_manifest_rows(typed_rows, required_roles)
+    assert valid_typed_role(
+        "stage:10:progressive_output:0:progressive_output_norm:norm_gamma"
+    )
+    assert not valid_typed_role(
+        "stage:10:progressive_output:0:progressive_output_norm:weight"
+    )
     assert (
         typed_manifest_sha256(typed_rows, required_roles)
-        == "7c77bb306c39ac21e019c069e329bc47751d5ded02519c3b09755db49658a4a2"
+        == "33b1d5a8dd3d1013f4a16754c29ad7e910d1a44f89a517c74f411cff97c7f306"
     )
     bound_rows = _bind_typed_manifest_rows(
         {"tensor_manifest": {row["name"]: {"shape": row["shape"], "dtype": row["dtype"]} for row in typed_rows}},
@@ -966,6 +1134,114 @@ def self_test() -> None:
         required_roles,
     )
     assert bound_rows == typed_rows
+
+    source_records = [
+        {
+            "name": "source.input.weight",
+            "stage_index": 0,
+            "kind": "input",
+            "block": 0,
+            "module": "input_projection",
+            "slot": "weight",
+            "dtype": "torch.float32",
+            "shape": [4, 4],
+        },
+        {
+            "name": "source.input.bias",
+            "stage_index": 0,
+            "kind": "input",
+            "block": 0,
+            "module": "input_projection",
+            "slot": "bias",
+            "dtype": "torch.float32",
+            "shape": [4],
+        },
+    ]
+    source_manifest = {
+        row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+        for row in source_records
+    }
+    candidate_rows, candidate_roles = derive_typed_binding_candidates(
+        source_records, source_manifest
+    )
+    assert [row["name"] for row in candidate_rows] == [
+        "source.input.bias",
+        "source.input.weight",
+    ]
+    assert candidate_roles == sorted({row["role"] for row in candidate_rows})
+    assert candidate_roles[0].startswith("stage:0:input:0:input_projection:")
+    assert typed_manifest_sha256(candidate_rows, candidate_roles)
+    same_slot_records = [
+        dict(source_records[0], name="source.residual.conv1.weight", stage_index=1,
+             kind="residual", block=1, module="residual_conv1"),
+        dict(source_records[0], name="source.residual.conv2.weight", stage_index=1,
+             kind="residual", block=1, module="residual_conv2"),
+        dict(source_records[0], name="source.attention.query.weight", stage_index=2,
+             kind="attention", block=0, module="attention_query"),
+        dict(source_records[0], name="source.attention.key.weight", stage_index=2,
+             kind="attention", block=0, module="attention_key"),
+    ]
+    same_slot_manifest = {
+        row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+        for row in same_slot_records
+    }
+    same_slot_rows, same_slot_roles = derive_typed_binding_candidates(
+        same_slot_records, same_slot_manifest
+    )
+    assert len(same_slot_rows) == 4
+    assert len(same_slot_roles) == 4
+    assert len({row["role"] for row in same_slot_rows}) == 4
+    assert any("residual_conv1:weight" in role for role in same_slot_roles)
+    assert any("residual_conv2:weight" in role for role in same_slot_roles)
+    assert any("attention_query:weight" in role for role in same_slot_roles)
+    assert any("attention_key:weight" in role for role in same_slot_roles)
+    fixed_record = {
+        "name": "source.fourier_frequencies",
+        "fixed_role": "fourier_frequencies",
+        "dtype": "torch.float32",
+        "shape": [128],
+    }
+    fixed_rows, fixed_roles = derive_typed_binding_candidates(
+        [fixed_record],
+        {fixed_record["name"]: {"shape": [128], "dtype": "torch.float32"}},
+    )
+    assert fixed_rows[0]["role"] == "fourier_frequencies"
+    assert fixed_roles == ["fourier_frequencies"]
+    nonsymmetric = {
+        "name": "source.nonsymmetric",
+        "stage_index": 1,
+        "kind": "residual",
+        "block": 1,
+        "module": "residual_conv1",
+        "slot": "weight",
+        "dtype": "torch.float32",
+        "shape": [2, 3, 5],
+    }
+    nonsymmetric_rows, nonsymmetric_roles = derive_typed_binding_candidates(
+        [nonsymmetric],
+        {"source.nonsymmetric": {"shape": [2, 3, 5], "dtype": "torch.float32"}},
+    )
+    assert nonsymmetric_rows[0]["dimensions"] == [5, 3, 2]
+    assert (
+        typed_manifest_sha256(nonsymmetric_rows, nonsymmetric_roles)
+        == "39671d48bc116445a52d6e573a9045ca5a5d080960a3993923d64c319a6c54ef"
+    )
+    for tampered_record in (
+        source_records[:1],
+        source_records + [dict(source_records[1], name="source.extra")],
+        [dict(source_records[0], module="unknown_module"), source_records[1]],
+        [dict(source_records[0], slot="norm_gamma"), source_records[1]],
+        [dict(source_records[0], name="source|input"), source_records[1]],
+        [dict(source_records[0], shape=[0]), source_records[1]],
+        [dict(fixed_record, fixed_role="arbitrary_passthrough")],
+        [fixed_record, dict(fixed_record, name="source.other")],
+    ):
+        try:
+            derive_typed_binding_candidates(tampered_record, source_manifest)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("tampered source candidate was accepted")
     try:
         _bind_typed_manifest_rows(
             {"tensor_manifest": {"source.frequency": {"shape": [128], "dtype": "torch.float32"}}},

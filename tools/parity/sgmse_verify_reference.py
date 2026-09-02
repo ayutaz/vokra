@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import platform
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -50,6 +52,8 @@ from sgmse_dump_reference import (
     git_revision,
     path_overlaps,
     reject_duplicate_json,
+    typed_candidate_contract,
+    validate_typed_candidate_contract,
     validate_construction_evidence,
 )
 
@@ -182,6 +186,18 @@ def verify_construction_sources(
             raise ValueError("construction pinned source file hash mismatch")
 
 
+def verify_typed_candidate_contract(
+    model: dict[str, Any], construction: dict[str, Any], inspection: dict[str, Any]
+) -> None:
+    """Recompute the inspection candidate; persisted role labels are not authority."""
+    expected = typed_candidate_contract(inspection, construction)
+    validate_typed_candidate_contract(expected, inspection["_manifest_sha256"])
+    actual = model.get("typed_candidate_contract")
+    validate_typed_candidate_contract(actual, inspection["_manifest_sha256"])
+    if actual != expected:
+        raise ValueError("completion typed candidate contract differs from recomputation")
+
+
 def verify_manifest(
     manifest_path: Path, output_dir: Path, vokra_root: Path
 ) -> dict[str, Any]:
@@ -287,6 +303,34 @@ def verify_manifest(
     }:
         raise ValueError("completion license identity mismatch")
 
+    inspection_record = manifest.get("inspection_manifest")
+    inspection_sha256 = manifest.get("inspection_manifest_sha256")
+    if (
+        not isinstance(inspection_record, dict)
+        or set(inspection_record) != {"path", "sha256"}
+        or not isinstance(inspection_record.get("path"), str)
+        or not isinstance(inspection_record.get("sha256"), str)
+        or not isinstance(inspection_sha256, str)
+        or inspection_record["sha256"] != inspection_sha256
+        or len(inspection_sha256) != 64
+    ):
+        raise ValueError("completion inspection manifest identity is malformed")
+    inspection_path = Path(inspection_record["path"])
+    if (
+        not inspection_path.is_absolute()
+        or not inspection_path.parent.is_absolute()
+        or inspection_path.is_symlink()
+        or not inspection_path.is_file()
+        or not stat.S_ISREG(inspection_path.stat().st_mode)
+        or sha256(inspection_path) != inspection_sha256
+    ):
+        raise ValueError("completion inspection manifest is missing or tampered")
+    inspection_payload = json.loads(
+        inspection_path.read_text(encoding="utf-8"),
+        object_pairs_hook=reject_duplicate_json,
+    )
+    inspection_payload["_manifest_sha256"] = inspection_sha256
+
     model = manifest.get("model")
     if not isinstance(model, dict) or model.get("tensor_count") != CHECKPOINT_TENSOR_COUNT or model.get("parameter_count") != CHECKPOINT_PARAMETER_COUNT:
         raise ValueError("completion model count mismatch")
@@ -307,6 +351,7 @@ def verify_manifest(
         expected_checkpoint=checkpoint_identity,
         expected_inspection_sha256=manifest["inspection_manifest_sha256"],
     )
+    verify_typed_candidate_contract(model, construction, inspection_payload)
     verify_construction_sources(construction, source_path, Path(speechbrain.get("path", "")))
     ema_route = manifest.get("ema_route")
     if not isinstance(ema_route, dict) or ema_route.get("status") != EMA_ROUTE_STATUS or ema_route.get("loadable") != "score_model_ema" or ema_route.get("unsafe_pickle_fallback") is not False:
@@ -388,13 +433,6 @@ def verify_manifest(
         or identity.get("self_test") != "sgmse_dump_reference.py --self-test"
     ):
         raise ValueError("completion reference identity mismatch")
-    inspection = manifest.get("inspection_manifest")
-    if not isinstance(inspection, dict) or inspection.get("sha256") != manifest.get("inspection_manifest_sha256"):
-        raise ValueError("completion inspection manifest identity mismatch")
-    inspection_path = Path(inspection.get("path", ""))
-    if inspection_path.is_symlink() or not inspection_path.is_file() or sha256(inspection_path) != inspection.get("sha256"):
-        raise ValueError("completion inspection manifest is missing or tampered")
-
     speechbrain_path = Path(speechbrain.get("path", ""))
     clean_revision(source_path, SOURCE_REVISION, "SGMSE source")
     clean_revision(speechbrain_path, SPEECHBRAIN_REVISION, "SpeechBrain source")
@@ -418,7 +456,15 @@ def self_test() -> None:
     assert EXPECTED_SPEECHBRAIN_REPOSITORY == "https://github.com/speechbrain/speechbrain.git"
     assert CONSTRUCTION_EVIDENCE_FORMAT == "vokra-sgmse-construction-evidence-v1"
     assert "validate_construction_evidence" in verify_manifest.__code__.co_names
+    assert "verify_typed_candidate_contract" in verify_manifest.__code__.co_names
+    assert "validate_typed_candidate_contract" in verify_typed_candidate_contract.__code__.co_names
     assert "verify_construction_sources" in verify_manifest.__code__.co_names
+    verifier_source = inspect.getsource(verify_manifest)
+    inspection_record_at = verifier_source.index('inspection_record = manifest.get("inspection_manifest")')
+    inspection_hash_at = verifier_source.index("sha256(inspection_path)", inspection_record_at)
+    inspection_parse_at = verifier_source.index("inspection_payload = json.loads", inspection_hash_at)
+    candidate_check_at = verifier_source.index("verify_typed_candidate_contract", inspection_parse_at)
+    assert inspection_record_at < inspection_hash_at < inspection_parse_at < candidate_check_at
     assert HYPERPARAMS_SHA256 == "5ebd87c6257537c3997c134b279d85cd7bebccce0e6d3fc68f7a36f15096aa51"
     assert set(EXPECTED_ARTIFACTS) == {
         "input_noisy_real",

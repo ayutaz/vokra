@@ -105,6 +105,9 @@ pretrainer: !new:speechbrain.utils.parameter_transfer.Pretrainer
 """
 REFERENCE_FORMAT = "vokra-sgmse-score-reference-v1"
 CONSTRUCTION_EVIDENCE_FORMAT = "vokra-sgmse-construction-evidence-v1"
+TYPED_CANDIDATE_CONTRACT_FORMAT = "vokra-sgmse-typed-role-candidate-v1"
+TYPED_CANDIDATE_STATUS = "INSPECTION_CANDIDATE"
+TYPED_CANDIDATE_BLOCKER = "BLOCKED_SOURCE_STRUCTURAL_RECORDS_MISSING"
 REFERENCE_BLOCKER = "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE"
 INSPECTION_EMA_BLOCKER = "BLOCKED_EMA_SELECTION_UNVERIFIED"
 EMA_ROUTE_STATUS = "SOURCE_ROUTE_VERIFIED_STRICT_LOAD"
@@ -594,6 +597,379 @@ def _direct_tensor_rows(module: Any) -> tuple[list[dict[str, Any]], list[dict[st
     )
 
 
+SOURCE_CH_MULT = (1, 1, 2, 2, 2, 2, 2)
+SOURCE_NUM_RES_BLOCKS = 2
+SOURCE_ATTN_RESOLUTION = 16
+SOURCE_IMAGE_SIZE = 256
+SOURCE_NF = 128
+SOURCE_MODULE_COUNT = 77
+
+
+def _source_stage_plan() -> list[dict[str, Any]]:
+    """Return the fixed NCSN++ v2 stage order used by Rust."""
+    stages: list[dict[str, Any]] = [{"kind": "input", "block": 0}]
+    levels = len(SOURCE_CH_MULT)
+    for level, multiplier in enumerate(SOURCE_CH_MULT):
+        del multiplier  # The tuple is retained as a source-config assertion.
+        resolution = SOURCE_IMAGE_SIZE >> level
+        for block in range(1, SOURCE_NUM_RES_BLOCKS + 1):
+            stages.append({"kind": "residual", "block": block})
+            if resolution == SOURCE_ATTN_RESOLUTION:
+                stages.append({"kind": "attention", "block": block})
+        if level + 1 < levels:
+            stages.append({"kind": "downsample", "block": 0})
+            stages.append({"kind": "progressive_input", "block": 0})
+    stages.extend(
+        [
+            {"kind": "middle", "block": 1},
+            {"kind": "attention", "block": 0},
+            {"kind": "middle", "block": 2},
+        ]
+    )
+    for level in reversed(range(levels)):
+        resolution = SOURCE_IMAGE_SIZE >> level
+        for block in range(1, SOURCE_NUM_RES_BLOCKS + 2):
+            stages.append({"kind": "residual", "block": block})
+        if resolution == SOURCE_ATTN_RESOLUTION:
+            stages.append({"kind": "attention", "block": 0})
+        stages.append({"kind": "progressive_output", "block": 0})
+        if level > 0:
+            stages.append({"kind": "upsample", "block": 0})
+    stages.append({"kind": "output", "block": 0})
+    return [{"stage_index": index, **stage} for index, stage in enumerate(stages)]
+
+
+def _source_module_plan() -> list[dict[str, Any]]:
+    """Expand graph stages to the pinned source's 77 ModuleList entries."""
+    modules: list[dict[str, Any]] = [
+        {"module_index": 0, "fixed": "fourier_frequencies", "class_suffix": "GaussianFourierProjection"},
+        {"module_index": 1, "fixed": "sigma_first_projection", "class_suffix": "Linear"},
+        {"module_index": 2, "fixed": "sigma_second_projection", "class_suffix": "Linear"},
+    ]
+    module_index = 3
+    for stage in _source_stage_plan():
+        if stage["kind"] == "output":
+            continue
+        if stage["kind"] == "progressive_output":
+            modules.extend(
+                [
+                    {**stage, "module_index": module_index, "module": "progressive_output_norm", "class_suffix": "GroupNorm"},
+                    {**stage, "module_index": module_index + 1, "module": "progressive_output", "class_suffix": "Conv2d"},
+                ]
+            )
+            module_index += 2
+        else:
+            modules.append({
+                **stage,
+                "module_index": module_index,
+                "class_suffix": {
+                    "input": "Conv2d",
+                    "residual": "ResnetBlockBigGANpp",
+                    "attention": "AttnBlockpp",
+                    "downsample": "ResnetBlockBigGANpp",
+                    "upsample": "ResnetBlockBigGANpp",
+                    "progressive_input": "Combine",
+                    "middle": "ResnetBlockBigGANpp",
+                }[stage["kind"]],
+            })
+            module_index += 1
+    if module_index != SOURCE_MODULE_COUNT:
+        raise ValueError(f"pinned NCSN++ source module plan has {module_index} entries, expected {SOURCE_MODULE_COUNT}")
+    return modules
+
+
+def _source_config_from_model(model: Any) -> dict[str, Any]:
+    named_modules = dict(model.named_modules())
+    all_modules = [
+        (path, module)
+        for path, module in named_modules.items()
+        if path.endswith("all_modules")
+        and _class_identity(module) == "torch.nn.modules.container.ModuleList"
+    ]
+    if len(all_modules) != 1:
+        raise ValueError(f"expected one pinned NCSN++ all_modules ModuleList, found {len(all_modules)}")
+    all_modules_path, module_list = all_modules[0]
+    parent_path, separator, _ = all_modules_path.rpartition(".")
+    if not separator or parent_path not in named_modules:
+        raise ValueError("pinned NCSN++ all_modules has no named parent module")
+    backbone = named_modules[parent_path]
+    if getattr(backbone, "all_modules", None) is not module_list:
+        raise ValueError("pinned NCSN++ all_modules parent ownership differs")
+    observed_ch_mult = getattr(backbone, "ch_mult", None)
+    # The pinned constructor keeps ch_mult as a local after validating its
+    # default; its seven-resolution all_modules plan is the source evidence
+    # for this field when no public attribute is retained.
+    if observed_ch_mult is None and getattr(backbone, "num_resolutions", None) == len(SOURCE_CH_MULT):
+        observed_ch_mult = SOURCE_CH_MULT
+    config = {
+        "nf": getattr(backbone, "nf", None),
+        "ch_mult": list(observed_ch_mult or ()),
+        "num_res_blocks": getattr(backbone, "num_res_blocks", None),
+        "attn_resolutions": list(getattr(backbone, "attn_resolutions", ())),
+        "progressive": getattr(backbone, "progressive", None),
+        "progressive_input": getattr(backbone, "progressive_input", None),
+        "resblock_type": getattr(backbone, "resblock_type", None),
+    }
+    expected = {
+        "nf": SOURCE_NF,
+        "ch_mult": list(SOURCE_CH_MULT),
+        "num_res_blocks": SOURCE_NUM_RES_BLOCKS,
+        "attn_resolutions": [SOURCE_ATTN_RESOLUTION],
+        "progressive": "output_skip",
+        "progressive_input": "input_skip",
+        "resblock_type": "biggan",
+    }
+    if config != expected:
+        raise ValueError(f"pinned NCSN++ source config differs: {config!r}")
+    return config
+
+
+_RESIDUAL_PATHS = {
+    "GroupNorm_0": ("residual_norm1", "norm"),
+    "Conv_0": ("residual_conv1", "conv"),
+    "Dense_0": ("residual_time_embedding", "dense"),
+    "GroupNorm_1": ("residual_norm2", "norm"),
+    "Conv_1": ("residual_conv2", "conv"),
+    "Conv_2": ("residual_skip", "conv"),
+}
+_ATTENTION_PATHS = {
+    "GroupNorm_0": ("attention_norm", "norm"),
+    "NIN_0": ("attention_query", "projection"),
+    "NIN_1": ("attention_key", "projection"),
+    "NIN_2": ("attention_value", "projection"),
+    "NIN_3": ("attention_output", "projection"),
+}
+
+
+def _slot_for_parameter(parameter_name: str, category: str) -> str:
+    if category == "norm":
+        return {"weight": "norm_gamma", "bias": "norm_beta"}.get(parameter_name, "")
+    if category == "projection":
+        return {"W": "weight", "b": "bias"}.get(parameter_name, "")
+    return parameter_name if parameter_name in {"weight", "bias"} else ""
+
+
+def _class_suffix_matches(observed: str, expected: str) -> bool:
+    if expected in {"Linear", "Conv2d", "GroupNorm"}:
+        return observed.startswith("torch.") and observed.endswith(f".{expected}")
+    return observed == expected or observed.endswith(f".{expected}")
+
+
+def _validate_owner_module(
+    owner: dict[str, Any], expected_class: str, *, pinned: bool = False
+) -> None:
+    observed = owner.get("class", "")
+    if not _class_suffix_matches(observed, expected_class):
+        raise ValueError("source parameter owner class identity drifted")
+    source = owner.get("source")
+    if pinned and (
+        not isinstance(source, dict)
+        or source.get("kind") != "pinned_checkout"
+        or source.get("revision") != SOURCE_REVISION
+    ):
+        raise ValueError("source parameter owner is not from the pinned checkout")
+
+
+def source_role_records_from_construction(
+    construction: dict[str, Any], loaded: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Derive closed typed rows from the instantiated pinned source graph."""
+    all_modules = construction.get("ncsnpp_all_modules")
+    if not isinstance(all_modules, dict) or all_modules.get("count") != SOURCE_MODULE_COUNT:
+        raise ValueError("pinned NCSN++ source ModuleList count is not 77")
+    module_rows = all_modules.get("rows")
+    if not isinstance(module_rows, list) or len(module_rows) != SOURCE_MODULE_COUNT:
+        raise ValueError("pinned NCSN++ source ModuleList rows are incomplete")
+    module_plan = _source_module_plan()
+    for observed, expected in zip(module_rows, module_plan):
+        if not isinstance(observed, dict) or observed.get("ordinal") != expected["module_index"]:
+            raise ValueError("pinned NCSN++ source ModuleList order is not exact")
+        if not _class_suffix_matches(observed.get("class", ""), expected["class_suffix"]):
+            raise ValueError("pinned NCSN++ source ModuleList class identity drifted")
+        source = observed.get("source")
+        if expected["class_suffix"] not in {"Linear", "Conv2d", "GroupNorm"} and (
+            not isinstance(source, dict)
+            or source.get("kind") != "pinned_checkout"
+            or source.get("revision") != SOURCE_REVISION
+        ):
+            raise ValueError("NCSN++ module class is not owned by the pinned source checkout")
+
+    state = construction.get("state_dict")
+    state_rows = state.get("rows") if isinstance(state, dict) else None
+    tensor_manifest = loaded.get("tensor_manifest") if isinstance(loaded, dict) else None
+    if not isinstance(state_rows, list) or not isinstance(tensor_manifest, dict):
+        raise ValueError("source construction/state tensor evidence is missing")
+    if {row.get("name") for row in state_rows} != set(tensor_manifest):
+        raise ValueError("source construction and safe-loaded tensor names differ")
+    named_modules = construction.get("named_modules")
+    if not isinstance(named_modules, list) or not named_modules:
+        raise ValueError("source construction named module ownership is missing")
+    owners = {row.get("path"): row for row in named_modules if isinstance(row, dict)}
+
+    all_path = all_modules.get("path")
+    if not isinstance(all_path, str) or not all_path.endswith("all_modules"):
+        raise ValueError("NCSN++ all_modules owner path is invalid")
+    parent_path, separator, _ = all_path.rpartition(".")
+    if not separator or parent_path not in owners:
+        raise ValueError("NCSN++ all_modules parent owner path is missing")
+    stage_by_module = {
+        item["module_index"]: item for item in module_plan if "stage_index" in item
+    }
+    records: list[dict[str, Any]] = []
+    role_keys: set[Any] = set()
+    fixed_role_seen: set[str] = set()
+    for row in state_rows:
+        if not isinstance(row, dict):
+            raise ValueError("source state row is malformed")
+        owner_path = row.get("owner_path")
+        owner_name = row.get("owner_name")
+        if not isinstance(owner_path, str) or not isinstance(owner_name, str):
+            raise ValueError("source state owner identity is malformed")
+        # ``output_layer`` is deliberately outside all_modules in the pinned
+        # constructor and is the final Rust Output stage.
+        if owner_path == "output_layer" or owner_path.endswith(".output_layer"):
+            owner = owners.get(owner_path)
+            if not isinstance(owner, dict):
+                raise ValueError("output_layer owner path is missing from source construction")
+            _validate_owner_module(owner, "Conv2d")
+            if row.get("owner_kind") != "parameter" or owner_name not in {"weight", "bias"}:
+                raise ValueError("output_layer has an unknown parameter leaf")
+            output_stage = _source_stage_plan()[-1]
+            record = {
+                "name": row["name"],
+                "stage_index": output_stage["stage_index"],
+                "kind": "output",
+                "block": 0,
+                "module": "output_projection",
+                "slot": owner_name,
+            }
+            descriptor = tensor_manifest.get(row["name"])
+            if not isinstance(descriptor, dict) or descriptor.get("shape") != row.get("shape") or descriptor.get("dtype") != row.get("dtype"):
+                raise ValueError(f"source/safe-loaded descriptor mismatch for {row.get('name')!r}")
+            record["dtype"] = row["dtype"]
+            record["shape"] = list(row["shape"])
+            role_key = (
+                record["stage_index"], record["kind"], record["block"],
+                record["module"], record["slot"],
+            )
+            if role_key in role_keys:
+                raise ValueError("source structural role is duplicated")
+            role_keys.add(role_key)
+            records.append(record)
+            continue
+        prefix = f"{all_path}."
+        if owner_path == all_path or not owner_path.startswith(prefix):
+            raise ValueError(f"state row is outside NCSN++ all_modules: {row.get('name')!r}")
+        remainder = owner_path[len(prefix):]
+        module_token, separator, relative = remainder.partition(".")
+        if not module_token.isascii() or not module_token.isdecimal():
+            raise ValueError("state owner lacks an exact all_modules index")
+        module_index = int(module_token)
+        owner = owners.get(owner_path)
+        if not isinstance(owner, dict):
+            raise ValueError("source parameter owner path is missing from construction")
+        stage = stage_by_module.get(module_index)
+        if stage is None:
+            fixed = next((item for item in module_plan if item["module_index"] == module_index), None)
+            if fixed is None or module_index not in {0, 1, 2}:
+                raise ValueError("state row has an unknown source module owner")
+            _validate_owner_module(owner, fixed["class_suffix"])
+            expected_leaves = {0: {"W"}, 1: {"weight", "bias"}, 2: {"weight", "bias"}}[module_index]
+            expected_kind = "parameter"
+            if row.get("owner_kind") != expected_kind or relative or owner_name not in expected_leaves:
+                raise ValueError("fixed source module has an unknown parameter path")
+            fixed_role_names = {
+                (0, "W"): "fourier_frequencies",
+                (1, "weight"): "sigma_first_projection",
+                (1, "bias"): "sigma_first_bias",
+                (2, "weight"): "sigma_second_projection",
+                (2, "bias"): "sigma_second_bias",
+            }
+            record = {"name": row["name"], "fixed_role": fixed_role_names[(module_index, owner_name)]}
+            role_key: Any = record["fixed_role"]
+            if role_key in fixed_role_seen:
+                raise ValueError("fixed source role is duplicated")
+            fixed_role_seen.add(role_key)
+        else:
+            if row.get("owner_kind") != "parameter":
+                raise ValueError("learned NCSN++ source row is not a parameter")
+            kind = stage["kind"]
+            if kind in {"residual", "downsample", "upsample", "middle"}:
+                path_token = relative.split(".", 1)[0]
+                module_info = _RESIDUAL_PATHS.get(path_token)
+            elif kind == "attention":
+                path_token = relative.split(".", 1)[0]
+                module_info = _ATTENTION_PATHS.get(path_token)
+            elif kind == "progressive_input":
+                path_token = relative.split(".", 1)[0]
+                module_info = ("progressive_input", "conv") if path_token == "Conv_0" else None
+            elif kind == "input":
+                module_info = ("input_projection", "conv") if not relative else None
+            elif kind == "progressive_output":
+                module_info = (
+                    (stage["module"], "norm")
+                    if stage.get("module") == "progressive_output_norm"
+                    else (stage["module"], "conv")
+                    if stage.get("module") == "progressive_output"
+                    else None
+                )
+            else:
+                module_info = None
+            if module_info is None:
+                raise ValueError(f"unknown source submodule path for {row.get('name')!r}")
+            module, category = module_info
+            path_token = relative.split(".", 1)[0] if relative else ""
+            if category == "norm":
+                _validate_owner_module(owner, "GroupNorm")
+            elif category == "projection" and path_token.startswith("NIN_"):
+                _validate_owner_module(owner, "NIN", pinned=True)
+            else:
+                _validate_owner_module(owner, "Linear" if category == "dense" else "Conv2d")
+            parameter = _slot_for_parameter(owner_name, category)
+            if not parameter:
+                raise ValueError(f"unknown source parameter leaf for {row.get('name')!r}")
+            role = None
+            for plan_item in module_plan:
+                if plan_item["module_index"] == module_index:
+                    role = f"stage:{stage['stage_index']}:{kind}:{stage['block']}:{module}:{parameter}"
+                    break
+            if role is None:
+                raise ValueError("source module plan lookup failed")
+            record = {
+                "name": row["name"],
+                "stage_index": stage["stage_index"],
+                "kind": kind,
+                "block": stage["block"],
+                "module": module,
+                "slot": parameter,
+            }
+            role_key = (
+                record["stage_index"], record["kind"], record["block"],
+                record["module"], record["slot"],
+            )
+        if role_key in role_keys:
+            raise ValueError("source structural role is duplicated")
+        role_keys.add(role_key)
+        descriptor = tensor_manifest.get(row["name"])
+        if not isinstance(descriptor, dict) or descriptor.get("shape") != row.get("shape") or descriptor.get("dtype") != row.get("dtype"):
+            raise ValueError(f"source/safe-loaded descriptor mismatch for {row.get('name')!r}")
+        record["dtype"] = row["dtype"]
+        record["shape"] = list(row["shape"])
+        records.append(record)
+    records.sort(key=lambda record: record["name"])
+    if len(records) != len(tensor_manifest):
+        raise ValueError("source typed role records are duplicate or incomplete")
+    if fixed_role_seen != {
+        "fourier_frequencies",
+        "sigma_first_projection",
+        "sigma_first_bias",
+        "sigma_second_projection",
+        "sigma_second_bias",
+    }:
+        raise ValueError("source fixed role coverage is incomplete")
+    return records
+
+
 def collect_construction_evidence(
     model: Any,
     loaded: dict[str, Any],
@@ -602,7 +978,7 @@ def collect_construction_evidence(
     checkpoint: Path,
     inspection_manifest: Path,
 ) -> dict[str, Any]:
-    """Capture exact source construction facts without assigning native roles."""
+    """Capture exact source construction facts and candidate structural roles."""
     import torch
 
     roots = (
@@ -704,7 +1080,10 @@ def collect_construction_evidence(
             "count": len(module_rows),
             "rows": module_rows,
         },
+        "source_config": _source_config_from_model(model),
+        "source_role_records": None,
     }
+    packet["source_role_records"] = source_role_records_from_construction(packet, loaded)
     packet["canonical_sha256"] = construction_evidence_sha256(packet)
     return packet
 
@@ -738,6 +1117,55 @@ def _validate_direct_rows(rows: Any, label: str) -> set[str]:
     return set(names)
 
 
+def _validate_construction_source(source: Any, class_identity: str) -> None:
+    """Accept only the two authenticated source identity schemas."""
+    if not isinstance(source, dict) or not isinstance(class_identity, str):
+        raise ValueError("construction source/class identity is invalid")
+    kind = source.get("kind")
+    if kind == "runtime":
+        if (
+            set(source) != {"kind", "module"}
+            or source.get("module") != class_identity
+            or not isinstance(source.get("module"), str)
+            or not source["module"].startswith("torch.")
+        ):
+            raise ValueError("construction runtime source/class identity is invalid")
+        return
+    if kind != "pinned_checkout" or set(source) != {
+        "kind", "repository", "revision", "path", "sha256"
+    }:
+        raise ValueError("construction pinned source identity is invalid")
+    if class_identity.startswith("torch."):
+        raise ValueError("torch runtime class cannot claim pinned source ownership")
+    revisions = {
+        SOURCE_REPOSITORY: SOURCE_REVISION,
+        SPEECHBRAIN_REPOSITORY: SPEECHBRAIN_REVISION,
+    }
+    repository = source.get("repository")
+    if not isinstance(repository, str) or repository not in revisions:
+        raise ValueError("construction pinned source repository is not authenticated")
+    if source.get("revision") != revisions[repository]:
+        raise ValueError("construction pinned source repository/revision is not authenticated")
+    path = source.get("path")
+    if (
+        not isinstance(path, str)
+        or not path
+        or path == "."
+        or Path(path).is_absolute()
+        or ".." in Path(path).parts
+        or any(ord(character) < 32 or ord(character) == 127 for character in path)
+    ):
+        raise ValueError("construction pinned source path is unsafe")
+    digest = source.get("sha256")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or digest.lower() != digest
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError("construction pinned source hash is malformed")
+
+
 def validate_construction_evidence(
     evidence: Any,
     *,
@@ -748,7 +1176,7 @@ def validate_construction_evidence(
     if not isinstance(evidence, dict) or set(evidence) != {
         "format", "source", "checkpoint", "inspection_manifest_sha256",
         "state_dict", "named_modules", "ncsnpp_all_modules",
-        "canonical_sha256",
+        "source_config", "source_role_records", "canonical_sha256",
     }:
         raise ValueError("construction evidence envelope is malformed")
     if evidence["format"] != CONSTRUCTION_EVIDENCE_FORMAT:
@@ -769,6 +1197,19 @@ def validate_construction_evidence(
     expected_digest = construction_evidence_sha256(unsigned)
     if evidence["canonical_sha256"] != expected_digest:
         raise ValueError("construction evidence canonical digest mismatch")
+    source_records = evidence["source_role_records"]
+    if source_records is not None and not isinstance(source_records, list):
+        raise ValueError("construction source role records are not a list or null")
+    if evidence["source_config"] != {
+        "nf": SOURCE_NF,
+        "ch_mult": list(SOURCE_CH_MULT),
+        "num_res_blocks": SOURCE_NUM_RES_BLOCKS,
+        "attn_resolutions": [SOURCE_ATTN_RESOLUTION],
+        "progressive": "output_skip",
+        "progressive_input": "input_skip",
+        "resblock_type": "biggan",
+    }:
+        raise ValueError("construction source config differs from the pinned NCSN++ defaults")
 
     modules = evidence["named_modules"]
     if not isinstance(modules, list) or not modules:
@@ -785,18 +1226,7 @@ def validate_construction_evidence(
             raise ValueError("construction named_module paths are duplicated")
         if not isinstance(row["class"], str) or not row["class"]:
             raise ValueError("construction named_module class is malformed")
-        source = row["source"]
-        if (
-            not isinstance(source, dict)
-            or source.get("kind") == "runtime"
-            and (
-                set(source) != {"kind", "module"}
-                or source.get("module") != row["class"]
-                or not isinstance(source.get("module"), str)
-                or not source["module"].startswith("torch.")
-            )
-        ):
-            raise ValueError("construction named_module source/class identity is invalid")
+        _validate_construction_source(row["source"], row["class"])
         _validate_direct_rows(row["direct_parameters"], f"module {path} parameters")
         _validate_direct_rows(row["direct_buffers"], f"module {path} buffers")
         paths.append(path)
@@ -820,18 +1250,7 @@ def validate_construction_evidence(
             raise ValueError("construction all_modules rows are missing, duplicated, or reordered")
         if not isinstance(row["class"], str) or not row["class"]:
             raise ValueError("construction all_modules class is malformed")
-        source = row["source"]
-        if (
-            not isinstance(source, dict)
-            or source.get("kind") == "runtime"
-            and (
-                set(source) != {"kind", "module"}
-                or source.get("module") != row["class"]
-                or not isinstance(source.get("module"), str)
-                or not source["module"].startswith("torch.")
-            )
-        ):
-            raise ValueError("construction all_modules source/class identity is invalid")
+        _validate_construction_source(row["source"], row["class"])
         parameters = _validate_direct_rows(
             row["direct_parameters"], f"all_modules[{ordinal}] parameters"
         )
@@ -899,6 +1318,131 @@ def validate_construction_evidence(
         for key in ("parameter_numel", "buffer_numel")
     ) or state["parameter_numel"] > parameter_rows or state["buffer_numel"] > buffer_rows:
         raise ValueError("construction true parameter/buffer totals are invalid")
+    if source_records is not None:
+        construction_manifest = {
+            row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+            for row in rows
+        }
+        expected_records = source_role_records_from_construction(
+            evidence, {"tensor_manifest": construction_manifest}
+        )
+        if source_records != expected_records:
+            raise ValueError(
+                "construction source role records differ from deterministic mapping"
+            )
+
+
+def typed_candidate_contract(
+    inspection: dict[str, Any], construction: dict[str, Any]
+) -> dict[str, Any]:
+    """Bind source-construction records to the inspected tensor manifest.
+
+    The pinned source adapter emits structural records, but this function
+    re-derives them from the construction packet before the shared preparer
+    sees them.  The result is still a candidate contract; only a separately
+    reviewed digest can authorize a native artifact.
+    """
+    contract: dict[str, Any] = {
+        "format": TYPED_CANDIDATE_CONTRACT_FORMAT,
+        "status": TYPED_CANDIDATE_STATUS,
+        "source": "pinned_ncsnpp_construction",
+        "inspection_manifest_sha256": inspection.get("_manifest_sha256"),
+        "candidate_bindings": None,
+        "candidate_required_roles": None,
+        "reviewed_manifest_sha256": None,
+    }
+    records = construction.get("source_role_records")
+    if records is None:
+        contract["blocker"] = TYPED_CANDIDATE_BLOCKER
+        contract["reason"] = (
+            "source construction evidence has exact state/module ownership, "
+            "but no source-authenticated stage/module/slot records"
+        )
+        return contract
+    try:
+        state = construction.get("state_dict")
+        state_rows = state.get("rows") if isinstance(state, dict) else None
+        if not isinstance(state_rows, list):
+            raise ValueError("source construction state rows are missing")
+        source_manifest = {
+            row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+            for row in state_rows
+            if isinstance(row, dict)
+            and {"name", "shape", "dtype"}.issubset(row)
+        }
+        expected_records = source_role_records_from_construction(
+            construction, {"tensor_manifest": source_manifest}
+        )
+        if records != expected_records:
+            raise ValueError(
+                "source role records differ from deterministic construction mapping"
+            )
+        from sgmse_prepare_checkpoint import derive_typed_binding_candidates
+
+        loaded = inspection.get("safe_load")
+        tensor_manifest = loaded.get("tensor_manifest") if isinstance(loaded, dict) else None
+        rows, required_roles = derive_typed_binding_candidates(records, tensor_manifest)
+    except (ImportError, ValueError) as error:
+        contract["blocker"] = TYPED_CANDIDATE_BLOCKER
+        contract["reason"] = f"source structural candidate validation failed: {error}"
+        return contract
+    contract["candidate_bindings"] = rows
+    contract["candidate_required_roles"] = required_roles
+    contract["candidate_manifest_sha256"] = _typed_manifest_sha256(rows, required_roles)
+    return contract
+
+
+def validate_typed_candidate_contract(
+    contract: Any,
+    expected_inspection_sha256: str,
+    *,
+    expected_tensor_count: int = CHECKPOINT_TENSOR_COUNT,
+) -> None:
+    """Require a complete candidate; persisted blockers can never verify."""
+    expected_keys = {
+        "format",
+        "status",
+        "source",
+        "inspection_manifest_sha256",
+        "candidate_bindings",
+        "candidate_required_roles",
+        "candidate_manifest_sha256",
+        "reviewed_manifest_sha256",
+    }
+    if not isinstance(contract, dict) or set(contract) != expected_keys:
+        raise ValueError("typed candidate contract is incomplete or contains a blocker")
+    if (
+        contract["format"] != TYPED_CANDIDATE_CONTRACT_FORMAT
+        or contract["status"] != TYPED_CANDIDATE_STATUS
+        or contract["source"] != "pinned_ncsnpp_construction"
+        or contract["inspection_manifest_sha256"] != expected_inspection_sha256
+        or contract["reviewed_manifest_sha256"] is not None
+    ):
+        raise ValueError("typed candidate contract identity or review gate is invalid")
+    rows = contract["candidate_bindings"]
+    required_roles = contract["candidate_required_roles"]
+    if (
+        not isinstance(rows, list)
+        or not isinstance(required_roles, list)
+        or len(rows) != expected_tensor_count
+        or len(required_roles) != expected_tensor_count
+    ):
+        raise ValueError("typed candidate contract does not cover the complete checkpoint")
+    digest = contract["candidate_manifest_sha256"]
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or digest.lower() != digest
+        or any(character not in "0123456789abcdef" for character in digest)
+        or digest != _typed_manifest_sha256(rows, required_roles)
+    ):
+        raise ValueError("typed candidate contract digest is malformed or mismatched")
+
+
+def _typed_manifest_sha256(rows: list[dict[str, Any]], required_roles: list[str]) -> str:
+    from sgmse_prepare_checkpoint import typed_manifest_sha256
+
+    return typed_manifest_sha256(rows, required_roles)
 
 
 def load_score_model(
@@ -1130,9 +1674,9 @@ def _run_reference_into(
         or model_evidence.get("parameter_count") != CHECKPOINT_PARAMETER_COUNT
     ):
         raise ValueError("strict model load count differs from reviewed checkpoint evidence")
-    # Capture the source construction route after strict loading. This packet
-    # is evidence for a later offline mapping review only; it deliberately
-    # contains no Vokra role labels and cannot unlock REVIEWED_* constants.
+    # Capture the source construction route after strict loading. These
+    # source-authenticated structural records are still candidate-only: they
+    # contain no reviewed Vokra authority and cannot unlock REVIEWED_* constants.
     model_evidence["construction_evidence"] = collect_construction_evidence(
         model,
         loaded_manifest,
@@ -1141,6 +1685,14 @@ def _run_reference_into(
         checkpoint,
         inspection_manifest,
     )
+    inspection["_manifest_sha256"] = sha256(inspection_manifest)
+    candidate_contract = typed_candidate_contract(
+        inspection, model_evidence["construction_evidence"]
+    )
+    validate_typed_candidate_contract(
+        candidate_contract, inspection["_manifest_sha256"]
+    )
+    model_evidence["typed_candidate_contract"] = candidate_contract
     # Imports and model construction can mutate Torch's precision policy and
     # consume RNG state. Re-establish the forward-time contract immediately
     # after those operations so fixture bytes are reproducible.
@@ -1338,6 +1890,48 @@ def self_test() -> None:
     assert "torch.load(weights_only=True)" in inspect.getsource(load_score_model)
     assert '"bytes": int(tensor.numel()) * 4' in inspect.getsource(_run_reference_into)
     assert CONSTRUCTION_EVIDENCE_FORMAT == "vokra-sgmse-construction-evidence-v1"
+    assert TYPED_CANDIDATE_CONTRACT_FORMAT == "vokra-sgmse-typed-role-candidate-v1"
+    assert TYPED_CANDIDATE_STATUS == "INSPECTION_CANDIDATE"
+    assert TYPED_CANDIDATE_BLOCKER == "BLOCKED_SOURCE_STRUCTURAL_RECORDS_MISSING"
+    assert "derive_typed_binding_candidates" in inspect.getsource(typed_candidate_contract)
+    assert "validate_typed_candidate_contract" in inspect.getsource(_run_reference_into)
+    stage_plan = _source_stage_plan()
+    module_plan = _source_module_plan()
+    assert len(stage_plan) == 68
+    assert len(module_plan) == SOURCE_MODULE_COUNT == 77
+    assert module_plan[:3] == [
+        {"module_index": 0, "fixed": "fourier_frequencies", "class_suffix": "GaussianFourierProjection"},
+        {"module_index": 1, "fixed": "sigma_first_projection", "class_suffix": "Linear"},
+        {"module_index": 2, "fixed": "sigma_second_projection", "class_suffix": "Linear"},
+    ]
+    assert sum(item.get("module") == "progressive_output_norm" for item in module_plan) == 7
+    assert sum(item.get("module") == "progressive_output" for item in module_plan) == 7
+    class ToyModuleList:
+        pass
+
+    ToyModuleList.__module__ = "torch.nn.modules.container"
+    ToyModuleList.__qualname__ = "ModuleList"
+
+    class ToyDnn:
+        pass
+
+    toy_module_list = ToyModuleList()
+    toy_dnn = ToyDnn()
+    toy_dnn.all_modules = toy_module_list
+    toy_dnn.nf = SOURCE_NF
+    toy_dnn.num_resolutions = len(SOURCE_CH_MULT)
+    toy_dnn.num_res_blocks = SOURCE_NUM_RES_BLOCKS
+    toy_dnn.attn_resolutions = (SOURCE_ATTN_RESOLUTION,)
+    toy_dnn.progressive = "output_skip"
+    toy_dnn.progressive_input = "input_skip"
+    toy_dnn.resblock_type = "biggan"
+
+    class ToyModel:
+        def named_modules(self):
+            return [("", object()), ("dnn", toy_dnn), ("dnn.all_modules", toy_module_list)]
+
+    assert _source_config_from_model(ToyModel())["ch_mult"] == list(SOURCE_CH_MULT)
+    import copy
     # A dependency-free packet model stands in for a tiny ModuleList. The
     # actual collector runs only after the pinned model is loaded on VAST;
     # these checks exercise the same strict packet contract locally.
@@ -1347,16 +1941,16 @@ def self_test() -> None:
     }
     toy_modules = [
         {"path": "", "class": "torch.nn.Module", "source": toy_source, "direct_parameters": [], "direct_buffers": []},
-        {"path": "backbone", "class": "torch.nn.Module", "source": toy_source, "direct_parameters": [], "direct_buffers": []},
-        {"path": "backbone.all_modules", "class": "torch.nn.modules.container.ModuleList", "source": toy_module_list_source, "direct_parameters": [], "direct_buffers": []},
-        {"path": "backbone.all_modules.0", "class": "torch.nn.Module", "source": toy_source, "direct_parameters": [
+        {"path": "dnn", "class": "torch.nn.Module", "source": toy_source, "direct_parameters": [], "direct_buffers": []},
+        {"path": "dnn.all_modules", "class": "torch.nn.modules.container.ModuleList", "source": toy_module_list_source, "direct_parameters": [], "direct_buffers": []},
+        {"path": "dnn.all_modules.0", "class": "torch.nn.Module", "source": toy_source, "direct_parameters": [
             {"name": "bias", "shape": [1], "dtype": "torch.float32"},
             {"name": "weight", "shape": [1], "dtype": "torch.float32"},
         ], "direct_buffers": []},
     ]
     toy_state_rows = [
-        {"name": "backbone.all_modules.0.bias", "shape": [1], "dtype": "torch.float32", "owner_path": "backbone.all_modules.0", "owner_kind": "parameter", "owner_name": "bias"},
-        {"name": "backbone.all_modules.0.weight", "shape": [1], "dtype": "torch.float32", "owner_path": "backbone.all_modules.0", "owner_kind": "parameter", "owner_name": "weight"},
+        {"name": "dnn.all_modules.0.bias", "shape": [1], "dtype": "torch.float32", "owner_path": "dnn.all_modules.0", "owner_kind": "parameter", "owner_name": "bias"},
+        {"name": "dnn.all_modules.0.weight", "shape": [1], "dtype": "torch.float32", "owner_path": "dnn.all_modules.0", "owner_kind": "parameter", "owner_name": "weight"},
     ]
     toy_packet = {
         "format": CONSTRUCTION_EVIDENCE_FORMAT,
@@ -1365,7 +1959,17 @@ def self_test() -> None:
         "inspection_manifest_sha256": "0" * 64,
         "state_dict": {"count": 2, "state_tensor_numel": 2, "parameter_row_numel": 2, "buffer_row_numel": 0, "parameter_numel": 2, "buffer_numel": 0, "rows": toy_state_rows},
         "named_modules": toy_modules,
-        "ncsnpp_all_modules": {"path": "backbone.all_modules", "count": 1, "rows": [{"ordinal": 0, "class": "torch.nn.Module", "source": toy_source, "direct_parameters": toy_modules[-1]["direct_parameters"], "direct_buffers": []}]},
+        "ncsnpp_all_modules": {"path": "dnn.all_modules", "count": 1, "rows": [{"ordinal": 0, "class": "torch.nn.Module", "source": toy_source, "direct_parameters": toy_modules[-1]["direct_parameters"], "direct_buffers": []}]},
+        "source_config": {
+            "nf": SOURCE_NF,
+            "ch_mult": list(SOURCE_CH_MULT),
+            "num_res_blocks": SOURCE_NUM_RES_BLOCKS,
+            "attn_resolutions": [SOURCE_ATTN_RESOLUTION],
+            "progressive": "output_skip",
+            "progressive_input": "input_skip",
+            "resblock_type": "biggan",
+        },
+        "source_role_records": None,
     }
     toy_packet["canonical_sha256"] = construction_evidence_sha256(toy_packet)
     validate_construction_evidence(
@@ -1373,7 +1977,153 @@ def self_test() -> None:
         expected_checkpoint=toy_packet["checkpoint"],
         expected_inspection_sha256="0" * 64,
     )
-    import copy
+    toy_module_rows = [
+        {
+            "ordinal": item["module_index"],
+            "class": f"torch.nn.{item['class_suffix']}",
+            "source": {"kind": "runtime", "module": f"torch.nn.{item['class_suffix']}"},
+            "direct_parameters": [],
+            "direct_buffers": [],
+        }
+        for item in module_plan
+    ]
+    # Mark source-defined BigGAN/attention classes as pinned source classes
+    # while keeping this test dependency-free.
+    for row, item in zip(toy_module_rows, module_plan):
+        if item["class_suffix"] not in {"Linear", "Conv2d", "GroupNorm"}:
+            row["class"] = f"sgmse.{item['class_suffix']}"
+            row["source"] = {
+                "kind": "pinned_checkout",
+                "repository": SOURCE_REPOSITORY,
+                "revision": SOURCE_REVISION,
+            }
+    toy_structural_rows = [
+        {"name": "dnn.all_modules.0.W", "shape": [128], "dtype": "torch.float32", "owner_path": "dnn.all_modules.0", "owner_kind": "parameter", "owner_name": "W"},
+        {"name": "dnn.all_modules.1.weight", "shape": [512, 256], "dtype": "torch.float32", "owner_path": "dnn.all_modules.1", "owner_kind": "parameter", "owner_name": "weight"},
+        {"name": "dnn.all_modules.1.bias", "shape": [512], "dtype": "torch.float32", "owner_path": "dnn.all_modules.1", "owner_kind": "parameter", "owner_name": "bias"},
+        {"name": "dnn.all_modules.2.weight", "shape": [512, 512], "dtype": "torch.float32", "owner_path": "dnn.all_modules.2", "owner_kind": "parameter", "owner_name": "weight"},
+        {"name": "dnn.all_modules.2.bias", "shape": [512], "dtype": "torch.float32", "owner_path": "dnn.all_modules.2", "owner_kind": "parameter", "owner_name": "bias"},
+        {"name": "dnn.all_modules.3.weight", "shape": [128, 4, 3, 3], "dtype": "torch.float32", "owner_path": "dnn.all_modules.3", "owner_kind": "parameter", "owner_name": "weight"},
+        {"name": "dnn.output_layer.weight", "shape": [2, 4, 1, 1], "dtype": "torch.float32", "owner_path": "dnn.output_layer", "owner_kind": "parameter", "owner_name": "weight"},
+    ]
+    residual_index = next(item["module_index"] for item in module_plan if item.get("kind") == "residual")
+    attention_index = next(item["module_index"] for item in module_plan if item.get("kind") == "attention")
+    toy_structural_rows.extend([
+        {"name": f"dnn.all_modules.{residual_index}.GroupNorm_0.weight", "shape": [128], "dtype": "torch.float32", "owner_path": f"dnn.all_modules.{residual_index}.GroupNorm_0", "owner_kind": "parameter", "owner_name": "weight"},
+        {"name": f"dnn.all_modules.{attention_index}.NIN_0.W", "shape": [128, 128], "dtype": "torch.float32", "owner_path": f"dnn.all_modules.{attention_index}.NIN_0", "owner_kind": "parameter", "owner_name": "W"},
+        {"name": f"dnn.all_modules.{attention_index}.NIN_1.b", "shape": [128], "dtype": "torch.float32", "owner_path": f"dnn.all_modules.{attention_index}.NIN_1", "owner_kind": "parameter", "owner_name": "b"},
+    ])
+    toy_construction = {
+        "ncsnpp_all_modules": {"path": "dnn.all_modules", "count": 77, "rows": toy_module_rows},
+        "state_dict": {"rows": toy_structural_rows},
+    }
+    toy_owner_rows = {
+        row["path"]: copy.deepcopy(row) for row in toy_modules
+    }
+    toy_owner_rows["dnn.all_modules.0"].update({
+        "class": "torch.nn.GaussianFourierProjection",
+        "source": {"kind": "runtime", "module": "torch.nn.GaussianFourierProjection"},
+    })
+    for state_row in toy_structural_rows:
+        owner_path = state_row["owner_path"]
+        if owner_path in toy_owner_rows:
+            continue
+        if owner_path.endswith("output_layer"):
+            class_name = "torch.nn.Conv2d"
+            source = {"kind": "runtime", "module": class_name}
+        elif ".NIN_" in owner_path:
+            class_name = "sgmse.NIN"
+            source = {"kind": "pinned_checkout", "repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION}
+        elif "GroupNorm_0" in owner_path:
+            class_name = "torch.nn.GroupNorm"
+            source = {"kind": "runtime", "module": class_name}
+        elif ".0" in owner_path:
+            class_name = "torch.nn.GaussianFourierProjection"
+            source = {"kind": "runtime", "module": class_name}
+        elif ".1" in owner_path or ".2" in owner_path:
+            class_name = "torch.nn.Linear"
+            source = {"kind": "runtime", "module": class_name}
+        else:
+            class_name = "torch.nn.Conv2d"
+            source = {"kind": "runtime", "module": class_name}
+        toy_owner_rows[owner_path] = {
+            "path": owner_path,
+            "class": class_name,
+            "source": source,
+            "direct_parameters": [],
+            "direct_buffers": [],
+        }
+    toy_construction["named_modules"] = list(toy_owner_rows.values())
+    toy_tensor_manifest = {
+        row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+        for row in toy_structural_rows
+    }
+    toy_records = source_role_records_from_construction(
+        toy_construction, {"tensor_manifest": toy_tensor_manifest}
+    )
+    assert len(toy_records) == len(toy_structural_rows)
+    assert toy_records[0]["fixed_role"] == "fourier_frequencies"
+    assert any(row.get("kind") == "output" for row in toy_records)
+    assert any(row.get("module") == "attention_query" and row.get("slot") == "weight" for row in toy_records)
+    assert any(row.get("module") == "attention_key" and row.get("slot") == "bias" for row in toy_records)
+    for variant, mutate in (
+        ("module count", lambda packet: packet["ncsnpp_all_modules"].update(count=76)),
+        ("class drift", lambda packet: packet["ncsnpp_all_modules"]["rows"][3].update(**{"class": "evil.Conv2d"})),
+        ("owner drift", lambda packet: packet["state_dict"]["rows"][0].update(owner_name="evil")),
+    ):
+        candidate = copy.deepcopy(toy_construction)
+        mutate(candidate)
+        try:
+            source_role_records_from_construction(candidate, {"tensor_manifest": toy_tensor_manifest})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"source candidate {variant} mutation was accepted")
+    candidate_contract = typed_candidate_contract(
+        {"_manifest_sha256": "0" * 64, "safe_load": {"tensor_manifest": {}}},
+        toy_packet,
+    )
+    assert candidate_contract["format"] == TYPED_CANDIDATE_CONTRACT_FORMAT
+    assert candidate_contract["status"] == TYPED_CANDIDATE_STATUS
+    assert candidate_contract["blocker"] == TYPED_CANDIDATE_BLOCKER
+    assert candidate_contract["candidate_bindings"] is None
+    try:
+        validate_typed_candidate_contract(candidate_contract, "0" * 64)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("incomplete blocker candidate was accepted")
+    candidate_packet = copy.deepcopy(toy_packet)
+    candidate_packet["ncsnpp_all_modules"] = toy_construction["ncsnpp_all_modules"]
+    candidate_packet["state_dict"] = {
+        "count": len(toy_structural_rows),
+        "rows": toy_structural_rows,
+    }
+    candidate_packet["named_modules"] = toy_construction["named_modules"]
+    candidate_packet["source_role_records"] = toy_records
+    candidate_inspection = {
+        "_manifest_sha256": "0" * 64,
+        "safe_load": {"tensor_manifest": toy_tensor_manifest},
+    }
+    candidate_contract = typed_candidate_contract(candidate_inspection, candidate_packet)
+    assert candidate_contract["candidate_bindings"]
+    assert candidate_contract["candidate_required_roles"]
+    assert candidate_contract["reviewed_manifest_sha256"] is None
+    validate_typed_candidate_contract(
+        candidate_contract,
+        candidate_inspection["_manifest_sha256"],
+        expected_tensor_count=len(toy_records),
+    )
+    tampered_packet = copy.deepcopy(candidate_packet)
+    tampered_record = next(
+        record for record in tampered_packet["source_role_records"]
+        if "module" in record and record["module"] == "residual_norm1"
+    )
+    tampered_record["module"] = "residual_norm2"
+    tampered_packet["canonical_sha256"] = construction_evidence_sha256(tampered_packet)
+    tampered_contract = typed_candidate_contract(candidate_inspection, tampered_packet)
+    assert tampered_contract["candidate_bindings"] is None
+    assert tampered_contract["blocker"] == TYPED_CANDIDATE_BLOCKER
     for variant, mutate in (
         ("duplicate", lambda packet: packet["named_modules"].append(copy.deepcopy(packet["named_modules"][-1]))),
         ("missing", lambda packet: packet["named_modules"].pop()),
@@ -1402,6 +2152,30 @@ def self_test() -> None:
         (
             "tampered runtime class",
             lambda packet: packet["named_modules"][0].update(**{"class": "torch.nn.Linear"}),
+        ),
+        (
+            "unknown source kind",
+            lambda packet: packet["named_modules"][0].update(source={"kind": "untrusted"}),
+        ),
+        (
+            "malformed pinned source",
+            lambda packet: packet["named_modules"][0].update(source={
+                "kind": "pinned_checkout",
+                "repository": SOURCE_REPOSITORY,
+                "revision": SOURCE_REVISION,
+                "path": "../outside.py",
+                "sha256": "0" * 64,
+            }),
+        ),
+        (
+            "pinned runtime class",
+            lambda packet: packet["named_modules"][0].update(source={
+                "kind": "pinned_checkout",
+                "repository": SOURCE_REPOSITORY,
+                "revision": SOURCE_REVISION,
+                "path": "source.py",
+                "sha256": "0" * 64,
+            }),
         ),
     ):
         candidate = copy.deepcopy(toy_packet)

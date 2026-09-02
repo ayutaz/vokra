@@ -10,7 +10,7 @@
 //!
 //! Primary source pin:
 //! <https://github.com/sp-uhh/sgmse/tree/1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e>
-//! (`sgmse/backbones/ncsnpp.py`, `sgmse/data_module.py`, and
+//! (`sgmse/backbones/ncsnpp_v2.py`, `sgmse/data_module.py`, and
 //! `sgmse/model.py`).
 
 use std::collections::BTreeSet;
@@ -70,18 +70,46 @@ pub enum SgmseTensorSlot {
     NormGamma,
     /// Normalization offset (`beta`) tensor.
     NormBeta,
-    /// Time or noise-level embedding tensor.
-    TimeEmbedding,
-    /// Attention query projection tensor.
-    Query,
-    /// Attention key projection tensor.
-    Key,
-    /// Attention value projection tensor.
-    Value,
-    /// Attention or block output projection tensor.
-    Output,
-    /// Source FIR resampling kernel tensor.
-    FirKernel,
+}
+
+/// Source-structural submodule owning a stage parameter.  NCSN++ residual
+/// blocks contain several weights and biases with the same broad slot; the
+/// submodule is therefore part of the typed role rather than an inferred
+/// suffix or pass-through string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SgmseTensorModule {
+    /// Initial input projection.
+    InputProjection,
+    /// First GroupNorm in a residual block.
+    ResidualNorm1,
+    /// First convolution in a residual block.
+    ResidualConv1,
+    /// Sigma/time projection in a residual block.
+    ResidualTimeEmbedding,
+    /// Second GroupNorm in a residual block.
+    ResidualNorm2,
+    /// Second convolution in a residual block.
+    ResidualConv2,
+    /// Optional residual skip projection.
+    ResidualSkip,
+    /// GroupNorm in an attention block.
+    AttentionNorm,
+    /// Attention query NIN projection.
+    AttentionQuery,
+    /// Attention key NIN projection.
+    AttentionKey,
+    /// Attention value NIN projection.
+    AttentionValue,
+    /// Attention output NIN projection.
+    AttentionOutput,
+    /// Progressive input projection.
+    ProgressiveInput,
+    /// Progressive output projection.
+    ProgressiveOutput,
+    /// GroupNorm in the progressive output-skip projection.
+    ProgressiveOutputNorm,
+    /// Final output projection.
+    OutputProjection,
 }
 
 /// Typed assignment target for one authenticated checkpoint tensor.
@@ -105,6 +133,8 @@ pub enum SgmseTensorRole {
         kind: NcsnppStageKind,
         /// Block ordinal within the stage.
         block: usize,
+        /// Source-structural submodule owning this parameter.
+        module: SgmseTensorModule,
         /// Parameter slot occupied by the tensor.
         slot: SgmseTensorSlot,
     },
@@ -122,12 +152,106 @@ impl SgmseTensorRole {
                 stage_index,
                 kind,
                 block,
+                module,
                 slot,
             } => format!(
-                "stage:{stage_index}:{}:{block}:{}",
+                "stage:{stage_index}:{}:{block}:{}:{}",
                 stage_kind_name(*kind),
+                module_name(*module),
                 slot_name(*slot)
             ),
+        }
+    }
+}
+
+fn module_name(module: SgmseTensorModule) -> &'static str {
+    match module {
+        SgmseTensorModule::InputProjection => "input_projection",
+        SgmseTensorModule::ResidualNorm1 => "residual_norm1",
+        SgmseTensorModule::ResidualConv1 => "residual_conv1",
+        SgmseTensorModule::ResidualTimeEmbedding => "residual_time_embedding",
+        SgmseTensorModule::ResidualNorm2 => "residual_norm2",
+        SgmseTensorModule::ResidualConv2 => "residual_conv2",
+        SgmseTensorModule::ResidualSkip => "residual_skip",
+        SgmseTensorModule::AttentionNorm => "attention_norm",
+        SgmseTensorModule::AttentionQuery => "attention_query",
+        SgmseTensorModule::AttentionKey => "attention_key",
+        SgmseTensorModule::AttentionValue => "attention_value",
+        SgmseTensorModule::AttentionOutput => "attention_output",
+        SgmseTensorModule::ProgressiveInput => "progressive_input",
+        SgmseTensorModule::ProgressiveOutput => "progressive_output",
+        SgmseTensorModule::ProgressiveOutputNorm => "progressive_output_norm",
+        SgmseTensorModule::OutputProjection => "output_projection",
+    }
+}
+
+fn parse_module(name: &str) -> Option<SgmseTensorModule> {
+    Some(match name {
+        "input_projection" => SgmseTensorModule::InputProjection,
+        "residual_norm1" => SgmseTensorModule::ResidualNorm1,
+        "residual_conv1" => SgmseTensorModule::ResidualConv1,
+        "residual_time_embedding" => SgmseTensorModule::ResidualTimeEmbedding,
+        "residual_norm2" => SgmseTensorModule::ResidualNorm2,
+        "residual_conv2" => SgmseTensorModule::ResidualConv2,
+        "residual_skip" => SgmseTensorModule::ResidualSkip,
+        "attention_norm" => SgmseTensorModule::AttentionNorm,
+        "attention_query" => SgmseTensorModule::AttentionQuery,
+        "attention_key" => SgmseTensorModule::AttentionKey,
+        "attention_value" => SgmseTensorModule::AttentionValue,
+        "attention_output" => SgmseTensorModule::AttentionOutput,
+        "progressive_input" => SgmseTensorModule::ProgressiveInput,
+        "progressive_output" => SgmseTensorModule::ProgressiveOutput,
+        "progressive_output_norm" => SgmseTensorModule::ProgressiveOutputNorm,
+        "output_projection" => SgmseTensorModule::OutputProjection,
+        _ => return None,
+    })
+}
+
+fn module_slot_valid(
+    kind: NcsnppStageKind,
+    module: SgmseTensorModule,
+    slot: SgmseTensorSlot,
+) -> bool {
+    let slot_is_weight_bias = matches!(slot, SgmseTensorSlot::Weight | SgmseTensorSlot::Bias);
+    let slot_is_norm = matches!(slot, SgmseTensorSlot::NormGamma | SgmseTensorSlot::NormBeta);
+    match kind {
+        NcsnppStageKind::Input => {
+            module == SgmseTensorModule::InputProjection && slot_is_weight_bias
+        }
+        NcsnppStageKind::Residual | NcsnppStageKind::Middle => match module {
+            SgmseTensorModule::ResidualNorm1 | SgmseTensorModule::ResidualNorm2 => slot_is_norm,
+            SgmseTensorModule::ResidualConv1
+            | SgmseTensorModule::ResidualTimeEmbedding
+            | SgmseTensorModule::ResidualConv2
+            | SgmseTensorModule::ResidualSkip => slot_is_weight_bias,
+            _ => false,
+        },
+        NcsnppStageKind::Attention => match module {
+            SgmseTensorModule::AttentionNorm => slot_is_norm,
+            SgmseTensorModule::AttentionQuery
+            | SgmseTensorModule::AttentionKey
+            | SgmseTensorModule::AttentionValue
+            | SgmseTensorModule::AttentionOutput => slot_is_weight_bias,
+            _ => false,
+        },
+        NcsnppStageKind::Downsample | NcsnppStageKind::Upsample => match module {
+            SgmseTensorModule::ResidualNorm1 | SgmseTensorModule::ResidualNorm2 => slot_is_norm,
+            SgmseTensorModule::ResidualConv1
+            | SgmseTensorModule::ResidualTimeEmbedding
+            | SgmseTensorModule::ResidualConv2
+            | SgmseTensorModule::ResidualSkip => slot_is_weight_bias,
+            _ => false,
+        },
+        NcsnppStageKind::ProgressiveInput => {
+            module == SgmseTensorModule::ProgressiveInput && slot_is_weight_bias
+        }
+        NcsnppStageKind::ProgressiveOutput => match module {
+            SgmseTensorModule::ProgressiveOutputNorm => slot_is_norm,
+            SgmseTensorModule::ProgressiveOutput => slot_is_weight_bias,
+            _ => false,
+        },
+        NcsnppStageKind::Output => {
+            module == SgmseTensorModule::OutputProjection && slot_is_weight_bias
         }
     }
 }
@@ -152,12 +276,6 @@ fn slot_name(slot: SgmseTensorSlot) -> &'static str {
         SgmseTensorSlot::Bias => "bias",
         SgmseTensorSlot::NormGamma => "norm_gamma",
         SgmseTensorSlot::NormBeta => "norm_beta",
-        SgmseTensorSlot::TimeEmbedding => "time_embedding",
-        SgmseTensorSlot::Query => "query",
-        SgmseTensorSlot::Key => "key",
-        SgmseTensorSlot::Value => "value",
-        SgmseTensorSlot::Output => "output",
-        SgmseTensorSlot::FirKernel => "fir_kernel",
     }
 }
 
@@ -182,12 +300,6 @@ fn parse_slot(name: &str) -> Option<SgmseTensorSlot> {
         "bias" => SgmseTensorSlot::Bias,
         "norm_gamma" => SgmseTensorSlot::NormGamma,
         "norm_beta" => SgmseTensorSlot::NormBeta,
-        "time_embedding" => SgmseTensorSlot::TimeEmbedding,
-        "query" => SgmseTensorSlot::Query,
-        "key" => SgmseTensorSlot::Key,
-        "value" => SgmseTensorSlot::Value,
-        "output" => SgmseTensorSlot::Output,
-        "fir_kernel" => SgmseTensorSlot::FirKernel,
         _ => return None,
     })
 }
@@ -207,14 +319,19 @@ fn parse_role(name: &str) -> Option<SgmseTensorRole> {
             let stage_index = fields.next()?.parse().ok()?;
             let kind = parse_stage_kind(fields.next()?)?;
             let block = fields.next()?.parse().ok()?;
+            let module = parse_module(fields.next()?)?;
             let slot = parse_slot(fields.next()?)?;
             if fields.next().is_some() {
+                return None;
+            }
+            if !module_slot_valid(kind, module, slot) {
                 return None;
             }
             SgmseTensorRole::NcsnppStage {
                 stage_index,
                 kind,
                 block,
+                module,
                 slot,
             }
         }
@@ -376,6 +493,10 @@ impl SgmseTensorManifest {
         let mut roles = BTreeSet::new();
         for entry in &self.entries {
             if entry.name.is_empty()
+                || entry
+                    .name
+                    .chars()
+                    .any(|character| character == '|' || character.is_control())
                 || !matches!(entry.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
                 || entry.dimensions.is_empty()
                 || !names.insert(entry.name.as_str())
@@ -391,7 +512,8 @@ impl SgmseTensorManifest {
                 stage_index,
                 kind,
                 block,
-                ..
+                module,
+                slot,
             } = &entry.role
             {
                 let Some(stage) = plan.stages.get(*stage_index) else {
@@ -402,6 +524,11 @@ impl SgmseTensorManifest {
                 if stage.kind != *kind || stage.block != *block {
                     return Err(VokraError::ModelLoad(
                         "sgmse: tensor role graph stage metadata mismatches source plan".to_owned(),
+                    ));
+                }
+                if !module_slot_valid(*kind, *module, *slot) {
+                    return Err(VokraError::ModelLoad(
+                        "sgmse: tensor role uses an invalid source submodule/slot pair".to_owned(),
                     ));
                 }
             }
@@ -944,14 +1071,14 @@ impl NcsnppV2GraphPlan {
 
 /// Fixed Fourier embedding helper used by the source's sigma conditioning.
 /// Frequencies are caller-supplied because the upstream projection is a
-/// fixed module buffer and must never be invented or regenerated by a binder.
+/// fixed module parameter and must never be invented or regenerated by a binder.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FourierSigmaEmbedding {
     frequencies: Vec<f32>,
 }
 
 impl FourierSigmaEmbedding {
-    /// Creates an embedding from the exact projection buffer recovered by the
+    /// Creates an embedding from the exact projection parameter recovered by the
     /// safe-loader or an independent synthetic oracle.
     pub fn new(frequencies: Vec<f32>) -> Result<Self> {
         if frequencies.is_empty() || frequencies.iter().any(|value| !value.is_finite()) {
@@ -2763,6 +2890,7 @@ mod tests {
             stage_index: 0,
             kind: NcsnppStageKind::Input,
             block: 0,
+            module: SgmseTensorModule::InputProjection,
             slot: SgmseTensorSlot::Weight,
         };
         let mut manifest = SgmseTensorManifest {
@@ -2789,12 +2917,74 @@ mod tests {
         let digest = manifest.canonical_sha256();
         assert_eq!(
             hex_digest(&digest),
-            "7c77bb306c39ac21e019c069e329bc47751d5ded02519c3b09755db49658a4a2"
+            "33b1d5a8dd3d1013f4a16754c29ad7e910d1a44f89a517c74f411cff97c7f306"
         );
         manifest.validate(&plan, digest).unwrap();
 
         manifest.required_roles.push(role);
         assert!(manifest.validate(&plan, digest).is_err());
+
+        let nonsymmetric_role = SgmseTensorRole::NcsnppStage {
+            stage_index: 1,
+            kind: NcsnppStageKind::Residual,
+            block: 1,
+            module: SgmseTensorModule::ResidualConv1,
+            slot: SgmseTensorSlot::Weight,
+        };
+        let nonsymmetric_manifest = SgmseTensorManifest {
+            source_revision: SOURCE_REVISION.to_owned(),
+            checkpoint_sha256: CHECKPOINT_SHA256.to_owned(),
+            graph_config: plan.config.clone(),
+            sampler_config: SgmseConfig::voicebank(),
+            required_roles: vec![nonsymmetric_role.clone()],
+            entries: vec![SgmseTensorManifestEntry {
+                name: "source.nonsymmetric".to_owned(),
+                dtype: GgmlType::F32,
+                dimensions: vec![5, 3, 2],
+                role: nonsymmetric_role,
+            }],
+        };
+        assert_eq!(
+            hex_digest(&nonsymmetric_manifest.canonical_sha256()),
+            "39671d48bc116445a52d6e573a9045ca5a5d080960a3993923d64c319a6c54ef"
+        );
+    }
+
+    #[test]
+    fn typed_roles_distinguish_same_slot_parameters_in_residual_and_attention() {
+        let residual_conv1 = SgmseTensorRole::NcsnppStage {
+            stage_index: 3,
+            kind: NcsnppStageKind::Residual,
+            block: 1,
+            module: SgmseTensorModule::ResidualConv1,
+            slot: SgmseTensorSlot::Weight,
+        };
+        let residual_conv2 = SgmseTensorRole::NcsnppStage {
+            module: SgmseTensorModule::ResidualConv2,
+            ..residual_conv1.clone()
+        };
+        assert_ne!(residual_conv1, residual_conv2);
+        assert_ne!(
+            residual_conv1.canonical_name(),
+            residual_conv2.canonical_name()
+        );
+
+        let attention_query = SgmseTensorRole::NcsnppStage {
+            stage_index: 4,
+            kind: NcsnppStageKind::Attention,
+            block: 1,
+            module: SgmseTensorModule::AttentionQuery,
+            slot: SgmseTensorSlot::Weight,
+        };
+        let attention_key = SgmseTensorRole::NcsnppStage {
+            module: SgmseTensorModule::AttentionKey,
+            ..attention_query.clone()
+        };
+        assert_ne!(attention_query, attention_key);
+        assert_ne!(
+            attention_query.canonical_name(),
+            attention_key.canonical_name()
+        );
     }
 
     #[test]
