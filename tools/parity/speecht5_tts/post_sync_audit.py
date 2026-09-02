@@ -53,7 +53,7 @@ EXPECTED = {
     "tokenizers": "0.22.2",
     "torch": "2.4.1+cpu",
     "tqdm": "4.70.0",
-    "transformers": "5.5.0",
+    "transformers": "5.10.4",
     "typer": "0.9.0",
     "typing-extensions": "4.16.0",
 }

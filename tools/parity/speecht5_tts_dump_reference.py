@@ -2,7 +2,7 @@
 """Dump an independent official-Transformers SpeechT5 TTS reference.
 
 The numerical oracle is ``SpeechT5ForTextToSpeech.generate_speech`` from the
-pinned Transformers 5.5.0 package. Vokra code is never imported. The only
+isolated Transformers 5.10.4 package. Vokra code is never imported. The only
 injection is the decoder-prenet dropout mask: SpeechT5 deliberately keeps that
 dropout active during evaluation, so this tool supplies Vokra's documented
 SplitMix64 mask stream to the *official* prenet. All encoder, attention,
@@ -31,7 +31,11 @@ REFERENCE_IMPLEMENTATION = (
     "transformers.models.speecht5.modeling_speecht5."
     "SpeechT5ForTextToSpeech.generate_speech"
 )
-REFERENCE_PACKAGE = "transformers==5.5.0"
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN = "transformers==5.5.0"
+REFERENCE_PACKAGE = "transformers==5.10.4"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 DETERMINISTIC_SEED = 0x5350_4545_4348_5435
 DEFAULT_TEXT = "The quick brown fox jumps over the lazy dog."
 SPEAKER_DIM = 512
@@ -116,6 +120,18 @@ def require_vast() -> None:
         )
 
 
+def require_transformers_api_smoke() -> None:
+    """Refuse imports/model loading until the active pin gets an API smoke run."""
+    if TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE":
+        raise SystemExit(
+            "SpeechT5 reference generation is BLOCKED_UNVERIFIED_API_SMOKE; "
+            "run an authorized VAST model smoke test before importing Transformers"
+        )
+    if TRANSFORMERS_COMPATIBILITY_STATUS == "AUTHENTICATED_API_SMOKE":
+        return
+    raise SystemExit("SpeechT5 Transformers compatibility status is not reviewed")
+
+
 class SplitMix64:
     """The public deterministic mask stream used by SpeechT5GenerationOptions."""
 
@@ -186,6 +202,32 @@ class OfficialPrenetDropout:
 
 
 def self_test() -> None:
+    global TRANSFORMERS_COMPATIBILITY_STATUS
+    assert PREVIOUS_ISOLATED_TRANSFORMERS_PIN == "transformers==5.5.0"
+    assert REFERENCE_PACKAGE == "transformers==5.10.4"
+    assert TRANSFORMERS_SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
+    assert TRANSFORMERS_SECURITY_PATCHED_MINIMUM == "5.10.0"
+    assert TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE"
+    try:
+        require_transformers_api_smoke()
+    except SystemExit as error:
+        assert "BLOCKED_UNVERIFIED_API_SMOKE" in str(error)
+    else:
+        raise AssertionError("unverified Transformers API smoke was accepted")
+    original_status = TRANSFORMERS_COMPATIBILITY_STATUS
+    try:
+        TRANSFORMERS_COMPATIBILITY_STATUS = "AUTHENTICATED_API_SMOKE"
+        require_transformers_api_smoke()
+        TRANSFORMERS_COMPATIBILITY_STATUS = "UNREVIEWED_STATUS"
+        try:
+            require_transformers_api_smoke()
+        except SystemExit as error:
+            assert "not reviewed" in str(error)
+        else:
+            raise AssertionError("unknown Transformers status was accepted")
+    finally:
+        TRANSFORMERS_COMPATIBILITY_STATUS = original_status
+    assert TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE"
     rng = SplitMix64(0)
     assert rng.next_u64() == 0xE220_A839_7B1D_CDAF
     assert rng.next_u64() == 0x6E78_9E6A_A1B9_65F4
@@ -232,6 +274,7 @@ def main() -> int:
         parser.error("--text must be non-empty and have no leading/trailing space")
 
     require_vast()
+    require_transformers_api_smoke()
     checkpoint = args.checkpoint.resolve()
     if not checkpoint.is_dir():
         parser.error(f"checkpoint is not a directory: {checkpoint}")
@@ -253,9 +296,9 @@ def main() -> int:
             f"{error}"
         ) from error
 
-    if transformers.__version__ != "5.5.0":
+    if transformers.__version__ != "5.10.4":
         raise RuntimeError(
-            f"transformers {transformers.__version__} != pinned 5.5.0"
+            f"transformers {transformers.__version__} != pinned 5.10.4"
         )
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
@@ -383,6 +426,10 @@ def main() -> int:
         "format": "vokra-speecht5-tts-reference-v1",
         "reference_implementation": REFERENCE_IMPLEMENTATION,
         "reference_package": REFERENCE_PACKAGE,
+        "previous_isolated_transformers_pin": PREVIOUS_ISOLATED_TRANSFORMERS_PIN,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
         "transformers_version": transformers.__version__,
         "torch_version": torch.__version__,
         "platform": platform.platform(),

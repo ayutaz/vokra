@@ -12,6 +12,10 @@ PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 
 PUBLIC_GGUF_SHA256="f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0"
 TTS_REVISION="30fcde30f19b87502b8435427b5f5068e401d5f6"
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN="transformers==5.5.0"
+ISOLATED_TRANSFORMERS_PIN="transformers==5.10.4"
+TRANSFORMERS_SECURITY_ADVISORY="GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM="5.10.0"
 MIN_MEMORY_BYTES=32000000000
 MIN_FREE_DISK_KIB=10000000
 
@@ -149,8 +153,10 @@ require_reference() {
   done
   grep -F '"format": "vokra-speecht5-tts-reference-v1"' "$reference_json" >/dev/null \
     || die "reference format is not the pinned SpeechT5 schema"
-  grep -F '"reference_package": "transformers==5.5.0"' "$reference_json" >/dev/null \
-    || die "reference Transformers route is not 5.5.0"
+  grep -F '"reference_package": "transformers==5.10.4"' "$reference_json" >/dev/null \
+    || die "reference Transformers route is not 5.10.4"
+  grep -F '"transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE"' "$reference_json" >/dev/null \
+    || die "reference Transformers compatibility status is not fail-closed"
   grep -F "\"upstream_revision\": \"$TTS_REVISION\"" "$reference_json" >/dev/null \
     || die "reference TTS revision is not pinned"
   verify_reference_scalars "$directory"
@@ -427,6 +433,9 @@ EOF
     || die "public GGUF SHA contract is missing"
   grep -F "SPEECHT5_TTS_OFFICIAL_PARITY backend=metal" "$script_path" >/dev/null \
     || die "Metal PASS marker contract is missing"
+  for token in "$PREVIOUS_ISOLATED_TRANSFORMERS_PIN" "$ISOLATED_TRANSFORMERS_PIN" "$TRANSFORMERS_SECURITY_ADVISORY" "$TRANSFORMERS_SECURITY_PATCHED_MINIMUM" 'BLOCKED_UNVERIFIED_API_SMOKE'; do
+    grep -F "$token" "$PARITY_PROJECT/pyproject.toml" >/dev/null || die "Transformers provenance is missing: $token"
+  done
   log "self-test PASS"
 )
 

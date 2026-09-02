@@ -20,8 +20,8 @@ GATE_VERSION = 2
 # These are the exact active closure inputs.  The retained dependency audit is
 # historical evidence for the previous lock and is independently checked below;
 # production remains blocked until a fresh audit binds these active bytes.
-LOCK_SHA256 = "e540f3151282a473f5ef63b901f1791927d4f5c6833fc807c89f945fd396cc06"
-PYPROJECT_SHA256 = "6105b4101732309880f43e3e8361c68ec5b7fa88f14611397e1e8b5f4827175b"
+LOCK_SHA256 = "418fb6b6516e0284b503ed20872e2dc6dd375aff918e253f3e7f9d27b62f904c"
+PYPROJECT_SHA256 = "1e61ad26749c1ad5ba05fe139ef8bfcf4698e3b030cad6182e18309789779346"
 FULL_AUDIT_SHA256 = "b7a4c6ffcbc68109d8743b127432dfedb4897cd52641b251433945da3f4b4d3d"
 COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
 EXPECTED_BUILD_CONSTRAINTS = [
@@ -71,7 +71,7 @@ MODEL_ROWS = [
     {"id": "tts:microsoft/speecht5_tts@30fcde30f19b87502b8435427b5f5068e401d5f6", "kind": "model", "status": "PENDING_REVIEW", "license": None, "native_review": None, "bundled_review": None},
     {"id": "tts-public:vokra/speecht5-tts@43cf6592038616d116a98fde4764d827ece59033", "kind": "model", "status": "PENDING_REVIEW", "license": None, "native_review": None, "bundled_review": None},
     {"id": "vocoder:microsoft/speecht5_hifigan@bb6f429406e86a9992357a972c0698b22043307d", "kind": "model", "status": "PENDING_REVIEW", "license": None, "native_review": None, "bundled_review": None},
-    {"id": "source:transformers@5.5.0", "kind": "source", "status": "PENDING_REVIEW", "license": None, "native_review": None, "bundled_review": None},
+    {"id": "source:previous-isolated-transformers@5.5.0", "kind": "source", "status": "PENDING_REVIEW", "license": None, "native_review": None, "bundled_review": None},
     {"id": "source:bin_to_safetensors", "kind": "source", "status": "PENDING_REVIEW", "license": None, "native_review": None, "bundled_review": None},
 ]
 
@@ -111,8 +111,16 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
         raise ValueError("uv.lock build-constraint manifest drifted")
     if set(project) != {"project", "tool"} or set(project["project"]) != {"name", "version", "description", "requires-python", "dependencies"}:
         raise ValueError("pyproject schema drifted")
-    if not isinstance(project["project"]["dependencies"], list) or set(project["tool"]) != {"uv"}:
+    if not isinstance(project["project"]["dependencies"], list) or set(project["tool"]) != {"uv", "speecht5_tts"}:
         raise ValueError("pyproject dependency/tool schema drifted")
+    if project["tool"]["speecht5_tts"] != {
+        "previous_isolated_transformers_pin": "transformers==5.5.0",
+        "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
+        "transformers_security_patched_minimum": "5.10.0",
+        "isolated_transformers_pin": "5.10.4",
+        "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
+    }:
+        raise ValueError("SpeechT5 Transformers provenance/status drifted")
     uv = project["tool"]["uv"]
     if not isinstance(uv, dict) or set(uv) != {"package", "no-binary-package", "config-settings-package", "build-constraint-dependencies", "environments", "sources", "index"} or not isinstance(uv["package"], bool) or not isinstance(uv["no-binary-package"], list) or not isinstance(uv["config-settings-package"], dict) or not isinstance(uv["build-constraint-dependencies"], list) or not isinstance(uv["environments"], list) or not isinstance(uv["sources"], dict) or not isinstance(uv["index"], list):
         raise ValueError("pyproject uv configuration drifted")
@@ -371,7 +379,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         "bytes": 585382432, "sha256": "f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0",
     }:
         return blocked("public SpeechT5 GGUF identity drifted")
-    if manifest.get("transformers_route") != "transformers==5.5.0 / SpeechT5ForTextToSpeech.generate_speech":
+    if manifest.get("transformers_route") != "previous isolated pin transformers==5.5.0; active isolated pin transformers==5.10.4 / SpeechT5ForTextToSpeech.generate_speech; BLOCKED_UNVERIFIED_API_SMOKE":
         return blocked("Transformers lock/dumper route is not bound")
     scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": manifest["package_rows_sha256"], "dependency_reviews": reviews, "dependency_reviews_sha256": manifest["dependency_reviews_sha256"], "build_dependency_reviews": build_reviews, "build_dependency_reviews_sha256": manifest["build_dependency_reviews_sha256"], "dependency_audit_evidence": audit_ref, "model_reviews": model_reviews, "tts_identity": expected_tts, "vocoder_identity": expected_vocoder, "public_tts_identity": manifest["public_tts_identity"], "transformers_route": manifest["transformers_route"]}
     scope_sha = canonical(scope)
@@ -397,7 +405,7 @@ def self_test() -> int:
     project = Path(__file__).resolve().parent
     manifest = project / "license_gate_manifest.json"
     ok, reason = validate(project, manifest)
-    if ok or not any(token in reason for token in ("unresolved", "canonicalization", "approval")):
+    if ok or not any(token in reason for token in ("unresolved", "canonicalization", "compact", "approval")):
         print(f"speecht5 preflight gate: expected pending review, got {reason}", file=sys.stderr)
         return 1
     with tempfile.TemporaryDirectory(prefix="speecht5-gate-") as directory:

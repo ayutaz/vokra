@@ -27,6 +27,10 @@ VOCODER_REVISION="bb6f429406e86a9992357a972c0698b22043307d"
 VOCODER_SOURCE_SHA256="b171e9bcd8a2b50dc9780040478dfa26783a9ee4be012cf5776914f091d6887b"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=30000000
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN="transformers==5.5.0"
+ISOLATED_TRANSFORMERS_PIN="transformers==5.10.4"
+TRANSFORMERS_SECURITY_ADVISORY="GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM="5.10.0"
 
 log() { printf '[speecht5-vast] %s\n' "$*" >&2; }
 step() { printf '\n[speecht5-vast] ==== %s ====\n' "$*" >&2; }
@@ -74,7 +78,7 @@ usage: run-speecht5-tts-validation.sh --approval-evidence <json> [--work-dir <ab
 VAST-only SpeechT5 TTS validation worker. It downloads immutable Microsoft
 SpeechT5 TTS + HiFi-GAN sources, verifies their identities, converts both,
 authenticates the fixed public tokenizer-less GGUF, runs the independent
-Transformers 5.5.0 oracle against both canonical and public text models,
+Transformers 5.10.4 oracle against both canonical and public text models,
 exercises both complete CLI waveform routes, then runs workspace Rust gates.
 
 Actual runs require Linux, VOKRA_PUBLISH_ON_VAST=1, at least 60,000,000 KiB
@@ -225,6 +229,12 @@ run_self_test() {
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
     fi
+  done
+  for required in "$PREVIOUS_ISOLATED_TRANSFORMERS_PIN" "$ISOLATED_TRANSFORMERS_PIN" "$TRANSFORMERS_SECURITY_ADVISORY" "$TRANSFORMERS_SECURITY_PATCHED_MINIMUM" "BLOCKED_UNVERIFIED_API_SMOKE"; do
+    grep -Fq -- "$required" "$PARITY_DUMPER" || { log "self-test FAIL: dumper Transformers provenance token missing: $required"; fail=1; }
+  done
+  for required in "$PREVIOUS_ISOLATED_TRANSFORMERS_PIN" "$ISOLATED_TRANSFORMERS_PIN" "$TRANSFORMERS_SECURITY_ADVISORY" "$TRANSFORMERS_SECURITY_PATCHED_MINIMUM" "BLOCKED_UNVERIFIED_API_SMOKE"; do
+    grep -Fq -- "$required" "$PARITY_PROJECT/pyproject.toml" || { log "self-test FAIL: Transformers provenance token missing: $required"; fail=1; }
   done
   local sentinel sentinel_log
   sentinel='SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu frames=2 decoder_steps=1 before_max_abs=1.000000000e-3 before_index=0 after_max_abs=2.000000000e-3 after_index=1 bound=1.000000000e-2 verdict=PASS'

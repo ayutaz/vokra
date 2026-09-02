@@ -1,7 +1,7 @@
 [project]
 name = "vokra-speecht5-tts-parity"
 version = "0.1.0"
-description = "Pinned independent Transformers 5.5.0 SpeechT5 TTS parity oracle"
+description = "Pinned independent Transformers 5.10.4 SpeechT5 TTS parity oracle"
 requires-python = "==3.12.*"
 dependencies = [
     "huggingface-hub==1.5.0",
@@ -10,7 +10,7 @@ dependencies = [
     "sentencepiece==0.2.2",
     "setuptools==83.0.0",
     "torch==2.4.1",
-    "transformers==5.5.0",
+    "transformers==5.10.4",
     "typer==0.9.0",
 ]
 
@@ -38,3 +38,13 @@ torch = { index = "pytorch-cpu" }
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[tool.speecht5_tts]
+# 5.5.0 is retained only as the prior isolated reference pin; no upstream
+# requirement is asserted. Compatibility of the security-remediated pin with
+# the source route remains unverified until an authorized VAST model smoke run.
+previous_isolated_transformers_pin = "transformers==5.5.0"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"

@@ -1,7 +1,11 @@
 # SpeechT5 TTS parity closure
 
 The VAST worker uses the pinned `uv.lock` project and the official
-`SpeechT5ForTextToSpeech.generate_speech` route from `transformers==5.5.0`.
+`SpeechT5ForTextToSpeech.generate_speech` route from the isolated
+`transformers==5.10.4` pin. The prior isolated reference pin was 5.5.0; no
+upstream requirement is asserted for that version. Compatibility of the
+security-remediated pin is `BLOCKED_UNVERIFIED_API_SMOKE` until an authorized
+VAST model smoke run.
 The lock and project bytes, all canonical dependency rows, fixed TTS and
 HiFi-GAN revisions/artifact hashes, and the historical public GGUF identity
 are bound by `license_gate_manifest.json`.
@@ -10,8 +14,10 @@ are bound by `license_gate_manifest.json`.
 `uv run --no-project --offline` before scratch creation, synchronization,
 source/model download, conversion, or Cargo. It binds the exact Linux lock,
 including uv's build-constraint manifest for the isolated NumPy source build.
-The compact `dependency_audit_evidence.json` records the full fresh VAST audit
-digest without committing the 1.3 MB report. `patchelf` is GPL build-only and
+The compact `dependency_audit_evidence.json` records the full historical VAST
+audit digest for the prior isolated pin without committing the 1.3 MB report;
+its old input hashes intentionally fail the active-lock gate until a fresh
+audit is produced. `patchelf` is GPL build-only and
 is not installed in or redistributed with the final environment; its operator
 approval remains an explicit gate.
 
@@ -23,7 +29,8 @@ five model/source factual review rows are complete; acquisition and validation
 remain fail-closed solely until operator approval supplies the separate
 authenticated evidence file.
 
-The source dumper imports the exact locked Transformers package and fails
-loudly on a version mismatch. CPU and Apple workers require the named Cargo
+The source dumper is now pinned to the active 5.10.4 route but refuses
+Transformers import and model acquisition while
+`BLOCKED_UNVERIFIED_API_SMOKE` remains set. CPU and Apple workers require the named Cargo
 test to report exactly one passed, zero failed/ignored, and require each
 model-level parity sentinel exactly once. No upload path is present.
