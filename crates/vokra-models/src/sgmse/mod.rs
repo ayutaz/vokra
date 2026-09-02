@@ -3909,7 +3909,12 @@ mod tests {
     fn score_graph_assembly_is_closed_without_all_authenticated_roles() {
         let weights = SgmseGraphWeights {
             plan: NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default()).unwrap(),
-            tensors: Vec::new(),
+            tensors: vec![(
+                SgmseTensorRole::FourierFrequencies,
+                "fourier".to_owned(),
+                vec![128],
+                vec![0.0; 128],
+            )],
         };
         let error = NcsnppScoreGraph::from_weights(&weights).unwrap_err();
         assert!(format!("{error}").contains("bound role coverage is incomplete"));
