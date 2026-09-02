@@ -7,8 +7,11 @@
 //! is sampled with the OUVE predictor/corrector seam. Checkpoint-specific
 //! tensor names and shapes are deliberately not guessed: the public binder
 //! accepts only the compiled, VAST-reviewed manifest contract below and
-//! assembles the native CPU score graph; enhancement and sampler integration
-//! remain separate follow-up work.
+//! assembles the source-mapped score graph through the selected `Compute`
+//! backend, plus source-pinned host frontend preprocessing and the selected
+//! `Compute` sampler path. Independent score parity has passed; end-to-end
+//! CPU enhancement parity remains pending; the Metal FIR route is staged and
+//! Apple-device parity remains pending.
 //!
 //! Primary source pin:
 //! <https://github.com/sp-uhh/sgmse/tree/1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e>
@@ -51,11 +54,15 @@ pub const REVIEWED_TENSOR_MANIFEST_SHA256: Option<[u8; 32]> = Some([
 ]);
 /// Status required before a native checkpoint can be opened.
 pub const AUTHENTICATED_MANIFEST: &str = "AUTHENTICATED";
-/// The authenticated native CPU score graph is staged for execution;
-/// independent parity remains pending, Metal remains closed until the fixed
-/// FIR resampler has a backend seam, and enhancement/sampler integration is
-/// incomplete.
-pub const SGMSE_STATUS: &str = "NATIVE_CPU_SCORE_GRAPH_PARITY_AND_METAL_FIR_PENDING";
+/// The authenticated native CPU enhancement path is staged for execution;
+/// independent score parity has passed, while end-to-end CPU enhancement
+/// parity and Apple-device parity remain pending. Metal uses the explicit
+/// Compute FIR route and is staged, but has not received independent parity.
+pub const SGMSE_STATUS: &str =
+    "NATIVE_CPU_SCORE_PARITY_PASS_CPU_ENHANCEMENT_PARITY_PENDING_METAL_STAGED_APPLE_PARITY_PENDING";
+
+const SGMSE_SCORE_HEIGHT: usize = 256;
+const SGMSE_SCORE_FRAME_ALIGNMENT: usize = 64;
 
 /// The only learned parameter roles accepted by the SGMSE binder.  Tensor
 /// names remain checkpoint-specific data from the authenticated manifest; no
@@ -1765,16 +1772,6 @@ pub enum NcsnppResample {
     Down,
 }
 
-fn validate_fir_backend(is_cpu: bool, resample: NcsnppResample) -> Result<()> {
-    if !is_cpu && !matches!(resample, NcsnppResample::None) {
-        return Err(VokraError::UnsupportedOp(
-            "sgmse BigGAN FIR resampling has no non-CPU Compute seam; no host fallback is performed"
-                .to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 /// Validated weights for one source BigGAN++ residual block.
 ///
 /// Convolution tensors use PyTorch layout `[out, in, kernel_h, kernel_w]` and
@@ -2016,11 +2013,9 @@ impl NcsnppBigGanBlock {
     /// Runs source `ResnetBlockBigGANpp` on channel-major `[C,H,W]` buffers.
     ///
     /// The learned operations (GroupNorm, SiLU, Conv2d, and time projection)
-    /// are all dispatched through `Compute`. FIR resampling is fixed, with no
-    /// learned state, and is kept as explicit scalar glue until a dedicated
-    /// backend FIR seam exists. A non-CPU backend with Up/Down resampling is
-    /// rejected by an explicit preflight before learned work or host FIR; no
-    /// CPU fallback is attempted.
+    /// are all dispatched through `Compute`, including the fixed FIR
+    /// resampling op. Unsupported backends return their explicit Compute
+    /// error; this block never falls back to host execution.
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2037,7 +2032,6 @@ impl NcsnppBigGanBlock {
                     .to_owned(),
             ));
         }
-        validate_fir_backend(compute.is_cpu(), self.resample)?;
         let input_plane = checked_product(height, width, "sgmse BigGAN input plane")?;
         let input_len =
             checked_product(self.weights.in_channels, input_plane, "sgmse BigGAN input")?;
@@ -2127,12 +2121,12 @@ impl NcsnppBigGanBlock {
         if matches!(self.resample, NcsnppResample::None) {
             h_input.copy_from_slice(&activated0);
         } else {
-            fir_resample_fixed(
+            compute.fir_resample_2d_f32(
                 &activated0,
                 self.weights.in_channels,
                 height,
                 width,
-                self.resample,
+                matches!(self.resample, NcsnppResample::Up),
                 &mut h_input,
             )?;
         }
@@ -2230,12 +2224,12 @@ impl NcsnppBigGanBlock {
         if matches!(self.resample, NcsnppResample::None) {
             skip_input.copy_from_slice(input);
         } else {
-            fir_resample_fixed(
+            compute.fir_resample_2d_f32(
                 input,
                 self.weights.in_channels,
                 height,
                 width,
-                self.resample,
+                matches!(self.resample, NcsnppResample::Up),
                 &mut skip_input,
             )?;
         }
@@ -2685,9 +2679,9 @@ fn residual_from_roles(
     NcsnppBigGanBlock::new(NcsnppV2Config::source_default(), block, resample)
 }
 
-/// Source-mapped, source-ordered NCSN++ v2 score graph assembled solely from authenticated
-/// typed operands. FIR remains a fixed host operation, so non-CPU dispatch is
-/// rejected before the first learned operation until a backend FIR seam lands.
+/// Source-mapped, source-ordered NCSN++ v2 score graph assembled solely from
+/// authenticated typed operands. Fixed FIR resampling is dispatched through
+/// the selected [`Compute`] backend, with no host fallback.
 #[derive(Debug, Clone)]
 pub struct NcsnppScoreGraph {
     config: NcsnppV2Config,
@@ -2941,9 +2935,10 @@ impl NcsnppScoreGraph {
         })
     }
 
-    /// Runs the score network for one `[real plane][imag plane]` state and
-    /// condition pair. The output uses the same two-plane layout and applies
-    /// the SpeechBrain wrapper's exact `1/t` network scaling.
+    /// Runs the score network for `[real plane][imag plane]` state and
+    /// condition pairs. Each plane is `[256,width]`, with `width` a nonzero
+    /// multiple of 64; the output uses the same layout and applies the
+    /// SpeechBrain wrapper's exact `1/t` network scaling.
     pub fn forward(
         &self,
         compute: &Compute,
@@ -2952,16 +2947,27 @@ impl NcsnppScoreGraph {
         t: f32,
         output: &mut [f32],
     ) -> Result<()> {
-        const HEIGHT: usize = 256;
-        const WIDTH: usize = 64;
-        let plane = checked_product(HEIGHT, WIDTH, "sgmse score plane")?;
-        let two_planes = checked_product(2, plane, "sgmse score two-plane layout")?;
-        if state.len() != two_planes || condition.len() != two_planes || output.len() != two_planes
-        {
+        let mut height = SGMSE_SCORE_HEIGHT;
+        if state.len() != condition.len() || state.len() != output.len() || state.len() % 2 != 0 {
             return Err(VokraError::InvalidArgument(
-                "sgmse score expects two 256x64 planes for state, condition, and output".to_owned(),
+                "sgmse score expects equal two-plane state, condition, and output buffers"
+                    .to_owned(),
             ));
         }
+        let plane = state.len() / 2;
+        if plane == 0 || plane % height != 0 {
+            return Err(VokraError::InvalidArgument(
+                "sgmse score expects two [256,width] planes".to_owned(),
+            ));
+        }
+        let mut width = plane / height;
+        if width == 0 || width % SGMSE_SCORE_FRAME_ALIGNMENT != 0 {
+            return Err(VokraError::InvalidArgument(
+                "sgmse score width must be a nonzero multiple of 64".to_owned(),
+            ));
+        }
+        let two_planes = checked_product(2, plane, "sgmse score two-plane layout")?;
+        debug_assert_eq!(state.len(), two_planes);
         if !t.is_finite() || t <= 0.0 {
             return Err(VokraError::InvalidArgument(
                 "sgmse score time must be finite and positive".to_owned(),
@@ -2976,19 +2982,16 @@ impl NcsnppScoreGraph {
                 "sgmse score input contains a non-finite value".to_owned(),
             ));
         }
-        if !compute.is_cpu() {
-            return Err(VokraError::UnsupportedOp("sgmse score graph uses a host FIR resampler; non-CPU dispatch is closed until a backend FIR seam exists".to_owned()));
-        }
-        let mut input = Vec::with_capacity(4 * plane);
+        let input_len = checked_product(4, plane, "sgmse score input layout")?;
+        let mut input = Vec::with_capacity(input_len);
         input.extend_from_slice(state);
         input.extend_from_slice(condition);
-        let mut temb = vec![0.0; self.config.nf * 4];
+        let temb_len = checked_product(self.config.nf, 4, "sgmse score time embedding")?;
+        let mut temb = vec![0.0; temb_len];
         self.conditioner.forward(compute, t.ln(), &mut temb)?;
-        let mut height = HEIGHT;
-        let mut width = WIDTH;
         let mut input_pyramid = input.clone();
         let mut output_pyramid: Option<Vec<f32>> = None;
-        let mut h = vec![0.0; 128 * plane];
+        let mut h = vec![0.0; checked_product(self.config.nf, plane, "sgmse score feature plane")?];
         let mut hs: Vec<Vec<f32>> = Vec::with_capacity(21);
         let mut pending_downsample_skip = false;
         for (stage_index, stage) in self.stages.iter().enumerate() {
@@ -3008,7 +3011,15 @@ impl NcsnppScoreGraph {
                         })?;
                         h = concat_channels(&h, &skip, height, width)?;
                     }
-                    let mut next = vec![0.0; block.out_channels() * height * width];
+                    let stage_plane = checked_product(height, width, "sgmse score stage plane")?;
+                    let mut next = vec![
+                        0.0;
+                        checked_product(
+                            block.out_channels(),
+                            stage_plane,
+                            "sgmse score stage features",
+                        )?
+                    ];
                     block.forward(compute, &h, height, width, Some(&temb), &mut next)?;
                     h = next;
                     if *commit_down_skip
@@ -3034,14 +3045,29 @@ impl NcsnppScoreGraph {
                 SgmseScoreStage::Downsample(block) => {
                     let old_height = height;
                     let old_width = width;
-                    let mut next = vec![0.0; block.out_channels() * (height / 2) * (width / 2)];
-                    let mut next_pyramid = vec![0.0; 4 * (height / 2) * (width / 2)];
-                    fir_resample_fixed(
+                    let down_height = height / 2;
+                    let down_width = width / 2;
+                    let down_plane =
+                        checked_product(down_height, down_width, "sgmse score downsample plane")?;
+                    let mut next = vec![
+                        0.0;
+                        checked_product(
+                            block.out_channels(),
+                            down_plane,
+                            "sgmse score downsample features",
+                        )?
+                    ];
+                    let mut next_pyramid =
+                        vec![
+                            0.0;
+                            checked_product(4, down_plane, "sgmse score downsample pyramid")?
+                        ];
+                    compute.fir_resample_2d_f32(
                         &input_pyramid,
                         4,
                         old_height,
                         old_width,
-                        NcsnppResample::Down,
+                        false,
                         &mut next_pyramid,
                     )?;
                     block.forward(compute, &h, height, width, Some(&temb), &mut next)?;
@@ -3052,7 +3078,15 @@ impl NcsnppScoreGraph {
                     pending_downsample_skip = true;
                 }
                 SgmseScoreStage::ProgressiveInput(projection) => {
-                    let mut pyramid = vec![0.0; projection.out_channels * height * width];
+                    let stage_plane = checked_product(height, width, "sgmse score stage plane")?;
+                    let mut pyramid = vec![
+                        0.0;
+                        checked_product(
+                            projection.out_channels,
+                            stage_plane,
+                            "sgmse score progressive input",
+                        )?
+                    ];
                     projection.forward(compute, &input_pyramid, height, width, &mut pyramid)?;
                     combine_input_skip(&mut h, &pyramid)?;
                     if pending_downsample_skip {
@@ -3061,12 +3095,13 @@ impl NcsnppScoreGraph {
                     }
                 }
                 SgmseScoreStage::ProgressiveOutput(progressive) => {
+                    let stage_plane = checked_product(height, width, "sgmse score stage plane")?;
                     let mut normalized = vec![0.0; h.len()];
                     compute.group_norm_groups_f32(
                         &h,
                         &mut normalized,
                         progressive.channels,
-                        height * width,
+                        stage_plane,
                         progressive.groups,
                         &progressive.norm_gamma,
                         &progressive.norm_beta,
@@ -3074,7 +3109,11 @@ impl NcsnppScoreGraph {
                     )?;
                     let mut activated = vec![0.0; h.len()];
                     compute.silu_f32(&normalized, &mut activated)?;
-                    let mut projected = vec![0.0; 4 * height * width];
+                    let mut projected =
+                        vec![
+                            0.0;
+                            checked_product(4, stage_plane, "sgmse score progressive output")?
+                        ];
                     progressive.projection.forward(
                         compute,
                         &activated,
@@ -3091,22 +3130,48 @@ impl NcsnppScoreGraph {
                 SgmseScoreStage::Upsample(block) => {
                     let old_height = height;
                     let old_width = width;
-                    let mut next = vec![0.0; block.out_channels() * height * 2 * width * 2];
+                    let up_height = height.checked_mul(2).ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "sgmse score upsample height overflows usize".to_owned(),
+                        )
+                    })?;
+                    let up_width = width.checked_mul(2).ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "sgmse score upsample width overflows usize".to_owned(),
+                        )
+                    })?;
+                    let up_plane =
+                        checked_product(up_height, up_width, "sgmse score upsample plane")?;
+                    let mut next = vec![
+                        0.0;
+                        checked_product(
+                            block.out_channels(),
+                            up_plane,
+                            "sgmse score upsample features",
+                        )?
+                    ];
                     block.forward(compute, &h, height, width, Some(&temb), &mut next)?;
                     if let Some(previous) = output_pyramid.take() {
-                        let mut up = vec![0.0; 4 * height * 2 * width * 2];
-                        fir_resample_fixed(
-                            &previous,
-                            4,
-                            old_height,
-                            old_width,
-                            NcsnppResample::Up,
-                            &mut up,
+                        let mut up =
+                            vec![
+                                0.0;
+                                checked_product(4, up_plane, "sgmse score upsample pyramid")?
+                            ];
+                        compute.fir_resample_2d_f32(
+                            &previous, 4, old_height, old_width, true, &mut up,
                         )?;
                         output_pyramid = Some(up);
                     }
-                    height *= 2;
-                    width *= 2;
+                    height = height.checked_mul(2).ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "sgmse score upsample height overflows usize".to_owned(),
+                        )
+                    })?;
+                    width = width.checked_mul(2).ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "sgmse score upsample width overflows usize".to_owned(),
+                        )
+                    })?;
                     h = next;
                 }
                 SgmseScoreStage::Output(projection) => {
@@ -3138,7 +3203,10 @@ fn concat_channels(left: &[f32], right: &[f32], height: usize, width: usize) -> 
             "sgmse skip tensors have incompatible spatial shapes".to_owned(),
         ));
     }
-    let mut output = Vec::with_capacity(left.len() + right.len());
+    let output_len = left.len().checked_add(right.len()).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse skip tensor size overflows usize".to_owned())
+    })?;
+    let mut output = Vec::with_capacity(output_len);
     output.extend_from_slice(left);
     output.extend_from_slice(right);
     Ok(output)
@@ -3195,186 +3263,6 @@ fn ceil_div_nonzero(n: usize, divisor: usize, what: &str) -> Result<usize> {
         .and_then(|value| value.checked_div(divisor))
         .and_then(|value| value.checked_add(1))
         .ok_or_else(|| VokraError::InvalidArgument(format!("{what} overflows usize")))
-}
-
-/// Source `upfirdn2d` with the fixed normalized `[1,3,3,1]` separable kernel.
-///
-/// The source uses zero extension, not reflection. Upsampling uses a 2×2
-/// zero-inserted lattice, kernel gain `factor²`, and symmetric pad `(2,1)`;
-/// downsampling uses no insertion, kernel gain `1`, and symmetric pad `(1,1)`.
-fn fir_resample_fixed(
-    input: &[f32],
-    channels: usize,
-    height: usize,
-    width: usize,
-    mode: NcsnppResample,
-    output: &mut [f32],
-) -> Result<()> {
-    if channels == 0 || height == 0 || width == 0 {
-        return Err(VokraError::InvalidArgument(
-            "sgmse FIR input dimensions must be non-zero".to_owned(),
-        ));
-    }
-    let input_plane = checked_product(height, width, "sgmse FIR input plane")?;
-    if input.len() != checked_product(channels, input_plane, "sgmse FIR input")?
-        || input.iter().any(|value| !value.is_finite())
-    {
-        return Err(VokraError::InvalidArgument(
-            "sgmse FIR input shape or values are invalid".to_owned(),
-        ));
-    }
-    let (up, down, pad_before, pad_after, out_height, out_width, gain) = match mode {
-        NcsnppResample::None => {
-            if output.len() != input.len() {
-                return Err(VokraError::InvalidArgument(
-                    "sgmse FIR identity output shape is invalid".to_owned(),
-                ));
-            }
-            output.copy_from_slice(input);
-            return Ok(());
-        }
-        NcsnppResample::Up => (
-            2usize,
-            1usize,
-            2usize,
-            1usize,
-            height.checked_mul(2).ok_or_else(|| {
-                VokraError::InvalidArgument("sgmse FIR upsample height overflows usize".to_owned())
-            })?,
-            width.checked_mul(2).ok_or_else(|| {
-                VokraError::InvalidArgument("sgmse FIR upsample width overflows usize".to_owned())
-            })?,
-            4.0f32,
-        ),
-        NcsnppResample::Down => (
-            1usize,
-            2usize,
-            1usize,
-            1usize,
-            height / 2,
-            width / 2,
-            1.0f32,
-        ),
-    };
-    if out_height == 0 || out_width == 0 {
-        return Err(VokraError::InvalidArgument(
-            "sgmse FIR downsample output dimensions are zero".to_owned(),
-        ));
-    }
-    let out_plane = checked_product(out_height, out_width, "sgmse FIR output plane")?;
-    if output.len() != checked_product(channels, out_plane, "sgmse FIR output")? {
-        return Err(VokraError::InvalidArgument(
-            "sgmse FIR output shape is invalid".to_owned(),
-        ));
-    }
-    // `_setup_kernel([1, 3, 3, 1])` first forms the 2-D outer product and
-    // normalizes its sum (64).  These are the equivalent separable 1-D taps;
-    // using 1/64 here would normalize twice and violate source constant gain.
-    const TAPS: [f32; 4] = [1.0 / 8.0, 3.0 / 8.0, 3.0 / 8.0, 1.0 / 8.0];
-    let up_height = height.checked_mul(up).ok_or_else(|| {
-        VokraError::InvalidArgument("sgmse FIR expanded height overflows usize".to_owned())
-    })?;
-    let up_width = width.checked_mul(up).ok_or_else(|| {
-        VokraError::InvalidArgument("sgmse FIR expanded width overflows usize".to_owned())
-    })?;
-    let padded_height = up_height
-        .checked_add(pad_before)
-        .and_then(|value| value.checked_add(pad_after))
-        .ok_or_else(|| {
-            VokraError::InvalidArgument("sgmse FIR padded height overflows usize".to_owned())
-        })?;
-    let padded_width = up_width
-        .checked_add(pad_before)
-        .and_then(|value| value.checked_add(pad_after))
-        .ok_or_else(|| {
-            VokraError::InvalidArgument("sgmse FIR padded width overflows usize".to_owned())
-        })?;
-    let convolution_height = padded_height.checked_sub(4).ok_or_else(|| {
-        VokraError::InvalidArgument("sgmse FIR padded height is smaller than kernel".to_owned())
-    })? + 1;
-    let convolution_width = padded_width.checked_sub(4).ok_or_else(|| {
-        VokraError::InvalidArgument("sgmse FIR padded width is smaller than kernel".to_owned())
-    })? + 1;
-    let expected_out_height =
-        ceil_div_nonzero(convolution_height, down, "sgmse FIR output height sampling")?;
-    let expected_out_width =
-        ceil_div_nonzero(convolution_width, down, "sgmse FIR output width sampling")?;
-    if expected_out_height != out_height || expected_out_width != out_width {
-        return Err(VokraError::InvalidArgument(
-            "sgmse FIR source shape formula mismatch".to_owned(),
-        ));
-    }
-    let last_conv_y = out_height
-        .checked_sub(1)
-        .and_then(|index| index.checked_mul(down))
-        .ok_or_else(|| {
-            VokraError::InvalidArgument("sgmse FIR last height sample overflows usize".to_owned())
-        })?;
-    let last_conv_x = out_width
-        .checked_sub(1)
-        .and_then(|index| index.checked_mul(down))
-        .ok_or_else(|| {
-            VokraError::InvalidArgument("sgmse FIR last width sample overflows usize".to_owned())
-        })?;
-    if last_conv_y >= convolution_height || last_conv_x >= convolution_width {
-        return Err(VokraError::InvalidArgument(
-            "sgmse FIR last sampled convolution index is out of bounds".to_owned(),
-        ));
-    }
-    for channel in 0..channels {
-        let input_base = channel * input_plane;
-        let output_base = channel * out_plane;
-        for out_y in 0..out_height {
-            for out_x in 0..out_width {
-                let conv_y = out_y.checked_mul(down).ok_or_else(|| {
-                    VokraError::InvalidArgument(
-                        "sgmse FIR height sample overflows usize".to_owned(),
-                    )
-                })?;
-                let conv_x = out_x.checked_mul(down).ok_or_else(|| {
-                    VokraError::InvalidArgument("sgmse FIR width sample overflows usize".to_owned())
-                })?;
-                let mut value = 0.0f32;
-                for (ky, &tap_y) in TAPS.iter().enumerate() {
-                    for (kx, &tap_x) in TAPS.iter().enumerate() {
-                        let padded_y = conv_y.checked_add(ky).ok_or_else(|| {
-                            VokraError::InvalidArgument(
-                                "sgmse FIR padded height sample overflows usize".to_owned(),
-                            )
-                        })?;
-                        let padded_x = conv_x.checked_add(kx).ok_or_else(|| {
-                            VokraError::InvalidArgument(
-                                "sgmse FIR padded width sample overflows usize".to_owned(),
-                            )
-                        })?;
-                        if padded_y < pad_before
-                            || padded_x < pad_before
-                            || padded_y >= pad_before + up_height
-                            || padded_x >= pad_before + up_width
-                        {
-                            continue;
-                        }
-                        let expanded_y = padded_y - pad_before;
-                        let expanded_x = padded_x - pad_before;
-                        if expanded_y % up != 0 || expanded_x % up != 0 {
-                            continue;
-                        }
-                        let source_y = expanded_y / up;
-                        let source_x = expanded_x / up;
-                        let source = input[input_base + source_y * width + source_x];
-                        value += source * tap_y * tap_x * gain;
-                    }
-                }
-                if !value.is_finite() {
-                    return Err(VokraError::InvalidArgument(
-                        "sgmse FIR produced a non-finite value".to_owned(),
-                    ));
-                }
-                output[output_base + out_y * out_width + out_x] = value;
-            }
-        }
-    }
-    Ok(())
 }
 
 impl NcsnppV2Config {
@@ -3482,6 +3370,199 @@ impl SgmseFrontend {
     }
 }
 
+fn normalize_pcm(pcm: &[f32]) -> Result<(Vec<f32>, f32)> {
+    if pcm.is_empty() || pcm.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "sgmse enhancement PCM must be non-empty and finite".to_owned(),
+        ));
+    }
+    let max_abs = pcm.iter().map(|value| value.abs()).fold(0.0f32, f32::max);
+    let norm = max_abs.max(1.0e-8);
+    let normalized = pcm.iter().map(|value| value / norm).collect::<Vec<_>>();
+    if normalized.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "sgmse PCM normalization produced a non-finite value".to_owned(),
+        ));
+    }
+    Ok((normalized, norm))
+}
+
+fn restore_pcm_scale(pcm: &mut [f32], norm: f32) -> Result<()> {
+    if !norm.is_finite() || norm < 1.0e-8 || pcm.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "sgmse PCM scale restoration received invalid values".to_owned(),
+        ));
+    }
+    for value in pcm.iter_mut() {
+        *value *= norm;
+    }
+    if pcm.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "sgmse PCM scale restoration produced a non-finite value".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Adapts the frontend's row-major `[frames, frequency]` spectrogram to the
+/// source score graph's channel-major `[frequency, frame]` planes. The pinned
+/// `pad_spec` contract right-pads the time axis to a multiple of 64 with
+/// ReflectionPad2d semantics. Padding is rejected when the source reflection
+/// constraint (`padding < input width`) cannot be met.
+fn spectrogram_to_score_planes(spec: &Spectrogram) -> Result<(Vec<f32>, usize, usize)> {
+    if spec.frames == 0 || spec.bins != SGMSE_SCORE_HEIGHT {
+        return Err(VokraError::InvalidArgument(
+            "sgmse frontend spectrogram must have 256 frequency bins and at least one frame"
+                .to_owned(),
+        ));
+    }
+    let remainder = spec.frames % SGMSE_SCORE_FRAME_ALIGNMENT;
+    let padding = if remainder == 0 {
+        0
+    } else {
+        SGMSE_SCORE_FRAME_ALIGNMENT - remainder
+    };
+    if padding >= spec.frames {
+        return Err(VokraError::InvalidArgument(
+            "sgmse reflection padding is impossible for the source frame count".to_owned(),
+        ));
+    }
+    let padded_frames = spec.frames.checked_add(padding).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse padded frame count overflows usize".to_owned())
+    })?;
+    let source_len = spec.frames.checked_mul(spec.bins).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse frontend spectrogram size overflows usize".to_owned())
+    })?;
+    if spec.re.len() != source_len || spec.im.len() != source_len {
+        return Err(VokraError::InvalidArgument(
+            "sgmse frontend spectrogram planes have inconsistent lengths".to_owned(),
+        ));
+    }
+    if spec
+        .re
+        .iter()
+        .chain(&spec.im)
+        .any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "sgmse frontend spectrogram contains a non-finite value".to_owned(),
+        ));
+    }
+    let plane_len = SGMSE_SCORE_HEIGHT
+        .checked_mul(padded_frames)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse score plane size overflows usize".to_owned())
+        })?;
+    let mut planes = vec![
+        0.0;
+        plane_len.checked_mul(2).ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse score plane pair size overflows usize".to_owned())
+        })?
+    ];
+    for frame in 0..padded_frames {
+        let source_frame = if frame < spec.frames {
+            frame
+        } else {
+            // Right ReflectionPad2d: after the final source frame, reflect
+            // from the preceding frame without repeating the edge value.
+            spec.frames
+                .checked_mul(2)
+                .and_then(|value| value.checked_sub(2))
+                .and_then(|value| value.checked_sub(frame))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument("sgmse reflection index overflows usize".to_owned())
+                })?
+        };
+        for bin in 0..spec.bins {
+            let source_index = source_frame
+                .checked_mul(spec.bins)
+                .and_then(|index| index.checked_add(bin))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "sgmse spectrogram source index overflows".to_owned(),
+                    )
+                })?;
+            let plane_index = bin
+                .checked_mul(padded_frames)
+                .and_then(|index| index.checked_add(frame))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument("sgmse score plane index overflows".to_owned())
+                })?;
+            planes[plane_index] = spec.re[source_index];
+            planes[plane_len + plane_index] = spec.im[source_index];
+        }
+    }
+    Ok((planes, spec.frames, padded_frames))
+}
+
+/// Rebuilds a frontend spectrogram from the score sampler's two planes and
+/// removes only the right-padding introduced by `spectrogram_to_score_planes`.
+fn score_planes_to_spectrogram(
+    planes: &[f32],
+    frames: usize,
+    padded_frames: usize,
+) -> Result<Spectrogram> {
+    if frames == 0 || padded_frames < frames || padded_frames % SGMSE_SCORE_FRAME_ALIGNMENT != 0 {
+        return Err(VokraError::InvalidArgument(
+            "sgmse sampled frame count is outside the source aligned frame contract".to_owned(),
+        ));
+    }
+    let padding = (SGMSE_SCORE_FRAME_ALIGNMENT - frames % SGMSE_SCORE_FRAME_ALIGNMENT)
+        % SGMSE_SCORE_FRAME_ALIGNMENT;
+    let expected_padded_frames = frames.checked_add(padding).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse sampled frame count overflows usize".to_owned())
+    })?;
+    if padded_frames != expected_padded_frames {
+        return Err(VokraError::InvalidArgument(
+            "sgmse sampled frame count does not match source padding".to_owned(),
+        ));
+    }
+    let plane_len = SGMSE_SCORE_HEIGHT
+        .checked_mul(padded_frames)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse score plane size overflows usize".to_owned())
+        })?;
+    let expected_len = plane_len.checked_mul(2).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse score plane pair size overflows usize".to_owned())
+    })?;
+    if planes.len() != expected_len || planes.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "sgmse sampled score planes have invalid shape or values".to_owned(),
+        ));
+    }
+    let output_len = frames.checked_mul(SGMSE_SCORE_HEIGHT).ok_or_else(|| {
+        VokraError::InvalidArgument("sgmse output spectrogram size overflows usize".to_owned())
+    })?;
+    let mut re = vec![0.0; output_len];
+    let mut im = vec![0.0; output_len];
+    for frame in 0..frames {
+        for bin in 0..SGMSE_SCORE_HEIGHT {
+            let output_index = frame
+                .checked_mul(SGMSE_SCORE_HEIGHT)
+                .and_then(|index| index.checked_add(bin))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "sgmse output spectrogram index overflows".to_owned(),
+                    )
+                })?;
+            let plane_index = bin
+                .checked_mul(padded_frames)
+                .and_then(|index| index.checked_add(frame))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument("sgmse score plane index overflows".to_owned())
+                })?;
+            re[output_index] = planes[plane_index];
+            im[output_index] = planes[plane_len + plane_index];
+        }
+    }
+    Ok(Spectrogram {
+        frames,
+        bins: SGMSE_SCORE_HEIGHT,
+        re,
+        im,
+    })
+}
+
 fn transform_forward(mut spec: Spectrogram, factor: f32, exponent: f32) -> Result<Spectrogram> {
     if !factor.is_finite() || factor <= 0.0 || !exponent.is_finite() || exponent <= 0.0 {
         return Err(VokraError::InvalidArgument(
@@ -3557,6 +3638,49 @@ pub trait NcsnppScore {
     /// Writes a flat real score for `state` conditioned on `condition` at time
     /// `t`. The callback must preserve the supplied length.
     fn score(&mut self, state: &[f32], condition: &[f32], t: f32, out: &mut [f32]) -> Result<()>;
+
+    /// Dispatches one score evaluation through the selected backend. Existing
+    /// external score callbacks retain the original CPU-only method contract;
+    /// native graph implementations override this seam to preserve backend
+    /// selection through the sampler.
+    fn score_with_compute(
+        &mut self,
+        _compute: &Compute,
+        state: &[f32],
+        condition: &[f32],
+        t: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_score_callback_backend(_compute.is_cpu())?;
+        self.score(state, condition, t, out)
+    }
+}
+
+fn validate_score_callback_backend(is_cpu: bool) -> Result<()> {
+    if !is_cpu {
+        return Err(VokraError::UnsupportedOp(
+            "sgmse score callback has no non-CPU backend seam; no CPU fallback is performed"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+impl NcsnppScore for NcsnppScoreGraph {
+    fn score(&mut self, state: &[f32], condition: &[f32], t: f32, out: &mut [f32]) -> Result<()> {
+        self.forward(&Compute::cpu(), state, condition, t, out)
+    }
+
+    fn score_with_compute(
+        &mut self,
+        compute: &Compute,
+        state: &[f32],
+        condition: &[f32],
+        t: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        self.forward(compute, state, condition, t, out)
+    }
 }
 
 /// Deterministic noise provider used by the sampler and independent fixtures.
@@ -3656,7 +3780,7 @@ impl SgmseSampler {
             };
             // Upstream `get_pc_sampler` calls the corrector first, using its
             // score evaluated at the current state/time.
-            score_model.score(&state, condition, t, &mut score)?;
+            score_model.score_with_compute(compute, &state, condition, t, &mut score)?;
             noise.fill(step_index, true, &mut step_noise)?;
             compute.ouve_annealed_langevin_step(
                 config,
@@ -3671,7 +3795,7 @@ impl SgmseSampler {
             state.copy_from_slice(&next);
 
             // Predictor consumes a fresh score/noise pair after the corrector.
-            score_model.score(&state, condition, t, &mut score)?;
+            score_model.score_with_compute(compute, &state, condition, t, &mut score)?;
             noise.fill(step_index, false, &mut step_noise)?;
             compute.ouve_reverse_diffusion_step(
                 config,
@@ -3695,8 +3819,10 @@ impl SgmseSampler {
 }
 
 /// Strict public checkpoint gate. It retains the authenticated operands and
-/// their assembled native score graph; enhancement/frontend and sampler
-/// integration remain separate follow-up work.
+/// their assembled source-mapped score graph, and exposes the source-pinned
+/// CPU frontend/sampler enhancement route. Independent score parity has
+/// passed; end-to-end CPU enhancement parity remains pending, while the Metal
+/// FIR route is staged and Apple-device parity remains pending.
 pub struct SgmseModel {
     weights: SgmseGraphWeights,
     score_graph: NcsnppScoreGraph,
@@ -3720,9 +3846,9 @@ impl SgmseModel {
         &self.weights
     }
 
-    /// Runs the native score graph through the selected [`Compute`] backend.
-    /// The current graph is CPU-only because fixed FIR resampling is still a
-    /// host operation; non-CPU dispatch fails before learned work begins.
+    /// Runs the source-mapped score graph through the selected [`Compute`]
+    /// backend. Unsupported backends return an explicit Compute error; no CPU
+    /// fallback is used.
     pub fn score(
         &self,
         compute: &Compute,
@@ -3733,6 +3859,30 @@ impl SgmseModel {
     ) -> Result<()> {
         self.score_graph
             .forward(compute, state, condition, t, output)
+    }
+
+    /// Enhances one 16 kHz mono PCM signal using the source-pinned VoiceBank
+    /// frontend, OUVE predictor/corrector sampler, and authenticated score
+    /// graph. The caller owns all randomness through `noise`; no implicit RNG
+    /// or resampling is performed. The source time axis is reflected to the
+    /// next multiple of 64; no chunking is introduced.
+    pub fn enhance<R: SgmseNoise>(
+        &mut self,
+        compute: &Compute,
+        pcm: &[f32],
+        noise: &mut R,
+    ) -> Result<Vec<f32>> {
+        let (normalized_pcm, norm) = normalize_pcm(pcm)?;
+        let config = SgmseConfig::voicebank();
+        let frontend = SgmseFrontend::new(config)?;
+        let transformed = frontend.forward(&normalized_pcm)?;
+        let (condition, frames, padded_frames) = spectrogram_to_score_planes(&transformed)?;
+        let sampler = SgmseSampler::new(config)?;
+        let sampled = sampler.sample(compute, &mut self.score_graph, noise, &condition)?;
+        let sampled_spectrogram = score_planes_to_spectrogram(&sampled, frames, padded_frames)?;
+        let mut enhanced = frontend.inverse(&sampled_spectrogram, Some(pcm.len()))?;
+        restore_pcm_scale(&mut enhanced, norm)?;
+        Ok(enhanced)
     }
 
     /// Path-only diagnostic helper that intentionally cannot authenticate or
@@ -3750,15 +3900,16 @@ impl SgmseModel {
     }
 }
 
-/// Hot ops required by the native score graph and the follow-up sampler. The
-/// learned score path dispatches these through [`Compute`]; fixed FIR remains
-/// host-only and therefore closes non-CPU score execution above.
+/// Hot ops required by the source score and sampler routes. All learned and
+/// fixed-FIR operations dispatch through [`Compute`]; unsupported backends
+/// return explicit errors without a silent CPU fallback.
 pub const SGMSE_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Conv2d,
     HotOp::GroupNorm,
     HotOp::Softmax,
     HotOp::Silu,
+    HotOp::FirResample2d,
     HotOp::OuveSde,
 ];
 
@@ -4062,7 +4213,7 @@ mod tests {
         let error = graph
             .forward(&Compute::cpu(), &[0.0; 2], &[0.0; 2], 0.5, &mut output)
             .unwrap_err();
-        assert!(format!("{error}").contains("expects two 256x64 planes"));
+        assert!(format!("{error}").contains("expects two [256,width] planes"));
 
         let plane = vec![0.0; 2 * 256 * 64];
         let mut valid_output = vec![0.0; 2 * 256 * 64];
@@ -4104,6 +4255,90 @@ mod tests {
         for (left, right) in input.im.iter().zip(restored.im.iter()) {
             assert!((left - right).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn pcm_normalization_accepts_silence_and_restores_scale_explicitly() {
+        let (normalized, norm) = normalize_pcm(&[0.0, 0.0]).unwrap();
+        assert_eq!(norm, 1.0e-8);
+        assert_eq!(normalized, vec![0.0, 0.0]);
+        assert!(normalized.iter().all(|value| value.is_finite()));
+
+        let (normalized, norm) = normalize_pcm(&[2.0, -4.0]).unwrap();
+        assert_eq!(norm, 4.0);
+        assert_eq!(normalized, vec![0.5, -1.0]);
+        let mut restored = normalized;
+        restore_pcm_scale(&mut restored, norm).unwrap();
+        assert_eq!(restored, vec![2.0, -4.0]);
+        assert!(normalize_pcm(&[f32::NAN]).is_err());
+        assert!(restore_pcm_scale(&mut [0.0], 0.0).is_err());
+    }
+
+    #[test]
+    fn score_plane_adapter_right_pads_and_restores_source_frame_order() {
+        let frames = 33;
+        let bins = SGMSE_SCORE_HEIGHT;
+        let count = frames * bins;
+        let spec = Spectrogram {
+            frames,
+            bins,
+            re: (0..count).map(|value| value as f32).collect(),
+            im: (0..count).map(|value| -(value as f32)).collect(),
+        };
+        let (planes, original_frames, padded_frames) = spectrogram_to_score_planes(&spec).unwrap();
+        assert_eq!(original_frames, frames);
+        assert_eq!(padded_frames, 64);
+        let plane_len = SGMSE_SCORE_HEIGHT * padded_frames;
+        assert_eq!(planes[0], 0.0);
+        assert_eq!(planes[1], bins as f32);
+        assert_eq!(planes[33], (31 * bins) as f32);
+        assert_eq!(planes[32], (32 * bins) as f32);
+        assert_eq!(planes[64], (30 * bins) as f32);
+        assert_eq!(planes[plane_len], 0.0);
+        assert_eq!(planes[plane_len + 33], -((31 * bins) as f32));
+        let restored =
+            score_planes_to_spectrogram(&planes, original_frames, padded_frames).unwrap();
+        assert_eq!(restored.frames, spec.frames);
+        assert_eq!(restored.bins, spec.bins);
+        assert_eq!(restored.re, spec.re);
+        assert_eq!(restored.im, spec.im);
+
+        let mut no_padding = Spectrogram {
+            frames: 64,
+            bins,
+            re: vec![0.0; 64 * bins],
+            im: vec![0.0; 64 * bins],
+        };
+        no_padding.re[63 * bins] = 9.0;
+        no_padding.im[63 * bins] = -9.0;
+        let (no_padding_planes, _, no_padding_frames) =
+            spectrogram_to_score_planes(&no_padding).unwrap();
+        assert_eq!(no_padding_frames, 64);
+        assert_eq!(no_padding_planes[63], 9.0);
+        assert_eq!(no_padding_planes[SGMSE_SCORE_HEIGHT * 64 + 63], -9.0);
+    }
+
+    #[test]
+    fn score_plane_adapter_rejects_unsupported_frame_and_value_shapes() {
+        let mut wrong_bins = Spectrogram {
+            frames: 1,
+            bins: SGMSE_SCORE_HEIGHT - 1,
+            re: vec![0.0; SGMSE_SCORE_HEIGHT - 1],
+            im: vec![0.0; SGMSE_SCORE_HEIGHT - 1],
+        };
+        assert!(spectrogram_to_score_planes(&wrong_bins).is_err());
+        wrong_bins.bins = SGMSE_SCORE_HEIGHT;
+        wrong_bins.re.resize(SGMSE_SCORE_HEIGHT, 0.0);
+        wrong_bins.im.resize(SGMSE_SCORE_HEIGHT, 0.0);
+        wrong_bins.re[0] = f32::NAN;
+        assert!(spectrogram_to_score_planes(&wrong_bins).is_err());
+        let too_many = Spectrogram {
+            frames: SGMSE_SCORE_FRAME_ALIGNMENT + 1,
+            bins: SGMSE_SCORE_HEIGHT,
+            re: vec![0.0; (SGMSE_SCORE_FRAME_ALIGNMENT + 1) * SGMSE_SCORE_HEIGHT],
+            im: vec![0.0; (SGMSE_SCORE_FRAME_ALIGNMENT + 1) * SGMSE_SCORE_HEIGHT],
+        };
+        assert_eq!(spectrogram_to_score_planes(&too_many).unwrap().2, 128);
     }
 
     #[test]
@@ -4583,6 +4818,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn score_callback_backend_guard_rejects_non_cpu_without_device() {
+        assert!(validate_score_callback_backend(false).is_err());
+        assert!(validate_score_callback_backend(true).is_ok());
+    }
+
     struct TraceScore {
         times: Vec<f32>,
     }
@@ -4758,17 +4999,11 @@ mod tests {
     }
 
     #[test]
-    fn host_fir_backend_guard_rejects_non_cpu_resampling_without_device() {
-        assert!(validate_fir_backend(false, NcsnppResample::Up).is_err());
-        assert!(validate_fir_backend(false, NcsnppResample::Down).is_err());
-        assert!(validate_fir_backend(false, NcsnppResample::None).is_ok());
-        assert!(validate_fir_backend(true, NcsnppResample::Down).is_ok());
-    }
-
-    #[test]
     fn fir_impulse_matches_normalized_source_kernel() {
         let mut up = vec![0.0; 16];
-        fir_resample_fixed(&[1.0, 0.0, 0.0, 0.0], 1, 2, 2, NcsnppResample::Up, &mut up).unwrap();
+        Compute::cpu()
+            .fir_resample_2d_f32(&[1.0, 0.0, 0.0, 0.0], 1, 2, 2, true, &mut up)
+            .unwrap();
         // `_setup_kernel` normalizes the 2-D outer product once, so the
         // separable taps are [1/8, 3/8, 3/8, 1/8].  With source pad (2, 1)
         // and upsampling gain four, the first impulse samples are 9/16,
@@ -4780,34 +5015,31 @@ mod tests {
         assert_eq!(up[15], 0.0);
 
         let mut up_constant = vec![0.0; 8 * 8];
-        fir_resample_fixed(&[1.0; 16], 1, 4, 4, NcsnppResample::Up, &mut up_constant).unwrap();
+        Compute::cpu()
+            .fir_resample_2d_f32(&[1.0; 16], 1, 4, 4, true, &mut up_constant)
+            .unwrap();
         assert!((up_constant[3 * 8 + 3] - 1.0).abs() < 1.0e-7);
 
         let mut down = vec![0.0; 4];
-        fir_resample_fixed(
-            &[
-                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            1,
-            4,
-            4,
-            NcsnppResample::Down,
-            &mut down,
-        )
-        .unwrap();
+        Compute::cpu()
+            .fir_resample_2d_f32(
+                &[
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+                1,
+                4,
+                4,
+                false,
+                &mut down,
+            )
+            .unwrap();
         assert!((down[0] - 9.0 / 64.0).abs() < 1.0e-8);
         assert!(down[1..].iter().all(|&value| value == 0.0));
 
         let mut down_constant = vec![0.0; 4 * 4];
-        fir_resample_fixed(
-            &[1.0; 64],
-            1,
-            8,
-            8,
-            NcsnppResample::Down,
-            &mut down_constant,
-        )
-        .unwrap();
+        Compute::cpu()
+            .fir_resample_2d_f32(&[1.0; 64], 1, 8, 8, false, &mut down_constant)
+            .unwrap();
         assert!((down_constant[5] - 1.0).abs() < 1.0e-7);
     }
 

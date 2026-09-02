@@ -2402,6 +2402,68 @@ kernel void vokra_qwen3_tts_codec_decode_f32(
     }
     out[t * d.codebook_dim + delem] = acc;
 }
+
+// ---- SGMSE fixed 2-D FIR resampler ----------------------------------------
+// The source contract is a channel-major [C,H,W] tensor, a zero-inserted
+// 2x2 lattice for upsampling or no insertion for downsampling, the normalized
+// separable [1,3,3,1] taps, and asymmetric (2,1) padding for upsampling / the
+// symmetric (1,1) padding for downsampling. `gain` is 4 for upsampling and 1
+// for downsampling. All shape and finite-value checks are performed by the
+// Rust wrapper before this kernel is dispatched.
+struct FirResample2dDims {
+    uint channels;
+    uint in_h;
+    uint in_w;
+    uint out_h;
+    uint out_w;
+    uint factor;
+    uint down;
+    uint pad;
+    float gain;
+};
+
+kernel void vokra_fir_resample_2d_f32(
+    device const float* input [[buffer(0)]],
+    device float* output      [[buffer(1)]],
+    constant FirResample2dDims& d [[buffer(2)]],
+    uint2 gid                 [[thread_position_in_grid]])
+{
+    const uint out_x = gid.x;
+    const uint row = gid.y;
+    if (out_x >= d.out_w || row >= d.channels * d.out_h) {
+        return;
+    }
+    const uint channel = row / d.out_h;
+    const uint out_y = row % d.out_h;
+    const uint input_plane = d.in_h * d.in_w;
+    const uint output_plane = d.out_h * d.out_w;
+    const uint conv_y = out_y * d.down;
+    const uint conv_x = out_x * d.down;
+    const float taps[4] = { 1.0f / 8.0f, 3.0f / 8.0f,
+                            3.0f / 8.0f, 1.0f / 8.0f };
+    float value = 0.0f;
+    for (uint ky = 0u; ky < 4u; ++ky) {
+        for (uint kx = 0u; kx < 4u; ++kx) {
+            const uint padded_y = conv_y + ky;
+            const uint padded_x = conv_x + kx;
+            if (padded_y < d.pad || padded_x < d.pad) {
+                continue;
+            }
+            const uint expanded_y = padded_y - d.pad;
+            const uint expanded_x = padded_x - d.pad;
+            if (expanded_y >= d.in_h * d.factor ||
+                expanded_x >= d.in_w * d.factor ||
+                (expanded_y % d.factor) != 0u ||
+                (expanded_x % d.factor) != 0u) {
+                continue;
+            }
+            const uint input_index = channel * input_plane +
+                (expanded_y / d.factor) * d.in_w + expanded_x / d.factor;
+            value += input[input_index] * taps[ky] * taps[kx] * d.gain;
+        }
+    }
+    output[channel * output_plane + out_y * d.out_w + out_x] = value;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -2437,6 +2499,22 @@ struct Conv2dDims {
     in_per_group: u32,
     out_per_group: u32,
     has_bias: u32,
+}
+
+/// SGMSE fixed FIR resampler dimensions (`setBytes:` index 2). Mirrors the
+/// MSL `FirResample2dDims` field order exactly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FirResample2dDims {
+    channels: u32,
+    in_h: u32,
+    in_w: u32,
+    out_h: u32,
+    out_w: u32,
+    factor: u32,
+    down: u32,
+    pad: u32,
+    gain: f32,
 }
 
 /// PyTorch-layout ConvTranspose2d dimensions (`setBytes:` index 4). Mirrors
@@ -3323,6 +3401,7 @@ pub struct MetalContext {
     tanh_pipeline: Id,
     conv1d_pipeline: Id,
     conv2d_pipeline: Id,
+    fir_resample_2d_pipeline: Id,
     conv_transpose2d_pipeline: Id,
     col_gather_pipeline: Id,
     col_gather_t_pipeline: Id,
@@ -3614,6 +3693,10 @@ impl MetalContext {
         // Dense/grouped 2-D convolution seams for HTDemucs.
         // SAFETY: as above.
         let conv2d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv2d_f32") }?;
+        // SGMSE's fixed normalized [1,3,3,1] channel-major resampler.
+        // SAFETY: as above.
+        let fir_resample_2d_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_fir_resample_2d_f32") }?;
         // SAFETY: as above.
         let conv_transpose2d_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_conv_transpose2d_f32") }?;
@@ -3788,6 +3871,7 @@ impl MetalContext {
             leaky_relu_pipeline: leaky_relu_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
             conv2d_pipeline: conv2d_pipeline.into_raw(),
+            fir_resample_2d_pipeline: fir_resample_2d_pipeline.into_raw(),
             conv_transpose2d_pipeline: conv_transpose2d_pipeline.into_raw(),
             col_gather_pipeline: col_gather_pipeline.into_raw(),
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
@@ -6916,6 +7000,68 @@ impl MetalContext {
         let mut out = vec![0.0_f32; out_len];
         read_back(&out_buf, &mut out)?;
         Ok(out)
+    }
+
+    /// Applies SGMSE's fixed normalized `[1,3,3,1]` separable FIR over
+    /// channel-major `[C,H,W]` host buffers. The host validates all dimensions,
+    /// finite inputs, and disjoint storage before one device dispatch.
+    pub fn fir_resample_2d_f32(
+        &self,
+        input: &[f32],
+        channels: usize,
+        height: usize,
+        width: usize,
+        upsample: bool,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let (out_h, out_w) =
+            validate_fir_resample_2d(input, channels, height, width, upsample, output)?;
+        if output.is_empty() {
+            return Ok(());
+        }
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = (|| {
+            let input_buf = self.new_buffer_from_slice(input)?;
+            let output_buf = self.new_buffer_output(output.len())?;
+            let (factor, down, pad, gain) = if upsample {
+                (2u32, 1u32, 2u32, 4.0f32)
+            } else {
+                (1u32, 2u32, 1u32, 1.0f32)
+            };
+            let dims = FirResample2dDims {
+                channels: checked_u32(channels, "fir_resample_2d channels")?,
+                in_h: checked_u32(height, "fir_resample_2d in_h")?,
+                in_w: checked_u32(width, "fir_resample_2d in_w")?,
+                out_h: checked_u32(out_h, "fir_resample_2d out_h")?,
+                out_w: checked_u32(out_w, "fir_resample_2d out_w")?,
+                factor,
+                down,
+                pad,
+                gain,
+            };
+            let dispatch_rows = channels.checked_mul(out_h).ok_or_else(|| {
+                VokraError::InvalidArgument("fir_resample_2d dispatch rows overflow".to_owned())
+            })?;
+            let (grid, tg) = grid_2d(out_w, dispatch_rows);
+            self.dispatch_compute(
+                self.fir_resample_2d_pipeline,
+                &[&input_buf, &output_buf],
+                (&dims as *const FirResample2dDims).cast::<c_void>(),
+                size_of::<FirResample2dDims>(),
+                grid,
+                tg,
+                "fir_resample_2d",
+            )?;
+            read_back(&output_buf, output)?;
+            if output.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::InvalidArgument(
+                    "fir_resample_2d produced a non-finite value".to_owned(),
+                ));
+            }
+            Ok(())
+        })();
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
     }
 
     /// Dense/grouped PyTorch-layout Conv2d on channel-major host buffers.
@@ -10940,6 +11086,7 @@ impl Drop for MetalContext {
             release(self.col_gather_t_pipeline);
             release(self.col_gather_pipeline);
             release(self.conv_transpose2d_pipeline);
+            release(self.fir_resample_2d_pipeline);
             release(self.conv2d_pipeline);
             release(self.conv1d_pipeline);
             release(self.leaky_relu_pipeline);
@@ -12467,6 +12614,112 @@ fn validate_conv2d(
         expect_len("conv2d bias", bias.len(), out_ch)?;
     }
     Ok((out_h, out_w))
+}
+
+/// Validates the fixed SGMSE FIR shape before any Metal allocation or
+/// dispatch. This deliberately mirrors the Compute CPU validator and keeps
+/// all `usize` arithmetic checked before values are narrowed to MSL `uint`.
+fn validate_fir_resample_2d(
+    input: &[f32],
+    channels: usize,
+    height: usize,
+    width: usize,
+    upsample: bool,
+    output: &[f32],
+) -> Result<(usize, usize)> {
+    if channels == 0 || height == 0 || width == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d dimensions must be non-zero".to_owned(),
+        ));
+    }
+    let input_plane = checked_mul(height, width, "fir_resample_2d input plane")?;
+    let input_len = checked_mul(channels, input_plane, "fir_resample_2d input")?;
+    expect_len("fir_resample_2d input", input.len(), input_len)?;
+    if input.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d input contains a non-finite value".to_owned(),
+        ));
+    }
+    let (out_h, out_w) = if upsample {
+        (
+            height.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("fir_resample_2d output height overflow".to_owned())
+            })?,
+            width.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("fir_resample_2d output width overflow".to_owned())
+            })?,
+        )
+    } else {
+        (height / 2, width / 2)
+    };
+    if out_h == 0 || out_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d downsample output dimensions are zero".to_owned(),
+        ));
+    }
+    let output_len = checked_mul(
+        checked_mul(channels, out_h, "fir_resample_2d output rows")?,
+        out_w,
+        "fir_resample_2d output",
+    )?;
+    expect_len("fir_resample_2d output", output.len(), output_len)?;
+    let factor = if upsample { 2 } else { 1 };
+    let expanded_height = checked_mul(height, factor, "fir_resample_2d expanded height")?;
+    let expanded_width = checked_mul(width, factor, "fir_resample_2d expanded width")?;
+    let pad = if upsample { 2 } else { 1 };
+    let padded_height = checked_mul(2, pad, "fir_resample_2d padding")?
+        .checked_add(expanded_height)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d padded height overflow".to_owned())
+        })?;
+    let padded_width = checked_mul(2, pad, "fir_resample_2d padding")?
+        .checked_add(expanded_width)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d padded width overflow".to_owned())
+        })?;
+    checked_u32(input_plane, "fir_resample_2d input plane")?;
+    checked_u32(input_len, "fir_resample_2d input")?;
+    checked_u32(output_len, "fir_resample_2d output")?;
+    checked_u32(expanded_height, "fir_resample_2d expanded height")?;
+    checked_u32(expanded_width, "fir_resample_2d expanded width")?;
+    checked_u32(padded_height, "fir_resample_2d padded height")?;
+    checked_u32(padded_width, "fir_resample_2d padded width")?;
+    checked_u32(channels, "fir_resample_2d channels")?;
+    checked_u32(height, "fir_resample_2d in_h")?;
+    checked_u32(width, "fir_resample_2d in_w")?;
+    checked_u32(out_h, "fir_resample_2d out_h")?;
+    checked_u32(out_w, "fir_resample_2d out_w")?;
+    checked_u32(
+        checked_mul(channels, out_h, "fir_resample_2d dispatch rows")?,
+        "fir_resample_2d dispatch rows",
+    )?;
+    if slices_overlap(input, output) {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d input and output must be disjoint".to_owned(),
+        ));
+    }
+    Ok((out_h, out_w))
+}
+
+fn slices_overlap(input: &[f32], output: &[f32]) -> bool {
+    if input.is_empty() || output.is_empty() {
+        return false;
+    }
+    let input_start = input.as_ptr() as usize;
+    let output_start = output.as_ptr() as usize;
+    let Some(input_bytes) = input.len().checked_mul(size_of::<f32>()) else {
+        return true;
+    };
+    let Some(output_bytes) = output.len().checked_mul(size_of::<f32>()) else {
+        return true;
+    };
+    let Some(input_end) = input_start.checked_add(input_bytes) else {
+        return true;
+    };
+    let Some(output_end) = output_start.checked_add(output_bytes) else {
+        return true;
+    };
+    input_start < output_end && output_start < input_end
 }
 
 /// Validates PyTorch-layout dense/grouped ConvTranspose2d and returns output

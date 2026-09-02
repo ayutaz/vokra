@@ -151,6 +151,10 @@ pub enum HotOp {
     /// output-padding, and groups. CPU and Metal provide real FP32 kernels;
     /// other backends remain explicitly unsupported.
     ConvTranspose2d,
+    /// Fixed `[1,3,3,1]` separable FIR resampling over channel-major
+    /// `[C,H,W]` tensors. The SGMSE NCSN++ path uses the 2x upsample and
+    /// 2x downsample forms; CPU and Metal share this checked shape contract.
+    FirResample2d,
     /// Mimi (Kyutai) residual vector quantization codec decode
     /// (`mimi_rvq_decode`) — the M3-06 RVQ codec op family. The heterogeneous
     /// signature (u32 `codes` + `Vec<CodebookTable>` → `Vec<f32>`) drives the
@@ -505,6 +509,7 @@ impl HotOp {
                 | HotOp::ConvTranspose1d
                 | HotOp::Conv2d
                 | HotOp::ConvTranspose2d
+                | HotOp::FirResample2d
                 | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
                 | HotOp::DacRvq
@@ -1917,6 +1922,57 @@ impl Compute {
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "conv2d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
                     .to_owned(),
+            )),
+        }
+    }
+
+    /// Applies the fixed normalized `[1, 3, 3, 1]` separable FIR used by
+    /// SGMSE's NCSN++ graph to channel-major `[C,H,W]` data.
+    ///
+    /// `upsample = true` inserts a 2x2 zero lattice, uses asymmetric padding
+    /// `(pad_before, pad_after) = (2,1)`, and applies gain four; `false` uses
+    /// no insertion and symmetric `(1,1)` padding while sampling every second
+    /// convolution output. This is a narrow
+    /// backend hot op rather than a general resampler so that the CPU oracle
+    /// and Metal dispatch remain exactly aligned. The output shape is
+    /// `[C, H*2, W*2]` for upsampling and `[C, H/2, W/2]` for downsampling.
+    ///
+    /// Input and output must be disjoint, finite, correctly shaped buffers.
+    /// Unsupported GPU backends return [`VokraError::UnsupportedOp`] without
+    /// falling back to the CPU.
+    pub fn fir_resample_2d_f32(
+        &self,
+        input: &[f32],
+        channels: usize,
+        height: usize,
+        width: usize,
+        upsample: bool,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let (out_height, out_width) =
+            validate_fir_resample_2d(input, channels, height, width, upsample, output)?;
+        match &self.be {
+            Be::Cpu => fir_resample_2d_cpu(
+                input,
+                channels,
+                height,
+                width,
+                upsample,
+                out_height,
+                out_width,
+                output,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.fir_resample_2d_f32(
+                input, channels, height, width, upsample, output,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "fir_resample_2d_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU".to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "fir_resample_2d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU".to_owned(),
             )),
         }
     }
@@ -4493,6 +4549,179 @@ impl vokra_ops::conformer::ConformerCompute for Compute {
     }
 }
 
+fn validate_fir_resample_2d(
+    input: &[f32],
+    channels: usize,
+    height: usize,
+    width: usize,
+    upsample: bool,
+    output: &[f32],
+) -> Result<(usize, usize)> {
+    if channels == 0 || height == 0 || width == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d dimensions must be non-zero".to_owned(),
+        ));
+    }
+    let input_plane = height.checked_mul(width).ok_or_else(|| {
+        VokraError::InvalidArgument("fir_resample_2d input plane overflows usize".to_owned())
+    })?;
+    let input_len = channels.checked_mul(input_plane).ok_or_else(|| {
+        VokraError::InvalidArgument("fir_resample_2d input length overflows usize".to_owned())
+    })?;
+    if input.len() != input_len || input.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d input shape or values are invalid".to_owned(),
+        ));
+    }
+    let (out_height, out_width) = if upsample {
+        (
+            height.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "fir_resample_2d upsample height overflows usize".to_owned(),
+                )
+            })?,
+            width.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "fir_resample_2d upsample width overflows usize".to_owned(),
+                )
+            })?,
+        )
+    } else {
+        (height / 2, width / 2)
+    };
+    if out_height == 0 || out_width == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d downsample output dimensions are zero".to_owned(),
+        ));
+    }
+    let output_len = channels
+        .checked_mul(out_height)
+        .and_then(|value| value.checked_mul(out_width))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d output length overflows usize".to_owned())
+        })?;
+    if output.len() != output_len {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d output shape is invalid".to_owned(),
+        ));
+    }
+    let expanded_height = height
+        .checked_mul(if upsample { 2 } else { 1 })
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "fir_resample_2d expanded height overflows usize".to_owned(),
+            )
+        })?;
+    let expanded_width = width
+        .checked_mul(if upsample { 2 } else { 1 })
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d expanded width overflows usize".to_owned())
+        })?;
+    let pad = if upsample { 2 } else { 1 };
+    expanded_height
+        .checked_add(pad)
+        .and_then(|value| value.checked_add(pad))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d padded height overflows usize".to_owned())
+        })?;
+    expanded_width
+        .checked_add(pad)
+        .and_then(|value| value.checked_add(pad))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d padded width overflows usize".to_owned())
+        })?;
+    if slices_overlap(input, output) {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d input and output must be disjoint".to_owned(),
+        ));
+    }
+    Ok((out_height, out_width))
+}
+
+fn slices_overlap(input: &[f32], output: &[f32]) -> bool {
+    if input.is_empty() || output.is_empty() {
+        return false;
+    }
+    let input_start = input.as_ptr() as usize;
+    let output_start = output.as_ptr() as usize;
+    let Some(input_bytes) = input.len().checked_mul(core::mem::size_of::<f32>()) else {
+        return true;
+    };
+    let Some(output_bytes) = output.len().checked_mul(core::mem::size_of::<f32>()) else {
+        return true;
+    };
+    let Some(input_end) = input_start.checked_add(input_bytes) else {
+        return true;
+    };
+    let Some(output_end) = output_start.checked_add(output_bytes) else {
+        return true;
+    };
+    input_start < output_end && output_start < input_end
+}
+
+fn fir_resample_2d_cpu(
+    input: &[f32],
+    channels: usize,
+    height: usize,
+    width: usize,
+    upsample: bool,
+    out_height: usize,
+    out_width: usize,
+    output: &mut [f32],
+) -> Result<()> {
+    const TAPS: [f32; 4] = [1.0 / 8.0, 3.0 / 8.0, 3.0 / 8.0, 1.0 / 8.0];
+    let (factor, down, pad, gain) = if upsample {
+        (2usize, 1usize, 2usize, 4.0f32)
+    } else {
+        (1usize, 2usize, 1usize, 1.0f32)
+    };
+    let input_plane = height * width;
+    let output_plane = out_height * out_width;
+    let expanded_height = height * factor;
+    let expanded_width = width * factor;
+    for channel in 0..channels {
+        let input_base = channel * input_plane;
+        let output_base = channel * output_plane;
+        for out_y in 0..out_height {
+            let conv_y = out_y * down;
+            for out_x in 0..out_width {
+                let conv_x = out_x * down;
+                let mut value = 0.0f32;
+                for (ky, &tap_y) in TAPS.iter().enumerate() {
+                    for (kx, &tap_x) in TAPS.iter().enumerate() {
+                        let padded_y = conv_y + ky;
+                        let padded_x = conv_x + kx;
+                        if padded_y < pad
+                            || padded_x < pad
+                            || padded_y >= pad + expanded_height
+                            || padded_x >= pad + expanded_width
+                        {
+                            continue;
+                        }
+                        let expanded_y = padded_y - pad;
+                        let expanded_x = padded_x - pad;
+                        if expanded_y % factor != 0 || expanded_x % factor != 0 {
+                            continue;
+                        }
+                        value += input
+                            [input_base + (expanded_y / factor) * width + expanded_x / factor]
+                            * tap_y
+                            * tap_x
+                            * gain;
+                    }
+                }
+                if !value.is_finite() {
+                    return Err(VokraError::InvalidArgument(
+                        "fir_resample_2d produced a non-finite value".to_owned(),
+                    ));
+                }
+                output[output_base + out_y * out_width + out_x] = value;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4514,6 +4743,55 @@ mod tests {
         kernels::gemm_f32(2, 2, 3, &a, &b, Some(&bias), &mut direct).unwrap();
 
         assert_eq!(via_compute, direct, "Compute::cpu gemm != direct kernel");
+    }
+
+    #[test]
+    fn cpu_fir_resample_matches_sgmse_fixed_kernel_contract() {
+        let mut up = vec![0.0f32; 16];
+        Compute::cpu()
+            .fir_resample_2d_f32(&[1.0, 0.0, 0.0, 0.0], 1, 2, 2, true, &mut up)
+            .unwrap();
+        assert_eq!(up[0], 9.0 / 16.0);
+        assert_eq!(up[1], 9.0 / 16.0);
+        assert_eq!(up[2], 3.0 / 16.0);
+        assert_eq!(up[4], 9.0 / 16.0);
+        assert_eq!(up[15], 0.0);
+
+        let mut down = vec![0.0f32; 4];
+        Compute::cpu()
+            .fir_resample_2d_f32(
+                &[
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+                1,
+                4,
+                4,
+                false,
+                &mut down,
+            )
+            .unwrap();
+        assert_eq!(down[0], 9.0 / 64.0);
+        assert!(down[1..].iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn cpu_fir_resample_rejects_invalid_shape_and_values() {
+        let mut out = vec![0.0f32; 16];
+        assert!(
+            Compute::cpu()
+                .fir_resample_2d_f32(&[f32::NAN; 4], 1, 2, 2, true, &mut out)
+                .is_err()
+        );
+        assert!(
+            Compute::cpu()
+                .fir_resample_2d_f32(&[0.0; 4], 1, 1, 1, false, &mut [])
+                .is_err()
+        );
+        assert!(
+            Compute::cpu()
+                .fir_resample_2d_f32(&[0.0; 4], 1, 2, 2, true, &mut [0.0; 4])
+                .is_err()
+        );
     }
 
     #[test]
@@ -5387,6 +5665,7 @@ mod tests {
             HotOp::ConvTranspose1d,
             HotOp::Conv2d,
             HotOp::ConvTranspose2d,
+            HotOp::FirResample2d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
