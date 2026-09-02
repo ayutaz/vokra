@@ -4280,7 +4280,8 @@ mod tests {
         assert_eq!(planes[1], bins as f32);
         assert_eq!(planes[33], (31 * bins) as f32);
         assert_eq!(planes[32], (32 * bins) as f32);
-        assert_eq!(planes[64], (30 * bins) as f32);
+        assert_eq!(planes[64], 1.0);
+        assert_eq!(planes[34], (30 * bins) as f32);
         assert_eq!(planes[plane_len], 0.0);
         assert_eq!(planes[plane_len + 33], -((31 * bins) as f32));
         let restored =
