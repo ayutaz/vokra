@@ -246,7 +246,7 @@ pub fn validate_typed_manifest(
             || !matches!(row.dtype_tag, 0 | 1 | 30)
             || row.shape.is_empty()
             || row.dimensions.is_empty()
-            || row.shape.iter().any(|dimension| *dimension == 0)
+            || row.shape.contains(&0)
             || row.dimensions != row.shape.iter().rev().copied().collect::<Vec<_>>()
         {
             return Err(
