@@ -2960,8 +2960,11 @@ mod tests {
             slot: SgmseTensorSlot::Weight,
         };
         let residual_conv2 = SgmseTensorRole::NcsnppStage {
+            stage_index: 3,
+            kind: NcsnppStageKind::Residual,
+            block: 1,
             module: SgmseTensorModule::ResidualConv2,
-            ..residual_conv1.clone()
+            slot: SgmseTensorSlot::Weight,
         };
         assert_ne!(residual_conv1, residual_conv2);
         assert_ne!(
@@ -2977,8 +2980,11 @@ mod tests {
             slot: SgmseTensorSlot::Weight,
         };
         let attention_key = SgmseTensorRole::NcsnppStage {
+            stage_index: 4,
+            kind: NcsnppStageKind::Attention,
+            block: 1,
             module: SgmseTensorModule::AttentionKey,
-            ..attention_query.clone()
+            slot: SgmseTensorSlot::Weight,
         };
         assert_ne!(attention_query, attention_key);
         assert_ne!(
