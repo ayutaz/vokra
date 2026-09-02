@@ -6,8 +6,9 @@
 //! source NCSN++ v2 graph plan, and
 //! is sampled with the OUVE predictor/corrector seam. Checkpoint-specific
 //! tensor names and shapes are deliberately not guessed: the public binder
-//! accepts only the compiled, VAST-reviewed manifest contract below; graph
-//! assembly and inference remain unavailable until a later implementation.
+//! accepts only the compiled, VAST-reviewed manifest contract below and
+//! assembles the native CPU score graph; enhancement and sampler integration
+//! remain separate follow-up work.
 //!
 //! Primary source pin:
 //! <https://github.com/sp-uhh/sgmse/tree/1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e>
@@ -50,11 +51,11 @@ pub const REVIEWED_TENSOR_MANIFEST_SHA256: Option<[u8; 32]> = Some([
 ]);
 /// Status required before a native checkpoint can be opened.
 pub const AUTHENTICATED_MANIFEST: &str = "AUTHENTICATED";
-/// The typed manifest/binder boundary is implemented: checkpoint tensors can
-/// now be authenticated and retained, but graph
-/// assembly, score execution, device dispatch, and numerical parity remain
+/// The authenticated native CPU score graph is staged for execution;
+/// independent parity remains pending, Metal remains closed until the fixed
+/// FIR resampler has a backend seam, and enhancement/sampler integration is
 /// incomplete.
-pub const SGMSE_STATUS: &str = "AUTHENTICATED_WEIGHTS_GRAPH_ASSEMBLY_PENDING";
+pub const SGMSE_STATUS: &str = "NATIVE_CPU_SCORE_GRAPH_PARITY_AND_METAL_FIR_PENDING";
 
 /// The only learned parameter roles accepted by the SGMSE binder.  Tensor
 /// names remain checkpoint-specific data from the authenticated manifest; no
@@ -568,8 +569,8 @@ impl SgmseTensorManifest {
 }
 
 /// Bound, finite graph operands produced only after the complete manifest is
-/// checked.  This is a typed assignment boundary, not an executable graph;
-/// unsupported residual/FIR/resampling kernels still keep SGMSE closed.
+/// checked. This is the sole source for score-graph assembly; no graph stage
+/// may recover tensors by GGUF name or ordinal.
 #[derive(Debug, Clone)]
 pub struct SgmseGraphWeights {
     plan: NcsnppV2GraphPlan,
@@ -704,6 +705,13 @@ impl SgmseGraphWeights {
             .iter()
             .find(|(bound_role, _, _, _)| bound_role == role)
             .map(|(_, _, _, values)| values.as_slice())
+    }
+
+    fn tensor_record_for_role(&self, role: &SgmseTensorRole) -> Option<(&[u64], &[f32])> {
+        self.tensors
+            .iter()
+            .find(|(bound_role, _, _, _)| bound_role == role)
+            .map(|(_, _, dimensions, values)| (dimensions.as_slice(), values.as_slice()))
     }
 }
 
@@ -1359,6 +1367,7 @@ impl FourierSigmaEmbedding {
 /// the authenticated tensor binder; no checkpoint dimensions are assumed.
 /// The dense and activation calls go through [`Compute`] so a Metal-bound
 /// score graph cannot silently execute learned work on the host.
+#[derive(Debug, Clone)]
 pub struct SigmaConditioner {
     embedding: FourierSigmaEmbedding,
     first_projection: Vec<f32>,
@@ -1371,8 +1380,9 @@ pub struct SigmaConditioner {
 impl SigmaConditioner {
     /// Builds the source two-layer conditioning MLP: biased
     /// `Linear(2*nf,4*nf)`, SiLU, then biased `Linear(4*nf,4*nf)`.
-    /// Matrices are row-major and all tensors are supplied by the caller so
-    /// the checkpoint binder remains shape-authenticated.
+    /// The authenticated source tensors use PyTorch `[out,in]` row-major
+    /// order; the stored matrices are transposed once into Compute's `[in,out]`
+    /// row-major GEMM layout. Source shape authentication remains unchanged.
     pub fn new(
         nf: usize,
         embedding: FourierSigmaEmbedding,
@@ -1416,6 +1426,18 @@ impl SigmaConditioner {
                 "sgmse sigma conditioner projection shape or values are invalid".to_owned(),
             ));
         }
+        let first_projection = transpose_dense_for_gemm(
+            &first_projection,
+            output_width,
+            embedding_width,
+            "sgmse sigma conditioner first projection",
+        )?;
+        let second_projection = transpose_dense_for_gemm(
+            &second_projection,
+            output_width,
+            output_width,
+            "sgmse sigma conditioner second projection",
+        )?;
         Ok(Self {
             embedding,
             first_projection,
@@ -1460,9 +1482,47 @@ impl SigmaConditioner {
     }
 }
 
+/// Transposes one authenticated PyTorch `[rows, cols]` matrix into the
+/// row-major `[cols, rows]` layout required by `Compute::gemm_f32`.
+fn transpose_dense_for_gemm(
+    source: &[f32],
+    rows: usize,
+    cols: usize,
+    label: &str,
+) -> Result<Vec<f32>> {
+    let expected = rows
+        .checked_mul(cols)
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{label} dimensions overflow")))?;
+    if source.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label} dimensions do not match source values"
+        )));
+    }
+    let mut transposed = vec![0.0; expected];
+    for row in 0..rows {
+        for col in 0..cols {
+            let source_index = row
+                .checked_mul(cols)
+                .and_then(|index| index.checked_add(col))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!("{label} source index overflows"))
+                })?;
+            let target_index = col
+                .checked_mul(rows)
+                .and_then(|index| index.checked_add(row))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!("{label} target index overflows"))
+                })?;
+            transposed[target_index] = source[source_index];
+        }
+    }
+    Ok(transposed)
+}
+
 /// 1×1 self-attention projections used by the source attention block. The four
 /// NIN matrices and their biases are mapped by the authenticated binder and
 /// are deliberately represented without checkpoint names or fixed dimensions.
+#[derive(Debug, Clone)]
 pub struct NcsnppAttentionWeights {
     channels: usize,
     norm_groups: usize,
@@ -1703,6 +1763,16 @@ pub enum NcsnppResample {
     Up,
     /// Apply source `downsample_2d(..., factor=2)` before the first convolution.
     Down,
+}
+
+fn validate_fir_backend(is_cpu: bool, resample: NcsnppResample) -> Result<()> {
+    if !is_cpu && !matches!(resample, NcsnppResample::None) {
+        return Err(VokraError::UnsupportedOp(
+            "sgmse BigGAN FIR resampling has no non-CPU Compute seam; no host fallback is performed"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Validated weights for one source BigGAN++ residual block.
@@ -1948,9 +2018,9 @@ impl NcsnppBigGanBlock {
     /// The learned operations (GroupNorm, SiLU, Conv2d, and time projection)
     /// are all dispatched through `Compute`. FIR resampling is fixed, with no
     /// learned state, and is kept as explicit scalar glue until a dedicated
-    /// backend FIR seam exists. Unsupported selected backends therefore return
-    /// their `Compute` error at the first learned operation; no CPU fallback is
-    /// attempted.
+    /// backend FIR seam exists. A non-CPU backend with Up/Down resampling is
+    /// rejected by an explicit preflight before learned work or host FIR; no
+    /// CPU fallback is attempted.
     pub fn forward(
         &self,
         compute: &Compute,
@@ -1967,6 +2037,7 @@ impl NcsnppBigGanBlock {
                     .to_owned(),
             ));
         }
+        validate_fir_backend(compute.is_cpu(), self.resample)?;
         let input_plane = checked_product(height, width, "sgmse BigGAN input plane")?;
         let input_len =
             checked_product(self.weights.in_channels, input_plane, "sgmse BigGAN input")?;
@@ -2201,6 +2272,911 @@ impl NcsnppBigGanBlock {
         }
         Ok(())
     }
+}
+
+/// One validated convolution used by the input, progressive, and output
+/// portions of the source graph. The vectors retain PyTorch row-major order;
+/// only the GGUF dimension metadata is reversed at assembly time.
+#[derive(Debug, Clone)]
+struct SgmseConv2d {
+    in_channels: usize,
+    out_channels: usize,
+    kernel: (usize, usize),
+    weight: Vec<f32>,
+    bias: Vec<f32>,
+}
+
+impl SgmseConv2d {
+    fn from_roles(
+        weights: &SgmseGraphWeights,
+        consumed: &mut BTreeSet<SgmseTensorRole>,
+        weight_role: SgmseTensorRole,
+        bias_role: SgmseTensorRole,
+        expected_kernel: (usize, usize),
+    ) -> Result<Self> {
+        let weight_shape = source_shape_for_role(weights, &weight_role)?;
+        let bias_shape = source_shape_for_role(weights, &bias_role)?;
+        if weight_shape.len() != 4
+            || weight_shape[2] != expected_kernel.0
+            || weight_shape[3] != expected_kernel.1
+            || bias_shape != vec![weight_shape[0]]
+        {
+            return Err(VokraError::ModelLoad(
+                "sgmse score graph convolution shape mismatches source role".to_owned(),
+            ));
+        }
+        let weight_values = consume_role(weights, consumed, &weight_role)?;
+        let bias_values = consume_role(weights, consumed, &bias_role)?;
+        Ok(Self {
+            in_channels: weight_shape[1],
+            out_channels: weight_shape[0],
+            kernel: expected_kernel,
+            weight: weight_values,
+            bias: bias_values,
+        })
+    }
+
+    fn forward(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        height: usize,
+        width: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let input_len = checked_product(
+            self.in_channels,
+            checked_product(height, width, "sgmse convolution input plane")?,
+            "sgmse convolution input",
+        )?;
+        if input.len() != input_len || height == 0 || width == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sgmse score graph convolution input shape is invalid".to_owned(),
+            ));
+        }
+        let padded_height = height.checked_add(2 * (self.kernel.0 / 2)).ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse convolution height overflows usize".to_owned())
+        })?;
+        let padded_width = width.checked_add(2 * (self.kernel.1 / 2)).ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse convolution width overflows usize".to_owned())
+        })?;
+        let output_height = padded_height.checked_sub(self.kernel.0).ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse convolution output height is invalid".to_owned())
+        })? + 1;
+        let output_width = padded_width.checked_sub(self.kernel.1).ok_or_else(|| {
+            VokraError::InvalidArgument("sgmse convolution output width is invalid".to_owned())
+        })? + 1;
+        let output_len = checked_product(
+            self.out_channels,
+            checked_product(
+                output_height,
+                output_width,
+                "sgmse convolution output plane",
+            )?,
+            "sgmse convolution output",
+        )?;
+        if output.len() != output_len {
+            return Err(VokraError::InvalidArgument(
+                "sgmse score graph convolution output shape is invalid".to_owned(),
+            ));
+        }
+        compute.conv2d_f32(
+            input,
+            self.in_channels,
+            height,
+            width,
+            &self.weight,
+            self.out_channels,
+            self.kernel.0,
+            self.kernel.1,
+            Some(&self.bias),
+            (1, 1),
+            (self.kernel.0 / 2, self.kernel.1 / 2),
+            (1, 1),
+            1,
+            output,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SgmseProgressiveOutput {
+    norm_gamma: Vec<f32>,
+    norm_beta: Vec<f32>,
+    projection: SgmseConv2d,
+    channels: usize,
+    groups: usize,
+}
+
+#[derive(Debug, Clone)]
+enum SgmseScoreStage {
+    Input(SgmseConv2d),
+    Residual {
+        block: NcsnppBigGanBlock,
+        up_path: bool,
+        commit_down_skip: bool,
+    },
+    Attention {
+        block: NcsnppAttentionWeights,
+        commit_down_skip: bool,
+    },
+    Downsample(NcsnppBigGanBlock),
+    ProgressiveInput(SgmseConv2d),
+    ProgressiveOutput(SgmseProgressiveOutput),
+    Upsample(NcsnppBigGanBlock),
+    Output(SgmseConv2d),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SgmseSkipTraceEvent {
+    Push(usize),
+    Pop(usize),
+}
+
+fn source_skip_trace(plan: &NcsnppV2GraphPlan) -> Result<Vec<SgmseSkipTraceEvent>> {
+    let middle_start = plan
+        .stages
+        .iter()
+        .position(|stage| stage.kind == NcsnppStageKind::Middle && stage.block == 1)
+        .ok_or_else(|| {
+            VokraError::ModelLoad("sgmse skip trace first middle stage is missing".to_owned())
+        })?;
+    let middle_two = plan
+        .stages
+        .iter()
+        .position(|stage| stage.kind == NcsnppStageKind::Middle && stage.block == 2)
+        .ok_or_else(|| {
+            VokraError::ModelLoad("sgmse skip trace middle stage is missing".to_owned())
+        })?;
+    let mut pending_downsample = false;
+    let mut trace = Vec::new();
+    for (stage_index, stage) in plan.stages.iter().enumerate() {
+        match stage.kind {
+            NcsnppStageKind::Input => trace.push(SgmseSkipTraceEvent::Push(stage_index)),
+            NcsnppStageKind::Residual => {
+                if stage_index > middle_two {
+                    trace.push(SgmseSkipTraceEvent::Pop(stage_index));
+                } else if stage_index < middle_start
+                    && !matches!(
+                        plan.stages.get(stage_index + 1),
+                        Some(NcsnppStage {
+                            kind: NcsnppStageKind::Attention,
+                            ..
+                        })
+                    )
+                {
+                    trace.push(SgmseSkipTraceEvent::Push(stage_index));
+                }
+            }
+            NcsnppStageKind::Attention if stage_index < middle_start => {
+                trace.push(SgmseSkipTraceEvent::Push(stage_index));
+            }
+            NcsnppStageKind::Downsample => pending_downsample = true,
+            NcsnppStageKind::ProgressiveInput if pending_downsample => {
+                trace.push(SgmseSkipTraceEvent::Push(stage_index));
+                pending_downsample = false;
+            }
+            _ => {}
+        }
+    }
+    if pending_downsample {
+        return Err(VokraError::ModelLoad(
+            "sgmse skip trace has an uncommitted downsample".to_owned(),
+        ));
+    }
+    Ok(trace)
+}
+
+fn missing_role(role: &SgmseTensorRole) -> VokraError {
+    VokraError::ModelLoad(format!(
+        "sgmse score graph is missing bound role {}",
+        role.canonical_name()
+    ))
+}
+
+fn consume_role(
+    weights: &SgmseGraphWeights,
+    consumed: &mut BTreeSet<SgmseTensorRole>,
+    role: &SgmseTensorRole,
+) -> Result<Vec<f32>> {
+    if !consumed.insert(role.clone()) {
+        return Err(VokraError::ModelLoad(format!(
+            "sgmse score graph role {} was consumed more than once",
+            role.canonical_name()
+        )));
+    }
+    weights
+        .tensor_record_for_role(role)
+        .map(|(_, values)| values.to_vec())
+        .ok_or_else(|| missing_role(role))
+}
+
+fn source_shape_for_role(
+    weights: &SgmseGraphWeights,
+    role: &SgmseTensorRole,
+) -> Result<Vec<usize>> {
+    let (dimensions, values) = weights
+        .tensor_record_for_role(role)
+        .ok_or_else(|| missing_role(role))?;
+    let shape = dimensions
+        .iter()
+        .rev()
+        .map(|&dimension| {
+            usize::try_from(dimension).map_err(|_| {
+                VokraError::ModelLoad(format!(
+                    "sgmse score graph role {} has an oversized dimension",
+                    role.canonical_name()
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let element_count = shape
+        .iter()
+        .try_fold(1usize, |count, &dimension| count.checked_mul(dimension));
+    if shape.is_empty() || element_count != Some(values.len()) {
+        return Err(VokraError::ModelLoad(format!(
+            "sgmse score graph role {} has an invalid source shape",
+            role.canonical_name()
+        )));
+    }
+    Ok(shape)
+}
+
+fn expect_source_shape(
+    weights: &SgmseGraphWeights,
+    role: &SgmseTensorRole,
+    expected: &[usize],
+) -> Result<()> {
+    if source_shape_for_role(weights, role)? != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "sgmse score graph role {} has an unexpected source shape",
+            role.canonical_name()
+        )));
+    }
+    Ok(())
+}
+
+fn stage_role(
+    stage_index: usize,
+    stage: NcsnppStage,
+    module: SgmseTensorModule,
+    slot: SgmseTensorSlot,
+) -> SgmseTensorRole {
+    SgmseTensorRole::NcsnppStage {
+        stage_index,
+        kind: stage.kind,
+        block: stage.block,
+        module,
+        slot,
+    }
+}
+
+fn residual_from_roles(
+    weights: &SgmseGraphWeights,
+    consumed: &mut BTreeSet<SgmseTensorRole>,
+    stage_index: usize,
+    stage: NcsnppStage,
+    resample: NcsnppResample,
+    up_path: bool,
+) -> Result<NcsnppBigGanBlock> {
+    let role = |module, slot| stage_role(stage_index, stage, module, slot);
+    let conv1_weight = role(SgmseTensorModule::ResidualConv1, SgmseTensorSlot::Weight);
+    let conv1_shape = source_shape_for_role(weights, &conv1_weight)?;
+    let conv2_weight = role(SgmseTensorModule::ResidualConv2, SgmseTensorSlot::Weight);
+    let conv2_shape = source_shape_for_role(weights, &conv2_weight)?;
+    let norm1 = role(SgmseTensorModule::ResidualNorm1, SgmseTensorSlot::NormGamma);
+    let norm2 = role(SgmseTensorModule::ResidualNorm2, SgmseTensorSlot::NormGamma);
+    let norm1_shape = source_shape_for_role(weights, &norm1)?;
+    let norm2_shape = source_shape_for_role(weights, &norm2)?;
+    if conv1_shape.len() != 4
+        || conv2_shape.len() != 4
+        || conv1_shape[2..] != [3, 3]
+        || conv2_shape[2..] != [3, 3]
+        || conv2_shape[0] != conv1_shape[0]
+        || conv2_shape[1] != conv1_shape[0]
+        || norm1_shape != vec![conv1_shape[1]]
+        || norm2_shape != vec![conv1_shape[0]]
+    {
+        return Err(VokraError::ModelLoad(format!(
+            "sgmse residual stage {stage_index} has an invalid source shape"
+        )));
+    }
+    expect_source_shape(
+        weights,
+        &role(SgmseTensorModule::ResidualNorm1, SgmseTensorSlot::NormBeta),
+        &[conv1_shape[1]],
+    )?;
+    expect_source_shape(
+        weights,
+        &role(SgmseTensorModule::ResidualNorm2, SgmseTensorSlot::NormBeta),
+        &[conv1_shape[0]],
+    )?;
+    expect_source_shape(
+        weights,
+        &role(SgmseTensorModule::ResidualConv1, SgmseTensorSlot::Bias),
+        &[conv1_shape[0]],
+    )?;
+    expect_source_shape(
+        weights,
+        &role(SgmseTensorModule::ResidualConv2, SgmseTensorSlot::Bias),
+        &[conv1_shape[0]],
+    )?;
+    expect_source_shape(
+        weights,
+        &role(
+            SgmseTensorModule::ResidualTimeEmbedding,
+            SgmseTensorSlot::Weight,
+        ),
+        &[conv1_shape[0], 4 * NcsnppV2Config::source_default().nf],
+    )?;
+    expect_source_shape(
+        weights,
+        &role(
+            SgmseTensorModule::ResidualTimeEmbedding,
+            SgmseTensorSlot::Bias,
+        ),
+        &[conv1_shape[0]],
+    )?;
+    let values = |module, slot| {
+        let role = role(module, slot);
+        consume_role(weights, consumed, &role)
+    };
+    let skip_weight_role = role(SgmseTensorModule::ResidualSkip, SgmseTensorSlot::Weight);
+    let skip_bias_role = role(SgmseTensorModule::ResidualSkip, SgmseTensorSlot::Bias);
+    let has_skip = weights.tensor_record_for_role(&skip_weight_role).is_some();
+    let skip = if has_skip {
+        let shape = source_shape_for_role(weights, &skip_weight_role)?;
+        if shape != vec![conv1_shape[0], conv1_shape[1], 1, 1] {
+            return Err(VokraError::ModelLoad(format!(
+                "sgmse residual stage {stage_index} skip shape is invalid"
+            )));
+        }
+        Some(values(
+            SgmseTensorModule::ResidualSkip,
+            SgmseTensorSlot::Weight,
+        )?)
+    } else {
+        None
+    };
+    let skip_bias = if has_skip {
+        let shape = source_shape_for_role(weights, &skip_bias_role)?;
+        if shape != vec![conv1_shape[0]] {
+            return Err(VokraError::ModelLoad(format!(
+                "sgmse residual stage {stage_index} skip bias shape is invalid"
+            )));
+        }
+        Some(values(
+            SgmseTensorModule::ResidualSkip,
+            SgmseTensorSlot::Bias,
+        )?)
+    } else {
+        None
+    };
+    let block = NcsnppBigGanBlockWeights::new(
+        conv1_shape[1],
+        conv1_shape[0],
+        Some(4 * NcsnppV2Config::source_default().nf),
+        values(SgmseTensorModule::ResidualNorm1, SgmseTensorSlot::NormGamma)?,
+        values(SgmseTensorModule::ResidualNorm1, SgmseTensorSlot::NormBeta)?,
+        values(SgmseTensorModule::ResidualConv1, SgmseTensorSlot::Weight)?,
+        values(SgmseTensorModule::ResidualConv1, SgmseTensorSlot::Bias)?,
+        values(SgmseTensorModule::ResidualNorm2, SgmseTensorSlot::NormGamma)?,
+        values(SgmseTensorModule::ResidualNorm2, SgmseTensorSlot::NormBeta)?,
+        values(SgmseTensorModule::ResidualConv2, SgmseTensorSlot::Weight)?,
+        values(SgmseTensorModule::ResidualConv2, SgmseTensorSlot::Bias)?,
+        skip,
+        skip_bias,
+        Some(values(
+            SgmseTensorModule::ResidualTimeEmbedding,
+            SgmseTensorSlot::Weight,
+        )?),
+        Some(values(
+            SgmseTensorModule::ResidualTimeEmbedding,
+            SgmseTensorSlot::Bias,
+        )?),
+    )?;
+    let expected_skip =
+        up_path || conv1_shape[1] != conv1_shape[0] || !matches!(resample, NcsnppResample::None);
+    if has_skip != expected_skip {
+        return Err(VokraError::ModelLoad(format!(
+            "sgmse residual stage {stage_index} skip presence mismatches source topology"
+        )));
+    }
+    NcsnppBigGanBlock::new(NcsnppV2Config::source_default(), block, resample)
+}
+
+/// Source-mapped, source-ordered NCSN++ v2 score graph assembled solely from authenticated
+/// typed operands. FIR remains a fixed host operation, so non-CPU dispatch is
+/// rejected before the first learned operation until a backend FIR seam lands.
+#[derive(Debug, Clone)]
+pub struct NcsnppScoreGraph {
+    config: NcsnppV2Config,
+    conditioner: SigmaConditioner,
+    stages: Vec<SgmseScoreStage>,
+}
+
+impl NcsnppScoreGraph {
+    /// Builds and shape-checks every source stage, consuming every required
+    /// role exactly once during construction.
+    pub fn from_weights(weights: &SgmseGraphWeights) -> Result<Self> {
+        weights.validate_before_dispatch()?;
+        let required_roles = compiled_required_roles(&weights.plan)?;
+        let skip_trace = source_skip_trace(&weights.plan)?;
+        let push_count = skip_trace
+            .iter()
+            .filter(|event| matches!(event, SgmseSkipTraceEvent::Push(_)))
+            .count();
+        let pop_count = skip_trace
+            .iter()
+            .filter(|event| matches!(event, SgmseSkipTraceEvent::Pop(_)))
+            .count();
+        if push_count != 21 || pop_count != 21 {
+            return Err(VokraError::ModelLoad(
+                "sgmse score graph source skip trace is incomplete".to_owned(),
+            ));
+        }
+        let bound_roles = weights
+            .tensors
+            .iter()
+            .map(|(role, _, _, _)| role.clone())
+            .collect::<BTreeSet<_>>();
+        if bound_roles.len() != weights.tensors.len()
+            || bound_roles.len() != required_roles.len()
+            || bound_roles.iter().ne(required_roles.iter())
+        {
+            return Err(VokraError::ModelLoad(
+                "sgmse score graph bound role coverage is incomplete or duplicated".to_owned(),
+            ));
+        }
+        let mut consumed = BTreeSet::new();
+        let config = weights.plan.config.clone();
+        let frequencies =
+            consume_role(weights, &mut consumed, &SgmseTensorRole::FourierFrequencies)?;
+        let conditioner = SigmaConditioner::new(
+            config.nf,
+            FourierSigmaEmbedding::new(frequencies)?,
+            consume_role(
+                weights,
+                &mut consumed,
+                &SgmseTensorRole::SigmaFirstProjection,
+            )?,
+            consume_role(weights, &mut consumed, &SgmseTensorRole::SigmaFirstBias)?,
+            consume_role(
+                weights,
+                &mut consumed,
+                &SgmseTensorRole::SigmaSecondProjection,
+            )?,
+            consume_role(weights, &mut consumed, &SgmseTensorRole::SigmaSecondBias)?,
+        )?;
+        expect_source_shape(weights, &SgmseTensorRole::FourierFrequencies, &[config.nf])?;
+        expect_source_shape(
+            weights,
+            &SgmseTensorRole::SigmaFirstProjection,
+            &[config.nf * 4, config.nf * 2],
+        )?;
+        expect_source_shape(weights, &SgmseTensorRole::SigmaFirstBias, &[config.nf * 4])?;
+        expect_source_shape(
+            weights,
+            &SgmseTensorRole::SigmaSecondProjection,
+            &[config.nf * 4, config.nf * 4],
+        )?;
+        expect_source_shape(weights, &SgmseTensorRole::SigmaSecondBias, &[config.nf * 4])?;
+        let middle_two = weights
+            .plan
+            .stages
+            .iter()
+            .position(|stage| stage.kind == NcsnppStageKind::Middle && stage.block == 2)
+            .ok_or_else(|| {
+                VokraError::ModelLoad("sgmse score graph middle stage is missing".to_owned())
+            })?;
+        let middle_start = weights
+            .plan
+            .stages
+            .iter()
+            .position(|stage| stage.kind == NcsnppStageKind::Middle && stage.block == 1)
+            .ok_or_else(|| {
+                VokraError::ModelLoad("sgmse score graph first middle stage is missing".to_owned())
+            })?;
+        let mut stages = Vec::with_capacity(weights.plan.stages.len());
+        for (stage_index, &stage) in weights.plan.stages.iter().enumerate() {
+            let role = |module, slot| stage_role(stage_index, stage, module, slot);
+            let built = match stage.kind {
+                NcsnppStageKind::Input => SgmseScoreStage::Input(SgmseConv2d::from_roles(
+                    weights,
+                    &mut consumed,
+                    role(SgmseTensorModule::InputProjection, SgmseTensorSlot::Weight),
+                    role(SgmseTensorModule::InputProjection, SgmseTensorSlot::Bias),
+                    (3, 3),
+                )?),
+                NcsnppStageKind::Residual | NcsnppStageKind::Middle => SgmseScoreStage::Residual {
+                    block: residual_from_roles(
+                        weights,
+                        &mut consumed,
+                        stage_index,
+                        stage,
+                        NcsnppResample::None,
+                        stage_index > middle_two,
+                    )?,
+                    up_path: stage_index > middle_two,
+                    commit_down_skip: stage_index < middle_start,
+                },
+                NcsnppStageKind::Attention => {
+                    let norm_gamma =
+                        role(SgmseTensorModule::AttentionNorm, SgmseTensorSlot::NormGamma);
+                    let norm_shape = source_shape_for_role(weights, &norm_gamma)?;
+                    if norm_shape.len() != 1 {
+                        return Err(VokraError::ModelLoad(
+                            "sgmse attention norm shape is invalid".to_owned(),
+                        ));
+                    }
+                    let values = |module, slot| {
+                        let role = role(module, slot);
+                        consume_role(weights, &mut consumed, &role)
+                    };
+                    let channels = norm_shape[0];
+                    expect_source_shape(
+                        weights,
+                        &role(SgmseTensorModule::AttentionNorm, SgmseTensorSlot::NormBeta),
+                        &[channels],
+                    )?;
+                    for module in [
+                        SgmseTensorModule::AttentionQuery,
+                        SgmseTensorModule::AttentionKey,
+                        SgmseTensorModule::AttentionValue,
+                        SgmseTensorModule::AttentionOutput,
+                    ] {
+                        expect_source_shape(
+                            weights,
+                            &role(module, SgmseTensorSlot::Weight),
+                            &[channels, channels],
+                        )?;
+                        expect_source_shape(
+                            weights,
+                            &role(module, SgmseTensorSlot::Bias),
+                            &[channels],
+                        )?;
+                    }
+                    SgmseScoreStage::Attention {
+                        block: NcsnppAttentionWeights::new(
+                            channels,
+                            config.group_norm_groups(channels)?,
+                            config.group_norm_eps,
+                            values(SgmseTensorModule::AttentionNorm, SgmseTensorSlot::NormGamma)?,
+                            values(SgmseTensorModule::AttentionNorm, SgmseTensorSlot::NormBeta)?,
+                            values(SgmseTensorModule::AttentionQuery, SgmseTensorSlot::Weight)?,
+                            values(SgmseTensorModule::AttentionQuery, SgmseTensorSlot::Bias)?,
+                            values(SgmseTensorModule::AttentionKey, SgmseTensorSlot::Weight)?,
+                            values(SgmseTensorModule::AttentionKey, SgmseTensorSlot::Bias)?,
+                            values(SgmseTensorModule::AttentionValue, SgmseTensorSlot::Weight)?,
+                            values(SgmseTensorModule::AttentionValue, SgmseTensorSlot::Bias)?,
+                            values(SgmseTensorModule::AttentionOutput, SgmseTensorSlot::Weight)?,
+                            values(SgmseTensorModule::AttentionOutput, SgmseTensorSlot::Bias)?,
+                            config.skip_rescale,
+                        )?,
+                        commit_down_skip: stage_index < middle_start,
+                    }
+                }
+                NcsnppStageKind::Downsample => SgmseScoreStage::Downsample(residual_from_roles(
+                    weights,
+                    &mut consumed,
+                    stage_index,
+                    stage,
+                    NcsnppResample::Down,
+                    false,
+                )?),
+                NcsnppStageKind::Upsample => SgmseScoreStage::Upsample(residual_from_roles(
+                    weights,
+                    &mut consumed,
+                    stage_index,
+                    stage,
+                    NcsnppResample::Up,
+                    true,
+                )?),
+                NcsnppStageKind::ProgressiveInput => {
+                    SgmseScoreStage::ProgressiveInput(SgmseConv2d::from_roles(
+                        weights,
+                        &mut consumed,
+                        role(SgmseTensorModule::ProgressiveInput, SgmseTensorSlot::Weight),
+                        role(SgmseTensorModule::ProgressiveInput, SgmseTensorSlot::Bias),
+                        (1, 1),
+                    )?)
+                }
+                NcsnppStageKind::ProgressiveOutput => {
+                    let gamma_role = role(
+                        SgmseTensorModule::ProgressiveOutputNorm,
+                        SgmseTensorSlot::NormGamma,
+                    );
+                    let shape = source_shape_for_role(weights, &gamma_role)?;
+                    let gamma = consume_role(weights, &mut consumed, &gamma_role)?;
+                    let beta_role = role(
+                        SgmseTensorModule::ProgressiveOutputNorm,
+                        SgmseTensorSlot::NormBeta,
+                    );
+                    let beta = consume_role(weights, &mut consumed, &beta_role)?;
+                    let channels = *shape.first().ok_or_else(|| {
+                        VokraError::ModelLoad("sgmse progressive norm shape is invalid".to_owned())
+                    })?;
+                    expect_source_shape(weights, &beta_role, &[channels])?;
+                    SgmseScoreStage::ProgressiveOutput(SgmseProgressiveOutput {
+                        norm_gamma: gamma,
+                        norm_beta: beta,
+                        projection: SgmseConv2d::from_roles(
+                            weights,
+                            &mut consumed,
+                            role(
+                                SgmseTensorModule::ProgressiveOutput,
+                                SgmseTensorSlot::Weight,
+                            ),
+                            role(SgmseTensorModule::ProgressiveOutput, SgmseTensorSlot::Bias),
+                            (3, 3),
+                        )?,
+                        channels,
+                        groups: config.group_norm_groups(channels)?,
+                    })
+                }
+                NcsnppStageKind::Output => SgmseScoreStage::Output(SgmseConv2d::from_roles(
+                    weights,
+                    &mut consumed,
+                    role(SgmseTensorModule::OutputProjection, SgmseTensorSlot::Weight),
+                    role(SgmseTensorModule::OutputProjection, SgmseTensorSlot::Bias),
+                    (1, 1),
+                )?),
+            };
+            stages.push(built);
+        }
+        if stages.len() != weights.plan.stages.len() {
+            return Err(VokraError::ModelLoad(
+                "sgmse score graph stage coverage is incomplete".to_owned(),
+            ));
+        }
+        if consumed != required_roles.iter().cloned().collect() {
+            return Err(VokraError::ModelLoad(
+                "sgmse score graph role consumption is incomplete".to_owned(),
+            ));
+        }
+        Ok(Self {
+            config,
+            conditioner,
+            stages,
+        })
+    }
+
+    /// Runs the score network for one `[real plane][imag plane]` state and
+    /// condition pair. The output uses the same two-plane layout and applies
+    /// the SpeechBrain wrapper's exact `1/t` network scaling.
+    pub fn forward(
+        &self,
+        compute: &Compute,
+        state: &[f32],
+        condition: &[f32],
+        t: f32,
+        output: &mut [f32],
+    ) -> Result<()> {
+        const HEIGHT: usize = 256;
+        const WIDTH: usize = 64;
+        let plane = checked_product(HEIGHT, WIDTH, "sgmse score plane")?;
+        let two_planes = checked_product(2, plane, "sgmse score two-plane layout")?;
+        if state.len() != two_planes || condition.len() != two_planes || output.len() != two_planes
+        {
+            return Err(VokraError::InvalidArgument(
+                "sgmse score expects two 256x64 planes for state, condition, and output".to_owned(),
+            ));
+        }
+        if !t.is_finite() || t <= 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "sgmse score time must be finite and positive".to_owned(),
+            ));
+        }
+        if state
+            .iter()
+            .chain(condition)
+            .any(|value| !value.is_finite())
+        {
+            return Err(VokraError::InvalidArgument(
+                "sgmse score input contains a non-finite value".to_owned(),
+            ));
+        }
+        if !compute.is_cpu() {
+            return Err(VokraError::UnsupportedOp("sgmse score graph uses a host FIR resampler; non-CPU dispatch is closed until a backend FIR seam exists".to_owned()));
+        }
+        let mut input = Vec::with_capacity(4 * plane);
+        input.extend_from_slice(state);
+        input.extend_from_slice(condition);
+        let mut temb = vec![0.0; self.config.nf * 4];
+        self.conditioner.forward(compute, t.ln(), &mut temb)?;
+        let mut height = HEIGHT;
+        let mut width = WIDTH;
+        let mut input_pyramid = input.clone();
+        let mut output_pyramid: Option<Vec<f32>> = None;
+        let mut h = vec![0.0; 128 * plane];
+        let mut hs: Vec<Vec<f32>> = Vec::with_capacity(21);
+        let mut pending_downsample_skip = false;
+        for (stage_index, stage) in self.stages.iter().enumerate() {
+            match stage {
+                SgmseScoreStage::Input(projection) => {
+                    projection.forward(compute, &input, height, width, &mut h)?;
+                    hs.push(h.clone());
+                }
+                SgmseScoreStage::Residual {
+                    block,
+                    up_path,
+                    commit_down_skip,
+                } => {
+                    if *up_path {
+                        let skip = hs.pop().ok_or_else(|| {
+                            VokraError::ModelLoad("sgmse score skip stack underflow".to_owned())
+                        })?;
+                        h = concat_channels(&h, &skip, height, width)?;
+                    }
+                    let mut next = vec![0.0; block.out_channels() * height * width];
+                    block.forward(compute, &h, height, width, Some(&temb), &mut next)?;
+                    h = next;
+                    if *commit_down_skip
+                        && !matches!(
+                            self.stages.get(stage_index + 1),
+                            Some(SgmseScoreStage::Attention { .. })
+                        )
+                    {
+                        hs.push(h.clone());
+                    }
+                }
+                SgmseScoreStage::Attention {
+                    block: attention,
+                    commit_down_skip,
+                } => {
+                    let mut next = vec![0.0; h.len()];
+                    attention.forward(compute, &h, &mut next)?;
+                    h = next;
+                    if *commit_down_skip {
+                        hs.push(h.clone());
+                    }
+                }
+                SgmseScoreStage::Downsample(block) => {
+                    let old_height = height;
+                    let old_width = width;
+                    let mut next = vec![0.0; block.out_channels() * (height / 2) * (width / 2)];
+                    let mut next_pyramid = vec![0.0; 4 * (height / 2) * (width / 2)];
+                    fir_resample_fixed(
+                        &input_pyramid,
+                        4,
+                        old_height,
+                        old_width,
+                        NcsnppResample::Down,
+                        &mut next_pyramid,
+                    )?;
+                    block.forward(compute, &h, height, width, Some(&temb), &mut next)?;
+                    height /= 2;
+                    width /= 2;
+                    input_pyramid = next_pyramid;
+                    h = next;
+                    pending_downsample_skip = true;
+                }
+                SgmseScoreStage::ProgressiveInput(projection) => {
+                    let mut pyramid = vec![0.0; projection.out_channels * height * width];
+                    projection.forward(compute, &input_pyramid, height, width, &mut pyramid)?;
+                    combine_input_skip(&mut h, &pyramid)?;
+                    if pending_downsample_skip {
+                        hs.push(h.clone());
+                        pending_downsample_skip = false;
+                    }
+                }
+                SgmseScoreStage::ProgressiveOutput(progressive) => {
+                    let mut normalized = vec![0.0; h.len()];
+                    compute.group_norm_groups_f32(
+                        &h,
+                        &mut normalized,
+                        progressive.channels,
+                        height * width,
+                        progressive.groups,
+                        &progressive.norm_gamma,
+                        &progressive.norm_beta,
+                        self.config.group_norm_eps,
+                    )?;
+                    let mut activated = vec![0.0; h.len()];
+                    compute.silu_f32(&normalized, &mut activated)?;
+                    let mut projected = vec![0.0; 4 * height * width];
+                    progressive.projection.forward(
+                        compute,
+                        &activated,
+                        height,
+                        width,
+                        &mut projected,
+                    )?;
+                    if let Some(previous) = output_pyramid.as_mut() {
+                        add_inplace(previous, &projected)?;
+                    } else {
+                        output_pyramid = Some(projected);
+                    }
+                }
+                SgmseScoreStage::Upsample(block) => {
+                    let old_height = height;
+                    let old_width = width;
+                    let mut next = vec![0.0; block.out_channels() * height * 2 * width * 2];
+                    block.forward(compute, &h, height, width, Some(&temb), &mut next)?;
+                    if let Some(previous) = output_pyramid.take() {
+                        let mut up = vec![0.0; 4 * height * 2 * width * 2];
+                        fir_resample_fixed(
+                            &previous,
+                            4,
+                            old_height,
+                            old_width,
+                            NcsnppResample::Up,
+                            &mut up,
+                        )?;
+                        output_pyramid = Some(up);
+                    }
+                    height *= 2;
+                    width *= 2;
+                    h = next;
+                }
+                SgmseScoreStage::Output(projection) => {
+                    let pyramid = output_pyramid.as_ref().ok_or_else(|| {
+                        VokraError::ModelLoad("sgmse output pyramid is missing".to_owned())
+                    })?;
+                    projection.forward(compute, pyramid, height, width, output)?;
+                }
+            }
+        }
+        if !hs.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "sgmse score skip stack has unconsumed source stages".to_owned(),
+            ));
+        }
+        if pending_downsample_skip {
+            return Err(VokraError::ModelLoad(
+                "sgmse score skip stack has an uncommitted downsample".to_owned(),
+            ));
+        }
+        apply_network_scaling(output, t)
+    }
+}
+
+fn concat_channels(left: &[f32], right: &[f32], height: usize, width: usize) -> Result<Vec<f32>> {
+    let plane = checked_product(height, width, "sgmse skip plane")?;
+    if left.is_empty() || right.is_empty() || left.len() % plane != 0 || right.len() % plane != 0 {
+        return Err(VokraError::InvalidArgument(
+            "sgmse skip tensors have incompatible spatial shapes".to_owned(),
+        ));
+    }
+    let mut output = Vec::with_capacity(left.len() + right.len());
+    output.extend_from_slice(left);
+    output.extend_from_slice(right);
+    Ok(output)
+}
+
+fn add_inplace(output: &mut [f32], input: &[f32]) -> Result<()> {
+    if output.len() != input.len() {
+        return Err(VokraError::InvalidArgument(
+            "sgmse graph combine shape mismatch".to_owned(),
+        ));
+    }
+    for (output, &input) in output.iter_mut().zip(input) {
+        *output += input;
+    }
+    Ok(())
+}
+
+fn combine_input_skip(output: &mut [f32], input_pyramid: &[f32]) -> Result<()> {
+    // `layerspp.Combine(method="sum")` is exactly Conv_0(input_pyramid) + h;
+    // skip_rescale does not apply to this input-skip combiner.
+    add_inplace(output, input_pyramid)
+}
+
+fn apply_network_scaling(output: &mut [f32], t: f32) -> Result<()> {
+    if !t.is_finite() || t <= 0.0 || output.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "sgmse network scaling requires finite output and positive time".to_owned(),
+        ));
+    }
+    for value in output.iter_mut() {
+        *value /= t;
+    }
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "sgmse network scaling produced a non-finite output".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn checked_product(left: usize, right: usize, what: &str) -> Result<usize> {
@@ -2718,31 +3694,50 @@ impl SgmseSampler {
     }
 }
 
-/// Strict public checkpoint gate. It intentionally cannot produce a runnable
-/// score graph until graph assembly is implemented, but retains authenticated
-/// tensor operands for that later assembly phase.
+/// Strict public checkpoint gate. It retains the authenticated operands and
+/// their assembled native score graph; enhancement/frontend and sampler
+/// integration remain separate follow-up work.
 pub struct SgmseModel {
     weights: SgmseGraphWeights,
+    score_graph: NcsnppScoreGraph,
 }
 
 impl SgmseModel {
-    /// Binds only the compiled VAST-reviewed GGUF contract. Inference remains
-    /// unavailable until the native graph assembly phase is complete.
+    /// Binds only the compiled VAST-reviewed GGUF contract and assembles the
+    /// source-mapped, source-ordered score graph from every authenticated role.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let weights = SgmseGraphWeights::bind_authenticated(file)?;
+        let score_graph = NcsnppScoreGraph::from_weights(&weights)?;
         Ok(Self {
-            weights: SgmseGraphWeights::bind_authenticated(file)?,
+            weights,
+            score_graph,
         })
     }
 
-    /// Returns the authenticated operands retained for later graph assembly.
+    /// Returns the authenticated operands retained alongside the score graph.
     #[must_use]
     pub fn graph_weights(&self) -> &SgmseGraphWeights {
         &self.weights
     }
 
+    /// Runs the native score graph through the selected [`Compute`] backend.
+    /// The current graph is CPU-only because fixed FIR resampling is still a
+    /// host operation; non-CPU dispatch fails before learned work begins.
+    pub fn score(
+        &self,
+        compute: &Compute,
+        state: &[f32],
+        condition: &[f32],
+        t: f32,
+        output: &mut [f32],
+    ) -> Result<()> {
+        self.score_graph
+            .forward(compute, state, condition, t, output)
+    }
+
     /// Path-only diagnostic helper that intentionally cannot authenticate or
     /// bind GGUF weights. Call [`Self::from_gguf`] with an authenticated GGUF
-    /// to retain typed operands for the pending graph-assembly phase.
+    /// to retain typed operands alongside the assembled native score graph.
     pub fn require_manifest(path: &Path) -> Result<()> {
         if path.as_os_str().is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -2755,9 +3750,9 @@ impl SgmseModel {
     }
 }
 
-/// Hot ops required by the source graph. This inventory is intentionally not
-/// a completion claim: source-exact FIR/resampling paths and full learned
-/// graph dispatch remain unavailable even after typed weights are bound.
+/// Hot ops required by the native score graph and the follow-up sampler. The
+/// learned score path dispatches these through [`Compute`]; fixed FIR remains
+/// host-only and therefore closes non-CPU score execution above.
 pub const SGMSE_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Conv2d,
@@ -2911,6 +3906,184 @@ mod tests {
     }
 
     #[test]
+    fn score_graph_assembly_is_closed_without_all_authenticated_roles() {
+        let weights = SgmseGraphWeights {
+            plan: NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default()).unwrap(),
+            tensors: Vec::new(),
+        };
+        let error = NcsnppScoreGraph::from_weights(&weights).unwrap_err();
+        assert!(format!("{error}").contains("bound role coverage is incomplete"));
+    }
+
+    #[test]
+    fn score_graph_role_consumption_rejects_duplicate_and_tracks_unconsumed() {
+        let role = SgmseTensorRole::FourierFrequencies;
+        let weights = SgmseGraphWeights {
+            plan: NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default()).unwrap(),
+            tensors: vec![(
+                role.clone(),
+                "fourier".to_owned(),
+                vec![128],
+                vec![0.0; 128],
+            )],
+        };
+        let mut consumed = BTreeSet::new();
+        assert_eq!(
+            consume_role(&weights, &mut consumed, &role).unwrap().len(),
+            128
+        );
+        let error = consume_role(&weights, &mut consumed, &role).unwrap_err();
+        assert!(format!("{error}").contains("consumed more than once"));
+        assert_eq!(consumed.len(), 1);
+        assert!(
+            consumed
+                != compiled_required_roles(&weights.plan)
+                    .unwrap()
+                    .into_iter()
+                    .collect()
+        );
+    }
+
+    #[test]
+    fn source_skip_trace_commits_after_attention_and_combine() {
+        let plan = NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default()).unwrap();
+        let trace = source_skip_trace(&plan).unwrap();
+        let pushes = trace
+            .iter()
+            .filter(|event| matches!(event, SgmseSkipTraceEvent::Push(_)))
+            .count();
+        let pops = trace
+            .iter()
+            .filter(|event| matches!(event, SgmseSkipTraceEvent::Pop(_)))
+            .count();
+        assert_eq!(pushes, 21);
+        assert_eq!(pops, 21);
+        let mut depth = 0isize;
+        for event in &trace {
+            match event {
+                SgmseSkipTraceEvent::Push(_) => depth += 1,
+                SgmseSkipTraceEvent::Pop(_) => {
+                    assert!(depth > 0);
+                    depth -= 1;
+                }
+            }
+        }
+        assert_eq!(depth, 0);
+        let middle_start = plan
+            .stages
+            .iter()
+            .position(|stage| stage.kind == NcsnppStageKind::Middle && stage.block == 1)
+            .unwrap();
+        let middle_two = plan
+            .stages
+            .iter()
+            .position(|stage| stage.kind == NcsnppStageKind::Middle && stage.block == 2)
+            .unwrap();
+        assert!(!trace.iter().any(|event| {
+            matches!(
+                event,
+                SgmseSkipTraceEvent::Push(stage_index)
+                    if *stage_index >= middle_start && *stage_index <= middle_two
+            )
+        }));
+        let progressive_input_stages: Vec<_> = plan
+            .stages
+            .iter()
+            .enumerate()
+            .filter_map(|(stage_index, stage)| {
+                (stage.kind == NcsnppStageKind::ProgressiveInput).then_some(stage_index)
+            })
+            .collect();
+        let progressive_input_pushes: Vec<_> = trace
+            .iter()
+            .filter_map(|event| match event {
+                SgmseSkipTraceEvent::Push(stage_index)
+                    if plan.stages[*stage_index].kind == NcsnppStageKind::ProgressiveInput =>
+                {
+                    Some(*stage_index)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(progressive_input_pushes, progressive_input_stages);
+        assert!(
+            progressive_input_pushes
+                .iter()
+                .all(|stage_index| *stage_index < middle_start)
+        );
+        assert!(progressive_input_pushes.iter().all(|stage_index| {
+            *stage_index > 0 && plan.stages[*stage_index - 1].kind == NcsnppStageKind::Downsample
+        }));
+        let down_attention_stages: Vec<_> = plan
+            .stages
+            .iter()
+            .enumerate()
+            .filter_map(|(stage_index, stage)| {
+                (stage_index < middle_start && stage.kind == NcsnppStageKind::Attention)
+                    .then_some(stage_index)
+            })
+            .collect();
+        let attention_pushes: Vec<_> = trace
+            .iter()
+            .filter_map(|event| match event {
+                SgmseSkipTraceEvent::Push(stage_index)
+                    if plan.stages[*stage_index].kind == NcsnppStageKind::Attention =>
+                {
+                    Some(*stage_index)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(attention_pushes, down_attention_stages);
+    }
+
+    #[test]
+    fn score_graph_rejects_wrong_layout_and_time_before_dispatch() {
+        let conditioner = SigmaConditioner::new(
+            1,
+            FourierSigmaEmbedding::new(vec![1.0]).unwrap(),
+            vec![0.0; 8],
+            vec![0.0; 4],
+            vec![0.0; 16],
+            vec![0.0; 4],
+        )
+        .unwrap();
+        let graph = NcsnppScoreGraph {
+            config: NcsnppV2Config::source_default(),
+            conditioner,
+            stages: Vec::new(),
+        };
+        let mut output = vec![0.0; 2];
+        let error = graph
+            .forward(&Compute::cpu(), &[0.0; 2], &[0.0; 2], 0.5, &mut output)
+            .unwrap_err();
+        assert!(format!("{error}").contains("expects two 256x64 planes"));
+
+        let plane = vec![0.0; 2 * 256 * 64];
+        let mut valid_output = vec![0.0; 2 * 256 * 64];
+        let error = graph
+            .forward(&Compute::cpu(), &plane, &plane, 0.0, &mut valid_output)
+            .unwrap_err();
+        assert!(format!("{error}").contains("time must be finite and positive"));
+    }
+
+    #[test]
+    fn score_graph_wrapper_applies_exact_inverse_time_scaling() {
+        let mut output = vec![2.0, -4.0, 0.5];
+        apply_network_scaling(&mut output, 0.5).unwrap();
+        assert_eq!(output, vec![4.0, -8.0, 1.0]);
+        assert!(apply_network_scaling(&mut output, 0.0).is_err());
+    }
+
+    #[test]
+    fn progressive_sum_requires_matching_channel_and_spatial_layout() {
+        let mut output = vec![1.0, 2.0, 3.0];
+        combine_input_skip(&mut output, &[4.0, 5.0, 6.0]).unwrap();
+        assert_eq!(output, vec![5.0, 7.0, 9.0]);
+        assert!(combine_input_skip(&mut output, &[1.0, 2.0]).is_err());
+    }
+
+    #[test]
     fn transform_round_trip_preserves_finite_phase_values() {
         let input = Spectrogram {
             frames: 1,
@@ -2967,6 +4140,39 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn sigma_conditioner_transposes_source_linear_weights_once() {
+        // At log_sigma=0, nf=1's Fourier embedding is exactly [sin(0), cos(0)]
+        // = [0, 1]. The matrices below are source PyTorch [out, in] rows;
+        // Compute receives their one-time [in, out] transpose.
+        let conditioner = SigmaConditioner::new(
+            1,
+            FourierSigmaEmbedding::new(vec![1.0]).unwrap(),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            vec![0.0; 4],
+            vec![
+                1.0, 2.0, 0.0, 0.0, 0.0, 1.0, 3.0, 0.0, 0.0, 0.0, 1.0, 4.0, 5.0, 0.0, 0.0, 1.0,
+            ],
+            vec![0.0; 4],
+        )
+        .unwrap();
+        let mut output = [0.0; 4];
+        conditioner
+            .forward(&Compute::cpu(), 0.0, &mut output)
+            .unwrap();
+        let silu = |value: f32| value / (1.0 + (-value).exp());
+        let hidden = [silu(2.0), silu(4.0), silu(6.0), silu(8.0)];
+        let expected = [
+            hidden[0] + 2.0 * hidden[1],
+            hidden[1] + 3.0 * hidden[2],
+            hidden[2] + 4.0 * hidden[3],
+            5.0 * hidden[0] + hidden[3],
+        ];
+        for (&actual, &want) in output.iter().zip(expected.iter()) {
+            assert!((actual - want).abs() < 1.0e-6, "{actual} != {want}");
+        }
     }
 
     #[test]
@@ -3544,6 +4750,14 @@ mod tests {
             .unwrap();
         assert_eq!(down_output.len(), 8);
         assert!(down_output.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn host_fir_backend_guard_rejects_non_cpu_resampling_without_device() {
+        assert!(validate_fir_backend(false, NcsnppResample::Up).is_err());
+        assert!(validate_fir_backend(false, NcsnppResample::Down).is_err());
+        assert!(validate_fir_backend(false, NcsnppResample::None).is_ok());
+        assert!(validate_fir_backend(true, NcsnppResample::Down).is_ok());
     }
 
     #[test]
