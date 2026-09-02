@@ -19,8 +19,13 @@ metadata in that v2 lock; the currently tracked v2 hand-authored lock is an
 external blocker and is rejected before any host, scratch, sync, or download
 operation.
 The Local closure uses the official PyTorch `2.7.1+cu126` wheel from the
-PyTorch cu126 index and Transformers 5.5.0. The VAST measurement leg is
-CPU-only; Metal is run only by the disposable Apple verifier.
+PyTorch cu126 index and Transformers 5.10.4. The prior isolated reference pin
+was Transformers 5.5.0; this current isolated pin addresses
+`GHSA-xrqw-3rrv-vx5w` (patched minimum 5.10.0). API compatibility between the
+previous and current isolated Transformers pins is
+`BLOCKED_UNVERIFIED_API_SMOKE` until an authorized VAST model smoke test is
+completed. The VAST measurement leg is CPU-only; Metal is run only by the
+disposable Apple verifier.
 
 The fixed Local identity is
 `OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5@be7766a6735b98bd793f7c79fb720b4d0f5d13b8`.

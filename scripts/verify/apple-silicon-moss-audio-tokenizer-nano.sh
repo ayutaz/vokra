@@ -352,6 +352,10 @@ run_self_test() (
   grep -Fq '(frame * 257 + quantizer * 503 + 17) % CODEBOOK_SIZE' \
     "$VOKRA_ROOT/tools/parity/moss_audio_tokenizer_dump_reference.py" \
     || die 'Apple/dumper deterministic code contract diverged'
+  for token in 'require_transformers_api_smoke' 'BLOCKED_UNVERIFIED_API_SMOKE' 'transformers==5.10.4'; do
+    grep -Fq "$token" "$VOKRA_ROOT/tools/parity/moss_audio_tokenizer_dump_reference.py" \
+      || die "Apple/dumper blocker is missing: $token"
+  done
   EXPECTED_MODEL_SOURCE_PATH='transformers_modules/OpenMOSS-Team/Nano/model.py'
   EXPECTED_CONFIG_SOURCE_PATH='transformers_modules/OpenMOSS-Team/Nano/config.py'
   EXPECTED_MODEL_SOURCE_SHA256='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'

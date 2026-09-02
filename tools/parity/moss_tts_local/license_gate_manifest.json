@@ -1,9 +1,9 @@
 {
   "gate_version": 1,
-  "lock_sha256": "f4d225fad7bb7fbc5fa2342855a91aa74b929612d87c36f2c97294e4df49cc29",
-  "project_sha256": "18cc19e890ca0b762985af3bd48216177a6a487133da97b2b172ab28087ee0b3",
-  "package_rows_sha256": "028a65410485214983da5a9c365cf33fe12158326f963a26ddd90bfca365f91c",
-  "package_review_rows_sha256": "ebd80d98a01865646dbaefca289051bc1ee8359280c1b549abe430948c2e9c4c",
+  "lock_sha256": "08913641842901d416b17bc2adcc1d9a252a3284a9c34373086c8868a0eeb33a",
+  "project_sha256": "9d8974ffedea83bb9e69d2d1e5b82507f6baf41ac1720bee1ead77044a1f8243",
+  "package_rows_sha256": "94082cfaa2830bed431a823fab625aa6bd217b6fe08e7b620f82259c93eb60f4",
+  "package_review_rows_sha256": "c717b9bb9aadb66e04df9975304b50138b93936e00f315cede5a85513b1ad782",
   "package_review_rows": [
     {
       "name": "anyio",
@@ -247,7 +247,7 @@
     },
     {
       "name": "transformers",
-      "version": "5.5.0",
+      "version": "5.10.4",
       "source": {
         "registry": "https://pypi.org/simple"
       },

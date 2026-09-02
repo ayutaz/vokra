@@ -28,6 +28,7 @@ SHARD3_SHA256="d0449fe1b0ef1f6045946867148d8166b9a91a58d0feca4a18b641494d0b22da"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=100000000
 MIN_GPU_MEM_MIB=20000
+TRANSFORMERS_VERSION="5.10.4"
 
 log() { printf '[moss-tokenizer-v2-vast] %s\n' "$*" >&2; }
 step() { printf '\n[moss-tokenizer-v2-vast] ==== %s ====\n' "$*" >&2; }
@@ -365,9 +366,16 @@ run_self_test() {
     "audit-moss-audio-tokenizer-v2-dependencies.sh" "--no-sync" "dependency_audit.py" "readelf" \
     "object_pairs_hook=reject" \
     "measure_v2_real_cpu_and_optional_metal_against_official" \
-    "numeric_bounds=UNSET"; do
+    "numeric_bounds=UNSET" 'TRANSFORMERS_VERSION="5.10.4"' \
+    "BLOCKED_UNVERIFIED_API_SMOKE"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
+      fail=1
+    fi
+  done
+  for required in 'require_transformers_api_smoke' 'BLOCKED_UNVERIFIED_API_SMOKE' 'transformers==5.10.4'; do
+    if ! grep -Fq -- "$required" "$REFERENCE_DUMPER"; then
+      log "self-test FAIL: reference dumper blocker is missing: $required"
       fail=1
     fi
   done
@@ -649,6 +657,8 @@ main() {
     --output "$reference_csv"
   grep -F "source,v2,$UPSTREAM_REPO,$UPSTREAM_REVISION" "$reference_csv" >/dev/null \
     || die "reference lost its pinned official source"
+  grep -F "runtime,torch-2.7.1+cu126,transformers-$TRANSFORMERS_VERSION" "$reference_csv" >/dev/null \
+    || die "reference did not record the security-remediated Transformers $TRANSFORMERS_VERSION runtime"
   grep -F "contract,2,12,1024,48000,2,3840" "$reference_csv" >/dev/null \
     || die "reference lost its v2 decode contract"
   reference_sha256="$(sha256_file "$reference_csv")"
@@ -677,6 +687,11 @@ main() {
     echo "upstream_repo=$UPSTREAM_REPO"
     echo "upstream_revision=$UPSTREAM_REVISION"
     echo "manifest_sha256=$CANDIDATE_MANIFEST_SHA256"
+    echo "previous_isolated_transformers_pin=transformers==5.5.0"
+    echo "transformers_security_advisory=GHSA-xrqw-3rrv-vx5w"
+    echo "transformers_security_patched_minimum=5.10.0"
+    echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"
+    echo "transformers_compatibility_status=BLOCKED_UNVERIFIED_API_SMOKE"
     echo "gguf_sha256=$gguf_sha256"
     echo "reference_sha256=$reference_sha256"
     echo "metal_runtime=NOT_RUN_LINUX_VAST"

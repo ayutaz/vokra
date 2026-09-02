@@ -36,6 +36,11 @@ SOURCE_DIGESTS = {
     "100163bd7ecf31a59bafacc0b032ace9339edc992a3eb4cc80662502e04e46f0": "qwen3_source",
     "db574bfebad009e05193196a63a4eeecd353eeca177ccfff28b9379d595d88b7": "processor_config",
 }
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN = "transformers==5.5.0"
+ISOLATED_TRANSFORMERS_PIN = "transformers==5.10.4"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 
 
 def strict_json(data: str | bytes, *, label: str) -> Any:
@@ -309,6 +314,20 @@ def authenticate_loaded_source(
     }
 
 
+def require_transformers_api_smoke() -> None:
+    """Refuse imports/model loading until the active pin gets an API smoke run."""
+
+    if TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE":
+        raise SystemExit(
+            "MOSS-TTS Local reference generation is "
+            "BLOCKED_UNVERIFIED_API_SMOKE; run an authorized VAST model smoke "
+            "test before importing Transformers"
+        )
+    if TRANSFORMERS_COMPATIBILITY_STATUS == "AUTHENTICATED_API_SMOKE":
+        return
+    raise SystemExit("MOSS-TTS Local Transformers compatibility status is not reviewed")
+
+
 def read_rows(path: Path) -> list[list[int]]:
     data = path.read_bytes()
     width = COLUMNS * 4
@@ -359,6 +378,7 @@ def normalize_generated(prompt: list[list[int]], generated: Any) -> tuple[list[l
 
 
 def dump(args: argparse.Namespace) -> None:
+    require_transformers_api_smoke()
     snapshot_evidence = authenticate_snapshot(args.snapshot)
     snapshot_evidence["server_tree"] = authenticate_server_tree(args.snapshot, snapshot_evidence["files"])
     rows = read_rows(args.prompt_rows)
@@ -413,6 +433,33 @@ def dump(args: argparse.Namespace) -> None:
 
 def self_test() -> None:
     import tempfile
+
+    global TRANSFORMERS_COMPATIBILITY_STATUS
+    assert PREVIOUS_ISOLATED_TRANSFORMERS_PIN == "transformers==5.5.0"
+    assert ISOLATED_TRANSFORMERS_PIN == "transformers==5.10.4"
+    assert TRANSFORMERS_SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
+    assert TRANSFORMERS_SECURITY_PATCHED_MINIMUM == "5.10.0"
+    assert TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE"
+    try:
+        require_transformers_api_smoke()
+    except SystemExit as error:
+        assert "BLOCKED_UNVERIFIED_API_SMOKE" in str(error)
+    else:
+        raise AssertionError("unverified Transformers API smoke was accepted")
+    original_status = TRANSFORMERS_COMPATIBILITY_STATUS
+    try:
+        TRANSFORMERS_COMPATIBILITY_STATUS = "AUTHENTICATED_API_SMOKE"
+        require_transformers_api_smoke()
+        TRANSFORMERS_COMPATIBILITY_STATUS = "UNREVIEWED_STATUS"
+        try:
+            require_transformers_api_smoke()
+        except SystemExit as error:
+            assert "not reviewed" in str(error)
+        else:
+            raise AssertionError("unknown Transformers status was accepted")
+    finally:
+        TRANSFORMERS_COMPATIBILITY_STATUS = original_status
+    assert TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE"
 
     class FakeGenerated:
         ndim = 3

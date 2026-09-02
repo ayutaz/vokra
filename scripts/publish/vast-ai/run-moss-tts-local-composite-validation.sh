@@ -17,6 +17,10 @@ REFERENCE_DUMPER="$VOKRA_ROOT/tools/parity/moss_tts_local_dump_reference.py"
 CODEC_REFERENCE_DUMPER="$PARITY_ROOT/moss_audio_tokenizer_dump_reference.py"
 LOCAL_REPO="OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
 LOCAL_REVISION="be7766a6735b98bd793f7c79fb720b4d0f5d13b8"
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN="transformers==5.5.0"
+TRANSFORMERS_SECURITY_ADVISORY="GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM="5.10.0"
+ISOLATED_TRANSFORMERS_PIN="5.10.4"
 CODEC_REPO="OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 CODEC_REVISION="f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"
 CODEC_MANIFEST="a83915cffe78cee7f031e18ac3de1bbd64e93b3e4af843ff28d531ccf81748c6"
@@ -383,6 +387,13 @@ self_test() {
   fi
   grep -F "$LOCAL_REPO" "$0" >/dev/null
   grep -F "$LOCAL_REVISION" "$0" >/dev/null
+  for token in "$PREVIOUS_ISOLATED_TRANSFORMERS_PIN" "$TRANSFORMERS_SECURITY_ADVISORY" "$TRANSFORMERS_SECURITY_PATCHED_MINIMUM" "$ISOLATED_TRANSFORMERS_PIN" 'BLOCKED_UNVERIFIED_API_SMOKE'; do
+    grep -F "$token" "$LOCAL_PROJECT/pyproject.toml" >/dev/null || die "Local Transformers provenance is missing: $token"
+  done
+  for token in 'require_transformers_api_smoke' 'BLOCKED_UNVERIFIED_API_SMOKE' 'transformers==5.10.4'; do
+    grep -F "$token" "$REFERENCE_DUMPER" >/dev/null || die "Local reference dumper blocker is missing: $token"
+    grep -F "$token" "$CODEC_REFERENCE_DUMPER" >/dev/null || die "v2 reference dumper blocker is missing: $token"
+  done
   grep -F "$CODEC_REPO" "$0" >/dev/null
   grep -F 'MEASURED_NOT_GATED' "$0" >/dev/null
   grep -F 'moss_tts::local_transformer::tests::measure_local_real_cpu_and_optional_metal_against_official' "$0" >/dev/null

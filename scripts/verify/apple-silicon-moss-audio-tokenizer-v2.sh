@@ -15,6 +15,7 @@ LICENSE_MANIFEST="$V2_PROJECT/license_gate_manifest.json"
 OFFICIAL_REVISION="f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"
 MODEL_SOURCE_SHA256="7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9"
 CONFIG_SOURCE_SHA256="f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529"
+TRANSFORMERS_VERSION="5.10.4"
 MIN_MEMORY_BYTES=32000000000
 MIN_FREE_DISK_KIB=20000000
 TEST_SOURCE="$VOKRA_ROOT/crates/vokra-models/src/moss_audio_tokenizer/full_decoder.rs"
@@ -39,6 +40,9 @@ The test itself decodes the same official code packet on CPU and Metal and
 prints the independent official-reference and Metal-vs-CPU measurements. The
 numeric bound is intentionally unset, so the verdict remains
 MEASURED_NOT_GATED; this verifier never turns an observation into PASS.
+The security-remediated Transformers pin is 5.10.4; source API compatibility
+remains BLOCKED_UNVERIFIED_API_SMOKE until an authorized VAST model smoke test
+proves it.
 
 The host must be a disposable Darwin/arm64 checkout with
 VOKRA_REMOTE_APPLE_SILICON=1, at least 32 GB physical memory, 20 GB free disk,
@@ -192,6 +196,7 @@ require_reference() {
     || die 'reference config source row is not an authenticated transformers_modules path/hash'
   count="$(awk -F, '$1 == "runtime" && $0 ~ /^runtime,torch-[^,]+,transformers-[^,]+$/ {count++} END {print count + 0}' "$path")"
   [[ "$count" == 1 ]] || die 'reference must contain exactly one Torch/Transformers runtime row'
+  require_exact_csv_line "$path" "runtime,torch-2.7.1+cu126,transformers-$TRANSFORMERS_VERSION"
   require_exact_csv_line "$path" 'environment,device,cuda'
   count="$(awk -F, '$1 == "environment" && $2 == "cpu" {count++} END {print count + 0}' "$path")"; [[ "$count" == 1 ]] || die 'reference must contain exactly one CPU/ISA row'
   require_exact_csv_line "$path" 'contract,2,12,1024,48000,2,3840'
@@ -338,6 +343,10 @@ run_self_test() (
   done
   grep -Fq 'object_pairs_hook=reject' "$LICENSE_GATE" \
     || die 'approval gate duplicate-key rejection is missing'
+  for token in 'require_transformers_api_smoke' 'BLOCKED_UNVERIFIED_API_SMOKE' 'transformers==5.10.4'; do
+    grep -Fq "$token" "$VOKRA_ROOT/tools/parity/moss_audio_tokenizer_dump_reference.py" \
+      || die "Apple/dumper blocker is missing: $token"
+  done
   if grep -En -- '(^|[[:space:]])(curl|wget|pip|git[[:space:]]+(clone|fetch|pull|push))([[:space:]]|$)' \
     "$script_path" >/dev/null; then
     die "download, conversion, or publication command found"
@@ -371,7 +380,7 @@ run_self_test() (
   sed 's/filtered out$/filtered out; finished in nope/' "$temporary/test.log" > "$temporary/bad-timing.log"
   if require_test_evidence "$temporary/bad-timing.log"; then die 'malformed timing was accepted'; fi
   reference="$temporary/reference.csv"
-  printf 'source,v2,OpenMOSS-Team/MOSS-Audio-Tokenizer-v2,%s\nruntime,torch-2.7.1+cu126,transformers-5.5.0\nenvironment,cpu,test,machine-test,logical-1,torch-capability-test\nenvironment,device,cuda\nsource_file,model,transformers_modules/test/model.py,%s\nsource_file,config,transformers_modules/test/config.py,%s\ncontract,2,12,1024,48000,2,3840\ncodes,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\ntensor,quantizer,1x1,0\n' "$OFFICIAL_REVISION" "$MODEL_SOURCE_SHA256" "$CONFIG_SOURCE_SHA256" > "$reference"
+  printf 'source,v2,OpenMOSS-Team/MOSS-Audio-Tokenizer-v2,%s\nruntime,torch-2.7.1+cu126,transformers-%s\nenvironment,cpu,test,machine-test,logical-1,torch-capability-test\nenvironment,device,cuda\nsource_file,model,transformers_modules/test/model.py,%s\nsource_file,config,transformers_modules/test/config.py,%s\ncontract,2,12,1024,48000,2,3840\ncodes,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\ntensor,quantizer,1x1,0\n' "$OFFICIAL_REVISION" "$TRANSFORMERS_VERSION" "$MODEL_SOURCE_SHA256" "$CONFIG_SOURCE_SHA256" > "$reference"
   for index in $(seq 0 11); do printf 'tensor,decoder_%s,1x1,0\n' "$index" >> "$reference"; done
   printf 'tensor,audio,1x2x7680,0\n' >> "$reference"
   require_reference "$reference"

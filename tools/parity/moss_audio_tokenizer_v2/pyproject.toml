@@ -9,7 +9,7 @@ dependencies = [
     "numpy==2.3.5",
     "safetensors==0.8.0",
     "torch==2.7.1",
-    "transformers==5.5.0",
+    "transformers==5.10.4",
 ]
 
 [tool.uv]
@@ -23,3 +23,13 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cuda" }
+
+[tool.vokra.moss_audio_tokenizer_v2]
+# This is a security-remediated isolated pin, not proof that the authenticated
+# source API remains compatible. Only an authorized VAST model smoke test may
+# clear this fail-closed status.
+previous_isolated_transformers_pin = "transformers==5.5.0"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"

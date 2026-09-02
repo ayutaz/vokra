@@ -1,8 +1,8 @@
 {
   "gate_version": 1,
-  "lock_sha256": "d5580f6bc13c20169451b789311863f50b917b0f07b364e80fa6a0c26314e7a5",
-  "project_sha256": "62266fe62f3a94bf8604bdc771a3185cea353a80bbb81b06fe56488bae11d6fc",
-  "package_rows_sha256": "27b8a464c173d4107cde6713f82fca1a156a29aead762b2634c9f2aaabf88c5a",
+  "lock_sha256": "8d2d2378b0239fe9670800c3e5cbd34be7413cddbb3f7417588a6eca2731333a",
+  "project_sha256": "62dce602056b995aabbb07b2059504c8513038416e3726575f1b97684a35f66c",
+  "package_rows_sha256": "f52a1c6a4b05497a6da9bbbf06cb5fcd3f0a591a0b60051b7d8b07cc5d4b5d83",
   "package_rows": [
     {
       "name": "accelerate",
@@ -676,7 +676,7 @@
     },
     {
       "name": "transformers",
-      "version": "5.5.0",
+      "version": "5.10.4",
       "source": {
         "registry": "https://pypi.org/simple"
       },
@@ -1273,7 +1273,7 @@
     },
     {
       "name": "transformers",
-      "version": "5.5.0",
+      "version": "5.10.4",
       "source": {
         "registry": "https://pypi.org/simple"
       },
@@ -1322,7 +1322,7 @@
       "native_bundled_review": "OWNER_REVIEW_REQUIRED"
     }
   ],
-  "package_review_rows_sha256": "201150b390053f4fafd6d5dff2416cbb6ea7ba1d3465dc5945bda83f8cc50314",
+  "package_review_rows_sha256": "fc582bd6821028e7981e3b2a564a89f21ba973e87c423821c495f00281f62353",
   "license_rows": [
     {
       "id": "source-apache",
@@ -1403,8 +1403,13 @@
   "upstream_revision": "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
   "reference_route": {
     "status": "UNRESOLVED",
-    "transformers_version": "5.5.0",
-    "reason": "official Nano dataclass compatibility has no authenticated package route"
+    "transformers_version": "5.10.4",
+    "previous_isolated_transformers_pin": "5.5.0",
+    "isolated_transformers_pin": "transformers==5.10.4",
+    "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
+    "transformers_security_patched_minimum": "5.10.0",
+    "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
+    "reason": "official Nano dataclass compatibility and API smoke remain unauthenticated; 5.5.0 is retained only as a previous isolated reference pin"
   },
   "reference_contract": {
     "frames": 2,

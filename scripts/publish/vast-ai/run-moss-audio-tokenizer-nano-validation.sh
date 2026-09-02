@@ -370,6 +370,13 @@ run_self_test() {
       fail=1
     fi
   done
+  for required in 'require_transformers_api_smoke' 'BLOCKED_UNVERIFIED_API_SMOKE' 'transformers==5.10.4'; do
+    cases=$((cases + 1))
+    if ! grep -Fq -- "$required" "$REFERENCE_DUMPER"; then
+      log "self-test FAIL: reference dumper blocker is missing: $required"
+      fail=1
+    fi
+  done
   if ! grep -Fq 'object_pairs_hook=reject_duplicate_json_keys' "$PREPARER"; then
     log 'self-test FAIL: checkpoint index duplicate-key rejection is missing'
     fail=1

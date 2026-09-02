@@ -15,8 +15,8 @@ from urllib.parse import urlparse
 REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 # These are code-bound after the staged files are finalized; a byte drift blocks.
-LOCK_SHA256 = "d5580f6bc13c20169451b789311863f50b917b0f07b364e80fa6a0c26314e7a5"
-PROJECT_SHA256 = "62266fe62f3a94bf8604bdc771a3185cea353a80bbb81b06fe56488bae11d6fc"
+LOCK_SHA256 = "8d2d2378b0239fe9670800c3e5cbd34be7413cddbb3f7417588a6eca2731333a"
+PROJECT_SHA256 = "62dce602056b995aabbb07b2059504c8513038416e3726575f1b97684a35f66c"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 PAYLOAD_FILES = (
     "LICENSE", "README.md", "config.json", "configuration_moss_audio_tokenizer.py",
@@ -31,8 +31,13 @@ FILE_IDENTITIES = {
 }
 ROUTE = {
     "status": "UNRESOLVED",
-    "transformers_version": "5.5.0",
-    "reason": "official Nano dataclass compatibility has no authenticated package route",
+    "transformers_version": "5.10.4",
+    "previous_isolated_transformers_pin": "5.5.0",
+    "isolated_transformers_pin": "transformers==5.10.4",
+    "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
+    "transformers_security_patched_minimum": "5.10.0",
+    "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
+    "reason": "official Nano dataclass compatibility and API smoke remain unauthenticated; 5.5.0 is retained only as a previous isolated reference pin",
 }
 REFERENCE_CONTRACT = {
     "frames": 2, "quantizers": 16, "codebook_size": 1024,
@@ -427,7 +432,7 @@ def self_test() -> None:
                 raise SystemExit(f"self-test accepted malformed artifact: {label}")
         PAYLOAD_FILES = ("demo",)
         FILE_IDENTITIES = {"demo": {"path": "demo", "role": "upstream", "bytes": 3, "sha256": sha(b"abc"), "status": "REVIEWED"}}
-        ROUTE = {"status": "REVIEWED", "transformers_version": "5.5.0", "reason": "owner evidence"}
+        ROUTE = {"status": "REVIEWED", "transformers_version": "5.10.4", "reason": "owner evidence"}
         LOCK_SHA256, PROJECT_SHA256 = sha(lock_path.read_bytes()), sha(project_path.read_bytes())
         rows = lock_rows(tomllib.loads(lock_path.read_text()))
         review = [{"name": "demo", "version": "1", "source": {"registry": "https://pypi.org/simple"}, "license": "MIT", "status": "REVIEWED", "native_bundled_review": "reviewed"}, {"name": "demo", "version": "0.1.0", "source": {"virtual": "."}, "license": "project", "status": "REVIEWED", "native_bundled_review": "reviewed"}]

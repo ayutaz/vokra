@@ -14,8 +14,8 @@ from typing import Any
 import tomllib
 from urllib.parse import urlparse
 
-LOCK_SHA256 = "f4d225fad7bb7fbc5fa2342855a91aa74b929612d87c36f2c97294e4df49cc29"
-PROJECT_SHA256 = "18cc19e890ca0b762985af3bd48216177a6a487133da97b2b172ab28087ee0b3"
+LOCK_SHA256 = "08913641842901d416b17bc2adcc1d9a252a3284a9c34373086c8868a0eeb33a"
+PROJECT_SHA256 = "9d8974ffedea83bb9e69d2d1e5b82507f6baf41ac1720bee1ead77044a1f8243"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 PLACEHOLDERS = {"", "null", "none", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo"}
 REPOSITORY = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
@@ -228,11 +228,9 @@ def artifact_error(lock: dict[str, Any]) -> str | None:
         if not artifacts:
             return f"{package.get('name')}: no resolver artifacts"
         for artifact in artifacts:
-            if (not isinstance(artifact, dict) or set(artifact) != ARTIFACT_KEYS or _artifact_host(artifact.get("url")) is None
+            if (not _artifact_valid(artifact)
                     or not isinstance(artifact.get("hash"), str)
-                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["hash"]) or not isinstance(artifact.get("size"), int)
-                    or isinstance(artifact["size"], bool) or artifact["size"] <= 0 or not isinstance(artifact.get("upload-time"), str)
-                    or not artifact["upload-time"].strip()):
+                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["hash"])):
                 return f"{package.get('name')}: malformed resolver artifact"
     return None
 
@@ -258,11 +256,19 @@ def validate(project: Path, manifest_path: Path, approval_evidence: Path | None 
         "version": "0.1.0",
         "description": "Pinned official MOSS-TTS Local reference environment; VAST only",
         "requires-python": "==3.12.*",
-        "dependencies": ["huggingface-hub==1.27.0", "numpy==2.3.5", "safetensors==0.8.0", "torch==2.7.1", "transformers==5.5.0"],
+        "dependencies": ["huggingface-hub==1.27.0", "numpy==2.3.5", "safetensors==0.8.0", "torch==2.7.1", "transformers==5.10.4"],
     }
     project_tool = project_data.get("tool") if isinstance(project_data, dict) else None
+    expected_moss_tool = {
+        "previous_isolated_transformers_pin": "transformers==5.5.0",
+        "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
+        "transformers_security_patched_minimum": "5.10.0",
+        "isolated_transformers_pin": "5.10.4",
+        "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
+    }
     if (not isinstance(project_data, dict) or set(project_data) != {"project", "tool"} or project_data.get("project") != expected_project
-            or not isinstance(project_tool, dict) or set(project_tool) != {"uv"}
+            or not isinstance(project_tool, dict) or set(project_tool) != {"uv", "moss_tts_local"}
+            or project_tool.get("moss_tts_local") != expected_moss_tool
             or project_tool["uv"] != {
                 "package": False,
                 "environments": ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"],

@@ -13,6 +13,10 @@ V2_REPOSITORY="OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 V2_REVISION="f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"
 V2_MODEL_SOURCE_SHA256="7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9"
 V2_CONFIG_SOURCE_SHA256="f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529"
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN="transformers==5.5.0"
+TRANSFORMERS_SECURITY_ADVISORY="GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM="5.10.0"
+ISOLATED_TRANSFORMERS_PIN="5.10.4"
 MIN_MEMORY_BYTES=32000000000
 MIN_FREE_DISK_KIB=20000000
 
@@ -262,7 +266,15 @@ PY
   mkdir "$tmp/inputs/input-dir"
   if validate_evidence_target "$tmp/inputs/input-dir/child" "$tmp/inputs/input-dir" >/dev/null 2>&1; then die 'input-overlapping evidence directory was accepted'; fi
   if validate_evidence_target "$VOKRA_ROOT/outside-evidence" "$tmp/inputs/input.bin" >/dev/null 2>&1; then die 'checkout-overlapping evidence directory was accepted'; fi
-  grep -Fq -- '--features metal' "$0" || die 'Metal feature is not enabled'; grep -Fq -- 'UV_NO_CACHE=1 uv run --no-cache' "$0" || die 'stdlib validation is not no-cache'; grep -Fq 'pre_sync_gates' "$0" || die 'dual approval gates are missing'; log 'self-test: PASS'
+  grep -Fq -- '--features metal' "$0" || die 'Metal feature is not enabled'; grep -Fq -- 'UV_NO_CACHE=1 uv run --no-cache' "$0" || die 'stdlib validation is not no-cache'; grep -Fq 'pre_sync_gates' "$0" || die 'dual approval gates are missing'
+  for token in "$PREVIOUS_ISOLATED_TRANSFORMERS_PIN" "$TRANSFORMERS_SECURITY_ADVISORY" "$TRANSFORMERS_SECURITY_PATCHED_MINIMUM" "$ISOLATED_TRANSFORMERS_PIN" 'BLOCKED_UNVERIFIED_API_SMOKE'; do
+    grep -F "$token" "$LOCAL_PROJECT/pyproject.toml" >/dev/null || die "Local Transformers provenance is missing: $token"
+  done
+  for token in 'require_transformers_api_smoke' 'BLOCKED_UNVERIFIED_API_SMOKE' 'transformers==5.10.4'; do
+    grep -F "$token" "$VOKRA_ROOT/tools/parity/moss_tts_local_dump_reference.py" >/dev/null \
+      || die "Local reference dumper blocker is missing: $token"
+  done
+  log 'self-test: PASS'
 }
 main() {
   if [[ "${1:-}" == --self-test ]]; then (($# == 1)) || { die '--self-test does not accept extra arguments'; return 2; }; self_test; return 0; fi
