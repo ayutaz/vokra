@@ -37,7 +37,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|qwen3-tts-tokenizer-12hz|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|sgmse-voicebank|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|qwen3-tts-tokenizer-12hz|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -97,6 +97,7 @@ USAGE:
     vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model sgmse-voicebank --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model fsmn-vad --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model firered-vad --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -109,7 +110,7 @@ USAGE:
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac |
-                              csm | moshi | denoise | dia | zonos | kyutai-stt |
+                              csm | moshi | denoise | sgmse-voicebank | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-tdt-1.1b | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
                               reazonspeech-nemo-v2 |
                               distil-whisper | kotoba-whisper | whisper-medusa-v1 |
@@ -2427,6 +2428,7 @@ mod tests {
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
             ("chatterbox-nano", ModelKind::ChatterboxNano),
             ("qwen3-tts", ModelKind::Qwen3Tts),
+            ("sgmse-voicebank", ModelKind::Sgmse),
             ("voxcpm", ModelKind::VoxCpm2),
             ("vibevoice", ModelKind::VibeVoice),
             ("irodori", ModelKind::Irodori),
