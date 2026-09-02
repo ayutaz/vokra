@@ -4,12 +4,15 @@ This directory is a VAST-only independent oracle for the public
 `vokra/parler-tts-mini-v1` and `vokra/parler-tts-mini-multilingual` GGUFs. It
 imports `ParlerTTSForConditionalGeneration` from the official
 `huggingface/parler-tts` repository at commit
-`d108732cd57788ec86bc857d99a6cabd66663d68`, with Transformers 4.46.1. It does
+`d108732cd57788ec86bc857d99a6cabd66663d68`. The isolated closure uses
+Transformers 5.10.4 and huggingface-hub 1.29.0; the previous isolated
+closure's Transformers 4.46.1 and hub 0.36.2 are preserved as provenance
+only. No upstream API compatibility is claimed. It does
 not import Vokra or reproduce the Rust graph in Python.
 
 The exact Python closure is the reviewed `uv.lock`: Python 3.12, NumPy 1.26.4,
 Torch 2.11.0+cpu and TorchAudio 2.11.0+cpu from the official PyTorch CPU index,
-and Transformers 4.46.1. TorchAudio's 2.11 stable-ABI contract supports the
+and Transformers 5.10.4. TorchAudio's 2.11 stable-ABI contract supports the
 matching 2.11 pair; this project does not infer compatibility from an omitted
 lock dependency. This is based on the [official TorchAudio installation
 matrix](https://pytorch.org/audio/stable/installation.html) and the
@@ -33,7 +36,10 @@ config is bound to its immutable Git blob identity. DAC license/native/bundled
 review still requires owner approval, so production is intentionally
 fail-closed.
 
-Before any worker scratch creation, source checkout, sync, or model download,
+The Transformers route is explicitly `BLOCKED_UNVERIFIED_API_SMOKE`; the
+dumper exits before third-party imports or model acquisition until an owner
+records authenticated API-smoke evidence. Before any worker scratch creation,
+source checkout, sync, or model download,
 `preflight_gate.py` binds exact project/lock bytes, canonical package
 version/source/marker/dependency rows, model/source/DAC identities, and
 version-keyed license/native/bundled review rows to authenticated operator

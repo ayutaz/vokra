@@ -10,6 +10,9 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/parler_tts"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
+DUMPER="$PARITY_PROJECT/dump_reference.py"
+TRANSFORMERS_COMPATIBILITY_STATUS="BLOCKED_UNVERIFIED_API_SMOKE"
+TRANSFORMERS_SECURITY_ADVISORY="GHSA-xrqw-3rrv-vx5w"
 
 ENGLISH_PUBLIC_BYTES=3511459168
 ENGLISH_PUBLIC_SHA256="7f69b811edae6cbe82fdfa8e72e6181945d4466748349aa74d994fb566785ddc"
@@ -31,6 +34,16 @@ MULTILINGUAL_TEST="real_parler_multilingual_matches_official"
 
 log() { printf '[parler-tts-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
+
+require_transformers_api_smoke() {
+  case "$TRANSFORMERS_COMPATIBILITY_STATUS" in
+    BLOCKED_UNVERIFIED_API_SMOKE)
+      die "Parler Transformers route is BLOCKED_UNVERIFIED_API_SMOKE; authorized API smoke is required before gate, host, download, or model work"
+      ;;
+    AUTHENTICATED_API_SMOKE) ;;
+    *) die "Parler Transformers compatibility status is not reviewed: $TRANSFORMERS_COMPATIBILITY_STATUS" ;;
+  esac
+}
 
 usage() {
   cat <<'EOF' >&2
@@ -162,8 +175,8 @@ require_reference() {
     || die "$label manifest lost DAC repository identity"
   grep -Fq '"dac_revision": "'"$DAC_REVISION"'"' "$directory/manifest.json" \
     || die "$label manifest lost DAC revision identity"
-  grep -Fq '"transformers_version": "4.46.1"' "$directory/manifest.json" \
-    || die "$label manifest lost the locked Transformers 4.46.1 oracle"
+  grep -Fq '"transformers_version": "5.10.4"' "$directory/manifest.json" \
+    || die "$label manifest lost the locked Transformers 5.10.4 oracle"
 }
 
 verify_public_gguf() {
@@ -238,9 +251,23 @@ record_environment() {
 }
 
 run_self_test() (
-  local temporary script_path required manifest_digest
+  local temporary script_path required manifest_digest api_line license_line
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-parler-tts-apple.XXXXXX")"
   trap 'rm -rf "$temporary"' EXIT
+  [[ -f "$DUMPER" && ! -L "$DUMPER" ]] || die 'Parler dumper is missing'
+  grep -Fq -- 'BLOCKED_UNVERIFIED_API_SMOKE' "$DUMPER" || die 'Parler dumper lost API smoke blocker'
+  grep -Fq -- 'TRANSFORMERS_SECURITY_ADVISORY' "$DUMPER" || die 'Parler dumper lost security advisory contract'
+  if require_transformers_api_smoke >/dev/null 2>&1; then
+    die 'blocked Transformers API smoke route was accepted'
+  fi
+  local original_transformers_status="$TRANSFORMERS_COMPATIBILITY_STATUS"
+  TRANSFORMERS_COMPATIBILITY_STATUS="AUTHENTICATED_API_SMOKE"
+  require_transformers_api_smoke || die 'authenticated Transformers API smoke route was rejected'
+  TRANSFORMERS_COMPATIBILITY_STATUS="UNREVIEWED_STATUS"
+  if require_transformers_api_smoke >/dev/null 2>&1; then
+    die 'unknown Transformers API smoke status was accepted'
+  fi
+  TRANSFORMERS_COMPATIBILITY_STATUS="$original_transformers_status"
   printf 'abc' > "$temporary/value"
   [[ "$(sha256_file "$temporary/value")" == \
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ]] \
@@ -301,11 +328,16 @@ run_self_test() (
     'PARLER_APPLE_PARITY variant=multilingual metal_vs_cpu=PASS' \
     'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' \
     '--english-reference-sha256' '--multilingual-reference-sha256' '--approval-evidence' \
-    'license_preflight' 'require_disjoint_evidence' '! -L' \
+    'license_preflight' 'require_transformers_api_smoke' 'BLOCKED_UNVERIFIED_API_SMOKE' \
+    'GHSA-xrqw-3rrv-vx5w' 'dump_reference.py' 'require_disjoint_evidence' '! -L' \
     'evidence directory must be absent before validation' 'upload=NOT_PERFORMED'; do
     grep -Fq -- "$required" "$script_path" \
       || die "self-test contract token is missing: $required"
   done
+  api_line="$(grep -n '^  require_transformers_api_smoke$' "$script_path" | tail -1 | cut -d: -f1)"
+  license_line="$(grep -n '^  license_preflight ' "$script_path" | tail -1 | cut -d: -f1)"
+  [[ "$api_line" =~ ^[0-9]+$ && "$license_line" =~ ^[0-9]+$ && "$api_line" -lt "$license_line" ]] \
+    || die 'self-test API smoke gate is not before license preflight'
   [[ "$(grep -Ec '^[[:space:]]+--english-gguf\)' "$script_path" || true)" == 1 ]] \
     || die "English GGUF parser arm is duplicated or missing"
   printf '%s\n' \
@@ -424,6 +456,7 @@ main() {
     -n "$multilingual_reference_sha256" && -n "$approval_evidence" && -n "$evidence_dir" ]] \
     || { usage; die "all GGUF/reference pairs and --evidence-dir are required"; }
 
+  require_transformers_api_smoke
   license_preflight "$approval_evidence"
   require_remote_apple_host
   require_tooling

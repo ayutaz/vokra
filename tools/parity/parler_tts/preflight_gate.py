@@ -23,10 +23,17 @@ from typing import Any
 import tomllib
 
 GATE_VERSION = 1
-LOCK_SHA256 = "1c87ba66b887b2230090981fc249bb70bfa13f7a300f7f4c72c7ef5ffdbc8727"
-PYPROJECT_SHA256 = "d2c4bdbacbf28b40e4c6baec2e626a636ae565276ecc0fe30171f3d5d2a01203"
+LOCK_SHA256 = "0b37648f20d26197ba4a5dbeac5e6336b57454b5f7d2306dd1ddcbf321952bac"
+PYPROJECT_SHA256 = "bea3b5f3c5e83b7af88e37a156a3ac8df2eccc5a1883a5daa229eecd080f3a1e"
 SOURCE_REPO = "https://github.com/huggingface/parler-tts.git"
 SOURCE_REVISION = "d108732cd57788ec86bc857d99a6cabd66663d68"
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN = "4.46.1"
+PREVIOUS_ISOLATED_HUGGINGFACE_HUB_PIN = "0.36.2"
+ISOLATED_TRANSFORMERS_PIN = "5.10.4"
+ISOLATED_HUGGINGFACE_HUB_PIN = "1.29.0"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 REVIEW_PLACEHOLDERS = {
     "", "unresolved", "pending", "pending_review", "owner_review_required",
@@ -350,7 +357,14 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     route = manifest.get("reference_route")
     if route != {
         "entrypoint": "ParlerTTSForConditionalGeneration",
-        "transformers": "4.46.1",
+        "transformers": ISOLATED_TRANSFORMERS_PIN,
+        "previous_isolated_transformers_pin": PREVIOUS_ISOLATED_TRANSFORMERS_PIN,
+        "previous_isolated_huggingface_hub_pin": PREVIOUS_ISOLATED_HUGGINGFACE_HUB_PIN,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
         "torch": "2.11.0+cpu",
         "torchaudio": "2.11.0+cpu",
         "torch_index": "https://download.pytorch.org/whl/cpu",

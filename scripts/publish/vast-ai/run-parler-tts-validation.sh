@@ -15,6 +15,9 @@ PARLER_SOURCE_REVISION="d108732cd57788ec86bc857d99a6cabd66663d68"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 DEPENDENCY_AUDIT_WRAPPER="$VOKRA_ROOT/scripts/publish/vast-ai/audit-parler-tts-dependencies.sh"
+DUMPER="$PARITY_PROJECT/dump_reference.py"
+TRANSFORMERS_COMPATIBILITY_STATUS="BLOCKED_UNVERIFIED_API_SMOKE"
+TRANSFORMERS_SECURITY_ADVISORY="GHSA-xrqw-3rrv-vx5w"
 
 ENGLISH_PUBLIC_REPO="vokra/parler-tts-mini-v1"
 ENGLISH_PUBLIC_REVISION="cb02a124c8d125231b396a293608f2488ae2e4d2"
@@ -51,6 +54,16 @@ log() { printf '[parler-vast] %s\n' "$*" >&2; }
 step() { printf '\n[parler-vast] ==== %s ====\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 
+require_transformers_api_smoke() {
+  case "$TRANSFORMERS_COMPATIBILITY_STATUS" in
+    BLOCKED_UNVERIFIED_API_SMOKE)
+      die "Parler Transformers route is BLOCKED_UNVERIFIED_API_SMOKE; authorized API smoke is required before gate, host, download, or model work"
+      ;;
+    AUTHENTICATED_API_SMOKE) ;;
+    *) die "Parler Transformers compatibility status is not reviewed: $TRANSFORMERS_COMPATIBILITY_STATUS" ;;
+  esac
+}
+
 usage() {
   cat <<'EOF' >&2
 usage: run-parler-tts-validation.sh --approval-evidence <file> [--work-dir <absent-dir>]
@@ -59,7 +72,7 @@ usage: run-parler-tts-validation.sh --approval-evidence <file> [--work-dir <abse
 VAST-only, non-publishing Parler-TTS Mini English/Multilingual validation. The
 worker downloads and verifies both exact public Vokra GGUFs and exact immutable
 upstream checkpoints, uses the locked official Parler-TTS source plus
-Transformers 4.46.1 for independent greedy references, compiles the workspace
+the isolated Transformers 5.10.4 pin for independent greedy references, compiles the workspace
 and Apple target, verifies CLI routing, and compares native CPU T5 states,
 generated codes, and embedded-DAC PCM.
 
@@ -218,7 +231,7 @@ record_environment() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0 gate_line host_line sync_line deleted_script audit_token
+  local tmp payload actual script_path cases=0 fail=0 api_line gate_line host_line sync_line deleted_script audit_token original_transformers_status
   check_dependency_audit_order() {
     local candidate="$1" candidate_sync candidate_audit candidate_download
     candidate_sync="$(grep -nF "  uv sync --project \"\$PARITY_PROJECT\" --frozen --python 3.12" "$candidate" | tail -1 | cut -d: -f1)"
@@ -230,6 +243,21 @@ run_self_test() {
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
+  [[ -f "$DUMPER" && ! -L "$DUMPER" ]] || { log 'self-test FAIL: Parler dumper is missing'; fail=1; }
+  grep -Fq -- 'BLOCKED_UNVERIFIED_API_SMOKE' "$DUMPER" || { log 'self-test FAIL: Parler dumper lost API smoke blocker'; fail=1; }
+  grep -Fq -- 'TRANSFORMERS_SECURITY_ADVISORY' "$DUMPER" || { log 'self-test FAIL: Parler dumper lost security advisory contract'; fail=1; }
+  if require_transformers_api_smoke >/dev/null 2>&1; then
+    log 'self-test FAIL: blocked Transformers API smoke route was accepted'; fail=1
+  fi
+  original_transformers_status="$TRANSFORMERS_COMPATIBILITY_STATUS"
+  TRANSFORMERS_COMPATIBILITY_STATUS="AUTHENTICATED_API_SMOKE"
+  require_transformers_api_smoke || { log 'self-test FAIL: authenticated Transformers API smoke route was rejected'; fail=1; }
+  TRANSFORMERS_COMPATIBILITY_STATUS="UNREVIEWED_STATUS"
+  if require_transformers_api_smoke >/dev/null 2>&1; then
+    log 'self-test FAIL: unknown Transformers API smoke status was accepted'; fail=1
+  fi
+  TRANSFORMERS_COMPATIBILITY_STATUS="$original_transformers_status"
+  cases=$((cases + 1))
   payload="$tmp/payload"
   printf 'vokra-parler-self-test\n' > "$payload"
   actual="$(sha256_file "$payload")"
@@ -294,7 +322,8 @@ run_self_test() {
     "aarch64-apple-darwin" "--test-threads=1" "--frozen --python 3.12" \
     "preflight_gate.py" "license_gate_manifest.json" "dependency_audit.py" \
     "audit-parler-tts-dependencies.sh" "dependency_audit_json" "--no-project --offline" \
-    "PARLER_SOURCE_DIR" "git -C" "fetch --depth 1 origin" "--approval-evidence" \
+    "PARLER_SOURCE_DIR" "dump_reference.py" "BLOCKED_UNVERIFIED_API_SMOKE" "$TRANSFORMERS_SECURITY_ADVISORY" \
+    "require_transformers_api_smoke" "git -C" "fetch --depth 1 origin" "--approval-evidence" \
     "<APPLE_APPROVAL_EVIDENCE>" "<APPLE_EVIDENCE_DIR>"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"; fail=1
@@ -314,10 +343,11 @@ run_self_test() {
   done
   cases=$((cases + 1))
   gate_line="$(grep -n '^  pre_sync_gate' "$script_path" | tail -1 | cut -d: -f1)"
+  api_line="$(grep -n '^  require_transformers_api_smoke$' "$script_path" | tail -1 | cut -d: -f1)"
   host_line="$(grep -n '^  require_vast_host$' "$script_path" | tail -1 | cut -d: -f1)"
   sync_line="$(grep -n '  uv sync --project' "$script_path" | tail -1 | cut -d: -f1)"
-  if [[ ! "$gate_line" =~ ^[0-9]+$ || ! "$host_line" =~ ^[0-9]+$ || ! "$sync_line" =~ ^[0-9]+$ ]] || (( gate_line >= host_line || gate_line >= sync_line )); then
-    log "self-test FAIL: preflight gate is not before host/sync operations"; fail=1
+  if [[ ! "$api_line" =~ ^[0-9]+$ || ! "$gate_line" =~ ^[0-9]+$ || ! "$host_line" =~ ^[0-9]+$ || ! "$sync_line" =~ ^[0-9]+$ ]] || (( api_line >= gate_line || gate_line >= host_line || gate_line >= sync_line )); then
+    log "self-test FAIL: API/preflight gates are not ordered before host/sync operations"; fail=1
   fi
   audit_token="  \"\$DEPENDENCY_AUDIT_WRAPPER\" --output \"\$dependency_audit_json\""
   if ! check_dependency_audit_order "$script_path"; then
@@ -356,8 +386,8 @@ EOF
       --approval-evidence "$tmp/approval.json" --work-dir "$tmp/work" >/dev/null 2>&1
   worker_rc=$?
   set -e
-  if [[ $worker_rc -ne 2 || ! -s "$fake_uv_log" || -e "$tmp/scratch" || -e "$tmp/work" ]]; then
-    log 'self-test FAIL: production gate did not block before host/work/scratch'; fail=1
+  if [[ $worker_rc -ne 2 || -s "$fake_uv_log" || -e "$tmp/scratch" || -e "$tmp/work" ]]; then
+    log 'self-test FAIL: API smoke gate did not block before dependency gate/host/work/scratch'; fail=1
   fi
 
   rm -rf "$tmp"
@@ -430,8 +460,10 @@ main() {
   fi
   [[ $seen_approval -eq 1 ]] || { usage; die '--approval-evidence is required'; return 2; }
 
-  # This must remain the first substantive operation: it is offline and reads
-  # only reviewed bytes before host/scratch/tool/network/model work.
+  require_transformers_api_smoke
+  # After the API-smoke gate above, this remains the first dependency/license
+  # operation: it is offline and reads only reviewed bytes before host,
+  # scratch, tool, network, or model work.
   pre_sync_gate "$approval_evidence"
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${requested_work_dir:-$VOKRA_SCRATCH/parler-validation/$run_stamp}"
