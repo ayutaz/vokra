@@ -4659,6 +4659,8 @@ fn slices_overlap(input: &[f32], output: &[f32]) -> bool {
     input_start < output_end && output_start < input_end
 }
 
+// Intrinsic checked FIR shape/dispatch argument set for the Compute seam.
+#[allow(clippy::too_many_arguments)]
 fn fir_resample_2d_cpu(
     input: &[f32],
     channels: usize,
