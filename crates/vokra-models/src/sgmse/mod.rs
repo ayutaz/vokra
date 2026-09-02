@@ -2617,7 +2617,7 @@ fn residual_from_roles(
         ),
         &[conv1_shape[0]],
     )?;
-    let values = |module, slot| {
+    let mut values = |module, slot| {
         let role = role(module, slot);
         consume_role(weights, consumed, &role)
     };
@@ -2809,7 +2809,7 @@ impl NcsnppScoreGraph {
                             "sgmse attention norm shape is invalid".to_owned(),
                         ));
                     }
-                    let values = |module, slot| {
+                    let mut values = |module, slot| {
                         let role = role(module, slot);
                         consume_role(weights, &mut consumed, &role)
                     };
