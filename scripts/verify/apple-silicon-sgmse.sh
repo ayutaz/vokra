@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
-VERIFY_TOOL="$PARITY_PROJECT/sgmse_verify_reference.py"
+PARITY_TOOL="$PARITY_PROJECT/sgmse_native_score_parity.py"
 TEST_NAME="sgmse_apple_cpu_metal_score_matches_reference"
 MIN_MEMORY_BYTES=16000000000
 MIN_FREE_DISK_KIB=5000000
@@ -43,7 +43,8 @@ require_host() {
 run_self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token
   for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'xcrun -f metal' \
-    'sgmse_verify_reference.py' 'CARGO_BUILD_JOBS=1' 'SGMSE_APPLE_SCORE_PARITY' \
+    'sgmse_native_score_parity.py' '--verify-reference-only' 'SGMSE_REFERENCE_VERIFIED' \
+    'CARGO_BUILD_JOBS=1' 'SGMSE_APPLE_SCORE_PARITY' \
     'backend=cpu,metal' 'metal_device=present' 'atol=0.01' \
     'cargo test --locked --features metal -p vokra-models --test sgmse_apple_score' \
     '-- --ignored --exact --show-output' 'shasum -a 256' 'no download' 'no upload'; do
@@ -52,6 +53,15 @@ run_self_test() {
   grep -En 'git[[:space:]]+push|publish-one\.sh|huggingface-cli[[:space:]]+upload|--push|curl[[:space:]]|wget[[:space:]]' "$script" | grep -v 'grep -En' >/dev/null && { log 'self-test publication/network command found'; fail=1; } || true
   if VOKRA_REMOTE_APPLE_SILICON=1 "$script" --self-test --gguf /tmp/rejected >/dev/null 2>&1; then log 'self-test accepted extra argument'; fail=1; fi
   if "$script" --unknown >/dev/null 2>&1; then log 'self-test accepted unknown argument'; fail=1; fi
+  if UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python \
+    "$PARITY_TOOL" --verify-reference-only >/dev/null 2>&1; then
+    log 'self-test accepted verify-only without a reference path'; fail=1
+  fi
+  if UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python \
+    "$PARITY_TOOL" --verify-reference-only --reference-dir /tmp/missing-reference \
+    --native-dir /tmp/not-accepted >/dev/null 2>&1; then
+    log 'self-test accepted verify-only with a native path'; fail=1
+  fi
   (( fail == 0 )) || return 1
   log 'self-test PASS'
 }
@@ -77,7 +87,7 @@ reject_symlink_ancestry "$GGUF" GGUF; reject_symlink_ancestry "$REFERENCE" refer
 disjoint "$GGUF" "$REFERENCE"; disjoint "$GGUF" "$EVIDENCE"; disjoint "$REFERENCE" "$EVIDENCE"
 [[ "$(sha256_file "$GGUF")" == "$GGUF_SHA" ]] || die 'GGUF SHA-256 mismatch'
 manifest_sha="$(sha256_file "$REFERENCE/manifest.json")"
-UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python "$VERIFY_TOOL" --manifest "$REFERENCE/manifest.json" --output-dir "$REFERENCE" --vokra-root "$VOKRA_ROOT" >/dev/null
+UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python "$PARITY_TOOL" --verify-reference-only --reference-dir "$REFERENCE" >/dev/null
 log_file="$(mktemp "${TMPDIR:-/tmp}/sgmse-apple.XXXXXX")"; trap 'rm -f -- "$log_file"' EXIT
 export VOKRA_SGMSE_GGUF="$GGUF" VOKRA_SGMSE_GGUF_SHA256="$GGUF_SHA" VOKRA_SGMSE_REFERENCE_DIR="$REFERENCE" VOKRA_SGMSE_REFERENCE_MANIFEST_SHA256="$manifest_sha" VOKRA_SGMSE_APPLE_EVIDENCE_DIR="$EVIDENCE" VOKRA_REMOTE_APPLE_SILICON=1
 CARGO_BUILD_JOBS=1 cargo test --locked --features metal -p vokra-models --test sgmse_apple_score "$TEST_NAME" -- --ignored --exact --show-output 2>&1 | tee "$log_file"

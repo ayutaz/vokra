@@ -92,8 +92,9 @@ run_self_test() {
     log 'self-test FAIL: unstable whole-manifest digest pin remains'
     fail=1
   fi
-  if ! grep -Fq -- 'REVIEWED_ARTIFACT_SHA256' "$NATIVE_PARITY_TOOL"; then
-    log 'self-test FAIL: reviewed per-artifact digest gate is missing'
+  if ! grep -Fq -- 'REVIEWED_INPUT_SHA256' "$NATIVE_PARITY_TOOL" || \
+     ! grep -Fq -- 'REVIEWED_SCORE_VARIANTS' "$NATIVE_PARITY_TOOL"; then
+    log 'self-test FAIL: reviewed input/score-variant digest gate is missing'
     fail=1
   fi
   # This deliberately reaches only host/argument guards: no path exists, no

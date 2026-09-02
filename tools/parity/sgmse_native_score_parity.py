@@ -46,18 +46,68 @@ REFERENCE_ARTIFACT_NAMES = {
     "score_imag",
 }
 NATIVE_ARTIFACT_NAMES = {f"{name}.f32" for name in SCORE_NAMES}
-# The manifest intentionally carries run-specific Vokra commit, host, and
-# absolute-path evidence, so its whole-file digest is not a stable identity.
-# These six payload digests were byte-identical across three exact VAST runs
-# and are the reviewed oracle for this consumer.  A manifest cannot authorize
-# a different payload merely by rewriting its own `sha256` field.
-REVIEWED_ARTIFACT_SHA256 = {
-    "input_condition_imag": "37d4a9e7d1793aaef270cdbaddf69464fe3286171661c8f75380bd6f6e305893",
-    "input_condition_real": "8fa96184edbec9c85856eebabd6ba6102fee3e30debaf7aee2fffffd1e9599ea",
-    "input_noisy_imag": "a355948bcbafb8b89a3975d40ee333129216e730e153d8ef26d5419ed07f90ba",
-    "input_noisy_real": "c62e324c7826c752b2a8b567d184bca31cd9e1dd6b1ac04885eb78f1ccf325fa",
-    "score_imag": "ea029f909ed9eae729b2b52e51807847aece53ee574435b3b3c0f3bb713b25d5",
-    "score_real": "f15e232711181167317c820b3e0c12f07fcad8f30cd431031d196aedabbda16b",
+INPUT_GENERATOR = {
+    "algorithm": "splitmix64_uniform_f32_v1",
+    "seed": 20260901,
+    "spec": "SplitMix64 upper 24 bits mapped to exact float32 values in [-1,1)",
+}
+EXPECTED_DETERMINISM = {
+    "numpy_seed": 20260901,
+    "torch_deterministic_algorithms": True,
+    "torch_float32_matmul_precision": "highest",
+    "torch_num_interop_threads": 1,
+    "torch_num_threads": 1,
+    "torch_seed": 20260901,
+}
+# Input bytes are stable across the reviewed VAST hosts. Independently
+# generated upstream score bytes varied by CPU host, so each reviewed score
+# pair is bound to its recorded producer runtime.
+# A manifest cannot authorize a different payload merely by rewriting sha256.
+REVIEWED_INPUT_SHA256 = {
+    "input_condition_imag": "d28f163358e5f7c555c96e0e0760fbbedda913a652c1a171411cdc36e294c85c",
+    "input_condition_real": "2f5ada20e1d2bdcc08907865f9011722ed2cea8a384a5604f12f9ef1fbd61c82",
+    "input_noisy_imag": "9adc6c9fc1b25f47bbd610c97cb3f366246a1f39fc8639f17707194248262edc",
+    "input_noisy_real": "71899e72e26fe669e8c97ed1cdc905956e77fbb10f5dfb790cbad74b0d2d0429",
+}
+REVIEWED_SCORE_VARIANTS = (
+    {
+        "cpu_model": "49",
+        "torch_version": "2.13.0+cu130",
+        "numpy_version": "2.3.5",
+        "scores": {
+            "score_imag": "616928ecba2045245562f48b7c62ab769094a08833a6ab4870bf0bd75025ea20",
+            "score_real": "a147ef7a8ad29d52fc55e164732c13b719c27b5c6895cfd45ebef0ca3e7658e4",
+        },
+    },
+    {
+        "cpu_model": "63",
+        "torch_version": "2.13.0+cu130",
+        "numpy_version": "2.3.5",
+        "scores": {
+            "score_imag": "78369b2727d24f9745529e3e21116060b0713d1e50ca04dc7d240af08d8ec4ed",
+            "score_real": "df5a0d9185852da2a969ceeb02ebf82098f589354775e3cc3d99eccaeee3278f",
+        },
+    },
+    {
+        "cpu_model": "97",
+        "torch_version": "2.13.0+cu130",
+        "numpy_version": "2.3.5",
+        "scores": {
+            "score_imag": "78fe19492c08f0a8213b68cc47388d6b219670c1ba8de765a4116bb59e1cdf7d",
+            "score_real": "7b8c1c5d97b18679645bc62cbd351173f9e25e7a31e072bc7a5d1c0687823f01",
+        },
+    },
+)
+EXPECTED_RUNTIME_KEYS = {
+    "cpu_model",
+    "determinism",
+    "input_generator",
+    "nproc",
+    "numpy_version",
+    "platform_machine",
+    "platform_node",
+    "platform_system",
+    "torch_version",
 }
 EXPECTED_INPUT = {
     "seed": 20260901,
@@ -131,6 +181,39 @@ def read_f32(path: Path, label: str, count: int) -> list[float]:
     return values
 
 
+def reviewed_artifact_sha256(runtime: dict[str, Any]) -> dict[str, str]:
+    """Select one reviewed score pair from exact producer provenance."""
+    if set(runtime) != EXPECTED_RUNTIME_KEYS:
+        raise ValueError("reference runtime provenance keys are not exact")
+    if runtime.get("platform_system") != "Linux" or runtime.get("platform_machine") != "x86_64":
+        raise ValueError("reference runtime platform is not reviewed VAST Linux x86_64")
+    if not isinstance(runtime.get("platform_node"), str) or not runtime["platform_node"]:
+        raise ValueError("reference runtime platform node is not a non-empty string")
+    if (
+        isinstance(runtime.get("nproc"), bool)
+        or not isinstance(runtime.get("nproc"), int)
+        or runtime["nproc"] <= 0
+    ):
+        raise ValueError("reference runtime nproc is not a positive integer")
+    if runtime.get("input_generator") != INPUT_GENERATOR:
+        raise ValueError("reference input generator is not the reviewed stable generator")
+    if runtime.get("determinism") != EXPECTED_DETERMINISM:
+        raise ValueError("reference determinism contract mismatch")
+    variant = next(
+        (
+            candidate
+            for candidate in REVIEWED_SCORE_VARIANTS
+            if candidate["cpu_model"] == runtime.get("cpu_model")
+            and candidate["torch_version"] == runtime.get("torch_version")
+            and candidate["numpy_version"] == runtime.get("numpy_version")
+        ),
+        None,
+    )
+    if variant is None:
+        raise ValueError("reference CPU/library score provenance is not reviewed")
+    return {**REVIEWED_INPUT_SHA256, **variant["scores"]}
+
+
 def verify_reference(
     reference_dir: Path,
 ) -> dict[str, Any]:
@@ -171,6 +254,10 @@ def verify_reference(
         raise ValueError("reference license identity mismatch")
     if manifest.get("input") != EXPECTED_INPUT:
         raise ValueError("reference input contract mismatch")
+    runtime = manifest.get("runtime")
+    if not isinstance(runtime, dict):
+        raise ValueError("reference runtime provenance is missing")
+    expected_sha256 = reviewed_artifact_sha256(runtime)
     identity = manifest.get("identity")
     if not isinstance(identity, dict) or identity.get("reference_format") != REFERENCE_FORMAT or identity.get("reference_tool") != "sgmse_dump_reference.py":
         raise ValueError("reference tool identity mismatch")
@@ -206,14 +293,14 @@ def verify_reference(
     for name, metadata in artifacts.items():
         if not isinstance(metadata, dict) or metadata.get("shape") != REFERENCE_SHAPE or metadata.get("count") != REFERENCE_COUNT or metadata.get("bytes") != REFERENCE_BYTES or metadata.get("dtype") != "float32":
             raise ValueError(f"reference artifact metadata mismatch: {name}")
-        expected_sha256 = REVIEWED_ARTIFACT_SHA256.get(name)
-        if expected_sha256 is None or metadata.get("sha256") != expected_sha256:
+        expected_digest = expected_sha256.get(name)
+        if expected_digest is None or metadata.get("sha256") != expected_digest:
             raise ValueError(f"reference artifact {name} is not a reviewed VAST payload")
         filename = metadata.get("path")
         if filename != f"{name}.f32":
             raise ValueError(f"reference artifact path mismatch: {name}")
         artifact = reference_dir / filename
-        if artifact.stat().st_size != REFERENCE_BYTES or sha256(artifact) != expected_sha256:
+        if artifact.stat().st_size != REFERENCE_BYTES or sha256(artifact) != expected_digest:
             raise ValueError(f"reference artifact hash mismatch: {name}")
     return manifest
 
@@ -248,18 +335,96 @@ def compare_native(
 
 
 def self_test() -> None:
+    global REVIEWED_SCORE_VARIANTS
+
     assert REFERENCE_SHAPE == [1, 1, 256, 64]
     assert REFERENCE_COUNT == 16_384
     assert REFERENCE_BYTES == 65_536
     assert FP32_ATOL == 0.01
-    assert set(REVIEWED_ARTIFACT_SHA256) == REFERENCE_ARTIFACT_NAMES
+    assert (set(REVIEWED_INPUT_SHA256) | set(SCORE_NAMES)) == REFERENCE_ARTIFACT_NAMES
+    assert len(REVIEWED_SCORE_VARIANTS) == 3
+    assert {variant["cpu_model"] for variant in REVIEWED_SCORE_VARIANTS} == {"49", "63", "97"}
     assert all(
         len(digest) == 64
         and digest.isascii()
         and digest.islower()
         and all(character in "0123456789abcdef" for character in digest)
-        for digest in REVIEWED_ARTIFACT_SHA256.values()
+        for digest in REVIEWED_INPUT_SHA256.values()
     )
+    assert all(
+        set(variant["scores"]) == set(SCORE_NAMES)
+        and all(
+            len(digest) == 64
+            and digest.isascii()
+            and digest.islower()
+            and all(character in "0123456789abcdef" for character in digest)
+            for digest in variant["scores"].values()
+        )
+        for variant in REVIEWED_SCORE_VARIANTS
+    )
+    for variant in REVIEWED_SCORE_VARIANTS:
+        selected = reviewed_artifact_sha256(
+            {
+                "platform_system": "Linux",
+                "platform_machine": "x86_64",
+                "platform_node": "reviewed-worker",
+                "nproc": 32,
+                "cpu_model": variant["cpu_model"],
+                "torch_version": variant["torch_version"],
+                "numpy_version": variant["numpy_version"],
+                "input_generator": INPUT_GENERATOR,
+                "determinism": EXPECTED_DETERMINISM,
+            }
+        )
+        assert selected["score_real"] == variant["scores"]["score_real"]
+        assert selected["score_imag"] == variant["scores"]["score_imag"]
+    alternate_runtime = {
+        "platform_system": "Linux",
+        "platform_machine": "x86_64",
+        "platform_node": "another-reviewed-worker",
+        "nproc": 1,
+        "cpu_model": "49",
+        "torch_version": "2.13.0+cu130",
+        "numpy_version": "2.3.5",
+        "input_generator": INPUT_GENERATOR,
+        "determinism": EXPECTED_DETERMINISM,
+    }
+    assert reviewed_artifact_sha256(alternate_runtime)["score_real"] == REVIEWED_SCORE_VARIANTS[0]["scores"]["score_real"]
+    for variant, mutate in (
+        ("missing node", lambda runtime: runtime.pop("platform_node")),
+        ("extra key", lambda runtime: runtime.update(extra=True)),
+        ("empty node", lambda runtime: runtime.update(platform_node="")),
+        ("zero nproc", lambda runtime: runtime.update(nproc=0)),
+        ("boolean nproc", lambda runtime: runtime.update(nproc=True)),
+        ("string nproc", lambda runtime: runtime.update(nproc="1")),
+    ):
+        invalid_runtime = alternate_runtime.copy()
+        mutate(invalid_runtime)
+        try:
+            reviewed_artifact_sha256(invalid_runtime)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid runtime provenance ({variant}) was accepted")
+    try:
+        reviewed_artifact_sha256(
+            {
+                "platform_system": "Linux",
+                "platform_machine": "x86_64",
+                "platform_node": "reviewed-worker",
+                "nproc": 32,
+                "cpu_model": "unknown",
+                "torch_version": "2.13.0+cu130",
+                "numpy_version": "2.3.5",
+                "input_generator": INPUT_GENERATOR,
+                "determinism": EXPECTED_DETERMINISM,
+            }
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown reviewed score provenance was accepted")
+    assert REVIEWED_SCORE_VARIANTS[0]["scores"] != REVIEWED_SCORE_VARIANTS[1]["scores"]
     try:
         json.loads('{"x": 1, "x": 2}', object_pairs_hook=reject_duplicate_json)
     except ValueError:
@@ -287,10 +452,20 @@ def self_test() -> None:
         # The fixture is synthetic and never leaves this self-test. Swap in
         # local digests only to exercise the exact verification wiring;
         # production calls retain the reviewed VAST constants above.
-        reviewed_digests = REVIEWED_ARTIFACT_SHA256.copy()
-        REVIEWED_ARTIFACT_SHA256.clear()
-        REVIEWED_ARTIFACT_SHA256.update(
-            {name: metadata["sha256"] for name, metadata in artifacts.items()}
+        reviewed_input_digests = REVIEWED_INPUT_SHA256.copy()
+        reviewed_score_variants = REVIEWED_SCORE_VARIANTS
+        synthetic_digest = next(iter(artifacts.values()))["sha256"]
+        REVIEWED_INPUT_SHA256.clear()
+        REVIEWED_INPUT_SHA256.update(
+            {name: artifacts[name]["sha256"] for name in reviewed_input_digests}
+        )
+        REVIEWED_SCORE_VARIANTS = (
+            {
+                "cpu_model": "49",
+                "torch_version": "2.13.0+cu130",
+                "numpy_version": "2.3.5",
+                "scores": {name: synthetic_digest for name in SCORE_NAMES},
+            },
         )
         manifest = {
             "format": REFERENCE_FORMAT,
@@ -308,6 +483,17 @@ def self_test() -> None:
                 "checkpoint": CHECKPOINT_LICENSE_SPDX,
             },
             "input": EXPECTED_INPUT,
+            "runtime": {
+                "platform_system": "Linux",
+                "platform_machine": "x86_64",
+                "cpu_model": "49",
+                "torch_version": "2.13.0+cu130",
+                "numpy_version": "2.3.5",
+                "input_generator": INPUT_GENERATOR,
+                "determinism": EXPECTED_DETERMINISM,
+                "platform_node": "ignored-self-test-node",
+                "nproc": 999,
+            },
             "artifacts": artifacts,
             "identity": {"reference_format": REFERENCE_FORMAT, "reference_tool": "sgmse_dump_reference.py"},
             "ema_route": {"status": "SOURCE_ROUTE_VERIFIED_STRICT_LOAD", "unsafe_pickle_fallback": False},
@@ -328,6 +514,20 @@ def self_test() -> None:
             (native / f"{name}.f32").write_bytes(b"\0" * REFERENCE_BYTES)
         result = compare_native(reference.resolve(), native.resolve())
         assert result["status"] == "SGMSE_NATIVE_SCORE_PARITY_PASS"
+
+        # A score digest from another reviewed CPU pair must not be mixed into
+        # this runtime's pair, even though both pairs are individually valid.
+        original_score_digest = manifest["artifacts"]["score_real"]["sha256"]
+        manifest["artifacts"]["score_real"]["sha256"] = reviewed_score_variants[1]["scores"]["score_real"]
+        (reference / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        try:
+            verify_reference(reference.resolve())
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("cross-CPU reviewed score pair was accepted")
+        manifest["artifacts"]["score_real"]["sha256"] = original_score_digest
+        (reference / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
         # A rewritten manifest must not be able to bless altered reference
         # bytes: changing both the payload and its self-declared digest still
@@ -380,21 +580,35 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("extra native output was accepted")
-        REVIEWED_ARTIFACT_SHA256.clear()
-        REVIEWED_ARTIFACT_SHA256.update(reviewed_digests)
+        REVIEWED_INPUT_SHA256.clear()
+        REVIEWED_INPUT_SHA256.update(reviewed_input_digests)
+        REVIEWED_SCORE_VARIANTS = reviewed_score_variants
     print("sgmse_native_score_parity self-test: OK")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--verify-reference-only", action="store_true")
     parser.add_argument("--reference-dir", type=Path)
     parser.add_argument("--native-dir", type=Path)
     args = parser.parse_args()
     if args.self_test:
-        if args.reference_dir is not None or args.native_dir is not None:
-            parser.error("--self-test accepts no paths")
+        if args.verify_reference_only or args.reference_dir is not None or args.native_dir is not None:
+            parser.error("--self-test accepts no other arguments")
         self_test()
+        return 0
+    if args.verify_reference_only:
+        if args.reference_dir is None or args.native_dir is not None:
+            parser.error("--verify-reference-only requires --reference-dir and no --native-dir")
+        if not args.reference_dir.is_absolute():
+            parser.error("--reference-dir must be absolute")
+        try:
+            manifest = verify_reference(args.reference_dir)
+        except Exception as error:  # noqa: BLE001 - verification must fail closed
+            print(json.dumps({"status": "BLOCKED_SGMSE_REFERENCE_VERIFICATION", "error": f"{type(error).__name__}: {error}"}))
+            return 2
+        print(json.dumps({"status": "SGMSE_REFERENCE_VERIFIED", "identity": manifest["identity"]}, sort_keys=True))
         return 0
     if args.reference_dir is None or args.native_dir is None:
         parser.error("normal parity requires --reference-dir and --native-dir")

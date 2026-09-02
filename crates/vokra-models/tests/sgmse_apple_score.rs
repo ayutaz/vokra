@@ -38,27 +38,27 @@ const REMOTE_ENV: &str = "VOKRA_REMOTE_APPLE_SILICON";
 const ARTIFACTS: &[(&str, &str)] = &[
     (
         "input_condition_imag",
-        "37d4a9e7d1793aaef270cdbaddf69464fe3286171661c8f75380bd6f6e305893",
+        "d28f163358e5f7c555c96e0e0760fbbedda913a652c1a171411cdc36e294c85c",
     ),
     (
         "input_condition_real",
-        "8fa96184edbec9c85856eebabd6ba6102fee3e30debaf7aee2fffffd1e9599ea",
+        "2f5ada20e1d2bdcc08907865f9011722ed2cea8a384a5604f12f9ef1fbd61c82",
     ),
     (
         "input_noisy_imag",
-        "a355948bcbafb8b89a3975d40ee333129216e730e153d8ef26d5419ed07f90ba",
+        "9adc6c9fc1b25f47bbd610c97cb3f366246a1f39fc8639f17707194248262edc",
     ),
     (
         "input_noisy_real",
-        "c62e324c7826c752b2a8b567d184bca31cd9e1dd6b1ac04885eb78f1ccf325fa",
+        "71899e72e26fe669e8c97ed1cdc905956e77fbb10f5dfb790cbad74b0d2d0429",
     ),
     (
         "score_imag",
-        "ea029f909ed9eae729b2b52e51807847aece53ee574435b3b3c0f3bb713b25d5",
+        "616928ecba2045245562f48b7c62ab769094a08833a6ab4870bf0bd75025ea20",
     ),
     (
         "score_real",
-        "f15e232711181167317c820b3e0c12f07fcad8f30cd431031d196aedabbda16b",
+        "a147ef7a8ad29d52fc55e164732c13b719c27b5c6895cfd45ebef0ca3e7658e4",
     ),
 ];
 
@@ -385,6 +385,55 @@ fn verify_reference(reference: &Path) {
     assert_eq!(u64_field(input, "frequency_bins"), 256);
     assert_eq!(u64_field(input, "frames"), 64);
     assert_eq!(string_field(input, "forward_signature"), "(x_t, y, t)");
+    let runtime = field(&root, "runtime");
+    assert_eq!(string_field(runtime, "platform_system"), "Linux");
+    assert_eq!(string_field(runtime, "platform_machine"), "x86_64");
+    let runtime_object = runtime.as_object().expect("manifest runtime object");
+    assert_eq!(runtime_object.len(), 9);
+    let runtime_keys: BTreeSet<&str> = runtime_object.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(
+        runtime_keys,
+        [
+            "cpu_model",
+            "determinism",
+            "input_generator",
+            "nproc",
+            "numpy_version",
+            "platform_machine",
+            "platform_node",
+            "platform_system",
+            "torch_version",
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert!(!string_field(runtime, "platform_node").is_empty());
+    assert!(u64_field(runtime, "nproc") > 0);
+    assert_eq!(string_field(runtime, "cpu_model"), "49");
+    assert_eq!(string_field(runtime, "torch_version"), "2.13.0+cu130");
+    assert_eq!(string_field(runtime, "numpy_version"), "2.3.5");
+    let input_generator = field(runtime, "input_generator");
+    assert_eq!(input_generator.as_object().unwrap().len(), 3);
+    assert_eq!(
+        string_field(input_generator, "algorithm"),
+        "splitmix64_uniform_f32_v1"
+    );
+    assert_eq!(u64_field(input_generator, "seed"), 20260901);
+    assert_eq!(
+        string_field(input_generator, "spec"),
+        "SplitMix64 upper 24 bits mapped to exact float32 values in [-1,1)"
+    );
+    let determinism = field(runtime, "determinism");
+    assert_eq!(determinism.as_object().unwrap().len(), 6);
+    assert!(bool_field(determinism, "torch_deterministic_algorithms"));
+    assert_eq!(u64_field(determinism, "torch_num_threads"), 1);
+    assert_eq!(u64_field(determinism, "torch_num_interop_threads"), 1);
+    assert_eq!(
+        string_field(determinism, "torch_float32_matmul_precision"),
+        "highest"
+    );
+    assert_eq!(u64_field(determinism, "numpy_seed"), 20260901);
+    assert_eq!(u64_field(determinism, "torch_seed"), 20260901);
     let artifacts = field(&root, "artifacts")
         .as_object()
         .expect("manifest artifacts object");
