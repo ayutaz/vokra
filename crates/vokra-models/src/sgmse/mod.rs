@@ -3252,19 +3252,6 @@ fn checked_product(left: usize, right: usize, what: &str) -> Result<usize> {
         .ok_or_else(|| VokraError::InvalidArgument(format!("{what} overflows usize")))
 }
 
-/// Returns `ceil(n / divisor)` without overflowing `n + divisor - 1`.
-fn ceil_div_nonzero(n: usize, divisor: usize, what: &str) -> Result<usize> {
-    if n == 0 || divisor == 0 {
-        return Err(VokraError::InvalidArgument(format!(
-            "{what} requires non-zero dimensions"
-        )));
-    }
-    n.checked_sub(1)
-        .and_then(|value| value.checked_div(divisor))
-        .and_then(|value| value.checked_add(1))
-        .ok_or_else(|| VokraError::InvalidArgument(format!("{what} overflows usize")))
-}
-
 impl NcsnppV2Config {
     /// Defaults transcribed from `ncsnpp.py` at the pinned revision.
     #[must_use]

@@ -138,9 +138,12 @@ impl Sha256 {
             0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
             0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
             0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x28877aaa,
-            0x3b8b4c84, 0x4d2c6dfc, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x81c2c92e,
-            0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+            0xc67178f2,
         ];
         let mut w = [0u32; 64];
         for (i, chunk) in block.chunks_exact(4).enumerate() {
@@ -281,8 +284,9 @@ fn verify_reference(reference: &Path) {
             .collect::<BTreeSet<_>>(),
         ["manifest.json", "run.log"]
             .into_iter()
+            .map(str::to_owned)
             .chain(ARTIFACTS.iter().map(|(name, _)| format!("{name}.f32")))
-            .collect()
+            .collect::<BTreeSet<String>>()
     );
     let root = json::parse(&fs::read(reference.join("manifest.json")).unwrap())
         .expect("reference manifest JSON");
@@ -387,7 +391,9 @@ fn verify_reference(reference: &Path) {
     assert_eq!(artifacts.len(), ARTIFACTS.len());
     for (name, expected_sha) in ARTIFACTS {
         let metadata = artifacts
-            .get(*name)
+            .iter()
+            .find(|(key, _)| key.as_str() == *name)
+            .map(|(_, value)| value)
             .unwrap_or_else(|| panic!("missing artifact {name}"));
         assert_eq!(string_field(metadata, "path"), format!("{name}.f32"));
         assert_eq!(string_field(metadata, "dtype"), "float32");
