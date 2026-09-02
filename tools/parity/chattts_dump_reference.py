@@ -31,23 +31,27 @@ SAMPLE_RATE_HZ = 24_000
 FORMAT = "vokra-chattts-reference-v1"
 REFERENCE_PROJECT = Path(__file__).parent / "chattts"
 PROJECT_VERSIONS = {
-    "huggingface-hub": "0.36.2", "numba": "0.63.1", "numpy": "2.3.5",
+    "huggingface-hub": "1.5.0", "numba": "0.63.1", "numpy": "2.3.5",
     "pybase16384": "0.3.0", "pyyaml": "6.0.3", "requests": "2.33.0", "safetensors": "0.7.0",
     "torch": "2.7.1",
-    "torchaudio": "2.7.1", "tqdm": "4.67.1", "transformers": "4.41.2",
+    "torchaudio": "2.7.1", "tqdm": "4.67.1", "transformers": "5.10.4",
     "vector-quantize-pytorch": "1.27.15", "vocos": "0.1.0",
 }
+SOURCE_TRANSFORMERS_CONSTRAINT = "transformers>=4.41.1"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+ISOLATED_TRANSFORMERS_PIN = "5.10.4"
 REFERENCE_LOCK = REFERENCE_PROJECT / "uv.lock"
-REFERENCE_LOCK_SHA256 = "265acb8b9ea68bdc7d5a1e8247e44a8410dfe6c4e3736fff9a5e6ef8d0ed5619"
+REFERENCE_LOCK_SHA256 = "6099870e3685fec99e8ae68745d37ce4e71138d353cf056540d092b3d55ac4c5"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 FORBIDDEN_PACKAGES = {"soxr", "rubberband", "triton"}
 REFERENCE_DISTRIBUTION_VERSIONS = {
     "torch": {"2.7.1", "2.7.1+cpu"},
     "torchaudio": {"2.7.1", "2.7.1+cpu"},
 }
-REFERENCE_PACKAGE_INVENTORY_SHA256 = "a4d2d83a5b1d95419c9c913262cc596ea63e90f4532ad09e8d021c3ad07097bd"
-REFERENCE_LOCK_PACKAGE_ROWS_SHA256 = "22247bf02552f4d31b613fa9a2944a339a0c066f652d7d2f25c8fe72b10d2307"
-REFERENCE_LICENSE_AUDIT_SHA256 = "364ca38d14d269705641c9ccf0a350085fbfbe05705b98a09ee6ba1636f95fc5"
+REFERENCE_PACKAGE_INVENTORY_SHA256 = "74c0c3ef9afd095594e24afc48e0d2148717308aa317ea9762eb9b10d2f0ec7f"
+REFERENCE_LOCK_PACKAGE_ROWS_SHA256 = "19395b8e7796dc26af01df77e3b786299391c38f3f861d2e9b59e29175b1cb4c"
+REFERENCE_LICENSE_AUDIT_SHA256 = "3e5b662aa2134be84ee6645a7c483345d46550b690c582f414896c990a7f1dff"
 SOURCE_LICENSE_EVIDENCE = "https://raw.githubusercontent.com/2noise/ChatTTS/77b89ee281cd479f5b1a787ada330dc975ca1f2a/LICENSE"
 WEIGHT_LICENSE_EVIDENCE = "https://huggingface.co/api/models/2Noise/ChatTTS?revision=1a3c04a8b0651689bd9242fbb55b1f4b5a9aef84"
 AUDIT_PRIMARY_METADATA = "PyPI JSON release metadata, upstream package LICENSE files, and official PyTorch CPU index metadata; wheel/native notices are reviewed separately."
@@ -58,6 +62,8 @@ AUDIT_BLOCKER = "Owner approval is required before dedicated uv sync or authenti
 # row order follows uv.lock and each row binds name/version/registry plus the
 # exact resolution markers used to select platform distributions.
 REFERENCE_PACKAGE_INVENTORY = (
+    ("annotated-doc", "0.0.5", "https://pypi.org/simple", ()),
+    ("anyio", "4.14.2", "https://pypi.org/simple", ()),
     ("certifi", "2026.7.22", "https://pypi.org/simple", ()),
     ("cffi", "2.1.1", "https://pypi.org/simple", ()),
     ("charset-normalizer", "3.5.1", "https://pypi.org/simple", ()),
@@ -68,12 +74,17 @@ REFERENCE_PACKAGE_INVENTORY = (
     ("filelock", "3.32.4", "https://pypi.org/simple", ()),
     ("frozendict", "2.4.7", "https://pypi.org/simple", ()),
     ("fsspec", "2026.7.0", "https://pypi.org/simple", ()),
+    ("h11", "0.16.0", "https://pypi.org/simple", ()),
     ("hf-xet", "1.6.0", "https://pypi.org/simple", ()),
-    ("huggingface-hub", "0.36.2", "https://pypi.org/simple", ()),
+    ("httpcore", "1.0.9", "https://pypi.org/simple", ()),
+    ("httpx", "0.28.1", "https://pypi.org/simple", ()),
+    ("huggingface-hub", "1.5.0", "https://pypi.org/simple", ()),
     ("idna", "3.19", "https://pypi.org/simple", ()),
     ("jinja2", "3.1.6", "https://pypi.org/simple", ()),
     ("llvmlite", "0.46.0", "https://pypi.org/simple", ()),
+    ("markdown-it-py", "4.2.0", "https://pypi.org/simple", ()),
     ("markupsafe", "3.0.3", "https://pypi.org/simple", ()),
+    ("mdurl", "0.1.2", "https://pypi.org/simple", ()),
     ("mpmath", "1.3.0", "https://pypi.org/simple", ()),
     ("networkx", "3.6.1", "https://pypi.org/simple", ()),
     ("numba", "0.63.1", "https://pypi.org/simple", ()),
@@ -81,20 +92,24 @@ REFERENCE_PACKAGE_INVENTORY = (
     ("packaging", "26.3", "https://pypi.org/simple", ()),
     ("pybase16384", "0.3.0", "https://pypi.org/simple", ()),
     ("pycparser", "3.0", "https://pypi.org/simple", ()),
+    ("pygments", "2.21.0", "https://pypi.org/simple", ()),
     ("pyyaml", "6.0.3", "https://pypi.org/simple", ()),
     ("regex", "2026.7.19", "https://pypi.org/simple", ()),
     ("requests", "2.33.0", "https://pypi.org/simple", ()),
+    ("rich", "15.0.0", "https://pypi.org/simple", ()),
     ("safetensors", "0.7.0", "https://pypi.org/simple", ()),
     ("scipy", "1.18.1", "https://pypi.org/simple", ()),
     ("setuptools", "84.0.0", "https://pypi.org/simple", ()),
+    ("shellingham", "1.5.4", "https://pypi.org/simple", ()),
     ("sympy", "1.14.0", "https://pypi.org/simple", ()),
-    ("tokenizers", "0.19.1", "https://pypi.org/simple", ()),
+    ("tokenizers", "0.22.2", "https://pypi.org/simple", ()),
     ("torch", "2.7.1", "https://download.pytorch.org/whl/cpu", ("sys_platform == 'darwin'",)),
     ("torch", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", ("(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')", "platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'")),
     ("torchaudio", "2.7.1", "https://download.pytorch.org/whl/cpu", ("platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'", "sys_platform == 'darwin'")),
     ("torchaudio", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", ("(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')",)),
     ("tqdm", "4.67.1", "https://pypi.org/simple", ()),
-    ("transformers", "4.41.2", "https://pypi.org/simple", ()),
+    ("transformers", "5.10.4", "https://pypi.org/simple", ()),
+    ("typer", "0.27.2", "https://pypi.org/simple", ()),
     ("typing-extensions", "4.16.0", "https://pypi.org/simple", ()),
     ("urllib3", "2.7.0", "https://pypi.org/simple", ()),
     ("vector-quantize-pytorch", "1.27.15", "https://pypi.org/simple", ()),
@@ -104,23 +119,29 @@ REFERENCE_PACKAGE_INVENTORY = (
 # lock row.  None means uv omitted that field; retaining it here makes an
 # unmarked dependency distinct from one resolved from another index.
 REFERENCE_DEPENDENCY_DETAILS = {
+    ("anyio", "4.14.2"): (("idna", None, None, None), ("typing-extensions", None, None, None)),
     ("cffi", "2.1.1"): (("pycparser", None, None, "implementation_name != 'PyPy'"),),
     ("einx", "0.4.3"): (("frozendict", None, None, None), ("numpy", None, None, None), ("sympy", None, None, None)),
     ("encodec", "0.1.1"): (("einops", None, None, None), ("numpy", None, None, None), ("torch", "2.7.1", "https://download.pytorch.org/whl/cpu", "sys_platform == 'darwin'"), ("torch", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "sys_platform != 'darwin'"), ("torchaudio", "2.7.1", "https://download.pytorch.org/whl/cpu", "(platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'"), ("torchaudio", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')")),
-    ("huggingface-hub", "0.36.2"): (("filelock", None, None, None), ("fsspec", None, None, None), ("hf-xet", None, None, "platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'"), ("packaging", None, None, None), ("pyyaml", None, None, None), ("requests", None, None, None), ("tqdm", None, None, None), ("typing-extensions", None, None, None)),
+    ("huggingface-hub", "1.5.0"): (("filelock", None, None, None), ("fsspec", None, None, None), ("hf-xet", None, None, "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'"), ("httpx", None, None, None), ("packaging", None, None, None), ("pyyaml", None, None, None), ("tqdm", None, None, None), ("typer", None, None, None), ("typing-extensions", None, None, None)),
+    ("httpcore", "1.0.9"): (("certifi", None, None, None), ("h11", None, None, None)),
+    ("httpx", "0.28.1"): (("anyio", None, None, None), ("certifi", None, None, None), ("httpcore", None, None, None), ("idna", None, None, None)),
     ("jinja2", "3.1.6"): (("markupsafe", None, None, None),),
+    ("markdown-it-py", "4.2.0"): (("mdurl", None, None, None),),
     ("numba", "0.63.1"): (("llvmlite", None, None, None), ("numpy", None, None, None)),
     ("pybase16384", "0.3.0"): (("cffi", None, None, None),),
     ("requests", "2.33.0"): (("certifi", None, None, None), ("charset-normalizer", None, None, None), ("idna", None, None, None), ("urllib3", None, None, None)),
     ("scipy", "1.18.1"): (("numpy", None, None, None),),
     ("sympy", "1.14.0"): (("mpmath", None, None, None),),
-    ("tokenizers", "0.19.1"): (("huggingface-hub", None, None, None),),
+    ("tokenizers", "0.22.2"): (("huggingface-hub", None, None, None),),
     ("torch", "2.7.1"): (("filelock", None, None, "sys_platform == 'darwin'"), ("fsspec", None, None, "sys_platform == 'darwin'"), ("jinja2", None, None, "sys_platform == 'darwin'"), ("networkx", None, None, "sys_platform == 'darwin'"), ("setuptools", None, None, "sys_platform == 'darwin'"), ("sympy", None, None, "sys_platform == 'darwin'"), ("typing-extensions", None, None, "sys_platform == 'darwin'")),
     ("torch", "2.7.1+cpu"): (("filelock", None, None, "sys_platform != 'darwin'"), ("fsspec", None, None, "sys_platform != 'darwin'"), ("jinja2", None, None, "sys_platform != 'darwin'"), ("networkx", None, None, "sys_platform != 'darwin'"), ("setuptools", None, None, "sys_platform != 'darwin'"), ("sympy", None, None, "sys_platform != 'darwin'"), ("typing-extensions", None, None, "sys_platform != 'darwin'")),
     ("torchaudio", "2.7.1"): (("torch", "2.7.1", "https://download.pytorch.org/whl/cpu", "sys_platform == 'darwin'"), ("torch", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'")),
     ("torchaudio", "2.7.1+cpu"): (("torch", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')"),),
     ("tqdm", "4.67.1"): (("colorama", None, None, "sys_platform == 'win32'"),),
-    ("transformers", "4.41.2"): (("filelock", None, None, None), ("huggingface-hub", None, None, None), ("numpy", None, None, None), ("packaging", None, None, None), ("pyyaml", None, None, None), ("regex", None, None, None), ("requests", None, None, None), ("safetensors", None, None, None), ("tokenizers", None, None, None), ("tqdm", None, None, None)),
+    ("transformers", "5.10.4"): (("huggingface-hub", None, None, None), ("numpy", None, None, None), ("packaging", None, None, None), ("pyyaml", None, None, None), ("regex", None, None, None), ("safetensors", None, None, None), ("tokenizers", None, None, None), ("tqdm", None, None, None), ("typer", None, None, None)),
+    ("typer", "0.27.2"): (("annotated-doc", None, None, None), ("colorama", None, None, "sys_platform == 'win32'"), ("rich", None, None, None), ("shellingham", None, None, None)),
+    ("rich", "15.0.0"): (("markdown-it-py", None, None, None), ("pygments", None, None, None)),
     ("vector-quantize-pytorch", "1.27.15"): (("einops", None, None, None), ("einx", None, None, None), ("torch", "2.7.1", "https://download.pytorch.org/whl/cpu", "sys_platform == 'darwin'"), ("torch", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "sys_platform != 'darwin'")),
     ("vocos", "0.1.0"): (("einops", None, None, None), ("encodec", None, None, None), ("huggingface-hub", None, None, None), ("numpy", None, None, None), ("pyyaml", None, None, None), ("scipy", None, None, None), ("torch", "2.7.1", "https://download.pytorch.org/whl/cpu", "sys_platform == 'darwin'"), ("torch", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "sys_platform != 'darwin'"), ("torchaudio", "2.7.1", "https://download.pytorch.org/whl/cpu", "(platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'"), ("torchaudio", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')")),
     ("vokra-chattts-reference", "0.1.0"): (("huggingface-hub", None, None, None), ("numba", None, None, None), ("numpy", None, None, None), ("pybase16384", None, None, None), ("pyyaml", None, None, None), ("requests", None, None, None), ("safetensors", None, None, None), ("torch", "2.7.1", "https://download.pytorch.org/whl/cpu", "sys_platform == 'darwin'"), ("torch", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "sys_platform != 'darwin'"), ("torchaudio", "2.7.1", "https://download.pytorch.org/whl/cpu", "(platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'"), ("torchaudio", "2.7.1+cpu", "https://download.pytorch.org/whl/cpu", "(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')"), ("tqdm", None, None, None), ("transformers", None, None, None), ("vector-quantize-pytorch", None, None, None), ("vocos", None, None, None)),
@@ -130,6 +151,8 @@ DEPENDENCY_GATE_FIELDS = {
     "selection_status", "selection_note", "upstream_install_requires",
     "excluded_upstream_optional", "torch_index", "forbidden_packages", "lock_sha256",
     "package_inventory_sha256", "lock_package_rows_sha256",
+    "transformers_security_advisory", "transformers_security_patched_minimum",
+    "isolated_transformers_pin",
 }
 LICENSE_AUDIT_FIELDS = {
     "status", "primary_metadata", "source_route", "weight_route", "blocker",
@@ -221,7 +244,7 @@ def canonical_lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(source, dict) or set(source) not in ({"registry"}, {"virtual"}) or not isinstance(next(iter(source.values()), None), str):
             raise RuntimeError(f"ChatTTS uv.lock package source is malformed: {item.get('name')}")
         rows.append(item)
-    # canonical_lock_inventory intentionally contains only the 41 concrete
+    # canonical_lock_inventory intentionally contains only the concrete
     # registry rows; this companion identity binds the virtual root too.
     concrete = canonical_lock_inventory({"package": rows})
     virtual = [item for item in rows if item["source"].get("virtual") == "."]
@@ -334,6 +357,8 @@ def validate_dependency_gate(project_path: Path = REFERENCE_PROJECT / "pyproject
         raise RuntimeError("ChatTTS source identity/license gate drifted")
     if reference.get("weight_license") != "CC-BY-NC-4.0":
         raise RuntimeError("ChatTTS weight license gate drifted")
+    if reference.get("transformers_security_advisory") != TRANSFORMERS_SECURITY_ADVISORY or reference.get("transformers_security_patched_minimum") != TRANSFORMERS_SECURITY_PATCHED_MINIMUM or reference.get("isolated_transformers_pin") != ISOLATED_TRANSFORMERS_PIN:
+        raise RuntimeError("ChatTTS transformers security provenance drifted")
     if reference.get("torch_index") != PYTORCH_CPU_INDEX:
         raise RuntimeError("ChatTTS PyTorch CPU index gate drifted")
     if reference.get("package_inventory_sha256") != REFERENCE_PACKAGE_INVENTORY_SHA256:

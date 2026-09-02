@@ -4,10 +4,10 @@ set -euo pipefail
 
 INSPECTION_WORKER="scripts/publish/vast-ai/run-chattts-inspection.sh"
 REFERENCE="tools/parity/chattts_dump_reference.py"
-REFERENCE_LOCK_SHA256="36986402c3badb45b50c9d18ffbc811409be618cf45e2438f97e99c6751235db"
-REFERENCE_PACKAGE_INVENTORY_SHA256="f8b00a8226662347ccf2e0ef7420922614ec570524ca6216852ee699f32db98a"
-REFERENCE_LOCK_PACKAGE_ROWS_SHA256="9714e1a005af4800608f608c9617e0ce90dec0c563427e7c693d9c603ea2cf52"
-REFERENCE_LICENSE_AUDIT_SHA256="38d0b49ad2b3fafd34bf19eaf1c955e53f0d7b5eb362612d0292a23d3e59148a"
+REFERENCE_LOCK_SHA256="6099870e3685fec99e8ae68745d37ce4e71138d353cf056540d092b3d55ac4c5"
+REFERENCE_PACKAGE_INVENTORY_SHA256="74c0c3ef9afd095594e24afc48e0d2148717308aa317ea9762eb9b10d2f0ec7f"
+REFERENCE_LOCK_PACKAGE_ROWS_SHA256="19395b8e7796dc26af01df77e3b786299391c38f3f861d2e9b59e29175b1cb4c"
+REFERENCE_LICENSE_AUDIT_SHA256="3e5b662aa2134be84ee6645a7c483345d46550b690c582f414896c990a7f1dff"
 UV_GATE_CMD=(uv run --no-project --python 3.12 python)
 WORK_DIR="/dev/shm/vokra-chattts-validation"
 
@@ -18,7 +18,7 @@ self_test() {
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
   [[ -f "$root/$INSPECTION_WORKER" ]] || die "inspection worker missing"
   [[ -f "$root/$REFERENCE" ]] || die "official reference missing"
-  for needle in "VOKRA_CHATTS_RUN_REFERENCE=1" "AUTHENTICATED_REFERENCE_EVIDENCE" "INSPECTION_ERROR" "NO_UPLOAD" "run-chattts-inspection.sh" "uv.lock" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_INVENTORY_SHA256" "$REFERENCE_LOCK_PACKAGE_ROWS_SHA256" "$REFERENCE_LICENSE_AUDIT_SHA256" "dependency-gate" "validate_reference_evidence"; do
+  for needle in "VOKRA_CHATTS_RUN_REFERENCE=1" "AUTHENTICATED_REFERENCE_EVIDENCE" "INSPECTION_ERROR" "NO_UPLOAD" "run-chattts-inspection.sh" "uv.lock" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_INVENTORY_SHA256" "$REFERENCE_LOCK_PACKAGE_ROWS_SHA256" "$REFERENCE_LICENSE_AUDIT_SHA256" "transformers==5.10.4" "huggingface-hub==1.5.0" "GHSA-xrqw-3rrv-vx5w" "dependency-gate" "validate_reference_evidence"; do
     if ! grep -Fq -- "$needle" "$root/$REFERENCE" && ! grep -Fq -- "$needle" "${BASH_SOURCE[0]}"; then
       echo "self-test FAIL: missing $needle" >&2; fail=1
     fi
