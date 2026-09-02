@@ -9,7 +9,7 @@ dependencies = [
     "HyperPyYAML==1.2.2",
     "einops==0.8.0",
     "inflect==7.3.1",
-    "huggingface-hub==0.24.7",
+    "huggingface-hub==1.5.0",
     "librosa==0.10.2",
     "modelscope==1.20.0",
     "numpy==1.26.4",
@@ -22,7 +22,7 @@ dependencies = [
     "soundfile==0.12.1",
     "torch==2.3.1",
     "torchaudio==2.3.1",
-    "transformers==4.51.3",
+    "transformers==5.10.4",
     "tqdm==4.66.5",
     "wetext==0.0.4",
 ]
@@ -43,6 +43,19 @@ source_revision = "0d990d60740bf174904a5185cce910b847bd3684"
 matcha_repository = "https://github.com/shivammehta25/Matcha-TTS"
 matcha_revision = "dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
 route = "official lower-level classes are still blocked: frontend + YAML mel_spectrogram import librosa"
+# CosyVoice3's pinned upstream environment declares transformers 4.51.3 and
+# huggingface-hub 0.24.7. Keep that provenance separate from the isolated
+# reference pins: transformers 5.10.4 requires huggingface-hub >=1.5.0, the
+# advisory patched minimum is 5.10.0, and API compatibility remains unverified.
+source_transformers_requirement = "transformers==4.51.3"
+source_huggingface_hub_requirement = "huggingface-hub==0.24.7"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+isolated_huggingface_hub_pin = "1.5.0"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
+transformers_license = "METADATA_DECLARED_APACHE-2.0_PRIMARY_BYTES_UNREVIEWED"
+transformers_metadata_evidence = "https://pypi.org/pypi/transformers/5.10.4/json"
 lock_status = "BLOCKED_FORBIDDEN_SOXR_IN_AUTHENTICATED_OFFICIAL_CLOSURE"
 dedicated_sync = "FORBIDDEN_UNTIL_LICENSE_SIGNOFF_AND_LOCK"
 model_download = "FORBIDDEN_UNTIL_LICENSE_SIGNOFF_AND_LOCK"

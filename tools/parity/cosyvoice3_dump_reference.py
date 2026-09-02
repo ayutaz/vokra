@@ -25,15 +25,24 @@ MODEL_REVISION = "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
 SOURCE_ORIGIN = "https://github.com/FunAudioLLM/CosyVoice"
 MATCHA_REVISION = "dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
 MATCHA_ORIGIN = "https://github.com/shivammehta25/Matcha-TTS"
+SOURCE_TRANSFORMERS_REQUIREMENT = "transformers==4.51.3"
+SOURCE_HUGGINGFACE_HUB_REQUIREMENT = "huggingface-hub==0.24.7"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+ISOLATED_TRANSFORMERS_PIN = "5.10.4"
+ISOLATED_HUGGINGFACE_HUB_PIN = "1.5.0"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
+TRANSFORMERS_LICENSE_METADATA = "METADATA_DECLARED_APACHE-2.0_PRIMARY_BYTES_UNREVIEWED"
+TRANSFORMERS_METADATA_EVIDENCE = "https://pypi.org/pypi/transformers/5.10.4/json"
 REFERENCE_PROJECT = Path(__file__).parent / "cosyvoice3_reference"
 PROJECT_VERSIONS = {
     "conformer": "0.3.2", "diffusers": "0.29.0", "hyperpyyaml": "1.2.2",
-    "einops": "0.8.0", "inflect": "7.3.1", "huggingface-hub": "0.24.7",
+    "einops": "0.8.0", "inflect": "7.3.1", "huggingface-hub": "1.5.0",
     "librosa": "0.10.2", "modelscope": "1.20.0", "numpy": "1.26.4",
     "omegaconf": "2.3.0", "onnx": "1.16.0", "onnxruntime": "1.18.0",
     "openai-whisper": "20231117", "pyworld": "0.3.4", "pyyaml": "6.0.2",
     "soundfile": "0.12.1", "torch": "2.3.1", "torchaudio": "2.3.1",
-    "transformers": "4.51.3", "tqdm": "4.66.5", "wetext": "0.0.4",
+    "transformers": ISOLATED_TRANSFORMERS_PIN, "tqdm": "4.66.5", "wetext": "0.0.4",
 }
 MODEL_REPOSITORY = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
 TARGET_TEXT = "八百标兵奔北坡，北坡炮兵并排跑，炮兵怕把标兵碰，标兵怕碰炮兵炮。"
@@ -86,6 +95,20 @@ def reference_project_identity() -> dict[str, Any]:
     if not pyproject.is_file() or not lock.is_file():
         raise RuntimeError("dedicated CosyVoice3 pyproject.toml and uv.lock are required before acquisition")
     config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    route = config.get("tool", {}).get("vokra", {}).get("cosyvoice3_reference", {})
+    expected_route = {
+        "source_transformers_requirement": SOURCE_TRANSFORMERS_REQUIREMENT,
+        "source_huggingface_hub_requirement": SOURCE_HUGGINGFACE_HUB_REQUIREMENT,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+        "transformers_license": TRANSFORMERS_LICENSE_METADATA,
+        "transformers_metadata_evidence": TRANSFORMERS_METADATA_EVIDENCE,
+    }
+    if any(route.get(key) != value for key, value in expected_route.items()):
+        raise RuntimeError("CosyVoice3 Transformers security metadata drifted")
     raw_dependencies = config.get("project", {}).get("dependencies")
     if not isinstance(raw_dependencies, list):
         raise RuntimeError("CosyVoice3 dependency inventory is missing")
@@ -111,7 +134,20 @@ def reference_project_identity() -> dict[str, Any]:
         if actual != expected:
             raise RuntimeError(f"CosyVoice3 installed dependency drift: {name}={actual}")
         actual_versions[name] = actual
-    return {"python": ">=3.12,<3.13", "pyproject_sha256": sha256_file(pyproject), "uv_lock_sha256": sha256_file(lock), "dependencies": PROJECT_VERSIONS, "actual_versions": actual_versions}
+    return {
+        "python": ">=3.12,<3.13",
+        "pyproject_sha256": sha256_file(pyproject),
+        "uv_lock_sha256": sha256_file(lock),
+        "dependencies": PROJECT_VERSIONS,
+        "actual_versions": actual_versions,
+        "source_transformers_requirement": SOURCE_TRANSFORMERS_REQUIREMENT,
+        "source_huggingface_hub_requirement": SOURCE_HUGGINGFACE_HUB_REQUIREMENT,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+    }
 
 
 def strict_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -617,6 +653,14 @@ def main() -> int:
     args = parser.parse_args()
     if args.self_test:
         assert len(SOURCE_REVISION) == 40 and len(MODEL_REVISION) == 40
+        assert SOURCE_TRANSFORMERS_REQUIREMENT == "transformers==4.51.3"
+        assert SOURCE_HUGGINGFACE_HUB_REQUIREMENT == "huggingface-hub==0.24.7"
+        assert TRANSFORMERS_SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
+        assert TRANSFORMERS_SECURITY_PATCHED_MINIMUM == "5.10.0"
+        assert ISOLATED_TRANSFORMERS_PIN == "5.10.4"
+        assert ISOLATED_HUGGINGFACE_HUB_PIN == "1.5.0"
+        assert PROJECT_VERSIONS["transformers"] == ISOLATED_TRANSFORMERS_PIN
+        assert PROJECT_VERSIONS["huggingface-hub"] == ISOLATED_HUGGINGFACE_HUB_PIN
         assert len(REQUIRED_ARTIFACTS) == 30 and "official_output_pcm" in REQUIRED_ARTIFACTS and "cfm_solver_trace" in REQUIRED_ARTIFACTS
         try:
             json.loads('{"duplicate": 1, "duplicate": 2}', object_pairs_hook=strict_pairs)

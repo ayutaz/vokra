@@ -17,14 +17,21 @@ EXPECTED_FORMAT = "vokra-cosyvoice3-official-reference-v1"
 TARGET_TEXT = "八百标兵奔北坡，北坡炮兵并排跑，炮兵怕把标兵碰，标兵怕碰炮兵炮。"
 PROMPT_TEXT = "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。"
 PROMPT_SHA256 = "c7b31d6dbe7cc6a716dded00550db5b50940bf209e424e4ad207b12e657c8ff6"
+SOURCE_TRANSFORMERS_REQUIREMENT = "transformers==4.51.3"
+SOURCE_HUGGINGFACE_HUB_REQUIREMENT = "huggingface-hub==0.24.7"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+ISOLATED_TRANSFORMERS_PIN = "5.10.4"
+ISOLATED_HUGGINGFACE_HUB_PIN = "1.5.0"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 PROJECT_VERSIONS = {
     "conformer": "0.3.2", "diffusers": "0.29.0", "hyperpyyaml": "1.2.2",
-    "einops": "0.8.0", "inflect": "7.3.1", "huggingface-hub": "0.24.7",
+    "einops": "0.8.0", "inflect": "7.3.1", "huggingface-hub": "1.5.0",
     "librosa": "0.10.2", "modelscope": "1.20.0", "numpy": "1.26.4",
     "omegaconf": "2.3.0", "onnx": "1.16.0", "onnxruntime": "1.18.0",
     "openai-whisper": "20231117", "pyworld": "0.3.4", "pyyaml": "6.0.2",
     "soundfile": "0.12.1", "torch": "2.3.1", "torchaudio": "2.3.1",
-    "transformers": "4.51.3", "tqdm": "4.66.5", "wetext": "0.0.4",
+    "transformers": ISOLATED_TRANSFORMERS_PIN, "tqdm": "4.66.5", "wetext": "0.0.4",
 }
 # Must match the reference dumper's transport sanity bound.  It is not a
 # model-value tolerance and does not relax numerical parity thresholds.
@@ -202,6 +209,18 @@ def validate_project() -> dict[str, Any]:
     if not pyproject.is_file() or not lock.is_file():
         raise ValueError("dedicated CosyVoice3 pyproject/uv.lock missing")
     config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    route = config.get("tool", {}).get("vokra", {}).get("cosyvoice3_reference", {})
+    expected_route = {
+        "source_transformers_requirement": SOURCE_TRANSFORMERS_REQUIREMENT,
+        "source_huggingface_hub_requirement": SOURCE_HUGGINGFACE_HUB_REQUIREMENT,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+    }
+    if any(route.get(key) != value for key, value in expected_route.items()):
+        raise ValueError("CosyVoice3 Transformers security metadata drifted")
     dependencies = {}
     for raw in config.get("project", {}).get("dependencies", []):
         name, pinned = raw.split("==")
@@ -222,7 +241,20 @@ def validate_project() -> dict[str, Any]:
         if value != expected:
             raise ValueError(f"CosyVoice3 installed dependency drift: {name}")
         actual[name] = value
-    return {"python": ">=3.12,<3.13", "pyproject_sha256": hashlib.sha256(pyproject.read_bytes()).hexdigest(), "uv_lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(), "dependencies": PROJECT_VERSIONS, "actual_versions": actual}
+    return {
+        "python": ">=3.12,<3.13",
+        "pyproject_sha256": hashlib.sha256(pyproject.read_bytes()).hexdigest(),
+        "uv_lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+        "dependencies": PROJECT_VERSIONS,
+        "actual_versions": actual,
+        "source_transformers_requirement": SOURCE_TRANSFORMERS_REQUIREMENT,
+        "source_huggingface_hub_requirement": SOURCE_HUGGINGFACE_HUB_REQUIREMENT,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+    }
 
 
 def validate(manifest_path: Path) -> None:
@@ -439,6 +471,14 @@ if __name__ == "__main__":
                 pass
         assert SOURCE_ROLE_BLOBS["cosyvoice/flow/flow.py"] == "c25518621bf98e95d5ed75b83c5a2a610d0822be"
         assert MATCHA_ROLE_BLOBS["matcha/models/components/decoder.py"] == "1137cd7008e9d07b4f306926a82e44c2b2cddbdf"
+        assert SOURCE_TRANSFORMERS_REQUIREMENT == "transformers==4.51.3"
+        assert SOURCE_HUGGINGFACE_HUB_REQUIREMENT == "huggingface-hub==0.24.7"
+        assert TRANSFORMERS_SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
+        assert TRANSFORMERS_SECURITY_PATCHED_MINIMUM == "5.10.0"
+        assert ISOLATED_TRANSFORMERS_PIN == "5.10.4"
+        assert ISOLATED_HUGGINGFACE_HUB_PIN == "1.5.0"
+        assert PROJECT_VERSIONS["transformers"] == ISOLATED_TRANSFORMERS_PIN
+        assert PROJECT_VERSIONS["huggingface-hub"] == ISOLATED_HUGGINGFACE_HUB_PIN
         grid = [1.0 - math.cos(index * math.pi / 20.0) for index in range(11)]
         assert len(grid) == 11 and grid[0] == 0.0 and abs(grid[-1] - 1.0) < 1e-12
         bad_grid = list(grid); bad_grid[4] += 0.01
