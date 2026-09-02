@@ -12,7 +12,7 @@ ROOT="${VOKRA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 PARITY="$ROOT/tools/parity"
 REFERENCE="$PARITY/csm_1b_dump_reference.py"
 REFERENCE_PROJECT="$PARITY/csm_1b_reference"
-REFERENCE_LOCK_SHA256="32e3dffd8b21a6f39613ded211484dd95030e2889dd0c204f6e2b14ff72db50a"
+REFERENCE_LOCK_SHA256="62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
 UV=(uv run --no-sync --frozen --project "$REFERENCE_PROJECT" --python 3.12 python)
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_SCRATCH_KIB=$((40 * 1024 * 1024))
@@ -28,7 +28,7 @@ self_test() {
     csm_1b_dump_reference.py REFERENCE_EVIDENCE_COMPLETE \
     COMPLETE_COMPOSITE_GGUF complete-artifact-manifest.json ACCEPTED_VAST_CPU_BASELINE BLOCKED_NATIVE_BINDING \
     VOKRA_PUBLISH_ON_VAST findmnt CARGO_BUILD_JOBS=1 NO_UPLOAD NOT_RUN_OFFICIAL_ONLY \
-    apply_chat_template audio_kwargs caller-owned NumPy librosa/soxr wav-pcm16-le pytorch-cpu uv.lock "$REFERENCE_LOCK_SHA256" BLOCKED_LICENSE_METADATA_REVIEW REVIEWED_LICENSE_AUDIT_COMPLETE --no-sync "uv sync --project" 2051 collection_status decoded_frame_codes.u32le; do
+    apply_chat_template audio_kwargs caller-owned NumPy librosa/soxr wav-pcm16-le pytorch-cpu uv.lock "$REFERENCE_LOCK_SHA256" BLOCKED_LICENSE_METADATA_REVIEW REVIEWED_LICENSE_AUDIT_COMPLETE source_transformers_requirement source_huggingface_hub_requirement isolated_transformers_pin isolated_huggingface_hub_pin GHSA-xrqw-3rrv-vx5w BLOCKED_UNVERIFIED_API_SMOKE --no-sync "uv sync --project" 2051 collection_status decoded_frame_codes.u32le; do
     grep -Fq -- "$token" "$0" || { echo "self-test missing $token" >&2; fail=1; }
   done
   if grep -En '(^|[;&|][[:space:]]*)git[[:space:]]+push|(^|[;&|][[:space:]]*)(curl|wget|huggingface-cli)[[:space:]]' "$0" >/dev/null; then
@@ -138,12 +138,14 @@ if manifest.get("transformers", {}).get("commit") != "945727948c1143a10ac6f7d811
 environment = manifest.get("reference_environment", {})
 if not isinstance(environment, dict) or not re.fullmatch(r"[0-9a-f]{64}", environment.get("lock_sha256", "")) or environment.get("python") != "3.12":
     raise SystemExit("dedicated reference lock identity is missing")
-if environment.get("lock_sha256") != "32e3dffd8b21a6f39613ded211484dd95030e2889dd0c204f6e2b14ff72db50a":
+if environment.get("lock_sha256") != "62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc":
     raise SystemExit("dedicated reference lock SHA does not match the reviewed lock")
 if environment.get("selection_status") != "REVIEWED_ADAPTED_REFERENCE_ENVIRONMENT_NOT_UPSTREAM_REQUIREMENTS":
     raise SystemExit("reference package selection is missing its adapted-environment disclosure")
 if environment.get("torch_index") != "https://download.pytorch.org/whl/cpu":
     raise SystemExit("reference is not bound to the official PyTorch CPU index")
+if environment.get("source_transformers_requirement") != "transformers==4.52.1" or environment.get("source_huggingface_hub_requirement") != "huggingface-hub>=0.30,<1.0" or environment.get("transformers_security_advisory") != "GHSA-xrqw-3rrv-vx5w" or environment.get("transformers_security_patched_minimum") != "5.10.0" or environment.get("isolated_transformers_pin") != "5.10.4" or environment.get("isolated_huggingface_hub_pin") != "1.5.0" or environment.get("transformers_compatibility_status") != "BLOCKED_UNVERIFIED_API_SMOKE":
+    raise SystemExit("reference Transformers security/provenance metadata is incomplete")
 lock_document = tomllib.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
 lock_rows = []
 identities = set()
@@ -166,41 +168,51 @@ if environment.get("locked_package_rows") != lock_rows or environment.get("locke
 if any(row["name"] in {"soundfile", "librosa", "soxr"} for row in lock_rows):
     raise SystemExit("forbidden audio dependency remains in the dedicated lock")
 audit_expectations = {
+    "annotated-doc": ("MIT", "https://pypi.org/pypi/annotated-doc/0.0.5/json"),
+    "anyio": ("MIT", "https://pypi.org/pypi/anyio/4.14.2/json"),
     "certifi": ("MPL-2.0", "https://pypi.org/pypi/certifi/2026.7.22/json"),
-    "charset-normalizer": ("MIT", "https://pypi.org/pypi/charset-normalizer/3.5.1/json"),
     "colorama": ("BSD-3-Clause", "https://pypi.org/pypi/colorama/0.4.6/json"),
     "filelock": ("MIT", "https://pypi.org/pypi/filelock/3.32.4/json"),
     "fsspec": ("BSD-3-Clause", "https://pypi.org/pypi/fsspec/2026.7.0/json"),
     "hf-xet": ("Apache-2.0", "https://pypi.org/pypi/hf-xet/1.6.0/json"),
-    "huggingface-hub": ("Apache-2.0", "https://pypi.org/pypi/huggingface-hub/0.36.2/json"),
+    "h11": ("MIT", "https://pypi.org/pypi/h11/0.16.0/json"),
+    "httpcore": ("BSD-3-Clause", "https://pypi.org/pypi/httpcore/1.0.9/json"),
+    "httpx": ("BSD-3-Clause", "https://pypi.org/pypi/httpx/0.28.1/json"),
+    "huggingface-hub": ("Apache-2.0", "https://pypi.org/pypi/huggingface-hub/1.5.0/json"),
     "idna": ("BSD-3-Clause", "https://pypi.org/pypi/idna/3.19/json"),
     "jinja2": ("BSD-3-Clause", "https://pypi.org/pypi/jinja2/3.1.6/json"),
     "markupsafe": ("BSD-3-Clause", "https://pypi.org/pypi/markupsafe/3.0.3/json"),
+    "markdown-it-py": ("MIT", "https://pypi.org/pypi/markdown-it-py/4.2.0/json"),
+    "mdurl": ("MIT", "https://pypi.org/pypi/mdurl/0.1.2/json"),
     "mpmath": ("BSD", "https://pypi.org/pypi/mpmath/1.3.0/json"),
     "networkx": ("BSD-3-Clause", "https://pypi.org/pypi/networkx/3.6.1/json"),
     "numpy": ("BSD-3-Clause + bundled runtime notices (GPL/LGPL)", "https://pypi.org/pypi/numpy/2.2.6/json"),
     "packaging": ("Apache-2.0 AND BSD-2-Clause", "https://pypi.org/pypi/packaging/26.3/json"),
     "pyyaml": ("MIT", "https://pypi.org/pypi/pyyaml/6.0.3/json"),
+    "pygments": ("BSD-2-Clause", "https://pypi.org/pypi/pygments/2.21.0/json"),
     "regex": ("Apache-2.0", "https://pypi.org/pypi/regex/2026.7.19/json"),
-    "requests": ("Apache-2.0", "https://pypi.org/pypi/requests/2.34.2/json"),
+    "rich": ("MIT", "https://pypi.org/pypi/rich/15.0.0/json"),
     "safetensors": ("Apache-2.0", "https://pypi.org/pypi/safetensors/0.8.0/json"),
     "setuptools": ("MIT", "https://pypi.org/pypi/setuptools/84.0.0/json"),
+    "shellingham": ("ISC", "https://pypi.org/pypi/shellingham/1.5.4/json"),
     "sympy": ("BSD-3-Clause", "https://pypi.org/pypi/sympy/1.14.0/json"),
-    "tokenizers": ("Apache-2.0", "https://pypi.org/pypi/tokenizers/0.21.4/json"),
+    "tokenizers": ("Apache-2.0", "https://pypi.org/pypi/tokenizers/0.22.2/json"),
     "torch": ("BSD-3-Clause; official CPU index", "https://download.pytorch.org/whl/cpu"),
     "tqdm": ("MPL-2.0 AND MIT", "https://pypi.org/pypi/tqdm/4.70.0/json"),
-    "transformers": ("Apache-2.0", "https://pypi.org/pypi/transformers/4.52.1/json"),
+    "transformers": ("Apache-2.0", "https://pypi.org/pypi/transformers/5.10.4/json"),
+    "typer": ("MIT", "https://pypi.org/pypi/typer/0.27.2/json"),
     "typing-extensions": ("PSF-2.0; blocked by owner policy", "https://pypi.org/pypi/typing-extensions/4.16.0/json"),
-    "urllib3": ("MIT", "https://pypi.org/pypi/urllib3/2.7.0/json"),
     "vokra-csm-1b-reference": ("PROJECT_METADATA_ONLY", "tools/parity/csm_1b_reference/pyproject.toml"),
 }
 audit_rows = environment.get("license_audit_rows")
 expected_audit = [{**row, "license": audit_expectations[row["name"]][0], "license_source": audit_expectations[row["name"]][1]} for row in lock_rows if row["name"] in audit_expectations]
 if audit_rows != expected_audit or environment.get("license_audit_status") != "BLOCKED_OWNER_POLICY_AND_NATIVE_NOTICE_REVIEW" or environment.get("license_audit_rows_sha256") != hashlib.sha256(json.dumps(expected_audit, sort_keys=True, separators=(",", ":")).encode()).hexdigest():
     raise SystemExit("full locked dependency license audit is missing or tampered")
-if set(audit_expectations) != {row["name"] for row in lock_rows}:
+locked_third_party = {row["name"] for row in lock_rows if row["name"] != "vokra-csm-1b-reference"}
+audited_third_party = set(audit_expectations) - {"vokra-csm-1b-reference"}
+if audited_third_party != locked_third_party or "vokra-csm-1b-reference" not in audit_expectations:
     raise SystemExit("locked dependency license audit does not cover every package")
-if environment.get("packages", {}).get("numpy") != "2.2.6" or environment.get("packages", {}).get("torch_distribution") not in {"2.7.1", "2.7.1+cpu"} or environment.get("packages", {}).get("transformers") != "4.52.1":
+if environment.get("packages", {}).get("numpy") != "2.2.6" or environment.get("packages", {}).get("torch_distribution") not in {"2.7.1", "2.7.1+cpu"} or environment.get("packages", {}).get("transformers") != "5.10.4":
     raise SystemExit("dedicated reference package versions are not pinned")
 torch_runtime = environment.get("packages", {}).get("torch_runtime")
 if not isinstance(torch_runtime, str) or not re.fullmatch(r"2\.7\.1(?:\+[^+ ]+)?", torch_runtime):

@@ -97,17 +97,19 @@ if ref_manifest.get("model", {}).get("repository") != "sesame/csm-1b" or ref_man
 identity = ref_manifest.get("inspection_identity", {})
 if identity.get("source_repository") != "https://github.com/SesameAILabs/csm.git" or identity.get("source_revision") != "8f6d947a26f6301deec9696f9bfb28e9e2e0d7d5" or identity.get("transformers_commit") != "945727948c1143a10ac6f7d811aa58bb0d126b5b":
     raise SystemExit("official reference source/Transformers identity is incomplete")
-if identity.get("transformers_version") != "4.52.1" or ref_manifest.get("generation", {}).get("input_boundary") != "official processor.apply_chat_template(conversation, tokenize=True, return_dict=True)":
+if identity.get("transformers_version") != "4.52.1" or ref_manifest.get("generation", {}).get("input_boundary") != "official processor.apply_chat_template(conversation, tokenize=False) then official CSM processor(text=rendered_prompt, audio=caller_numpy, sampling_rate=24000, return_tensors=pt)":
     raise SystemExit("official reference Transformers/input boundary is not pinned")
 environment = ref_manifest.get("reference_environment", {})
 if not isinstance(environment, dict) or not re.fullmatch(r"[0-9a-f]{64}", environment.get("lock_sha256", "")) or environment.get("python") != "3.12":
     raise SystemExit("dedicated reference lock identity is missing")
-if environment.get("packages", {}).get("numpy") != "2.2.6" or environment.get("packages", {}).get("librosa") != "0.11.0" or environment.get("packages", {}).get("soundfile") != "0.13.1" or environment.get("packages", {}).get("torch_distribution") != "2.7.1" or environment.get("packages", {}).get("transformers") != "4.52.1":
+if environment.get("source_transformers_requirement") != "transformers==4.52.1" or environment.get("source_huggingface_hub_requirement") != "huggingface-hub>=0.30,<1.0" or environment.get("transformers_security_advisory") != "GHSA-xrqw-3rrv-vx5w" or environment.get("transformers_security_patched_minimum") != "5.10.0" or environment.get("isolated_transformers_pin") != "5.10.4" or environment.get("isolated_huggingface_hub_pin") != "1.5.0" or environment.get("transformers_compatibility_status") != "BLOCKED_UNVERIFIED_API_SMOKE":
+    raise SystemExit("reference Transformers security/provenance metadata is incomplete")
+if environment.get("packages", {}).get("numpy") != "2.2.6" or environment.get("packages", {}).get("torch_distribution") != "2.7.1" or environment.get("packages", {}).get("transformers") != "5.10.4":
     raise SystemExit("dedicated reference package versions are not pinned")
 torch_runtime = environment.get("packages", {}).get("torch_runtime")
 if not isinstance(torch_runtime, str) or not re.fullmatch(r"2\.7\.1(?:\+[^+ ]+)?", torch_runtime):
     raise SystemExit("runtime torch version is missing or incompatible with the locked distribution")
-if ref_manifest.get("generation", {}).get("processor_call") != {"method": "apply_chat_template", "kwargs": {"tokenize": True, "return_dict": True}, "audio_kwargs": "none"}:
+if ref_manifest.get("generation", {}).get("processor_call") != {"method": "apply_chat_template_then_official_processor", "chat_template_kwargs": {"tokenize": False}, "processor_kwargs": {"sampling_rate": 24000, "return_tensors": "pt"}, "audio_input": "authenticated caller-owned NumPy arrays", "audio_argument": "None when audio_placeholder_count=0; otherwise the ordered non-empty authenticated array list", "adapter": "pinned_upstream_ProcessorMixin_boundary; no_reference_mirror"}:
     raise SystemExit("official processor call arguments are not the fixed boundary")
 tokenizer = ref_manifest.get("tokenizer", {})
 if tokenizer.get("tokenizer_json_git_blob_sha1") != "8de5df033b78de76dbe15fdd8b934678b5017aaf" or not re.fullmatch(r"[0-9a-f]{64}", tokenizer.get("tokenizer_json_sha256", "")):

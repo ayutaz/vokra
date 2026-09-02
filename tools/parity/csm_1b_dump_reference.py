@@ -38,42 +38,57 @@ FORMAT = "vokra-csm-1b-official-reference-v1"
 # This is the reviewed lock identity for the adapted Python 3.12 reference
 # selection. It does not claim that Sesame or Transformers upstream require
 # these torch/numpy/audio versions.
-REFERENCE_LOCK_SHA256 = "32e3dffd8b21a6f39613ded211484dd95030e2889dd0c204f6e2b14ff72db50a"
+REFERENCE_LOCK_SHA256 = "62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
+SOURCE_TRANSFORMERS_REQUIREMENT = "transformers==4.52.1"
+SOURCE_HUGGINGFACE_HUB_REQUIREMENT = "huggingface-hub>=0.30,<1.0"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+ISOLATED_TRANSFORMERS_PIN = "5.10.4"
+ISOLATED_HUGGINGFACE_HUB_PIN = "1.5.0"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 REFERENCE_PACKAGE_SELECTION = {
-    "huggingface-hub": "0.36.2",
+    "huggingface-hub": ISOLATED_HUGGINGFACE_HUB_PIN,
     "numpy": "2.2.6",
     "torch": "2.7.1",
-    "transformers": "4.52.1",
+    "transformers": ISOLATED_TRANSFORMERS_PIN,
 }
 REFERENCE_TORCH_DISTRIBUTIONS = {"2.7.1", "2.7.1+cpu"}
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 DEPENDENCY_LICENSE_AUDIT = {
+    "annotated-doc": ("MIT", "https://pypi.org/pypi/annotated-doc/0.0.5/json"),
+    "anyio": ("MIT", "https://pypi.org/pypi/anyio/4.14.2/json"),
     "certifi": ("MPL-2.0", "https://pypi.org/pypi/certifi/2026.7.22/json"),
-    "charset-normalizer": ("MIT", "https://pypi.org/pypi/charset-normalizer/3.5.1/json"),
     "colorama": ("BSD-3-Clause", "https://pypi.org/pypi/colorama/0.4.6/json"),
     "filelock": ("MIT", "https://pypi.org/pypi/filelock/3.32.4/json"),
     "fsspec": ("BSD-3-Clause", "https://pypi.org/pypi/fsspec/2026.7.0/json"),
     "hf-xet": ("Apache-2.0", "https://pypi.org/pypi/hf-xet/1.6.0/json"),
-    "huggingface-hub": ("Apache-2.0", "https://pypi.org/pypi/huggingface-hub/0.36.2/json"),
+    "h11": ("MIT", "https://pypi.org/pypi/h11/0.16.0/json"),
+    "httpcore": ("BSD-3-Clause", "https://pypi.org/pypi/httpcore/1.0.9/json"),
+    "httpx": ("BSD-3-Clause", "https://pypi.org/pypi/httpx/0.28.1/json"),
+    "huggingface-hub": ("Apache-2.0", "https://pypi.org/pypi/huggingface-hub/1.5.0/json"),
     "idna": ("BSD-3-Clause", "https://pypi.org/pypi/idna/3.19/json"),
     "jinja2": ("BSD-3-Clause", "https://pypi.org/pypi/jinja2/3.1.6/json"),
     "markupsafe": ("BSD-3-Clause", "https://pypi.org/pypi/markupsafe/3.0.3/json"),
+    "markdown-it-py": ("MIT", "https://pypi.org/pypi/markdown-it-py/4.2.0/json"),
+    "mdurl": ("MIT", "https://pypi.org/pypi/mdurl/0.1.2/json"),
     "mpmath": ("BSD", "https://pypi.org/pypi/mpmath/1.3.0/json"),
     "networkx": ("BSD-3-Clause", "https://pypi.org/pypi/networkx/3.6.1/json"),
     "numpy": ("BSD-3-Clause + bundled runtime notices (GPL/LGPL)", "https://pypi.org/pypi/numpy/2.2.6/json"),
     "packaging": ("Apache-2.0 AND BSD-2-Clause", "https://pypi.org/pypi/packaging/26.3/json"),
     "pyyaml": ("MIT", "https://pypi.org/pypi/pyyaml/6.0.3/json"),
+    "pygments": ("BSD-2-Clause", "https://pypi.org/pypi/pygments/2.21.0/json"),
     "regex": ("Apache-2.0", "https://pypi.org/pypi/regex/2026.7.19/json"),
-    "requests": ("Apache-2.0", "https://pypi.org/pypi/requests/2.34.2/json"),
+    "rich": ("MIT", "https://pypi.org/pypi/rich/15.0.0/json"),
     "safetensors": ("Apache-2.0", "https://pypi.org/pypi/safetensors/0.8.0/json"),
     "setuptools": ("MIT", "https://pypi.org/pypi/setuptools/84.0.0/json"),
+    "shellingham": ("ISC", "https://pypi.org/pypi/shellingham/1.5.4/json"),
     "sympy": ("BSD-3-Clause", "https://pypi.org/pypi/sympy/1.14.0/json"),
-    "tokenizers": ("Apache-2.0", "https://pypi.org/pypi/tokenizers/0.21.4/json"),
+    "tokenizers": ("Apache-2.0", "https://pypi.org/pypi/tokenizers/0.22.2/json"),
     "torch": ("BSD-3-Clause; official CPU index", PYTORCH_CPU_INDEX),
     "tqdm": ("MPL-2.0 AND MIT", "https://pypi.org/pypi/tqdm/4.70.0/json"),
-    "transformers": ("Apache-2.0", "https://pypi.org/pypi/transformers/4.52.1/json"),
+    "transformers": ("Apache-2.0", "https://pypi.org/pypi/transformers/5.10.4/json"),
+    "typer": ("MIT", "https://pypi.org/pypi/typer/0.27.2/json"),
     "typing-extensions": ("PSF-2.0; blocked by owner policy", "https://pypi.org/pypi/typing-extensions/4.16.0/json"),
-    "urllib3": ("MIT", "https://pypi.org/pypi/urllib3/2.7.0/json"),
     "vokra-csm-1b-reference": ("PROJECT_METADATA_ONLY", "tools/parity/csm_1b_reference/pyproject.toml"),
 }
 MAX_TEXT = 16_384
@@ -97,6 +112,13 @@ DEPENDENCY_APPROVAL_STATUS = "LOCKED_ADAPTED_SELECTION_LICENSE_AUDIT_COMPLETE"
 CSM_REFERENCE_PROJECT_FIELDS = {
     "dependency_status",
     "transformers_compatibility",
+    "source_transformers_requirement",
+    "source_huggingface_hub_requirement",
+    "transformers_security_advisory",
+    "transformers_security_patched_minimum",
+    "isolated_transformers_pin",
+    "isolated_huggingface_hub_pin",
+    "transformers_compatibility_status",
     "lock_sha256",
     "selection_note",
     "license_status",
@@ -133,6 +155,19 @@ def validate_dependency_gate(project_path: Path, lock_path: Path) -> None:
         raise RuntimeError("CSM reference dependency license approval is not explicit")
     if reference.get("license_evidence_lock_sha256") != REFERENCE_LOCK_SHA256:
         raise RuntimeError("CSM reference license evidence is not bound to the reviewed lock")
+    expected_security = {
+        "source_transformers_requirement": SOURCE_TRANSFORMERS_REQUIREMENT,
+        "source_huggingface_hub_requirement": SOURCE_HUGGINGFACE_HUB_REQUIREMENT,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+    }
+    if any(reference.get(key) != value for key, value in expected_security.items()):
+        raise RuntimeError("CSM Transformers security metadata is not authenticated")
+    if reference.get("transformers_compatibility_status") == TRANSFORMERS_COMPATIBILITY_STATUS:
+        raise RuntimeError("CSM secure Transformers closure lacks authenticated API smoke")
 
 
 def locked_package_rows(lock_path: Path) -> tuple[list[dict[str, Any]], str]:
@@ -397,12 +432,24 @@ def self_test() -> int:
         with tempfile.TemporaryDirectory() as gate_directory:
             approved_path = Path(gate_directory) / "pyproject.toml"
             approved_path.write_text(approved, encoding="utf-8")
-            validate_dependency_gate(approved_path, lock_path)
+            try:
+                validate_dependency_gate(approved_path, lock_path)
+            except RuntimeError:
+                pass
+            else:
+                return 1
         assert CODEBOOK_SIZE == 2048
         assert LOGIT_VOCAB_SIZE == 2051
         assert MIMI_SAMPLE_RATE == 24_000 and MIMI_FRAME_HOP == 1_920
         assert "librosa" not in REFERENCE_PACKAGE_SELECTION
         assert "soundfile" not in REFERENCE_PACKAGE_SELECTION
+        assert REFERENCE_PACKAGE_SELECTION["transformers"] == ISOLATED_TRANSFORMERS_PIN
+        assert REFERENCE_PACKAGE_SELECTION["huggingface-hub"] == ISOLATED_HUGGINGFACE_HUB_PIN
+        assert SOURCE_TRANSFORMERS_REQUIREMENT == "transformers==4.52.1"
+        assert SOURCE_HUGGINGFACE_HUB_REQUIREMENT == "huggingface-hub>=0.30,<1.0"
+        assert TRANSFORMERS_SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
+        assert TRANSFORMERS_SECURITY_PATCHED_MINIMUM == "5.10.0"
+        assert TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE"
         assert PYTORCH_CPU_INDEX == "https://download.pytorch.org/whl/cpu"
         assert processor_audio_argument([]) is None
         sentinel_audio = [object()]
@@ -411,6 +458,10 @@ def self_test() -> int:
         assert rows and rows_hash == hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         license_rows = dependency_license_rows(rows)
         assert {row["name"] for row in license_rows} == {row["name"] for row in rows}
+        locked_third_party = {row["name"] for row in rows if row["name"] != "vokra-csm-1b-reference"}
+        audited_third_party = set(DEPENDENCY_LICENSE_AUDIT) - {"vokra-csm-1b-reference"}
+        assert audited_third_party == locked_third_party
+        assert "vokra-csm-1b-reference" in DEPENDENCY_LICENSE_AUDIT
         with tempfile.NamedTemporaryFile("w", suffix=".lock", encoding="utf-8") as lock_file:
             lock_file.write('version = 1\nrevision = 3\n[[package]]\nname = "x"\nversion = "1"\nsource = { registry = "https://pypi.org/simple" }\n[[package]]\nname = "x"\nversion = "1"\nsource = { registry = "https://pypi.org/simple" }\n')
             lock_file.flush()
@@ -955,6 +1006,13 @@ def run(args: argparse.Namespace) -> int:
             "python": "3.12",
             "lock_sha256": REFERENCE_LOCK_SHA256,
             "selection_status": "REVIEWED_ADAPTED_REFERENCE_ENVIRONMENT_NOT_UPSTREAM_REQUIREMENTS",
+            "source_transformers_requirement": SOURCE_TRANSFORMERS_REQUIREMENT,
+            "source_huggingface_hub_requirement": SOURCE_HUGGINGFACE_HUB_REQUIREMENT,
+            "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+            "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+            "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+            "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+            "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
             "torch_index": PYTORCH_CPU_INDEX,
             "packages": {
                 "numpy": np.__version__,
@@ -963,7 +1021,7 @@ def run(args: argparse.Namespace) -> int:
                 # preserve that independently instead of conflating them.
                 "torch_distribution": package_version("torch"),
                 "torch_runtime": torch.__version__,
-                "transformers": transformers_module.__version__,
+                "transformers": package_version("transformers"),
             },
             "locked_package_rows": package_rows,
             "locked_package_rows_sha256": package_rows_sha256,

@@ -24,7 +24,10 @@ the native CSM+Mimi composite binder and CPU parity are accepted.
    broad parity lock or `uv run --with`.
 2. Supply the resulting inspection bundle and an authenticated packet to
    `scripts/publish/vast-ai/run-csm-1b-validation.sh`. The worker invokes
-   `csm_1b_dump_reference.py` through the dedicated Transformers-4.52.1 lock:
+   `csm_1b_dump_reference.py` through the dedicated secure Transformers-5.10.4
+   environment. The authenticated upstream CSM source checkout remains at
+   Transformers-4.52.1 for provenance, so the reference route stays blocked
+   until an API smoke test proves compatibility with the isolated pin:
 
    The packet boundary is an exact conversation: `messages` contains the
    source-shaped role/content entries; each typed `audio` content item embeds

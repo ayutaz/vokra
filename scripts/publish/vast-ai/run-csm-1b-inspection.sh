@@ -13,7 +13,7 @@ PUBLIC_REPOSITORY="vokra/csm-1b"
 PUBLIC_REVISION="81613fc840fa995f4c8f1c48749fd731ed6424b8"
 INSPECTOR="tools/parity/csm_1b_inspect.py"
 REFERENCE_PROJECT="tools/parity/csm_1b_reference"
-REFERENCE_LOCK_SHA256="32e3dffd8b21a6f39613ded211484dd95030e2889dd0c204f6e2b14ff72db50a"
+REFERENCE_LOCK_SHA256="62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
 UV_CMD=(uv run --no-sync --frozen --project "$REFERENCE_PROJECT" --python 3.12 python)
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_SHM_KIB=$((40 * 1024 * 1024))
@@ -26,7 +26,7 @@ self_test() {
   py=python
   [[ -f "$root/$INSPECTOR" ]] || die "inspector missing"
   [[ -f "$root/$REFERENCE_PROJECT/pyproject.toml" ]] || die "dedicated reference project missing"
-  for needle in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_COMMIT" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$INSPECTOR" "CSM_PUBLIC_CONTRACT" "public/model.gguf" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "INSPECTION_ONLY" "NO_UPLOAD" "collection_status" "requested_revision" "snapshot_download" "list_repo_tree" "RepoFolder" "get_hf_file_metadata" "hf_hub_url" "ckpt.pt" "transformers.safetensors.index.json" "FULL_CSM_TRANSFORMERS_COMPOSITE_ROLES_PRESENT" "codec_model." "tokenizer.json" "caller-owned NumPy" "librosa/soxr" "pytorch-cpu" "uv.lock" "$REFERENCE_LOCK_SHA256" "BLOCKED_LICENSE_METADATA_REVIEW" "REVIEWED_LICENSE_AUDIT_COMPLETE" "--no-sync" "uv sync --project" "NOT_RUN_OFFICIAL_ONLY"; do
+  for needle in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_COMMIT" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$INSPECTOR" "CSM_PUBLIC_CONTRACT" "public/model.gguf" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "INSPECTION_ONLY" "NO_UPLOAD" "collection_status" "requested_revision" "snapshot_download" "list_repo_tree" "RepoFolder" "get_hf_file_metadata" "hf_hub_url" "ckpt.pt" "transformers.safetensors.index.json" "FULL_CSM_TRANSFORMERS_COMPOSITE_ROLES_PRESENT" "codec_model." "tokenizer.json" "caller-owned NumPy" "librosa/soxr" "pytorch-cpu" "uv.lock" "$REFERENCE_LOCK_SHA256" "BLOCKED_LICENSE_METADATA_REVIEW" "REVIEWED_LICENSE_AUDIT_COMPLETE" "source_transformers_requirement" "source_huggingface_hub_requirement" "isolated_transformers_pin" "isolated_huggingface_hub_pin" "GHSA-xrqw-3rrv-vx5w" "BLOCKED_UNVERIFIED_API_SMOKE" "--no-sync" "uv sync --project" "NOT_RUN_OFFICIAL_ONLY"; do
     if ! grep -Fq -- "$needle" "$self" && ! grep -Fq -- "$needle" "$root/$INSPECTOR"; then echo "self-test FAIL: missing $needle" >&2; fail=1; fi
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|vokra-cli[[:space:]]+convert|cargo[[:space:]]+(run|test|check))([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: mutation/conversion/Cargo test found" >&2; fail=1; fi
