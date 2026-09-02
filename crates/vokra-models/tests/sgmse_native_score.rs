@@ -113,7 +113,10 @@ fn assert_exact_native_output(native: &Path) {
     names.sort();
     assert_eq!(
         names,
-        vec!["score_imag.f32".into(), "score_real.f32".into()],
+        vec![
+            std::ffi::OsString::from("score_imag.f32"),
+            std::ffi::OsString::from("score_real.f32"),
+        ],
         "native output must contain exactly the two score planes"
     );
     for path in entries {
