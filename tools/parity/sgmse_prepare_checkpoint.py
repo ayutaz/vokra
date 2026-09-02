@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Inspect the official SGMSE-VoiceBank checkpoint without creating weights.
+"""Inspect or prepare the official SGMSE-VoiceBank checkpoint.
 
 The HF checkpoint is an untrusted pickle container.  Only
 ``torch.load(weights_only=True)`` is attempted; SpeechBrain custom classes and
 any unsafe pickle fallback are intentionally forbidden.  This sidecar writes
-an evidence manifest, never a safetensors or GGUF candidate.
+an evidence manifest.  The separate ``--prepare`` path is VAST-only in the
+caller and emits a deterministic safetensors file plus an authenticated
+sidecar from the reviewed typed contract fixture.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -18,6 +21,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -70,9 +74,16 @@ TENSOR_MAPPING_BLOCKER = "BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN"
 SOURCE_MAPPING_REVIEW_FORMAT = "vokra-sgmse-source-mapping-review-v1"
 TYPED_TENSOR_CONTRACT_FORMAT = "vokra-sgmse-typed-role-manifest-v2"
 TYPED_CANDIDATE_STATUS = "INSPECTION_CANDIDATE"
-# Filled only by a later commit after VAST reviews the real checkpoint.  The
-# inspector must not let a caller self-authorize rows and a matching digest.
-REVIEWED_TENSOR_MANIFEST_SHA256: str | None = None
+PREPARED_FORMAT = "vokra-sgmse-voicebank-prepared-v1"
+TYPED_CONTRACT_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "sgmse_voicebank_typed_contract_v1.json"
+)
+# Compiled from the independently reviewed VAST reference manifest.  A caller
+# supplied contract must match this authority after its rows are re-derived.
+REVIEWED_TENSOR_MANIFEST_SHA256 = "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c"
+CONTRACT_MAX_BASE64_BYTES = 128 * 1024
+CONTRACT_MAX_COMPRESSED_BYTES = 96 * 1024
+CONTRACT_MAX_DECOMPRESSED_BYTES = 512 * 1024
 TYPED_FIXED_ROLES = {
     "fourier_frequencies",
     "sigma_first_projection",
@@ -189,6 +200,240 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _reject_symlink_ancestry(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    for ancestor in (absolute, *absolute.parents):
+        if ancestor.is_symlink():
+            raise ValueError(f"path has symlink ancestry: {path}")
+
+
+def _require_absent_regular(path: Path, label: str) -> None:
+    _reject_symlink_ancestry(path)
+    if path.exists() or path.is_symlink():
+        raise ValueError(f"{label} must be absent: {path}")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _decode_contract_rows(encoded_rows: Any) -> Any:
+    if not isinstance(encoded_rows, str) or len(encoded_rows) > CONTRACT_MAX_BASE64_BYTES:
+        raise ValueError("SGMSE contract base64 payload exceeds the fixed limit")
+    try:
+        compressed = base64.b64decode(encoded_rows, validate=True)
+    except (ValueError, UnicodeError) as error:
+        raise ValueError(f"SGMSE contract base64 payload is invalid: {error}") from error
+    if len(compressed) > CONTRACT_MAX_COMPRESSED_BYTES:
+        raise ValueError("SGMSE contract compressed payload exceeds the fixed limit")
+    decompressor = zlib.decompressobj()
+    try:
+        decoded = decompressor.decompress(compressed, CONTRACT_MAX_DECOMPRESSED_BYTES + 1)
+        if decompressor.unconsumed_tail:
+            raise ValueError("SGMSE contract decompressed payload exceeds the fixed limit")
+        tail = decompressor.flush()
+        if len(decoded) + len(tail) > CONTRACT_MAX_DECOMPRESSED_BYTES:
+            raise ValueError("SGMSE contract decompressed payload exceeds the fixed limit")
+        decoded += tail
+    except zlib.error as error:
+        raise ValueError(f"SGMSE contract compressed payload is invalid: {error}") from error
+    if len(decoded) > CONTRACT_MAX_DECOMPRESSED_BYTES:
+        raise ValueError("SGMSE contract decompressed payload exceeds the fixed limit")
+    if not decompressor.eof or decompressor.unused_data or decompressor.unconsumed_tail:
+        raise ValueError("SGMSE contract compressed payload is incomplete or has trailing data")
+    try:
+        return json.loads(decoded, object_pairs_hook=_reject_duplicate_json_keys)
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"SGMSE contract rows JSON is invalid: {error}") from error
+
+
+def _validate_fixture_contract(contract: Any) -> tuple[list[dict[str, Any]], str]:
+    """Validate the committed contract without trusting its digest declaration."""
+    if not isinstance(contract, dict) or set(contract) != {
+        "format", "repository", "model_revision", "source_repository",
+        "source_revision", "checkpoint", "container_path", "tensor_count",
+        "typed_manifest_sha256", "rows_zlib_base64",
+    }:
+        raise ValueError("SGMSE contract fixture has unknown or missing keys")
+    if contract["format"] != "vokra-sgmse-typed-contract-v1":
+        raise ValueError("SGMSE contract fixture format mismatch")
+    if contract["repository"] != MODEL_REPOSITORY or contract["model_revision"] != MODEL_REVISION:
+        raise ValueError("SGMSE contract model identity mismatch")
+    if contract["source_repository"] != SOURCE_REPOSITORY or contract["source_revision"] != SOURCE_REVISION:
+        raise ValueError("SGMSE contract source identity mismatch")
+    checkpoint = contract["checkpoint"]
+    if not isinstance(checkpoint, dict) or set(checkpoint) != {"filename", "size", "sha256"}:
+        raise ValueError("SGMSE contract checkpoint schema mismatch")
+    if checkpoint != {
+        "filename": CHECKPOINT_NAME, "size": CHECKPOINT_SIZE, "sha256": CHECKPOINT_SHA256
+    }:
+        raise ValueError("SGMSE contract checkpoint identity mismatch")
+    if contract["container_path"] != "<root>" or contract["tensor_count"] != 647:
+        raise ValueError("SGMSE contract tensor-container metadata mismatch")
+    encoded_rows = contract["rows_zlib_base64"]
+    if not isinstance(encoded_rows, str):
+        raise ValueError("SGMSE contract rows encoding is not a string")
+    rows = _decode_contract_rows(encoded_rows)
+    if not isinstance(rows, list):
+        raise ValueError("SGMSE contract rows are not a list")
+    roles = [row.get("role") for row in rows if isinstance(row, dict)]
+    validate_typed_manifest_rows(rows, roles)
+    if len(rows) != contract["tensor_count"]:
+        raise ValueError("SGMSE contract tensor count mismatch")
+    digest = typed_manifest_sha256(rows, roles)
+    declared = contract["typed_manifest_sha256"]
+    if (
+        not isinstance(declared, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", declared)
+        or declared != digest
+        or declared != REVIEWED_TENSOR_MANIFEST_SHA256
+    ):
+        raise ValueError("SGMSE contract typed manifest digest mismatch")
+    return rows, digest
+
+
+def load_contract(path: Path = TYPED_CONTRACT_FIXTURE) -> tuple[list[dict[str, Any]], str]:
+    _reject_symlink_ancestry(path)
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"SGMSE contract fixture is missing: {path}")
+    try:
+        contract = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"SGMSE contract fixture cannot be read: {error}") from error
+    return _validate_fixture_contract(contract)
+
+
+def _validate_prepared_sidecar(sidecar: Any, rows: list[dict[str, Any]], digest: str) -> None:
+    expected_keys = {
+        "format", "repository", "model_revision", "source_repository", "source_revision",
+        "checkpoint_filename", "checkpoint_size", "checkpoint_sha256", "prepared_sha256",
+        "tensor_count", "typed_manifest_sha256", "tensor_rows",
+    }
+    if not isinstance(sidecar, dict) or set(sidecar) != expected_keys:
+        raise ValueError("SGMSE prepared sidecar has unknown or missing keys")
+    if sidecar["format"] != PREPARED_FORMAT or sidecar["repository"] != MODEL_REPOSITORY:
+        raise ValueError("SGMSE prepared sidecar format/model mismatch")
+    if sidecar["model_revision"] != MODEL_REVISION or sidecar["source_repository"] != SOURCE_REPOSITORY or sidecar["source_revision"] != SOURCE_REVISION:
+        raise ValueError("SGMSE prepared sidecar revision mismatch")
+    if sidecar["checkpoint_filename"] != CHECKPOINT_NAME or sidecar["checkpoint_size"] != CHECKPOINT_SIZE or sidecar["checkpoint_sha256"] != CHECKPOINT_SHA256:
+        raise ValueError("SGMSE prepared sidecar checkpoint identity mismatch")
+    if sidecar["tensor_count"] != len(rows) or sidecar["typed_manifest_sha256"] != digest or sidecar["tensor_rows"] != rows:
+        raise ValueError("SGMSE prepared sidecar tensor contract mismatch")
+    if not isinstance(sidecar["prepared_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", sidecar["prepared_sha256"]):
+        raise ValueError("SGMSE prepared sidecar prepared SHA-256 is malformed")
+
+
+def prepare_checkpoint(
+    ckpt: Path,
+    output: Path,
+    sidecar: Path,
+    contract_path: Path,
+) -> int:
+    """Prepare the one reviewed checkpoint; intended for the VAST wrapper."""
+    _reject_symlink_ancestry(ckpt)
+    if ckpt.name != CHECKPOINT_NAME or not ckpt.is_file() or ckpt.is_symlink():
+        raise ValueError("fixed SGMSE checkpoint must be a regular score_model_ema.ckpt")
+    if ckpt.stat().st_size != CHECKPOINT_SIZE or sha256(ckpt) != CHECKPOINT_SHA256:
+        raise ValueError("fixed checkpoint size/SHA-256 mismatch")
+    _require_absent_regular(output, "prepared output")
+    _require_absent_regular(sidecar, "sidecar")
+    if output == sidecar or output.resolve() == sidecar.resolve() or output.resolve() == ckpt.resolve() or sidecar.resolve() == ckpt.resolve():
+        raise ValueError("checkpoint and outputs must be distinct")
+    if output.parent != sidecar.parent:
+        raise ValueError("prepared output and sidecar must share a directory")
+    rows, digest = load_contract(contract_path)
+    import torch
+    from safetensors.torch import save_file
+
+    raw = torch.load(str(ckpt), map_location="cpu", weights_only=True)
+    candidates = _tensor_map_candidates(raw)
+    if len(candidates) != 1 or candidates[0][0] != "<root>":
+        raise ValueError("checkpoint tensor map route is not the reviewed root map")
+    state_dict = candidates[0][1]
+    expected_names = {row["name"] for row in rows}
+    if set(state_dict) != expected_names or len(state_dict) != len(expected_names):
+        raise ValueError("checkpoint tensor names do not exactly match the reviewed contract")
+    prepared: dict[str, torch.Tensor] = {}
+    for row in rows:
+        tensor = state_dict[row["name"]]
+        expected_dtype = row["dtype"].removeprefix("torch.")
+        if str(tensor.dtype) != row["dtype"] or list(tensor.shape) != row["shape"]:
+            raise ValueError(f"tensor {row['name']!r} dtype/shape mismatch")
+        if not bool(torch.isfinite(tensor).all().item()):
+            raise ValueError(f"tensor {row['name']!r} contains non-finite values")
+        if expected_dtype not in {"float32", "float16", "bfloat16"}:
+            raise ValueError(f"tensor {row['name']!r} has unsupported dtype")
+        prepared[row["name"]] = tensor.detach().cpu().contiguous()
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary: list[Path] = []
+    published: list[Path] = []
+    try:
+        with tempfile.NamedTemporaryFile(dir=output.parent, prefix=f".{output.name}.", suffix=".tmp", delete=False) as handle:
+            temporary_output = Path(handle.name)
+        temporary.append(temporary_output)
+        save_file(prepared, str(temporary_output), metadata={"vokra.sgmse.typed_manifest_sha256": digest})
+        with temporary_output.open("rb") as handle:
+            os.fsync(handle.fileno())
+        prepared_digest = sha256(temporary_output)
+        sidecar_payload = {
+            "format": PREPARED_FORMAT,
+            "repository": MODEL_REPOSITORY,
+            "model_revision": MODEL_REVISION,
+            "source_repository": SOURCE_REPOSITORY,
+            "source_revision": SOURCE_REVISION,
+            "checkpoint_filename": CHECKPOINT_NAME,
+            "checkpoint_size": CHECKPOINT_SIZE,
+            "checkpoint_sha256": CHECKPOINT_SHA256,
+            "prepared_sha256": prepared_digest,
+            "tensor_count": len(rows),
+            "typed_manifest_sha256": digest,
+            "tensor_rows": rows,
+        }
+        _validate_prepared_sidecar(sidecar_payload, rows, digest)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=sidecar.parent, prefix=f".{sidecar.name}.", suffix=".tmp", delete=False) as handle:
+            temporary_sidecar = Path(handle.name)
+            temporary.append(temporary_sidecar)
+            handle.write(json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        for temporary_path, destination in ((temporary_output, output), (temporary_sidecar, sidecar)):
+            try:
+                os.link(temporary_path, destination)
+            except FileExistsError as error:
+                raise ValueError(f"output appeared concurrently: {destination}") from error
+            published.append(destination)
+        directory_fd = os.open(output.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        for path in published:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        for path in temporary:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    print(f"prepared {len(rows)} tensors: {output}")
+    print(f"prepared_sha256={prepared_digest}")
+    return 0
 
 
 def write_manifest_no_replace(path: Path, payload: dict[str, Any]) -> None:
@@ -1041,6 +1286,94 @@ def self_test() -> None:
     assert SPEECHBRAIN_REVISION == "2b3f4f44351fd08a627c4ab307de5c420351bc19"
     assert SPEECHBRAIN_LICENSE_SHA256 == "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     assert SPEECHBRAIN_VERSION == "1.0.3"
+    contract_rows, contract_digest = load_contract()
+    assert len(contract_rows) == 647
+    assert contract_digest == REVIEWED_TENSOR_MANIFEST_SHA256
+    fixture_contract = json.loads(
+        TYPED_CONTRACT_FIXTURE.read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_json_keys,
+    )
+    tampered_rows = [dict(row) for row in contract_rows]
+    tampered_rows[0]["name"] = "dnn.all_modules.0.W.tampered"
+    tampered_digest = typed_manifest_sha256(tampered_rows, [row["role"] for row in tampered_rows])
+    tampered_contract = dict(fixture_contract)
+    tampered_contract["rows_zlib_base64"] = base64.b64encode(
+        zlib.compress(json.dumps(tampered_rows, sort_keys=True, separators=(",", ":")).encode(), 9)
+    ).decode()
+    tampered_contract["typed_manifest_sha256"] = tampered_digest
+    try:
+        _validate_fixture_contract(tampered_contract)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("different but internally consistent contract digest was accepted")
+    with tempfile.TemporaryDirectory() as duplicate_directory:
+        duplicate_fixture = Path(duplicate_directory) / "duplicate.json"
+        duplicate_fixture.write_text(
+            '{"format":"vokra-sgmse-typed-contract-v1","format":"tampered"}',
+            encoding="utf-8",
+        )
+        try:
+            load_contract(duplicate_fixture)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("duplicate outer JSON key was accepted")
+    duplicate_rows = base64.b64encode(
+        zlib.compress(b'[{"name":"x","name":"y"}]', 9)
+    ).decode()
+    try:
+        _decode_contract_rows(duplicate_rows)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate decompressed JSON key was accepted")
+    trailing = base64.b64encode(zlib.compress(b"[]", 9) + b"trailing").decode()
+    try:
+        _decode_contract_rows(trailing)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("trailing compressed data was accepted")
+    try:
+        _decode_contract_rows("A" * (CONTRACT_MAX_BASE64_BYTES + 1))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("oversize base64 payload was accepted")
+    oversized = base64.b64encode(
+        zlib.compress(b"x" * (CONTRACT_MAX_DECOMPRESSED_BYTES + 1), 9)
+    ).decode()
+    try:
+        _decode_contract_rows(oversized)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("oversize decompressed payload was accepted")
+    valid_sidecar = {
+        "format": PREPARED_FORMAT,
+        "repository": MODEL_REPOSITORY,
+        "model_revision": MODEL_REVISION,
+        "source_repository": SOURCE_REPOSITORY,
+        "source_revision": SOURCE_REVISION,
+        "checkpoint_filename": CHECKPOINT_NAME,
+        "checkpoint_size": CHECKPOINT_SIZE,
+        "checkpoint_sha256": CHECKPOINT_SHA256,
+        "prepared_sha256": "0" * 64,
+        "tensor_count": len(contract_rows),
+        "typed_manifest_sha256": contract_digest,
+        "tensor_rows": contract_rows,
+    }
+    _validate_prepared_sidecar(valid_sidecar, contract_rows, contract_digest)
+    for key, value in (("typed_manifest_sha256", "1" * 64), ("tensor_count", 646), ("unexpected", True)):
+        tampered = dict(valid_sidecar)
+        tampered[key] = value
+        try:
+            _validate_prepared_sidecar(tampered, contract_rows, contract_digest)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"tampered prepared sidecar field was accepted: {key}")
     assert EXECUTABLE_SPEECHBRAIN_FILES[0].endswith("sgmse_plus.py")
     assert EXECUTABLE_SPEECHBRAIN_FILES[1].endswith("enhancement.py")
     assert "class SGMSEEnhancement" in EXECUTABLE_SPEECHBRAIN_MARKERS[EXECUTABLE_SPEECHBRAIN_FILES[1]]
@@ -1262,6 +1595,7 @@ def self_test() -> None:
         assert "AUTHENTICATED_MANIFEST_REQUIRED" in str(error)
     else:
         raise AssertionError("production SGMSE typed binder opened without reviewed digest")
+    original_reviewed_digest = REVIEWED_TENSOR_MANIFEST_SHA256
     globals()["REVIEWED_TENSOR_MANIFEST_SHA256"] = "0" * 64
     try:
         loaded_typed = {
@@ -1283,7 +1617,7 @@ def self_test() -> None:
     else:
         raise AssertionError("non-matching compiled SGMSE digest was accepted")
     finally:
-        globals()["REVIEWED_TENSOR_MANIFEST_SHA256"] = None
+        globals()["REVIEWED_TENSOR_MANIFEST_SHA256"] = original_reviewed_digest
     for tampered in (
         typed_rows[:1],
         typed_rows + [dict(typed_rows[1], name="source.extra")],
@@ -1305,20 +1639,32 @@ def self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--ckpt", type=Path)
     parser.add_argument("--hyperparams", type=Path)
     parser.add_argument("--companion-dir", type=Path)
     parser.add_argument("--algorithm-source-dir", type=Path)
     parser.add_argument("--speechbrain-source-dir", type=Path)
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--sidecar", type=Path)
+    parser.add_argument("--contract", type=Path, default=TYPED_CONTRACT_FIXTURE)
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.ckpt, args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest)):
+        if args.prepare or any(value is not None for value in (args.ckpt, args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest, args.output, args.sidecar)) or args.contract != TYPED_CONTRACT_FIXTURE:
             parser.error("--self-test accepts no other arguments")
         self_test()
         print("sgmse_prepare_checkpoint self-test: OK")
         return 0
-    if None in (args.ckpt, args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest):
+    if args.prepare:
+        if args.ckpt is None or args.output is None or args.sidecar is None or any(value is not None for value in (args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest)):
+            parser.error("--prepare requires --ckpt, --output, and --sidecar only")
+        try:
+            return prepare_checkpoint(args.ckpt, args.output, args.sidecar, args.contract)
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f"SGMSE preparation blocked: {error}", file=sys.stderr)
+            return 2
+    if None in (args.ckpt, args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest) or args.output is not None or args.sidecar is not None:
         parser.error("normal runs require --ckpt, --hyperparams, --companion-dir, --algorithm-source-dir, --speechbrain-source-dir, and --manifest")
     return inspect(
         args.ckpt,
