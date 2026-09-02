@@ -2278,7 +2278,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "sgmse_voicebank",
         module: "vokra_models::sgmse",
-        entry: "SgmseModel::from_gguf → CPU score graph staged; parity, Metal FIR, enhancement pending",
+        entry: "SgmseModel::from_gguf → native CPU score parity PASS; CPU enhancement parity pending; Metal FIR/score staged; Apple parity pending",
         probe: Some(|g: &GgufFile| vokra_models::sgmse::SgmseModel::from_gguf(g).map(|_| ())),
     },
     BoundArch {
@@ -3869,7 +3869,7 @@ mod tests {
             "sgmse_voicebank",
             "sgmse-voicebank-arch",
             "vokra_models::sgmse",
-            "CPU score graph staged; parity, Metal FIR, enhancement pending",
+            "native CPU score parity PASS; CPU enhancement parity pending; Metal FIR/score staged; Apple parity pending",
         );
         assert!(
             err.contains("typed tensor manifest metadata is missing"),
