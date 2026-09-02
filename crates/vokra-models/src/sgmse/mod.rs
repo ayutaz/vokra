@@ -6,7 +6,8 @@
 //! source NCSN++ v2 graph plan, and
 //! is sampled with the OUVE predictor/corrector seam. Checkpoint-specific
 //! tensor names and shapes are deliberately not guessed: the public binder
-//! remains closed until VAST produces the complete safe-loaded manifest.
+//! accepts only the compiled, VAST-reviewed manifest contract below; graph
+//! assembly and inference remain unavailable until a later implementation.
 //!
 //! Primary source pin:
 //! <https://github.com/sp-uhh/sgmse/tree/1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e>
@@ -41,21 +42,19 @@ pub const KEY_TENSOR_MANIFEST: &str = "vokra.sgmse.tensor_manifest";
 /// SHA-256 identity of the fixed VoiceBank checkpoint inspected by the worker.
 pub const CHECKPOINT_SHA256: &str =
     "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3";
-/// The release digest is deliberately uninstantiated until VAST reviews the
-/// real safe-loaded checkpoint and role assignment.  This prevents a caller
-/// from self-authorizing an arbitrary GGUF by supplying its own digest.
-pub const REVIEWED_TENSOR_MANIFEST_SHA256: Option<[u8; 32]> = None;
-/// The reviewed role set is held out with the digest so neither names nor
-/// required assignment targets can be supplied by an artifact caller.
-pub const REVIEWED_TENSOR_ROLES: Option<&'static [SgmseTensorRole]> = None;
+/// The release digest is compiled from the VAST-reviewed real checkpoint and
+/// role assignment. It is never read from mutable GGUF metadata.
+pub const REVIEWED_TENSOR_MANIFEST_SHA256: Option<[u8; 32]> = Some([
+    0x40, 0x96, 0x90, 0xf7, 0x0b, 0x53, 0x47, 0x71, 0x05, 0x5d, 0xc4, 0xf7, 0x40, 0xcc, 0x66, 0xbd,
+    0xb4, 0xd1, 0xb2, 0x5d, 0xba, 0x5e, 0x22, 0xfd, 0x06, 0x61, 0x09, 0xad, 0xce, 0x77, 0x27, 0x8c,
+]);
 /// Status required before a native checkpoint can be opened.
 pub const AUTHENTICATED_MANIFEST: &str = "AUTHENTICATED";
-/// The typed manifest/binder boundary is implemented, but the native graph is
-/// not runnable until checkpoint-specific weights, GroupNorm and OUVE seams
-/// are wired through the selected Compute backend; full residual/FIR/
-/// resampling score graph, real parity, and device-resident execution remain
+/// The typed manifest/binder boundary is implemented: checkpoint tensors can
+/// now be authenticated and retained, but graph
+/// assembly, score execution, device dispatch, and numerical parity remain
 /// incomplete.
-pub const SGMSE_STATUS: &str = "SOURCE_PLAN_ONLY";
+pub const SGMSE_STATUS: &str = "AUTHENTICATED_WEIGHTS_GRAPH_ASSEMBLY_PENDING";
 
 /// The only learned parameter roles accepted by the SGMSE binder.  Tensor
 /// names remain checkpoint-specific data from the authenticated manifest; no
@@ -580,21 +579,19 @@ pub struct SgmseGraphWeights {
 impl SgmseGraphWeights {
     /// Binds every declared tensor and rejects any missing/extra descriptor.
     pub fn bind_authenticated(file: &GgufFile) -> Result<Self> {
-        let (Some(expected_digest), Some(reviewed_roles)) =
-            (REVIEWED_TENSOR_MANIFEST_SHA256, REVIEWED_TENSOR_ROLES)
-        else {
+        let Some(expected_digest) = REVIEWED_TENSOR_MANIFEST_SHA256 else {
             return Err(VokraError::ModelLoad(
-                "sgmse: AUTHENTICATED_MANIFEST_REQUIRED until VAST-reviewed tensor digest is compiled in"
-                    .to_owned(),
+                "sgmse: compiled reviewed tensor manifest digest is unavailable".to_owned(),
             ));
         };
         let plan = NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default())?;
+        let required_roles = compiled_required_roles(&plan)?;
         let manifest = SgmseTensorManifest {
             source_revision: SOURCE_REVISION.to_owned(),
             checkpoint_sha256: CHECKPOINT_SHA256.to_owned(),
             graph_config: plan.config.clone(),
             sampler_config: SgmseConfig::voicebank(),
-            required_roles: reviewed_roles.to_vec(),
+            required_roles,
             entries: SgmseTensorManifest::from_gguf_metadata(file)?,
         };
         manifest.validate(&plan, expected_digest)?;
@@ -1067,6 +1064,252 @@ impl NcsnppV2GraphPlan {
         });
         Ok(Self { config, stages })
     }
+}
+
+const COMPILED_TENSOR_ROLE_COUNT: usize = 647;
+
+fn push_role(
+    roles: &mut Vec<SgmseTensorRole>,
+    stage_index: usize,
+    kind: NcsnppStageKind,
+    block: usize,
+    module: SgmseTensorModule,
+    slot: SgmseTensorSlot,
+) {
+    roles.push(SgmseTensorRole::NcsnppStage {
+        stage_index,
+        kind,
+        block,
+        module,
+        slot,
+    });
+}
+
+fn push_weight_bias(
+    roles: &mut Vec<SgmseTensorRole>,
+    stage_index: usize,
+    kind: NcsnppStageKind,
+    block: usize,
+    module: SgmseTensorModule,
+) {
+    push_role(
+        roles,
+        stage_index,
+        kind,
+        block,
+        module,
+        SgmseTensorSlot::Weight,
+    );
+    push_role(
+        roles,
+        stage_index,
+        kind,
+        block,
+        module,
+        SgmseTensorSlot::Bias,
+    );
+}
+
+fn push_norm(
+    roles: &mut Vec<SgmseTensorRole>,
+    stage_index: usize,
+    kind: NcsnppStageKind,
+    block: usize,
+    module: SgmseTensorModule,
+) {
+    push_role(
+        roles,
+        stage_index,
+        kind,
+        block,
+        module,
+        SgmseTensorSlot::NormGamma,
+    );
+    push_role(
+        roles,
+        stage_index,
+        kind,
+        block,
+        module,
+        SgmseTensorSlot::NormBeta,
+    );
+}
+
+fn push_residual_roles(
+    roles: &mut Vec<SgmseTensorRole>,
+    stage_index: usize,
+    kind: NcsnppStageKind,
+    block: usize,
+    with_skip: bool,
+) {
+    push_norm(
+        roles,
+        stage_index,
+        kind,
+        block,
+        SgmseTensorModule::ResidualNorm1,
+    );
+    push_weight_bias(
+        roles,
+        stage_index,
+        kind,
+        block,
+        SgmseTensorModule::ResidualConv1,
+    );
+    push_weight_bias(
+        roles,
+        stage_index,
+        kind,
+        block,
+        SgmseTensorModule::ResidualTimeEmbedding,
+    );
+    push_norm(
+        roles,
+        stage_index,
+        kind,
+        block,
+        SgmseTensorModule::ResidualNorm2,
+    );
+    push_weight_bias(
+        roles,
+        stage_index,
+        kind,
+        block,
+        SgmseTensorModule::ResidualConv2,
+    );
+    if with_skip {
+        push_weight_bias(
+            roles,
+            stage_index,
+            kind,
+            block,
+            SgmseTensorModule::ResidualSkip,
+        );
+    }
+}
+
+/// Derives the complete source role set from the immutable graph topology.
+/// This never reads GGUF rows; the caller compares the result against the
+/// independently authenticated manifest after parsing it.
+fn compiled_required_roles(plan: &NcsnppV2GraphPlan) -> Result<Vec<SgmseTensorRole>> {
+    if plan.config != NcsnppV2Config::source_default() {
+        return Err(VokraError::ModelLoad(
+            "sgmse: required role derivation received a non-source graph configuration".to_owned(),
+        ));
+    }
+    let mut roles = vec![
+        SgmseTensorRole::FourierFrequencies,
+        SgmseTensorRole::SigmaFirstProjection,
+        SgmseTensorRole::SigmaFirstBias,
+        SgmseTensorRole::SigmaSecondProjection,
+        SgmseTensorRole::SigmaSecondBias,
+    ];
+    let mut down_channels = 1usize;
+    let mut up_path = false;
+    for (stage_index, stage) in plan.stages.iter().enumerate() {
+        match stage.kind {
+            NcsnppStageKind::Input => {
+                push_weight_bias(
+                    &mut roles,
+                    stage_index,
+                    stage.kind,
+                    stage.block,
+                    SgmseTensorModule::InputProjection,
+                );
+            }
+            NcsnppStageKind::Residual | NcsnppStageKind::Middle => {
+                // Down-path residuals need a learned shortcut only when the
+                // source changes channel width. Every up-path residual also
+                // consumes a concatenated down-path skip, so its shortcut is
+                // structurally present even when widths match.
+                let channel_change = !up_path
+                    && stage.kind == NcsnppStageKind::Residual
+                    && stage.channel_multiplier != down_channels;
+                push_residual_roles(
+                    &mut roles,
+                    stage_index,
+                    stage.kind,
+                    stage.block,
+                    up_path || channel_change,
+                );
+                down_channels = stage.channel_multiplier;
+            }
+            NcsnppStageKind::Attention => {
+                push_norm(
+                    &mut roles,
+                    stage_index,
+                    stage.kind,
+                    stage.block,
+                    SgmseTensorModule::AttentionNorm,
+                );
+                for module in [
+                    SgmseTensorModule::AttentionQuery,
+                    SgmseTensorModule::AttentionKey,
+                    SgmseTensorModule::AttentionValue,
+                    SgmseTensorModule::AttentionOutput,
+                ] {
+                    push_weight_bias(&mut roles, stage_index, stage.kind, stage.block, module);
+                }
+            }
+            NcsnppStageKind::Downsample | NcsnppStageKind::Upsample => {
+                // Source resampling BigGAN blocks carry a learned shortcut;
+                // fixed FIR taps are not learned tensor roles.
+                push_residual_roles(&mut roles, stage_index, stage.kind, stage.block, true);
+            }
+            NcsnppStageKind::ProgressiveInput => {
+                push_weight_bias(
+                    &mut roles,
+                    stage_index,
+                    stage.kind,
+                    stage.block,
+                    SgmseTensorModule::ProgressiveInput,
+                );
+            }
+            NcsnppStageKind::ProgressiveOutput => {
+                push_norm(
+                    &mut roles,
+                    stage_index,
+                    stage.kind,
+                    stage.block,
+                    SgmseTensorModule::ProgressiveOutputNorm,
+                );
+                push_weight_bias(
+                    &mut roles,
+                    stage_index,
+                    stage.kind,
+                    stage.block,
+                    SgmseTensorModule::ProgressiveOutput,
+                );
+            }
+            NcsnppStageKind::Output => {
+                push_weight_bias(
+                    &mut roles,
+                    stage_index,
+                    stage.kind,
+                    stage.block,
+                    SgmseTensorModule::OutputProjection,
+                );
+            }
+        }
+        if stage.kind == NcsnppStageKind::Middle && stage.block == 2 {
+            up_path = true;
+        }
+    }
+    roles.sort_unstable();
+    let mut unique = BTreeSet::new();
+    if roles.iter().any(|role| !unique.insert(role.clone())) {
+        return Err(VokraError::ModelLoad(
+            "sgmse: compiled required role set contains duplicates".to_owned(),
+        ));
+    }
+    if roles.len() != COMPILED_TENSOR_ROLE_COUNT {
+        return Err(VokraError::ModelLoad(format!(
+            "sgmse: compiled required role count is {}, expected {}",
+            roles.len(),
+            COMPILED_TENSOR_ROLE_COUNT
+        )));
+    }
+    Ok(roles)
 }
 
 /// Fixed Fourier embedding helper used by the source's sigma conditioning.
@@ -2476,38 +2719,30 @@ impl SgmseSampler {
 }
 
 /// Strict public checkpoint gate. It intentionally cannot produce a runnable
-/// model until the VAST safe-load manifest and native tensor binder are closed.
-pub struct SgmseModel;
+/// score graph until graph assembly is implemented, but retains authenticated
+/// tensor operands for that later assembly phase.
+pub struct SgmseModel {
+    weights: SgmseGraphWeights,
+}
 
 impl SgmseModel {
-    /// Rejects arbitrary GGUF files and unreviewed manifests fail-closed.
+    /// Binds only the compiled VAST-reviewed GGUF contract. Inference remains
+    /// unavailable until the native graph assembly phase is complete.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
-        let arch = file
-            .get(chunks::KEY_MODEL_ARCH)
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| VokraError::ModelLoad("sgmse: missing model arch".to_owned()))?;
-        if arch != ARCH {
-            return Err(VokraError::ModelLoad(format!(
-                "sgmse: unsupported model arch {arch:?}; expected {ARCH:?}"
-            )));
-        }
-        let status = file
-            .get(KEY_MANIFEST_STATUS)
-            .and_then(|value| value.as_str());
-        if status != Some(AUTHENTICATED_MANIFEST) {
-            return Err(VokraError::ModelLoad(
-                "sgmse: AUTHENTICATED_MANIFEST_REQUIRED; VAST must bind the complete source tensor manifest"
-                    .to_owned(),
-            ));
-        }
-        Err(VokraError::ModelLoad(
-            "sgmse: AUTHENTICATED_MANIFEST_REQUIRED until the reviewed tensor digest and semantic bindings are compiled in"
-                .to_owned(),
-        ))
+        Ok(Self {
+            weights: SgmseGraphWeights::bind_authenticated(file)?,
+        })
     }
 
-    /// Management-only helper used by static checks to document the failure
-    /// boundary without opening or downloading model weights.
+    /// Returns the authenticated operands retained for later graph assembly.
+    #[must_use]
+    pub fn graph_weights(&self) -> &SgmseGraphWeights {
+        &self.weights
+    }
+
+    /// Path-only diagnostic helper that intentionally cannot authenticate or
+    /// bind GGUF weights. Call [`Self::from_gguf`] with an authenticated GGUF
+    /// to retain typed operands for the pending graph-assembly phase.
     pub fn require_manifest(path: &Path) -> Result<()> {
         if path.as_os_str().is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -2515,7 +2750,7 @@ impl SgmseModel {
             ));
         }
         Err(VokraError::ModelLoad(
-            "sgmse: AUTHENTICATED_MANIFEST_REQUIRED".to_owned(),
+            "sgmse: path-only helper cannot bind GGUF weights".to_owned(),
         ))
     }
 }
@@ -2879,7 +3114,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_binder_stays_closed_without_authenticated_manifest() {
+    fn path_only_helper_stays_non_binding() {
         assert!(SgmseModel::require_manifest(Path::new("checkpoint.gguf")).is_err());
     }
 
@@ -2990,6 +3225,117 @@ mod tests {
         assert_ne!(
             attention_query.canonical_name(),
             attention_key.canonical_name()
+        );
+    }
+
+    #[test]
+    fn compiled_source_roles_cover_reviewed_checkpoint() {
+        let plan = NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default()).unwrap();
+        let roles = compiled_required_roles(&plan).unwrap();
+        assert_eq!(roles.len(), COMPILED_TENSOR_ROLE_COUNT);
+        assert_eq!(roles.len(), 647);
+        let unique = roles.iter().collect::<BTreeSet<_>>();
+        assert_eq!(unique.len(), roles.len());
+        assert_eq!(
+            hex_digest(&REVIEWED_TENSOR_MANIFEST_SHA256.unwrap()),
+            "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c"
+        );
+        assert_eq!(
+            roles
+                .iter()
+                .filter(|role| matches!(
+                    role,
+                    SgmseTensorRole::NcsnppStage {
+                        kind: NcsnppStageKind::Downsample,
+                        module: SgmseTensorModule::ResidualSkip,
+                        slot: SgmseTensorSlot::Weight,
+                        ..
+                    }
+                ))
+                .count(),
+            6
+        );
+        let up_path_start = plan
+            .stages
+            .iter()
+            .position(|stage| stage.kind == NcsnppStageKind::Middle && stage.block == 2)
+            .expect("source plan has middle block 2")
+            + 1;
+        let down_ordinary_skip_indices: Vec<_> = roles
+            .iter()
+            .filter_map(|role| match role {
+                SgmseTensorRole::NcsnppStage {
+                    stage_index,
+                    kind: NcsnppStageKind::Residual,
+                    block,
+                    module: SgmseTensorModule::ResidualSkip,
+                    slot: SgmseTensorSlot::Weight,
+                } if *stage_index < up_path_start => Some((*stage_index, *block)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(down_ordinary_skip_indices, vec![(9, 1)]);
+        assert!(roles.contains(&SgmseTensorRole::NcsnppStage {
+            stage_index: 9,
+            kind: NcsnppStageKind::Residual,
+            block: 1,
+            module: SgmseTensorModule::ResidualSkip,
+            slot: SgmseTensorSlot::Weight,
+        }));
+        let up_residual_indices: Vec<_> = plan
+            .stages
+            .iter()
+            .enumerate()
+            .filter_map(|(stage_index, stage)| {
+                (stage_index >= up_path_start && stage.kind == NcsnppStageKind::Residual)
+                    .then_some((stage_index, stage.block))
+            })
+            .collect();
+        let up_skip_indices: Vec<_> = roles
+            .iter()
+            .filter_map(|role| match role {
+                SgmseTensorRole::NcsnppStage {
+                    stage_index,
+                    kind: NcsnppStageKind::Residual,
+                    block,
+                    module: SgmseTensorModule::ResidualSkip,
+                    slot: SgmseTensorSlot::Weight,
+                } if *stage_index >= up_path_start => Some((*stage_index, *block)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(up_residual_indices.len(), 21);
+        assert_eq!(up_skip_indices, up_residual_indices);
+        assert_eq!(
+            roles
+                .iter()
+                .filter(|role| matches!(
+                    role,
+                    SgmseTensorRole::NcsnppStage {
+                        kind: NcsnppStageKind::Upsample,
+                        module: SgmseTensorModule::ResidualSkip,
+                        slot: SgmseTensorSlot::Weight,
+                        ..
+                    }
+                ))
+                .count(),
+            6
+        );
+        assert_eq!(
+            roles
+                .iter()
+                .filter(|role| matches!(
+                    role,
+                    SgmseTensorRole::NcsnppStage {
+                        kind: NcsnppStageKind::Residual,
+                        module: SgmseTensorModule::ResidualSkip,
+                        slot: SgmseTensorSlot::Weight,
+                        stage_index: 0..=67,
+                        ..
+                    }
+                ))
+                .count(),
+            22
         );
     }
 

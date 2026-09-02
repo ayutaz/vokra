@@ -2278,7 +2278,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "sgmse_voicebank",
         module: "vokra_models::sgmse",
-        entry: "SgmseModel::from_gguf → SOURCE_PLAN_ONLY/AUTHENTICATED_MANIFEST_REQUIRED",
+        entry: "SgmseModel::from_gguf → authenticated weights bind; graph assembly/inference pending",
         probe: Some(|g: &GgufFile| vokra_models::sgmse::SgmseModel::from_gguf(g).map(|_| ())),
     },
     BoundArch {
@@ -3860,20 +3860,24 @@ mod tests {
         );
     }
 
-    /// SGMSE is deliberately discoverable through its typed binder, while
-    /// the source-plan/authenticated-manifest gate remains visible instead of
-    /// being misreported as an unknown architecture.
+    /// SGMSE is discoverable through its typed binder. An arch-only synthetic
+    /// GGUF still fails closed at the typed-manifest boundary because it has
+    /// no authenticated tensor metadata.
     #[test]
     fn load_session_binds_sgmse_arch_fail_closed() {
         let err = assert_bound_arch(
             "sgmse_voicebank",
             "sgmse-voicebank-arch",
             "vokra_models::sgmse",
-            "SOURCE_PLAN_ONLY/AUTHENTICATED_MANIFEST_REQUIRED",
+            "authenticated weights bind; graph assembly/inference pending",
         );
         assert!(
-            err.contains("AUTHENTICATED_MANIFEST_REQUIRED"),
-            "SGMSE must retain its authenticated-manifest blocker: {err}"
+            err.contains("typed tensor manifest metadata is missing"),
+            "arch-only SGMSE must fail at the missing typed manifest boundary: {err}"
+        );
+        assert!(
+            !err.contains("SOURCE_PLAN_ONLY") && !err.contains("VAST-reviewed tensor digest"),
+            "SGMSE must not report the retired pre-compiled-manifest blocker: {err}"
         );
     }
 
