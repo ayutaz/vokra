@@ -24,7 +24,7 @@ dependencies = [
     "soundfile==0.12.1",
     "torch==2.3.1",
     "torchaudio==2.3.1",
-    "transformers==4.40.1",
+    "transformers==5.10.4",
     "tqdm==4.66.5",
     "wetext==0.0.4",
 ]
@@ -46,6 +46,16 @@ source_revision = "8555549e882236e6541748b1042d95693caa82ba"
 matcha_repository = "https://github.com/shivammehta25/Matcha-TTS"
 matcha_revision = "dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
 route = "official lower-level classes are still blocked: frontend + YAML mel_spectrogram import librosa"
+# CosyVoice2's fixed upstream requirements.txt declares 4.40.1.  Keep that
+# provenance separate from the future isolated runtime pin below: changing the
+# pin does not claim source/API compatibility.
+source_transformers_requirement = "transformers==4.40.1"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
+transformers_license = "METADATA_DECLARED_APACHE-2.0_PRIMARY_BYTES_UNREVIEWED"
+transformers_metadata_evidence = "https://pypi.org/pypi/transformers/5.10.4/json"
 lock_status = "BLOCKED_FORBIDDEN_SOXR_IN_AUTHENTICATED_OFFICIAL_CLOSURE"
 dedicated_sync = "FORBIDDEN_UNTIL_LICENSE_SIGNOFF_AND_LOCK"
 model_download = "FORBIDDEN_UNTIL_LICENSE_SIGNOFF_AND_LOCK"

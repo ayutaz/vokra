@@ -32,6 +32,13 @@ MODEL_REVISION = "eec1ae6c79877dbd9379285cf8789c9e0879293d"
 MODEL_REPOSITORY = "FunAudioLLM/CosyVoice2-0.5B"
 FORMAT = "vokra-cosyvoice2-official-reference-v2"
 LOCK_PATH = Path(__file__).with_name("cosyvoice2_reference") / "uv.lock"
+SOURCE_TRANSFORMERS_REQUIREMENT = "transformers==4.40.1"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+ISOLATED_TRANSFORMERS_PIN = "5.10.4"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
+TRANSFORMERS_LICENSE_METADATA = "METADATA_DECLARED_APACHE-2.0_PRIMARY_BYTES_UNREVIEWED"
+TRANSFORMERS_METADATA_EVIDENCE = "https://pypi.org/pypi/transformers/5.10.4/json"
 EOS = 6561
 OFFICIAL_CONFIG_SEED = 1986
 OFFICIAL_TARGET_TEXT = "收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。"
@@ -40,7 +47,7 @@ REFERENCE_ENV = {
     "python": ">=3.12,<3.13",
     "torch": "2.3.1",
     "torchaudio": "2.3.1",
-    "transformers": "4.40.1",
+    "transformers": ISOLATED_TRANSFORMERS_PIN,
     "HyperPyYAML": "1.2.2",
     "conformer": "0.3.2",
     "diffusers": "0.29.0",
@@ -79,6 +86,25 @@ def dependency_gate() -> int:
         audit = document["tool"]["vokra"]["cosyvoice2_reference"]["license_audit"]
         if route["source_revision"] != SOURCE_REVISION or route["matcha_revision"] != MATCHA_REVISION:
             raise RuntimeError("CosyVoice2 fixed source identity drifted")
+        if route["source_transformers_requirement"] != SOURCE_TRANSFORMERS_REQUIREMENT:
+            raise RuntimeError("CosyVoice2 upstream Transformers requirement provenance drifted")
+        if route["transformers_security_advisory"] != TRANSFORMERS_SECURITY_ADVISORY:
+            raise RuntimeError("CosyVoice2 Transformers advisory provenance drifted")
+        if route["transformers_security_patched_minimum"] != TRANSFORMERS_SECURITY_PATCHED_MINIMUM:
+            raise RuntimeError("CosyVoice2 Transformers patched minimum drifted")
+        if route["isolated_transformers_pin"] != ISOLATED_TRANSFORMERS_PIN:
+            raise RuntimeError("CosyVoice2 isolated Transformers pin drifted")
+        if route["transformers_compatibility_status"] != TRANSFORMERS_COMPATIBILITY_STATUS:
+            raise RuntimeError("CosyVoice2 Transformers compatibility gate drifted")
+        if route["transformers_license"] != TRANSFORMERS_LICENSE_METADATA:
+            raise RuntimeError("CosyVoice2 Transformers license review status drifted")
+        if route["transformers_metadata_evidence"] != TRANSFORMERS_METADATA_EVIDENCE:
+            raise RuntimeError("CosyVoice2 Transformers metadata evidence drifted")
+        dependencies = set(project["dependencies"])
+        if f"transformers=={ISOLATED_TRANSFORMERS_PIN}" not in dependencies:
+            raise RuntimeError("CosyVoice2 project does not pin the isolated Transformers runtime")
+        if f"transformers=={SOURCE_TRANSFORMERS_REQUIREMENT.split('==', 1)[1]}" in dependencies:
+            raise RuntimeError("CosyVoice2 project still exposes the vulnerable upstream Transformers pin")
         if route["lock_status"] != "BLOCKED_FORBIDDEN_SOXR_IN_AUTHENTICATED_OFFICIAL_CLOSURE":
             raise RuntimeError("CosyVoice2 closure status is not authenticated")
         if audit["status"] != "BLOCKED_UNRESOLVED":
@@ -927,7 +953,17 @@ def run(source: Path, matcha_source: Path, model_dir: Path, input_path: Path, ou
             source=source_identity,
             matcha=matcha_identity,
             model=model_identity,
-            reference_environment={**REFERENCE_ENV, "python_version": evidence.meta.get("python_version"), "lock_sha256": lock_sha, "actual_versions": evidence.meta.get("actual_versions")},
+            reference_environment={
+                **REFERENCE_ENV,
+                "python_version": evidence.meta.get("python_version"),
+                "lock_sha256": lock_sha,
+                "actual_versions": evidence.meta.get("actual_versions"),
+                "source_transformers_requirement": SOURCE_TRANSFORMERS_REQUIREMENT,
+                "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+                "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+                "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+                "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+            },
             input={"mode": packet["mode"], "target_text": packet["target_text"], "prompt_text": packet["prompt_text"], "seed": packet["seed"], "prompt_wav": packet["prompt_wav"], "prompt_wav_sha256": packet["prompt_wav_sha256"], "prompt_wav_rate": packet["prompt_wav_rate"], "prompt_wav_samples": packet["prompt_wav_samples"]},
             flow_noise={"shape": [1, 80, 15000], "slice": "[:, :, :mu.size(2)]", "seed": 0, "source": "CausalConditionalCFM.rand_noise"},
             pcm_semantics={
@@ -949,7 +985,13 @@ def self_test() -> None:
     assert {"flow_rand_noise_full", "qwen_prompt_embeddings", "ras_pre_ras_probability", "ras_nucleus_probability"} <= REQUIRED_ARTIFACTS
     assert "torch.Tensor.multinomial" in Path(__file__).read_text(encoding="utf-8")
     assert REFERENCE_ENV["torch"] == REFERENCE_ENV["torchaudio"] == "2.3.1"
-    assert REFERENCE_ENV["transformers"] == "4.40.1"
+    assert SOURCE_TRANSFORMERS_REQUIREMENT == "transformers==4.40.1"
+    assert TRANSFORMERS_SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
+    assert TRANSFORMERS_SECURITY_PATCHED_MINIMUM == "5.10.0"
+    assert REFERENCE_ENV["transformers"] == ISOLATED_TRANSFORMERS_PIN == "5.10.4"
+    assert TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE"
+    assert TRANSFORMERS_LICENSE_METADATA.endswith("PRIMARY_BYTES_UNREVIEWED")
+    assert TRANSFORMERS_METADATA_EVIDENCE.endswith("transformers/5.10.4/json")
     print("cosyvoice2_dump_reference.py self-test: OK")
 
 

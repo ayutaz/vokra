@@ -11,6 +11,10 @@ REFERENCE_PROJECT="$ROOT/tools/parity/cosyvoice2_reference"
 SOURCE_REVISION="8555549e882236e6541748b1042d95693caa82ba"
 MODEL_REVISION="eec1ae6c79877dbd9379285cf8789c9e0879293d"
 MATCHA_REVISION="dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
+TRANSFORMERS_SOURCE_REQUIREMENT="transformers==4.40.1"
+TRANSFORMERS_SECURITY_ADVISORY="GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM="5.10.0"
+ISOLATED_TRANSFORMERS_PIN="5.10.4"
 die() { echo "cosyvoice2-vast: ERROR: $*" >&2; exit 2; }
 
 run_dependency_gate() {
@@ -56,7 +60,7 @@ require_disjoint_uncreated() {
 
 self_test() {
   local fail=0 token
-  for token in "$SOURCE_REVISION" "$MODEL_REVISION" "$MATCHA_REVISION" "AUTHENTICATED_REFERENCE_EVIDENCE" "NOT_IMPLEMENTED_FAIL_CLOSED" "NO_UPLOAD" "qwen_prompt_embeddings" "flow_rand_noise_full" "flow_rand_noise_slice" "ras_calls" "ras_pre_ras_probability" "ras_nucleus_probability" "official_output_pcm" "execution_id" "llm_calls" "15000" "zero_shot" "cross_lingual" "prompt_wav_sha256" "cfm_time_grid" "ignored_eos"; do
+  for token in "$SOURCE_REVISION" "$MODEL_REVISION" "$MATCHA_REVISION" "$TRANSFORMERS_SOURCE_REQUIREMENT" "$TRANSFORMERS_SECURITY_ADVISORY" "$TRANSFORMERS_SECURITY_PATCHED_MINIMUM" "$ISOLATED_TRANSFORMERS_PIN" "BLOCKED_UNVERIFIED_API_SMOKE" "AUTHENTICATED_REFERENCE_EVIDENCE" "NOT_IMPLEMENTED_FAIL_CLOSED" "NO_UPLOAD" "qwen_prompt_embeddings" "flow_rand_noise_full" "flow_rand_noise_slice" "ras_calls" "ras_pre_ras_probability" "ras_nucleus_probability" "official_output_pcm" "execution_id" "llm_calls" "15000" "zero_shot" "cross_lingual" "prompt_wav_sha256" "cfm_time_grid" "ignored_eos"; do
     grep -Fq -- "$token" "$REFERENCE" "$REFERENCE_PROJECT/pyproject.toml" "$0" || { echo "missing contract: $token" >&2; fail=1; }
   done
   if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload|OFFICIAL_ADAPTER_AUTHENTICATED_NOT_RUN' "$0" | grep -v 'grep -En' >/dev/null; then fail=1; fi
@@ -146,7 +150,12 @@ environment = manifest["reference_environment"]
 assert environment["python"] == ">=3.12,<3.13"
 assert isinstance(environment["python_version"], str) and environment["python_version"].startswith("3.12.")
 assert environment["lock_sha256"] == hashlib.sha256(lock_path.read_bytes()).hexdigest()
-assert environment["actual_versions"] == {"torch":"2.3.1", "torchaudio":"2.3.1", "transformers":"4.40.1", "HyperPyYAML":"1.2.2", "conformer":"0.3.2", "diffusers":"0.29.0", "onnxruntime":"1.18.0"}
+assert environment["source_transformers_requirement"] == "transformers==4.40.1"
+assert environment["transformers_security_advisory"] == "GHSA-xrqw-3rrv-vx5w"
+assert environment["transformers_security_patched_minimum"] == "5.10.0"
+assert environment["isolated_transformers_pin"] == "5.10.4"
+assert environment["transformers_compatibility_status"] == "BLOCKED_UNVERIFIED_API_SMOKE"
+assert environment["actual_versions"] == {"torch":"2.3.1", "torchaudio":"2.3.1", "transformers":"5.10.4", "HyperPyYAML":"1.2.2", "conformer":"0.3.2", "diffusers":"0.29.0", "onnxruntime":"1.18.0"}
 from tools.parity.cosyvoice2_inspect import EXPECTED
 assert set(manifest["model"]["files"]) == set(EXPECTED)
 required = {"tokenizer_ids", "prompt_speech_tokens", "campplus_embedding", "qwen_prompt_embeddings", "qwen_prompt_speech_embeddings", "ras_logits", "ras_pre_ras_probability", "ras_nucleus_probability", "ras_multinomial_probability", "ras_calls", "generated_speech_tokens", "flow_rand_noise_full", "flow_rand_noise_slice", "flow_encoder_output", "cfm_terminal_mel", "prompt_mel", "generated_mel", "hift_input_mel", "hift_output_pcm", "official_output_pcm", "prompt_pcm16k"}

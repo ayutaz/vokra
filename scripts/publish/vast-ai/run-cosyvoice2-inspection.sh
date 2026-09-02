@@ -8,15 +8,19 @@ REFERENCE_PROJECT="$ROOT/tools/parity/cosyvoice2_reference"
 MODEL_REVISION="eec1ae6c79877dbd9379285cf8789c9e0879293d"
 SOURCE_REVISION="8555549e882236e6541748b1042d95693caa82ba"
 MATCHA_REVISION="dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
+TRANSFORMERS_SOURCE_REQUIREMENT="transformers==4.40.1"
+TRANSFORMERS_SECURITY_ADVISORY="GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM="5.10.0"
+ISOLATED_TRANSFORMERS_PIN="5.10.4"
 die(){ echo "cosyvoice2-vast: ERROR: $*" >&2; exit 2; }
 self_test(){
   local fail=0 token
-  for token in "$MODEL_REVISION" "$SOURCE_REVISION" "$MATCHA_REVISION" 'weights_only=True' 'tensor_manifest_sha256' 'INSPECTION_ONLY' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'NO_UPLOAD' 'runtime_status' 'cpu_status' 'metal_status' 'parity_status' 'llm.pt' 'flow.pt' 'hift.pt' 'rand_noise' 'uv.lock'; do
+  for token in "$MODEL_REVISION" "$SOURCE_REVISION" "$MATCHA_REVISION" "$TRANSFORMERS_SOURCE_REQUIREMENT" "$TRANSFORMERS_SECURITY_ADVISORY" "$TRANSFORMERS_SECURITY_PATCHED_MINIMUM" "$ISOLATED_TRANSFORMERS_PIN" 'BLOCKED_UNVERIFIED_API_SMOKE' 'weights_only=True' 'tensor_manifest_sha256' 'INSPECTION_ONLY' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'NO_UPLOAD' 'runtime_status' 'cpu_status' 'metal_status' 'parity_status' 'llm.pt' 'flow.pt' 'hift.pt' 'rand_noise' 'uv.lock'; do
     grep -Fq -- "$token" "$INSPECTOR" "$REFERENCE" "$REFERENCE_PROJECT/pyproject.toml" "$0" || { echo "missing contract $token" >&2; fail=1; }
   done
   if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$0" | grep -v 'grep -En' >/dev/null; then fail=1; fi
-  UV_CACHE_DIR="${COSYVOICE2_UV_CACHE_DIR:-/tmp/vokra-cosyvoice2-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1
-  UV_CACHE_DIR="${COSYVOICE2_UV_CACHE_DIR:-/tmp/vokra-cosyvoice2-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$REFERENCE" --self-test || fail=1
+  UV_CACHE_DIR="${COSYVOICE2_UV_CACHE_DIR:-/tmp/vokra-cosyvoice2-uv-cache}" uv run --no-sync --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1
+  UV_CACHE_DIR="${COSYVOICE2_UV_CACHE_DIR:-/tmp/vokra-cosyvoice2-uv-cache}" uv run --no-sync --frozen --project "$ROOT/tools/parity" --python 3.12 python "$REFERENCE" --self-test || fail=1
   (( fail == 0 )) || return 1
   echo 'run-cosyvoice2-inspection.sh self-test: OK'
 }
