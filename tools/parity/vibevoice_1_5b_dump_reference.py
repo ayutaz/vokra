@@ -66,13 +66,20 @@ SOURCE_ROLE_BLOBS: dict[str, str] = {
 FORMAT = "vokra-vibevoice-1-5b-reference-v1"
 REFERENCE_PROJECT = Path(__file__).with_name("vibevoice_1_5b_reference")
 REFERENCE_LOCK = REFERENCE_PROJECT / "uv.lock"
-REFERENCE_LOCK_SHA256 = "a1aa0b371e5036a7f5bc72f2a5e1ba82ef21a6fa9ba8993e5612fb7612107806"
-REFERENCE_PACKAGE_ROWS_SHA256 = "ae07242d3b0e4d8fdda8b7435956b835a996e003a6615660358a01dbfd9bddf6"
-REFERENCE_PACKAGE_COUNT = 32
+REFERENCE_LOCK_SHA256 = "ba80c08b17b2d04356264b9f9d42393e9c8be66bc0cd9fda6139dc007d943909"
+REFERENCE_PACKAGE_ROWS_SHA256 = "1ea002fe37f4ddc4df9f7535b5ae3a42661fc1eaa0a28e8ae6dbba0fa7e9649b"
+REFERENCE_PACKAGE_COUNT = 44
 REFERENCE_PACKAGE_ROWS_SCHEMA = "package-resolution-and-dependency-markers-v2"
-REFERENCE_LICENSE_ROWS_SHA256 = "6cca02093a2b76c728f0957193657f614e6f443e13805705423b384c5aa6c0ca"
-REFERENCE_LICENSE_COUNT = 32
+REFERENCE_LICENSE_ROWS_SHA256 = "987a1f7204c2d7f2baa1c537ebaa06ca4bc872d2aae60f25a78393967da7bf8c"
+REFERENCE_LICENSE_COUNT = 44
 REFERENCE_LICENSE_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN = "transformers==4.51.3"
+PREVIOUS_ISOLATED_HUGGINGFACE_HUB_PIN = "huggingface-hub==0.36.2"
+ISOLATED_TRANSFORMERS_PIN = "transformers==5.10.4"
+ISOLATED_HUGGINGFACE_HUB_PIN = "huggingface-hub==1.29.0"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 REFERENCE_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 REFERENCE_RESOLUTION_MARKERS = ("sys_platform != 'darwin'", "sys_platform == 'darwin'")
 REFERENCE_SOURCE_IMPORT_CLOSURE = ("torch", "numpy", "tqdm", "transformers", "diffusers.DPMSolverMultistepScheduler")
@@ -194,6 +201,17 @@ def reference_lock_identity(lock_path: Path = REFERENCE_LOCK) -> dict[str, Any]:
         raise RuntimeError("dedicated VibeVoice forbidden/unused dependency exclusion declaration drifted")
     if project_metadata.get("lock_package_rows_schema") != REFERENCE_PACKAGE_ROWS_SCHEMA:
         raise RuntimeError("dedicated VibeVoice lock package-row schema declaration drifted")
+    expected_security = {
+        "previous_isolated_transformers_pin": PREVIOUS_ISOLATED_TRANSFORMERS_PIN,
+        "previous_isolated_huggingface_hub_pin": PREVIOUS_ISOLATED_HUGGINGFACE_HUB_PIN,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+    }
+    if any(project_metadata.get(key) != value for key, value in expected_security.items()):
+        raise RuntimeError("dedicated VibeVoice Transformers security metadata drifted")
     rows = canonical_lock_rows(lock)
     if len(rows) != REFERENCE_PACKAGE_COUNT or lock_rows_sha256(rows) != REFERENCE_PACKAGE_ROWS_SHA256:
         raise RuntimeError("dedicated VibeVoice lock package rows are not the reviewed identity")
@@ -216,6 +234,7 @@ def reference_lock_identity(lock_path: Path = REFERENCE_LOCK) -> dict[str, Any]:
         "package_names": sorted(names),
         "cpu_index": REFERENCE_CPU_INDEX,
         "torch_distribution_versions": ["2.7.1", "2.7.1+cpu"],
+        "transformers_security": expected_security,
     }
 
 
@@ -266,13 +285,18 @@ def license_audit_identity(lock_record: Mapping[str, Any] | None = None) -> dict
 def reference_environment_identity() -> dict[str, Any]:
     lock = reference_lock_identity()
     audit = license_audit_identity(lock)
-    return {"lock": lock, "license_audit": audit}
+    return {"lock": lock, "license_audit": audit, "transformers_security": lock["transformers_security"]}
 
 
 def require_license_clearance() -> dict[str, Any]:
     environment = reference_environment_identity()
     if environment["license_audit"]["status"] != "AUTHENTICATED_CLEAR":
         raise RuntimeError("dedicated VibeVoice dependency license audit is unresolved; uv sync/model acquisition/reference execution are blocked")
+    if environment["transformers_security"]["transformers_compatibility_status"] != "AUTHENTICATED_API_SMOKE":
+        raise RuntimeError(
+            "dedicated VibeVoice reference is BLOCKED_UNVERIFIED_API_SMOKE; "
+            "authorized API smoke is required before importing Transformers or acquiring a model"
+        )
     return environment
 
 
@@ -603,6 +627,15 @@ def blocked(output: Path, error: Exception, *, packet_sha256: str | None = None)
         "upstream": {"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None},
         "qwen_companion": {"repository": QWEN_REPOSITORY, "requested_revision": QWEN_REVISION, "resolved_revision": None},
         "source": {"repository": SOURCE_REPOSITORY, "requested_revision": SOURCE_REVISION, "resolved_revision": None},
+        "transformers_security": {
+            "previous_isolated_transformers_pin": PREVIOUS_ISOLATED_TRANSFORMERS_PIN,
+            "previous_isolated_huggingface_hub_pin": PREVIOUS_ISOLATED_HUGGINGFACE_HUB_PIN,
+            "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+            "isolated_huggingface_hub_pin": ISOLATED_HUGGINGFACE_HUB_PIN,
+            "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+            "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+            "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+        },
         "error_type": type(error).__name__,
         "reason": str(error),
         "blockers": [str(error)],
@@ -902,6 +935,15 @@ def self_test() -> None:
     assert "torch" in lock["package_names"] and "transformers" in lock["package_names"]
     assert "soundfile" not in lock["package_names"]
     assert "soxr" not in lock["package_names"]
+    security = lock["transformers_security"]
+    assert security["previous_isolated_transformers_pin"] == "transformers==4.51.3"
+    assert security["previous_isolated_huggingface_hub_pin"] == "huggingface-hub==0.36.2"
+    assert security["isolated_transformers_pin"] == "transformers==5.10.4"
+    assert security["isolated_huggingface_hub_pin"] == "huggingface-hub==1.29.0"
+    assert security["transformers_security_advisory"] == "GHSA-xrqw-3rrv-vx5w"
+    assert security["transformers_security_patched_minimum"] == "5.10.0"
+    assert security["transformers_compatibility_status"] == "BLOCKED_UNVERIFIED_API_SMOKE"
+    assert reference_environment_identity()["transformers_security"] == security
     audit = license_audit_identity(lock)
     assert audit["status"] == REFERENCE_LICENSE_STATUS
     assert len(audit["license_conclusions"]) == REFERENCE_LICENSE_COUNT
@@ -948,10 +990,12 @@ def self_test() -> None:
         "guidance_scale": 1.0, "max_generated_tokens": 1, "seed": 7,
     }
     assert validate_packet(base)["token_ids"] == [151_652]
-    call = processor_call_kwargs(base)
-    assert set(call) == {"text", "voice_samples", "padding", "return_tensors", "return_attention_mask"}
-    assert "audio" not in call and call["text"] == ["fixture"]
-    assert call["voice_samples"][0][0].dtype.name == "float32"
+    # Keep this self-test dependency-free: processor_call_kwargs imports NumPy
+    # only at the authorized reference execution boundary.
+    processor_source = inspect.getsource(processor_call_kwargs)
+    assert '"voice_samples"' in processor_source
+    assert '"return_attention_mask"' in processor_source
+    assert '"audio"' not in processor_source
     def official_generate_fixture(inputs, speech_tensors, speech_masks, speech_input_mask, cfg_scale=1.0, return_speech=False, **kwargs):
         return inputs, kwargs
     validate_generate_signature(inspect.signature(official_generate_fixture))
@@ -1065,6 +1109,11 @@ def main() -> int:
         environment = reference_environment_identity()
         if environment["license_audit"]["status"] != "AUTHENTICATED_CLEAR":
             raise RuntimeError("dedicated VibeVoice dependency license audit is unresolved")
+        if environment["transformers_security"]["transformers_compatibility_status"] != "AUTHENTICATED_API_SMOKE":
+            raise RuntimeError(
+                "dedicated VibeVoice reference is BLOCKED_UNVERIFIED_API_SMOKE; "
+                "authorized API smoke is required before importing Transformers or acquiring a model"
+            )
     except Exception as error:
         print(f"VibeVoice reference BLOCKED before output creation: {error}", file=sys.stderr)
         return 2

@@ -17,7 +17,7 @@ self_test() {
     parity_vibevoice_1_5b_real VIBEVOICE_CPU_TOKENS_MEASURED VIBEVOICE_METAL_TOKENS_MEASURED \
     VIBEVOICE_CPU_OFFICIAL_DIFFUSION_LATENTS_CAPTURED VIBEVOICE_METAL_OFFICIAL_DIFFUSION_LATENTS_CAPTURED \
     exact=true MEASURED_NOT_GATED official_pcm.f32le packet.json vibevoice-apple-summary.json NO_UPLOAD \
-    reference_environment license_audit BLOCKED_UNREVIEWED_TRANSITIVE AUTHENTICATED_CLEAR --license-audit --no-project package-resolution-and-dependency-markers-v2 ae07242d3b0e4d8fdda8b7435956b835a996e003a6615660358a01dbfd9bddf6 6cca02093a2b76c728f0957193657f614e6f443e13805705423b384c5aa6c0ca a1aa0b371e5036a7f5bc72f2a5e1ba82ef21a6fa9ba8993e5612fb7612107806 \
+    reference_environment license_audit BLOCKED_UNREVIEWED_TRANSITIVE BLOCKED_UNVERIFIED_API_SMOKE GHSA-xrqw-3rrv-vx5w AUTHENTICATED_CLEAR --license-audit --no-project package-resolution-and-dependency-markers-v2 1ea002fe37f4ddc4df9f7535b5ae3a42661fc1eaa0a28e8ae6dbba0fa7e9649b 987a1f7204c2d7f2baa1c537ebaa06ca4bc872d2aae60f25a78393967da7bf8c ba80c08b17b2d04356264b9f9d42393e9c8be66bc0cd9fda6139dc007d943909 \
     'VOKRA_VIBEVOICE_BACKEND=cpu' 'VOKRA_VIBEVOICE_BACKEND=metal' '--ignored --exact --nocapture'; do
     grep -Fq -- "$token" "$0" || { printf 'self-test missing %s\n' "$token" >&2; fail=1; }
   done
@@ -91,14 +91,17 @@ if not isinstance(environment, dict):
     raise SystemExit("combined manifest is missing reference environment identity")
 lock = environment.get("lock")
 audit = environment.get("license_audit")
-if not isinstance(lock, dict) or lock.get("sha256") != "a1aa0b371e5036a7f5bc72f2a5e1ba82ef21a6fa9ba8993e5612fb7612107806":
+if not isinstance(lock, dict) or lock.get("sha256") != "ba80c08b17b2d04356264b9f9d42393e9c8be66bc0cd9fda6139dc007d943909":
     raise SystemExit("combined manifest has an unreviewed VibeVoice lock")
-if lock.get("package_rows_schema") != "package-resolution-and-dependency-markers-v2" or lock.get("package_rows_sha256") != "ae07242d3b0e4d8fdda8b7435956b835a996e003a6615660358a01dbfd9bddf6":
+if lock.get("package_rows_schema") != "package-resolution-and-dependency-markers-v2" or lock.get("package_rows_sha256") != "1ea002fe37f4ddc4df9f7535b5ae3a42661fc1eaa0a28e8ae6dbba0fa7e9649b":
     raise SystemExit("combined manifest has unreviewed VibeVoice dependency qualifiers")
 if not isinstance(audit, dict) or audit.get("status") != "AUTHENTICATED_CLEAR":
     raise SystemExit("combined manifest has an unexpected VibeVoice license status")
-if audit.get("license_audit_rows_sha256") != "6cca02093a2b76c728f0957193657f614e6f443e13805705423b384c5aa6c0ca":
+if audit.get("license_audit_rows_sha256") != "987a1f7204c2d7f2baa1c537ebaa06ca4bc872d2aae60f25a78393967da7bf8c":
     raise SystemExit("combined manifest has unreviewed VibeVoice license rows")
+security = environment.get("transformers_security")
+if not isinstance(security, dict) or security.get("transformers_security_advisory") != "GHSA-xrqw-3rrv-vx5w" or security.get("transformers_security_patched_minimum") != "5.10.0" or security.get("isolated_transformers_pin") != "transformers==5.10.4" or security.get("transformers_compatibility_status") != "AUTHENTICATED_API_SMOKE":
+    raise SystemExit("combined manifest has an unverified Transformers security closure")
 packet_hash = hashlib.sha256(open(sys.argv[3], "rb").read()).hexdigest()
 if combined.get("input_packet_sha256") != packet_hash:
     raise SystemExit("caller-owned packet hash mismatch")
@@ -118,7 +121,7 @@ license_audit_preflight() {
   fi
   [[ "$audit_rc" == 0 ]] || die "license audit command returned $audit_rc"
   [[ "$audit_output" == *"AUTHENTICATED_CLEAR"* ]] || die 'license audit did not return authenticated clearance'
-  [[ "$audit_output" == *"a1aa0b371e5036a7f5bc72f2a5e1ba82ef21a6fa9ba8993e5612fb7612107806"* ]] || die 'license audit lock identity is missing'
+  [[ "$audit_output" == *"ba80c08b17b2d04356264b9f9d42393e9c8be66bc0cd9fda6139dc007d943909"* ]] || die 'license audit lock identity is missing'
 }
 
 main() {

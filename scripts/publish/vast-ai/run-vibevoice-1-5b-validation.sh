@@ -23,9 +23,9 @@ PUBLIC_REPOSITORY="vokra/vibevoice-1.5b"
 PUBLIC_REVISION="dec190628f58928fc247b1205b9da2dabc58b9da"
 PUBLIC_BYTES=5408160960
 PUBLIC_SHA256="8ef5f259dfab0b048151ce52d27468040f72b35b6909528e6db7fbb332ccaeac"
-REFERENCE_LOCK_SHA256="a1aa0b371e5036a7f5bc72f2a5e1ba82ef21a6fa9ba8993e5612fb7612107806"
-REFERENCE_PACKAGE_ROWS_SHA256="ae07242d3b0e4d8fdda8b7435956b835a996e003a6615660358a01dbfd9bddf6"
-REFERENCE_LICENSE_ROWS_SHA256="6cca02093a2b76c728f0957193657f614e6f443e13805705423b384c5aa6c0ca"
+REFERENCE_LOCK_SHA256="ba80c08b17b2d04356264b9f9d42393e9c8be66bc0cd9fda6139dc007d943909"
+REFERENCE_PACKAGE_ROWS_SHA256="1ea002fe37f4ddc4df9f7535b5ae3a42661fc1eaa0a28e8ae6dbba0fa7e9649b"
+REFERENCE_LICENSE_ROWS_SHA256="987a1f7204c2d7f2baa1c537ebaa06ca4bc872d2aae60f25a78393967da7bf8c"
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_SCRATCH_KIB=$((40 * 1024 * 1024))
 UV=(uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python)
@@ -47,7 +47,7 @@ require_absent_path() {
 
 self_test() {
   local fail=0 token
-  for token in "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_LICENSE_ROWS_SHA256" "package-resolution-and-dependency-markers-v2" "vibevoice_1_5b_inspect.py" "vibevoice_1_5b_dump_reference.py" "vibevoice_1_5b_reference" "uv.lock" "--license-audit" "--no-project" "BLOCKED_UNREVIEWED_TRANSITIVE" "reference_environment_identity" "local_dir" "RepoFile" "RepoFolder" "AUTHENTICATED_EVIDENCE_COMPLETE" "REFERENCE_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "official_pcm.f32le" "diffusion_initial_native.f32le" "NO_UPLOAD"; do
+  for token in "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_LICENSE_ROWS_SHA256" "package-resolution-and-dependency-markers-v2" "vibevoice_1_5b_inspect.py" "vibevoice_1_5b_dump_reference.py" "vibevoice_1_5b_reference" "uv.lock" "--license-audit" "--no-project" "BLOCKED_UNREVIEWED_TRANSITIVE" "BLOCKED_UNVERIFIED_API_SMOKE" "GHSA-xrqw-3rrv-vx5w" "reference_environment_identity" "local_dir" "RepoFile" "RepoFolder" "AUTHENTICATED_EVIDENCE_COMPLETE" "REFERENCE_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "official_pcm.f32le" "diffusion_initial_native.f32le" "NO_UPLOAD"; do
     if ! grep -Fq -- "$token" "$0" && ! grep -Fq -- "$token" "$INSPECTOR" && ! grep -Fq -- "$token" "$REFERENCE"; then
       log "self-test missing contract token: $token"; fail=1
     fi
