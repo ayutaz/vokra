@@ -111,6 +111,38 @@ TYPED_CANDIDATE_BLOCKER = "BLOCKED_SOURCE_STRUCTURAL_RECORDS_MISSING"
 REFERENCE_BLOCKER = "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE"
 INSPECTION_EMA_BLOCKER = "BLOCKED_EMA_SELECTION_UNVERIFIED"
 EMA_ROUTE_STATUS = "SOURCE_ROUTE_VERIFIED_STRICT_LOAD"
+INPUT_SEED = 20260901
+INPUT_GENERATOR = "splitmix64_uniform_f32_v1"
+INPUT_GENERATOR_SPEC = (
+    "SplitMix64 upper 24 bits mapped to exact float32 values in [-1,1)"
+)
+_SPLITMIX64_MASK = (1 << 64) - 1
+_SPLITMIX64_INCREMENT = 0x9E3779B97F4A7C15
+_SPLITMIX64_STREAM_OFFSET = 0xD1B54A32D192ED03
+
+
+def stable_input_values(count: int, stream: int) -> list[float]:
+    """Return CPU-independent, deterministic float32-representable inputs.
+
+    This is deliberately a small pure-stdlib generator.  The integer
+    SplitMix64 recurrence and 24-bit mantissa extraction avoid Torch's
+    hardware-dispatched RNG while retaining bounded pseudo-random fixture
+    inputs.  Each stream has a disjoint initial state for real and imaginary
+    planes; the returned fractions are exactly representable as float32.
+    """
+    if count < 0 or stream < 0:
+        raise ValueError("input count and stream must be non-negative")
+    state = (INPUT_SEED + stream * _SPLITMIX64_STREAM_OFFSET) & _SPLITMIX64_MASK
+    values: list[float] = []
+    for _ in range(count):
+        state = (state + _SPLITMIX64_INCREMENT) & _SPLITMIX64_MASK
+        value = state
+        value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & _SPLITMIX64_MASK
+        value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & _SPLITMIX64_MASK
+        value ^= value >> 31
+        unit = (value >> 40) / float(1 << 24)
+        values.append(2.0 * unit - 1.0)
+    return values
 
 SCORE_MODEL_FILE = "speechbrain/integrations/models/sgmse_plus.py"
 PARAMETER_TRANSFER_FILE = "speechbrain/utils/parameter_transfer.py"
@@ -1657,14 +1689,16 @@ def _run_reference_into(
     algorithm_files = verify_algorithm_source(source, inspection)
     pad_spec_file = verify_pad_spec_source(source)
     # Pin the CPU execution knobs before importing or invoking the upstream
-    # model.  The fixture remains an x86/VAST reference, but its environment is
-    # explicit enough to diagnose a future platform-dependent drift.
+    # model. Input bytes are generated independently below; these settings
+    # describe the upstream forward only and do not control fixture inputs.
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     torch.use_deterministic_algorithms(True)
     torch.set_float32_matmul_precision("highest")
-    torch.manual_seed(20260901)
-    np.random.seed(20260901)
+    # Keep the legacy runtime seed evidence for compatibility with the
+    # completion verifier; fixture values below do not consume either RNG.
+    torch.manual_seed(INPUT_SEED)
+    np.random.seed(INPUT_SEED)
     model, model_evidence = load_score_model(
         source,
         speechbrain_source, checkpoint, SCORE_MODEL_CONFIG
@@ -1693,13 +1727,13 @@ def _run_reference_into(
         candidate_contract, inspection["_manifest_sha256"]
     )
     model_evidence["typed_candidate_contract"] = candidate_contract
-    # Imports and model construction can mutate Torch's precision policy and
-    # consume RNG state. Re-establish the forward-time contract immediately
-    # after those operations so fixture bytes are reproducible.
+    # Imports and model construction can mutate Torch's precision policy.
+    # Re-establish the forward-time contract immediately after those
+    # operations; fixture input bytes do not depend on Torch's RNG state.
     torch.use_deterministic_algorithms(True)
     torch.set_float32_matmul_precision("highest")
-    torch.manual_seed(20260901)
-    np.random.seed(20260901)
+    torch.manual_seed(INPUT_SEED)
+    np.random.seed(INPUT_SEED)
     frequency_bins = 510 // 2 + 1
     # The pinned util/other.py pad_spec contract pads the time axis to a
     # multiple of 64; 64 is the smallest source-authenticated fixture block.
@@ -1707,8 +1741,10 @@ def _run_reference_into(
     # The pinned NCSN++ route accepts complex [batch, channel, frequency,
     # frame] tensors.  The source ScoreModel/Backbone contract fixes one
     # complex channel; do not silently squeeze or broadcast this dimension.
-    real = torch.randn((1, 1, frequency_bins, frames), dtype=torch.float32)
-    imaginary = torch.randn((1, 1, frequency_bins, frames), dtype=torch.float32)
+    plane_size = frequency_bins * frames
+    shape = (1, 1, frequency_bins, frames)
+    real = torch.tensor(stable_input_values(plane_size, 0), dtype=torch.float32).reshape(shape)
+    imaginary = torch.tensor(stable_input_values(plane_size, 1), dtype=torch.float32).reshape(shape)
     noisy = torch.complex(real, imaginary)
     condition = torch.complex(real.flip(-1), imaginary.flip(-1))
     timestep = torch.tensor([0.5], dtype=torch.float32)
@@ -1826,6 +1862,11 @@ def _run_reference_into(
             "nproc": os.cpu_count(),
             "torch_version": torch.__version__,
             "numpy_version": np.__version__,
+            "input_generator": {
+                "algorithm": INPUT_GENERATOR,
+                "spec": INPUT_GENERATOR_SPEC,
+                "seed": INPUT_SEED,
+            },
             "determinism": {
                 "torch_deterministic_algorithms": bool(
                     torch.are_deterministic_algorithms_enabled()
@@ -1833,12 +1874,12 @@ def _run_reference_into(
                 "torch_num_threads": torch.get_num_threads(),
                 "torch_num_interop_threads": torch.get_num_interop_threads(),
                 "torch_float32_matmul_precision": torch.get_float32_matmul_precision(),
-                "numpy_seed": 20260901,
-                "torch_seed": 20260901,
+                "numpy_seed": INPUT_SEED,
+                "torch_seed": INPUT_SEED,
             },
         },
         "input": {
-            "seed": 20260901,
+            "seed": INPUT_SEED,
             "sample_rate": 16_000,
             "n_fft": 510,
             "frequency_bins": frequency_bins,
@@ -1886,6 +1927,9 @@ def self_test() -> None:
     assert PAD_SPEC_SOURCE_SHA256 == "092efb6e7da82d11c0afa555e5b124dd950e1216237e1c165a3aea8d4551ffd0"
     assert PAD_SPEC_SEMANTICS == "pad_spec_pads_time_axis_to_a_multiple_of_64"
     assert PAD_SPEC_MARKERS[-1] == "num_pad = 64-T%64"
+    assert INPUT_GENERATOR == "splitmix64_uniform_f32_v1"
+    assert INPUT_SEED == 20260901
+    assert "hardware-dispatched RNG" in stable_input_values.__doc__.replace("\n", " ")
     assert "reviewed x_t,y,t route" in inspect.getsource(_run_reference_into)
     assert "torch.load(weights_only=True)" in inspect.getsource(load_score_model)
     assert '"bytes": int(tensor.numel()) * 4' in inspect.getsource(_run_reference_into)
@@ -2193,11 +2237,19 @@ def self_test() -> None:
             raise AssertionError(f"toy construction {variant} was accepted")
     reference_source = inspect.getsource(_run_reference_into)
     model_load_end = reference_source.index("model, model_evidence = load_score_model")
-    forward_reassert = reference_source.index(
-        "torch.use_deterministic_algorithms(True)", model_load_end
-    )
-    fixture_randn = reference_source.index("real = torch.randn", forward_reassert)
-    assert model_load_end < forward_reassert < fixture_randn
+    fixture_generator = reference_source.index("stable_input_values", model_load_end)
+    fixture_tensor = reference_source.index("torch.tensor(stable_input_values", fixture_generator)
+    assert model_load_end < fixture_generator < fixture_tensor
+    assert "torch.randn" not in reference_source
+    first_values = stable_input_values(4, 0)
+    assert first_values == [
+        -0.8980529308319092,
+        0.19560980796813965,
+        -0.19750940799713135,
+        -0.762389063835144,
+    ]
+    assert first_values == stable_input_values(4, 0)
+    assert first_values != stable_input_values(4, 1)
     try:
         json.loads('{"duplicate": 1, "duplicate": 2}', object_pairs_hook=reject_duplicate_json)
     except ValueError:
