@@ -11,6 +11,13 @@ on an approved networked worker and then audited for every package and native
 payload before this project may sync or acquire a model. Until that happens,
 the reference dumper fails closed before model acquisition.
 
+On VAST, generate the lock and perform the installed-closure audit with
+`scripts/publish/vast-ai/run-cosyvoice2-llm-closure-audit.sh --audit`. The
+audit records exact registry rows (the `package = false` virtual project row
+is recorded separately), installed metadata/license files, and every native
+payload hash. Its evidence remains `OWNER_REVIEW_REQUIRED` and `NO_UPLOAD`;
+the audit downloads and executes no model.
+
 Pinned inputs are the `llm.pt` component at the immutable CosyVoice2 revision,
 the exact `CosyVoice-BlankEN/config.json` Qwen sidecar, and the clean official
 CosyVoice source revision. No tokenizer download, model upload, or fallback
