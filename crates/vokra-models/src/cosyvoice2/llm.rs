@@ -1105,8 +1105,10 @@ impl LlmBackbone {
     }
 
     /// Appends caller-supplied embedding rows to a decode state and returns
-    /// the final-RMSNorm hidden rows `[rows, hidden]`. The initial call may
-    /// contain multiple rows; subsequent calls must contain exactly one row.
+    /// the final-RMSNorm hidden rows `[rows, hidden]`. Any positive row count
+    /// is accepted on every call; this preserves the official Qwen2LM
+    /// control-input behavior, where an unchanged multi-row `lm_input` may be
+    /// appended again after a control decision.
     pub fn step_embeddings(
         &self,
         state: &mut LlmBackboneStep,
@@ -1137,12 +1139,6 @@ impl LlmBackbone {
                     kv.positions()
                 )));
             }
-        }
-        if state.seq_len != 0 && rows != 1 {
-            return Err(VokraError::InvalidArgument(
-                "cosyvoice2 LLM step_embeddings: only one row may be appended after the initial prefix"
-                    .to_owned(),
-            ));
         }
         let expected = rows.checked_mul(self.config.hidden_dim).ok_or_else(|| {
             VokraError::InvalidArgument(
@@ -2774,10 +2770,11 @@ mod tests {
         backbone
             .step_embeddings(&mut state, &embeddings, 2)
             .unwrap();
-        assert!(matches!(
-            backbone.step_embeddings(&mut state, &embeddings, 2),
-            Err(VokraError::InvalidArgument(_))
-        ));
+        backbone
+            .step_embeddings(&mut state, &embeddings, 2)
+            .unwrap();
+        assert_eq!(state.seq_len, 4);
+        assert_eq!(state.kv_cache.as_ref().unwrap().positions(), 4);
 
         let mut other_config = test_config();
         other_config.n_ctx += 1;
