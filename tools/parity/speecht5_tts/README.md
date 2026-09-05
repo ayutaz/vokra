@@ -34,3 +34,23 @@ Transformers import and model acquisition while
 `BLOCKED_UNVERIFIED_API_SMOKE` remains set. CPU and Apple workers require the named Cargo
 test to report exactly one passed, zero failed/ignored, and require each
 model-level parity sentinel exactly once. No upload path is present.
+
+## API smoke prerequisite
+
+Before changing the reviewed compatibility status, run the dedicated
+`scripts/publish/vast-ai/run-speecht5-tts-api-smoke.sh` worker on a disposable
+Linux x86_64 VAST instance. It requires authenticated preflight approval
+evidence accepted by the existing license gate, a clean checkout, and two
+absent absolute output paths. The worker uses the frozen
+Python 3.12 project, the exact SpeechT5 checkpoint above, and the official
+`SpeechT5ForTextToSpeech.generate_speech` route with the deterministic `Hi.`
+input. It emits only hashed API evidence and `NO_UPLOAD`; it does not run
+Vokra or upload/publish any artifact. Keep the status
+`BLOCKED_UNVERIFIED_API_SMOKE` until that evidence is reviewed.
+
+The approval file is the authenticated evidence consumed by the existing
+`preflight_gate.py` against `license_gate_manifest.json`. It must match that
+manifest's reviewed scope and operator signer. This worker does not introduce
+a parallel approval schema; the current manifest remains blocked while its
+existing dependency/model/operator reviews are unresolved. The Python worker
+also invokes this same gate in-process, so direct invocation cannot bypass it.
