@@ -122,6 +122,35 @@ kernel void vokra_gemm_f32_bf16_bits(
     C[row * d.N + col] = acc;
 }
 
+// ---- raw BF16 activation × raw BF16 weight GEMM --------------------------
+// Both operands stay in their caller-owned ushort storage.  This is a
+// storage/dispatch primitive, not a claim that Metal performs native BF16
+// arithmetic: values are reconstructed to FP32 before the FP32 accumulation.
+struct GemmBf16BitsDims {
+    uint M;
+    uint N;
+    uint K;
+};
+
+kernel void vokra_gemm_bf16_bits(
+    device const ushort* A    [[buffer(0)]],
+    device const ushort* B    [[buffer(1)]],
+    device float*        C    [[buffer(2)]],
+    constant GemmBf16BitsDims& d [[buffer(3)]],
+    uint2                 gid  [[thread_position_in_grid]])
+{
+    const uint row = gid.y;
+    const uint col = gid.x;
+    if (row >= d.M || col >= d.N) return;
+    float acc = 0.0f;
+    const uint arow = row * d.K;
+    for (uint k = 0u; k < d.K; ++k) {
+        acc += vokra_bf16_bits_to_f32(A[arow + k])
+            * vokra_bf16_bits_to_f32(B[k * d.N + col]);
+    }
+    C[row * d.N + col] = acc;
+}
+
 // ---- gemv: out[i] = (has_bias ? bias[i] : 0) + Σ_l A[i*K + l] · x[l] --------
 // Bias-first accumulation matches vokra_backend_cpu::kernels' scalar `gemv`.
 struct GemvDims {
@@ -2616,6 +2645,16 @@ struct GemmF32Bf16BitsDims {
     k: u32,
 }
 
+/// Raw-BF16 activation/raw-BF16-weight GEMM dimensions. Mirrors
+/// `GemmBf16BitsDims` in `KERNELS_MSL`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GemmBf16BitsDims {
+    m: u32,
+    n: u32,
+    k: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct HiftComplexDims {
@@ -3466,6 +3505,9 @@ pub struct MetalContext {
     /// Mixed FP32-activation × raw-BF16-weight GEMM pipeline. The weight
     /// operand remains a `ushort` buffer and is widened in the shader.
     gemm_f32_bf16_bits_pipeline: Id,
+    /// Raw-BF16 activation × raw-BF16-weight GEMM pipeline. Both operands
+    /// remain `ushort` buffers and are widened in the shader.
+    gemm_bf16_bits_pipeline: Id,
     gemv_pipeline: Id,
     softmax_pipeline: Id,
     softmax_causal_pipeline: Id,
@@ -3731,6 +3773,9 @@ impl MetalContext {
         // SAFETY: `device` valid; `klib` owns each named function below.
         let gemm_f32_bf16_bits_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_gemm_f32_bf16_bits") }?;
+        // SAFETY: `device` valid; `klib` owns the named function below.
+        let gemm_bf16_bits_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_gemm_bf16_bits") }?;
         // SAFETY: `device` is valid and `klib` owns the named function.
         let gemv_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gemv_f32") }?;
         // SAFETY: as above.
@@ -3943,6 +3988,7 @@ impl MetalContext {
             queue: queue.into_raw(),
             gemm_pipeline: gemm_pipeline.into_raw(),
             gemm_f32_bf16_bits_pipeline: gemm_f32_bf16_bits_pipeline.into_raw(),
+            gemm_bf16_bits_pipeline: gemm_bf16_bits_pipeline.into_raw(),
             gemv_pipeline: gemv_pipeline.into_raw(),
             softmax_pipeline: softmax_pipeline.into_raw(),
             softmax_causal_pipeline: softmax_causal_pipeline.into_raw(),
@@ -8336,6 +8382,41 @@ impl MetalContext {
         result
     }
 
+    /// Host-in/host-out GEMM over raw BF16 activation and weight matrices.
+    ///
+    /// `a` is `[m,k]` and `b` is `[k,n]`, both containing caller-owned BF16
+    /// bit patterns.  The buffers remain raw `ushort` storage on the device;
+    /// the shader reconstructs each value to FP32 and accumulates in FP32.
+    /// This is a storage/API capability, not a claim of native Metal BF16
+    /// arithmetic.  No CPU fallback is performed.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] is returned for shape, overflow, or
+    /// MSL-dimension conversion errors. [`VokraError::BackendUnavailable`]
+    /// covers Metal allocation and command failures.
+    pub fn gemm_bf16_bits(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[u16],
+        b: &[u16],
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_raw_bf16_host(m, n, k, a, b, out)?;
+        if m == 0 || n == 0 {
+            return Ok(());
+        }
+        // SAFETY: the token returned by push is consumed by exactly one
+        // matching pop below, including the error path.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_gemm_bf16_bits(m, n, k, a, b, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
     /// Mixed-BF16 host GEMM body. Shapes are already validated and the caller
     /// has established the autorelease-pool boundary.
     #[allow(clippy::too_many_arguments)]
@@ -8356,6 +8437,23 @@ impl MetalContext {
         // copy the completed shared buffer directly rather than composing the
         // resident `download` API. The resident readback counter therefore
         // remains reserved for explicit device-tensor downloads.
+        read_back(&output.buf, out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_gemm_bf16_bits(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[u16],
+        b: &[u16],
+        out: &mut [f32],
+    ) -> Result<()> {
+        let activation = self.upload_bf16_bits(a)?;
+        let weight = self.upload_bf16_bits(b)?;
+        let mut output = self.alloc_dev(out.len())?;
+        self.gemm_bf16_bits_dev(&mut output, &activation, &weight, m, n, k)?;
         read_back(&output.buf, out)
     }
 
@@ -8486,6 +8584,60 @@ impl MetalContext {
             grid,
             tg,
             "gemm_f32_bf16_bits",
+        )
+    }
+
+    /// Device-resident GEMM over raw BF16 activation and weight matrices.
+    ///
+    /// Both inputs must be [`MetalBf16DeviceTensor`]s owned by this context;
+    /// the output is an FP32 [`MetalDeviceTensor`].  The shader reconstructs
+    /// both operands to FP32 and accumulates in FP32.  A shape/context error
+    /// is rejected before dispatch, and unsupported execution never falls back
+    /// to the CPU.
+    ///
+    /// Zero-size semantics match the CPU raw-BF16 GEMM contract: `m == 0` or
+    /// `n == 0` leaves a correctly shaped output untouched, while `k == 0`
+    /// dispatches one GPU pass that writes exact zeros.
+    pub fn gemm_bf16_bits_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        activation: &MetalBf16DeviceTensor<'_>,
+        weight: &MetalBf16DeviceTensor<'_>,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "gemm_bf16_bits_dev output")?;
+        self.expect_owner_bf16(activation, "gemm_bf16_bits_dev activation")?;
+        self.expect_owner_bf16(weight, "gemm_bf16_bits_dev weight")?;
+
+        let (activation_len, weight_len, output_len) =
+            validate_mixed_bf16_dims(m, n, k, "gemm_bf16_bits_dev")?;
+        expect_len(
+            "gemm_bf16_bits_dev activation",
+            activation.len,
+            activation_len,
+        )?;
+        expect_len("gemm_bf16_bits_dev weight", weight.len, weight_len)?;
+        expect_len("gemm_bf16_bits_dev output", out.len, output_len)?;
+        if m == 0 || n == 0 {
+            return Ok(());
+        }
+
+        let dims = GemmBf16BitsDims {
+            m: checked_u32(m, "gemm_bf16_bits_dev m")?,
+            n: checked_u32(n, "gemm_bf16_bits_dev n")?,
+            k: checked_u32(k, "gemm_bf16_bits_dev k")?,
+        };
+        let (grid, tg) = grid_2d(n, m);
+        self.dispatch_compute(
+            self.gemm_bf16_bits_pipeline,
+            &[&activation.buf, &weight.buf, &out.buf],
+            (&dims as *const GemmBf16BitsDims).cast::<c_void>(),
+            size_of::<GemmBf16BitsDims>(),
+            grid,
+            tg,
+            "gemm_bf16_bits",
         )
     }
 
@@ -11337,6 +11489,7 @@ impl Drop for MetalContext {
             release(self.softmax_causal_pipeline);
             release(self.softmax_pipeline);
             release(self.gemv_pipeline);
+            release(self.gemm_bf16_bits_pipeline);
             release(self.gemm_f32_bf16_bits_pipeline);
             release(self.gemm_pipeline);
             release(self.queue);
@@ -12499,6 +12652,20 @@ fn validate_mixed_bf16_host(
     expect_len("gemm_f32_bf16_bits activation", a.len(), mk)?;
     expect_len("gemm_f32_bf16_bits weight", b.len(), kn)?;
     expect_len("gemm_f32_bf16_bits output", out.len(), mn)
+}
+
+fn validate_raw_bf16_host(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[u16],
+    b: &[u16],
+    out: &[f32],
+) -> Result<()> {
+    let (mk, kn, mn) = validate_mixed_bf16_dims(m, n, k, "gemm_bf16_bits")?;
+    expect_len("gemm_bf16_bits activation", a.len(), mk)?;
+    expect_len("gemm_bf16_bits weight", b.len(), kn)?;
+    expect_len("gemm_bf16_bits output", out.len(), mn)
 }
 
 fn validate_gemv(

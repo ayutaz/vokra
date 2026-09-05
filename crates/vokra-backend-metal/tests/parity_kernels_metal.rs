@@ -13,7 +13,7 @@
 
 use vokra_backend_cpu::kernels as cpu;
 use vokra_backend_metal::MetalContext;
-use vokra_core::{KvCache, PrenormLayer};
+use vokra_core::{KvCache, PrenormLayer, VokraError};
 
 #[path = "../../vokra-backend-cpu/tests/support/vocoder_conv_fixture.rs"]
 mod vocoder_conv_fixture;
@@ -2984,4 +2984,106 @@ fn mixed_bf16_host_wrapper_keeps_resident_readback_counter_clean() {
     for (actual, want) in output.into_iter().zip(expected) {
         assert!((actual - want).abs() <= 1.0e-5);
     }
+}
+
+#[test]
+fn raw_bf16_gemm_keeps_both_operands_raw_and_matches_scalar_oracle() {
+    let ctx = ctx_or_skip!("raw BF16 GEMM");
+    let (m, n, k) = (3usize, 5usize, 7usize);
+    let pattern = [0x0000, 0x8000, 0x3f80, 0xbf80, 0x3f81, 0xbf81, 0x4000];
+    let activation: Vec<u16> = (0..m * k)
+        .map(|index| pattern[index % pattern.len()])
+        .collect();
+    let weight: Vec<u16> = (0..k * n)
+        .map(|index| pattern[(index + 2) % pattern.len()])
+        .collect();
+
+    let mut expected = vec![0.0f32; m * n];
+    for row in 0..m {
+        for col in 0..n {
+            for inner in 0..k {
+                expected[row * n + col] += bf16_bits_to_f32(activation[row * k + inner])
+                    * bf16_bits_to_f32(weight[inner * n + col]);
+            }
+        }
+    }
+
+    let activation_dev = ctx
+        .upload_bf16_bits(&activation)
+        .expect("raw BF16 activation upload");
+    let weight_dev = ctx
+        .upload_bf16_bits(&weight)
+        .expect("raw BF16 weight upload");
+    let mut output_dev = ctx.alloc_dev(m * n).expect("output allocation");
+    ctx.gemm_bf16_bits_dev(&mut output_dev, &activation_dev, &weight_dev, m, n, k)
+        .expect("raw BF16 GEMM");
+    assert_eq!(ctx.submission_count(), 1, "one GPU submission");
+    assert_eq!(ctx.readback_count(), 0, "no implicit resident readback");
+    let mut actual = vec![f32::NAN; m * n];
+    ctx.download(&output_dev, &mut actual)
+        .expect("final raw BF16 readback");
+    for (index, (&got, &want)) in actual.iter().zip(&expected).enumerate() {
+        assert!(
+            (got - want).abs() <= 1.0e-5,
+            "raw BF16 GEMM index {index}: got {got}, expected {want}"
+        );
+    }
+
+    let mut host_output = vec![f32::NAN; m * n];
+    ctx.gemm_bf16_bits(m, n, k, &activation, &weight, &mut host_output)
+        .expect("raw BF16 host wrapper");
+    assert_eq!(
+        host_output, actual,
+        "host and resident raw-BF16 paths differ"
+    );
+}
+
+#[test]
+fn raw_bf16_gemm_rejects_shape_and_context_mismatch_and_handles_zero_k() {
+    let ctx = ctx_or_skip!("raw BF16 validation");
+    let activation = ctx
+        .upload_bf16_bits(&[0x3f80; 6])
+        .expect("activation upload");
+    let weight = ctx.upload_bf16_bits(&[0x3f80; 8]).expect("weight upload");
+    let mut wrong_output = ctx.alloc_dev(3).expect("wrong output allocation");
+    assert!(matches!(
+        ctx.gemm_bf16_bits_dev(&mut wrong_output, &activation, &weight, 2, 2, 3),
+        Err(VokraError::InvalidArgument(_))
+    ));
+    assert_eq!(
+        ctx.submission_count(),
+        0,
+        "shape rejection must not dispatch"
+    );
+
+    let other = match MetalContext::new() {
+        Ok(context) => context,
+        Err(error) => {
+            eprintln!("second Metal context unavailable; skipping owner check: {error}");
+            return;
+        }
+    };
+    let foreign_activation = other
+        .upload_bf16_bits(&[0x3f80; 6])
+        .expect("foreign activation upload");
+    let mut valid_output = ctx.alloc_dev(4).expect("valid output allocation");
+    assert!(matches!(
+        ctx.gemm_bf16_bits_dev(&mut valid_output, &foreign_activation, &weight, 2, 2, 3,),
+        Err(VokraError::InvalidArgument(_))
+    ));
+    assert_eq!(
+        ctx.submission_count(),
+        0,
+        "owner rejection must not dispatch"
+    );
+
+    let empty_activation = ctx.upload_bf16_bits(&[]).expect("empty activation upload");
+    let empty_weight = ctx.upload_bf16_bits(&[]).expect("empty weight upload");
+    let mut zero_output = ctx.alloc_dev(6).expect("zero-k output allocation");
+    ctx.gemm_bf16_bits_dev(&mut zero_output, &empty_activation, &empty_weight, 2, 3, 0)
+        .expect("raw BF16 zero-k GEMM");
+    let mut zeros = [f32::NAN; 6];
+    ctx.download(&zero_output, &mut zeros)
+        .expect("zero-k output readback");
+    assert_eq!(zeros, [0.0; 6]);
 }

@@ -44,9 +44,9 @@
 //! entry, threading `&Compute` down. That keeps the engines `Send + Sync` while
 //! the `!Send` context lives only for the call.
 
-use vokra_backend_cpu::IsaPath;
 use vokra_backend_cpu::kernels;
 use vokra_backend_cpu::kernels::KQuantDtype;
+use vokra_backend_cpu::{CpuFeatures, IsaPath};
 use vokra_core::backend::BackendKind;
 use vokra_core::{Backend, DecoderLayerView, PrenormLayer, Result, VokraError};
 // M3-06 mimi_rvq (+ M4-04 dac_rvq / encodec_rvq, + M4-16 FSQ family
@@ -1156,6 +1156,47 @@ impl Compute {
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "mixed raw-BF16 GEMM is not exposed on WebGPU; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Row-major GEMM over caller-owned raw BF16 activation and weight bits.
+    ///
+    /// `a` is `[m,k]`, `b` is `[k,n]`, and `out` is `[m,n]`; all accumulation
+    /// is FP32.  CPU selects the existing native BF16 path when available and
+    /// otherwise its existing scalar raw-bit oracle.  Metal keeps both inputs
+    /// as raw `ushort` device storage and reconstructs them to FP32 in MSL.
+    /// CUDA/WebGPU return an explicit unsupported error; no backend silently
+    /// falls back to CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_bf16_bits(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[u16],
+        b: &[u16],
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => {
+                let isa = self
+                    .cpu_isa
+                    .or_else(|| CpuFeatures::detect().best_bf16_isa())
+                    .unwrap_or(IsaPath::Scalar);
+                kernels::gemm_bf16_bits_on(isa, m, n, k, a, b, out)
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.gemm_bf16_bits(m, n, k, a, b, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "raw BF16 activation × raw BF16 weight GEMM is not exposed on CUDA; no CPU fallback is performed"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "raw BF16 activation × raw BF16 weight GEMM is not exposed on WebGPU; no CPU fallback is performed"
                     .to_owned(),
             )),
         }
@@ -5611,6 +5652,53 @@ mod tests {
         assert!(Compute::cpu().supports_mixed_bf16());
         assert_eq!(Compute::cpu().backend_name(), "cpu");
         assert_ne!(a[0], kernels::bf16_to_f32(kernels::f32_to_bf16_rne(a[0])));
+    }
+
+    #[test]
+    fn cpu_raw_bf16_gemm_dispatches_bits_and_handles_tails_and_zero_k() {
+        let a_f32 = [1.0039062f32, -2.0078125, 0.5, 3.25, -4.5, 0.125];
+        let b_f32 = [1.0f32, -2.0, 3.25, 0.5];
+        let a: Vec<u16> = a_f32
+            .iter()
+            .copied()
+            .map(kernels::f32_to_bf16_rne)
+            .collect();
+        let b: Vec<u16> = b_f32
+            .iter()
+            .copied()
+            .map(kernels::f32_to_bf16_rne)
+            .collect();
+        let mut actual = vec![f32::NAN; 3 * 2];
+        Compute::cpu()
+            .gemm_bf16_bits(3, 2, 2, &a, &b, &mut actual)
+            .expect("CPU raw BF16 GEMM");
+
+        let mut expected = vec![0.0f32; 3 * 2];
+        for row in 0..3 {
+            for col in 0..2 {
+                for inner in 0..2 {
+                    expected[row * 2 + col] += kernels::bf16_to_f32(a[row * 2 + inner])
+                        * kernels::bf16_to_f32(b[inner * 2 + col]);
+                }
+            }
+        }
+        for (index, (&got, &want)) in actual.iter().zip(&expected).enumerate() {
+            assert!(
+                (got - want).abs() <= 1.0e-3,
+                "raw BF16 GEMM index {index}: got {got}, expected scalar {want}"
+            );
+        }
+
+        let mut zero_k = [f32::NAN; 6];
+        Compute::cpu()
+            .gemm_bf16_bits(3, 2, 0, &[], &[], &mut zero_k)
+            .expect("CPU raw BF16 zero-k GEMM");
+        assert_eq!(zero_k, [0.0; 6]);
+
+        let error = Compute::cpu()
+            .gemm_bf16_bits(3, 2, 2, &a[..4], &b, &mut actual)
+            .expect_err("raw BF16 shape mismatch must be explicit");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
     }
 
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]

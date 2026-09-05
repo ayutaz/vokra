@@ -49,6 +49,40 @@ fn compare_case(case: &Fixture) {
 }
 
 #[test]
+fn raw_bf16_bits_gemm_matches_existing_pytorch_fixture() {
+    // The committed fixture contract stores the pre-rounding f32 inputs, not
+    // raw bits.  Re-encode those inputs with the runtime's explicit RNE
+    // conversion and compare the raw-bit path with the same independent
+    // PyTorch output; no oracle values are invented here.
+    for case in fixture::load_all() {
+        let a: Vec<u16> = case
+            .a
+            .iter()
+            .copied()
+            .map(kernels::f32_to_bf16_rne)
+            .collect();
+        let b: Vec<u16> = case
+            .b
+            .iter()
+            .copied()
+            .map(kernels::f32_to_bf16_rne)
+            .collect();
+        let mut actual = vec![f32::NAN; case.m * case.n];
+        kernels::gemm_bf16_bits_on(IsaPath::Scalar, case.m, case.n, case.k, &a, &b, &mut actual)
+            .unwrap_or_else(|error| panic!("{}: raw BF16 GEMM failed: {error}", case.name));
+        for (index, (&got, &expected)) in actual.iter().zip(&case.output).enumerate() {
+            let tolerance = case.atol + case.rtol * expected.abs();
+            assert!(
+                (got - expected).abs() <= tolerance,
+                "{}: index {index}: raw BF16={got:?}, PyTorch={expected:?}, |diff|={} > tolerance {tolerance}",
+                case.name,
+                (got - expected).abs()
+            );
+        }
+    }
+}
+
+#[test]
 #[ignore = "run after VAST PyTorch fixture generation; no local Torch/model execution"]
 fn avx512_bf16_gemm_matches_pytorch_reference() {
     let features = CpuFeatures::detect();
