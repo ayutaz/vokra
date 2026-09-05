@@ -581,6 +581,12 @@ def parse_metadata(metadata: bytes, row: dict[str, Any], path: str) -> dict[str,
     return fields
 
 
+def is_wheel_root_metadata(path: str) -> bool:
+    """Return whether path is the wheel's package-identity METADATA member."""
+    parts = path.casefold().split("/")
+    return len(parts) == 2 and parts[0].endswith(".dist-info") and parts[1] == "metadata"
+
+
 def ensure_safe_output(path: Path) -> None:
     if path.exists() or path.is_symlink():
         fail(f"output already exists or is symlinked: {path}")
@@ -625,9 +631,13 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
 
 def inspect_package(row: dict[str, Any], path: Path, locked_artifact: dict[str, Any], selection_basis: str) -> dict[str, Any]:
     inventory = inspect_archive(path)
-    metadata = inventory["metadata"]
+    # Vendored distributions may carry their own dist-info/METADATA members.
+    # They remain in the archive inventory (and therefore undergo all safety,
+    # bounded-read, and hash accounting), but only the wheel-root metadata is
+    # authoritative for this package's identity.
+    metadata = [item for item in inventory["metadata"] if is_wheel_root_metadata(item[0])]
     if len(metadata) != 1:
-        fail(f"{row['name']} must contain exactly one dist-info/METADATA")
+        fail(f"{row['name']} must contain exactly one wheel-root dist-info/METADATA")
     metadata_path, metadata_bytes = metadata[0]
     metadata_fields = parse_metadata(metadata_bytes, row, metadata_path)
     native = sorted(inventory["native"], key=lambda item: item["path"])
@@ -714,6 +724,10 @@ def self_test() -> None:
             archive.writestr(
                 "demo-1.0.dist-info/METADATA",
                 "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\nLicense: MIT\n",
+            )
+            archive.writestr(
+                "demo/_vendor/nested-1.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: nested\nVersion: 1.0\n",
             )
             archive.writestr("LICENSE", "MIT License\n")
             archive.writestr("NOTICE", "demo notice\n")
@@ -860,6 +874,7 @@ wheels = [{ url = 'https://files.pythonhosted.org/packages/inactive.whl', hash =
         assert value["dependency_review"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
         assert value["packages"][0]["selected_filename"] == wheel_path.name
         assert value["packages"][0]["selection_basis"] == "py3-none-any-universal"
+        assert value["packages"][0]["metadata"]["path"] == "demo-1.0.dist-info/METADATA"
         assert value["packages"][0]["native_bundled_payloads"][0]["sha256"] == sha256_bytes(b"native")
         assert value["packages"][0]["notice_payloads"][0]["path"] == "NOTICE"
         assert {item["path"] for item in value["packages"][0]["license_payloads"]} == {
@@ -869,6 +884,27 @@ wheels = [{ url = 'https://files.pythonhosted.org/packages/inactive.whl', hash =
             "THIRD_PARTY_LICENSES.txt",
         }
         assert value["packages"][0]["dependency_review"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
+        root_duplicate_buffer = io.BytesIO()
+        with zipfile.ZipFile(wheel_path) as source, zipfile.ZipFile(root_duplicate_buffer, "w") as archive:
+            for info in source.infolist():
+                archive.writestr(info, source.read(info.filename))
+            archive.writestr(
+                "other-1.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: other\nVersion: 1.0\n",
+            )
+        root_duplicate_path = root / "root-duplicate.whl"
+        root_duplicate_path.write_bytes(root_duplicate_buffer.getvalue())
+        try:
+            inspect_package(
+                {**lock_row, "source": {"registry": "https://pypi.org/simple"}},
+                root_duplicate_path,
+                {"url": "fixture", "hash": "sha256:00"},
+                "self-test",
+            )
+        except SystemExit as exc:
+            assert "exactly one wheel-root" in str(exc)
+        else:
+            raise SystemExit("bigvgan closure self-test accepted duplicate wheel-root metadata")
         assert value["approval"] == {
             "status": "OWNER_SIGNOFF_REQUIRED",
             "signer": None,
