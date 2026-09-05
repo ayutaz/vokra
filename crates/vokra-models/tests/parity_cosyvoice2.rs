@@ -141,7 +141,7 @@ fn parity_cosyvoice2_mimi_bridge_accepts_kyutai_defaults() {
 /// fallback to linear).
 #[test]
 fn parity_cosyvoice2_unknown_schedule_fails_up_front() {
-    let bytes = synthetic_gguf("cosyvoice2", "cosine");
+    let bytes = synthetic_gguf("cosyvoice2", "not-a-schedule");
     let file = vokra_core::gguf::GgufFile::parse(bytes).expect("parse");
     let cfg = CosyVoice2Config::from_gguf(&file).expect("read");
     // The runtime accepts the tag string at config load time (the reader
@@ -150,7 +150,7 @@ fn parity_cosyvoice2_unknown_schedule_fails_up_front() {
     // Matching driver builds its runtime params.
     use vokra_models::cosyvoice2::FlowMatchingRuntimeParams;
     let err = FlowMatchingRuntimeParams::from_config(&cfg)
-        .expect_err("cosine is not a schedule vokra_ops accepts");
+        .expect_err("not-a-schedule is not a schedule vokra_ops accepts");
     assert!(matches!(err, VokraError::InvalidArgument(_)));
 }
 
