@@ -23,6 +23,11 @@ dependencies = [
 
 [tool.uv]
 package = false
+# The fixed inference route never imports setuptools. Keep the transitive
+# requirement impossible so uv omits setuptools, including its forbidden
+# LGPLv3-vendored autocommand payload, from every platform closure. Do not
+# replace this with a newer setuptools pin: the payload is still bundled.
+override-dependencies = ["setuptools ; python_version < '0'"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

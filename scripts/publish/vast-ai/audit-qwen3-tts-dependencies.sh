@@ -107,6 +107,9 @@ self_test() {
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- 'fixed source LICENSE paths' "$0" || failed=1
   grep -Fq -- 'no model download' "$0" || failed=1
+  grep -Fq -- "setuptools ; python_version < '0'" "$PARITY_PROJECT/pyproject.toml" || failed=1
+  ! grep -Eq '^[[:space:]]*name[[:space:]]*=[[:space:]]*"setuptools"[[:space:]]*$' "$PARITY_PROJECT/uv.lock" || failed=1
+  ! grep -Eq '^[[:space:]]*\{[[:space:]]*name[[:space:]]*=[[:space:]]*"setuptools"([,[:space:]])' "$PARITY_PROJECT/uv.lock" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   grep -Fq -- 'uv run --no-cache --no-project --offline --python 3.12' "$0" || failed=1
   if VOKRA_PUBLISH_ON_VAST=0 run_audit /private/tmp/qwen3-tts-audit-self-test.json >/dev/null 2>&1; then failed=1; fi

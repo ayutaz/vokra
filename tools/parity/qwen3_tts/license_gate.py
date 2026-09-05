@@ -41,9 +41,12 @@ REGISTRY_PACKAGE_KEYS = (
     frozenset({"name", "version", "source", "dependencies", "resolution-markers", "wheels"}),
 )
 REQUIRES_DIST_KEYS = (frozenset({"name", "specifier"}), frozenset({"name", "specifier", "extras"}), frozenset({"name", "specifier", "marker"}), frozenset({"name", "specifier", "extras", "marker"}), frozenset({"name", "specifier", "index"}), frozenset({"name", "git"}))
-LOCK_SHA256 = "662d92f45f5554be78bdf88934b7e7e0b59d01e3b5953558534b903119714f2a"
-PYPROJECT_SHA256 = "1d988815b5a7dd0560cf0c9f7d5d8b70cc765059933a6b48d1d84399af0b5857"
-FORBIDDEN_PACKAGES = ("gradio", "onnxruntime", "protobuf", "sox")
+LOCK_SHA256 = "b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2"
+PYPROJECT_SHA256 = "7ef84e96d4fb486aa4b6c922fbbe06cb42f8ab56108958106287ccd613ac100e"
+# setuptools is forbidden in this reference closure: torch declares it as a
+# transitive runtime dependency, but the fixed route never imports it and the
+# package bundles the LGPLv3 autocommand payload.
+FORBIDDEN_PACKAGES = ("gradio", "onnxruntime", "protobuf", "setuptools", "sox")
 PLACEHOLDER_SENTINELS = {"UNRESOLVED", "OWNER_REVIEW_REQUIRED", "PENDING_REVIEW", "REVIEW_REQUIRED"}
 VARIANTS = ("0.6b-base", "0.6b-customvoice", "1.7b-base", "1.7b-customvoice")
 FIXED_IDENTITIES = {
@@ -155,19 +158,23 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
     """Validate the resolver schema before any digest/sign-off is trusted."""
     if not isinstance(project, dict) or not isinstance(project.get("project"), dict) or not isinstance(project.get("tool"), dict):
         raise ValueError("pyproject root schema drifted")
-    if set(lock) != {"version", "revision", "requires-python", "resolution-markers", "package"}:
+    if set(lock) != {"version", "revision", "requires-python", "resolution-markers", "manifest", "package"}:
         raise ValueError("uv.lock top-level schema drifted")
     if not isinstance(lock["version"], int) or isinstance(lock["version"], bool) or lock["version"] != 1 or not isinstance(lock["revision"], int) or lock["revision"] != 3:
         raise ValueError("uv.lock version/revision types drifted")
     if not isinstance(lock["requires-python"], str) or not isinstance(lock["resolution-markers"], list) or not isinstance(lock["package"], list):
         raise ValueError("uv.lock top-level value types drifted")
+    if lock["manifest"] != {"overrides": [{"name": "setuptools", "marker": "python_full_version < '0'"}]}:
+        raise ValueError("uv.lock override manifest drifted")
     if set(project) != {"project", "tool"} or set(project["project"]) != {"name", "version", "description", "requires-python", "dependencies"}:
         raise ValueError("pyproject schema drifted")
     if not isinstance(project["project"]["dependencies"], list) or set(project["tool"]) != {"uv"}:
         raise ValueError("pyproject dependency/tool schema drifted")
     uv = project["tool"]["uv"]
-    if not isinstance(uv, dict) or set(uv) != {"package", "index", "sources"} or not isinstance(uv["package"], bool) or not isinstance(uv["index"], list) or not isinstance(uv["sources"], dict):
+    if not isinstance(uv, dict) or set(uv) != {"package", "index", "sources", "override-dependencies"} or not isinstance(uv["package"], bool) or not isinstance(uv["index"], list) or not isinstance(uv["sources"], dict):
         raise ValueError("pyproject uv configuration drifted")
+    if uv["override-dependencies"] != ["setuptools ; python_version < '0'"]:
+        raise ValueError("pyproject override dependency drifted")
     identities: set[tuple[str, str, str]] = set()
     virtual = 0
     for package in lock["package"]:
@@ -234,6 +241,8 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
         for dependency in dependencies:
             if not isinstance(dependency, dict) or frozenset(dependency) not in DEPENDENCY_KEYS or not isinstance(dependency.get("name"), str) or not dependency["name"].strip():
                 raise ValueError("uv.lock dependency schema drifted")
+            if dependency["name"] in FORBIDDEN_PACKAGES:
+                raise ValueError(f"forbidden package dependency is locked: {dependency['name']}")
             if "extra" in dependency and (not isinstance(dependency["extra"], list) or any(not isinstance(x, str) or not x.strip() for x in dependency["extra"])):
                 raise ValueError("uv.lock dependency extra drifted")
             if "version" in dependency and (not isinstance(dependency["version"], str) or not dependency["version"].strip()):

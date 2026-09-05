@@ -186,6 +186,8 @@ def active_rows(lock: dict[str, Any], env: dict[str, str]) -> tuple[list[dict[st
         for dep in row.get("dependencies", []):
             if not isinstance(dep, dict) or not isinstance(dep.get("name"), str):
                 raise AuditError(f"malformed dependency row: {row['name']}")
+            if dep["name"] in license_gate.FORBIDDEN_PACKAGES:
+                raise AuditError(f"forbidden package dependency is locked: {dep['name']}")
             marker_matches(dep.get("marker"), env)
     roots = [r for r in rows if r.get("source") == {"virtual": "."}]
     if len(roots) != 1:
@@ -668,6 +670,10 @@ def audit_environment(project: Path, fetch_model_licenses: bool) -> dict[str, An
     for dist in records:
         if dist.metadata.get("Name"): by_id.setdefault(identity(dist.metadata["Name"], dist.version), []).append(dist)
     packages: list[dict[str, Any]] = []; failures: list[str] = []
+    locked_names = {row["name"] for row in lock.get("package", []) if isinstance(row, dict)}
+    forbidden_locked = sorted(locked_names & set(license_gate.FORBIDDEN_PACKAGES))
+    if forbidden_locked:
+        failures.append(f"forbidden packages are locked: {forbidden_locked}")
     for row in expected_rows:
         key = identity(row["name"], row["version"]); candidates = by_id.get(key, [])
         if len(candidates) != 1:
@@ -726,6 +732,17 @@ def self_test() -> int:
     assert project_data["project"]["name"] == "vokra-qwen3-tts-parity"
     assert len(linux_rows) > 0 and len(linux_rows) + len(linux_inactive) == len(lock["package"])
     assert sum(row.get("source") == {"virtual": "."} for row in lock["package"]) == 1
+    assert "setuptools" not in {row["name"] for row in lock["package"]}
+    assert "setuptools" in license_gate.FORBIDDEN_PACKAGES
+    tampered_lock = json.loads(json.dumps(lock))
+    torch_row = next(row for row in tampered_lock["package"] if row["name"] == "torch")
+    torch_row.setdefault("dependencies", []).append({"name": "setuptools"})
+    try:
+        active_rows(tampered_lock, {"implementation_name": "cpython", "platform_machine": "x86_64", "sys_platform": "linux"})
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("setuptools dependency reintroduction was accepted")
     assert gate["status"] == "BLOCKED_UNRESOLVED_REVIEW"
     assert "accelerate==1.12.0" in gate["unresolved_rows"]
     assert identity("foo_bar", "1.0") == "foo-bar==1.0"

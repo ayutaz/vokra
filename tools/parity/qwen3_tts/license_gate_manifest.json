@@ -1,11 +1,11 @@
 {
   "gate_version": 2,
-  "pyproject_sha256": "1d988815b5a7dd0560cf0c9f7d5d8b70cc765059933a6b48d1d84399af0b5857",
-  "lock_sha256": "662d92f45f5554be78bdf88934b7e7e0b59d01e3b5953558534b903119714f2a",
-  "package_rows_sha256": "5c72dec8fa3a5ac47878dcbed0f4d4f953b47fce94dda5a5572bff7cdb1e507b",
-  "review_rows_sha256": "5d75b3a65b2cfd626def7d2e9c3dda30b7250b819e03f13c589fd0bf5fccadc9",
+  "pyproject_sha256": "7ef84e96d4fb486aa4b6c922fbbe06cb42f8ab56108958106287ccd613ac100e",
+  "lock_sha256": "b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2",
+  "package_rows_sha256": "96b9e02c836283426189e223cf8b2c48ac7d8888819a834bbbb2bc15b26e575f",
+  "review_rows_sha256": "29e8ac64e9d75e84ba3571f2107fd4deb2035b8834f2b7a1829577aa1da0b4f2",
   "component_rows_sha256": "8700cea9fac4646ae65925adbb0e11b4d41e859db4127c2abdb0ba518fe01019",
-  "approval_scope_sha256": "350bebabb77db9c9bd8837e39076e5cb8949c8b05aa13d85decaa392ed2b0c97",
+  "approval_scope_sha256": "ccfcff4d4fca695f8136edf018ad7a5b2ba726a89ea2b276c4778381217a4463",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -716,20 +716,6 @@
       "approval_digest": null
     },
     {
-      "name": "setuptools",
-      "version": "84.0.0",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
-      "approval_schema": "v1",
-      "approval_signer": null,
-      "approval_digest": null
-    },
-    {
       "name": "shellingham",
       "version": "1.5.4",
       "source": {
@@ -1051,6 +1037,7 @@
     "gradio",
     "onnxruntime",
     "protobuf",
+    "setuptools",
     "sox"
   ],
   "publication": "NO_UPLOAD"

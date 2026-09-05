@@ -26,6 +26,11 @@ them unconditionally for voice-clone audio normalization; `gradio`,
 `onnxruntime`, `protobuf`, and `sox` demo/ONNX/SoX paths are excluded. The tool
 is offline after source and model snapshots are staged and never uploads or
 publishes.
+Torch declares `setuptools` transitively, but this fixed route never imports
+it. The project therefore applies the strict impossible-marker override
+`setuptools ; python_version < '0'`; uv omits the package from every platform
+closure, and the gate rejects any lock that reintroduces it because the pinned
+release bundles an LGPLv3 `autocommand` payload.
 
 The isolated reference previously used `transformers==4.57.3`, which is
 affected by `GHSA-xrqw-3rrv-vx5w` (<5.10.0). The reviewed dependency is now

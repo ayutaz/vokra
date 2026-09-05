@@ -35,7 +35,7 @@ MODEL_CONFIG_SHA256 = "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef
 DECODER_REPOSITORY = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
-LOCK_SHA256 = "662d92f45f5554be78bdf88934b7e7e0b59d01e3b5953558534b903119714f2a"
+LOCK_SHA256 = "b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2"
 TRANSFORMERS_VERSION = "5.10.4"
 TEXT = "The Vokra API smoke packet is short and deterministic."
 LANGUAGE = "English"
@@ -298,6 +298,14 @@ def require_lock(lock_path: Path) -> dict[str, Any]:
     packages = lock.get("package")
     if not isinstance(packages, list):
         raise SmokeError("uv.lock package table is malformed")
+    if any(isinstance(package, dict) and package.get("name") == "setuptools" for package in packages):
+        raise SmokeError("uv.lock contains forbidden setuptools")
+    if any(
+        isinstance(package, dict)
+        and any(isinstance(dependency, dict) and dependency.get("name") == "setuptools" for dependency in package.get("dependencies", []))
+        for package in packages
+    ):
+        raise SmokeError("uv.lock contains forbidden setuptools dependency")
     versions: dict[str, set[str]] = {}
     for package in packages:
         if isinstance(package, dict) and isinstance(package.get("name"), str) and isinstance(package.get("version"), str):
@@ -627,6 +635,7 @@ def run_smoke(args: argparse.Namespace) -> int:
 
 
 def self_test() -> None:
+    global LOCK_SHA256
     if "torch" in sys.modules or "transformers" in sys.modules:
         raise SmokeError("self-test imported a model dependency")
     for values in (("0", "Linux", "x86_64"), ("1", "Darwin", "arm64"), ("1", "Linux", "aarch64")):
@@ -696,6 +705,35 @@ def self_test() -> None:
             pass
         else:
             raise SmokeError("lock SHA-256 drift was accepted")
+        forbidden_lock = root / "forbidden-uv.lock"
+        forbidden_lock.write_text(
+            '[project]\nname = "test"\n\n[[package]]\nname = "setuptools"\nversion = "84.0.0"\n',
+            encoding="utf-8",
+        )
+        original_lock_sha = LOCK_SHA256
+        LOCK_SHA256 = sha256_file(forbidden_lock)
+        try:
+            require_lock(forbidden_lock)
+        except SmokeError:
+            pass
+        else:
+            raise SmokeError("setuptools package reintroduction was accepted")
+        finally:
+            LOCK_SHA256 = original_lock_sha
+        forbidden_dependency_lock = root / "forbidden-dependency-uv.lock"
+        forbidden_dependency_lock.write_text(
+            '[project]\nname = "test"\n\n[[package]]\nname = "torch"\nversion = "2.7.1"\ndependencies = [{ name = "setuptools" }]\n',
+            encoding="utf-8",
+        )
+        LOCK_SHA256 = sha256_file(forbidden_dependency_lock)
+        try:
+            require_lock(forbidden_dependency_lock)
+        except SmokeError:
+            pass
+        else:
+            raise SmokeError("setuptools dependency reintroduction was accepted")
+        finally:
+            LOCK_SHA256 = original_lock_sha
         protected = root / "protected"
         output_parent = root / "output"
         protected.mkdir()
