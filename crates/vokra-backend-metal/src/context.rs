@@ -2182,6 +2182,71 @@ kernel void vokra_anti_aliased_upsample_f32(
     out[out_row_off + t_out] = acc;
 }
 
+// BigVGAN's alias-free Activation1d UpSample1d. This is deliberately separate
+// from `vokra_anti_aliased_upsample_f32`: the latter is the generic causal
+// polyphase FIR op, while BigVGAN first replicate-pads, applies a grouped
+// stride-`ratio` transposed convolution, and then takes an asymmetric crop.
+// The output kernel below evaluates that centered/cropped convolution directly
+// without materialising the padded or uncropped intermediate.
+struct BigVganAliasFreeUpsampleDims {
+    uint channels;
+    uint time_in;
+    uint time_out;
+    uint ratio;
+    uint taps;
+    uint pad;
+    uint padded_time;
+    uint crop_left;
+};
+
+kernel void vokra_bigvgan_alias_free_upsample_f32(
+    device const float*                     x      [[buffer(0)]],
+    device const float*                     kernel_ [[buffer(1)]],
+    device float*                           out    [[buffer(2)]],
+    constant BigVganAliasFreeUpsampleDims&  d      [[buffer(3)]],
+    uint2                                   gid    [[thread_position_in_grid]])
+{
+    const uint t_out = gid.x;
+    const uint c = gid.y;
+    if (c >= d.channels || t_out >= d.time_out) {
+        return;
+    }
+
+    const uint core_index = t_out + d.crop_left;
+    const uint x_row_off = c * d.time_in;
+    const uint out_row_off = c * d.time_out;
+    float acc = 0.0f;
+
+    // The scalar reference walks padded input positions in ascending order,
+    // then visits each transposed-convolution tap. For a fixed core index,
+    // valid taps therefore appear in descending order; retaining that order
+    // preserves the reference's FP32 reduction order.
+    for (int tap = int(d.taps) - 1; tap >= 0; --tap) {
+        const int relative = int(core_index) - tap;
+        if (relative < 0 || relative % int(d.ratio) != 0) {
+            continue;
+        }
+        const uint padded_index = uint(relative) / d.ratio;
+        if (padded_index >= d.padded_time) {
+            continue;
+        }
+
+        // ReplicationPad1d: padded positions before/after the input edge use
+        // the nearest endpoint; the middle interval maps back by `d.pad`.
+        uint source = padded_index;
+        if (source < d.pad) {
+            source = 0u;
+        } else if (source >= d.pad + d.time_in) {
+            source = d.time_in - 1u;
+        } else {
+            source -= d.pad;
+        }
+        const float value = x[x_row_off + source] * float(d.ratio);
+        acc += value * kernel_[uint(tap)];
+    }
+    out[out_row_off + t_out] = acc;
+}
+
 // Alias-free DownSample1d. The asymmetric edge replication and FIR/stride
 // indexing intentionally mirror vokra-ops' scalar reference exactly.
 struct AntiAliasedDownsampleDims {
@@ -3007,6 +3072,23 @@ struct AntiAliasedUpsampleDims {
     taps: u32,
 }
 
+/// Device-resident BigVGAN `UpSample1d` dimensions (`setBytes:` index 3).
+/// The derived fields mirror the scalar reference's replicate-padding and
+/// asymmetric crop exactly; keeping them explicit avoids recomputing a
+/// potentially overflowing index in MSL.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BigVganAliasFreeUpsampleDims {
+    channels: u32,
+    time_in: u32,
+    time_out: u32,
+    ratio: u32,
+    taps: u32,
+    pad: u32,
+    padded_time: u32,
+    crop_left: u32,
+}
+
 /// Device-resident alias-free downsample dimensions. `pad_left` is the
 /// asymmetric replicate-padding amount used by BigVGAN.
 #[repr(C)]
@@ -3496,16 +3578,16 @@ pub struct MetalContext {
     sinegen_deterministic_pipeline: Id,
     /// Channel-major `[H+1, T]` deterministic SineGen for HiFTResidentOps.
     sinegen_deterministic_channel_major_pipeline: Id,
-    /// Vocoder Metal wave common vocoder primitive: polyphase anti-aliased
-    /// upsample (`vokra_anti_aliased_upsample_f32`), the GPU implementation
-    /// of [`vokra_ops::anti_aliased_upsample_f32`]. Multiply-add core of
-    /// BigVGAN's `UpSample1d` (upstream `alias_free_activation.torch.act`,
-    /// MIT). Consumes a caller-supplied Kaiser-window filter kernel; the
-    /// Kaiser design lives on the host (once per model load), keeping the
-    /// runtime op signature narrow. Ordinary FIR reduction — the FMA-vs-
-    /// non-FMA gap between MSL fast-math and the CPU strict-left-fold is
-    /// well inside the parity bound `atol ≤ 1e-4`.
+    /// Vocoder Metal wave common vocoder primitive: generic causal polyphase
+    /// anti-aliased upsample (`vokra_anti_aliased_upsample_f32`), the GPU
+    /// implementation of [`vokra_ops::anti_aliased_upsample_f32`]. BigVGAN's
+    /// centered replicate/crop path uses the dedicated pipeline immediately
+    /// below; this one remains available for callers that explicitly require
+    /// causal FIR semantics.
     anti_aliased_upsample_pipeline: Id,
+    /// Device-resident BigVGAN `UpSample1d`: replicate padding, grouped
+    /// stride-`ratio` transposed convolution, and asymmetric crop.
+    bigvgan_alias_free_upsample_pipeline: Id,
     /// Device-resident BigVGAN alias-free downsample (replicate + FIR).
     anti_aliased_downsample_pipeline: Id,
     /// Device-resident scalar used for MRF branch averaging.
@@ -3798,6 +3880,12 @@ impl MetalContext {
         // SAFETY: as above.
         let anti_aliased_upsample_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_anti_aliased_upsample_f32") }?;
+        // BigVGAN's centered replicate-pad / transposed-convolution / crop
+        // semantics are intentionally not folded into the generic causal
+        // polyphase pipeline above.
+        // SAFETY: as above.
+        let bigvgan_alias_free_upsample_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_bigvgan_alias_free_upsample_f32") }?;
         // BigVGAN alias-free downsample, branch scaling, and terminal clamp.
         // SAFETY: as above.
         let anti_aliased_downsample_pipeline =
@@ -3899,6 +3987,7 @@ impl MetalContext {
             sinegen_deterministic_channel_major_pipeline:
                 sinegen_deterministic_channel_major_pipeline.into_raw(),
             anti_aliased_upsample_pipeline: anti_aliased_upsample_pipeline.into_raw(),
+            bigvgan_alias_free_upsample_pipeline: bigvgan_alias_free_upsample_pipeline.into_raw(),
             anti_aliased_downsample_pipeline: anti_aliased_downsample_pipeline.into_raw(),
             scale_pipeline: scale_pipeline.into_raw(),
             clamp_pipeline: clamp_pipeline.into_raw(),
@@ -9057,6 +9146,145 @@ impl MetalContext {
         })
     }
 
+    /// Device-resident BigVGAN `UpSample1d`: replicate padding, grouped
+    /// stride-`ratio` transposed convolution scaled by `ratio`, and the
+    /// reference's centered asymmetric crop. This is intentionally a
+    /// different operation from [`Self::anti_aliased_upsample_dev`], whose
+    /// contract is the generic causal polyphase FIR path.
+    ///
+    /// The filter and all tensors use channel-major `[channels, time]` layout.
+    /// The operation is one synchronous commit/wait and performs no host
+    /// readback or CPU fallback.
+    #[allow(clippy::too_many_arguments)] // intrinsic BigVGAN upsample shape
+    pub fn bigvgan_alias_free_upsample_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        kernel: &MetalDeviceTensor<'_>,
+        ratio: usize,
+        channels: usize,
+        time_in: usize,
+        taps: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "bigvgan_alias_free_upsample_dev output")?;
+        self.expect_owner(input, "bigvgan_alias_free_upsample_dev input")?;
+        self.expect_owner(kernel, "bigvgan_alias_free_upsample_dev kernel")?;
+        if ratio == 0 || taps < ratio || taps % 2 != 0 {
+            return Err(VokraError::InvalidArgument(
+                "bigvgan_alias_free_upsample_dev ratio must be > 0, taps must be even, and taps must cover ratio"
+                    .to_owned(),
+            ));
+        }
+        let time_out = checked_mul(time_in, ratio, "bigvgan_alias_free_upsample_dev time_out")?;
+        expect_len(
+            "bigvgan_alias_free_upsample_dev input",
+            input.len,
+            checked_mul(channels, time_in, "bigvgan_alias_free_upsample_dev input")?,
+        )?;
+        expect_len("bigvgan_alias_free_upsample_dev kernel", kernel.len, taps)?;
+        expect_len(
+            "bigvgan_alias_free_upsample_dev output",
+            out.len,
+            checked_mul(channels, time_out, "bigvgan_alias_free_upsample_dev output")?,
+        )?;
+        if channels == 0 || time_in == 0 {
+            return Ok(());
+        }
+
+        // Keep the scalar reference's exact geometry in usize until every
+        // intermediate is checked. `taps >= ratio` makes `pad` non-negative.
+        let pad = taps / ratio - 1;
+        let padded_time = checked_mul(2, pad, "bigvgan_alias_free_upsample_dev padding")?
+            .checked_add(time_in)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "bigvgan_alias_free_upsample_dev padded length overflow".to_owned(),
+                )
+            })?;
+        let core_time = checked_mul(
+            padded_time - 1,
+            ratio,
+            "bigvgan_alias_free_upsample_dev transposed output",
+        )?
+        .checked_add(taps)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "bigvgan_alias_free_upsample_dev transposed output overflow".to_owned(),
+            )
+        })?;
+        let crop_left = checked_mul(pad, ratio, "bigvgan_alias_free_upsample_dev crop_left")?
+            .checked_add((taps - ratio) / 2)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "bigvgan_alias_free_upsample_dev crop_left overflow".to_owned(),
+                )
+            })?;
+        let crop_right = checked_mul(pad, ratio, "bigvgan_alias_free_upsample_dev crop_right")?
+            .checked_add((taps - ratio).div_ceil(2))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "bigvgan_alias_free_upsample_dev crop_right overflow".to_owned(),
+                )
+            })?;
+        let crop = crop_left.checked_add(crop_right).ok_or_else(|| {
+            VokraError::InvalidArgument("bigvgan_alias_free_upsample_dev crop overflow".to_owned())
+        })?;
+        let derived_time_out = core_time.checked_sub(crop).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "bigvgan_alias_free_upsample_dev crop exceeds output".to_owned(),
+            )
+        })?;
+        if derived_time_out != time_out {
+            return Err(VokraError::InvalidArgument(format!(
+                "bigvgan_alias_free_upsample_dev derived output {derived_time_out} != expected {time_out}"
+            )));
+        }
+
+        // MSL uses uint addressing and a signed tap/relative index. Reject
+        // dimensions that cannot be represented by either side before any
+        // buffer is dispatched.
+        checked_u32(channels, "bigvgan_alias_free_upsample_dev channels")?;
+        checked_u32(time_in, "bigvgan_alias_free_upsample_dev time_in")?;
+        checked_u32(time_out, "bigvgan_alias_free_upsample_dev time_out")?;
+        checked_u32(ratio, "bigvgan_alias_free_upsample_dev ratio")?;
+        checked_u32(taps, "bigvgan_alias_free_upsample_dev taps")?;
+        checked_u32(pad, "bigvgan_alias_free_upsample_dev pad")?;
+        checked_u32(padded_time, "bigvgan_alias_free_upsample_dev padded_time")?;
+        checked_u32(crop_left, "bigvgan_alias_free_upsample_dev crop_left")?;
+        checked_i32(ratio, "bigvgan_alias_free_upsample_dev ratio")?;
+        checked_i32(taps, "bigvgan_alias_free_upsample_dev taps")?;
+        checked_i32(
+            core_time,
+            "bigvgan_alias_free_upsample_dev transposed output",
+        )?;
+
+        let dims = BigVganAliasFreeUpsampleDims {
+            channels: checked_u32(channels, "bigvgan_alias_free_upsample_dev channels")?,
+            time_in: checked_u32(time_in, "bigvgan_alias_free_upsample_dev time_in")?,
+            time_out: checked_u32(time_out, "bigvgan_alias_free_upsample_dev time_out")?,
+            ratio: checked_u32(ratio, "bigvgan_alias_free_upsample_dev ratio")?,
+            taps: checked_u32(taps, "bigvgan_alias_free_upsample_dev taps")?,
+            pad: checked_u32(pad, "bigvgan_alias_free_upsample_dev pad")?,
+            padded_time: checked_u32(padded_time, "bigvgan_alias_free_upsample_dev padded_time")?,
+            crop_left: checked_u32(crop_left, "bigvgan_alias_free_upsample_dev crop_left")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("bigvgan_alias_free_upsample_dev")?;
+            let (grid, tg) = grid_2d(time_out, channels);
+            self.encode_pass(
+                cmd,
+                self.bigvgan_alias_free_upsample_pipeline,
+                &[&input.buf, &kernel.buf, &out.buf],
+                (&dims as *const BigVganAliasFreeUpsampleDims).cast::<c_void>(),
+                size_of::<BigVganAliasFreeUpsampleDims>(),
+                grid,
+                tg,
+                "bigvgan_alias_free_upsample_dev",
+            )?;
+            self.commit_and_wait(cmd, "bigvgan_alias_free_upsample_dev")
+        })
+    }
+
     /// Device-resident BigVGAN `DownSample1d`: asymmetric replicate padding,
     /// FIR filtering, and strided decimation. The filter and all tensors are
     /// channel-major; only an explicit final `download` crosses D2H. This
@@ -11065,6 +11293,7 @@ impl Drop for MetalContext {
             release(self.clamp_pipeline);
             release(self.scale_pipeline);
             release(self.anti_aliased_downsample_pipeline);
+            release(self.bigvgan_alias_free_upsample_pipeline);
             release(self.anti_aliased_upsample_pipeline);
             release(self.sinegen_deterministic_channel_major_pipeline);
             release(self.sinegen_deterministic_pipeline);

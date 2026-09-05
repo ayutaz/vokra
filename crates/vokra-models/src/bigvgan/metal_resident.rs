@@ -235,7 +235,7 @@ impl<'ctx> BigVganResidentOps for MetalBigVganResidentOps<'ctx> {
             .alloc_dev(channels.checked_mul(time_out).ok_or_else(|| {
                 VokraError::InvalidArgument("BigVGAN Metal upsample output overflow".to_owned())
             })?)?;
-        self.context.anti_aliased_upsample_dev(
+        self.context.bigvgan_alias_free_upsample_dev(
             &mut output,
             input,
             &kernel,
