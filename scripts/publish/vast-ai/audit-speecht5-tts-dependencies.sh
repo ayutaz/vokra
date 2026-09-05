@@ -84,11 +84,11 @@ require_inputs() {
 run_audit() {
   local output="$1" rc
   local full="$output/full-audit.json" compact="$output/compact-audit.json" log_path="$output/audit.log"
-  require_vast "$(dirname "$output")"
-  require_clean_checkout
-  require_inputs
-  require_absent_output "$output"
-  mkdir -p "$output"
+  require_vast "$(dirname "$output")" || return 2
+  require_clean_checkout || return 2
+  require_inputs || return 2
+  require_absent_output "$output" || return 2
+  mkdir -p "$output" || return 2
   log 'Synchronizing the frozen active SpeechT5 project (no model/source acquisition)'
   set +e
   UV_NO_CACHE=1 UV_CACHE_DIR="${SPEECHT5_AUDIT_UV_CACHE_DIR:-/tmp/vokra-speecht5-audit-uv-cache}" \
@@ -124,6 +124,7 @@ self_test() {
   ! grep -Eq '(^|[;&|[:space:]])xargs([[:space:]]|$)' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   if VOKRA_PUBLISH_ON_VAST=0 run_audit "$tmp/blocked" >/dev/null 2>&1; then failed=1; fi
+  [[ ! -e "$tmp/blocked" ]] || failed=1
   if require_absent_output "$VOKRA_ROOT" >/dev/null 2>&1; then failed=1; fi
   if require_absent_output "$PARITY_PROJECT" >/dev/null 2>&1; then failed=1; fi
   if ! require_absent_output "$tmp/new/nested" >/dev/null 2>&1; then failed=1; fi

@@ -88,8 +88,8 @@ require_absent_output() {
 
 run_audit() {
   local output="$1" compact_output="$2" input
-  require_vast_linux
-  require_clean_checkout
+  require_vast_linux || return 2
+  require_clean_checkout || return 2
   command -v uv >/dev/null 2>&1 || { echo "qwen3-tts dependency audit: uv unavailable" >&2; return 2; }
   command -v readelf >/dev/null 2>&1 || { echo "qwen3-tts dependency audit: readelf unavailable" >&2; return 2; }
   command -v git >/dev/null 2>&1 || { echo "qwen3-tts dependency audit: git unavailable" >&2; return 2; }
@@ -97,16 +97,16 @@ run_audit() {
     [[ -f "$PARITY_PROJECT/$input" && ! -L "$PARITY_PROJECT/$input" ]] || return 2
   done
   [[ "$output" == /* ]] || return 2
-  require_absent_output "$output"
+  require_absent_output "$output" || return 2
   if [[ -n "$compact_output" ]]; then
     [[ "$compact_output" == /* ]] || return 2
-    require_absent_output "$compact_output"
+    require_absent_output "$compact_output" || return 2
     paths_overlap "$output" "$compact_output" && return 2
   fi
-  mkdir -p "$(dirname "$output")"
+  mkdir -p "$(dirname "$output")" || return 2
   local -a compact_args=()
   if [[ -n "$compact_output" ]]; then
-    mkdir -p "$(dirname "$compact_output")"
+    mkdir -p "$(dirname "$compact_output")" || return 2
     compact_args=(--compact-output "$compact_output")
   fi
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 \
@@ -114,7 +114,7 @@ run_audit() {
 }
 
 self_test() {
-  local failed=0 probe_root probe_parent=/tmp
+  local failed=0 probe_root blocked_output probe_parent=/tmp
   [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- 'fixed source LICENSE paths' "$0" || failed=1
@@ -124,8 +124,10 @@ self_test() {
   ! grep -Eq '^[[:space:]]*\{[[:space:]]*name[[:space:]]*=[[:space:]]*"setuptools"([,[:space:]])' "$PARITY_PROJECT/uv.lock" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   grep -Fq -- 'uv run --no-cache --no-project --offline --python 3.12' "$0" || failed=1
-  if VOKRA_PUBLISH_ON_VAST=0 run_audit /private/tmp/qwen3-tts-audit-self-test.json "" >/dev/null 2>&1; then failed=1; fi
   probe_root="$(mktemp -d "$probe_parent/qwen3-tts-audit-wrapper.XXXXXX")"
+  blocked_output="$probe_root/blocked.json"
+  if VOKRA_PUBLISH_ON_VAST=0 run_audit "$blocked_output" "" >/dev/null 2>&1; then failed=1; fi
+  [[ ! -e "$blocked_output" ]] || failed=1
   if require_absent_output "$VOKRA_ROOT" >/dev/null 2>&1; then failed=1; fi
   if require_absent_output "$PARITY_PROJECT" >/dev/null 2>&1; then failed=1; fi
   require_absent_output "$probe_root/nested/audit.json" || failed=1
