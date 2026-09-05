@@ -144,6 +144,32 @@ No model was acquired, executed or published during that run. Instance
 `49982196` was destroyed with its storage immediately after verification, and
 the post-destroy VAST inventory returned `[]`.
 
+The next disposable VAST run closed the non-Apple validation work for
+`vokra/voice-gender-classifier` at exact HEAD
+`df7f557409e5e1e785f9edfd98a7b00d0a3b3be0`. Instance `49983538` authenticated
+the public historical ECAPA-misstamped artifact, the fixed upstream source
+revision `49bcbecfd929ba5a043bde645fdff1a375eb79c7`, the fixed Hugging Face revision
+`db1222153bd60337e900be22add7af180452adc0`, the 61,907,512-byte MIT checkpoint
+and checkpoint SHA-256
+`2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5`.
+The official upstream generated the canned synthetic-tone reference. The
+normalizer authenticated 233 input tensors, 202 floating tensors and 31
+removed counters; the corrected 202-tensor classifier artifact has SHA-256
+`afb03696d8a640d5d701ea0c136bb065cac648cbfe905a5dcc4eae04e0769b1a` and
+`arch=voice_gender_classifier`, `license=mit`, `weight_license=permissive`.
+
+CPU parity passed the fixed `0.01` FP32 bound with maximum absolute errors
+`0.000054359` (features), `0.000044465` (embedding), `0.000018924` (logits) and
+`0.000007540` (probability). The exact-head workspace tests and doctests,
+all-target Clippy, forbidden-symbol, zero-dependency, cargo-deny and cargo-audit
+gates completed successfully. The final status was
+`CPU_PASS_METAL_NOT_RUN`; publication was not performed. Only small evidence
+was recovered. Instance `49983538` and its storage were then destroyed, and
+the post-destroy VAST inventory returned `[]`. This closes the row's current
+pre-Scaleway CPU action but does not decrement the 63-row live-public audit:
+the corrected artifact remains unpublished pending Apple CPU/Metal evidence
+and separate repository-scoped upload authorization.
+
 The remaining factual dependency-license cases were checked against primary
 release sources and must stay fail-closed:
 
@@ -220,7 +246,7 @@ authorization.
 | `vokra/rmvpe` | Resolve the absence of an upstream license for the exact source repository; the live MIT stamp cannot be accepted by inference. |
 | `vokra/sbv2-v2-jp-extra-base` | Replace raw legacy tensor names with the strict converter/runtime metadata and close the production Japanese G2P boundary. |
 | `vokra/speechbrain-spkrec-ecapa-voxceleb` | Replace or repair the artifact whose tensor data extends outside the declared file bounds, then rerun strict parity. |
-| `vokra/voice-gender-classifier` | Replace the artifact incorrectly stamped as ECAPA with the authenticated classifier identity and contract. |
+| `vokra/voice-gender-classifier` | Exact-head corrected conversion and official CPU parity are green at `df7f5574`; regenerate its authenticated Apple packet for the final CPU/Metal worker. Publish the replacement only after that passes and separate upload authorization is given. |
 | `vokra/wespeaker` | Resolve Apache-vs-CC-BY-4.0 provenance and attribution, then produce the strict artifact. |
 | `vokra/xy-tokenizer` | Provide a real authenticated tensor payload and verify topology/dependency closure; the live file is metadata-only. |
 | `vokra/yue-xcodec-mini` | Add the missing PCM encode path: acoustic/HuBERT, RepCodec, fusion and RVQ contracts. Decode-only is incomplete. |
