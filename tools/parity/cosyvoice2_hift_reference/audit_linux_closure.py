@@ -262,6 +262,53 @@ def stream_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> tuple[str,
     return name, total, digest.hexdigest(), bytes(captured)
 
 
+def parse_metadata_headers(data: bytes) -> tuple[dict[str, Any], list[str]]:
+    """Parse only the RFC 822-style Core Metadata header block.
+
+    A blank line terminates the header block; everything after it is the
+    Description body and must not be interpreted as headers. Continuation
+    lines are unfolded onto the preceding field before field multiplicity is
+    checked.
+    """
+
+    metadata: dict[str, Any] = {}
+    requires_dist: list[str] = []
+    current_key: str | None = None
+    current_value: str | None = None
+
+    def commit() -> None:
+        if current_key is None or current_value is None:
+            return
+        if current_key in MULTI_VALUE_METADATA_HEADERS:
+            metadata.setdefault(current_key, []).append(current_value)
+        elif current_key in metadata:
+            fail(f"duplicate METADATA {current_key} header")
+        else:
+            metadata[current_key] = current_value
+        if current_key == "requires-dist":
+            requires_dist.append(current_value)
+
+    for line in data.decode("utf-8", "replace").splitlines():
+        if not line:
+            break
+        if line.startswith((" ", "\t")):
+            if current_key is None or current_value is None:
+                fail("METADATA continuation has no preceding header")
+            current_value += " " + line.strip()
+            continue
+        if ":" not in line:
+            fail(f"malformed METADATA header: {line!r}")
+        key, value = line.split(":", 1)
+        key = key.casefold()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", key):
+            fail(f"malformed METADATA field name: {key!r}")
+        commit()
+        current_key = key
+        current_value = value.strip()
+    commit()
+    return metadata, requires_dist
+
+
 def inspect_wheel(path: Path, expected_name: str, expected_version: str) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file():
         fail(f"wheel missing or symlinked: {path}")
@@ -272,8 +319,6 @@ def inspect_wheel(path: Path, expected_name: str, expected_version: str) -> dict
     names: set[str] = set()
     canonical_names: set[str] = set()
     total = 0
-    metadata: dict[str, Any] = {}
-    requires_dist: list[str] = []
     licenses = []
     native = []
     suspicious = []
@@ -320,19 +365,7 @@ def inspect_wheel(path: Path, expected_name: str, expected_version: str) -> dict
     if metadata_members != 1 or metadata_candidate is None:
         fail(f"wheel must contain exactly one .dist-info/METADATA (found {metadata_members})")
     _, metadata_bytes = metadata_candidate
-    for line in metadata_bytes.decode("utf-8", "replace").splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            key = key.casefold()
-            value = value.strip()
-            if key in MULTI_VALUE_METADATA_HEADERS:
-                metadata.setdefault(key, []).append(value)
-            elif key in metadata:
-                fail(f"duplicate METADATA {key} header")
-            else:
-                metadata[key] = value
-            if key == "requires-dist":
-                requires_dist.append(value)
+    metadata, requires_dist = parse_metadata_headers(metadata_bytes)
     if (
         normalize_package_name(metadata.get("name", ""))
         != normalize_package_name(expected_name)
@@ -435,7 +468,11 @@ def self_test() -> None:
                 "Classifier: Programming Language :: Python :: 3\n"
                 "Requires-Dist: packaging>=20\n"
                 "Requires-Dist: wheel\n"
-                "License: MIT\n",
+                "License: MIT\n"
+                "Description: first line\n"
+                " second line\n"
+                "\n"
+                "body: this colon is not a header\n",
             )
             archive.writestr("LICENSE", "MIT\n")
         record = inspect_wheel(wheel, "demo-pkg", "1.0")
@@ -445,6 +482,7 @@ def self_test() -> None:
             "Programming Language :: Python :: 3",
         ]
         assert record["requires_dist"] == ["packaging>=20", "wheel"]
+        assert record["metadata"]["description"] == "first line second line"
         nested_metadata = root / "nested-metadata-1.0-py3-none-any.whl"
         with zipfile.ZipFile(nested_metadata, "w") as archive:
             archive.writestr(
