@@ -40,6 +40,11 @@ jobs:
       - name: actionlint + ShellCheck
         run: /tmp/actionlint -shellcheck shellcheck -pyflakes "" .github/workflows/*.yml
 
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+
+      - name: GigaAM v3 dependency quarantine self-test
+        run: uv run --no-project --offline --python 3.12 python tools/parity/gigaam_v3/security_self_test.py
+
       - name: Install pinned zizmor
         shell: bash
         run: |
