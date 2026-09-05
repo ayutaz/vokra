@@ -61,22 +61,16 @@ pub struct ConvertHiftReport {
     pub output_bytes: u64,
 }
 
-/// Converts the authenticated CosyVoice2 HiFT safetensors and YAML sidecar.
+/// Converts the strictly bound CosyVoice2 HiFT safetensors and YAML sidecar.
 pub fn convert_cosyvoice2_hift_file(
     input: &Path,
     config: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<ConvertHiftReport, ConvertError> {
+    require_explicit_license(license)?;
     let config_bytes = std::fs::read(config).map_err(ConvertError::Io)?;
     validate_config(&config_bytes)?;
-    if let Some(value) = license {
-        if !value.eq_ignore_ascii_case("apache-2.0") {
-            return Err(ConvertError::Parse(format!(
-                "{ARCH}: fixed Apache-2.0 weight license cannot be overridden by `{value}`"
-            )));
-        }
-    }
     let st = SafetensorsFile::parse(std::fs::read(input).map_err(ConvertError::Io)?)?;
     validate_manifest(&st)?;
     let mut builder = GgufBuilder::new();
@@ -131,6 +125,18 @@ pub fn convert_cosyvoice2_hift_file(
         metadata_count: builder.metadata_count(),
         output_bytes: out.len() as u64,
     })
+}
+
+fn require_explicit_license(license: Option<&str>) -> Result<(), ConvertError> {
+    match license {
+        Some(value) if value.eq_ignore_ascii_case("apache-2.0") => Ok(()),
+        Some(value) => Err(ConvertError::Parse(format!(
+            "{ARCH}: explicit license attestation must exactly match Apache-2.0; got `{value}`"
+        ))),
+        None => Err(ConvertError::Parse(format!(
+            "{ARCH}: explicit Apache-2.0 license attestation is required"
+        ))),
+    }
 }
 
 /// Atomically publish only to an absent output path. A same-filesystem hard
@@ -428,6 +434,19 @@ mod tests {
             MANIFEST_SHA256
         )
     }
+
+    #[test]
+    fn explicit_license_attestation_is_required_and_fixed() {
+        let missing = require_explicit_license(None).expect_err("missing license must fail closed");
+        assert!(missing.to_string().contains("attestation is required"));
+
+        let wrong = require_explicit_license(Some("mit")).expect_err("wrong license must fail");
+        assert!(wrong.to_string().contains("must exactly match Apache-2.0"));
+
+        require_explicit_license(Some("Apache-2.0"))
+            .expect("case-insensitive Apache-2.0 attestation must be accepted");
+    }
+
     #[test]
     fn sha1_vector() {
         assert_eq!(
@@ -447,17 +466,33 @@ mod tests {
         std::fs::write(&input, b"not a checkpoint").unwrap();
         std::fs::write(&config, b"wrong").unwrap();
         std::fs::write(&output, b"original").unwrap();
-        let error = convert_cosyvoice2_hift_file(&input, &config, &output, None)
+        let error = convert_cosyvoice2_hift_file(&input, &config, &output, Some("apache-2.0"))
             .expect_err("wrong config must fail closed");
         assert!(error.to_string().contains("identity mismatch"));
         assert_eq!(std::fs::read(&output).unwrap(), b"original");
         std::fs::remove_file(&output).unwrap();
-        let _ = convert_cosyvoice2_hift_file(&input, &config, &output, None);
+        let _ = convert_cosyvoice2_hift_file(&input, &config, &output, Some("apache-2.0"));
         assert!(
             !output.exists(),
             "failure must not leave an output artifact"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_license_is_rejected_before_input_io() {
+        let error = convert_cosyvoice2_hift_file(
+            Path::new("/definitely/nonexistent/cosyvoice2-hift.safetensors"),
+            Path::new("/definitely/nonexistent/cosyvoice2.yaml"),
+            Path::new("/definitely/nonexistent/out.gguf"),
+            None,
+        )
+        .expect_err("missing license must fail before input IO");
+        assert!(
+            error
+                .to_string()
+                .contains("explicit Apache-2.0 license attestation")
+        );
     }
 
     #[test]

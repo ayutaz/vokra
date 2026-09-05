@@ -273,15 +273,29 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 ### 2026-09-06 — 0.3.0-dev (standalone CosyVoice2 HiFT companion)
 
 Added the standalone `cosyvoice2_hift` vocoder conversion surface and its
-authenticated GGUF metadata schema. This is additive: the full CosyVoice2
-composite remains fail-closed, CPU/Metal numerical parity is pending, and no
-publication is claimed.
+strict, provenance-constrained GGUF metadata schema. The converter emits the
+`vokra.cosyvoice2_hift.*` component group and `HiFTChain::from_gguf` consumes
+the same fixed keys before loading the 328-tensor F32 manifest; this records a
+wire contract, not completion of artifact authentication or publication. The
+Rust-only execution surface additionally includes
+`SourceModuleHnNSF2`, `HiFTResidentOps::sinegen2_deterministic`, the
+`HiFTChain` binder and independently comparable F0 seam, and the Metal
+device primitive `MetalContext::sinegen2_deterministic_channel_major_dev`.
+The C ABI remains unchanged at 57 FUNC / 15 TYPEDEF. Artifact and license
+owner approval, VAST real-weight parity, and the Apple/Scaleway Metal verdict
+remain pending. Publication status is `NO_UPLOAD`; no authentication or
+public-release completion is claimed.
 
 | Surface | Symbol / key | Change | Compatibility |
 |---|---|---|---|
-| `vokra-convert` / `vokra-cli convert` | `cosyvoice2-hift` | Added strict exact-config, exact-328-F32-manifest converter | Standalone vocoder only; quantization and license override rejected. `ModelKind` is not `non_exhaustive`, so external exhaustive Rust matches may be source-breaking before 1.0. |
-| GGUF metadata | `vokra.cosyvoice2_hift.*` | Added fixed source/checkpoint/config/topology schema | Additive; no existing key changes; full composite remains fail-closed |
-| GGUF provenance | `vokra.provenance.upstream_revision`, `vokra.provenance.checkpoint_sha256` | Added standard provenance identities for the authenticated HF revision and `hift.pt` | Additive; parity and publication remain pending |
+| `vokra-convert` / `vokra-cli convert` | `cosyvoice2-hift` | Added strict exact-config, exact-328-F32-manifest converter requiring explicit case-insensitive `apache-2.0` license attestation | Standalone vocoder only; missing or non-matching attestation fails before tensor payload read/output. `ModelKind` is not `non_exhaustive`, so external exhaustive Rust matches may be source-breaking before 1.0. Artifact/license approval is still pending. |
+| GGUF identity | `vokra.model.arch`, `vokra.model.name`, `vokra.model.category` | Added `cosyvoice2_hift`, `cosyvoice2-0.5b-hift`, `vocoder` identity | Additive model-file identity; `HiFTChain::from_gguf` rejects other identities |
+| GGUF provenance | `vokra.provenance.*` | Added the standard weight-license, raw-license, model-id, source-repository, upstream-revision, and checkpoint-SHA256 fields | Additive provenance requirements; fixed values are checked at bind time, but this row does not grant artifact authentication or publication approval |
+| GGUF component provenance | `vokra.cosyvoice2_hift.{upstream_revision,checkpoint_file,checkpoint_bytes,checkpoint_sha256,config_bytes,config_sha256,config_git_blob_sha1,source_repo,source_revision,source_generator_sha256,source_generator_git_blob_sha1,tensor_manifest_sha256,weight_norm_pairs}` | Added fixed `string` / `u32` provenance and manifest keys; 83,390,254-byte `hift.pt`, 328 F32 tensors, 82 weight-norm pairs | Additive; `HiFTChain::from_gguf` requires exact values and rejects incomplete, stale, or alternate files |
+| GGUF topology | `vokra.cosyvoice2_hift.config.*` | Added all converter-emitted `u32` / `f32` topology keys: channel/rate/ISTFT scalars, indexed upsample/kernel/resblock/source-resblock arrays, `[1,3,5]` dilation matrices, and `f0.{class_channels,input_channels,cond_channels,num_layers,kernel_size}` | Additive; every emitted topology value is checked before binding; no caller-supplied shape override |
+| `vokra-ops` | `SourceModuleHnNSF2`, `HiFTResidentOps::sinegen2_deterministic` | Added the deterministic non-22050-Hz SineGen2 source path and resident-op seam | Rust-only, pre-1.0 additive surface; zero phase/noise contract is model-free-tested, while real parity remains VAST-gated |
+| `vokra-models::cosyvoice2` | `HiFTChain::from_gguf`, `HiFTChain::f0_predictor_forward` | Added strict standalone binder and independently comparable F0/reference seam | Rust-only; full CosyVoice2 composite and real-weight parity remain fail-closed/pending |
+| `vokra-backend-metal` | `MetalContext::sinegen2_deterministic_channel_major_dev` | Added device-resident SineGen2 primitive with no intermediate host readback or CPU fallback | Apple execution remains pending Scaleway verification; no Metal verdict is claimed |
 
 ### 2026-09-01 — 0.3.0-dev (microWakeWord dense I8 GGUF wire support)
 

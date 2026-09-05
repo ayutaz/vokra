@@ -40,7 +40,9 @@ USAGE:
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model nanocodec --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
-    vokra-convert --model <cosyvoice2|cosyvoice2-hift|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
+    vokra-convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-convert --model cosyvoice2-hift --input <hift.safetensors> --config <cosyvoice2.yaml> --license apache-2.0 --output <out.gguf>
+    vokra-convert --model <csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
     vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
@@ -574,6 +576,12 @@ fn main() -> ExitCode {
         ModelKind::CosyVoice2Hift => {
             if quant.is_some() {
                 eprintln!("error: --quantize is not supported for cosyvoice2-hift\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            if license.is_none() {
+                eprintln!(
+                    "error: --model cosyvoice2-hift requires --license apache-2.0 (explicit license attestation)\n\n{USAGE}"
+                );
                 return ExitCode::from(2);
             }
             let Some(config) = config.as_deref() else {
@@ -3737,6 +3745,13 @@ mod tests {
         assert_eq!(parsed.output, PathBuf::from("o"));
         assert_eq!(parsed.config, None);
         assert_eq!(parsed.quant, None);
+    }
+
+    #[test]
+    fn usage_requires_hift_config_and_apache_attestation() {
+        assert!(USAGE.contains("--model cosyvoice2-hift"));
+        assert!(USAGE.contains("--config <cosyvoice2.yaml>"));
+        assert!(USAGE.contains("--license apache-2.0"));
     }
 
     #[test]

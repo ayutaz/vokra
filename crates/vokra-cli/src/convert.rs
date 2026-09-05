@@ -42,7 +42,7 @@ USAGE:
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
-    vokra-cli convert --model cosyvoice2-hift --input <hift.safetensors> --config <cosyvoice2.yaml> --output <out.gguf>
+    vokra-cli convert --model cosyvoice2-hift --input <hift.safetensors> --config <cosyvoice2.yaml> --license apache-2.0 --output <out.gguf>
     vokra-cli convert --model cosyvoice3 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model chatterbox --input <t3.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
@@ -1173,14 +1173,17 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             if p.policy.is_some() {
                 return Err("--policy-preset is not supported for cosyvoice2-hift".to_owned());
             }
-            if p.license.is_some() {
-                return Err("--license cannot override the fixed Apache-2.0 cosyvoice2-hift weight contract".to_owned());
+            if p.license.is_none() {
+                return Err(
+                    "--model cosyvoice2-hift requires --license apache-2.0 (explicit license attestation)"
+                        .to_owned(),
+                );
             }
             let config = p
                 .config
                 .as_deref()
                 .ok_or("--model cosyvoice2-hift requires --config <cosyvoice2.yaml>")?;
-            convert_cosyvoice2_hift_file(&p.input, config, &p.output, None).map(|r| ConvertSummary {
+            convert_cosyvoice2_hift_file(&p.input, config, &p.output, p.license.as_deref()).map(|r| ConvertSummary {
                 model,
                 tensor_count: r.written,
                 metadata_count: r.metadata_count,
@@ -2388,6 +2391,24 @@ mod tests {
         .expect("valid");
         assert_eq!(p.model, ModelKind::CosyVoice2);
         assert_eq!(p.config, Some(PathBuf::from("config.json")));
+    }
+
+    #[test]
+    fn cosyvoice2_hift_requires_explicit_apache_attestation() {
+        assert!(USAGE.contains("--model cosyvoice2-hift"));
+        assert!(USAGE.contains("--license apache-2.0"));
+        let error = main(&args(&[
+            "--model",
+            "cosyvoice2-hift",
+            "--input",
+            "/definitely/nonexistent/hift.safetensors",
+            "--config",
+            "/definitely/nonexistent/cosyvoice2.yaml",
+            "--output",
+            "/definitely/nonexistent/out.gguf",
+        ]))
+        .expect_err("missing license must fail at CLI dispatch");
+        assert!(error.contains("requires --license apache-2.0"), "{error}");
     }
 
     #[test]
