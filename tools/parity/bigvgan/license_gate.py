@@ -49,27 +49,52 @@ DARWIN_TORCH_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1-cp312-no
 DARWIN_TORCH_HASH = "sha256:7b4f8b2b83bd08f7d399025a9a7b323bdbb53d20566f1e0d584689bb92d82f9a"
 DARWIN_TORCH_UPLOAD_TIME = "2025-06-03T18:28:06Z"
 AUDIT_EVIDENCE_KEYS = {
+    "schema",
+    "linux",
+    "arm64-darwin",
+    "publication",
+}
+PLATFORM_AUDIT_KEYS = {
     "candidate_schema",
     "candidate_sha256",
     "license_evidence_schema",
     "license_evidence_sha256",
     "lock_sha256",
-    "active_linux_package_count",
+    "active_package_count",
     "license_payload_count",
     "native_payload_count",
     "audit_source_commit",
+    "platform",
     "publication",
 }
 EXPECTED_AUDIT_EVIDENCE = {
-    "candidate_schema": "bigvgan-linux-closure-candidate-v1",
-    "candidate_sha256": "fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086",
-    "license_evidence_schema": "bigvgan-license-payload-evidence-v1",
-    "license_evidence_sha256": "88f0a6e98b5000243f32471c6a9a1274db5c38bbbcad0d271c11cb7176ab7f9f",
-    "lock_sha256": "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e",
-    "active_linux_package_count": 10,
-    "license_payload_count": 28,
-    "native_payload_count": 142,
-    "audit_source_commit": "1ce957dfdacc38be9530d0b0931bd92e99d447f2",
+    "schema": "bigvgan-multi-platform-closure-evidence-v1",
+    "linux": {
+        "candidate_schema": "bigvgan-linux-closure-candidate-v1",
+        "candidate_sha256": "fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086",
+        "license_evidence_schema": "bigvgan-license-payload-evidence-v1",
+        "license_evidence_sha256": "88f0a6e98b5000243f32471c6a9a1274db5c38bbbcad0d271c11cb7176ab7f9f",
+        "lock_sha256": "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e",
+        "active_package_count": 10,
+        "license_payload_count": 28,
+        "native_payload_count": 142,
+        "audit_source_commit": "1ce957dfdacc38be9530d0b0931bd92e99d447f2",
+        "platform": "x86_64-linux",
+        "publication": "NO_UPLOAD",
+    },
+    "arm64-darwin": {
+        "candidate_schema": "bigvgan-darwin-closure-candidate-v1",
+        "candidate_sha256": "148e44365efa92c2cd95feeef156e327975be465aad21c6b20c979433f6d25fa",
+        "license_evidence_schema": "bigvgan-license-payload-evidence-v1",
+        "license_evidence_sha256": "cd1e28d9449dc4a1e6fac1a13f1611042bcb8dddf68bc53b50026a646cbd0e42",
+        "lock_sha256": "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e",
+        "active_package_count": 10,
+        "license_payload_count": 28,
+        "native_payload_count": 21,
+        "audit_source_commit": "e55a712add5df017a1c9b4e112ca0278905ed2df",
+        "platform": "arm64-darwin",
+        "publication": "NO_UPLOAD",
+    },
     "publication": "NO_UPLOAD",
 }
 
@@ -307,6 +332,11 @@ def run(
     if (
         not isinstance(audit_evidence, dict)
         or set(audit_evidence) != AUDIT_EVIDENCE_KEYS
+        or any(
+            not isinstance(audit_evidence.get(platform), dict)
+            or set(audit_evidence[platform]) != PLATFORM_AUDIT_KEYS
+            for platform in ("linux", "arm64-darwin")
+        )
         or audit_evidence != EXPECTED_AUDIT_EVIDENCE
     ):
         fail("model-free VAST audit evidence is missing or drifted")
@@ -802,8 +832,10 @@ source = { registry = 'https://pypi.org/simple' }
         expect_manifest_blocked("license-row-extra", lambda value: value["license_rows"][0].update(extra="unexpected"))
         expect_manifest_blocked("license-row-reordered", lambda value: value.update(license_rows=list(reversed(value["license_rows"]))))
         expect_manifest_blocked("license-row-duplicate", lambda value: value["license_rows"].__setitem__(1, dict(value["license_rows"][0])))
-        expect_manifest_blocked("audit-evidence-tamper", lambda value: value["audit_evidence"].update(native_payload_count=143))
+        expect_manifest_blocked("audit-evidence-tamper", lambda value: value["audit_evidence"]["linux"].update(native_payload_count=143))
         expect_manifest_blocked("audit-evidence-missing", lambda value: value.pop("audit_evidence"))
+        expect_manifest_blocked("audit-evidence-platform-missing", lambda value: value["audit_evidence"].pop("arm64-darwin"))
+        expect_manifest_blocked("audit-evidence-platform-extra", lambda value: value["audit_evidence"].update(windows=dict(EXPECTED_AUDIT_EVIDENCE["linux"])))
         expect_blocked("evidence-row-missing", lambda value: value["rows"].pop())
         expect_blocked("evidence-row-extra", lambda value: value["rows"].append(dict(value["rows"][0])))
         expect_blocked("evidence-row-duplicate", lambda value: value["rows"].__setitem__(1, dict(value["rows"][0])))
