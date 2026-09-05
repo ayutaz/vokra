@@ -88,6 +88,8 @@ pub(crate) mod chatterbox_nano;
 // weight norm, and stamps the official 42-entry phone inventory.
 pub(crate) mod charsiu;
 pub(crate) mod cosyvoice2;
+#[allow(dead_code)] // staged until the VAST-prepared flow digest is pinned
+pub(crate) mod cosyvoice2_flow;
 pub(crate) mod cosyvoice2_hift;
 // M5 gap follow-up (2026-07-30): marl/crepe (Kim et al. 2018) — a
 // monophonic F0 (fundamental-frequency) extractor. The upstream release
