@@ -66,7 +66,7 @@ Before any Scaleway allocation:
 
 ### 2026-09-06 exact-head progress
 
-The branch has advanced to `8b7064d4` locally. The PR remote remains at
+The branch has advanced through `1ce957df` locally. The PR remote remains at
 `559b8b36`; all checks at that remote commit are green and GitHub reports the
 PR mergeable. Do not merge it as the final Mac-coverage change yet: the local
 audit and BF16 commits have not been pushed or checked by GitHub.
@@ -98,6 +98,18 @@ Torch `2.13.0+cpu`. The forced AVX-512 BF16 Rust path passed all three cases
 twice at the pre-registered `atol=1e-3`, `rtol=0`; the observed global maximum
 absolute difference was `7.629394531e-6`. Compatible Arm-BF16 evidence and a
 real BF16 checkpoint remain part of the final Apple/model work.
+
+BigVGAN's model-free Linux dependency preflight also passes at exact HEAD
+`1ce957df` after making the allowlisted PyTorch wheel request identifiable,
+accepting only the officially specified Core Metadata multiple-use fields and
+isolating the wheel-root identity metadata from setuptools' vendored metadata.
+The committed lock SHA-256 is
+`80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e`;
+the 10-package owner-review candidate SHA-256 is
+`fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086`.
+No model, package install/import or upload was involved. The candidate remains
+fail-closed as `OWNER_REVIEW_REQUIRED`, `BLOCKED_UNREVIEWED_TRANSITIVE` and
+`NO_UPLOAD`; it is evidence for owner review, not approval or real parity.
 
 The remaining factual dependency-license cases were checked against primary
 release sources and must stay fail-closed:
