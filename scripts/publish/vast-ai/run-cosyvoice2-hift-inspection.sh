@@ -26,8 +26,11 @@ log() { printf '[cosyvoice2-hift-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
 
 self_test() {
-  local fail=0 token
-  for token in "$MODEL_URL" "$MODEL_SHA256" "$SOURCE_REVISION" "$GENERATOR_SHA256" "$LICENSE_SHA256" 'MIN_MEM_GIB=8' 'MIN_TMPFS_GIB=2' 'RAM below 8 GiB' 'tmpfs free space below 2 GiB' '--retry 4' '--retry-delay 5' '--retry-max-time 120' '--retry-all-errors' 'INSPECTION_ONLY' 'NOT_RUN' 'NO_UPLOAD' 'DATA_PKL_ONLY' 'torch_pickle_manifest.py' 'HiFTGenerator'; do
+  local fail=0 token log_file_token command_token move_token
+  log_file_token="log_file=\"\$WORK/validation.log\""
+  command_token="\$INSPECTOR\" --checkpoint \"\$checkpoint\" --source \"\$source\" --output \"\$evidence\" >>\"\$log_file\""
+  move_token="mv \"\$log_file\" \"\$evidence/validation.log\""
+  for token in "$MODEL_URL" "$MODEL_SHA256" "$SOURCE_REVISION" "$GENERATOR_SHA256" "$LICENSE_SHA256" 'MIN_MEM_GIB=8' 'MIN_TMPFS_GIB=2' 'RAM below 8 GiB' 'tmpfs free space below 2 GiB' '--retry 4' '--retry-delay 5' '--retry-max-time 120' '--retry-all-errors' "$log_file_token" "$command_token" "$move_token" 'INSPECTION_ONLY' 'NOT_RUN' 'NO_UPLOAD' 'DATA_PKL_ONLY' 'torch_pickle_manifest.py' 'HiFTGenerator'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test missing contract: $token"; fail=1; }
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|vokra-cli[[:space:]]+convert|cargo[[:space:]]+(run|test|check))([[:space:]]|$)' "$0" >/dev/null; then
@@ -70,24 +73,25 @@ WORK="$(cd "$WORK" && pwd)"
 checkpoint="$WORK/model/hift.pt"
 source="$WORK/source/CosyVoice"
 evidence="$WORK/evidence"
+log_file="$WORK/validation.log"
 log 'downloading only the pinned hift.pt payload'
-curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-delay 5 --retry-max-time 120 --retry-all-errors --output "$checkpoint" "$MODEL_URL" >>"$evidence/validation.log" 2>&1
+curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-delay 5 --retry-max-time 120 --retry-all-errors --output "$checkpoint" "$MODEL_URL" >>"$log_file" 2>&1
 [[ "$(stat -c '%s' "$checkpoint")" == "$MODEL_BYTES" ]] || die 'downloaded hift.pt byte count mismatch'
 [[ "$(sha256sum "$checkpoint" | awk '{print $1}')" == "$MODEL_SHA256" ]] || die 'downloaded hift.pt SHA-256 mismatch'
 
-git clone --no-tags --filter=blob:none "$SOURCE_URL" "$source" >>"$evidence/validation.log" 2>&1
-git -C "$source" checkout --detach "$SOURCE_REVISION" >>"$evidence/validation.log" 2>&1
+git clone --no-tags --filter=blob:none "$SOURCE_URL" "$source" >>"$log_file" 2>&1
+git -C "$source" checkout --detach "$SOURCE_REVISION" >>"$log_file" 2>&1
 [[ "$(git -C "$source" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die 'CosyVoice source revision mismatch'
 [[ -z "$(git -C "$source" status --porcelain --untracked-files=all)" ]] || die 'source checkout is dirty'
 [[ "$(sha256sum "$source/cosyvoice/hifigan/generator.py" | awk '{print $1}')" == "$GENERATOR_SHA256" ]] || die 'generator.py SHA-256 mismatch'
 [[ "$(sha256sum "$source/LICENSE" | awk '{print $1}')" == "$LICENSE_SHA256" ]] || die 'Apache LICENSE SHA-256 mismatch'
 
 set +e
-"${UV_CMD[@]}" "$INSPECTOR" --checkpoint "$checkpoint" --source "$source" --output "$evidence" >>"$evidence/validation.log" 2>&1
+"${UV_CMD[@]}" "$INSPECTOR" --checkpoint "$checkpoint" --source "$source" --output "$evidence" >>"$log_file" 2>&1
 rc=$?
 set -e
 [[ "$rc" == 2 ]] || die "inspector returned unexpected status $rc"
-"${UV_CMD[@]}" - "$evidence/manifest.json" <<'PY' >>"$evidence/validation.log" 2>&1
+"${UV_CMD[@]}" - "$evidence/manifest.json" <<'PY' >>"$log_file" 2>&1
 import json
 import sys
 from pathlib import Path
@@ -111,5 +115,6 @@ if checkpoint.get("payload_reads") != "DATA_PKL_ONLY; TENSOR_STORAGE_MEMBERS_NOT
     raise SystemExit("tensor payload-read contract missing")
 print(f"tensor_count={checkpoint.get('tensor_count')} manifest_sha256={checkpoint.get('manifest_sha256')}")
 PY
+mv "$log_file" "$evidence/validation.log"
 log "HiFT structural inspection BLOCKED; evidence=$evidence"
 exit 2
