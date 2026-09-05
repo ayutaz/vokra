@@ -41,6 +41,10 @@ try:
     import preflight_gate
 except ModuleNotFoundError:  # pragma: no cover - direct script execution uses this path
     from tools.parity.parler_tts import preflight_gate
+try:
+    import dac_provenance
+except ModuleNotFoundError:  # pragma: no cover - package execution fallback
+    from tools.parity.parler_tts import dac_provenance
 
 
 SCHEMA = "vokra-parler-tts-dependency-audit-v1"
@@ -64,6 +68,7 @@ MAX_MODEL_INFO_BYTES = 2 * 1024 * 1024
 MAX_MODEL_INFO_REDIRECTS = 4
 MODEL_METADATA_SCHEMA = "vokra-parler-tts-hf-model-metadata-v1"
 MODEL_INFO_REQUIRED_KEYS = {"id", "sha", "private", "gated", "disabled", "cardData", "siblings"}
+DAC_PROOF_PATH = Path(__file__).with_name("dac_provenance_evidence.json")
 PYPI_FILE_HOST = "files.pythonhosted.org"
 
 
@@ -177,6 +182,8 @@ def _contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, 
         raise AuditError("Parler model variant identities drifted from the reviewed manifest")
     if manifest.get("dac_identity") != preflight_gate.DAC_IDENTITY:
         raise AuditError("Parler DAC identity drifted from the reviewed manifest")
+    if manifest.get("dac_provenance") != dac_provenance.PROOF_BINDING:
+        raise AuditError("Parler DAC provenance binding drifted from the reviewed manifest")
     if manifest.get("model_metadata_fallback") != preflight_gate.MODEL_METADATA_FALLBACK:
         raise AuditError("Parler HF model-metadata fallback contract drifted from the reviewed manifest")
     return project_data, lock_data, manifest, project_bytes, lock_bytes
@@ -1057,6 +1064,7 @@ def _fixed_license_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 def audit_model_licenses(
     manifest: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None,
     metadata_fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+    provenance_path: Path | None = DAC_PROOF_PATH,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     files: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -1064,6 +1072,40 @@ def audit_model_licenses(
         try:
             files.append(_fetch_license(item, fetcher))
         except LicensePathError as exc:
+            is_dac = item["repo"] == dac_provenance.HF_REPOSITORY and item["revision"] == dac_provenance.HF_REVISION
+            if exc.status_code == 404 and is_dac and provenance_path is not None:
+                try:
+                    proof = dac_provenance.validate_proof(provenance_path)
+                except (OSError, ValueError, TypeError) as proof_exc:
+                    files.append({
+                        "id": item["id"], "kind": item["kind"], "repo": item["repo"],
+                        "revision": item["revision"], "claimed_license": item["claimed_license"],
+                        "requested_url": _license_url(item), "final_url": None, "acquired_file": None,
+                        "status": "BLOCKED_FACTUAL_LICENSE_PATH", "error": str(exc),
+                        "provenance": {"status": "BLOCKED", "error": str(proof_exc)},
+                    })
+                    failures.append(f"{item['id']}: {exc}; DAC provenance proof: {proof_exc}")
+                else:
+                    source = proof["source"]
+                    files.append({
+                        "id": item["id"], "kind": item["kind"], "repo": item["repo"],
+                        "revision": item["revision"], "claimed_license": item["claimed_license"],
+                        "requested_url": _license_url(item), "final_url": None, "acquired_file": None,
+                        "status": "PASS_PROVEN_OFFICIAL_RELEASE_LICENSE", "error": str(exc),
+                        "provenance": {
+                            "path": dac_provenance.PROOF_BINDING["path"],
+                            "file_sha256": dac_provenance.PROOF_BINDING["sha256"],
+                            "tool_sha256": dac_provenance.PROOF_BINDING["tool_sha256"],
+                            "repository_head": dac_provenance.PROOF_BINDING["repository_head"],
+                            "tensor_count": proof["tensor_count"],
+                            "tensor_manifest_sha256": proof["tensor_manifest_sha256"],
+                        },
+                        "source_tag_evidence": {
+                            "repository": source["repository"], "release_tag": source["release_tag"],
+                            "revision": source["revision"], "license": source["license"],
+                        },
+                    })
+                continue
             fallback = _model_info_entry(item)
             if exc.status_code == 404 and fallback is not None:
                 try:
@@ -1207,8 +1249,8 @@ def audit_environment(
         "fixed_source_model_dac_identities": _fixed_license_items(manifest),
         "model_license_files": model_license_files,
         "model_acquisition": {
-            "scope": "fixed source/model/DAC LICENSE paths plus exact HF model-info metadata fallback",
-            "policy": "allow-listed exact primary-source LICENSE fetch, with model-only 404 fallback to authenticated HF API metadata",
+            "scope": "fixed source/model/DAC LICENSE paths plus exact HF model-info metadata fallback and checked-in DAC VAST proof",
+            "policy": "allow-listed exact primary-source LICENSE fetch; model-only 404 uses authenticated HF metadata, DAC-only 404 uses the exact checked-in VAST proof",
             "requested_files": [item["requested_url"] for item in model_license_files],
             "metadata_requests": [
                 item["metadata_fallback"]["requested_url"]
@@ -1218,7 +1260,7 @@ def audit_environment(
             ],
             "non_license_requests": [],
             "non_license_files": [],
-            "proof": "audit code has no model-weight acquisition path and imports no model/Torch code; HF metadata responses are bounded JSON only",
+            "proof": "audit code has no model-weight acquisition path and imports no model/Torch code; HF metadata responses are bounded JSON only; DAC proof is digests/metadata with NO_UPLOAD",
         },
         "failures": sorted(set(failures)),
     }
@@ -1263,6 +1305,38 @@ def self_test() -> int:
     assert all(row["name"].casefold() != "setuptools" for row in preflight_gate.canonical_package_rows(_lock, _project["project"]))
 
     manifest = load_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
+    proof = dac_provenance.validate_proof(DAC_PROOF_PATH)
+    assert proof["status"] == "PASS" and proof["tensor_count"] == 301
+    with tempfile.TemporaryDirectory(prefix="parler-dac-proof-self-test-", dir="/private/tmp") as proof_directory:
+        proof_root = Path(proof_directory)
+        try:
+            dac_provenance.validate_proof(proof_root / "missing.json")
+        except (AuditError, dac_provenance.ProvenanceError):
+            pass
+        else:
+            raise AssertionError("accepted a missing DAC provenance proof")
+        tampered = proof_root / "tampered.json"
+        tampered.write_bytes(DAC_PROOF_PATH.read_bytes()[:-1] + b"x")
+        try:
+            dac_provenance.validate_proof(tampered)
+        except (AuditError, dac_provenance.ProvenanceError):
+            pass
+        else:
+            raise AssertionError("accepted a tampered DAC provenance proof")
+        duplicate = proof_root / "duplicate.json"
+        duplicate.write_text('{"schema":"x","schema":"x"}', encoding="utf-8")
+        try:
+            dac_provenance.validate_proof(
+                duplicate,
+                expected_file_bytes=None,
+                expected_file_sha256=None,
+                expected_head=None,
+                expected_tool_sha256=None,
+            )
+        except (AuditError, dac_provenance.ProvenanceError):
+            pass
+        else:
+            raise AssertionError("accepted duplicate DAC provenance JSON keys")
     items = _fixed_license_items(manifest)
     assert len(items) == 4
     assert all(_license_url(item).endswith("/LICENSE") for item in items)
@@ -1403,11 +1477,19 @@ def self_test() -> int:
         }
         return url, canonical_json(payload).encode()
 
-    fallback_files, fallback_failures = audit_model_licenses(manifest, missing_model_license, model_info_fetcher)
+    fallback_files, fallback_failures = audit_model_licenses(
+        manifest, missing_model_license, model_info_fetcher, provenance_path=None
+    )
     assert [item.get("status", "PASS") for item in fallback_files] == [
         "PASS", "PASS_METADATA_FALLBACK", "PASS_METADATA_FALLBACK", "BLOCKED_FACTUAL_LICENSE_PATH"
     ]
     assert len(fallback_failures) == 1 and "dac_44khZ_8kbps" in fallback_failures[0]
+    proven_files, proven_failures = audit_model_licenses(manifest, missing_model_license, model_info_fetcher)
+    assert [item.get("status", "PASS") for item in proven_files] == [
+        "PASS", "PASS_METADATA_FALLBACK", "PASS_METADATA_FALLBACK",
+        "PASS_PROVEN_OFFICIAL_RELEASE_LICENSE",
+    ]
+    assert proven_failures == []
 
     def synthetic_tar(entries: list[tuple[str, bytes, str]]) -> bytes:
         output = io.BytesIO()

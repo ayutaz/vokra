@@ -54,6 +54,16 @@ dirty or symlinked inputs/checkouts, and output overwrite. The JSON contains no
 tensor values and is `NO_UPLOAD`; this is provenance evidence only, not
 inference or numerical parity evidence.
 
+The checked-in `dac_provenance_evidence.json` is the exact 101,082-byte VAST
+proof (`sha256=7eebc272fbd9451bd88b4b7d12dc14057e09d1991ea64e97689654f2917e81a1`).
+Its strict validator binds the clean proof HEAD, generator SHA, official
+release-tag MIT LICENSE, exact HF revision, raw DAC kwargs, derived semantics,
+all 301 key mappings, and every tensor digest. Dependency audit accepts this
+proof only after the exact DAC LICENSE request returns HTTP 404; it never
+downloads model bytes. Preflight and API smoke bind the same proof before any
+reference model can run. This proof is not inference parity evidence and is
+never uploaded.
+
 Example VAST invocation:
 
 ```sh
@@ -132,9 +142,10 @@ That fallback authenticates the exact revision endpoint
 `https://huggingface.co/api/models/{repo}/revision/{revision}`, exact
 repo/revision/`sha`, public/non-gated,
 enabled (`disabled=false`) flags, `cardData.license=apache-2.0`, and an exact
-tree with no license-like file. It is not enabled for the source or DAC identity; a missing DAC
-checkpoint LICENSE therefore remains blocked, and the official DAC code
-license is not inferred as a weight license. No license class is inferred from
-raw LICENSE bytes. The audit can inspect only an environment synchronized by a
+tree with no license-like file. It is not enabled for the source identity. A
+DAC 404 is accepted only with the checked-in exact VAST provenance proof
+described above, which binds the official release-tag MIT LICENSE and does not
+infer a weight license from raw bytes. No license class is inferred from raw
+LICENSE bytes. The audit can inspect only an environment synchronized by a
 separately authorized, named VAST job; it does not download weights, import
 model/Torch code, or invoke Cargo.

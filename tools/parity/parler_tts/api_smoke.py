@@ -24,6 +24,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+try:
+    import dac_provenance
+except ModuleNotFoundError:  # pragma: no cover - package execution fallback
+    from tools.parity.parler_tts import dac_provenance
+
 
 SOURCE_REPOSITORY = "https://github.com/huggingface/parler-tts.git"
 SOURCE_REVISION = "d108732cd57788ec86bc857d99a6cabd66663d68"
@@ -334,6 +339,8 @@ def verify_project(project: Path, manifest_path: Path) -> dict[str, Any]:
         "license": "Apache-2.0",
     }:
         raise RuntimeError("authenticated Parler source identity drifted")
+    if manifest.get("dac_provenance") != dac_provenance.PROOF_BINDING:
+        raise RuntimeError("authenticated DAC provenance proof binding drifted")
     route = manifest.get("reference_route")
     if not isinstance(route, dict):
         raise RuntimeError("authenticated reference route is missing")

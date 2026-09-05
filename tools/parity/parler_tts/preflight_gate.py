@@ -22,6 +22,11 @@ from typing import Any
 
 import tomllib
 
+try:
+    import dac_provenance
+except ModuleNotFoundError:  # pragma: no cover - package execution fallback
+    from tools.parity.parler_tts import dac_provenance
+
 GATE_VERSION = 1
 LOCK_SHA256 = "683c1c2324f3dbcd543b86fce0b71ec1c1ee32254cdf03b0361064b4b8d4901c"
 PYPROJECT_SHA256 = "eacb62df8ffc207f2d8d860607da93d1fdc6980cbb3fe657bf8664bc20675793"
@@ -43,7 +48,7 @@ MANIFEST_KEYS = {
     "gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "review_rows",
     "review_rows_sha256", "source_identity", "variants", "dac_identity", "reference_route",
     "model_metadata_fallback",
-    "model_reviews", "approval_scope_sha256", "operator_approval",
+    "model_reviews", "dac_provenance", "approval_scope_sha256", "operator_approval",
 }
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "manifest", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
@@ -387,6 +392,13 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         return blocked("fixed model or DAC identities drifted")
     if manifest.get("model_metadata_fallback") != MODEL_METADATA_FALLBACK:
         return blocked("HF model-metadata fallback contract drifted")
+    if manifest.get("dac_provenance") != dac_provenance.PROOF_BINDING:
+        return blocked("DAC provenance proof binding drifted")
+    proof_path = manifest_path.parent / dac_provenance.PROOF_BINDING["path"]
+    try:
+        dac_provenance.validate_proof(proof_path)
+    except (OSError, ValueError, TypeError) as exc:
+        return blocked(f"DAC provenance proof is invalid: {exc}")
     route = manifest.get("reference_route")
     if route != {
         "entrypoint": "ParlerTTSForConditionalGeneration",
@@ -435,6 +447,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         "package_rows_sha256": manifest["package_rows_sha256"], "package_rows": rows, "review_rows": review_rows,
         "source_identity": manifest["source_identity"], "variants": VARIANTS,
         "dac_identity": DAC_IDENTITY, "model_metadata_fallback": MODEL_METADATA_FALLBACK,
+        "dac_provenance": manifest["dac_provenance"],
         "reference_route": route,
         "model_reviews": model_reviews,
     }
@@ -570,12 +583,14 @@ def self_test() -> int:
         else:
             print("parler artifact accepted under the wrong package identity", file=sys.stderr)
             return 1
-    with tempfile.TemporaryDirectory(prefix="parler-gate-") as directory:
+    with tempfile.TemporaryDirectory(prefix="parler-gate-", dir="/private/tmp") as directory:
         root = Path(directory)
         test_project = root / "project"
         test_project.mkdir()
         shutil.copy2(project / "uv.lock", test_project / "uv.lock")
         shutil.copy2(project / "pyproject.toml", test_project / "pyproject.toml")
+        shutil.copy2(project / dac_provenance.PROOF_BINDING["path"], test_project / dac_provenance.PROOF_BINDING["path"])
+        shutil.copy2(project / dac_provenance.PROOF_BINDING["path"], root / dac_provenance.PROOF_BINDING["path"])
         test_rows = canonical_package_rows(
             tomllib.loads((test_project / "uv.lock").read_text(encoding="utf-8")),
             tomllib.loads((test_project / "pyproject.toml").read_text(encoding="utf-8"))["project"],
@@ -590,6 +605,7 @@ def self_test() -> int:
                  "package_rows_sha256": approved["package_rows_sha256"], "package_rows": test_rows, "review_rows": approved["review_rows"],
                  "source_identity": approved["source_identity"], "variants": VARIANTS,
                  "dac_identity": DAC_IDENTITY, "model_metadata_fallback": MODEL_METADATA_FALLBACK,
+                 "dac_provenance": approved["dac_provenance"],
                  "reference_route": approved["reference_route"],
                  "model_reviews": approved["model_reviews"]}
         approved["approval_scope_sha256"] = canonical_digest(scope)
@@ -601,6 +617,14 @@ def self_test() -> int:
         good, why = validate(test_project, approved_path, evidence_path)
         if not good:
             print(f"parler gate: approved baseline failed: {why}", file=sys.stderr)
+            return 1
+        proof_path = root / dac_provenance.PROOF_BINDING["path"]
+        original_proof = proof_path.read_bytes()
+        proof_path.write_bytes(original_proof[:-1] + b"x")
+        proof_ok, proof_why = validate(test_project, approved_path, evidence_path)
+        proof_path.write_bytes(original_proof)
+        if proof_ok or "DAC provenance proof" not in proof_why:
+            print("parler gate: tampered DAC provenance proof was accepted", file=sys.stderr)
             return 1
         duplicate_manifest = root / "duplicate-manifest.json"
         duplicate_manifest.write_text('{"gate_version":1,"gate_version":1}', encoding="utf-8")

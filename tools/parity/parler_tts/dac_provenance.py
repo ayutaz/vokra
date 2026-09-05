@@ -103,6 +103,165 @@ PRODUCTION_CONTRACT = Contract(
     ),
 )
 
+# These are the immutable facts of the VAST-generated proof checked into this
+# tree.  The tool hash is the generator used on VAST (not necessarily the hash
+# of a later validator), so the proof remains independently reproducible while
+# still binding the exact historical generator.
+PROOF_BINDING = {
+    "path": "dac_provenance_evidence.json",
+    "bytes": 101_082,
+    "sha256": "7eebc272fbd9451bd88b4b7d12dc14057e09d1991ea64e97689654f2917e81a1",
+    "repository_head": "31e6a2fc04ec6b500fdf5121c58610a09af0462a",
+    "tool_path": "tools/parity/parler_tts/dac_provenance.py",
+    "tool_sha256": "0fa3326f2a813c324785b446a5fa098b477a34fd23944094e85acf8d63f87c68",
+    "tensor_count": EXPECTED_TENSOR_COUNT,
+    "tensor_manifest_sha256": "3f9f0e1e2e239bd35a64bf0603c15763851bfdf648fea6176befffb8fe85e92b",
+    "source_repository": OFFICIAL_REPOSITORY,
+    "source_revision": OFFICIAL_RELEASE_REVISION,
+    "source_release_tag": OFFICIAL_RELEASE_TAG,
+    "hf_repository": HF_REPOSITORY,
+    "hf_revision": HF_REVISION,
+}
+
+PROOF_SCHEMA_KEYS = {
+    "dac_derived", "dac_kwargs", "environment", "hf", "inference_parity",
+    "inference_run", "key_mapping", "model_artifacts_read", "model_code_imported",
+    "publication", "repository", "schema", "source", "status", "tensor_count",
+    "tensor_manifest_sha256", "tensors", "tool",
+}
+
+
+def _exact_dict(value: Any, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ProvenanceError(f"{label} schema is not exact")
+    return value
+
+
+def _exact_digest(value: Any, label: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise ProvenanceError(f"{label} is not a lowercase SHA-256 digest")
+    return value
+
+
+def validate_proof(
+    path: Path,
+    *,
+    contract: Contract = PRODUCTION_CONTRACT,
+    expected_file_bytes: int | None = PROOF_BINDING["bytes"],
+    expected_file_sha256: str | None = PROOF_BINDING["sha256"],
+    expected_head: str | None = PROOF_BINDING["repository_head"],
+    expected_tool_sha256: str | None = PROOF_BINDING["tool_sha256"],
+) -> dict[str, Any]:
+    """Validate a generated proof without importing torch or reading weights."""
+    proof_path = require_input(path, label="DAC provenance proof")
+    if expected_file_bytes is not None and proof_path.stat().st_size != expected_file_bytes:
+        raise ProvenanceError("DAC provenance proof byte size mismatch")
+    actual_file_sha = sha256_file(proof_path)
+    if expected_file_sha256 is not None and actual_file_sha != expected_file_sha256:
+        raise ProvenanceError("DAC provenance proof SHA-256 mismatch")
+    try:
+        proof = json.loads(proof_path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_json_keys)
+    except (OSError, UnicodeError, json.JSONDecodeError, ProvenanceError) as exc:
+        raise ProvenanceError(f"DAC provenance proof is not strict JSON: {exc}") from exc
+    _exact_dict(proof, PROOF_SCHEMA_KEYS, "DAC provenance proof")
+    if proof["schema"] != SCHEMA or proof["status"] != "PASS" or proof["publication"] != "NO_UPLOAD":
+        raise ProvenanceError("DAC provenance proof status/publication is not fail-closed")
+    if proof["model_artifacts_read"] is not True or proof["model_code_imported"] is not False:
+        raise ProvenanceError("DAC provenance artifact/code flags are invalid")
+    if proof["inference_run"] is not False or proof["inference_parity"] != "NOT_CLAIMED":
+        raise ProvenanceError("DAC provenance proof claims inference")
+
+    repository = _exact_dict(proof["repository"], {"root", "head", "clean"}, "repository")
+    if not isinstance(repository["root"], str) or repository["clean"] is not True:
+        raise ProvenanceError("DAC provenance repository is not clean")
+    if expected_head is not None and repository["head"] != expected_head:
+        raise ProvenanceError("DAC provenance repository HEAD mismatch")
+    tool = _exact_dict(proof["tool"], {"path", "sha256"}, "tool")
+    if tool["path"] != PROOF_BINDING["tool_path"]:
+        raise ProvenanceError("DAC provenance tool path mismatch")
+    if expected_tool_sha256 is not None and tool["sha256"] != expected_tool_sha256:
+        raise ProvenanceError("DAC provenance tool SHA-256 mismatch")
+
+    source = _exact_dict(proof["source"], {"repository", "url", "release_tag", "revision", "asset_url", "weights", "license"}, "source")
+    if source["repository"] != OFFICIAL_REPOSITORY or source["url"] != OFFICIAL_SOURCE_URL:
+        raise ProvenanceError("DAC official source identity mismatch")
+    if source["release_tag"] != OFFICIAL_RELEASE_TAG or source["revision"] != OFFICIAL_RELEASE_REVISION or source["asset_url"] != OFFICIAL_ASSET_URL:
+        raise ProvenanceError("DAC release identity mismatch")
+    weights = _exact_dict(source["weights"], {"bytes", "sha256"}, "official weights identity")
+    if weights != {"bytes": contract.official_weights_bytes, "sha256": contract.official_weights_sha256}:
+        raise ProvenanceError("official weights identity mismatch")
+    license_identity = _exact_dict(source["license"], {"bytes", "sha256", "spdx"}, "release license identity")
+    if license_identity != {"bytes": contract.license_bytes, "sha256": contract.license_sha256, "spdx": "MIT"}:
+        raise ProvenanceError("release-tag MIT license identity mismatch")
+
+    hf = _exact_dict(proof["hf"], {"repository", "revision", "model", "config", "config_semantics"}, "HF identity")
+    if hf["repository"] != HF_REPOSITORY or hf["revision"] != HF_REVISION:
+        raise ProvenanceError("HF repository or exact revision mismatch")
+    model_identity = _exact_dict(hf["model"], {"bytes", "sha256"}, "HF model identity")
+    if model_identity != {"bytes": contract.hf_model_bytes, "sha256": contract.hf_model_sha256}:
+        raise ProvenanceError("HF model identity mismatch")
+    config_identity = _exact_dict(hf["config"], {"bytes", "sha256"}, "HF config identity")
+    if config_identity != {"bytes": contract.hf_config_bytes, "sha256": contract.hf_config_sha256}:
+        raise ProvenanceError("HF config identity mismatch")
+    if hf["config_semantics"] != contract.config:
+        raise ProvenanceError("HF config semantics mismatch")
+    if proof["dac_kwargs"] != contract.kwargs:
+        raise ProvenanceError("DAC raw kwargs mismatch")
+    if proof["dac_derived"] != {"d_model": 1024, "hop_length": 512}:
+        raise ProvenanceError("DAC derived semantics mismatch")
+    if proof["key_mapping"] != {"bijective": True, "official_to_hf_prefix": "model."}:
+        raise ProvenanceError("DAC key mapping is not the exact model. bijection")
+
+    if proof["tensor_count"] != contract.tensor_count or not isinstance(proof["tensors"], list):
+        raise ProvenanceError("DAC tensor count/list mismatch")
+    rows = proof["tensors"]
+    if len(rows) != contract.tensor_count:
+        raise ProvenanceError("DAC tensor proof row count mismatch")
+    previous = None
+    seen: set[str] = set()
+    for row in rows:
+        row = _exact_dict(row, {"official_key", "hf_key", "shape", "dtype", "numel", "official_sha256", "hf_sha256"}, "tensor row")
+        key = row["official_key"]
+        if not isinstance(key, str) or key in seen or (previous is not None and key <= previous):
+            raise ProvenanceError("DAC tensor keys are not unique and sorted")
+        seen.add(key)
+        previous = key
+        if row["hf_key"] != f"model.{key}" or not isinstance(row["dtype"], str) or not row["dtype"]:
+            raise ProvenanceError("DAC tensor key mapping or dtype mismatch")
+        shape = row["shape"]
+        if not isinstance(shape, list) or any(not isinstance(dim, int) or isinstance(dim, bool) or dim < 0 for dim in shape):
+            raise ProvenanceError("DAC tensor shape is invalid")
+        numel = 1
+        for dim in shape:
+            numel *= dim
+        if not isinstance(row["numel"], int) or isinstance(row["numel"], bool) or row["numel"] != numel:
+            raise ProvenanceError("DAC tensor numel does not match shape")
+        official_sha = _exact_digest(row["official_sha256"], "official tensor digest")
+        hf_sha = _exact_digest(row["hf_sha256"], "HF tensor digest")
+        if official_sha != hf_sha:
+            raise ProvenanceError("official and HF tensor digests differ")
+    manifest_sha = _exact_digest(proof["tensor_manifest_sha256"], "tensor manifest digest")
+    if manifest_sha != sha256_json(rows):
+        raise ProvenanceError("DAC tensor manifest hash drifted")
+    environment = _exact_dict(
+        proof["environment"],
+        {"cargo_invoked", "inference_run", "machine", "model_code_imported", "platform", "python", "safetensors", "torch"},
+        "environment",
+    )
+    if environment["cargo_invoked"] is not False or environment["inference_run"] is not False or environment["model_code_imported"] is not False:
+        raise ProvenanceError("DAC provenance environment claims forbidden work")
+    if any(not isinstance(environment[key], str) or not environment[key] for key in ("machine", "platform", "python", "safetensors", "torch")):
+        raise ProvenanceError("DAC provenance environment versions/platform are malformed")
+    if expected_head == PROOF_BINDING["repository_head"]:
+        if len(rows) != PROOF_BINDING["tensor_count"] or manifest_sha != PROOF_BINDING["tensor_manifest_sha256"]:
+            raise ProvenanceError("checked-in DAC tensor proof binding drifted")
+        if environment != {
+            "cargo_invoked": False, "inference_run": False, "machine": "x86_64", "model_code_imported": False,
+            "platform": "Linux", "python": "3.12.14", "safetensors": "0.8.0", "torch": "2.11.0+cpu",
+        }:
+            raise ProvenanceError("checked-in DAC proof environment drifted")
+    return proof
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -459,7 +618,7 @@ def self_test() -> int:
     torch, safe_open = load_torch_and_safetensors()
     from safetensors.torch import save_file
 
-    with tempfile.TemporaryDirectory(prefix="parler-dac-provenance-") as directory:
+    with tempfile.TemporaryDirectory(prefix="parler-dac-provenance-", dir="/private/tmp") as directory:
         root = Path(directory)
         repo_root = root / "repo"
         repo_root.mkdir()
