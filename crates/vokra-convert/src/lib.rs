@@ -97,6 +97,8 @@ pub enum ModelKind {
     /// sizes) are `0`-placeholders pending T02 upstream inspection — the
     /// runtime rejects `0` at load per `CosyVoice2Config::from_gguf`.
     CosyVoice2,
+    /// Standalone authenticated CosyVoice2 HiFTNet vocoder companion.
+    CosyVoice2Hift,
     /// `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` safetensors checkpoint (SoTA
     /// plan Phase 3, 2026-07-24). Same architecture as CosyVoice2 — Qwen2
     /// LLM backbone + chunk-aware Flow Matching CFM + **HiFTNet** vocoder
@@ -3942,6 +3944,7 @@ impl ModelKind {
             // there is one Kokoro release.
             "kokoro" | "kokoro-82m" | "kokoro_82m" | "hexgrad/kokoro-82m" => Some(Self::Kokoro),
             "cosyvoice2" => Some(Self::CosyVoice2),
+            "cosyvoice2-hift" | "cosyvoice2_hift" => Some(Self::CosyVoice2Hift),
             "cosyvoice3"
             | "cosyvoice-3"
             | "fun-cosyvoice3"
@@ -5815,6 +5818,7 @@ impl ModelKind {
             Self::CamPlus => "campplus",
             Self::Kokoro => "kokoro",
             Self::CosyVoice2 => "cosyvoice2",
+            Self::CosyVoice2Hift => "cosyvoice2-hift",
             Self::CosyVoice3 => "cosyvoice3",
             Self::Voxtral => "voxtral",
             Self::Mimi => "mimi",
@@ -6950,6 +6954,12 @@ pub fn convert_file_licensed(
     output: &Path,
     license: Option<&str>,
 ) -> Result<ConvertSummary, ConvertError> {
+    if matches!(model, ModelKind::CosyVoice2Hift) {
+        return Err(ConvertError::Usage(
+            "cosyvoice2-hift requires the exact cosyvoice2.yaml sidecar; use the CLI --config path"
+                .into(),
+        ));
+    }
     // Whisper-Medusa needs an exact config side-car. Reject the legacy
     // three-path dispatcher before reading the 6.25 GB checkpoint; the
     // config-aware public entry point and CLI arm are the only valid routes.
@@ -7197,6 +7207,12 @@ pub fn convert_file_licensed(
             // with a `--config` for the full hparam chunk.
             let (builder, report) = models::cosyvoice2::convert(bytes)?;
             (builder, cosyvoice2_notes(&report))
+        }
+        ModelKind::CosyVoice2Hift => {
+            return Err(ConvertError::Usage(
+                "cosyvoice2-hift requires the exact cosyvoice2.yaml sidecar; use the dedicated entry point"
+                    .into(),
+            ));
         }
         ModelKind::CosyVoice3 => {
             // SoTA plan Phase 3: same shape-driven walk as CosyVoice2, but
@@ -13003,6 +13019,7 @@ pub use models::nkf_aec::{NkfAecReport, convert_nkf_aec_file};
 // routing it to `convert_llama_omni2_file_with_config` instead of a link
 // error. See the 2026-08-15 handshake-repair section of the module doc in
 // `crates/vokra-convert/src/models/llama_omni2.rs`.
+pub use models::cosyvoice2_hift::{ConvertHiftReport, convert_cosyvoice2_hift_file};
 pub use models::llama_omni2::{
     LlamaOmni2Report, LlamaOmni2Variant, convert_llama_omni2_bytes, convert_llama_omni2_file,
 };

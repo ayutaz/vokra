@@ -19,12 +19,13 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
-    convert_canary_1b_flash_file_with_tokenizer, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_csm_file, convert_dac_file, convert_file_licensed, convert_file_quantized,
-    convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
-    convert_moshi_file, convert_nanocodec_file, convert_parakeet_ctc_file_with_assets,
-    convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
-    convert_piper_plus_file, convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
+    convert_canary_1b_flash_file_with_tokenizer, convert_cosyvoice2_file,
+    convert_cosyvoice2_hift_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
+    convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
+    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
+    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
+    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file,
+    convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
     convert_speecht5_file_with_tokenizer, convert_ultravox_llama_companion_file,
     convert_utmos_file,
 };
@@ -39,7 +40,7 @@ USAGE:
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model nanocodec --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
-    vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
+    vokra-convert --model <cosyvoice2|cosyvoice2-hift|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
     vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
@@ -570,6 +571,25 @@ fn main() -> ExitCode {
             // written and the runtime refuses the LLM bind (loud note).
             convert_cosyvoice2_file(&input, config.as_deref(), &output)
         }
+        ModelKind::CosyVoice2Hift => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is not supported for cosyvoice2-hift\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            let Some(config) = config.as_deref() else {
+                eprintln!(
+                    "error: --model cosyvoice2-hift requires --config <cosyvoice2.yaml>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_cosyvoice2_hift_file(&input, config, &output, license.as_deref()).map(|r| ConvertSummary {
+                model,
+                tensor_count: r.written,
+                metadata_count: r.metadata_count,
+                output_bytes: r.output_bytes,
+                notes: vec!["strict standalone CosyVoice2 HiFT companion; g/v and Snake alpha tensors preserved verbatim".to_owned()],
+            })
+        }
         ModelKind::CosyVoice3 => {
             if quant.is_some() {
                 eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
@@ -1039,6 +1059,17 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 "; arch={arch} sample_rate={sr} n_layer={n_layer} n_head={n_head} \
                  hidden_dim={hidden_dim}"
             );
+        }
+        ModelKind::CosyVoice2Hift => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.cosyvoice2_hift.config.sampling_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!("; arch={arch} sampling_rate={sr} standalone_hift=true");
         }
         ModelKind::CosyVoice3 => {
             // SoTA plan Phase 3: shape-parallel to CosyVoice2 but reads
@@ -3832,6 +3863,7 @@ mod tests {
             ("campplus", ModelKind::CamPlus),
             ("kokoro", ModelKind::Kokoro),
             ("cosyvoice2", ModelKind::CosyVoice2),
+            ("cosyvoice2-hift", ModelKind::CosyVoice2Hift),
             ("voxtral", ModelKind::Voxtral),
             ("mimi", ModelKind::Mimi),
             ("nanocodec", ModelKind::NanoCodec),

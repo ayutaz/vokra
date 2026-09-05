@@ -270,6 +270,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-09-06 — 0.3.0-dev (standalone CosyVoice2 HiFT companion)
+
+Added the standalone `cosyvoice2_hift` vocoder conversion surface and its
+authenticated GGUF metadata schema. This is additive: the full CosyVoice2
+composite remains fail-closed, CPU/Metal numerical parity is pending, and no
+publication is claimed.
+
+| Surface | Symbol / key | Change | Compatibility |
+|---|---|---|---|
+| `vokra-convert` / `vokra-cli convert` | `cosyvoice2-hift` | Added strict exact-config, exact-328-F32-manifest converter | Standalone vocoder only; quantization and license override rejected. `ModelKind` is not `non_exhaustive`, so external exhaustive Rust matches may be source-breaking before 1.0. |
+| GGUF metadata | `vokra.cosyvoice2_hift.*` | Added fixed source/checkpoint/config/topology schema | Additive; no existing key changes; full composite remains fail-closed |
+| GGUF provenance | `vokra.provenance.upstream_revision`, `vokra.provenance.checkpoint_sha256` | Added standard provenance identities for the authenticated HF revision and `hift.pt` | Additive; parity and publication remain pending |
+
 ### 2026-09-01 — 0.3.0-dev (microWakeWord dense I8 GGUF wire support)
 
 The dense signed-I8 GGUF leg is additive within the current `0.3.0` prerelease

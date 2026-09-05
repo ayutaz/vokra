@@ -15,14 +15,15 @@ use vokra_convert::{
     VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file,
     convert_canary_1b_flash_file_with_tokenizer, convert_canary_file_with_tokenizer,
     convert_chatterbox_file, convert_chatterbox_nano_file, convert_chatterbox_turbo_file,
-    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_crepe_file, convert_dac_file,
-    convert_deberta_v2_file, convert_deberta_v3_file, convert_file, convert_file_quantized,
-    convert_file_with_policy, convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
-    convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
-    convert_moonshine_tiny_file_with_tokenizer, convert_nanocodec_file,
-    convert_nemotron_asr_file_with_tokenizer, convert_openwakeword_op_file_with_config,
-    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
-    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_cosyvoice2_file, convert_cosyvoice2_hift_file, convert_cosyvoice3_file,
+    convert_crepe_file, convert_dac_file, convert_deberta_v2_file, convert_deberta_v3_file,
+    convert_file, convert_file_quantized, convert_file_with_policy, convert_file_with_slug,
+    convert_irodori_file, convert_kokoro_file, convert_llama_omni2_file_with_config,
+    convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
+    convert_nanocodec_file, convert_nemotron_asr_file_with_tokenizer,
+    convert_openwakeword_op_file_with_config, convert_parakeet_ctc_file_with_assets,
+    convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
+    convert_piper_plus_file, convert_qwen3_tts_file,
     convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file, convert_silero_file,
     convert_speecht5_file_with_tokenizer, convert_styletts2_file,
     convert_ultravox_llama_companion_file, convert_vibevoice_file, convert_vits_ja_file,
@@ -41,6 +42,7 @@ USAGE:
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model cosyvoice2-hift --input <hift.safetensors> --config <cosyvoice2.yaml> --output <out.gguf>
     vokra-cli convert --model cosyvoice3 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model chatterbox --input <t3.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
@@ -556,7 +558,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` \
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
-                         campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac | \
+                         campplus | kokoro | cosyvoice2 | cosyvoice2-hift | cosyvoice3 | voxtral | mimi | nanocodec | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | \
@@ -1163,6 +1165,28 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // without it only the shape-derived hparams are written and the
             // runtime refuses the LLM bind (loud converter note).
             convert_cosyvoice2_file(&p.input, p.config.as_deref(), &p.output)
+        }
+        ModelKind::CosyVoice2Hift => {
+            if p.quant.is_some() {
+                return Err("--quantize is not supported for cosyvoice2-hift".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is not supported for cosyvoice2-hift".to_owned());
+            }
+            if p.license.is_some() {
+                return Err("--license cannot override the fixed Apache-2.0 cosyvoice2-hift weight contract".to_owned());
+            }
+            let config = p
+                .config
+                .as_deref()
+                .ok_or("--model cosyvoice2-hift requires --config <cosyvoice2.yaml>")?;
+            convert_cosyvoice2_hift_file(&p.input, config, &p.output, None).map(|r| ConvertSummary {
+                model,
+                tensor_count: r.written,
+                metadata_count: r.metadata_count,
+                output_bytes: r.output_bytes,
+                notes: vec!["strict standalone CosyVoice2 HiFT companion; no publication or parity claim".to_owned()],
+            })
         }
         ModelKind::CosyVoice3 => {
             // Quantization surface is whisper-only; reject rather than
@@ -2406,6 +2430,7 @@ mod tests {
             ("campplus", ModelKind::CamPlus),
             ("kokoro", ModelKind::Kokoro),
             ("cosyvoice2", ModelKind::CosyVoice2),
+            ("cosyvoice2-hift", ModelKind::CosyVoice2Hift),
             ("cosyvoice3", ModelKind::CosyVoice3),
             ("voxtral", ModelKind::Voxtral),
             ("mimi", ModelKind::Mimi),
