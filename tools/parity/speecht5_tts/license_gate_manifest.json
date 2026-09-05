@@ -1,9 +1,9 @@
 {
   "gate_version": 2,
-  "lock_sha256": "418fb6b6516e0284b503ed20872e2dc6dd375aff918e253f3e7f9d27b62f904c",
-  "pyproject_sha256": "1e61ad26749c1ad5ba05fe139ef8bfcf4698e3b030cad6182e18309789779346",
-  "package_rows_sha256": "b051451a6435387d0f5c121a368936dea3b18a9ae4b308fd686a75d6a3858c4f",
-  "dependency_reviews_sha256": "02eaeb7fcf145acec8d48d3876c81524c9b784a4e0a14552ff3c25e9bf6840d2",
+  "lock_sha256": "3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075",
+  "pyproject_sha256": "b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8",
+  "package_rows_sha256": "d49d3091fffcc8df5a0d75f0cf2a94e14ddd90a164698f37bc64bc788bc545bf",
+  "dependency_reviews_sha256": "8784596ff265ce012a0babd1e8963f03f274b4e5799d8da6c33d81bae5cd7eda",
   "transformers_route": "previous isolated pin transformers==5.5.0; active isolated pin transformers==5.10.4 / SpeechT5ForTextToSpeech.generate_speech; BLOCKED_UNVERIFIED_API_SMOKE",
   "tts_identity": {
     "repo": "microsoft/speecht5_tts",
@@ -305,18 +305,6 @@
       "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
     },
     {
-      "id": "setuptools@83.0.0",
-      "name": "setuptools",
-      "version": "83.0.0",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "status": "PENDING_REVIEW",
-      "license": null,
-      "native_review": null,
-      "bundled_review": null
-    },
-    {
       "id": "sympy@1.14.0",
       "name": "sympy",
       "version": "1.14.0",
@@ -455,7 +443,7 @@
       "bundled_review": "First-party repository tooling; not redistributed"
     }
   ],
-  "approval_scope_sha256": "22b73def867d09d4c50786a6d3b24c4433022848b1bc494e1b0885b0a5f71647",
+  "approval_scope_sha256": "6fa342b204bf40c68e10c26b3a745bd9fdeb93d2d3127eed3f07c04a62f609b8",
   "build_dependency_reviews": [
     {
       "id": "Cython@3.0.12",

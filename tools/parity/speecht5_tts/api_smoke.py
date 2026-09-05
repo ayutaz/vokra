@@ -43,8 +43,8 @@ VOCODER_WEIGHT_SHA256 = "b171e9bcd8a2b50dc9780040478dfa26783a9ee4be012cf5776914f
 SMOKE_TEXT = "Hi."
 SMOKE_SEED = 0x5350_4545_4348_5435
 SPEAKER_DIM = 512
-LOCK_SHA256 = "418fb6b6516e0284b503ed20872e2dc6dd375aff918e253f3e7f9d27b62f904c"
-PYPROJECT_SHA256 = "1e61ad26749c1ad5ba05fe139ef8bfcf4698e3b030cad6182e18309789779346"
+LOCK_SHA256 = "3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075"
+PYPROJECT_SHA256 = "b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8"
 PASS_EVIDENCE_KEYS = {
     "call", "call_checkpoint_sha256", "checkpoint_files", "environment", "format",
     "frames", "input_sha256", "lock_sha256", "mel_bins", "output_count",
@@ -182,6 +182,19 @@ def verify_project(project_dir: Path) -> tuple[str, str, str]:
     packages = lock_data.get("package")
     if not isinstance(packages, list) or not packages:
         raise RuntimeError("uv.lock package rows are missing")
+    if any(
+        isinstance(package, dict)
+        and (
+            str(package.get("name", "")).casefold() == "setuptools"
+            or any(
+                isinstance(dependency, dict)
+                and str(dependency.get("name", "")).casefold() == "setuptools"
+                for dependency in package.get("dependencies", [])
+            )
+        )
+        for package in packages
+    ):
+        raise RuntimeError("uv.lock reintroduces forbidden setuptools closure")
     rows = []
     for package in packages:
         if not isinstance(package, dict):

@@ -48,7 +48,6 @@ EXPECTED = {
     "regex": "2026.7.19",
     "safetensors": "0.8.0",
     "sentencepiece": "0.2.2",
-    "setuptools": "83.0.0",
     "sympy": "1.14.0",
     "tokenizers": "0.22.2",
     "torch": "2.4.1+cpu",

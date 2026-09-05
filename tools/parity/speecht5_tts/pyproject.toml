@@ -8,7 +8,6 @@ dependencies = [
     "numpy==1.26.4",
     "safetensors==0.8.0",
     "sentencepiece==0.2.2",
-    "setuptools==83.0.0",
     "torch==2.4.1",
     "transformers==5.10.4",
     "typer==0.9.0",
@@ -18,6 +17,12 @@ dependencies = [
 package = false
 no-binary-package = ["numpy"]
 config-settings-package = { numpy = { setup-args = ["-Dblas=none", "-Dlapack=none"] } }
+# The fixed inference route never imports setuptools.  Keep the transitive
+# build-tool requirement impossible so uv omits setuptools, including its
+# forbidden LGPLv3 vendored autocommand payload, from the frozen runtime
+# closure.  Do not replace this with a newer setuptools pin: the payload is
+# still bundled there.
+override-dependencies = ["setuptools ; python_version < '0'"]
 build-constraint-dependencies = [
     "Cython==3.0.12",
     "meson-python==0.15.0",

@@ -14,10 +14,15 @@ are bound by `license_gate_manifest.json`.
 `uv run --no-project --offline` before scratch creation, synchronization,
 source/model download, conversion, or Cargo. It binds the exact Linux lock,
 including uv's build-constraint manifest for the isolated NumPy source build.
-The compact `dependency_audit_evidence.json` records the full fresh VAST
-audit digest for the active isolated pin without committing the 252 KiB report.
-Its input hashes bind the current lock and project bytes; the operator review
-state remains pending. `patchelf` is GPL build-only and
+The fixed inference path never imports `setuptools`; its transitive
+requirement is overridden with the impossible marker `python_version < '0'`,
+so the frozen runtime closure contains no `setuptools` or its forbidden
+LGPLv3-vendored `autocommand` payload. The preflight and post-sync audits fail
+closed if either the lock or installed environment reintroduces it.
+The checked-in compact `dependency_audit_evidence.json` is historical evidence
+for the superseded setuptools-containing closure; its input hashes intentionally
+do not match the active lock/project, so preflight remains blocked until a
+fresh model-free VAST audit replaces it. `patchelf` is GPL build-only and
 is not installed in or redistributed with the final environment; its operator
 approval remains an explicit gate.
 
@@ -26,8 +31,8 @@ model acquisition. It independently checks the synchronized package closure,
 absence of build-only dependencies, source-built NumPy native libraries and
 ELF NEEDED allowlists, and the exact reviewed torch `libgomp` identity. The
 five model/source factual review rows are complete; acquisition and validation
-remain fail-closed solely until operator approval supplies the separate
-authenticated evidence file.
+remain fail-closed until a fresh VAST audit is imported for the active closure
+and operator approval supplies the separate authenticated evidence file.
 
 The source dumper is now pinned to the active 5.10.4 route but refuses
 Transformers import and model acquisition while
@@ -59,9 +64,11 @@ The latter is the fail-closed blocker, so a successful fallback is not reported
 as missing overall evidence. Compact evidence retains the network count and
 scope without credentials or response-body URLs beyond the locked artifact
 facts.
-The committed compact evidence is the fresh audit for the active lock. The
-preflight gate remains fail-closed until the owner reviews the evidence and
-supplies the separate authenticated approval file.
+The committed compact evidence is historical evidence for the superseded
+setuptools-containing closure; a fresh VAST audit must replace it for the
+active lock. The preflight gate remains fail-closed until that evidence is
+imported and the owner reviews it and supplies the separate authenticated
+approval file.
 
 ## API smoke prerequisite
 

@@ -20,8 +20,8 @@ GATE_VERSION = 2
 # These are the exact active closure inputs.  The retained dependency audit is
 # historical evidence for the previous lock and is independently checked below;
 # production remains blocked until a fresh audit binds these active bytes.
-LOCK_SHA256 = "418fb6b6516e0284b503ed20872e2dc6dd375aff918e253f3e7f9d27b62f904c"
-PYPROJECT_SHA256 = "1e61ad26749c1ad5ba05fe139ef8bfcf4698e3b030cad6182e18309789779346"
+LOCK_SHA256 = "3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075"
+PYPROJECT_SHA256 = "b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8"
 FULL_AUDIT_SHA256 = "a1d267f4b2e744fc67a5be3cf8737ee410c89ccc8a4f0f5c94e4d425a3b75bb8"
 COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
 EXPECTED_BUILD_CONSTRAINTS = [
@@ -107,7 +107,7 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
         raise ValueError("uv.lock version/revision types drifted")
     if not isinstance(lock["requires-python"], str) or not isinstance(lock["resolution-markers"], list) or not isinstance(lock["supported-markers"], list) or not isinstance(lock["package"], list):
         raise ValueError("uv.lock top-level value types drifted")
-    if lock.get("manifest") != {"build-constraints": [{"name": "cython", "specifier": "==3.0.12"}, {"name": "meson", "specifier": "==1.12.0"}, {"name": "meson-python", "specifier": "==0.15.0"}, {"name": "ninja", "specifier": "==1.13.0"}, {"name": "packaging", "specifier": "==26.3"}, {"name": "patchelf", "specifier": "==0.19.1.0"}, {"name": "pyproject-metadata", "specifier": "==0.12.1"}]}:
+    if lock.get("manifest") != {"overrides": [{"name": "setuptools", "marker": "python_full_version < '0'"}], "build-constraints": [{"name": "cython", "specifier": "==3.0.12"}, {"name": "meson", "specifier": "==1.12.0"}, {"name": "meson-python", "specifier": "==0.15.0"}, {"name": "ninja", "specifier": "==1.13.0"}, {"name": "packaging", "specifier": "==26.3"}, {"name": "patchelf", "specifier": "==0.19.1.0"}, {"name": "pyproject-metadata", "specifier": "==0.12.1"}]}:
         raise ValueError("uv.lock build-constraint manifest drifted")
     if set(project) != {"project", "tool"} or set(project["project"]) != {"name", "version", "description", "requires-python", "dependencies"}:
         raise ValueError("pyproject schema drifted")
@@ -122,9 +122,9 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
     }:
         raise ValueError("SpeechT5 Transformers provenance/status drifted")
     uv = project["tool"]["uv"]
-    if not isinstance(uv, dict) or set(uv) != {"package", "no-binary-package", "config-settings-package", "build-constraint-dependencies", "environments", "sources", "index"} or not isinstance(uv["package"], bool) or not isinstance(uv["no-binary-package"], list) or not isinstance(uv["config-settings-package"], dict) or not isinstance(uv["build-constraint-dependencies"], list) or not isinstance(uv["environments"], list) or not isinstance(uv["sources"], dict) or not isinstance(uv["index"], list):
+    if not isinstance(uv, dict) or set(uv) != {"package", "no-binary-package", "config-settings-package", "override-dependencies", "build-constraint-dependencies", "environments", "sources", "index"} or not isinstance(uv["package"], bool) or not isinstance(uv["no-binary-package"], list) or not isinstance(uv["config-settings-package"], dict) or not isinstance(uv["override-dependencies"], list) or not isinstance(uv["build-constraint-dependencies"], list) or not isinstance(uv["environments"], list) or not isinstance(uv["sources"], dict) or not isinstance(uv["index"], list):
         raise ValueError("pyproject uv configuration drifted")
-    if uv["no-binary-package"] != ["numpy"] or uv["config-settings-package"] != {"numpy": {"setup-args": ["-Dblas=none", "-Dlapack=none"]}} or uv["build-constraint-dependencies"] != EXPECTED_BUILD_CONSTRAINTS:
+    if uv["no-binary-package"] != ["numpy"] or uv["config-settings-package"] != {"numpy": {"setup-args": ["-Dblas=none", "-Dlapack=none"]}} or uv["override-dependencies"] != ["setuptools ; python_version < '0'"] or uv["build-constraint-dependencies"] != EXPECTED_BUILD_CONSTRAINTS:
         raise ValueError("NumPy source-build policy or isolated build constraints drifted")
     seen: set[tuple[str, str, str]] = set()
     virtual = 0
@@ -133,6 +133,8 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
             raise ValueError("uv.lock package identity is malformed")
         if not package["name"].strip() or not package["version"].strip():
             raise ValueError("uv.lock package name/version are malformed")
+        if package["name"].casefold() == "setuptools":
+            raise ValueError("uv.lock must omit forbidden setuptools closure")
         source = package.get("source")
         if not isinstance(source, dict) or set(source) not in ({"virtual"}, {"registry"}):
             raise ValueError("uv.lock package source schema drifted")
@@ -205,6 +207,8 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
                 raise ValueError("uv.lock dependency extra drifted")
             if "marker" in dependency and not isinstance(dependency["marker"], str):
                 raise ValueError("uv.lock dependency marker drifted")
+            if dependency["name"].casefold() == "setuptools":
+                raise ValueError("uv.lock must not reintroduce setuptools dependency")
         key = (package["name"], package["version"], json.dumps(source, sort_keys=True))
         if key in seen:
             raise ValueError("uv.lock duplicate package identity")
@@ -404,6 +408,36 @@ def self_test() -> int:
     global LOCK_SHA256
     project = Path(__file__).resolve().parent
     manifest = project / "license_gate_manifest.json"
+    manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+    expected_scope = {
+        "lock_sha256": LOCK_SHA256,
+        "pyproject_sha256": PYPROJECT_SHA256,
+        "package_rows_sha256": manifest_data["package_rows_sha256"],
+        "dependency_reviews": manifest_data["dependency_reviews"],
+        "dependency_reviews_sha256": manifest_data["dependency_reviews_sha256"],
+        "build_dependency_reviews": manifest_data["build_dependency_reviews"],
+        "build_dependency_reviews_sha256": manifest_data["build_dependency_reviews_sha256"],
+        "dependency_audit_evidence": manifest_data["dependency_audit_evidence"],
+        "model_reviews": manifest_data["model_reviews"],
+        "tts_identity": {
+            "repo": "microsoft/speecht5_tts",
+            "revision": "30fcde30f19b87502b8435427b5f5068e401d5f6",
+            "files": {name: list(value) for name, value in TTS_FILES.items()},
+        },
+        "vocoder_identity": {
+            "repo": "microsoft/speecht5_hifigan",
+            "revision": "bb6f429406e86a9992357a972c0698b22043307d",
+            "pytorch_model_sha256": "b171e9bcd8a2b50dc9780040478dfa26783a9ee4be012cf5776914f091d6887b",
+        },
+        "public_tts_identity": manifest_data["public_tts_identity"],
+        "transformers_route": manifest_data["transformers_route"],
+    }
+    if manifest_data.get("approval_scope_sha256") != canonical(expected_scope):
+        print("speecht5 preflight gate: manifest scope is stale", file=sys.stderr)
+        return 1
+    if manifest_data.get("operator_approval", {}).get("decision") != "PENDING_REVIEW":
+        print("speecht5 preflight gate: operator approval is not pending", file=sys.stderr)
+        return 1
     ok, reason = validate(project, manifest)
     if ok or not any(token in reason for token in ("unresolved", "canonicalization", "compact", "approval")):
         print(f"speecht5 preflight gate: expected pending review, got {reason}", file=sys.stderr)

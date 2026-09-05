@@ -199,6 +199,15 @@ def contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, A
     if project_sha != gate.PYPROJECT_SHA256 or lock_sha != gate.LOCK_SHA256:
         raise AuditError("active pyproject.toml or uv.lock bytes differ from the reviewed contract")
     rows = lock_rows(lock_data)
+    if any(normalized_name(row["name"]) == "setuptools" for row in rows):
+        raise AuditError("forbidden setuptools closure is present in uv.lock")
+    if any(
+        normalized_name(dependency.get("name", "")) == "setuptools"
+        for row in rows
+        for dependency in row.get("dependencies", [])
+        if isinstance(dependency, dict)
+    ):
+        raise AuditError("forbidden setuptools dependency is present in uv.lock")
     rows_sha = sha256_bytes(canonical_json(rows).encode("utf-8"))
     if manifest.get("pyproject_sha256") != project_sha or manifest.get("lock_sha256") != lock_sha or manifest.get("package_rows_sha256") != rows_sha:
         raise AuditError("license gate manifest is not bound to the active project/lock rows")
@@ -696,6 +705,8 @@ def self_test() -> int:
     assert mismatch["missing"] == ["a==1"] and mismatch["unexpected"] == ["a==2"]
     assert is_license_path("pkg/LICENSE.txt") and is_license_path("pkg/LICENCE.txt") and is_license_path("pkg/COPYING")
     assert not is_license_path("pkg/README.md")
+    project_data, lock_data, _manifest, _binding = contract(Path(__file__).resolve().parent)
+    assert not any(normalized_name(row["name"]) == "setuptools" for row in _binding["rows"])
     with __import__("tempfile").TemporaryDirectory(prefix="speecht5-dependency-audit-selftest-") as directory:
         root = Path(directory).resolve()
         archive_buffer = io.BytesIO()
