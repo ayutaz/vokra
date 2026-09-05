@@ -1,0 +1,34 @@
+{
+  "schema": "vokra-canary-1b-gate-v1",
+  "gate_version": 1,
+  "license_spdx": "CC-BY-4.0",
+  "publication": "NO_UPLOAD",
+  "variants": [
+    {
+      "variant": "canary-1b-flash",
+      "model": "canary-1b-flash",
+      "upstream_repo": "nvidia/canary-1b-flash",
+      "upstream_revision": "2b6e4d2dacb11cc1b1724de31bb48fe68c26c12e",
+      "archive_filename": "canary-1b-flash.nemo",
+      "archive_bytes": 3540715520,
+      "archive_sha256": "3887cce1afdd425429cfc5109575a8f2cffeb07c02c503a9faff7612bd74e324",
+      "main_checkpoint_member": null,
+      "main_checkpoint_bytes": null,
+      "attribution_required": true,
+      "attribution_text": "This application uses NVIDIA Canary-1B-Flash (multilingual ASR / AST for English, German, Spanish and French). Model weights are licensed under CC-BY 4.0. Copyright (c) NVIDIA. Source: https://huggingface.co/nvidia/canary-1b-flash"
+    },
+    {
+      "variant": "canary-1b-v2",
+      "model": "canary-1b-v2",
+      "upstream_repo": "nvidia/canary-1b-v2",
+      "upstream_revision": "87bc52657add533cd0156b3fc1aef027280754bf",
+      "archive_filename": "canary-1b-v2.nemo",
+      "archive_bytes": 6358958080,
+      "archive_sha256": "ae5ef1bf06812a95a1594a8f5f0ee9c51f35418e5ba96939fa6b98ab00431094",
+      "main_checkpoint_member": "./model_weights.ckpt",
+      "main_checkpoint_bytes": 3853798427,
+      "attribution_required": true,
+      "attribution_text": "This application uses NVIDIA Canary-1B-v2 (multilingual ASR / AST across 25 languages). Model weights are licensed under CC-BY 4.0. Copyright (c) NVIDIA. Source: https://huggingface.co/nvidia/canary-1b-v2"
+    }
+  ]
+}

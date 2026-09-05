@@ -17,42 +17,6 @@ import platform
 import wave
 from pathlib import Path
 
-import huggingface_hub
-import numpy as np
-import torch
-import torchaudio
-from huggingface_hub.errors import RemoteEntryNotFoundError
-from requests.exceptions import HTTPError
-
-if not hasattr(torchaudio, "list_audio_backends"):
-    torchaudio.list_audio_backends = lambda: []  # type: ignore[attr-defined]
-
-_hf_hub_download = huggingface_hub.hf_hub_download
-
-
-def _hf_hub_download_compat(*args: object, **kwargs: object) -> str:
-    use_auth_token = kwargs.pop("use_auth_token", None)
-    if use_auth_token is not None and "token" not in kwargs:
-        kwargs["token"] = use_auth_token
-    try:
-        return _hf_hub_download(*args, **kwargs)
-    except RemoteEntryNotFoundError as error:
-        raise HTTPError(f"404 Client Error: {error}") from error
-
-
-huggingface_hub.hf_hub_download = _hf_hub_download_compat
-
-try:
-    import speechbrain
-    from speechbrain.inference.classifiers import EncoderClassifier
-except Exception as error:  # noqa: BLE001 - loud independent-oracle failure
-    raise SystemExit(
-        "speechbrain_lang_id_dump_reference: could not import the real "
-        f"SpeechBrain implementation ({type(error).__name__}: {error}); a "
-        "mirror fallback is forbidden"
-    ) from error
-
-
 DEFAULT_SOURCE = "speechbrain/lang-id-voxlingua107-ecapa"
 SAMPLE_RATE = 16_000
 EXPECTED = {
@@ -67,6 +31,13 @@ PINNED_REVISIONS = {
         "70a742bbc513f693efcf73d6d64a5ed14b3a34a4"
     ),
 }
+
+
+def self_test() -> None:
+    assert DEFAULT_SOURCE == "speechbrain/lang-id-voxlingua107-ecapa"
+    assert PINNED_REVISIONS[DEFAULT_SOURCE] == "0253049ae131d6a4be1c4f0d8b0ff483a0f8c8e9"
+    assert EXPECTED[DEFAULT_SOURCE] == (60, 256, 107)
+    print("speechbrain_lang_id_dump_reference: stdlib self-test PASS")
 
 
 def resolve_revision(source: str, revision: str | None) -> str:
@@ -125,16 +96,53 @@ def write_f32(path: Path, values: torch.Tensor | np.ndarray) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--wav", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--wav", type=Path)
     parser.add_argument("--source", choices=sorted(EXPECTED), default=DEFAULT_SOURCE)
     parser.add_argument(
         "--revision",
         help="full upstream commit (defaults to the source-specific audited pin)",
     )
-    parser.add_argument("--savedir", type=Path, required=True)
+    parser.add_argument("--savedir", type=Path)
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if args.output_dir is None or args.wav is None or args.savedir is None:
+        parser.error("--output-dir, --wav, and --savedir are required unless --self-test is used")
     revision = resolve_revision(args.source, args.revision)
+
+    global huggingface_hub, np, torch, torchaudio, speechbrain, EncoderClassifier
+    import huggingface_hub
+    import numpy as np
+    import torch
+    import torchaudio
+    from huggingface_hub.errors import RemoteEntryNotFoundError
+    from requests.exceptions import HTTPError
+    if not hasattr(torchaudio, "list_audio_backends"):
+        torchaudio.list_audio_backends = lambda: []  # type: ignore[attr-defined]
+    hf_hub_download = huggingface_hub.hf_hub_download
+
+    def _hf_hub_download_compat(*args: object, **kwargs: object) -> str:
+        use_auth_token = kwargs.pop("use_auth_token", None)
+        if use_auth_token is not None and "token" not in kwargs:
+            kwargs["token"] = use_auth_token
+        try:
+            return hf_hub_download(*args, **kwargs)
+        except RemoteEntryNotFoundError as error:
+            raise HTTPError(f"404 Client Error: {error}") from error
+
+    huggingface_hub.hf_hub_download = _hf_hub_download_compat
+    try:
+        import speechbrain
+        from speechbrain.inference.classifiers import EncoderClassifier
+    except Exception as error:  # noqa: BLE001 - loud independent-oracle failure
+        raise SystemExit(
+            "speechbrain_lang_id_dump_reference: could not import the real "
+            f"SpeechBrain implementation ({type(error).__name__}: {error}); a "
+            "mirror fallback is forbidden"
+        ) from error
 
     torch.manual_seed(1234)
     torch.set_grad_enabled(False)
@@ -200,6 +208,19 @@ def main() -> int:
     (output / "labels.json").write_text(
         json.dumps(labels, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    artifact_hashes = {
+        name: sha256(output / name)
+        for name in (
+            "pcm.f32.bin",
+            "features.f32.bin",
+            "embedding.f32.bin",
+            "scores.f32.bin",
+            "labels.json",
+        )
+    }
+    artifact_bytes = {
+        name: (output / name).stat().st_size for name in artifact_hashes
+    }
 
     checkpoint_hashes = {}
     for filename in ["embedding_model.ckpt", "classifier.ckpt", "label_encoder.txt"]:
@@ -210,6 +231,7 @@ def main() -> int:
         "source": args.source,
         "revision": revision,
         "sample_rate": SAMPLE_RATE,
+        "device": "cpu",
         "pcm_samples": int(pcm.size),
         "raw_feature_shape": list(raw_features.shape),
         "feature_shape": list(features.shape),
@@ -218,6 +240,7 @@ def main() -> int:
         "best_index": best_index,
         "best_label": decoded,
         "best_score": float(score.item()),
+        "wav_bytes": args.wav.stat().st_size,
         "wav_sha256": sha256(args.wav),
         "checkpoint_sha256": checkpoint_hashes,
         "python": platform.python_version(),
@@ -225,6 +248,8 @@ def main() -> int:
         "torch": torch.__version__,
         "torchaudio": torchaudio.__version__,
         "speechbrain": speechbrain.__version__,
+        "artifact_sha256": artifact_hashes,
+        "artifact_bytes": artifact_bytes,
     }
     (output / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

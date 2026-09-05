@@ -9,7 +9,7 @@
 //! its public surface, keeping one forward shared bit-identically between the
 //! std and no_std builds.
 //!
-//! ## Status: the forward is real; binding a checkpoint to it is not
+//! ## Status: reviewed stateful binding is implemented; VAST parity remains open
 //!
 //! [`KwsMicro::detect`] runs a real inference pass — 40-band log-mel feature
 //! extraction ([`features`]) → INT8 quantisation → an INT8 forward chain
@@ -25,19 +25,26 @@
 //! hide the misconfiguration behind a plausible-looking null result
 //! (FR-EX-08). [`KwsMicro::has_chain`] distinguishes the two states.
 //!
-//! ### The remaining gap
+//! ### Authenticated artifact boundary
 //!
-//! **No code path builds an [`interpreter::ChainConfig`] from a
-//! [`model::Model`].** The offline sidecar
-//! (`tools/parity/microwakeword/prepare_checkpoint.py`) dequantises the
-//! upstream `.tflite`'s INT8 weights to F32 at export time and writes only
-//! those F32 tensors, so a loaded [`model::Model`] carries no per-tensor
-//! `(scale, zero_point)` — precisely the params every
-//! [`interpreter::LayerSpec`] needs to be constructed. Re-emitting them,
-//! alongside the `Q8_0` storage type [`vokra_core::gguf::GgmlType`] does not
-//! yet carry, is the follow-up that closes the loop (see [`model`]'s module
-//! docs). Until then a real hey_jarvis run stays owner-triggered — it also
-//! wants a canned "hey jarvis" audio fixture for accuracy verification.
+//! [`model::Model::bind_untrusted_topology`] validates a synthetic/untrusted
+//! [`model::TopologyManifest`] against GGUF constants. The fixed reviewed
+//! `hey_jarvis` artifact can now be bound with
+//! [`model::Model::bind_authenticated_streaming`], which checks the compiled
+//! provenance, topology, tensor names/shapes/quantization, and weight/bias
+//! fingerprints before returning a stateful executor. The legacy
+//! [`model::Model::bind_authenticated_chain`] API remains fail-closed because
+//! [`interpreter::ChainConfig`] cannot represent the persistent streaming
+//! state or the public uint8 final-quantize boundary.
+//!
+//! This is an executable binding surface, not a completed numerical verdict:
+//! the exact 512-invocation stage-trace parity set must still be run on the
+//! authenticated VAST fixture before production parity is claimed. The
+//! [`KwsMicro`] convenience detector continues to own the feature-extractor +
+//! caller-attached [`interpreter::ChainConfig`] path; it does not silently
+//! construct or embed the stateful GGUF binder. Applications that need the
+//! reviewed `hey_jarvis` stream should retain the
+//! [`model::AuthenticatedHeyJarvisBinder`] returned by the model API.
 //!
 //! Upstream model: microWakeWord (Apache 2.0,
 //! <https://github.com/kahrendt/microWakeWord>).
@@ -96,7 +103,7 @@ pub mod interpreter;
 pub mod kernels;
 // M5-03b Phase 2: the runtime *loader* for microWakeWord GGUFs produced by
 // `tools/parity/microwakeword/prepare_checkpoint.py`. Reads the
-// `vokra.kws.*` metadata contract + every dense F32 tensor via
+// `vokra.kws.*` metadata contract + every dense F32 or Q8_0 tensor via
 // `vokra_core::gguf::GgufFile` (no_std-clean under `default-features =
 // false`). Callers construct an [`interpreter::ChainConfig`] from a
 // [`model::Model`] (per-layer weight binding is model-specific; see the
@@ -356,14 +363,19 @@ impl KwsMicro {
     ///
     /// # Honest boundary
     ///
-    /// The pipeline above is real for whatever chain the caller attached.
-    /// What is not yet reachable is a chain built from an upstream
-    /// checkpoint: nothing converts a [`model::Model`] into an
-    /// [`interpreter::ChainConfig`], because the offline sidecar emits
-    /// dequantised F32 tensors carrying no per-tensor `(scale,
-    /// zero_point)`. Real hey_jarvis accuracy verification additionally
-    /// needs a canned "hey jarvis" audio fixture (owner-triggered). See
-    /// the crate-level docs for the full contract.
+    /// The pipeline above is real for whatever chain the caller attached. For
+    /// the reviewed fixed `hey_jarvis` artifact, callers can instead use
+    /// [`model::Model::bind_authenticated_streaming`] to obtain the stateful
+    /// eleven-layer executor and its exact stage trace. That binder is not
+    /// automatically installed into `KwsMicro`: this type's public convenience
+    /// API remains the feature-extractor + caller-attached `ChainConfig` path.
+    /// The sidecar now preserves Q8_0 source
+    /// bytes, exact I32 bias values, affine metadata, and supported operator
+    /// topology. Real
+    /// hey_jarvis numerical verification additionally needs the owner-approved
+    /// VAST artifact and fixtures. See the crate-level docs for the full
+    /// contract; a local synthetic chain must not be reported as production
+    /// model completion.
     pub fn detect(&mut self, frame: &[i16]) -> Result<KwsEvent> {
         // Unconfigured: `set_chain` was never called, so there is no chain
         // to run. Refuse loudly instead of returning `KwsEvent::Idle` — the

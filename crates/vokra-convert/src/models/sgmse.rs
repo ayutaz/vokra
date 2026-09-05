@@ -1,417 +1,747 @@
-//! **SGMSE-VoiceBank** (`speechbrain/sgmse-voicebank`, apache-2.0) —
-//! safetensors → GGUF conversion (score-based generative model for
-//! speech enhancement, VoiceBank-DEMAND corpus).
+//! Strict prepared-safetensors → GGUF conversion for SGMSE-VoiceBank.
 //!
-//! # Provenance
-//!
-//! - **HF path**: `speechbrain/sgmse-voicebank` — a SpeechBrain-packaged
-//!   release of the SGMSE (Score-based Generative Model for Speech
-//!   Enhancement) family (Welker et al. 2022 / Richter et al. 2023).
-//!   Ships a `hyperparams.yaml` + single `score_model_ema.ckpt`
-//!   (~263 MB torch pickle), fine-tuned on the VoiceBank-DEMAND corpus
-//!   (Valentini-Botinhao 2016) — the enhancement pair to the
-//!   sibling SepFormer / MP-SENet / MetricGAN+ enhancement rows.
-//! - **License (SPDX)**: `apache-2.0` — permissive; no runtime-side
-//!   attribution obligation under the Apache-2.0 grant. Verified
-//!   2026-08-04 via HF cardData API primary source
-//!   (`api/models/speechbrain/sgmse-voicebank` → `license: apache-2.0`,
-//!   `pipeline_tag: audio-to-audio`).
-//! - **Category**: `enhancement` (per SpeechBrain family: single-channel
-//!   speech enhancement / dereverberation via a **diffusion / flow
-//!   sampler** applied to a score-network's noise-to-clean estimate).
-//! - **Complements**: the M3-05 `flow_sampler` + ODE solver op family —
-//!   SGMSE is the first *real weight* in the Vokra catalog for that
-//!   sampler group (existing enhancement family MetricGAN+ / MP-SENet /
-//!   Facebook Denoiser / DeepFilterNet3 are all *masking* or *time-
-//!   domain UNet* — none exercise the flow sampler path).
-//!
-//! # BF16 pass-through (mirror of metricgan_plus / mp_senet / sepformer)
-//!
-//! F32 / F16 / BF16 float tensors ride the verbatim pass-through arm —
-//! no convert-time widening. BF16 stays GGUF type 30 (`GgmlType::BF16`);
-//! the runtime widens BF16 → f32 losslessly at load via
-//! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. The
-//! observability counter [`SgmseReport::bf16_passthrough`] records how
-//! many BF16 tensors landed on this arm so a silent widen / downcast
-//! cannot slip in undetected. Upstream ships F32 in the primary release
-//! today; the BF16 arm is defensive for future re-quantized derivatives
-//! (SpeechBrain has re-published several sibling models in BF16 mirror
-//! repos over time).
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream `.ckpt` state-dict names
-//! verbatim** (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS /
-//! VoxCPM / MP-SENet / MetricGAN+ contract). The upstream
-//! `score_model_ema.ckpt` is a **flat** state_dict of the internal
-//! NCSN++ v2 score network (SpeechBrain's `Pretrainer` binds it into
-//! the `score_model` module *at load time* — the ckpt file itself
-//! carries no `score_model.` prefix on its keys). This converter
-//! preserves that flat layout so a future `Sgmse::from_gguf` can walk
-//! the same NCSN++ v2 backbone tensor names (`input_layer.weight`,
-//! `blocks.0.norm1.weight`, etc.) that the upstream `sgmse` code
-//! reference uses.
-//!
-//! Real-weight parity + a native `Sgmse::from_gguf` forward path are
-//! deferred to owner sign-off (`docs/license-audit.md` §3.1) — this
-//! converter provides the byte-parallel GGUF surface only. The
-//! internal NCSN++ v2 (Song et al. 2021) + OUVE SDE reverse sampler
-//! (predictor: reverse_diffusion, corrector: annealed Langevin
-//! dynamics, N=30 steps per upstream `hyperparams.yaml`) is
-//! intentionally NOT re-implemented on this pass: transcribing that
-//! from the SGMSE paper (arXiv:2212.11851 / arXiv:2208.05830) +
-//! upstream `sgmse` code is a `loud-partial` sibling wave (RMVPE /
-//! Charsiu / MOSS-Audio-Tokenizer / MioCodec landing precedent).
-//!
-//! # No ONNX (permanent)
-//!
-//! SGMSE-VoiceBank ships a torch pickle checkpoint (`.ckpt`); this
-//! converter **never** touches ONNX (FR-LD-05); the offline
-//! `.ckpt` → `.safetensors` bridge runs in
-//! `tools/parity/sgmse_prepare_checkpoint.py` (a
-//! `nemo_pt_to_safetensors.py`-family sidecar), and the runtime
-//! pipeline is re-implemented natively in a future
-//! `crates/vokra-models/src/sgmse/` module (whisper.cpp 型 self
-//! re-implementation, CLAUDE.md 設計判断 4).
+//! The upstream release is a pickle checkpoint. Python preparation is kept
+//! outside this crate; this converter accepts only the resulting
+//! sgmse_voicebank.safetensors and its exact sibling manifest.
+//! The prepared-byte digest is populated only from an independent VAST review.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
+use vokra_core::json::{self, JsonValue};
 
+use super::canary_1b_flash::{hex, sha256};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` for SGMSE GGUFs. Distinct from every other
-/// enhancement / denoise sibling (`denoise` = DeepFilterNet3, `mp_senet`
-/// = magnitude+phase U-Net, `metricgan_plus` = generator-only PESQ-
-/// tuned GAN, `sepformer` = dual-path Transformer masker+decoder) —
-/// SGMSE's *score-based diffusion / OUVE SDE reverse sampler* topology
-/// is distinct enough to warrant its own routing arm (FR-EX-08). It
-/// also anchors the first real-weight consumer of the M3-05
-/// `flow_sampler` + ODE solver op family.
-pub const ARCH: &str = "sgmse";
-
-/// `vokra.model.name` value for the canonical VoiceBank-DEMAND fine-tune
-/// release.
+pub const ARCH: &str = "sgmse_voicebank";
 pub const NAME: &str = "sgmse-voicebank";
-
-/// `vokra.model.category` — `enhancement` (single-channel speech
-/// enhancement, matching the sibling SepFormer/MetricGAN+/MP-SENet
-/// enhancement rows).
-pub const CATEGORY: &str = "enhancement";
-
-/// `vokra.provenance.upstream_hf` slug (`org/name`).
+pub const PREPARED_FORMAT: &str = "vokra-sgmse-voicebank-prepared-v1";
 pub const UPSTREAM_HF: &str = "speechbrain/sgmse-voicebank";
+pub const UPSTREAM_REVISION: &str = "8f4ff7b65284c49492a43349b8106e094ac0d365";
+pub const SOURCE_REPOSITORY: &str = "https://github.com/sp-uhh/sgmse.git";
+pub const SOURCE_REVISION: &str = "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e";
+pub const CHECKPOINT_FILENAME: &str = "score_model_ema.ckpt";
+pub const CHECKPOINT_SIZE: u64 = 262_593_305;
+pub const CHECKPOINT_SHA256: &str =
+    "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3";
+pub const TENSOR_COUNT: usize = 647;
+/// Independently observed VAST SHA-256 of the prepared safetensors bytes.
+pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> =
+    Some("eda3064488c670db78f7f93a77fade739e0d3941b7863e28db489a137f723045");
+/// Digest of the complete, independently reviewed role/name/dtype/shape map.
+pub const REVIEWED_TENSOR_MANIFEST_SHA256: &str =
+    "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c";
 
-/// Default upstream weight license (SPDX). Verified 2026-08-04 via HF
-/// cardData API primary source. May be overridden via the `license`
-/// argument to [`convert_sgmse_file`] (the whisper / kokoro /
-/// metricgan_plus / mp_senet override pattern).
-pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
+const KEY_SOURCE_REPOSITORY: &str = "vokra.sgmse.source_repository";
+const KEY_SOURCE_REVISION: &str = "vokra.sgmse.source_revision";
+const KEY_CHECKPOINT_FILENAME: &str = "vokra.sgmse.checkpoint_filename";
+const KEY_CHECKPOINT_SIZE: &str = "vokra.sgmse.checkpoint_size";
+const KEY_CHECKPOINT_SHA256: &str = "vokra.sgmse.checkpoint_sha256";
+const KEY_PREPARED_SHA256: &str = "vokra.sgmse.prepared_sha256";
+const KEY_MODEL_REVISION: &str = "vokra.sgmse.model_revision";
+const KEY_MANIFEST_STATUS: &str = "vokra.sgmse.manifest_status";
+const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.sgmse.tensor_manifest_sha256";
+const KEY_TENSOR_MANIFEST: &str = "vokra.sgmse.tensor_manifest";
+const MAX_SIDECAR_BYTES: u64 = 2 * 1024 * 1024;
 
-// Raw string keys not covered by `crate::gguf::chunks` — kept as
-// converter-side constants (mirrors metricgan_plus / mp_senet / sepformer).
-const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
-
-/// Outcome of an SGMSE conversion. Mirrors the sibling BF16 pass-through
-/// converters' counter shape (`super::metricgan_plus::MetricganPlusReport`,
-/// `super::mp_senet::MpSenetReport`).
+/// Counts emitted by the strict prepared-artifact conversion path.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SgmseReport {
-    /// Total tensors surfaced by the safetensors reader.
+    /// Number of authenticated source tensors read.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16).
+    /// Number of tensors written verbatim into GGUF.
     pub written: usize,
-    /// Non-float tensors skipped (defensive counter — the safetensors
-    /// reader rejects unknown dtypes at parse time; anything that reaches
-    /// this arm is a quantized dtype the runtime is not expected to
-    /// consume).
+    /// Number of non-floating-point tensors skipped (always zero here).
     pub skipped_non_float: usize,
-    /// BF16 tensors that landed on the pass-through arm (subset of
-    /// [`Self::written`]). Additive observability counter — upstream
-    /// ships F32 today, so this counter is expected to be 0 on the real
-    /// checkpoint; a future BF16 mirror release would surface it here.
+    /// Number of BF16 tensors preserved byte-for-byte.
     pub bf16_passthrough: usize,
 }
 
-/// File-based SGMSE-VoiceBank converter.
-///
-/// Reads `input` (a safetensors mirror of the upstream
-/// `score_model_ema.ckpt` — produced by
-/// `tools/parity/sgmse_prepare_checkpoint.py`), writes a Vokra GGUF to
-/// `output` carrying every F32 / F16 / BF16 tensor verbatim under its
-/// upstream state-dict name plus the `vokra.model.*` +
-/// `vokra.provenance.*` metadata chunks.
-///
-/// `license` optionally overrides the default `apache-2.0` provenance
-/// stamp (same override pattern as
-/// `super::metricgan_plus::convert_metricgan_plus_file`).
-///
-/// # Errors
-///
-/// [`ConvertError::Io`] on read / write failure; [`ConvertError::Parse`]
-/// on a malformed safetensors input; [`ConvertError::Gguf`] if the GGUF
-/// serialization fails.
+/// One row in the prepared checkpoint's complete typed contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SgmseManifestRow {
+    pub name: String,
+    pub role: String,
+    pub dtype_tag: u32,
+    pub shape: Vec<u64>,
+    pub dimensions: Vec<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedManifest {
+    prepared_sha256: String,
+    typed_manifest_sha256: String,
+    rows: Vec<SgmseManifestRow>,
+}
+
+fn parse_error(message: impl Into<String>) -> ConvertError {
+    ConvertError::Parse(format!("SGMSE {}", message.into()))
+}
+
+fn exact_object_schema(
+    value: &JsonValue,
+    allowed: &[&str],
+    context: &str,
+) -> Result<(), ConvertError> {
+    let entries = value
+        .as_object()
+        .ok_or_else(|| parse_error(format!("{context} must be an object")))?;
+    let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
+    let mut seen = BTreeSet::new();
+    for (key, _) in entries {
+        if !allowed.contains(key.as_str()) {
+            return Err(parse_error(format!(
+                "{context} contains unknown key {key:?}"
+            )));
+        }
+        if !seen.insert(key.as_str()) {
+            return Err(parse_error(format!(
+                "{context} contains duplicate key {key:?}"
+            )));
+        }
+    }
+    if seen.len() != allowed.len() {
+        return Err(parse_error(format!("{context} is missing required keys")));
+    }
+    Ok(())
+}
+
+fn required_str(root: &JsonValue, key: &str, expected: &str) -> Result<(), ConvertError> {
+    if root.get(key).and_then(JsonValue::as_str) != Some(expected) {
+        return Err(parse_error(format!("manifest {key:?} identity mismatch")));
+    }
+    Ok(())
+}
+
+fn required_u64(root: &JsonValue, key: &str, expected: u64) -> Result<(), ConvertError> {
+    if root.get(key).and_then(JsonValue::as_u64) != Some(expected) {
+        return Err(parse_error(format!("manifest {key:?} identity mismatch")));
+    }
+    Ok(())
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn required_sha256(root: &JsonValue, key: &str) -> Result<String, ConvertError> {
+    let value = root
+        .get(key)
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| parse_error(format!("manifest {key:?} must be a string")))?;
+    if !valid_sha256(value) || value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(parse_error(format!(
+            "manifest {key:?} must be a lowercase 64-digit SHA-256"
+        )));
+    }
+    Ok(value.to_owned())
+}
+
+fn dtype_tag(value: &str) -> Option<u32> {
+    match value {
+        "torch.float32" => Some(0),
+        "torch.float16" => Some(1),
+        "torch.bfloat16" => Some(30),
+        _ => None,
+    }
+}
+
+fn parse_positive_dimensions(value: &JsonValue, context: &str) -> Result<Vec<u64>, ConvertError> {
+    let values = value
+        .as_array()
+        .ok_or_else(|| parse_error(format!("{context} must be an array")))?;
+    if values.is_empty() {
+        return Err(parse_error(format!("{context} must not be empty")));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let dimension = value
+                .as_u64()
+                .ok_or_else(|| parse_error(format!("{context} contains a non-positive integer")))?;
+            if dimension == 0 {
+                return Err(parse_error(format!("{context} contains a zero dimension")));
+            }
+            Ok(dimension)
+        })
+        .collect()
+}
+
+fn parse_row(value: &JsonValue, index: usize) -> Result<SgmseManifestRow, ConvertError> {
+    exact_object_schema(
+        value,
+        &["name", "role", "dtype", "shape", "dimensions"],
+        &format!("tensor row {index}"),
+    )?;
+    let name = value
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .filter(|name| {
+            !name.is_empty()
+                && !name.contains('|')
+                && !name.chars().any(|character| character.is_control())
+        })
+        .ok_or_else(|| parse_error(format!("tensor row {index} has an invalid name")))?
+        .to_owned();
+    let role = value
+        .get("role")
+        .and_then(JsonValue::as_str)
+        .filter(|role| valid_role(role))
+        .ok_or_else(|| parse_error(format!("tensor row {index} has an invalid role")))?
+        .to_owned();
+    let dtype = value
+        .get("dtype")
+        .and_then(JsonValue::as_str)
+        .and_then(dtype_tag)
+        .ok_or_else(|| parse_error(format!("tensor row {index} has an unsupported dtype")))?;
+    let shape = parse_positive_dimensions(
+        value.get("shape").unwrap_or(&JsonValue::Null),
+        &format!("tensor row {index} shape"),
+    )?;
+    let dimensions = parse_positive_dimensions(
+        value.get("dimensions").unwrap_or(&JsonValue::Null),
+        &format!("tensor row {index} dimensions"),
+    )?;
+    if dimensions != shape.iter().rev().copied().collect::<Vec<_>>() {
+        return Err(parse_error(format!(
+            "tensor row {index} dimensions are not reverse(shape)"
+        )));
+    }
+    Ok(SgmseManifestRow {
+        name,
+        role,
+        dtype_tag: dtype,
+        shape,
+        dimensions,
+    })
+}
+
+/// Validate the closed typed role/name/dtype/shape declaration.
+pub fn validate_typed_manifest(
+    rows: &[SgmseManifestRow],
+    required_roles: &[String],
+) -> Result<(), String> {
+    let expected: BTreeSet<_> = required_roles.iter().map(String::as_str).collect();
+    if expected.is_empty() || expected.len() != required_roles.len() || rows.len() != expected.len()
+    {
+        return Err(
+            "sgmse: typed manifest required-role set is empty, duplicate, or incomplete".to_owned(),
+        );
+    }
+    let mut names = BTreeSet::new();
+    let mut roles = BTreeSet::new();
+    for row in rows {
+        if row.name.is_empty()
+            || row.name.contains('|')
+            || row.name.chars().any(|character| character.is_control())
+            || !names.insert(row.name.as_str())
+            || !roles.insert(row.role.as_str())
+            || !expected.contains(row.role.as_str())
+            || !valid_role(&row.role)
+            || !matches!(row.dtype_tag, 0 | 1 | 30)
+            || row.shape.is_empty()
+            || row.dimensions.is_empty()
+            || row.shape.contains(&0)
+            || row.dimensions != row.shape.iter().rev().copied().collect::<Vec<_>>()
+        {
+            return Err(
+                "sgmse: typed manifest has duplicate, unknown, or unsupported row".to_owned(),
+            );
+        }
+    }
+    if roles != expected {
+        return Err("sgmse: typed manifest is missing or has extra roles".to_owned());
+    }
+    Ok(())
+}
+
+fn valid_role(role: &str) -> bool {
+    matches!(
+        role,
+        "fourier_frequencies"
+            | "sigma_first_projection"
+            | "sigma_first_bias"
+            | "sigma_second_projection"
+            | "sigma_second_bias"
+    ) || role
+        .strip_prefix("stage:")
+        .and_then(|rest| {
+            let mut fields = rest.split(':');
+            let _index = fields.next()?.parse::<usize>().ok()?;
+            let kind = fields.next()?;
+            let _block = fields.next()?.parse::<usize>().ok()?;
+            let module = fields.next()?;
+            let slot = fields.next()?;
+            if fields.next().is_some() || kind.is_empty() || slot.is_empty() {
+                return None;
+            }
+            let valid_kind = matches!(
+                kind,
+                "input"
+                    | "residual"
+                    | "attention"
+                    | "downsample"
+                    | "upsample"
+                    | "progressive_output"
+                    | "progressive_input"
+                    | "middle"
+                    | "output"
+            );
+            let valid_module = match kind {
+                "input" => module == "input_projection",
+                "residual" | "middle" | "downsample" | "upsample" => matches!(
+                    module,
+                    "residual_norm1"
+                        | "residual_conv1"
+                        | "residual_time_embedding"
+                        | "residual_norm2"
+                        | "residual_conv2"
+                        | "residual_skip"
+                ),
+                "attention" => matches!(
+                    module,
+                    "attention_norm"
+                        | "attention_query"
+                        | "attention_key"
+                        | "attention_value"
+                        | "attention_output"
+                ),
+                "progressive_output" => {
+                    matches!(module, "progressive_output" | "progressive_output_norm")
+                }
+                "progressive_input" => module == "progressive_input",
+                "output" => module == "output_projection",
+                _ => false,
+            };
+            let valid_slot = if matches!(
+                module,
+                "residual_norm1" | "residual_norm2" | "attention_norm" | "progressive_output_norm"
+            ) {
+                matches!(slot, "norm_gamma" | "norm_beta")
+            } else {
+                matches!(slot, "weight" | "bias")
+            };
+            (valid_kind && valid_module && valid_slot).then_some(())
+        })
+        .is_some()
+}
+
+fn canonical_typed_manifest_sha256(rows: &[SgmseManifestRow]) -> [u8; 32] {
+    let mut ordered: Vec<&SgmseManifestRow> = rows.iter().collect();
+    ordered.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut bytes = Vec::new();
+    for row in ordered {
+        bytes.extend_from_slice(row.role.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(row.name.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&row.dtype_tag.to_le_bytes());
+        bytes.extend_from_slice(&(row.dimensions.len() as u64).to_le_bytes());
+        for dimension in &row.dimensions {
+            bytes.extend_from_slice(&dimension.to_le_bytes());
+        }
+    }
+    sha256(&bytes)
+}
+
+fn validate_prepared_sidecar(bytes: &[u8]) -> Result<PreparedManifest, ConvertError> {
+    let root = json::parse(bytes).map_err(|error| parse_error(format!("sidecar: {error}")))?;
+    exact_object_schema(
+        &root,
+        &[
+            "format",
+            "repository",
+            "model_revision",
+            "source_repository",
+            "source_revision",
+            "checkpoint_filename",
+            "checkpoint_size",
+            "checkpoint_sha256",
+            "prepared_sha256",
+            "tensor_count",
+            "typed_manifest_sha256",
+            "tensor_rows",
+        ],
+        "sidecar",
+    )?;
+    required_str(&root, "format", PREPARED_FORMAT)?;
+    required_str(&root, "repository", UPSTREAM_HF)?;
+    required_str(&root, "model_revision", UPSTREAM_REVISION)?;
+    required_str(&root, "source_repository", SOURCE_REPOSITORY)?;
+    required_str(&root, "source_revision", SOURCE_REVISION)?;
+    required_str(&root, "checkpoint_filename", CHECKPOINT_FILENAME)?;
+    required_u64(&root, "checkpoint_size", CHECKPOINT_SIZE)?;
+    required_str(&root, "checkpoint_sha256", CHECKPOINT_SHA256)?;
+    let prepared_sha256 = required_sha256(&root, "prepared_sha256")?;
+    let typed_manifest_sha256 = required_sha256(&root, "typed_manifest_sha256")?;
+    if typed_manifest_sha256 != REVIEWED_TENSOR_MANIFEST_SHA256 {
+        return Err(parse_error("sidecar typed manifest digest is not reviewed"));
+    }
+    if root.get("tensor_count").and_then(JsonValue::as_u64) != Some(TENSOR_COUNT as u64) {
+        return Err(parse_error("sidecar tensor count mismatch"));
+    }
+    let values = root
+        .get("tensor_rows")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| parse_error("sidecar tensor_rows must be an array"))?;
+    if values.len() != TENSOR_COUNT {
+        return Err(parse_error("sidecar tensor_rows count mismatch"));
+    }
+    let rows = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_row(value, index))
+        .collect::<Result<Vec<_>, _>>()?;
+    if rows
+        .windows(2)
+        .any(|window| window[0].name >= window[1].name)
+    {
+        return Err(parse_error(
+            "sidecar tensor_rows must be sorted by exact name",
+        ));
+    }
+    let required_roles = rows.iter().map(|row| row.role.clone()).collect::<Vec<_>>();
+    validate_typed_manifest(&rows, &required_roles).map_err(parse_error)?;
+    if hex(&canonical_typed_manifest_sha256(&rows)) != typed_manifest_sha256 {
+        return Err(parse_error(
+            "sidecar typed manifest digest recomputation mismatch",
+        ));
+    }
+    Ok(PreparedManifest {
+        prepared_sha256,
+        typed_manifest_sha256,
+        rows,
+    })
+}
+
+fn sidecar_path(input: &Path) -> PathBuf {
+    let mut path = input.to_owned();
+    path.set_extension("manifest.json");
+    path
+}
+
+fn read_sidecar(input: &Path) -> Result<Vec<u8>, ConvertError> {
+    let path = sidecar_path(input);
+    let size = std::fs::metadata(&path)?.len();
+    if size > MAX_SIDECAR_BYTES {
+        return Err(parse_error(format!(
+            "sidecar exceeds the {MAX_SIDECAR_BYTES}-byte limit"
+        )));
+    }
+    Ok(std::fs::read(path)?)
+}
+
+fn validate_checkpoint(
+    checkpoint: &SafetensorsFile,
+    rows: &[SgmseManifestRow],
+) -> Result<usize, ConvertError> {
+    if checkpoint.tensors().len() != rows.len() {
+        return Err(parse_error("prepared tensor count mismatch"));
+    }
+    let expected_names = rows
+        .iter()
+        .map(|row| row.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let actual_names = checkpoint
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect::<BTreeSet<_>>();
+    if expected_names.len() != rows.len() || actual_names != expected_names {
+        return Err(parse_error("prepared tensor name set mismatch"));
+    }
+    let mut bf16 = 0;
+    for row in rows {
+        let tensor = checkpoint
+            .tensor_info(&row.name)
+            .ok_or_else(|| parse_error(format!("prepared tensor {} is missing", row.name)))?;
+        let expected_dtype =
+            GgmlType::from_tag(row.dtype_tag).map_err(|error| parse_error(error.to_string()))?;
+        if tensor.dtype != expected_dtype || tensor.shape != row.shape {
+            return Err(parse_error(format!(
+                "prepared tensor {} dtype/shape mismatch",
+                row.name
+            )));
+        }
+        if tensor.dtype == GgmlType::BF16 {
+            bf16 += 1;
+        }
+    }
+    Ok(bf16)
+}
+
+fn add_string_array(builder: &mut GgufBuilder, key: &str, values: Vec<String>) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: values.into_iter().map(GgufMetadataValue::String).collect(),
+        }),
+    );
+}
+
+/// Convert one authenticated prepared artifact.
 pub fn convert_sgmse_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<SgmseReport, ConvertError> {
-    let bytes = std::fs::read(input)?;
-    let st = SafetensorsFile::parse(bytes)?;
-
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
-
-    // Self-describing redistribution: the artifact carries its own
-    // licence. The `license` param overrides the raw SPDX string
-    // (`vokra.provenance.license`) and — when overridden — re-derives
-    // the class through `LicenseClass::from_license_str` so the
-    // compliance gate stays honest (a caller who overrides to a
-    // non-permissive SPDX would otherwise get a silent Permissive
-    // verdict). `None` keeps the SpeechBrain default (apache-2.0 →
-    // Permissive) that matches the upstream weight card.
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
-    };
-    vokra_core::stamp_provenance(
-        &mut b,
-        class,
-        &spdx,
-        Some(NAME),
-        Some(
-            "speechbrain/sgmse-voicebank \
-             (SGMSE score-based diffusion speech enhancement, VoiceBank-DEMAND, apache-2.0)",
-        ),
-    );
-
-    let mut report = SgmseReport::default();
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )
-                .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+    if let Some(value) = license {
+        if !value.eq_ignore_ascii_case("apache-2.0") {
+            return Err(ConvertError::Usage(
+                "SGMSE-VoiceBank weights are fixed Apache-2.0; license override must be apache-2.0"
+                    .to_owned(),
+            ));
         }
     }
+    let Some(expected_prepared_sha256) = AUTHENTICATED_PREPARED_SHA256 else {
+        return Err(ConvertError::Usage(
+            "SGMSE-VoiceBank conversion is AUTHENTICATED_PREPARED_SHA256_REQUIRED: obtain and review the VAST prepared safetensors SHA-256 before conversion"
+                .to_owned(),
+        ));
+    };
+    let manifest = validate_prepared_sidecar(&read_sidecar(input)?)?;
+    if manifest.prepared_sha256 != expected_prepared_sha256 {
+        return Err(parse_error(
+            "prepared SHA-256 does not match the reviewed digest",
+        ));
+    }
+    let bytes = std::fs::read(input)?;
+    let actual_prepared_sha256 = hex(&sha256(&bytes));
+    if actual_prepared_sha256 != expected_prepared_sha256 {
+        return Err(parse_error("prepared artifact SHA-256 mismatch"));
+    }
+    let checkpoint = SafetensorsFile::parse(bytes)?;
+    let bf16_passthrough = validate_checkpoint(&checkpoint, &manifest.rows)?;
 
-    let out_bytes = b
-        .to_bytes()
-        .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
-    Ok(report)
+    let mut builder = GgufBuilder::new();
+    builder
+        .add_string(chunks::KEY_MODEL_ARCH, ARCH)
+        .add_string(chunks::KEY_MODEL_NAME, NAME)
+        .add_string(KEY_MANIFEST_STATUS, "AUTHENTICATED")
+        .add_string(KEY_TENSOR_MANIFEST_SHA256, &manifest.typed_manifest_sha256)
+        .add_string(KEY_SOURCE_REPOSITORY, SOURCE_REPOSITORY)
+        .add_string(KEY_SOURCE_REVISION, SOURCE_REVISION)
+        .add_string(KEY_MODEL_REVISION, UPSTREAM_REVISION)
+        .add_string(KEY_CHECKPOINT_FILENAME, CHECKPOINT_FILENAME)
+        .add_metadata(KEY_CHECKPOINT_SIZE, GgufMetadataValue::U64(CHECKPOINT_SIZE))
+        .add_string(KEY_CHECKPOINT_SHA256, CHECKPOINT_SHA256)
+        .add_string(KEY_PREPARED_SHA256, expected_prepared_sha256);
+    add_string_array(
+        &mut builder,
+        KEY_TENSOR_MANIFEST,
+        manifest
+            .rows
+            .iter()
+            .map(|row| {
+                format!(
+                    "{}|{}|{}|{}",
+                    row.role,
+                    row.name,
+                    row.dtype_tag,
+                    row.dimensions
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
+            .collect(),
+    );
+    vokra_core::stamp_provenance(
+        &mut builder,
+        LicenseClass::Permissive,
+        "Apache-2.0",
+        Some(UPSTREAM_HF),
+        Some("https://huggingface.co/speechbrain/sgmse-voicebank"),
+    );
+    for row in &manifest.rows {
+        let tensor = checkpoint
+            .tensor_info(&row.name)
+            .expect("validated SGMSE tensor name set");
+        builder.add_tensor(
+            &row.name,
+            tensor.dtype,
+            row.dimensions.clone(),
+            checkpoint.tensor_bytes(tensor).to_vec(),
+        )?;
+    }
+    std::fs::write(output, builder.to_bytes()?)?;
+    Ok(SgmseReport {
+        read: TENSOR_COUNT,
+        written: TENSOR_COUNT,
+        skipped_non_float: 0,
+        bf16_passthrough,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vokra_core::gguf::GgufFile;
 
-    fn safetensors_one_bf16(name: &str, shape: &[u64], bf16_bytes: &[u8]) -> Vec<u8> {
-        let elems: u64 = shape.iter().product();
-        let expected = elems as usize * 2;
-        assert_eq!(bf16_bytes.len(), expected, "shape × 2 BF16");
-        let shape_str = shape
-            .iter()
-            .map(|d| d.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let header = format!(
-            r#"{{"{name}":{{"dtype":"BF16","shape":[{shape_str}],"data_offsets":[0,{}]}}}}"#,
-            bf16_bytes.len()
-        );
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(bf16_bytes);
-        out
+    fn row(name: &str, role: &str, dtype_tag: u32, shape: &[u64]) -> SgmseManifestRow {
+        SgmseManifestRow {
+            name: name.to_owned(),
+            role: role.to_owned(),
+            dtype_tag,
+            shape: shape.to_vec(),
+            dimensions: shape.iter().rev().copied().collect(),
+        }
     }
 
-    fn safetensors_one_f32(name: &str, shape: &[u64], f32_bytes: &[u8]) -> Vec<u8> {
-        let elems: u64 = shape.iter().product();
-        let expected = elems as usize * 4;
-        assert_eq!(f32_bytes.len(), expected, "shape × 4 F32");
-        let shape_str = shape
-            .iter()
-            .map(|d| d.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let header = format!(
-            r#"{{"{name}":{{"dtype":"F32","shape":[{shape_str}],"data_offsets":[0,{}]}}}}"#,
-            f32_bytes.len()
-        );
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(f32_bytes);
-        out
-    }
-
-    fn write_temp(kind: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-sgmse-{kind}-{}-{}.bin",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::write(&p, bytes).expect("write temp file");
-        p
-    }
-
-    /// BF16 round-trip byte-identity + every stamp lands (defensive —
-    /// upstream is F32 today, but the BF16 arm must be pinned for
-    /// future re-quantized mirror releases).
     #[test]
-    fn bf16_round_trips_verbatim() {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        // Realistic upstream tensor name from the NCSN++ v2 score
-        // network's input stack. `score_model_ema.ckpt` is a flat
-        // state_dict of the internal network (no `score_model.`
-        // prefix — SpeechBrain's Pretrainer adds that at load time).
-        let input_bytes = safetensors_one_bf16("input_layer.weight", &[2, 3], &bf16);
-        let input = write_temp("bf16-in", &input_bytes);
-        let output = write_temp("bf16-out", &[]);
-
-        let report = convert_sgmse_file(&input, &output, None).expect("convert SGMSE");
-        assert_eq!(report.read, 1);
-        assert_eq!(report.written, 1);
-        assert_eq!(report.bf16_passthrough, 1);
-        assert_eq!(report.skipped_non_float, 0);
-
-        let out_bytes = std::fs::read(&output).expect("read output");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let info = file
-            .tensor_info("input_layer.weight")
-            .expect("BF16 tensor present");
-        assert_eq!(info.dtype, GgmlType::BF16);
-        assert_eq!(info.dimensions, vec![2, 3]);
+    fn prepared_digest_is_independently_observed() {
         assert_eq!(
-            file.tensor_bytes(info),
-            bf16.as_slice(),
-            "BF16 payload must be byte-identical (no silent widen)"
+            AUTHENTICATED_PREPARED_SHA256,
+            Some("eda3064488c670db78f7f93a77fade739e0d3941b7863e28db489a137f723045")
         );
-
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_HF)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("apache-2.0")
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
-
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
     }
 
-    /// Primary code path — upstream `score_model_ema.ckpt` ships F32
-    /// today. This test pins the exact path a real conversion walks.
     #[test]
-    fn f32_pass_through_is_primary_upstream_path() {
-        let f32_vals: [f32; 6] = [0.5, -0.25, 1.5, -3.0, 42.0, 0.0];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let input_bytes = safetensors_one_f32("blocks.0.norm1.weight", &[2, 3], &f32_bytes);
-        let input = write_temp("f32-in", &input_bytes);
-        let output = write_temp("f32-out", &[]);
-
-        let report = convert_sgmse_file(&input, &output, None).expect("convert SGMSE");
-        assert_eq!(report.read, 1);
-        assert_eq!(report.written, 1);
-        assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32 must not increment BF16 counter"
-        );
-        assert_eq!(report.skipped_non_float, 0);
-
-        let out_bytes = std::fs::read(&output).expect("read output");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let info = file
-            .tensor_info("blocks.0.norm1.weight")
-            .expect("F32 tensor present");
-        assert_eq!(info.dtype, GgmlType::F32, "F32 stays F32");
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(file.tensor_bytes(info), f32_bytes.as_slice());
-
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+    fn missing_sidecar_is_rejected_without_output() {
+        let stem = format!("sgmse-missing-sidecar-{}", std::process::id());
+        let input = std::env::temp_dir().join(format!("{stem}.safetensors"));
+        let output = std::env::temp_dir().join(format!("{stem}.gguf"));
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
+        let error = convert_sgmse_file(&input, &output, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("I/O error"), "{error}");
+        assert!(!output.exists());
     }
 
-    /// The `license` override must flow through to the provenance stamp
-    /// and re-derive the class (guards against a silent Permissive
-    /// verdict when a caller ships under a non-permissive SPDX).
     #[test]
-    fn license_override_flows_through() {
-        let f32_bytes: Vec<u8> = [1.0_f32, 2.0]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let input_bytes = safetensors_one_f32("input_layer.weight", &[1, 2], &f32_bytes);
-        let input = write_temp("license-in", &input_bytes);
-        let output = write_temp("license-out", &[]);
+    fn license_override_cannot_relabel_weights() {
+        let error = convert_sgmse_file(Path::new("missing"), Path::new("out"), Some("mit"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Apache-2.0"), "{error}");
+        let error = convert_sgmse_file(Path::new("missing"), Path::new("out"), Some(""))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Apache-2.0"), "{error}");
+    }
 
-        convert_sgmse_file(&input, &output, Some("mit")).expect("license override must succeed");
+    #[test]
+    fn typed_manifest_rejects_drift_and_accepts_reverse_dimensions() {
+        let required = vec!["fourier_frequencies".to_owned()];
+        let valid = vec![row("source.frequencies", &required[0], 0, &[2, 3])];
+        validate_typed_manifest(&valid, &required).unwrap();
+        let mut drifted = valid.clone();
+        drifted[0].dimensions = vec![2, 3];
+        assert!(validate_typed_manifest(&drifted, &required).is_err());
+        drifted = valid;
+        drifted[0].role = "arbitrary_passthrough".to_owned();
+        assert!(validate_typed_manifest(&drifted, &required).is_err());
+    }
 
-        let out_bytes = std::fs::read(&output).expect("read output");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
+    #[test]
+    fn canonical_digest_uses_non_symmetric_dimensions_and_exact_name() {
+        let rows = vec![row(
+            "source.nonsymmetric",
+            "stage:1:residual:1:residual_conv1:weight",
+            0,
+            &[2, 3, 5],
+        )];
         assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("mit"),
-            "license override must be honored"
+            hex(&canonical_typed_manifest_sha256(&rows)),
+            "39671d48bc116445a52d6e573a9045ca5a5d080960a3993923d64c319a6c54ef"
         );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "mit is Permissive class (same bucket as apache-2.0 default)"
-        );
+    }
 
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+    #[test]
+    fn exact_schema_rejects_duplicate_and_unknown_keys() {
+        let duplicate = json::parse(br#"{"a":1,"a":2}"#).unwrap();
+        assert!(exact_object_schema(&duplicate, &["a"], "tiny").is_err());
+        let unknown = json::parse(br#"{"a":1,"b":2}"#).unwrap();
+        assert!(exact_object_schema(&unknown, &["a"], "tiny").is_err());
+        let row_unknown = json::parse(
+            br#"{"name":"x","role":"fourier_frequencies","dtype":"torch.float32","shape":[1],"dimensions":[1],"extra":true}"#,
+        )
+        .unwrap();
+        assert!(parse_row(&row_unknown, 0).is_err());
+        let row_duplicate = json::parse(
+            br#"{"name":"x","role":"fourier_frequencies","dtype":"torch.float32","shape":[1],"dimensions":[1],"name":"y"}"#,
+        )
+        .unwrap();
+        assert!(parse_row(&row_duplicate, 0).is_err());
+    }
+
+    #[test]
+    fn row_parser_rejects_invalid_role_dtype_zero_and_nonreversed_dimensions() {
+        let base = |role: &str, dtype: &str, shape: &str, dimensions: &str| {
+            json::parse(
+                format!(
+                    "{{\"name\":\"x\",\"role\":\"{role}\",\"dtype\":\"{dtype}\",\"shape\":{shape},\"dimensions\":{dimensions}}}"
+                )
+                .as_bytes(),
+            )
+            .unwrap()
+        };
+        assert!(parse_row(&base("not-a-role", "torch.float32", "[1]", "[1]"), 0).is_err());
+        assert!(parse_row(&base("fourier_frequencies", "torch.int64", "[1]", "[1]"), 0).is_err());
+        assert!(
+            parse_row(
+                &base("fourier_frequencies", "torch.float32", "[0]", "[0]"),
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            parse_row(
+                &base("fourier_frequencies", "torch.float32", "[2,3]", "[2,3]"),
+                0
+            )
+            .is_err()
+        );
+    }
+
+    fn synthetic_safetensors(entries: &[(&str, &str, &[u64], usize)]) -> SafetensorsFile {
+        let mut header = String::from("{");
+        let mut offset = 0usize;
+        for (index, (name, dtype, shape, bytes)) in entries.iter().enumerate() {
+            if index != 0 {
+                header.push(',');
+            }
+            let shape = shape
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            header.push_str(&format!(
+                "\"{name}\":{{\"dtype\":\"{dtype}\",\"shape\":[{shape}],\"data_offsets\":[{offset},{}]}}",
+                offset + bytes
+            ));
+            offset += bytes;
+        }
+        header.push('}');
+        let mut data = Vec::with_capacity(8 + header.len() + offset);
+        data.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        data.extend_from_slice(header.as_bytes());
+        data.resize(data.len() + offset, 0);
+        SafetensorsFile::parse(data).expect("synthetic safetensors")
+    }
+
+    #[test]
+    fn checkpoint_validation_rejects_count_name_dtype_and_shape_drift() {
+        let expected = row("source.nonsymmetric", "fourier_frequencies", 0, &[2, 3, 5]);
+        let expected_rows = vec![expected.clone()];
+        let duplicate = synthetic_safetensors(&[
+            ("source.nonsymmetric", "F32", &[2, 3, 5], 120),
+            ("source.nonsymmetric", "F32", &[2, 3, 5], 120),
+        ]);
+        assert!(validate_checkpoint(&duplicate, &expected_rows).is_err());
+        let wrong_name = synthetic_safetensors(&[("other", "F32", &[2, 3, 5], 120)]);
+        assert!(validate_checkpoint(&wrong_name, &expected_rows).is_err());
+        let wrong_dtype = synthetic_safetensors(&[("source.nonsymmetric", "F16", &[2, 3, 5], 60)]);
+        assert!(validate_checkpoint(&wrong_dtype, &expected_rows).is_err());
+        let wrong_shape = synthetic_safetensors(&[("source.nonsymmetric", "F32", &[3, 10], 120)]);
+        assert!(validate_checkpoint(&wrong_shape, &expected_rows).is_err());
     }
 }

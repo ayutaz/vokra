@@ -135,6 +135,7 @@ pub mod deberta_v3;
 pub(crate) mod dia;
 pub mod ecapa_tdnn;
 pub mod emotion2vec;
+pub mod voice_gender_classifier;
 // M5-16 (FR-OP-83): FCPE — Fast Context-based Pitch Estimator (CNChTu/FCPE,
 // MIT permissive). safetensors → GGUF pass-through (F32 / F16 / BF16
 // verbatim, `vokra.fcpe.*` / `vokra.provenance.*` stamps). Reuses the

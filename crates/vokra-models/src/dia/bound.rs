@@ -3,6 +3,7 @@
 use vokra_core::gguf::GgufFile;
 use vokra_core::{LicenseClass, Result, VokraError};
 
+use crate::dia::{DiaConfig, DiaDecoderBlockWeights, DiaEncoderBlockWeights, DiaWeights};
 use crate::strict_checkpoint::{
     StrictCheckpoint, StrictCheckpointSpec, embedding_rows, load_tensor, require_tensor_shape,
 };
@@ -24,7 +25,12 @@ const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
     ],
 };
 
-/// Strict handle for `vokra/dia-1.6b`.
+/// Strict handle for the historical `vokra/dia-1.6b` main-model artifact.
+///
+/// The complete 343-tensor main-model manifest and payload are authenticated,
+/// but this is still a composite-partial text-to-PCM route: the delayed-AR
+/// generation evidence and the separately distributed [`crate::dac::Dac`]
+/// PCM decoder must be bound independently.
 #[derive(Debug, Clone)]
 pub struct DiaCheckpoint {
     checkpoint: StrictCheckpoint,
@@ -41,7 +47,155 @@ impl DiaCheckpoint {
     /// Decodes the real byte-token encoder embedding.
     pub fn load_text_embedding(&self, file: &GgufFile) -> Result<DiaTextEmbedding> {
         Ok(DiaTextEmbedding {
-            weight: load_tensor(file, LABEL, EMBEDDING, &[VOCAB, DIMENSION])?,
+            weight: tensor(file, EMBEDDING, &[VOCAB, DIMENSION])?,
+        })
+    }
+
+    /// Loads the complete authenticated 343-tensor main-model payload.
+    ///
+    /// The public GGUF stores projection tensors in the source-authentic
+    /// `[input, heads, head_dim]`/`[heads, head_dim, output]` layouts.  The
+    /// native forward uses flattened `[input, output]` matrices, so this
+    /// method performs only shape-preserving flattening and the documented
+    /// interleaved `wi_fused` split.  No tensor is synthesized or silently
+    /// omitted: the manifest bind runs first and every expected tensor is
+    /// decoded and checked for finite values.
+    pub fn load_weights(&self, file: &GgufFile, config: &DiaConfig) -> Result<DiaWeights> {
+        if config != &DiaConfig::dia_1_6b() {
+            return Err(VokraError::InvalidArgument(
+                "dia weights: only the authenticated Dia-1.6B config is supported".to_owned(),
+            ));
+        }
+        let encoder = &config.encoder;
+        let decoder = &config.decoder;
+        let text_embedding = tensor(file, EMBEDDING, &[256, 1024])?;
+        let mut encoder_blocks = Vec::with_capacity(encoder.n_layer);
+        for layer in 0..encoder.n_layer {
+            let prefix = format!("encoder.layers.{layer}");
+            let (gate_proj, up_proj) = fused(
+                file,
+                &format!("{prefix}.mlp.wi_fused.weight"),
+                &[1024, 2, 4096],
+                1024,
+                4096,
+            )?;
+            encoder_blocks.push(DiaEncoderBlockWeights {
+                norm_1: tensor(file, &format!("{prefix}.pre_sa_norm.weight"), &[1024])?,
+                q_proj: tensor(
+                    file,
+                    &format!("{prefix}.self_attention.q_proj.weight"),
+                    &[1024, 16, 128],
+                )?,
+                k_proj: tensor(
+                    file,
+                    &format!("{prefix}.self_attention.k_proj.weight"),
+                    &[1024, 16, 128],
+                )?,
+                v_proj: tensor(
+                    file,
+                    &format!("{prefix}.self_attention.v_proj.weight"),
+                    &[1024, 16, 128],
+                )?,
+                o_proj: tensor(
+                    file,
+                    &format!("{prefix}.self_attention.o_proj.weight"),
+                    &[16, 128, 1024],
+                )?,
+                norm_2: tensor(file, &format!("{prefix}.post_sa_norm.weight"), &[1024])?,
+                gate_proj,
+                up_proj,
+                down_proj: tensor(file, &format!("{prefix}.mlp.wo.weight"), &[4096, 1024])?,
+            });
+        }
+        let mut channel_embeddings = Vec::with_capacity(config.channels);
+        for channel in 0..config.channels {
+            channel_embeddings.push(tensor(
+                file,
+                &format!("decoder.embeddings.{channel}.weight"),
+                &[1028, 2048],
+            )?);
+        }
+        let mut decoder_blocks = Vec::with_capacity(decoder.n_layer);
+        for layer in 0..decoder.n_layer {
+            let prefix = format!("decoder.layers.{layer}");
+            let (gate_proj, up_proj) = fused(
+                file,
+                &format!("{prefix}.mlp.wi_fused.weight"),
+                &[2048, 2, 8192],
+                2048,
+                8192,
+            )?;
+            decoder_blocks.push(DiaDecoderBlockWeights {
+                sa_norm: tensor(file, &format!("{prefix}.pre_sa_norm.weight"), &[2048])?,
+                sa_q_proj: tensor(
+                    file,
+                    &format!("{prefix}.self_attention.q_proj.weight"),
+                    &[2048, 16, 128],
+                )?,
+                sa_k_proj: tensor(
+                    file,
+                    &format!("{prefix}.self_attention.k_proj.weight"),
+                    &[2048, 4, 128],
+                )?,
+                sa_v_proj: tensor(
+                    file,
+                    &format!("{prefix}.self_attention.v_proj.weight"),
+                    &[2048, 4, 128],
+                )?,
+                sa_o_proj: tensor(
+                    file,
+                    &format!("{prefix}.self_attention.o_proj.weight"),
+                    &[16, 128, 2048],
+                )?,
+                xa_norm: tensor(file, &format!("{prefix}.pre_ca_norm.weight"), &[2048])?,
+                xa_q_proj: tensor(
+                    file,
+                    &format!("{prefix}.cross_attention.q_proj.weight"),
+                    &[2048, 16, 128],
+                )?,
+                xa_k_proj: tensor(
+                    file,
+                    &format!("{prefix}.cross_attention.k_proj.weight"),
+                    &[1024, 16, 128],
+                )?,
+                xa_v_proj: tensor(
+                    file,
+                    &format!("{prefix}.cross_attention.v_proj.weight"),
+                    &[1024, 16, 128],
+                )?,
+                xa_o_proj: tensor(
+                    file,
+                    &format!("{prefix}.cross_attention.o_proj.weight"),
+                    &[16, 128, 2048],
+                )?,
+                ffn_norm: tensor(file, &format!("{prefix}.pre_mlp_norm.weight"), &[2048])?,
+                gate_proj,
+                up_proj,
+                down_proj: tensor(file, &format!("{prefix}.mlp.wo.weight"), &[8192, 2048])?,
+            });
+        }
+        let logits = tensor(file, "decoder.logits_dense.weight", &[2048, 9, 1028])?;
+        let mut logit_heads = Vec::with_capacity(config.channels);
+        let stride = decoder.n_embd * config.tgt_vocab_size;
+        for channel in 0..config.channels {
+            let mut head = vec![0.0; stride];
+            for input in 0..decoder.n_embd {
+                for output in 0..config.tgt_vocab_size {
+                    head[input * config.tgt_vocab_size + output] = logits
+                        [(input * config.channels + channel) * config.tgt_vocab_size + output];
+                }
+            }
+            logit_heads.push(head);
+        }
+        Ok(DiaWeights {
+            text_embedding,
+            encoder_blocks,
+            encoder_norm: tensor(file, "encoder.norm.weight", &[1024])?,
+            channel_embeddings,
+            decoder_blocks,
+            decoder_norm: tensor(file, "decoder.norm.weight", &[2048])?,
+            logit_heads,
+            is_synthesized: false,
         })
     }
 
@@ -63,6 +217,13 @@ impl DiaCheckpoint {
         self.checkpoint.tensor_count()
     }
 
+    /// Returns whether this handle still needs the separately authenticated
+    /// DAC composition for text-to-PCM inference.
+    #[must_use]
+    pub const fn is_partial(&self) -> bool {
+        true
+    }
+
     /// End-to-end PCM stays loud until delayed-AR and DAC are bound.
     pub fn synthesize(&self, text: &str) -> Result<Vec<f32>> {
         if text.is_empty() {
@@ -71,9 +232,38 @@ impl DiaCheckpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "dia synthesize: the complete official checkpoint is bound and the real text embedding runs natively, but encoder/decoder attention, delayed nine-codebook sampling and the separately distributed DAC decoder remain pending.",
+            "dia synthesize: the authenticated 343-tensor main model is bound, but same-execution generation parity and the separately distributed 44.1-kHz nine-codebook crate::dac::Dac route remain pending.",
         ))
     }
+}
+
+fn tensor(file: &GgufFile, name: &str, shape: &[usize]) -> Result<Vec<f32>> {
+    let values = load_tensor(file, LABEL, name, shape)?;
+    if values.iter().all(|value| value.is_finite()) {
+        Ok(values)
+    } else {
+        Err(VokraError::ModelLoad(format!(
+            "{LABEL}: tensor `{name}` contains non-finite values"
+        )))
+    }
+}
+
+fn fused(
+    file: &GgufFile,
+    name: &str,
+    shape: &[usize],
+    input: usize,
+    output: usize,
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    let values = tensor(file, name, shape)?;
+    let mut gate = Vec::with_capacity(input * output);
+    let mut up = Vec::with_capacity(input * output);
+    for row in 0..input {
+        let start = row * 2 * output;
+        gate.extend_from_slice(&values[start..start + output]);
+        up.extend_from_slice(&values[start + output..start + 2 * output]);
+    }
+    Ok((gate, up))
 }
 
 /// Real Dia byte-token embedding table.

@@ -69,6 +69,17 @@ const KEY_DEC_D_MODEL: &str = "vokra.reazonspeech_nemo_v2.decoder.d_model";
 const KEY_JOINT_VOCAB_SIZE: &str = "vokra.reazonspeech_nemo_v2.joint.vocab_size";
 const KEY_JOINT_BLANK_ID: &str = "vokra.reazonspeech_nemo_v2.joint.blank_token_id";
 const KEY_JOINT_MAX_SYMBOLS: &str = "vokra.reazonspeech_nemo_v2.joint.max_symbols_per_step";
+const KEY_DECODING_STRATEGY: &str = "vokra.reazonspeech_nemo_v2.decoding.strategy";
+const KEY_DECODING_BEAM_SIZE: &str = "vokra.reazonspeech_nemo_v2.decoding.beam_size";
+const KEY_DECODING_ALSD_MAX_TARGET_LEN: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.alsd_max_target_len";
+const KEY_DECODING_SCORE_NORM: &str = "vokra.reazonspeech_nemo_v2.decoding.score_norm";
+const KEY_DECODING_BEAM_MODE: &str = "vokra.reazonspeech_nemo_v2.decoding.search_type";
+const KEY_DECODING_SOFTMAX_TEMPERATURE: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.softmax_temperature";
+const KEY_DECODING_RETURN_BEST: &str = "vokra.reazonspeech_nemo_v2.decoding.return_best_hypothesis";
+const KEY_DECODING_PRESERVE_ALIGNMENTS: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.preserve_alignments";
 
 const KEY_FRONTEND_N_FFT: &str = "vokra.frontend.n_fft";
 const KEY_FRONTEND_HOP: &str = "vokra.frontend.hop_length";
@@ -174,6 +185,8 @@ fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
         (KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256),
         (KEY_FRONTEND_WINDOW, "hann"),
         (KEY_FRONTEND_NORMALIZE, "per_feature"),
+        (KEY_DECODING_STRATEGY, "alsd"),
+        (KEY_DECODING_BEAM_MODE, "default"),
     ] {
         builder.add_string(key, value);
     }
@@ -197,6 +210,7 @@ fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
         (KEY_JOINT_VOCAB_SIZE, 3_001),
         (KEY_JOINT_BLANK_ID, 3_000),
         (KEY_JOINT_MAX_SYMBOLS, 10),
+        (KEY_DECODING_BEAM_SIZE, 4),
         (KEY_FRONTEND_N_FFT, 512),
         (KEY_FRONTEND_HOP, 160),
         (KEY_FRONTEND_WIN, 400),
@@ -205,6 +219,11 @@ fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
         builder.add_u32(key, value);
     }
     builder.add_f32(KEY_FRONTEND_DITHER, 1.0e-5);
+    builder.add_f32(KEY_DECODING_ALSD_MAX_TARGET_LEN, 1.0);
+    builder.add_f32(KEY_DECODING_SOFTMAX_TEMPERATURE, 1.0);
+    builder.add_bool(KEY_DECODING_SCORE_NORM, true);
+    builder.add_bool(KEY_DECODING_RETURN_BEST, true);
+    builder.add_bool(KEY_DECODING_PRESERVE_ALIGNMENTS, false);
     builder.add_metadata(
         KEY_TOKENIZER_VOCAB,
         GgufMetadataValue::Array(GgufArray {
@@ -475,6 +494,40 @@ mod tests {
         assert_eq!(
             file.get(KEY_JOINT_BLANK_ID),
             Some(&GgufMetadataValue::U32(3_000))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_STRATEGY)
+                .and_then(|value| value.as_str()),
+            Some("alsd")
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_BEAM_SIZE),
+            Some(&GgufMetadataValue::U32(4))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_ALSD_MAX_TARGET_LEN),
+            Some(&GgufMetadataValue::F32(1.0))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_SCORE_NORM),
+            Some(&GgufMetadataValue::Bool(true))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_BEAM_MODE)
+                .and_then(|value| value.as_str()),
+            Some("default")
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_SOFTMAX_TEMPERATURE),
+            Some(&GgufMetadataValue::F32(1.0))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_RETURN_BEST),
+            Some(&GgufMetadataValue::Bool(true))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_PRESERVE_ALIGNMENTS),
+            Some(&GgufMetadataValue::Bool(false))
         );
         assert_eq!(
             file.get(KEY_FRONTEND_DITHER),

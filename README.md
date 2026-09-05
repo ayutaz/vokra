@@ -15,9 +15,13 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Release status:** `0.1.0` is prepared as the first tagged release. Rust
-> APIs, the C ABI, GGUF metadata, and model coverage remain pre-1.0 and may
-> change. Pin an exact release when evaluating Vokra in another project.
+> **Development status (2026-08-31):** the workspace is `0.3.0` development.
+> The pre-documentation-refresh PR #79 snapshot was `d8a93bc3` (109 pass / 13
+> expected skip), against `origin/main` at `41ce9ffd`; there are no Git tags or
+> published releases yet. Rust APIs, the C ABI, GGUF metadata, and model coverage remain
+> pre-1.0 and may change. During this unpublished phase, pin an exact commit
+> when evaluating Vokra in another project; switch to an exact tag or release
+> after one is published.
 
 ## Why Vokra
 
@@ -84,8 +88,10 @@ Use these sources instead of a copied model list:
   runtime routing and deferred-operation registry for developers.
 
 CPU is the default backend. Metal, CUDA, Vulkan, and WebGPU are opt-in and have
-operation-specific coverage; CoreML and QNN are experimental delegates. See
-the [backend guide](docs/backend-guide.md) before selecting an accelerator.
+operation-specific coverage. CoreML has an experimental whole-submodel
+delegate path for the Whisper encoder; QNN remains an SDK-gated experimental
+delegate scaffold. See the [backend guide](docs/backend-guide.md) before
+selecting an accelerator.
 
 ## Library integration
 

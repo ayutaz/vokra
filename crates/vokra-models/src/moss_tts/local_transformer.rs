@@ -26,6 +26,9 @@ use super::local::{
     LOCAL_NUM_HEADS, LOCAL_ROPE_BASE, LOCAL_TOPOLOGY, LocalMappedDescriptors,
     MossTtsLocalCheckpoint,
 };
+use crate::moss_audio_tokenizer::{
+    MossAudioTokenizer, MossAudioTokenizerVariant, MossDecodedAudio,
+};
 
 const AUDIO_START_TOKEN_ID: u32 = 151_669;
 const AUDIO_END_TOKEN_ID: u32 = 151_670;
@@ -95,7 +98,8 @@ impl MossTtsLocalGenerationOptions {
 pub struct MossTtsLocalGeneration {
     /// Row-major `[rows,13]` values starting at the prompt's last audio-start
     /// row and including all generated assistant/audio rows. This matches the
-    /// fixed processor's decode input and preserves continuation context.
+    /// fixed processor's decode input and preserves continuation context. The
+    /// generation loop does not append a terminal decision row.
     pub rows_from_audio_start: Vec<u32>,
     /// Number of prompt audio rows following the last audio-start marker.
     pub start_length: usize,
@@ -126,6 +130,52 @@ impl MossTtsLocalGeneration {
         let start = index * columns;
         Ok(&self.rows_from_audio_start[start..start + columns])
     }
+
+    /// Returns generated assistant rows as frame-major twelve-codebook data.
+    ///
+    /// The `start_length` boundary is the upstream continuation boundary: it
+    /// excludes prompt audio rows, while the generated-frame count excludes
+    /// the terminal row because the terminal decision is not an audio frame.
+    /// Every selected row is checked rather than treating arbitrary columns
+    /// as codec input.
+    pub fn assistant_audio_codes(&self) -> Result<Vec<u32>> {
+        let first = self.start_length.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("MOSS Local start length overflow".to_owned())
+        })?;
+        let end = first.checked_add(self.generated_frames).ok_or_else(|| {
+            VokraError::InvalidArgument("MOSS Local generated frame count overflow".to_owned())
+        })?;
+        if end > self.row_count() {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: generated boundary [{first},{end}) exceeds {} rows",
+                self.row_count()
+            )));
+        }
+        let mut codes =
+            Vec::with_capacity(self.generated_frames * LOCAL_TOPOLOGY.num_audio_codebooks);
+        for row_index in first..end {
+            let row = self.row(row_index)?;
+            if row[0] != AUDIO_ASSISTANT_SLOT_TOKEN_ID {
+                return Err(VokraError::InvalidArgument(format!(
+                    "{LABEL}: row {row_index} is not an assistant audio row (token {})",
+                    row[0]
+                )));
+            }
+            codes.extend_from_slice(&row[1..]);
+        }
+        Ok(codes)
+    }
+}
+
+/// Local Transformer generation plus the explicitly authenticated v2 codec
+/// companion's decoded 48 kHz stereo PCM.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct MossTtsLocalSynthesis {
+    /// Complete row boundary returned by the Local generator.
+    pub generated: MossTtsLocalGeneration,
+    /// Stereo PCM decoded by MOSS Audio Tokenizer v2.
+    pub audio: MossDecodedAudio,
 }
 
 /// Native Local Transformer model on one explicit CPU or Metal backend.
@@ -342,6 +392,44 @@ impl MossTtsLocal {
             start_length,
             generated_frames: appended.len() / columns,
         })
+    }
+
+    /// Generates Local rows and decodes only the newly generated assistant
+    /// audio rows through the exact v2 companion. Text tokenization and chat
+    /// template expansion remain caller responsibilities; no raw-text
+    /// fallback is introduced here.
+    pub fn synthesize_prompt_rows(
+        &self,
+        codec: &MossAudioTokenizer,
+        prompt_rows: &[u32],
+        options: &MossTtsLocalGenerationOptions,
+    ) -> Result<MossTtsLocalSynthesis> {
+        if codec.variant() != MossAudioTokenizerVariant::V2 {
+            return Err(VokraError::UnsupportedOp(format!(
+                "{LABEL}: Local synthesis requires the exact MOSS Audio Tokenizer v2 companion; got {:?}",
+                codec.variant()
+            )));
+        }
+        if codec.backend() != self.backend {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: Local backend {:?} does not match codec backend {:?}; CPU fallback is forbidden",
+                self.backend,
+                codec.backend()
+            )));
+        }
+        let generated = self.generate_rows(prompt_rows, options)?;
+        let codes = generated.assistant_audio_codes()?;
+        if generated.generated_frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "moss_tts/local: generation ended without an assistant audio frame".to_owned(),
+            ));
+        }
+        let audio = codec.decode_frame_major(
+            &codes,
+            generated.generated_frames,
+            LOCAL_TOPOLOGY.num_audio_codebooks,
+        )?;
+        Ok(MossTtsLocalSynthesis { generated, audio })
     }
 }
 
@@ -911,10 +999,276 @@ mod tests {
     }
 
     #[test]
+    fn assistant_audio_extraction_respects_start_length_and_terminal_boundary() {
+        let columns = LOCAL_TOPOLOGY.input_columns();
+        let mut rows = vec![0; 3 * columns];
+        rows[columns] = 999; // prompt continuation row, never decoded as output
+        rows[2 * columns] = AUDIO_ASSISTANT_SLOT_TOKEN_ID;
+        for (index, value) in rows[2 * columns + 1..].iter_mut().enumerate() {
+            *value = index as u32;
+        }
+        let generation = MossTtsLocalGeneration {
+            rows_from_audio_start: rows,
+            start_length: 1,
+            generated_frames: 1,
+        };
+        let codes = generation.assistant_audio_codes().unwrap();
+        assert_eq!(
+            codes,
+            (0..LOCAL_TOPOLOGY.num_audio_codebooks as u32).collect::<Vec<_>>()
+        );
+
+        let mut bad = generation.clone();
+        bad.rows_from_audio_start[2 * columns] = AUDIO_END_TOKEN_ID;
+        assert!(bad.assistant_audio_codes().is_err());
+    }
+
+    #[test]
     fn pad_token_is_not_a_generated_audio_class() {
         assert_eq!(
             AUDIO_PAD_TOKEN_ID as usize,
             LOCAL_TOPOLOGY.audio_vocab_with_pad
         );
+    }
+
+    /// VAST/Apple-only real-weight measurement.  This deliberately remains
+    /// ignored locally: opening the Local checkpoint and the v2 codec is a
+    /// multi-gigabyte operation.  The test is the owner of the measurement
+    /// markers consumed by the remote workers; scripts must not manufacture
+    /// them.
+    #[test]
+    #[ignore = "requires authenticated VAST snapshot and disposable Apple hardware"]
+    fn measure_local_real_cpu_and_optional_metal_against_official() {
+        let model_path = std::env::var("VOKRA_MOSS_TTS_LOCAL_GGUF")
+            .expect("VOKRA_MOSS_TTS_LOCAL_GGUF must name the authenticated Local GGUF");
+        let codec_path = std::env::var("VOKRA_MOSS_AUDIO_TOKENIZER_V2_GGUF")
+            .expect("VOKRA_MOSS_AUDIO_TOKENIZER_V2_GGUF must name the authenticated v2 GGUF");
+        let prompt_path = std::env::var("VOKRA_MOSS_TTS_LOCAL_PROMPT_ROWS")
+            .expect("VOKRA_MOSS_TTS_LOCAL_PROMPT_ROWS must name the exact prompt rows");
+        let reference_path = std::env::var("VOKRA_MOSS_TTS_LOCAL_REFERENCE_ROWS")
+            .expect("VOKRA_MOSS_TTS_LOCAL_REFERENCE_ROWS must name normalized official rows");
+        let reference_codes_path = std::env::var("VOKRA_MOSS_TTS_LOCAL_REFERENCE_CODES")
+            .expect("VOKRA_MOSS_TTS_LOCAL_REFERENCE_CODES must name official assistant codes");
+        let columns = LOCAL_TOPOLOGY.input_columns();
+        let prompt = read_u32_rows(&prompt_path, columns);
+        let reference = read_u32_rows(&reference_path, columns);
+        let reference_codes =
+            read_u32_rows(&reference_codes_path, LOCAL_TOPOLOGY.num_audio_codebooks);
+        assert!(
+            !reference.is_empty(),
+            "official normalized rows must not be empty"
+        );
+        let cap = std::env::var("VOKRA_MOSS_TTS_LOCAL_MAX_FRAMES")
+            .ok()
+            .map(|value| value.parse::<usize>().expect("valid frame cap"))
+            .unwrap_or(4);
+        assert!(
+            cap > 0,
+            "real-weight measurement requires a positive frame cap"
+        );
+
+        let cpu = measure_backend(
+            &model_path,
+            &codec_path,
+            &prompt,
+            &reference,
+            &reference_codes,
+            BackendKind::Cpu,
+            cap,
+        );
+        assert!(
+            cpu.rows_exact,
+            "official greedy CPU rows differ from normalized reference ({} values)",
+            cpu.differing_values
+        );
+        assert!(
+            cpu.codes_exact,
+            "official greedy CPU assistant codes differ from reference ({} values)",
+            cpu.code_differences
+        );
+        eprintln!(
+            "MOSS_TTS_LOCAL_ROWS_MEASURED backend=cpu exact={} differing_values={}",
+            cpu.rows_exact, cpu.differing_values
+        );
+        eprintln!(
+            "MOSS_TTS_LOCAL_CODES_MEASURED backend=cpu exact={} differing_values={}",
+            cpu.codes_exact, cpu.code_differences
+        );
+        eprintln!(
+            "MOSS_TTS_LOCAL_PCM_MEASURED backend=cpu samples={} channels={} rms={:.9e} peak={:.9e}",
+            cpu.audio_samples, cpu.audio_channels, cpu.audio_rms, cpu.audio_peak
+        );
+        // The independent reference currently emits normalized rows.  Unless
+        // its optional v2 PCM sidecar is supplied, a composite PCM comparison
+        // is intentionally not claimed; codec-only evidence remains separate.
+        eprintln!("COMPOSITE_PCM_NOT_RUN reason=official_v2_pcm_sidecar_not_supplied");
+
+        if std::env::var("VOKRA_MOSS_TTS_LOCAL_RUN_METAL").as_deref() == Ok("1") {
+            let metal = measure_backend(
+                &model_path,
+                &codec_path,
+                &prompt,
+                &reference,
+                &reference_codes,
+                BackendKind::Metal,
+                cap,
+            );
+            assert_eq!(metal.rows, cpu.rows, "Metal rows differ from CPU rows");
+            assert_eq!(
+                metal.codes, cpu.codes,
+                "Metal assistant codes differ from CPU codes"
+            );
+            assert_eq!(metal.audio_sample_rate, cpu.audio_sample_rate);
+            assert_eq!(metal.audio_channels, cpu.audio_channels);
+            assert_eq!(metal.audio_samples, cpu.audio_samples);
+            assert_eq!(metal.pcm.len(), cpu.pcm.len());
+            assert!(
+                metal.rows_exact,
+                "Metal rows differ from the official reference"
+            );
+            assert!(
+                metal.codes_exact,
+                "Metal assistant codes differ from the official reference"
+            );
+            eprintln!(
+                "MOSS_TTS_LOCAL_METAL_ROWS_MEASURED exact_to_cpu={} differing_values={}",
+                metal.rows_exact_to_cpu(&cpu),
+                metal.differing_values
+            );
+            eprintln!(
+                "MOSS_TTS_LOCAL_METAL_CODES_MEASURED exact_to_cpu={} exact_to_reference={} differing_values={}",
+                metal.codes == cpu.codes,
+                metal.codes_exact,
+                metal.code_differences
+            );
+            eprintln!(
+                "MOSS_TTS_LOCAL_METAL_PCM_MEASURED samples={} channels={} rms={:.9e} peak={:.9e} max_abs_to_cpu={:.9e}",
+                metal.audio_samples,
+                metal.audio_channels,
+                metal.audio_rms,
+                metal.audio_peak,
+                metal.pcm_max_abs_to(&cpu)
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct BackendMeasurement {
+        rows: Vec<u32>,
+        codes: Vec<u32>,
+        pcm: Vec<f32>,
+        rows_exact: bool,
+        differing_values: usize,
+        codes_exact: bool,
+        code_differences: usize,
+        audio_samples: usize,
+        audio_channels: usize,
+        audio_sample_rate: u32,
+        audio_rms: f64,
+        audio_peak: f64,
+    }
+
+    impl BackendMeasurement {
+        fn rows_exact_to_cpu(&self, cpu: &Self) -> bool {
+            self.rows == cpu.rows
+        }
+
+        fn pcm_max_abs_to(&self, other: &Self) -> f32 {
+            assert_eq!(self.audio_sample_rate, other.audio_sample_rate);
+            assert_eq!(self.audio_channels, other.audio_channels);
+            assert_eq!(self.audio_samples, other.audio_samples);
+            assert_eq!(self.pcm.len(), other.pcm.len());
+            self.pcm
+                .iter()
+                .zip(other.pcm.iter())
+                .map(|(actual, expected)| (actual - expected).abs())
+                .fold(0.0, f32::max)
+        }
+    }
+
+    fn read_u32_rows(path: &str, columns: usize) -> Vec<u32> {
+        let bytes = std::fs::read(path).expect("read u32le rows");
+        assert_eq!(bytes.len() % 4, 0, "row file must contain whole u32 values");
+        let values = bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("u32 chunk")))
+            .collect::<Vec<_>>();
+        assert!(!values.is_empty(), "row file must not be empty");
+        assert_eq!(
+            values.len() % columns,
+            0,
+            "row file must have {columns} columns"
+        );
+        values
+    }
+
+    fn measure_backend(
+        model_path: &str,
+        codec_path: &str,
+        prompt: &[u32],
+        reference: &[u32],
+        reference_codes: &[u32],
+        backend: BackendKind,
+        cap: usize,
+    ) -> BackendMeasurement {
+        let model = MossTtsLocal::open_mapped(model_path, backend)
+            .unwrap_or_else(|error| panic!("open Local model on {backend:?}: {error}"));
+        let codec = MossAudioTokenizer::open_mapped_with_backend(codec_path, backend)
+            .unwrap_or_else(|error| panic!("open v2 codec on {backend:?}: {error}"));
+        assert_eq!(codec.variant(), MossAudioTokenizerVariant::V2);
+        let synthesis = model
+            .synthesize_prompt_rows(&codec, prompt, &MossTtsLocalGenerationOptions::greedy(cap))
+            .unwrap_or_else(|error| panic!("synthesize Local on {backend:?}: {error}"));
+        let rows = synthesis.generated.rows_from_audio_start.clone();
+        let codes = synthesis
+            .generated
+            .assistant_audio_codes()
+            .unwrap_or_else(|error| {
+                panic!("extract Local assistant codes on {backend:?}: {error}")
+            });
+        let differing_values = rows
+            .iter()
+            .zip(reference.iter())
+            .filter(|(actual, expected)| actual != expected)
+            .count()
+            + rows.len().abs_diff(reference.len());
+        let rows_exact = rows == reference;
+        let code_differences = codes
+            .iter()
+            .zip(reference_codes.iter())
+            .filter(|(actual, expected)| actual != expected)
+            .count()
+            + codes.len().abs_diff(reference_codes.len());
+        let codes_exact = codes == reference_codes;
+        let finite = synthesis.audio.pcm.iter().all(|sample| sample.is_finite());
+        assert!(finite, "{backend:?} PCM contains non-finite samples");
+        assert!(!synthesis.audio.pcm.is_empty(), "{backend:?} PCM is empty");
+        let audio_samples = synthesis.audio.samples_per_channel;
+        let audio_channels = synthesis.audio.channels;
+        let audio_sample_rate = synthesis.audio.sample_rate;
+        let pcm = synthesis.audio.pcm;
+        let pcm_len = pcm.len();
+        let sum_sq = pcm
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>();
+        let peak = pcm
+            .iter()
+            .map(|sample| f64::from(sample.abs()))
+            .fold(0.0, f64::max);
+        BackendMeasurement {
+            rows,
+            codes,
+            pcm,
+            rows_exact,
+            differing_values,
+            codes_exact,
+            code_differences,
+            audio_samples,
+            audio_channels,
+            audio_sample_rate,
+            audio_rms: (sum_sq / pcm_len as f64).sqrt(),
+            audio_peak: peak,
+        }
     }
 }

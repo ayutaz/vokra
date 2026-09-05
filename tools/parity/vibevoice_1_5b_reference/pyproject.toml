@@ -1,0 +1,128 @@
+[project]
+name = "vokra-vibevoice-1-5b-reference"
+version = "0.1.0"
+description = "Dedicated, VAST-only official VibeVoice 1.5B reference adapter."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # This is the authenticated import closure of the pinned Microsoft
+    # inference roles, not the full upstream demo environment.  In
+    # particular, the reference writes raw PCM with stdlib ``struct`` and
+    # therefore must not pull soundfile/libsndfile (or librosa/soxr).
+    "diffusers==0.32.2",
+    "numpy==2.2.6",
+    "torch==2.7.1",
+    "transformers==5.10.4",
+    "tqdm==4.67.1",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[tool.vokra.vibevoice_1_5b_reference]
+source_import_closure = ["torch", "numpy", "tqdm", "transformers", "diffusers.DPMSolverMultistepScheduler"]
+excluded_upstream_optional = ["accelerate", "gradio", "av", "aiortc", "ml-collections", "absl-py"]
+excluded_forbidden_or_unused = ["soundfile", "libsndfile", "librosa", "soxr"]
+torch_index = "https://download.pytorch.org/whl/cpu"
+torch_distribution = "2.7.1+cpu"
+lock_status = "AUTHENTICATED_CPU_INDEX_METADATA_LOCKED"
+dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"
+previous_isolated_transformers_pin = "transformers==4.51.3"
+previous_isolated_huggingface_hub_pin = "huggingface-hub==0.36.2"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "transformers==5.10.4"
+isolated_huggingface_hub_pin = "huggingface-hub==1.29.0"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
+lock_sha256 = "ba80c08b17b2d04356264b9f9d42393e9c8be66bc0cd9fda6139dc007d943909"
+lock_package_rows_sha256 = "1ea002fe37f4ddc4df9f7535b5ae3a42661fc1eaa0a28e8ae6dbba0fa7e9649b"
+lock_package_count = 44
+lock_package_rows_schema = "package-resolution-and-dependency-markers-v2"
+lock_resolution_markers = ["sys_platform != 'darwin'", "sys_platform == 'darwin'"]
+
+[tool.vokra.vibevoice_1_5b_reference.license_audit]
+status = "BLOCKED_UNREVIEWED_TRANSITIVE"
+primary_metadata = "Version-specific PyPI JSON metadata, upstream license files, NumPy wheel notices, and the official PyTorch CPU index; reference-only acceptance is not inferred"
+reviewed_packages = [
+    "annotated-doc", "anyio", "certifi", "charset-normalizer", "click", "colorama",
+    "diffusers", "filelock", "fsspec", "h11", "hf-xet", "httpcore", "httpx",
+    "huggingface-hub", "idna", "importlib-metadata", "jinja2", "markdown-it-py",
+    "markupsafe", "mdurl", "mpmath", "networkx", "numpy", "packaging", "pillow",
+    "pygments", "pyyaml", "regex", "requests", "rich", "safetensors", "setuptools",
+    "shellingham", "sympy", "tokenizers", "torch", "tqdm", "transformers", "typer",
+    "typing-extensions", "urllib3", "vokra-vibevoice-1-5b-reference", "zipp",
+]
+blockers = [
+    "certifi==2026.7.22 carries MPL-2.0 file-level notices outside the repository Apache/MIT/BSD allowlist; owner policy clearance is required",
+    "filelock==3.32.4 declares Unlicense; owner policy clearance is required",
+    "numpy==2.2.6 carries bundled OpenBLAS/LAPACK and GCC runtime notices including GPL/LGPL components; reference-only treatment is not owner-approved",
+    "pyyaml==6.0.3 includes a native extension and requires separate source/binary review before use",
+    "tqdm==4.67.1 contains MPL-2.0 files alongside MIT files; owner policy clearance is required",
+    "typing-extensions==4.16.0 declares PSF-2.0 outside the repository Apache/MIT/BSD allowlist; owner policy clearance is required",
+]
+accepted_reference_only = []
+primary_evidence = [
+    "https://pypi.org/pypi/certifi/2026.7.22/json",
+    "https://pypi.org/pypi/filelock/3.32.4/json",
+    "https://pypi.org/pypi/numpy/2.2.6/json",
+    "https://pypi.org/pypi/pyyaml/6.0.3/json",
+    "https://pypi.org/pypi/tqdm/4.67.1/json",
+    "https://pypi.org/pypi/typing-extensions/4.16.0/json",
+]
+license_conclusion_map = "version-keyed name==version mapping emitted by vibevoice_1_5b_dump_reference.py from authenticated package_rows"
+license_conclusion_count = 44
+license_audit_rows_sha256 = "987a1f7204c2d7f2baa1c537ebaa06ca4bc872d2aae60f25a78393967da7bf8c"
+
+license_conclusions = [
+    { name = "annotated-doc", version = "0.0.5", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/annotated-doc/0.0.5/json", route = "reference-only" },
+    { name = "anyio", version = "4.14.2", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/anyio/4.14.2/json", route = "reference-only" },
+    { name = "certifi", version = "2026.7.22", license = "MPL-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/certifi/2026.7.22/json", route = "reference-only" },
+    { name = "charset-normalizer", version = "3.5.1", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/charset-normalizer/3.5.1/json", route = "reference-only" },
+    { name = "click", version = "8.5.0", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/click/8.5.0/json", route = "reference-only" },
+    { name = "colorama", version = "0.4.6", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/colorama/0.4.6/json", route = "reference-only" },
+    { name = "diffusers", version = "0.32.2", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/diffusers/0.32.2/json", route = "reference-only" },
+    { name = "filelock", version = "3.32.4", license = "Unlicense_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/filelock/3.32.4/json", route = "reference-only" },
+    { name = "fsspec", version = "2026.7.0", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/fsspec/2026.7.0/json", route = "reference-only" },
+    { name = "h11", version = "0.16.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/h11/0.16.0/json", route = "reference-only" },
+    { name = "hf-xet", version = "1.6.0", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/hf-xet/1.6.0/json", route = "reference-only" },
+    { name = "httpcore", version = "1.0.9", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/httpcore/1.0.9/json", route = "reference-only" },
+    { name = "httpx", version = "0.28.1", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/httpx/0.28.1/json", route = "reference-only" },
+    { name = "huggingface-hub", version = "1.29.0", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/huggingface-hub/1.29.0/json", route = "reference-only" },
+    { name = "idna", version = "3.19", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/idna/3.19/json", route = "reference-only" },
+    { name = "importlib-metadata", version = "9.0.1", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/importlib-metadata/9.0.1/json", route = "reference-only" },
+    { name = "jinja2", version = "3.1.6", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/Jinja2/3.1.6/json", route = "reference-only" },
+    { name = "markdown-it-py", version = "4.2.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/markdown-it-py/4.2.0/json", route = "reference-only" },
+    { name = "markupsafe", version = "3.0.3", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/MarkupSafe/3.0.3/json", route = "reference-only" },
+    { name = "mdurl", version = "0.1.2", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/mdurl/0.1.2/json", route = "reference-only" },
+    { name = "mpmath", version = "1.3.0", license = "BSD_REVIEWED", primary_source = "https://pypi.org/pypi/mpmath/1.3.0/json", route = "reference-only" },
+    { name = "networkx", version = "3.6.1", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/networkx/3.6.1/json", route = "reference-only" },
+    { name = "numpy", version = "2.2.6", license = "BSD-3-Clause_PLUS_BUNDLED_NOTICES_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/numpy/2.2.6/json", route = "reference-only" },
+    { name = "packaging", version = "26.3", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/packaging/26.3/json", route = "reference-only" },
+    { name = "pillow", version = "12.3.0", license = "HPND_REVIEWED", primary_source = "https://pypi.org/pypi/pillow/12.3.0/json", route = "reference-only" },
+    { name = "pygments", version = "2.21.0", license = "BSD-2-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/pygments/2.21.0/json", route = "reference-only" },
+    { name = "pyyaml", version = "6.0.3", license = "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json", route = "reference-only" },
+    { name = "regex", version = "2026.7.19", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/regex/2026.7.19/json", route = "reference-only" },
+    { name = "requests", version = "2.34.2", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/requests/2.34.2/json", route = "reference-only" },
+    { name = "rich", version = "15.0.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/rich/15.0.0/json", route = "reference-only" },
+    { name = "safetensors", version = "0.8.0", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/safetensors/0.8.0/json", route = "reference-only" },
+    { name = "setuptools", version = "84.0.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/setuptools/84.0.0/json", route = "reference-only" },
+    { name = "shellingham", version = "1.5.4", license = "ISC_REVIEWED", primary_source = "https://pypi.org/pypi/shellingham/1.5.4/json", route = "reference-only" },
+    { name = "sympy", version = "1.14.0", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/sympy/1.14.0/json", route = "reference-only" },
+    { name = "tokenizers", version = "0.22.2", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/tokenizers/0.22.2/json", route = "reference-only" },
+    { name = "torch", version = "2.7.1", license = "BSD-3-Clause_REVIEWED", primary_source = "https://download.pytorch.org/whl/cpu", route = "reference-only" },
+    { name = "torch", version = "2.7.1+cpu", license = "BSD-3-Clause_REVIEWED", primary_source = "https://download.pytorch.org/whl/cpu", route = "reference-only" },
+    { name = "tqdm", version = "4.67.1", license = "MIT_PLUS_MPL-2.0_FILES_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/tqdm/4.67.1/json", route = "reference-only" },
+    { name = "transformers", version = "5.10.4", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/transformers/5.10.4/json", route = "reference-only" },
+    { name = "typer", version = "0.27.2", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/typer/0.27.2/json", route = "reference-only" },
+    { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json", route = "reference-only" },
+    { name = "urllib3", version = "2.7.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/urllib3/2.7.0/json", route = "reference-only" },
+    { name = "vokra-vibevoice-1-5b-reference", version = "0.1.0", license = "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE", primary_source = "repository", route = "not-distributed" },
+    { name = "zipp", version = "4.1.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/zipp/4.1.0/json", route = "reference-only" },
+]

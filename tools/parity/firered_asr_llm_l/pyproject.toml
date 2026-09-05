@@ -1,8 +1,12 @@
+# Deliberately lockless: the current release is a model.pth.tar bundle and
+# its authenticated extraction/source closure is not the safetensors graph
+# described below.  run-firered-asr-llm-l-validation.sh must remain blocked
+# before any uv sync until that identity is fixed.
 [project]
 name = "firered-asr-llm-l-prep"
 version = "0.1.0"
 description = "Offline sidecar: FireRedTeam/FireRedASR-LLM-L sharded safetensors → flat safetensors (dedup + int/f64/bool strip). Bridges the upstream sharded HF release (~16.6 GB BF16, 8.3B params = Conformer + audio-text adapter + Qwen2 LM decoder Chinese ASR) to the Rust converter (crates/vokra-convert/src/models/firered_asr_llm_l.rs), which consumes safetensors only. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 dependencies = [
     # torch: unwraps the sharded safetensors state dict via `safetensors.torch.load_file`
     #        (or the plain `.load` low-level reader), plus data-pointer tracking for

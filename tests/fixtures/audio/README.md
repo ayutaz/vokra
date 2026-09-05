@@ -1,5 +1,10 @@
 # Vokra parity audio fixtures
 
+> **2026-08-30 current-state boundary:** This file records fixture provenance
+> and the dated parity-input contract. It does not by itself claim a current
+> model parity result or release gate; use the current parity handoff and M5
+> ledger for live verification status.
+
 This directory holds real-audio input used by the Whisper parity dumper
 (`tools/parity/dump_whisper_reference.py`) and the M2-06 §3 CI workflow
 (`.github/workflows/parity-whisper-real.yml`). The audio must be **committed

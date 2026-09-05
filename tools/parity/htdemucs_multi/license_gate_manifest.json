@@ -1,0 +1,69 @@
+{
+  "schema": "vokra-htdemucs-multi-license-gate-v1",
+  "status": "BLOCKED_UNREVIEWED_DEPENDENCY_AND_WEIGHT_PROVENANCE",
+  "publication": "NO_UPLOAD",
+  "upstream": {
+    "repository": "https://github.com/facebookresearch/demucs",
+    "revision": "e976d93ecc3865e5757426930257e200846a520a",
+    "license": {
+      "spdx": "MIT",
+      "path": "LICENSE",
+      "bytes": 1087,
+      "sha256": "cf9b17822d1fcd4ff32ccbe14183386fb3adf6f2ff92dc184130823f7fc28173",
+      "git_blob_sha1": "a45a376fb0fcd4a3de06b6c096e62028929a2dcb"
+    },
+    "roles": {
+      "LICENSE": "a45a376fb0fcd4a3de06b6c096e62028929a2dcb",
+      "demucs/apply.py": "1540f3d44fc8bbca1ce377cc80af3cd9212278be",
+      "demucs/audio.py": "31b29b3c348b29cfa7120c31542bc9a16ac24405",
+      "demucs/hdemucs.py": "711d47157a975e04a0ffb044991d2dc3cfd54b66",
+      "demucs/htdemucs.py": "5d2eaaa1eb2620a5d2147eb86361e9964fb94528",
+      "demucs/pretrained.py": "80ae49cb1d3e1894f07eafbb49f95559a9f3de33",
+      "demucs/repo.py": "5e20ff5199e5003cf3e2228d41998e53200691de",
+      "demucs/states.py": "361bb4196569bffaf622e39dd067d802dd43b38b",
+      "demucs/remote/htdemucs_ft.yaml": "ba5c69c272770f5e5db3dd5fcda75b94ba523250",
+      "demucs/remote/htdemucs_6s.yaml": "651a0fa536038a3e6d650f7b2bcc0b50ff7a4be9"
+    },
+    "config_sha256": {
+      "htdemucs_ft.yaml": "69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346",
+      "htdemucs_6s.yaml": "207405151270af8fd81c2373c25d27950916682ac91dca7884a11ce13dad6f58"
+    }
+  },
+  "weights": [
+    {"model_id": "f7e0c4bc", "filename": "f7e0c4bc-ba3fe64a.th", "url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/f7e0c4bc-ba3fe64a.th", "sha256": "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066", "tensor_count": 533, "parameter_count": 41984456},
+    {"model_id": "d12395a8", "filename": "d12395a8-e57c48e6.th", "url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/d12395a8-e57c48e6.th", "sha256": "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6", "tensor_count": 533, "parameter_count": 41984456},
+    {"model_id": "92cfc3b6", "filename": "92cfc3b6-ef3bcb9c.th", "url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/92cfc3b6-ef3bcb9c.th", "sha256": "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2", "tensor_count": 533, "parameter_count": 41984456},
+    {"model_id": "04573f0d", "filename": "04573f0d-f3cf25b2.th", "url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/04573f0d-f3cf25b2.th", "sha256": "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49", "tensor_count": 533, "parameter_count": 41984456},
+    {"model_id": "5c90dfd2", "filename": "5c90dfd2-34c22ccb.th", "url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/5c90dfd2-34c22ccb.th", "sha256": "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd", "tensor_count": 525, "parameter_count": 27414996}
+  ],
+  "dataset": {
+    "name": "MUSDB18",
+    "provenance_status": "UNAUTHENTICATED",
+    "license_status": "UNREVIEWED",
+    "source": "https://sigsep.github.io/datasets/musdb.html"
+  },
+  "dependency_audit": {
+    "source_file": "upstream_requirements_minimal.snapshot",
+    "source_file_sha256": "397981fba141898fe727a6a7a3bd44b49265be37cf0e984bd4936eb7a46ffc29",
+    "pyproject_sha256": "040355f4b56d004f1b364135708fd6f2b909e9abddf928a30297e34c742976e0",
+    "rows_file": "dependency_audit.json",
+    "rows_file_sha256": "54898661d18452beb1860a747d3508ea5bf8ed1f4faab99517066623c26795b1",
+    "status": "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO",
+    "lock_sha256": null,
+    "package_rows_sha256": null,
+    "license_rows_sha256": null,
+    "active_import_closure": {
+      "path": "pyproject.toml",
+      "sha256": "040355f4b56d004f1b364135708fd6f2b909e9abddf928a30297e34c742976e0",
+      "packages": ["dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml", "torch", "torchaudio", "tqdm"],
+      "excluded_upstream_packages": ["lameenc"]
+    },
+    "forbidden_or_unreviewed_packages": ["dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml", "torch", "torchaudio", "tqdm"]
+  },
+  "blockers": [
+    "dependency lock and primary package license rows are not reviewed",
+    "MUSDB18 dataset provenance and license are unauthenticated",
+    "weight redistribution terms are unreviewed",
+    "inspection manifest remains INSPECTION_ONLY and NO_UPLOAD"
+  ]
+}

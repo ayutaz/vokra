@@ -11,7 +11,8 @@ Vokra 呼び出しを動かすまでを扱います。
 - **Xcode 14 以上**（macOS）
 - **iOS 15 以上**の実機または Simulator（iOS 14 以下はスコープ外）
 - 実機配布用の Apple Developer 署名プロファイル
-- Vokra リポジトリ（またはタグ付きリリース URL）
+- Vokra リポジトリ。タグ付きリリース URL は承認済みリリース公開後に
+  利用できます（現時点ではタグ付きリリースはありません）。
 
 ## 2. XCFramework をビルド
 
@@ -36,9 +37,10 @@ scripts/verify-ios-xcframework.sh build/ios/Vokra.xcframework
 
 ### 経路 B — リリース DL
 
-CD は `Vokra.xcframework.zip` と SHA-256 を GitHub Release asset として
-公開します。`Package.swift` を URL 形式に切り替えます（テンプレートは
-コメントアウトで既に用意済み）:
+承認済みリリース後に、CD は `Vokra.xcframework.zip` と SHA-256 を GitHub
+Release asset として公開できます。現時点でその asset はありません。
+リリースが存在するようになったら `Package.swift` を URL 形式に切り替え
+ます（テンプレートはコメントアウトで既に用意済み）:
 
 ```swift
 .binaryTarget(

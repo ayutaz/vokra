@@ -1,5 +1,10 @@
 # Vokra Godot demo projects
 
+**Current status (2026-08-30):** the parent binding's native dispatch and
+headless CI path are implemented; these files remain small source demos whose
+interactive Editor run is owner verification. See [`../README.md`](../README.md)
+for the current binding status and release boundary.
+
 Godot 4.x demo scaffolds for the `vokra-godot` GDExtension binding
 (M3-11-T14 + T15).
 
@@ -36,7 +41,7 @@ API described in [`../README.md`](../README.md) to the on-screen UI.
 ## Runtime verification
 
 Opening either project in the Godot 4.x Editor and pressing Play is
-**owner work** (M3-11-T19). This CC-authored scaffold covers the
+**owner work** (M3-11-T19). This repository demo scaffold covers the
 files Godot needs to load the project (INI `config_version=5`,
 `.tscn` with `format=3`, GDScript `extends Control`); it has not been
 opened in the Godot Editor from this session's environment. If the

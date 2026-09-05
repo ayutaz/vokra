@@ -1,111 +1,79 @@
-# RMVPE parity sidecar
+# RMVPE parity sidecar (VAST-only, currently blocked)
 
-This directory generates independent numerical fixtures for the exact native
-RMVPE CPU/Metal implementation. It imports the upstream implementation rather
-than reimplementing the model in Python.
+This sidecar is an independent numerical-reference harness for the native
+RMVPE CPU/Metal implementation. It imports the exact upstream implementation
+only while producing VAST evidence; no upstream Python, PyTorch, checkpoint,
+or generated model artifact enters the Vokra runtime or this checkout.
 
-Fixed inputs:
+The route is intentionally blocked before dependency resolution or artifact
+acquisition. Run the stdlib-only gate from the repository root to inspect the
+current reason:
 
-- upstream repository: `yxlllc/RMVPE`
-- upstream commit: `0aabafba18289ca938a73af0b0297686abf4922d`
-- model class: `src.inference.RMVPE`, which instantiates `src.model.E2E0`
+```text
+uv run --no-project --offline --python 3.12 python tools/parity/rmvpe_inspect.py --dependency-gate
+```
+
+It must return exit 2 until all owner approvals below exist. Do not run
+`uv sync`, download source/checkpoints/wheels, convert, or run Cargo locally.
+The later validation path is VAST-only and is reached only after the gate is
+explicitly changed to allow it:
+
+```text
+VOKRA_PUBLISH_ON_VAST=1 scripts/publish/vast-ai/run-rmvpe-validation.sh \
+  --checkpoint-sha256 <independently-recorded-64-hex-sha256>
+```
+
+The worker itself requires Linux x86_64, at least 64 GiB RAM, 150 GB free disk,
+a clean checkout, and the exact locks. It never uploads or pushes. Its
+checkpoint SHA and the release-archive SHA remain unset until acquisition on
+VAST; no model bytes have been acquired for this staging change.
+
+## Immutable reference identity
+
+- upstream: `https://github.com/yxlllc/RMVPE`
+- source commit: `0aabafba18289ca938a73af0b0297686abf4922d`
+- reference class: `src.inference.RMVPE` / `src.model.E2E0`
 - frontend: 16 kHz, hop 160, `n_fft = win_length = 1024`, 128 HTK mels
 - decoder: nine-bin local average, threshold `0.03`, no Viterbi
+- release: tag `230917`, asset `rmvpe.zip`, 340638958 bytes, member `model.pt`
 
-The `yxlllc/RMVPE` repository has no LICENSE file. `Dream-High/RMVPE` is
-Apache-2.0 but is not a GitHub fork relationship and does not establish terms
-for the exact `yxlllc` checkpoint. Keep the weight and generated GGUF
-fail-closed as `unknown`; this parity workflow does not authorize publication.
+Source-role Git blob identities and the release metadata are emitted by the
+stdlib inspector. Git blob IDs are not file SHA-256 values. The source has no
+LICENSE file at the fixed revision, and the checkpoint license is unknown.
+The historical `vokra/rmvpe` artifact is mis-stamped (`mit`/`permissive`) and
+is rejected as a parity input; it must not be replaced without a separate
+license grant and upload authorization.
 
-## Safety and execution location
+## Dedicated Python lock
 
-Run the checkpoint conversion, upstream inference, and `vokra-models` Cargo
-tests on VAST. Do not run them on the maintainer Mac. Python is 3.12 and every
-invocation goes through `uv`; dependencies are pinned in the parent
-`tools/parity/uv.lock` workspace lock.
+RMVPE is excluded from the parent `tools/parity` uv workspace. Its dedicated
+`uv.lock` is Python `==3.12.*` with exact direct pins for `librosa==0.11.0`,
+`numpy==2.3.5`, `soundfile==0.14.0`, `torch==2.7.1`, and
+`torchaudio==2.7.1`, plus the exact `safetensors==0.8.0` checkpoint bridge.
+Both PyTorch packages resolve only from the official CPU
+index `https://download.pytorch.org/whl/cpu`.
 
-The `.pt` checkpoint is a PyTorch pickle and may execute code while loading.
-Fetch it only from the audited release and record its SHA-256. No Python,
-PyTorch, upstream source, or pickle enters the Rust runtime.
+The lock contains 40 package rows, including platform-qualified torch and
+torchaudio rows. The inspector binds every row's name/version/source,
+resolution marker, and dependency qualifier into canonical digests:
 
-## VAST recipe
+- lock SHA-256: `747057f4e8596d801d5d0450e6e10a33fc467ab9e9a6cf2063460d1ea019919d`
+- package/dependency rows: `ecc622c63e8a487c4440cdc838f22af7b31fae783cca41f693b0f870dd9a1819`
+- resolution markers: `70a0c0d228b605430c8219bfc8e4ed66652a5f06d64cab841fee543266f3bffa`
+- version-keyed license evidence: `2afebac3c079863d28415885412c11fd2acf7e3f3b9a686e2c855455da8eedec`
 
-After provisioning the repository with the standard VAST workflow:
+Resolution is not license approval. The gate remains blocked for the
+`librosa -> soxr` LGPL/native route; `soundfile`'s bundled libsndfile LGPL
+and cffi native route; numba/llvmlite native wheels; NumPy/SciPy bundled
+notices; official CPU torch/torchaudio bundled notices; and unresolved
+MPL-2.0, Unlicense, and PSF-2.0 policy rows. Owner sign-off must be recorded
+before any environment sync or source/model acquisition.
 
-```bash
-cd ~/vokra/tools/parity/rmvpe
-uv sync --python 3.12 --frozen
+## Future VAST evidence
 
-bash ./fetch_rmvpe_pt.sh \
-  --output ~/rmvpe-fixtures/rmvpe.pt \
-  --sha256 <audited-release-sha256>
-
-git clone https://github.com/yxlllc/RMVPE.git ~/rmvpe-upstream
-git -C ~/rmvpe-upstream checkout 0aabafba18289ca938a73af0b0297686abf4922d
-test -z "$(git -C ~/rmvpe-upstream status --porcelain --untracked-files=all)"
-
-uv run --python 3.12 python dump_reference.py \
-  --pt-path ~/rmvpe-fixtures/rmvpe.pt \
-  --upstream-src ~/rmvpe-upstream \
-  --canned \
-  --out-dir ~/rmvpe-fixtures/reference
-```
-
-For real audio, replace `--canned` with `--pcm /path/to/clip.wav`. The WAV must
-already be 16-kHz PCM; the dumper refuses resampling so upstream and Rust
-receive byte-identical samples.
-
-The dumper writes raw little-endian data without `.npy` headers:
-
-| File | Shape | Meaning |
-|---|---:|---|
-| `pcm.f32` | `[samples]` | exact 16-kHz mono input |
-| `hidden.f32` | `[frames, 384]` | input captured at `fc.0.gru` |
-| `probabilities.f32` | `[frames, 360]` | already-sigmoid E2E0 output |
-| `argmax.u32` | `[frames]` | class index; `0xffffffff` means unvoiced |
-| `f0.f32` | `[frames]` | upstream nine-bin local-average F0 |
-| `meta.json` | — | revisions, hashes, shapes, and settings |
-
-Class zero is a valid 31.7-Hz bin and therefore is not used as the unvoiced
-sentinel.
-
-## GGUF and test
-
-Convert the same trusted checkpoint through the established `.pt` →
-safetensors bridge and RMVPE converter. The strict runtime accepts only the
-623 inference tensors, with the 118 BatchNorm counters optional. Unused
-`unet.tf.*` weights constructed by `DeepUnet0` must not enter the runnable
-GGUF because `E2E0.forward` never reads them.
-
-The current public `vokra/rmvpe` tensor payload is useful for audit, but its
-header incorrectly says `license=mit` / `weight_license=permissive`. The
-production loader deliberately rejects it. For parity only, make an ephemeral
-provenance-corrected copy stamped `unknown`; do not upload or replace the
-public artifact without separate permission and a valid license grant.
-
-Set the paths printed by the dumper, plus the corrected GGUF:
-
-```bash
-export VOKRA_RMVPE_REAL_GGUF=~/rmvpe-fixtures/rmvpe-corrected.gguf
-export VOKRA_RMVPE_REAL_PCM=~/rmvpe-fixtures/reference/pcm.f32
-export VOKRA_RMVPE_REAL_HIDDEN=~/rmvpe-fixtures/reference/hidden.f32
-export VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM=384
-export VOKRA_RMVPE_REAL_ARGMAX=~/rmvpe-fixtures/reference/argmax.u32
-export VOKRA_RMVPE_REAL_F0=~/rmvpe-fixtures/reference/f0.f32
-
-CARGO_BUILD_JOBS=1 cargo test -p vokra-models --test parity_rmvpe -- --nocapture
-```
-
-The harness has three distinct gates:
-
-1. exact 623/741 manifest, frontend, topology, and finite end-to-end smoke;
-2. full PCM-to-F0 agreement against the independent upstream output;
-3. post-CNN hidden-state agreement for the BiGRU, head, and decoder.
-
-On Apple hardware it additionally compares the Metal path with CPU. Selecting
-Metal validates all required learned operations before execution; unsupported
-operations return an explicit error and never fall back to CPU.
-
-Copy the small logs, `meta.json`, and hashes back to the repository evidence
-directory, then destroy the VAST instance. Do not copy checkpoint payloads or
-large generated model artifacts to the maintainer Mac.
+Once the gate is separately approved, the worker uses the fixed source and
+release, loads the pickle only with `torch.load(weights_only=True)`, prepares
+an ephemeral `unknown`-provenance GGUF, and emits raw little-endian PCM,
+hidden `[frames, 384]`, probabilities `[frames, 360]`, argmax, and F0
+fixtures. The existing `parity_rmvpe` CPU/Metal tests remain the numerical
+gate. A successful conversion or parity run still does not authorize upload.

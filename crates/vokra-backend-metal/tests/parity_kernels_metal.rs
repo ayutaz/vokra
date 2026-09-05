@@ -15,8 +15,29 @@ use vokra_backend_cpu::kernels as cpu;
 use vokra_backend_metal::MetalContext;
 use vokra_core::{KvCache, PrenormLayer};
 
+#[path = "../../vokra-backend-cpu/tests/support/vocoder_conv_fixture.rs"]
+mod vocoder_conv_fixture;
+
 /// NFR-QL-01 FP32 parity ceiling.
 const ATOL: f32 = 0.01;
+// The vocoder fixture uses signed powers of two whose products and sums stay
+// in the exact f32 integer range, so its independent oracle check is exact.
+const VOCODER_CONV_ATOL: f32 = 0.0;
+
+fn assert_vocoder_exact(got: &[f32], expected: &[f32], context: &str) {
+    assert_eq!(got.len(), expected.len(), "{context}: output length");
+    for (index, (&actual, &reference)) in got.iter().zip(expected).enumerate() {
+        let delta = (actual - reference).abs();
+        assert!(
+            actual.is_finite() && reference.is_finite(),
+            "{context}: index {index}: non-finite value: got {actual}, PyTorch {reference}, delta {delta}"
+        );
+        assert!(
+            actual == reference && delta <= VOCODER_CONV_ATOL,
+            "{context}: index {index}: got {actual}, PyTorch {reference}, delta {delta} > {VOCODER_CONV_ATOL}"
+        );
+    }
+}
 
 /// Deterministic pseudo-random f32 in roughly [-1, 1) (xorshift64*), matching the
 /// GEMM parity suite's generator so inputs are reproducible.
@@ -395,6 +416,79 @@ fn conv1d_metal_matches_cpu() {
         worst = worst.max(d);
     }
     eprintln!("conv1d Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
+#[test]
+fn dilated_conv1d_metal_host_wrapper_matches_pytorch_reference() {
+    let ctx = ctx_or_skip!("dilated conv1d PyTorch fixture");
+    let fixture = vocoder_conv_fixture::load("conv1d_d2_s2_p2");
+    assert_eq!(fixture.kind, vocoder_conv_fixture::Kind::Conv1d);
+    assert_eq!(fixture.input_shape, [1, 2, 5]);
+    assert_eq!(fixture.weight_shape, [3, 2, 3]);
+    assert_eq!(fixture.output_shape, [1, 3, 3]);
+    assert_eq!(fixture.stride, 2);
+    assert_eq!(fixture.dilation, 2);
+    assert_eq!(fixture.padding, 2);
+
+    let submissions_before = ctx.submission_count();
+    let mut actual = vec![f32::NAN; fixture.output.len()];
+    ctx.conv1d_f32_dilated(
+        &fixture.input,
+        fixture.in_channels,
+        fixture.input_shape[2],
+        &fixture.weight,
+        fixture.out_channels,
+        fixture.kernel,
+        Some(&fixture.bias),
+        fixture.stride,
+        fixture.dilation,
+        fixture.padding,
+        &mut actual,
+    )
+    .expect("Metal dilated Conv1d host wrapper");
+    assert_eq!(
+        ctx.submission_count() - submissions_before,
+        1,
+        "dilated Conv1d must dispatch Metal work (no CPU fallback)"
+    );
+    assert_vocoder_exact(&actual, &fixture.output, "Metal Conv1d vs PyTorch");
+}
+
+#[test]
+fn conv_transpose1d_metal_host_wrapper_matches_pytorch_reference() {
+    let ctx = ctx_or_skip!("conv transpose1d PyTorch fixture");
+    let fixture = vocoder_conv_fixture::load("conv_transpose1d_s3_p1_op2");
+    assert_eq!(fixture.kind, vocoder_conv_fixture::Kind::ConvTranspose1d);
+    assert_eq!(fixture.input_shape, [1, 2, 4]);
+    assert_eq!(fixture.weight_shape, [2, 3, 4]);
+    assert_eq!(fixture.output_shape, [1, 3, 13]);
+    assert_eq!(fixture.stride, 3);
+    assert_eq!(fixture.dilation, 1);
+    assert_eq!(fixture.padding, 1);
+    assert_eq!(fixture.output_padding, 2);
+
+    let submissions_before = ctx.submission_count();
+    let mut actual = vec![f32::NAN; fixture.output.len()];
+    ctx.conv_transpose1d_f32(
+        &fixture.input,
+        fixture.in_channels,
+        fixture.input_shape[2],
+        &fixture.weight,
+        fixture.out_channels,
+        fixture.kernel,
+        Some(&fixture.bias),
+        fixture.stride,
+        fixture.padding,
+        fixture.output_padding,
+        &mut actual,
+    )
+    .expect("Metal ConvTranspose1d host wrapper");
+    assert_eq!(
+        ctx.submission_count() - submissions_before,
+        1,
+        "ConvTranspose1d must dispatch Metal work (no CPU fallback)"
+    );
+    assert_vocoder_exact(&actual, &fixture.output, "Metal ConvTranspose1d vs PyTorch");
 }
 
 #[test]
@@ -2206,4 +2300,688 @@ fn llama_primitives_reject_bad_shapes_explicitly() {
         ctx.swiglu_f32(&[0.0; 4], &[0.0; 3], &mut wo).is_err(),
         "swiglu up length mismatch must be rejected"
     );
+}
+
+/// The vocoder resident seam must keep learned-op intermediates on Metal:
+/// input/weights are uploaded once, three device passes are submitted, and
+/// only the final tensor is explicitly downloaded. This is a structural
+/// device-gated test; it does not claim model or hardware parity.
+#[test]
+fn vocoder_resident_primitives_have_one_final_readback() {
+    let ctx = ctx_or_skip!("resident vocoder primitives");
+    let input = ctx.upload(&[1.0, 2.0, 3.0, 4.0]).expect("input upload");
+    let conv_weight = ctx.upload(&[1.0, 1.0, 1.0]).expect("conv weight upload");
+    let conv_bias = ctx.upload(&[0.0]).expect("conv bias upload");
+    let alpha = ctx.upload(&[0.5]).expect("alpha upload");
+    let transpose_weight = ctx.upload(&[1.0, 1.0]).expect("transpose weight upload");
+
+    let mut conv = ctx.alloc_dev(4).expect("conv output allocation");
+    let mut snake = ctx.alloc_dev(4).expect("snake output allocation");
+    let mut upsampled = ctx.alloc_dev(8).expect("transpose output allocation");
+    let submissions_before = ctx.submission_count();
+    assert_eq!(ctx.readback_count(), 0, "resident setup must not read back");
+
+    ctx.conv1d_dev(
+        &mut conv,
+        &input,
+        &conv_weight,
+        Some(&conv_bias),
+        1,
+        4,
+        1,
+        3,
+        1,
+        1,
+        1,
+    )
+    .expect("resident conv1d");
+    ctx.snake_activation_dev(&mut snake, &conv, &alpha, 1, 4)
+        .expect("resident snake");
+    ctx.conv_transpose1d_dev(
+        &mut upsampled,
+        &snake,
+        &transpose_weight,
+        None,
+        1,
+        4,
+        1,
+        2,
+        2,
+        0,
+        0,
+    )
+    .expect("resident conv transpose");
+
+    assert_eq!(ctx.submission_count() - submissions_before, 3);
+    assert_eq!(ctx.readback_count(), 0, "no intermediate D2H is allowed");
+    let mut host = vec![0.0; 8];
+    ctx.download(&upsampled, &mut host)
+        .expect("final PCM-style readback");
+    assert_eq!(ctx.readback_count(), 1);
+    let conv_expected = [3.0f32, 6.0, 9.0, 7.0];
+    let snake_expected: Vec<f32> = conv_expected
+        .iter()
+        .map(|&v| v + (1.0 / (0.5 + 1.0e-9)) * (0.5 * v).sin().powi(2))
+        .collect();
+    let mut expected = Vec::with_capacity(8);
+    for &v in &snake_expected {
+        expected.extend([v, v]);
+    }
+    for (got, want) in host.iter().zip(&expected) {
+        assert!(
+            (got - want).abs() <= 5.0e-4,
+            "resident chain drift: {got} vs {want}"
+        );
+    }
+}
+
+#[test]
+fn vocoder_resident_dilation_and_shape_guards() {
+    let ctx = ctx_or_skip!("resident vocoder dilation");
+    let input = ctx
+        .upload(&[1.0, 2.0, 3.0, 4.0, 5.0])
+        .expect("input upload");
+    let weight = ctx.upload(&[1.0, 2.0, 3.0]).expect("weight upload");
+    let mut out = ctx.alloc_dev(5).expect("output allocation");
+    ctx.conv1d_dev(&mut out, &input, &weight, None, 1, 5, 1, 3, 1, 2, 2)
+        .expect("resident dilated conv1d");
+    let mut host = vec![0.0; 5];
+    ctx.download(&out, &mut host).expect("dilated readback");
+    assert_eq!(host, [11.0, 16.0, 22.0, 10.0, 13.0]);
+
+    let mut wrong = ctx.alloc_dev(4).expect("wrong-shape allocation");
+    assert!(
+        ctx.conv1d_dev(&mut wrong, &input, &weight, None, 1, 5, 1, 3, 1, 2, 2)
+            .is_err()
+    );
+    assert_eq!(
+        ctx.readback_count(),
+        1,
+        "shape rejection must not read back"
+    );
+}
+
+#[test]
+fn device_tensors_reject_cross_context_use() {
+    let ctx = ctx_or_skip!("cross-context resident tensors");
+    let other = match MetalContext::new() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("second Metal context unavailable; skipping: {e}");
+            return;
+        }
+    };
+    let foreign = other.upload(&[1.0]).expect("foreign upload");
+    let mut output = ctx.alloc_dev(1).expect("local output allocation");
+    let mut host = [0.0];
+    assert!(ctx.download(&foreign, &mut host).is_err());
+    assert!(ctx.copy_dev(&mut output, &foreign).is_err());
+    assert!(ctx.elu_dev(&mut output, &foreign).is_err());
+    assert_eq!(
+        ctx.submission_count(),
+        0,
+        "owner rejection must precede dispatch"
+    );
+}
+
+#[test]
+fn vocoder_downsample_scale_clamp_match_cpu_oracle() {
+    let ctx = ctx_or_skip!("resident downsample/scale/clamp");
+    let input = ctx.upload(&[1.0, 2.0, 3.0, 4.0]).expect("input upload");
+    let filter = ctx
+        .upload(&[0.25, 0.5, 0.25])
+        .expect("downsample filter upload");
+    let mut down = ctx.alloc_dev(2).expect("downsample output allocation");
+    let mut scaled = ctx.alloc_dev(2).expect("scale output allocation");
+    let mut clamped = ctx.alloc_dev(2).expect("clamp output allocation");
+
+    ctx.anti_aliased_downsample_dev(&mut down, &input, &filter, 2, 1, 4, 3)
+        .expect("resident downsample");
+    ctx.scale_dev(&mut scaled, &down, 0.5)
+        .expect("resident scale");
+    ctx.clamp_dev(&mut clamped, &scaled, 0.7, 1.0)
+        .expect("resident clamp");
+
+    assert_eq!(ctx.submission_count(), 3);
+    assert_eq!(ctx.readback_count(), 0, "intermediates stay on device");
+    let mut host = [0.0; 2];
+    ctx.download(&clamped, &mut host).expect("final readback");
+    // Independent scalar oracle: replicate-pad [1,1,2,3,4,4], FIR stride 2
+    // gives [1.25, 3.0], then scale .5 and clamp to [.7, 1.0].
+    assert_eq!(host, [0.7, 1.0]);
+    assert_eq!(ctx.readback_count(), 1);
+
+    let mut wrong = ctx.alloc_dev(1).expect("wrong-shape allocation");
+    assert!(
+        ctx.anti_aliased_downsample_dev(&mut wrong, &input, &filter, 2, 1, 4, 3)
+            .is_err()
+    );
+    assert!(ctx.clamp_dev(&mut wrong, &clamped, 2.0, -2.0).is_err());
+}
+
+#[test]
+fn vocoder_downsample_even_tap_padding_is_asymmetric() {
+    let ctx = ctx_or_skip!("resident even-tap downsample");
+    let input = ctx.upload(&[1.0, 2.0, 3.0, 4.0]).expect("input upload");
+    let filter = ctx
+        .upload(&[1.0, 10.0, 100.0, 1000.0])
+        .expect("even filter upload");
+    let mut out = ctx.alloc_dev(2).expect("output allocation");
+    ctx.anti_aliased_downsample_dev(&mut out, &input, &filter, 2, 1, 4, 4)
+        .expect("resident even-tap downsample");
+    let mut host = [0.0; 2];
+    ctx.download(&out, &mut host).expect("even-tap readback");
+    // Four taps use pad_left=1 and pad_right=2. The replicated sequence is
+    // [1, 1, 2, 3, 4, 4, 4], so stride-2 windows produce these values.
+    assert_eq!(host, [3211.0, 4432.0]);
+}
+
+fn oracle_elu(x: &[f32]) -> Vec<f32> {
+    x.iter()
+        .map(|&v| if v > 0.0 { v } else { v.exp() - 1.0 })
+        .collect()
+}
+
+fn oracle_linear_abs(
+    x: &[f32],
+    weight: &[f32],
+    bias: f32,
+    channels: usize,
+    time: usize,
+) -> Vec<f32> {
+    (0..time)
+        .map(|t| {
+            let mut acc = bias;
+            for c in 0..channels {
+                acc += x[c * time + t] * weight[c];
+            }
+            acc.abs()
+        })
+        .collect()
+}
+
+fn oracle_nearest(x: &[f32], channels: usize, time: usize, factor: usize) -> Vec<f32> {
+    let mut out = vec![0.0; channels * time * factor];
+    for c in 0..channels {
+        for t in 0..time * factor {
+            out[c * time * factor + t] = x[c * time + t / factor];
+        }
+    }
+    out
+}
+
+fn oracle_sinegen(
+    f0: &[f32],
+    samp_rate: u32,
+    harmonic_num: u32,
+    amp: f32,
+    threshold: f32,
+) -> Vec<f32> {
+    let h1 = harmonic_num as usize + 1;
+    let mut out = vec![0.0; f0.len() * h1];
+    for i in 0..h1 {
+        let gain = (i as f32 + 1.0) / samp_rate as f32;
+        let mut cs = 0.0;
+        for (t, &f) in f0.iter().enumerate() {
+            cs += f * gain;
+            let theta = 2.0 * std::f32::consts::PI * (cs - cs.floor());
+            out[t * h1 + i] = amp * theta.sin() * f32::from(f > threshold);
+        }
+    }
+    out
+}
+
+fn oracle_hift_stft(input: &[f32], n_fft: usize, hop: usize) -> Vec<f32> {
+    let bins = n_fft / 2 + 1;
+    let padded_len = input.len() + 2 * (n_fft / 2);
+    let frames = if padded_len >= n_fft {
+        (padded_len - n_fft) / hop + 1
+    } else {
+        0
+    };
+    let mut out = vec![0.0; 2 * bins * frames];
+    for frame in 0..frames {
+        for bin in 0..bins {
+            let mut re = 0.0;
+            let mut im = 0.0;
+            for k in 0..n_fft {
+                let logical = (frame * hop + k) as isize - (n_fft / 2) as isize;
+                let src = oracle_reflect_index(logical, input.len());
+                let sample = input[src];
+                let window =
+                    0.5 - 0.5 * (2.0 * std::f32::consts::PI * k as f32 / n_fft as f32).cos();
+                let angle = 2.0 * std::f32::consts::PI * (bin * k) as f32 / n_fft as f32;
+                re += sample * window * angle.cos();
+                im -= sample * window * angle.sin();
+            }
+            out[bin * frames + frame] = re;
+            out[bins * frames + bin * frames + frame] = im;
+        }
+    }
+    out
+}
+
+fn oracle_reflect_index(i: isize, n: usize) -> usize {
+    if n <= 1 {
+        return 0;
+    }
+    let period = 2 * (n as isize - 1);
+    let mut m = i % period;
+    if m < 0 {
+        m += period;
+    }
+    if m >= n as isize {
+        (period - m) as usize
+    } else {
+        m as usize
+    }
+}
+
+fn oracle_hift_istft(
+    logits: &[f32],
+    n_fft: usize,
+    hop: usize,
+    frames: usize,
+    limit: f32,
+) -> Vec<f32> {
+    let bins = n_fft / 2 + 1;
+    let total = (frames - 1) * hop + n_fft;
+    let out_len = total - 2 * (n_fft / 2);
+    let mut out = vec![0.0; out_len];
+    for (idx, dst) in out.iter_mut().enumerate() {
+        let raw = idx + n_fft / 2;
+        let mut acc = 0.0;
+        let mut wss = 0.0;
+        for frame in 0..frames {
+            let start = frame * hop;
+            if raw < start || raw >= start + n_fft {
+                continue;
+            }
+            let k = raw - start;
+            let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * k as f32 / n_fft as f32).cos();
+            let mut frame_value = 0.0;
+            for freq in 0..n_fft {
+                let bin = if freq < bins { freq } else { n_fft - freq };
+                let base = bin * frames + frame;
+                let magnitude = logits[base].exp().min(100.0);
+                let phase = logits[bins * frames + base].sin();
+                let re = magnitude * phase.cos();
+                let im0 = magnitude * phase.sin();
+                let im = if freq < bins { im0 } else { -im0 };
+                let angle = 2.0 * std::f32::consts::PI * (freq * k) as f32 / n_fft as f32;
+                frame_value += re * angle.cos() - im * angle.sin();
+            }
+            acc += frame_value / n_fft as f32 * window;
+            wss += window * window;
+        }
+        *dst = if wss > 1.0e-8 {
+            (acc / wss).clamp(-limit, limit)
+        } else {
+            0.0
+        };
+    }
+    out
+}
+
+#[test]
+fn hiftnet_resident_f0_primitives_match_scalar_oracles() {
+    let ctx = ctx_or_skip!("resident HiFTNet F0 primitives");
+    let x = [1.25, -0.5, 2.0, -1.5, -0.25, 0.75, -2.0, 3.0];
+    let input = ctx.upload(&x).expect("F0 input upload");
+    let weight = ctx.upload(&[0.5, -1.25]).expect("F0 weight upload");
+    let bias = ctx.upload(&[-0.75]).expect("F0 bias upload");
+    let mut elu = ctx.alloc_dev(x.len()).expect("ELU allocation");
+    let mut f0 = ctx.alloc_dev(4).expect("linear allocation");
+    let mut up = ctx.alloc_dev(8).expect("upsample allocation");
+    let mut sine = ctx.alloc_dev(16).expect("SineGen allocation");
+
+    ctx.elu_dev(&mut elu, &input).expect("resident ELU");
+    ctx.linear_abs_dev(&mut f0, &elu, &weight, &bias, 2, 4)
+        .expect("resident linear abs");
+    ctx.nearest_upsample_dev(&mut up, &f0, 1, 4, 2)
+        .expect("resident nearest upsample");
+    ctx.sinegen_deterministic_channel_major_dev(&mut sine, &up, 8_000, 1, 0.1, 0.0)
+        .expect("resident channel-major SineGen");
+
+    let elu_expected = oracle_elu(&x);
+    let f0_expected = oracle_linear_abs(&elu_expected, &[0.5, -1.25], -0.75, 2, 4);
+    let up_expected = oracle_nearest(&f0_expected, 1, 4, 2);
+    let sine_time_major = oracle_sinegen(&up_expected, 8_000, 1, 0.1, 0.0);
+    let mut sine_expected = vec![0.0; sine_time_major.len()];
+    for t in 0..up_expected.len() {
+        for c in 0..2 {
+            sine_expected[c * up_expected.len() + t] = sine_time_major[t * 2 + c];
+        }
+    }
+    let mut got = vec![0.0; sine_expected.len()];
+    ctx.download(&sine, &mut got).expect("F0 final readback");
+    assert_eq!(ctx.readback_count(), 1, "only final F0 tensor is read back");
+    for (actual, expected) in got.iter().zip(sine_expected) {
+        assert!(
+            (actual - expected).abs() <= ATOL,
+            "F0 chain drift: {actual} vs {expected}"
+        );
+    }
+
+    let mut wrong = ctx.alloc_dev(3).expect("bad-shape allocation");
+    assert!(
+        ctx.linear_abs_dev(&mut wrong, &elu, &weight, &bias, 2, 4)
+            .is_err()
+    );
+}
+
+#[test]
+fn hiftnet_resident_source_mixer_matches_channel_major_oracle() {
+    let ctx = ctx_or_skip!("resident HiFTNet source mixer");
+    let source = [0.2, -0.4, 0.6, -0.8, 1.0, -1.2]; // [H=2, T=3]
+    let input = ctx.upload(&source).expect("source upload");
+    let weight = ctx.upload(&[1.5, -0.75]).expect("source weight upload");
+    let bias = ctx.upload(&[0.125]).expect("source bias upload");
+    let mut out = ctx.alloc_dev(3).expect("source mixer output allocation");
+    ctx.linear_tanh_dev(&mut out, &input, &weight, &bias, 2, 3)
+        .expect("resident source mixer");
+    let expected: Vec<f32> = (0..3)
+        .map(|t| (0.125 + source[t] * 1.5 + source[3 + t] * -0.75).tanh())
+        .collect();
+    let mut got = vec![0.0; 3];
+    ctx.download(&out, &mut got).expect("source mixer readback");
+    for (actual, expected) in got.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() <= ATOL,
+            "source mixer drift: {actual} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn hiftnet_resident_stft_matches_odd_fft_scalar_oracle() {
+    let ctx = ctx_or_skip!("resident HiFTNet STFT");
+    // Six samples is hop-aligned; odd n_fft=5 therefore exposes the
+    // centered-pad frame formula (3 frames, not T/hop+1 = 4).
+    let source = [0.25, -0.75, 1.5, 0.5, -1.0, 0.75];
+    let input = ctx.upload(&source).expect("STFT input upload");
+    let n_fft = 5;
+    let hop = 2;
+    let frames = (source.len() + 2 * (n_fft / 2) - n_fft) / hop + 1;
+    let bins = n_fft / 2 + 1;
+    let mut out = ctx
+        .alloc_dev(2 * bins * frames)
+        .expect("STFT output allocation");
+    ctx.hift_stft_dev(&mut out, &input, n_fft, hop)
+        .expect("resident HiFT STFT");
+    let mut got = vec![0.0; 2 * bins * frames];
+    ctx.download(&out, &mut got).expect("STFT readback");
+    let expected = oracle_hift_stft(&source, n_fft, hop);
+    for (actual, expected) in got.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() <= ATOL,
+            "STFT drift: {actual} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn hiftnet_resident_stft_empty_even_fft_matches_cpu_frame_semantics() {
+    let ctx = ctx_or_skip!("resident HiFTNet empty STFT");
+    // CPU center padding of an empty signal with even n_fft produces one
+    // all-zero frame (padded length == n_fft), unlike odd n_fft which yields
+    // zero frames because 2*floor(n_fft/2) < n_fft.
+    let input = ctx.upload(&[]).expect("empty STFT input upload");
+    let n_fft = 4;
+    let hop = 2;
+    let bins = n_fft / 2 + 1;
+    let mut out = ctx
+        .alloc_dev(2 * bins)
+        .expect("empty STFT output allocation");
+    ctx.hift_stft_dev(&mut out, &input, n_fft, hop)
+        .expect("resident empty STFT");
+    let mut got = vec![f32::NAN; 2 * bins];
+    ctx.download(&out, &mut got).expect("empty STFT readback");
+    assert_eq!(got, vec![0.0; 2 * bins]);
+}
+
+#[test]
+fn hiftnet_resident_istft_matches_odd_fft_scalar_oracle() {
+    let ctx = ctx_or_skip!("resident HiFTNet iSTFT");
+    // Odd n_fft=5 exposes centered trim of 2*floor(n_fft/2)=4 rather than
+    // subtracting n_fft (which would lose one output sample).
+    let n_fft = 5;
+    let hop = 2;
+    let frames = 3;
+    let bins = n_fft / 2 + 1;
+    let logits: Vec<f32> = (0..2 * bins * frames)
+        .map(|i| (i as f32 * 0.17 - 0.4).sin())
+        .collect();
+    let input = ctx.upload(&logits).expect("iSTFT logits upload");
+    let mut complex = ctx
+        .alloc_dev(2 * bins * frames)
+        .expect("complex output allocation");
+    ctx.complex_from_logits_dev(&mut complex, &input, n_fft, frames)
+        .expect("resident complex postprocess");
+    let out_len = (frames - 1) * hop + n_fft - 2 * (n_fft / 2);
+    let mut raw = ctx.alloc_dev(out_len).expect("iSTFT output allocation");
+    ctx.istft_dev(&mut raw, &complex, n_fft, hop, frames)
+        .expect("resident HiFT iSTFT");
+    let mut out = ctx.alloc_dev(out_len).expect("clamp output allocation");
+    ctx.clamp_dev(&mut out, &raw, -1.0, 1.0)
+        .expect("iSTFT clamp");
+    let mut got = vec![0.0; out_len];
+    ctx.download(&out, &mut got).expect("iSTFT readback");
+    let expected = oracle_hift_istft(&logits, n_fft, hop, frames, 1.0);
+    assert_eq!(got.len(), expected.len(), "iSTFT oracle length mismatch");
+    for (actual, expected) in got.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() <= ATOL,
+            "iSTFT drift: {actual} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn hiftnet_resident_chain_has_one_final_readback() {
+    let ctx = ctx_or_skip!("resident HiFTNet full primitive chain");
+    let f0_host = [120.0, 180.0, 90.0, 210.0];
+    let f0 = ctx.upload(&f0_host).expect("chain f0 upload");
+    let mut sine = ctx.alloc_dev(8).expect("chain SineGen allocation");
+    ctx.sinegen_deterministic_channel_major_dev(&mut sine, &f0, 8_000, 1, 0.1, 0.0)
+        .expect("chain channel-major SineGen");
+
+    let source = ctx
+        .upload(&[0.25, -0.5, 0.75, -1.0, 1.25, -1.5])
+        .expect("chain STFT input");
+    let mut stft = ctx.alloc_dev(2 * 3 * 4).expect("chain STFT allocation");
+    ctx.hift_stft_dev(&mut stft, &source, 4, 2)
+        .expect("chain STFT");
+
+    let logits_host: Vec<f32> = (0..2 * 3 * 4)
+        .map(|i| (i as f32 * 0.13 + 0.2).cos())
+        .collect();
+    let logits = ctx.upload(&logits_host).expect("chain logits upload");
+    let mut pcm = ctx.alloc_dev(6).expect("chain iSTFT allocation");
+    ctx.hift_istft_dev(&mut pcm, &logits, 4, 2, 4, 0.75)
+        .expect("chain logits/iSTFT/configured clamp");
+
+    assert_eq!(ctx.submission_count(), 5, "five resident chain stages");
+    assert_eq!(ctx.readback_count(), 0, "no intermediate chain D2H");
+    let mut got = vec![0.0; 6];
+    ctx.download(&pcm, &mut got)
+        .expect("chain final PCM readback");
+    assert_eq!(ctx.readback_count(), 1, "exactly one final readback");
+    let expected = oracle_hift_istft(&logits_host, 4, 2, 4, 0.75);
+    assert_eq!(got.len(), expected.len(), "chain oracle length mismatch");
+    for (actual, expected) in got.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() <= ATOL,
+            "chain PCM drift: {actual} vs {expected}"
+        );
+    }
+}
+
+fn bf16_bits_to_f32(bits: u16) -> f32 {
+    f32::from_bits(u32::from(bits) << 16)
+}
+
+#[test]
+fn mixed_bf16_gemm_uses_raw_weights_and_one_final_readback() {
+    let ctx = ctx_or_skip!("mixed FP32/BF16 GEMM");
+    // Non-square, ragged dimensions exercise both the 16x16 dispatch tail and
+    // the row-major [k,n] weight indexing. The values include signed zero,
+    // exact powers of two, and finite BF16 tail values without overflow.
+    let (m, n, k) = (3usize, 5usize, 7usize);
+    let activation = rand_vec(0xbf16_2026, m * k);
+    let pattern = [0x0000, 0x8000, 0x3f80, 0xbf80, 0x3f81, 0xbf81, 0x4000];
+    let weights: Vec<u16> = (0..k * n).map(|i| pattern[i % pattern.len()]).collect();
+    // This is the independent scalar oracle: widening is explicit and happens
+    // in the test, not by mirroring the Metal kernel's indexing code.
+    let weights_f32: Vec<f32> = weights.iter().copied().map(bf16_bits_to_f32).collect();
+    let mut expected = vec![0.0f32; m * n];
+    for row in 0..m {
+        for col in 0..n {
+            let mut acc = 0.0f32;
+            for l in 0..k {
+                acc += activation[row * k + l] * weights_f32[l * n + col];
+            }
+            expected[row * n + col] = acc;
+        }
+    }
+
+    let activation_dev = ctx.upload(&activation).expect("activation upload");
+    let weights_dev = ctx
+        .upload_bf16_bits(&weights)
+        .expect("raw BF16 weight upload");
+    let mut output_dev = ctx.alloc_dev(m * n).expect("output allocation");
+    ctx.gemm_f32_bf16_bits_dev(&mut output_dev, &activation_dev, &weights_dev, m, n, k)
+        .expect("mixed BF16 GEMM");
+    assert_eq!(ctx.submission_count(), 1, "one GPU submission");
+    assert_eq!(
+        ctx.readback_count(),
+        0,
+        "GEMM must not read back internally"
+    );
+
+    let mut got = vec![f32::NAN; m * n];
+    ctx.download(&output_dev, &mut got)
+        .expect("final GEMM readback");
+    assert_eq!(ctx.readback_count(), 1, "exactly one final readback");
+    for (actual, want) in got.iter().zip(expected) {
+        assert!(
+            (actual - want).abs() <= 1.0e-5,
+            "mixed BF16 GEMM drift: actual={actual} expected={want}"
+        );
+    }
+}
+
+#[test]
+fn mixed_bf16_gemm_preserves_special_bit_patterns() {
+    let ctx = ctx_or_skip!("mixed BF16 special values");
+    let activation_dev = ctx.upload(&[2.0]).expect("activation upload");
+    // -0, +1, +Inf and a quiet NaN are consumed as raw BF16 values. Keep k=1
+    // so no unrelated 0*Inf term can manufacture a NaN in the oracle. The
+    // scalar oracle starts at +0 and accumulates the product, matching the
+    // CPU GEMM contract: +0 += 2*(-0) is +0, even though the widened product
+    // itself carries the negative-zero sign.
+    let weights_dev = ctx
+        .upload_bf16_bits(&[0x8000, 0x3f80, 0x7f80, 0x7fc1])
+        .expect("special raw BF16 upload");
+    let mut output_dev = ctx.alloc_dev(4).expect("output allocation");
+    ctx.gemm_f32_bf16_bits_dev(&mut output_dev, &activation_dev, &weights_dev, 1, 4, 1)
+        .expect("mixed special-value GEMM");
+    let mut got = [f32::NAN; 4];
+    ctx.download(&output_dev, &mut got)
+        .expect("special readback");
+    let mut scalar_neg_zero = 0.0f32;
+    scalar_neg_zero += 2.0 * bf16_bits_to_f32(0x8000);
+    assert_eq!(
+        scalar_neg_zero.to_bits(),
+        0,
+        "scalar accumulation normalizes zero"
+    );
+    assert_eq!(got[0].to_bits(), scalar_neg_zero.to_bits());
+    assert_eq!(got[1], 2.0);
+    assert!(got[2].is_infinite() && got[2].is_sign_positive());
+    assert!(got[3].is_nan());
+}
+
+#[test]
+fn mixed_bf16_gemm_rejects_shapes_contexts_and_handles_empty_k() {
+    let ctx = ctx_or_skip!("mixed BF16 validation");
+    let activation_dev = ctx.upload(&[1.0; 6]).expect("activation upload");
+    let weights_dev = ctx.upload_bf16_bits(&[0x3f80; 8]).expect("weight upload");
+    let mut wrong_output = ctx.alloc_dev(3).expect("wrong output allocation");
+    assert!(
+        ctx.gemm_f32_bf16_bits_dev(&mut wrong_output, &activation_dev, &weights_dev, 2, 2, 3,)
+            .is_err()
+    );
+    assert_eq!(
+        ctx.submission_count(),
+        0,
+        "shape rejection must not dispatch"
+    );
+
+    let other = match MetalContext::new() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("second Metal context unavailable; skipping: {e}");
+            return;
+        }
+    };
+    let foreign_weight = other
+        .upload_bf16_bits(&[0x3f80; 8])
+        .expect("foreign weight upload");
+    let mut valid_output = ctx.alloc_dev(4).expect("valid output allocation");
+    assert!(
+        ctx.gemm_f32_bf16_bits_dev(&mut valid_output, &activation_dev, &foreign_weight, 2, 2, 3,)
+            .is_err()
+    );
+    assert_eq!(
+        ctx.submission_count(),
+        0,
+        "owner rejection must not dispatch"
+    );
+
+    // k=0 is a valid empty reduction: the output is zeroed on the GPU, not by
+    // a CPU fallback, while the empty buffers use Metal-safe placeholders.
+    let empty_activation = ctx.upload(&[]).expect("empty activation upload");
+    let empty_weights = ctx.upload_bf16_bits(&[]).expect("empty weight upload");
+    let mut zero_output = ctx.alloc_dev(6).expect("zero-output allocation");
+    ctx.gemm_f32_bf16_bits_dev(&mut zero_output, &empty_activation, &empty_weights, 2, 3, 0)
+        .expect("empty-k GEMM");
+    assert_eq!(
+        ctx.submission_count(),
+        1,
+        "empty-k output is still GPU-written"
+    );
+    let mut zeros = [f32::NAN; 6];
+    ctx.download(&zero_output, &mut zeros)
+        .expect("empty-k final readback");
+    assert_eq!(zeros, [0.0; 6]);
+}
+
+#[test]
+fn mixed_bf16_host_wrapper_keeps_resident_readback_counter_clean() {
+    let ctx = ctx_or_skip!("mixed BF16 host wrapper");
+    let activation = [1.0f32, -2.0, 0.5, 3.25];
+    let weights = [0x3f80u16, 0x4000, 0x4040, 0x4080];
+    let mut output = [f32::NAN; 4];
+    ctx.gemm_f32_bf16_bits(2, 2, 2, &activation, &weights, &mut output)
+        .expect("host mixed BF16 GEMM");
+    assert_eq!(ctx.submission_count(), 1);
+    assert_eq!(
+        ctx.readback_count(),
+        0,
+        "legacy host wrapper readback is excluded"
+    );
+    let mut expected = [0.0f32; 4];
+    for row in 0..2 {
+        for col in 0..2 {
+            let mut acc = 0.0f32;
+            for l in 0..2 {
+                acc += activation[row * 2 + l] * bf16_bits_to_f32(weights[l * 2 + col]);
+            }
+            expected[row * 2 + col] = acc;
+        }
+    }
+    for (actual, want) in output.into_iter().zip(expected) {
+        assert!((actual - want).abs() <= 1.0e-5);
+    }
 }

@@ -984,6 +984,181 @@ pub struct HiFTGeneratorWeights {
     pub f0_predictor_weights: F0PredictorWeights,
 }
 
+/// Backend-independent seam for running the complete HiFTNet graph while
+/// keeping intermediates in a caller-owned tensor representation.
+///
+/// Every tensor passed to this trait is channel-major `[channels, time]`.
+/// Weight slices retain the layouts documented on [`HiFTGeneratorWeights`].
+/// Implementations may upload weights as needed, but must not download an
+/// intermediate.  [`HiFTGenerator::forward_with_resident_ops`] returns the
+/// final clamped waveform as an associated tensor; the caller decides when
+/// (and whether) to call [`HiFTResidentOps::download`].
+///
+/// This trait intentionally contains the whole graph's primitive vocabulary.
+/// It is not a CPU fallback interface: a backend that cannot implement one
+/// of these operations must return its explicit unsupported-operation error.
+pub trait HiFTResidentOps {
+    /// Backend-owned tensor handle.  The handle may carry device/context
+    /// lifetime information (for example a Metal buffer and its context).
+    type Tensor;
+
+    /// Upload one channel-major tensor from host memory.
+    fn upload(&mut self, data: &[f32], channels: usize, time: usize) -> Result<Self::Tensor>;
+    /// Download a tensor.  This is the sole host-readback seam in the graph.
+    fn download(&mut self, tensor: &Self::Tensor, channels: usize, time: usize)
+    -> Result<Vec<f32>>;
+
+    /// Regular Conv1d with explicit stride, dilation, and symmetric zero
+    /// padding.  Output length follows PyTorch's Conv1d formula.
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+    fn conv1d(
+        &mut self,
+        input: &Self::Tensor,
+        in_channels: usize,
+        out_channels: usize,
+        kernel: usize,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        input_time: usize,
+        weight: &[f32],
+        bias: &[f32],
+    ) -> Result<Self::Tensor>;
+
+    /// ConvTranspose1d in PyTorch's `[in, out, kernel]` layout.
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+    fn conv_transpose1d(
+        &mut self,
+        input: &Self::Tensor,
+        in_channels: usize,
+        out_channels: usize,
+        kernel: usize,
+        stride: usize,
+        padding: usize,
+        input_time: usize,
+        weight: &[f32],
+        bias: &[f32],
+    ) -> Result<Self::Tensor>;
+
+    /// ReflectionPad1d on the left side, excluding the boundary sample.
+    fn reflection_pad_left(
+        &mut self,
+        input: &Self::Tensor,
+        channels: usize,
+        input_time: usize,
+        pad_left: usize,
+    ) -> Result<Self::Tensor>;
+
+    /// Elementwise ELU (`alpha = 1`).
+    fn elu(&mut self, input: &Self::Tensor, channels: usize, time: usize) -> Result<Self::Tensor>;
+    /// Elementwise LeakyReLU.
+    fn leaky_relu(
+        &mut self,
+        input: &Self::Tensor,
+        channels: usize,
+        time: usize,
+        negative_slope: f32,
+    ) -> Result<Self::Tensor>;
+    /// Per-channel Snake with the supplied effective alpha values.
+    fn snake(
+        &mut self,
+        input: &Self::Tensor,
+        channels: usize,
+        time: usize,
+        alpha: &[f32],
+    ) -> Result<Self::Tensor>;
+
+    /// Elementwise tensor add and scalar scale.
+    fn add(
+        &mut self,
+        lhs: &Self::Tensor,
+        rhs: &Self::Tensor,
+        channels: usize,
+        time: usize,
+    ) -> Result<Self::Tensor>;
+    /// Multiply every element by a scalar.
+    fn scale(
+        &mut self,
+        input: &Self::Tensor,
+        channels: usize,
+        time: usize,
+        factor: f32,
+    ) -> Result<Self::Tensor>;
+
+    /// Channel-major Linear `[in_channels, time] -> [1, time]`, followed by
+    /// absolute value.  This is the F0 classifier head.
+    fn linear_abs(
+        &mut self,
+        input: &Self::Tensor,
+        in_channels: usize,
+        time: usize,
+        weight: &[f32],
+        bias: f32,
+    ) -> Result<Self::Tensor>;
+    /// Channel-major Linear `[in_channels, time] -> [1, time]`, followed by
+    /// tanh.  This is the NSF source mixer.
+    fn linear_tanh(
+        &mut self,
+        input: &Self::Tensor,
+        in_channels: usize,
+        time: usize,
+        weight: &[f32],
+        bias: f32,
+    ) -> Result<Self::Tensor>;
+    /// Nearest-neighbour upsampling along time.
+    fn nearest_upsample(
+        &mut self,
+        input: &Self::Tensor,
+        channels: usize,
+        input_time: usize,
+        factor: usize,
+    ) -> Result<Self::Tensor>;
+    /// Deterministic (zero phase/noise) SineGen.  Output is channel-major
+    /// `[harmonic_num + 1, time]`.
+    fn sinegen_deterministic(
+        &mut self,
+        f0: &Self::Tensor,
+        time: usize,
+        config: &SineGenConfig,
+    ) -> Result<Self::Tensor>;
+
+    /// Centered Hann STFT followed by `[Re; Im]` concatenation.  Returns the
+    /// concatenated tensor `[n_fft + 2, frames]` and its frame count.
+    fn stft_concat(
+        &mut self,
+        input: &Self::Tensor,
+        time: usize,
+        n_fft: usize,
+        hop_len: usize,
+    ) -> Result<(Self::Tensor, usize)>;
+    /// Apply HiFT's exact logits postprocess: `exp` + clip(100) for
+    /// magnitude, `sin` for phase, and real/imaginary reassembly.  Input and
+    /// output are `[n_fft + 2, frames]`.
+    fn complex_from_logits(
+        &mut self,
+        logits: &Self::Tensor,
+        frames: usize,
+        n_fft: usize,
+    ) -> Result<Self::Tensor>;
+    /// Centered iSTFT of the reassembled complex spectrum.  Returns the
+    /// waveform tensor `[1, samples]` and its sample count.
+    fn istft(
+        &mut self,
+        spectrum: &Self::Tensor,
+        frames: usize,
+        n_fft: usize,
+        hop_len: usize,
+    ) -> Result<(Self::Tensor, usize)>;
+    /// Elementwise clamp to the configured audio limit.
+    fn clamp(
+        &mut self,
+        input: &Self::Tensor,
+        channels: usize,
+        time: usize,
+        limit: f32,
+    ) -> Result<Self::Tensor>;
+}
+
 /// HiFTNet generator — the full "Neural Source Filter + ISTFTNet" stack.
 /// See [`Self::forward`] for the top-level call sequence and `Self::decode`
 /// for the fusion/upsample chain (upstream `generator.py:467-506`).
@@ -992,6 +1167,11 @@ pub struct HiFTGenerator {
     cfg: HiFTGeneratorConfig,
     f0_predictor: F0Predictor,
     m_source: SourceModuleHnNSF,
+    // Keep the NSF mixer in the generator as well as in `m_source`: the
+    // resident graph needs to hand the exact checkpoint bytes to its backend
+    // Linear+tanh primitive without materialising a host source waveform.
+    m_source_linear_w: Vec<f32>,
+    m_source_linear_b: f32,
     conv_pre_w: Vec<f32>,
     conv_pre_b: Vec<f32>,
     ups_w: Vec<Vec<f32>>,
@@ -1072,6 +1252,8 @@ impl HiFTGenerator {
             weights.f0_predictor_weights,
         )?;
 
+        let m_source_linear_w = weights.m_source_linear_w.clone();
+        let m_source_linear_b = weights.m_source_linear_b;
         let m_source = SourceModuleHnNSF::new(
             SourceModuleHnNSFConfig {
                 sine_gen: SineGenConfig {
@@ -1261,6 +1443,8 @@ impl HiFTGenerator {
             cfg,
             f0_predictor,
             m_source,
+            m_source_linear_w,
+            m_source_linear_b,
             conv_pre_w: weights.conv_pre_w,
             conv_pre_b: weights.conv_pre_b,
             ups_w: weights.ups_w,
@@ -1344,6 +1528,220 @@ impl HiFTGenerator {
 
         // generated_speech = self.decode(x=speech_feat, s=s)
         self.decode(mel, &src_out.sine_merge, t_mel, t_source)
+    }
+
+    /// Run the complete HiFTNet graph without materialising intermediate
+    /// tensors on the host.  The returned tensor is the final clamped
+    /// waveform (`[1, samples]`); the caller chooses when to invoke
+    /// [`HiFTResidentOps::download`].
+    ///
+    /// This path is deliberately separate from [`Self::forward`].  The
+    /// scalar path remains the reference implementation and retains its
+    /// deterministic source semantics.  A resident backend must implement
+    /// every operation in [`HiFTResidentOps`] and must return an explicit
+    /// error for unsupported operations; this method never falls back to the
+    /// scalar path.
+    pub fn forward_with_resident_ops<O: HiFTResidentOps>(
+        &self,
+        ops: &mut O,
+        mel: &[f32],
+        t_mel: usize,
+    ) -> Result<O::Tensor> {
+        let in_ch = self.cfg.in_channels as usize;
+        if t_mel == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFTGenerator resident forward: t_mel must be > 0".to_owned(),
+            ));
+        }
+        if mel.len() != in_ch * t_mel {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator resident forward: mel length {} != in_channels * t_mel = {}",
+                mel.len(),
+                in_ch * t_mel
+            )));
+        }
+
+        let base_ch = self.cfg.base_channels as usize;
+        let n_fft = self.cfg.istft_n_fft as usize;
+        let hop_len = self.cfg.istft_hop_len as usize;
+        // The upstream HiFT checkpoints use even FFT sizes.  The resident
+        // spectrum contract is `[Re F; Im F]` with `2F = n_fft + 2`, and the
+        // Metal direct-DTF path has the same centered-trim convention; for an
+        // odd FFT those two identities diverge by one bin/sample.  Refuse it
+        // explicitly instead of silently changing the scalar graph's shape.
+        if n_fft % 2 != 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFTGenerator resident forward: istft_n_fft must be even".to_owned(),
+            ));
+        }
+        let f_bins = n_fft / 2 + 1;
+        let two_f = n_fft + 2;
+        let num_ups = self.cfg.num_upsamples();
+        let num_kernels = self.cfg.num_kernels();
+
+        // F0 predictor: five (checkpoint-configured) Conv1d + ELU pairs,
+        // then transpose-free channel-major Linear + abs.
+        let mel_tensor = ops.upload(mel, in_ch, t_mel)?;
+        let mut hidden = None;
+        let hidden_time = t_mel;
+        for (layer, (weight, bias)) in self
+            .f0_predictor
+            .weights
+            .conv_weights
+            .iter()
+            .zip(self.f0_predictor.weights.conv_biases.iter())
+            .enumerate()
+        {
+            let layer_in = if layer == 0 { in_ch } else { base_ch };
+            let layer_input = match hidden.as_ref() {
+                Some(value) => value,
+                None => &mel_tensor,
+            };
+            let layer_output = ops.conv1d(
+                layer_input,
+                layer_in,
+                base_ch,
+                self.f0_predictor.cfg.kernel_size as usize,
+                1,
+                1,
+                self.f0_predictor.cfg.kernel_size as usize / 2,
+                hidden_time,
+                weight,
+                bias,
+            )?;
+            hidden = Some(ops.elu(&layer_output, base_ch, hidden_time)?);
+        }
+        let hidden = hidden.expect("HiFTGenerator resident: F0 layer count validated nonzero");
+        let f0 = ops.linear_abs(
+            &hidden,
+            base_ch,
+            t_mel,
+            &self.f0_predictor.weights.linear_w,
+            self.f0_predictor.weights.linear_b[0],
+        )?;
+
+        let factor = self.cfg.total_upsample_factor() as usize;
+        let t_source = t_mel.checked_mul(factor).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "HiFTGenerator resident forward: source length overflow".to_owned(),
+            )
+        })?;
+        let f0_up = ops.nearest_upsample(&f0, 1, t_mel, factor)?;
+        let sine = ops.sinegen_deterministic(&f0_up, t_source, &self.m_source.config().sine_gen)?;
+        let source = ops.linear_tanh(
+            &sine,
+            self.m_source.config().sine_gen.out_channels(),
+            t_source,
+            &self.m_source_linear_w,
+            self.m_source_linear_b,
+        )?;
+        let (s_stft, t_stft) = ops.stft_concat(&source, t_source, n_fft, hop_len)?;
+        if t_stft == 0 || f_bins == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFTGenerator resident forward: STFT returned empty shape".to_owned(),
+            ));
+        }
+
+        // Mel projection and the complete upsample/fusion/MRF chain.
+        let mut x = ops.conv1d(
+            &mel_tensor,
+            in_ch,
+            base_ch,
+            7,
+            1,
+            1,
+            3,
+            t_mel,
+            &self.conv_pre_w,
+            &self.conv_pre_b,
+        )?;
+        let mut t_current = t_mel;
+        for i in 0..num_ups {
+            let in_stage = base_ch >> i;
+            let out_stage = base_ch >> (i + 1);
+            x = ops.leaky_relu(&x, in_stage, t_current, self.cfg.lrelu_slope)?;
+            let stride = self.cfg.upsample_rates[i] as usize;
+            let kernel = self.cfg.upsample_kernel_sizes[i] as usize;
+            let padding = (kernel - stride) / 2;
+            x = ops.conv_transpose1d(
+                &x,
+                in_stage,
+                out_stage,
+                kernel,
+                stride,
+                padding,
+                t_current,
+                &self.ups_w[i],
+                &self.ups_b[i],
+            )?;
+            t_current = conv_transpose_time(t_current, stride, kernel, padding)?;
+            if i == num_ups - 1 {
+                x = ops.reflection_pad_left(&x, out_stage, t_current, 1)?;
+                t_current += 1;
+            }
+
+            let k_src = self.source_downs_kernel[i] as usize;
+            let stride_src = self.source_downs_stride[i] as usize;
+            let padding_src = self.source_downs_padding[i] as usize;
+            let si = ops.conv1d(
+                &s_stft,
+                two_f,
+                out_stage,
+                k_src,
+                stride_src,
+                1,
+                padding_src,
+                t_stft,
+                &self.source_downs_w[i],
+                &self.source_downs_b[i],
+            )?;
+            let t_si = conv1d_time(t_stft, stride_src, 1, k_src, padding_src)?;
+            if t_si != t_current {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFTGenerator resident forward: source_downs[{i}] produced t_si = {t_si} but stage time = {t_current}"
+                )));
+            }
+            let si = resident_resblock(ops, &self.source_resblocks[i], &si, out_stage, t_si)?;
+            x = ops.add(&x, &si, out_stage, t_current)?;
+
+            let mut xs = None;
+            for j in 0..num_kernels {
+                let branch = resident_resblock(
+                    ops,
+                    &self.resblocks[i * num_kernels + j],
+                    &x,
+                    out_stage,
+                    t_current,
+                )?;
+                xs = Some(match xs {
+                    None => branch,
+                    Some(acc) => ops.add(&acc, &branch, out_stage, t_current)?,
+                });
+            }
+            x = ops.scale(
+                &xs.expect("HiFTGenerator resident: num_kernels validated nonzero"),
+                out_stage,
+                t_current,
+                1.0 / num_kernels as f32,
+            )?;
+        }
+
+        x = ops.leaky_relu(&x, base_ch >> num_ups, t_current, 0.01)?;
+        let logits = ops.conv1d(
+            &x,
+            base_ch >> num_ups,
+            two_f,
+            7,
+            1,
+            1,
+            3,
+            t_current,
+            &self.conv_post_w,
+            &self.conv_post_b,
+        )?;
+        let spectrum = ops.complex_from_logits(&logits, t_current, n_fft)?;
+        let (audio, audio_time) = ops.istft(&spectrum, t_current, n_fft, hop_len)?;
+        ops.clamp(&audio, 1, audio_time, self.cfg.audio_limit)
     }
 
     /// Convenience: run only the F0 predictor on `mel`. Kept as a thin
@@ -1625,6 +2023,120 @@ impl HiFTGenerator {
         }
         Ok(audio)
     }
+}
+
+/// Conv1d output-time formula shared by the resident graph's shape checks.
+fn conv1d_time(
+    input_time: usize,
+    stride: usize,
+    dilation: usize,
+    kernel: usize,
+    padding: usize,
+) -> Result<usize> {
+    if stride == 0 || dilation == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "HiFTGenerator resident: Conv1d stride, dilation, and kernel must be > 0".to_owned(),
+        ));
+    }
+    let receptive = dilation
+        .checked_mul(kernel.saturating_sub(1))
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("HiFTGenerator resident: Conv1d shape overflow".to_owned())
+        })?;
+    let padded = input_time
+        .checked_add(padding.checked_mul(2).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "HiFTGenerator resident: Conv1d padding overflow".to_owned(),
+            )
+        })?)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("HiFTGenerator resident: Conv1d shape overflow".to_owned())
+        })?;
+    if padded < receptive {
+        return Err(VokraError::InvalidArgument(
+            "HiFTGenerator resident: Conv1d receptive field exceeds padded input".to_owned(),
+        ));
+    }
+    Ok((padded - receptive) / stride + 1)
+}
+
+fn conv_transpose_time(
+    input_time: usize,
+    stride: usize,
+    kernel: usize,
+    padding: usize,
+) -> Result<usize> {
+    if input_time == 0 || stride == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "HiFTGenerator resident: ConvTranspose1d dimensions must be > 0".to_owned(),
+        ));
+    }
+    let core = (input_time - 1)
+        .checked_mul(stride)
+        .and_then(|v| v.checked_add(kernel))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "HiFTGenerator resident: ConvTranspose1d shape overflow".to_owned(),
+            )
+        })?;
+    let twice_padding = padding.checked_mul(2).ok_or_else(|| {
+        VokraError::InvalidArgument(
+            "HiFTGenerator resident: ConvTranspose1d padding overflow".to_owned(),
+        )
+    })?;
+    core.checked_sub(twice_padding).ok_or_else(|| {
+        VokraError::InvalidArgument(
+            "HiFTGenerator resident: ConvTranspose1d padding exceeds output".to_owned(),
+        )
+    })
+}
+
+fn resident_resblock<O: HiFTResidentOps>(
+    ops: &mut O,
+    block: &ResBlock,
+    input: &O::Tensor,
+    channels: usize,
+    time: usize,
+) -> Result<O::Tensor> {
+    let mut current = None;
+    for (idx, &dilation) in block.cfg.dilations.iter().enumerate() {
+        let base = current.as_ref().unwrap_or(input);
+        let alpha1 = block.activations1[idx].effective_alpha();
+        let mut branch = ops.snake(base, channels, time, &alpha1)?;
+        let kernel = block.cfg.kernel_size as usize;
+        let padding = get_padding(kernel, dilation as usize);
+        branch = ops.conv1d(
+            &branch,
+            channels,
+            channels,
+            kernel,
+            1,
+            dilation as usize,
+            padding,
+            time,
+            &block.weights.convs1_w[idx],
+            &block.weights.convs1_b[idx],
+        )?;
+        let alpha2 = block.activations2[idx].effective_alpha();
+        branch = ops.snake(&branch, channels, time, &alpha2)?;
+        branch = ops.conv1d(
+            &branch,
+            channels,
+            channels,
+            kernel,
+            1,
+            1,
+            get_padding(kernel, 1),
+            time,
+            &block.weights.convs2_w[idx],
+            &block.weights.convs2_b[idx],
+        )?;
+        current = Some(ops.add(base, &branch, channels, time)?);
+    }
+    current.ok_or_else(|| {
+        VokraError::InvalidArgument("HiFTGenerator resident: empty ResBlock".to_owned())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3361,5 +3873,655 @@ mod tests {
         rb.forward_in_place(&mut a, 6).unwrap();
         rb.forward_in_place(&mut b, 6).unwrap();
         assert_eq!(a, b);
+    }
+
+    // A deliberately small scalar resident adapter.  It is a structural
+    // oracle for this graph only: production backends provide the same trait
+    // with device tensors, while this adapter makes the no-intermediate-
+    // readback and error-propagation contracts testable without a device.
+    #[derive(Clone, Debug)]
+    struct FakeTensor {
+        data: Vec<f32>,
+        channels: usize,
+        time: usize,
+    }
+
+    #[derive(Default)]
+    struct FakeResident {
+        downloads: usize,
+        fail_at: Option<&'static str>,
+        conv1d_calls: usize,
+        conv_transpose_calls: usize,
+        elu_calls: usize,
+        leaky_relu_calls: usize,
+        snake_calls: usize,
+        add_calls: usize,
+        scale_calls: usize,
+        linear_abs_calls: usize,
+        linear_tanh_calls: usize,
+        nearest_calls: usize,
+        sinegen_calls: usize,
+        stft_calls: usize,
+        complex_calls: usize,
+        istft_calls: usize,
+        clamp_calls: usize,
+        reflection_calls: usize,
+    }
+
+    impl FakeResident {
+        fn tensor(&self, data: Vec<f32>, channels: usize, time: usize) -> Result<FakeTensor> {
+            if data.len() != channels * time {
+                return Err(VokraError::InvalidArgument(
+                    "fake resident shape mismatch".to_owned(),
+                ));
+            }
+            Ok(FakeTensor {
+                data,
+                channels,
+                time,
+            })
+        }
+
+        fn check(&self, op: &'static str) -> Result<()> {
+            if self.fail_at == Some(op) {
+                Err(VokraError::UnsupportedOp(format!(
+                    "fake resident injected failure at {op}"
+                )))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn expect_shape(input: &FakeTensor, channels: usize, time: usize, op: &str) -> Result<()> {
+            if input.channels != channels || input.time != time {
+                return Err(VokraError::InvalidArgument(format!(
+                    "fake resident {op}: got [{} x {}], expected [{} x {}]",
+                    input.channels, input.time, channels, time
+                )));
+            }
+            Ok(())
+        }
+    }
+
+    impl HiFTResidentOps for FakeResident {
+        type Tensor = FakeTensor;
+
+        fn upload(&mut self, data: &[f32], channels: usize, time: usize) -> Result<Self::Tensor> {
+            self.check("upload")?;
+            self.tensor(data.to_vec(), channels, time)
+        }
+
+        fn download(
+            &mut self,
+            tensor: &Self::Tensor,
+            channels: usize,
+            time: usize,
+        ) -> Result<Vec<f32>> {
+            self.check("download")?;
+            Self::expect_shape(tensor, channels, time, "download")?;
+            self.downloads += 1;
+            Ok(tensor.data.clone())
+        }
+
+        fn conv1d(
+            &mut self,
+            input: &Self::Tensor,
+            in_channels: usize,
+            out_channels: usize,
+            kernel: usize,
+            stride: usize,
+            dilation: usize,
+            padding: usize,
+            input_time: usize,
+            weight: &[f32],
+            bias: &[f32],
+        ) -> Result<Self::Tensor> {
+            self.check("conv1d")?;
+            self.conv1d_calls += 1;
+            Self::expect_shape(input, in_channels, input_time, "conv1d")?;
+            let output_time = conv1d_time(input_time, stride, dilation, kernel, padding)?;
+            let data = if stride == 1 {
+                conv1d_dilated_same_padding(
+                    &input.data,
+                    in_channels,
+                    out_channels,
+                    kernel,
+                    dilation,
+                    padding,
+                    input_time,
+                    weight,
+                    bias,
+                )?
+            } else {
+                if dilation != 1 {
+                    return Err(VokraError::UnsupportedOp(
+                        "fake resident strided dilation".to_owned(),
+                    ));
+                }
+                conv1d_strided_no_dilation(
+                    &input.data,
+                    in_channels,
+                    out_channels,
+                    kernel,
+                    stride,
+                    padding,
+                    input_time,
+                    weight,
+                    bias,
+                )?
+            };
+            self.tensor(data, out_channels, output_time)
+        }
+
+        fn conv_transpose1d(
+            &mut self,
+            input: &Self::Tensor,
+            in_channels: usize,
+            out_channels: usize,
+            kernel: usize,
+            stride: usize,
+            padding: usize,
+            input_time: usize,
+            weight: &[f32],
+            bias: &[f32],
+        ) -> Result<Self::Tensor> {
+            self.check("conv_transpose1d")?;
+            self.conv_transpose_calls += 1;
+            Self::expect_shape(input, in_channels, input_time, "conv_transpose1d")?;
+            let time = conv_transpose_time(input_time, stride, kernel, padding)?;
+            self.tensor(
+                conv_transpose1d(
+                    &input.data,
+                    in_channels,
+                    out_channels,
+                    kernel,
+                    stride,
+                    padding,
+                    input_time,
+                    weight,
+                    bias,
+                )?,
+                out_channels,
+                time,
+            )
+        }
+
+        fn reflection_pad_left(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            input_time: usize,
+            pad_left: usize,
+        ) -> Result<Self::Tensor> {
+            self.check("reflection_pad_left")?;
+            self.reflection_calls += 1;
+            Self::expect_shape(input, channels, input_time, "reflection_pad_left")?;
+            self.tensor(
+                reflection_pad_1d_left(&input.data, channels, input_time, pad_left)?,
+                channels,
+                input_time + pad_left,
+            )
+        }
+
+        fn elu(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            time: usize,
+        ) -> Result<Self::Tensor> {
+            self.check("elu")?;
+            self.elu_calls += 1;
+            Self::expect_shape(input, channels, time, "elu")?;
+            self.tensor(
+                input.data.iter().copied().map(elu).collect(),
+                channels,
+                time,
+            )
+        }
+
+        fn leaky_relu(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            time: usize,
+            negative_slope: f32,
+        ) -> Result<Self::Tensor> {
+            self.check("leaky_relu")?;
+            self.leaky_relu_calls += 1;
+            Self::expect_shape(input, channels, time, "leaky_relu")?;
+            self.tensor(
+                input
+                    .data
+                    .iter()
+                    .copied()
+                    .map(|v| leaky_relu(v, negative_slope))
+                    .collect(),
+                channels,
+                time,
+            )
+        }
+
+        fn snake(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            time: usize,
+            alpha: &[f32],
+        ) -> Result<Self::Tensor> {
+            self.check("snake")?;
+            self.snake_calls += 1;
+            Self::expect_shape(input, channels, time, "snake")?;
+            if alpha.len() != channels {
+                return Err(VokraError::InvalidArgument(
+                    "fake resident Snake alpha shape".to_owned(),
+                ));
+            }
+            let mut data = input.data.clone();
+            for (c, &a) in alpha.iter().enumerate() {
+                let inv = 1.0 / (a + 1e-9);
+                for v in &mut data[c * time..(c + 1) * time] {
+                    let s = (*v * a).sin();
+                    *v += inv * s * s;
+                }
+            }
+            self.tensor(data, channels, time)
+        }
+
+        fn add(
+            &mut self,
+            lhs: &Self::Tensor,
+            rhs: &Self::Tensor,
+            channels: usize,
+            time: usize,
+        ) -> Result<Self::Tensor> {
+            self.check("add")?;
+            self.add_calls += 1;
+            Self::expect_shape(lhs, channels, time, "add lhs")?;
+            Self::expect_shape(rhs, channels, time, "add rhs")?;
+            self.tensor(
+                lhs.data
+                    .iter()
+                    .zip(&rhs.data)
+                    .map(|(&a, &b)| a + b)
+                    .collect(),
+                channels,
+                time,
+            )
+        }
+
+        fn scale(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            time: usize,
+            factor: f32,
+        ) -> Result<Self::Tensor> {
+            self.check("scale")?;
+            self.scale_calls += 1;
+            Self::expect_shape(input, channels, time, "scale")?;
+            self.tensor(
+                input.data.iter().map(|&v| v * factor).collect(),
+                channels,
+                time,
+            )
+        }
+
+        fn linear_abs(
+            &mut self,
+            input: &Self::Tensor,
+            in_channels: usize,
+            time: usize,
+            weight: &[f32],
+            bias: f32,
+        ) -> Result<Self::Tensor> {
+            self.check("linear_abs")?;
+            self.linear_abs_calls += 1;
+            Self::expect_shape(input, in_channels, time, "linear_abs")?;
+            if weight.len() != in_channels {
+                return Err(VokraError::InvalidArgument(
+                    "fake resident linear_abs weight shape".to_owned(),
+                ));
+            }
+            let mut data = vec![0.0; time];
+            for (t, value) in data.iter_mut().enumerate() {
+                *value = (bias
+                    + (0..in_channels)
+                        .map(|c| input.data[c * time + t] * weight[c])
+                        .sum::<f32>())
+                .abs();
+            }
+            self.tensor(data, 1, time)
+        }
+
+        fn linear_tanh(
+            &mut self,
+            input: &Self::Tensor,
+            in_channels: usize,
+            time: usize,
+            weight: &[f32],
+            bias: f32,
+        ) -> Result<Self::Tensor> {
+            self.check("linear_tanh")?;
+            self.linear_tanh_calls += 1;
+            Self::expect_shape(input, in_channels, time, "linear_tanh")?;
+            if weight.len() != in_channels {
+                return Err(VokraError::InvalidArgument(
+                    "fake resident linear_tanh weight shape".to_owned(),
+                ));
+            }
+            let mut data = vec![0.0; time];
+            for (t, value) in data.iter_mut().enumerate() {
+                *value = (bias
+                    + (0..in_channels)
+                        .map(|c| input.data[c * time + t] * weight[c])
+                        .sum::<f32>())
+                .tanh();
+            }
+            self.tensor(data, 1, time)
+        }
+
+        fn nearest_upsample(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            input_time: usize,
+            factor: usize,
+        ) -> Result<Self::Tensor> {
+            self.check("nearest_upsample")?;
+            self.nearest_calls += 1;
+            Self::expect_shape(input, channels, input_time, "nearest_upsample")?;
+            let time = input_time.checked_mul(factor).ok_or_else(|| {
+                VokraError::InvalidArgument("fake resident upsample overflow".to_owned())
+            })?;
+            self.tensor(
+                upsample_nearest_row_major(&input.data, channels, input_time, factor),
+                channels,
+                time,
+            )
+        }
+
+        fn sinegen_deterministic(
+            &mut self,
+            f0: &Self::Tensor,
+            time: usize,
+            config: &SineGenConfig,
+        ) -> Result<Self::Tensor> {
+            self.check("sinegen_deterministic")?;
+            self.sinegen_calls += 1;
+            Self::expect_shape(f0, 1, time, "sinegen_deterministic")?;
+            let harmonics = config.out_channels();
+            let mut time_major = vec![0.0; time * harmonics];
+            crate::nsf::sinegen_deterministic_f32(
+                &f0.data,
+                config.samp_rate,
+                config.harmonic_num,
+                config.sine_amp,
+                config.voiced_threshold,
+                &mut time_major,
+            )?;
+            let mut channels = vec![0.0; harmonics * time];
+            for t in 0..time {
+                for c in 0..harmonics {
+                    channels[c * time + t] = time_major[t * harmonics + c];
+                }
+            }
+            self.tensor(channels, harmonics, time)
+        }
+
+        fn stft_concat(
+            &mut self,
+            input: &Self::Tensor,
+            time: usize,
+            n_fft: usize,
+            hop_len: usize,
+        ) -> Result<(Self::Tensor, usize)> {
+            self.check("stft_concat")?;
+            self.stft_calls += 1;
+            Self::expect_shape(input, 1, time, "stft_concat")?;
+            let spec = stft(&input.data, &StftAttrs::new(n_fft, hop_len))?;
+            let f_bins = n_fft / 2 + 1;
+            let mut data = vec![0.0; (n_fft + 2) * spec.frames];
+            for f in 0..f_bins {
+                for t in 0..spec.frames {
+                    data[f * spec.frames + t] = spec.re[t * f_bins + f];
+                    data[(f_bins + f) * spec.frames + t] = spec.im[t * f_bins + f];
+                }
+            }
+            Ok((self.tensor(data, n_fft + 2, spec.frames)?, spec.frames))
+        }
+
+        fn complex_from_logits(
+            &mut self,
+            logits: &Self::Tensor,
+            frames: usize,
+            n_fft: usize,
+        ) -> Result<Self::Tensor> {
+            self.check("complex_from_logits")?;
+            self.complex_calls += 1;
+            Self::expect_shape(logits, n_fft + 2, frames, "complex_from_logits")?;
+            let bins = n_fft / 2 + 1;
+            let mut data = vec![0.0; (n_fft + 2) * frames];
+            for f in 0..bins {
+                for t in 0..frames {
+                    let mag = logits.data[f * frames + t].exp().min(1e2);
+                    let phase = logits.data[(bins + f) * frames + t].sin();
+                    data[f * frames + t] = mag * phase.cos();
+                    data[(bins + f) * frames + t] = mag * phase.sin();
+                }
+            }
+            self.tensor(data, n_fft + 2, frames)
+        }
+
+        fn istft(
+            &mut self,
+            spectrum: &Self::Tensor,
+            frames: usize,
+            n_fft: usize,
+            hop_len: usize,
+        ) -> Result<(Self::Tensor, usize)> {
+            self.check("istft")?;
+            self.istft_calls += 1;
+            Self::expect_shape(spectrum, n_fft + 2, frames, "istft")?;
+            let bins = n_fft / 2 + 1;
+            let mut re = vec![0.0; frames * bins];
+            let mut im = vec![0.0; frames * bins];
+            for f in 0..bins {
+                for t in 0..frames {
+                    re[t * bins + f] = spectrum.data[f * frames + t];
+                    im[t * bins + f] = spectrum.data[(bins + f) * frames + t];
+                }
+            }
+            let audio = istft(
+                &Spectrogram {
+                    frames,
+                    bins,
+                    re,
+                    im,
+                },
+                &IstftAttrs::new(n_fft, hop_len),
+            )?;
+            let time = audio.len();
+            Ok((self.tensor(audio, 1, time)?, time))
+        }
+
+        fn clamp(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            time: usize,
+            limit: f32,
+        ) -> Result<Self::Tensor> {
+            self.check("clamp")?;
+            self.clamp_calls += 1;
+            Self::expect_shape(input, channels, time, "clamp")?;
+            self.tensor(
+                input.data.iter().map(|&v| v.clamp(-limit, limit)).collect(),
+                channels,
+                time,
+            )
+        }
+    }
+
+    #[test]
+    fn hift_resident_graph_has_one_caller_selected_final_download() {
+        let g = small_hift_generator();
+        let mel = vec![0.0f32; 4 * 2];
+        let mut resident = FakeResident::default();
+        let waveform = g.forward_with_resident_ops(&mut resident, &mel, 2).unwrap();
+        assert_eq!(resident.downloads, 0, "graph must not read back implicitly");
+        let audio = resident.download(&waveform, 1, waveform.time).unwrap();
+        assert_eq!(
+            resident.downloads, 1,
+            "caller selected exactly one final readback"
+        );
+        assert_eq!(audio, g.forward(&mel, 2).unwrap());
+    }
+
+    #[test]
+    fn hift_resident_graph_exercises_nonzero_full_topology() {
+        let (mut cfg, mut weights) = small_hift_generator_bundle();
+        weights.conv_pre_w.fill(0.002);
+        weights.conv_pre_b.fill(0.001);
+        for v in &mut weights.ups_w {
+            v.fill(0.002);
+        }
+        for v in &mut weights.ups_b {
+            v.fill(0.001);
+        }
+        for v in &mut weights.source_downs_w {
+            v.fill(0.002);
+        }
+        for v in &mut weights.source_downs_b {
+            v.fill(0.001);
+        }
+        weights.conv_post_w.fill(0.002);
+        weights.conv_post_b.fill(0.001);
+        weights.m_source_linear_w.fill(0.1);
+        for v in &mut weights.f0_predictor_weights.conv_weights {
+            v.fill(0.001);
+        }
+        for v in &mut weights.f0_predictor_weights.conv_biases {
+            v.fill(0.001);
+        }
+        weights.f0_predictor_weights.linear_w.fill(0.001);
+        weights.f0_predictor_weights.linear_b[0] = 0.1;
+        for rb in weights
+            .source_resblock_weights
+            .iter_mut()
+            .chain(weights.resblock_weights.iter_mut())
+        {
+            for v in rb.convs1_w.iter_mut().chain(rb.convs2_w.iter_mut()) {
+                v.fill(0.001);
+            }
+            for v in rb.convs1_b.iter_mut().chain(rb.convs2_b.iter_mut()) {
+                v.fill(0.001);
+            }
+            for v in rb
+                .activations1_alpha
+                .iter_mut()
+                .chain(rb.activations2_alpha.iter_mut())
+            {
+                v.fill(0.2);
+            }
+        }
+        cfg.audio_limit = 0.99;
+        let g = HiFTGenerator::new(cfg, weights).unwrap();
+        let mel: Vec<f32> = (0..8).map(|i| i as f32 * 0.01).collect();
+        let mut resident = FakeResident::default();
+        let waveform = g.forward_with_resident_ops(&mut resident, &mel, 2).unwrap();
+        let audio = resident.download(&waveform, 1, waveform.time).unwrap();
+        assert_eq!(resident.downloads, 1);
+        assert_eq!(audio.len(), 16);
+        assert!(
+            audio
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= g.cfg.audio_limit + 1e-6)
+        );
+
+        // This two-stage, one-MRF-branch fixture has an unambiguous operation
+        // count. These assertions make a skipped source or main ResBlock
+        // visible even if the resulting waveform remains finite.
+        assert_eq!(
+            resident.conv1d_calls, 17,
+            "5 F0 + conv_pre + 2 source_downs + conv_post + 4 ResBlocks×2"
+        );
+        assert_eq!(resident.elu_calls, 5, "all five F0 predictor ELU layers");
+        assert_eq!(resident.conv_transpose_calls, 2);
+        assert_eq!(resident.reflection_calls, 1);
+        assert_eq!(resident.leaky_relu_calls, 3);
+        assert_eq!(
+            resident.snake_calls, 8,
+            "two source and two MRF ResBlocks, two Snake ops each"
+        );
+        assert_eq!(
+            resident.add_calls, 6,
+            "two source fusions and four ResBlock residuals"
+        );
+        assert_eq!(
+            resident.scale_calls, 2,
+            "one MRF average per upsample stage"
+        );
+        assert_eq!(resident.linear_abs_calls, 1);
+        assert_eq!(resident.linear_tanh_calls, 1);
+        assert_eq!(resident.nearest_calls, 1);
+        assert_eq!(resident.sinegen_calls, 1);
+        assert_eq!(resident.stft_calls, 1);
+        assert_eq!(resident.complex_calls, 1);
+        assert_eq!(resident.istft_calls, 1);
+        assert_eq!(resident.clamp_calls, 1);
+
+        // The fake adapter intentionally delegates to the same scalar
+        // helpers, so this is a structural regression with a tight bound,
+        // not an independent numerical parity claim.
+        let scalar = g.forward(&mel, 2).unwrap();
+        let max_diff = audio
+            .iter()
+            .zip(&scalar)
+            .map(|(resident, scalar)| (resident - scalar).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_diff <= 1e-5,
+            "fake resident/scalar helper drift: {max_diff}"
+        );
+        let l1 = audio.iter().map(|v| v.abs()).sum::<f32>();
+        assert!(
+            l1 > 1e-6,
+            "nonzero fixture unexpectedly produced a zero waveform"
+        );
+    }
+
+    #[test]
+    fn hift_resident_graph_propagates_backend_failure() {
+        let g = small_hift_generator();
+        let mel = vec![0.0f32; 4 * 2];
+        let mut resident = FakeResident {
+            fail_at: Some("conv_transpose1d"),
+            ..FakeResident::default()
+        };
+        let err = g
+            .forward_with_resident_ops(&mut resident, &mel, 2)
+            .unwrap_err();
+        assert!(err.to_string().contains("conv_transpose1d"), "{err}");
+        assert_eq!(resident.downloads, 0);
+    }
+
+    #[test]
+    fn hift_resident_graph_rejects_odd_fft_fail_closed() {
+        let (mut cfg, mut weights) = small_hift_generator_bundle();
+        cfg.istft_n_fft = 7;
+        // Keep construction valid for the intentionally odd resident config;
+        // the resident forward gate, rather than the weight-shape validator,
+        // must be the failing boundary.
+        weights.source_downs_w[0] = vec![0.0; 4 * 9 * 4];
+        weights.source_downs_w[1] = vec![0.0; 2 * 9];
+        weights.conv_post_w = vec![0.0; 9 * 2 * 7];
+        weights.conv_post_b = vec![0.0; 9];
+        let g = HiFTGenerator::new(cfg, weights).unwrap();
+        let mut resident = FakeResident::default();
+        let err = g
+            .forward_with_resident_ops(&mut resident, &[0.0; 4 * 2], 2)
+            .unwrap_err();
+        assert!(err.to_string().contains("must be even"), "{err}");
+        assert_eq!(resident.downloads, 0);
     }
 }

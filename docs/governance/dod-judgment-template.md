@@ -1,5 +1,11 @@
 # GA Definition-of-Done judgment record — v1.0 GA (M5-12)
 
+> **Current state (2026-08-30):** `release-cadence.yml` and
+> `tools/release/test_cadence.py` are landed. There are currently **0 git tags,
+> 0 GitHub releases, and 0 quarterly review records**, so the cadence item is
+> not established. The fields below remain blank for the owner to judge; these
+> facts must not be turned into a pass.
+
 > **This file is a blank template.** Copy it to
 > `quarterly-reviews/<YYYY>-Q<N>.dod.md` (or record the judgment directly in the
 > GA go-nogo record) and fill in the copy. Do not record a judgment by editing
@@ -86,8 +92,8 @@ threshold oracle). This WP does **not** re-implement the 28-day definition or
 the tag/release reading — doing so would split one judgment across two places
 and drift. Record item 3 from X-07's output + the go-nogo record.
 
-- **X-07 cadence mechanism landed?**: _(記入 — as of M5-12 authoring: NOT landed)_
-- **Releases published** (`git tag` / GitHub releases): _(記入 — as of M5-12 authoring: 0; cadence not-established)_
+- **X-07 cadence mechanism landed?**: _(記入 — current: landed; `release-cadence.yml` + `tools/release/test_cadence.py`)_
+- **Releases published** (`git tag` / GitHub releases): _(記入 — current: 0; cadence not-established)_
 - **Release-interval history** (dates, gaps ≤ 28 days for stable operation): _(記入)_
 - **Item 3 verdict** (owner): _(記入 — "stable operation" cannot be true with 0 releases)_
 
@@ -105,6 +111,11 @@ is not duplicated here** — record each switch in
 
 ### Item 5 — ≥ 3 committers other than Claude Code; not owner-dependent
 
+The phrase **“other than Claude Code” is the owner-approved normative
+threshold** carried by the project’s Kill switch/DoD policy. It is not a claim
+about the current Codex agent identity; the current count and the choice of
+owner-excluded versus owner-included metric must still be recorded by the owner.
+
 Material: `kill-switch-metrics.sh` → `contributors_excluding_owner` /
 `dod_item5.external_committers`. This is the **owner-excluded** count (external
 committers only), which is what "community not dependent on the maintainer
@@ -113,7 +124,7 @@ alone" requires. The Kill switch D input (`contributors_non_bot_non_cc`) still
 owner is an owner decision (X-05-T21/T23)** — the metrics JSON surfaces both and
 decides neither.
 
-- **external_committers**: _(記入 — as of authoring, real API returns 0 external / `ayutaz` only)_
+- **external_committers**: _(記入 — no quarterly review record exists yet; collect for the review)_
 - **Threshold**: 3
 - **Item 5 verdict** (owner, stating which count and threshold interpretation was used): _(記入)_
 

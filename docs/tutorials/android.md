@@ -97,7 +97,7 @@ build as a passing RTF; the two are separate.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — against `scripts/build-android.sh` (CPU-only,
+**Last verified: 2026-08-30 — against `scripts/build-android.sh` (CPU-only,
 API 24) and the `godot-crossbuild` NDK-linker precedent.**
 
 - **Update responsibility**: a PR that changes the Android build script, the

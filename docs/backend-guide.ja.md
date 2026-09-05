@@ -9,10 +9,11 @@ Vokra に**新しい計算バックエンド**を追加するための end-to-en
 「実際に 1 個作る手順」を担う。引用する `FR-*` / `NFR-*` / `IF-*` の意味は
 [requirement-ids.md](requirement-ids.ja.md) で解決できる。
 
-Vokra は現在 5 つの計算バックエンド（CPU / Metal / CUDA / Vulkan / WebGPU）
-と 2 つの delegate scaffold（CoreML / QNN）を持つ。いずれも外部 binding
-crate を使わない first-party な `vokra-*` crate であり、それが
-zero-dependency 不変条件（`NFR-DS-02`）を保つ理由である。
+Vokra は現在 5 つの実装済み計算バックエンド（CPU / Metal / CUDA / Vulkan / WebGPU）
+に加えて、experimental な CoreML whole-submodel delegate と SDK gate 下の
+QNN delegate scaffold を持つ。いずれも外部 binding crate を使わない
+first-party な `vokra-*` crate であり、それが zero-dependency 不変条件
+（`NFR-DS-02`）を保つ理由である。
 
 ## 1. 着手前: バックエンドが壊してはならない 2 つの不変条件
 
@@ -87,24 +88,33 @@ canonical なテンプレートとして使う:
 ## 4. worked example: 最新のバックエンド
 
 最も新しく追加されたのは **CoreML**（Apple ANE）と **QNN**（Qualcomm
-Hexagon）の *delegate*（`FR-BE-06`）である。これらは上記の crate-scaffold
-手順 1–4 の最新例だ: `crates/vokra-backend-coreml/`
+Hexagon）の *delegate*（`FR-BE-06`）である。`crates/vokra-backend-coreml/`
 <!-- anchor: crates/vokra-backend-coreml/src/lib.rs --> は `sys.rs` /
 `probe.rs` / `backend.rs` / `lib.rs` を持つ first-party crate で、既定 OFF の
-`coreml` feature で gate され macOS / iOS に target-gate されている。
+`coreml` feature で gate され macOS / iOS に target-gate されている。CoreML
+には hash-bound な `.mlmodelc` sidecar 経路もあり、`DelegateBackend` 経由で
+Whisper encoder 全体を実行する。generic per-op の `Backend` coverage は設計上
+空のままである。
+
+`crates/vokra-backend-qnn/` は SDK gate 下の scaffold のままである。実行時ロード
+する QNN probe と backend 契約はあるが、Qualcomm 公式 SDK ABI の転記が完了する
+まで graph 構築・実行は zero-op である。
 
 **delegate は 6-file な GPU バックエンドと異なり、ガイドはそれを正直に書く**。
 delegate は宣言された submodel を vendor framework に渡し、ANE / GPU / CPU への
 配置は *framework 側* が内部で行う。これは Vokra 側の op 分割（`Backend`
 trait の uniform-coverage 規則が禁止）でも silent fallback でもない。よって:
 
-- canonical な **6-file** テンプレートは依然として 5 つの GPU/FFI バックエンド
-  （Metal / CUDA / Vulkan / WebGPU）である — 別の *kernel* バックエンドを足す
+- canonical な **6-file** テンプレートは依然として 4 つの accelerator GPU/FFI
+  バックエンド（Metal / CUDA / Vulkan / WebGPU）である — 別の *kernel* バックエンドを足す
   ときはこれらを使う。
-- CoreML / QNN は *delegate* のテンプレート。op 実行パスは model-supply ADR が
-  批准された後に land するので、今は全 hot op が明示的な `UnsupportedOp`、
-  到達可能な NPU が無い host は明示的な `BackendUnavailable` である。これは
-  正直な scaffold 状態であってバグではない。
+- CoreML は whole-submodel *delegate* のテンプレートである。宣言した Whisper
+  encoder 経路は vendor framework 経由で実行する一方、generic hot op は明示的な
+  `UnsupportedOp`、ANE に到達できない host は明示的な `BackendUnavailable` で
+  ある。2026-08-24 の M1 bakeoff は ANE 配置 99.63% に PASS したが、parity と
+  2 倍速 gate は FAIL だったため C selector は公開しない。QNN は上記 scaffold
+  状態に従い、SDK gate 下の graph 経路が land するまで hot op を明示的な
+  `UnsupportedOp` とし、runtime 不在は `BackendUnavailable` とする。
 
 delegate の C レベル selector は v1.0-rc 期間中は意図的に **export しない**。
 post-bakeoff の `IF-01` 決定までは Rust surface（`with_backend`）が唯一の選択
@@ -127,6 +137,21 @@ post-bakeoff の `IF-01` 決定までは Rust surface（`with_backend`）が唯�
 
 ## 6. owner / contributor 境界
 
+現行の CPU / Metal compute seam は、汎用の dilated Conv1d、
+ConvTranspose1d、Conv2d、ConvTranspose2d kernel も公開する。モデル経路は Metal
+選択前に learned-op inventory 全体を preflight しなければならず、これらの seam
+は silent CPU fallback を許可しない。source-level contract は
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0` で確認済みだが、準備済みの
+GigaAM、OmniASR、ReazonSpeech、BiCodec packet に対する実 Apple CPU/Metal
+evidence は引き続き pending である。現行 0.3.0 系列では GigaAM v3 と
+Multilingual は conservative な Metal code route が complete だが、Apple
+hardware の verdict はまだ未取得である。OmniASR も認証済み Scaleway 実機 run
+待ちであり、source-level route の complete を Apple device 結果とはみなさない。
+live public coverage の現行値は CPU `full=131`、`partial=42`、
+`no-runtime-binder=20`、`not-artifact=1`、Metal `full=131`、
+`blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
+現時点の release tag は 0、GitHub Release も 0 である。
+
 本ガイドは*手順*を documentation する。device は回さない: 実機（Apple Neural
 Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak は owner
 タスクである。contributor は crate・coverage 契約・CPU-oracle parity harness
@@ -134,8 +159,9 @@ Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak �
 
 ## Keeping this page current
 
-**最終確認日: 2026-07-21 — 稼働中の 5 バックエンド + CoreML / QNN delegate
-scaffold に対して確認。**
+**最終確認日: 2026-08-31 — 実装済みの 5 計算バックエンド、上記の汎用
+convolution seam、CoreML whole-submodel delegate 経路、SDK gate 下の QNN
+delegate scaffold に対して確認。**
 
 - **更新責任**: 新バックエンドを land した者（または 6-file 構成・`Backend`
   trait を変えた者）が、同一 PR で本ページと英語版を更新し、上の「確認対象」

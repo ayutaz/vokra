@@ -22,6 +22,13 @@ sidecars, source files and generated evidence are all hashed. A missing import,
 source path outside the official checkout, revision/shape drift, non-FP32 CPU
 reference, or modified sidecar aborts loudly.
 
+The VAST worker runs the dependency-free `preflight_gate.py` against the exact
+project/lock bytes before checking host capacity, checkout cleanliness, tokens,
+scratch paths, synchronization, or downloads. The checked-in manifest is
+intentionally pending review and therefore exits 2; no model or source
+acquisition is reachable until dependency, source-license, model-license, and
+exact checkpoint-file evidence is authenticated by a later owner review.
+
 No numerical fixture is committed before an actual run. The Rust consumer in
 `crates/vokra-models/tests/moss_audio_real.rs` is environment-gated and uses
 the repository FP32 ceiling `atol=0.01` for primary and all three DeepStack
@@ -49,9 +56,13 @@ VAST to a disposable Apple Silicon host with at least 64 GB RAM:
 VOKRA_REMOTE_APPLE_SILICON=1 \
 scripts/verify/apple-silicon-moss-audio.sh \
   --gguf-4b /remote/stage/moss-audio-4b-instruct.gguf \
+  --gguf-4b-sha256 <VAST_GGUF_4B_SHA256> \
   --reference-4b /remote/stage/reference-4b \
+  --reference-4b-sha256 <VAST_REFERENCE_4B_MANIFEST_SHA256> \
   --gguf-8b /remote/stage/moss-audio-8b-instruct.gguf \
+  --gguf-8b-sha256 <VAST_GGUF_8B_SHA256> \
   --reference-8b /remote/stage/reference-8b \
+  --reference-8b-sha256 <VAST_REFERENCE_8B_MANIFEST_SHA256> \
   --evidence-dir /remote/evidence/moss-audio-metal
 ```
 

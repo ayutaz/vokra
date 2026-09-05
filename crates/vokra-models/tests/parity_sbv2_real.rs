@@ -236,10 +236,10 @@
 
 use std::path::{Path, PathBuf};
 
-use vokra_core::VokraError;
 use vokra_core::gguf::GgufFile;
 use vokra_core::ir::graph::{MelAttrs, MelInterp, MelNorm, MelScale, StftAttrs};
 use vokra_core::json::{self, JsonValue};
+use vokra_core::{BackendKind, VokraError};
 use vokra_eval::metrics::utmos::Utmos;
 use vokra_models::sbv2::{
     AtolCalibration, Language, MEL_LOSS_ATOL, PhonemizeFixture, PhonemizeResult, RngMode,
@@ -274,6 +274,9 @@ const SBV2_MEL_N_MELS: usize = 128;
 /// `parity_csm.rs`, `parity_moshi.rs`) rather than as a bare relative
 /// literal.
 fn fixtures_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("VOKRA_SBV2_FIXTURE_DIR") {
+        return PathBuf::from(path);
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
@@ -1266,7 +1269,7 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     // SbV2Model::from_gguf installs by default).
     let fixture = phonemize_fixture_from_manifest(&manifest, &req, &dir, &ctx);
     let phonemizer = SbV2Phonemizer::from_fixture(fixture);
-    let model = if let Some(bert_zh) = &bert_zh {
+    let mut model = if let Some(bert_zh) = &bert_zh {
         SbV2Model::from_gguf_with_zh_bert_and_phonemizer(
             &main, &bert_ja, &bert_en, bert_zh, phonemizer,
         )
@@ -1539,6 +1542,62 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     // real perceptual regression rather than an incidental sample-level
     // noise floor drift.
     utmos_gate(&audio.samples, &reference, audio.sample_rate);
+
+    // Apple worker opt-in: only after every CPU/reference assertion above has
+    // passed, run the exact same request and seed through Metal. Keeping this
+    // block after the CPU gates is important: a Metal run must never make a
+    // failed CPU/reference fixture look like a backend comparison. The
+    // comparison remains measurement-only until VAST establishes a bound.
+    if std::env::var("VOKRA_SBV2_METAL_VS_CPU").as_deref() == Ok("1") {
+        model.set_backend(BackendKind::Metal);
+        let (metal_audio, metal_intermediates) = model
+            .synthesize_with_intermediates(&req)
+            .unwrap_or_else(|e| panic!("SbV2Model Metal synthesis: {e}"));
+        assert_eq!(
+            metal_audio.samples.len(),
+            audio.samples.len(),
+            "SBV2 Metal/CPU waveform shape mismatch"
+        );
+        let waveform_delta = max_abs_diff(&audio.samples, &metal_audio.samples);
+        assert!(
+            waveform_delta.is_finite(),
+            "SBV2 Metal waveform metric is non-finite"
+        );
+        let cpu_map = intermediates.to_dumper_map();
+        let metal_map = metal_intermediates.to_dumper_map();
+        assert_eq!(
+            cpu_map.len(),
+            metal_map.len(),
+            "SBV2 intermediate map shape mismatch"
+        );
+        let mut intermediate_max = 0.0_f32;
+        for (name, cpu_bytes) in &cpu_map {
+            let (_, metal_bytes) = metal_map
+                .iter()
+                .find(|(metal_name, _)| metal_name == name)
+                .unwrap_or_else(|| panic!("SBV2 Metal missing intermediate {name}"));
+            assert_eq!(
+                cpu_bytes.len(),
+                metal_bytes.len(),
+                "SBV2 {name} shape mismatch"
+            );
+            assert_eq!(cpu_bytes.len() % 4, 0, "SBV2 {name} byte alignment");
+            let cpu_values: Vec<f32> = cpu_bytes
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            let metal_values: Vec<f32> = metal_bytes
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            let delta = max_abs_diff(&cpu_values, &metal_values);
+            assert!(delta.is_finite(), "SBV2 Metal {name} metric is non-finite");
+            intermediate_max = intermediate_max.max(delta);
+        }
+        eprintln!(
+            "SBV2_METAL_VS_CPU MEASURED_NOT_GATED waveform_max_abs={waveform_delta:.6e} intermediate_max_abs={intermediate_max:.6e}"
+        );
+    }
 }
 
 /// Aggregator mel-loss (WP-04, ADR `docs/adr/sbv2-libm-strategy.md` §2.2):

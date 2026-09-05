@@ -5,7 +5,7 @@ description: Vokra の audio-dialect オペレータ（STFT/vocoder/flow sampler
 
 # audio-dialect オペレータを追加する
 
-「最新技術のオペレータ化」は Vokra の中核目標。op は**属性で挙動を明示**し、CPU を第一級 backend として必ず動かす。単一事実源は `CLAUDE.md`「音声特化オペレータ」節。
+「最新技術のオペレータ化」は Vokra の中核目標。op は**属性で挙動を明示**し、CPU を第一級 backend として必ず動かす。基本方針は `AGENTS.md` と本skillに従い、実装時は実コードと対応ドキュメントも確認する。
 
 ## 1. 定義は `vokra-ops`、カーネルは各 backend（CPU 必須 / Metal / CUDA）
 

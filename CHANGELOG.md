@@ -14,6 +14,61 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- **2026-08-31 pre-1.0 Rust API line: 0.2.0 → 0.3.0**: this feature line
+  intentionally changes the public Rust API while the project remains before
+  v1.0. The changes include new model/converter and backend enum variants,
+  public model/config and convolution-weight fields, and corrections to
+  inspection-only model boundaries. The workspace and path-dependency
+  versions are bumped together so `cargo-semver-checks` evaluates the changes
+  against the next 0.x breaking line rather than silently accepting them under
+  0.2.0. The `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot was
+  refreshed with the prescribed script and remains aligned with this release
+  line. The C ABI remains covered by its separate pre-1.0 policy.
+
+- **Current 0.3.0 Apple/CI status**: the parity figures below are a
+  pre-documentation-refresh snapshot from PR #79 (head `d8a93bc3`, against
+  `origin/main` `41ce9ffd`) and record 109 passes and 13 expected skips. The
+  live public audit currently reports 194 repositories, including
+  193 GGUF repositories and 198 GGUF files; its CPU classification is
+  `full=131`, `partial=42`, `no-runtime-binder=20`, `not-artifact=1`, and its
+  Metal classification is `full=131`, `blocked-by-cpu=62`, `not-artifact=1`.
+  Source-level CPU-only coverage is 0. GigaAM v3 and Multilingual now have
+  complete conservative Metal code routes, but no Apple-hardware verdict is
+  claimed; OmniASR remains gated on the authenticated Scaleway run. The CI
+  Quality `hf-mac-coverage-unit` and live advisory checks are green on the
+  latest PR. No hardware result or publication eligibility is inferred from
+  these code/audit results. There are currently 0 release tags and 0 GitHub
+  Releases.
+
+- **2026-08-31 authenticated CPU/remote lock**: GigaAM v3, GigaAM Multilingual and
+  OmniASR CTC 1B now have strict native CPU routes and independent official
+  VAST real-weight parity. GigaAM v3 and GigaAM Multilingual now have complete
+  conservative Metal code routes, but their Apple-hardware verdict remains
+  pending; OmniASR likewise awaits the authenticated Scaleway run. No Apple
+  hardware completion or Hugging Face upload is claimed.
+  Exact hashes and unchanged numerical bounds are recorded in the Mac
+  CPU/Metal handoff. OmniASR now has a complete source-level Metal route. The
+  live audit is CPU `full=131`, `partial=42`, `no-runtime-binder=20`,
+  `not-artifact=1`; Metal `full=131`, `blocked-by-cpu=62`,
+  `not-artifact=1`; source-level CPU-only coverage is 0.
+- ReazonSpeech NeMo v2 now locks the exact native ALSD CPU decoder, tokens and
+  text against the official NeMo reference. Its authenticated Apple packet is
+  staged, while Apple CPU/Metal and any public replacement remain pending and
+  `NO_UPLOAD`.
+- BiCodec now has a strict 840-F32-tensor binder and native decode-only route.
+  Official VAST parity passed semantic latent, d-vector, prenet and waveform
+  with maximum absolute errors `1.907348633e-6`, `1.847743988e-6`,
+  `7.539987564e-6` and `6.183981895e-7`; PCM encode is explicitly unsupported,
+  Apple CPU/Metal is pending, and the research-only artifact remains
+  `NO_UPLOAD`.
+- CPU and Metal backends now expose generic dilated Conv1d, ConvTranspose1d,
+  Conv2d and ConvTranspose2d seams. Unsupported complete model graphs fail
+  explicitly rather than silently falling back to CPU.
+- The model-free XY-Tokenizer dependency audit collected exact evidence for 51
+  of 57 active rows. SciPy, setuptools, soxr, SymPy, tokenizers and tqdm remain
+  fail-closed; no model or Torch route was imported. HT-Demucs Multi remains
+  `BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO` because its exact
+  `torchaudio>=0.8,<2.1` constraint has no Python 3.12-compatible release.
 - The public Bark and Bark Small GGUFs now have a strict mapping-owned native
   runtime for the semantic, coarse and fine token hierarchy and their embedded
   causal 24 kHz EnCodec decoder. Exact 758/518-tensor all-F32 manifests select
@@ -366,9 +421,9 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   an incompatible convolution-bias contract; both remain fail-closed pending
   separately authorized gated replacement.
 
-## [0.1.0] — 2026-08-23
+## 0.1.0 prepared baseline — 2026-08-23 (not tagged; no GitHub Release)
 
-This first tagged release includes the source-publication baseline plus the
+This prepared 0.1.0 history records the source-publication baseline plus the
 subsequently implemented v0.5 (M2), v0.9 (M3), v1.0-rc (M4), and real-weight
 verification / HF publication work. Owner-side verification
 (real-device RTF / GPU / NPU measurement, real-weight parity
@@ -377,8 +432,9 @@ tracked in the per-milestone owner checklists
 (`docs/m2-owner-verification-checklist.md`,
 `docs/m3-owner-verification-checklist.md`,
 `docs/m4-owner-verification-checklist.md`,
-`docs/m5-owner-verification-checklist.md`). Added entries are grouped by
-milestone below.
+`docs/m5-owner-verification-checklist.md`). No Git tag or GitHub Release
+exists for this prepared baseline as of 2026-08-30; added entries are grouped
+by milestone below.
 
 ### Fixed
 
@@ -1216,7 +1272,8 @@ milestone decision.
 The repository became public on 2026-07-04 with the **v0.1 spike + v0.1 MVP**
 implementation baseline and CI quality gates enforced
 (`.github/workflows/ci.yml`). No Git tag or GitHub Release was created then;
-this baseline is therefore included in the first tagged release.
+this baseline remains recorded as the prepared 0.1.0 history, not a published
+release.
 
 #### Added
 
@@ -1251,6 +1308,3 @@ this baseline is therefore included in the first tagged release.
 - **CI quality gates**: build, test, `rustfmt`, `clippy`, numerical
   parity, license (`cargo deny`), zero-dependency invariant, hot-path
   audit, iOS build, Python wheel build, license audit, GPU backends.
-
-[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ayutaz/vokra/releases/tag/v0.1.0

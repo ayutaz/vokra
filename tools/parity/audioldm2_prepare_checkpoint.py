@@ -32,7 +32,8 @@ script:
   (d) merges everything into one in-memory dict,
   (e) re-serialises as one flat safetensors file the Vokra Rust
       converter (``crates/vokra-convert/src/models/audioldm2.rs``)
-      consumes.
+      would consume only after its authenticated bundle binder is enabled;
+      the current converter is intentionally BLOCKED.
 
 Vokra's Rust converter is **single-file safetensors only** by design —
 the runtime never grows a shard-index reader or a pickle parser
@@ -78,10 +79,9 @@ No AudioLDM 2 code source is read or referenced (clean-room).
 
 - Missing / malformed pickle → propagates torch.load's own exception.
 - Missing sub-module directory → fails loudly with the missing path.
-- Any INT-dtype tensor (BatchNorm ``num_batches_tracked``, position
-  ids, etc.) is dropped with a warn — the sibling BF16 pass-through
-  converters all do this at the bridge layer since the Rust
-  safetensors reader admits only F32 / F16 / BF16.
+- Any INT/bool tensor is rejected. Dropping it would make the fixed
+  component and sidecar contract omission-prone, so this preparer fails
+  closed instead of stripping inference metadata.
 - Key collisions across sub-modules (e.g. two sub-modules both writing
   under bare ``weight``) fail loudly with the colliding key set — the
   role-prefix contract MUST guarantee unique keys, and any collision
@@ -107,12 +107,36 @@ Or point at an already-downloaded checkpoint directory::
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
 
 
 DEFAULT_HF_REPO = "cvssp/audioldm2"
+DEFAULT_REVISION = "c8e7e189d324425c05c4c2f81214041ef4107983"
+REQUIRED_TREE = {
+    ".gitattributes", "README.md", "model_index.json",
+    "feature_extractor/preprocessor_config.json",
+    "language_model/config.json", "language_model/model.safetensors",
+    "language_model/pytorch_model.bin",
+    "projection_model/config.json", "projection_model/diffusion_pytorch_model.bin",
+    "projection_model/diffusion_pytorch_model.safetensors",
+    "scheduler/scheduler_config.json", "text_encoder/config.json",
+    "text_encoder/model.safetensors", "text_encoder/pytorch_model.bin",
+    "text_encoder_2/config.json", "text_encoder_2/model.safetensors",
+    "text_encoder_2/pytorch_model.bin", "tokenizer/merges.txt",
+    "tokenizer/special_tokens_map.json", "tokenizer/tokenizer.json",
+    "tokenizer/tokenizer_config.json", "tokenizer/vocab.json",
+    "tokenizer_2/special_tokens_map.json", "tokenizer_2/spiece.model",
+    "tokenizer_2/tokenizer.json", "tokenizer_2/tokenizer_config.json",
+    "unet/config.json", "unet/diffusion_pytorch_model.bin",
+    "unet/diffusion_pytorch_model.safetensors", "vae/config.json",
+    "vae/diffusion_pytorch_model.bin", "vae/diffusion_pytorch_model.safetensors",
+    "vocoder/config.json", "vocoder/model.safetensors",
+    "vocoder/pytorch_model.bin",
+}
 
 # Role prefix ← sub-module dir name mapping. Every sub-module rooted at
 # its own directory under the pipeline root. Keys are the diffusers-
@@ -128,6 +152,7 @@ SUBMODULES: dict[str, str] = {
     "unet": "unet",
     "vocoder": "vocoder",
     "language_model": "language_model",
+    "projection_model": "projection_model",
     "text_encoder": "text_encoder",
     "text_encoder_2": "text_encoder_2",
 }
@@ -135,6 +160,15 @@ SUBMODULES: dict[str, str] = {
 
 def _log(msg: str) -> None:
     print(f"[audioldm2-prep] {msg}", file=sys.stderr, flush=True)
+
+
+def _git_blob_sha1(data: bytes) -> str:
+    return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+
+def _lfs_pointer_sha1(sha256: str, size: int) -> str:
+    pointer = f"version https://git-lfs.github.com/spec/v1\noid sha256:{sha256}\nsize {size}\n".encode()
+    return _git_blob_sha1(pointer)
 
 
 def _dtype_ok_for_vokra(dtype_str: str) -> bool:
@@ -154,6 +188,10 @@ def _dtype_ok_for_vokra(dtype_str: str) -> bool:
 def _resolve_checkpoint_dir(args: argparse.Namespace) -> Path:
     """Return a local checkpoint directory, downloading from HF if
     needed."""
+    if args.hf_repo != DEFAULT_HF_REPO:
+        raise SystemExit(
+            f"audioldm2-prep: BLOCKED: only fixed repository {DEFAULT_HF_REPO} is allowed"
+        )
     if args.checkpoint_dir is not None:
         d = Path(args.checkpoint_dir)
         if not d.is_dir():
@@ -169,17 +207,82 @@ def _resolve_checkpoint_dir(args: argparse.Namespace) -> Path:
     _log(f"downloading {args.hf_repo} to local snapshot cache ...")
     local = snapshot_download(
         repo_id=args.hf_repo,
+        revision=DEFAULT_REVISION,
         # Skip .md / .png / .gitattributes etc. — pull only what the
         # converter walks (weight files + shard indices + configs).
-        allow_patterns=[
-            "*.safetensors",
-            "*.safetensors.index.json",
-            "*.bin",
-            "*.json",
-            "*.yaml",
-        ],
+        allow_patterns=["*"],
     )
     return Path(local)
+
+
+def _validate_fixed_bundle(root: Path) -> None:
+    """Require the complete, exact official tree before reading weights."""
+    symlinks = [path for path in root.rglob("*") if path.is_symlink()]
+    if symlinks:
+        raise SystemExit(f"audioldm2-prep: BLOCKED: symlinks are not allowed: {symlinks[:3]}")
+    actual = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+        and path.relative_to(root).as_posix()
+        not in {".vokra-source-revision", ".vokra-server-tree.json"}
+    }
+    missing = sorted(REQUIRED_TREE - actual)
+    extra = sorted(actual - REQUIRED_TREE)
+    if missing or extra:
+        raise SystemExit(
+            "audioldm2-prep: BLOCKED: snapshot tree is not the fixed official "
+            f"{DEFAULT_HF_REPO}@{DEFAULT_REVISION}; missing={missing[:4]} "
+            f"extra={extra[:4]}"
+        )
+    packet_path = root / ".vokra-server-tree.json"
+    if not packet_path.is_file():
+        raise SystemExit(
+            "audioldm2-prep: BLOCKED: authoritative server-tree packet is required; "
+            "a self-created revision marker is not source/model authentication"
+        )
+    try:
+        packet = json.loads(packet_path.read_text())
+        rows = packet["files"]
+        if (
+            packet.get("repository") != DEFAULT_HF_REPO
+            or packet.get("revision") != DEFAULT_REVISION
+            or packet.get("resolved_revision") != DEFAULT_REVISION
+            or not isinstance(rows, list)
+            or any(not isinstance(row, dict) for row in rows)
+            or {row["path"] for row in rows} != REQUIRED_TREE
+            or any(
+                not isinstance(row.get("git_blob_sha1"), str)
+                or len(row["git_blob_sha1"]) != 40
+                or any(char not in "0123456789abcdef" for char in row["git_blob_sha1"])
+                for row in rows
+            )
+        ):
+            raise ValueError
+        expected = {row["path"]: row for row in rows}
+        for relative in REQUIRED_TREE:
+            data = (root / relative).read_bytes()
+            row = expected[relative]
+            if row.get("lfs_sha256") is not None:
+                sha = row["lfs_sha256"]
+                size = row.get("lfs_size")
+                if not isinstance(sha, str) or not isinstance(size, int) or len(sha) != 64 or size != len(data) or hashlib.sha256(data).hexdigest() != sha or row.get("git_blob_sha1") != _lfs_pointer_sha1(sha, size):
+                    raise ValueError(relative)
+            elif row.get("git_blob_sha1") != _git_blob_sha1(data):
+                raise ValueError(relative)
+    except (OSError, KeyError, TypeError, AttributeError, ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"audioldm2-prep: BLOCKED: invalid server-tree identity packet: {exc}")
+
+
+def _authenticated_tree(root: Path) -> list[dict[str, object]]:
+    return [
+        {
+            "path": relative,
+            "bytes": (root / relative).stat().st_size,
+            "sha256": hashlib.sha256((root / relative).read_bytes()).hexdigest(),
+        }
+        for relative in sorted(REQUIRED_TREE)
+    ]
 
 
 def _load_submodule_safetensors(sub_dir: Path) -> dict[str, Any]:
@@ -271,20 +374,20 @@ def _load_submodule(ckpt_dir: Path, sub_name: str, role_prefix: str) -> dict[str
     key present in both would silently favour one)."""
     sub_dir = ckpt_dir / sub_name
     if not sub_dir.is_dir():
-        _log(f"sub-module directory absent, skipping: {sub_name}/")
-        return {}
+        raise SystemExit(f"audioldm2-prep: required sub-module is absent: {sub_name}/")
 
     _log(f"loading sub-module: {sub_name}/ (role prefix: {role_prefix})")
 
     # Prefer safetensors when the sub-module ships them.
     inner = _load_submodule_safetensors(sub_dir)
     if not inner:
-        _log(f"  no safetensors under {sub_name}/, falling back to pickle")
-        inner = _load_submodule_pickle(sub_dir)
+        raise SystemExit(
+            f"audioldm2-prep: required safetensors are absent under {sub_name}/; "
+            "pickle fallback is disabled by the fixed bundle contract"
+        )
 
     if not inner:
-        _log(f"  WARN: sub-module {sub_name}/ found on disk but no loadable weights")
-        return {}
+        raise SystemExit(f"audioldm2-prep: no loadable weights under {sub_name}/")
 
     # Apply role prefix so the flat merged state has unique keys across
     # sub-modules. `text_encoder.encoder.block.0.q.weight` +
@@ -298,13 +401,11 @@ def _load_submodule(ckpt_dir: Path, sub_name: str, role_prefix: str) -> dict[str
 
 
 def _save_state(state: dict[str, Any], out_path: Path) -> None:
-    """Serialize the merged in-memory state to a single safetensors
-    file with INT-dtype stripping."""
+    """Serialize only after every source tensor passes the fixed dtype contract."""
     # Delayed import: safetensors save is only needed here.
     from safetensors.numpy import save_file  # type: ignore[import]
 
     kept: dict[str, Any] = {}
-    dropped: list[str] = []
     for name, tensor in state.items():
         # numpy arrays have .dtype.name = "float32" / "float16" /
         # "int64" etc. We normalise to the safetensors dtype tags
@@ -318,14 +419,10 @@ def _save_state(state: dict[str, Any], out_path: Path) -> None:
         if _dtype_ok_for_vokra(norm):
             kept[name] = tensor
         else:
-            dropped.append(f"{name} (dtype={dtype_name})")
-
-    if dropped:
-        _log(f"dropped {len(dropped)} non-float tensors (INT/etc):")
-        for entry in dropped[:20]:
-            _log(f"  - {entry}")
-        if len(dropped) > 20:
-            _log(f"  ... and {len(dropped) - 20} more")
+            raise SystemExit(
+                f"audioldm2-prep: BLOCKED: tensor {name} has non-floating dtype "
+                f"{dtype_name}; omission/stripping is forbidden"
+            )
 
     _log(f"writing {len(kept):,} float tensors to {out_path}")
     save_file(kept, str(out_path))
@@ -356,10 +453,24 @@ def main() -> None:
     )
     parser.add_argument(
         "--output",
-        required=True,
+        required=False,
         help="Output safetensors path (e.g. ./audioldm2.safetensors)",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="run the local negative dtype-contract self-test",
+    )
     args = parser.parse_args()
+
+    if args.self_test:
+        assert _dtype_ok_for_vokra("F32")
+        assert not _dtype_ok_for_vokra("I64")
+        print("audioldm2-prep --self-test: OK")
+        return
+
+    if args.output is None:
+        parser.error("--output is required unless --self-test is selected")
 
     out_path = Path(args.output)
     if out_path.exists():
@@ -369,6 +480,7 @@ def main() -> None:
 
     ckpt_dir = _resolve_checkpoint_dir(args)
     _log(f"checkpoint dir: {ckpt_dir}")
+    _validate_fixed_bundle(ckpt_dir)
 
     merged: dict[str, Any] = {}
     total_loaded = 0
@@ -386,15 +498,24 @@ def main() -> None:
         merged.update(prefixed)
         total_loaded += len(prefixed)
 
-    if not merged:
-        raise SystemExit(
-            "no loadable checkpoint found: expected sub-module directories "
-            f"({sorted(SUBMODULES.keys())}) under {ckpt_dir} with either "
-            "safetensors or pytorch_model.bin"
-        )
-
     _log(f"merged {total_loaded:,} tensors across {len(SUBMODULES)} sub-modules")
     _save_state(merged, out_path)
+    manifest = {
+        "schema": "vokra.audioldm2.bundle.v1",
+        "status": "SNAPSHOT_TREE_AUTHENTICATED_COMPONENTS_STAGED",
+        "source_repo": DEFAULT_HF_REPO,
+        "source_revision": DEFAULT_REVISION,
+        "tree": sorted(REQUIRED_TREE),
+        "tree_files": _authenticated_tree(ckpt_dir),
+        "components": sorted(SUBMODULES),
+        "output": out_path.name,
+        "output_bytes": out_path.stat().st_size,
+        "output_sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
+        "tensor_count": total_loaded,
+    }
+    out_path.with_suffix(out_path.suffix + ".manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
 
 
 if __name__ == "__main__":

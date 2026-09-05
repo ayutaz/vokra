@@ -2,11 +2,15 @@
 //!
 //! The reference is generated only on VAST by Fixie's authenticated official
 //! custom model and processor in `tools/parity/ultravox/dump_reference.py`.
-//! An unset three-path configuration skips honestly; a partial configuration
-//! fails. `VOKRA_ULTRAVOX_BACKEND=metal` is reserved for the guarded remote
-//! Apple Silicon worker.
+//! All input paths, the companion hash, and the backend must be configured;
+//! partial configuration is a hard failure. An entirely unconfigured workspace
+//! test skips honestly and is never accepted as VAST/Apple parity evidence;
+//! those scripts require the named test, result, and independent-reference
+//! sentinel. `metal` is reserved for the guarded remote Apple Silicon worker.
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use vokra_core::LicenseClass;
@@ -27,6 +31,8 @@ const EXPECTED_PROCESSOR_SOURCE_SHA256: &str =
     "2ae6682f3deecb22539fae6a6631688fc1675282f1a5b31145d9f95d2347ff7b";
 const EXPECTED_CONFIG_SOURCE_SHA256: &str =
     "99cf5ad911189f2351c2232234025db56b23763283583c0a848ebf2a1ecc40fc";
+const EXPECTED_UPSTREAM_MODEL_SHA256: &str =
+    "f3a3bf7e9137f3219a0d27ba71668deeee8c60aaf0ea587b48d8f71178763f31";
 
 #[derive(Debug)]
 struct Reference {
@@ -114,6 +120,124 @@ fn read_f32(path: &Path) -> Vec<f32> {
     values
 }
 
+fn sha256_file(path: &Path) -> String {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    fn compress(h: &mut [u32; 8], block: &[u8], k: &[u32; 64]) {
+        let mut w = [0u32; 64];
+        for (index, word) in block.chunks_exact(4).enumerate() {
+            w[index] = u32::from_be_bytes(word.try_into().unwrap());
+        }
+        for index in 16..64 {
+            let s0 = w[index - 15].rotate_right(7)
+                ^ w[index - 15].rotate_right(18)
+                ^ (w[index - 15] >> 3);
+            let s1 = w[index - 2].rotate_right(17)
+                ^ w[index - 2].rotate_right(19)
+                ^ (w[index - 2] >> 10);
+            w[index] = w[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[index - 7])
+                .wrapping_add(s1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
+            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+        for index in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(k[index])
+                .wrapping_add(w[index]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        for (value, add) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+            *value = value.wrapping_add(add);
+        }
+    }
+    let mut h = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let mut file = File::open(path).unwrap_or_else(|error| panic!("read {path:?}: {error}"));
+    let mut pending = Vec::with_capacity(64);
+    // Keep the streaming buffer on the heap: integration-test threads have a
+    // much smaller stack than this 8 MiB I/O chunk, and the SHA-256 known
+    // vector must exercise this helper without overflowing that stack.
+    let mut chunk = vec![0u8; 8 * 1024 * 1024];
+    let mut bit_len = 0u64;
+    loop {
+        let read = file
+            .read(&mut chunk)
+            .unwrap_or_else(|error| panic!("read {path:?}: {error}"));
+        if read == 0 {
+            break;
+        }
+        bit_len = bit_len
+            .checked_add((read as u64).checked_mul(8).unwrap())
+            .expect("SHA-256 input exceeds u64 bit length");
+        pending.extend_from_slice(&chunk[..read]);
+        let complete = pending.len() / 64 * 64;
+        for block in pending[..complete].chunks_exact(64) {
+            compress(&mut h, block, &K);
+        }
+        pending.drain(..complete);
+    }
+    pending.push(0x80);
+    while pending.len() % 64 != 56 {
+        pending.push(0);
+    }
+    pending.extend_from_slice(&bit_len.to_be_bytes());
+    for block in pending.chunks_exact(64) {
+        compress(&mut h, block, &K);
+    }
+    h.iter().map(|word| format!("{word:08x}")).collect()
+}
+
+fn manifest_hash<'a>(manifest: &'a BTreeMap<String, String>, file: &str) -> &'a str {
+    manifest_value(manifest, &format!("sha256_{}", file.replace('.', "_")))
+}
+
+fn verify_manifest_hashes(directory: &Path, manifest: &BTreeMap<String, String>) {
+    for file in [
+        "pcm.f32le",
+        "input_features.f32le",
+        "audio_embeddings.f32le",
+        "prompt_ids.u32le",
+        "next_logits.f32le",
+        "generated_ids.u32le",
+        "source_files.json",
+        "environment.json",
+    ] {
+        assert_eq!(
+            sha256_file(&directory.join(file)),
+            manifest_hash(manifest, file),
+            "reference {file} differs from its authenticated manifest hash"
+        );
+    }
+}
+
 impl Reference {
     fn load(directory: &Path) -> Self {
         let manifest = read_manifest(&directory.join("manifest.txt"));
@@ -134,7 +258,31 @@ impl Reference {
             manifest_value(&manifest, "companion_revision"),
             COMPANION_SOURCE_REVISION
         );
-        assert_eq!(manifest_value(&manifest, "transformers_version"), "4.48.1");
+        assert_eq!(manifest_value(&manifest, "transformers_version"), "5.5.0");
+        assert_eq!(
+            manifest_value(&manifest, "public_repo"),
+            "vokra/ultravox-v0-5-llama-3-2-1b"
+        );
+        assert_eq!(
+            manifest_value(&manifest, "public_revision"),
+            PUBLIC_VOKRA_REVISION
+        );
+        assert_eq!(
+            manifest_value(&manifest, "public_filename"),
+            PUBLIC_FILENAME
+        );
+        assert_eq!(
+            manifest_usize(&manifest, "public_file_bytes"),
+            PUBLIC_FILE_BYTES as usize
+        );
+        assert_eq!(
+            manifest_value(&manifest, "public_file_sha256"),
+            PUBLIC_FILE_SHA256
+        );
+        assert_eq!(
+            manifest_value(&manifest, "public_weights_sha256"),
+            EXPECTED_UPSTREAM_MODEL_SHA256
+        );
         assert_eq!(
             manifest_value(&manifest, "source_ultravox_model_sha256"),
             EXPECTED_MODEL_SOURCE_SHA256
@@ -147,6 +295,7 @@ impl Reference {
             manifest_value(&manifest, "source_ultravox_config_sha256"),
             EXPECTED_CONFIG_SOURCE_SHA256
         );
+        verify_manifest_hashes(directory, &manifest);
         assert_eq!(
             manifest_usize(&manifest, "sample_rate"),
             SAMPLE_RATE as usize
@@ -193,20 +342,36 @@ impl Reference {
     }
 }
 
-fn configured_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
+fn configured_paths() -> Option<(PathBuf, PathBuf, PathBuf, String)> {
     let gguf = std::env::var_os("VOKRA_ULTRAVOX_GGUF").map(PathBuf::from);
     let companion = std::env::var_os("VOKRA_ULTRAVOX_COMPANION_GGUF").map(PathBuf::from);
     let reference = std::env::var_os("VOKRA_ULTRAVOX_REFERENCE_DIR").map(PathBuf::from);
+    let companion_sha = std::env::var_os("VOKRA_ULTRAVOX_COMPANION_GGUF_SHA256");
+    let backend = std::env::var_os("VOKRA_ULTRAVOX_BACKEND");
     match (gguf, companion, reference) {
-        (None, None, None) => {
+        (Some(gguf), Some(companion), Some(reference)) => {
+            let companion_sha = companion_sha
+                .unwrap_or_else(|| {
+                    panic!("Ultravox parity requires VOKRA_ULTRAVOX_COMPANION_GGUF_SHA256")
+                })
+                .into_string()
+                .unwrap_or_else(|_| panic!("companion SHA-256 must be valid UTF-8"));
+            assert!(
+                companion_sha.len() == 64
+                    && companion_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && companion_sha.bytes().all(|byte| !byte.is_ascii_uppercase()),
+                "VOKRA_ULTRAVOX_COMPANION_GGUF_SHA256 must be 64 lowercase hex characters"
+            );
+            Some((gguf, companion, reference, companion_sha))
+        }
+        (None, None, None) if companion_sha.is_none() && backend.is_none() => {
             eprintln!(
-                "skip Ultravox official parity: set VOKRA_ULTRAVOX_GGUF, VOKRA_ULTRAVOX_COMPANION_GGUF and VOKRA_ULTRAVOX_REFERENCE_DIR"
+                "Ultravox real-weight parity inputs absent; skipping (not validation evidence)"
             );
             None
         }
-        (Some(gguf), Some(companion), Some(reference)) => Some((gguf, companion, reference)),
         _ => {
-            panic!("Ultravox parity is partially configured; set all three VOKRA_ULTRAVOX_* paths")
+            panic!("Ultravox parity is partially configured; set all paths, hash, and backend")
         }
     }
 }
@@ -214,7 +379,8 @@ fn configured_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
 fn selected_backend() -> BackendKind {
     match std::env::var("VOKRA_ULTRAVOX_BACKEND").as_deref() {
         Ok("metal") => BackendKind::Metal,
-        Ok("cpu") | Err(_) => BackendKind::Cpu,
+        Ok("cpu") => BackendKind::Cpu,
+        Err(_) => panic!("Ultravox parity requires VOKRA_ULTRAVOX_BACKEND=cpu or metal"),
         Ok(other) => panic!("VOKRA_ULTRAVOX_BACKEND must be cpu or metal, got {other:?}"),
     }
 }
@@ -249,14 +415,35 @@ fn assert_close(actual: &[f32], expected: &[f32], label: &str) {
 }
 
 #[test]
+fn ultravox_sha256_known_vector() {
+    let path = std::env::temp_dir().join(format!("vokra-ultravox-sha256-{}", std::process::id()));
+    std::fs::write(&path, b"abc").expect("write SHA-256 known vector");
+    assert_eq!(
+        sha256_file(&path),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    std::fs::remove_file(path).expect("remove SHA-256 known vector");
+}
+
+#[test]
 fn ultravox_public_cpu_or_metal_matches_official_reference() {
-    let Some((gguf, companion_gguf, reference_dir)) = configured_paths() else {
+    let Some((gguf, companion_gguf, reference_dir, companion_sha)) = configured_paths() else {
         return;
     };
     assert_eq!(
         std::fs::metadata(&gguf).expect("stat Ultravox GGUF").len(),
         PUBLIC_FILE_BYTES,
         "public file byte identity; expected {PUBLIC_FILENAME}@{PUBLIC_VOKRA_REVISION} SHA-256 {PUBLIC_FILE_SHA256}"
+    );
+    assert_eq!(
+        sha256_file(&gguf),
+        PUBLIC_FILE_SHA256,
+        "public file SHA-256 identity; expected {PUBLIC_FILENAME}@{PUBLIC_VOKRA_REVISION}"
+    );
+    assert_eq!(
+        sha256_file(&companion_gguf),
+        companion_sha,
+        "companion GGUF differs from the authenticated VAST input hash"
     );
     let reference = Reference::load(&reference_dir);
     let backend = selected_backend();

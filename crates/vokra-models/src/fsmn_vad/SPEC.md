@@ -1,5 +1,11 @@
 # FSMN-VAD implementation contract
 
+> **2026-08-30 current-state boundary:** The identities, hashes, and geometry
+> below are an audited source contract, not a claim that a new acquisition,
+> conversion, or parity run was performed today. Current loader/runtime
+> behavior is authoritative in the Rust implementation and its focused gates;
+> use the current M5 ledger for live completion status.
+
 This document pins the native runtime to the released FunASR FSMN-VAD model.
 
 - Hugging Face: `funasr/fsmn-vad`

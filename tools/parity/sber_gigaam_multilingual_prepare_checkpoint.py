@@ -1,286 +1,175 @@
-#!/usr/bin/env python3
-"""Flatten a salute-developers/GigaAM ``pretrained/*.pt`` → safetensors
-(coverage-audit-2026-08-03 Wave B, sber-gigaam-multilingual).
+#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+"""Prepare the authenticated GigaAM Multilingual CTC checkpoint on VAST only.
 
-Offline sidecar tool (FR-LD-05: no Python / PyTorch ever enters the
-runtime). The upstream GigaAM release ships torch-pickle checkpoints
-under ``github.com/salute-developers/GigaAM/tree/main/pretrained``
-(the multilingual variant follows the same layout the sibling
-``sber-gigaam-v3`` uses — either a flat state dict or a dict wrapping
-one under a common key ``state_dict`` / ``model_state_dict`` /
-``model``). The Rust converter
-(``crates/vokra-convert/src/models/sber_gigaam_multilingual.rs``)
-consumes safetensors only, so this script bridges the two:
-
-* Loads the ``.pt`` with ``torch.load(..., weights_only=True)`` (the
-  release checkpoint loads cleanly under the safe loader; a checkpoint
-  that does not is refused rather than falling back to unsafe
-  unpickling — the CVE-2020-27786-class ``pickle.loads`` supply-chain
-  posture the sibling ``dfn3_prepare_checkpoint.py`` /
-  ``nkf_aec_prepare_checkpoint.py`` / ``csm_dump.py`` scripts adopt).
-* Unwraps a single-level ``state_dict`` container if present (the
-  upstream release ships a flat OrderedDict but future releases may
-  wrap it; the DFN3 / NKF-AEC pattern of "unwrap known container keys
-  but never execute arbitrary unpickled callables" applies).
-* Writes the flat state dict as safetensors. The writer is
-  hand-rolled (stdlib ``json`` + raw bytes + a minimal safetensors
-  ``shared_pairs.json`` audit trail on the side) so the eval venv
-  needs no ``safetensors`` package; the format is the standard one
-  vokra-core parses.
-* F32 tensors are written as-is. F16 / BF16 pass through under their
-  original dtype (the runtime widens BF16 → f32 losslessly at load
-  via ``crates/vokra-core/src/gguf/quant/mod.rs decode_bf16``).
-* I64 ``num_batches_tracked`` BatchNorm training counters and any
-  other integer-typed state are DROPPED here (explicitly, each one
-  reported) — they have no inference role and vokra-core's
-  safetensors parser is float-only by design (FR-EX-08). Any
-  ``I64`` / ``I32`` / other non-float tensor that is NOT a
-  ``num_batches_tracked`` counter is a hard error rather than a
-  silent drop.
-* Handles ``share_memory_`` / tied-weight cases (``data_ptr``
-  collisions) via a dedup pass that keeps the first-seen contiguous
-  copy and records the alias graph in
-  ``<output>.shared_pairs.json`` — the pattern
-  ``[[reference-safetensors-shared-tensor-dedup]]`` describes for
-  the general publish path (Bark / XTTS-v2 / MOSS variants).
-
-Fails loudly on any anomaly (non-tensor entry, unexpected non-float
-non-``num_batches_tracked`` dtype, empty state) rather than masking
-it — FR-EX-08 posture.
-
-# Usage
-
-Managed through ``uv`` per the tools/parity contract
-(``[[feedback-python-uses-uv]] / [[feedback-python-3-12]]``):
-
-::
-
-    cd tools/parity
-    uv run python sber_gigaam_multilingual_prepare_checkpoint.py \\
-        --input ~/checkpoints/sber-gigaam-multilingual/repo/pretrained/model.pt \\
-        --output ~/checkpoints/sber-gigaam-multilingual/model.safetensors
-
-Then:
-
-::
-
-    vokra-cli convert --model sber-gigaam-multilingual \\
-        --input ~/checkpoints/sber-gigaam-multilingual/model.safetensors \\
-        --output ~/gguf/sber-gigaam-multilingual.gguf
+The input is accepted only when its SHA-256 and complete tensor manifest match
+the fixed evidence. The output is a flat F32 safetensors file plus the exact
+sidecar consumed by the Rust converter. This script must not be run on the
+maintainer Mac; the worker invokes it after the VAST evidence gate.
 """
-
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import struct
+import os
 import sys
-from collections import OrderedDict
 from pathlib import Path
-from typing import Any
 
-import torch
-
-# Mapping torch dtypes → safetensors dtype tags the vokra-core parser
-# accepts (F32 / F16 / BF16 today). I64 counters are handled via the
-# ``num_batches_tracked`` skip below and are intentionally NOT in this
-# table so any other integer tensor trips the "unexpected dtype" hard
-# error.
-DTYPE_MAP: dict[torch.dtype, str] = {
-    torch.float32: "F32",
-    torch.float16: "F16",
-    torch.bfloat16: "BF16",
-}
-
-# Container keys the wrapped-state-dict unwrap step recognises. Order
-# matters only for reporting; every present key is checked and if more
-# than one is populated we refuse rather than guess which one is the
-# real state dict.
-_STATE_DICT_KEYS = ("state_dict", "model_state_dict", "model")
+HF_REPOSITORY = "ai-sage/GigaAM-Multilingual"
+HF_REVISION = "2f8a57144e6ec3adfd32fe0484d9ea9913305bc8"
+INSPECTION_STATUS = "INSPECTION_ONLY"
+CHECKPOINT_SHA256 = "e1db43873ec5e296f229572e06e2470fc157ac9f8d4aacabda295630b9b91728"
+SOURCE_REVISION = "7447938d791c4f3e643386ee22c33777004293a5"
+CONFIG_SHA256 = "c830232c7d51688a630a221517b52585ab5ee57e1d3c21bcbae01759351d2653"
+PREPARED_FORMAT = "vokra-gigaam-multilingual-prepared-v1"
 
 
-def _unwrap_state_dict(loaded: Any) -> "OrderedDict[str, torch.Tensor]":
-    """Reduce ``loaded`` (whatever torch.load returned) to a flat
-    ``OrderedDict[str, torch.Tensor]``.
-
-    - If ``loaded`` is itself a dict-of-tensors, return it verbatim.
-    - Else if it is a dict with exactly one known state-dict container
-      key, unwrap that.
-    - Else refuse (loudly), since silently choosing between multiple
-      containers is exactly the kind of guess FR-EX-08 forbids.
-    """
-    if not isinstance(loaded, (dict, OrderedDict)):
-        raise SystemExit(
-            f"checkpoint top level is {type(loaded).__name__}, expected a flat state "
-            "dict or a dict containing one under 'state_dict' / 'model_state_dict' / "
-            "'model'"
-        )
-    # Direct state dict (values are tensors).
-    if all(isinstance(v, torch.Tensor) for v in loaded.values()):
-        return OrderedDict(loaded)
-    # Wrapped state dict.
-    present = [k for k in _STATE_DICT_KEYS if k in loaded]
-    if len(present) == 0:
-        raise SystemExit(
-            "checkpoint dict contains no tensors at the top level and no "
-            f"known state-dict container key {_STATE_DICT_KEYS!r}"
-        )
-    if len(present) > 1:
-        raise SystemExit(
-            f"checkpoint dict has multiple state-dict container keys {present!r}; "
-            "refuse to guess which is the real state dict"
-        )
-    inner = loaded[present[0]]
-    if not isinstance(inner, (dict, OrderedDict)) or not all(
-        isinstance(v, torch.Tensor) for v in inner.values()
-    ):
-        raise SystemExit(
-            f"container key {present[0]!r} does not hold a flat "
-            "OrderedDict[str, Tensor]"
-        )
-    return OrderedDict(inner)
+def expected_manifest() -> list[tuple[str, list[int]]]:
+    rows = [
+        ("model.preprocessor.featurizer.0.spectrogram.window", [320]),
+        ("model.preprocessor.featurizer.0.mel_scale.fb", [161, 64]),
+        ("model.encoder.pre_encode.conv.0.weight", [768, 64, 5]),
+        ("model.encoder.pre_encode.conv.0.bias", [768]),
+        ("model.encoder.pre_encode.conv.2.weight", [768, 768, 5]),
+        ("model.encoder.pre_encode.conv.2.bias", [768]),
+    ]
+    for layer in range(16):
+        prefix = f"model.encoder.layers.{layer}"
+        for name in ("norm_feed_forward1", "norm_conv", "norm_self_att", "norm_feed_forward2", "norm_out"):
+            rows.extend(((f"{prefix}.{name}.weight", [768]), (f"{prefix}.{name}.bias", [768])))
+        for branch in ("feed_forward1", "feed_forward2"):
+            rows.extend(((f"{prefix}.{branch}.linear1.weight", [3072, 768]), (f"{prefix}.{branch}.linear1.bias", [3072])))
+            rows.extend(((f"{prefix}.{branch}.linear2.weight", [768, 3072]), (f"{prefix}.{branch}.linear2.bias", [768])))
+        rows.extend(((f"{prefix}.conv.pointwise_conv1.weight", [1536, 768, 1]), (f"{prefix}.conv.pointwise_conv1.bias", [1536])))
+        rows.extend(((f"{prefix}.conv.depthwise_conv.weight", [768, 1, 5]), (f"{prefix}.conv.depthwise_conv.bias", [768])))
+        rows.extend(((f"{prefix}.conv.batch_norm.weight", [768]), (f"{prefix}.conv.batch_norm.bias", [768])))
+        rows.extend(((f"{prefix}.conv.pointwise_conv2.weight", [768, 768, 1]), (f"{prefix}.conv.pointwise_conv2.bias", [768])))
+        for name in ("linear_q", "linear_k", "linear_v", "linear_out"):
+            rows.extend(((f"{prefix}.self_attn.{name}.weight", [768, 768]), (f"{prefix}.self_attn.{name}.bias", [768])))
+    rows.extend((("model.head.decoder_layers.0.weight", [71, 768, 1]), ("model.head.decoder_layers.0.bias", [71])))
+    return rows
 
 
-def _dedup_and_contiguousize(
-    state: "OrderedDict[str, torch.Tensor]",
-) -> tuple["OrderedDict[str, torch.Tensor]", list[list[str]]]:
-    """Return (deduped_state, shared_pairs).
-
-    Any two tensors that share underlying storage (``data_ptr``
-    equality) would trip safetensors' ``RuntimeError: cannot serialise
-    two tensors sharing memory``. We keep the first-seen name's
-    contiguous copy and drop later aliases; every alias group is
-    recorded in ``shared_pairs`` for a downstream audit trail (mirror
-    of the general ``[[reference-safetensors-shared-tensor-dedup]]``
-    pattern).
-    """
-    seen: dict[int, str] = {}
-    shared: dict[str, list[str]] = {}
-    out: OrderedDict[str, torch.Tensor] = OrderedDict()
-    for name, t in state.items():
-        detached = t.detach().contiguous().cpu()
-        ptr = detached.data_ptr()
-        # `.contiguous()` may allocate a new buffer breaking the
-        # original alias; use the ORIGINAL tensor's data_ptr to detect
-        # sharing (mirroring what safetensors' own check sees).
-        orig_ptr = t.detach().data_ptr()
-        if orig_ptr in seen:
-            keeper = seen[orig_ptr]
-            shared.setdefault(keeper, [keeper]).append(name)
-            continue
-        seen[orig_ptr] = name
-        out[name] = detached
-        # Silence the unused-ptr warning without dropping the
-        # after-contiguous ptr we might want in a future extension.
-        _ = ptr
-    return out, [group for group in shared.values() if len(group) > 1]
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def write_safetensors(path: str, tensors: "OrderedDict[str, torch.Tensor]") -> None:
-    """Minimal safetensors writer (stdlib only): 8-byte LE header
-    length + JSON header + contiguous little-endian tensor data.
+def reject_symlink_ancestry(path: Path, label: str) -> None:
+    current = Path(os.path.abspath(path))
+    for ancestor in (current, *current.parents):
+        if ancestor.is_symlink():
+            raise RuntimeError(f"{label} has symlink ancestry: {ancestor}")
 
-    Refuses any dtype not in [`DTYPE_MAP`]. BF16 is emitted as GGUF
-    type ``BF16`` verbatim (top 16 bits of an f32) — the runtime
-    widens BF16 → f32 losslessly at load via
-    ``crates/vokra-core/src/gguf/quant/mod.rs decode_bf16``.
-    """
-    header: dict[str, dict[str, Any]] = {}
-    blobs: list[bytes] = []
-    offset = 0
-    for name, t in tensors.items():
-        if t.dtype not in DTYPE_MAP:
-            raise SystemExit(f"unsupported dtype {t.dtype} for tensor {name!r}")
-        # PyTorch has no numpy view for BF16 (numpy has no bfloat16
-        # dtype), so route BF16 explicitly through its raw byte
-        # representation. For F32 / F16 use the standard numpy path.
-        if t.dtype is torch.bfloat16:
-            # BF16 is the top 16 bits of an f32; ``.view(torch.int16)``
-            # then ``.numpy()`` gives us the raw 2-byte-per-element
-            # payload the safetensors writer expects, in host byte
-            # order (which is little-endian on every architecture
-            # Vokra supports).
-            data = t.contiguous().view(torch.int16).cpu().numpy().tobytes()
-        else:
-            data = t.detach().contiguous().cpu().numpy().tobytes()
-        header[name] = {
-            "dtype": DTYPE_MAP[t.dtype],
-            "shape": list(t.shape),
-            "data_offsets": [offset, offset + len(data)],
-        }
-        blobs.append(data)
-        offset += len(data)
-    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
-    with open(path, "wb") as f:
-        f.write(struct.pack("<Q", len(header_bytes)))
-        f.write(header_bytes)
-        for b in blobs:
-            f.write(b)
+
+def require_absent_output(path: Path, label: str) -> None:
+    reject_symlink_ancestry(path, label)
+    if path.exists() or path.is_symlink():
+        raise RuntimeError(f"{label} must be absent and non-symlink: {path}")
+
+
+def flatten(value: object, prefix: str = "") -> dict[str, object]:
+    # torch tensors are intentionally tested by duck typing only after torch is
+    # imported in main; nested checkpoint metadata is never copied.
+    import torch
+
+    if isinstance(value, torch.Tensor):
+        return {prefix: value}
+    if isinstance(value, dict):
+        result: dict[str, object] = {}
+        for key, child in value.items():
+            if not isinstance(key, str) or not key or "/" in key or "\\" in key or ".." in Path(key).parts:
+                raise RuntimeError(f"unsafe checkpoint key: {key!r}")
+            child_prefix = f"{prefix}.{key}" if prefix else key
+            result.update(flatten(child, child_prefix))
+        return result
+    if isinstance(value, (list, tuple)):
+        result = {}
+        for index, child in enumerate(value):
+            result.update(flatten(child, f"{prefix}[{index}]"))
+        return result
+    return {}
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--input",
-        required=True,
-        help="path to salute-developers/GigaAM multilingual .pt (torch pickle)",
+    parser = argparse.ArgumentParser(
+        description="Refuse unauthenticated GigaAM Multilingual preparation"
     )
-    ap.add_argument(
-        "--output",
-        required=True,
-        help="output .safetensors path",
-    )
-    args = ap.parse_args()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--input")
+    parser.add_argument("--output")
+    args = parser.parse_args()
+    if args.self_test:
+        if args.input is not None or args.output is not None:
+            parser.error("--self-test accepts no input or output")
+        assert len(HF_REVISION) == 40 and len(CHECKPOINT_SHA256) == 64
+        assert len(CONFIG_SHA256) == 64
+        assert len(expected_manifest()) == 552
+        print("sber_gigaam_multilingual_prepare_checkpoint self-test: OK")
+        return 0
+    if not args.input or not args.output:
+        parser.error("--input and --output are required outside --self-test")
+    source = Path(args.input)
+    output = Path(args.output)
+    sidecar = output.with_suffix(".manifest.json")
+    reject_symlink_ancestry(source, "checkpoint")
+    if source.is_symlink() or not source.is_file():
+        print(f"missing checkpoint: {source}", file=sys.stderr)
+        return 2
+    require_absent_output(output, "prepared safetensors")
+    require_absent_output(sidecar, "prepared manifest")
+    source_real = source.resolve()
+    output_real = output.resolve(strict=False)
+    sidecar_real = sidecar.resolve(strict=False)
+    if source_real in (output_real, sidecar_real) or output_real == sidecar_real:
+        print("checkpoint, prepared output, and sidecar must not overlap", file=sys.stderr)
+        return 2
+    if sha256(source) != CHECKPOINT_SHA256:
+        print("checkpoint SHA-256 mismatch; refusing preparation", file=sys.stderr)
+        return 2
 
-    loaded = torch.load(args.input, map_location="cpu", weights_only=True)
-    state = _unwrap_state_dict(loaded)
-    if len(state) == 0:
-        raise SystemExit("state dict is empty — refuse to emit a zero-tensor GGUF")
+    import torch
+    from safetensors.torch import save_file
 
-    # Drop known non-inference integer counters, keep every other float
-    # tensor, hard-error on any unexpected non-float dtype.
-    out: OrderedDict[str, torch.Tensor] = OrderedDict()
-    dropped: list[str] = []
-    for name, t in state.items():
-        if not isinstance(t, torch.Tensor):
-            raise SystemExit(f"non-tensor state entry {name!r}: {type(t).__name__}")
-        if name.endswith(".num_batches_tracked"):
-            # BatchNorm training counter (I64 scalar): no inference
-            # role, and vokra-core's safetensors parser is float-only.
-            dropped.append(name)
-            continue
-        if t.dtype not in DTYPE_MAP:
-            raise SystemExit(
-                f"unexpected dtype {t.dtype} for tensor {name!r} — the safetensors "
-                "bridge is float-only (F32 / F16 / BF16), and this tensor is not a "
-                "known integer counter that can be safely dropped"
-            )
-        out[name] = t
+    value = torch.load(source, map_location="cpu", weights_only=True)
+    tensors = flatten(value)
+    expected = expected_manifest()
+    expected_names = {name for name, _ in expected}
+    if set(tensors) != expected_names:
+        missing = sorted(expected_names - set(tensors))[:4]
+        extra = sorted(set(tensors) - expected_names)[:4]
+        raise RuntimeError(f"checkpoint tensor manifest mismatch: missing={missing}, extra={extra}")
+    prepared: dict[str, torch.Tensor] = {}
+    sidecar_tensors = []
+    for name, shape in expected:
+        tensor = tensors[name]
+        if not isinstance(tensor, torch.Tensor) or tensor.dtype != torch.float32 or list(tensor.shape) != shape:
+            raise RuntimeError(f"tensor {name} must be F32 {shape}")
+        if not bool(torch.isfinite(tensor).all().item()):
+            raise RuntimeError(f"tensor {name} contains non-finite values")
+        prepared[name] = tensor.contiguous()
+        sidecar_tensors.append({"name": name, "shape": shape, "dtype": "F32"})
 
-    deduped, shared = _dedup_and_contiguousize(out)
-
-    write_safetensors(args.output, deduped)
-
-    n_params = sum(t.numel() for t in deduped.values())
-
-    # Write a `shared_pairs.json` audit trail only if any aliasing was
-    # actually detected — an empty sidecar just adds noise to the eval
-    # tree.
-    if shared:
-        sidecar = Path(args.output).with_suffix(Path(args.output).suffix + ".shared_pairs.json")
-        with open(sidecar, "w", encoding="utf-8") as f:
-            json.dump(shared, f, indent=2)
-        print(f"shared-tensor alias groups written to: {sidecar}")
-
-    for name in dropped:
-        print(f"dropped (non-inference counter): {name}")
-
-    sha = hashlib.sha256(open(args.output, "rb").read()).hexdigest()
-    print(f"{sha}  {args.output}")
-    print(f"tensors={len(deduped)} params={n_params}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    save_file(prepared, str(output))
+    prepared_sha256 = sha256(output)
+    sidecar.write_text(json.dumps({
+        "format": PREPARED_FORMAT,
+        "repository": HF_REPOSITORY,
+        "revision": HF_REVISION,
+        "source_revision": SOURCE_REVISION,
+        "config_sha256": CONFIG_SHA256,
+        "checkpoint_sha256": CHECKPOINT_SHA256,
+        "prepared_sha256": prepared_sha256,
+        "tensor_count": len(sidecar_tensors),
+        "tensors": sidecar_tensors,
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"prepared {len(prepared)} tensors: {output}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

@@ -1,5 +1,11 @@
 # Kokoro-82M upstream tensor manifest
 
+> **2026-08-30 current-state boundary:** This manifest is a dated
+> 2026-07-07 upstream inspection artifact. It is the tensor-schema evidence
+> for the follow-up implementation, not a current claim that Kokoro conversion
+> or end-to-end parity is complete. Treat the TSV and the current Rust loader
+> as separate evidence surfaces; consult the M5 ledger for live status.
+
 `upstream_tensors_v1_0.tsv` is the flat tensor manifest of the upstream
 [hexgrad/Kokoro-82M `kokoro-v1_0.pth`](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/kokoro-v1_0.pth)
 checkpoint. It was captured on **2026-07-07** by CC while closing out

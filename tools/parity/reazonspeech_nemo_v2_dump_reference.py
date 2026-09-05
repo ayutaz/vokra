@@ -2,9 +2,9 @@
 """Dump an independent official-NeMo ReazonSpeech v2 reference.
 
 The oracle is ``EncDecRNNTBPEModel.restore_from`` from NVIDIA NeMo. This file
-does not reproduce the frontend, Longformer attention, RNN-T decoder, greedy
+does not reproduce the frontend, Longformer attention, RNN-T decoder, ALSD
 search, or tokenizer. It records the official encoder output and exact emitted
-token IDs for the committed 16 kHz JFK clip, and aborts if NeMo/checkpoint/API
+token IDs/text for the committed 16 kHz JFK clip, and aborts if NeMo/checkpoint/API
 provenance is unavailable.
 """
 
@@ -26,9 +26,16 @@ REFERENCE_IMPLEMENTATION = (
     "nemo.collections.asr.models.EncDecRNNTBPEModel.restore_from"
 )
 REFERENCE_PACKAGE = "nemo-toolkit[asr]==3.0.0"
+DECODING_STRATEGY = "alsd"
+DECODING_BEAM_SIZE = 4
+DECODING_ALSD_MAX_TARGET_LEN = 1.0
+DECODING_SCORE_NORM = True
+DECODING_SEARCH_TYPE = "default"
+DECODING_SOFTMAX_TEMPERATURE = 1.0
 JFK_SHA256 = "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_AUDIO = REPO_ROOT / "tests/fixtures/audio/jfk-30s.wav"
+_MISSING = object()
 
 
 def digest_file(path: Path) -> str:
@@ -41,6 +48,23 @@ def digest_file(path: Path) -> str:
 
 def digest_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def required_config_value(container: object, name: str) -> object:
+    """Read an explicit NeMo config field; absent fields are never defaulted."""
+    if container is None:
+        raise RuntimeError(f"official NeMo config section is missing: {name}")
+    value = getattr(container, name, _MISSING)
+    if value is _MISSING:
+        raise RuntimeError(f"official NeMo config field is missing: {name}")
+    return value
+
+
+def required_bool_config(container: object, name: str) -> bool:
+    value = required_config_value(container, name)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"official NeMo config field {name} is not bool: {value!r}")
+    return value
 
 
 def require_vast() -> None:
@@ -101,6 +125,21 @@ def self_test() -> None:
 
     assert hypothesis_tokens(Hypothesis()) == [1, 2, 2]
     assert len(ARCHIVE_SHA256) == len(JFK_SHA256) == 64
+    assert DECODING_STRATEGY == "alsd"
+    assert DECODING_BEAM_SIZE == 4
+    assert DECODING_ALSD_MAX_TARGET_LEN == 1.0
+    assert DECODING_SCORE_NORM is True
+    assert DECODING_SEARCH_TYPE == "default"
+    assert DECODING_SOFTMAX_TEMPERATURE == 1.0
+    class MissingConfig:
+        pass
+
+    try:
+        required_config_value(MissingConfig(), "search_type")
+    except RuntimeError as error:
+        assert "missing" in str(error)
+    else:
+        raise AssertionError("missing decoder config must fail closed")
     print("reazonspeech_nemo_v2_dump_reference: self-test PASS")
 
 
@@ -187,11 +226,34 @@ def main() -> int:
     model.freeze()
     model.to(device)
     decoding = getattr(model.cfg, "decoding", None)
-    decoding_strategy = str(getattr(decoding, "strategy", "unknown"))
-    if "greedy" not in decoding_strategy.lower():
+    decoding_strategy = str(required_config_value(decoding, "strategy"))
+    beam = required_config_value(decoding, "beam")
+    beam_size = int(required_config_value(beam, "beam_size"))
+    alsd_max_target_len = float(
+        required_config_value(beam, "alsd_max_target_len")
+    )
+    score_norm = required_bool_config(beam, "score_norm")
+    search_type = str(required_config_value(beam, "search_type"))
+    softmax_temperature = float(
+        required_config_value(beam, "softmax_temperature")
+    )
+    return_best_hypothesis = required_bool_config(beam, "return_best_hypothesis")
+    preserve_alignments = required_bool_config(beam, "preserve_alignments")
+    if (
+        decoding_strategy != DECODING_STRATEGY
+        or beam_size != DECODING_BEAM_SIZE
+        or alsd_max_target_len != DECODING_ALSD_MAX_TARGET_LEN
+        or score_norm != DECODING_SCORE_NORM
+        or search_type != DECODING_SEARCH_TYPE
+        or softmax_temperature != DECODING_SOFTMAX_TEMPERATURE
+        or return_best_hypothesis is not True
+        or preserve_alignments is not False
+    ):
         raise RuntimeError(
-            f"released decoding strategy {decoding_strategy!r} is not greedy; "
-            "the native oracle contract must be reviewed rather than inferred"
+            "released NeMo ALSD decoder config does not match the pinned "
+            f"contract: strategy={decoding_strategy!r}, beam_size={beam_size}, "
+            f"alsd_max_target_len={alsd_max_target_len}, score_norm={score_norm}, "
+            f"search_type={search_type!r}, softmax_temperature={softmax_temperature}"
         )
 
     signal = torch.from_numpy(pcm[:, 0].copy()).to(device).unsqueeze(0)
@@ -268,13 +330,22 @@ def main() -> int:
         "audio_sha256": audio_sha256,
         "sample_rate": sample_rate,
         "sample_count": int(pcm.shape[0]),
+        "pcm_sha256": digest_bytes(pcm_bytes),
         "decoding_strategy": decoding_strategy,
+        "decoding_beam_size": beam_size,
+        "decoding_alsd_max_target_len": alsd_max_target_len,
+        "decoding_score_norm": score_norm,
+        "decoding_search_type": search_type,
+        "decoding_softmax_temperature": softmax_temperature,
+        "decoding_return_best_hypothesis": return_best_hypothesis,
+        "decoding_preserve_alignments": preserve_alignments,
         "encoder_frames": frames,
         "encoder_width": int(encoder_time_major.shape[1]),
         "encoder_sha256": digest_bytes(encoder_bytes),
         "tokens": tokens,
         "tokens_sha256": digest_bytes(token_bytes),
         "text": text,
+        "text_file_sha256": digest_bytes((text + "\n").encode("utf-8")),
     }
     (output_dir / "reference.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

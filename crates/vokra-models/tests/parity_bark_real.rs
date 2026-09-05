@@ -1,4 +1,4 @@
-//! Gated real-public-GGUF parity against pinned official Transformers 4.31.0.
+//! Gated real-public-GGUF parity against pinned official Transformers 5.5.0.
 //!
 //! Generate references on VAST through
 //! `scripts/publish/vast-ai/run-bark-validation.sh`. Each variant requires a
@@ -78,6 +78,108 @@ fn error_metrics(actual: &[f32], expected: &[f32], label: &str) -> (f32, f64) {
     (max_abs, (squared_error / actual.len() as f64).sqrt())
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct BarkCpuParityInputs<'a> {
+    prefix: &'a str,
+    gguf_path: &'a Path,
+    text_tokens: &'a [u32],
+    expected_codes: &'a [u32],
+    frames: usize,
+    official_packet: &'a BarkGeneratedCodes,
+    expected_pcm: &'a [f32],
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct BarkMetalParityOutputs<'a> {
+    generated: &'a BarkGeneratedCodes,
+    official_pcm: &'a [f32],
+    end_to_end_pcm: &'a [f32],
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn compare_metal_with_cpu(inputs: BarkCpuParityInputs<'_>, metal: BarkMetalParityOutputs<'_>) {
+    let BarkCpuParityInputs {
+        prefix,
+        gguf_path,
+        text_tokens,
+        expected_codes,
+        frames,
+        official_packet,
+        expected_pcm,
+    } = inputs;
+    let BarkMetalParityOutputs {
+        generated: metal_generated,
+        official_pcm: metal_official_pcm,
+        end_to_end_pcm: metal_end_to_end_pcm,
+    } = metal;
+    let cpu_model = BarkModel::open_mapped_with_backend(gguf_path, BackendKind::Cpu)
+        .expect("strict CPU mapping for direct Bark Metal-vs-CPU comparison");
+    assert_eq!(
+        cpu_model.variant().variant_tag(),
+        prefix.to_ascii_lowercase()
+    );
+    let cpu_generated = cpu_model
+        .generate_codes_from_tokens(
+            text_tokens,
+            None,
+            &BarkGenerationConfig::greedy(MAX_SEMANTIC_TOKENS),
+        )
+        .expect("native Bark CPU greedy generation for Metal-vs-CPU comparison");
+    assert_eq!(
+        cpu_generated.as_frame_major(),
+        expected_codes,
+        "Bark {prefix} CPU generated packet differs from the official oracle"
+    );
+    assert_eq!(
+        cpu_generated.as_frame_major(),
+        metal_generated.as_frame_major(),
+        "Bark {prefix} CPU and Metal generated code packets differ"
+    );
+
+    let cpu_official_pcm = cpu_model
+        .decode_codes(official_packet)
+        .expect("native Bark CPU decode of the official packet");
+    let (official_max_abs, official_rmse) = error_metrics(
+        &cpu_official_pcm,
+        metal_official_pcm,
+        "CPU-vs-Metal official PCM",
+    );
+    assert!(
+        official_max_abs <= FP32_ATOL,
+        "Bark {prefix} CPU-vs-Metal official PCM max_abs={official_max_abs}, rmse={official_rmse}, exceeding {FP32_ATOL}"
+    );
+    let (official_cpu_max_abs, official_cpu_rmse) =
+        error_metrics(&cpu_official_pcm, expected_pcm, "CPU official-packet PCM");
+    assert!(
+        official_cpu_max_abs <= FP32_ATOL,
+        "Bark {prefix} CPU official-packet PCM max_abs={official_cpu_max_abs}, rmse={official_cpu_rmse}, exceeding {FP32_ATOL}"
+    );
+
+    let cpu_end_to_end_pcm = cpu_model
+        .decode_codes(&cpu_generated)
+        .expect("native Bark CPU end-to-end decode");
+    let (end_to_end_max_abs, end_to_end_rmse) = error_metrics(
+        &cpu_end_to_end_pcm,
+        metal_end_to_end_pcm,
+        "CPU-vs-Metal end-to-end PCM",
+    );
+    assert!(
+        end_to_end_max_abs <= FP32_ATOL,
+        "Bark {prefix} CPU-vs-Metal end-to-end PCM max_abs={end_to_end_max_abs}, rmse={end_to_end_rmse}, exceeding {FP32_ATOL}"
+    );
+    let (end_to_end_cpu_max_abs, end_to_end_cpu_rmse) =
+        error_metrics(&cpu_end_to_end_pcm, expected_pcm, "CPU end-to-end PCM");
+    assert!(
+        end_to_end_cpu_max_abs <= FP32_ATOL,
+        "Bark {prefix} CPU end-to-end PCM max_abs={end_to_end_cpu_max_abs}, rmse={end_to_end_cpu_rmse}, exceeding {FP32_ATOL}"
+    );
+    eprintln!(
+        "BARK_APPLE_PARITY variant={} metal_vs_cpu=PASS",
+        prefix.to_ascii_lowercase()
+    );
+    assert_eq!(official_packet.frames(), frames);
+}
+
 fn run_variant(prefix: &str) {
     let Some((gguf_path, reference_dir)) = parity_paths(prefix) else {
         return;
@@ -111,7 +213,7 @@ fn run_variant(prefix: &str) {
 
     // Isolate decoder parity from the autoregressive schedule by feeding the
     // official packet through the public validated frame-major boundary.
-    let official_packet = BarkGeneratedCodes::from_frame_major(expected_codes, frames)
+    let official_packet = BarkGeneratedCodes::from_frame_major(expected_codes.clone(), frames)
         .expect("official Bark frame-major packet");
     let decoded = model
         .decode_codes(&official_packet)
@@ -135,6 +237,26 @@ fn run_variant(prefix: &str) {
         end_to_end_max_abs <= FP32_ATOL,
         "Bark {prefix} {backend:?} end-to-end max_abs {end_to_end_max_abs} exceeds FP32 ceiling {FP32_ATOL}"
     );
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if backend == BackendKind::Metal {
+        compare_metal_with_cpu(
+            BarkCpuParityInputs {
+                prefix,
+                gguf_path: &gguf_path,
+                text_tokens: &text_tokens,
+                expected_codes: &expected_codes,
+                frames,
+                official_packet: &official_packet,
+                expected_pcm: &expected_pcm,
+            },
+            BarkMetalParityOutputs {
+                generated: &generated,
+                official_pcm: &decoded,
+                end_to_end_pcm: &end_to_end,
+            },
+        );
+    }
 }
 
 #[test]

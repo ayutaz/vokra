@@ -7,7 +7,8 @@
 //! continuous DACVAE latents with a **Rectified-Flow Diffusion Transformer
 //! (RF-DiT)** over a 32-dim continuous latent stream and reconstructs 48
 //! kHz PCM via the paired `Aratako/Semantic-DACVAE-Japanese-32dim` codec
-//! (a variant of the Meta `facebookresearch/dacvae` DAC-VAE, Apache 2.0).
+//! (a distinct continuous-latent decoder; it is not interchangeable with
+//! Vokra's vanilla Descript DAC/RVQ loader).
 //! The architecture and training design largely follow **Echo-TTS**
 //! (Darefsky 2025), and Aratako's repository ships the training + inference
 //! Python code under MIT (`gh api /repos/Aratako/Irodori-TTS/license` →
@@ -28,10 +29,12 @@
 //!   `timestep_embed_dim = 512` (sinusoidal timestep embedding — see
 //!   `irodori_tts/model.py::get_timestep_embedding`).
 //! - **Text encoder** — `text_vocab_size = 99574`,
-//!   `text_tokenizer_repo = "llm-jp/llm-jp-3-150m"` (Apache-2.0),
+//!   `text_tokenizer_repo = "llm-jp/llm-jp-3-150m"` (license/revision
+//!   evidence pending),
 //!   `text_add_bos = true`, `text_dim = 512`, `text_layers = 10`,
-//!   `text_heads = 8`, `text_mlp_ratio = 2.6`, initialized from a
-//!   pretrained LLM checkpoint (LLM-JP-3 150M). Attention adds RoPE and a
+//!   `text_heads = 8`, `text_mlp_ratio = 2.6`; the companion LLM-JP
+//!   tokenizer is named by config, but its immutable assets are not yet
+//!   authenticated. Attention adds RoPE and a
 //!   sigmoid gate on the output projection
 //!   (`irodori_tts/model.py::SelfAttention`).
 //! - **Reference (speaker) latent encoder** — self-attention transformer
@@ -54,25 +57,25 @@
 //!   per-axis scales `cfg_scale_text = 3.0`, `cfg_scale_caption = 3.0`,
 //!   `cfg_scale_speaker = 5.0` and windowing `cfg_min_t = 0.5`,
 //!   `cfg_max_t = 1.0`. Schedule ∈ {Linear, Sway (F5-TTS)} — both
-//!   supported natively by [`vokra_ops::flow_sampler`] (M3-05).
+//!   represented by the source-shaped staging contract below; the shared
+//!   sampler's increasing-time convention is not used as an exact oracle.
 //!
 //! # Terminal codec — Semantic-DACVAE-Japanese-32dim
 //!
 //! Irodori-TTS decodes to PCM via **Semantic-DACVAE-Japanese-32dim**
-//! (`huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim`), a
-//! `dacvae.DACVAE` variant of the Meta open-source
-//! `facebookresearch/dacvae` codec (Apache 2.0). Two axes are pinned by
+//! (`huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim`), a distinct
+//! continuous-latent decoder. Two axes are pinned by
 //! the release: **`latent_dim = 32`** (matches the RF-DiT latent stream)
 //! and **`sample_rate = 48_000`** (48 kHz PCM out, per the base model
 //! card at `huggingface.co/Aratako/Irodori-TTS-500M-v3`); the exact
 //! `encoder_rates` / `decoder_rates` are set inside the checkpoint blob
 //! (`weights.pth`) and are NOT part of the model's public config — they
-//! ride the codec GGUF. Callers inject the codec through
-//! [`IrodoriTts::with_codec`] once the paired GGUF is prepared (the same
-//! `DacCodecGguf`-shaped seam Dia + Zonos use with vanilla DAC).
-//! Until then [`IrodoriTts::synthesize`] returns
-//! [`VokraError::NotImplemented`] naming the blocker (FR-EX-08 — never
-//! a silent zero-fill).
+//! ride separate codec evidence and a dedicated binder. The existing
+//! [`DacCodecGguf`] API seam is retained only as a legacy-named diagnostic
+//! entry point; it is never accepted as proof of Semantic-DACVAE
+//! interoperability.
+//! [`IrodoriTts::synthesize`] remains fail-closed with
+//! [`VokraError::NotImplemented`] (FR-EX-08 — never a silent zero-fill).
 //!
 //! # Distinct topology axis: DiT over continuous DACVAE latents
 //!
@@ -92,9 +95,9 @@
 //! - **RF sampler**: shared [`vokra_ops::flow_sampler`] primitive (M3-05)
 //!   — `OdeSolver::Euler` + `Schedule::Linear` (default) or
 //!   `Schedule::Sway` (F5-TTS toggle).
-//! - **DACVAE decoder**: shared [`crate::codec::DacCodecGguf`] seam — a
-//!   paired `Semantic-DACVAE-Japanese-32dim` GGUF is a stock DAC-family
-//!   codec injected via [`IrodoriTts::with_codec`].
+//! - **DACVAE decoder**: a separate `Semantic-DACVAE-Japanese-32dim`
+//!   continuous-latent decoder is required. The vanilla
+//!   [`crate::codec::DacCodecGguf`] type is not interchangeable.
 //!
 //! No new backend kernel is added — every DiT / text-encoder / speaker-
 //! encoder building block is Linear + RMSNorm + SwiGLU + RoPE + softmax
@@ -116,22 +119,19 @@
 //! - [`IrodoriWeights`] remains a deterministic legacy shape fixture for
 //!   callers exercising the older scaffold API; it is never admitted as a
 //!   real checkpoint.
-//! - [`IrodoriTts`] — engine handle carrying config + weights + an
-//!   optional [`DacCodecGguf`] codec binding. The legacy primary
-//!   [`IrodoriTts::synthesize`] entry point returns
-//!   [`VokraError::NotImplemented`] naming the blocker until real
-//!   codec GGUF is injected AND the full
-//!   text-encoder → speaker-encoder → RF-DiT → codec-decode chain is
-//!   wired end-to-end (T29-equivalent follow-up wave — never a silent
-//!   zero-fill, FR-EX-08).
+//! - [`IrodoriTts`] — compatibility engine handle. Its primary
+//!   [`IrodoriTts::synthesize`] entry point is unconditionally
+//!   [`VokraError::NotImplemented`] while authenticated composite binding,
+//!   native full forward, and parity remain pending; the vanilla DAC seam
+//!   cannot unlock it (FR-EX-08).
 //!
 //! # No ONNX (permanent)
 //!
 //! Irodori-TTS is distributed as safetensors + a Python pipeline
 //! (`irodori_tts/inference_runtime.py`); the runtime **never** loads an
-//! ONNX graph (FR-LD-05, permanent constraint); the pipeline is
-//! re-implemented natively from the safetensors checkpoint (whisper.cpp
-//! 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! ONNX graph (FR-LD-05, permanent constraint). A future clean-room native
+//! implementation must bind the full safetensors checkpoint and codec; no
+//! such production forward is enabled by the current inspection-only API.
 
 use vokra_core::{Result, VokraError};
 
@@ -156,19 +156,300 @@ pub use vokra_ops::flow_sampler::{
 /// VoxCPM's 64 vs VibeVoice's 64).
 pub const EXPECTED_ARCH: &str = "irodori-tts";
 
-/// PCM sample rate Irodori-TTS emits — **48 kHz**. Primary source: the
+/// PCM sample rate associated with the Irodori codec — **48 kHz**. Primary source: the
 /// base-model card at `huggingface.co/Aratako/Irodori-TTS-500M-v3`
 /// (`Semantic-DACVAE-Japanese-32dim codec (32-dim), enabling high-quality
-/// 48kHz waveform reconstruction`, fetched 2026-07-24). Not encoded in
-/// the training YAML — it rides the paired codec GGUF.
+/// 48kHz waveform reconstruction`, fetched 2026-07-24). This does not prove
+/// that a vanilla DAC GGUF is compatible.
 pub const IRODORI_SAMPLE_RATE: u32 = 48_000;
 
+/// Source `SamplingRequest` duration controls.  These are request bounds,
+/// not promises that a checkpoint can decode without its authenticated codec
+/// hop length.
+pub const IRODORI_DURATION_SCALE: f32 = 1.0;
+/// Minimum manually requested synthesis duration, in seconds.
+pub const IRODORI_DURATION_MIN_SECONDS: f32 = 0.5;
+/// Maximum manually requested synthesis duration, in seconds.
+pub const IRODORI_DURATION_MAX_SECONDS: f32 = 30.0;
+
 /// Text tokenizer repo the released v3 checkpoint pins
-/// (`ModelConfig.text_tokenizer_repo`). LLM-JP-3 150M is Apache-2.0
-/// (`huggingface.co/llm-jp/llm-jp-3-150m`) so the tokenizer transitively
-/// inherits Permissive-class redistribution; the id is recorded verbatim
-/// so a real-checkpoint bind can cross-check the tokenizer manifest.
+/// (`ModelConfig.text_tokenizer_repo`). The repository id is recorded
+/// verbatim, but its immutable revision, tokenizer assets, and license
+/// treatment remain an explicit prerequisite for a real-checkpoint bind.
 pub const IRODORI_TEXT_TOKENIZER_REPO: &str = "llm-jp/llm-jp-3-150m";
+
+/// Selected immutable tokenizer evidence revision. The upstream Irodori
+/// config names only the repository; this snapshot is an evidence choice for
+/// official ID parity, not an invented upstream source pin.
+#[allow(dead_code)] // Retained for the staged tokenizer provenance contract.
+pub(crate) const IRODORI_TEXT_TOKENIZER_REVISION: Option<&str> =
+    Some("b112feef602fff752e4dac4c30af6a2c2fa41c7a");
+
+/// The RF implementation in the official source evolves from the noise end
+/// (`t=0.999`) toward the data end (`t=0`).  The shared flow sampler uses the
+/// opposite increasing-time convention, so this model-specific helper is the
+/// source-shaped staging boundary until a native full forward is bound.
+#[allow(dead_code)] // Staged schedule helper awaits the authenticated native forward path.
+pub(crate) fn irodori_rf_timesteps(num_steps: usize, sway_coeff: f32) -> Result<Vec<f32>> {
+    if num_steps == 0 {
+        return Err(VokraError::InvalidArgument(
+            "irodori RF schedule: num_steps must be > 0".to_owned(),
+        ));
+    }
+    if !sway_coeff.is_finite() {
+        return Err(VokraError::InvalidArgument(
+            "irodori RF schedule: sway_coeff must be finite".to_owned(),
+        ));
+    }
+    let initial = 0.999_f32;
+    let n = num_steps as f32;
+    let mut out = Vec::with_capacity(num_steps + 1);
+    for index in 0..=num_steps {
+        let mut u = index as f32 / n;
+        if sway_coeff != 0.0 {
+            u += sway_coeff * ((std::f32::consts::FRAC_PI_2 * u).cos() + u - 1.0);
+        }
+        u = u.clamp(0.0, 1.0);
+        out.push((1.0 - u) * initial);
+    }
+    if !out.windows(2).all(|pair| pair[0] > pair[1]) {
+        return Err(VokraError::InvalidArgument(
+            "irodori RF schedule must be strictly decreasing".to_owned(),
+        ));
+    }
+    Ok(out)
+}
+
+/// Source CFG variants.  These are distinct from the shared sampler's
+/// batch/dual dispatch because Irodori's independent mode can mix text,
+/// speaker, and optional caption branches separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Guidance modes await the authenticated native RF-DiT path.
+pub(crate) enum IrodoriCfgGuidanceMode {
+    Independent,
+    Joint,
+    Alternating,
+}
+
+/// Validates the source sampling controls without pretending that a learned
+/// RF-DiT forward is available. This is an adapted deterministic native
+/// boundary: the official Python source seeds and allocates `x_t` internally,
+/// so caller-owned noise here is not a byte-identical source ownership claim.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // Sampling contract is retained for staged validation only.
+pub(crate) struct IrodoriSamplingContract {
+    pub num_steps: usize,
+    pub cfg_scale_text: f32,
+    pub cfg_scale_speaker: f32,
+    pub cfg_scale_caption: f32,
+    pub cfg_min_t: f32,
+    pub cfg_max_t: f32,
+    pub truncation_factor: Option<f32>,
+    pub rescale_k: Option<f32>,
+    pub rescale_sigma: Option<f32>,
+    pub guidance_mode: IrodoriCfgGuidanceMode,
+    pub sway_coeff: f32,
+}
+
+impl IrodoriSamplingContract {
+    #[allow(dead_code)] // Staged validation awaits the authenticated native RF-DiT path.
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.num_steps == 0 {
+            return Err(VokraError::InvalidArgument(
+                "irodori sampling: num_steps must be > 0".to_owned(),
+            ));
+        }
+        for (name, value) in [
+            ("cfg_scale_text", self.cfg_scale_text),
+            ("cfg_scale_speaker", self.cfg_scale_speaker),
+            ("cfg_scale_caption", self.cfg_scale_caption),
+            ("cfg_min_t", self.cfg_min_t),
+            ("cfg_max_t", self.cfg_max_t),
+            ("sway_coeff", self.sway_coeff),
+        ] {
+            if !value.is_finite() {
+                return Err(VokraError::InvalidArgument(format!(
+                    "irodori sampling: {name} must be finite"
+                )));
+            }
+        }
+        for (name, value) in [
+            ("cfg_scale_text", self.cfg_scale_text),
+            ("cfg_scale_speaker", self.cfg_scale_speaker),
+            ("cfg_scale_caption", self.cfg_scale_caption),
+        ] {
+            if value < 0.0 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "irodori sampling: {name} must be >= 0"
+                )));
+            }
+        }
+        if !(0.0..=1.0).contains(&self.cfg_min_t)
+            || !(0.0..=1.0).contains(&self.cfg_max_t)
+            || self.cfg_min_t > self.cfg_max_t
+        {
+            return Err(VokraError::InvalidArgument(
+                "irodori sampling: cfg window must satisfy 0 <= min_t <= max_t <= 1".to_owned(),
+            ));
+        }
+        for (name, value) in [
+            ("truncation_factor", self.truncation_factor),
+            ("rescale_k", self.rescale_k),
+            ("rescale_sigma", self.rescale_sigma),
+        ] {
+            if let Some(value) = value {
+                if !value.is_finite() || value <= 0.0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "irodori sampling: {name} must be finite and > 0"
+                    )));
+                }
+            }
+        }
+        if self.rescale_k.is_some() != self.rescale_sigma.is_some() {
+            return Err(VokraError::InvalidArgument(
+                "irodori sampling: rescale_k and rescale_sigma must be supplied together"
+                    .to_owned(),
+            ));
+        }
+        if matches!(self.guidance_mode, IrodoriCfgGuidanceMode::Joint)
+            && ((self.cfg_scale_text - self.cfg_scale_speaker).abs() > 1.0e-6
+                || (self.cfg_scale_text - self.cfg_scale_caption).abs() > 1.0e-6)
+        {
+            return Err(VokraError::InvalidArgument(
+                "irodori sampling: joint CFG requires equal enabled guidance scales".to_owned(),
+            ));
+        }
+        irodori_rf_timesteps(self.num_steps, self.sway_coeff).map(|_| ())
+    }
+
+    /// Validates an adapted native caller-owned RF initial-noise buffer. This
+    /// is not byte-identical to the official source, which seeds and allocates
+    /// `x_t` internally; a future binder must document that boundary explicitly.
+    #[allow(dead_code)] // Staged validation awaits the authenticated native RF-DiT path.
+    pub(crate) fn validate_initial_noise(
+        &self,
+        initial_noise: &[f32],
+        batch_size: usize,
+        sequence_length: usize,
+        latent_dim: usize,
+    ) -> Result<()> {
+        self.validate()?;
+        let expected = batch_size
+            .checked_mul(sequence_length)
+            .and_then(|value| value.checked_mul(latent_dim))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "irodori sampling: initial-noise shape overflows usize".to_owned(),
+                )
+            })?;
+        if initial_noise.len() != expected || initial_noise.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(format!(
+                "irodori sampling: initial noise must contain {expected} finite values"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Explicit duration bounds copied from `SamplingRequest`.
+///
+/// The official runtime has two distinct paths: an explicit `seconds` request
+/// (clamped in Python) and a duration-predictor frame estimate (scaled, rounded
+/// and clamped in latent-frame units). The native staging boundary deliberately
+/// rejects out-of-range manual seconds instead of silently reproducing that
+/// user-facing clamp; predicted frames use the source arithmetic below.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // Duration contract is retained for staged validation only.
+pub(crate) struct IrodoriDurationBounds {
+    pub scale: f32,
+    pub min_seconds: f32,
+    pub max_seconds: f32,
+    pub codec_hop_length: u32,
+}
+
+impl IrodoriDurationBounds {
+    #[allow(dead_code)] // Staged validation awaits the authenticated codec binding.
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "irodori duration: scale must be finite and > 0".to_owned(),
+            ));
+        }
+        if !self.min_seconds.is_finite()
+            || !self.max_seconds.is_finite()
+            || self.min_seconds <= 0.0
+            || self.max_seconds < self.min_seconds
+            || self.codec_hop_length == 0
+        {
+            return Err(VokraError::InvalidArgument(
+                "irodori duration: invalid seconds interval or codec hop length".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Convert an explicit manual duration. Out-of-range values are rejected
+    /// rather than silently clamped at this fail-closed boundary.
+    #[allow(dead_code)] // Staged duration path awaits the authenticated codec binding.
+    pub(crate) fn manual_frames_for_seconds(&self, seconds: f32) -> Result<usize> {
+        self.validate()?;
+        if !seconds.is_finite() || seconds < self.min_seconds || seconds > self.max_seconds {
+            return Err(VokraError::InvalidArgument(format!(
+                "irodori duration: requested {seconds} seconds outside [{}, {}]",
+                self.min_seconds, self.max_seconds
+            )));
+        }
+        let frames = (seconds * IRODORI_SAMPLE_RATE as f32 / self.codec_hop_length as f32).ceil();
+        if !frames.is_finite() || frames < 1.0 || frames > usize::MAX as f32 {
+            return Err(VokraError::InvalidArgument(
+                "irodori duration: requested frame count is out of range".to_owned(),
+            ));
+        }
+        Ok(frames as usize)
+    }
+
+    /// Convert a duration-predictor estimate using the official runtime's
+    /// `pred_frames * duration_scale`, `round`, minimum-ceil and maximum-floor
+    /// sequence. This is intentionally separate from manual seconds.
+    #[allow(dead_code)] // Staged duration path awaits the authenticated codec binding.
+    pub(crate) fn predicted_frames_to_latent_steps(&self, pred_frames: f32) -> Result<usize> {
+        self.validate()?;
+        if !pred_frames.is_finite() || pred_frames < 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "irodori duration: predicted frames must be finite and >= 0".to_owned(),
+            ));
+        }
+        let min_frames =
+            (self.min_seconds * IRODORI_SAMPLE_RATE as f32 / self.codec_hop_length as f32).ceil();
+        let max_frames =
+            (self.max_seconds * IRODORI_SAMPLE_RATE as f32 / self.codec_hop_length as f32).floor();
+        let scaled = pred_frames * self.scale;
+        let rounded = scaled.round();
+        if !scaled.is_finite()
+            || !rounded.is_finite()
+            || rounded < 0.0
+            || rounded > usize::MAX as f32
+            || min_frames > max_frames
+        {
+            return Err(VokraError::InvalidArgument(
+                "irodori duration: predicted frame count is out of range".to_owned(),
+            ));
+        }
+        Ok((rounded as usize).clamp(min_frames as usize, max_frames as usize))
+    }
+
+    /// Compatibility spelling for callers that only have an explicit seconds
+    /// request. It remains the manual, fail-closed path.
+    #[allow(dead_code)] // Staged duration path awaits the authenticated codec binding.
+    pub(crate) fn frames_for_seconds(&self, seconds: f32) -> Result<usize> {
+        self.manual_frames_for_seconds(seconds)
+    }
+}
+
+// Semantic-DACVAE-Japanese-32dim is intentionally not represented by a
+// caller-constructed evidence object.  A future private binder must be built
+// directly from a fixed, authenticated inspection manifest; accepting a
+// caller-provided digest here would make an untrusted payload self-authenticating.
 
 // ---------------------------------------------------------------------------
 // DiT (rectified-flow diffusion transformer) hparams
@@ -270,6 +551,35 @@ impl IrodoriDitConfig {
     #[must_use]
     pub fn ffn_inner_dim(&self) -> u32 {
         (self.model_dim as f64 * self.mlp_ratio as f64) as u32
+    }
+
+    /// Source `JointAttention._apply_rotary_half` rotates the first half of
+    /// attention heads and leaves the second half unrotated.
+    #[allow(dead_code)] // Staged layout helper awaits the authenticated native RF-DiT path.
+    pub(crate) fn half_rotary_head_counts(&self) -> Result<(u32, u32)> {
+        let heads = self.head_dim().map(|_| self.num_heads).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "irodori DiT: num_heads must divide model_dim for half-head RoPE".to_owned(),
+            )
+        })?;
+        if heads == 0 || heads % 2 != 0 {
+            return Err(VokraError::InvalidArgument(
+                "irodori DiT: half-head RoPE requires an even positive head count".to_owned(),
+            ));
+        }
+        Ok((heads / 2, heads / 2))
+    }
+
+    /// LowRankAdaLN emits three model-width vectors (shift, scale, gate),
+    /// each with a rank bottleneck on its learned residual projection.
+    #[allow(dead_code)] // Staged layout helper awaits the authenticated native RF-DiT path.
+    pub(crate) fn adaln_layout(&self) -> Result<(u32, u32, u32)> {
+        if self.model_dim == 0 || self.adaln_rank == 0 || self.adaln_rank > self.model_dim {
+            return Err(VokraError::InvalidArgument(
+                "irodori DiT: invalid LowRankAdaLN model/rank".to_owned(),
+            ));
+        }
+        Ok((self.model_dim, self.adaln_rank, 3 * self.model_dim))
     }
 }
 
@@ -553,15 +863,12 @@ impl IrodoriConfig {
         }
     }
 
-    /// A canonical [`FlowSamplerConfig`] that matches the release
-    /// inference defaults (`SamplingConfig.num_steps = 40`,
-    /// `Schedule::Linear`, independent split-batch CFG on three axes).
-    /// The three per-axis scales (`cfg_scale_text = 3.0`,
-    /// `cfg_scale_caption = 3.0`, `cfg_scale_speaker = 5.0`) collapse to
-    /// a single [`CfgScaleProfile::Constant`] here because the v3 base
-    /// checkpoint does not carry the caption branch — the caller can
-    /// override the profile when driving the VoiceDesign 3-branch
-    /// variant.
+    /// Returns the generic sampler descriptor used by Vokra's shared flow
+    /// API for diagnostics. It is not itself the source sampler: the
+    /// official implementation runs from `t=0.999` down to `t=0` and has
+    /// independent text/speaker/caption CFG branches. The source-shaped
+    /// controls are represented by [`IrodoriSamplingContract`] and
+    /// [`irodori_rf_timesteps`].
     #[must_use]
     pub fn default_sampler(&self) -> FlowSamplerConfig {
         FlowSamplerConfig {
@@ -823,20 +1130,14 @@ impl IrodoriWeights {
 
 /// Irodori-TTS-500M-v3 engine handle.
 ///
-/// Carries the resolved config + weight store + an optional
-/// [`DacCodecGguf`] codec binding + a derived [`FlowSamplerConfig`]
-/// (the release inference defaults). [`Self::synthesize`] is the primary
-/// text → PCM entry point; until real weights are bound, a codec GGUF
-/// is injected via [`Self::with_codec`], and the text-encoder →
-/// speaker-encoder → RF-DiT → codec-decode chain is wired end-to-end
-/// (T29-equivalent follow-up wave), it returns
-/// [`VokraError::NotImplemented`] naming the blocker (FR-EX-08 — never
-/// a silent zero-fill or empty audio buffer).
+/// Carries the resolved config and explicit fixture weight store. The
+/// compatibility [`Self::with_codec`] accessor does not bind a vanilla
+/// [`DacCodecGguf`]: it is not an Irodori Semantic-DACVAE decoder and cannot
+/// unlock production synthesis.
 #[derive(Debug, Clone)]
 pub struct IrodoriTts {
     cfg: IrodoriConfig,
     weights: IrodoriWeights,
-    codec: Option<DacCodecGguf>,
     sampler: FlowSamplerConfig,
 }
 
@@ -855,19 +1156,17 @@ impl IrodoriTts {
         Ok(Self {
             cfg,
             weights,
-            codec: None,
             sampler,
         })
     }
 
-    /// Injects a `Semantic-DACVAE-Japanese-32dim` codec binding (the
-    /// same `DacCodecGguf`-shaped seam Dia / Zonos use with vanilla
-    /// DAC). Returns the modified engine; without this bind
-    /// [`Self::synthesize`] returns `NotImplemented`.
-    #[must_use]
-    pub fn with_codec(mut self, codec: DacCodecGguf) -> Self {
-        self.codec = Some(codec);
-        self
+    /// Legacy-named accessor. A vanilla DAC value cannot be used as Irodori's
+    /// distinct Semantic-DACVAE-Japanese-32dim decoder, so callers receive an
+    /// explicit error instead of a silently discarded binding.
+    pub fn with_codec(self, _codec: DacCodecGguf) -> Result<Self> {
+        Err(VokraError::NotImplemented(
+            "irodori: INSPECTION_ONLY — DacCodecGguf is not an authenticated Semantic-DACVAE-Japanese-32dim binder",
+        ))
     }
 
     /// Overrides the default sampler. The release defaults are a
@@ -900,19 +1199,19 @@ impl IrodoriTts {
         self.weights.is_synthesized
     }
 
-    /// True iff a `Semantic-DACVAE-Japanese-32dim` codec binding has
-    /// been injected via [`Self::with_codec`].
+    /// Whether the production codec binder is present. This compatibility
+    /// seam remains false until a dedicated Semantic-DACVAE binder exists.
     #[must_use]
     pub fn has_codec(&self) -> bool {
-        self.codec.is_some()
+        false
     }
 
     /// Synthesizes PCM for `text` at 48 kHz mono.
     ///
-    /// This is the primary text → PCM entry point. **Real weights AND a
-    /// codec binding required**: synthesized-weight builds cannot
-    /// produce meaningful audio, so this returns
-    /// [`VokraError::NotImplemented`] naming the blocker (FR-EX-08 —
+    /// This is the primary text → PCM entry point. The production path is
+    /// currently inspection-only: authenticated composite binding, native
+    /// forward, and parity are pending. It returns
+    /// [`VokraError::NotImplemented`] naming those blockers (FR-EX-08 —
     /// never a silent zero-fill or empty audio buffer).
     ///
     /// # Errors
@@ -926,37 +1225,9 @@ impl IrodoriTts {
                 "irodori synthesize: text is empty".to_owned(),
             ));
         }
-        if self.weights.is_synthesized {
-            return Err(VokraError::NotImplemented(
-                "irodori synthesize: this engine holds synthesized weights (deterministic \
-                 scaffold fixture from IrodoriWeights::synthesized) — synthesized-weight audio \
-                 would be a hallucinated waveform, not real speech. Bind real Irodori-TTS-500M-v3 \
-                 weights (MIT, huggingface.co/Aratako/Irodori-TTS-500M-v3) before invoking \
-                 synthesize. The shape flow (config validation, weight-store construction, \
-                 text-empty check, sampler handshake) is exercised through IrodoriTts::new; \
-                 real-checkpoint binding lands in a follow-up wave (T29-equivalent).",
-            ));
-        }
-        if self.codec.is_none() {
-            return Err(VokraError::NotImplemented(
-                "irodori synthesize: no `Semantic-DACVAE-Japanese-32dim` codec binding — inject \
-                 one via IrodoriTts::with_codec(DacCodecGguf) before invoking synthesize. \
-                 Irodori-TTS decodes to PCM through the paired DACVAE codec \
-                 (huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim, 32-d latent → 48 kHz \
-                 PCM); without it the runtime cannot lower continuous latents to a waveform.",
-            ));
-        }
+        let _ = self;
         Err(VokraError::NotImplemented(
-            "irodori synthesize: real weights are bound and a Semantic-DACVAE codec is present, \
-             but the LLM-JP-3 text-encoder → reference-latent speaker-encoder → RF-DiT joint- \
-             attention body → rectified-flow Euler sampler (vokra_ops::flow_sample, \
-             Schedule::Linear or Sway / 40 steps / split-batch CFG on text, caption and speaker \
-             axes / cfg window t ∈ [0.5, 1.0]) → Semantic-DACVAE decode → 48 kHz PCM forward \
-             path has not landed yet. Follow-up wave (T29-equivalent): (1) tokenize `text` with \
-             the LLM-JP-3 150M tokenizer (add_bos=true), (2) run the text encoder + optional \
-             reference-latent speaker encoder, (3) sample a 32-d latent sequence of length \
-             derived from the duration predictor (v3 base + v3 VoiceDesign) or a caller-supplied \
-             `--seconds`, (4) decode through the injected DACVAE codec to 48 kHz mono PCM.",
+            "irodori synthesize: INSPECTION_ONLY — authenticated composite binding, Japanese tokenizer/reference conditioning, duration and RF-DiT sampling, distinct Semantic-DACVAE-Japanese-32dim PCM decoder, and CPU parity are not implemented; no audio is produced",
         ))
     }
 }
@@ -1185,6 +1456,88 @@ mod tests {
         assert_eq!(s.cfg_mode, CfgMode::SplitBatch);
     }
 
+    #[test]
+    fn source_rf_schedule_is_descending_and_sway_is_explicit() {
+        let linear = irodori_rf_timesteps(40, 0.0).expect("linear source schedule");
+        assert_eq!(linear.len(), 41);
+        assert_eq!(linear.first().copied(), Some(0.999));
+        assert_eq!(linear.last().copied(), Some(0.0));
+        assert!(linear.windows(2).all(|pair| pair[0] > pair[1]));
+        let sway = irodori_rf_timesteps(40, -1.0).expect("sway source schedule");
+        assert!(sway.windows(2).all(|pair| pair[0] > pair[1]));
+        assert_ne!(linear, sway);
+    }
+
+    #[test]
+    fn source_conditioning_layouts_are_pinned() {
+        let dit = IrodoriDitConfig::irodori_500m_v3();
+        assert_eq!(dit.half_rotary_head_counts().unwrap(), (10, 10));
+        assert_eq!(dit.adaln_layout().unwrap(), (1280, 192, 3840));
+    }
+
+    #[test]
+    fn source_sampling_contract_rejects_partial_rescale() {
+        let contract = IrodoriSamplingContract {
+            num_steps: 40,
+            cfg_scale_text: 3.0,
+            cfg_scale_speaker: 5.0,
+            cfg_scale_caption: 3.0,
+            cfg_min_t: 0.5,
+            cfg_max_t: 1.0,
+            truncation_factor: None,
+            rescale_k: Some(1.0),
+            rescale_sigma: None,
+            guidance_mode: IrodoriCfgGuidanceMode::Independent,
+            sway_coeff: -1.0,
+        };
+        assert!(contract.validate().is_err());
+    }
+
+    #[test]
+    fn source_sampling_contract_requires_caller_owned_finite_noise() {
+        let contract = IrodoriSamplingContract {
+            num_steps: 40,
+            cfg_scale_text: 3.0,
+            cfg_scale_speaker: 5.0,
+            cfg_scale_caption: 3.0,
+            cfg_min_t: 0.5,
+            cfg_max_t: 1.0,
+            truncation_factor: None,
+            rescale_k: None,
+            rescale_sigma: None,
+            guidance_mode: IrodoriCfgGuidanceMode::Independent,
+            sway_coeff: -1.0,
+        };
+        assert!(contract.validate_initial_noise(&[0.0; 8], 1, 2, 4).is_ok());
+        assert!(
+            contract
+                .validate_initial_noise(&[f32::NAN; 8], 1, 2, 4)
+                .is_err()
+        );
+        assert!(contract.validate_initial_noise(&[0.0; 4], 1, 2, 4).is_err());
+    }
+
+    #[test]
+    fn duration_bounds_distinguish_manual_and_predicted_paths() {
+        let bounds = IrodoriDurationBounds {
+            scale: 1.5,
+            min_seconds: 0.5,
+            max_seconds: 30.0,
+            codec_hop_length: 3840,
+        };
+        assert_eq!(bounds.manual_frames_for_seconds(0.5).unwrap(), 7);
+        assert!(bounds.manual_frames_for_seconds(30.1).is_err());
+        // 4.0 predicted frames * 1.5 = 6.0, then the source min-frame ceil
+        // keeps the result at 7 frames for a 48 kHz / 3840-hop codec.
+        assert_eq!(bounds.predicted_frames_to_latent_steps(4.0).unwrap(), 7);
+        // The max bound is a floor in latent-frame units.
+        assert_eq!(
+            bounds.predicted_frames_to_latent_steps(100_000.0).unwrap(),
+            375
+        );
+        assert_eq!(bounds.frames_for_seconds(0.5).unwrap(), 7);
+    }
+
     // ---- Engine posture --------------------------------------------------
 
     #[test]
@@ -1206,9 +1559,9 @@ mod tests {
         let err = engine.synthesize("こんにちは").unwrap_err();
         match err {
             VokraError::NotImplemented(msg) => {
-                // Message must name the blocker so operators can act on it.
-                assert!(msg.contains("synthesized weights"), "message: {msg}");
-                assert!(msg.contains("Irodori"), "message: {msg}");
+                assert!(msg.contains("INSPECTION_ONLY"), "message: {msg}");
+                assert!(msg.contains("Semantic-DACVAE"), "message: {msg}");
+                assert!(msg.contains("no audio"), "message: {msg}");
             }
             other => panic!("expected NotImplemented, got {other:?}"),
         }
@@ -1220,5 +1573,30 @@ mod tests {
         let weights = IrodoriWeights::synthesized(&cfg).expect("synthesized");
         let engine = IrodoriTts::new(cfg, weights).expect("new");
         assert!(!engine.has_codec());
+    }
+
+    #[test]
+    fn legacy_named_vanilla_codec_seam_refuses_explicitly() {
+        let cfg = IrodoriConfig::tiny_for_tests();
+        let weights = IrodoriWeights::synthesized(&cfg).expect("synthesized");
+        let engine = IrodoriTts::new(cfg, weights).expect("new");
+        let codec = DacCodecGguf {
+            attrs: vokra_ops::dac_rvq::DacRvqAttrs {
+                n_codebooks: 0,
+                codebook_size: 0,
+                codebook_dim: 0,
+                d_model: 0,
+            },
+            tables: Vec::new(),
+            out_projs: Vec::new(),
+            sample_rate: 0,
+            hop_length: 0,
+        };
+        let err = engine
+            .with_codec(codec)
+            .expect_err("vanilla DAC must not bind");
+        assert!(
+            matches!(err, VokraError::NotImplemented(message) if message.contains("Semantic-DACVAE"))
+        );
     }
 }

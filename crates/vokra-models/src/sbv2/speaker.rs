@@ -24,6 +24,8 @@
 
 use vokra_core::{Result, VokraError};
 
+use crate::compute::Compute;
+
 /// Per-speaker embedding table: a flat, row-major `[n_speakers,
 /// d_speaker]` buffer, indexed by `speaker_id` to a `[d_speaker]` slice
 /// (see [`lookup`](SpeakerEmbedding::lookup)).
@@ -207,5 +209,57 @@ impl ExternalSpeakerProjection {
             *o_slot = acc;
         }
         Ok(out)
+    }
+
+    /// Backend sibling of [`Self::forward`], routing the learned projection
+    /// through GEMV while retaining the same strict input-shape contract.
+    pub(crate) fn forward_with_compute(
+        &self,
+        compute: &Compute,
+        embedding: &[f32],
+    ) -> Result<Vec<f32>> {
+        if embedding.len() != self.d_in {
+            return Err(VokraError::InvalidArgument(format!(
+                "ExternalSpeakerProjection::forward: embedding length {} does not match d_in {}",
+                embedding.len(),
+                self.d_in,
+            )));
+        }
+        let mut out = vec![0.0_f32; self.d_out];
+        compute.gemv_f32(
+            self.d_out,
+            self.d_in,
+            &self.weight,
+            embedding,
+            Some(&self.bias),
+            &mut out,
+        )?;
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_projection_compute_matches_asymmetric_scalar_reference() {
+        // Distinct rows, signs, and a non-zero bias catch transposed GEMV
+        // layouts and the easy-to-miss bias omission.
+        let projection = ExternalSpeakerProjection::from_weights(
+            vec![1.0, -2.0, 0.5, -3.0, 4.0, 1.5],
+            vec![0.25, -0.75],
+            3,
+            2,
+        );
+        let input = [0.7, -1.25, 2.0];
+        let scalar = projection.forward(&input).expect("valid scalar projection");
+        let computed = projection
+            .forward_with_compute(&Compute::cpu(), &input)
+            .expect("valid CPU Compute projection");
+        assert_eq!(computed.len(), scalar.len());
+        for (actual, expected) in computed.iter().zip(scalar) {
+            assert!((actual - expected).abs() <= 1e-6, "{actual} != {expected}");
+        }
     }
 }

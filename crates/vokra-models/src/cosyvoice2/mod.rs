@@ -1,86 +1,28 @@
-//! CosyVoice2 native TTS / S2S — module scaffold (M3-09).
+//! CosyVoice2 composite TTS inspection boundary.
 //!
-//! Native re-implementation of the CosyVoice2 inference core (text tokenizer,
-//! LLM backbone, Flow Matching CFM → mel, HiFTNet vocoder, chunk-aware
-//! streaming — see [`hift_chain`] for the 2026-07-22 訂正 that replaced the
-//! wrong-premise Mimi wiring) in the whisper.cpp style: the model
-//! *definition* lives in Rust; only the upstream
-//! **safetensors** checkpoint (Apache 2.0 code + weight, official
-//! `iic/CosyVoice2-0.5B` on HuggingFace, converted offline to GGUF by
-//! `vokra-convert`, T03) is consumed at runtime. No ONNX at runtime
-//! (FR-LD-05, permanent constraint; CLAUDE.md design judgement 4).
+//! The official release combines a Qwen2LM wrapper, causal flow/CFM, HiFTNet
+//! vocoder, speech tokenizer, and speaker conditioning. The historical
+//! LLM-only GGUF and arbitrary metadata containers are not complete TTS
+//! artifacts. This module retains compatibility fixtures, while the public
+//! GGUF loader fails closed until a complete authenticated binder and
+//! independent parity evidence are reviewed. The source-shaped batch-one
+//! route lives in the internal [`native`] module and requires injected
+//! components; it does not make a production-support claim.
 //!
-//! # Scope of this scaffold (M3-09 session partial land)
-//!
-//! One CC session cannot cover all 28 M3-09 CC tickets (14 h of code work).
-//! This scaffold delivers the **module tree + config surface + engine wiring
-//! contracts** so the follow-up sessions can land the numeric forward paths
-//! against the same public surface without re-plumbing the top-level types:
-//!
-//! - [`CosyVoice2Config`] — `vokra.cosyvoice2.*` metadata surface (T04);
-//! - [`CosyVoice2Tts`] — the [`TtsEngine`] handle carrying the loaded arch,
-//!   the compliance / research-flag gate wiring (T01/T25) and the
-//!   watermark / disclosure config (T17/T18);
-//! - the `text_encoder`, `flow_matching`, `mimi_bridge` submodules — stubs
-//!   returning [`VokraError::NotImplemented`] with a clear next-step message
-//!   until T07 / T10 / T13 land.
-//!
-//! Every stub surfaces an explicit [`VokraError`] (never a silent fallback,
-//! FR-EX-08) so a caller who wires a session against this scaffold today
-//! does *not* silently receive a degraded output — they get a loud error
-//! naming the ticket that would satisfy it.
-//!
-//! # Dependencies (all landed as Wave 2/3 in the M3 batch)
-//!
-//! - `vokra_ops::flow_sample` (M3-05, FR-EX-10 — runtime function, NOT a
-//!   graph op; sampler axes are configurable per invocation);
-//! - `vokra_ops::mimi_rvq_decode` / `MimiDecoder` (M3-06, RVQ decode +
-//!   Mimi CC-BY 4.0 attribution recorded in NOTICE / license-audit.md);
-//! - `vokra_ops::length_conditioning` (M3-08, mode A `UserSpecified` /
-//!   mode B `RefLinear`);
-//! - `vokra_ops::ProsodyControl` + [`ApplyProsody`] (M3-17, unified prosody
-//!   control message; the CosyVoice2 adapter folds pitch/speed/pause into
-//!   the model's native instruction-string surface — T17-follow-on).
-//!
-//! # Streaming (NFR-PF-07)
-//!
-//! chunk-aware streaming with `[time, stream, codebook]` paged KV cache
-//! (M3-03) lands with T14 / T15 / T16. The type surface for that path is
-//! *reserved* here (module `flow_matching` docs `chunk_size` / `chunk_hop`)
-//! but the concrete state machine is deferred — see T14's docstring for the
-//! next-session contract.
-//!
-//! # Compliance
-//!
-//! CosyVoice2 is **Apache 2.0 code + weight** (CLAUDE.md モデル表, verified in
-//! docs/license-audit.md — appended by the T26 owner ticket). The runtime
-//! reads the license class through
-//! [`vokra_core::check_weight_license`] on load; the M2-13 compliance gate
-//! rejects a CC-BY-NC provenance (F5-TTS / Fish-Speech) even if it were
-//! mislabelled as CosyVoice2 (T25 regression test lives beside T22 parity
-//! CI once the GGUF fixture is available).
-//!
-//! # AudioSeal watermark / C2PA manifest (T17 / T18)
-//!
-//! [`WatermarkConfig::default()`] preserves the FR-CP-01/02 design intent
-//! (AudioSeal + C2PA + SilentCipher = ON), and
-//! [`WatermarkConfig::backend_status()`] returns
-//! [`vokra_core::compliance::WatermarkBackendStatus::Deferred`] — no embedding backend was
-//! implemented (M1-07 client drop 2026-07-04). CosyVoice2 must NOT lie
-//! about watermarking: **the deployer-side disclosure MUST**
-//! (`docs/legal-compliance.md` §1.4) still applies regardless of config
-//! flags, and the loader surfaces the deferred-backend notice through the
-//! same session-level hook the piper-plus / Kokoro loaders use (wired at
-//! T17 follow-on when the CosyVoice2 GGUF is available).
-
+//! Synthetic constructors are test-only numerical fixtures and are never used
+//! by the production loader. Unsupported operations return explicit errors;
+//! there is no silent CPU fallback.
 pub(crate) mod chunk_pipeline;
 pub(crate) mod config;
 pub(crate) mod flow_matching;
+pub(crate) mod native;
 // SoTA plan Phase 1-3 (2026-07-24): the correct terminal vocoder for
 // CosyVoice2 — mel → PCM via NSF + ISTFTNet. Replaces the wrong-premise
 // `mimi_bridge` module (which is now `#[deprecated]` and retained only for
 // the existing `chunk_pipeline` scaffold + `parity_cosyvoice2` test imports).
 pub mod hift_chain;
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+mod hift_chain_metal;
 // Public so integration tests can reach the parity harness
 // (`vokra_models::cosyvoice2::llm::parity`). The internal-oracle path
 // through the `pub use` list below remains the primary surface; the
@@ -96,7 +38,7 @@ use std::path::Path;
 use vokra_core::gguf::GgufFile;
 use vokra_core::{
     BackendKind, CompliancePolicy, Result, SynthesisRequest, SynthesizedAudio, TtsEngine,
-    VokraError, WatermarkConfig, check_weight_license,
+    VokraError, WatermarkConfig,
 };
 use vokra_ops::{ApplyProsody, ProsodyControl};
 
@@ -107,7 +49,7 @@ pub use hift_chain::{HiFTChain, HiFTChainConfig, HiFTChainWeights};
 pub use llm::{
     DEFAULT_RMS_NORM_EPS, DEFAULT_ROPE_BASE_QWEN2, LlmBackbone, LlmBackboneConfig, LlmBackboneStep,
 };
-// SoTA plan Phase 1-3 (2026-07-24): re-export is intentionally
+// Compatibility re-export is intentionally
 // `#[allow(deprecated)]` — `MimiBridge` itself is marked deprecated (see
 // `mimi_bridge.rs` module docstring for the SoTA plan §1(a) 訂正 rationale)
 // but the re-export must keep working so pre-existing test imports and the
@@ -119,11 +61,11 @@ pub use text_encoder::{CosyVoice2Tokenizer, TextEncoderStub};
 /// `vokra.model.arch` a CosyVoice2 GGUF must carry.
 ///
 /// Written by `vokra-convert::models::cosyvoice2::ARCH` (T03); kept in sync
-/// with the runtime constant here. The registry
-/// (`vokra_core::compliance::license_class::registry_lookup`) already knows
-/// this id as `LicenseClass::Permissive` (Apache 2.0 code + weight —
-/// docs/license-audit.md), so a stock CosyVoice2 GGUF passes the
-/// [`check_weight_license`] gate without a research flag.
+/// with the runtime constant here. This marker is retained for compatibility
+/// with the shared dispatch table; it does not authorize a production load.
+/// The public loader performs its architecture parse and then returns the
+/// explicit inspection-only composite blocker, regardless of provenance
+/// metadata or license labels.
 const EXPECTED_ARCH: &str = "cosyvoice2";
 
 /// The backend hot ops the CosyVoice2 native model dispatches through the
@@ -140,32 +82,30 @@ const EXPECTED_ARCH: &str = "cosyvoice2";
 #[allow(dead_code)] // consumed by T19/T20 follow-on
 pub(crate) const COSYVOICE2_HOT_OPS: &[crate::compute::HotOp] = &[];
 
-/// A loaded CosyVoice2 model — engine handle.
+/// CosyVoice2 engine handle for a future authenticated composite artifact.
+///
+/// The public GGUF loader currently fails closed: an LLM-only or arbitrary
+/// metadata container cannot construct this production handle. The explicit
+/// synthetic LLM constructors remain available for numerical tests only.
 ///
 /// The struct is intentionally light: it carries the resolved config, the
 /// selected backend, and the watermark / prosody control state. The heavy
-/// numeric state (text encoder / LLM backbone / Flow Matching / Mimi decoder)
+/// numeric state (Qwen2LM / causal flow / HiFTNet)
 /// lands in follow-on tickets and hangs off private fields added at that
-/// time. A stub constructor
-/// ([`CosyVoice2Tts::from_gguf_with_policy`]) still validates the arch, runs
-/// the compliance gate, and reads the config so the engine's error surface
-/// (bad arch → [`VokraError::ModelLoad`], mismatched hparams →
-/// [`VokraError::InvalidArgument`]) is exercised today.
+/// time. The public constructor validates identity/compliance and then fails
+/// closed until the complete composite checkpoint binder is reviewed.
 #[derive(Debug)]
 pub struct CosyVoice2Tts {
-    /// The resolved GGUF metadata (arch / vocab / streaming / flow / mimi
-    /// hyperparameters — T04 chunk design).
+    /// The resolved GGUF metadata retained for the compatibility container.
+    /// Legacy `mimi.*` fields are inspection-only; the native component graph
+    /// is Qwen2LM → causal flow/CFM → HiFTNet.
     config: CosyVoice2Config,
     /// LLM backbone (M3-09-T07/T08 body). Decoder-only Mistral-style
     /// transformer whose output token stream drives the Flow Matching CFM.
     ///
-    /// `None` when the GGUF carries the 0-placeholder shape config the
-    /// scaffold converter emits — the LLM backbone refuses to bind a
-    /// synthesized fixture on zero dims (FR-EX-08 — the shape-only
-    /// converter path is not a silent-fallback path). A caller who wires
-    /// a real synthesized fixture receives a `Some(LlmBackbone)` and can
-    /// exercise the full Mistral forward via
-    /// [`CosyVoice2Tts::llm`] → [`llm::LlmBackbone::forward`].
+    /// Populated only by a future authenticated composite binder. Synthetic
+    /// numerical fixtures use the explicitly named
+    /// [`llm::LlmBackbone::synthesized`] constructor instead.
     ///
     /// The LLM config is read from the same GGUF as the top-level config
     /// (`vokra.cosyvoice2.arch.*` LLM-side keys), so the two are always
@@ -178,8 +118,8 @@ pub struct CosyVoice2Tts {
     /// the load loudly (FR-EX-08), rather than silently binding `None`.
     tokenizer: Option<text_encoder::CosyVoice2Tokenizer>,
     /// Selected compute backend (default [`BackendKind::Cpu`], overridable
-    /// via [`CosyVoice2Tts::with_backend`]; the numeric path lands with
-    /// T19/T20).
+    /// via [`CosyVoice2Tts::with_backend`]. The injected HiFTChain forwards
+    /// this selection to its CPU or Apple Metal resident route.
     backend_kind: BackendKind,
     /// Watermark / disclosure knobs. Defaults to design intent — AudioSeal +
     /// C2PA + SilentCipher = ON. Embedding backend is deferred (T17 doc),
@@ -204,13 +144,14 @@ pub struct CosyVoice2Tts {
 
 impl CosyVoice2Tts {
     /// Loads a CosyVoice2 GGUF from disk with the fail-closed
-    /// [`CompliancePolicy::strict`] gate.
+    /// [`CompliancePolicy::strict`] policy available to the compatibility
+    /// API. The reviewed loader still rejects every parsed artifact at the
+    /// composite inspection-only boundary.
     ///
     /// # Errors
     ///
-    /// Propagates GGUF parse errors, arch mismatch, and any
-    /// compliance-gate refusal (a CC-BY-NC provenance without a research
-    /// flag is rejected — [`VokraError::ResearchLicenseRequired`]).
+    /// Propagates GGUF parse errors, arch mismatch, and the explicit
+    /// inspection-only composite-runtime refusal.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         Self::from_path_with_policy(path, &CompliancePolicy::strict())
     }
@@ -227,16 +168,12 @@ impl CosyVoice2Tts {
     /// Loads a CosyVoice2 GGUF from raw bytes under an explicit `policy`.
     ///
     /// The `vokra.model.arch` is checked first, so a non-CosyVoice2 (or
-    /// wrong architecture) GGUF fails with a clear
-    /// [`VokraError::ModelLoad`] rather than a confusing missing-tensor
-    /// error deep in a component loader (the pattern piper-plus and
-    /// Kokoro established). Then the shared weight-license gate
-    /// ([`check_weight_license`], FR-CP-03) runs on the container before
-    /// any weight tensor is bound — a non-commercial or unknown weight
-    /// license without a research flag is refused, never silently loaded.
-    /// CosyVoice2 is Apache 2.0 code + weight, so a stock (unlabelled)
-    /// CosyVoice2 GGUF classifies permissive (built-in registry, arch
-    /// `cosyvoice2`) and passes.
+    /// wrong-architecture) GGUF fails with a clear [`VokraError::ModelLoad`].
+    /// For the correct architecture, this API then returns the explicit
+    /// `INSPECTION_ONLY` composite-runtime error. This ordering is
+    /// intentional: malformed identity is diagnosed first, while no
+    /// provenance or license label can make an incomplete composite appear
+    /// production-ready.
     pub fn from_gguf_with_policy(bytes: &[u8], policy: &CompliancePolicy) -> Result<Self> {
         let file = GgufFile::parse(bytes.to_vec())
             .map_err(|e| VokraError::ModelLoad(format!("cosyvoice2 GGUF: {e}")))?;
@@ -249,58 +186,23 @@ impl CosyVoice2Tts {
                  `{EXPECTED_ARCH}`"
             )));
         }
-        check_weight_license(&file, policy)?;
-        let config = CosyVoice2Config::from_gguf(&file)?;
-        // Bind the LLM backbone off the same GGUF. `from_gguf` binds **real
-        // weights** when the GGUF carries the backbone tensors, else a
-        // synthesized fixture against the metadata shape.
-        //
-        // Exactly one binding failure is tolerated: a GGUF whose LLM dims are
-        // all the converter's 0 sentinel (a pre-hparam-fix conversion). Such a
-        // container must stay loadable so it can be inspected and re-converted,
-        // so the LLM handle is surfaced as `None` and
-        // [`CosyVoice2Tts::synthesize`] names that as the reason.
-        //
-        // The condition is read off the *config*, not off the error variant.
-        // Keying it on `InvalidArgument` (as this did until the 2026-07-19
-        // audit, cc-28) also swallowed genuinely malformed GGUFs — wrong-typed
-        // metadata keys and non-GQA-well-formed dims raise the same variant —
-        // so a broken container reported a successful load and only failed
-        // later, misattributed. Everything except the sentinel now propagates
-        // (FR-EX-08); real tensor-binding problems were and remain `ModelLoad`.
-        let llm_cfg = llm::LlmBackboneConfig::from_gguf(&file, &config)?;
-        let llm = if llm_cfg.is_placeholder_shape() {
-            None
-        } else {
-            Some(llm::LlmBackbone::from_gguf(&file, &config)?)
-        };
-        // Text tokenizer (T06). Present → load (a present-but-malformed pair
-        // propagates its error, FR-EX-08); wholly absent → `None`. Keying on
-        // "either chunk present" means a half-embedded pair (only vocab or
-        // only merges) hits the loud `from_gguf` missing-chunk error rather
-        // than binding a silently unusable `None`.
-        let tokenizer = if file.get(text_encoder::KEY_TOKENIZER_VOCAB).is_some()
-            || file.get(text_encoder::KEY_TOKENIZER_MERGES).is_some()
-        {
-            Some(text_encoder::CosyVoice2Tokenizer::from_gguf(&file)?)
-        } else {
-            None
-        };
-        Ok(Self {
-            config,
-            llm,
-            tokenizer,
-            backend_kind: BackendKind::Cpu,
-            watermark: WatermarkConfig::default(),
-            // SoTA plan Phase 1-3: the HiFTNet vocoder is caller-injected via
-            // `with_hift_chain`. Auto-binding off the GGUF is deferred to the
-            // T13 codec-migration follow-up (real tensor-name walk).
-            hift_chain: None,
-        })
+        let _ = policy;
+        // Parse and architecture validation deliberately precede this gate so
+        // malformed or wrong-model bytes are diagnosed accurately. No
+        // compliance metadata is consulted after the gate: a composite
+        // artifact can never become a production handle through a license
+        // label or partial checkpoint.
+        Err(VokraError::UnsupportedOp(
+            "CosyVoice2 composite runtime is INSPECTION_ONLY: the reviewed llm.pt + flow.pt + hift.pt + speech-tokenizer contract is not bound; no partial LLM handle is accepted"
+                .to_owned(),
+        ))
     }
 
     /// Selects the backend the synthesis hot path runs on (default
-    /// [`BackendKind::Cpu`]; wired at T19/T20).
+    /// [`BackendKind::Cpu`]). The selected backend is forwarded by
+    /// [`Self::synthesize_pcm_from_mel`] to the injected HiFTChain.
+    /// Backend capability is checked when a forward is attempted, not when
+    /// this selector is called.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend_kind = backend;
@@ -505,8 +407,10 @@ impl CosyVoice2Tts {
     /// - [`VokraError::NotImplemented`] when no [`HiFTChain`] has been
     ///   injected via [`CosyVoice2Tts::with_hift_chain`] (fail-loud, FR-EX-08
     ///   — never a silent zero-fill fallback).
-    /// - Propagates every [`HiFTChain::forward`] error verbatim
-    ///   (shape mismatch, `t_mel == 0`, …).
+    /// - Routes through [`HiFTChain::forward_with_backend`] using the selected
+    ///   backend. CPU preserves [`HiFTChain::forward`], while Metal and other
+    ///   unsupported backends remain explicit errors (including shape
+    ///   mismatch and `t_mel == 0`).
     pub fn synthesize_pcm_from_mel(&self, mel: &[f32], t_mel: usize) -> Result<SynthesizedAudio> {
         let chain = self.hift_chain.as_ref().ok_or({
             VokraError::NotImplemented(
@@ -518,7 +422,7 @@ impl CosyVoice2Tts {
                  rustdoc for the §1(a) 訂正 rationale",
             )
         })?;
-        let samples = chain.forward(mel, t_mel)?;
+        let samples = chain.forward_with_backend(mel, t_mel, self.backend_kind)?;
         Ok(SynthesizedAudio::new(samples, chain.sample_rate()))
     }
 }
@@ -638,412 +542,19 @@ impl ApplyProsody for CosyVoice2Tts {
 }
 
 #[cfg(test)]
-mod tests {
+mod inspection_tests {
     use super::*;
+    use vokra_core::gguf::GgufBuilder;
     use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
-    use vokra_core::gguf::{GgufBuilder, GgufMetadataValue};
-
-    fn minimal_gguf_bytes(arch: &str) -> Vec<u8> {
-        let mut b = GgufBuilder::new();
-        b.add_string(KEY_MODEL_ARCH, arch);
-        b.add_string("vokra.model.name", "cosyvoice2-0.5b");
-        // config keys — see config::from_gguf; degenerate but structurally
-        // valid so the scaffold exercises the load path.
-        b.add_u32(config::KEY_SAMPLE_RATE, 24_000);
-        b.add_u32(config::KEY_VOCAB_SIZE, 0);
-        b.add_u32(config::KEY_HIDDEN_DIM, 0);
-        b.add_u32(config::KEY_N_LAYER, 0);
-        b.add_u32(config::KEY_N_HEAD, 0);
-        b.add_u32(config::KEY_FFN_DIM, 0);
-        b.add_u32(config::KEY_FLOW_NFE, 0);
-        b.add_u32(config::KEY_MIMI_N_CODEBOOKS, 0);
-        b.add_u32(config::KEY_MIMI_CODEBOOK_SIZE, 0);
-        b.add_u32(config::KEY_MIMI_D_MODEL, 0);
-        b.add_u32(config::KEY_STREAMING_CHUNK_SIZE, 0);
-        b.add_u32(config::KEY_STREAMING_CHUNK_HOP, 0);
-        b.add_metadata(
-            config::KEY_FLOW_SCHEDULE,
-            GgufMetadataValue::String("linear".to_owned()),
-        );
-        b.to_bytes().expect("gguf serialize")
-    }
 
     #[test]
-    fn arch_mismatch_fails_loudly() {
-        // A wrong-arch GGUF must fail at the arch check — not deep inside a
-        // component loader (FR-EX-08).
-        let bytes = minimal_gguf_bytes("kokoro-82m-istftnet");
-        let err = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect_err("wrong arch must fail");
-        match err {
-            VokraError::ModelLoad(msg) => assert!(
-                msg.contains(EXPECTED_ARCH) && msg.contains("kokoro-82m-istftnet"),
-                "unexpected message: {msg}"
-            ),
-            other => panic!("unexpected error variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn correct_arch_loads_scaffold_config() {
-        // The registry classifies `cosyvoice2` permissive (Apache 2.0), so
-        // the strict policy admits it.
-        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("apache-2.0 registry entry admits it");
-        assert_eq!(tts.config().sample_rate, 24_000);
-        assert_eq!(tts.backend_kind(), BackendKind::Cpu);
-        assert!(tts.watermark().any_enabled());
-    }
-
-    /// A 0-placeholder GGUF is the one LLM-binding failure the engine
-    /// deliberately tolerates (the container must stay loadable), and it must
-    /// keep loading — with the LLM handle honestly absent.
-    #[test]
-    fn placeholder_shape_gguf_loads_with_absent_llm() {
-        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("placeholder GGUF must still load");
-        assert!(tts.llm().is_none(), "0-placeholder dims → no LLM backbone");
-    }
-
-    /// Regression for the 2026-07-19 audit (cc-28): the engine used to key its
-    /// tolerance on the *error variant* (`InvalidArgument` → `None`), so a GGUF
-    /// that was genuinely malformed rather than merely old was swallowed just
-    /// the same and reported a successful load. Non-zero but non-GQA dims are
-    /// exactly that case — `n_head = 7` does not divide `hidden_dim = 512` — and
-    /// must now fail loudly (FR-EX-08).
-    #[test]
-    fn malformed_llm_dims_fail_loudly_instead_of_binding_none() {
-        let mut b = GgufBuilder::new();
-        b.add_string(KEY_MODEL_ARCH, EXPECTED_ARCH);
-        b.add_string("vokra.model.name", "cosyvoice2-0.5b");
-        b.add_u32(config::KEY_SAMPLE_RATE, 24_000);
-        // Non-zero (so not the placeholder sentinel) but not GQA-well-formed.
-        b.add_u32(config::KEY_VOCAB_SIZE, 1024);
-        b.add_u32(config::KEY_HIDDEN_DIM, 512);
-        b.add_u32(config::KEY_N_LAYER, 2);
-        b.add_u32(config::KEY_N_HEAD, 7);
-        b.add_u32(config::KEY_FFN_DIM, 1024);
-        b.add_u32(config::KEY_FLOW_NFE, 0);
-        b.add_u32(config::KEY_MIMI_N_CODEBOOKS, 0);
-        b.add_u32(config::KEY_MIMI_CODEBOOK_SIZE, 0);
-        b.add_u32(config::KEY_MIMI_D_MODEL, 0);
-        b.add_u32(config::KEY_STREAMING_CHUNK_SIZE, 0);
-        b.add_u32(config::KEY_STREAMING_CHUNK_HOP, 0);
-        b.add_metadata(
-            config::KEY_FLOW_SCHEDULE,
-            GgufMetadataValue::String("linear".to_owned()),
-        );
-        let bytes = b.to_bytes().expect("gguf serialize");
-
-        let err = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect_err("malformed LLM dims must not load as `llm = None`");
-        assert!(
-            matches!(err, VokraError::InvalidArgument(_)),
-            "unexpected error variant: {err:?}"
-        );
-    }
-
-    #[test]
-    fn synthesize_is_not_implemented_never_silent() {
-        // No silent zero-fill fallback (FR-EX-08).
-        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("load");
-        let err = tts
-            .synthesize(&SynthesisRequest::new("hello world"))
-            .expect_err("scaffold must not produce audio");
-        let VokraError::NotImplemented(msg) = err else {
-            panic!("unexpected error variant: {err:?}");
-        };
-        // This fixture carries 0-placeholder LLM dims, so the message must name
-        // *that* blocker and its fix, not the generic scaffold text. Asserting
-        // only the variant let the branch added for the 2026-07-19 audit
-        // (cc-28) be deleted with every test still green.
-        assert!(
-            msg.contains("0-placeholder") && msg.contains("--config"),
-            "placeholder GGUF must name its own blocker: {msg}"
-        );
-    }
-
-    #[test]
-    fn apply_prosody_identity_is_passthrough() {
-        // M3-17 trait contract: identity control leaves ctx untouched.
-        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("load");
-        let mut ctx = ProsodyControl::identity();
-        tts.apply(&mut ctx);
-        assert!(ctx.is_identity(), "identity in → identity out");
-    }
-
-    #[test]
-    fn apply_prosody_non_identity_is_currently_preserved() {
-        // T17-follow-on will fold pitch/speed/pause into ctx.instruction;
-        // today the scaffold preserves the caller's ctx verbatim (see the
-        // impl rustdoc for the honest-negative rationale).
-        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("load");
-        let mut ctx = ProsodyControl::default()
-            .with_speed_scale(1.25)
-            .with_pause_ms(200);
-        let before = ctx.clone();
-        tts.apply(&mut ctx);
-        assert_eq!(
-            ctx, before,
-            "T17-follow-on lands the folding; today passthrough"
-        );
-    }
-
-    // ---- Pipeline integration through CosyVoice2Tts --------------------
-
-    fn nondegenerate_gguf_bytes() -> Vec<u8> {
-        // Same fixture as minimal_gguf_bytes but with sane mimi_* +
-        // streaming_* values so the pipeline can actually run.
-        let mut b = GgufBuilder::new();
-        b.add_string(KEY_MODEL_ARCH, "cosyvoice2");
-        b.add_string("vokra.model.name", "cosyvoice2-0.5b");
-        b.add_u32(config::KEY_SAMPLE_RATE, 24_000);
-        b.add_u32(config::KEY_VOCAB_SIZE, 32);
-        b.add_u32(config::KEY_HIDDEN_DIM, 16);
-        b.add_u32(config::KEY_N_LAYER, 2);
-        b.add_u32(config::KEY_N_HEAD, 2);
-        b.add_u32(config::KEY_FFN_DIM, 32);
-        b.add_u32(config::KEY_FLOW_NFE, 2);
-        b.add_u32(config::KEY_MIMI_N_CODEBOOKS, 2);
-        b.add_u32(config::KEY_MIMI_CODEBOOK_SIZE, 8);
-        b.add_u32(config::KEY_MIMI_D_MODEL, 4);
-        b.add_u32(config::KEY_STREAMING_CHUNK_SIZE, 4);
-        b.add_u32(config::KEY_STREAMING_CHUNK_HOP, 4);
-        b.add_metadata(
-            config::KEY_FLOW_SCHEDULE,
-            GgufMetadataValue::String("linear".to_owned()),
-        );
-        b.to_bytes().expect("gguf serialize")
-    }
-
-    #[test]
-    fn synthesize_with_pipeline_end_to_end_smoke() {
-        // Full pipeline run through the engine handle: length_conditioning
-        // → run_chunks → identity MimiDecoder → PipelineOutput.
-        //
-        // Uses a zero-velocity closure so each chunk's terminal is the
-        // chunk's initial state (predictable). The code closure emits
-        // constant 1s → identity decoder produces a predictable feature
-        // buffer. This is the internal-oracle path — no real safetensors
-        // checkpoint invoked (CLAUDE.md hallucination ban).
-        let bytes = nondegenerate_gguf_bytes();
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("load");
-        let length_input =
-            vokra_core::ir::graph::LengthConditioningAttrs::user_specified_frames(6.0);
-        let x0 = vokra_ops::FlowSamplerState::new(vec![1], vec![0.0]).unwrap();
-        let out = tts
-            .synthesize_with_pipeline(
-                length_input,
-                &x0,
-                |s, _t, _p, _c| {
-                    Ok(vokra_ops::FlowSamplerState {
-                        shape: s.shape.clone(),
-                        data: vec![0.0; s.data.len()],
-                    })
-                },
-                |_s, chunk_frames, n_cb| Ok(vec![1u32; chunk_frames * n_cb]),
-            )
-            .expect("pipeline succeeds");
-        assert_eq!(out.target_frames, 6);
-        assert_eq!(out.chunks.len(), 2, "6 frames / 4 chunk_size → 2 chunks");
-        assert_eq!(out.chunks[0].chunk_frames, 4);
-        assert_eq!(out.chunks[1].chunk_frames, 2);
-        // Every feature must be finite (the "no NaN" invariant).
-        for c in &out.chunks {
-            for &v in &c.features {
-                assert!(v.is_finite(), "feature must be finite");
-            }
-        }
-    }
-
-    // ---- SoTA plan Phase 1-3 HiFTChain wiring --------------------------
-
-    /// Small-shape HiFTChain fixture used by the wiring tests below. Same
-    /// shape as `hift_chain::tests::small_hift_chain_bundle` — the private
-    /// helper cannot be reached from this module, so we rebuild the
-    /// smallest legal bundle inline. Keeping the shapes in sync with the
-    /// op-crate parity harness is guaranteed by
-    /// [`vokra_ops::hiftnet::HiFTGenerator::new`]'s own validation: any
-    /// drift here would fail its own shape check.
-    fn small_hift_chain_for_wiring() -> HiFTChain {
-        use vokra_ops::hiftnet::{F0PredictorWeights, ResBlockWeights};
-
-        let cfg = HiFTChainConfig {
-            in_channels: 4,
-            base_channels: 8,
-            nb_harmonics: 2,
-            sampling_rate: 16_000,
-            nsf_alpha: 0.1,
-            nsf_sigma: 0.003,
-            nsf_voiced_threshold: 10.0,
-            upsample_rates: vec![2, 2],
-            upsample_kernel_sizes: vec![4, 4],
-            istft_n_fft: 8,
-            istft_hop_len: 2,
-            resblock_kernel_sizes: vec![3],
-            resblock_dilation_sizes: vec![vec![1]],
-            source_resblock_kernel_sizes: vec![3, 3],
-            source_resblock_dilation_sizes: vec![vec![1], vec![1]],
-            lrelu_slope: 0.1,
-            audio_limit: 0.99,
-        };
-        let mut f0_conv_weights: Vec<Vec<f32>> = vec![vec![0.0; 8 * 4 * 3]];
-        for _ in 1..5 {
-            f0_conv_weights.push(vec![0.0; 8 * 8 * 3]);
-        }
-        let f0_weights = F0PredictorWeights {
-            conv_weights: f0_conv_weights,
-            conv_biases: vec![vec![0.0; 8]; 5],
-            linear_w: vec![0.0; 8],
-            linear_b: vec![0.0; 1],
-        };
-        let ups_w = vec![vec![0.0; 8 * 4 * 4], vec![0.0; 4 * 2 * 4]];
-        let ups_b = vec![vec![0.0; 4], vec![0.0; 2]];
-        let n_fft_plus_2 = 10;
-        let source_downs_w = vec![vec![0.0; 4 * n_fft_plus_2 * 4], vec![0.0; 2 * n_fft_plus_2]];
-        let source_downs_b = vec![vec![0.0; 4], vec![0.0; 2]];
-        let make_res_zero = |ch: usize, k: usize, n_branches: usize| ResBlockWeights {
-            convs1_w: vec![vec![0.0; ch * ch * k]; n_branches],
-            convs1_b: vec![vec![0.0; ch]; n_branches],
-            convs2_w: vec![vec![0.0; ch * ch * k]; n_branches],
-            convs2_b: vec![vec![0.0; ch]; n_branches],
-            activations1_alpha: vec![vec![0.0; ch]; n_branches],
-            activations2_alpha: vec![vec![0.0; ch]; n_branches],
-        };
-        let weights = HiFTChainWeights {
-            conv_pre_w: vec![0.0; 8 * 4 * 7],
-            conv_pre_b: vec![0.0; 8],
-            ups_w,
-            ups_b,
-            source_downs_w,
-            source_downs_b,
-            source_resblock_weights: vec![make_res_zero(4, 3, 1), make_res_zero(2, 3, 1)],
-            resblock_weights: vec![make_res_zero(4, 3, 1), make_res_zero(2, 3, 1)],
-            conv_post_w: vec![0.0; n_fft_plus_2 * 2 * 7],
-            conv_post_b: vec![0.0; n_fft_plus_2],
-            m_source_linear_w: vec![0.0; 3],
-            m_source_linear_b: 0.0,
-            f0_predictor_weights: f0_weights,
-        };
-        HiFTChain::new(cfg, weights).expect("small HiFTChain must build")
-    }
-
-    /// A fresh `CosyVoice2Tts` has no HiFTChain — the accessor + predicate
-    /// reflect that honestly. `synthesize_pcm_from_mel` therefore returns
-    /// NotImplemented naming the fix (FR-EX-08).
-    #[test]
-    fn default_load_has_no_hift_chain_and_pcm_entry_fails_loudly() {
-        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("load");
-        assert!(!tts.has_hift_chain(), "fresh load must not carry a chain");
-        assert!(tts.hift_chain().is_none());
-        let err = tts
-            .synthesize_pcm_from_mel(&[0.0; 4], 1)
-            .expect_err("no chain → NotImplemented");
-        let VokraError::NotImplemented(msg) = err else {
-            panic!("unexpected variant: {err:?}");
-        };
-        assert!(
-            msg.contains("HiFTChain") && msg.contains("with_hift_chain"),
-            "message must name the fix: {msg}"
-        );
-    }
-
-    /// Injecting a HiFTChain via the builder makes the accessor + predicate
-    /// report it, and `synthesize_pcm_from_mel` now delegates to the chain.
-    /// The PCM sample rate on the returned audio is the chain's, not the
-    /// engine config's (a small-shape 16 kHz harness would fail otherwise —
-    /// see the `with_hift_chain` rustdoc).
-    #[test]
-    fn with_hift_chain_wires_the_pcm_entry_point() {
-        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
-        let chain = small_hift_chain_for_wiring();
-        let chain_sr = chain.sample_rate();
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("load")
-            .with_hift_chain(chain);
-        assert!(tts.has_hift_chain(), "chain must be reported present");
-        assert!(tts.hift_chain().is_some());
-        let t_mel = 3;
-        let mel = vec![0.0_f32; 4 * t_mel];
-        let audio = tts
-            .synthesize_pcm_from_mel(&mel, t_mel)
-            .expect("chain must produce PCM");
-        // Length contract: t_mel * total_upsample_factor() (== 8 for the
-        // small-shape config).
-        assert_eq!(audio.samples.len(), t_mel * 8);
-        assert_eq!(audio.sample_rate, chain_sr, "SR must come from the chain");
-    }
-
-    /// The top-level `TtsEngine::synthesize` names the HiFTChain blocker
-    /// when the LLM path is otherwise wired (real dims + no chain). This
-    /// is the SoTA plan Phase 1-3 fail-loud contract — a caller who fixed
-    /// the LLM but forgot the vocoder gets a message pointing at the
-    /// second half of the migration.
-    #[test]
-    fn synthesize_names_hift_chain_blocker_when_llm_is_wired() {
-        let bytes = nondegenerate_gguf_bytes();
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("load");
-        // No chain injected → the second branch fires.
-        assert!(tts.llm().is_some(), "non-placeholder GGUF has LLM");
-        assert!(!tts.has_hift_chain(), "no chain injected");
-        let err = tts
-            .synthesize(&SynthesisRequest::new("hello"))
-            .expect_err("no chain → NotImplemented");
-        let VokraError::NotImplemented(msg) = err else {
-            panic!("unexpected variant: {err:?}");
-        };
-        assert!(
-            msg.contains("HiFTChain"),
-            "message must name the HiFTChain blocker: {msg}"
-        );
-    }
-
-    #[test]
-    fn synthesize_with_pipeline_propagates_synthesize_stub_rationale() {
-        // FR-EX-08: the top-level TtsEngine::synthesize returns
-        // NotImplemented (real LLM path unwired), but
-        // synthesize_with_pipeline succeeds because it accepts injected
-        // closures. This mirrors the T14 streaming pipeline promotion
-        // pattern: today's testable oracle path does not depend on
-        // upstream tensor names.
-        let bytes = nondegenerate_gguf_bytes();
-        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("load");
-        // Native synthesize() still stub.
-        let err = tts
-            .synthesize(&SynthesisRequest::new("hello"))
-            .expect_err("no real LLM path yet");
-        assert!(matches!(err, VokraError::NotImplemented(_)));
-        // Pipeline path succeeds with injected closures.
-        let length_input =
-            vokra_core::ir::graph::LengthConditioningAttrs::user_specified_frames(4.0);
-        let x0 = vokra_ops::FlowSamplerState::new(vec![1], vec![0.0]).unwrap();
-        let out = tts
-            .synthesize_with_pipeline(
-                length_input,
-                &x0,
-                |s, _t, _p, _c| {
-                    Ok(vokra_ops::FlowSamplerState {
-                        shape: s.shape.clone(),
-                        data: vec![0.0; s.data.len()],
-                    })
-                },
-                |_s, chunk_frames, n_cb| Ok(vec![0u32; chunk_frames * n_cb]),
-            )
-            .expect("pipeline succeeds");
-        assert_eq!(out.target_frames, 4);
-        assert_eq!(out.chunks.len(), 1);
+    fn arbitrary_metadata_and_historical_llm_only_shape_are_rejected() {
+        let mut builder = GgufBuilder::new();
+        builder.add_string(KEY_MODEL_ARCH, EXPECTED_ARCH);
+        let bytes = builder.to_bytes().expect("serialize");
+        let error = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("composite runtime must fail closed");
+        assert!(matches!(error, VokraError::UnsupportedOp(_)));
+        assert!(error.to_string().contains("INSPECTION_ONLY"));
     }
 }

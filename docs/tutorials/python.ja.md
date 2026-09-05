@@ -2,9 +2,10 @@
 
 [English](python.md) | **日本語**
 
-> **実装状態（2026-08-22 照合）: source 実装済み・未公開。** package root は
-> `Session`、`Stream`、`Event`、typed error を export し、生成 table は現行
-> 現行 C ABI の全 function を覆います。PyPI 公開は未検証・未承認です。正確な
+> **実装状態（2026-08-31 照合）: workspace `0.3.0` development、source 実装済み・
+> 未公開。** package root は
+> `Session`、`Stream`、`Event`、typed error を export し、生成 table は現行 C ABI
+> の全 function を覆います。PyPI 公開は未検証・未承認です。正確な
 > gate は [binding README](../../bindings/python/README.md) を参照してください。
 
 ## 現在存在するもの
@@ -14,7 +15,7 @@
 - public source API: `Session`、`Stream`、`Event`、9 個の error subclass。
   音声 file の decode は caller 側の責務です。
 - 生成済み FFI table: 現行 C header の全 function、4 enums、2 concrete
-  structs、8 opaque handles。
+  15 typedef、4 enums、2 concrete structs、9 opaque handles。
 - CI 契約: required `license` job がgenerator driftを検査し、各wheel smokeが
   public names、table件数、native symbolsのloadを検証します。
 

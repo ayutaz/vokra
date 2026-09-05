@@ -9,7 +9,9 @@ usage() {
   cat <<'EOF'
 Usage:
   run-canary-1b-flash-validation.sh --nemo <canary-1b-flash.nemo> \
+    --approval-evidence <owner-approval.json> \
     [--work-dir /workspace/vokra-canary-validation]
+  run-canary-1b-flash-validation.sh --self-test
 
 Requires Linux and VOKRA_PUBLISH_ON_VAST=1 from provision.sh, plus the
 rustfmt/clippy components and cargo-deny/cargo-audit executables. Produces a
@@ -23,13 +25,238 @@ die() {
   exit 1
 }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+PREFLIGHT_GATE="$REPO_ROOT/tools/parity/canary_1b/preflight_gate.py"
+PREFLIGHT_MANIFEST="$REPO_ROOT/tools/parity/canary_1b/license_gate_manifest.json"
+
+canonical_absent_path() {
+  local target="$1" lexical current="/" component suffix="" real
+  [[ "$target" = /* ]] || target="$PWD/$target"
+  lexical="${target#/}"
+  while [[ -n "$lexical" ]]; do
+    component="${lexical%%/*}"
+    if [[ "$lexical" == "$component" ]]; then lexical=""; else lexical="${lexical#*/}"; fi
+    [[ "$component" == "." || -z "$component" ]] && continue
+    [[ "$component" != ".." ]] || die "work path contains .."
+    current="${current%/}/$component"
+    [[ ! -L "$current" ]] || die "work path contains a symlinked ancestor"
+  done
+  current="$target"
+  while [[ ! -e "$current" && ! -L "$current" ]]; do
+    component="$(basename "$current")"; suffix="/$component$suffix"; current="$(dirname "$current")"
+  done
+  [[ -d "$current" && ! -L "$current" ]] || die "work path parent is missing or symlinked"
+  real="$(cd -P "$current" 2>/dev/null && pwd)" || die "work path parent is inaccessible"
+  printf '%s%s\n' "$real" "$suffix"
+}
+
+require_absent_work_dir() {
+  local work="$1" input="$2" candidate root_real input_parent input_real
+  [[ ! -e "$work" && ! -L "$work" ]] || die "work directory must be absent"
+  candidate="$(canonical_absent_path "$work")"
+  root_real="$(cd -P "$PWD" && pwd)"
+  input_parent="$(cd -P "$(dirname "$input")" 2>/dev/null && pwd)" || die "input parent is inaccessible"
+  input_real="$input_parent/$(basename "$input")"
+  [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && "$root_real/" != "$candidate/"* ]] || die "work directory overlaps checkout"
+  [[ "$candidate" != "$input_real" && "$candidate/" != "$input_real/"* && "$input_real/" != "$candidate/"* ]] || die "work directory overlaps checkpoint"
+}
+
+UPSTREAM_REPO="nvidia/canary-1b-flash"
+UPSTREAM_REVISION="2b6e4d2dacb11cc1b1724de31bb48fe68c26c12e"
+MODEL_KIND="canary-1b-flash"
+PARITY_TEST="canary_1b_flash::tests::released_checkpoint_matches_official_nemo_greedy_tokens"
+GGUF_ENV="VOKRA_CANARY_REAL_GGUF"
+REFERENCE_PCM_ENV="VOKRA_CANARY_REFERENCE_PCM"
+REFERENCE_TOKENS_ENV="VOKRA_CANARY_REFERENCE_TOKENS"
+SOURCE_LANGUAGE_ENV="VOKRA_CANARY_SOURCE_LANGUAGE"
+TARGET_LANGUAGE_ENV="VOKRA_CANARY_TARGET_LANGUAGE"
+VARIANT="canary-1b-flash"
+ARCHIVE_BYTES=3540715520
+ARCHIVE_SHA256="3887cce1afdd425429cfc5109575a8f2cffeb07c02c503a9faff7612bd74e324"
+
+license_preflight() {
+  local approval="$1"
+  [[ -f "$PREFLIGHT_GATE" && ! -L "$PREFLIGHT_GATE" && \
+    -f "$PREFLIGHT_MANIFEST" && ! -L "$PREFLIGHT_MANIFEST" ]] \
+    || die "Canary-1B approval gate or manifest is missing or symlinked"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$PREFLIGHT_GATE" --manifest "$PREFLIGHT_MANIFEST" \
+    --approval "$approval" --variant "$VARIANT" \
+    || die "Canary-1B-Flash approval preflight is unresolved"
+}
+
+verify_archive() {
+  local path="$1" actual_bytes actual_sha
+  [[ -f "$path" && ! -L "$path" ]] \
+    || die "checkpoint is not a regular non-symlink file: $path"
+  actual_bytes="$(wc -c < "$path" | tr -d '[:space:]')"
+  [[ "$actual_bytes" == "$ARCHIVE_BYTES" ]] \
+    || die "Canary-1B-Flash archive byte count $actual_bytes != $ARCHIVE_BYTES"
+  actual_sha="$(sha256sum "$path" | awk '{print $1}')"
+  [[ "$actual_sha" == "$ARCHIVE_SHA256" ]] \
+    || die "Canary-1B-Flash archive SHA-256 $actual_sha != $ARCHIVE_SHA256"
+}
+
+production_order_ok() {
+  local script_path="$1" gate_pattern="$2" host_pattern="$3" resource_pattern="$4"
+  local checkpoint_pattern="$5" scratch_pattern="$6" cargo_pattern="$7"
+  local gate_line host_line resource_line checkpoint_line scratch_line cargo_line
+  gate_line="$(grep -nE "$gate_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  host_line="$(grep -nE "$host_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  resource_line="$(grep -nE "$resource_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  checkpoint_line="$(grep -nE "$checkpoint_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  scratch_line="$(grep -nE "$scratch_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  cargo_line="$(grep -nE "$cargo_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  [[ -n "$gate_line" && -n "$host_line" && -n "$resource_line" \
+    && -n "$checkpoint_line" && -n "$scratch_line" && -n "$cargo_line" \
+    && "$gate_line" -lt "$host_line" && "$gate_line" -lt "$resource_line" \
+    && "$gate_line" -lt "$checkpoint_line" && "$gate_line" -lt "$scratch_line" \
+    && "$gate_line" -lt "$cargo_line" ]]
+}
+
+# shellcheck disable=SC2016
+run_self_test() {
+  local script_path="${BASH_SOURCE[0]}" tmp fail=0 cases=0 required
+  local parity_invocation="\"\$PARITY_TEST\" -- --exact --ignored"
+  local parity_harness_count
+  tmp="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+
+  cases=$((cases + 1))
+  for required in \
+    "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$MODEL_KIND" "$PARITY_TEST" \
+    "$GGUF_ENV" "$REFERENCE_PCM_ENV" "$REFERENCE_TOKENS_ENV" \
+    "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
+    "--approval-evidence" "tools/parity/canary_1b/preflight_gate.py" \
+    "license_gate_manifest.json" "--variant \"\$VARIANT\"" \
+    "tools/parity/canary_1b_flash_prepare_checkpoint.py" \
+    "tools/parity/canary_1b_flash_dump_reference.py" \
+    "--frozen --project tools/parity --python 3.12 python" \
+    "--target-language de"; do
+    if ! grep -Fq -- "$required" "$script_path"; then
+      echo "run-canary-1b-flash-validation: self-test FAIL: contract lost token: $required" >&2
+      fail=1
+    fi
+  done
+
+  cases=$((cases + 1))
+  if grep -En '^[[:space:]]+(released_checkpoint_matches_official_nemo_greedy_tokens|canary_v2_released_checkpoint_matches_official_nemo_greedy_tokens)[[:space:]]+--' \
+    "$script_path" >/dev/null; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: bare parity test name found" >&2
+    fail=1
+  fi
+  parity_harness_count="$(grep -Fc -- "$parity_invocation" "$script_path" || true)"
+  if [[ "$parity_harness_count" -ne 2 ]]; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: expected two exact singleton parity harnesses, found $parity_harness_count" >&2
+    fail=1
+  fi
+
+  cases=$((cases + 1))
+  if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' \
+    "$script_path" >/dev/null; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: direct Python/pip command found" >&2
+    fail=1
+  fi
+  if grep -En -- '^[[:space:]]*(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh)([[:space:]]|$)' \
+    "$script_path" >/dev/null; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: publication command found" >&2
+    fail=1
+  fi
+
+  cases=$((cases + 1))
+  for required in 'uname -s' 'VOKRA_PUBLISH_ON_VAST' 'git status --porcelain --untracked-files=all' \
+    'cargo fmt --all -- --check' 'cargo test --locked --workspace' \
+    'cargo clippy --locked --workspace --all-targets -- -D warnings'; do
+    if ! grep -Fq -- "$required" "$script_path"; then
+      echo "run-canary-1b-flash-validation: self-test FAIL: fail-closed guard lost token: $required" >&2
+      fail=1
+    fi
+  done
+
+  cases=$((cases + 1))
+  local gate_pattern='^[[:space:]]*license_preflight "\$approval_evidence"[[:space:]]*$'
+  local host_pattern='^[[:space:]]*\[\[ "\$\(uname -s\)" == "Linux" \]\]'
+  local resource_pattern='^[[:space:]]*\[\[ "\$\{VOKRA_PUBLISH_ON_VAST:-0\}" == "1" \]\]'
+  local checkpoint_pattern='^[[:space:]]*verify_archive "\$nemo_path"[[:space:]]*$'
+  local scratch_pattern='^[[:space:]]*mkdir -p "\$work_dir"[[:space:]]*$'
+  local cargo_pattern='^[[:space:]]*cargo clippy --version'
+  if ! production_order_ok "$script_path" "$gate_pattern" "$host_pattern" \
+    "$resource_pattern" "$checkpoint_pattern" "$scratch_pattern" "$cargo_pattern"; then
+    echo 'run-canary-1b-flash-validation: self-test FAIL: preflight is not before production boundaries' >&2
+    fail=1
+  fi
+  if grep -vE "$gate_pattern" "$script_path" > "$tmp/without-preflight.sh" \
+    && production_order_ok "$tmp/without-preflight.sh" "$gate_pattern" "$host_pattern" \
+      "$resource_pattern" "$checkpoint_pattern" "$scratch_pattern" "$cargo_pattern"; then
+    echo 'run-canary-1b-flash-validation: self-test FAIL: deleted production preflight was accepted' >&2
+    fail=1
+  fi
+
+  cases=$((cases + 1))
+  if "$script_path" --self-test --work-dir "$tmp/nonempty" >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: extra self-test argument accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --nemo >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: missing --nemo value accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --unknown-self-test-flag >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: unknown argument accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --nemo "$tmp/a" --nemo "$tmp/b" >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: duplicate --nemo accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --self-test --approval-evidence "$tmp/approval.json" >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: extra approval argument accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --nemo "$tmp/a" --approval-evidence >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: missing approval value accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --nemo "$tmp/a" --approval-evidence "$tmp/a" --approval-evidence "$tmp/b" >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: duplicate approval accepted" >&2
+    fail=1
+  fi
+
+  rm -rf "$tmp"
+  trap - EXIT
+  if [[ $fail -eq 0 ]]; then
+    echo "run-canary-1b-flash-validation.sh self-test: OK ($cases cases)"
+    return 0
+  fi
+  return 1
+}
+
 nemo_path=""
+approval_evidence=""
 work_dir="/workspace/vokra-canary-validation"
+seen_nemo=0
+seen_approval=0
+self_test=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --self-test)
+      self_test=1
+      shift
+      ;;
     --nemo)
-      [[ $# -ge 2 ]] || die "--nemo requires a path"
+      (( seen_nemo == 0 )) || die "duplicate --nemo"
+      [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "--nemo requires a path"
+      seen_nemo=1
       nemo_path="$2"
+      shift 2
+      ;;
+    --approval-evidence)
+      (( seen_approval == 0 )) || die "duplicate --approval-evidence"
+      [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "--approval-evidence requires a path"
+      seen_approval=1
+      approval_evidence="$2"
       shift 2
       ;;
     --work-dir)
@@ -47,13 +274,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ $self_test -eq 1 ]]; then
+  [[ -z "$nemo_path$approval_evidence" && "$work_dir" == "/workspace/vokra-canary-validation" ]] \
+    || die "--self-test accepts no other arguments"
+  run_self_test
+  exit $?
+fi
+
+# This is intentionally the first normal-run operation.  It must remain ahead
+# of host/resource checks, checkpoint inspection, scratch creation, uv sync,
+# model work, and Cargo so an unapproved scope cannot consume those resources.
+[[ -n "$approval_evidence" ]] || die "--approval-evidence is required"
+license_preflight "$approval_evidence"
+
 [[ "$(uname -s)" == "Linux" ]] || die "actual validation is Linux/VAST-only"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
   || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
 [[ -n "$nemo_path" ]] || die "--nemo is required"
-[[ -f "$nemo_path" ]] || die "checkpoint is not a regular file: $nemo_path"
+verify_archive "$nemo_path"
 [[ -f Cargo.toml && -d crates/vokra-models ]] \
   || die "run from the Vokra repository root"
+require_absent_work_dir "$work_dir" "$nemo_path"
 
 # Fail before the multi-gigabyte checkpoint is unpacked if the verification
 # host is missing a tool. `provision.sh` installs the minimal Rust profile, so
@@ -62,12 +303,15 @@ for command in rustfmt cargo-deny cargo-audit; do
   command -v "$command" >/dev/null 2>&1 \
     || die "required VAST verification tool is missing: $command"
 done
+for command in sha256sum wc tr; do
+  command -v "$command" >/dev/null 2>&1 \
+    || die "required archive identity tool is missing: $command"
+done
 cargo clippy --version >/dev/null 2>&1 \
   || die "the clippy component is missing; install rustfmt/clippy on the VAST host"
-git diff --quiet \
-  || die "tracked worktree changes are present; validate a committed git-bundle checkpoint"
-git diff --cached --quiet \
-  || die "staged worktree changes are present; validate a committed git-bundle checkpoint"
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] \
+  || die "worktree changes or untracked files are present; validate a clean committed git-bundle checkpoint"
+verify_archive "$nemo_path"
 
 mkdir -p "$work_dir"
 work_dir="$(cd "$work_dir" && pwd)"
@@ -96,7 +340,7 @@ run_logged uv run --frozen --project tools/parity --python 3.12 python \
 
 run_logged cargo build --locked --release -p vokra-cli
 run_logged target/release/vokra-cli convert \
-  --model canary-1b-flash \
+  --model "$MODEL_KIND" \
   --input "$prepared_dir/canary-1b-flash.prepared.safetensors" \
   --tokenizer "$prepared_dir/canary-1b-flash.aggregate.vocab" \
   --output "$work_dir/canary-1b-flash.gguf"
@@ -112,22 +356,22 @@ run_logged uv run --frozen --project tools/parity --extra titanet --python 3.12 
   --source-language en --target-language de \
   --output "$evidence_dir/reference-en-de.json"
 
-export VOKRA_CANARY_REAL_GGUF="$work_dir/canary-1b-flash.gguf"
-export VOKRA_CANARY_REFERENCE_PCM="$evidence_dir/reference-en-en.pcm.f32"
-export VOKRA_CANARY_REFERENCE_TOKENS="$evidence_dir/reference-en-en.tokens.txt"
-export VOKRA_CANARY_SOURCE_LANGUAGE=en
-export VOKRA_CANARY_TARGET_LANGUAGE=en
+export "$GGUF_ENV=$work_dir/canary-1b-flash.gguf"
+export "$REFERENCE_PCM_ENV=$evidence_dir/reference-en-en.pcm.f32"
+export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference-en-en.tokens.txt"
+export "$SOURCE_LANGUAGE_ENV=en"
+export "$TARGET_LANGUAGE_ENV=en"
 run_logged cargo test --locked -p vokra-models \
-  released_checkpoint_matches_official_nemo_greedy_tokens -- --ignored
+  "$PARITY_TEST" -- --exact --ignored
 
 # A different target language changes the Canary2 prompt and exercises AST,
 # so its exact token sequence is a separate independent-oracle gate rather
 # than being inferred from an English-ASR pass.
-export VOKRA_CANARY_REFERENCE_PCM="$evidence_dir/reference-en-de.pcm.f32"
-export VOKRA_CANARY_REFERENCE_TOKENS="$evidence_dir/reference-en-de.tokens.txt"
-export VOKRA_CANARY_TARGET_LANGUAGE=de
+export "$REFERENCE_PCM_ENV=$evidence_dir/reference-en-de.pcm.f32"
+export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference-en-de.tokens.txt"
+export "$TARGET_LANGUAGE_ENV=de"
 run_logged cargo test --locked -p vokra-models \
-  released_checkpoint_matches_official_nemo_greedy_tokens -- --ignored
+  "$PARITY_TEST" -- --exact --ignored
 
 run_logged target/release/vokra-cli run \
   --model "$work_dir/canary-1b-flash.gguf" \
@@ -144,6 +388,11 @@ run_logged cargo deny check licenses advisories bans
 run_logged cargo audit
 
 {
+  echo "variant=$VARIANT"
+  echo "upstream_repo=$UPSTREAM_REPO"
+  echo "upstream_revision=$UPSTREAM_REVISION"
+  echo "archive_bytes=$ARCHIVE_BYTES"
+  echo "archive_sha256=$ARCHIVE_SHA256"
   echo "commit=$(git rev-parse HEAD)"
   echo "branch=$(git branch --show-current)"
   echo "rustc=$(rustc --version)"

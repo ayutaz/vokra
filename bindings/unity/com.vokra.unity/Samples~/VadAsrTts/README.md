@@ -22,23 +22,35 @@ demo** → **Import**. Unity copies the sample under
 ## Models
 
 **Models are never committed to git** (`*.gguf` is `.gitignore`d — see
-NFR-DS-04). Run the fetcher before opening the scene:
+NFR-DS-04). There is no Git tag or GitHub Release as of 2026-08-30, so the
+fetcher's `releases/latest` defaults are not usable yet. During this
+unpublished phase, provide all three source URLs before running it:
 
 ```
+export VOKRA_SILERO_URL=<verified-silero-gguf-url>
+export VOKRA_WHISPER_URL=<verified-whisper-gguf-url>
+export VOKRA_PIPER_URL=<verified-piper-gguf-url>
 bash Samples~/VadAsrTts/scripts/fetch-demo-models.sh
 ```
 
-This downloads three **MIT-licensed** artifacts into
-`Samples~/VadAsrTts/StreamingAssets/models/`:
+After a future authorized release publishes these assets, the default URLs
+may be used. Verify license and provenance against
+[`docs/license-audit.md`](../../../../../docs/license-audit.md) before fetching.
 
-| File                  | Model              | License | Source                    |
-| --------------------- | ------------------ | ------- | ------------------------- |
-| `silero-vad-v5.gguf`  | Silero VAD v5      | MIT     | snakers4/silero-vad       |
-| `whisper-base.gguf`   | Whisper base       | MIT     | openai/whisper            |
-| `voice.gguf`          | piper-plus voice   | MIT     | ayutaz/piper-plus         |
+The fetcher expects three artifacts in
+`Samples~/VadAsrTts/StreamingAssets/models/`. The URL overrides are
+user-supplied: verify each artifact's license, provenance, and checksum
+against [`docs/license-audit.md`](../../../../../docs/license-audit.md) before
+use. The fetcher does not establish those claims:
 
-Override any URL via `VOKRA_SILERO_URL`, `VOKRA_WHISPER_URL`,
-`VOKRA_PIPER_URL`, or the whole destination via `VOKRA_MODELS_DIR`.
+| File                  | Model              | Expected license | Expected source          |
+| --------------------- | ------------------ | ---------------- | ------------------------ |
+| `silero-vad-v5.gguf`  | Silero VAD v5      | MIT              | snakers4/silero-vad      |
+| `whisper-base.gguf`    | Whisper base       | MIT              | openai/whisper           |
+| `voice.gguf`           | piper-plus voice   | MIT              | ayutaz/piper-plus        |
+
+Override each source with `VOKRA_SILERO_URL`, `VOKRA_WHISPER_URL`, and
+`VOKRA_PIPER_URL`, or the whole destination with `VOKRA_MODELS_DIR`.
 
 ### CC-BY-NC / research-flag exclusion (M2-13 compliance)
 
@@ -50,7 +62,7 @@ MIT-licensed weights. The following are **excluded** from the fetch script:
 - **EnCodec** — CC-BY-NC 4.0.
 - **RVC / GPT-SoVITS** — training-data provenance unresolved; scoped to the
   separate `vokra-voiceclone-experimental` repo (ELVIS Act / NO FAKES Act
-  isolation, CLAUDE.md design note 8).
+  isolation; see [`docs/legal-compliance.md`](../../../../../docs/legal-compliance.md)).
 
 These are surfaced through the `vokra-cli` research flag against a distinct
 model index and never through the official Vokra distribution channel.

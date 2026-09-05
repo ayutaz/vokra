@@ -1,14 +1,17 @@
 //! **XY_Tokenizer**: safetensors checkpoint → GGUF conversion.
 //!
-//! - **HF**: `fnlp/XY_Tokenizer_TTSD_V0`
-//! - **License**: `apache-2.0` (Permissive — end-to-end)
+//! - **HF**: `OpenMOSS-Team/XY_Tokenizer_TTSD_V0`
+//! - **License**: `apache-2.0` for the weights; the official source
+//!   `readme.md` explicitly declares Apache-2.0 at the fixed revision, but no
+//!   full `LICENSE`/`COPYING`/`NOTICE`/`COPYRIGHT` file is tracked. The source
+//!   is not copied or derived here.
 //! - **Category**: `codec`
 //! - **Notes**: 1 kbps RVQ-8 @ 12.5 Hz, MOSS-TTSD backend.
 //!
-//! Input: the upstream `fnlp/XY_Tokenizer_TTSD_V0` release —
-//! `model.safetensors`. Output: a GGUF carrying every float tensor plus
-//! the `vokra.provenance.*` / `vokra.model.*` metadata chunks the
-//! native XY_Tokenizer implementation reads.
+//! Input: a VAST-prepared safetensors artifact derived from the upstream
+//! `OpenMOSS-Team/XY_Tokenizer_TTSD_V0` `.ckpt`. Output is deliberately
+//! `INSPECTION_ONLY`; no native XY_Tokenizer binder exists yet because the
+//! authenticated evidence still has an unverified topology contract.
 //!
 //! # BF16 posture
 //!
@@ -25,17 +28,15 @@
 //! # No ONNX (permanent)
 //!
 //! XY_Tokenizer is distributed as safetensors + a Python pipeline; this
-//! converter **never** touches ONNX (FR-LD-05); the pipeline will be
-//! re-implemented natively (whisper.cpp 型 self re-implementation,
+//! converter **never** touches ONNX (FR-LD-05); a native pipeline is a
+//! future implementation (whisper.cpp 型 self re-implementation,
 //! CLAUDE.md 設計判断 4).
 //!
 //! # License override
 //!
-//! `convert_xy_tokenizer_file` accepts an `Option<&str>` SPDX override
-//! so a caller can pin a non-default license string at the outer
-//! `convert_file --license <spdx>` boundary (mirrors the pattern
-//! `vits_ja` uses when the trained corpus terms differ from the code
-//! license). Default is `apache-2.0` (upstream).
+//! `convert_xy_tokenizer_file` accepts the upstream `apache-2.0` value only;
+//! arbitrary license overrides are rejected so the weight license cannot be
+//! confused with the separately recorded source README declaration.
 
 use std::path::Path;
 
@@ -49,21 +50,42 @@ use crate::safetensors::SafetensorsFile;
 /// from every sibling arch tag (`mimi`, `dac`, `wavtokenizer_vq`,
 /// `xcodec2_fsq`, ...) — silently sharing an arch tag would mis-route
 /// the runtime dispatch.
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until binding is authenticated.
 pub(crate) const ARCH: &str = "xy_tokenizer";
 
 /// `vokra.model.name` value written for the canonical XY_Tokenizer
 /// GGUF.
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub(crate) const NAME: &str = "xy_tokenizer_ttsd_v0";
 
 /// The upstream HuggingFace repo path — recorded verbatim on the
 /// GGUF at `vokra.provenance.upstream_hf`.
-pub(crate) const UPSTREAM_HF: &str = "fnlp/XY_Tokenizer_TTSD_V0";
+#[allow(dead_code)] // Retained as inspection-only provenance until the artifact is authenticated.
+pub(crate) const UPSTREAM_HF: &str = "OpenMOSS-Team/XY_Tokenizer_TTSD_V0";
 
 /// Default SPDX license string (upstream ships apache-2.0 end-to-end).
+#[allow(dead_code)] // Retained as inspection-only license metadata until the artifact is authenticated.
 pub(crate) const DEFAULT_LICENSE: &str = "apache-2.0";
 
 /// Model category value written to `vokra.model.category`.
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub(crate) const CATEGORY: &str = "codec";
+
+#[allow(dead_code)] // Retained as inspection-only provenance until the artifact is authenticated.
+pub const UPSTREAM_REVISION: &str = "c83433728e698ed0698e88cb5096bc221fb8f8c5";
+#[allow(dead_code)] // Retained as inspection-only checkpoint evidence until authenticated.
+pub const CHECKPOINT_BYTES: u64 = 2_137_328_977;
+#[allow(dead_code)] // Retained as inspection-only checkpoint evidence until authenticated.
+pub const CHECKPOINT_SHA256: &str =
+    "37c7ac18d0a48f5a1d0687e31af7c0264861232c500206718c98acd8e37d1671";
+#[allow(dead_code)] // Retained as inspection-only sidecar evidence until authenticated.
+pub const CONFIG_RELATIVE: &str = "config/xy_tokenizer_config.yaml";
+#[allow(dead_code)] // Retained as inspection-only sidecar evidence until authenticated.
+pub const CONFIG_SHA256: &str = "e7d48677e34f77e5b9fd7dc7a3e0eef7f2d2dd9be9a245d5c1d56489dc748938";
+#[allow(dead_code)] // Retained as inspection-only source evidence until authenticated.
+pub const SOURCE_REPOSITORY: &str = "https://github.com/gyt1145028706/XY-Tokenizer";
+#[allow(dead_code)] // Retained as inspection-only source evidence until authenticated.
+pub const SOURCE_REVISION: &str = "5df5609c5883e555bd39a2d0b1005ca8f1a8f12e";
 
 // Additional provenance / model keys not in the shared
 // `chunks::KEY_PROVENANCE_*` set. These are additive string keys
@@ -71,8 +93,22 @@ pub(crate) const CATEGORY: &str = "codec";
 // project-goal-depth-not-breadth): every codec / TTS record carries its
 // upstream HF path and category verbatim so `check-catalog-reality.sh`
 // and `make_model_card.py` can drive gates without a side registry.
+#[allow(dead_code)] // Metadata key is reserved for the future authenticated converter.
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+#[allow(dead_code)] // Metadata key is reserved for the future authenticated converter.
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+#[allow(dead_code)] // Metadata key is reserved for the future authenticated converter.
+const KEY_UPSTREAM_REVISION: &str = "vokra.xy_tokenizer.upstream_revision";
+#[allow(dead_code)] // Metadata key is reserved for the future authenticated converter.
+const KEY_CHECKPOINT_SHA256: &str = "vokra.xy_tokenizer.checkpoint_sha256";
+#[allow(dead_code)] // Metadata key is reserved for the future authenticated converter.
+const KEY_CONFIG_SHA256: &str = "vokra.xy_tokenizer.config_sha256";
+#[allow(dead_code)] // Metadata key is reserved for the future authenticated converter.
+const KEY_SOURCE_REPOSITORY: &str = "vokra.xy_tokenizer.source_repository";
+#[allow(dead_code)] // Metadata key is reserved for the future authenticated converter.
+const KEY_SOURCE_REVISION: &str = "vokra.xy_tokenizer.source_revision";
+#[allow(dead_code)] // Metadata key is reserved for the future authenticated converter.
+const KEY_INSPECTION_STATUS: &str = "vokra.xy_tokenizer.inspection_status";
 
 /// Outcome of an XY_Tokenizer conversion.
 ///
@@ -106,12 +142,13 @@ pub struct XyTokenizerReport {
 /// Convert an XY_Tokenizer safetensors checkpoint at `input` into a
 /// Vokra GGUF at `output`.
 ///
-/// Every F32 / F16 / BF16 tensor passes through under its upstream
-/// name; the `vokra.model.*` / `vokra.provenance.*` metadata is
-/// stamped from the transcribed constants above. When `license` is
-/// `Some`, its SPDX string overrides the default and drives the
-/// `LicenseClass` classifier (`LicenseClass::from_license_str`);
-/// otherwise the default `apache-2.0 → Permissive` is written.
+/// The public conversion entry point currently refuses every input with an
+/// explicit `INSPECTION_ONLY` error: although the VAST prepared-artifact SHA
+/// and complete tensor manifest are authenticated, the topology contract,
+/// native runtime path, and independent numerical parity are not. The private
+/// synthetic format helper exists only for converter tests. The only accepted
+/// license for a future conversion is the upstream `apache-2.0` weight
+/// license.
 ///
 /// # Errors
 ///
@@ -123,8 +160,25 @@ pub fn convert_xy_tokenizer_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<XyTokenizerReport, ConvertError> {
-    let bytes = std::fs::read(input)?;
-    let st = SafetensorsFile::parse(bytes)?;
+    let _ = (input, output, license);
+    Err(ConvertError::Usage(
+        "XY-Tokenizer conversion is INSPECTION_ONLY: topology contract, native runtime, and independent parity remain unauthenticated"
+            .to_owned(),
+    ))
+}
+
+#[allow(dead_code)] // Synthetic helper is reserved for the authenticated converter.
+fn convert_xy_tokenizer_bytes(
+    bytes: &[u8],
+    output: &Path,
+    spdx: &str,
+) -> Result<XyTokenizerReport, ConvertError> {
+    let st = SafetensorsFile::parse(bytes.to_vec())?;
+    if st.tensors().is_empty() {
+        return Err(ConvertError::Parse(
+            "XY-Tokenizer checkpoint has no tensors; refusing complete conversion".to_owned(),
+        ));
+    }
 
     let mut b = GgufBuilder::new();
     // Canonical model identity stamps (chunks::KEY_MODEL_ARCH / _NAME).
@@ -137,15 +191,18 @@ pub fn convert_xy_tokenizer_file(
     // by `stamp_provenance` below, so the two sets do not overlap.
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
     b.add_string(KEY_UPSTREAM_HF, UPSTREAM_HF);
+    b.add_string(KEY_UPSTREAM_REVISION, UPSTREAM_REVISION);
+    b.add_string(KEY_CHECKPOINT_SHA256, CHECKPOINT_SHA256);
+    b.add_string(KEY_CONFIG_SHA256, CONFIG_SHA256);
+    b.add_string(KEY_SOURCE_REPOSITORY, SOURCE_REPOSITORY);
+    b.add_string(KEY_SOURCE_REVISION, SOURCE_REVISION);
+    b.add_string(KEY_INSPECTION_STATUS, "INSPECTION_ONLY");
 
     // Self-describing redistribution: the artifact carries its own
-    // license. Default = `apache-2.0` (`fnlp/XY_Tokenizer_TTSD_V0` model
-    // card + LICENSE, apache-2.0 end-to-end); overridable at the outer
-    // `convert_file --license <spdx>` boundary via `license`. The
-    // `LicenseClass` is derived from the SPDX string through the shared
-    // classifier so a downstream research-only override
-    // (`--license cc-by-nc-4.0` etc.) correctly re-classes the artifact.
-    let spdx = license.unwrap_or(DEFAULT_LICENSE);
+    // license. Default = `apache-2.0` (the OpenMOSS model-card weight
+    // license). `require_license` rejects relabeling this weight as another
+    // license; source README evidence is recorded separately. The
+    // `LicenseClass` is derived through the shared classifier.
     let class = LicenseClass::from_license_str(spdx);
     vokra_core::stamp_provenance(&mut b, class, spdx, Some(NAME), Some(UPSTREAM_HF));
 
@@ -177,9 +234,29 @@ pub fn convert_xy_tokenizer_file(
         }
     }
 
+    if report.written == 0 {
+        return Err(ConvertError::Parse(
+            "XY-Tokenizer checkpoint contains no supported float tensors".to_owned(),
+        ));
+    }
+
     let gguf_bytes = b.to_bytes()?;
     std::fs::write(output, &gguf_bytes)?;
     Ok(report)
+}
+
+#[allow(dead_code)] // License gate is reserved for the authenticated converter.
+fn require_license(license: Option<&str>) -> Result<&'static str, ConvertError> {
+    let value = license
+        .unwrap_or(DEFAULT_LICENSE)
+        .trim()
+        .to_ascii_lowercase();
+    if value != DEFAULT_LICENSE {
+        return Err(ConvertError::Usage(format!(
+            "XY-Tokenizer weights are apache-2.0; refusing license override `{value}`"
+        )));
+    }
+    Ok(DEFAULT_LICENSE)
 }
 
 #[cfg(test)]
@@ -269,7 +346,8 @@ mod tests {
         let output = unique_temp("bf16-out", "gguf");
         std::fs::write(&input, &input_bytes).unwrap();
 
-        let report = convert_xy_tokenizer_file(&input, &output, None).expect("convert");
+        let report = convert_xy_tokenizer_bytes(&input_bytes, &output, DEFAULT_LICENSE)
+            .expect("convert synthetic fixture");
         assert_eq!(report.read, 1, "one input tensor was read");
         assert_eq!(
             report.written, 1,
@@ -316,7 +394,8 @@ mod tests {
         let output = unique_temp("mixed-out", "gguf");
         std::fs::write(&input, &input_bytes).unwrap();
 
-        let report = convert_xy_tokenizer_file(&input, &output, None).expect("convert");
+        let report = convert_xy_tokenizer_bytes(&input_bytes, &output, DEFAULT_LICENSE)
+            .expect("convert synthetic fixture");
         assert_eq!(report.read, 2, "two input tensors were read");
         assert_eq!(
             report.written, 2,
@@ -342,6 +421,42 @@ mod tests {
         assert_eq!(f16_info.dtype, GgmlType::F16, "F16 stays F16");
         assert_eq!(f16_info.dimensions, vec![2, 3]);
 
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn permissive_license_override_is_rejected() {
+        let error = require_license(Some("cc-by-4.0"))
+            .expect_err("XY-Tokenizer must preserve the Apache-2.0 weight license");
+        assert!(error.to_string().contains("apache-2.0"));
+    }
+
+    #[test]
+    fn empty_checkpoint_is_not_complete() {
+        let header = b"{}";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        let output = unique_temp("empty-out", "gguf");
+        let error = convert_xy_tokenizer_bytes(&bytes, &output, DEFAULT_LICENSE)
+            .expect_err("empty XY-Tokenizer input must fail closed");
+        assert!(error.to_string().contains("no tensors"));
+        std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn public_conversion_requires_prepared_sidecars() {
+        let input = unique_temp("missing-manifest-in", "safetensors");
+        let output = unique_temp("missing-manifest-out", "gguf");
+        std::fs::write(
+            &input,
+            safetensors_one_bf16("codebook.weight", &[1], &[0, 0]),
+        )
+        .unwrap();
+        let error = convert_xy_tokenizer_file(&input, &output, None)
+            .expect_err("public conversion must require VAST authentication");
+        assert!(error.to_string().contains("INSPECTION_ONLY"));
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
     }

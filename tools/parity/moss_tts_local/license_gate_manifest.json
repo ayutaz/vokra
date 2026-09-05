@@ -1,0 +1,543 @@
+{
+  "gate_version": 1,
+  "lock_sha256": "08913641842901d416b17bc2adcc1d9a252a3284a9c34373086c8868a0eeb33a",
+  "project_sha256": "9d8974ffedea83bb9e69d2d1e5b82507f6baf41ac1720bee1ead77044a1f8243",
+  "package_rows_sha256": "94082cfaa2830bed431a823fab625aa6bd217b6fe08e7b620f82259c93eb60f4",
+  "package_review_rows_sha256": "c717b9bb9aadb66e04df9975304b50138b93936e00f315cede5a85513b1ad782",
+  "package_review_rows": [
+    {
+      "name": "anyio",
+      "version": "4.14.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "filelock",
+      "version": "3.32.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.7.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "huggingface-hub",
+      "version": "1.27.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "idna",
+      "version": "3.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "jinja2",
+      "version": "3.1.6",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "markupsafe",
+      "version": "3.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "mpmath",
+      "version": "1.3.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "networkx",
+      "version": "3.6.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "numpy",
+      "version": "2.3.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "regex",
+      "version": "2026.7.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "safetensors",
+      "version": "0.8.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "setuptools",
+      "version": "84.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "sympy",
+      "version": "1.14.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.22.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "torch",
+      "version": "2.7.1+cu126",
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cu126"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "transformers",
+      "version": "5.10.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "vokra-moss-tts-local-parity",
+      "version": "0.1.0",
+      "source": {
+        "virtual": "."
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    }
+  ,
+    {
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "mdurl",
+      "version": "0.1.2",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cublas-cu12",
+      "version": "12.6.4.1",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cuda-cupti-cu12",
+      "version": "12.6.80",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cuda-nvrtc-cu12",
+      "version": "12.6.77",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cuda-runtime-cu12",
+      "version": "12.6.77",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cudnn-cu12",
+      "version": "9.5.1.17",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cufft-cu12",
+      "version": "11.3.0.4",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cufile-cu12",
+      "version": "1.11.1.6",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-curand-cu12",
+      "version": "10.3.7.77",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cusolver-cu12",
+      "version": "11.7.1.2",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cusparse-cu12",
+      "version": "12.5.4.2",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-cusparselt-cu12",
+      "version": "0.6.3",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-nccl-cu12",
+      "version": "2.26.2",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-nvjitlink-cu12",
+      "version": "12.6.85",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "nvidia-nvtx-cu12",
+      "version": "12.6.77",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "pygments",
+      "version": "2.21.0",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "rich",
+      "version": "15.0.0",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "shellingham",
+      "version": "1.5.4",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "triton",
+      "version": "3.3.1",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "typer",
+      "version": "0.27.2",
+      "source": {"registry": "https://pypi.org/simple"},
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    }
+  ],
+  "local_identity": {
+    "repository": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+    "revision": "be7766a6735b98bd793f7c79fb720b4d0f5d13b8",
+    "tree": "full_hf_tree",
+    "model_path": "model.safetensors",
+    "model_bytes": 9100859544,
+    "model_sha256": "608f1ff64bc6caa9be836060fc7c78a15c4658c4a07b8d73c78d6f70d1b39c23",
+    "tensor_count": 438,
+    "license": "apache-2.0",
+    "source_roles": [
+      {
+        "role": "configuration",
+        "path": "config.json",
+        "sha256": "826f81f163b1b557ad13f83c4f35008f4fee5a6cb6311b4316ff3dbb25149411",
+        "bytes": 10045,
+        "git_blob_sha1": "c9e6b86a7d151bf800bb030831bba929163ad43f"
+      },
+      {
+        "role": "configuration_source",
+        "path": "configuration_moss_tts.py",
+        "sha256": "ab6debcb92032cb9dc91ae80aed77dbadd2e59848208baef2b062bd6def3f3be",
+        "bytes": 7160,
+        "git_blob_sha1": "04b453edd7077170ebbd6a3ffb8167d9af8ac458"
+      },
+      {
+        "role": "modeling_source",
+        "path": "modeling_moss_tts.py",
+        "sha256": "b0a66211943ae580b087f3e71495fea2f455701a4f6c29b6d3562218f7668c5f",
+        "bytes": 26379,
+        "git_blob_sha1": "4891b570440663b44f0304fe44e6df3d9baf55f8"
+      },
+      {
+        "role": "processing_source",
+        "path": "processing_moss_tts.py",
+        "sha256": "3fc5616b1ec3408162b7d859a7696725a40525313b20f9b31a06ee55c93bd7ad",
+        "bytes": 37496,
+        "git_blob_sha1": "2b15449bb1504a564207eb4c513430416864fce3"
+      },
+      {
+        "role": "gpt2_source",
+        "path": "gpt2_decoder.py",
+        "sha256": "f2e877104669f1e6c7cd34680f0da1a8a159e032123ee56b660b63929b6c8989",
+        "bytes": 30896,
+        "git_blob_sha1": "84c597cf1bcca240562dec1417a53fb19f47bfca"
+      },
+      {
+        "role": "qwen3_source",
+        "path": "qwen3_decoder.py",
+        "sha256": "100163bd7ecf31a59bafacc0b032ace9339edc992a3eb4cc80662502e04e46f0",
+        "bytes": 25473,
+        "git_blob_sha1": "3756bd7033d88388d51a9e64d2fa0efd71959e84"
+      },
+      {
+        "role": "processor_config",
+        "path": "processor_config.json",
+        "sha256": "db574bfebad009e05193196a63a4eeecd353eeca177ccfff28b9379d595d88b7",
+        "bytes": 210,
+        "git_blob_sha1": "9bb021c7cc13f3e886f4be9ca326b68f6b42c461"
+      }
+    ]
+  },
+  "prompt_contract": {
+    "shape": [
+      "rows",
+      13
+    ],
+    "dtype": "u32le",
+    "nonempty": true
+  },
+  "publication": "NO_UPLOAD",
+  "numeric_state": "MEASURED_NOT_GATED",
+  "composite_pcm": "COMPOSITE_PCM_NOT_RUN",
+  "approval": {
+    "status": "OWNER_SIGNOFF_REQUIRED",
+    "signer": null,
+    "scope_sha256": null,
+    "digest": null,
+    "evidence_sha256": null
+  }
+}

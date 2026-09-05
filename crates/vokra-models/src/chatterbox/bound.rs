@@ -1,4 +1,8 @@
-//! Strict binding for the official Chatterbox multilingual v3 T3 checkpoint.
+//! Strict binding for the authenticated Chatterbox multilingual v3 T3 slice.
+//!
+//! This manifest covers T3 tensors only. It is intentionally not a complete
+//! PCM pipeline binder: S3 tokenizer/S3Gen, HiFT, voice encoder and watermark
+//! evidence remain required before a public loader may synthesize audio.
 
 use vokra_core::gguf::GgufFile;
 use vokra_core::{LicenseClass, Result, VokraError};
@@ -30,7 +34,7 @@ pub struct ChatterboxCheckpoint {
 }
 
 impl ChatterboxCheckpoint {
-    /// Validates identity and all 292 upstream tensor names and shapes.
+    /// Validates identity and all 292 authenticated T3 tensor names/shapes.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
         require_tensor_shape(
@@ -69,7 +73,7 @@ impl ChatterboxCheckpoint {
     }
 
     #[must_use]
-    /// Returns the number of tensors checked by the complete manifest gate.
+    /// Returns the number of T3 tensors checked by the manifest gate.
     pub const fn tensor_count(&self) -> usize {
         self.checkpoint.tensor_count()
     }
@@ -82,7 +86,7 @@ impl ChatterboxCheckpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "chatterbox synthesize: the complete official v3 T3 checkpoint is bound and the real speaker projection runs natively, but text tokenization, T3 autoregressive speech-token sampling, S3Gen and HiFTNet PCM generation remain pending.",
+            "chatterbox synthesize: authenticated v3 T3-only checkpoint is bound and the real speaker projection runs natively, but the composite voice encoder/S3 tokenizer/S3Gen/HiFT/watermark pipeline and T3 PCM route remain unavailable.",
         ))
     }
 }

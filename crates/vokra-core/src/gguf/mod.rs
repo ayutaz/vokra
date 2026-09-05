@@ -30,9 +30,10 @@
 //! 4. zero padding up to [`DEFAULT_ALIGNMENT`] (or `general.alignment`), then
 //!    the tensor data, each tensor starting at an alignment multiple.
 //!
-//! # Scope (M0)
+//! # Scope
 //!
-//! Dense `F32`/`F16` tensors only; K-quant direct load is FR-LD-07 (M1-02).
+//! Dense `F32`/`F16` tensors and the supported quantized types
+//! (`Q8_0`/`Q4_K`/`Q5_K`/`Q6_K`) are decoded by the scalar reader. The
 //! `frontend_spec` is read/written here but **not inspected** — the bit-exact
 //! match check is FR-LD-03 (M1-03). See [`chunks`] for the full scope note.
 
@@ -124,12 +125,13 @@ pub enum GgufError {
     /// A metadata value type tag was outside the range `0..=12`.
     UnsupportedValueType(u32),
     /// A tensor declared a ggml type tag Vokra does not load: the accepted set
-    /// is `F32` (0), `F16` (1) and the K-quants `Q4_K` (12) / `Q5_K` (13) /
-    /// `Q6_K` (14). Other quantized families (IQ2, Q2_K, Q8_0, …) are
-    /// intentionally unsupported.
+    /// is `F32` (0), `F16` (1), `I8` (24), `I32` (26), `Q8_0` (8), `BF16` (30) and the K-quants
+    /// `Q4_K` (12) / `Q5_K` (13) / `Q6_K` (14). Other quantized families
+    /// (IQ2, Q2_K, …) are intentionally unsupported.
     UnsupportedDtype(u32),
-    /// A quantized tensor's element count was not a whole multiple of its
-    /// block size (a K-quant row not divisible by [`tensor::QK_K`] = 256).
+    /// A quantized tensor's total element count was not a whole multiple of
+    /// its block size (Q8_0 uses 32; K-quants use
+    /// [`tensor::QK_K`] = 256).
     /// K-quants are stored as fixed-size super-blocks, so a partial block is
     /// malformed.
     BlockSizeMisaligned {
@@ -176,6 +178,15 @@ pub enum GgufError {
         /// Byte length actually supplied.
         actual: u64,
     },
+    /// A dtype-specific accessor was used with a tensor of another dtype.
+    DtypeMismatch {
+        /// Name of the tensor that was requested.
+        name: String,
+        /// Dtype required by the accessor (on-disk ggml tag).
+        expected: u32,
+        /// Dtype declared by the tensor.
+        actual: u32,
+    },
     /// A required metadata key was absent (e.g. a `vokra.frontend.*` field).
     MissingKey(String),
     /// A metadata key held a value of an unexpected type.
@@ -218,7 +229,7 @@ impl fmt::Display for GgufError {
                 write!(
                     f,
                     "unsupported tensor dtype tag {t} \
-                     (accepted: F32=0, F16=1, Q4_K=12, Q5_K=13, Q6_K=14)"
+                     (accepted: F32=0, F16=1, I8=24, I32=26, BF16=30, Q8_0=8, Q4_K=12, Q5_K=13, Q6_K=14)"
                 )
             }
             Self::BlockSizeMisaligned {
@@ -256,6 +267,14 @@ impl fmt::Display for GgufError {
             } => write!(
                 f,
                 "tensor `{name}` payload is {actual} bytes but shape/dtype imply {expected}"
+            ),
+            Self::DtypeMismatch {
+                name,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "tensor `{name}` has dtype tag {actual}, but accessor requires {expected}"
             ),
             Self::MissingKey(k) => write!(f, "missing required metadata key `{k}`"),
             Self::WrongType { key, expected } => {

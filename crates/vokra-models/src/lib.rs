@@ -96,6 +96,10 @@ pub mod canary_qwen;
 // — the Llama primitives and HiFTNet seam are shared with CosyVoice2 /
 // CosyVoice3.
 pub mod chatterbox;
+/// Shared source-native T3/tokenizer/conditioning contracts for the
+/// Chatterbox family.  PCM loaders remain fail-closed until the complete
+/// composite pipeline is authenticated.
+pub mod chatterbox_family;
 // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Turbo TTS
 // (MIT). 350M-parameter distilled Turbo variant of Chatterbox — swaps
 // the backbone family from Llama_520M to **gpt2-medium** (30 layers ×
@@ -137,6 +141,8 @@ pub mod chatterbox_turbo;
 // (SoTA plan §1(a) 訂正 2026-07-22). Every hparam transcribed verbatim
 // from `t3_nano_v1.yaml` at `huggingface.co/ResembleAI/chatterbox-nano`
 // (fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」).
+/// Native SparkAudio BiCodec token detokenizer (CPU / Metal; decode only).
+pub mod bicodec;
 pub mod chatterbox_nano;
 pub mod codec;
 pub mod compute;
@@ -294,6 +300,11 @@ pub mod parakeet;
 // the encoder body, vokra_ops::ctc_decode for greedy / beam CTC decoding)
 // rather than duplicating.
 pub mod parakeet_ctc;
+// Wave D (2026-09-01): strict GGUF manifest binder for ESPnet OWSM v4
+// medium 1B. The fixed 1,172-tensor inventory and source provenance are
+// authenticated; frontend/decoder forward remains explicit NotImplemented
+// until an independent CPU reference/parity packet is available.
+pub mod owsm_v4_medium_1b;
 /// Native ReazonSpeech NeMo v2 Japanese long-form FastConformer + RNN-T ASR.
 pub mod reazonspeech_nemo_v2;
 // SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B — 1600+ language
@@ -380,6 +391,8 @@ pub mod qwen3_tts;
 // — see `sbv2::mod` doc comment for the full reference list and the explicit
 // NOT REFERENCED (AGPL-3.0) sources.
 pub mod sbv2;
+/// Native SGMSE-VoiceBank score-model orchestration (CPU / Metal).
+pub mod sgmse;
 pub mod silero_vad;
 // KWS (keyword-spotting / wake-word) family (SoTA plan KWS binder, 2026-08-05).
 // First member: openWakeWord (dscripka/openWakeWord, Apache-2.0 code).
@@ -403,6 +416,10 @@ pub mod speaker;
 // 200-tensor public topology and runs its learned Conv1d/attention path through
 // the explicit CPU/Metal Compute seam.
 pub mod ecapa_tdnn;
+// JaesungHuh MIT voice-gender classifier. This is a distinct 202-tensor
+// classifier architecture and must not route through the 200-tensor
+// SpeechBrain ECAPA speaker binder.
+pub mod voice_gender_classifier;
 // WeSpeaker ResNet34-LM speaker encoder. Strictly accepts the two public
 // manifests and dispatches every learned Conv2D/projection GEMM through the
 // selected CPU or Metal backend.
@@ -1648,39 +1665,14 @@ pub mod firered_asr_aed;
 // same leaf set as layer 0), refusing a violation by naming the EXACT absent
 // tensor. Weight-license surfacing fail-closes to `LicenseClass::Unknown`.
 //
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より honest」):
-// `Gigaam::transcribe` returns `VokraError::UnsupportedOp` naming three concrete
-// blockers, all properties of the GGUF CONTRACT rather than of the kernel
-// library — (i) the MISSING FRONT-END SPEC: neither converter stamps a
-// `vokra.gigaam.*` / `vokra.frontend.*` chunk, so sample rate, mel-bin count,
-// hop, window and normalisation convention are all unknown, and those differ
-// silently between librosa / torchaudio / Kaldi; (ii) the MISSING ENCODER
-// TENSOR-NAME MAPPING: both converters copy every tensor under its verbatim
-// upstream state-dict key and both explicitly record real-weight binding as a
-// follow-up "gated on the upstream tensor-name manifest fetch", so a best-guess
-// mapping would emit a SHAPE-VALID but quietly wrong transcript rather than
-// crash; (iii) the MISSING CTC VOCABULARY: no tokenizer / vocab chunk is
-// embedded (contrast the Whisper converter's `vokra.tokenizer.model` U8 array),
-// and GigaAM is char-wise CTC, so frame-argmax indices cannot be mapped to
-// characters at all. The message states explicitly that the blockers are
-// METADATA, not kernels — `vokra_ops::conformer`, `vokra_ops::ctc_decode_greedy`
-// / `ctc_decode_beam` and `vokra_ops::mel` / `kaldi_fbank` all already exist —
-// and points at the converter + sidecar to extend. No fabricated transcript is
-// ever emitted (FR-EX-08). Deliberately NO `GigaamConfig::upstream_default()`:
-// no in-repo primary source transcribes GigaAM's encoder geometry or front-end
-// axes, so a default would be invented numbers wearing an authoritative face
-// (CLAUDE.md ハルシネーション厳禁) — the same posture `ten_vad` / `firered_vad`
-// take. `GigaamTopology` MEASURES the checkpoint instead of asserting anything.
-//
-// LICENSING: both converters stamp `mit` → `LicenseClass::Permissive` per the
-// upstream `github.com/salute-developers/GigaAM/LICENSE`. This binder only
-// SURFACES whatever class the GGUF carries. `docs/license-audit.md` §3.1
-// sign-off stays BLANK (owner-only per
-// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign, and does not
-// treat a converter default as a sign-off). Both tickets additionally flag open
-// corpus-provenance questions (Sber-internal disclosure for v3; a Common Voice /
-// MLS / VoxPopuli / FLEURS rights chain for the 70+-language variant) that are
-// owner audit items, not runtime concerns.
+// HISTORICAL AUDIT NOTE (superseded for both variants by their strict native
+// binders in `gigaam::multilingual` and `gigaam::v3`): the old LOUD-PARTIAL
+// diagnostic described pre-authentication metadata blockers. It is no longer
+// a current runtime status. The v3 route still fails closed until its
+// independently reviewed prepared SHA is recorded, and its text boundary
+// remains unsupported until the exact SentencePiece runtime is available.
+// Both routes preserve the upstream MIT declaration and the open dataset
+// provenance/publication gate; no fabricated transcript is emitted.
 //
 // Cross-crate string handshake via duplicated `pub const ARCH_V3` /
 // `ARCH_MULTILINGUAL` / `NAME_*` / `CATEGORY` / `UPSTREAM_*` (mirrors of the two

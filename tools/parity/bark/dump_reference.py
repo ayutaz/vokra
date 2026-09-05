@@ -13,17 +13,8 @@ import hashlib
 import json
 import os
 import platform
+import tempfile
 from pathlib import Path
-
-import numpy as np
-import torch
-import transformers
-from transformers import BarkModel
-from transformers.models.bark.generation_configuration_bark import (
-    BarkCoarseGenerationConfig,
-    BarkFineGenerationConfig,
-    BarkSemanticGenerationConfig,
-)
 
 
 TRANSFORMERS_VERSION = "5.5.0"
@@ -65,6 +56,21 @@ VARIANTS: dict[str, dict[str, object]] = {
         "layers": 24,
     },
 }
+
+
+def import_reference_modules() -> None:
+    """Import the project closure only after the offline self-test path."""
+    global BarkCoarseGenerationConfig, BarkFineGenerationConfig
+    global BarkModel, BarkSemanticGenerationConfig, np, torch, transformers
+    import numpy as np  # noqa: PLC0415
+    import torch  # noqa: PLC0415
+    import transformers  # noqa: PLC0415
+    from transformers import BarkModel  # noqa: PLC0415
+    from transformers.models.bark.generation_configuration_bark import (  # noqa: PLC0415
+        BarkCoarseGenerationConfig,
+        BarkFineGenerationConfig,
+        BarkSemanticGenerationConfig,
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -131,6 +137,66 @@ def verify_model_directory(model_dir: Path, identity: dict[str, object]) -> None
         raise RuntimeError("codec topology differs from the pinned causal 24 kHz release")
 
 
+def verify_reference_manifest(output: Path, manifest: dict[str, object]) -> None:
+    variant = manifest.get("variant")
+    identity = VARIANTS.get(str(variant))
+    if manifest.get("format") != "vokra-bark-transformers-5.5-reference-v1":
+        raise RuntimeError("reference format is not the pinned Transformers 5.5 oracle")
+    if identity is None or manifest.get("upstream_revision") != identity["upstream_revision"]:
+        raise RuntimeError("reference upstream revision is not pinned")
+    if manifest.get("transformers_version") != TRANSFORMERS_VERSION:
+        raise RuntimeError("reference Transformers version is not pinned")
+    if manifest.get("transformers_source_revision") != TRANSFORMERS_SOURCE_REVISION:
+        raise RuntimeError("reference Transformers source revision is not pinned")
+    files = manifest.get("files")
+    if not isinstance(files, dict) or set(files) != {
+        "text_token_ids.u32le", "semantic_tokens.u32le", "codes.u32le", "decoded_pcm.f32"
+    }:
+        raise RuntimeError("reference manifest file inventory is not exact")
+    for name, expected in files.items():
+        if not isinstance(expected, str) or len(expected) != 64:
+            raise RuntimeError(f"invalid reference hash for {name}")
+        path = output / str(name)
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"missing or empty reference artifact: {path}")
+        actual = sha256_file(path)
+        if actual != expected:
+            raise RuntimeError(f"reference artifact hash changed: {name}")
+
+
+def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="bark-reference-") as raw:
+        output = Path(raw)
+        for name in ("text_token_ids.u32le", "semantic_tokens.u32le", "codes.u32le", "decoded_pcm.f32"):
+            (output / name).write_bytes(name.encode("ascii"))
+        manifest = {
+            "format": "vokra-bark-transformers-5.5-reference-v1",
+            "variant": "small",
+            "upstream_revision": VARIANTS["small"]["upstream_revision"],
+            "transformers_version": TRANSFORMERS_VERSION,
+            "transformers_source_revision": TRANSFORMERS_SOURCE_REVISION,
+            "files": {name: sha256_file(output / name) for name in (
+                "text_token_ids.u32le", "semantic_tokens.u32le", "codes.u32le", "decoded_pcm.f32"
+            )},
+        }
+        verify_reference_manifest(output, manifest)
+        (output / "codes.u32le").write_bytes(b"tampered")
+        try:
+            verify_reference_manifest(output, manifest)
+        except RuntimeError:
+            pass
+        else:
+            raise SystemExit("reference self-test accepted an artifact hash tamper")
+        manifest["upstream_revision"] = "0" * 40
+        try:
+            verify_reference_manifest(output, manifest)
+        except RuntimeError:
+            pass
+        else:
+            raise SystemExit("reference self-test accepted a revision tamper")
+    print("dump_reference.py self-test: PASS")
+
+
 def write_u32(path: Path, values: torch.Tensor | list[int]) -> None:
     array = np.asarray(
         values.detach().cpu().to(torch.int64).contiguous().numpy()
@@ -168,10 +234,19 @@ def execution_environment() -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--variant", choices=sorted(VARIANTS), required=True)
-    parser.add_argument("--model-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--variant", choices=sorted(VARIANTS))
+    parser.add_argument("--model-dir", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+
+    if args.self_test:
+        self_test()
+        return 0
+    if args.variant is None or args.model_dir is None or args.output is None:
+        parser.error("--variant, --model-dir, and --output are required")
+
+    import_reference_modules()
 
     if transformers.__version__ != TRANSFORMERS_VERSION:
         raise RuntimeError(
@@ -257,7 +332,7 @@ def main() -> int:
     write_f32(files["decoded_pcm.f32"], pcm)
 
     manifest = {
-        "format": "vokra-bark-transformers-4.31-reference-v1",
+        "format": "vokra-bark-transformers-5.5-reference-v1",
         "oracle": "official Transformers BarkModel semantic/coarse/fine generate plus codec_decode",
         "variant": args.variant,
         "upstream_hf": identity["upstream_hf"],
@@ -282,6 +357,7 @@ def main() -> int:
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    verify_reference_manifest(args.output, manifest)
     print(json.dumps(manifest, sort_keys=True))
     return 0
 

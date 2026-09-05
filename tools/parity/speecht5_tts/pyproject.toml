@@ -1,19 +1,37 @@
 [project]
 name = "vokra-speecht5-tts-parity"
 version = "0.1.0"
-description = "Pinned independent Transformers 4.45.2 SpeechT5 TTS parity oracle"
+description = "Pinned independent Transformers 5.10.4 SpeechT5 TTS parity oracle"
 requires-python = "==3.12.*"
 dependencies = [
-    "huggingface-hub==1.27.0",
+    "huggingface-hub==1.5.0",
     "numpy==1.26.4",
     "safetensors==0.8.0",
     "sentencepiece==0.2.2",
-    "torch==2.13.0",
-    "transformers==5.5.0",
+    "torch==2.4.1",
+    "transformers==5.10.4",
+    "typer==0.9.0",
 ]
 
 [tool.uv]
 package = false
+no-binary-package = ["numpy"]
+config-settings-package = { numpy = { setup-args = ["-Dblas=none", "-Dlapack=none"] } }
+# The fixed inference route never imports setuptools.  Keep the transitive
+# build-tool requirement impossible so uv omits setuptools, including its
+# forbidden LGPLv3 vendored autocommand payload, from the frozen runtime
+# closure.  Do not replace this with a newer setuptools pin: the payload is
+# still bundled there.
+override-dependencies = ["setuptools ; python_version < '0'"]
+build-constraint-dependencies = [
+    "Cython==3.0.12",
+    "meson-python==0.15.0",
+    "meson==1.12.0",
+    "pyproject-metadata==0.12.1",
+    "ninja==1.13.0",
+    "patchelf==0.19.1.0",
+    "packaging==26.3",
+]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
@@ -25,3 +43,13 @@ torch = { index = "pytorch-cpu" }
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[tool.speecht5_tts]
+# 5.5.0 is retained only as the prior isolated reference pin; no upstream
+# requirement is asserted. Compatibility of the security-remediated pin with
+# the source route remains unverified until an authorized VAST model smoke run.
+previous_isolated_transformers_pin = "transformers==5.5.0"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"

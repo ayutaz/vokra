@@ -77,11 +77,12 @@ build `dlopen`s the system CUDA at run time; it never ships a `libcudart` /
 The trampoline runtime dispatch is code-complete: `transcribe`, `synthesize`,
 `vad_open_stream`, `push_pcm`, `poll` and `interrupt` unpack/pack Variants and call the runtime
 (`integrations/vokra-godot/src/trampoline.rs`
-<!-- anchor: integrations/vokra-godot/src/trampoline.rs -->). The Linux CI leg
-downloads the checksum-pinned official Godot 4.7.1 binary and runs both the
-asset-free ClassDB/error harness and a real Silero VAD stream smoke. Opening
-the ASR/TTS demo scenes interactively in the editor remains a manual release
-check; it is not represented as automated evidence.
+<!-- anchor: integrations/vokra-godot/src/trampoline.rs -->). The latest
+recorded Linux CI evidence downloaded the checksum-pinned official Godot
+4.7.1 binary and ran both the asset-free ClassDB/error harness and a real
+Silero VAD stream smoke. Opening the ASR/TTS demo scenes interactively in the
+editor remains a manual release check; it is not represented as automated
+evidence.
 
 ## 7. Troubleshooting
 
@@ -100,8 +101,9 @@ check; it is not represented as automated evidence.
 
 ## Keeping this page current
 
-**Last verified: 2026-08-22 — official Godot 4.7.1 headless, real Silero VAD
-GGUF + raw-f32 PCM stream.**
+**Documentation reviewed: 2026-08-30; latest recorded runtime evidence remains
+2026-08-22 — official Godot 4.7.1 headless, real Silero VAD GGUF + raw-f32 PCM
+stream.** No new model execution is claimed for this documentation review.
 
 - **Update responsibility**: a PR that changes the GDExtension API, the build
   targets, or the compliance scanner updates this page and its Japanese twin in

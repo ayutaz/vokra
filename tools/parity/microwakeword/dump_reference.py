@@ -24,11 +24,12 @@ micro-wake-word-models, Apache-2.0), this script writes into
     transcription** of the standard log-mel algorithm (Hann window +
     radix-2 FFT + HTK-convention mel filterbank + log10 with 1e-10 floor)
     against ``input_pcm.bin``.
-- ``output_ref.bin`` — raw ``f32`` little-endian, the reference
-    probability vector produced by running ``input_pcm.bin`` end-to-end
-    through the source ``.tflite`` (INT8 forward, dequantised to F32 for
-    portable comparison). Length equals the TFLite output size (typically
-    1 or the number of wake classes).
+- ``input_invocation_NN.bin`` — exact quantised ``int8`` bytes for one
+    ``[1, 3, 40]`` invocation, with distinct frames per invocation.
+- ``output_invocation_NN.bin`` / ``output_invocation_NN_f32.bin`` — exact
+    raw ``uint8 [1, 1]`` output and affine dequantisation. The model is run
+    through one persistent upstream interpreter and replayed in a fresh
+    interpreter as a reset check.
 - ``manifest.json`` — describes each artefact (name, path, shape,
     dtype, atol recommendation). Also carries the source ``.tflite``
     sha256 for provenance audit.
@@ -40,25 +41,21 @@ the same log-mel algorithm the Rust code implements — Hann window,
 radix-2 FFT, HTK-convention mel filterbank, log10 with floor. This
 validates *transcription faithfulness*: the Rust code implements the
 standard algorithm it claims to implement, and matches an independent
-numpy pass at ``atol = 1e-3`` on real inputs.
+numpy pass at the registered ``atol = 5e-2`` boundary on real inputs.
 
 What this does **not** validate: bit-parity against the specific
 training-time ``tf.signal`` mel front-end used to train the
 microWakeWord checkpoints. Bit-parity against ``tf.signal`` would
 require pulling ``tensorflow`` (~500 MB) into the sidecar's dep
-footprint (currently 3 deps: ``gguf`` + ``numpy`` +
-``ai-edge-litert``). Empirically the standard log-mel algorithm
-matches ``tf.signal.stft`` + ``tf.signal.linear_to_mel_weight_matrix``
-within ``1e-3`` for the same parameters (Whisper front-end sibling
-takes the same posture — see ``vokra_backend_cpu::fused_log_mel_dispatch``'s
-docs; the ``dispatch`` module defining it is private, so the crate-root
-re-export is the only nameable path).
+footprint (currently 2 deps: ``numpy`` + ``ai-edge-litert``). The standard
+log-mel algorithm is not compared with ``tf.signal.stft`` plus
+``tf.signal.linear_to_mel_weight_matrix`` here. The registered 5e-2 boundary
+applies only to this numpy transcription versus Rust f32 comparison.
 
-The ``output_ref.bin`` reference, by contrast, is the **real**
-upstream TFLite forward: ``ai_edge_litert.Interpreter`` runs the exact
-INT8 MC-MobileNet operations the microWakeWord checkpoint was trained
-with. That leg has no "transcription" concern — it is the ground truth
-for the INT8 forward.
+The per-invocation output reference is the **real** upstream TFLite forward:
+``ai_edge_litert.Interpreter`` runs the exact quantised MC-MobileNet
+operations the checkpoint was trained with. That leg has no "transcription"
+concern — it is the ground truth for the INT8 forward.
 
 # NOT REFERENCED (clean-room)
 
@@ -73,14 +70,26 @@ for the INT8 forward.
 
 ::
 
-    cd tools/parity/microwakeword
-    uv sync                          # only if first run
-    # Assumes owner has previously downloaded the .tflite (e.g. via
-    # prepare_checkpoint.py's --url path, or manually curl-ed):
-    uv run python dump_reference.py \\
+    cd tools/parity/microwakeword-reference
+    # VAST must first complete inspect.py's dependency/native-license audit.
+    # The current result is BLOCKED_PENDING_VAST_EVIDENCE; do not generate
+    # fixtures until the audit report explicitly permits it.
+    uv run --no-project --offline --python 3.12 python inspect.py
+    # Only after the VAST audit is PASS, and only with the owner-provided
+    # regular (non-symlink) .tflite whose SHA is authenticated:
+    # --output-dir must be a new absent sibling; existing paths are rejected.
+    uv run python ../microwakeword/dump_reference.py \\
         --tflite-path ~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.tflite \\
         --output-dir  ~/.cache/vokra-eval/fixtures/microwakeword \\
+        --dependency-evidence /absolute/path/to/dependency-evidence.json \\
         --verbose
+
+    The dependency-evidence file is the successful collection report from
+    the same clean VAST environment. The dumper rechecks its fixed schema,
+    hashes, platform, and installed distribution versions, then requires the
+    Inspector's exact-owner-reviewed audit decision. The manifest keeps the
+    raw collection status separate from the effective fixture decision;
+    publication remains prohibited.
 
     # Point the Rust parity harness at both artefacts (the GGUF was
     # produced by prepare_checkpoint.py in a separate step):
@@ -97,14 +106,17 @@ FR-EX-08 posture, matches every other sidecar in ``tools/parity/``.
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
+import importlib.util
 import json
+import os
+import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
-
-import numpy as np
-from ai_edge_litert.interpreter import Interpreter
 
 # ----------------------------------------------------------------------
 # Constants — must mirror ``crates/vokra-kws-micro/src/features.rs``
@@ -135,6 +147,47 @@ PCM_SINE_HZ: float = 440.0
 PCM_SINE_AMPLITUDE: float = 6000.0    # ~1/5 of int16 range → no clipping
 PCM_NOISE_STDDEV: float = 200.0        # small vs sine → sine dominates
 
+# Authenticated release contract. Keep this aligned with the converter's
+# reviewed constants; a different model/topology must fail closed.
+AUTHENTICATED_TFLITE_SHA256 = (
+    "21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"
+)
+AUTHENTICATED_TFLITE_BYTES = 52272
+INPUT_SHAPE = (1, 3, 40)
+INPUT_DTYPE_NAME = "int8"
+INPUT_SCALE = 0.10196078568696976
+INPUT_ZERO_POINT = -128
+OUTPUT_SHAPE = (1, 1)
+OUTPUT_DTYPE_NAME = "uint8"
+OUTPUT_SCALE = 1.0 / 256.0
+OUTPUT_ZERO_POINT = 0
+INVOCATION_COUNT = 4
+FRAMES_PER_INVOCATION = INPUT_SHAPE[1]
+STRESS_SEED = 4
+STRESS_INVOCATION_COUNT = 512
+STRESS_STAGE_TENSOR_INDICES = (47, 50, 51, 54, 55, 58, 59, 62, 63, 67, 68, 69)
+STRESS_STAGE_SHAPES = {
+    47: (1, 1, 1, 30), 50: (1, 1, 1, 30), 51: (1, 1, 1, 60),
+    54: (1, 1, 1, 60), 55: (1, 1, 1, 60), 58: (1, 1, 1, 60),
+    59: (1, 1, 1, 60), 62: (1, 1, 1, 60), 63: (1, 1, 1, 60),
+    67: (1, 1), 68: (1, 1), 69: (1, 1),
+}
+STRESS_STAGE_DTYPES = {index: ("uint8" if index == 69 else "int8") for index in STRESS_STAGE_TENSOR_INDICES}
+
+DEPENDENCY_EVIDENCE_SCHEMA = "microwakeword-reference-dependency-evidence-v1"
+DEPENDENCY_EVIDENCE_STATUS = "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED"
+EXPECTED_REFERENCE_PROJECT_SHA256 = "2438d719428e497cc7f101429ba31fb5016e72737659d55aa0269d0824b1183d"
+EXPECTED_REFERENCE_LOCK_SHA256 = "736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3"
+EXPECTED_REFERENCE_DISTRIBUTIONS = {
+    "ai-edge-litert": "2.1.5",
+    "backports-strenum": "1.3.1",
+    "flatbuffers": "25.12.19",
+    "numpy": "2.5.2",
+    "protobuf": "7.36.1",
+    "tqdm": "4.70.0",
+    "typing-extensions": "4.16.0",
+}
+
 # Compile-time contracts (mirror the Rust `const _:` asserts).
 assert WINDOW_SAMPLES <= N_FFT, "WINDOW_SAMPLES must fit in N_FFT"
 assert (N_FFT & (N_FFT - 1)) == 0, "N_FFT must be a power of two (radix-2)"
@@ -151,16 +204,535 @@ def sha256_of_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def synth_pcm() -> np.ndarray:
-    """Deterministic ``i16`` PCM window, ``WINDOW_SAMPLES`` samples wide.
+class DuplicateJsonKey(ValueError):
+    """Raised when evidence JSON contains a duplicate object key."""
 
-    Returns a ``np.int16`` array. Same seed on every invocation → the
-    dump is byte-stable across runs, so the Rust parity harness can
-    hash-audit the fixture if desired.
+
+def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateJsonKey(f"duplicate dependency-evidence key: {key}")
+        result[key] = value
+    return result
+
+
+def load_dependency_evidence(path: Path) -> tuple[dict[str, Any], str, bytes]:
+    """Load one regular evidence file and return its bytes digest.
+
+    This parser is stdlib-only and runs before NumPy/LiteRT imports. It is a
+    collection-evidence integrity gate, not a license or publication grant.
     """
-    rng = np.random.default_rng(PCM_SEED)
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(f"--dependency-evidence must be a regular non-symlink file: {path}")
+    payload = path.read_bytes()
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_object_without_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKey) as error:
+        raise SystemExit(f"invalid dependency evidence JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise SystemExit("dependency evidence root must be a JSON object")
+    return value, hashlib.sha256(payload).hexdigest(), payload
+
+
+def _exact_keys(value: dict[str, Any], expected: tuple[str, ...], label: str) -> None:
+    if set(value) != set(expected) or len(value) != len(expected):
+        raise SystemExit(f"{label} keys drift: {sorted(value)}")
+
+
+def _require_sha(value: Any, label: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(
+        char not in "0123456789abcdef" for char in value
+    ):
+        raise SystemExit(f"{label} must be lowercase SHA-256 hex")
+    return value
+
+
+def _normalize_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).casefold()
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _require_exact_versions(value: Any, label: str) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != set(EXPECTED_REFERENCE_DISTRIBUTIONS):
+        raise SystemExit(
+            f"{label} must contain exactly {len(EXPECTED_REFERENCE_DISTRIBUTIONS)} audited distributions"
+        )
+    result: dict[str, str] = {}
+    for name, expected in EXPECTED_REFERENCE_DISTRIBUTIONS.items():
+        actual = value.get(name)
+        if actual != expected:
+            raise SystemExit(f"{label}.{name} version drift: {actual!r} != {expected!r}")
+        result[name] = actual
+    return result
+
+
+def _metadata_license_declarations_present(metadata: dict[str, Any]) -> bool:
+    fields = ("license", "license_expression", "license_classifiers")
+    return all(isinstance(metadata.get(field), list) for field in fields) and any(
+        isinstance(value, str)
+        and value.strip()
+        and value.strip().casefold() != "unknown"
+        for field in fields
+        for value in metadata[field]
+    )
+
+
+def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Validate the collector's exact success contract without granting it permission."""
+    _exact_keys(
+        evidence,
+        (
+            "schema",
+            "status",
+            "publication_permitted",
+            "fixture_generation_permitted",
+            "owner_review_required",
+            "platform",
+            "project",
+            "uv_lock",
+            "lock",
+            "installed_inventory",
+            "installed_distributions",
+            "failures",
+        ),
+        "dependency evidence",
+    )
+    if evidence["schema"] != DEPENDENCY_EVIDENCE_SCHEMA:
+        raise SystemExit("dependency evidence schema drift")
+    if evidence["status"] != DEPENDENCY_EVIDENCE_STATUS:
+        raise SystemExit("dependency evidence collection did not succeed")
+    if evidence["publication_permitted"] is not False or evidence["fixture_generation_permitted"] is not False:
+        raise SystemExit("dependency evidence cannot grant publication or fixture permission")
+    if evidence["owner_review_required"] is not True:
+        raise SystemExit("dependency evidence must retain owner review requirement")
+    if evidence["failures"] != []:
+        raise SystemExit("dependency evidence contains collection failures")
+
+    platform_data = evidence["platform"]
+    if not isinstance(platform_data, dict):
+        raise SystemExit("dependency evidence platform must be an object")
+    _exact_keys(platform_data, ("system", "machine", "python"), "dependency evidence platform")
+    if platform_data != {"system": "Linux", "machine": "x86_64", "python": "3.12"}:
+        raise SystemExit(f"dependency evidence platform drift: {platform_data!r}")
+
+    for key, expected in (("project", "pyproject.toml"), ("uv_lock", "uv.lock")):
+        item = evidence[key]
+        if not isinstance(item, dict):
+            raise SystemExit(f"dependency evidence {key} must be an object")
+        _exact_keys(item, ("path", "bytes", "sha256"), f"dependency evidence {key}")
+        if item["path"] != expected or not isinstance(item["bytes"], int) or item["bytes"] <= 0:
+            raise SystemExit(f"dependency evidence {key} identity drift")
+        expected_sha = EXPECTED_REFERENCE_PROJECT_SHA256 if key == "project" else EXPECTED_REFERENCE_LOCK_SHA256
+        if _require_sha(item["sha256"], f"dependency evidence {key}.sha256") != expected_sha:
+            raise SystemExit(f"dependency evidence {key} digest drift")
+
+    lock_data = evidence["lock"]
+    if not isinstance(lock_data, dict):
+        raise SystemExit("dependency evidence lock must be an object")
+    _exact_keys(
+        lock_data,
+        ("selected_platform", "resolution_markers", "selected_closure", "rows", "rows_sha256"),
+        "dependency evidence lock",
+    )
+    if lock_data["selected_platform"] != "Linux x86_64 CPython 3.12":
+        raise SystemExit("dependency evidence selected platform drift")
+    if not isinstance(lock_data["resolution_markers"], list) or not isinstance(lock_data["rows"], list):
+        raise SystemExit("dependency evidence lock rows/markers malformed")
+    selected = lock_data["selected_closure"]
+    if selected != sorted(["vokra-microwakeword-reference", *EXPECTED_REFERENCE_DISTRIBUTIONS]):
+        raise SystemExit("dependency evidence selected closure drift")
+    lock_rows_sha256 = _require_sha(lock_data["rows_sha256"], "dependency evidence lock.rows_sha256")
+    if lock_rows_sha256 != _canonical_json_sha256(lock_data["rows"]):
+        raise SystemExit("dependency evidence lock rows digest mismatch")
+
+    inventory = evidence["installed_inventory"]
+    if not isinstance(inventory, dict):
+        raise SystemExit("dependency evidence installed_inventory must be an object")
+    _exact_keys(inventory, ("status", "sha256", "entries", "failures"), "dependency evidence installed_inventory")
+    if inventory["status"] != "PASS" or inventory["failures"] != []:
+        raise SystemExit("dependency evidence installed inventory is not a successful collection")
+    inventory_sha256 = _require_sha(inventory["sha256"], "dependency evidence installed_inventory.sha256")
+    inventory_entries = inventory["entries"]
+    if not isinstance(inventory_entries, list) or len(inventory_entries) != len(EXPECTED_REFERENCE_DISTRIBUTIONS):
+        raise SystemExit(
+            "dependency evidence installed inventory must contain exactly "
+            f"{len(EXPECTED_REFERENCE_DISTRIBUTIONS)} entries"
+        )
+    inventory_names: set[str] = set()
+    for entry in inventory_entries:
+        if not isinstance(entry, dict):
+            raise SystemExit("dependency evidence inventory entry must be an object")
+        _exact_keys(
+            entry,
+            ("path", "metadata", "normalized_name", "name", "version", "status", "failures"),
+            "dependency evidence inventory entry",
+        )
+        name = entry["normalized_name"]
+        if not isinstance(name, str) or name not in EXPECTED_REFERENCE_DISTRIBUTIONS or name in inventory_names:
+            raise SystemExit(f"dependency evidence inventory name drift: {name!r}")
+        if entry["status"] != "VALID" or entry["failures"] != []:
+            raise SystemExit(f"dependency evidence inventory entry is not valid: {name}")
+        if entry["version"] != EXPECTED_REFERENCE_DISTRIBUTIONS[name]:
+            raise SystemExit(f"dependency evidence inventory version drift: {name}")
+        if not isinstance(entry["path"], str) or not entry["path"]:
+            raise SystemExit(f"dependency evidence inventory path malformed: {name}")
+        metadata = entry["metadata"]
+        if not isinstance(metadata, dict) or metadata.get("name") != [entry["name"]] or metadata.get("version") != [entry["version"]]:
+            raise SystemExit(f"dependency evidence inventory metadata drift: {name}")
+        inventory_names.add(name)
+    if inventory_names != set(EXPECTED_REFERENCE_DISTRIBUTIONS):
+        raise SystemExit("dependency evidence installed inventory set drift")
+    if inventory_sha256 != _canonical_json_sha256(inventory_entries):
+        raise SystemExit("dependency evidence installed inventory digest mismatch")
+
+    installed = evidence["installed_distributions"]
+    if not isinstance(installed, list) or len(installed) != len(EXPECTED_REFERENCE_DISTRIBUTIONS):
+        raise SystemExit(
+            "dependency evidence must contain exactly "
+            f"{len(EXPECTED_REFERENCE_DISTRIBUTIONS)} installed distributions"
+        )
+    seen: set[str] = set()
+    versions: dict[str, str] = {}
+    required = (
+        "expected_name",
+        "expected_version",
+        "status",
+        "metadata",
+        "record",
+        "license_candidates",
+        "native_payloads",
+        "failures",
+        "dist_info",
+        "dist_info_path",
+        "inventory_sha256",
+    )
+    for row in installed:
+        if not isinstance(row, dict):
+            raise SystemExit("dependency evidence installed row must be an object")
+        _exact_keys(row, required, "dependency evidence installed row")
+        name = row["expected_name"]
+        version = row["expected_version"]
+        if not isinstance(name, str) or name not in EXPECTED_REFERENCE_DISTRIBUTIONS or name in seen:
+            raise SystemExit(f"dependency evidence installed name drift: {name!r}")
+        if version != EXPECTED_REFERENCE_DISTRIBUTIONS[name]:
+            raise SystemExit(f"dependency evidence installed version drift: {name}={version!r}")
+        if row["status"] != DEPENDENCY_EVIDENCE_STATUS or row["failures"] != []:
+            raise SystemExit(f"dependency evidence installed collection failed: {name}")
+        if row["inventory_sha256"] != inventory_sha256:
+            raise SystemExit(f"dependency evidence inventory digest mismatch: {name}")
+        metadata = row["metadata"]
+        if not isinstance(metadata, dict):
+            raise SystemExit(f"dependency evidence installed metadata/record malformed: {name}")
+        _exact_keys(
+            metadata,
+            (
+                "path",
+                "bytes",
+                "sha256",
+                "name",
+                "version",
+                "license",
+                "license_expression",
+                "license_file",
+                "classifiers",
+                "license_classifiers",
+            ),
+            f"dependency evidence metadata.{name}",
+        )
+        metadata_names = metadata.get("name")
+        if (
+            not isinstance(metadata_names, list)
+            or len(metadata_names) != 1
+            or not isinstance(metadata_names[0], str)
+            or _normalize_distribution_name(metadata_names[0]) != name
+            or metadata.get("version") != [version]
+        ):
+            raise SystemExit(f"dependency evidence installed metadata name/version drift: {name}")
+        if not isinstance(metadata["bytes"], int) or metadata["bytes"] <= 0:
+            raise SystemExit(f"dependency evidence metadata byte count malformed: {name}")
+        _require_sha(metadata["sha256"], f"dependency evidence metadata.{name}.sha256")
+        declaration_fields = ("license", "license_expression", "license_classifiers")
+        for field in (*declaration_fields, "license_file", "classifiers"):
+            if not isinstance(metadata[field], list) or not all(isinstance(item, str) for item in metadata[field]):
+                raise SystemExit(f"dependency evidence metadata declaration malformed: {name}.{field}")
+        record = row["record"]
+        if not isinstance(record, dict):
+            raise SystemExit(f"dependency evidence installed record malformed: {name}")
+        _exact_keys(record, ("path", "bytes", "sha256", "entries", "entries_count", "entries_sha256"), f"dependency evidence record.{name}")
+        if not isinstance(record["path"], str) or not record["path"] or not isinstance(record["bytes"], int) or record["bytes"] <= 0:
+            raise SystemExit(f"dependency evidence RECORD identity malformed: {name}")
+        entries = record["entries"]
+        if not isinstance(entries, list) or not entries or record["entries_count"] != len(entries):
+            raise SystemExit(f"dependency evidence installed RECORD is empty/malformed: {name}")
+        _require_sha(record["sha256"], f"dependency evidence record.{name}.sha256")
+        entries_sha256 = _require_sha(record["entries_sha256"], f"dependency evidence record.{name}.entries_sha256")
+        if entries_sha256 != _canonical_json_sha256(entries):
+            raise SystemExit(f"dependency evidence RECORD entries digest mismatch: {name}")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise SystemExit(f"dependency evidence RECORD entry malformed: {name}")
+            keys = set(entry)
+            required_entry_keys = {"row", "declared", "actual", "validation", "errors"}
+            if keys not in (required_entry_keys, required_entry_keys | {"resolved_path"}):
+                raise SystemExit(f"dependency evidence RECORD entry keys drift: {name}")
+            if not isinstance(entry["row"], int) or entry["row"] <= 0:
+                raise SystemExit(f"dependency evidence RECORD row number malformed: {name}")
+            declared = entry["declared"]
+            if not isinstance(declared, dict) or set(declared) != {"path", "hash", "size"}:
+                raise SystemExit(f"dependency evidence RECORD declaration malformed: {name}")
+            if not isinstance(declared["path"], str) or not declared["path"]:
+                raise SystemExit(f"dependency evidence RECORD path malformed: {name}")
+            declared_hash = declared["hash"]
+            if declared_hash is not None:
+                if not isinstance(declared_hash, dict) or set(declared_hash) != {"algorithm", "value", "status"}:
+                    raise SystemExit(f"dependency evidence RECORD hash declaration malformed: {name}")
+                if not isinstance(declared_hash["status"], str) or not isinstance(declared_hash["algorithm"], (str, type(None))) or not isinstance(declared_hash["value"], (str, type(None))):
+                    raise SystemExit(f"dependency evidence RECORD hash declaration types malformed: {name}")
+            declared_size = declared["size"]
+            if declared_size is not None:
+                if not isinstance(declared_size, dict) or set(declared_size) != {"value", "status"}:
+                    raise SystemExit(f"dependency evidence RECORD size declaration malformed: {name}")
+                if not isinstance(declared_size["status"], str) or not isinstance(declared_size["value"], (int, str, type(None))):
+                    raise SystemExit(f"dependency evidence RECORD size declaration types malformed: {name}")
+            actual = entry["actual"]
+            if actual is not None:
+                if not isinstance(actual, dict) or set(actual) != {"sha256", "bytes"}:
+                    raise SystemExit(f"dependency evidence RECORD actual identity malformed: {name}")
+                _require_sha(actual["sha256"], f"dependency evidence RECORD actual.{name}.sha256")
+                if not isinstance(actual["bytes"], int) or actual["bytes"] < 0:
+                    raise SystemExit(f"dependency evidence RECORD actual byte count malformed: {name}")
+            if entry["validation"] not in {"MATCH", "EMPTY_DECLARATION", "FAIL", "MALFORMED_ROW", "OVERSIZE"}:
+                raise SystemExit(f"dependency evidence RECORD validation status malformed: {name}")
+            if not isinstance(entry["errors"], list) or not all(isinstance(error, str) for error in entry["errors"]):
+                raise SystemExit(f"dependency evidence RECORD errors malformed: {name}")
+            if "resolved_path" in entry and (not isinstance(entry["resolved_path"], str) or not entry["resolved_path"]):
+                raise SystemExit(f"dependency evidence RECORD resolved path malformed: {name}")
+        candidates = row["license_candidates"]
+        metadata_declared = _metadata_license_declarations_present(metadata)
+        if not isinstance(candidates, list) or (not candidates and not metadata_declared):
+            raise SystemExit(f"dependency evidence installed payload evidence malformed: {name}")
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                raise SystemExit(f"dependency evidence license candidate malformed: {name}")
+            _exact_keys(candidate, ("path", "bytes", "sha256"), f"dependency evidence license.{name}")
+            if not isinstance(candidate["path"], str) or not candidate["path"] or not isinstance(candidate["bytes"], int) or candidate["bytes"] <= 0:
+                raise SystemExit(f"dependency evidence license candidate identity malformed: {name}")
+            _require_sha(candidate["sha256"], f"dependency evidence license.{name}.sha256")
+        native_payloads = row["native_payloads"]
+        if not isinstance(native_payloads, list):
+            raise SystemExit(f"dependency evidence native payload evidence malformed: {name}")
+        for native in native_payloads:
+            if not isinstance(native, dict):
+                raise SystemExit(f"dependency evidence native payload malformed: {name}")
+            _exact_keys(native, ("path", "bytes", "sha256", "readelf"), f"dependency evidence native.{name}")
+            if not isinstance(native["path"], str) or not native["path"] or not isinstance(native["bytes"], int) or native["bytes"] <= 0:
+                raise SystemExit(f"dependency evidence native payload identity malformed: {name}")
+            _require_sha(native["sha256"], f"dependency evidence native.{name}.sha256")
+            if not isinstance(native["readelf"], dict) or not isinstance(native["readelf"].get("status"), str):
+                raise SystemExit(f"dependency evidence native readelf malformed: {name}")
+        if not isinstance(row["dist_info"], str) or not isinstance(row["dist_info_path"], str):
+            raise SystemExit(f"dependency evidence installed dist-info malformed: {name}")
+        seen.add(name)
+        versions[name] = version
+    if seen != set(EXPECTED_REFERENCE_DISTRIBUTIONS):
+        raise SystemExit("dependency evidence installed distribution set drift")
+    return {"platform": platform_data, "versions": versions}
+
+
+def require_reference_runtime(evidence_versions: dict[str, str]) -> dict[str, Any]:
+    """Verify the actual VAST interpreter only after all evidence gates pass."""
+    import importlib.metadata
+    import platform
+
+    if sys.version_info[:2] != (3, 12):
+        raise SystemExit(f"reference runtime must be Python 3.12, got {sys.version_info[:3]}")
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        raise SystemExit("reference runtime must be Linux x86_64")
+    expected_names = set(EXPECTED_REFERENCE_DISTRIBUTIONS)
+    observed_names: list[str] = []
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata.get("Name")
+        if not isinstance(name, str) or not name:
+            raise SystemExit("installed reference distribution has no canonical Name metadata")
+        observed_names.append(re.sub(r"[-_.]+", "-", name).casefold())
+    if len(observed_names) != len(expected_names) or set(observed_names) != expected_names:
+        raise SystemExit(
+            "installed reference distribution set drift: "
+            + ",".join(sorted(observed_names))
+        )
+    installed: dict[str, str] = {}
+    for name, expected in EXPECTED_REFERENCE_DISTRIBUTIONS.items():
+        try:
+            actual = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError as error:
+            raise SystemExit(f"required reference distribution is not installed: {name}") from error
+        if actual != expected or actual != evidence_versions[name]:
+            raise SystemExit(f"installed reference distribution drift: {name}={actual!r}")
+        installed[name] = actual
+    return {"system": "Linux", "machine": "x86_64", "python": "3.12", "installed_distributions": installed}
+
+
+def _synthetic_dependency_evidence() -> dict[str, Any]:
+    """Build a model-free success-shaped collector report for self-tests."""
+    inventory_entries = [
+        {
+            "path": f"lib/python3.12/site-packages/{name}-{version}.dist-info",
+            "metadata": {
+                "path": f"lib/python3.12/site-packages/{name}-{version}.dist-info/METADATA",
+                "bytes": 1,
+                "sha256": "0" * 64,
+                "name": [name],
+                "version": [version],
+                "license": ["BSD-3-Clause"],
+                "license_expression": [],
+                "license_file": ["LICENSE"],
+                "classifiers": ["License :: OSI Approved :: BSD License"],
+                "license_classifiers": ["License :: OSI Approved :: BSD License"],
+            },
+            "normalized_name": name,
+            "name": name,
+            "version": version,
+            "status": "VALID",
+            "failures": [],
+        }
+        for name, version in EXPECTED_REFERENCE_DISTRIBUTIONS.items()
+    ]
+    inventory_sha256 = _canonical_json_sha256(inventory_entries)
+    lock_rows: list[dict[str, Any]] = []
+    record_entries = [
+        {
+            "row": 1,
+            "declared": {
+                "path": "METADATA",
+                "hash": {"algorithm": "sha256", "value": "0" * 64, "status": "VALID"},
+                "size": {"value": 1, "status": "VALID"},
+            },
+            "actual": {"sha256": "0" * 64, "bytes": 1},
+            "resolved_path": "lib/python3.12/site-packages/METADATA",
+            "validation": "MATCH",
+            "errors": [],
+        }
+    ]
+    record = {
+        "path": "RECORD",
+        "bytes": 1,
+        "sha256": "0" * 64,
+        "entries": record_entries,
+        "entries_count": len(record_entries),
+        "entries_sha256": _canonical_json_sha256(record_entries),
+    }
+    rows = [
+        {
+            "expected_name": name,
+            "expected_version": version,
+            "status": DEPENDENCY_EVIDENCE_STATUS,
+            "metadata": dict(inventory_entries[0]["metadata"] | {"name": [name], "version": [version]}),
+            "record": record,
+            "license_candidates": [{"path": "LICENSE", "bytes": 1, "sha256": "0" * 64}],
+            "native_payloads": [],
+            "failures": [],
+            "dist_info": f"{name}-{version}.dist-info",
+            "dist_info_path": f"lib/python3.12/site-packages/{name}-{version}.dist-info",
+            "inventory_sha256": inventory_sha256,
+        }
+        for name, version in EXPECTED_REFERENCE_DISTRIBUTIONS.items()
+    ]
+    return {
+        "schema": DEPENDENCY_EVIDENCE_SCHEMA,
+        "status": DEPENDENCY_EVIDENCE_STATUS,
+        "publication_permitted": False,
+        "fixture_generation_permitted": False,
+        "owner_review_required": True,
+        "platform": {"system": "Linux", "machine": "x86_64", "python": "3.12"},
+        "project": {"path": "pyproject.toml", "bytes": 1, "sha256": EXPECTED_REFERENCE_PROJECT_SHA256},
+        "uv_lock": {"path": "uv.lock", "bytes": 1, "sha256": EXPECTED_REFERENCE_LOCK_SHA256},
+        "lock": {
+            "selected_platform": "Linux x86_64 CPython 3.12",
+            "resolution_markers": [],
+            "selected_closure": sorted(["vokra-microwakeword-reference", *EXPECTED_REFERENCE_DISTRIBUTIONS]),
+            "rows": [],
+            "rows_sha256": _canonical_json_sha256(lock_rows),
+        },
+        "installed_inventory": {
+            "status": "PASS",
+            "sha256": inventory_sha256,
+            "entries": inventory_entries,
+            "failures": [],
+        },
+        "installed_distributions": rows,
+        "failures": [],
+    }
+
+
+def require_reference_dependency_gate(dependency_evidence_bytes: bytes) -> dict[str, Any]:
+    """Refuse fixture generation until the isolated dependency audit is PASS."""
+    inspector_path = Path(__file__).parent.parent / "microwakeword-reference" / "inspect.py"
+    project_path = inspector_path.parent / "pyproject.toml"
+    lock_path = inspector_path.parent / "uv.lock"
+    spec = importlib.util.spec_from_file_location("microwakeword_reference_inspector", inspector_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"reference dependency inspector unavailable: {inspector_path}")
+    inspector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inspector)
+    report = inspector.inspect_documents(
+        project_path.read_bytes(),
+        lock_path.read_bytes(),
+        dependency_evidence=dependency_evidence_bytes,
+    )
+    if report.get("status") != "PASS" or not report.get("fixture_generation_permitted", False):
+        raise SystemExit(
+            "reference fixture generation is blocked by dependency/license gate: "
+            + ", ".join(report.get("failures", ["unknown gate failure"]))
+        )
+    return report
+
+
+def _effective_dependency_manifest(
+    raw_evidence: dict[str, Any],
+    audit_report: dict[str, Any],
+    dependency_contract: dict[str, Any],
+    evidence_path: Path,
+    evidence_sha256: str,
+) -> dict[str, Any]:
+    """Separate collector facts from the effective reviewed fixture decision."""
+    return {
+        "schema": DEPENDENCY_EVIDENCE_SCHEMA,
+        "collection_status": raw_evidence["status"],
+        "audit_status": audit_report["status"],
+        "review_status": audit_report["dependency_evidence_status"],
+        "publication_permitted": audit_report["publication_permitted"],
+        "fixture_generation_permitted": audit_report["fixture_generation_permitted"],
+        "collector_owner_review_required": raw_evidence["owner_review_required"],
+        "failures": audit_report["failures"],
+        "path": evidence_path.name,
+        "sha256": evidence_sha256,
+        "project_sha256": EXPECTED_REFERENCE_PROJECT_SHA256,
+        "uv_lock_sha256": EXPECTED_REFERENCE_LOCK_SHA256,
+        "platform": dependency_contract["platform"],
+        "installed_distributions": dependency_contract["versions"],
+    }
+
+
+def synth_pcm(invocation: int = 0, frame: int = 0) -> np.ndarray:
+    """Deterministic ``i16`` PCM frame, ``WINDOW_SAMPLES`` samples wide.
+
+    The global frame index changes tone and seed so each streaming frame is
+    distinct while remaining reproducible.
+    """
+    import numpy as np
+
+    if invocation < 0 or frame < 0:
+        raise ValueError("invocation/frame must be non-negative")
+    global_frame = invocation * FRAMES_PER_INVOCATION + frame
+    rng = np.random.default_rng(PCM_SEED + global_frame)
     t = np.arange(WINDOW_SAMPLES, dtype=np.float64) / float(SAMPLE_RATE)
-    sine = PCM_SINE_AMPLITUDE * np.sin(2.0 * np.pi * PCM_SINE_HZ * t)
+    sine_hz = PCM_SINE_HZ + 37.0 * global_frame
+    sine = PCM_SINE_AMPLITUDE * np.sin(2.0 * np.pi * sine_hz * t)
     noise = rng.normal(0.0, PCM_NOISE_STDDEV, size=WINDOW_SAMPLES)
     signal = sine + noise
     # Clip to int16 range (defensive — the amplitude budget above avoids
@@ -168,6 +740,42 @@ def synth_pcm() -> np.ndarray:
     # produce silent wrap-around).
     signal = np.clip(signal, -32768.0, 32767.0)
     return signal.astype(np.int16)
+
+
+def quantize_features_int8(features: np.ndarray) -> np.ndarray:
+    """Quantise one ``[3, 40]`` feature stack to authenticated ``[1,3,40]``."""
+    import numpy as np
+
+    if features.shape != INPUT_SHAPE[1:]:
+        raise ValueError(f"features shape {features.shape} != {INPUT_SHAPE[1:]}")
+    if features.dtype != np.float32 or not np.all(np.isfinite(features)):
+        raise ValueError("features must be finite float32")
+    scaled = features.astype(np.float64) / INPUT_SCALE
+    rounded = np.where(scaled >= 0.0, scaled + 0.5, scaled - 0.5).astype(np.int64)
+    values = rounded + INPUT_ZERO_POINT
+    if np.any(values < -128) or np.any(values > 127):
+        raise ValueError("quantised input does not fit int8")
+    return values.astype(np.int8).reshape(INPUT_SHAPE)
+
+
+def validate_tflite_contract(input_detail: dict[str, Any], output_detail: dict[str, Any]) -> None:
+    """Fail-closed validation of the authenticated TFLite IO contract."""
+    if tuple(int(x) for x in input_detail.get("shape", ())) != INPUT_SHAPE:
+        raise ValueError(f"input shape is not authenticated: {input_detail.get('shape')}")
+    input_dtype_name = getattr(input_detail.get("dtype"), "__name__", str(input_detail.get("dtype")))
+    if input_dtype_name != INPUT_DTYPE_NAME:
+        raise ValueError(f"input dtype is not int8: {input_detail.get('dtype')!r}")
+    in_scale, in_zp = input_detail.get("quantization", (0.0, 0))
+    if float(in_scale) != INPUT_SCALE or int(in_zp) != INPUT_ZERO_POINT:
+        raise ValueError(f"input quantization drift: {(in_scale, in_zp)!r}")
+    if tuple(int(x) for x in output_detail.get("shape", ())) != OUTPUT_SHAPE:
+        raise ValueError(f"output shape is not authenticated: {output_detail.get('shape')}")
+    output_dtype_name = getattr(output_detail.get("dtype"), "__name__", str(output_detail.get("dtype")))
+    if output_dtype_name != OUTPUT_DTYPE_NAME:
+        raise ValueError(f"output dtype is not uint8: {output_detail.get('dtype')!r}")
+    out_scale, out_zp = output_detail.get("quantization", (0.0, 0))
+    if float(out_scale) != OUTPUT_SCALE or int(out_zp) != OUTPUT_ZERO_POINT:
+        raise ValueError(f"output quantization drift: {(out_scale, out_zp)!r}")
 
 
 def hz_to_mel_f32(hz: np.float32) -> np.float32:
@@ -180,7 +788,8 @@ def hz_to_mel_f32(hz: np.float32) -> np.float32:
     promoted to f64 by scalar arithmetic) would silently shift the mel
     filterbank edges by ~1e-5 Hz and break bit-parity against Vokra
     (verified empirically — a float64 mel_points path fails Path B at
-    band ~30 by 3e-2, well above the 1e-3 atol).
+    band ~30 by 3e-2, within the registered 5e-2 boundary but still
+    useful as a drift signal).
     """
     return np.float32(2595.0) * np.log10(np.float32(1.0) + hz / np.float32(700.0))
 
@@ -336,6 +945,121 @@ def numpy_log_mel_features(pcm_i16: np.ndarray) -> np.ndarray:
     return features
 
 
+def validate_final_output_path(path: Path) -> None:
+    """Require a new final path; never delete or follow an existing path."""
+    if path.is_symlink():
+        raise SystemExit(f"refusing symlink output directory: {path}")
+    parent = path.parent
+    if parent.is_symlink() or not parent.is_dir():
+        raise SystemExit(f"output directory parent must be an existing real directory: {parent}")
+    if path.exists():
+        raise SystemExit(f"refusing existing output path (no-clobber): {path}")
+
+
+def create_staging_output(final_path: Path) -> tuple[Path, Any]:
+    """Create an owned sibling staging directory with failure cleanup."""
+    validate_final_output_path(final_path)
+    staging = Path(tempfile.mkdtemp(prefix=f".{final_path.name}.staging-", dir=final_path.parent))
+
+    def cleanup() -> None:
+        if staging.exists() or staging.is_symlink():
+            shutil.rmtree(staging)
+
+    atexit.register(cleanup)
+    return staging, cleanup
+
+
+def publish_staging(staging: Path, final_path: Path, cleanup: Any) -> None:
+    """Publish staged files with an exclusive final-directory claim.
+
+    The final directory is claimed with atomic ``mkdir``; each staged file is
+    then hard-linked into it (which refuses an existing destination) and the
+    manifest is linked last. A final directory without its manifest is never
+    considered a fixture by the Rust gate.
+    """
+    lock_path = final_path.parent / f".{final_path.name}.publish.lock"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except FileExistsError as error:
+        raise SystemExit(f"refusing concurrent/existing publish lock: {lock_path}") from error
+    final_stat: os.stat_result | None = None
+    lock_stat = os.fstat(fd)
+    owner_marker = final_path / ".vokra-publish-owner"
+    owner_token = os.urandom(16).hex().encode("ascii")
+
+    def cleanup_owned_final() -> None:
+        if final_stat is None:
+            return
+        try:
+            current = final_path.lstat()
+            marker = owner_marker.read_bytes()
+        except (FileNotFoundError, OSError):
+            return
+        if (current.st_dev, current.st_ino) == (final_stat.st_dev, final_stat.st_ino) and marker == owner_token:
+            shutil.rmtree(final_path)
+
+    try:
+        validate_final_output_path(final_path)
+        children = list(staging.iterdir())
+        if any(child.is_symlink() or not child.is_file() for child in children):
+            raise SystemExit(f"staging contains unsafe non-regular artefact: {staging}")
+        manifest = staging / "manifest.json"
+        if not manifest.is_file() or manifest.is_symlink():
+            raise SystemExit("staging manifest is missing or unsafe")
+        try:
+            os.mkdir(final_path, 0o700)
+        except FileExistsError as error:
+            raise SystemExit(f"refusing concurrent/existing final output: {final_path}") from error
+        final_stat = final_path.lstat()
+        with owner_marker.open("xb") as marker:
+            marker.write(owner_token)
+        for child in sorted(children, key=lambda item: item.name == "manifest.json"):
+            destination = final_path / child.name
+            try:
+                os.link(child, destination, follow_symlinks=False)
+            except FileExistsError as error:
+                raise SystemExit(f"refusing artefact destination collision: {destination}") from error
+            child.unlink()
+        staging.rmdir()
+        marker_stat = owner_marker.lstat()
+        current_marker = owner_marker.lstat()
+        if (current_marker.st_dev, current_marker.st_ino) != (marker_stat.st_dev, marker_stat.st_ino):
+            raise SystemExit("publish owner marker changed unexpectedly")
+        owner_marker.unlink()
+        atexit.unregister(cleanup)
+    except BaseException:
+        cleanup_owned_final()
+        raise
+    finally:
+        os.close(fd)
+        try:
+            current_lock = lock_path.lstat()
+        except FileNotFoundError:
+            current_lock = None
+        if current_lock is not None and (current_lock.st_dev, current_lock.st_ino) == (lock_stat.st_dev, lock_stat.st_ino):
+            lock_path.unlink()
+
+
+def require_regular_tflite(path: Path) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"refusing symlink TFLite path: {path}")
+    if not path.is_file():
+        raise SystemExit(f"--tflite-path not found: {path}")
+
+
+def require_real_cli_args(args: argparse.Namespace) -> None:
+    missing = [
+        name
+        for name in ("tflite_path", "output_dir", "dependency_evidence")
+        if getattr(args, name, None) is None
+    ]
+    if missing:
+        raise SystemExit("missing required arguments: " + ", ".join(f"--{name.replace('_', '-')}" for name in missing))
+
+
 def dump_le(arr: np.ndarray, path: Path) -> None:
     """Writes ``arr`` as little-endian raw bytes (no header).
 
@@ -345,7 +1069,8 @@ def dump_le(arr: np.ndarray, path: Path) -> None:
     harness) reads little-endian, matching the M5-03 IoT target family
     (thumbv8m is little-endian).
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or path.exists():
+        raise SystemExit(f"refusing to overwrite existing artefact: {path}")
     # Map dtype → little-endian equivalent. Guard against surprise dtypes.
     if arr.dtype == np.int16:
         arr = arr.astype("<i2")
@@ -353,261 +1078,540 @@ def dump_le(arr: np.ndarray, path: Path) -> None:
         arr = arr.astype("<f4")
     elif arr.dtype == np.int8:
         arr = arr.astype("<i1")  # trivially LE
+    elif arr.dtype == np.uint8:
+        arr = arr.astype("<u1")  # trivially LE
     else:
         raise SystemExit(f"dump_le: unsupported dtype {arr.dtype} for {path}")
-    path.write_bytes(np.ascontiguousarray(arr).tobytes())
+    with path.open("xb") as output:
+        output.write(np.ascontiguousarray(arr).tobytes())
 
 
-def run_tflite_forward(
-    interp: Interpreter, pcm_i16: np.ndarray, verbose: bool
-) -> tuple[np.ndarray, dict[str, Any]]:
-    """Runs the TFLite reference forward and returns
-    ``(output_probability_f32, meta)`` where ``meta`` captures the
-    interpreter's input / output tensor descriptors (for the manifest).
+def run_tflite_sequence(
+    interp: Any, feature_sequence: np.ndarray, verbose: bool
+) -> tuple[list[np.ndarray], dict[str, Any]]:
+    """Run the independent upstream interpreter over a persistent sequence."""
+    import numpy as np
 
-    The microWakeWord TFLite models consume **pre-computed features** as
-    their input (not raw PCM). Two topologies exist in the wild:
+    if feature_sequence.shape != (FRAMES_PER_INVOCATION * INVOCATION_COUNT, N_MELS):
+        raise ValueError(f"unexpected feature sequence shape: {feature_sequence.shape}")
+    input_details = interp.get_input_details()
+    output_details = interp.get_output_details()
+    if len(input_details) != 1 or len(output_details) != 1:
+        raise ValueError("authenticated model must expose exactly one input and output")
+    inp, out = input_details[0], output_details[0]
+    validate_tflite_contract(inp, out)
+    if verbose:
+        print(f"  TFLite input : name={inp['name']!r} shape={list(inp['shape'])} dtype={inp['dtype']}", file=sys.stderr)
+        print(f"  TFLite output: name={out['name']!r} shape={list(out['shape'])} dtype={out['dtype']}", file=sys.stderr)
 
-    1. **Stacked-frame INT8 input** (typical hey_jarvis): the input
-        tensor is ``[1, T, N_MELS]`` where ``T`` is a small number of
-        stacked frames (e.g. 3 or 5). Vokra's Phase 4 parity uses a
-        single frame, so we tile the log-mel features across the T
-        dimension (justified — the reference forward is a black-box
-        smoke check, not per-frame timing parity).
-    2. **Single-frame F32 input** (rarer): the input is ``[1, N_MELS]``
-        F32. We feed the log-mel features directly.
+    raw_outputs: list[np.ndarray] = []
+    for invocation in range(INVOCATION_COUNT):
+        frames = feature_sequence[
+            invocation * FRAMES_PER_INVOCATION : (invocation + 1) * FRAMES_PER_INVOCATION
+        ]
+        input_tensor = quantize_features_int8(frames)
+        interp.set_tensor(inp["index"], input_tensor)
+        interp.invoke()
+        raw = np.ascontiguousarray(interp.get_tensor(out["index"]))
+        if raw.shape != OUTPUT_SHAPE or raw.dtype != np.uint8:
+            raise ValueError(f"invocation {invocation}: output drift: {raw.shape} {raw.dtype}")
+        raw_outputs.append(raw.copy())
+        if verbose:
+            print(f"  invocation {invocation:02d}: input bytes={input_tensor.nbytes} output={int(raw.reshape(-1)[0])}", file=sys.stderr)
+    return raw_outputs, {
+        "input_name": inp["name"],
+        "input_shape": list(INPUT_SHAPE),
+        "input_dtype": "int8",
+        "input_scale": INPUT_SCALE,
+        "input_zero_point": INPUT_ZERO_POINT,
+        "output_name": out["name"],
+        "output_shape": list(OUTPUT_SHAPE),
+        "output_dtype": "uint8",
+        "output_scale": OUTPUT_SCALE,
+        "output_zero_point": OUTPUT_ZERO_POINT,
+    }
 
-    The dumper detects the shape at runtime and adapts. Any other input
-    shape is a loud SystemExit — a mis-detected topology would silently
-    produce garbage reference outputs.
-    """
-    features_f32 = numpy_log_mel_features(pcm_i16)
+
+def build_stress_inputs() -> np.ndarray:
+    """Return the fixed direct-int8 stress sequence (no frontend involved)."""
+    import numpy as np
+
+    return np.random.default_rng(STRESS_SEED).integers(
+        -128, 128, (STRESS_INVOCATION_COUNT, *INPUT_SHAPE[1:]), dtype=np.int8
+    )
+
+
+def run_tflite_stress_trace(
+    interp: Any, stress_inputs: np.ndarray, verbose: bool = False
+) -> tuple[np.ndarray, dict[int, np.ndarray], dict[str, Any]]:
+    """Capture every reviewed intermediate tensor for every stress invocation."""
+    import numpy as np
+
+    if stress_inputs.shape != (STRESS_INVOCATION_COUNT, *INPUT_SHAPE[1:]) or stress_inputs.dtype != np.int8:
+        raise ValueError("stress input sequence shape/dtype drift")
+    input_details = interp.get_input_details()
+    output_details = interp.get_output_details()
+    if len(input_details) != 1 or len(output_details) != 1:
+        raise ValueError("authenticated model must expose exactly one input and output")
+    inp, out = input_details[0], output_details[0]
+    validate_tflite_contract(inp, out)
+    for index in STRESS_STAGE_TENSOR_INDICES:
+        value = np.ascontiguousarray(interp.get_tensor(index))
+        expected_shape = STRESS_STAGE_SHAPES[index]
+        expected_dtype = getattr(np, STRESS_STAGE_DTYPES[index])
+        if value.shape != expected_shape or value.dtype != expected_dtype:
+            raise ValueError(f"stress tensor {index} contract drift: {value.shape} {value.dtype}")
+    traces = {index: [] for index in STRESS_STAGE_TENSOR_INDICES}
+    outputs: list[np.ndarray] = []
+    for invocation, value in enumerate(stress_inputs):
+        input_tensor = value.reshape(INPUT_SHAPE)
+        interp.set_tensor(inp["index"], input_tensor)
+        interp.invoke()
+        for index in STRESS_STAGE_TENSOR_INDICES:
+            stage = np.ascontiguousarray(interp.get_tensor(index))
+            if stage.shape != STRESS_STAGE_SHAPES[index] or stage.dtype != getattr(np, STRESS_STAGE_DTYPES[index]):
+                raise ValueError(f"stress invocation {invocation} tensor {index} drift")
+            traces[index].append(stage.copy())
+        output = np.ascontiguousarray(interp.get_tensor(out["index"]))
+        outputs.append(output.copy())
+        if verbose and invocation % 64 == 0:
+            print(f"  stress invocation {invocation:03d}: output={int(output.reshape(-1)[0])}", file=sys.stderr)
+    output_array = np.stack(outputs, axis=0)
+    trace_arrays = {index: np.stack(values, axis=0) for index, values in traces.items()}
+    if output_array.shape != (STRESS_INVOCATION_COUNT, *OUTPUT_SHAPE):
+        raise ValueError(f"stress output aggregate shape drift: {output_array.shape}")
+    for index, value in trace_arrays.items():
+        expected_shape = (STRESS_INVOCATION_COUNT, *STRESS_STAGE_SHAPES[index])
+        if value.shape != expected_shape:
+            raise ValueError(f"stress tensor {index} aggregate shape drift: {value.shape}")
+    return (
+        output_array,
+        trace_arrays,
+        {"input_name": inp["name"], "output_name": out["name"], "stage_tensor_indices": list(STRESS_STAGE_TENSOR_INDICES)},
+    )
+
+
+def run_tflite_stress_outputs(interp: Any, stress_inputs: np.ndarray) -> np.ndarray:
+    """Run the same stress bytes through a normal non-preserving interpreter."""
+    import numpy as np
 
     input_details = interp.get_input_details()
     output_details = interp.get_output_details()
-    if len(input_details) != 1:
-        raise SystemExit(
-            f"expected exactly 1 TFLite input tensor, got {len(input_details)}: "
-            f"{[d['name'] for d in input_details]}"
-        )
-    if len(output_details) != 1:
-        raise SystemExit(
-            f"expected exactly 1 TFLite output tensor, got {len(output_details)}: "
-            f"{[d['name'] for d in output_details]}"
-        )
-    inp = input_details[0]
-    out = output_details[0]
-    in_shape = list(inp["shape"])
-    in_dtype = inp["dtype"]
-    if verbose:
-        print(f"  TFLite input : name={inp['name']!r} shape={in_shape} dtype={in_dtype}",
-              file=sys.stderr)
-        print(f"  TFLite output: name={out['name']!r} shape={list(out['shape'])} dtype={out['dtype']}",
-              file=sys.stderr)
+    if len(input_details) != 1 or len(output_details) != 1:
+        raise ValueError("authenticated model must expose exactly one input and output")
+    inp, out = input_details[0], output_details[0]
+    validate_tflite_contract(inp, out)
+    outputs = []
+    for value in stress_inputs:
+        interp.set_tensor(inp["index"], value.reshape(INPUT_SHAPE))
+        interp.invoke()
+        output = np.ascontiguousarray(interp.get_tensor(out["index"]))
+        if output.shape != OUTPUT_SHAPE or output.dtype != np.uint8:
+            raise ValueError("normal stress output contract drift")
+        outputs.append(output.copy())
+    return np.stack(outputs)
 
-    # --- Shape adaptation ------------------------------------------------
-    # Squeeze leading batch=1 for shape reasoning.
-    squeezed = [d for d in in_shape if d != 1]
-    if squeezed == [N_MELS]:
-        # Single-frame F32 or INT8 input.
-        input_tensor = features_f32.reshape(in_shape)
-    elif len(squeezed) == 2 and squeezed[-1] == N_MELS:
-        # Stacked-frame [T, N_MELS] input. Tile features across T.
-        t_stack = int(squeezed[0])
-        tiled = np.tile(features_f32.reshape(1, N_MELS), (t_stack, 1))
-        input_tensor = tiled.reshape(in_shape)
-    else:
-        raise SystemExit(
-            f"TFLite input shape {in_shape} not recognised as "
-            f"[1, N_MELS={N_MELS}] or [1, T, N_MELS={N_MELS}]. Refusing to "
-            f"feed a mis-shaped tensor — investigate the checkpoint."
-        )
 
-    # Dtype quantisation to input's INT8 params, if any.
-    if in_dtype == np.int8:
-        in_quant = inp.get("quantization", (0.0, 0))
-        in_scale, in_zp = in_quant if isinstance(in_quant, tuple) else (0.0, 0)
-        if in_scale <= 0.0:
-            raise SystemExit(
-                f"TFLite input {inp['name']!r} is INT8 but carries no per-tensor "
-                f"quantization scale (scale={in_scale!r}, zero_point={in_zp!r}). "
-                f"Refusing to feed — FR-EX-08."
-            )
-        # Standard TFLite affine quantise (matches
-        # `crates/vokra-kws-micro/src/features.rs::quantize_int8`).
-        scaled = input_tensor / float(in_scale)
-        rounded = np.where(scaled >= 0.0, scaled + 0.5, scaled - 0.5).astype(np.int32)
-        clipped = np.clip(rounded + int(in_zp), -128, 127).astype(np.int8)
-        input_tensor = clipped
-    elif in_dtype == np.float32:
-        input_tensor = input_tensor.astype(np.float32)
-    else:
-        raise SystemExit(
-            f"TFLite input dtype {in_dtype!r} unsupported (only INT8 + F32 handled). "
-            f"Report to CC for Phase 5 extension."
-        )
-
-    # Feed + invoke.
-    interp.set_tensor(inp["index"], input_tensor)
-    interp.invoke()
-    output = interp.get_tensor(out["index"])
-    if verbose:
-        print(f"  raw output   : shape={list(output.shape)} dtype={output.dtype}",
-              file=sys.stderr)
-
-    # Dequantise output to F32 for portable comparison (INT8 zero-point
-    # semantics vary by build; F32 is universal).
-    if output.dtype == np.int8:
-        out_quant = out.get("quantization", (0.0, 0))
-        out_scale, out_zp = out_quant if isinstance(out_quant, tuple) else (0.0, 0)
-        if out_scale <= 0.0:
-            raise SystemExit(
-                f"TFLite output {out['name']!r} is INT8 but carries no per-tensor "
-                f"quantization scale — refusing to emit F32 comparison values."
-            )
-        out_f32 = (output.astype(np.int32) - int(out_zp)).astype(np.float32) * float(out_scale)
-    elif output.dtype == np.float32:
-        out_f32 = output
-    else:
-        raise SystemExit(
-            f"TFLite output dtype {output.dtype!r} unsupported. Report to CC."
-        )
-
-    # Flatten to a 1D vector (batch=1 → squeeze), for portable comparison.
-    out_f32 = np.ascontiguousarray(out_f32.reshape(-1).astype(np.float32))
-
-    meta = {
-        "input_name": inp["name"],
-        "input_shape": in_shape,
-        "input_dtype": str(in_dtype.__name__ if hasattr(in_dtype, "__name__") else in_dtype),
-        "output_name": out["name"],
-        "output_shape": list(out["shape"]),
-        "output_dtype": str(output.dtype.__name__ if hasattr(output.dtype, "__name__") else output.dtype),
+def artifact(path: Path, name: str, shape: tuple[int, ...], dtype: str, role: str) -> dict[str, Any]:
+    payload = path.read_bytes()
+    return {
+        "name": name,
+        "path": path.name,
+        "shape": list(shape),
+        "dtype": dtype,
+        "byte_order": "little-endian",
+        "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "role": role,
     }
-    return out_f32, meta
+
+
+def self_test() -> int:
+    """No-model contract checks; intentionally does not import LiteRT."""
+    evidence = _synthetic_dependency_evidence()
+    validated = validate_dependency_evidence(evidence)
+    assert validated["platform"]["system"] == "Linux"
+    assert validated["versions"] == EXPECTED_REFERENCE_DISTRIBUTIONS
+    effective = _effective_dependency_manifest(
+        evidence,
+        {
+            "status": "PASS",
+            "dependency_evidence_status": "VALIDATED_EXACT_OWNER_REVIEWED",
+            "publication_permitted": False,
+            "fixture_generation_permitted": True,
+            "failures": [],
+        },
+        validated,
+        Path("dependency-evidence.json"),
+        "0" * 64,
+    )
+    assert effective["audit_status"] == "PASS"
+    assert effective["review_status"] == "VALIDATED_EXACT_OWNER_REVIEWED"
+    assert effective["fixture_generation_permitted"] is True
+    assert effective["publication_permitted"] is False
+    backports_name = json.loads(json.dumps(evidence))
+    backports_row = next(
+        row for row in backports_name["installed_distributions"] if row["expected_name"] == "backports-strenum"
+    )
+    backports_row["metadata"]["name"] = ["backports.strenum"]
+    validate_dependency_evidence(backports_name)
+    non_equivalent_name = json.loads(json.dumps(backports_name))
+    non_equivalent_row = next(
+        row for row in non_equivalent_name["installed_distributions"] if row["expected_name"] == "backports-strenum"
+    )
+    non_equivalent_row["metadata"]["name"] = ["backports.strenum-extra"]
+    try:
+        validate_dependency_evidence(non_equivalent_name)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("non-equivalent normalized distribution name was accepted")
+    empty_success = json.loads(json.dumps(evidence))
+    empty_success["installed_distributions"][0]["license_candidates"] = []
+    try:
+        validate_dependency_evidence(empty_success)
+    except SystemExit as error:
+        raise AssertionError("METADATA-declared empty license candidates were rejected") from error
+    empty_failure = json.loads(json.dumps(empty_success))
+    for field in ("license", "license_expression", "license_classifiers"):
+        empty_failure["installed_distributions"][0]["metadata"][field] = []
+    try:
+        validate_dependency_evidence(empty_failure)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("empty license evidence without METADATA declaration was accepted")
+    only_file_failure = json.loads(json.dumps(empty_success))
+    for field in ("license", "license_expression", "license_classifiers"):
+        only_file_failure["installed_distributions"][0]["metadata"][field] = []
+    assert only_file_failure["installed_distributions"][0]["metadata"]["license_file"] == ["LICENSE"]
+    try:
+        validate_dependency_evidence(only_file_failure)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("License-File-only evidence was accepted")
+    unknown_failure = json.loads(json.dumps(empty_success))
+    unknown_failure["installed_distributions"][0]["license_candidates"] = []
+    unknown_failure["installed_distributions"][0]["metadata"]["license"] = ["  UNKNOWN  "]
+    unknown_failure["installed_distributions"][0]["metadata"]["license_expression"] = []
+    unknown_failure["installed_distributions"][0]["metadata"]["license_classifiers"] = []
+    try:
+        validate_dependency_evidence(unknown_failure)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("UNKNOWN metadata license declaration was accepted")
+    inventory_tamper = json.loads(json.dumps(evidence))
+    inventory_tamper["installed_inventory"]["entries"][0]["version"] = "9.9.9"
+    try:
+        validate_dependency_evidence(inventory_tamper)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("installed inventory digest drift was accepted")
+    record_tamper = json.loads(json.dumps(evidence))
+    record_tamper["installed_distributions"][0]["record"]["entries"].append({"path": "tampered"})
+    try:
+        validate_dependency_evidence(record_tamper)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("RECORD entries digest drift was accepted")
+    lock_tamper = json.loads(json.dumps(evidence))
+    lock_tamper["lock"]["rows"].append({"name": "tampered"})
+    try:
+        validate_dependency_evidence(lock_tamper)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("lock rows digest drift was accepted")
+    tampered = json.loads(json.dumps(evidence))
+    tampered["project"]["sha256"] = "f" * 64
+    try:
+        validate_dependency_evidence(tampered)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("dependency project digest drift was accepted")
+    unknown = json.loads(json.dumps(evidence))
+    unknown["unknown"] = True
+    try:
+        validate_dependency_evidence(unknown)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("unknown dependency evidence key was accepted")
+    version_drift = json.loads(json.dumps(evidence))
+    version_drift["installed_distributions"][0]["expected_version"] = "9.9.9"
+    try:
+        validate_dependency_evidence(version_drift)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("dependency version drift was accepted")
+    try:
+        json.loads('{"schema":"one","schema":"two"}', object_pairs_hook=_object_without_duplicates)
+    except DuplicateJsonKey:
+        pass
+    else:
+        raise AssertionError("duplicate dependency evidence key was accepted")
+    try:
+        require_real_cli_args(argparse.Namespace(tflite_path=None, output_dir=None, dependency_evidence=None))
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("missing dependency-evidence CLI argument was accepted")
+    good_in = {"shape": list(INPUT_SHAPE), "dtype": "int8", "quantization": (INPUT_SCALE, INPUT_ZERO_POINT)}
+    good_out = {"shape": list(OUTPUT_SHAPE), "dtype": "uint8", "quantization": (OUTPUT_SCALE, OUTPUT_ZERO_POINT)}
+    validate_tflite_contract(good_in, good_out)
+    for bad_in, bad_out in (
+        ({**good_in, "shape": [1, 40]}, good_out),
+        ({**good_in, "dtype": "float32"}, good_out),
+        ({**good_in, "quantization": (INPUT_SCALE, 0)}, good_out),
+        (good_in, {**good_out, "shape": [1]}),
+        (good_in, {**good_out, "dtype": "int8"}),
+        (good_in, {**good_out, "quantization": (OUTPUT_SCALE, 1)}),
+    ):
+        try:
+            validate_tflite_contract(bad_in, bad_out)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"contract drift accepted: {bad_in!r} / {bad_out!r}")
+    # Exercise pure shape/quantisation constants and schedule invariants.
+    assert INPUT_SHAPE == (1, 3, 40) and OUTPUT_SHAPE == (1, 1)
+    assert INPUT_DTYPE_NAME == "int8" and OUTPUT_DTYPE_NAME == "uint8"
+    assert INPUT_ZERO_POINT == -128 and OUTPUT_ZERO_POINT == 0
+    assert OUTPUT_SCALE == 0.00390625
+    assert INVOCATION_COUNT >= 2 and FRAMES_PER_INVOCATION == 3
+    # Keep this gate dependency-free: the actual NumPy stress-input generator
+    # is exercised only by the VAST worker, while its fixed schema is pinned
+    # here without importing NumPy in the no-model self-test.
+    assert STRESS_INVOCATION_COUNT == 512
+    assert INPUT_SHAPE == (1, 3, 40)
+    assert STRESS_STAGE_TENSOR_INDICES[-1] == 69
+    with tempfile.TemporaryDirectory(prefix="microwakeword-self-test-") as temporary:
+        parent = Path(temporary)
+        empty = parent / "empty"
+        empty.mkdir()
+        try:
+            validate_final_output_path(empty)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("existing output directory was accepted")
+        new_final = parent / "new-output"
+        staging, cleanup = create_staging_output(new_final)
+        assert staging.parent == parent and staging.is_dir()
+        cleanup()
+        atexit.unregister(cleanup)
+        published = parent / "published"
+        staging, cleanup = create_staging_output(published)
+        (staging / "partial-marker").write_text("complete staging", encoding="utf-8")
+        (staging / "manifest.json").write_text("complete manifest", encoding="utf-8")
+        publish_staging(staging, published, cleanup)
+        assert (published / "partial-marker").read_text(encoding="utf-8") == "complete staging"
+        assert sorted(child.name for child in published.iterdir()) == ["manifest.json", "partial-marker"]
+        assert not staging.exists()
+        shutil.rmtree(published)
+        raced_final = parent / "raced-output"
+        staging, cleanup = create_staging_output(raced_final)
+        (staging / "manifest.json").write_text("{}\n", encoding="utf-8")
+        raced_final.mkdir()
+        try:
+            publish_staging(staging, raced_final, cleanup)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("publish replaced a raced final directory")
+        assert raced_final.is_dir() and not (raced_final / ".vokra-publish-owner").exists()
+        cleanup()
+        atexit.unregister(cleanup)
+        link = parent / "link"
+        try:
+            link.symlink_to(empty, target_is_directory=True)
+        except OSError:
+            pass  # Windows without symlink privileges; Linux VAST covers it.
+        else:
+            try:
+                validate_final_output_path(link)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("symlink output directory was accepted")
+        source = parent / "source.tflite"
+        source.write_bytes(b"placeholder")
+        require_regular_tflite(source)
+        evidence_path = parent / "dependency-evidence.json"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        loaded, evidence_sha256, _ = load_dependency_evidence(evidence_path)
+        validate_dependency_evidence(loaded)
+        assert len(evidence_sha256) == 64
+        evidence_link = parent / "dependency-evidence-link.json"
+        try:
+            evidence_link.symlink_to(evidence_path)
+        except OSError:
+            pass
+        else:
+            try:
+                load_dependency_evidence(evidence_link)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("symlink dependency evidence was accepted")
+        source_link = parent / "source-link.tflite"
+        try:
+            source_link.symlink_to(source)
+        except OSError:
+            pass
+        else:
+            try:
+                require_regular_tflite(source_link)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("symlink TFLite input was accepted")
+    print("microWakeWord reference self-test: PASS (no model/interpreter)", file=sys.stderr)
+    return 0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="microWakeWord host parity reference dumper (Phase 4)."
-    )
-    ap.add_argument("--tflite-path", type=Path, required=True,
-                    help="Path to source hey_jarvis.tflite (owner-fetched, "
-                         "e.g. via prepare_checkpoint.py's --url path).")
-    ap.add_argument("--output-dir", type=Path, required=True,
-                    help="Output directory for input_pcm.bin, features_ref.bin, "
-                         "output_ref.bin, and manifest.json.")
-    ap.add_argument("-v", "--verbose", action="store_true",
-                    help="Print per-stage progress to stderr.")
+    ap = argparse.ArgumentParser(description="microWakeWord authenticated TFLite reference dumper.")
+    ap.add_argument("--self-test", action="store_true", help="Run model-free contract checks.")
+    ap.add_argument("--tflite-path", type=Path)
+    ap.add_argument("--output-dir", type=Path)
+    ap.add_argument("--dependency-evidence", type=Path)
+    ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
-
-    if not args.tflite_path.exists():
-        raise SystemExit(f"--tflite-path not found: {args.tflite_path}")
+    if args.self_test:
+        if any(
+            value is not None
+            for value in (args.tflite_path, args.output_dir, args.dependency_evidence)
+        ) or args.verbose:
+            ap.error("--self-test cannot be combined with real-input arguments")
+        return self_test()
+    try:
+        require_real_cli_args(args)
+    except SystemExit as error:
+        ap.error(str(error))
+    require_regular_tflite(args.tflite_path)
+    dependency_evidence, dependency_evidence_sha256, dependency_evidence_bytes = load_dependency_evidence(args.dependency_evidence)
+    dependency_contract = validate_dependency_evidence(dependency_evidence)
+    audit_report = require_reference_dependency_gate(dependency_evidence_bytes)
+    reference_environment = require_reference_runtime(dependency_contract["versions"])
+    global np
+    import numpy as np
 
     tflite_sha256 = sha256_of_file(args.tflite_path)
+    if tflite_sha256 != AUTHENTICATED_TFLITE_SHA256:
+        raise SystemExit(f"refusing unauthenticated TFLite SHA-256 {tflite_sha256}; expected {AUTHENTICATED_TFLITE_SHA256}")
     tflite_size = args.tflite_path.stat().st_size
-    print(f"Source: {args.tflite_path.name} ({tflite_size:,} bytes, "
-          f"sha256={tflite_sha256[:16]}…)", file=sys.stderr)
+    if tflite_size != AUTHENTICATED_TFLITE_BYTES:
+        raise SystemExit(f"refusing authenticated SHA with unexpected byte size {tflite_size}; expected {AUTHENTICATED_TFLITE_BYTES}")
+    final_output_dir = args.output_dir
+    staging_output_dir, staging_cleanup = create_staging_output(final_output_dir)
+    args.output_dir = staging_output_dir
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    pcm_frames = [synth_pcm(i, f) for i in range(INVOCATION_COUNT) for f in range(FRAMES_PER_INVOCATION)]
+    feature_sequence = np.stack([numpy_log_mel_features(pcm) for pcm in pcm_frames]).astype(np.float32)
+    dump_le(pcm_frames[0], args.output_dir / "input_pcm.bin")
+    dump_le(feature_sequence[0], args.output_dir / "features_ref.bin")
+    for invocation in range(INVOCATION_COUNT):
+        frames = feature_sequence[invocation * FRAMES_PER_INVOCATION : (invocation + 1) * FRAMES_PER_INVOCATION]
+        dump_le(frames, args.output_dir / f"features_invocation_{invocation:02d}.bin")
+        dump_le(quantize_features_int8(frames), args.output_dir / f"input_invocation_{invocation:02d}.bin")
 
-    # (1) Synthesise deterministic PCM.
-    pcm = synth_pcm()
-    dump_le(pcm, args.output_dir / "input_pcm.bin")
-    if args.verbose:
-        print(f"  input_pcm.bin   : {pcm.dtype} shape={pcm.shape} "
-              f"min={pcm.min()} max={pcm.max()}", file=sys.stderr)
+    from ai_edge_litert.interpreter import Interpreter
 
-    # (2) Reference log-mel features (numpy transcription).
-    features_ref = numpy_log_mel_features(pcm)
-    dump_le(features_ref, args.output_dir / "features_ref.bin")
-    if args.verbose:
-        print(f"  features_ref.bin: f32 shape={features_ref.shape} "
-              f"min={features_ref.min():.4f} max={features_ref.max():.4f}",
-              file=sys.stderr)
+    def new_interpreter(*, preserve_all_tensors: bool = False) -> Any:
+        fresh = Interpreter(
+            model_path=str(args.tflite_path),
+            experimental_preserve_all_tensors=preserve_all_tensors,
+        )
+        fresh.allocate_tensors()
+        return fresh
 
-    # (3) TFLite forward for output reference.
-    interp = Interpreter(model_path=str(args.tflite_path))
-    interp.allocate_tensors()
-    output_ref, tflite_meta = run_tflite_forward(interp, pcm, args.verbose)
-    dump_le(output_ref, args.output_dir / "output_ref.bin")
-    if args.verbose:
-        print(f"  output_ref.bin  : f32 shape={output_ref.shape} "
-              f"min={output_ref.min():.4f} max={output_ref.max():.4f}",
-              file=sys.stderr)
-
-    # (4) Manifest.
+    raw_outputs, tflite_meta = run_tflite_sequence(new_interpreter(), feature_sequence, args.verbose)
+    replay_outputs, _ = run_tflite_sequence(new_interpreter(), feature_sequence, False)
+    if not all(np.array_equal(a, b) for a, b in zip(raw_outputs, replay_outputs, strict=True)):
+        raise SystemExit("fresh-interpreter reset replay mismatch")
+    stress_inputs = build_stress_inputs()
+    stress_outputs, stress_traces, stress_meta = run_tflite_stress_trace(
+        new_interpreter(preserve_all_tensors=True), stress_inputs, args.verbose
+    )
+    normal_stress_outputs = run_tflite_stress_outputs(new_interpreter(), stress_inputs)
+    if not np.array_equal(stress_outputs, normal_stress_outputs):
+        raise SystemExit("normal non-preserving interpreter stress output mismatch")
+    stress_replay_outputs, _, _ = run_tflite_stress_trace(
+        new_interpreter(preserve_all_tensors=True), stress_inputs, False
+    )
+    if not np.array_equal(stress_outputs, stress_replay_outputs):
+        raise SystemExit("fresh-interpreter stress replay mismatch")
+    output_f32 = [((raw.astype(np.float32) - OUTPUT_ZERO_POINT) * OUTPUT_SCALE) for raw in raw_outputs]
+    artefacts: list[dict[str, Any]] = [
+        artifact(args.output_dir / "input_pcm.bin", "input_pcm", (WINDOW_SAMPLES,), "int16", "first frame for separate numpy/Rust frontend transcription"),
+        artifact(args.output_dir / "features_ref.bin", "features_ref", (N_MELS,), "float32", "first frame numpy frontend transcription; not TFLite parity"),
+    ]
+    for invocation, (raw, dequant) in enumerate(zip(raw_outputs, output_f32, strict=True)):
+        raw_path = args.output_dir / f"output_invocation_{invocation:02d}.bin"
+        f32_path = args.output_dir / f"output_invocation_{invocation:02d}_f32.bin"
+        artefacts.append(artifact(args.output_dir / f"features_invocation_{invocation:02d}.bin", f"features_invocation_{invocation:02d}", (FRAMES_PER_INVOCATION, N_MELS), "float32", "numpy frontend transcription used to form this invocation; not the TFLite oracle"))
+        dump_le(raw, raw_path)
+        dump_le(dequant, f32_path)
+        artefacts.extend([
+            artifact(args.output_dir / f"input_invocation_{invocation:02d}.bin", f"input_invocation_{invocation:02d}", INPUT_SHAPE, "int8", "exact quantised bytes fed to persistent upstream interpreter"),
+            artifact(raw_path, f"output_invocation_{invocation:02d}", OUTPUT_SHAPE, "uint8", "raw upstream TFLite output"),
+            artifact(f32_path, f"output_invocation_{invocation:02d}_f32", OUTPUT_SHAPE, "float32", "affine dequantisation of raw uint8 output"),
+        ])
+    concat_f32 = np.concatenate(output_f32, axis=0).astype(np.float32)
+    dump_le(concat_f32, args.output_dir / "output_ref.bin")
+    artefacts.append(artifact(args.output_dir / "output_ref.bin", "output_ref", (INVOCATION_COUNT, 1), "float32", "legacy aggregate of per-invocation dequantised outputs"))
+    dump_le(stress_inputs, args.output_dir / "stress_inputs.bin")
+    artefacts.append(artifact(args.output_dir / "stress_inputs.bin", "stress_inputs", (STRESS_INVOCATION_COUNT, *INPUT_SHAPE[1:]), "int8", "default_rng(4) direct-int8 stress sequence"))
+    for index in STRESS_STAGE_TENSOR_INDICES:
+        stage_path = args.output_dir / f"stress_stage_tensor_{index}.bin"
+        dump_le(stress_traces[index], stage_path)
+        artefacts.append(artifact(stage_path, f"stress_stage_tensor_{index}", (STRESS_INVOCATION_COUNT, *STRESS_STAGE_SHAPES[index]), STRESS_STAGE_DTYPES[index], f"preserved LiteRT tensor {index} per invocation"))
     manifest: dict[str, Any] = {
+        "schema": "microwakeword-reference-v2",
+        "status": "REFERENCE_COMPLETE",
         "generator": "vokra tools/parity/microwakeword/dump_reference.py",
-        "generator_version": "0.1.0-phase4",
+        "generator_version": "0.2.0-authenticated-streaming",
+        "oracle": "ai_edge_litert.Interpreter running the pinned upstream TFLite; never a Vokra mirror",
         "source_tflite": str(args.tflite_path),
         "source_tflite_sha256": tflite_sha256,
         "source_tflite_bytes": tflite_size,
-        "constants": {
-            "sample_rate": SAMPLE_RATE,
-            "hop_ms": HOP_MS,
-            "window_ms": WINDOW_MS,
-            "n_mels": N_MELS,
-            "hop_samples": HOP_SAMPLES,
-            "window_samples": WINDOW_SAMPLES,
-            "n_fft": N_FFT,
-            "n_bins": N_BINS,
-            "log_mel_epsilon": LOG_MEL_EPSILON,
-        },
-        "pcm_synthesis": {
-            "seed": PCM_SEED,
-            "sine_hz": PCM_SINE_HZ,
-            "sine_amplitude": PCM_SINE_AMPLITUDE,
-            "noise_stddev": PCM_NOISE_STDDEV,
-        },
-        "artefacts": [
-            {
-                "name": "input_pcm",
-                "path": "input_pcm.bin",
-                "shape": [WINDOW_SAMPLES],
-                "dtype": "int16",
-                "byte_order": "little-endian",
-                "role": "PCM window fed to both numpy reference and "
-                        "Vokra FeatureExtractor",
-            },
-            {
-                "name": "features_ref",
-                "path": "features_ref.bin",
-                "shape": [N_MELS],
-                "dtype": "float32",
-                "byte_order": "little-endian",
-                "role": "reference log-mel features (numpy transcription "
-                        "of the standard algorithm)",
-                "rust_side_atol": 1e-3,
-            },
-            {
-                "name": "output_ref",
-                "path": "output_ref.bin",
-                "shape": list(output_ref.shape),
-                "dtype": "float32",
-                "byte_order": "little-endian",
-                "role": "reference INT8-dequantised TFLite output "
-                        "probability vector (end-to-end forward)",
-                "rust_side_atol": 1e-2,
-                "note_end_to_end_status": (
-                    "UNMET as of Phase 4 — the Rust INT8 ChainConfig needs "
-                    "per-tensor quantisation params the current Phase 1 "
-                    "sidecar does not emit. This artefact is scaffold for "
-                    "the Phase 3.5 Q8_0 sidecar extension."
-                ),
-            },
-        ],
+        "authenticated_model_sha256": AUTHENTICATED_TFLITE_SHA256,
+        "constants": {"sample_rate": SAMPLE_RATE, "hop_ms": HOP_MS, "window_ms": WINDOW_MS, "n_mels": N_MELS, "hop_samples": HOP_SAMPLES, "window_samples": WINDOW_SAMPLES, "n_fft": N_FFT, "n_bins": N_BINS, "log_mel_epsilon": LOG_MEL_EPSILON},
+        "pcm_synthesis": {"seed": PCM_SEED, "sine_hz": PCM_SINE_HZ, "sine_amplitude": PCM_SINE_AMPLITUDE, "noise_stddev": PCM_NOISE_STDDEV, "distinct_frame_schedule": "frequency += 37 Hz and seed += global frame index"},
+        "authenticated_io": {"input": {"shape": list(INPUT_SHAPE), "dtype": "int8", "scale": INPUT_SCALE, "zero_point": INPUT_ZERO_POINT}, "output": {"shape": list(OUTPUT_SHAPE), "dtype": "uint8", "scale": OUTPUT_SCALE, "zero_point": OUTPUT_ZERO_POINT}},
+        "persistent_sequence": {"invocation_count": INVOCATION_COUNT, "frames_per_invocation": FRAMES_PER_INVOCATION, "distinct_frames": True, "single_persistent_interpreter": True, "fresh_interpreter_reset_replay": {"status": "PASS", "invocation_count": INVOCATION_COUNT, "raw_outputs_match": True}},
+        "direct_int8_stress": {"seed": STRESS_SEED, "invocation_count": STRESS_INVOCATION_COUNT, "input_shape": list(INPUT_SHAPE), "input_dtype": INPUT_DTYPE_NAME, "stage_tensor_indices": list(STRESS_STAGE_TENSOR_INDICES), "stage_shapes": {str(index): list(STRESS_STAGE_SHAPES[index]) for index in STRESS_STAGE_TENSOR_INDICES}, "stage_dtypes": {str(index): STRESS_STAGE_DTYPES[index] for index in STRESS_STAGE_TENSOR_INDICES}, "preserve_all_tensors": True, "normal_interpreter_final_output_equal": True, "fresh_replay_equal": True, "trace_runner": stress_meta},
+        "artefacts": artefacts,
         "tflite_topology": tflite_meta,
+        "frontend_parity_boundary": "features_ref is a numpy transcription kept separate from the independent TFLite oracle",
+        "reference_environment": {
+            "python": reference_environment["python"],
+            "system": reference_environment["system"],
+            "machine": reference_environment["machine"],
+            "installed_distributions": reference_environment["installed_distributions"],
+        },
+        "dependency_evidence": _effective_dependency_manifest(
+            dependency_evidence,
+            audit_report,
+            dependency_contract,
+            args.dependency_evidence,
+            dependency_evidence_sha256,
+        ),
     }
     manifest_path = args.output_dir / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=False) + "\n",
-        encoding="utf-8",
-    )
-
-    print(f"Wrote {args.output_dir}/  "
-          f"(input_pcm.bin, features_ref.bin, output_ref.bin, manifest.json)",
-          file=sys.stderr)
+    if manifest_path.exists() or manifest_path.is_symlink():
+        raise SystemExit(f"refusing to overwrite existing manifest: {manifest_path}")
+    with manifest_path.open("x", encoding="utf-8") as output:
+        output.write(json.dumps(manifest, indent=2) + "\n")
+    publish_staging(staging_output_dir, final_output_dir, staging_cleanup)
+    print(f"Wrote authenticated {INVOCATION_COUNT}-invocation fixture to {final_output_dir}/", file=sys.stderr)
     return 0
 
 

@@ -5,6 +5,14 @@
 > named branch from this document; use
 > `docs/handoff/codex-operations-2026-08-18.md` and the live M5 checklist.
 
+> **2026-08-30 supersession / resource boundary:** This document remains a
+> historical campaign record. Current resource policy is **VAST for artefacts
+> whose model-plus-shard total is >=2 GB**; an unknown exact size is not
+> `local-safe`. The old MAGNeT medium `5.7 GB` entry is therefore VAST-bound;
+> its historical “8 GB cutoff / local” wording below is superseded. Current
+> implementation and legal status are governed by `AGENTS.md`, the M5
+> checklist, and `docs/legal-compliance.md`.
+
 **Date**: 2026-08-13（session 1）/ 2026-08-13〜14 (session 2 residual wave)
 **Branch**: `feat/post-audit-cc-gap-2026-08-13`（main HEAD `40558f5` から作成）
 **Author**: Claude Code（本 doc は audit → plan → implement workflow の最終

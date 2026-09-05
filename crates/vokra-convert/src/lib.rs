@@ -148,15 +148,11 @@ pub enum ModelKind {
     /// Convert with [`convert_dac_file`] — the config is required, so this is
     /// not a plain single-input [`convert_file`] model. MIT weights.
     Dac,
-    /// `sesame/csm-1b` safetensors checkpoint (M4-05): Sesame CSM-1B, the
-    /// S2S speech-generation model (Llama-3.2-1B-flavor backbone +
-    /// llama-100M-flavor depth transformer over Mimi RVQ frames; Apache 2.0
-    /// code + weight, docs/license-audit.md — the HF repo is gated, T29
-    /// owner hand-off). Weights are bound verbatim; flavor dims / RoPE
-    /// scaling / rates are transcribed primary-source constants and the two
-    /// vocab axes are `0`-placeholders the runtime rejects at load
-    /// (FR-EX-08). The Llama-3.2 tokenizer blob is embedded through
-    /// [`convert_csm_file`].
+    /// `sesame/csm-1b` composite inspection target (M4-05): the CSM S2S
+    /// model requires its Mimi codec, tokenizer, configuration, and
+    /// provenance alongside the checkpoint. The public converter currently
+    /// refuses the legacy single-file path with `INSPECTION_ONLY`; no
+    /// incomplete GGUF is emitted.
     Csm,
     /// `kyutai/moshiko-pytorch-bf16` safetensors checkpoint (M4-06):
     /// Moshi (Helium temporal transformer + depformer), full-duplex S2S
@@ -370,18 +366,26 @@ pub enum ModelKind {
     /// CTC decoding is a host-side runtime function
     /// (`vokra_ops::ctc_decode`). Apache-2.0 weight (`Permissive` —
     /// no runtime-side attribution obligation, unlike NVIDIA's CC-BY 4.0
-    /// Parakeet-CTC / Canary). Every hparam is transcribed verbatim
-    /// from the fairseq2 registry walk
+    /// Parakeet-CTC / Canary). The converter accepts only the pinned
+    /// `facebook/omniASR-CTC-1B` release (upstream revision
+    /// `8c22e3ffdaa4aab6431b128b84b991a7d9c2515c`, source digest
+    /// `e8564fa59dab7caedbcdb54ab7fb9bd6c96989f4d19add2ad81ddd969716952c`,
+    /// prepared digest
+    /// `cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`)
+    /// and its exact 807-entry F32 tensor manifest. The strict runtime
+    /// binder consumes that same name/shape/dtype contract, including the
+    /// source q/k/v ordering and positional-convolution weight norm.
+    /// Every hparam is transcribed verbatim from the fairseq2 registry walk
     /// (`omnilingual_asr/models/wav2vec2_asr/config.py::_1b_asr` →
     /// `wav2vec2_ssl/config.py::_1b_ssl` →
     /// `fairseq2/models/wav2vec2/config.py::large_lv60k`); the HF
     /// release carries no `config.json`, only the `.pt` + a
     /// SentencePiece tokenizer. Reuses `vokra_ops::ctc_decode`
     /// (greedy / beam CTC decoding); the wav2vec 2.0 encoder body is a
-    /// distinct topology from FastConformer — no shared
-    /// `vokra_ops::wav2vec2_encoder` op today (the "may need new op"
-    /// note is deliberately deferred; the scaffold stops at shape /
-    /// weight-store flow).
+    /// distinct topology from FastConformer. The native waveform encoder
+    /// and CTC path are staged for the runtime's CPU and Metal Compute
+    /// backends; this entry does not claim a completed VAST numerical
+    /// parity run or Apple verdict.
     OmniasrCtc,
     /// Resemble AI **Chatterbox-Multilingual** T3 safetensors checkpoint
     /// (SoTA plan Phase 3, 2026-07-24). MIT weight + code. T3 =
@@ -1365,8 +1369,8 @@ pub enum ModelKind {
     /// **AudioSeal real weight** (`facebook/audioseal`, MIT,
     /// coverage-audit-2026-08-03 Wave A permissive continuation) —
     /// Meta paired Generator + Detector 16-bit-message audio
-    /// watermark for EU AI Act Article 50 compliance
-    /// (2026-08-02 applies, San Roman et al. arXiv:2401.17264).
+    /// watermark for marking / technical-control candidate use only; this is
+    /// not a legal compliance claim (San Roman et al. arXiv:2401.17264).
     /// Replaces the M5-05 config-only scaffold with a real weight-
     /// loading path; runtime binder remains gated on M5-05 T04 ADR
     /// ratification. Category = `watermark`. Convert with
@@ -1440,6 +1444,10 @@ pub enum ModelKind {
     /// F16 / BF16 tensor passes through verbatim under its upstream
     /// safetensors name. Provenance = **apache-2.0** (Permissive).
     EcapaTdnn,
+    /// JaesungHuh MIT 202-tensor binary voice-gender classifier. Distinct
+    /// from [`ModelKind::EcapaTdnn`]: the official model uses a 512-point
+    /// torchaudio frontend and a dedicated 2-class head.
+    VoiceGenderClassifier,
     /// Wespeaker **wespeaker-voxceleb-resnet34-LM** speaker
     /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
     /// 2026-07-28). Category = `speaker`. ResNet-34 speaker embedding
@@ -4624,6 +4632,9 @@ impl ModelKind {
             | "ecapa_tdnn"
             | "spkrec-ecapa-voxceleb"
             | "speechbrain/spkrec-ecapa-voxceleb" => Some(Self::EcapaTdnn),
+            "voice-gender-classifier"
+            | "voice_gender_classifier"
+            | "jaesunghuh/voice-gender-classifier" => Some(Self::VoiceGenderClassifier),
             "wespeaker"
             | "we-speaker"
             | "we_speaker"
@@ -5954,6 +5965,7 @@ impl ModelKind {
             Self::NeuTtsAir => "neutts-air",
             Self::NemotronSpeechStreamingV2603 => "nemotron-speech-streaming-v2603",
             Self::EcapaTdnn => "ecapa-tdnn",
+            Self::VoiceGenderClassifier => "voice-gender-classifier",
             Self::Wespeaker => "wespeaker",
             Self::Speaker3d => "speaker-3d",
             Self::TitaNet => "titanet-large",
@@ -7295,10 +7307,9 @@ pub fn convert_file_licensed(
             ));
         }
         ModelKind::Csm => {
-            // Tokenizer-less path (M4-05-T03/T04): every float tensor
-            // verbatim + the vokra.csm.* / vokra.mimi.* chunk groups. The
-            // Llama-3.2 tokenizer blob (gated repo — T29) travels through
-            // `convert_csm_file`.
+            // The legacy single-checkpoint route is intentionally refused by
+            // the model-specific boundary. Keep this dispatch arm so callers
+            // receive the same explicit inspection-only error.
             let (builder, report) = models::csm::convert(bytes, None)?;
             let mut notes = vec![format!(
                 "csm: {} float weights written, {} non-float skipped, tokenizer \
@@ -7436,17 +7447,15 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::OmniasrCtc => {
-            // SoTA plan Phase 2: pass every F32/F16 tensor through
-            // verbatim and stamp the `vokra.omniasr_ctc.*` chunk group
-            // (wav2vec 2.0 encoder + CTC head — no decoder or joint
-            // section, since CTC has no RNN-T prediction network) from
-            // the primary-source constants transcribed in
-            // `models::omniasr_ctc`. Provenance = Apache-2.0
-            // (Permissive) — no runtime-side attribution obligation,
-            // unlike NVIDIA's CC-BY 4.0 Parakeet-CTC / Canary.
+            // The strict OmniASR converter accepts only the pinned prepared
+            // bytes and exact 807-entry F32 manifest. It stamps the source
+            // and prepared identities only after the input digest gate;
+            // the native runtime binder consumes the same tensor contract.
+            // CTC has no decoder or joint section, and the external
+            // tokenizer remains outside the GGUF (runtime output is IDs).
             let (builder, report) = models::omniasr_ctc::convert(bytes)?;
             let mut notes = vec![format!(
-                "omniasr-ctc: {} float weights written verbatim, {} non-float skipped",
+                "omniasr-ctc: {} manifest-authenticated F32 weights written, {} non-F32 skipped (always zero on success)",
                 report.written, report.skipped_non_float,
             )];
             notes.extend(
@@ -7751,21 +7760,10 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::Irodori => {
-            // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): pass every F32/F16
-            // tensor through verbatim and stamp the `vokra.irodori.*`
-            // chunk group (RF-DiT body + LLM-JP-3 prompt-text encoder +
-            // reference-latent speaker encoder + v3 phase-2 duration
-            // predictor) from the transcribed constants in
-            // `models::irodori`. THIRD consumer of the continuous-latent
-            // + DiT class (after VoxCPM + VibeVoice); the sampler is
-            // Rectified-Flow Euler with a Linear or Sway schedule (F5-TTS
-            // toggle), NOT VibeVoice's DDPM and NOT VoxCPM's EpsS-
-            // schedule flow-matching — silently sharing an arch tag
-            // would misroute the runtime dispatch. Provenance = **MIT**
-            // end-to-end (Permissive — no runtime-side attribution
-            // obligation; code + weight all under a single MIT LICENSE
-            // at `github.com/Aratako/Irodori-TTS`, verified via
-            // `gh api /repos/Aratako/Irodori-TTS/license` → `MIT`).
+            // The unauthenticated single-file route is intentionally refused
+            // by the model-specific boundary. In particular, a generic DAC
+            // GGUF is not the distinct Semantic-DACVAE decoder required by
+            // Irodori, so no metadata-only/pass-through artifact is emitted.
             let (builder, report) = models::irodori::convert(bytes)?;
             let mut notes = vec![format!(
                 "irodori: {} float weights written verbatim, {} non-float skipped",
@@ -9029,6 +9027,24 @@ pub fn convert_file_licensed(
                 // 3 model keys + 4 provenance keys + upstream HF/revision +
                 // 15 exact frontend/topology/layout keys.
                 metadata_count: 24,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::VoiceGenderClassifier => {
+            let report = models::voice_gender_classifier::convert_voice_gender_classifier_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "voice-gender-classifier: {} float weights written verbatim ({} BF16 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::VoiceGenderClassifier,
+                tensor_count: report.written,
+                // 3 model keys + 4 provenance keys + upstream HF/source/HF
+                // checkpoint revisions + 15 exact frontend/topology/layout keys.
+                metadata_count: 25,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -12603,14 +12619,12 @@ pub fn convert_llama_omni2_file_with_config(
     })
 }
 
-/// Convert a Sesame CSM-1B safetensors checkpoint into a Vokra GGUF,
-/// optionally embedding the raw `meta-llama/Llama-3.2-1B` tokenizer file
-/// as `vokra.tokenizer.model` (M4-05-T03/T04/T05).
+/// Refuse the legacy single-checkpoint CSM conversion path.
 ///
-/// The tokenizer repo is gated (T29 owner hand-off); passing
-/// `tokenizer = None` converts without the blob and the runtime text path
-/// fails loudly until a tokenizer-carrying GGUF exists (FR-EX-08 — never a
-/// silent byte-level fallback).
+/// CSM is a composite of the model checkpoint, Mimi codec, tokenizer,
+/// configuration, and provenance. Until that exact composite is authenticated
+/// and parity-reviewed, this API returns `INSPECTION_ONLY` and writes no GGUF;
+/// `tokenizer` is retained only for the stable call signature.
 pub fn convert_csm_file(
     input: &Path,
     tokenizer: Option<&Path>,
@@ -13140,7 +13154,10 @@ pub use models::audioseal_real_weight::{
 // a caller who prefers `--model miocodec` via `convert_file_licensed`
 // and a caller who calls `convert_miocodec_file` directly land the
 // same bytes.
-pub use models::htdemucs_multi::{HtdemucsMultiReport, convert_htdemucs_multi_file};
+pub use models::htdemucs_multi::{
+    HTDEMUCS_6S_MEMBER_IDS, HTDEMUCS_FT_MEMBER_IDS, HtdemucsMultiReport, HtdemucsMultiVariant,
+    convert_htdemucs_multi_file, validate_htdemucs_multi_structure,
+};
 pub use models::miocodec::{MioCodecReport, convert_miocodec_file};
 // SoTA plan candidate wave (2026-08-04): Neuphonic NeuTTS Air
 // (apache-2.0) — Qwen2 0.5B LLM backbone emitting NeuCodec audio
@@ -13197,6 +13214,9 @@ pub use models::panns::{PannsReport, convert_panns_file};
 // file-based entry point mirrors the panns / dasheng / muq / mert /
 // yamnet re-export pattern.
 pub use models::basic_pitch::{BasicPitchReport, convert_basic_pitch_file};
+pub use models::voice_gender_classifier::{
+    VoiceGenderClassifierReport, convert_voice_gender_classifier_file,
+};
 // SSL audio-encoder wave (2026-08-13): BEATs — foundational
 // self-supervised audio encoder with iterative acoustic tokenizer +
 // mask acoustic modeling (~90M params iter3_plus_AS2M, mit default).
@@ -13891,8 +13911,13 @@ pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSumm
     convert_file(ModelKind::Qwen3Tts, input, output)
 }
 
-/// Convert an OpenBMB **VoxCPM-0.5B** safetensors checkpoint into a Vokra
-/// GGUF (SoTA plan Phase 4, 2026-07-24).
+/// Reject production conversion of an OpenBMB **VoxCPM-0.5B** checkpoint.
+///
+/// The historical public GGUF contains only the main checkpoint. The
+/// authenticated replacement must bind the exact AudioVAE, tokenizer,
+/// config, and provenance as one composite; until that VAST/native-parity
+/// work is complete this API is deliberately `INSPECTION_ONLY` and writes no
+/// GGUF.
 ///
 /// This is the named entry point that mirrors `convert_qwen3_tts_file`
 /// / `convert_chatterbox_nano_file` / `convert_dia_file` /
@@ -14104,23 +14129,13 @@ pub fn convert_vibevoice_file(input: &Path, output: &Path) -> Result<ConvertSumm
     convert_file(ModelKind::VibeVoice, input, output)
 }
 
-/// Convert an Aratako **Irodori-TTS-500M-v3** safetensors checkpoint into
-/// a Vokra GGUF (SoTA plan Phase 5 JA-TTS-1, 2026-07-24).
+/// Refuse the unauthenticated Irodori-TTS-500M-v3 single-file conversion path.
 ///
-/// This is the named entry point that mirrors `convert_vibevoice_file` /
-/// `convert_voxcpm2_file` / `convert_qwen3_tts_file` /
-/// `convert_chatterbox_nano_file` / `convert_dia_file` /
-/// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
-/// is functionally identical to
-/// `convert_file(ModelKind::Irodori, input, output)` — Irodori-TTS-500M-v3
-/// takes no side-car config on this conversion path (every hparam of
-/// the `vokra.irodori.*` chunk group is transcribed as compile-time
-/// constants in `models::irodori` from the primary sources
-/// `github.com/Aratako/Irodori-TTS/blob/main/configs/train_500m_v3_phase1_body.yaml`
-/// plus `..._phase2_duration.yaml` plus
-/// `github.com/Aratako/Irodori-TTS/blob/main/irodori_tts/config.py::ModelConfig`)
-/// — but the named entry keeps the `convert_*_file` naming symmetry with
-/// the other TTS models.
+/// The public entry point is retained for API symmetry, but it does not
+/// construct a metadata-only or BF16 pass-through artifact. A valid future
+/// conversion must authenticate the RF-DiT checkpoint, tokenizer/reference
+/// inputs, duration path, and the distinct Semantic-DACVAE-Japanese-32dim
+/// decoder as one composite.
 ///
 /// Irodori-TTS-500M-v3 is the **third** consumer of the continuous-latent
 /// plus DiT class (after VoxCPM-0.5B and VibeVoice-1.5B) — but this time
@@ -14160,30 +14175,14 @@ pub fn convert_vibevoice_file(input: &Path, output: &Path) -> Result<ConvertSumm
 ///   `duration_token_init_frames=9.0`,
 ///   `duration_speaker_fusion="adarn_zero"`.
 ///
-/// Terminal decode: the paired `Aratako/Semantic-DACVAE-Japanese-32dim`
-/// codec (a `dacvae.DACVAE` variant of the Meta open-source
-/// `facebookresearch/dacvae` codec, Apache 2.0) — 32-d continuous latent
-/// → 48 kHz mono PCM. Callers inject the codec through
-/// `IrodoriTts::with_codec` once the paired GGUF is prepared (the same
-/// `DacCodecGguf`-shaped seam Dia + Zonos use with vanilla DAC).
+/// Terminal decode is the paired `Aratako/Semantic-DACVAE-Japanese-32dim`
+/// continuous-latent decoder (32-d latent → 48 kHz PCM). The ordinary
+/// `DacCodecGguf` seam is not an interoperable proof of this codec and cannot
+/// unlock synthesis.
 ///
-/// # BF16 posture
-///
-/// The upstream Irodori-TTS release trains in bf16
-/// (`TrainConfig.precision = "bf16"`) but the released
-/// `model.safetensors` blob is typically served in F32 / F16 (the
-/// `save_pretrained` default). If a downstream ships BF16, today's
-/// F32/F16 pass-through arm hits the `skipped_non_float` counter and
-/// the "no float tensors" loud note fires. Pre-widen offline to F32
-/// (the CSM / Kokoro / VoxCPM pattern) to convert a BF16 checkpoint
-/// directly.
-///
-/// Weight license = **MIT** end-to-end (`github.com/Aratako/Irodori-TTS/blob/main/LICENSE`
-/// verified via `gh api /repos/Aratako/Irodori-TTS/license` → `MIT`,
-/// fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). The M2-13
-/// gate passes commercially without any attribution obligation on the
-/// runtime side (MIT is a `Permissive` license class, same commercial
-/// verdict as apache-2.0).
+/// The conversion remains `INSPECTION_ONLY` regardless of dtype or license
+/// override. Model, codec, source, and publication licenses are separate
+/// review inputs; no end-to-end license claim is made here.
 pub fn convert_irodori_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Irodori, input, output)
 }
@@ -14540,13 +14539,13 @@ pub fn convert_canary_qwen_file(
 ///
 /// This is the named entry point that mirrors `convert_parakeet_ctc_file` /
 /// `convert_canary_file` / `convert_kyutai_stt_file`. It is functionally
-/// identical to `convert_file(ModelKind::OmniasrCtc, input, output)` —
-/// omniASR-CTC has no side-car config or tokenizer to embed at this
-/// scaffold stage (every hparam is transcribed as constants in
-/// `models::omniasr_ctc`; the fairseq2 registry walk fixes every axis,
-/// and the SentencePiece char tokenizer ships separately on the HF
-/// release) — but the named entry keeps the `convert_*_file` naming
-/// symmetry with the other ASR / TTS models.
+/// identical to `convert_file(ModelKind::OmniasrCtc, input, output)` and
+/// accepts only the pinned prepared artifact and its exact 807-entry F32
+/// manifest. The runtime binder rejects any other provenance, tensor name,
+/// shape, dtype, or QKV/positional-convolution layout. No side-car tokenizer
+/// is embedded: the external SentencePiece tokenizer supplies token IDs.
+/// The prepared/source digests and upstream revision are stamped only after
+/// the input-byte digest gate succeeds.
 ///
 /// # Architecture summary
 ///
@@ -14557,9 +14556,9 @@ pub fn convert_canary_qwen_file(
 ///   Layer Normalization and bias (large_lv60k axes). The positional
 ///   encoder is a single grouped Conv1D (`pos_conv_kernel_size=128`,
 ///   `num_pos_conv_groups=16`). The wav2vec 2.0 encoder is a distinct
-///   topology from the FastConformer used by Parakeet-CTC — no shared
-///   `vokra_ops::wav2vec2_encoder` op today (the task note's "may need
-///   new op" is deliberately deferred).
+///   topology from the FastConformer used by Parakeet-CTC. Native CPU and
+///   Metal Compute execution is staged through the strict runtime binder;
+///   independent VAST numerical parity and Apple validation remain pending.
 /// - CTC head: single Linear from `model_dim=1280` to
 ///   `target_vocab_size=9812`, with bias (fairseq2 default
 ///   `final_proj_bias=True`). **`blank_id = 0`** — the fairseq2 wav2vec
@@ -14586,16 +14585,17 @@ pub fn convert_canary_qwen_file(
 /// - License = **Apache-2.0** (`Permissive`), not CC-BY 4.0
 ///   (`AttributionRequired`) — no runtime-side attribution obligation.
 ///
-/// # BF16 posture
+/// # Tensor and identity contract
 ///
-/// The `facebook/omniASR-CTC-1B.pt` checkpoint is `torch.float32` per
-/// the fairseq2 release; no BF16 pass-through is required to convert
-/// the release build. A downstream that pre-widens to F16 offline
-/// lands on the F16 arm (also pass-through); BF16 tensors reach the
-/// `skipped_non_float` counter — never a silent widen (T29-equivalent
-/// — the Moshi pattern). Provenance is stamped **Apache-2.0**
-/// (`Permissive`) so the M2-13 gate passes commercially without an
-/// attribution obligation on the runtime side.
+/// The accepted prepared bytes have SHA-256
+/// `cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`;
+/// the bound manifest contains exactly 807 named `torch.float32` tensors.
+/// There is no F16/BF16 pass-through: non-F32 input is rejected, as are
+/// missing, extra, renamed, reshaped, or otherwise tampered tensors.
+/// The source checkpoint identity is
+/// `facebook/omniASR-CTC-1B@8c22e3ffdaa4aab6431b128b84b991a7d9c2515c`
+/// with source SHA-256
+/// `e8564fa59dab7caedbcdb54ab7fb9bd6c96989f4d19add2ad81ddd969716952c`.
 ///
 /// # Errors
 ///

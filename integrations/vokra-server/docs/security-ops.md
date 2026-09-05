@@ -1,5 +1,14 @@
 # vokra-server — Security & Operations (M2-09 T20)
 
+**Current-status note (2026-08-30):** This document retains the M2-09 security
+and operations decision record. Current implementation status is the source
+and [`../README.md`](../README.md): Wyoming full ASR/TTS handling and its
+connection-scoped barge-in path are wired; HTTP `stream=true` and word-level
+timestamps remain unexposed; authentication is still a reverse-proxy concern,
+not a built-in server policy. Repository and legal boundaries are maintained
+in [`AGENTS.md`](../../../AGENTS.md), [`CONTRIBUTING.md`](../../../CONTRIBUTING.md),
+and [`docs/legal-compliance.md`](../../../docs/legal-compliance.md).
+
 This document pins the security/ops posture of `vokra-server` at v0.5
 (M2-09). It complements `docs/scope.md` (crate boundaries) and
 `docs/adr-http-stack.md` (dependency choices) and is the single source
@@ -9,7 +18,9 @@ fixed target.
 
 Requirements traced: FR-SV-01, FR-EX-08 (no silent fallback / no silent
 network exposure), NFR-RL-01 (LC_NUMERIC), NFR-RL-07 (API-boundary
-safety), NFR-SC-* (see CLAUDE.md "TLS/auth = reverse-proxy 前提").
+safety), NFR-SC-* (see [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) and
+[`docs/legal-compliance.md`](../../../docs/legal-compliance.md) for the
+reverse-proxy/auth and legal-review boundary).
 
 ## 1. Bind posture: loopback by default, explicit opt-in for network
 
@@ -131,8 +142,8 @@ headers today without breaking:
 Rationale for parking auth in a proxy for v0.5: keeping TLS + auth
 out of `vokra-server` shrinks the trusted-code surface, avoids
 handling PEM chains inside a Rust binary that already carries HTTP +
-tokio, and matches the Cartesia Sonic / Deepgram Nova on-prem posture
-(the reference competitors in CLAUDE.md §"サーバサイド用途対応").
+tokio, and matches the reference on-prem posture recorded in the
+historical project planning material.
 
 ## 4. CORS: restrictive by default
 
@@ -149,8 +160,9 @@ browser-facing use case appears):
   a single named origin.
 - `Access-Control-Allow-Origin: *` is DISCOURAGED for anything that
   handles user audio — audio uploads leaking to arbitrary origins
-  matches the "voice cloning misuse" risk called out in CLAUDE.md
-  (ELVIS Act / NO FAKES Act posture, §L).
+  matches the voice-cloning misuse risk and deployment/legal-review boundary
+  documented in [`docs/legal-compliance.md`](../../../docs/legal-compliance.md)
+  §§3–4.
 
 Preflight (`OPTIONS`) requests receive a `204 No Content` with no
 `Access-Control-*` headers by default, matching the "restrictive"

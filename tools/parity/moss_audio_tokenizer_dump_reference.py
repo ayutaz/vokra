@@ -16,8 +16,12 @@ Python 3.12 policy after provisioning the selected snapshot, for example::
       --with 'transformers==5.15.0' \
       --with 'accelerate>=1,<2' \
       python tools/parity/moss_audio_tokenizer_dump_reference.py \
-      --variant v2 --num-quantizers 12 --device cuda \
-      --output /workspace/moss-audio-tokenizer-v2-reference.csv
+      --variant full --num-quantizers 32 --device cuda \
+      --output /workspace/moss-audio-tokenizer-full-reference.csv
+
+The ``5.15.0`` example above is for the Full variant's historical standalone
+route only. Nano and v2 use their dedicated projects and the active
+``transformers==5.10.4`` lock; their API-smoke status remains fail-closed.
 
 The output is intentionally not created or committed by this source-only
 landing. A fixture becomes authoritative only after this script has run
@@ -36,6 +40,11 @@ from pathlib import Path
 
 
 CODEBOOK_SIZE = 1_024
+PREVIOUS_ISOLATED_TRANSFORMERS_PIN = "transformers==5.5.0"
+ISOLATED_TRANSFORMERS_PIN = "transformers==5.10.4"
+TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
+TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
+TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 VARIANTS = {
     "full": {
         "model_id": "OpenMOSS-Team/MOSS-Audio-Tokenizer",
@@ -62,6 +71,11 @@ VARIANTS = {
         "restore_channels": True,
         "model_source_sha256": None,
         "config_source_sha256": None,
+        "previous_isolated_transformers_pin": PREVIOUS_ISOLATED_TRANSFORMERS_PIN,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
     },
     "v2": {
         "model_id": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
@@ -79,6 +93,11 @@ VARIANTS = {
         "config_source_sha256": (
             "f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529"
         ),
+        "previous_isolated_transformers_pin": PREVIOUS_ISOLATED_TRANSFORMERS_PIN,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+        "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
     },
 }
 
@@ -114,6 +133,91 @@ def source_file(obj: object, label: str) -> Path:
             "refusing a non-upstream oracle"
         )
     return path
+
+
+def canonical_source_path(path: Path) -> str:
+    """Return a stable path relative to the HF remote-code cache root."""
+
+    try:
+        start = path.parts.index("transformers_modules")
+    except ValueError as error:
+        raise RuntimeError(
+            f"source path {path} is outside transformers_modules"
+        ) from error
+    relative = Path(*path.parts[start:]).as_posix()
+    if not relative.startswith("transformers_modules/"):
+        raise RuntimeError(f"invalid canonical source path: {relative}")
+    return relative
+
+
+def require_transformers_api_smoke(variant_name: str, variant: dict[str, object]) -> None:
+    """Refuse Nano/v2 imports and model acquisition until API smoke is reviewed."""
+
+    if variant_name == "full":
+        return
+    expected = {
+        "previous_isolated_transformers_pin": PREVIOUS_ISOLATED_TRANSFORMERS_PIN,
+        "isolated_transformers_pin": ISOLATED_TRANSFORMERS_PIN,
+        "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
+        "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
+    }
+    for key, value in expected.items():
+        if variant.get(key) != value:
+            raise SystemExit(f"{variant_name} Transformers contract is not reviewed")
+    status = variant.get("transformers_compatibility_status")
+    if status == "BLOCKED_UNVERIFIED_API_SMOKE":
+        raise SystemExit(
+            f"MOSS Audio Tokenizer {variant_name} reference generation is "
+            "BLOCKED_UNVERIFIED_API_SMOKE; run an authorized VAST model smoke "
+            "test before importing Transformers"
+        )
+    if status == "AUTHENTICATED_API_SMOKE":
+        return
+    raise SystemExit(
+        f"MOSS Audio Tokenizer {variant_name} Transformers compatibility status "
+        "is not reviewed"
+    )
+
+
+def self_test() -> None:
+    path = Path("/tmp/huggingface/transformers_modules/OpenMOSS-Team/Nano/model.py")
+    assert canonical_source_path(path) == (
+        "transformers_modules/OpenMOSS-Team/Nano/model.py"
+    )
+    try:
+        canonical_source_path(Path("/tmp/local/model.py"))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("local source path was accepted")
+    for variant_name in ("nano", "v2"):
+        variant = VARIANTS[variant_name]
+        assert variant["previous_isolated_transformers_pin"] == "transformers==5.5.0"
+        assert variant["isolated_transformers_pin"] == "transformers==5.10.4"
+        assert variant["transformers_security_advisory"] == "GHSA-xrqw-3rrv-vx5w"
+        assert variant["transformers_security_patched_minimum"] == "5.10.0"
+        assert variant["transformers_compatibility_status"] == "BLOCKED_UNVERIFIED_API_SMOKE"
+        try:
+            require_transformers_api_smoke(variant_name, variant)
+        except SystemExit as error:
+            assert "BLOCKED_UNVERIFIED_API_SMOKE" in str(error)
+        else:
+            raise AssertionError(f"unverified {variant_name} API smoke was accepted")
+        original_status = variant["transformers_compatibility_status"]
+        try:
+            variant["transformers_compatibility_status"] = "AUTHENTICATED_API_SMOKE"
+            require_transformers_api_smoke(variant_name, variant)
+            variant["transformers_compatibility_status"] = "UNREVIEWED_STATUS"
+            try:
+                require_transformers_api_smoke(variant_name, variant)
+            except SystemExit as error:
+                assert "not reviewed" in str(error)
+            else:
+                raise AssertionError(f"unknown {variant_name} status was accepted")
+        finally:
+            variant["transformers_compatibility_status"] = original_status
+        assert variant["transformers_compatibility_status"] == "BLOCKED_UNVERIFIED_API_SMOKE"
+    print("moss reference dumper path self-test: PASS")
 
 
 def flat_values(tensor: object, torch_module: object, label: str) -> tuple[str, str]:
@@ -161,9 +265,16 @@ def main() -> None:
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--frames", type=int, default=2)
     parser.add_argument("--num-quantizers", type=int)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return
+    if args.output is None:
+        parser.error("--output is required unless --self-test is used")
     variant = VARIANTS[args.variant]
+    require_transformers_api_smoke(args.variant, variant)
     model_id = str(variant["model_id"])
     revision = str(variant["revision"])
     max_quantizers = int(variant["max_quantizers"])
@@ -204,10 +315,12 @@ def main() -> None:
     )
     model.eval()
 
-    model_source = source_file(type(model), "model class")
-    config_source = source_file(type(model.config), "config class")
-    model_source_sha256 = sha256_file(model_source)
-    config_source_sha256 = sha256_file(config_source)
+    model_source_path = source_file(type(model), "model class")
+    config_source_path = source_file(type(model.config), "config class")
+    model_source = canonical_source_path(model_source_path)
+    config_source = canonical_source_path(config_source_path)
+    model_source_sha256 = sha256_file(model_source_path)
+    config_source_sha256 = sha256_file(config_source_path)
     for label, actual, expected in (
         ("model", model_source_sha256, variant["model_source_sha256"]),
         ("config", config_source_sha256, variant["config_source_sha256"]),

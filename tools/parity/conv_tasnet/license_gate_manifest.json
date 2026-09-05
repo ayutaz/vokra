@@ -1,0 +1,27 @@
+{
+  "gate_version": 1,
+  "lock_sha256": "f8a95f3052c472a608a087b2c2470cff193d98276094856e2e6c254678d56afa",
+  "project_sha256": "0ab5226a359c7d5268761d1f4685a1723d69c2430bba0735ed79be6f943b59f8",
+  "package_rows_sha256": "b4dd1f9af2cb23806c17a986772fb4af255e0de67bad3249f5fe317e82277896",
+  "package_review_rows": [],
+  "package_review_rows_sha256": null,
+  "identities": {
+    "upstream_repo": "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k",
+    "upstream_revision": "bb8a876bc157b5cf3c405994accb798c49146016",
+    "checkpoint": {"path": "pytorch_model.bin", "bytes": 20130704, "sha256": "dd8ddefe95a35761f8a48643a618eba908572d04d33208a8ed5451fb5a4378d0"},
+    "asteroid_artifacts": {"wheel_sha256": "ea97a24901d9d9851b4a594171bd7c6dd900fee2c132b9ce045aa09926d489c7", "sdist_sha256": "0326f28c5342495cb08ba0520efd0e21e39435dfd78854837fdd5a6c9c9ca410"}
+  },
+  "license_rows": [
+    {"id": "upstream-license-contradiction", "status": "UNRESOLVED", "license": "CC-BY-SA-3.0 vs CC-BY-SA-4.0", "conclusion": "UNRESOLVED", "evidence": "upstream YAML declares CC-BY-SA-4.0 while LICENSE body declares CC-BY-SA-3.0"},
+    {"id": "wham-research-restriction", "status": "UNRESOLVED", "license": "CC-BY-NC-4.0", "conclusion": "UNRESOLVED", "evidence": "WHAM training data restriction is Research-only"},
+    {"id": "asteroid-python-closure", "status": "UNRESOLVED", "license": "UNRESOLVED", "conclusion": "UNRESOLVED", "evidence": "owner dependency/native/bundled review required"}
+  ],
+  "license_rows_sha256": "ae592527f5021852e6a33c728bb5ee9349916a304bb78d452b49d34aaaeb197a",
+  "reference_contract": {
+    "topology": {"n_filters": 512, "kernel_size": 32, "stride": 16, "bn_chan": 128, "hid_chan": 512, "n_blocks": 8, "n_repeats": 3, "n_src": 1},
+    "sample_rate": 16000,
+    "license_context": {"upstream_yaml": "CC-BY-SA-4.0", "license_body": "CC-BY-SA-3.0", "wham": "CC-BY-NC-4.0 Research-only"}
+  },
+  "publication": "NO_UPLOAD",
+  "approval": {"status": "OWNER_SIGNOFF_REQUIRED", "signer": null, "digest": null}
+}

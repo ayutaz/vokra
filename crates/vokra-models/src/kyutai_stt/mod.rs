@@ -35,14 +35,13 @@
 //!   (**24 kHz / 12.5 Hz** — the Mimi sample-rate / frame-rate live in
 //!   `vokra.mimi.*`, ADR M4-06 §D3; the STT chunk group deliberately does
 //!   *not* duplicate them).
-//! - **Tokenizer side-car**: `tokenizer_name="tokenizer_en_audio_4000.model"`
-//!   (raw SentencePiece; the T29-equivalent owner hand-off embeds it into
-//!   `vokra.tokenizer.model` — the Moshi / CSM pattern).
-//! - **Weight license**: **CC-BY 4.0** (`AttributionRequired`) — the
-//!   converter stamps the FR-MD-09 attribution text; the compliance
-//!   registry maps `kyutai-stt` / `kyutai-stt-2.6b-en` to
-//!   [`vokra_core::LicenseClass::AttributionRequired`] so the M2-13 gate
-//!   passes commercially *and* the FR-MD-09 attribution surface activates.
+//! - **Tokenizer side-car**: authenticated config says
+//!   `tokenizer_name="tokenizer_en_audio_4000.model"`, while the fixed HF
+//!   tree provides `tokenizer_spm_4k_en.model`; this mismatch is an explicit
+//!   operational blocker and the tokenizer is not currently runtime-bound.
+//! - **Weight license**: **CC-BY 4.0** (`AttributionRequired`) in the
+//!   upstream card. Publication and runtime binding remain blocked pending
+//!   authenticated composite evidence and owner review.
 //!
 //! # Boundary — Mimi consumed, never re-implemented
 //!
@@ -72,9 +71,13 @@
 //! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29
 //! / Moshi T29: this scaffold sets the seam so the follow-up lands drop-in.
 
-use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
+#[cfg(test)]
+use vokra_core::check_weight_license;
+#[cfg(test)]
+use vokra_core::gguf::chunks;
+use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{CompliancePolicy, Result, VokraError, check_weight_license};
+use vokra_core::{CompliancePolicy, Result, VokraError};
 
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
@@ -90,12 +93,8 @@ pub const EXPECTED_ARCH: &str = "kyutai-stt";
 /// the shared Mimi module docs, ADR M4-06 §D3).
 pub const KYUTAI_STT_SAMPLE_RATE: u32 = 24_000;
 
-/// Deterministic seed [`KyutaiSttAsr::from_gguf_with_policy`] threads into
-/// [`KyutaiSttWeights::synthesized`] until the real-checkpoint tensor-name
-/// manifest lands (T29-equivalent — the CSM
-/// [`CSM_FROM_GGUF_DEFAULT_SEED`](super::csm::CSM_FROM_GGUF_DEFAULT_SEED)
-/// pattern). Fixed so every `from_gguf` build against the same shape
-/// config produces bit-identical weight bytes → reproducible bug reports.
+/// Deterministic seed retained for the explicit in-module fixture constructor.
+/// It is never used by the public GGUF/path loaders.
 pub const KYUTAI_STT_FROM_GGUF_DEFAULT_SEED: u64 = 0x0C57_0C57_0C57_0C57;
 
 // ---------------------------------------------------------------------------
@@ -846,86 +845,42 @@ impl KyutaiSttAsr {
     /// Loads a Kyutai STT GGUF from raw bytes under `policy` (M2-13 gate —
     /// a non-commercial provenance without a research flag is refused).
     ///
-    /// Weight posture: **synthesized bridge** until the real-checkpoint
-    /// tensor-name manifest lands (T29-equivalent — the CSM
-    /// [`from_gguf_with_policy`](super::csm::CsmEngine::from_gguf_with_policy)
-    /// precedent). The engine binds
-    /// [`KyutaiSttWeights::synthesized`] against the GGUF's shape
-    /// config using [`KYUTAI_STT_FROM_GGUF_DEFAULT_SEED`] so shape /
-    /// dtype / size flow can be exercised without the real HF
-    /// checkpoint; a `transcribe` call fires the synthesized-weight
-    /// loud-partial arm and names the primary source URL.
+    /// Public GGUF loading is fail-closed until the fixed composite release
+    /// has a real model/Mimi/tokenizer tensor binder and independent parity.
+    /// Deterministic synthesized weights remain available only through the
+    /// explicit test fixture constructor and are never a public fallback.
     ///
-    /// The Kyutai STT weight license is **CC-BY 4.0** (`AttributionRequired`) —
-    /// the converter's registry mapping and provenance stamps make the
-    /// M2-13 gate pass commercially, and the FR-MD-09 attribution
-    /// surface activates. `docs/license-audit.md` row 272 records the
-    /// commercial sign-off (2026-07-28 yousan).
+    /// The upstream card identifies the weight as **CC-BY 4.0**
+    /// (`AttributionRequired`), but this inspection-only wave does not stamp
+    /// or publish provenance and therefore does not activate a runtime load.
     ///
     /// # Errors
     ///
-    /// - [`VokraError::ModelLoad`] on parse failure / wrong or missing
-    ///   `vokra.model.arch` — the message names the expected arch tag
-    ///   (`kyutai-stt`), sibling arch tags (`csm` / `moshi` / `kyutai-tts`)
-    ///   so a mis-routed GGUF fails specifically here, and the primary
-    ///   source URL.
-    /// - [`VokraError::ResearchLicenseRequired`] (from the M2-13 gate)
-    ///   when the weight class is gated and `policy` grants no research
-    ///   opt-in (never a silent skip / substitution).
-    /// - [`VokraError::InvalidArgument`] on a `0`-placeholder shape
-    ///   config (a scaffold converter path that never wrote the real
-    ///   hparams) from the downstream
-    ///   [`KyutaiSttConfig::validate_for_forward`] gate.
+    /// - [`VokraError::ModelLoad`] because the authenticated composite
+    ///   tensor binder and native forward are not implemented yet.
     pub fn from_gguf_with_policy(bytes: &[u8], policy: &CompliancePolicy) -> Result<Self> {
-        let file = GgufFile::parse(bytes.to_vec())
-            .map_err(|e| VokraError::ModelLoad(format!("kyutai-stt GGUF: {e}")))?;
-        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
-            Some(a) if a == EXPECTED_ARCH => {}
-            Some(other) => {
-                return Err(VokraError::ModelLoad(format!(
-                    "kyutai-stt: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
-                     (was this GGUF produced by `vokra-cli convert --model kyutai-stt`? \
-                     Sibling Kyutai / Moshi-family arches — `csm` (Sesame CSM-1B \
-                     S2S), `moshi` (Kyutai Helium + Mimi full-duplex), `kyutai-tts` \
-                     (Kyutai text-to-speech) — are different topologies). \
-                     Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
-                     https://github.com/kyutai-labs/delayed-streams-modeling"
-                )));
-            }
-            None => {
-                return Err(VokraError::ModelLoad(format!(
-                    "kyutai-stt: GGUF is missing `vokra.model.arch` (converter did \
-                     not stamp it — this is not a Vokra-native `{EXPECTED_ARCH}` \
-                     GGUF). Primary source: \
-                     https://huggingface.co/kyutai/stt-2.6b-en / \
-                     https://github.com/kyutai-labs/delayed-streams-modeling"
-                )));
-            }
-        }
-        check_weight_license(&file, policy)?;
-        let cfg = KyutaiSttConfig::from_gguf(&file)?;
-        // `synthesized` runs `validate_for_forward` internally; keep the
-        // explicit call here so a validate failure surfaces with the config
-        // context intact (same posture as CSM `from_gguf_with_policy`).
-        cfg.validate_for_forward()?;
-        let weights = KyutaiSttWeights::synthesized(&cfg, KYUTAI_STT_FROM_GGUF_DEFAULT_SEED)?;
-        Self::new(cfg, weights)
+        let _ = (bytes, policy);
+        Err(VokraError::ModelLoad(
+            "kyutai-stt public GGUF loading is blocked: real authenticated model/Mimi/tokenizer tensor binding and native parity are not implemented; synthesized fixtures are test-only and never a public load fallback".to_owned(),
+        ))
     }
 
     /// Loads a Kyutai STT GGUF from a file path with the fail-closed
     /// strict policy ([`CompliancePolicy::strict`]).
     ///
-    /// The Kyutai STT weight license is **CC-BY 4.0**
-    /// (`AttributionRequired`), which is commercially permitted — the
-    /// M2-13 gate passes under `strict` without a research opt-in.
+    /// The upstream card identifies the weight as **CC-BY 4.0**. That
+    /// license fact does not waive the missing composite binder gate.
     ///
     /// # Errors
     ///
     /// - [`VokraError::Io`] on read failure.
     /// - See [`Self::from_gguf_with_policy`].
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let bytes = std::fs::read(path.as_ref()).map_err(VokraError::Io)?;
-        Self::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+        // Probe existence without materializing the multi-gigabyte composite.
+        std::fs::metadata(path.as_ref()).map_err(VokraError::Io)?;
+        Err(VokraError::ModelLoad(
+            "kyutai-stt public GGUF loading is blocked: real authenticated model/Mimi/tokenizer tensor binding and native parity are not implemented; synthesized fixtures are test-only and never a public load fallback".to_owned(),
+        ))
     }
 }
 
@@ -938,6 +893,16 @@ mod tests {
     use super::*;
     use vokra_core::LicenseClass;
     use vokra_core::gguf::GgufBuilder;
+
+    #[test]
+    fn public_gguf_load_is_fail_closed_without_real_tensor_binding() {
+        let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
+        let error = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("public load must reject synthesized fallback");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("synthesized") && message.contains("authenticated"))
+        );
+    }
 
     /// Every hparam matches the primary source
     /// (`huggingface.co/kyutai/stt-2.6b-en/raw/main/config.json`) verbatim.
@@ -1430,19 +1395,9 @@ mod tests {
         let bytes = build_gguf_with_hparams(None);
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect_err("missing arch must be rejected");
-        match err {
-            VokraError::ModelLoad(msg) => {
-                assert!(
-                    msg.contains(EXPECTED_ARCH),
-                    "message must name expected arch `{EXPECTED_ARCH}`: {msg}"
-                );
-                assert!(
-                    msg.contains("huggingface.co/kyutai/stt-2.6b-en"),
-                    "message must name the primary source URL: {msg}"
-                );
-            }
-            other => panic!("expected ModelLoad, got {other:?}"),
-        }
+        assert!(
+            matches!(err, VokraError::ModelLoad(msg) if msg.contains("authenticated") && msg.contains("blocked"))
+        );
     }
 
     /// A GGUF whose arch is a sibling (`csm`) fails with a message that
@@ -1453,23 +1408,9 @@ mod tests {
         let bytes = build_gguf_with_hparams(Some("csm"));
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect_err("wrong arch must be rejected");
-        match err {
-            VokraError::ModelLoad(msg) => {
-                assert!(
-                    msg.contains(EXPECTED_ARCH),
-                    "message must name expected arch `{EXPECTED_ARCH}`: {msg}"
-                );
-                assert!(
-                    msg.contains("csm"),
-                    "message must name the offending arch tag `csm`: {msg}"
-                );
-                assert!(
-                    msg.contains("huggingface.co/kyutai/stt-2.6b-en"),
-                    "message must name the primary source URL: {msg}"
-                );
-            }
-            other => panic!("expected ModelLoad, got {other:?}"),
-        }
+        assert!(
+            matches!(err, VokraError::ModelLoad(msg) if msg.contains("authenticated") && msg.contains("blocked"))
+        );
     }
 
     /// The `vokra.kyutai_stt.*` chunk group round-trips through the
@@ -1488,16 +1429,10 @@ mod tests {
         assert_eq!(cfg, want);
     }
 
-    /// A GGUF whose provenance advertises `AttributionRequired` (CC-BY
-    /// 4.0) passes the M2-13 gate under [`CompliancePolicy::strict`]
-    /// (no research opt-in needed — the license is commercially
-    /// permitted) and the resolution surfaces the attribution-required
-    /// class + `is_research_only == false`. This is what makes Kyutai
-    /// STT loadable in the default posture.
+    /// Correct CC-BY-4.0 provenance does not bypass the missing composite
+    /// model/Mimi/tokenizer binder.
     #[test]
-    fn from_gguf_reads_attribution_required_license() {
-        // Tiny scale: this test constructs an engine, and what it asserts
-        // is the licence gate, not the model's dimensions.
+    fn from_gguf_with_valid_license_still_fails_closed() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let file = GgufFile::parse(bytes).expect("parse fixture");
         let resolution =
@@ -1507,46 +1442,22 @@ mod tests {
             !resolution.is_research_only(),
             "CC-BY 4.0 is commercial-permitted; must NOT be marked research-only"
         );
-        // The M2-13 gate + arch check + config load all pass together.
-        let asr = KyutaiSttAsr::from_gguf_with_policy(
+        let err = KyutaiSttAsr::from_gguf_with_policy(
             &build_tiny_gguf(Some(EXPECTED_ARCH)),
             &CompliancePolicy::strict(),
         )
-        .expect("kyutai-stt from_gguf under strict policy");
-        assert!(asr.is_synthesized(), "from_gguf binds synthesized bridge");
-        assert_eq!(asr.config(), &KyutaiSttConfig::tiny_for_tests());
+        .expect_err("valid provenance must not synthesize public weights");
+        assert!(matches!(err, VokraError::ModelLoad(msg) if msg.contains("authenticated")));
     }
 
-    /// The loud-partial transcribe gate names the primary source URL so a
-    /// downstream caller / user can look up the real forward's status
-    /// (Wave 4 loud-partial contract — never a silent noise transcript).
+    /// A public load is rejected before a transcribe call can reach the
+    /// synthesized fixture's loud-partial path.
     #[test]
-    fn transcribe_loud_partial_names_primary_source_url() {
-        // Tiny scale: constructs an engine, and asserts only the message.
+    fn public_loader_rejects_before_transcribe() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
-        let asr = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("kyutai-stt from_gguf");
-        // Build a legal one-frame code slice against the resolved config.
-        let n_q = asr.config().n_q;
-        let codes = vec![0u32; n_q];
-        let err = asr.transcribe(&codes).unwrap_err();
-        match err {
-            VokraError::NotImplemented(msg) => {
-                assert!(
-                    msg.contains("https://huggingface.co/kyutai/stt-2.6b-en"),
-                    "message must name the HF primary source URL: {msg}"
-                );
-                assert!(
-                    msg.contains("github.com/kyutai-labs/delayed-streams-modeling"),
-                    "message must name the GitHub primary source URL: {msg}"
-                );
-                assert!(
-                    msg.contains("synthesized"),
-                    "message must name the synthesized-weight blocker: {msg}"
-                );
-            }
-            other => panic!("expected NotImplemented, got {other:?}"),
-        }
+        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("public loader must fail before transcribe");
+        assert!(matches!(err, VokraError::ModelLoad(msg) if msg.contains("synthesized")));
     }
 
     /// A GGUF with `n_layer = 0` (a scaffold converter path that never
@@ -1566,10 +1477,7 @@ mod tests {
         let bytes = b.to_bytes().expect("serialize");
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect_err("0-placeholder config must be rejected");
-        assert!(
-            matches!(err, VokraError::InvalidArgument(_)),
-            "expected InvalidArgument, got {err:?}"
-        );
+        assert!(matches!(err, VokraError::ModelLoad(msg) if msg.contains("blocked")));
     }
 
     /// A GGUF that mis-types `sample_rate` (F32 instead of U32 — a
@@ -1590,56 +1498,24 @@ mod tests {
         let bytes = b.to_bytes().expect("serialize");
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect_err("wrong-typed key must be rejected");
-        match err {
-            VokraError::InvalidArgument(msg) => {
-                assert!(
-                    msg.contains(KEY_SAMPLE_RATE),
-                    "message must name the offending key `{KEY_SAMPLE_RATE}`: {msg}"
-                );
-                assert!(
-                    msg.contains("UINT32"),
-                    "message must name the expected type UINT32: {msg}"
-                );
-            }
-            other => panic!("expected InvalidArgument, got {other:?}"),
-        }
+        assert!(matches!(err, VokraError::ModelLoad(msg) if msg.contains("authenticated")));
     }
 
-    /// `KyutaiSttAsr::from_path` reads the file bytes and threads them
-    /// through [`KyutaiSttAsr::from_gguf_with_policy`] with
-    /// [`CompliancePolicy::strict`] — the resulting engines are
-    /// equivalent (same config, same synthesized-weight bridge, same
-    /// loud-partial arm).
+    /// `from_path` propagates the same fail-closed public binder error as the
+    /// raw-byte loader and never constructs synthesized weights.
     #[test]
-    fn from_path_round_trip() {
-        // Tiny scale: constructs two engines, and asserts they agree.
+    fn from_path_is_fail_closed() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let path = std::env::temp_dir().join(format!(
             "vokra-kyutai-stt-scout-{}.gguf",
             std::process::id()
         ));
         std::fs::write(&path, &bytes).expect("write fixture");
-        let via_path = KyutaiSttAsr::from_path(&path).expect("from_path");
-        let via_bytes = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("from_gguf_with_policy");
+        let via_path = KyutaiSttAsr::from_path(&path).expect_err("from_path must be blocked");
         // Best-effort cleanup — never a panic on cleanup failure (test
         // determinism must not depend on tmp cleanup).
         let _ = std::fs::remove_file(&path);
-        assert_eq!(via_path.config(), via_bytes.config());
-        assert_eq!(via_path.is_synthesized(), via_bytes.is_synthesized());
-        // Both engines refuse to synthesise real text (synthesized-weight
-        // loud-partial arm) — pin the message parity so downstream
-        // callers see identical behaviour whichever loader they use.
-        let n_q = via_path.config().n_q;
-        let codes = vec![0u32; n_q];
-        let e1 = via_path.transcribe(&codes).unwrap_err();
-        let e2 = via_bytes.transcribe(&codes).unwrap_err();
-        match (e1, e2) {
-            (VokraError::NotImplemented(m1), VokraError::NotImplemented(m2)) => {
-                assert_eq!(m1, m2, "from_path and from_gguf must yield identical arms");
-            }
-            (a, b) => panic!("expected two NotImplemented, got {a:?} / {b:?}"),
-        }
+        assert!(matches!(via_path, VokraError::ModelLoad(msg) if msg.contains("authenticated")));
     }
 
     /// `from_path` on a non-existent file surfaces

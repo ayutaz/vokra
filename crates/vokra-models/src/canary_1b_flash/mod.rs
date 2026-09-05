@@ -1775,5 +1775,24 @@ mod tests {
             actual, expected,
             "Vokra greedy token sequence must exactly match official NeMo"
         );
+        eprintln!("CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS");
+
+        // The CPU result above is the independent official-NeMo oracle. On a
+        // disposable Apple Silicon host, bind the same authenticated GGUF
+        // again with the real Metal backend and compare the complete greedy
+        // token sequence. This branch is deliberately device-gated: Linux
+        // VAST keeps the existing CPU-only behavior, while a Metal build on
+        // macOS must execute Metal or fail loudly (never substitute CPU).
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            drop(model);
+            let metal_model = Canary1bFlashAsr::from_gguf_with_backend(&gguf, BackendKind::Metal)
+                .expect("bind complete Canary release on Metal");
+            let metal_actual = metal_model
+                .transcribe_with_options(&pcm, options)
+                .expect("run Canary Metal forward");
+            assert_eq!(metal_actual, actual, "Flash Metal IDs equal CPU");
+            eprintln!("CANARY_1B_FLASH_METAL_VS_CPU PASS");
+        }
     }
 }

@@ -88,6 +88,40 @@ const KERNELS_MSL: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
+// ---- mixed FP32 activation × raw BF16 weight GEMM -------------------------
+// The weight buffer is deliberately `ushort` storage: these are the numeric
+// BF16 bit patterns decoded from little-endian model bytes, not an eagerly
+// widened FP32 mirror.  Widening is exact (the BF16 exponent/significand are
+// the high 16 bits of an IEEE-754 binary32 value) and every product is added
+// to an FP32 accumulator.
+struct GemmF32Bf16BitsDims {
+    uint M;
+    uint N;
+    uint K;
+};
+
+inline float vokra_bf16_bits_to_f32(ushort bits) {
+    return as_type<float>(uint(bits) << 16);
+}
+
+kernel void vokra_gemm_f32_bf16_bits(
+    device const float*  A    [[buffer(0)]],
+    device const ushort* B    [[buffer(1)]],
+    device float*        C    [[buffer(2)]],
+    constant GemmF32Bf16BitsDims& d [[buffer(3)]],
+    uint2                 gid  [[thread_position_in_grid]])
+{
+    const uint row = gid.y;
+    const uint col = gid.x;
+    if (row >= d.M || col >= d.N) return;
+    float acc = 0.0f;
+    const uint arow = row * d.K;
+    for (uint k = 0u; k < d.K; ++k) {
+        acc += A[arow + k] * vokra_bf16_bits_to_f32(B[k * d.N + col]);
+    }
+    C[row * d.N + col] = acc;
+}
+
 // ---- gemv: out[i] = (has_bias ? bias[i] : 0) + Σ_l A[i*K + l] · x[l] --------
 // Bias-first accumulation matches vokra_backend_cpu::kernels' scalar `gemv`.
 struct GemvDims {
@@ -308,6 +342,61 @@ kernel void vokra_group_norm_f32(
     }
 }
 
+// ---- multi-group GroupNorm: channel-major [channels, positions] -----------
+// NCSN++ uses GroupNorm with an explicit group count. One thread owns one
+// complete group: it reduces that group once, then writes every channel and
+// position in it. This preserves the CPU sibling's channel-major membership
+// and left-fold order without repeating the reduction for every output.
+struct GroupNormGroupsDims {
+    uint channels;
+    uint positions;
+    uint groups;
+    float eps;
+};
+
+kernel void vokra_group_norm_groups_f32(
+    device const float* inp   [[buffer(0)]],
+    device const float* gamma [[buffer(1)]],
+    device const float* beta  [[buffer(2)]],
+    device float*       out   [[buffer(3)]],
+    constant GroupNormGroupsDims& d [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= d.groups) {
+        return;
+    }
+    const uint channels_per_group = d.channels / d.groups;
+    const uint first_channel = gid * channels_per_group;
+    const uint count = channels_per_group * d.positions;
+    float sum = 0.0f;
+    for (uint c = first_channel; c < first_channel + channels_per_group; ++c) {
+        const uint base = c * d.positions;
+        for (uint p = 0u; p < d.positions; ++p) {
+            sum += inp[base + p];
+        }
+    }
+    const float mean = sum / (float)count;
+    float variance_sum = 0.0f;
+    for (uint c = first_channel; c < first_channel + channels_per_group; ++c) {
+        const uint base = c * d.positions;
+        for (uint p = 0u; p < d.positions; ++p) {
+            const float delta = inp[base + p] - mean;
+            variance_sum += delta * delta;
+        }
+    }
+    const float inv_std = 1.0f / sqrt(variance_sum / (float)count + d.eps);
+    for (uint channel = first_channel;
+         channel < first_channel + channels_per_group;
+         ++channel) {
+        const uint base = channel * d.positions;
+        for (uint position = 0u; position < d.positions; ++position) {
+            const uint index = base + position;
+            const float normalized = (inp[index] - mean) * inv_std;
+            out[index] = normalized * gamma[channel] + beta[channel];
+        }
+    }
+}
+
 // ---- gelu: exact (erf) form, out = 0.5·x·(1 + erf(x/√2)) ---------------------
 // MSL has no builtin `erf`, so we inline the *identical* Abramowitz & Stegun
 // 7.1.26 approximation (and constants, and Horner order) that
@@ -398,6 +487,208 @@ kernel void vokra_elu_f32(
     out[i] = v > 0.0f ? v : exp(v) - 1.0f;
 }
 
+// ---- linear-to-one + abs: HiFTNet F0 predictor head -----------------------
+// Input is channel-major [channels, time], matching the preceding Conv1d
+// stack. The scalar reduction is deliberately kept in channel order so the
+// device route has the same contract as `abs(linear(x)).squeeze(-1)`.
+struct LinearAbsDims {
+    uint channels;
+    uint time;
+};
+
+kernel void vokra_linear_abs_f32(
+    device const float* x      [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device const float* bias   [[buffer(2)]],
+    device float*       out    [[buffer(3)]],
+    constant LinearAbsDims& d  [[buffer(4)]],
+    uint                 gid   [[thread_position_in_grid]])
+{
+    const uint t = gid;
+    if (t >= d.time) return;
+    float acc = bias[0];
+    for (uint c = 0u; c < d.channels; ++c) {
+        acc += x[c * d.time + t] * weight[c];
+    }
+    out[t] = fabs(acc);
+}
+
+kernel void vokra_linear_tanh_f32(
+    device const float* x      [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device const float* bias   [[buffer(2)]],
+    device float*       out    [[buffer(3)]],
+    constant LinearAbsDims& d  [[buffer(4)]],
+    uint                 gid   [[thread_position_in_grid]])
+{
+    const uint t = gid;
+    if (t >= d.time) return;
+    float acc = bias[0];
+    for (uint c = 0u; c < d.channels; ++c) {
+        acc += x[c * d.time + t] * weight[c];
+    }
+    out[t] = tanh(acc);
+}
+
+// ---- nearest-neighbour temporal upsample ----------------------------------
+struct NearestUpsampleDims {
+    uint channels;
+    uint time_in;
+    uint time_out;
+    uint factor;
+};
+
+kernel void vokra_nearest_upsample_f32(
+    device const float* x       [[buffer(0)]],
+    device float*       out     [[buffer(1)]],
+    constant NearestUpsampleDims& d [[buffer(2)]],
+    uint2               gid     [[thread_position_in_grid]])
+{
+    const uint t = gid.x;
+    const uint c = gid.y;
+    if (c >= d.channels || t >= d.time_out) return;
+    out[c * d.time_out + t] = x[c * d.time_in + t / d.factor];
+}
+
+// ---- HiFTNet centered Hann STFT --------------------------------------------
+// Output layout is channel-major [Re F, frames; Im F, frames]. This is the
+// exact layout consumed by HiFTNet's source_downs convolutions. The kernel is
+// intentionally a direct DFT: it keeps the centered reflect convention and
+// avoids an intermediate host-side frame/FFT representation.
+struct HiftStftDims {
+    uint time_in;
+    uint n_fft;
+    uint hop;
+    uint frames;
+    uint bins;
+};
+
+inline int vokra_reflect_index(int i, uint n) {
+    if (n <= 1u) return 0;
+    const int period = 2 * (int(n) - 1);
+    int m = i % period;
+    if (m < 0) m += period;
+    return m >= int(n) ? period - m : m;
+}
+
+kernel void vokra_hift_stft_f32(
+    device const float* x       [[buffer(0)]],
+    device float*       out     [[buffer(1)]],
+    constant HiftStftDims& d    [[buffer(2)]],
+    uint2               gid     [[thread_position_in_grid]])
+{
+    const uint frame = gid.x;
+    const uint bin = gid.y;
+    if (frame >= d.frames || bin >= d.bins) return;
+    const float pi2 = 6.28318530717958647692f;
+    float re = 0.0f;
+    float im = 0.0f;
+    const int center = int(d.n_fft / 2u);
+    for (uint k = 0u; k < d.n_fft; ++k) {
+        const int logical = int(frame * d.hop + k) - center;
+        const int src = vokra_reflect_index(logical, d.time_in);
+        const float sample = d.time_in == 0u ? 0.0f : x[uint(src)];
+        const float window = d.n_fft == 1u ? 1.0f :
+            0.5f - 0.5f * cos(pi2 * float(k) / float(d.n_fft));
+        const float value = sample * window;
+        const float angle = pi2 * float(bin * k) / float(d.n_fft);
+        re += value * cos(angle);
+        im -= value * sin(angle);
+    }
+    out[bin * d.frames + frame] = re;
+    out[d.bins * d.frames + bin * d.frames + frame] = im;
+}
+
+// ---- HiFTNet logits -> complex spectrum ------------------------------------
+// Input logits are [2F, frames] with magnitude logits followed by phase
+// logits. Output is [Re F, frames; Im F, frames]. Keeping this as its own
+// pass mirrors HiFTResidentOps::complex_from_logits and lets callers choose
+// their configured audio-limit clamp separately.
+struct HiftComplexDims {
+    uint frames;
+    uint bins;
+};
+
+kernel void vokra_hift_complex_from_logits_f32(
+    device const float* logits [[buffer(0)]],
+    device float*       out    [[buffer(1)]],
+    constant HiftComplexDims& d [[buffer(2)]],
+    uint2               gid    [[thread_position_in_grid]])
+{
+    const uint frame = gid.x;
+    const uint channel = gid.y;
+    if (frame >= d.frames || channel >= 2u * d.bins) return;
+    const uint bin = channel < d.bins ? channel : channel - d.bins;
+    const uint base = bin * d.frames + frame;
+    if (channel < d.bins) {
+        const float log_magnitude = logits[base];
+        // Rust's f32::min follows IEEE behavior for NaN (the other operand
+        // wins), while f32::sin(inf) is NaN. Spell those cases out so MSL's
+        // optimizer cannot choose a different fast-math result.
+        const float magnitude = isnan(log_magnitude) ? 100.0f :
+            min(exp(log_magnitude), 100.0f);
+        const float log_phase = logits[d.bins * d.frames + base];
+        const float phase = (isnan(log_phase) || isinf(log_phase)) ?
+            (0.0f / 0.0f) : sin(log_phase);
+        out[base] = magnitude * cos(phase);
+    } else {
+        const float log_magnitude = logits[base];
+        const float magnitude = isnan(log_magnitude) ? 100.0f :
+            min(exp(log_magnitude), 100.0f);
+        const float log_phase = logits[d.bins * d.frames + base];
+        const float phase = (isnan(log_phase) || isinf(log_phase)) ?
+            (0.0f / 0.0f) : sin(log_phase);
+        out[d.bins * d.frames + base] = magnitude * sin(phase);
+    }
+}
+
+// ---- HiFTNet complex spectrum -> centered Hann iSTFT ----------------------
+// Input is [Re F, frames; Im F, frames]. This pass intentionally does not
+// clamp: HiFT's configured audio limit is a separate elementwise operation.
+struct HiftIstftDims {
+    uint n_fft;
+    uint hop;
+    uint frames;
+    uint bins;
+    uint out_len;
+};
+
+kernel void vokra_hift_istft_f32(
+    device const float* spectrum [[buffer(0)]],
+    device float*       out    [[buffer(1)]],
+    constant HiftIstftDims& d  [[buffer(2)]],
+    uint                 gid   [[thread_position_in_grid]])
+{
+    if (gid >= d.out_len) return;
+    const float pi2 = 6.28318530717958647692f;
+    const uint raw = gid + d.n_fft / 2u;
+    float acc = 0.0f;
+    float wss = 0.0f;
+    for (uint frame = 0u; frame < d.frames; ++frame) {
+        const uint start = frame * d.hop;
+        if (raw < start || raw >= start + d.n_fft) continue;
+        const uint k = raw - start;
+        const float window = d.n_fft == 1u ? 1.0f :
+            0.5f - 0.5f * cos(pi2 * float(k) / float(d.n_fft));
+        float frame_value = 0.0f;
+        for (uint freq = 0u; freq < d.n_fft; ++freq) {
+            const uint bin = freq < d.bins ? freq : d.n_fft - freq;
+            const uint base = bin * d.frames + frame;
+            const float re = spectrum[base];
+            const float im0 = spectrum[d.bins * d.frames + base];
+            const float im = freq < d.bins ? im0 : -im0;
+            const float angle = pi2 * float(freq * k) / float(d.n_fft);
+            frame_value += re * cos(angle) - im * sin(angle);
+        }
+        frame_value /= float(d.n_fft);
+        acc += frame_value * window;
+        wss += window * window;
+    }
+    if (wss > 1.0e-8f) acc /= wss;
+    // Match Rust's f32::clamp NaN behavior for non-finite spectral inputs.
+    out[gid] = acc;
+}
+
 // ---- tanh: SpeechT5 postnet activation ------------------------------------
 struct TanhDims {
     uint n;
@@ -416,10 +707,26 @@ kernel void vokra_tanh_f32(
     out[i] = tanh(x[i]);
 }
 
+struct LeakyReluDims {
+    uint n;
+    float slope;
+};
+
+kernel void vokra_leaky_relu_f32(
+    device const float* x [[buffer(0)]],
+    device float* out [[buffer(1)]],
+    constant LeakyReluDims& d [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= d.n) return;
+    const float v = x[gid];
+    out[gid] = v >= 0.0f ? v : d.slope * v;
+}
+
 // ---- conv1d: direct convolution (im2col + GEMM equivalent) -------------------
 // `kernel` is an MSL reserved word, so the tap count is `kernel_size`. The (c
-// outer, kk inner) accumulation order equals the im2col+GEMM reduction the CPU
-// runs, so the two agree within the FP32 bound; bias is added after, as on CPU.
+// outer, kk inner) accumulation order equals the scalar CPU helper: bias is
+// the accumulator seed, followed by c/kk products in row-major weight order.
 struct Conv1dDims {
     uint in_per_group;
     uint in_len;
@@ -430,6 +737,18 @@ struct Conv1dDims {
     uint padding;
     uint has_bias;
     uint out_per_group;
+    uint dilation;
+};
+
+struct ConvTranspose1dDims {
+    uint in_ch;
+    uint out_ch;
+    uint kernel_size;
+    uint t_in;
+    uint t_out;
+    uint stride;
+    uint padding;
+    uint has_bias;
 };
 
 kernel void vokra_conv1d_f32(
@@ -448,21 +767,196 @@ kernel void vokra_conv1d_f32(
     const uint group = oc / d.out_per_group;
     const uint k     = d.in_per_group * d.kernel_size;
     const uint wbase = oc * k;
-    float acc = 0.0f;
+    float acc = d.has_bias != 0u ? bias[oc] : 0.0f;
     for (uint c = 0; c < d.in_per_group; ++c) {
         const uint wc    = wbase + c * d.kernel_size;
         const uint ibase = (group * d.in_per_group + c) * d.in_len;
         for (uint kk = 0; kk < d.kernel_size; ++kk) {
-            const uint pos = t * d.stride + kk;
+            const uint pos = t * d.stride + kk * d.dilation;
             if (pos >= d.padding && pos < d.padding + d.in_len) {
                 acc += weight[wc + kk] * inp[ibase + (pos - d.padding)];
             }
         }
     }
-    if (d.has_bias != 0u) {
-        acc += bias[oc];
-    }
     out[oc * d.out_len + t] = acc;
+}
+
+// Direct PyTorch-layout ConvTranspose1d. Keeping the scatter on the device
+// avoids the host expansion/readback dance used by the legacy slice.
+kernel void vokra_conv_transpose1d_f32(
+    device const float* inp    [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device const float* bias   [[buffer(2)]],
+    device float*       out    [[buffer(3)]],
+    constant ConvTranspose1dDims& d [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint t = gid.x;
+    const uint oc = gid.y;
+    if (t >= d.t_out || oc >= d.out_ch) return;
+    float acc = d.has_bias != 0u ? bias[oc] : 0.0f;
+    for (uint ic = 0u; ic < d.in_ch; ++ic) {
+        for (uint ti = 0u; ti < d.t_in; ++ti) {
+            const int tap = int(t) - int(ti * d.stride) + int(d.padding);
+            if (tap >= 0 && uint(tap) < d.kernel_size) {
+                const uint wi = (ic * d.out_ch + oc) * d.kernel_size + uint(tap);
+                acc += inp[ic * d.t_in + ti] * weight[wi];
+            }
+        }
+    }
+    out[oc * d.t_out + t] = acc;
+}
+
+// Direct dense/grouped PyTorch-layout Conv2d. The host flattens the output
+// channel and height axes into gid.y; one thread computes one output element.
+struct Conv2dDims {
+    uint in_ch;
+    uint in_h;
+    uint in_w;
+    uint out_ch;
+    uint out_h;
+    uint out_w;
+    uint kernel_h;
+    uint kernel_w;
+    uint stride_h;
+    uint stride_w;
+    uint padding_h;
+    uint padding_w;
+    uint dilation_h;
+    uint dilation_w;
+    uint in_per_group;
+    uint out_per_group;
+    uint has_bias;
+};
+
+kernel void vokra_conv2d_f32(
+    device const float* inp    [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device const float* bias   [[buffer(2)]],
+    device float*       out    [[buffer(3)]],
+    constant Conv2dDims& d     [[buffer(4)]],
+    uint2 gid                  [[thread_position_in_grid]])
+{
+    const uint ow = gid.x;
+    const uint row = gid.y;
+    if (ow >= d.out_w || row >= d.out_ch * d.out_h) return;
+    const uint oc = row / d.out_h;
+    const uint oh = row % d.out_h;
+    const uint group = oc / d.out_per_group;
+    const uint kernel_plane = d.kernel_h * d.kernel_w;
+    const uint input_plane = d.in_h * d.in_w;
+    const uint output_plane = d.out_h * d.out_w;
+    const uint wbase = oc * d.in_per_group * kernel_plane;
+    float acc = d.has_bias != 0u ? bias[oc] : 0.0f;
+    for (uint ic_local = 0u; ic_local < d.in_per_group; ++ic_local) {
+        const uint ic = group * d.in_per_group + ic_local;
+        for (uint kh = 0u; kh < d.kernel_h; ++kh) {
+            const uint input_h = oh * d.stride_h + kh * d.dilation_h;
+            if (input_h < d.padding_h || input_h >= d.padding_h + d.in_h) continue;
+            for (uint kw = 0u; kw < d.kernel_w; ++kw) {
+                const uint input_w = ow * d.stride_w + kw * d.dilation_w;
+                if (input_w < d.padding_w || input_w >= d.padding_w + d.in_w) continue;
+                const uint input_index = ic * input_plane + (input_h - d.padding_h) * d.in_w + (input_w - d.padding_w);
+                const uint weight_index = wbase + ic_local * kernel_plane + kh * d.kernel_w + kw;
+                acc += inp[input_index] * weight[weight_index];
+            }
+        }
+    }
+    out[oc * output_plane + oh * d.out_w + ow] = acc;
+}
+
+// Direct dense/grouped PyTorch-layout ConvTranspose2d. The weight layout is
+// [in_ch, out_ch/groups, kernel_h, kernel_w]. Output padding is represented in
+// the host-derived output dimensions; positions without a source contribution
+// retain only the optional bias.
+struct ConvTranspose2dDims {
+    uint in_ch;
+    uint in_h;
+    uint in_w;
+    uint out_ch;
+    uint out_h;
+    uint out_w;
+    uint kernel_h;
+    uint kernel_w;
+    uint stride_h;
+    uint stride_w;
+    uint padding_h;
+    uint padding_w;
+    uint dilation_h;
+    uint dilation_w;
+    uint in_per_group;
+    uint out_per_group;
+    uint has_bias;
+};
+
+kernel void vokra_conv_transpose2d_f32(
+    device const float* inp    [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device const float* bias   [[buffer(2)]],
+    device float*       out    [[buffer(3)]],
+    constant ConvTranspose2dDims& d [[buffer(4)]],
+    uint2 gid                  [[thread_position_in_grid]])
+{
+    const uint ow = gid.x;
+    const uint row = gid.y;
+    if (ow >= d.out_w || row >= d.out_ch * d.out_h) return;
+    const uint oc = row / d.out_h;
+    const uint oh = row % d.out_h;
+    const uint group = oc / d.out_per_group;
+    const uint oc_local = oc % d.out_per_group;
+    const uint kernel_plane = d.kernel_h * d.kernel_w;
+    const uint input_plane = d.in_h * d.in_w;
+    const uint output_plane = d.out_h * d.out_w;
+    float acc = d.has_bias != 0u ? bias[oc] : 0.0f;
+    for (uint ic_local = 0u; ic_local < d.in_per_group; ++ic_local) {
+        const uint ic = group * d.in_per_group + ic_local;
+        for (uint kh = 0u; kh < d.kernel_h; ++kh) {
+            const uint numerator_h = oh + d.padding_h;
+            const uint tap_h = kh * d.dilation_h;
+            if (numerator_h < tap_h) continue;
+            const uint source_h = numerator_h - tap_h;
+            if (source_h % d.stride_h != 0u || source_h / d.stride_h >= d.in_h) continue;
+            for (uint kw = 0u; kw < d.kernel_w; ++kw) {
+                const uint numerator_w = ow + d.padding_w;
+                const uint tap_w = kw * d.dilation_w;
+                if (numerator_w < tap_w) continue;
+                const uint source_w = numerator_w - tap_w;
+                if (source_w % d.stride_w != 0u || source_w / d.stride_w >= d.in_w) continue;
+                const uint input_index = ic * input_plane + (source_h / d.stride_h) * d.in_w + source_w / d.stride_w;
+                const uint weight_index = (ic * d.out_per_group + oc_local) * kernel_plane + kh * d.kernel_w + kw;
+                acc += inp[input_index] * weight[weight_index];
+            }
+        }
+    }
+    out[oc * output_plane + oh * d.out_w + ow] = acc;
+}
+
+struct Pad1dDims {
+    uint channels;
+    uint time_in;
+    uint time_out;
+    uint left;
+    uint right;
+    uint mode; // 0 = reflect, 1 = replicate
+};
+
+kernel void vokra_pad1d_f32(
+    device const float* inp [[buffer(0)]],
+    device float* out [[buffer(1)]],
+    constant Pad1dDims& d [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint t = gid.x;
+    const uint c = gid.y;
+    if (c >= d.channels || t >= d.time_out) return;
+    int logical = int(t) - int(d.left);
+    int src;
+    if (d.mode == 0u) {
+        src = logical < 0 ? -logical : (logical >= int(d.time_in) ? 2 * int(d.time_in) - 2 - logical : logical);
+    } else {
+        src = logical < 0 ? 0 : (logical >= int(d.time_in) ? int(d.time_in) - 1 : logical);
+    }
+    out[c * d.time_out + t] = inp[c * d.time_in + uint(src)];
 }
 
 // ---- Phase-5 attention fusion: three pure-copy column movers -----------------
@@ -906,6 +1400,72 @@ kernel void vokra_silu_f32(
     const float v = x[i];
     const float sig = 1.0f / (1.0f + exp(-v));
     out[i] = v * sig;
+}
+
+// ---- OUVE-SDE score-model sampler primitives -------------------------------
+// These element-wise kernels mirror `vokra_ops::ouve_sde` and the pinned
+// `sp-uhh/sgmse` source.  The state, conditioning signal, score, noise, and
+// both outputs stay in device-resident buffers; callers can chain predictor
+// and corrector steps without a host readback between iterations.
+struct OuvEReverseDims {
+    uint n;
+    float theta;
+    float sigma_min;
+    float sigma_max;
+    float t;
+    float step;
+    uint probability_flow;
+};
+
+kernel void vokra_ouve_reverse_diffusion_f32(
+    device const float* x        [[buffer(0)]],
+    device const float* y        [[buffer(1)]],
+    device const float* score    [[buffer(2)]],
+    device const float* noise    [[buffer(3)]],
+    device float*       out      [[buffer(4)]],
+    device float*       out_mean [[buffer(5)]],
+    constant OuvEReverseDims& d  [[buffer(6)]],
+    uint gid                     [[thread_position_in_grid]])
+{
+    if (gid >= d.n) return;
+    const float log_ratio = log(d.sigma_max / d.sigma_min);
+    const float diffusion = d.sigma_min * exp(log_ratio * d.t) * sqrt(2.0f * log_ratio);
+    const float score_scale = diffusion * diffusion * (d.probability_flow != 0u ? 0.5f : 1.0f);
+    const float forward_drift = d.theta * (y[gid] - x[gid]);
+    const float reverse_increment = (forward_drift - score_scale * score[gid]) * d.step;
+    const float mean = x[gid] - reverse_increment;
+    const float noise_scale = d.probability_flow != 0u ? 0.0f : diffusion * sqrt(d.step);
+    out_mean[gid] = mean;
+    out[gid] = mean + noise_scale * noise[gid];
+}
+
+struct OuvEAnnealedDims {
+    uint n;
+    float theta;
+    float sigma_min;
+    float sigma_max;
+    float t;
+    float snr;
+};
+
+kernel void vokra_ouve_annealed_langevin_f32(
+    device const float* x        [[buffer(0)]],
+    device const float* score    [[buffer(1)]],
+    device const float* noise    [[buffer(2)]],
+    device float*       out      [[buffer(3)]],
+    device float*       out_mean [[buffer(4)]],
+    constant OuvEAnnealedDims& d [[buffer(5)]],
+    uint gid                     [[thread_position_in_grid]])
+{
+    if (gid >= d.n) return;
+    const float log_ratio = log(d.sigma_max / d.sigma_min);
+    const float numerator = d.sigma_min * d.sigma_min * exp(-2.0f * d.theta * d.t)
+        * (exp(2.0f * (d.theta + log_ratio) * d.t) - 1.0f) * log_ratio;
+    const float variance = numerator / (d.theta + log_ratio);
+    const float step_size = 2.0f * (d.snr * sqrt(variance)) * (d.snr * sqrt(variance));
+    const float mean = x[gid] + step_size * score[gid];
+    out_mean[gid] = mean;
+    out[gid] = mean + sqrt(2.0f * step_size) * noise[gid];
 }
 
 // ---- swiglu: fused SiLU(gate) * up (the SwiGLU FFN activation) ---------------
@@ -1521,6 +2081,32 @@ kernel void vokra_sinegen_deterministic_f32(
     }
 }
 
+// Same deterministic SineGen arithmetic as above, with the channel-major
+// `[H+1, T]` layout required by HiFTResidentOps. The legacy kernel remains
+// time-major for its existing host-facing API; this separate entry point
+// prevents callers from reinterpreting bytes under a different layout.
+kernel void vokra_sinegen_deterministic_channel_major_f32(
+    device const float*                  f0    [[buffer(0)]],
+    device float*                        out   [[buffer(1)]],
+    constant SinegenDeterministicDims&   d     [[buffer(2)]],
+    uint                                 gid   [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.h1) return;
+    const float harmonic_gain = (float(i) + 1.0f) / d.samp_rate_f;
+    const float two_pi = 6.28318530717958647692f;
+    float cs = 0.0f;
+    for (uint j = 0u; j < d.t; ++j) {
+        const float f0_j = f0[j];
+        cs += f0_j * harmonic_gain;
+        const float modded = cs - floor(cs);
+        const float theta = two_pi * modded;
+        const float sine = d.sine_amp * sin(theta);
+        const float uv = f0_j > d.voiced_threshold ? 1.0f : 0.0f;
+        out[i * d.t + j] = sine * uv;
+    }
+}
+
 // ---- Vocoder Metal wave common vocoder primitive: anti_aliased_upsample ---
 //
 // Semantics identical to `vokra_ops::anti_aliased_upsample_f32` — polyphase
@@ -1594,6 +2180,72 @@ kernel void vokra_anti_aliased_upsample_f32(
         acc += x[x_row_off + src] * kernel_[k_idx];
     }
     out[out_row_off + t_out] = acc;
+}
+
+// Alias-free DownSample1d. The asymmetric edge replication and FIR/stride
+// indexing intentionally mirror vokra-ops' scalar reference exactly.
+struct AntiAliasedDownsampleDims {
+    uint channels;
+    uint time_in;
+    uint time_out;
+    uint ratio;
+    uint taps;
+    uint pad_left;
+};
+
+kernel void vokra_anti_aliased_downsample_f32(
+    device const float* x [[buffer(0)]],
+    device const float* kernel_ [[buffer(1)]],
+    device float* out [[buffer(2)]],
+    constant AntiAliasedDownsampleDims& d [[buffer(3)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint t = gid.x;
+    const uint c = gid.y;
+    if (c >= d.channels || t >= d.time_out) return;
+    const uint in_off = c * d.time_in;
+    float sum = 0.0f;
+    for (uint tap = 0u; tap < d.taps; ++tap) {
+        const uint padded = t * d.ratio + tap;
+        int source = int(padded) - int(d.pad_left);
+        if (source < 0) source = 0;
+        if (source >= int(d.time_in)) source = int(d.time_in) - 1;
+        sum += x[in_off + uint(source)] * kernel_[tap];
+    }
+    out[c * d.time_out + t] = sum;
+}
+
+struct ScaleDims {
+    uint n;
+    float scale;
+};
+
+kernel void vokra_scale_f32(
+    device const float* x [[buffer(0)]],
+    device float* out [[buffer(1)]],
+    constant ScaleDims& d [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < d.n) out[gid] = x[gid] * d.scale;
+}
+
+struct ClampDims {
+    uint n;
+    float lower;
+    float upper;
+};
+
+kernel void vokra_clamp_f32(
+    device const float* x [[buffer(0)]],
+    device float* out [[buffer(1)]],
+    constant ClampDims& d [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= d.n) return;
+    const float v = x[gid];
+    // Rust's f32::clamp preserves NaN; do not let a backend min/max choose a
+    // bound for a non-finite intermediate from the logits path.
+    out[gid] = isnan(v) ? v : min(max(v, d.lower), d.upper);
 }
 
 // ---- Vocoder Metal wave WF5 denoise spectral-gate primitive (2026-08-13) ----
@@ -1750,6 +2402,68 @@ kernel void vokra_qwen3_tts_codec_decode_f32(
     }
     out[t * d.codebook_dim + delem] = acc;
 }
+
+// ---- SGMSE fixed 2-D FIR resampler ----------------------------------------
+// The source contract is a channel-major [C,H,W] tensor, a zero-inserted
+// 2x2 lattice for upsampling or no insertion for downsampling, the normalized
+// separable [1,3,3,1] taps, and asymmetric (2,1) padding for upsampling / the
+// symmetric (1,1) padding for downsampling. `gain` is 4 for upsampling and 1
+// for downsampling. All shape and finite-value checks are performed by the
+// Rust wrapper before this kernel is dispatched.
+struct FirResample2dDims {
+    uint channels;
+    uint in_h;
+    uint in_w;
+    uint out_h;
+    uint out_w;
+    uint factor;
+    uint down;
+    uint pad;
+    float gain;
+};
+
+kernel void vokra_fir_resample_2d_f32(
+    device const float* input [[buffer(0)]],
+    device float* output      [[buffer(1)]],
+    constant FirResample2dDims& d [[buffer(2)]],
+    uint2 gid                 [[thread_position_in_grid]])
+{
+    const uint out_x = gid.x;
+    const uint row = gid.y;
+    if (out_x >= d.out_w || row >= d.channels * d.out_h) {
+        return;
+    }
+    const uint channel = row / d.out_h;
+    const uint out_y = row % d.out_h;
+    const uint input_plane = d.in_h * d.in_w;
+    const uint output_plane = d.out_h * d.out_w;
+    const uint conv_y = out_y * d.down;
+    const uint conv_x = out_x * d.down;
+    const float taps[4] = { 1.0f / 8.0f, 3.0f / 8.0f,
+                            3.0f / 8.0f, 1.0f / 8.0f };
+    float value = 0.0f;
+    for (uint ky = 0u; ky < 4u; ++ky) {
+        for (uint kx = 0u; kx < 4u; ++kx) {
+            const uint padded_y = conv_y + ky;
+            const uint padded_x = conv_x + kx;
+            if (padded_y < d.pad || padded_x < d.pad) {
+                continue;
+            }
+            const uint expanded_y = padded_y - d.pad;
+            const uint expanded_x = padded_x - d.pad;
+            if (expanded_y >= d.in_h * d.factor ||
+                expanded_x >= d.in_w * d.factor ||
+                (expanded_y % d.factor) != 0u ||
+                (expanded_x % d.factor) != 0u) {
+                continue;
+            }
+            const uint input_index = channel * input_plane +
+                (expanded_y / d.factor) * d.in_w + expanded_x / d.factor;
+            value += input[input_index] * taps[ky] * taps[kx] * d.gain;
+        }
+    }
+    output[channel * output_plane + out_y * d.out_w + out_x] = value;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -1761,6 +2475,98 @@ struct GemmDims {
     n: u32,
     k: u32,
     has_bias: u32,
+}
+
+/// Dense/grouped Conv2d dimensions (`setBytes:` index 4). Mirrors the MSL
+/// `Conv2dDims` field order exactly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Conv2dDims {
+    in_ch: u32,
+    in_h: u32,
+    in_w: u32,
+    out_ch: u32,
+    out_h: u32,
+    out_w: u32,
+    kernel_h: u32,
+    kernel_w: u32,
+    stride_h: u32,
+    stride_w: u32,
+    padding_h: u32,
+    padding_w: u32,
+    dilation_h: u32,
+    dilation_w: u32,
+    in_per_group: u32,
+    out_per_group: u32,
+    has_bias: u32,
+}
+
+/// SGMSE fixed FIR resampler dimensions (`setBytes:` index 2). Mirrors the
+/// MSL `FirResample2dDims` field order exactly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FirResample2dDims {
+    channels: u32,
+    in_h: u32,
+    in_w: u32,
+    out_h: u32,
+    out_w: u32,
+    factor: u32,
+    down: u32,
+    pad: u32,
+    gain: f32,
+}
+
+/// PyTorch-layout ConvTranspose2d dimensions (`setBytes:` index 4). Mirrors
+/// the MSL `ConvTranspose2dDims` field order exactly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ConvTranspose2dDims {
+    in_ch: u32,
+    in_h: u32,
+    in_w: u32,
+    out_ch: u32,
+    out_h: u32,
+    out_w: u32,
+    kernel_h: u32,
+    kernel_w: u32,
+    stride_h: u32,
+    stride_w: u32,
+    padding_h: u32,
+    padding_w: u32,
+    dilation_h: u32,
+    dilation_w: u32,
+    in_per_group: u32,
+    out_per_group: u32,
+    has_bias: u32,
+}
+
+/// Mixed FP32-activation/raw-BF16-weight GEMM dimensions. Mirrors
+/// `GemmF32Bf16BitsDims` in `KERNELS_MSL`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GemmF32Bf16BitsDims {
+    m: u32,
+    n: u32,
+    k: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HiftComplexDims {
+    frames: u32,
+    bins: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Pad1dDims {
+    channels: u32,
+    time_in: u32,
+    time_out: u32,
+    left: u32,
+    right: u32,
+    mode: u32,
 }
 
 /// GEMV dims (`setBytes:` index 4). Field order / `u32` widths mirror the MSL
@@ -1811,6 +2617,17 @@ struct GroupNormDims {
     eps: f32,
 }
 
+/// Multi-group GroupNorm dims (`setBytes:` index 4). Mirrors the MSL
+/// `struct GroupNormGroupsDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GroupNormGroupsDims {
+    channels: u32,
+    positions: u32,
+    groups: u32,
+    eps: f32,
+}
+
 /// GELU dims (`setBytes:` index 2). Mirrors the MSL `struct GeluDims`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1832,11 +2649,54 @@ struct EluDims {
     n: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinearAbsDims {
+    channels: u32,
+    time: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NearestUpsampleDims {
+    channels: u32,
+    time_in: u32,
+    time_out: u32,
+    factor: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HiftStftDims {
+    time_in: u32,
+    n_fft: u32,
+    hop: u32,
+    frames: u32,
+    bins: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HiftIstftDims {
+    n_fft: u32,
+    hop: u32,
+    frames: u32,
+    bins: u32,
+    out_len: u32,
+}
+
 /// Tanh dims (`setBytes:` index 2). Mirrors the MSL `struct TanhDims`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct TanhDims {
     n: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LeakyReluDims {
+    n: u32,
+    slope: f32,
 }
 
 /// M3-04 fused dequant + GEMV dims (`setBytes:` index 3). Mirrors the MSL
@@ -1865,6 +2725,22 @@ struct Conv1dDims {
     padding: u32,
     has_bias: u32,
     out_per_group: u32,
+    dilation: u32,
+}
+
+/// Device-resident ConvTranspose1d dimensions. Weight layout is PyTorch's
+/// `[in_ch, out_ch, kernel]`; input/output are channel-major.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ConvTranspose1dDims {
+    in_ch: u32,
+    out_ch: u32,
+    kernel_size: u32,
+    t_in: u32,
+    t_out: u32,
+    stride: u32,
+    padding: u32,
+    has_bias: u32,
 }
 
 /// `col_gather` dims (`setBytes:` index 2). Field order / widths mirror the MSL
@@ -1949,6 +2825,33 @@ struct RopeDims {
 #[derive(Clone, Copy)]
 struct SiluDims {
     n: u32,
+}
+
+/// OUVE predictor dims (`setBytes:` index 6). Field order mirrors the MSL
+/// `OuvEReverseDims` and is intentionally scalar: model-specific layout stays
+/// in the caller while every element uses the same source equation.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OuvEReverseDims {
+    n: u32,
+    theta: f32,
+    sigma_min: f32,
+    sigma_max: f32,
+    t: f32,
+    step: f32,
+    probability_flow: u32,
+}
+
+/// OUVE annealed-Langevin corrector dims (`setBytes:` index 5).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OuvEAnnealedDims {
+    n: u32,
+    theta: f32,
+    sigma_min: f32,
+    sigma_max: f32,
+    t: f32,
+    snr: f32,
 }
 
 /// SwiGLU dims (`setBytes:` index 3). Mirrors the MSL `struct SwigluDims`.
@@ -2102,6 +3005,34 @@ struct AntiAliasedUpsampleDims {
     time_out: u32,
     ratio: u32,
     taps: u32,
+}
+
+/// Device-resident alias-free downsample dimensions. `pad_left` is the
+/// asymmetric replicate-padding amount used by BigVGAN.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AntiAliasedDownsampleDims {
+    channels: u32,
+    time_in: u32,
+    time_out: u32,
+    ratio: u32,
+    taps: u32,
+    pad_left: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ScaleDims {
+    n: u32,
+    scale: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ClampDims {
+    n: u32,
+    lower: f32,
+    upper: f32,
 }
 
 /// Vocoder Metal wave WF5 denoise spectral-gate dims (`setBytes:` index 5).
@@ -2310,6 +3241,33 @@ impl Drop for OwnedBuf {
     }
 }
 
+/// A device-resident matrix of raw BF16 numeric bit patterns.
+///
+/// The logical elements are `u16` values obtained from little-endian BF16
+/// storage (for example with `u16::from_le_bytes`). The Metal buffer retains
+/// those two-byte values as `ushort`; it is never widened to an FP32 host or
+/// device tensor before a mixed GEMM consumes it.
+pub struct MetalBf16DeviceTensor<'ctx> {
+    buf: OwnedBuf,
+    len: usize,
+    owner: *const MetalContext,
+    _ctx: PhantomData<&'ctx MetalContext>,
+}
+
+impl MetalBf16DeviceTensor<'_> {
+    /// The number of raw BF16 (`u16`) elements in this device buffer.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the device buffer contains no logical BF16 elements.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// A public, cross-call handle to a device-resident `[f32]` buffer — the
 /// Phase-5-follow-on surface that lets a caller keep intermediates on the GPU
 /// between op calls (produced by [`MetalContext::upload`] / [`alloc_dev`], read
@@ -2318,6 +3276,9 @@ impl Drop for OwnedBuf {
 /// - Owns its `MTLBuffer` through the existing [`OwnedBuf`] RAII (released once on
 ///   drop), so it adds no new `unsafe`.
 /// - `len` is the f32 element count (buffer sizing / readback validation).
+/// - `owner` records the allocating context identity. The lifetime marker
+///   prevents use-after-drop; the owner check prevents cross-context/device
+///   mixing before any Metal command is encoded.
 /// - The `PhantomData<&'ctx MetalContext>` ties the handle's lifetime to the
 ///   context it was allocated from: because every producer is an `&'ctx self`
 ///   method returning `MetalDeviceTensor<'ctx>`, holding a tensor past the
@@ -2330,6 +3291,9 @@ impl Drop for OwnedBuf {
 pub struct MetalDeviceTensor<'ctx> {
     buf: OwnedBuf,
     len: usize,
+    /// Identity of the allocating context. This is compared before every
+    /// public device operation; it is never dereferenced.
+    owner: *const MetalContext,
     _ctx: PhantomData<&'ctx MetalContext>,
 }
 
@@ -2417,17 +3381,28 @@ pub struct MetalContext {
     device: Id,
     queue: Id,
     gemm_pipeline: Id,
+    /// Mixed FP32-activation × raw-BF16-weight GEMM pipeline. The weight
+    /// operand remains a `ushort` buffer and is widened in the shader.
+    gemm_f32_bf16_bits_pipeline: Id,
     gemv_pipeline: Id,
     softmax_pipeline: Id,
     softmax_causal_pipeline: Id,
     layer_norm_pipeline: Id,
     group_norm_pipeline: Id,
+    group_norm_groups_pipeline: Id,
     gelu_pipeline: Id,
     gelu_new_pipeline: Id,
     relu_pipeline: Id,
     elu_pipeline: Id,
+    /// HiFTNet F0-predictor linear-to-one followed by absolute value.
+    linear_abs_pipeline: Id,
+    /// HiFTNet NSF source linear-to-one followed by tanh.
+    linear_tanh_pipeline: Id,
     tanh_pipeline: Id,
     conv1d_pipeline: Id,
+    conv2d_pipeline: Id,
+    fir_resample_2d_pipeline: Id,
+    conv_transpose2d_pipeline: Id,
     col_gather_pipeline: Id,
     col_gather_t_pipeline: Id,
     col_scatter_pipeline: Id,
@@ -2453,6 +3428,9 @@ pub struct MetalContext {
     rope_adjacent_pipeline: Id,
     silu_pipeline: Id,
     swiglu_pipeline: Id,
+    /// Device-resident OUVE-SDE predictor and annealed-Langevin sampler steps.
+    ouve_reverse_diffusion_pipeline: Id,
+    ouve_annealed_langevin_pipeline: Id,
     /// M3-06 T14 mimi_rvq gather + FP32 fold (`vokra_mimi_rvq_gather_fold_f32`),
     /// the GPU implementation of `vokra_ops::mimi_rvq::rvq_fold_core`. Also the
     /// current M4-04 GPU seam target for DAC / EnCodec siblings after their
@@ -2516,6 +3494,8 @@ pub struct MetalContext {
     /// walking the full time axis sequentially; grid launches
     /// `(H+1, 1)` threadgroups.
     sinegen_deterministic_pipeline: Id,
+    /// Channel-major `[H+1, T]` deterministic SineGen for HiFTResidentOps.
+    sinegen_deterministic_channel_major_pipeline: Id,
     /// Vocoder Metal wave common vocoder primitive: polyphase anti-aliased
     /// upsample (`vokra_anti_aliased_upsample_f32`), the GPU implementation
     /// of [`vokra_ops::anti_aliased_upsample_f32`]. Multiply-add core of
@@ -2526,6 +3506,29 @@ pub struct MetalContext {
     /// non-FMA gap between MSL fast-math and the CPU strict-left-fold is
     /// well inside the parity bound `atol ≤ 1e-4`.
     anti_aliased_upsample_pipeline: Id,
+    /// Device-resident BigVGAN alias-free downsample (replicate + FIR).
+    anti_aliased_downsample_pipeline: Id,
+    /// Device-resident scalar used for MRF branch averaging.
+    scale_pipeline: Id,
+    /// Device-resident terminal/general clamp.
+    clamp_pipeline: Id,
+    /// Device-resident PyTorch-layout ConvTranspose1d used by HiFTNet and
+    /// BigVGAN upsample stages. Unlike the legacy host-facing Conv1d seam,
+    /// this pipeline never reads an intermediate back to the host.
+    conv_transpose1d_pipeline: Id,
+    /// Device-resident reflect/replicate channel-major padding for vocoder
+    /// seams. Padding is kept as a device copy so no host Vec is materialized.
+    pad1d_pipeline: Id,
+    /// Device-resident LeakyReLU used between HiFTNet upsample stages.
+    leaky_relu_pipeline: Id,
+    /// Device-resident nearest-neighbour temporal upsample for HiFTNet F0.
+    nearest_upsample_pipeline: Id,
+    /// Device-resident centered periodic-Hann reflect-padded HiFT STFT.
+    hift_stft_pipeline: Id,
+    /// Device-resident HiFT magnitude/phase logits to complex spectrum.
+    hift_complex_pipeline: Id,
+    /// Device-resident HiFT magnitude/phase postprocess and centered iSTFT.
+    hift_istft_pipeline: Id,
     /// Vocoder Metal wave WF5 SNAC 3-stage hierarchical RVQ decode
     /// (`vokra_snac_decode_f32`), the GPU implementation of
     /// `vokra_ops::snac_decode::SnacDecoder::decode` (upstream
@@ -2569,6 +3572,10 @@ pub struct MetalContext {
     /// in ONE submission vs the per-op path's `6·N + 1`). `Cell` because every op
     /// takes `&self` and the context is already thread-affine (`!Send`/`!Sync`).
     submissions: Cell<u64>,
+    /// Explicit host readbacks requested through the resident API. Device
+    /// primitives never increment this counter; it is a cheap assertion hook
+    /// for vocoder callers that only the final PCM crosses D2H.
+    readbacks: Cell<u64>,
 }
 
 impl MetalContext {
@@ -2640,6 +3647,9 @@ impl MetalContext {
         // SAFETY: `device` is a valid MTLDevice.
         let klib = unsafe { compile_library(device, KERNELS_MSL, "kernels") }?;
         // SAFETY: `device` valid; `klib` owns each named function below.
+        let gemm_f32_bf16_bits_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_gemm_f32_bf16_bits") }?;
+        // SAFETY: `device` is valid and `klib` owns the named function.
         let gemv_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gemv_f32") }?;
         // SAFETY: as above.
         let softmax_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_softmax_f32") }?;
@@ -2652,6 +3662,11 @@ impl MetalContext {
         // SAFETY: as above.
         let group_norm_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_group_norm_f32") }?;
+        // Multi-group NCSN++ normalization; explicit rather than reusing the
+        // one-group SepFormer reduction.
+        // SAFETY: `device` is valid and `klib` owns the named function.
+        let group_norm_groups_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_group_norm_groups_f32") }?;
         // SAFETY: as above.
         let gelu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gelu_f32") }?;
         // SAFETY: as above.
@@ -2660,10 +3675,31 @@ impl MetalContext {
         let relu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_relu_f32") }?;
         // SAFETY: as above.
         let elu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_elu_f32") }?;
+        // HiFTNet F0-predictor linear head: abs(linear(x)).
+        // SAFETY: as above.
+        let linear_abs_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_linear_abs_f32") }?;
+        // SAFETY: as above.
+        let linear_tanh_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_linear_tanh_f32") }?;
         // SAFETY: as above.
         let tanh_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_tanh_f32") }?;
+        // HiFTNet's explicit negative-slope activation.
+        // SAFETY: as above.
+        let leaky_relu_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_leaky_relu_f32") }?;
         // SAFETY: as above.
         let conv1d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv1d_f32") }?;
+        // Dense/grouped 2-D convolution seams for HTDemucs.
+        // SAFETY: as above.
+        let conv2d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv2d_f32") }?;
+        // SGMSE's fixed normalized [1,3,3,1] channel-major resampler.
+        // SAFETY: as above.
+        let fir_resample_2d_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_fir_resample_2d_f32") }?;
+        // SAFETY: as above.
+        let conv_transpose2d_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_conv_transpose2d_f32") }?;
         // The three Phase-5 attention column-mover kernels share the same library.
         // SAFETY: as above.
         let col_gather_pipeline =
@@ -2706,6 +3742,14 @@ impl MetalContext {
             unsafe { make_pipeline(device, klib.0, c"vokra_rope_adjacent_f32") }?;
         // SAFETY: as above.
         let silu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_silu_f32") }?;
+        // OUVE-SDE predictor / corrector.  Both are device-resident
+        // element-wise kernels; no host fallback is permitted.
+        // SAFETY: as above.
+        let ouve_reverse_diffusion_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_ouve_reverse_diffusion_f32") }?;
+        // SAFETY: as above.
+        let ouve_annealed_langevin_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_ouve_annealed_langevin_f32") }?;
         // SAFETY: as above.
         let swiglu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_swiglu_f32") }?;
         // M3-06 T14 mimi_rvq gather + FP32 fold; shares the same library.
@@ -2744,8 +3788,43 @@ impl MetalContext {
         let sinegen_deterministic_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_sinegen_deterministic_f32") }?;
         // SAFETY: as above.
+        let sinegen_deterministic_channel_major_pipeline = unsafe {
+            make_pipeline(
+                device,
+                klib.0,
+                c"vokra_sinegen_deterministic_channel_major_f32",
+            )
+        }?;
+        // SAFETY: as above.
         let anti_aliased_upsample_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_anti_aliased_upsample_f32") }?;
+        // BigVGAN alias-free downsample, branch scaling, and terminal clamp.
+        // SAFETY: as above.
+        let anti_aliased_downsample_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_anti_aliased_downsample_f32") }?;
+        // SAFETY: as above.
+        let scale_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_scale_f32") }?;
+        // SAFETY: as above.
+        let clamp_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_clamp_f32") }?;
+        // Device-resident vocoder upsample primitive.
+        // SAFETY: as above.
+        let conv_transpose1d_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_conv_transpose1d_f32") }?;
+        // Device-resident vocoder padding primitive.
+        // SAFETY: as above.
+        let pad1d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_pad1d_f32") }?;
+        // HiFTNet resident source upsample and spectral seams.
+        // SAFETY: as above.
+        let nearest_upsample_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_nearest_upsample_f32") }?;
+        // SAFETY: as above.
+        let hift_stft_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_hift_stft_f32") }?;
+        // SAFETY: as above.
+        let hift_complex_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_hift_complex_from_logits_f32") }?;
+        // SAFETY: as above.
+        let hift_istft_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_hift_istft_f32") }?;
         // Vocoder Metal wave WF5 SNAC 3-stage hierarchical RVQ decode; shares
         // the same library. Distinct kernel from the RVQ / FSQ family because
         // SNAC's multi-scale structure requires a per-stage
@@ -2775,17 +3854,25 @@ impl MetalContext {
             device,
             queue: queue.into_raw(),
             gemm_pipeline: gemm_pipeline.into_raw(),
+            gemm_f32_bf16_bits_pipeline: gemm_f32_bf16_bits_pipeline.into_raw(),
             gemv_pipeline: gemv_pipeline.into_raw(),
             softmax_pipeline: softmax_pipeline.into_raw(),
             softmax_causal_pipeline: softmax_causal_pipeline.into_raw(),
             layer_norm_pipeline: layer_norm_pipeline.into_raw(),
             group_norm_pipeline: group_norm_pipeline.into_raw(),
+            group_norm_groups_pipeline: group_norm_groups_pipeline.into_raw(),
             gelu_pipeline: gelu_pipeline.into_raw(),
             gelu_new_pipeline: gelu_new_pipeline.into_raw(),
             relu_pipeline: relu_pipeline.into_raw(),
             elu_pipeline: elu_pipeline.into_raw(),
+            linear_abs_pipeline: linear_abs_pipeline.into_raw(),
+            linear_tanh_pipeline: linear_tanh_pipeline.into_raw(),
             tanh_pipeline: tanh_pipeline.into_raw(),
+            leaky_relu_pipeline: leaky_relu_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
+            conv2d_pipeline: conv2d_pipeline.into_raw(),
+            fir_resample_2d_pipeline: fir_resample_2d_pipeline.into_raw(),
+            conv_transpose2d_pipeline: conv_transpose2d_pipeline.into_raw(),
             col_gather_pipeline: col_gather_pipeline.into_raw(),
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
             col_scatter_pipeline: col_scatter_pipeline.into_raw(),
@@ -2799,6 +3886,8 @@ impl MetalContext {
             scale_norm_pipeline: scale_norm_pipeline.into_raw(),
             rope_adjacent_pipeline: rope_adjacent_pipeline.into_raw(),
             silu_pipeline: silu_pipeline.into_raw(),
+            ouve_reverse_diffusion_pipeline: ouve_reverse_diffusion_pipeline.into_raw(),
+            ouve_annealed_langevin_pipeline: ouve_annealed_langevin_pipeline.into_raw(),
             swiglu_pipeline: swiglu_pipeline.into_raw(),
             mimi_rvq_gather_fold_pipeline: mimi_rvq_gather_fold_pipeline.into_raw(),
             dac_rvq_gather_project_fold_pipeline: dac_rvq_gather_project_fold_pipeline.into_raw(),
@@ -2807,11 +3896,23 @@ impl MetalContext {
             snake_activation_pipeline: snake_activation_pipeline.into_raw(),
             snake_beta_pipeline: snake_beta_pipeline.into_raw(),
             sinegen_deterministic_pipeline: sinegen_deterministic_pipeline.into_raw(),
+            sinegen_deterministic_channel_major_pipeline:
+                sinegen_deterministic_channel_major_pipeline.into_raw(),
             anti_aliased_upsample_pipeline: anti_aliased_upsample_pipeline.into_raw(),
+            anti_aliased_downsample_pipeline: anti_aliased_downsample_pipeline.into_raw(),
+            scale_pipeline: scale_pipeline.into_raw(),
+            clamp_pipeline: clamp_pipeline.into_raw(),
+            conv_transpose1d_pipeline: conv_transpose1d_pipeline.into_raw(),
+            pad1d_pipeline: pad1d_pipeline.into_raw(),
+            nearest_upsample_pipeline: nearest_upsample_pipeline.into_raw(),
+            hift_stft_pipeline: hift_stft_pipeline.into_raw(),
+            hift_complex_pipeline: hift_complex_pipeline.into_raw(),
+            hift_istft_pipeline: hift_istft_pipeline.into_raw(),
             snac_decode_pipeline: snac_decode_pipeline.into_raw(),
             denoise_apply_mask_pipeline: denoise_apply_mask_pipeline.into_raw(),
             qwen3_tts_codec_decode_pipeline: qwen3_tts_codec_decode_pipeline.into_raw(),
             submissions: Cell::new(0),
+            readbacks: Cell::new(0),
         })
     }
 
@@ -2993,10 +4094,18 @@ impl MetalContext {
 
     /// Allocates a shared-storage `MTLBuffer` initialised from `data`.
     ///
-    /// A safe wrapper: `data` is a valid slice, so its pointer is valid for
-    /// `size_of_val(data)` bytes, which is what `newBufferWithBytes:` copies.
+    /// A safe wrapper: non-empty `data` is a valid slice, so its pointer is
+    /// valid for `size_of_val(data)` bytes, which is what
+    /// `newBufferWithBytes:` copies. Metal does not reliably accept a
+    /// zero-length `newBufferWithBytes:` allocation (and copying four bytes
+    /// from an empty slice would be invalid), so an empty upload gets a
+    /// one-f32 placeholder buffer instead. The logical tensor length remains
+    /// zero and kernels must not dereference it.
     fn new_buffer_from_slice(&self, data: &[f32]) -> Result<OwnedBuf> {
-        let bytes = size_of_val(data).max(size_of::<f32>());
+        if data.is_empty() {
+            return self.new_buffer_output(0);
+        }
+        let bytes = size_of_val(data);
         // SAFETY: `device` is valid; `data.as_ptr()` is valid for
         // `size_of_val(data)` bytes; shared storage mode (0). +1-owned buffer.
         let buf = unsafe {
@@ -3022,7 +4131,10 @@ impl MetalContext {
     /// upload the wrong element count. Kept as its own method for that
     /// reason.
     fn new_buffer_from_bytes(&self, data: &[u8]) -> Result<OwnedBuf> {
-        let bytes = data.len().max(size_of::<f32>());
+        if data.is_empty() {
+            return self.new_buffer_output(0);
+        }
+        let bytes = data.len();
         // SAFETY: `device` is valid; `data.as_ptr()` is valid for `data.len()`
         // bytes (the buffer copies at most `bytes >= data.len()`; the tail
         // padding is unread by the kernel); shared storage mode (0).
@@ -3043,9 +4155,42 @@ impl MetalContext {
         Ok(OwnedBuf(buf))
     }
 
+    /// Byte-preserving upload for raw BF16 `u16` bit patterns. Apple targets
+    /// supported by this crate are little-endian, so the in-memory bytes of a
+    /// decoded `u16` are exactly the model's little-endian BF16 payload.
+    fn new_buffer_from_u16(&self, data: &[u16]) -> Result<OwnedBuf> {
+        if data.is_empty() {
+            return self.new_buffer_output(0);
+        }
+        let bytes = data.len().checked_mul(size_of::<u16>()).ok_or_else(|| {
+            VokraError::InvalidArgument("Metal BF16 buffer byte size overflow".to_owned())
+        })?;
+        // SAFETY: `device` is valid; a non-empty `u16` slice is valid for its
+        // complete byte length. Apple Metal targets are little-endian, so the
+        // raw memory bytes preserve each decoded BF16 bit pattern exactly.
+        let buf = unsafe {
+            sys::send_new_buffer_bytes(
+                self.device,
+                sys::sel(b"newBufferWithBytes:length:options:\0"),
+                data.as_ptr().cast::<c_void>(),
+                bytes,
+                sys::STORAGE_MODE_SHARED,
+            )
+        };
+        if buf.is_null() {
+            return Err(VokraError::BackendUnavailable(
+                "MTLDevice newBufferWithBytes (BF16) returned nil".to_owned(),
+            ));
+        }
+        Ok(OwnedBuf(buf))
+    }
+
     /// Allocates an uninitialised shared-storage `MTLBuffer` of `len` f32s.
     fn new_buffer_output(&self, len: usize) -> Result<OwnedBuf> {
-        let bytes = (len * size_of::<f32>()).max(size_of::<f32>());
+        let bytes = len
+            .checked_mul(size_of::<f32>())
+            .ok_or_else(|| VokraError::InvalidArgument("Metal buffer size overflow".to_owned()))?
+            .max(size_of::<f32>());
         // SAFETY: `device` is valid; shared storage mode (0). +1-owned buffer.
         let buf = unsafe {
             sys::send_new_buffer_len(
@@ -3443,6 +4588,85 @@ impl MetalContext {
             grid,
             tg,
             "group_norm",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Affine multi-group GroupNorm over channel-major `[channels, positions]`.
+    /// Each group reduces `channels / groups × positions`; gamma and beta are
+    /// per-channel. This is the source NCSN++ path and never falls back to CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_groups_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        groups: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        validate_group_norm_groups(GroupNormGroupsArgs {
+            input,
+            out,
+            channels,
+            positions,
+            groups,
+            gamma,
+            beta,
+            eps,
+        })?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result =
+            self.run_group_norm_groups(input, out, channels, positions, groups, gamma, beta, eps);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result?;
+        if out.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "group_norm_groups output overflowed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_group_norm_groups(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        groups: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let gamma_buf = self.new_buffer_from_slice(gamma)?;
+        let beta_buf = self.new_buffer_from_slice(beta)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = GroupNormGroupsDims {
+            channels: checked_u32(channels, "group_norm_groups channels")?,
+            positions: checked_u32(positions, "group_norm_groups positions")?,
+            groups: checked_u32(groups, "group_norm_groups groups")?,
+            eps,
+        };
+        // The kernel owns one complete reduction/output loop per group.
+        let (grid, tg) = grid_1d(groups);
+        self.dispatch_compute(
+            self.group_norm_groups_pipeline,
+            &[&in_buf, &gamma_buf, &beta_buf, &out_buf],
+            (&dims as *const GroupNormGroupsDims).cast::<c_void>(),
+            size_of::<GroupNormGroupsDims>(),
+            grid,
+            tg,
+            "group_norm_groups",
         )?;
         read_back(&out_buf, out)
     }
@@ -3866,6 +5090,94 @@ impl MetalContext {
             "silu",
         )?;
         read_back(&out_buf, out)
+    }
+
+    /// Host-facing OUVE predictor wrapper backed by the resident Metal kernel.
+    /// This convenience API uploads its host slices and downloads the two
+    /// requested outputs. Cross-step state residency is provided only by
+    /// [`Self::ouve_reverse_diffusion_dev`], whose caller-owned device tensors
+    /// remain on Metal until an explicit [`Self::download`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_reverse_diffusion_f32(
+        &self,
+        theta: f32,
+        sigma_min: f32,
+        sigma_max: f32,
+        x: &[f32],
+        y: &[f32],
+        score: &[f32],
+        t: f32,
+        step: f32,
+        noise: &[f32],
+        probability_flow: bool,
+        out: &mut [f32],
+        out_mean: &mut [f32],
+    ) -> Result<()> {
+        validate_ouve_host_buffers(x, y, score, noise, out, out_mean)?;
+        validate_ouve_params(theta, sigma_min, sigma_max, t, step, None)?;
+        let x_dev = self.upload(x)?;
+        let y_dev = self.upload(y)?;
+        let score_dev = self.upload(score)?;
+        let noise_dev = self.upload(noise)?;
+        let mut out_dev = self.alloc_dev(out.len())?;
+        let mut mean_dev = self.alloc_dev(out_mean.len())?;
+        self.ouve_reverse_diffusion_dev(
+            &mut out_dev,
+            &mut mean_dev,
+            &x_dev,
+            &y_dev,
+            &score_dev,
+            &noise_dev,
+            theta,
+            sigma_min,
+            sigma_max,
+            t,
+            step,
+            probability_flow,
+        )?;
+        self.download(&out_dev, out)?;
+        self.download(&mean_dev, out_mean)
+    }
+
+    /// Host-facing OUVE annealed-Langevin wrapper backed by the resident Metal
+    /// kernel. It uploads host slices and downloads the requested outputs; no
+    /// CPU fallback or per-element host computation is performed. Use
+    /// [`Self::ouve_annealed_langevin_dev`] to keep cross-step state resident.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_annealed_langevin_f32(
+        &self,
+        theta: f32,
+        sigma_min: f32,
+        sigma_max: f32,
+        x: &[f32],
+        score: &[f32],
+        t: f32,
+        snr: f32,
+        noise: &[f32],
+        out: &mut [f32],
+        out_mean: &mut [f32],
+    ) -> Result<()> {
+        validate_ouve_host_buffers_unary(x, score, noise, out, out_mean)?;
+        validate_ouve_params(theta, sigma_min, sigma_max, t, 1.0, Some(snr))?;
+        let x_dev = self.upload(x)?;
+        let score_dev = self.upload(score)?;
+        let noise_dev = self.upload(noise)?;
+        let mut out_dev = self.alloc_dev(out.len())?;
+        let mut mean_dev = self.alloc_dev(out_mean.len())?;
+        self.ouve_annealed_langevin_dev(
+            &mut out_dev,
+            &mut mean_dev,
+            &x_dev,
+            &score_dev,
+            &noise_dev,
+            theta,
+            sigma_min,
+            sigma_max,
+            t,
+            snr,
+        )?;
+        self.download(&out_dev, out)?;
+        self.download(&mean_dev, out_mean)
     }
 
     /// Fused SwiGLU FFN activation: `out[i] = (gate[i] · sigmoid(gate[i])) ·
@@ -5690,6 +7002,166 @@ impl MetalContext {
         Ok(out)
     }
 
+    /// Applies SGMSE's fixed normalized `[1,3,3,1]` separable FIR over
+    /// channel-major `[C,H,W]` host buffers. The host validates all dimensions,
+    /// finite inputs, and disjoint storage before one device dispatch.
+    pub fn fir_resample_2d_f32(
+        &self,
+        input: &[f32],
+        channels: usize,
+        height: usize,
+        width: usize,
+        upsample: bool,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let (out_h, out_w) =
+            validate_fir_resample_2d(input, channels, height, width, upsample, output)?;
+        if output.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: `objc_autoreleasePoolPush` returns a token consumed by the
+        // matching pop below; all Objective-C objects created by this FIR
+        // dispatch remain within the pool's lexical operation scope.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = (|| {
+            let input_buf = self.new_buffer_from_slice(input)?;
+            let output_buf = self.new_buffer_output(output.len())?;
+            let (factor, down, pad, gain) = if upsample {
+                (2u32, 1u32, 2u32, 4.0f32)
+            } else {
+                (1u32, 2u32, 1u32, 1.0f32)
+            };
+            let dims = FirResample2dDims {
+                channels: checked_u32(channels, "fir_resample_2d channels")?,
+                in_h: checked_u32(height, "fir_resample_2d in_h")?,
+                in_w: checked_u32(width, "fir_resample_2d in_w")?,
+                out_h: checked_u32(out_h, "fir_resample_2d out_h")?,
+                out_w: checked_u32(out_w, "fir_resample_2d out_w")?,
+                factor,
+                down,
+                pad,
+                gain,
+            };
+            let dispatch_rows = channels.checked_mul(out_h).ok_or_else(|| {
+                VokraError::InvalidArgument("fir_resample_2d dispatch rows overflow".to_owned())
+            })?;
+            let (grid, tg) = grid_2d(out_w, dispatch_rows);
+            self.dispatch_compute(
+                self.fir_resample_2d_pipeline,
+                &[&input_buf, &output_buf],
+                (&dims as *const FirResample2dDims).cast::<c_void>(),
+                size_of::<FirResample2dDims>(),
+                grid,
+                tg,
+                "fir_resample_2d",
+            )?;
+            read_back(&output_buf, output)?;
+            if output.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::InvalidArgument(
+                    "fir_resample_2d produced a non-finite value".to_owned(),
+                ));
+            }
+            Ok(())
+        })();
+        // SAFETY: `pool` is the token returned by the matching push above, and
+        // no use of the pool token occurs after it is popped.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    /// Dense/grouped PyTorch-layout Conv2d on channel-major host buffers.
+    /// Inputs and weights are uploaded once, one Metal dispatch computes the
+    /// caller-sized output, and only that output is read back.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let (out_h, out_w) = validate_conv2d(
+            input, in_ch, in_h, in_w, weight, out_ch, kernel_h, kernel_w, bias, stride, padding,
+            dilation, groups, out,
+        )?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_conv2d(
+            input, in_h, in_w, weight, out_ch, out_h, out_w, kernel_h, kernel_w, bias, stride,
+            padding, dilation, groups, in_ch, out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    /// Dense/grouped PyTorch-layout ConvTranspose2d on channel-major host
+    /// buffers. Weight layout is `[in_ch, out_ch / groups, kernel_h, kernel_w]`.
+    /// The host validates the exact output formula before one GPU submission;
+    /// there is no CPU fallback or hidden host convolution.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        output_padding: (usize, usize),
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let (out_h, out_w) = validate_conv_transpose2d(
+            input,
+            in_ch,
+            in_h,
+            in_w,
+            weight,
+            out_ch,
+            kernel_h,
+            kernel_w,
+            bias,
+            stride,
+            padding,
+            dilation,
+            output_padding,
+            groups,
+            out,
+        )?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_conv_transpose2d(
+            input, in_h, in_w, weight, out_ch, out_h, out_w, kernel_h, kernel_w, bias, stride,
+            padding, dilation, groups, in_ch, out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
     /// 1-D convolution (`input` is `in_ch × in_len`, `weight` is
     /// `out_ch × in_ch × kernel`, `out` is `out_ch × out_len`) — the exact
     /// contract of `vokra_backend_cpu::kernels::conv1d_f32`. The direct GPU
@@ -5730,6 +7202,126 @@ impl MetalContext {
         // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         r
+    }
+
+    /// Host-facing stride/dilation-aware Conv1d.  This is the host wrapper for
+    /// [`Self::conv1d_dev`], so the same Metal kernel and validation contract
+    /// are used by both the resident and imperative Compute seams.  Inputs,
+    /// weights, and the final output cross the host/device boundary once each;
+    /// there is no CPU fallback when `dilation > 1`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv1d_f32_dilated(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let out_len = validate_conv1d_dilated(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, dilation, padding, out,
+        )?;
+        if out_len == 0 {
+            return Ok(());
+        }
+        if dilation == 1 {
+            return self.conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+            );
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = (|| {
+            let input_dev = self.upload(input)?;
+            let weight_dev = self.upload(weight)?;
+            let bias_dev = bias.map(|values| self.upload(values)).transpose()?;
+            let mut output_dev = self.alloc_dev(out.len())?;
+            self.conv1d_dev(
+                &mut output_dev,
+                &input_dev,
+                &weight_dev,
+                bias_dev.as_ref(),
+                in_ch,
+                in_len,
+                out_ch,
+                kernel,
+                stride,
+                dilation,
+                padding,
+            )?;
+            read_back(&output_dev.buf, out)
+        })();
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    /// Host-facing PyTorch-layout ConvTranspose1d.  The explicit
+    /// `output_padding` participates in the output-length formula and is
+    /// passed unchanged to the device kernel; it is never inferred or
+    /// silently cropped.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let out_len = validate_conv_transpose1d(
+            input,
+            in_ch,
+            in_len,
+            weight,
+            out_ch,
+            kernel,
+            bias,
+            stride,
+            padding,
+            output_padding,
+            out,
+        )?;
+        if out_len == 0 {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = (|| {
+            let input_dev = self.upload(input)?;
+            let weight_dev = self.upload(weight)?;
+            let bias_dev = bias.map(|values| self.upload(values)).transpose()?;
+            let mut output_dev = self.alloc_dev(out.len())?;
+            self.conv_transpose1d_dev(
+                &mut output_dev,
+                &input_dev,
+                &weight_dev,
+                bias_dev.as_ref(),
+                in_ch,
+                in_len,
+                out_ch,
+                kernel,
+                stride,
+                padding,
+                output_padding,
+            )?;
+            read_back(&output_dev.buf, out)
+        })();
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
     }
 
     /// Grouped 1-D convolution with PyTorch-compatible weight layout
@@ -5781,6 +7373,122 @@ impl MetalContext {
         r
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn run_conv2d(
+        &self,
+        input: &[f32],
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        out_h: usize,
+        out_w: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+        in_ch: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let w_buf = self.new_buffer_from_slice(weight)?;
+        let dummy = [0.0f32];
+        let bias_buf = self.new_buffer_from_slice(bias.unwrap_or(&dummy))?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = Conv2dDims {
+            in_ch: checked_u32(in_ch, "conv2d in_ch")?,
+            in_h: checked_u32(in_h, "conv2d in_h")?,
+            in_w: checked_u32(in_w, "conv2d in_w")?,
+            out_ch: checked_u32(out_ch, "conv2d out_ch")?,
+            out_h: checked_u32(out_h, "conv2d out_h")?,
+            out_w: checked_u32(out_w, "conv2d out_w")?,
+            kernel_h: checked_u32(kernel_h, "conv2d kernel_h")?,
+            kernel_w: checked_u32(kernel_w, "conv2d kernel_w")?,
+            stride_h: checked_u32(stride.0, "conv2d stride_h")?,
+            stride_w: checked_u32(stride.1, "conv2d stride_w")?,
+            padding_h: checked_u32(padding.0, "conv2d padding_h")?,
+            padding_w: checked_u32(padding.1, "conv2d padding_w")?,
+            dilation_h: checked_u32(dilation.0, "conv2d dilation_h")?,
+            dilation_w: checked_u32(dilation.1, "conv2d dilation_w")?,
+            in_per_group: checked_u32(in_ch / groups, "conv2d in_per_group")?,
+            out_per_group: checked_u32(out_ch / groups, "conv2d out_per_group")?,
+            has_bias: u32::from(bias.is_some()),
+        };
+        let out_rows = checked_mul(out_ch, out_h, "conv2d dispatch rows")?;
+        let (grid, tg) = grid_2d(out_w, out_rows);
+        self.dispatch_compute(
+            self.conv2d_pipeline,
+            &[&in_buf, &w_buf, &bias_buf, &out_buf],
+            (&dims as *const Conv2dDims).cast::<c_void>(),
+            size_of::<Conv2dDims>(),
+            grid,
+            tg,
+            "conv2d",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_conv_transpose2d(
+        &self,
+        input: &[f32],
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        out_h: usize,
+        out_w: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+        in_ch: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let w_buf = self.new_buffer_from_slice(weight)?;
+        let dummy = [0.0f32];
+        let bias_buf = self.new_buffer_from_slice(bias.unwrap_or(&dummy))?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = ConvTranspose2dDims {
+            in_ch: checked_u32(in_ch, "conv_transpose2d in_ch")?,
+            in_h: checked_u32(in_h, "conv_transpose2d in_h")?,
+            in_w: checked_u32(in_w, "conv_transpose2d in_w")?,
+            out_ch: checked_u32(out_ch, "conv_transpose2d out_ch")?,
+            out_h: checked_u32(out_h, "conv_transpose2d out_h")?,
+            out_w: checked_u32(out_w, "conv_transpose2d out_w")?,
+            kernel_h: checked_u32(kernel_h, "conv_transpose2d kernel_h")?,
+            kernel_w: checked_u32(kernel_w, "conv_transpose2d kernel_w")?,
+            stride_h: checked_u32(stride.0, "conv_transpose2d stride_h")?,
+            stride_w: checked_u32(stride.1, "conv_transpose2d stride_w")?,
+            padding_h: checked_u32(padding.0, "conv_transpose2d padding_h")?,
+            padding_w: checked_u32(padding.1, "conv_transpose2d padding_w")?,
+            dilation_h: checked_u32(dilation.0, "conv_transpose2d dilation_h")?,
+            dilation_w: checked_u32(dilation.1, "conv_transpose2d dilation_w")?,
+            in_per_group: checked_u32(in_ch / groups, "conv_transpose2d in_per_group")?,
+            out_per_group: checked_u32(out_ch / groups, "conv_transpose2d out_per_group")?,
+            has_bias: u32::from(bias.is_some()),
+        };
+        let out_rows = checked_mul(out_ch, out_h, "conv_transpose2d dispatch rows")?;
+        let (grid, tg) = grid_2d(out_w, out_rows);
+        self.dispatch_compute(
+            self.conv_transpose2d_pipeline,
+            &[&in_buf, &w_buf, &bias_buf, &out_buf],
+            (&dims as *const ConvTranspose2dDims).cast::<c_void>(),
+            size_of::<ConvTranspose2dDims>(),
+            grid,
+            tg,
+            "conv_transpose2d",
+        )?;
+        read_back(&out_buf, out)
+    }
+
     #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
     fn run_conv1d(
         &self,
@@ -5812,6 +7520,7 @@ impl MetalContext {
             padding: padding as u32,
             has_bias: u32::from(bias.is_some()),
             out_per_group: out_per_group as u32,
+            dilation: 1,
         };
         let (grid, tg) = grid_2d(out_len, out_ch);
         self.dispatch_compute(
@@ -6448,6 +8157,16 @@ impl MetalContext {
         self.submissions.get()
     }
 
+    /// Number of explicit D2H copies made through [`Self::download`].
+    ///
+    /// This intentionally excludes the legacy slice APIs, whose contract is
+    /// host-in/host-out by design. Resident vocoder tests use this counter to
+    /// assert that all intermediate device tensors remain on Metal.
+    #[must_use]
+    pub fn readback_count(&self) -> u64 {
+        self.readbacks.get()
+    }
+
     /// Uploads `data` into a fresh device-resident buffer (H2D once). The returned
     /// `MetalDeviceTensor` borrows the context, so it cannot outlive it.
     ///
@@ -6459,8 +8178,96 @@ impl MetalContext {
         Ok(MetalDeviceTensor {
             buf,
             len: data.len(),
+            owner: self as *const MetalContext,
             _ctx: PhantomData,
         })
+    }
+
+    /// Uploads raw BF16 numeric bit patterns into a device-resident `ushort`
+    /// buffer. Each `u16` is the value obtained after decoding the model's
+    /// little-endian two-byte BF16 payload (for example,
+    /// `u16::from_le_bytes([lo, hi])`). The bytes are retained as BF16 storage;
+    /// this method does not widen the weight matrix to an FP32 tensor.
+    ///
+    /// The returned handle is consumed by
+    /// [`Self::gemm_f32_bf16_bits_dev`]. It borrows this context and therefore
+    /// cannot outlive it.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] if the Metal buffer cannot be
+    /// created; [`VokraError::InvalidArgument`] if the raw buffer byte size
+    /// overflows.
+    pub fn upload_bf16_bits(&self, data: &[u16]) -> Result<MetalBf16DeviceTensor<'_>> {
+        let buf = self.new_buffer_from_u16(data)?;
+        Ok(MetalBf16DeviceTensor {
+            buf,
+            len: data.len(),
+            owner: self as *const MetalContext,
+            _ctx: PhantomData,
+        })
+    }
+
+    /// Host-in/host-out mixed GEMM using the raw-BF16 device path.
+    ///
+    /// This is the bounded wrapper for callers whose surrounding model graph
+    /// is host-resident: `a` is FP32 `[m,k]`, `b` is raw little-endian-decoded
+    /// BF16 `[k,n]`, and `out` is FP32 `[m,n]`. The complete BF16 matrix is
+    /// uploaded as `ushort` storage and widened only inside the Metal shader;
+    /// no FP32 weight mirror is created. The wrapper performs one final output
+    /// download and never falls back to CPU execution.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] is returned for shape, overflow, or
+    /// MSL-dimension conversion errors. [`VokraError::BackendUnavailable`]
+    /// covers Metal allocation and command failures.
+    pub fn gemm_f32_bf16_bits(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[u16],
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_mixed_bf16_host(m, n, k, a, b, out)?;
+        if m == 0 || n == 0 {
+            return Ok(());
+        }
+        // Bracket the GPU work in an autorelease pool, matching `gemm_f32`.
+        // `dispatch_compute` creates autoreleased command objects and callers
+        // must drain them even when the operation returns an error.
+        // SAFETY: `objc_autoreleasePoolPush` returns a token consumed by the
+        // one matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_gemm_f32_bf16_bits(m, n, k, a, b, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    /// Mixed-BF16 host GEMM body. Shapes are already validated and the caller
+    /// has established the autorelease-pool boundary.
+    #[allow(clippy::too_many_arguments)]
+    fn run_gemm_f32_bf16_bits(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[u16],
+        out: &mut [f32],
+    ) -> Result<()> {
+        let activation = self.upload(a)?;
+        let weight = self.upload_bf16_bits(b)?;
+        let mut output = self.alloc_dev(out.len())?;
+        self.gemm_f32_bf16_bits_dev(&mut output, &activation, &weight, m, n, k)?;
+        // This is the legacy host-in/host-out surface, matching `gemm_f32`:
+        // copy the completed shared buffer directly rather than composing the
+        // resident `download` API. The resident readback counter therefore
+        // remains reserved for explicit device-tensor downloads.
+        read_back(&output.buf, out)
     }
 
     /// Allocates an uninitialised device-resident buffer of `len` f32s (the
@@ -6475,8 +8282,33 @@ impl MetalContext {
         Ok(MetalDeviceTensor {
             buf,
             len,
+            owner: self as *const MetalContext,
             _ctx: PhantomData,
         })
+    }
+
+    /// Rejects buffers allocated by a different live context. The lifetime
+    /// marker prevents use-after-drop, while this identity check prevents
+    /// mixing queues/devices from independent Metal contexts.
+    fn expect_owner(&self, tensor: &MetalDeviceTensor<'_>, name: &str) -> Result<()> {
+        if !std::ptr::eq(tensor.owner, self as *const MetalContext) {
+            return Err(VokraError::InvalidArgument(format!(
+                "{name} belongs to a different MetalContext"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Sibling owner check for the raw-BF16 device handle. Keeping this
+    /// separate from [`Self::expect_owner`] prevents accidentally accepting a
+    /// typed FP32 tensor where a `ushort` storage buffer is required.
+    fn expect_owner_bf16(&self, tensor: &MetalBf16DeviceTensor<'_>, name: &str) -> Result<()> {
+        if !std::ptr::eq(tensor.owner, self as *const MetalContext) {
+            return Err(VokraError::InvalidArgument(format!(
+                "{name} belongs to a different MetalContext"
+            )));
+        }
+        Ok(())
     }
 
     /// Reads a device-resident buffer back into `out` (D2H). Call after the owning
@@ -6489,8 +8321,1462 @@ impl MetalContext {
     /// element count; [`VokraError::BackendUnavailable`] on a null contents
     /// pointer.
     pub fn download(&self, t: &MetalDeviceTensor<'_>, out: &mut [f32]) -> Result<()> {
+        self.expect_owner(t, "download tensor")?;
         expect_len("download out", out.len(), t.len)?;
-        read_back(&t.buf, out)
+        let result = read_back(&t.buf, out);
+        if result.is_ok() {
+            self.readbacks.set(self.readbacks.get() + 1);
+        }
+        result
+    }
+
+    /// Device-resident mixed GEMM with FP32 activations and raw BF16 weights.
+    ///
+    /// Computes `out[r,c] = Σ_l activation[r,l] * bf16_to_f32(weight[l,c])`
+    /// for `activation` shaped `[m,k]`, `weight` shaped `[k,n]`, and `out`
+    /// shaped `[m,n]`. Activations and output are device-resident FP32
+    /// [`MetalDeviceTensor`]s. `weight` is a distinct raw-BF16
+    /// [`MetalBf16DeviceTensor`], so the complete weight matrix is never
+    /// expanded to an FP32 host or device tensor. The shader reconstructs each
+    /// BF16 value exactly from its sign/exponent/mantissa bits and accumulates
+    /// products in FP32. This operation issues one Metal submission and no
+    /// host readback; callers explicitly use [`Self::download`] for the final
+    /// result.
+    ///
+    /// Zero-size semantics match the CPU raw-BF16 GEMM contract: if `m == 0`
+    /// or `n == 0`, a correctly shaped output is left untouched and no
+    /// submission is issued. If `k == 0` with non-empty output, one GPU pass
+    /// writes exact zeros. The empty input buffers are bound to Metal-safe
+    /// placeholders and are never dereferenced by that pass.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] is returned before dispatch for a
+    /// cross-context tensor, shape mismatch, zero-sized output inconsistency,
+    /// dimension product overflow, or a dimension that cannot be represented
+    /// by the MSL `uint` shape block. [`VokraError::BackendUnavailable`] is
+    /// returned for allocation or command-buffer failures. There is no CPU
+    /// fallback.
+    pub fn gemm_f32_bf16_bits_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        activation: &MetalDeviceTensor<'_>,
+        weight: &MetalBf16DeviceTensor<'_>,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "gemm_f32_bf16_bits_dev output")?;
+        self.expect_owner(activation, "gemm_f32_bf16_bits_dev activation")?;
+        self.expect_owner_bf16(weight, "gemm_f32_bf16_bits_dev weight")?;
+
+        let (activation_len, weight_len, output_len) =
+            validate_mixed_bf16_dims(m, n, k, "gemm_f32_bf16_bits_dev")?;
+        expect_len(
+            "gemm_f32_bf16_bits_dev activation",
+            activation.len,
+            activation_len,
+        )?;
+        expect_len("gemm_f32_bf16_bits_dev weight", weight.len, weight_len)?;
+        expect_len("gemm_f32_bf16_bits_dev output", out.len, output_len)?;
+        if m == 0 || n == 0 {
+            return Ok(());
+        }
+
+        let dims = GemmF32Bf16BitsDims {
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+        };
+        let (grid, tg) = grid_2d(n, m);
+        self.dispatch_compute(
+            self.gemm_f32_bf16_bits_pipeline,
+            &[&activation.buf, &weight.buf, &out.buf],
+            (&dims as *const GemmF32Bf16BitsDims).cast::<c_void>(),
+            size_of::<GemmF32Bf16BitsDims>(),
+            grid,
+            tg,
+            "gemm_f32_bf16_bits",
+        )
+    }
+
+    /// Device-resident stride/dilation-aware Conv1d. The input, weights,
+    /// optional bias, and output all remain in Metal buffers; this method
+    /// submits one pass and performs no host readback. The original
+    /// `[out,in,kernel]` weight layout is retained and `dilation` is applied
+    /// directly by the Metal kernel, so callers must not pre-expand weights.
+    /// Like every current `*_dev` primitive, this is one synchronous
+    /// commit/wait; fusing a complete vocoder graph is a separate layer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv1d_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        weight: &MetalDeviceTensor<'_>,
+        bias: Option<&MetalDeviceTensor<'_>>,
+        in_ch: usize,
+        in_len: usize,
+        out_ch: usize,
+        kernel: usize,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "conv1d_dev output")?;
+        self.expect_owner(input, "conv1d_dev input")?;
+        self.expect_owner(weight, "conv1d_dev weight")?;
+        if let Some(b) = bias {
+            self.expect_owner(b, "conv1d_dev bias")?;
+        }
+        if in_ch == 0 || in_len == 0 || out_ch == 0 || kernel == 0 || stride == 0 || dilation == 0 {
+            return Err(VokraError::InvalidArgument(
+                "conv1d_dev dimensions and stride/dilation must be > 0".to_owned(),
+            ));
+        }
+        let effective = checked_mul(kernel - 1, dilation, "conv1d_dev effective kernel")?
+            .checked_add(1)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("conv1d_dev effective kernel overflow".to_owned())
+            })?;
+        let padded = checked_mul(2, padding, "conv1d_dev padding")?
+            .checked_add(in_len)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("conv1d_dev padded length overflow".to_owned())
+            })?;
+        if padded < effective {
+            return Err(VokraError::InvalidArgument(
+                "conv1d_dev padded input is smaller than the effective kernel".to_owned(),
+            ));
+        }
+        let out_len = (padded - effective) / stride + 1;
+        let last_t = checked_mul(out_len - 1, stride, "conv1d_dev dispatch index")?
+            .checked_add(checked_mul(
+                kernel - 1,
+                dilation,
+                "conv1d_dev dispatch tap",
+            )?)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("conv1d_dev dispatch index overflow".to_owned())
+            })?;
+        checked_u32(last_t, "conv1d_dev dispatch index")?;
+        expect_len(
+            "conv1d_dev input",
+            input.len,
+            checked_mul(in_ch, in_len, "conv1d_dev input")?,
+        )?;
+        expect_len(
+            "conv1d_dev weight",
+            weight.len,
+            checked_mul(
+                checked_mul(out_ch, in_ch, "conv1d_dev weight")?,
+                kernel,
+                "conv1d_dev weight",
+            )?,
+        )?;
+        expect_len(
+            "conv1d_dev output",
+            out.len,
+            checked_mul(out_ch, out_len, "conv1d_dev output")?,
+        )?;
+        if let Some(b) = bias {
+            expect_len("conv1d_dev bias", b.len, out_ch)?;
+        }
+        let dummy = self.new_buffer_from_slice(&[0.0f32])?;
+        let bias_buf = bias.map_or(&dummy, |b| &b.buf);
+        let dims = Conv1dDims {
+            in_per_group: checked_u32(in_ch, "conv1d_dev in_ch")?,
+            in_len: checked_u32(in_len, "conv1d_dev in_len")?,
+            out_ch: checked_u32(out_ch, "conv1d_dev out_ch")?,
+            kernel_size: checked_u32(kernel, "conv1d_dev kernel")?,
+            out_len: checked_u32(out_len, "conv1d_dev out_len")?,
+            stride: checked_u32(stride, "conv1d_dev stride")?,
+            padding: checked_u32(padding, "conv1d_dev padding")?,
+            has_bias: u32::from(bias.is_some()),
+            out_per_group: checked_u32(out_ch, "conv1d_dev out_ch")?,
+            dilation: checked_u32(dilation, "conv1d_dev dilation")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("conv1d_dev")?;
+            let (grid, tg) = grid_2d(out_len, out_ch);
+            self.encode_pass(
+                cmd,
+                self.conv1d_pipeline,
+                &[&input.buf, &weight.buf, bias_buf, &out.buf],
+                (&dims as *const Conv1dDims).cast::<c_void>(),
+                size_of::<Conv1dDims>(),
+                grid,
+                tg,
+                "conv1d_dev",
+            )?;
+            self.commit_and_wait(cmd, "conv1d_dev")
+        })
+    }
+
+    /// Device-resident PyTorch-layout ConvTranspose1d. This is the native
+    /// upsample primitive for HiFTNet and BigVGAN; only the final caller-owned
+    /// tensor should be passed to [`Self::download`]. The operation performs
+    /// one synchronous commit/wait and does not itself read back intermediates.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose1d_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        weight: &MetalDeviceTensor<'_>,
+        bias: Option<&MetalDeviceTensor<'_>>,
+        in_ch: usize,
+        in_len: usize,
+        out_ch: usize,
+        kernel: usize,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "conv_transpose1d_dev output")?;
+        self.expect_owner(input, "conv_transpose1d_dev input")?;
+        self.expect_owner(weight, "conv_transpose1d_dev weight")?;
+        if let Some(b) = bias {
+            self.expect_owner(b, "conv_transpose1d_dev bias")?;
+        }
+        if in_ch == 0 || in_len == 0 || out_ch == 0 || kernel == 0 || stride == 0 {
+            return Err(VokraError::InvalidArgument(
+                "conv_transpose1d_dev dimensions and stride/kernel must be > 0".to_owned(),
+            ));
+        }
+        if output_padding >= stride {
+            return Err(VokraError::InvalidArgument(
+                "conv_transpose1d_dev output_padding must be < stride".to_owned(),
+            ));
+        }
+        let base = checked_mul(in_len - 1, stride, "conv_transpose1d_dev output")?
+            .checked_add(kernel)
+            .and_then(|v| v.checked_add(output_padding))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("conv_transpose1d_dev output overflow".to_owned())
+            })?;
+        let trim = checked_mul(2, padding, "conv_transpose1d_dev padding")?;
+        if trim > base {
+            return Err(VokraError::InvalidArgument(
+                "conv_transpose1d_dev padding exceeds output extent".to_owned(),
+            ));
+        }
+        let out_len = base - trim;
+        if out_len == 0 {
+            return Err(VokraError::InvalidArgument(
+                "conv_transpose1d_dev output extent must be > 0".to_owned(),
+            ));
+        }
+        let last_input_step = checked_mul(in_len - 1, stride, "conv_transpose1d_dev input step")?;
+        checked_i32(last_input_step, "conv_transpose1d_dev input step")?;
+        checked_i32(out_len - 1, "conv_transpose1d_dev output index")?;
+        let signed_sum = (out_len - 1).checked_add(padding).ok_or_else(|| {
+            VokraError::InvalidArgument("conv_transpose1d_dev index overflow".to_owned())
+        })?;
+        checked_i32(signed_sum, "conv_transpose1d_dev signed index")?;
+        expect_len(
+            "conv_transpose1d_dev input",
+            input.len,
+            checked_mul(in_ch, in_len, "conv_transpose1d_dev input")?,
+        )?;
+        expect_len(
+            "conv_transpose1d_dev weight",
+            weight.len,
+            checked_mul(
+                checked_mul(in_ch, out_ch, "conv_transpose1d_dev weight")?,
+                kernel,
+                "conv_transpose1d_dev weight",
+            )?,
+        )?;
+        expect_len(
+            "conv_transpose1d_dev output",
+            out.len,
+            checked_mul(out_ch, out_len, "conv_transpose1d_dev output")?,
+        )?;
+        if let Some(b) = bias {
+            expect_len("conv_transpose1d_dev bias", b.len, out_ch)?;
+        }
+        let dummy = self.new_buffer_from_slice(&[0.0f32])?;
+        let bias_buf = bias.map_or(&dummy, |b| &b.buf);
+        let dims = ConvTranspose1dDims {
+            in_ch: checked_u32(in_ch, "conv_transpose1d_dev in_ch")?,
+            out_ch: checked_u32(out_ch, "conv_transpose1d_dev out_ch")?,
+            kernel_size: checked_u32(kernel, "conv_transpose1d_dev kernel")?,
+            t_in: checked_u32(in_len, "conv_transpose1d_dev in_len")?,
+            t_out: checked_u32(out_len, "conv_transpose1d_dev out_len")?,
+            stride: checked_u32(stride, "conv_transpose1d_dev stride")?,
+            padding: checked_u32(padding, "conv_transpose1d_dev padding")?,
+            has_bias: u32::from(bias.is_some()),
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("conv_transpose1d_dev")?;
+            let (grid, tg) = grid_2d(out_len, out_ch);
+            self.encode_pass(
+                cmd,
+                self.conv_transpose1d_pipeline,
+                &[&input.buf, &weight.buf, bias_buf, &out.buf],
+                (&dims as *const ConvTranspose1dDims).cast::<c_void>(),
+                size_of::<ConvTranspose1dDims>(),
+                grid,
+                tg,
+                "conv_transpose1d_dev",
+            )?;
+            self.commit_and_wait(cmd, "conv_transpose1d_dev")
+        })
+    }
+
+    /// Device-resident channel-major 1-D padding. `reflect = true` implements
+    /// PyTorch ReflectionPad1d (requiring each side to be smaller than the
+    /// input length); `false` implements ReplicationPad1d. The operation is a
+    /// pure device copy and never performs an intermediate D2H transfer. It
+    /// is submitted synchronously as one commit/wait.
+    #[allow(clippy::too_many_arguments)] // intrinsic padding shape + device tensors
+    pub fn pad1d_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        channels: usize,
+        time_in: usize,
+        left: usize,
+        right: usize,
+        reflect: bool,
+    ) -> Result<()> {
+        self.expect_owner(out, "pad1d_dev output")?;
+        self.expect_owner(input, "pad1d_dev input")?;
+        if channels == 0 || time_in == 0 {
+            return Err(VokraError::InvalidArgument(
+                "pad1d_dev channels and time_in must be > 0".to_owned(),
+            ));
+        }
+        if reflect && (left >= time_in || right >= time_in) {
+            return Err(VokraError::InvalidArgument(
+                "pad1d_dev reflect padding must be smaller than input length".to_owned(),
+            ));
+        }
+        let time_out = time_in
+            .checked_add(left)
+            .and_then(|v| v.checked_add(right))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("pad1d_dev output length overflow".to_owned())
+            })?;
+        checked_i32(time_out, "pad1d_dev time_out")?;
+        if reflect {
+            let reflect_bound = checked_mul(time_in, 3, "pad1d_dev reflect index")?;
+            checked_i32(reflect_bound, "pad1d_dev reflect index")?;
+        } else {
+            checked_i32(time_in, "pad1d_dev time_in")?;
+        }
+        expect_len(
+            "pad1d_dev input",
+            input.len,
+            checked_mul(channels, time_in, "pad1d_dev input")?,
+        )?;
+        expect_len(
+            "pad1d_dev output",
+            out.len,
+            checked_mul(channels, time_out, "pad1d_dev output")?,
+        )?;
+        let dims = Pad1dDims {
+            channels: checked_u32(channels, "pad1d_dev channels")?,
+            time_in: checked_u32(time_in, "pad1d_dev time_in")?,
+            time_out: checked_u32(time_out, "pad1d_dev time_out")?,
+            left: checked_u32(left, "pad1d_dev left")?,
+            right: checked_u32(right, "pad1d_dev right")?,
+            mode: u32::from(!reflect),
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("pad1d_dev")?;
+            let (grid, tg) = grid_2d(time_out, channels);
+            self.encode_pass(
+                cmd,
+                self.pad1d_pipeline,
+                &[&input.buf, &out.buf],
+                (&dims as *const Pad1dDims).cast::<c_void>(),
+                size_of::<Pad1dDims>(),
+                grid,
+                tg,
+                "pad1d_dev",
+            )?;
+            self.commit_and_wait(cmd, "pad1d_dev")
+        })
+    }
+
+    /// Device-resident LeakyReLU. This is the activation seam used around
+    /// HiFTNet upsample stages; `slope` is an explicit model attribute. One
+    /// synchronous commit/wait is issued and no intermediate is read back.
+    pub fn leaky_relu_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        slope: f32,
+    ) -> Result<()> {
+        self.expect_owner(out, "leaky_relu_dev output")?;
+        self.expect_owner(input, "leaky_relu_dev input")?;
+        expect_len("leaky_relu_dev output", out.len, input.len)?;
+        if input.is_empty() {
+            return Ok(());
+        }
+        let dims = LeakyReluDims {
+            n: u32::try_from(input.len).map_err(|_| {
+                VokraError::InvalidArgument("leaky_relu_dev length exceeds u32".to_owned())
+            })?,
+            slope,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("leaky_relu_dev")?;
+            let (grid, tg) = grid_1d(input.len);
+            self.encode_pass(
+                cmd,
+                self.leaky_relu_pipeline,
+                &[&input.buf, &out.buf],
+                (&dims as *const LeakyReluDims).cast::<c_void>(),
+                size_of::<LeakyReluDims>(),
+                grid,
+                tg,
+                "leaky_relu_dev",
+            )?;
+            self.commit_and_wait(cmd, "leaky_relu_dev")
+        })
+    }
+
+    /// Device-resident terminal tanh. Used by BigVGAN's final output seam.
+    /// This is one synchronous commit/wait with no intermediate readback.
+    pub fn tanh_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+    ) -> Result<()> {
+        self.expect_owner(out, "tanh_dev output")?;
+        self.expect_owner(input, "tanh_dev input")?;
+        expect_len("tanh_dev output", out.len, input.len)?;
+        if input.is_empty() {
+            return Ok(());
+        }
+        let dims = TanhDims {
+            n: u32::try_from(input.len).map_err(|_| {
+                VokraError::InvalidArgument("tanh_dev length exceeds u32".to_owned())
+            })?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("tanh_dev")?;
+            let (grid, tg) = grid_1d(input.len);
+            self.encode_pass(
+                cmd,
+                self.tanh_pipeline,
+                &[&input.buf, &out.buf],
+                (&dims as *const TanhDims).cast::<c_void>(),
+                size_of::<TanhDims>(),
+                grid,
+                tg,
+                "tanh_dev",
+            )?;
+            self.commit_and_wait(cmd, "tanh_dev")
+        })
+    }
+
+    /// Device-resident OUVE reverse-diffusion predictor. All state and noise
+    /// buffers remain on Metal; the caller can chain this with the corrector
+    /// without an intermediate readback. The scalar coefficients mirror the
+    /// pinned `sp-uhh/sgmse` OUVE implementation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_reverse_diffusion_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        out_mean: &mut MetalDeviceTensor<'_>,
+        x: &MetalDeviceTensor<'_>,
+        y: &MetalDeviceTensor<'_>,
+        score: &MetalDeviceTensor<'_>,
+        noise: &MetalDeviceTensor<'_>,
+        theta: f32,
+        sigma_min: f32,
+        sigma_max: f32,
+        t: f32,
+        step: f32,
+        probability_flow: bool,
+    ) -> Result<()> {
+        self.expect_owner(out, "ouve_reverse_diffusion_dev output")?;
+        self.expect_owner(out_mean, "ouve_reverse_diffusion_dev mean")?;
+        self.expect_owner(x, "ouve_reverse_diffusion_dev x")?;
+        self.expect_owner(y, "ouve_reverse_diffusion_dev y")?;
+        self.expect_owner(score, "ouve_reverse_diffusion_dev score")?;
+        self.expect_owner(noise, "ouve_reverse_diffusion_dev noise")?;
+        validate_ouve_params(theta, sigma_min, sigma_max, t, step, None)?;
+        let n = x.len();
+        for (name, len) in [
+            ("y", y.len()),
+            ("score", score.len()),
+            ("noise", noise.len()),
+            ("out", out.len()),
+            ("out_mean", out_mean.len()),
+        ] {
+            expect_len("ouve_reverse_diffusion_dev buffer", len, n).map_err(|_| {
+                VokraError::InvalidArgument(format!(
+                    "ouve_reverse_diffusion_dev {name} length {len} != x length {n}"
+                ))
+            })?;
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let dims = OuvEReverseDims {
+            n: checked_u32(n, "ouve_reverse_diffusion_dev length")?,
+            theta,
+            sigma_min,
+            sigma_max,
+            t,
+            step,
+            probability_flow: u32::from(probability_flow),
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("ouve_reverse_diffusion_dev")?;
+            let (grid, tg) = grid_1d(n);
+            self.encode_pass(
+                cmd,
+                self.ouve_reverse_diffusion_pipeline,
+                &[
+                    &x.buf,
+                    &y.buf,
+                    &score.buf,
+                    &noise.buf,
+                    &out.buf,
+                    &out_mean.buf,
+                ],
+                (&dims as *const OuvEReverseDims).cast::<c_void>(),
+                size_of::<OuvEReverseDims>(),
+                grid,
+                tg,
+                "ouve_reverse_diffusion_dev",
+            )?;
+            self.commit_and_wait(cmd, "ouve_reverse_diffusion_dev")
+        })
+    }
+
+    /// Device-resident OUVE annealed-Langevin corrector. This is the exact
+    /// source `2 * (snr * std(t))²` update and never falls back to the CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_annealed_langevin_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        out_mean: &mut MetalDeviceTensor<'_>,
+        x: &MetalDeviceTensor<'_>,
+        score: &MetalDeviceTensor<'_>,
+        noise: &MetalDeviceTensor<'_>,
+        theta: f32,
+        sigma_min: f32,
+        sigma_max: f32,
+        t: f32,
+        snr: f32,
+    ) -> Result<()> {
+        self.expect_owner(out, "ouve_annealed_langevin_dev output")?;
+        self.expect_owner(out_mean, "ouve_annealed_langevin_dev mean")?;
+        self.expect_owner(x, "ouve_annealed_langevin_dev x")?;
+        self.expect_owner(score, "ouve_annealed_langevin_dev score")?;
+        self.expect_owner(noise, "ouve_annealed_langevin_dev noise")?;
+        validate_ouve_params(theta, sigma_min, sigma_max, t, 1.0, Some(snr))?;
+        let n = x.len();
+        for (name, len) in [
+            ("score", score.len()),
+            ("noise", noise.len()),
+            ("out", out.len()),
+            ("out_mean", out_mean.len()),
+        ] {
+            expect_len("ouve_annealed_langevin_dev buffer", len, n).map_err(|_| {
+                VokraError::InvalidArgument(format!(
+                    "ouve_annealed_langevin_dev {name} length {len} != x length {n}"
+                ))
+            })?;
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let dims = OuvEAnnealedDims {
+            n: checked_u32(n, "ouve_annealed_langevin_dev length")?,
+            theta,
+            sigma_min,
+            sigma_max,
+            t,
+            snr,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("ouve_annealed_langevin_dev")?;
+            let (grid, tg) = grid_1d(n);
+            self.encode_pass(
+                cmd,
+                self.ouve_annealed_langevin_pipeline,
+                &[&x.buf, &score.buf, &noise.buf, &out.buf, &out_mean.buf],
+                (&dims as *const OuvEAnnealedDims).cast::<c_void>(),
+                size_of::<OuvEAnnealedDims>(),
+                grid,
+                tg,
+                "ouve_annealed_langevin_dev",
+            )?;
+            self.commit_and_wait(cmd, "ouve_annealed_langevin_dev")
+        })
+    }
+
+    /// Device-resident Snake activation. Parameters are effective FP32 alpha
+    /// values; exponentiation for log-scale checkpoints belongs at load time.
+    pub fn snake_activation_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        alpha: &MetalDeviceTensor<'_>,
+        channels: usize,
+        time: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "snake_activation_dev output")?;
+        self.expect_owner(input, "snake_activation_dev input")?;
+        self.expect_owner(alpha, "snake_activation_dev alpha")?;
+        let n = checked_mul(channels, time, "snake_activation_dev channels*time")?;
+        expect_len("snake_activation_dev input", input.len, n)?;
+        expect_len("snake_activation_dev output", out.len, n)?;
+        expect_len("snake_activation_dev alpha", alpha.len, channels)?;
+        if n == 0 {
+            return Ok(());
+        }
+        let dims = SnakeActivationDims {
+            channels: checked_u32(channels, "snake_activation_dev channels")?,
+            time: checked_u32(time, "snake_activation_dev time")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("snake_activation_dev")?;
+            let (grid, tg) = grid_2d(time, channels);
+            self.encode_pass(
+                cmd,
+                self.snake_activation_pipeline,
+                &[&input.buf, &alpha.buf, &out.buf],
+                (&dims as *const SnakeActivationDims).cast::<c_void>(),
+                size_of::<SnakeActivationDims>(),
+                grid,
+                tg,
+                "snake_activation_dev",
+            )?;
+            self.commit_and_wait(cmd, "snake_activation_dev")
+        })
+    }
+
+    /// Device-resident SnakeBeta activation with effective alpha/beta vectors.
+    pub fn snake_beta_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        alpha: &MetalDeviceTensor<'_>,
+        beta: &MetalDeviceTensor<'_>,
+        channels: usize,
+        time: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "snake_beta_dev output")?;
+        self.expect_owner(input, "snake_beta_dev input")?;
+        self.expect_owner(alpha, "snake_beta_dev alpha")?;
+        self.expect_owner(beta, "snake_beta_dev beta")?;
+        let n = checked_mul(channels, time, "snake_beta_dev channels*time")?;
+        expect_len("snake_beta_dev input", input.len, n)?;
+        expect_len("snake_beta_dev output", out.len, n)?;
+        expect_len("snake_beta_dev alpha", alpha.len, channels)?;
+        expect_len("snake_beta_dev beta", beta.len, channels)?;
+        if n == 0 {
+            return Ok(());
+        }
+        let dims = SnakeBetaDims {
+            channels: checked_u32(channels, "snake_beta_dev channels")?,
+            time: checked_u32(time, "snake_beta_dev time")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("snake_beta_dev")?;
+            let (grid, tg) = grid_2d(time, channels);
+            self.encode_pass(
+                cmd,
+                self.snake_beta_pipeline,
+                &[&input.buf, &alpha.buf, &beta.buf, &out.buf],
+                (&dims as *const SnakeBetaDims).cast::<c_void>(),
+                size_of::<SnakeBetaDims>(),
+                grid,
+                tg,
+                "snake_beta_dev",
+            )?;
+            self.commit_and_wait(cmd, "snake_beta_dev")
+        })
+    }
+
+    /// Device-resident anti-aliased upsample. FIR taps are uploaded once by
+    /// the caller and can be shared by every invocation. Each invocation is a
+    /// single synchronous commit/wait and performs no intermediate readback.
+    #[allow(clippy::too_many_arguments)] // intrinsic FIR upsample shape + device tensors
+    pub fn anti_aliased_upsample_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        kernel: &MetalDeviceTensor<'_>,
+        ratio: usize,
+        channels: usize,
+        time_in: usize,
+        taps: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "anti_aliased_upsample_dev output")?;
+        self.expect_owner(input, "anti_aliased_upsample_dev input")?;
+        self.expect_owner(kernel, "anti_aliased_upsample_dev kernel")?;
+        if ratio == 0 || taps == 0 {
+            return Err(VokraError::InvalidArgument(
+                "anti_aliased_upsample_dev ratio/taps must be > 0".to_owned(),
+            ));
+        }
+        let time_out = checked_mul(time_in, ratio, "anti_aliased_upsample_dev time_out")?;
+        expect_len(
+            "anti_aliased_upsample_dev input",
+            input.len,
+            checked_mul(channels, time_in, "anti_aliased_upsample_dev input")?,
+        )?;
+        expect_len("anti_aliased_upsample_dev kernel", kernel.len, taps)?;
+        expect_len(
+            "anti_aliased_upsample_dev output",
+            out.len,
+            checked_mul(channels, time_out, "anti_aliased_upsample_dev output")?,
+        )?;
+        if channels == 0 || time_in == 0 {
+            return Ok(());
+        }
+        let dims = AntiAliasedUpsampleDims {
+            channels: checked_u32(channels, "anti_aliased_upsample_dev channels")?,
+            time_in: checked_u32(time_in, "anti_aliased_upsample_dev time_in")?,
+            time_out: checked_u32(time_out, "anti_aliased_upsample_dev time_out")?,
+            ratio: checked_u32(ratio, "anti_aliased_upsample_dev ratio")?,
+            taps: checked_u32(taps, "anti_aliased_upsample_dev taps")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("anti_aliased_upsample_dev")?;
+            let (grid, tg) = grid_2d(time_out, channels);
+            self.encode_pass(
+                cmd,
+                self.anti_aliased_upsample_pipeline,
+                &[&input.buf, &kernel.buf, &out.buf],
+                (&dims as *const AntiAliasedUpsampleDims).cast::<c_void>(),
+                size_of::<AntiAliasedUpsampleDims>(),
+                grid,
+                tg,
+                "anti_aliased_upsample_dev",
+            )?;
+            self.commit_and_wait(cmd, "anti_aliased_upsample_dev")
+        })
+    }
+
+    /// Device-resident BigVGAN `DownSample1d`: asymmetric replicate padding,
+    /// FIR filtering, and strided decimation. The filter and all tensors are
+    /// channel-major; only an explicit final `download` crosses D2H. This
+    /// primitive is one synchronous commit/wait, not an async/fused graph.
+    #[allow(clippy::too_many_arguments)] // intrinsic FIR downsample shape + device tensors
+    pub fn anti_aliased_downsample_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        kernel: &MetalDeviceTensor<'_>,
+        ratio: usize,
+        channels: usize,
+        time_in: usize,
+        taps: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "anti_aliased_downsample_dev output")?;
+        self.expect_owner(input, "anti_aliased_downsample_dev input")?;
+        self.expect_owner(kernel, "anti_aliased_downsample_dev kernel")?;
+        if ratio == 0 || taps == 0 || time_in == 0 {
+            return Err(VokraError::InvalidArgument(
+                "anti_aliased_downsample_dev ratio/taps/time_in must be > 0".to_owned(),
+            ));
+        }
+        let even = usize::from(taps % 2 == 0);
+        let pad_left = taps / 2 - even;
+        let pad_right = taps / 2;
+        let padded_time = time_in
+            .checked_add(pad_left)
+            .and_then(|v| v.checked_add(pad_right))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "anti_aliased_downsample_dev padded length overflow".to_owned(),
+                )
+            })?;
+        if padded_time < taps {
+            return Err(VokraError::InvalidArgument(
+                "anti_aliased_downsample_dev filter exceeds padded input".to_owned(),
+            ));
+        }
+        let time_out = (padded_time - taps) / ratio + 1;
+        checked_u32(padded_time, "anti_aliased_downsample_dev padded length")?;
+        checked_i32(time_in, "anti_aliased_downsample_dev time_in")?;
+        checked_i32(padded_time, "anti_aliased_downsample_dev padded length")?;
+        checked_i32(pad_left, "anti_aliased_downsample_dev pad_left")?;
+        expect_len(
+            "anti_aliased_downsample_dev input",
+            input.len,
+            checked_mul(channels, time_in, "anti_aliased_downsample_dev input")?,
+        )?;
+        expect_len("anti_aliased_downsample_dev kernel", kernel.len, taps)?;
+        expect_len(
+            "anti_aliased_downsample_dev output",
+            out.len,
+            checked_mul(channels, time_out, "anti_aliased_downsample_dev output")?,
+        )?;
+        let dims = AntiAliasedDownsampleDims {
+            channels: checked_u32(channels, "anti_aliased_downsample_dev channels")?,
+            time_in: checked_u32(time_in, "anti_aliased_downsample_dev time_in")?,
+            time_out: checked_u32(time_out, "anti_aliased_downsample_dev time_out")?,
+            ratio: checked_u32(ratio, "anti_aliased_downsample_dev ratio")?,
+            taps: checked_u32(taps, "anti_aliased_downsample_dev taps")?,
+            pad_left: checked_u32(pad_left, "anti_aliased_downsample_dev pad_left")?,
+        };
+        if channels == 0 {
+            return Ok(());
+        }
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("anti_aliased_downsample_dev")?;
+            let (grid, tg) = grid_2d(time_out, channels);
+            self.encode_pass(
+                cmd,
+                self.anti_aliased_downsample_pipeline,
+                &[&input.buf, &kernel.buf, &out.buf],
+                (&dims as *const AntiAliasedDownsampleDims).cast::<c_void>(),
+                size_of::<AntiAliasedDownsampleDims>(),
+                grid,
+                tg,
+                "anti_aliased_downsample_dev",
+            )?;
+            self.commit_and_wait(cmd, "anti_aliased_downsample_dev")
+        })
+    }
+
+    /// Device-resident scalar multiply, intended for branch averaging after
+    /// an explicit residual sum. One synchronous commit/wait; no D2H copy.
+    pub fn scale_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        scale: f32,
+    ) -> Result<()> {
+        self.expect_owner(out, "scale_dev output")?;
+        self.expect_owner(input, "scale_dev input")?;
+        expect_len("scale_dev output", out.len, input.len)?;
+        if input.is_empty() {
+            return Ok(());
+        }
+        let dims = ScaleDims {
+            n: checked_u32(input.len, "scale_dev length")?,
+            scale,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("scale_dev")?;
+            let (grid, tg) = grid_1d(input.len);
+            self.encode_pass(
+                cmd,
+                self.scale_pipeline,
+                &[&input.buf, &out.buf],
+                (&dims as *const ScaleDims).cast::<c_void>(),
+                size_of::<ScaleDims>(),
+                grid,
+                tg,
+                "scale_dev",
+            )?;
+            self.commit_and_wait(cmd, "scale_dev")
+        })
+    }
+
+    /// Device-resident clamp. The lower/upper bounds are explicit model
+    /// attributes; BigVGAN's terminal seam uses `[-1, 1]`.
+    pub fn clamp_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        lower: f32,
+        upper: f32,
+    ) -> Result<()> {
+        self.expect_owner(out, "clamp_dev output")?;
+        self.expect_owner(input, "clamp_dev input")?;
+        if lower > upper {
+            return Err(VokraError::InvalidArgument(
+                "clamp_dev lower bound must not exceed upper bound".to_owned(),
+            ));
+        }
+        expect_len("clamp_dev output", out.len, input.len)?;
+        if input.is_empty() {
+            return Ok(());
+        }
+        let dims = ClampDims {
+            n: checked_u32(input.len, "clamp_dev length")?,
+            lower,
+            upper,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("clamp_dev")?;
+            let (grid, tg) = grid_1d(input.len);
+            self.encode_pass(
+                cmd,
+                self.clamp_pipeline,
+                &[&input.buf, &out.buf],
+                (&dims as *const ClampDims).cast::<c_void>(),
+                size_of::<ClampDims>(),
+                grid,
+                tg,
+                "clamp_dev",
+            )?;
+            self.commit_and_wait(cmd, "clamp_dev")
+        })
+    }
+
+    /// Device-resident ELU with `alpha = 1`, matching HiFTNet's F0 predictor
+    /// activation. One synchronous commit/wait is issued; no D2H transfer is
+    /// performed.
+    pub fn elu_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+    ) -> Result<()> {
+        self.expect_owner(out, "elu_dev output")?;
+        self.expect_owner(input, "elu_dev input")?;
+        expect_len("elu_dev output", out.len, input.len)?;
+        if input.is_empty() {
+            return Ok(());
+        }
+        let dims = EluDims {
+            n: checked_u32(input.len, "elu_dev length")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("elu_dev")?;
+            let (grid, tg) = grid_1d(input.len);
+            self.encode_pass(
+                cmd,
+                self.elu_pipeline,
+                &[&input.buf, &out.buf],
+                (&dims as *const EluDims).cast::<c_void>(),
+                size_of::<EluDims>(),
+                grid,
+                tg,
+                "elu_dev",
+            )?;
+            self.commit_and_wait(cmd, "elu_dev")
+        })
+    }
+
+    /// Device-resident HiFTNet F0 linear head: `abs(bias + W·x)`. `input` is
+    /// channel-major `[channels, time]`, `weight` is `[channels]`, `bias` is a
+    /// one-element tensor, and `out` is `[time]`. The operation is one
+    /// synchronous commit/wait and keeps all tensors on Metal.
+    pub fn linear_abs_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        weight: &MetalDeviceTensor<'_>,
+        bias: &MetalDeviceTensor<'_>,
+        channels: usize,
+        time: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "linear_abs_dev output")?;
+        self.expect_owner(input, "linear_abs_dev input")?;
+        self.expect_owner(weight, "linear_abs_dev weight")?;
+        self.expect_owner(bias, "linear_abs_dev bias")?;
+        if channels == 0 || time == 0 {
+            return Err(VokraError::InvalidArgument(
+                "linear_abs_dev channels and time must be > 0".to_owned(),
+            ));
+        }
+        let input_len = checked_mul(channels, time, "linear_abs_dev channels*time")?;
+        expect_len("linear_abs_dev input", input.len, input_len)?;
+        expect_len("linear_abs_dev weight", weight.len, channels)?;
+        expect_len("linear_abs_dev bias", bias.len, 1)?;
+        expect_len("linear_abs_dev output", out.len, time)?;
+        let dims = LinearAbsDims {
+            channels: checked_u32(channels, "linear_abs_dev channels")?,
+            time: checked_u32(time, "linear_abs_dev time")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("linear_abs_dev")?;
+            let (grid, tg) = grid_1d(time);
+            self.encode_pass(
+                cmd,
+                self.linear_abs_pipeline,
+                &[&input.buf, &weight.buf, &bias.buf, &out.buf],
+                (&dims as *const LinearAbsDims).cast::<c_void>(),
+                size_of::<LinearAbsDims>(),
+                grid,
+                tg,
+                "linear_abs_dev",
+            )?;
+            self.commit_and_wait(cmd, "linear_abs_dev")
+        })
+    }
+
+    /// Device-resident HiFTNet NSF source mixer: `tanh(bias + W·x)`.
+    /// `input` is channel-major `[channels, time]`, `weight` is `[channels]`,
+    /// `bias` is a one-element tensor, and `out` is `[time]`. This affine
+    /// reduction is separate from [`Self::linear_abs_dev`] so the source
+    /// branch can consume channel-major SineGen bytes without reinterpretation.
+    pub fn linear_tanh_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        weight: &MetalDeviceTensor<'_>,
+        bias: &MetalDeviceTensor<'_>,
+        channels: usize,
+        time: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "linear_tanh_dev output")?;
+        self.expect_owner(input, "linear_tanh_dev input")?;
+        self.expect_owner(weight, "linear_tanh_dev weight")?;
+        self.expect_owner(bias, "linear_tanh_dev bias")?;
+        if channels == 0 || time == 0 {
+            return Err(VokraError::InvalidArgument(
+                "linear_tanh_dev channels and time must be > 0".to_owned(),
+            ));
+        }
+        let input_len = checked_mul(channels, time, "linear_tanh_dev channels*time")?;
+        expect_len("linear_tanh_dev input", input.len, input_len)?;
+        expect_len("linear_tanh_dev weight", weight.len, channels)?;
+        expect_len("linear_tanh_dev bias", bias.len, 1)?;
+        expect_len("linear_tanh_dev output", out.len, time)?;
+        let dims = LinearAbsDims {
+            channels: checked_u32(channels, "linear_tanh_dev channels")?,
+            time: checked_u32(time, "linear_tanh_dev time")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("linear_tanh_dev")?;
+            let (grid, tg) = grid_1d(time);
+            self.encode_pass(
+                cmd,
+                self.linear_tanh_pipeline,
+                &[&input.buf, &weight.buf, &bias.buf, &out.buf],
+                (&dims as *const LinearAbsDims).cast::<c_void>(),
+                size_of::<LinearAbsDims>(),
+                grid,
+                tg,
+                "linear_tanh_dev",
+            )?;
+            self.commit_and_wait(cmd, "linear_tanh_dev")
+        })
+    }
+
+    /// Device-resident nearest-neighbour temporal upsample. Both tensors use
+    /// channel-major `[channels, time]` layout and `out` must have shape
+    /// `[channels, time_in * factor]`. One synchronous commit/wait is issued.
+    pub fn nearest_upsample_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        channels: usize,
+        time_in: usize,
+        factor: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "nearest_upsample_dev output")?;
+        self.expect_owner(input, "nearest_upsample_dev input")?;
+        if channels == 0 || time_in == 0 || factor == 0 {
+            return Err(VokraError::InvalidArgument(
+                "nearest_upsample_dev channels, time_in, and factor must be > 0".to_owned(),
+            ));
+        }
+        let time_out = checked_mul(time_in, factor, "nearest_upsample_dev time_out")?;
+        expect_len(
+            "nearest_upsample_dev input",
+            input.len,
+            checked_mul(channels, time_in, "nearest_upsample_dev input")?,
+        )?;
+        expect_len(
+            "nearest_upsample_dev output",
+            out.len,
+            checked_mul(channels, time_out, "nearest_upsample_dev output")?,
+        )?;
+        let dims = NearestUpsampleDims {
+            channels: checked_u32(channels, "nearest_upsample_dev channels")?,
+            time_in: checked_u32(time_in, "nearest_upsample_dev time_in")?,
+            time_out: checked_u32(time_out, "nearest_upsample_dev time_out")?,
+            factor: checked_u32(factor, "nearest_upsample_dev factor")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("nearest_upsample_dev")?;
+            let (grid, tg) = grid_2d(time_out, channels);
+            self.encode_pass(
+                cmd,
+                self.nearest_upsample_pipeline,
+                &[&input.buf, &out.buf],
+                (&dims as *const NearestUpsampleDims).cast::<c_void>(),
+                size_of::<NearestUpsampleDims>(),
+                grid,
+                tg,
+                "nearest_upsample_dev",
+            )?;
+            self.commit_and_wait(cmd, "nearest_upsample_dev")
+        })
+    }
+
+    /// Device-resident deterministic SineGen route. `f0` is `[T]` and `out`
+    /// is `[T, harmonic_num + 1]` (time-major). This matches
+    /// `sinegen_deterministic_f32` and the deterministic `NsfEntropy` path;
+    /// phase and stochastic noise are intentionally not part of this API.
+    pub fn sinegen_deterministic_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        f0: &MetalDeviceTensor<'_>,
+        samp_rate: u32,
+        harmonic_num: u32,
+        sine_amp: f32,
+        voiced_threshold: f32,
+    ) -> Result<()> {
+        self.expect_owner(out, "sinegen_deterministic_dev output")?;
+        self.expect_owner(f0, "sinegen_deterministic_dev f0")?;
+        if f0.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "sinegen_deterministic_dev f0 must be non-empty".to_owned(),
+            ));
+        }
+        if samp_rate == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sinegen_deterministic_dev samp_rate must be > 0".to_owned(),
+            ));
+        }
+        let h1 = (harmonic_num as usize).checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "sinegen_deterministic_dev harmonic count overflow".to_owned(),
+            )
+        })?;
+        let expected = checked_mul(f0.len, h1, "sinegen_deterministic_dev output")?;
+        expect_len("sinegen_deterministic_dev output", out.len, expected)?;
+        let dims = SinegenDeterministicDims {
+            t: checked_u32(f0.len, "sinegen_deterministic_dev time")?,
+            h1: checked_u32(h1, "sinegen_deterministic_dev harmonics")?,
+            samp_rate_f: samp_rate as f32,
+            sine_amp,
+            voiced_threshold,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("sinegen_deterministic_dev")?;
+            let (grid, tg) = grid_1d(h1);
+            self.encode_pass(
+                cmd,
+                self.sinegen_deterministic_pipeline,
+                &[&f0.buf, &out.buf],
+                (&dims as *const SinegenDeterministicDims).cast::<c_void>(),
+                size_of::<SinegenDeterministicDims>(),
+                grid,
+                tg,
+                "sinegen_deterministic_dev",
+            )?;
+            self.commit_and_wait(cmd, "sinegen_deterministic_dev")
+        })
+    }
+
+    /// Device-resident deterministic SineGen with the HiFT graph's required
+    /// channel-major `[harmonic_num + 1, time]` output layout. This is kept
+    /// separate from [`Self::sinegen_deterministic_dev`], whose legacy
+    /// host-facing contract is time-major `[time, harmonic_num + 1]`.
+    pub fn sinegen_deterministic_channel_major_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        f0: &MetalDeviceTensor<'_>,
+        samp_rate: u32,
+        harmonic_num: u32,
+        sine_amp: f32,
+        voiced_threshold: f32,
+    ) -> Result<()> {
+        self.expect_owner(out, "sinegen_deterministic_channel_major_dev output")?;
+        self.expect_owner(f0, "sinegen_deterministic_channel_major_dev f0")?;
+        if f0.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "sinegen_deterministic_channel_major_dev f0 must be non-empty".to_owned(),
+            ));
+        }
+        if samp_rate == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sinegen_deterministic_channel_major_dev samp_rate must be > 0".to_owned(),
+            ));
+        }
+        let h1 = (harmonic_num as usize).checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "sinegen_deterministic_channel_major_dev harmonic count overflow".to_owned(),
+            )
+        })?;
+        let expected = checked_mul(f0.len, h1, "sinegen_deterministic_channel_major_dev output")?;
+        expect_len(
+            "sinegen_deterministic_channel_major_dev output",
+            out.len,
+            expected,
+        )?;
+        let dims = SinegenDeterministicDims {
+            t: checked_u32(f0.len, "sinegen_deterministic_channel_major_dev time")?,
+            h1: checked_u32(h1, "sinegen_deterministic_channel_major_dev harmonics")?,
+            samp_rate_f: samp_rate as f32,
+            sine_amp,
+            voiced_threshold,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("sinegen_deterministic_channel_major_dev")?;
+            let (grid, tg) = grid_1d(h1);
+            self.encode_pass(
+                cmd,
+                self.sinegen_deterministic_channel_major_pipeline,
+                &[&f0.buf, &out.buf],
+                (&dims as *const SinegenDeterministicDims).cast::<c_void>(),
+                size_of::<SinegenDeterministicDims>(),
+                grid,
+                tg,
+                "sinegen_deterministic_channel_major_dev",
+            )?;
+            self.commit_and_wait(cmd, "sinegen_deterministic_channel_major_dev")
+        })
+    }
+
+    /// Device-resident HiFT source STFT. The input is `[T]`; the output is
+    /// channel-major `[Re F, frames; Im F, frames]`, using periodic Hann,
+    /// centered `n_fft/2` reflect padding, backward (unscaled) RFFT, and the
+    /// CPU frame formula from `StftAttrs::new`: pad to `T + 2*(n_fft/2)` and
+    /// derive frames from the padded extent. This direct-DTF pass is
+    /// synchronous and performs no host readback.
+    pub fn hift_stft_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        input: &MetalDeviceTensor<'_>,
+        n_fft: usize,
+        hop: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "hift_stft_dev output")?;
+        self.expect_owner(input, "hift_stft_dev input")?;
+        if n_fft == 0 || hop == 0 {
+            return Err(VokraError::InvalidArgument(
+                "hift_stft_dev n_fft and hop must be non-zero".to_owned(),
+            ));
+        }
+        let bins = n_fft / 2 + 1;
+        let center = n_fft / 2;
+        let padded_len = checked_mul(center, 2, "hift_stft_dev center padding")?
+            .checked_add(input.len)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("hift_stft_dev padded length overflow".to_owned())
+            })?;
+        let frames = if padded_len >= n_fft {
+            (padded_len - n_fft)
+                .checked_div(hop)
+                .and_then(|v| v.checked_add(1))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument("hift_stft_dev frame count overflow".to_owned())
+                })?
+        } else {
+            0
+        };
+        let padded_total = if frames == 0 {
+            0
+        } else {
+            checked_mul(frames - 1, hop, "hift_stft_dev frame extent")?
+                .checked_add(n_fft)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument("hift_stft_dev extent overflow".to_owned())
+                })?
+        };
+        checked_i32(input.len, "hift_stft_dev input length")?;
+        if !input.is_empty() {
+            checked_i32(
+                checked_mul(input.len, 2, "hift_stft_dev reflect period")?,
+                "hift_stft_dev reflect period",
+            )?;
+        }
+        checked_i32(padded_total, "hift_stft_dev frame extent")?;
+        checked_u32(
+            checked_mul(n_fft, n_fft, "hift_stft_dev frequency product")?,
+            "hift_stft_dev frequency product",
+        )?;
+        checked_u32(n_fft, "hift_stft_dev n_fft")?;
+        checked_u32(hop, "hift_stft_dev hop")?;
+        let expected = checked_mul(
+            2,
+            checked_mul(bins, frames, "hift_stft_dev frame buffer")?,
+            "hift_stft_dev output",
+        )?;
+        expect_len("hift_stft_dev output", out.len, expected)?;
+        if frames == 0 {
+            return Ok(());
+        }
+        let dims = HiftStftDims {
+            time_in: checked_u32(input.len, "hift_stft_dev time_in")?,
+            n_fft: checked_u32(n_fft, "hift_stft_dev n_fft")?,
+            hop: checked_u32(hop, "hift_stft_dev hop")?,
+            frames: checked_u32(frames, "hift_stft_dev frames")?,
+            bins: checked_u32(bins, "hift_stft_dev bins")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("hift_stft_dev")?;
+            let (grid, tg) = grid_2d(frames, bins);
+            self.encode_pass(
+                cmd,
+                self.hift_stft_pipeline,
+                &[&input.buf, &out.buf],
+                (&dims as *const HiftStftDims).cast::<c_void>(),
+                size_of::<HiftStftDims>(),
+                grid,
+                tg,
+                "hift_stft_dev",
+            )?;
+            self.commit_and_wait(cmd, "hift_stft_dev")
+        })
+    }
+
+    /// Device-resident HiFT logits postprocess. `logits` and `out` use the
+    /// channel-major `[magnitude F, frames; phase F, frames]` layout; `out`
+    /// receives `[Re F, frames; Im F, frames]`. Magnitudes use the exact
+    /// `min(exp(logit), 100)` order and phases use `sin(logit)`. Non-finite
+    /// phase logits deliberately produce NaN, matching Rust `f32::sin`.
+    pub fn complex_from_logits_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        logits: &MetalDeviceTensor<'_>,
+        n_fft: usize,
+        frames: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "complex_from_logits_dev output")?;
+        self.expect_owner(logits, "complex_from_logits_dev logits")?;
+        if n_fft == 0 || frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "complex_from_logits_dev n_fft and frames must be non-zero".to_owned(),
+            ));
+        }
+        let bins = n_fft / 2 + 1;
+        checked_u32(
+            checked_mul(n_fft, n_fft, "complex_from_logits_dev frequency product")?,
+            "complex_from_logits_dev frequency product",
+        )?;
+        let spectral_len = checked_mul(
+            2,
+            checked_mul(bins, frames, "complex_from_logits_dev frame buffer")?,
+            "complex_from_logits_dev spectral buffer",
+        )?;
+        expect_len("complex_from_logits_dev logits", logits.len, spectral_len)?;
+        expect_len("complex_from_logits_dev output", out.len, spectral_len)?;
+        let dims = HiftComplexDims {
+            frames: checked_u32(frames, "complex_from_logits_dev frames")?,
+            bins: checked_u32(bins, "complex_from_logits_dev bins")?,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("complex_from_logits_dev")?;
+            let (grid, tg) = grid_2d(frames, 2 * bins);
+            self.encode_pass(
+                cmd,
+                self.hift_complex_pipeline,
+                &[&logits.buf, &out.buf],
+                (&dims as *const HiftComplexDims).cast::<c_void>(),
+                size_of::<HiftComplexDims>(),
+                grid,
+                tg,
+                "complex_from_logits_dev",
+            )?;
+            self.commit_and_wait(cmd, "complex_from_logits_dev")
+        })
+    }
+
+    /// Device-resident centered periodic-Hann iSTFT from a complex spectrum.
+    /// `spectrum` and `out` are channel-major `[Re F, frames; Im F, frames]`
+    /// and `[samples]`; this pass performs WOLA normalization and center trim,
+    /// but intentionally does not apply an audio-limit clamp. Use
+    /// [`Self::clamp_dev`] with the model's configured limit afterward.
+    pub fn istft_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        spectrum: &MetalDeviceTensor<'_>,
+        n_fft: usize,
+        hop: usize,
+        frames: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "istft_dev output")?;
+        self.expect_owner(spectrum, "istft_dev spectrum")?;
+        if n_fft == 0 || hop == 0 || frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "istft_dev n_fft, hop, and frames must be non-zero".to_owned(),
+            ));
+        }
+        let bins = n_fft / 2 + 1;
+        let total = checked_mul(frames - 1, hop, "istft_dev frame extent")?
+            .checked_add(n_fft)
+            .ok_or_else(|| VokraError::InvalidArgument("istft_dev extent overflow".to_owned()))?;
+        let center_trim = checked_mul(2, n_fft / 2, "istft_dev center trim")?;
+        let out_len = total.checked_sub(center_trim).ok_or_else(|| {
+            VokraError::InvalidArgument("istft_dev center trim underflow".to_owned())
+        })?;
+        checked_u32(
+            checked_mul(n_fft, n_fft, "istft_dev frequency product")?,
+            "istft_dev frequency product",
+        )?;
+        checked_i32(total, "istft_dev frame extent")?;
+        let spectral_len = checked_mul(
+            2,
+            checked_mul(bins, frames, "istft_dev frame buffer")?,
+            "istft_dev spectrum",
+        )?;
+        expect_len("istft_dev spectrum", spectrum.len, spectral_len)?;
+        expect_len("istft_dev output", out.len, out_len)?;
+        let dims = HiftIstftDims {
+            n_fft: checked_u32(n_fft, "istft_dev n_fft")?,
+            hop: checked_u32(hop, "istft_dev hop")?,
+            frames: checked_u32(frames, "istft_dev frames")?,
+            bins: checked_u32(bins, "istft_dev bins")?,
+            out_len: checked_u32(out_len, "istft_dev output length")?,
+        };
+        if out_len == 0 {
+            return Ok(());
+        }
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("istft_dev")?;
+            let (grid, tg) = grid_1d(out_len);
+            self.encode_pass(
+                cmd,
+                self.hift_istft_pipeline,
+                &[&spectrum.buf, &out.buf],
+                (&dims as *const HiftIstftDims).cast::<c_void>(),
+                size_of::<HiftIstftDims>(),
+                grid,
+                tg,
+                "istft_dev",
+            )?;
+            self.commit_and_wait(cmd, "istft_dev")
+        })
+    }
+
+    /// Device-resident convenience route for HiFTNet's logits → complex →
+    /// iSTFT → configured clamp sequence. `audio_limit` is explicit (rather
+    /// than an unconditional ±1), so model configurations with a larger or
+    /// smaller limit retain their CPU semantics. For trait-level orchestration
+    /// use [`Self::complex_from_logits_dev`], [`Self::istft_dev`], and
+    /// [`Self::clamp_dev`] separately.
+    pub fn hift_istft_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        logits: &MetalDeviceTensor<'_>,
+        n_fft: usize,
+        hop: usize,
+        frames: usize,
+        audio_limit: f32,
+    ) -> Result<()> {
+        self.expect_owner(out, "hift_istft_dev output")?;
+        self.expect_owner(logits, "hift_istft_dev logits")?;
+        if !audio_limit.is_finite() || audio_limit < 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "hift_istft_dev audio_limit must be finite and non-negative".to_owned(),
+            ));
+        }
+        if n_fft == 0 || hop == 0 || frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "hift_istft_dev n_fft, hop, and frames must be non-zero".to_owned(),
+            ));
+        }
+        let bins = n_fft / 2 + 1;
+        let spectral_len = checked_mul(
+            2,
+            checked_mul(bins, frames, "hift_istft_dev spectral buffer")?,
+            "hift_istft_dev logits",
+        )?;
+        expect_len("hift_istft_dev logits", logits.len, spectral_len)?;
+        let total = checked_mul(frames - 1, hop, "hift_istft_dev frame extent")?
+            .checked_add(n_fft)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("hift_istft_dev extent overflow".to_owned())
+            })?;
+        let center_trim = checked_mul(2, n_fft / 2, "hift_istft_dev center trim")?;
+        let out_len = total.checked_sub(center_trim).ok_or_else(|| {
+            VokraError::InvalidArgument("hift_istft_dev center trim underflow".to_owned())
+        })?;
+        expect_len("hift_istft_dev output", out.len, out_len)?;
+        let mut complex = self.alloc_dev(spectral_len)?;
+        self.complex_from_logits_dev(&mut complex, logits, n_fft, frames)?;
+        let mut raw = self.alloc_dev(out_len)?;
+        self.istft_dev(&mut raw, &complex, n_fft, hop, frames)?;
+        self.clamp_dev(out, &raw, -audio_limit, audio_limit)
     }
 
     /// Device-in/out affine layer normalisation (one self-contained submission):
@@ -6513,7 +9799,14 @@ impl MetalContext {
         cols: usize,
         eps: f32,
     ) -> Result<()> {
+        self.expect_owner(out, "layer_norm_dev output")?;
+        self.expect_owner(x, "layer_norm_dev input")?;
+        self.expect_owner(gamma, "layer_norm_dev gamma")?;
+        self.expect_owner(beta, "layer_norm_dev beta")?;
         let total = checked_mul(rows, cols, "layer_norm_dev rows*cols")?;
+        checked_u32(rows, "layer_norm_dev rows")?;
+        checked_u32(cols, "layer_norm_dev cols")?;
+        checked_u32(total, "layer_norm_dev rows*cols")?;
         expect_len("layer_norm_dev x", x.len, total)?;
         expect_len("layer_norm_dev out", out.len, total)?;
         expect_len("layer_norm_dev gamma", gamma.len, cols)?;
@@ -6543,7 +9836,10 @@ impl MetalContext {
         dst: &mut MetalDeviceTensor<'_>,
         src: &MetalDeviceTensor<'_>,
     ) -> Result<()> {
+        self.expect_owner(dst, "residual_add_dev destination")?;
+        self.expect_owner(src, "residual_add_dev source")?;
         expect_len("residual_add_dev src", src.len, dst.len)?;
+        checked_u32(dst.len, "residual_add_dev length")?;
         if dst.len == 0 {
             return Ok(());
         }
@@ -6574,7 +9870,10 @@ impl MetalContext {
         dst: &mut MetalDeviceTensor<'_>,
         src: &MetalDeviceTensor<'_>,
     ) -> Result<()> {
+        self.expect_owner(dst, "mul_dev destination")?;
+        self.expect_owner(src, "mul_dev source")?;
         expect_len("mul_dev src", src.len, dst.len)?;
+        checked_u32(dst.len, "mul_dev length")?;
         if dst.len == 0 {
             return Ok(());
         }
@@ -6602,7 +9901,10 @@ impl MetalContext {
         dst: &mut MetalDeviceTensor<'_>,
         src: &MetalDeviceTensor<'_>,
     ) -> Result<()> {
+        self.expect_owner(dst, "copy_dev destination")?;
+        self.expect_owner(src, "copy_dev source")?;
         expect_len("copy_dev src", src.len, dst.len)?;
+        checked_u32(dst.len, "copy_dev length")?;
         if dst.len == 0 {
             return Ok(());
         }
@@ -6635,11 +9937,24 @@ impl MetalContext {
         fc2_bias: Option<&MetalDeviceTensor<'_>>,
         out: &mut MetalDeviceTensor<'_>,
     ) -> Result<()> {
+        self.expect_owner(out, "mlp_dev output")?;
+        self.expect_owner(x, "mlp_dev input")?;
+        self.expect_owner(fc1_w, "mlp_dev fc1 weight")?;
+        self.expect_owner(fc2_w, "mlp_dev fc2 weight")?;
+        if let Some(b) = fc1_bias {
+            self.expect_owner(b, "mlp_dev fc1 bias")?;
+        }
+        if let Some(b) = fc2_bias {
+            self.expect_owner(b, "mlp_dev fc2 bias")?;
+        }
         if t == 0 || d == 0 || ffn == 0 {
             return Err(VokraError::InvalidArgument(
                 "mlp_dev dimensions t, d, ffn must all be >= 1".to_owned(),
             ));
         }
+        checked_u32(t, "mlp_dev t")?;
+        checked_u32(d, "mlp_dev d")?;
+        checked_u32(ffn, "mlp_dev ffn")?;
         expect_len("mlp_dev x", x.len, checked_mul(t, d, "mlp_dev t*d")?)?;
         expect_len(
             "mlp_dev fc1_w",
@@ -6663,6 +9978,10 @@ impl MetalContext {
             expect_len("mlp_dev fc2_bias", b.len, d)?;
         }
         let inter = checked_mul(t, ffn, "mlp_dev t*ffn")?;
+        checked_u32(inter, "mlp_dev t*ffn")?;
+        checked_u32(checked_mul(t, d, "mlp_dev t*d")?, "mlp_dev t*d")?;
+        checked_u32(checked_mul(d, ffn, "mlp_dev d*ffn")?, "mlp_dev d*ffn")?;
+        checked_u32(checked_mul(ffn, d, "mlp_dev ffn*d")?, "mlp_dev ffn*d")?;
         self.pooled(|| {
             let dummy = self.new_buffer_from_slice(&[0.0f32])?;
             let h_buf = self.new_buffer_output(inter)?;
@@ -6719,11 +10038,27 @@ impl MetalContext {
         scale: f32,
         out: &mut MetalDeviceTensor<'_>,
     ) -> Result<()> {
+        self.expect_owner(out, "attn_dev output")?;
+        self.expect_owner(xq, "attn_dev query")?;
+        self.expect_owner(q_w, "attn_dev query weight")?;
+        self.expect_owner(k, "attn_dev key")?;
+        self.expect_owner(v, "attn_dev value")?;
+        self.expect_owner(out_w, "attn_dev output weight")?;
+        if let Some(b) = q_bias {
+            self.expect_owner(b, "attn_dev query bias")?;
+        }
+        if let Some(b) = out_bias {
+            self.expect_owner(b, "attn_dev output bias")?;
+        }
         if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
             return Err(VokraError::InvalidArgument(
                 "attn_dev dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
             ));
         }
+        checked_u32(t_q, "attn_dev t_q")?;
+        checked_u32(t_kv, "attn_dev t_kv")?;
+        checked_u32(d, "attn_dev d")?;
+        checked_u32(n_head, "attn_dev n_head")?;
         if d % n_head != 0 {
             return Err(VokraError::InvalidArgument(format!(
                 "attn_dev d ({d}) must be divisible by n_head ({n_head})"
@@ -6757,6 +10092,17 @@ impl MetalContext {
         let tkv_hd = checked_mul(t_kv, hd, "attn_dev t_kv*hd")?;
         let hd_tkv = checked_mul(hd, t_kv, "attn_dev hd*t_kv")?;
         let tq_tkv = checked_mul(t_q, t_kv, "attn_dev t_q*t_kv")?;
+        for (name, value) in [
+            ("attn_dev d*d", dd),
+            ("attn_dev t_kv*d", tkvd),
+            ("attn_dev t_q*d", tqd),
+            ("attn_dev t_q*hd", tq_hd),
+            ("attn_dev t_kv*hd", tkv_hd),
+            ("attn_dev hd*t_kv", hd_tkv),
+            ("attn_dev t_q*t_kv", tq_tkv),
+        ] {
+            checked_u32(value, name)?;
+        }
         self.pooled(|| {
             let dummy = self.new_buffer_from_slice(&[0.0f32])?;
             let q_buf = self.new_buffer_output(tqd)?;
@@ -6830,11 +10176,20 @@ impl MetalContext {
         n: usize,
         k: usize,
     ) -> Result<()> {
+        self.expect_owner(out, "gemm_dev output")?;
+        self.expect_owner(a, "gemm_dev lhs")?;
+        self.expect_owner(b, "gemm_dev rhs")?;
+        if let Some(bs) = bias {
+            self.expect_owner(bs, "gemm_dev bias")?;
+        }
         if m == 0 || n == 0 || k == 0 {
             return Err(VokraError::InvalidArgument(
                 "gemm_dev dimensions m, n, k must all be >= 1".to_owned(),
             ));
         }
+        checked_u32(m, "gemm_dev m")?;
+        checked_u32(n, "gemm_dev n")?;
+        checked_u32(k, "gemm_dev k")?;
         expect_len("gemm_dev a", a.len, checked_mul(m, k, "gemm_dev m*k")?)?;
         expect_len("gemm_dev b", b.len, checked_mul(k, n, "gemm_dev k*n")?)?;
         // The written region ends at row (out_row_offset + m); it must fit `out`.
@@ -6842,6 +10197,7 @@ impl MetalContext {
             VokraError::InvalidArgument("gemm_dev row offset overflow".to_owned())
         })?;
         let need = checked_mul(end_rows, n, "gemm_dev (offset+m)*n")?;
+        checked_u32(need, "gemm_dev output region")?;
         if out.len < need {
             return Err(VokraError::InvalidArgument(format!(
                 "gemm_dev out holds {} f32 but the offset write needs {need}",
@@ -7697,10 +11053,20 @@ impl Drop for MetalContext {
             release(self.qwen3_tts_codec_decode_pipeline);
             release(self.denoise_apply_mask_pipeline);
             release(self.snac_decode_pipeline);
+            release(self.hift_istft_pipeline);
+            release(self.hift_complex_pipeline);
+            release(self.hift_stft_pipeline);
+            release(self.nearest_upsample_pipeline);
             // Vocoder Metal wave common vocoder primitives — released after
             // the WF5 codec siblings and before the WF2 snake_activation so
             // the LIFO order matches the construction order in `build`.
+            release(self.pad1d_pipeline);
+            release(self.conv_transpose1d_pipeline);
+            release(self.clamp_pipeline);
+            release(self.scale_pipeline);
+            release(self.anti_aliased_downsample_pipeline);
             release(self.anti_aliased_upsample_pipeline);
+            release(self.sinegen_deterministic_channel_major_pipeline);
             release(self.sinegen_deterministic_pipeline);
             release(self.snake_beta_pipeline);
             release(self.snake_activation_pipeline);
@@ -7709,6 +11075,8 @@ impl Drop for MetalContext {
             release(self.dac_rvq_gather_project_fold_pipeline);
             release(self.mimi_rvq_gather_fold_pipeline);
             release(self.swiglu_pipeline);
+            release(self.ouve_annealed_langevin_pipeline);
+            release(self.ouve_reverse_diffusion_pipeline);
             release(self.silu_pipeline);
             release(self.rope_adjacent_pipeline);
             release(self.scale_norm_pipeline);
@@ -7722,17 +11090,25 @@ impl Drop for MetalContext {
             release(self.col_scatter_pipeline);
             release(self.col_gather_t_pipeline);
             release(self.col_gather_pipeline);
+            release(self.conv_transpose2d_pipeline);
+            release(self.fir_resample_2d_pipeline);
+            release(self.conv2d_pipeline);
             release(self.conv1d_pipeline);
+            release(self.leaky_relu_pipeline);
             release(self.tanh_pipeline);
+            release(self.linear_tanh_pipeline);
+            release(self.linear_abs_pipeline);
             release(self.elu_pipeline);
             release(self.relu_pipeline);
             release(self.gelu_new_pipeline);
             release(self.gelu_pipeline);
+            release(self.group_norm_groups_pipeline);
             release(self.group_norm_pipeline);
             release(self.layer_norm_pipeline);
             release(self.softmax_causal_pipeline);
             release(self.softmax_pipeline);
             release(self.gemv_pipeline);
+            release(self.gemm_f32_bf16_bits_pipeline);
             release(self.gemm_pipeline);
             release(self.queue);
             release(self.device);
@@ -8674,6 +12050,181 @@ fn checked_mul(a: usize, b: usize, what: &str) -> Result<usize> {
     })
 }
 
+fn checked_u32(value: usize, what: &str) -> Result<u32> {
+    u32::try_from(value)
+        .map_err(|_| VokraError::InvalidArgument(format!("{what}: value exceeds u32")))
+}
+
+fn checked_i32(value: usize, what: &str) -> Result<i32> {
+    i32::try_from(value)
+        .map_err(|_| VokraError::InvalidArgument(format!("{what}: value exceeds i32")))
+}
+
+/// Validates every element-count product used by mixed BF16 GEMM.
+///
+/// The MSL kernel computes row-major indexes as uint; a product that fits
+/// usize but exceeds u32::MAX is therefore rejected before allocation or
+/// dispatch.
+fn validate_mixed_bf16_dims(
+    m: usize,
+    n: usize,
+    k: usize,
+    what: &str,
+) -> Result<(usize, usize, usize)> {
+    checked_u32(m, &format!("{what} m"))?;
+    checked_u32(n, &format!("{what} n"))?;
+    checked_u32(k, &format!("{what} k"))?;
+    let mk = checked_mul(m, k, &format!("{what} m*k"))?;
+    let kn = checked_mul(k, n, &format!("{what} k*n"))?;
+    let mn = checked_mul(m, n, &format!("{what} m*n"))?;
+    checked_u32(mk, &format!("{what} m*k"))?;
+    checked_u32(kn, &format!("{what} k*n"))?;
+    checked_u32(mn, &format!("{what} m*n"))?;
+    Ok((mk, kn, mn))
+}
+
+fn validate_ouve_params(
+    theta: f32,
+    sigma_min: f32,
+    sigma_max: f32,
+    t: f32,
+    step: f32,
+    snr: Option<f32>,
+) -> Result<()> {
+    if !theta.is_finite()
+        || !sigma_min.is_finite()
+        || !sigma_max.is_finite()
+        || theta < 0.0
+        || sigma_min <= 0.0
+        || sigma_max <= sigma_min
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE config requires finite theta >= 0 and 0 < sigma_min < sigma_max".to_owned(),
+        ));
+    }
+    if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+        return Err(VokraError::InvalidArgument(
+            "OUVE time must be finite and in [0, 1]".to_owned(),
+        ));
+    }
+    if !step.is_finite() || step <= 0.0 {
+        return Err(VokraError::InvalidArgument(
+            "OUVE reverse step must be finite and positive".to_owned(),
+        ));
+    }
+    if let Some(snr) = snr {
+        if !snr.is_finite() || snr < 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "OUVE annealed Langevin SNR must be finite and non-negative".to_owned(),
+            ));
+        }
+    }
+    let ratio = sigma_max / sigma_min;
+    let log_ratio = ratio.ln();
+    let diffusion_exponent = log_ratio * t;
+    let diffusion = sigma_min * diffusion_exponent.exp() * (2.0 * log_ratio).sqrt();
+    let score_scale = diffusion * diffusion;
+    let noise_variance = score_scale * step;
+    if !ratio.is_finite()
+        || ratio <= 1.0
+        || !log_ratio.is_finite()
+        || log_ratio <= 0.0
+        || !diffusion_exponent.is_finite()
+        || !diffusion.is_finite()
+        || !score_scale.is_finite()
+        || !noise_variance.is_finite()
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE ratio/diffusion/score/noise coefficient is not finite".to_owned(),
+        ));
+    }
+    if let Some(snr) = snr {
+        let denominator = theta + log_ratio;
+        let decay = -2.0 * theta * t;
+        let growth = 2.0 * denominator * t;
+        let variance =
+            sigma_min * sigma_min * decay.exp() * (growth.exp() - 1.0) * log_ratio / denominator;
+        let std = variance.sqrt();
+        let scaled_std = snr * std;
+        let step_size = 2.0 * scaled_std.powi(2);
+        let langevin_noise_variance = 2.0 * step_size;
+        if !denominator.is_finite()
+            || denominator <= 0.0
+            || !decay.is_finite()
+            || !growth.is_finite()
+            || !variance.is_finite()
+            || variance < 0.0
+            || !std.is_finite()
+            || !scaled_std.is_finite()
+            || !step_size.is_finite()
+            || !langevin_noise_variance.is_finite()
+        {
+            return Err(VokraError::InvalidArgument(
+                "OUVE variance/score/noise coefficient is not finite".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_ouve_host_buffers(
+    x: &[f32],
+    y: &[f32],
+    score: &[f32],
+    noise: &[f32],
+    out: &[f32],
+    out_mean: &[f32],
+) -> Result<()> {
+    let n = x.len();
+    if [y.len(), score.len(), noise.len(), out.len(), out_mean.len()]
+        .into_iter()
+        .any(|len| len != n)
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE predictor buffers must have equal lengths".to_owned(),
+        ));
+    }
+    if x.iter()
+        .chain(y)
+        .chain(score)
+        .chain(noise)
+        .any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE predictor buffers must contain finite values".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ouve_host_buffers_unary(
+    x: &[f32],
+    score: &[f32],
+    noise: &[f32],
+    out: &[f32],
+    out_mean: &[f32],
+) -> Result<()> {
+    let n = x.len();
+    if [score.len(), noise.len(), out.len(), out_mean.len()]
+        .into_iter()
+        .any(|len| len != n)
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE corrector buffers must have equal lengths".to_owned(),
+        ));
+    }
+    if x.iter()
+        .chain(score)
+        .chain(noise)
+        .any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE corrector buffers must contain finite values".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn expect_len(name: &str, got: usize, want: usize) -> Result<()> {
     if got == want {
         Ok(())
@@ -8705,6 +12256,20 @@ fn validate_gemm(
         expect_len("gemm bias", bias.len(), n)?;
     }
     Ok(())
+}
+
+fn validate_mixed_bf16_host(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[u16],
+    out: &[f32],
+) -> Result<()> {
+    let (mk, kn, mn) = validate_mixed_bf16_dims(m, n, k, "gemm_f32_bf16_bits")?;
+    expect_len("gemm_f32_bf16_bits activation", a.len(), mk)?;
+    expect_len("gemm_f32_bf16_bits weight", b.len(), kn)?;
+    expect_len("gemm_f32_bf16_bits output", out.len(), mn)
 }
 
 fn validate_gemv(
@@ -8761,6 +12326,73 @@ fn validate_group_norm(
     expect_len("group_norm out", out.len(), total)?;
     expect_len("group_norm gamma", gamma.len(), channels)?;
     expect_len("group_norm beta", beta.len(), channels)
+}
+
+struct GroupNormGroupsArgs<'a> {
+    input: &'a [f32],
+    out: &'a [f32],
+    channels: usize,
+    positions: usize,
+    groups: usize,
+    gamma: &'a [f32],
+    beta: &'a [f32],
+    eps: f32,
+}
+
+fn validate_group_norm_groups(args: GroupNormGroupsArgs<'_>) -> Result<()> {
+    let GroupNormGroupsArgs {
+        input,
+        out,
+        channels,
+        positions,
+        groups,
+        gamma,
+        beta,
+        eps,
+    } = args;
+    if channels == 0 || positions == 0 || groups == 0 || channels % groups != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_norm_groups requires non-zero channels/positions, positive groups dividing channels; got {channels}x{positions}, groups={groups}"
+        )));
+    }
+    if !eps.is_finite() || eps <= 0.0 {
+        return Err(VokraError::InvalidArgument(
+            "group_norm_groups eps must be finite and positive".to_owned(),
+        ));
+    }
+    checked_u32(channels, "group_norm_groups channels")?;
+    checked_u32(positions, "group_norm_groups positions")?;
+    checked_u32(groups, "group_norm_groups groups")?;
+    let total = checked_mul(channels, positions, "group_norm_groups channels*positions")?;
+    // MSL computes both products with uint indexing. Checking dimensions
+    // independently is insufficient: a pair of valid u32 dimensions can
+    // still overflow the product used by the kernel.
+    let channels_per_group = channels / groups;
+    let group_total = checked_mul(
+        channels_per_group,
+        positions,
+        "group_norm_groups channels_per_group*positions",
+    )?;
+    checked_u32(
+        group_total,
+        "group_norm_groups channels_per_group*positions indexing",
+    )?;
+    checked_u32(total, "group_norm_groups channels*positions indexing")?;
+    expect_len("group_norm_groups input", input.len(), total)?;
+    expect_len("group_norm_groups out", out.len(), total)?;
+    expect_len("group_norm_groups gamma", gamma.len(), channels)?;
+    expect_len("group_norm_groups beta", beta.len(), channels)?;
+    if input
+        .iter()
+        .chain(gamma)
+        .chain(beta)
+        .any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "group_norm_groups input and affine parameters must be finite".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_unary(x: &[f32], out: &[f32]) -> Result<()> {
@@ -8880,6 +12512,506 @@ fn validate_conv1d(
     if let Some(bias) = bias {
         expect_len("conv1d bias", bias.len(), out_ch)?;
     }
+    Ok(out_len)
+}
+
+/// Validates the dense/grouped Conv2d host contract and returns `(out_h, out_w)`.
+#[allow(clippy::too_many_arguments)]
+fn validate_conv2d(
+    input: &[f32],
+    in_ch: usize,
+    in_h: usize,
+    in_w: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    bias: Option<&[f32]>,
+    stride: (usize, usize),
+    padding: (usize, usize),
+    dilation: (usize, usize),
+    groups: usize,
+    out: &[f32],
+) -> Result<(usize, usize)> {
+    let (stride_h, stride_w) = stride;
+    let (padding_h, padding_w) = padding;
+    let (dilation_h, dilation_w) = dilation;
+    if in_ch == 0 || in_h == 0 || in_w == 0 || out_ch == 0 || kernel_h == 0 || kernel_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv2d channels, spatial dimensions, and kernel dimensions must be > 0".into(),
+        ));
+    }
+    if groups == 0 || in_ch % groups != 0 || out_ch % groups != 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv2d groups must be > 0 and divide both channel counts".into(),
+        ));
+    }
+    if stride_h == 0 || stride_w == 0 || dilation_h == 0 || dilation_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv2d stride and dilation dimensions must be > 0".into(),
+        ));
+    }
+    let effective_h = checked_mul(kernel_h - 1, dilation_h, "conv2d effective kernel height")?
+        .checked_add(1)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv2d effective kernel height overflow".into())
+        })?;
+    let effective_w = checked_mul(kernel_w - 1, dilation_w, "conv2d effective kernel width")?
+        .checked_add(1)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv2d effective kernel width overflow".into())
+        })?;
+    let padded_h = checked_mul(2, padding_h, "conv2d 2*padding_h")?
+        .checked_add(in_h)
+        .ok_or_else(|| VokraError::InvalidArgument("conv2d padded height overflow".into()))?;
+    let padded_w = checked_mul(2, padding_w, "conv2d 2*padding_w")?
+        .checked_add(in_w)
+        .ok_or_else(|| VokraError::InvalidArgument("conv2d padded width overflow".into()))?;
+    if padded_h < effective_h || padded_w < effective_w {
+        return Err(VokraError::InvalidArgument(
+            "conv2d padded input is smaller than the effective kernel".into(),
+        ));
+    }
+    // The MSL shader performs the padded extent and effective-kernel
+    // additions/multiplications in `uint`; reject any valid-`usize` shape
+    // whose intermediate arithmetic would wrap on the device.
+    checked_u32(effective_h, "conv2d effective kernel height")?;
+    checked_u32(effective_w, "conv2d effective kernel width")?;
+    checked_u32(padded_h, "conv2d padded height")?;
+    checked_u32(padded_w, "conv2d padded width")?;
+    let out_h = (padded_h - effective_h) / stride_h + 1;
+    let out_w = (padded_w - effective_w) / stride_w + 1;
+    checked_u32(in_ch, "conv2d in_ch")?;
+    checked_u32(in_h, "conv2d in_h")?;
+    checked_u32(in_w, "conv2d in_w")?;
+    checked_u32(out_ch, "conv2d out_ch")?;
+    checked_u32(out_h, "conv2d out_h")?;
+    checked_u32(out_w, "conv2d out_w")?;
+    checked_u32(kernel_h, "conv2d kernel_h")?;
+    checked_u32(kernel_w, "conv2d kernel_w")?;
+    checked_u32(stride_h, "conv2d stride_h")?;
+    checked_u32(stride_w, "conv2d stride_w")?;
+    checked_u32(padding_h, "conv2d padding_h")?;
+    checked_u32(padding_w, "conv2d padding_w")?;
+    checked_u32(dilation_h, "conv2d dilation_h")?;
+    checked_u32(dilation_w, "conv2d dilation_w")?;
+    let input_plane = checked_mul(in_h, in_w, "conv2d input plane")?;
+    let output_plane = checked_mul(out_h, out_w, "conv2d output plane")?;
+    let kernel_plane = checked_mul(kernel_h, kernel_w, "conv2d kernel plane")?;
+    checked_u32(input_plane, "conv2d input plane")?;
+    checked_u32(output_plane, "conv2d output plane")?;
+    checked_u32(kernel_plane, "conv2d kernel plane")?;
+    let input_len = checked_mul(in_ch, input_plane, "conv2d input")?;
+    let weight_per_output = checked_mul(in_ch / groups, kernel_plane, "conv2d weight per output")?;
+    let weight_len = checked_mul(out_ch, weight_per_output, "conv2d weight")?;
+    let output_len = checked_mul(out_ch, output_plane, "conv2d output")?;
+    checked_u32(input_len, "conv2d input")?;
+    checked_u32(weight_len, "conv2d weight")?;
+    checked_u32(output_len, "conv2d output")?;
+    checked_u32(
+        checked_mul(out_ch, out_h, "conv2d dispatch rows")?,
+        "conv2d dispatch rows",
+    )?;
+    expect_len("conv2d input", input.len(), input_len)?;
+    expect_len("conv2d weight", weight.len(), weight_len)?;
+    expect_len("conv2d out", out.len(), output_len)?;
+    if let Some(bias) = bias {
+        expect_len("conv2d bias", bias.len(), out_ch)?;
+    }
+    Ok((out_h, out_w))
+}
+
+/// Validates the fixed SGMSE FIR shape before any Metal allocation or
+/// dispatch. This deliberately mirrors the Compute CPU validator and keeps
+/// all `usize` arithmetic checked before values are narrowed to MSL `uint`.
+fn validate_fir_resample_2d(
+    input: &[f32],
+    channels: usize,
+    height: usize,
+    width: usize,
+    upsample: bool,
+    output: &[f32],
+) -> Result<(usize, usize)> {
+    if channels == 0 || height == 0 || width == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d dimensions must be non-zero".to_owned(),
+        ));
+    }
+    let input_plane = checked_mul(height, width, "fir_resample_2d input plane")?;
+    let input_len = checked_mul(channels, input_plane, "fir_resample_2d input")?;
+    expect_len("fir_resample_2d input", input.len(), input_len)?;
+    if input.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d input contains a non-finite value".to_owned(),
+        ));
+    }
+    let (out_h, out_w) = if upsample {
+        (
+            height.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("fir_resample_2d output height overflow".to_owned())
+            })?,
+            width.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("fir_resample_2d output width overflow".to_owned())
+            })?,
+        )
+    } else {
+        (height / 2, width / 2)
+    };
+    if out_h == 0 || out_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d downsample output dimensions are zero".to_owned(),
+        ));
+    }
+    let output_len = checked_mul(
+        checked_mul(channels, out_h, "fir_resample_2d output rows")?,
+        out_w,
+        "fir_resample_2d output",
+    )?;
+    expect_len("fir_resample_2d output", output.len(), output_len)?;
+    let factor = if upsample { 2 } else { 1 };
+    let expanded_height = checked_mul(height, factor, "fir_resample_2d expanded height")?;
+    let expanded_width = checked_mul(width, factor, "fir_resample_2d expanded width")?;
+    let pad = if upsample { 2 } else { 1 };
+    let padded_height = checked_mul(2, pad, "fir_resample_2d padding")?
+        .checked_add(expanded_height)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d padded height overflow".to_owned())
+        })?;
+    let padded_width = checked_mul(2, pad, "fir_resample_2d padding")?
+        .checked_add(expanded_width)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d padded width overflow".to_owned())
+        })?;
+    checked_u32(input_plane, "fir_resample_2d input plane")?;
+    checked_u32(input_len, "fir_resample_2d input")?;
+    checked_u32(output_len, "fir_resample_2d output")?;
+    checked_u32(expanded_height, "fir_resample_2d expanded height")?;
+    checked_u32(expanded_width, "fir_resample_2d expanded width")?;
+    checked_u32(padded_height, "fir_resample_2d padded height")?;
+    checked_u32(padded_width, "fir_resample_2d padded width")?;
+    checked_u32(channels, "fir_resample_2d channels")?;
+    checked_u32(height, "fir_resample_2d in_h")?;
+    checked_u32(width, "fir_resample_2d in_w")?;
+    checked_u32(out_h, "fir_resample_2d out_h")?;
+    checked_u32(out_w, "fir_resample_2d out_w")?;
+    checked_u32(
+        checked_mul(channels, out_h, "fir_resample_2d dispatch rows")?,
+        "fir_resample_2d dispatch rows",
+    )?;
+    if slices_overlap(input, output) {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d input and output must be disjoint".to_owned(),
+        ));
+    }
+    Ok((out_h, out_w))
+}
+
+fn slices_overlap(input: &[f32], output: &[f32]) -> bool {
+    if input.is_empty() || output.is_empty() {
+        return false;
+    }
+    let input_start = input.as_ptr() as usize;
+    let output_start = output.as_ptr() as usize;
+    let Some(input_bytes) = input.len().checked_mul(size_of::<f32>()) else {
+        return true;
+    };
+    let Some(output_bytes) = output.len().checked_mul(size_of::<f32>()) else {
+        return true;
+    };
+    let Some(input_end) = input_start.checked_add(input_bytes) else {
+        return true;
+    };
+    let Some(output_end) = output_start.checked_add(output_bytes) else {
+        return true;
+    };
+    input_start < output_end && output_start < input_end
+}
+
+/// Validates PyTorch-layout dense/grouped ConvTranspose2d and returns output
+/// spatial dimensions. Following PyTorch/ATen, output padding must be less
+/// than either stride or dilation on each axis before any device work is
+/// allocated.
+#[allow(clippy::too_many_arguments)]
+fn validate_conv_transpose2d(
+    input: &[f32],
+    in_ch: usize,
+    in_h: usize,
+    in_w: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    bias: Option<&[f32]>,
+    stride: (usize, usize),
+    padding: (usize, usize),
+    dilation: (usize, usize),
+    output_padding: (usize, usize),
+    groups: usize,
+    out: &[f32],
+) -> Result<(usize, usize)> {
+    let (stride_h, stride_w) = stride;
+    let (padding_h, padding_w) = padding;
+    let (dilation_h, dilation_w) = dilation;
+    let (output_padding_h, output_padding_w) = output_padding;
+    if in_ch == 0 || in_h == 0 || in_w == 0 || out_ch == 0 || kernel_h == 0 || kernel_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d channels, spatial dimensions, and kernel dimensions must be > 0"
+                .into(),
+        ));
+    }
+    if groups == 0 || in_ch % groups != 0 || out_ch % groups != 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d groups must be > 0 and divide both channel counts".into(),
+        ));
+    }
+    if stride_h == 0 || stride_w == 0 || dilation_h == 0 || dilation_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d stride and dilation dimensions must be > 0".into(),
+        ));
+    }
+    if (output_padding_h >= stride_h && output_padding_h >= dilation_h)
+        || (output_padding_w >= stride_w && output_padding_w >= dilation_w)
+    {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d output_padding must be smaller than either stride or dilation on each axis".into(),
+        ));
+    }
+    let effective_h = checked_mul(
+        kernel_h - 1,
+        dilation_h,
+        "conv_transpose2d effective kernel height",
+    )?
+    .checked_add(1)
+    .ok_or_else(|| {
+        VokraError::InvalidArgument("conv_transpose2d effective kernel height overflow".into())
+    })?;
+    let effective_w = checked_mul(
+        kernel_w - 1,
+        dilation_w,
+        "conv_transpose2d effective kernel width",
+    )?
+    .checked_add(1)
+    .ok_or_else(|| {
+        VokraError::InvalidArgument("conv_transpose2d effective kernel width overflow".into())
+    })?;
+    let base_h = checked_mul(in_h - 1, stride_h, "conv_transpose2d base height")?
+        .checked_add(effective_h)
+        .and_then(|value| value.checked_add(output_padding_h))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv_transpose2d base height overflow".into())
+        })?;
+    let base_w = checked_mul(in_w - 1, stride_w, "conv_transpose2d base width")?
+        .checked_add(effective_w)
+        .and_then(|value| value.checked_add(output_padding_w))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv_transpose2d base width overflow".into())
+        })?;
+    let trim_h = checked_mul(2, padding_h, "conv_transpose2d 2*padding_h")?;
+    let trim_w = checked_mul(2, padding_w, "conv_transpose2d 2*padding_w")?;
+    if trim_h >= base_h || trim_w >= base_w {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d padding removes the complete output extent".into(),
+        ));
+    }
+    // The MSL inverse-index calculation forms `output + padding` and
+    // `kernel_tap * dilation` in `uint`; keep the complete pre-trim extent
+    // representable so those intermediate expressions cannot wrap.
+    checked_u32(effective_h, "conv_transpose2d effective kernel height")?;
+    checked_u32(effective_w, "conv_transpose2d effective kernel width")?;
+    checked_u32(base_h, "conv_transpose2d base height")?;
+    checked_u32(base_w, "conv_transpose2d base width")?;
+    let out_h = base_h - trim_h;
+    let out_w = base_w - trim_w;
+    checked_u32(in_ch, "conv_transpose2d in_ch")?;
+    checked_u32(in_h, "conv_transpose2d in_h")?;
+    checked_u32(in_w, "conv_transpose2d in_w")?;
+    checked_u32(out_ch, "conv_transpose2d out_ch")?;
+    checked_u32(out_h, "conv_transpose2d out_h")?;
+    checked_u32(out_w, "conv_transpose2d out_w")?;
+    checked_u32(kernel_h, "conv_transpose2d kernel_h")?;
+    checked_u32(kernel_w, "conv_transpose2d kernel_w")?;
+    checked_u32(stride_h, "conv_transpose2d stride_h")?;
+    checked_u32(stride_w, "conv_transpose2d stride_w")?;
+    checked_u32(padding_h, "conv_transpose2d padding_h")?;
+    checked_u32(padding_w, "conv_transpose2d padding_w")?;
+    checked_u32(dilation_h, "conv_transpose2d dilation_h")?;
+    checked_u32(dilation_w, "conv_transpose2d dilation_w")?;
+    checked_u32(output_padding_h, "conv_transpose2d output_padding_h")?;
+    checked_u32(output_padding_w, "conv_transpose2d output_padding_w")?;
+    let input_plane = checked_mul(in_h, in_w, "conv_transpose2d input plane")?;
+    let output_plane = checked_mul(out_h, out_w, "conv_transpose2d output plane")?;
+    let kernel_plane = checked_mul(kernel_h, kernel_w, "conv_transpose2d kernel plane")?;
+    checked_u32(input_plane, "conv_transpose2d input plane")?;
+    checked_u32(output_plane, "conv_transpose2d output plane")?;
+    checked_u32(kernel_plane, "conv_transpose2d kernel plane")?;
+    let input_len = checked_mul(in_ch, input_plane, "conv_transpose2d input")?;
+    let weight_per_input = checked_mul(
+        out_ch / groups,
+        kernel_plane,
+        "conv_transpose2d weight per input",
+    )?;
+    let weight_len = checked_mul(in_ch, weight_per_input, "conv_transpose2d weight")?;
+    let output_len = checked_mul(out_ch, output_plane, "conv_transpose2d output")?;
+    checked_u32(input_len, "conv_transpose2d input")?;
+    checked_u32(weight_len, "conv_transpose2d weight")?;
+    checked_u32(output_len, "conv_transpose2d output")?;
+    checked_u32(
+        checked_mul(out_ch, out_h, "conv_transpose2d dispatch rows")?,
+        "conv_transpose2d dispatch rows",
+    )?;
+    expect_len("conv_transpose2d input", input.len(), input_len)?;
+    expect_len("conv_transpose2d weight", weight.len(), weight_len)?;
+    expect_len("conv_transpose2d out", out.len(), output_len)?;
+    if let Some(bias) = bias {
+        expect_len("conv_transpose2d bias", bias.len(), out_ch)?;
+    }
+    Ok((out_h, out_w))
+}
+
+/// Validates the stride/dilation Conv1d host wrapper and returns its exact
+/// output length.  This mirrors `MetalContext::conv1d_dev` and the CPU
+/// `conv1d_f32_dilated` contract so invalid dimensions fail before any buffer
+/// allocation or dispatch.
+#[allow(clippy::too_many_arguments)]
+fn validate_conv1d_dilated(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    dilation: usize,
+    padding: usize,
+    out: &[f32],
+) -> Result<usize> {
+    if dilation == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d dilation must be >= 1".to_owned(),
+        ));
+    }
+    if in_ch == 0 || out_ch == 0 || in_len == 0 || stride == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d in_ch, out_ch, in_len, stride, and kernel must be > 0".to_owned(),
+        ));
+    }
+    let effective = checked_mul(kernel - 1, dilation, "conv1d effective kernel")?
+        .checked_add(1)
+        .ok_or_else(|| VokraError::InvalidArgument("conv1d effective kernel overflow".into()))?;
+    let padded = in_len
+        .checked_add(checked_mul(2, padding, "conv1d 2*padding")?)
+        .ok_or_else(|| VokraError::InvalidArgument("conv1d padded length overflow".into()))?;
+    if padded < effective {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d padded length {padded} is smaller than effective kernel {effective}"
+        )));
+    }
+    let out_len = (padded - effective) / stride + 1;
+    checked_u32(in_ch, "conv1d in_ch")?;
+    checked_u32(in_len, "conv1d in_len")?;
+    checked_u32(out_ch, "conv1d out_ch")?;
+    checked_u32(kernel, "conv1d kernel")?;
+    checked_u32(stride, "conv1d stride")?;
+    checked_u32(dilation, "conv1d dilation")?;
+    checked_u32(padding, "conv1d padding")?;
+    checked_u32(padded, "conv1d padded length")?;
+    checked_u32(out_len, "conv1d out_len")?;
+    expect_len(
+        "conv1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "conv1d in_ch*in_len")?,
+    )?;
+    expect_len(
+        "conv1d weight",
+        weight.len(),
+        checked_mul(
+            checked_mul(out_ch, in_ch, "conv1d out_ch*in_ch")?,
+            kernel,
+            "conv1d out_ch*in_ch*kernel",
+        )?,
+    )?;
+    expect_len(
+        "conv1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "conv1d out_ch*out_len")?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("conv1d bias", bias.len(), out_ch)?;
+    }
+    Ok(out_len)
+}
+
+/// Validates a host-facing PyTorch-layout ConvTranspose1d and returns its
+/// exact output length.  `output_padding` is explicit and must be smaller than
+/// `stride`, matching the Metal device kernel.
+#[allow(clippy::too_many_arguments)]
+fn validate_conv_transpose1d(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    output_padding: usize,
+    out: &[f32],
+) -> Result<usize> {
+    if in_ch == 0 || out_ch == 0 || in_len == 0 || stride == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose1d in_ch, out_ch, in_len, stride, and kernel must be > 0".into(),
+        ));
+    }
+    if output_padding >= stride {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv_transpose1d output_padding {output_padding} must be < stride {stride}"
+        )));
+    }
+    expect_len(
+        "conv_transpose1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "conv_transpose1d in_ch*in_len")?,
+    )?;
+    expect_len(
+        "conv_transpose1d weight",
+        weight.len(),
+        checked_mul(
+            checked_mul(in_ch, out_ch, "conv_transpose1d in_ch*out_ch")?,
+            kernel,
+            "conv_transpose1d weight",
+        )?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("conv_transpose1d bias", bias.len(), out_ch)?;
+    }
+    let full_out = checked_mul(in_len - 1, stride, "conv_transpose1d output")?
+        .checked_add(kernel)
+        .and_then(|value| value.checked_add(output_padding))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv_transpose1d output length overflow".into())
+        })?;
+    let trim = checked_mul(2, padding, "conv_transpose1d padding")?;
+    if trim >= full_out {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv_transpose1d padding {trim} removes the complete output extent {full_out}"
+        )));
+    }
+    let out_len = full_out - trim;
+    checked_u32(in_ch, "conv_transpose1d in_ch")?;
+    checked_u32(in_len, "conv_transpose1d in_len")?;
+    checked_u32(out_ch, "conv_transpose1d out_ch")?;
+    checked_u32(kernel, "conv_transpose1d kernel")?;
+    checked_u32(stride, "conv_transpose1d stride")?;
+    checked_u32(padding, "conv_transpose1d padding")?;
+    checked_u32(output_padding, "conv_transpose1d output_padding")?;
+    checked_u32(out_len, "conv_transpose1d out_len")?;
+    expect_len(
+        "conv_transpose1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "conv_transpose1d out_ch*out_len")?,
+    )?;
     Ok(out_len)
 }
 
@@ -9145,5 +13277,236 @@ impl vokra_core::KvQuantDequantGemvOps for MetalContext {
         x: &[f32],
     ) -> Result<Vec<f32>> {
         self.dequant_gemv_f32(mode, blocks_bytes, n_rows, n_blocks_per_row, x)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{
+        GroupNormGroupsArgs, checked_i32, checked_u32, validate_conv_transpose2d, validate_conv2d,
+        validate_group_norm_groups, validate_mixed_bf16_dims, validate_ouve_host_buffers,
+        validate_ouve_params,
+    };
+
+    #[test]
+    fn device_dimension_conversions_fail_closed() {
+        assert!(checked_u32(usize::MAX, "test").is_err());
+        assert!(checked_i32(usize::MAX, "test").is_err());
+    }
+
+    #[test]
+    fn ouve_bounds_reject_invalid_parameters_and_shapes() {
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 0.01, None).is_ok());
+        assert!(validate_ouve_params(1.0, 0.5, 0.05, 0.5, 0.01, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 1.1, 0.01, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 0.0, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 1.0, Some(-1.0)).is_err());
+        assert!(
+            validate_ouve_host_buffers(
+                &[0.0, 1.0],
+                &[0.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn mixed_bf16_gemm_rejects_msl_u32_product_overflow() {
+        let max = u32::MAX as usize;
+        assert!(validate_mixed_bf16_dims(1, max, 1, "test").is_ok());
+        assert!(validate_mixed_bf16_dims(max, 1, 1, "test").is_ok());
+        assert!(validate_mixed_bf16_dims(2, max, 1, "test").is_err());
+        assert!(validate_mixed_bf16_dims(max, 1, 2, "test").is_err());
+        assert!(validate_mixed_bf16_dims(1, max, 2, "test").is_err());
+    }
+
+    #[test]
+    fn mixed_bf16_gemm_preserves_zero_k_dimension_semantics() {
+        assert_eq!(
+            validate_mixed_bf16_dims(2, 3, 0, "test").unwrap(),
+            (0, 0, 6)
+        );
+        assert!(validate_mixed_bf16_dims(u32::MAX as usize, 2, 0, "test").is_err());
+    }
+
+    #[test]
+    fn group_norm_groups_rejects_msl_u32_index_product_overflow() {
+        let max = u32::MAX as usize;
+        // Every individual dimension fits uint, but channels*positions does
+        // not. Empty buffers are intentional: product validation must happen
+        // before host slice-length checks and reject the launch fail-closed.
+        assert!(
+            validate_group_norm_groups(GroupNormGroupsArgs {
+                input: &[],
+                out: &[],
+                channels: 2,
+                positions: max,
+                groups: 2,
+                gamma: &[],
+                beta: &[],
+                eps: 1e-6,
+            })
+            .is_err()
+        );
+        // The group product is checked independently as well; this case keeps
+        // the same boundary visible for the per-group MSL loop.
+        assert!(
+            validate_group_norm_groups(GroupNormGroupsArgs {
+                input: &[],
+                out: &[],
+                channels: 4,
+                positions: max,
+                groups: 2,
+                gamma: &[],
+                beta: &[],
+                eps: 1e-6,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn conv2d_validates_grouped_dilated_asymmetric_shape() {
+        let input = [0.0; 12];
+        let weight = [0.0; 8];
+        let out = [0.0; 6];
+        assert_eq!(
+            validate_conv2d(
+                &input,
+                2,
+                2,
+                3,
+                &weight,
+                2,
+                2,
+                2,
+                Some(&[0.0; 2]),
+                (1, 1),
+                (0, 1),
+                (1, 2),
+                2,
+                &out,
+            )
+            .unwrap(),
+            (1, 3)
+        );
+    }
+
+    #[test]
+    fn conv_transpose2d_validates_output_padding_and_rejects_bad_shapes() {
+        let input = [0.0; 4];
+        let weight = [0.0; 8];
+        // Output shape follows
+        // `(in - 1) * stride + dilation * (kernel - 1) + 1
+        //  + output_padding - 2 * padding` per spatial axis:
+        // height = 3, width = 6, with two output channels => 36 values.
+        let out = [0.0; 36];
+        assert_eq!(
+            validate_conv_transpose2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                Some(&[0.0; 2]),
+                (2, 2),
+                (0, 0),
+                (1, 2),
+                (1, 1),
+                2,
+                &out,
+            )
+            .unwrap(),
+            (3, 6)
+        );
+        // ATen permits output_padding == stride when it remains smaller than
+        // dilation on that axis.
+        assert_eq!(
+            validate_conv_transpose2d(
+                &[0.0],
+                1,
+                1,
+                1,
+                &[0.0],
+                1,
+                1,
+                1,
+                None,
+                (1, 1),
+                (0, 0),
+                (2, 1),
+                (1, 0),
+                1,
+                &[0.0; 2],
+            )
+            .unwrap(),
+            (2, 1)
+        );
+        assert!(
+            validate_conv_transpose2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                None,
+                (2, 2),
+                (0, 0),
+                (1, 2),
+                (2, 0),
+                2,
+                &out,
+            )
+            .is_err()
+        );
+        // Once output_padding reaches both bounds on an axis, reject it.
+        assert!(
+            validate_conv_transpose2d(
+                &[0.0],
+                1,
+                1,
+                1,
+                &[0.0],
+                1,
+                1,
+                1,
+                None,
+                (1, 1),
+                (0, 0),
+                (2, 1),
+                (2, 0),
+                1,
+                &[0.0; 3],
+            )
+            .is_err()
+        );
+        assert!(
+            validate_conv2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                None,
+                (1, 1),
+                (0, 0),
+                (1, 1),
+                3,
+                &out,
+            )
+            .is_err()
+        );
     }
 }

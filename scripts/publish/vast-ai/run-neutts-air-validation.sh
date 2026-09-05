@@ -9,6 +9,10 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/neutts_air"
 REFERENCE_DUMPER="$PARITY_PROJECT/dump_reference.py"
+DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
+DEPENDENCY_AUDIT_WRAPPER="$VOKRA_ROOT/scripts/publish/vast-ai/audit-neutts-air-dependencies.sh"
+PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
+PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 
 PUBLIC_REPO="vokra/neutts-air"
 PUBLIC_REVISION="df2b47ec81862f0e3a19eb2638a6a2bcd2f13b8c"
@@ -40,7 +44,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-neutts-air-validation.sh [--work-dir <empty-dir>]
+usage: run-neutts-air-validation.sh --approval-evidence <file> [--work-dir <absent-dir>]
        run-neutts-air-validation.sh --self-test
 
 VAST-only, non-publishing gate for the exact public NeuTTS Air release. It
@@ -78,32 +82,104 @@ require_vast_host() {
   if (( mem_kib < MIN_VAST_MEM_KIB )); then
     die "MemTotal=${mem_kib} KiB is below the 48-GB-class guard"
   fi
-  mkdir -p "$VOKRA_SCRATCH"
-  free_kib="$(df -Pk "$VOKRA_SCRATCH" | awk 'NR == 2 {print $4}')"
+  local disk_path="$VOKRA_SCRATCH"
+  [[ -e "$disk_path" ]] || disk_path="$(dirname "$disk_path")"
+  free_kib="$(df -Pk "$disk_path" | awk 'NR == 2 {print $4}')"
   [[ "$free_kib" =~ ^[0-9]+$ ]] || die "could not read free disk"
   if (( free_kib < MIN_FREE_DISK_KIB )); then
     die "free disk=${free_kib} KiB is below the 25-GB run guard"
   fi
-  [[ -n "${HF_TOKEN:-${HF:-}}" ]] \
-    || die "HF_TOKEN/HF is required for the gated upstream snapshot"
 }
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup git awk find tee wc df grep; do
+  for tool in uv cargo rustc rustup git awk find tee wc df grep readelf; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
-  [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "NeuTTS Air parity uv.lock is missing"
+  [[ -f "$PARITY_PROJECT/uv.lock" && -f "$PARITY_PROJECT/pyproject.toml" ]] \
+    || die "NeuTTS Air parity lock/project is missing"
+  [[ -f "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" ]] \
+    || die "NeuTTS Air preflight gate inputs are missing"
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
+  [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] || die "dependency audit is missing or symlinked"
+  [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || die "dependency audit wrapper is missing or symlinked"
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
     die "VAST checkout must be clean so evidence names one exact commit"
   fi
 }
 
+pre_sync_gate() {
+  local approval="$1"
+  step "Validate exact NeuTTS Air closure before synchronization"
+  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die "approval evidence is missing, symlinked, or empty"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+      --project "$PARITY_PROJECT" --manifest "$PREFLIGHT_MANIFEST" \
+      --evidence "$approval"
+}
+
+write_apple_verifier_command() {
+  local output="$1" reference_manifest_sha256="$2"
+  {
+    printf '%s\n' "VOKRA_REMOTE_APPLE_SILICON=1 \\"
+    printf '%s\n' "scripts/verify/apple-silicon-neutts-air.sh \\"
+    printf '%s\n' "  --gguf '<APPLE_GGUF_PATH>' \\"
+    printf '%s\n' "  --gguf-sha256 $PUBLIC_SHA256 \\"
+    printf '%s\n' "  --companion '<APPLE_COMPANION_PATH>' \\"
+    printf '%s\n' "  --companion-sha256 $COMPANION_SHA256 \\"
+    printf '%s\n' "  --reference '<APPLE_REFERENCE_DIR>' \\"
+    printf '%s\n' "  --reference-sha256 $reference_manifest_sha256 \\"
+    printf '%s\n' "  --approval-evidence '<APPLE_APPROVAL_EVIDENCE>' \\"
+    printf '%s\n' "  --evidence-dir '<APPLE_EVIDENCE_DIR>'"
+  } > "$output"
+}
+
+require_disjoint_work_dir() {
+  local work="$1" approval="$2" candidate root_real approval_parent approval_real
+  candidate="$(canonical_absent_path "$work")" || return 2
+  root_real="$(cd -P "$VOKRA_ROOT" 2>/dev/null && pwd)" || die "Vokra checkout is inaccessible"
+  approval_parent="$(cd -P "$(dirname "$approval")" 2>/dev/null && pwd)" || die "approval parent is inaccessible"
+  approval_real="$approval_parent/$(basename "$approval")"
+  [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && "$root_real/" != "$candidate/"* ]] || die "work-dir overlaps the checkout"
+  [[ "$candidate" != "$approval_real" && "$candidate/" != "$approval_real/"* && "$approval_real/" != "$candidate/"* ]] || die "work-dir overlaps approval evidence"
+}
+
+canonical_absent_path() {
+  local target="$1" current suffix component real lexical
+  [[ "$target" = /* ]] || target="$PWD/$target"
+  lexical="${target#/}"; current="/"
+  while [[ -n "$lexical" ]]; do
+    component="${lexical%%/*}"
+    if [[ "$lexical" == "$component" ]]; then lexical=""; else lexical="${lexical#*/}"; fi
+    [[ "$component" == "." || -z "$component" ]] && continue
+    [[ "$component" != ".." ]] || { die "work-dir path contains .."; return 2; }
+    current="${current%/}/$component"
+    if [[ -L "$current" ]]; then
+      real="$(cd -P "$current" 2>/dev/null && pwd)" || { die "work-dir path contains an inaccessible component"; return 2; }
+      case "$current:$real" in
+        /var:/private/var|/tmp:/private/tmp) current="$real" ;;
+        *) die "work-dir path contains a symlinked component"; return 2 ;;
+      esac
+    fi
+  done
+  current="$target"; suffix=""
+  while [[ ! -e "$current" && ! -L "$current" ]]; do
+    component="$(basename "$current")"; suffix="/$component$suffix"; current="$(dirname "$current")"
+  done
+  [[ -d "$current" && ! -L "$current" ]] || { die "work-dir has an inaccessible or symlinked existing parent"; return 2; }
+  real="$(cd -P "$current" 2>/dev/null && pwd)" || { die "work-dir parent is inaccessible"; return 2; }
+  printf '%s%s\n' "$real" "$suffix"
+}
+
+require_absent_work_dir() {
+  local work="$1" approval="$2"
+  require_disjoint_work_dir "$work" "$approval" || return 2
+  [[ ! -e "$work" && ! -L "$work" ]] || { die "--work-dir must be absent before validation: $work"; return 2; }
+}
+
 require_identity() {
   local label="$1" path="$2" expected_bytes="$3" expected_sha="$4"
-  [[ -f "$path" ]] || die "$label is missing: $path"
+  [[ -f "$path" && ! -L "$path" ]] || { die "$label is missing, symlinked, or non-regular: $path"; return 2; }
   local actual_bytes actual_sha
   actual_bytes="$(wc -c < "$path" | tr -d '[:space:]')"
   actual_sha="$(sha256_file "$path")"
@@ -135,8 +211,7 @@ record_environment() {
 download_hf_file() {
   local repo="$1" revision="$2" filename="$3" output_dir="$4"
   mkdir -p "$output_dir"
-  uv run --no-project --python 3.12 \
-    --with 'huggingface_hub<0.30' python -c \
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
     'import os,sys
 from huggingface_hub import hf_hub_download
 hf_hub_download(
@@ -148,8 +223,7 @@ hf_hub_download(
 download_upstream_snapshot() {
   local output_dir="$1"
   mkdir -p "$output_dir"
-  uv run --no-project --python 3.12 \
-    --with 'huggingface_hub<0.30' python -c \
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
     'import os,sys
 from huggingface_hub import snapshot_download
 snapshot_download(
@@ -172,14 +246,112 @@ checkout_source() {
     "$SOURCE_BYTES" "$SOURCE_SHA256"
 }
 
+require_one_named_test_passed() {
+  local log_path="$1" test_name="$2" backend="$3"
+  local test_count named_line_count result_count total_result_count parity_count composition_count
+  test_count="$(grep -Ec "^test ${test_name} \.\.\. ok$" "$log_path" || true)"
+  named_line_count="$(grep -Ec "^test ${test_name} \.\.\." "$log_path" || true)"
+  result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$log_path" || true)"
+  total_result_count="$(grep -Ec '^test result:' "$log_path" || true)"
+  parity_count="$(grep -Fxc "NEUTTS_AIR_PARITY ${backend}_vs_official logits_atol=0.01 greedy_ids=exact PASS" "$log_path" || true)"
+  composition_count="$(grep -Exc "NEUTTS_AIR_COMPOSITION ${backend} codes=[0-9]+ samples=[0-9]+ PASS" "$log_path" || true)"
+  [[ "$test_count" == 1 ]] || { die "expected exactly one passing $test_name, got $test_count"; return 2; }
+  [[ "$named_line_count" == 1 ]] || { die "expected exactly one total $test_name result line, got $named_line_count"; return 2; }
+  [[ "$result_count" == 1 && "$total_result_count" == 1 ]] \
+    || { die "expected exactly one exact Cargo result with 1 passed/0 failed/0 ignored"; return 2; }
+  [[ "$parity_count" == 1 ]] || { die "expected exactly one full-line ${backend} parity marker"; return 2; }
+  [[ "$composition_count" == 1 ]] || { die "expected exactly one full-line ${backend} composition marker"; return 2; }
+  ! grep -Eq '^NEUTTS_AIR_(PARITY|COMPOSITION).*FAIL$' "$log_path" \
+    || { die "a NEUTTS_AIR FAIL marker is present"; return 2; }
+}
+
 run_self_test() {
-  local failed=0
+  local failed=0 probe_root probe_output gate_line host_line tooling_line sync_line audit_line download_line identity_size identity_sha
   [[ "$PUBLIC_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$UPSTREAM_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$PUBLIC_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$COMPANION_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
+  gate_line="$(grep -n '^  pre_sync_gate' "$0" | tail -1 | cut -d: -f1)"
+  host_line="$(grep -n '^  require_vast_host$' "$0" | tail -1 | cut -d: -f1)"
+  tooling_line="$(grep -n '^  require_tooling$' "$0" | tail -1 | cut -d: -f1)"
+  sync_line="$(grep -n '^  uv sync --project' "$0" | tail -1 | cut -d: -f1)"
+  audit_line="$(grep -n 'DEPENDENCY_AUDIT_WRAPPER.*--output' "$0" | tail -1 | cut -d: -f1)"
+  download_line="$(grep -n '^  download_hf_file' "$0" | tail -1 | cut -d: -f1)"
+  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$download_line" =~ ^[0-9]+$ ]] || failed=1
+  (( gate_line < host_line && gate_line < tooling_line && tooling_line < sync_line && sync_line < audit_line && audit_line < download_line )) || failed=1
+  probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vokra-neutts-air-sentinel.XXXXXX")"
+  printf '{}\n' > "$probe_root/path-approval.json"
+  mkdir -p "$probe_root/nested-parent"
+  require_absent_work_dir "$probe_root/nested-parent/model/work" "$probe_root/path-approval.json" || failed=1
+  mkdir -p "$probe_root/intermediate"
+  ln -s "$VOKRA_ROOT" "$probe_root/intermediate/checkout-link"
+  if require_absent_work_dir "$probe_root/intermediate/checkout-link/work" "$probe_root/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  mkdir -p "$probe_root/real/existing"
+  ln -s "$probe_root/real" "$probe_root/ancestor-link"
+  if require_absent_work_dir "$probe_root/ancestor-link/existing/nested/new" "$probe_root/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  ln -s "$probe_root/missing-target" "$probe_root/dangling-work"
+  if require_absent_work_dir "$probe_root/dangling-work" "$probe_root/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  if require_absent_work_dir "$VOKRA_ROOT/tools" "$probe_root/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  if require_absent_work_dir "$probe_root/path-approval.json/child" "$probe_root/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  mkdir "$probe_root/existing-empty"
+  if require_absent_work_dir "$probe_root/existing-empty" "$probe_root/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  printf 'identity-self-test\n' > "$probe_root/payload"
+  identity_size="$(wc -c < "$probe_root/payload" | tr -d '[:space:]')"
+  identity_sha="$(sha256_file "$probe_root/payload")"
+  require_identity "self-test payload" "$probe_root/payload" "$identity_size" "$identity_sha" || failed=1
+  ln -s "$probe_root/payload" "$probe_root/payload-link"
+  if require_identity "self-test symlink payload" "$probe_root/payload-link" "$identity_size" "$identity_sha" >/dev/null 2>&1; then failed=1; fi
+  printf '%s\n' \
+    'test neutts_air_public_cpu_or_metal_matches_official_reference ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    'NEUTTS_AIR_PARITY Cpu_vs_official logits_atol=0.01 greedy_ids=exact PASS' \
+    'NEUTTS_AIR_COMPOSITION Cpu codes=8 samples=3840 PASS' > "$probe_root/valid.log"
+  require_one_named_test_passed "$probe_root/valid.log" neutts_air_public_cpu_or_metal_matches_official_reference Cpu || failed=1
+  for malformed in duplicate_named duplicate_result duplicate_marker prefix suffix result_suffix FAIL; do
+    cp "$probe_root/valid.log" "$probe_root/$malformed.log"
+    case "$malformed" in
+      duplicate_named) printf '%s\n' 'test neutts_air_public_cpu_or_metal_matches_official_reference ... FAILED' >> "$probe_root/$malformed.log" ;;
+      duplicate_result) printf '%s\n' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' >> "$probe_root/$malformed.log" ;;
+      duplicate_marker) printf '%s\n' 'NEUTTS_AIR_PARITY Cpu_vs_official logits_atol=0.01 greedy_ids=exact PASS' >> "$probe_root/$malformed.log" ;;
+      prefix) sed 's/^NEUTTS_AIR_/prefix NEUTTS_AIR_/' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+      suffix) sed 's/ PASS$/ PASS trailing/' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+      result_suffix) sed 's/filtered out$/filtered out; finished in nonsense/' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+      FAIL) sed 's/ PASS$/ FAIL/' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+    esac
+    if require_one_named_test_passed "$probe_root/$malformed.log" neutts_air_public_cpu_or_metal_matches_official_reference Cpu >/dev/null 2>&1; then failed=1; fi
+  done
+  rm -rf "$probe_root"
+  local command_file
+  command_file="$(mktemp "${TMPDIR:-/tmp}/vokra-neutts-air-apple-command.XXXXXX")"
+  write_apple_verifier_command "$command_file" "$(printf '%064d' 7)"
+  [[ "$(grep -Fxc -- "  --approval-evidence '<APPLE_APPROVAL_EVIDENCE>' \\" "$command_file" || true)" == 1 ]] || failed=1
+  [[ "$(grep -Fxc -- "  --evidence-dir '<APPLE_EVIDENCE_DIR>'" "$command_file" || true)" == 1 ]] || failed=1
+  bash -n "$command_file" || failed=1
+  grep -Fq -- "$VOKRA_ROOT" "$command_file" && failed=1
+  # shellcheck disable=SC2016 # verify the literal production writer call
+  [[ "$(grep -Fxc -- '  write_apple_verifier_command "$evidence_dir/apple-verifier-command.txt" "$reference_manifest_sha256"' "$0" || true)" == 1 ]] || failed=1
+  rm -f "$command_file"
+  if command -v uv >/dev/null 2>&1; then
+    UV_CACHE_DIR="${NEUTTS_AIR_UV_CACHE_DIR:-/private/tmp/vokra-neutts-air-uv-cache}" \
+      uv run --no-project --offline --python 3.12 python "$REFERENCE_DUMPER" --self-test || failed=1
+    UV_CACHE_DIR="${NEUTTS_AIR_UV_CACHE_DIR:-/private/tmp/vokra-neutts-air-uv-cache}" \
+      uv run --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" --self-test || failed=1
+  fi
+  probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vokra-neutts-air-gate.XXXXXX")"
+  probe_output="$probe_root/worker.log"
+  printf '%s\n' 'invalid approval evidence' > "$probe_root/approval.json"
+  if VOKRA_PUBLISH_ON_VAST=0 VOKRA_SCRATCH="$probe_root/scratch" \
+    bash "$0" --approval-evidence "$probe_root/approval.json" --work-dir "$probe_root/work" >"$probe_output" 2>&1; then failed=1; fi
+  grep -Fq 'preflight gate' "$probe_output" || failed=1
+  grep -Eq 'uv sync|download_hf_file|download_upstream_snapshot|git -C .* fetch|cargo (build|test|check|clippy)' "$probe_output" && failed=1
+  [[ ! -e "$probe_root/scratch" && ! -e "$probe_root/work" ]] || failed=1
+  rm -rf "$probe_root"
+  # shellcheck disable=SC2086 # Each case intentionally models argv tokenization.
+  for bad_args in "--self-test --approval-evidence x" "--self-test --self-test" "--work-dir x --work-dir y" "--approval-evidence" "--approval-evidence --work-dir x" "--unknown x"; do
+    if bash "$0" $bad_args >/dev/null 2>&1; then failed=1; fi
+  done
   if (( failed != 0 )); then
     die "self-test FAIL"
   fi
@@ -187,15 +359,21 @@ run_self_test() {
 }
 
 main() {
-  local work_dir='' self_test=0
+  local work_dir='' approval_evidence='' self_test=0
+  local seen_work=0 seen_approval=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --work-dir)
-        [[ $# -ge 2 ]] || { usage; return 2; }
+        (( seen_work == 0 )) || die 'duplicate --work-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; seen_work=1
         work_dir="$2"
         shift 2
         ;;
+      --approval-evidence)
+        (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; seen_approval=1
+        approval_evidence="$2"; shift 2
+        ;;
       --self-test)
+        (( seen_self_test == 0 )) || die 'duplicate --self-test'; seen_self_test=1
         self_test=1
         shift
         ;;
@@ -210,22 +388,20 @@ main() {
     esac
   done
   if (( self_test == 1 )); then
-    [[ -z "$work_dir" ]] || die "--self-test accepts no other arguments"
+    [[ -z "$work_dir$approval_evidence" ]] || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
 
+  [[ -n "$approval_evidence" ]] || { usage; die "--approval-evidence is required"; }
+  pre_sync_gate "$approval_evidence"
   require_vast_host
   require_tooling
   if [[ -z "$work_dir" ]]; then
     work_dir="$VOKRA_SCRATCH/neutts-air-validation-$(git -C "$VOKRA_ROOT" rev-parse --short=12 HEAD)"
   fi
-  if [[ -e "$work_dir" ]]; then
-    [[ -d "$work_dir" && -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
-      || die "--work-dir must not exist or must be empty: $work_dir"
-  else
-    mkdir -p "$work_dir"
-  fi
+  require_absent_work_dir "$work_dir" "$approval_evidence"
+  mkdir -p "$work_dir"
 
   local evidence_dir="$work_dir/evidence"
   local public_dir="$work_dir/public-neutts"
@@ -238,6 +414,14 @@ main() {
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
 
+  step "Install locked official reference environment"
+  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
+    2>&1 | tee "$evidence_dir/uv-sync.log"
+
+  step "Audit exact synchronized dependency closure before model acquisition"
+  VOKRA_PUBLISH_ON_VAST=1 VOKRA_ROOT="$VOKRA_ROOT" \
+    "$DEPENDENCY_AUDIT_WRAPPER" --output "$evidence_dir/dependency-audit.json"
+
   step "Download and authenticate exact public GGUFs"
   download_hf_file "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_FILE" "$public_dir"
   download_hf_file "$COMPANION_REPO" "$COMPANION_REVISION" "$COMPANION_FILE" "$companion_dir"
@@ -248,10 +432,6 @@ main() {
   step "Download exact gated upstream snapshot and official source"
   download_upstream_snapshot "$upstream_dir"
   checkout_source "$source_dir"
-
-  step "Install locked official reference environment"
-  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
-    2>&1 | tee "$evidence_dir/uv-sync.log"
 
   step "Generate independent official FP32 reference"
   VOKRA_REFERENCE_TORCH_THREADS="${VOKRA_REFERENCE_TORCH_THREADS:-8}" \
@@ -276,12 +456,8 @@ main() {
       -p vokra-models --test neutts_air_real \
       neutts_air_public_cpu_or_metal_matches_official_reference -- --exact --nocapture \
       2>&1 | tee "$evidence_dir/parity-cpu.log"
-  grep -F 'NEUTTS_AIR_PARITY Cpu_vs_official logits_atol=0.01 greedy_ids=exact PASS' \
-    "$evidence_dir/parity-cpu.log" >/dev/null \
-    || die "CPU numerical PASS marker is absent"
-  grep -F 'NEUTTS_AIR_COMPOSITION Cpu' "$evidence_dir/parity-cpu.log" >/dev/null \
-    || die "CPU composition PASS marker is absent"
-
+  require_one_named_test_passed "$evidence_dir/parity-cpu.log" \
+    neutts_air_public_cpu_or_metal_matches_official_reference Cpu
   local prompt_ids
   prompt_ids="$(awk -F= '$1 == "prompt_ids_csv" {print substr($0, index($0, "=") + 1); exit}' "$reference_dir/manifest.txt")"
   [[ -n "$prompt_ids" ]] || die "reference manifest has no prompt_ids_csv"
@@ -312,7 +488,11 @@ main() {
     -p vokra-models --features metal --target aarch64-apple-darwin \
     2>&1 | tee "$evidence_dir/apple-metal-cross-check.log"
 
+  local reference_manifest_sha256
+  reference_manifest_sha256="$(sha256_file "$reference_dir/manifest.txt")"
+  write_apple_verifier_command "$evidence_dir/apple-verifier-command.txt" "$reference_manifest_sha256"
   {
+    echo "apple_verifier_command=$(tr '\n' ' ' < "$evidence_dir/apple-verifier-command.txt")"
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "public_repo=$PUBLIC_REPO"

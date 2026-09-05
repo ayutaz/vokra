@@ -47,7 +47,9 @@ ROUTED_PARTIAL_ARCHES = {
     "magnet_small_10secs",
     "magnet_medium_30secs",
     "melodyflow_t24_30secs",
-    "sbv2",
+    # OWSM's public binder is manifest-only: PCM frontend/decoder/tokenizer
+    # execution remains NotImplemented, so CPU and Metal must stay partial.
+    "owsm-v4-medium-1b",
     # The public GGUF contains only the MIT Whisper tower + projector.  Those
     # learned stages are native CPU/Metal, but the separately licensed Llama
     # companion/tokenizer/chat route is not yet a complete CLI engine.
@@ -282,6 +284,8 @@ METAL_CODE_ARCHES = {
     "focalcodec",
     "frcrn",
     "funcodec",
+    "gigaam_multilingual",
+    "sber_gigaam_v3",
     "speechtokenizer",
     "speecht5",
     "fsmn-vad",
@@ -308,6 +312,7 @@ METAL_CODE_ARCHES = {
     "nemotron_asr_streaming",
     "nisqa_v2_weight",
     "nsnet2",
+    "omniasr-ctc",
     "parakeet-ctc",
     "parakeet-tdt",
     "parakeet-tdt-1_1b",
@@ -319,6 +324,7 @@ METAL_CODE_ARCHES = {
     "reazonspeech_nemo_v2",
     "rnnoise",
     "rmvpe",
+    "sbv2",
     "silero-vad",
     "snac",
     "sepformer",
@@ -330,6 +336,7 @@ METAL_CODE_ARCHES = {
     "utmos",
     "vocos",
     "voxtral",
+    "voice_gender_classifier",
     "wav2vec2_ctc",
     "wavtokenizer",
     "whisper",
@@ -344,8 +351,13 @@ ARCH_ROW = re.compile(
     r"^\|\s*Architecture\s*\|\s*(?:`(?P<quoted>[^`]+)`|(?P<plain>[^|]+?))\s*\|\s*$",
     re.MULTILINE,
 )
-ARCH_CONST = re.compile(r'^const ARCH_[A-Z0-9_]+: &str = "([^"]+)";', re.MULTILINE)
-BOUND_ROW = re.compile(r'\barch:\s*"([^"]+)"')
+ARCH_CONST = re.compile(
+    r'^const (?P<name>ARCH_[A-Z0-9_]+): &str = "(?P<value>[^"]+)";',
+    re.MULTILINE,
+)
+BOUND_ROW = re.compile(
+    r'\barch:\s*(?:"(?P<quoted>[^"]+)"|(?P<const>ARCH_[A-Z0-9_]+))'
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -387,7 +399,8 @@ def parse_readme_architecture(readme: str) -> str | None:
 
 
 def parse_engine_arches(source: str) -> tuple[set[str], set[str]]:
-    routed = set(ARCH_CONST.findall(source))
+    constants = {match.group("name"): match.group("value") for match in ARCH_CONST.finditer(source)}
+    routed = set(constants.values())
     marker = "const BOUND_ARCHES"
     start = source.find(marker)
     if start < 0:
@@ -395,7 +408,15 @@ def parse_engine_arches(source: str) -> tuple[set[str], set[str]]:
     end = source.find("\n];", start)
     if end < 0:
         raise ValueError("engine source has an unterminated const BOUND_ARCHES registry")
-    bound = set(BOUND_ROW.findall(source[start:end]))
+    bound: set[str] = set()
+    for match in BOUND_ROW.finditer(source[start:end]):
+        value = match.group("quoted")
+        if value is None:
+            name = match.group("const")
+            value = constants.get(name)
+            if value is None:
+                raise ValueError(f"BOUND_ARCHES references unknown architecture constant: {name}")
+        bound.add(value)
     if not routed:
         raise ValueError("engine source yielded zero routed ARCH_* constants")
     if not bound:

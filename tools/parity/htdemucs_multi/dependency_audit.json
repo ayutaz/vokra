@@ -1,0 +1,39 @@
+{
+  "schema": "vokra-htdemucs-multi-dependency-audit-v1",
+  "status": "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO",
+  "python": "==3.12.*",
+  "platform": "linux-x86_64",
+  "direct_requirements_source": {
+    "path": "upstream_requirements_minimal.snapshot",
+    "sha256": "397981fba141898fe727a6a7a3bd44b49265be37cf0e984bd4936eb7a46ffc29"
+  },
+  "active_import_closure": {
+    "path": "pyproject.toml",
+    "sha256": "040355f4b56d004f1b364135708fd6f2b909e9abddf928a30297e34c742976e0",
+    "packages": ["dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml", "torch", "torchaudio", "tqdm"],
+    "excluded_upstream_packages": ["lameenc"]
+  },
+  "compatibility": {
+    "status": "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO",
+    "constraint": "torchaudio>=0.8,<2.1",
+    "reason": "VAST Python 3.12.14 cannot resolve the unchanged upstream torchaudio>=0.8,<2.1 constraint: available releases are <=2.0.2+cpu and >=2.1, while 2.0.2+cpu has cp38/cp39/cp310/cp311 wheels only and no cp312 wheel. Do not loosen the upstream constraint. The compatibility run also requires the Torch scanner API; its log SHA-256 is ed594c9014232b79e8bed1eceae767f0b339157b93c114aa8d9b3d418c6abeba at commit 73307e99c83fdd59ca9693abdc343b929fb518de. No model/checkpoint/Torch import was performed."
+  },
+  "package_rows": [],
+  "license_rows": [],
+  "inactive_package_rows": [],
+  "inactive_license_rows": [],
+  "package_rows_sha256": null,
+  "license_rows_sha256": null,
+  "forbidden_license_policy": {
+    "status": "FAIL_CLOSED",
+    "reject": ["GPL", "LGPL", "UNKNOWN", "UNREVIEWED"]
+  },
+  "blockers": [
+    "uv.lock has not been generated on VAST",
+    "exact package artifact bytes and primary license rows are not audited",
+    "Python 3.12.14 torchaudio>=0.8,<2.1 is unsatisfiable: no cp312 wheel exists",
+    "compatibility evidence log ed594c9014232b79e8bed1eceae767f0b339157b93c114aa8d9b3d418c6abeba was recorded at run commit 73307e99c83fdd59ca9693abdc343b929fb518de",
+    "the authenticated upstream requirements snapshot includes GPL lameenc, but the curated active import closure excludes it",
+    "the active closure remains blocked until a compatible Python-3.12 lock and primary package/license audit are completed"
+  ]
+}

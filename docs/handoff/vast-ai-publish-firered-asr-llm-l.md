@@ -3,6 +3,13 @@
 **Owner-triggered.** CC は本 doc 作成のみ。実 vast.ai instance の起動・convert・
 publish は owner が本 runbook を追いながら実行する。
 
+> **2026-08-30 resource-policy boundary:** The ASR-side archive alone is
+> **3.38 GiB**, so it is a single artefact at or above the current 2 GiB
+> threshold and requires VAST handling. The legacy `LOCAL_OK` label emitted
+> by `check-model-size.sh` below is metadata from the old classifier only; it
+> is **not** permission to process the artefact locally. The full runtime also
+> includes the approximately 15 GB Qwen2-7B-Instruct dependency.
+
 **Related**:
 - 本 runbook は `docs/handoff/vast-ai-large-model-publish.md`（総論 = §2 recipe /
   §3 provision.sh gotcha / §4 lifecycle）を **前提** とする。共通手順は総論を参照
@@ -157,8 +164,9 @@ mirror できる。実装は owner Python 側 (uv-managed 3.12、`safetensors[to
 | License (upstream weight) | apache-2.0 (同上) |
 | SPDX (Vokra 判定) | `apache-2.0` (`LicenseClass::Permissive`) |
 | Total footprint | **3.38 GiB `model.pth.tar`** (asr side) **+ ~15 GB Qwen2-7B-Instruct** (別途 DL、README §Usage 参照) = 実 runtime ~18-19 GB |
-| 判定 (`check-model-size.sh`) — asr side only | `LOCAL_OK` (asr 単体 3.38 GiB は 4-8 GiB range 下端) |
-| 判定 — Qwen2-7B-Instruct 含めた full runtime | `LOCAL_BORDERLINE` — combined 18-19 GB は vast.ai 推奨 |
+| Current handling — ASR side alone | **VAST required** (single 3.38 GiB artefact; current >=2 GiB policy) |
+| Current handling — Qwen2-7B-Instruct 含めた full runtime | **VAST required** — combined ~18-19 GB |
+| Legacy `check-model-size.sh` label | `LOCAL_OK` was classifier metadata only; it is not local-processing authorization |
 | Vokra ModelKind | `FireredAsrLlmL` (`--model firered-asr-llm-l` / `firered_asr_llm_l` / `fireredasr-llm-l` 等 15 alias) |
 | Arch tag | `vokra.model.arch = "firered_asr_llm_l"` (sibling `firered_asr_aed_l` (AED variant) と区別) |
 | Category tag | `vokra.model.category = "asr"` (sibling Canary-Qwen / Voxtral / Whisper family と同 tier) |
@@ -193,7 +201,7 @@ curl -sL "https://huggingface.co/FireRedTeam/FireRedASR-LLM-L/raw/main/README.md
 
 # Size verification (asr side only)
 ./scripts/publish/check-model-size.sh FireRedTeam/FireRedASR-LLM-L
-# expected verdict: LOCAL_OK (3.38 GiB)
+# historical output: LOCAL_OK (legacy classifier label; do not use as current handling)
 ```
 
 ## 2. vast.ai instance recipe

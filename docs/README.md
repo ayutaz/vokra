@@ -1,8 +1,19 @@
 # Vokra documentation
 
-**Current-state review:** 2026-08-22
+**Current-state review:** 2026-08-31
 
-**Reviewed baseline:** `main` at `42af7a90`
+**Reviewed implementation baseline:** GitHub `main` at
+`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`; the pre-documentation code
+baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
+documentation/evidence checkpoint was
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
+
+The current checkout is workspace `0.3.0`. The pre-documentation-refresh PR
+#79 snapshot was `d8a93bc3` with 109 pass / 13 expected skip, against
+`origin/main` at `41ce9ffd`; the repository has 0 Git tags and 0 published
+releases. The `9f69277d` and
+`5cd97d12` hashes above are historical 0.2.0 records, not the current version.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -27,6 +38,7 @@ environment they name.
 | Deployment policy and legal notes | [Legal compliance](legal-compliance.md) |
 | C ABI changes | [ABI changelog](abi-changelog.md) |
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
+| Current Mac CPU/Metal campaign | [Completion plan](handoff/mac-cpu-metal-completion-plan-2026-08-30.md) |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).
@@ -54,11 +66,11 @@ and the publication scripts for release eligibility.
 
 ## Current release posture
 
-The workspace version is `0.1.0`. Rust APIs, the C ABI, GGUF metadata, and the
-model roster remain pre-1.0 and may change. The C header and Python
-prototype table are checked for exact function-set equality; documentation
-therefore avoids copying a function count that would drift on the next ABI
-addition.
+The workspace version is `0.3.0` development; no Git tag or published release
+exists yet. Rust APIs, the C ABI, GGUF metadata, and the model roster remain
+pre-1.0 and may change. The C header and Python prototype table are checked for
+exact function-set equality; documentation therefore avoids copying a function
+count that would drift on the next ABI addition.
 
 The default runtime keeps the root `Cargo.lock` first-party-only. GPU and NPU
 features are opt-in, and unsupported operations must fail explicitly instead

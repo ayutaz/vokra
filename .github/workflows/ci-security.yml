@@ -40,6 +40,11 @@ jobs:
       - name: actionlint + ShellCheck
         run: /tmp/actionlint -shellcheck shellcheck -pyflakes "" .github/workflows/*.yml
 
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+
+      - name: GigaAM v3 dependency quarantine self-test
+        run: uv run --no-project --offline --python 3.12 python tools/parity/gigaam_v3/security_self_test.py
+
       - name: Install pinned zizmor
         shell: bash
         run: |
@@ -96,6 +101,17 @@ jobs:
           #   qwen3_asr : qwen-asr==0.0.6   requires transformers==4.57.6
           #   parler_tts: parler-tts==0.2.2 requires transformers==4.46.1
           #   xcodec2   : xcodec2==0.1.5    requires torch==2.5.0
+          #   cosyvoice2_reference: diffusers==0.29.0 is an immutable
+          #     blocked upstream inventory with no uv.lock; its dedicated
+          #     sync/model-download path is forbidden before license and
+          #     soxr review. The exact diffusers advisories below are retained
+          #     only for this fail-closed, non-executable inventory. The same
+          #     inventory pins modelscope==1.20.0; its crafted-module advisory
+          #     is likewise an exact exception, never permission to execute it.
+          #     It also inventories onnx==1.16.0; the nine ONNX advisories below
+          #     cover that immutable, non-executable dependency. No ONNX lock,
+          #     sync, model download, or runtime route is enabled by these
+          #     exceptions.
           # Those trees only dump independent reference tensors on VAST.
           # torch and Transformers appear nowhere else in the repository:
           # the Rust runtime carries no dependencies (check-zero-deps.sh)
@@ -123,7 +139,19 @@ jobs:
             GHSA-qxrp-vhvm-j765,
             GHSA-rcv9-qm8p-9p6j,
             GHSA-vgrw-7cvw-pwgx,
-            GHSA-wrfc-pvp9-mr9g
+            GHSA-wrfc-pvp9-mr9g,
+            GHSA-98h9-4798-4q5v,
+            GHSA-7wx4-6vff-v64p,
+            GHSA-fhhq-h4hg-549x,
+            GHSA-6rq9-53c3-f7vj,
+            GHSA-h36j-8vv3-cj52,
+            GHSA-hqmj-h5c6-369m,
+            GHSA-3r9x-f23j-gc73,
+            GHSA-538c-55jv-c5g9,
+            GHSA-q56x-g2fj-4rj6,
+            GHSA-cmw6-hcpp-c6jp,
+            GHSA-p433-9wv8-28xj,
+            GHSA-hwpq-hmq9-wj77
           vulnerability-check: true
           retry-on-snapshot-warnings: true
           show-openssf-scorecard: true
@@ -152,5 +180,7 @@ jobs:
             --timeout 20
             --exclude '^file://.*/docs/(system-requirements\.md|adr/(0004-ios-build|M2-03-followup-rtf)\.md)$'
             --exclude '^https://www\.tn\.gov/governor/news/2024/1/10/tennessee-first-in-the-nation-to-address-ai-impact-on-music-industry\.html$'
+            --exclude '^https://www\.hhs\.gov/hipaa/for-professionals/covered-entities/index\.html$'
+            --exclude '^https://www\.hhs\.gov/hipaa/for-professionals/privacy/guidance/business-associates/index\.html$'
             README.md CONTRIBUTING.md .github docs
           fail: true

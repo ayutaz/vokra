@@ -103,7 +103,7 @@ is a hard error rather than a lazy failure on first request.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — against the flag surface in
+**Last verified: 2026-08-30 — against the flag surface in
 `integrations/vokra-server/src/config.rs`
 <!-- anchor: integrations/vokra-server/src/config.rs -->.**
 

@@ -226,7 +226,7 @@ make, not one Vokra makes behind your back.
 
 ## Keeping this page current
 
-**Last verified: 2026-08-21 — against the `run` / `convert` / `bench` / `f0`
+**Last verified: 2026-08-30 — against the `run` / `convert` / `bench` / `f0`
 argument parsers in `crates/vokra-cli/src/`.**
 
 - **Update responsibility**: a PR that adds or renames a CLI flag updates this

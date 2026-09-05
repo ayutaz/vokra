@@ -30,7 +30,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import onnx
@@ -53,6 +56,43 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def require_regular_input(path: Path, label: str) -> None:
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"{label} must be a regular non-symlink file: {path}")
+
+
+def require_absent_output(path: Path, label: str) -> None:
+    if path.exists() or path.is_symlink():
+        raise SystemExit(f"{label} must be absent and non-symlink: {path}")
+
+
+def publish_no_replace(path: Path, writer: Callable[[Path], None], label: str) -> None:
+    """Publish a generated artifact without replacing a concurrent target."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    require_absent_output(path, label)
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.",
+            suffix=path.suffix, delete=False
+        ) as temporary:
+            temporary_name = temporary.name
+        writer(Path(temporary_name))
+        with open(temporary_name, "rb") as handle:
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary_name, path)
+        except FileExistsError as exc:
+            raise SystemExit(f"{label} appeared concurrently; refusing replacement: {path}") from exc
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
 
 
 def official_stft(signal: np.ndarray) -> np.ndarray:
@@ -106,9 +146,14 @@ def official_istft(spectrum: np.ndarray) -> np.ndarray:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--onnx", type=Path, required=True)
-    parser.add_argument("--input-wav", type=Path, required=True)
-    parser.add_argument("--output-wav", type=Path, required=True)
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="run hermetic output publication guards without loading a model",
+    )
+    parser.add_argument("--onnx", type=Path, required=False)
+    parser.add_argument("--input-wav", type=Path, required=False)
+    parser.add_argument("--output-wav", type=Path, required=False)
     parser.add_argument(
         "--dump-npz",
         type=Path,
@@ -119,6 +164,40 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.self_test:
+        with tempfile.TemporaryDirectory(prefix="vokra-nsnet2-dump-selftest-") as root:
+            output = Path(root) / "nested" / "reference.wav"
+            publish_no_replace(output, lambda path: path.write_bytes(b"fixture"), "output WAV")
+            if output.read_bytes() != b"fixture":
+                raise SystemExit("nsnet2_dump_reference: self-test failed: publish")
+            try:
+                publish_no_replace(output, lambda path: path.write_bytes(b"clobber"), "output WAV")
+            except SystemExit:
+                pass
+            else:
+                raise SystemExit("nsnet2_dump_reference: self-test failed: overwrite accepted")
+            if output.read_bytes() != b"fixture":
+                raise SystemExit("nsnet2_dump_reference: self-test failed: existing output changed")
+        print("nsnet2_dump_reference: self-test: OK")
+        return
+    if args.onnx is None or args.input_wav is None or args.output_wav is None:
+        raise SystemExit(
+            "nsnet2_dump_reference: --onnx, --input-wav, and --output-wav "
+            "are required unless --self-test is used"
+        )
+    require_regular_input(args.onnx, "ONNX input")
+    require_regular_input(args.input_wav, "input WAV")
+    require_absent_output(args.output_wav, "output WAV")
+    if args.dump_npz is not None:
+        require_absent_output(args.dump_npz, "dump NPZ")
+    input_paths = {args.onnx.resolve(strict=True), args.input_wav.resolve(strict=True)}
+    output_paths = {args.output_wav.resolve(strict=False)}
+    if args.dump_npz is not None:
+        output_paths.add(args.dump_npz.resolve(strict=False))
+    if input_paths & output_paths:
+        raise SystemExit("generated outputs must be distinct from authenticated inputs")
+    if len(output_paths) != (1 if args.dump_npz is None else 2):
+        raise SystemExit("output WAV and NPZ paths must be distinct")
     onnx_sha = sha256(args.onnx)
     if onnx_sha != PINNED_ONNX_SHA256:
         raise SystemExit(
@@ -149,15 +228,28 @@ def main() -> None:
     gain = np.clip(network_output[0].T, MIN_GAIN, 1.0)
     enhanced = official_istft(spectrum * gain)
 
-    args.output_wav.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(args.output_wav, enhanced.astype(np.float32), SAMPLE_RATE, subtype="FLOAT")
+    publish_no_replace(
+        args.output_wav,
+        lambda path: sf.write(path, enhanced.astype(np.float32), SAMPLE_RATE, subtype="FLOAT"),
+        "output WAV",
+    )
     if args.dump_npz is not None:
-        args.dump_npz.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
+        def write_npz(path: Path) -> None:
+            # Passing an open file prevents NumPy from appending a second
+            # `.npz` suffix, so the no-replace publisher owns the exact path
+            # requested by the caller.
+            with path.open("wb") as handle:
+                np.savez(
+                    handle,
+                    feature=feature.astype(np.float32),
+                    gain=gain.astype(np.float32),
+                    enhanced=enhanced.astype(np.float32),
+                )
+
+        publish_no_replace(
             args.dump_npz,
-            feature=feature.astype(np.float32),
-            gain=gain.astype(np.float32),
-            enhanced=enhanced.astype(np.float32),
+            write_npz,
+            "dump NPZ",
         )
 
     print(

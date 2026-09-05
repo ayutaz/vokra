@@ -1,0 +1,883 @@
+{
+  "approval_scope_sha256": "6f8378213db1ef19924c42cb76a194ed013093c048aba910808eb14e2dcef262",
+  "component_reviews": [
+    {
+      "approval_digest": null,
+      "id": "source",
+      "identity": {
+        "card_readme": {
+          "bytes": 31,
+          "git_blob_sha1": "7b95401dc46245ac339fc25059d4a56d90b4cde5",
+          "license_spdx": "apache-2.0",
+          "path": "README.md",
+          "sha256": "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7"
+        },
+        "files": [
+          {
+            "bytes": 271,
+            "git_blob_sha1": "bfabe52b8cb6f260cdda6137b34df2f4736bd02f",
+            "path": "quantization/__init__.py",
+            "role": "rvq",
+            "sha256": "34c806bc1cafc8b835926b6f6450bee769f95eb467cf1c19b4427e9dd7e55bbc"
+          },
+          {
+            "bytes": 4598,
+            "git_blob_sha1": "aeca14f95177bcc8f5c3ab492845a38d01cff5f1",
+            "path": "quantization/vq.py",
+            "role": "rvq",
+            "sha256": "8f24a4a389bad6dec6d77a35526264a1acd07c29a69854274bc73ebda4c622f9"
+          },
+          {
+            "bytes": 16050,
+            "git_blob_sha1": "65f8d2405a8758087ca0590d2f8fe72053e7f65b",
+            "path": "quantization/core_vq_lsx_version.py",
+            "role": "rvq",
+            "sha256": "154e2c5ddbacd3b82c74bf18d7177ea4b011cbd71e6e5575c7265b70e58c2af0"
+          },
+          {
+            "bytes": 4109,
+            "git_blob_sha1": "e0985f5418ecad2c6fe5fe941c0e4dbafbc60d84",
+            "path": "quantization/distrib.py",
+            "role": "rvq",
+            "sha256": "79b8dbfe3dda4da10ea0d3e143b373d90dd920f40d4a7f6f7446412b3584f655"
+          },
+          {
+            "bytes": 8484,
+            "git_blob_sha1": "a3bf157c1ad64f6404078d2b8eaf8a864e451cd3",
+            "path": "utils/utils.py",
+            "role": "rvq_import",
+            "sha256": "8521062c4b1afae1366a100244449a7dcdcc79883bf1874e50f9954c66c2ccd2"
+          },
+          {
+            "bytes": 9108,
+            "git_blob_sha1": "2240124d8dcc3684a9831e1f40b55c2c916d463c",
+            "path": "utils/ddp_utils.py",
+            "role": "rvq_import",
+            "sha256": "a53a4efc83ab34c8655d61bbcae7e0965a573ecce3321f8c1cffc2ec6889644f"
+          }
+        ],
+        "license": {
+          "bytes": null,
+          "git_blob_sha1": null,
+          "path": null,
+          "reason": "HF tree has no LICENSE; code-source license object is not authenticated",
+          "sha256": null,
+          "status": "UNRESOLVED"
+        },
+        "license_spdx": "apache-2.0",
+        "repcodec_pcm_encode": {
+          "license_spdx": null,
+          "reason": "mixed MIT and CC-BY-NC; PCM encode is not executed",
+          "status": "UNRESOLVED"
+        },
+        "repo": "https://huggingface.co/m-a-p/xcodec_mini_infer",
+        "revision": "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5",
+        "role": "official_token_decoder_source"
+      },
+      "license": null,
+      "payload_sha256": null,
+      "role": "official_token_decoder_source",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "public",
+      "identity": {
+        "bytes": 1810001760,
+        "license_spdx": "apache-2.0",
+        "manifest_sha256": "cc0a5e9a5a6f1cfbd93b1869bbcb70744814bd8c855d173949abbf6b6cc08f15",
+        "path": "yue-xcodec-mini.gguf",
+        "repo": "vokra/yue-xcodec-mini",
+        "revision": "83c14a67ed792a0d5b3b61fff8ae35a04c6da8fa",
+        "role": "historical_public_measurement_artifact",
+        "sha256": "60e21aa5335646080102196454d7ffad5e012467d6f5eb9b776bf07d666b02bc",
+        "tensor_count": 2145
+      },
+      "license": null,
+      "payload_sha256": null,
+      "role": "historical_public_measurement_artifact",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "codec",
+      "identity": {
+        "bytes": 1360444883,
+        "path": "final_ckpt/ckpt_00360000.pth",
+        "repo": "m-a-p/xcodec_mini_infer",
+        "revision": "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5",
+        "role": "codec_checkpoint",
+        "sha256": "c8c379ea2d3cbde1c8ba1b9717975220e79ba3f556bb161766fd5e4585dcd59c"
+      },
+      "license": null,
+      "payload_sha256": null,
+      "role": "codec_checkpoint",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "semantic",
+      "identity": {
+        "bytes": 377555286,
+        "path": "semantic_ckpts/hf_1_325000/pytorch_model.bin",
+        "repo": "m-a-p/xcodec_mini_infer",
+        "revision": "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5",
+        "role": "nonexecuted_semantic_checkpoint",
+        "sha256": "c5ddbd7fa2468483cb9b2aa53117813471543dd278e65870333a56c54305f527"
+      },
+      "license": null,
+      "payload_sha256": null,
+      "role": "nonexecuted_semantic_checkpoint",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "decoder",
+      "identity": {
+        "bytes": 72610550,
+        "path": "decoders/decoder_151000.pth",
+        "repo": "m-a-p/xcodec_mini_infer",
+        "revision": "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5",
+        "role": "vocos_decoder_checkpoint",
+        "sha256": "8af97a29d3483f9d4a3755992837501bd7d6caa1a69382ed16e64039e0ea0998"
+      },
+      "license": null,
+      "payload_sha256": null,
+      "role": "vocos_decoder_checkpoint",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "vocos",
+      "identity": {
+        "license_spdx": "apache-2.0",
+        "package": "vocos==0.1.0",
+        "role": "vocos_istft_decoder",
+        "wheel_sha256": "0ac13eaef68596074301e912d781399b3defa4b4ca60b6bc52c8a4b9209ca235"
+      },
+      "license": null,
+      "payload_sha256": null,
+      "role": "vocos_istft_decoder",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    }
+  ],
+  "dependency_reviews": [
+    {
+      "bundled_review": null,
+      "id": "absl-py@2.5.0",
+      "license": null,
+      "name": "absl-py",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.5.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "antlr4-python3-runtime@4.9.3",
+      "license": null,
+      "name": "antlr4-python3-runtime",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.9.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "certifi@2026.7.22",
+      "license": null,
+      "name": "certifi",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2026.7.22"
+    },
+    {
+      "bundled_review": null,
+      "id": "charset-normalizer@3.5.1",
+      "license": null,
+      "name": "charset-normalizer",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.5.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "contourpy@1.3.3",
+      "license": null,
+      "name": "contourpy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.3.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "cycler@0.12.1",
+      "license": null,
+      "name": "cycler",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.12.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "einops@0.8.2",
+      "license": null,
+      "name": "einops",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.8.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "encodec@0.1.1",
+      "license": null,
+      "name": "encodec",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.1.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "filelock@3.32.4",
+      "license": null,
+      "name": "filelock",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.32.4"
+    },
+    {
+      "bundled_review": null,
+      "id": "fonttools@4.63.0",
+      "license": null,
+      "name": "fonttools",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.63.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "fsspec@2026.7.0",
+      "license": null,
+      "name": "fsspec",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2026.7.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "grpcio@1.83.1",
+      "license": null,
+      "name": "grpcio",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.83.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "hf-xet@1.6.0",
+      "license": null,
+      "name": "hf-xet",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.6.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "huggingface-hub@0.36.2",
+      "license": null,
+      "name": "huggingface-hub",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.36.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "idna@3.19",
+      "license": null,
+      "name": "idna",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.19"
+    },
+    {
+      "bundled_review": null,
+      "id": "jinja2@3.1.6",
+      "license": null,
+      "name": "jinja2",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.1.6"
+    },
+    {
+      "bundled_review": null,
+      "id": "kiwisolver@1.5.1",
+      "license": null,
+      "name": "kiwisolver",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.5.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "markdown@3.10.3",
+      "license": null,
+      "name": "markdown",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.10.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "markupsafe@3.0.3",
+      "license": null,
+      "name": "markupsafe",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.0.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "matplotlib@3.11.1",
+      "license": null,
+      "name": "matplotlib",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.11.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "mpmath@1.3.0",
+      "license": null,
+      "name": "mpmath",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.3.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "networkx@3.6.1",
+      "license": null,
+      "name": "networkx",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.6.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "numpy@2.3.5",
+      "license": null,
+      "name": "numpy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.3.5"
+    },
+    {
+      "bundled_review": null,
+      "id": "omegaconf@2.3.0",
+      "license": null,
+      "name": "omegaconf",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.3.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "packaging@26.3",
+      "license": null,
+      "name": "packaging",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "26.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "pillow@12.3.0",
+      "license": null,
+      "name": "pillow",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "12.3.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "protobuf@7.36.0",
+      "license": null,
+      "name": "protobuf",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "7.36.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "pyparsing@3.3.2",
+      "license": null,
+      "name": "pyparsing",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.3.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "python-dateutil@2.9.0.post0",
+      "license": null,
+      "name": "python-dateutil",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.9.0.post0"
+    },
+    {
+      "bundled_review": null,
+      "id": "pyyaml@6.0.3",
+      "license": null,
+      "name": "pyyaml",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "6.0.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "requests@2.33.0",
+      "license": null,
+      "name": "requests",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.33.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "scipy@1.18.1",
+      "license": null,
+      "name": "scipy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.18.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "setuptools@84.0.0",
+      "license": null,
+      "name": "setuptools",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "84.0.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "six@1.17.0",
+      "license": null,
+      "name": "six",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.17.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "sympy@1.14.0",
+      "license": null,
+      "name": "sympy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.14.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "tensorboard@2.20.0",
+      "license": null,
+      "name": "tensorboard",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.20.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "tensorboard-data-server@0.7.2",
+      "license": null,
+      "name": "tensorboard-data-server",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.7.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "torch@2.7.1+cpu",
+      "license": null,
+      "name": "torch",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.7.1+cpu"
+    },
+    {
+      "bundled_review": null,
+      "id": "torchaudio@2.7.1",
+      "license": null,
+      "name": "torchaudio",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.7.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "tqdm@4.67.1",
+      "license": null,
+      "name": "tqdm",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.67.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "typing-extensions@4.16.0",
+      "license": null,
+      "name": "typing-extensions",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.16.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "urllib3@2.7.0",
+      "license": null,
+      "name": "urllib3",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.7.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "vocos@0.1.0",
+      "license": null,
+      "name": "vocos",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.1.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "vokra-yue-xcodec-mini-parity@0.1.0",
+      "license": null,
+      "name": "vokra-yue-xcodec-mini-parity",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "virtual": "."
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.1.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "werkzeug@3.1.8",
+      "license": null,
+      "name": "werkzeug",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.1.8"
+    }
+  ],
+  "dependency_reviews_sha256": "e41f4b37869736c58d70a397f653f85c6901e6b6a52e4774c61ab5af60845867",
+  "fixed_identities": {
+    "checkpoints": {
+      "codec": {
+        "bytes": 1360444883,
+        "path": "final_ckpt/ckpt_00360000.pth",
+        "repo": "m-a-p/xcodec_mini_infer",
+        "revision": "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5",
+        "role": "codec_checkpoint",
+        "sha256": "c8c379ea2d3cbde1c8ba1b9717975220e79ba3f556bb161766fd5e4585dcd59c"
+      },
+      "decoder": {
+        "bytes": 72610550,
+        "path": "decoders/decoder_151000.pth",
+        "repo": "m-a-p/xcodec_mini_infer",
+        "revision": "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5",
+        "role": "vocos_decoder_checkpoint",
+        "sha256": "8af97a29d3483f9d4a3755992837501bd7d6caa1a69382ed16e64039e0ea0998"
+      },
+      "semantic": {
+        "bytes": 377555286,
+        "path": "semantic_ckpts/hf_1_325000/pytorch_model.bin",
+        "repo": "m-a-p/xcodec_mini_infer",
+        "revision": "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5",
+        "role": "nonexecuted_semantic_checkpoint",
+        "sha256": "c5ddbd7fa2468483cb9b2aa53117813471543dd278e65870333a56c54305f527"
+      }
+    },
+    "public": {
+      "bytes": 1810001760,
+      "license_spdx": "apache-2.0",
+      "manifest_sha256": "cc0a5e9a5a6f1cfbd93b1869bbcb70744814bd8c855d173949abbf6b6cc08f15",
+      "path": "yue-xcodec-mini.gguf",
+      "repo": "vokra/yue-xcodec-mini",
+      "revision": "83c14a67ed792a0d5b3b61fff8ae35a04c6da8fa",
+      "role": "historical_public_measurement_artifact",
+      "sha256": "60e21aa5335646080102196454d7ffad5e012467d6f5eb9b776bf07d666b02bc",
+      "tensor_count": 2145
+    },
+    "source": {
+      "card_readme": {
+        "bytes": 31,
+        "git_blob_sha1": "7b95401dc46245ac339fc25059d4a56d90b4cde5",
+        "license_spdx": "apache-2.0",
+        "path": "README.md",
+        "sha256": "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7"
+      },
+      "files": [
+        {
+          "bytes": 271,
+          "git_blob_sha1": "bfabe52b8cb6f260cdda6137b34df2f4736bd02f",
+          "path": "quantization/__init__.py",
+          "role": "rvq",
+          "sha256": "34c806bc1cafc8b835926b6f6450bee769f95eb467cf1c19b4427e9dd7e55bbc"
+        },
+        {
+          "bytes": 4598,
+          "git_blob_sha1": "aeca14f95177bcc8f5c3ab492845a38d01cff5f1",
+          "path": "quantization/vq.py",
+          "role": "rvq",
+          "sha256": "8f24a4a389bad6dec6d77a35526264a1acd07c29a69854274bc73ebda4c622f9"
+        },
+        {
+          "bytes": 16050,
+          "git_blob_sha1": "65f8d2405a8758087ca0590d2f8fe72053e7f65b",
+          "path": "quantization/core_vq_lsx_version.py",
+          "role": "rvq",
+          "sha256": "154e2c5ddbacd3b82c74bf18d7177ea4b011cbd71e6e5575c7265b70e58c2af0"
+        },
+        {
+          "bytes": 4109,
+          "git_blob_sha1": "e0985f5418ecad2c6fe5fe941c0e4dbafbc60d84",
+          "path": "quantization/distrib.py",
+          "role": "rvq",
+          "sha256": "79b8dbfe3dda4da10ea0d3e143b373d90dd920f40d4a7f6f7446412b3584f655"
+        },
+        {
+          "bytes": 8484,
+          "git_blob_sha1": "a3bf157c1ad64f6404078d2b8eaf8a864e451cd3",
+          "path": "utils/utils.py",
+          "role": "rvq_import",
+          "sha256": "8521062c4b1afae1366a100244449a7dcdcc79883bf1874e50f9954c66c2ccd2"
+        },
+        {
+          "bytes": 9108,
+          "git_blob_sha1": "2240124d8dcc3684a9831e1f40b55c2c916d463c",
+          "path": "utils/ddp_utils.py",
+          "role": "rvq_import",
+          "sha256": "a53a4efc83ab34c8655d61bbcae7e0965a573ecce3321f8c1cffc2ec6889644f"
+        }
+      ],
+      "license": {
+        "bytes": null,
+        "git_blob_sha1": null,
+        "path": null,
+        "reason": "HF tree has no LICENSE; code-source license object is not authenticated",
+        "sha256": null,
+        "status": "UNRESOLVED"
+      },
+      "license_spdx": "apache-2.0",
+      "repcodec_pcm_encode": {
+        "license_spdx": null,
+        "reason": "mixed MIT and CC-BY-NC; PCM encode is not executed",
+        "status": "UNRESOLVED"
+      },
+      "repo": "https://huggingface.co/m-a-p/xcodec_mini_infer",
+      "revision": "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5",
+      "role": "official_token_decoder_source"
+    },
+    "vocos": {
+      "license_spdx": "apache-2.0",
+      "package": "vocos==0.1.0",
+      "role": "vocos_istft_decoder",
+      "wheel_sha256": "0ac13eaef68596074301e912d781399b3defa4b4ca60b6bc52c8a4b9209ca235"
+    }
+  },
+  "gate_version": 1,
+  "lock_sha256": "5a05395c04e3c047714e4c3e6fa1f7849520c83e4343c3d07aaea23b3f1bf754",
+  "no_upload": "NO_UPLOAD",
+  "operator_approval": {
+    "decision": "PENDING_REVIEW",
+    "digest": null,
+    "signer": null
+  },
+  "package_rows_sha256": "700c84daa85f4bef2846987af992246dca305853be3f8d3b8e5965228d670c61",
+  "pyproject_sha256": "05ee8513b32d3bec6e9205c352363602177d7a52f3db525d3eb8bf1081181fb1"
+}

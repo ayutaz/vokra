@@ -2,9 +2,12 @@
 
 **English** | [日本語](unity.ja.md)
 
-Vokra ships a Unity Package (`com.vokra.unity`) with prebuilt native
-libraries for all supported platforms and a C# API that survives IL2CPP
-AOT compilation and iOS static linking constraints.
+Vokra provides a Unity Package (`com.vokra.unity`) source/API skeleton and a
+C# API designed for IL2CPP AOT compilation and iOS static linking constraints.
+The tracked UPM tree contains only native-plugin `.gitkeep`/`.meta`
+placeholders; a clean Git URL import is source-only and cannot run until the
+target native library is built and staged. Prebuilt libraries for all supported
+platforms are a future authorized CD release deliverable.
 
 ## 1. Prerequisites
 
@@ -19,15 +22,19 @@ AOT compilation and iOS static linking constraints.
 
 ## 2. Install the package
 
-Three supported paths:
+The package can be referenced in three ways; before an authorized release,
+only the local flow below is runnable:
 
-### UPM Git URL (recommended)
+### UPM Git URL (source inspection only)
 
 ```
 Window → Package Manager → + → Add package from git URL…
 
 https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 ```
+
+This Git URL does not provide runnable native binaries in the current
+unpublished tree.
 
 ### Local file reference (development)
 
@@ -39,20 +46,45 @@ https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 }
 ```
 
+Clone the publicly fetchable GitHub `main` baseline verified on 2026-08-30,
+then build and stage the native library for the platform you will test:
+
+```sh
+git clone https://github.com/ayutaz/vokra.git
+cd vokra
+git checkout --detach 41ce9ffdd4b0959497f55afa5016822f77a8a7b6
+
+# Host desktop (macOS, Linux, or Windows).
+scripts/build-unity-plugin.sh
+# Android (requires ANDROID_NDK_HOME).
+ANDROID_NDK_HOME=/path/to/ndk scripts/build-android.sh
+# iOS (build the XCFramework, then stage its device slice for Unity).
+scripts/build-ios.sh
+scripts/collect-ios-lib.sh
+# WebGL (CPU-only wasm archive).
+scripts/build-unity-webgl-lib.sh
+```
+
+The helpers require their corresponding platform SDK/toolchain and produce
+local development artifacts. The local `file:` reference becomes runnable
+only after the relevant library is staged.
+
 ### Tarball (production)
 
-Download `com.vokra.unity-<version>.tgz` from GitHub Releases and use
-**Add package from tarball…** in the Package Manager.
+Once an authorized GitHub Release is published, download
+`com.vokra.unity-<version>.tgz` and use **Add package from tarball…** in the
+Package Manager. No such release exists yet.
 
 ## 3. Supported platform matrix
 
-| Platform | Native lib                              | Feature set                                 |
+| Platform | Native lib after local staging           | Feature set                                 |
 | -------- | --------------------------------------- | ------------------------------------------- |
 | macOS    | `Plugins/macOS/libvokra.dylib`          | CPU (Metal opt-in)                          |
 | Windows  | `Plugins/Windows/x86_64/vokra.dll`      | CPU (CUDA opt-in, system-installed)         |
 | Linux    | `Plugins/Linux/x86_64/libvokra.so`      | CPU (CUDA opt-in, system-installed)         |
 | iOS      | `Plugins/iOS/libvokra.a` (`__Internal`) | CPU                                         |
 | Android  | `Plugins/Android/libs/arm64-v8a/libvokra.so` | CPU                                    |
+| WebGL    | `Plugins/WebGL/libvokra.a` (`__Internal`) | CPU-only WASM (WebGPU not wired)          |
 
 ## 4. Minimal C# usage
 
@@ -175,8 +207,9 @@ MIT, piper-plus voice MIT) are **not** bundled — run
 ## 10. Troubleshooting
 
 - **`DllNotFoundException: vokra`**: the Plugins folder is missing your
-  platform's native library. Reimport the package or (for the local
-  `file:` install) run the CD scripts locally.
+  platform's native library. A Git URL import cannot supply it in the current
+  unpublished tree; for a local `file:` install, run the matching staging
+  helper described in section 2.
 - **`VokraException: Unsupported backend`**: FR-EX-08 forbids silent
   fallback. Either build with the matching backend feature or use a
   GGUF whose ops are covered by CPU.

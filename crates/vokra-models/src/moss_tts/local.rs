@@ -20,6 +20,7 @@ use super::delay::{DelayMappedDescriptors, DelayTopology, QwenTensorLayout};
 use super::{ARCH, CATEGORY};
 
 pub(super) const LABEL: &str = "moss_tts/local";
+/// Stable model identifier for the MOSS-TTS Local Transformer release.
 pub const NAME: &str = "moss-tts-local-transformer-v1.5";
 pub const UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5";
 pub const UPSTREAM_REVISION: &str = "be7766a6735b98bd793f7c79fb720b4d0f5d13b8";

@@ -1,10 +1,19 @@
 # Wyoming ↔ Home Assistant — local Docker smoke (M2-15 pre-check)
 
+## Current status (2026-08-30)
+
+The implementation gaps described by the July capture below have since been
+superseded: `run_with_config` now waits for shutdown, the accept loop routes
+connections through `run_wyoming_connection`, and the discovery plus full ASR
+and TTS protocol path is implemented. The raw output and findings below are
+retained as historical evidence from 2026-07-07, not as a description of the
+current server. A real Home Assistant UI integration and owner-device check
+remain outstanding.
+
 Wire-level reachability smoke: confirms that a Home Assistant container on
-this host can reach `vokra-server`'s Wyoming TCP port. Full protocol
-handshake (`describe` → `info`) is **NOT** covered — it requires the T14/T15/T16
-event loop to be wired into the accept loop, which is still pending
-(see "Findings" below).
+this host could reach `vokra-server`'s Wyoming TCP port. The full protocol
+handshake was **not** covered by this historical run; see the dated raw
+evidence and findings below.
 
 Kill switch J judgment (HA Voice adopting Vokra) is owner-side; this smoke
 does not attempt to make that call.
@@ -37,7 +46,7 @@ does not attempt to make that call.
 | Ports                    | HA `127.0.0.1:8123 → container:8123`; vokra-server `0.0.0.0:10300` (host)                  |
 | Docker→host bridge       | `host.docker.internal` and `gateway.docker.internal` both resolve to `192.168.65.254`      |
 
-## Raw observed output (not synthesized)
+## Raw observed output (not synthesized; captured 2026-07-07)
 
 ### vokra-server startup log (`/tmp/vokra-server.log`)
 
@@ -92,7 +101,7 @@ TCP OK gateway.docker.internal:10300 dt=2.3ms
 | HA container receives a Wyoming `info` reply to `describe`                  | ❌ EOF, 0 bytes            |
 | Cleanup (stop + rm container, kill server)                                  | ✅ done                    |
 
-## Findings (bugs / gaps observed during this smoke)
+## Findings (bugs / gaps observed during this smoke; historical)
 
 1. **`vokra-server` main entrypoint exits immediately after logging.**
    `run_with_config` (`src/server.rs`) calls `spawn_server(...).await?`,
@@ -132,14 +141,13 @@ TCP OK gateway.docker.internal:10300 dt=2.3ms
    into the accept loop (with panic-isolated per-connection tasks per
    NFR-RL-07) is the follow-up that turns this smoke green end-to-end.
 
-## Known limitations of this smoke
+## Known limitations of this smoke (at the time of capture)
 
-- **Wire-level only.** This test asserts that a container reaches the host
-  port; it does not exercise the Wyoming event vocabulary (`describe` /
+- **Wire-level only.** This historical test asserted that a container reached
+  the host port; it did not exercise the Wyoming event vocabulary (`describe` /
   `info` / `audio-start` / `audio-chunk` / `audio-stop` / `transcribe` /
-  `synthesize` / `transcript`). The engine handlers are unit-tested inside
-  `src/api/wyoming.rs` but are not reachable over the socket yet (see
-  finding 2).
+  `synthesize` / `transcript`). The current event path is implemented, but
+  this capture does not provide current end-to-end evidence.
 - **HA integration wizard is not driven.** Adding "Wyoming Protocol" as
   an integration inside the HA UI and selecting Vokra as the ASR/TTS
   backend is a manual, cookie-authenticated flow. Owner runs that step
@@ -155,7 +163,7 @@ TCP OK gateway.docker.internal:10300 dt=2.3ms
   this smoke path (no `--config` was passed), so no ASR / TTS work was
   attempted. RTF gates for the Wyoming path land in M3-01 regression.
 
-## Owner follow-ups
+## Owner follow-ups (historical capture)
 
 - Decide whether the `run_with_config` fix (finding 1) lands as a small
   standalone `fix(server)` commit or is folded into the T14 wiring PR.

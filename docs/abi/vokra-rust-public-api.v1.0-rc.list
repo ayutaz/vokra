@@ -99,6 +99,7 @@ CONST vokra-core::rng::philox_round::PHILOX_ROUNDS|pub const PHILOX_ROUNDS: usiz
 CONST vokra-core::rng::philox_round::PHILOX_W0|pub const PHILOX_W0: u32 = 0x9E37_79B9;
 CONST vokra-core::rng::philox_round::PHILOX_W1|pub const PHILOX_W1: u32 = 0xBB67_AE85;
 CONST vokra-core::session::IN_MEMORY_MODEL_PATH|pub const IN_MEMORY_MODEL_PATH: &str = "<in-memory>";
+CONST vokra-ops::conformer::GIGAAM_SOURCE_REVISION|pub const GIGAAM_SOURCE_REVISION: &str = "7447938d791c4f3e643386ee22c33777004293a5";
 CONST vokra-ops::f0::DEFAULT_ABSOLUTE_THRESHOLD|pub const DEFAULT_ABSOLUTE_THRESHOLD: f32 = 0.10;
 CONST vokra-ops::f0::DEFAULT_FRAME_SIZE|pub const DEFAULT_FRAME_SIZE: usize = 2048;
 CONST vokra-ops::f0::DEFAULT_HOP|pub const DEFAULT_HOP: usize = 256;
@@ -460,6 +461,7 @@ FN vokra-core::gguf::frontend_spec::diff|pub fn diff(&self, runtime: &FrontendSp
 FN vokra-core::gguf::frontend_spec::from_gguf|pub fn from_gguf(file: &GgufFile) -> Result<Self, GgufError> {
 FN vokra-core::gguf::frontend_spec::to_gguf_kv|pub fn to_gguf_kv(&self) -> Vec<(String, GgufMetadataValue)> {
 FN vokra-core::gguf::frontend_spec::write_into|pub fn write_into(&self, builder: &mut GgufBuilder) {
+FN vokra-core::gguf::quant::decode_bf16_bits|pub fn decode_bf16_bits(
 FN vokra-core::gguf::quant::dequantize|pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Vec<f32>, GgufError> {
 FN vokra-core::gguf::quant::f16_to_f32|pub fn f16_to_f32(h: u16) -> f32 {
 FN vokra-core::gguf::reader::alignment|pub fn alignment(&self) -> u64 {
@@ -468,9 +470,12 @@ FN vokra-core::gguf::reader::get|pub fn get(&self, key: &str) -> Option<&GgufMet
 FN vokra-core::gguf::reader::metadata|pub fn metadata(&self) -> &[(String, GgufMetadataValue)] {
 FN vokra-core::gguf::reader::open|pub fn open(path: impl AsRef<Path>) -> Result<Self, GgufError> {
 FN vokra-core::gguf::reader::parse|pub fn parse(data: Vec<u8>) -> Result<Self, GgufError> {
+FN vokra-core::gguf::reader::tensor_bf16_bits|pub fn tensor_bf16_bits(&self, name: &str) -> Result<Vec<u16>, GgufError> {
 FN vokra-core::gguf::reader::tensor_bytes|pub fn tensor_bytes(&self, info: &GgufTensorInfo) -> &[u8] {
 FN vokra-core::gguf::reader::tensor_data|pub fn tensor_data(&self, name: &str) -> Option<&[u8]> {
 FN vokra-core::gguf::reader::tensor_f32|pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>, GgufError> {
+FN vokra-core::gguf::reader::tensor_i32|pub fn tensor_i32(&self, name: &str) -> Result<Vec<i32>, GgufError> {
+FN vokra-core::gguf::reader::tensor_i8|pub fn tensor_i8(&self, name: &str) -> Result<Vec<i8>, GgufError> {
 FN vokra-core::gguf::reader::tensor_info|pub fn tensor_info(&self, name: &str) -> Option<&GgufTensorInfo> {
 FN vokra-core::gguf::reader::tensors|pub fn tensors(&self) -> &[GgufTensorInfo] {
 FN vokra-core::gguf::reader::version|pub fn version(&self) -> u32 {
@@ -488,6 +493,7 @@ FN vokra-core::gguf::tensor::block_size|pub fn block_size(self) -> usize {
 FN vokra-core::gguf::tensor::byte_len|pub fn byte_len(&self) -> Result<u64, GgufError> {
 FN vokra-core::gguf::tensor::element_count|pub fn element_count(&self) -> Result<u64, GgufError> {
 FN vokra-core::gguf::tensor::from_tag|pub fn from_tag(tag: u32) -> Result<Self, GgufError> {
+FN vokra-core::gguf::tensor::payload_size_for_dimensions|pub fn payload_size_for_dimensions(self, dimensions: &[u64]) -> Result<u64, GgufError> {
 FN vokra-core::gguf::tensor::payload_size|pub fn payload_size(self, n_elements: u64) -> Result<u64, GgufError> {
 FN vokra-core::gguf::tensor::tag|pub fn tag(self) -> u32 {
 FN vokra-core::gguf::tensor::type_size|pub fn type_size(self) -> usize {
@@ -669,7 +675,9 @@ FN vokra-core::runtime::tensor::zeros_f32|pub fn zeros_f32(shape: Vec<usize>) ->
 FN vokra-core::safetensors::element_count|pub fn element_count(&self) -> u64 {
 FN vokra-core::safetensors::open|pub fn open(path: impl AsRef<Path>) -> Result<Self, SafetensorsError> {
 FN vokra-core::safetensors::parse|pub fn parse(data: Vec<u8>) -> Result<Self, SafetensorsError> {
+FN vokra-core::safetensors::read_tensor_bf16_bits_into|pub fn read_tensor_bf16_bits_into(
 FN vokra-core::safetensors::read_tensor_into|pub fn read_tensor_into(
+FN vokra-core::safetensors::tensor_bf16_bits|pub fn tensor_bf16_bits(&self, name: &str) -> Result<Vec<u16>, SafetensorsError> {
 FN vokra-core::safetensors::tensor_bytes|pub fn tensor_bytes(&self, t: &SafeTensorInfo) -> &[u8] {
 FN vokra-core::safetensors::tensor_data|pub fn tensor_data(&self, name: &str) -> Option<&[u8]> {
 FN vokra-core::safetensors::tensor_f32|pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>, SafetensorsError> {
@@ -781,6 +789,7 @@ FN vokra-ops::bigvgan_generator::effective_parameters|pub fn effective_parameter
 FN vokra-ops::bigvgan_generator::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
 FN vokra-ops::bigvgan_generator::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], t: usize) -> Result<()> {
 FN vokra-ops::bigvgan_generator::forward_with_backend_ops|pub fn forward_with_backend_ops<O: BigVganBackendOps>(
+FN vokra-ops::bigvgan_generator::forward_with_resident_ops|pub fn forward_with_resident_ops<O: BigVganResidentOps>(
 FN vokra-ops::bigvgan_generator::forward|pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
 FN vokra-ops::bigvgan_generator::new|pub fn new(
 FN vokra-ops::bigvgan_generator::new|pub fn new(alpha: Vec<f32>, beta: Vec<f32>, alpha_logscale: bool) -> Result<Self> {
@@ -793,10 +802,14 @@ FN vokra-ops::clustering::cluster_with_min_cluster_size|pub fn cluster_with_min_
 FN vokra-ops::clustering::cluster|pub fn cluster(&self, embeddings: &[Vec<f32>]) -> Vec<usize> {
 FN vokra-ops::conformer::config|pub fn config(&self) -> &ConformerConfig {
 FN vokra-ops::conformer::factor|pub fn factor(&self) -> usize {
+FN vokra-ops::conformer::forward_with_compute|pub fn forward_with_compute<C: ConformerCompute>(
+FN vokra-ops::conformer::forward_with_valid_frames|pub fn forward_with_valid_frames(
 FN vokra-ops::conformer::forward|pub fn forward(&self, mel: &[f32], mel_frames: usize) -> Result<(Vec<f32>, usize)> {
 FN vokra-ops::conformer::has_norm|pub fn has_norm(&self) -> bool {
 FN vokra-ops::conformer::head_dim|pub fn head_dim(&self) -> usize {
+FN vokra-ops::conformer::is_conv1d|pub const fn is_conv1d(self) -> bool {
 FN vokra-ops::conformer::new|pub fn new(cfg: ConformerConfig, weights: ConformerWeights) -> Result<Self> {
+FN vokra-ops::conformer::output_len|pub fn output_len(&self, input_len: usize) -> Result<usize> {
 FN vokra-ops::conformer::projection_in_dim|pub fn projection_in_dim(&self, in_dim: usize) -> usize {
 FN vokra-ops::ctc_decode::ctc_decode_beam|pub fn ctc_decode_beam(logits: &[f32], attrs: &CtcBeamAttrs) -> Result<Vec<CtcHypothesis>> {
 FN vokra-ops::ctc_decode::ctc_decode_greedy|pub fn ctc_decode_greedy(
@@ -926,6 +939,7 @@ FN vokra-ops::hiftnet::effective_alpha|pub fn effective_alpha(&self) -> Vec<f32>
 FN vokra-ops::hiftnet::f0_predictor_forward|pub fn f0_predictor_forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
 FN vokra-ops::hiftnet::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
 FN vokra-ops::hiftnet::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], t: usize) -> Result<()> {
+FN vokra-ops::hiftnet::forward_with_resident_ops|pub fn forward_with_resident_ops<O: HiFTResidentOps>(
 FN vokra-ops::hiftnet::forward|pub fn forward(&self, mel: &[f32], t: usize) -> Result<Vec<f32>> {
 FN vokra-ops::hiftnet::forward|pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
 FN vokra-ops::hiftnet::new|pub fn new(alpha: Vec<f32>, alpha_logscale: bool) -> Result<Self> {
@@ -1041,6 +1055,12 @@ FN vokra-ops::openwakeword::openwakeword_dnn_classifier_forward|pub fn openwakew
 FN vokra-ops::openwakeword::openwakeword_embedding_forward|pub fn openwakeword_embedding_forward(
 FN vokra-ops::openwakeword::openwakeword_melspectrogram|pub fn openwakeword_melspectrogram(
 FN vokra-ops::openwakeword::validate|pub fn validate(&self) -> Result<()> {
+FN vokra-ops::ouve_sde::annealed_langevin_step|pub fn annealed_langevin_step(
+FN vokra-ops::ouve_sde::diffusion|pub fn diffusion(self, t: f32) -> Result<f32> {
+FN vokra-ops::ouve_sde::mean|pub fn mean(self, x0: f32, y: f32, t: f32) -> Result<f32> {
+FN vokra-ops::ouve_sde::new|pub fn new(theta: f32, sigma_min: f32, sigma_max: f32) -> Result<Self> {
+FN vokra-ops::ouve_sde::reverse_diffusion_step|pub fn reverse_diffusion_step(
+FN vokra-ops::ouve_sde::std|pub fn std(self, t: f32) -> Result<f32> {
 FN vokra-ops::preprocess::apply_frontend|pub fn apply_frontend(pcm: &[f32], in_rate: u32, spec: &FrontendSpec) -> Result<Vec<f32>> {
 FN vokra-ops::preprocess::dc_offset_remove|pub fn dc_offset_remove(pcm: &[f32]) -> Vec<f32> {
 FN vokra-ops::preprocess::pre_emphasis|pub fn pre_emphasis(pcm: &[f32], coeff: f32) -> Vec<f32> {
@@ -1285,6 +1305,7 @@ MOD vokra-ops::moe_expert_gemm|pub mod moe_expert_gemm;
 MOD vokra-ops::musicgen_delay_pattern|pub mod musicgen_delay_pattern;
 MOD vokra-ops::nsf|pub mod nsf;
 MOD vokra-ops::openwakeword|pub mod openwakeword;
+MOD vokra-ops::ouve_sde|pub mod ouve_sde;
 MOD vokra-ops::preprocess|pub mod preprocess;
 MOD vokra-ops::prosody|pub mod prosody;
 MOD vokra-ops::qwen3_tts_codec|pub mod qwen3_tts_codec;
@@ -1548,6 +1569,7 @@ STRUCT vokra-ops::openwakeword::OpenwakewordDenseWeights|pub struct Openwakeword
 STRUCT vokra-ops::openwakeword::OpenwakewordDnnClassifierWeights|pub struct OpenwakewordDnnClassifierWeights {
 STRUCT vokra-ops::openwakeword::OpenwakewordEmbeddingWeights|pub struct OpenwakewordEmbeddingWeights {
 STRUCT vokra-ops::openwakeword::OpenwakewordMelspecWeights|pub struct OpenwakewordMelspecWeights {
+STRUCT vokra-ops::ouve_sde::OuvEConfig|pub struct OuvEConfig {
 STRUCT vokra-ops::prosody::ProsodyControl|pub struct ProsodyControl {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodecConfig|pub struct Qwen3TtsCodecConfig {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodec|pub struct Qwen3TtsCodec {
@@ -1631,10 +1653,13 @@ TRAIT vokra-core::rng::NormalSource|pub trait NormalSource {
 TRAIT vokra-core::stream::event::EventSink|pub trait EventSink {
 TRAIT vokra-core::stream::step::StreamStep|pub trait StreamStep: Send {
 TRAIT vokra-ops::bigvgan_generator::BigVganBackendOps|pub trait BigVganBackendOps: HifiGanBackendOps {
+TRAIT vokra-ops::bigvgan_generator::BigVganResidentOps|pub trait BigVganResidentOps {
+TRAIT vokra-ops::conformer::ConformerCompute|pub trait ConformerCompute {
 TRAIT vokra-ops::denoise::DenoiseBackendOps|pub trait DenoiseBackendOps {
 TRAIT vokra-ops::firered_vad::FireredVadBackendOps|pub trait FireredVadBackendOps {
 TRAIT vokra-ops::fsmn_vad::FsmnBackendOps|pub trait FsmnBackendOps {
 TRAIT vokra-ops::hifigan::HifiGanBackendOps|pub trait HifiGanBackendOps {
+TRAIT vokra-ops::hiftnet::HiFTResidentOps|pub trait HiFTResidentOps {
 TRAIT vokra-ops::prosody::ApplyProsody|pub trait ApplyProsody {
 TRAIT vokra-ops::ten_vad::TenVadBackendOps|pub trait TenVadBackendOps {
 TRAIT vokra-ops::vit::ViTBackendOps|pub trait ViTBackendOps {
@@ -1763,6 +1788,7 @@ USE vokra-ops::moe_dispatch::{MoeAssignment, MoeDispatchAttrs, MoeDispatchPlan, 
 USE vokra-ops::moe_expert_gemm::{MoeExpertWeights, moe_expert_gemm}|pub use moe_expert_gemm::{MoeExpertWeights, moe_expert_gemm};
 USE vokra-ops::nsf::sinegen_deterministic_f32|pub use nsf::sinegen_deterministic_f32;
 USE vokra-ops::openwakeword::{ OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights, OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights, openwakeword_classifier_forward, openwakeword_dnn_classifier_forward, openwakeword_embedding_forward, openwakeword_melspectrogram, }|pub use openwakeword::{ OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights, OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights, openwakeword_classifier_forward, openwakeword_dnn_classifier_forward, openwakeword_embedding_forward, openwakeword_melspectrogram, };
+USE vokra-ops::ouve_sde::{OuvEConfig, annealed_langevin_step, reverse_diffusion_step}|pub use ouve_sde::{OuvEConfig, annealed_langevin_step, reverse_diffusion_step};
 USE vokra-ops::preprocess::{apply_frontend, dc_offset_remove, pre_emphasis}|pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 USE vokra-ops::prosody::{ApplyProsody, ProsodyControl}|pub use prosody::{ApplyProsody, ProsodyControl};
 USE vokra-ops::qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode}|pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};

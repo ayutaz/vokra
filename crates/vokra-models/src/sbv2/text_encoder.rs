@@ -325,6 +325,62 @@ impl SbV2TextEncoder {
 
         (phoneme_embed, hidden)
     }
+
+    /// Backend-dispatched counterpart of [`Self::forward_with_embed`].
+    /// Embedding-table lookup and the final snapshots remain host-side; every
+    /// learned transformer operation is routed through `compute`.
+    pub(crate) fn forward_with_compute(
+        &self,
+        compute: &Compute,
+        phoneme_ids: &[u16],
+        tones: &[u8],
+        language_id: u8,
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
+        debug_assert_eq!(phoneme_ids.len(), tones.len());
+        debug_assert!(phoneme_ids.iter().all(|&id| (id as usize) < self.n_vocab));
+        debug_assert!(tones.iter().all(|&tone| (tone as usize) < self.n_tones));
+        debug_assert!((language_id as usize) < N_LANGUAGES);
+
+        let d_model = self.d_model;
+        let seq_len = phoneme_ids.len();
+        let lang_start = language_id as usize * d_model;
+        let lang_row = &self.language_embed[lang_start..lang_start + d_model];
+        let mut hidden = vec![0.0_f32; seq_len * d_model];
+        for ((out_row, &id), &tone) in hidden.chunks_exact_mut(d_model).zip(phoneme_ids).zip(tones)
+        {
+            let ph_row = &self.phoneme_embed[id as usize * d_model..(id as usize + 1) * d_model];
+            let tone_row = &self.tone_embed[tone as usize * d_model..(tone as usize + 1) * d_model];
+            for ((out, (&phoneme, &tone)), &language) in out_row
+                .iter_mut()
+                .zip(ph_row.iter().zip(tone_row))
+                .zip(lang_row)
+            {
+                *out = (phoneme + tone + language) * self.scale;
+            }
+        }
+        // Preserve the pre-scale snapshot without re-reading the tables in a
+        // second learned pass. This host-side copy is intentionally explicit.
+        let mut snapshot = vec![0.0_f32; hidden.len()];
+        for ((out_row, &id), &tone) in snapshot
+            .chunks_exact_mut(d_model)
+            .zip(phoneme_ids)
+            .zip(tones)
+        {
+            let ph_row = &self.phoneme_embed[id as usize * d_model..(id as usize + 1) * d_model];
+            let tone_row = &self.tone_embed[tone as usize * d_model..(tone as usize + 1) * d_model];
+            for ((out, (&phoneme, &tone)), &language) in out_row
+                .iter_mut()
+                .zip(ph_row.iter().zip(tone_row))
+                .zip(lang_row)
+            {
+                *out = phoneme + tone + language;
+            }
+        }
+        for block in &self.transformer_layers {
+            block.forward_with_compute(compute, &mut hidden, seq_len)?;
+        }
+        Ok((snapshot, hidden))
+    }
 }
 
 // =====================================================================
@@ -1156,6 +1212,50 @@ impl BertBridge {
         }
         out
     }
+
+    /// Backend-dispatched bridge projection. Sequence interpolation is
+    /// layout glue and remains on the host; the learned 1x1 projection uses
+    /// the selected backend's GEMM kernel.
+    pub(crate) fn forward_with_compute(
+        &self,
+        compute: &Compute,
+        bert_hidden: &[f32],
+        text_seq_len: usize,
+        bert_seq_len: usize,
+    ) -> Result<Vec<f32>> {
+        debug_assert!(bert_seq_len > 0);
+        debug_assert_eq!(bert_hidden.len(), bert_seq_len * self.d_bert);
+        let projected = linear_rows_biased_with_compute(
+            compute,
+            bert_hidden,
+            self.d_bert,
+            &self.conv_weight,
+            &self.conv_bias,
+            self.d_target,
+        )?;
+        let d_target = self.d_target;
+        let mut out = vec![0.0_f32; text_seq_len * d_target];
+        let src_len_f = bert_seq_len as f32;
+        let dst_len_f = text_seq_len as f32;
+        let max_idx = (bert_seq_len as i64) - 1;
+        for (t, out_row) in out.chunks_exact_mut(d_target).enumerate() {
+            let src_x = ((t as f32) + 0.5) * src_len_f / dst_len_f - 0.5;
+            let low_f = src_x.floor();
+            let low = (low_f as i64).clamp(0, max_idx) as usize;
+            let high = ((low_f as i64) + 1).clamp(0, max_idx) as usize;
+            let low_row = &projected[low * d_target..(low + 1) * d_target];
+            if low == high {
+                out_row.copy_from_slice(low_row);
+                continue;
+            }
+            let alpha = (src_x - low_f).clamp(0.0, 1.0);
+            let high_row = &projected[high * d_target..(high + 1) * d_target];
+            for (d, cell) in out_row.iter_mut().enumerate() {
+                *cell = (1.0 - alpha) * low_row[d] + alpha * high_row[d];
+            }
+        }
+        Ok(out)
+    }
 }
 
 // =====================================================================
@@ -1188,6 +1288,17 @@ fn linear_rows_biased(x: &[f32], in_dim: usize, w: &[f32], b: &[f32], out_dim: u
         }
     }
     out
+}
+
+fn linear_rows_biased_with_compute(
+    compute: &Compute,
+    x: &[f32],
+    in_dim: usize,
+    w: &[f32],
+    b: &[f32],
+    out_dim: usize,
+) -> Result<Vec<f32>> {
+    linear_rows_with_compute(compute, x, w, b, in_dim, out_dim)
 }
 
 /// 1×1 Conv1d with bias — per-position linear map. `x` is `[T, in_dim]`
@@ -1592,6 +1703,112 @@ mod tests {
             assert!(
                 (var - 1.0).abs() < 1e-3,
                 "row variance should be ~1, got {var}"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_attention_compute_matches_asymmetric_scalar_reference() {
+        let d_model = 4;
+        let n_heads = 2;
+        let d_head = 2;
+        let window = 2;
+        let attention = RelPositionMHA::new(
+            vec![
+                0.10, -0.20, 0.30, -0.40, // q row 0
+                -0.50, 0.60, -0.70, 0.80, // q row 1
+                0.90, -1.00, 1.10, -1.20, // q row 2
+                1.30, -1.40, 1.50, -1.60, // q row 3
+            ],
+            vec![0.01, -0.02, 0.03, -0.04],
+            vec![
+                0.20, 0.30, -0.40, 0.50, -0.60, 0.70, 0.80, -0.90, 1.00, 1.10, -1.20, 1.30, -1.40,
+                1.50, 1.60, -1.70,
+            ],
+            vec![-0.05, 0.06, -0.07, 0.08],
+            vec![
+                0.30, -0.10, 0.20, 0.40, -0.50, 0.60, -0.70, 0.80, 0.90, -1.00, 1.10, -1.20, 1.30,
+                -1.40, 1.50, -1.60,
+            ],
+            vec![0.09, -0.08, 0.07, -0.06],
+            vec![
+                -0.20, 0.40, -0.60, 0.80, 1.00, -1.20, 1.40, -1.60, 1.80, -2.00, 2.20, -2.40, 2.60,
+                -2.80, 3.00, -3.20,
+            ],
+            vec![0.11, -0.12, 0.13, -0.14],
+            (0..(2 * window + 1) * d_head)
+                .map(|i| (i as f32 - 6.0) * 0.07)
+                .collect(),
+            (0..(2 * window + 1) * d_head)
+                .map(|i| (5.0 - i as f32) * 0.09)
+                .collect(),
+            n_heads,
+            d_head,
+            window,
+        );
+        let input: Vec<f32> = (0..3 * d_model).map(|i| (i as f32 * 0.17) - 0.8).collect();
+        let expected = attention.forward(&input, 3);
+        let actual = attention
+            .forward_with_compute(&Compute::cpu(), &input, 3)
+            .expect("CPU Compute attention");
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() <= 2e-6,
+                "attention mismatch at {index}: {actual} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn positionwise_ffn_compute_matches_asymmetric_scalar_reference() {
+        let d_model = 2;
+        let d_ff = 3;
+        let kernel = 3;
+        let ffn = PositionWiseFFN::new(
+            (0..d_ff * d_model * kernel)
+                .map(|i| (i as f32 - 7.0) * 0.11)
+                .collect(),
+            vec![0.13, -0.27, 0.41],
+            (0..d_model * d_ff * kernel)
+                .map(|i| (5.0 - i as f32) * 0.08)
+                .collect(),
+            vec![-0.19, 0.23],
+            d_model,
+            d_ff,
+            kernel,
+        );
+        let input = vec![0.4, -0.7, 1.1, 0.2, -1.3, 0.9];
+        let expected = ffn.forward(&input, 3);
+        let actual = ffn
+            .forward_with_compute(&Compute::cpu(), &input, 3)
+            .expect("CPU Compute FFN");
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() <= 2e-6,
+                "FFN mismatch at {index}: {actual} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn bert_bridge_compute_matches_scalar_projection_and_interpolation() {
+        let bridge = BertBridge::from_conv(
+            vec![0.4, -0.7, 1.1, 0.2, -0.3, 0.9],
+            vec![0.05, -0.11],
+            3,
+            2,
+        );
+        let bert_hidden = vec![0.2, -0.5, 1.3, -0.7, 0.8, 0.4];
+        let expected = bridge.forward(&bert_hidden, 4, 2);
+        let actual = bridge
+            .forward_with_compute(&Compute::cpu(), &bert_hidden, 4, 2)
+            .expect("CPU Compute BERT bridge");
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() <= 2e-6,
+                "BERT bridge mismatch at {index}: {actual} != {expected}"
             );
         }
     }

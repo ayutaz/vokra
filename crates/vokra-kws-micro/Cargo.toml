@@ -8,15 +8,17 @@
 # `KwsMicro::detect()` runs a real forward (log-mel -> INT8 quantise -> INT8
 # chain -> threshold) for any chain attached via `set_chain`, and refuses
 # loudly when none is. What is still missing is the join to an upstream
-# checkpoint: nothing builds a `ChainConfig` from a loaded `Model`, because the
-# offline sidecar emits dequantised F32 tensors with no per-tensor
-# (scale, zero_point). See `src/lib.rs`'s crate docs.
+# checkpoint: nothing builds a `ChainConfig` from a loaded `Model`, because
+# authenticated TFLite topology → typed ChainConfig binding and real parity remain pending
+# even though the sidecar now emits dense I8 tensors and affine metadata
+# (legacy Q8_0 remains load-compatible). See
+# `src/lib.rs`'s crate docs.
 # `publish = false` until that lands — the crate cannot yet load the
 # microWakeWord models (Apache 2.0, https://github.com/kahrendt/microWakeWord)
 # its name implies.
 [package]
 name = "vokra-kws-micro"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
@@ -32,7 +34,7 @@ publish = false
 # path dep; the `version` alongside `path` tracks the shared workspace version
 # for future `cargo publish` (a no-op for local path resolution today).
 [dependencies]
-vokra-core = { path = "../vokra-core", version = "0.2.0", default-features = false }
+vokra-core = { path = "../vokra-core", version = "0.3.0", default-features = false }
 
 # Mirror of `vokra-vad-micro`'s feature layout: `std` (default-ON) forwards to
 # `vokra-core/std`. This crate's own `lib.rs` uses

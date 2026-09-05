@@ -1,6 +1,6 @@
 # Codex operations handoff (2026-08-18)
 
-## Current baseline
+## Historical baseline at handoff (2026-08-18; superseded)
 
 - Repository: `ayutaz/vokra`
 - Current branch: `main`
@@ -15,6 +15,25 @@
 This file records the decisions carried from the Claude Code session into
 Codex. Reusable policy belongs in `AGENTS.md`, `.agents/skills/`, and hooks;
 this file keeps the dated evidence and branch history.
+
+## Current-state supersession notice (2026-08-31)
+
+This handoff is history-only. The baseline branch name was
+`feat/mac-cpu-metal-full-coverage-2026-08-28`. The 2026-08-31 documentation
+refresh cross-checked the pre-documentation implementation/code baseline at
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0` and evidence/package checkpoint
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; those checkpoints are historical
+workspace `0.2.0` evidence. The active branch is workspace `0.3.0`; immediately
+before this documentation refresh its remote head was
+`d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109 passing
+checks, 13 expected skips, and no failures or pending checks. The current C ABI
+is 57 functions / 15 typedefs and M5 is 49 checked / 33 unchecked. The GitHub
+`main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
+Current model, VAST and Scaleway status is authoritative only in
+`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`,
+`docs/handoff/mac-cpu-metal-completion-plan-2026-08-30.md`, and
+`docs/m5-owner-verification-checklist.md`; the dated baseline and all later
+history in this file are not current-state claims.
 
 ## Mainline history used for the reconciliation
 
@@ -123,9 +142,10 @@ No Hugging Face upload was performed in the session summarized here.
 
 ## M5 remaining-work interpretation
 
-`docs/m5-owner-verification-checklist.md` currently contains 42 checked and 36
-unchecked boxes. The old 94 unchecked count was historical and never meant 94
-missing implementations. The 36-box ledger mixes distinct done-conditions:
+This 2026-08-18 section is historical: it recorded 42 checked and 36 unchecked
+boxes. The current literal ledger contains 49 checked and 33 unchecked boxes.
+The old 94 unchecked count was historical and never meant 94 missing
+implementations. The unchecked-box ledger mixes distinct done-conditions:
 
 - NPU/CoreML/QNN real-hardware capture and C ABI GO/NO-GO inputs;
 - Cortex-M55/FVP, console SDK/NDA, legal/ADR, and GA/branch-protection actions;
@@ -138,7 +158,7 @@ missing implementations. The 36-box ledger mixes distinct done-conditions:
 - optional GitHub Pages deployment.
 
 Read and close each literal box independently. Also follow the prose-only GA
-gates in the checklist's §0 live index; the 36 literal boxes are not an
+gates in the checklist's §0 live index; the literal boxes are not an
 exhaustive count of M5 work. Do not infer implementation status from the total.
 
 ## Credential hygiene

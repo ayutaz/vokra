@@ -1,0 +1,38 @@
+[project]
+name = "vokra-qwen3-tts-parity"
+version = "0.1.0"
+description = "Pinned independent official Qwen3-TTS reference dumper"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # The official source tree is staged at the fixed Git revision and loaded
+    # through PYTHONPATH; installing qwen-tts would also install its demo and
+    # ONNX extras (gradio, onnxruntime, protobuf, and sox).
+    "accelerate==1.12.0",
+    "einops==0.8.2",
+    "librosa==1.0.0",
+    "numpy==2.5.2",
+    "soundfile==0.14.0",
+    "torch==2.7.1",
+    "torchaudio==2.11.0",
+    # The previous isolated reference pin was transformers==4.57.3; it is
+    # retained only as provenance. The security-remediated pin is not proof
+    # that the authenticated source API remains compatible without an
+    # authorized model smoke test (BLOCKED_UNVERIFIED_API_SMOKE).
+    "transformers==5.10.4",
+]
+
+[tool.uv]
+package = false
+# The fixed inference route never imports setuptools. Keep the transitive
+# requirement impossible so uv omits setuptools, including its forbidden
+# LGPLv3-vendored autocommand payload, from every platform closure. Do not
+# replace this with a newer setuptools pin: the payload is still bundled.
+override-dependencies = ["setuptools ; python_version < '0'"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

@@ -5,6 +5,15 @@
 - **Scope**: `integrations/vokra-server/` only. Does not affect any
   `crates/vokra-*` runtime crate or the root workspace `Cargo.lock`.
 
+**Current-status note (2026-08-30):** This ADR records the historical M2
+stack decision; current implementation and public behavior are documented by
+[`../README.md`](../README.md), [`AGENTS.md`](../../../AGENTS.md),
+[`CONTRIBUTING.md`](../../../CONTRIBUTING.md), and
+[`docs/legal-compliance.md`](../../../docs/legal-compliance.md). The
+service-aware Wyoming accept loop, full ASR/TTS connection handler, and
+barge-in path are implemented; HTTP streaming remains an explicit unsupported
+surface where the README says so.
+
 ## 1. Context
 
 M2-09 delivers `vokra-server` — a single-binary compatibility server exposing
@@ -16,7 +25,8 @@ four APIs on top of Vokra's zero-dependency runtime:
 3. piper-plus `/api/tts` (text → WAV; FR-SV-04)
 4. Home Assistant Wyoming Protocol over TCP (FR-SV-05)
 
-Constraints inherited from the plan and CLAUDE.md:
+Constraints inherited from the plan and current repository policy
+([`AGENTS.md`](../../../AGENTS.md) and [`CONTRIBUTING.md`](../../../CONTRIBUTING.md)):
 
 - **Zero-dep invariant (NFR-DS-02)**: the root workspace `Cargo.lock` must
   remain `vokra-*` only. `scripts/check-zero-deps.sh` only scans the root
@@ -146,8 +156,8 @@ Zero GPL/LGPL dependencies are recorded here as the T02 exit criterion.
 
 - Plan §1.4 (HTTP stack options), §2 D2 (stack decision), §5 R1 / R3 / R4
   (risks this ADR addresses).
-- CLAUDE.md — Kill switch E/F posture, NFR-DS-02 zero-dep invariant,
-  FR-EX-08 no-silent-fallback rule.
+- [`AGENTS.md`](../../../AGENTS.md) and [`CONTRIBUTING.md`](../../../CONTRIBUTING.md)
+  — NFR-DS-02 zero-dep invariant and FR-EX-08 no-silent-fallback rule.
 - `integrations/vokra-piper-g2p/Cargo.toml` — reference implementation of
   the excluded-workspace + empty-`[workspace]` isolation pattern.
 - `deny.toml` (root) — parallel policy applied to the runtime workspace.

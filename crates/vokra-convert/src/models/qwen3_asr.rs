@@ -1117,6 +1117,16 @@ mod tests {
                 Some(LicenseClass::Permissive.as_str())
             );
             assert_eq!(
+                file.get(chunks::KEY_PROVENANCE_LICENSE)
+                    .and_then(|value| value.as_str()),
+                Some("apache-2.0")
+            );
+            assert_eq!(
+                file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                    .and_then(|value| value.as_str()),
+                Some(axes.name)
+            );
+            assert_eq!(
                 file.get(KEY_AUDIO_N_LAYER).and_then(|value| value.as_u64()),
                 Some(u64::from(axes.audio_n_layer))
             );

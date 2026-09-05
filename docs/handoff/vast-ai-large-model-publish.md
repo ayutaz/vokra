@@ -17,7 +17,9 @@ memory [[feedback-large-models-on-vast-ai]] の運用側詳細版。
 # SSH 接続後、まず HF token を export (instance destroy で消える)
 export HF_TOKEN='hf_xxxxxx'
 
-# 1 コマンドで Rust + uv + Python 3.12 + hf-transfer + repo + vokra-cli build まで完了
+# 1 コマンドで Rust + uv + Python 3.12 + repo + vokra-cli build まで完了
+# checkout 内の pyproject.toml / uv.lock は変更しない。run-one.sh が HF 用の
+# pinned dependency をモデル実行ごとの一時的な uv 環境で解決する。
 curl -sSL https://raw.githubusercontent.com/ayutaz/vokra/main/scripts/publish/vast-ai/provision.sh | bash
 source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 ```
@@ -175,7 +177,51 @@ curl -sI https://huggingface.co/vokra/voxtral-small-24b-2507 | head -1
 
 ### 2.6 instance destroy (billing 抑制)
 
-vast.ai UI から即 destroy、または `vastai destroy <instance-id>` (CLI 使用時)。dry-run/evidence だけなら完了後すぐ destroy。upload が明示承認された場合は **upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残さない。
+vast.ai UI から即 destroy、または `scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>` (CLI 使用時)。dry-run/evidence だけなら完了後すぐ destroy。upload が明示承認された場合は **upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残さない。ローカルから Vast CLI を呼ぶ場合は必ず `vastai-safe.sh` を経由すること。stdout/stderr に誤って出る URL クエリの `api_key` 等を `[REDACTED]` に置換し、CLI の終了コードは保持する。
+
+#### retained handoff の一時停止例外
+
+通常は work 完了後に destroy する。例外として、直近の再開予定が明示された
+retained handoff（別環境への転送待ちなど）に限り、外部 backup を済ませた上で
+一時的に Stop を選べる。Stop は compute 課金を止めデータを保持するが、storage
+課金は継続し、再開時に GPU を確保できる保証はない。重要データは外部 backup
+にも保持し、handoff・再開・検証が完了したら必ず destroy する。Destroy は
+データを削除して全課金を停止する。仕様は [Vast Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
+および [Vast Storage types](https://docs.vast.ai/guides/instances/storage/types)
+を参照。
+
+**2026-08-31 の retained handoff**: instance `49168183`（500 GB storage）と
+`49261078`（200 GB storage）はいずれも `cur_state=stopped`、
+`intended_status=stopped`、`actual_status=exited` であり、compute は動いて
+いない。storage 課金は継続する。前者は
+`/root/scratchpad/apple-transfer-bc9d1db2`（manifest SHA-256
+`c96eee3c61ec85b589a488deff21668097ed4e94f96b4654b990706098f6f606`）と
+`/root/scratchpad/apple-transfer-reazon-a59c48c8`（
+`48874cf71497e347019c156f49409d74428734e840cc0302d8626ae5780679ed`）、
+後者は `/root/scratchpad/apple-transfer-bicodec-5cd97d12`（
+`0a80edb51e88d17ce8f243ee58523551baf7d9fc5a848a17dc9c3fdecaf8d18f`）を
+Scaleway へ直接転送するためだけに保持する。再開はその転送に限定し、
+Scaleway 上で manifest を検証して証拠を回収した後に両方を destroy する。
+
+**2026-09-01 live status supplement**: 上記2件は引き続き
+`cur_state=stopped`、`intended_status=stopped`、`actual_status=exited` で、
+compute は停止している。live API の storage-only cost は `49168183` が
+`$0.074074/h`、`49261078` が `$0.022222/h`、合計約 `$0.096296/h`
+（約 `$2.31/day`）。使い捨て検証 instance `49422639` は Voice Gender、
+FireRed preparation、3件の依存監査の小容量証跡を回収・照合した後に destroy
+し、個別照会で `instances: null` を確認した。別作業の running instance
+`cutetts-s1-preprocess` には触れていない。
+
+**2026-09-01 retained-storage destruction supplement**: owner は Scaleway
+実行までの待機が長期化するため、上記 packet を将来 VAST で再生成する方針へ
+変更した。`49168183` と `49261078` は `-y` の明示確認付きで保存データごと
+destroy 済みであり、両方の個別 API 読み戻しは `instances: null` だった。
+したがって3つの `/root/scratchpad/apple-transfer-*` path は現在存在せず、
+旧 instance を再開・転送元として扱ってはならない。これにより合計
+`$0.096296/h` の storage-only 課金は終了する。必要時は記録済みの固定
+revision、artefact hash、manifest contract から新しい disposable VAST
+instance 上で変換・reference・packet を再生成し、Scaleway へ直接転送して
+destroy する。別作業の `49466383` (`cutetts-s1-train`) は変更していない。
 
 ## 3. int tensor 対応 (parakeet 系で発生した pattern)
 
@@ -253,8 +299,10 @@ owner 判断待ちの vast.ai-scale モデル: なし (§3.1 で fail-closed 済
 |---|---|---|
 | `scripts/publish/check-model-size.sh` | local | HF API で size 判定、`LOCAL_SAFE / LOCAL_OK / LOCAL_BORDERLINE / VAST_AI_REQUIRED` verdict |
 | `scripts/publish/publish-one.sh` (**gate 7 追加**) | どこでも | GGUF publish の 5-gate chain。8 GiB 超で fail-closed、`VOKRA_PUBLISH_ON_VAST=1` or `--allow-large` で bypass |
-| `scripts/publish/vast-ai/provision.sh` | vast.ai | Rust/uv/Python 3.12/hf-transfer/repo/vokra-cli を idempotent に install、shell rc に marker export |
-| `scripts/publish/vast-ai/run-one.sh` | vast.ai | 1 モデル分の DL + convert + publish chain (`--push` で本番) |
+| `scripts/publish/vast-ai/provision.sh` | vast.ai | Rust/uv/Python 3.12/repo/vokra-cli を idempotent に install。checkout の dependency files は変更せず、shell rc に marker export |
+| `scripts/publish/vast-ai/run-one.sh` | vast.ai | pinned HF dependencies を一時的な uv 環境で解決し、1 モデル分の DL + convert + publish chain (`--push` で本番) |
+| `scripts/publish/vast-ai/vastai-safe.sh` | local | Vast CLI の stdout/stderr を redaction し、終了コードを保持する wrapper |
+| `scripts/publish/vast-ai/test-vastai-safe.sh` | local | ネットワークなしの wrapper 契約テスト |
 
 各 script は `--self-test` を持つ (pure、network fetch 無し)。CI で回すのは `check-model-size.sh` と `publish-one.sh` の self-test (vast.ai script は vast.ai 前提ゆえ CI 側の自動化対象外)。
 

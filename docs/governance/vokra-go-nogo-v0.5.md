@@ -1,5 +1,12 @@
 # Go / No-go review record — v0.5 (M2)
 
+> **Current state (2026-08-30):** This remains a blank v0.5 template. There
+> are **0 git tags, 0 GitHub releases, and 0 quarterly review records**. The
+> X-07 cadence mechanism (`release-cadence.yml` +
+> `tools/release/test_cadence.py`) is landed, but no release cadence is
+> established and no verdict is implied. The Kill switch thresholds below are
+> normative owner policy and are not changed by this status note.
+
 > **This file is a blank template.** Copy it to
 > `quarterly-reviews/<YYYY>-Q<N>.md` and fill in the copy. Do not record a
 > review by editing this file.
@@ -116,7 +123,7 @@ recording how it closed.
 
 | Risk | Status | Owner | Note |
 |---|---|---|---|
-| Runtime watermarking deferred — the compliance obligation is currently met by deployer-side disclosure rather than by the runtime | Open | Maintainer | See `docs/legal-compliance.md`. Read-through note 3. |
+| Runtime watermarking deferred — deployer-side disclosure remains a required consideration; runtime compliance is not claimed | Open | Maintainer | See `docs/legal-compliance.md`. Read-through note 3. |
 | GitHub Discussions disabled — half of the Kill switch C engagement channel does not exist | Open | Maintainer | X-05-T23 |
 | Kill switch C/D start date undefined — no `v0.5.0` tag or release exists | Open | Maintainer | X-05-T23 |
 | Kill switch D threshold ambiguous — two contributor definitions disagree | Open | Maintainer | X-05-T23 |

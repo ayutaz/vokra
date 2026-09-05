@@ -108,6 +108,23 @@ def hypothesis_tokens(hypothesis: object) -> list[int]:
 
 
 def self_test() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert 'torch.device("cpu")' in source
+    assert "torch." + "cuda" not in source
+    assert '"cuda_device": None' in source
+    production = source[source.index("def main") :]
+    lines = production.splitlines()
+    cpu_env_line = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == 'os.environ["CUDA_VISIBLE_DEVICES"] = ""'
+    )
+    nemo_import_line = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == "import " + "nemo"
+    )
+    assert cpu_env_line < nemo_import_line
     for language in LANGUAGES:
         assert validate_language(language) == language
     try:
@@ -156,6 +173,10 @@ def main() -> int:
             f"committed JFK fixture SHA-256 {audio_sha256} != pinned {JFK_SHA256}"
         )
 
+    # NeMo's ModelPT constructor probes CUDA during import/restore. This
+    # worker is a CPU oracle, so suppress that internal probe before imports;
+    # do not honor a caller-provided GPU visibility setting.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
     try:
         import nemo
         import numpy as np
@@ -176,7 +197,10 @@ def main() -> int:
             f"reference audio must be 16 kHz mono, got rate={sample_rate}, shape={pcm.shape}"
         )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Numerical-parity policy: the official NeMo run is a CPU oracle. Do not
+    # probe CUDA or fall back to it, since a visible GPU is not part of this
+    # worker's reproducibility contract.
+    device = torch.device("cpu")
     cpu_capability = getattr(torch.backends.cpu, "get_cpu_capability", None)
     environment = {
         "platform": platform.platform(),
@@ -187,9 +211,8 @@ def main() -> int:
             cpu_capability() if callable(cpu_capability) else "unavailable"
         ),
         "device": str(device),
-        "cuda_device": (
-            torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
-        ),
+        "cuda_device": None,
+        "cuda_visible_devices": "",
     }
     # Numerical-parity policy: record the execution environment before the
     # model emits values, so a later platform-specific discrepancy is

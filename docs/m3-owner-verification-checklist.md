@@ -1,5 +1,12 @@
 # M3 (v0.9) Owner Verification Checklist
 
+> **2026-08-30 current-state boundary:** This checklist is a historical M3
+> owner handoff and retains its dated campaign results, commands, and open
+> items. It is not the live completion ledger. For current implementation,
+> evidence, and remaining owner gates, use the M5 owner checklist and the
+> current handoff; repository operating rules come from `AGENTS.md` and the
+> applicable skill documents.
+
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・法務判断・鍵/秘密情報の provision を担当。
 **CC-side status**（2026-07-12 更新、**PR #4 (merge commit `1f934da`) merged 2026-07-11T15:54 UTC = feat/m3-plan-and-wave1 → main + Wave 14 (5 grouped commits: `8843814` / `3d79833` / `d0b1aea` / `c2abfcb` / `ba33bd0`) follow-up land**、Wave 1〜Wave 14 の CC 実装分完了 = 19 WP 中 16 コミット済 + partial WP を Wave 7/8/9/10/11/12/13/14 で追撃、**M3-11 (T01-T18) + M3-15 = 100% 完成 / M3-16 = Wave 14 で CC-side 100% 完成 (`d0b1aea`)**）:
 

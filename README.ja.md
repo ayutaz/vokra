@@ -14,10 +14,13 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **リリース状況:** `0.1.0` を最初のタグ付きリリースとして準備しています。
-> Rust API、C ABI、GGUF metadata、モデル対応範囲は引き続き pre-1.0 で、
-> 変更される可能性があります。他プロジェクトで評価するときは正確な release
-> を固定してください。
+> **開発状況（2026-08-31）:** workspace は `0.3.0` development です。現在の
+> ドキュメント refresh 直前の PR #79 snapshot は `d8a93bc3`（109 pass / 13
+> expected skip）で、`origin/main` は `41ce9ffd` でした。Git tag と公開済み
+> release はまだありません。
+> Rust API、C ABI、GGUF metadata、モデル対応範囲は引き続き pre-1.0 で、変更される
+> 可能性があります。他プロジェクトで評価するときは現段階では正確な commit を固定し、
+> release 公開後は正確な tag または release を固定してください。
 
 ## Vokra の特徴
 
@@ -83,8 +86,10 @@ numerical parity、公開 artefact はそれぞれ別の到達点です。どれ
   明示的な runtime routing / deferred-operation registry
 
 CPU が既定 backend です。Metal・CUDA・Vulkan・WebGPU は opt-in で、対応 op は
-backend ごとに異なります。CoreML / QNN は experimental delegate です。
-accelerator を選ぶ前に [backend guide](docs/backend-guide.ja.md) を確認してください。
+backend ごとに異なります。CoreML には Whisper encoder 全体を扱う experimental
+whole-submodel delegate 経路があり、QNN は SDK gate 下の experimental delegate
+scaffold のままです。accelerator を選ぶ前に
+[backend guide](docs/backend-guide.ja.md) を確認してください。
 
 ## ライブラリ統合
 

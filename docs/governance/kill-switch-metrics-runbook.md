@@ -1,13 +1,18 @@
 # Kill Switch C / K メトリクス計測 runbook
 
 **文書 ID**: VOKRA-GOV-001
-**最終更新**: 2026-07-07（初版、Task #78）
+**最終更新**: 2026-08-30（現行tag/release/review状態を再照合）
 **位置付け**: [`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md) の Kill switch 表
 （NFR-MT-05、四半期手動 Go/No-go review）で
 `C`（v0.1 MVP 公開後 3ヶ月で GitHub star < 500、active user < 20）と
 `K`（v0.5 時点で addressable market が競合の 10% 未満）を判定するための
 **再現可能で機械的なメトリクス収集手順**。判定そのものは依頼者（`ayutaz`）が行う。
 本 runbook は「何を、いつ、どう数えるか」だけを固定する。
+
+**現行状態（2026-08-30）**: `release-cadence.yml` と
+`tools/release/test_cadence.py` は land 済み。ただし **git tag 0 / GitHub
+release 0 / quarterly review record 0** であり、release cadence は未確立。
+この状態を Kill switch の判定結果とは扱わない。
 
 **対象条件（現行判定表より抜粋）**:
 
@@ -51,6 +56,10 @@ gh repo view ayutaz/vokra --json stargazerCount --jq .stargazerCount
 ---
 
 ## 2. コントリビュータ数（bot と Claude Code を除外）
+
+ここでの「Claude Codeを除外」は、Kill switch/DoDに定められた**規範上の集計閾値**
+である。現行Codexのagent運用を理由に閾値や除外ルールを変更しない。実際のreview
+では、ownerを除外する別集計も併記し、どちらを判定に使ったかをownerが記録する。
 
 `GET /repos/{owner}/{repo}/contributors` は login と contributions を返す。
 bot（`*[bot]` / `-bot` パターン）と `Claude*` を `jq` で除外する。
@@ -276,9 +285,9 @@ EOF
 
 | Kill switch | 走らせる時期 | 契機イベント |
 |-----|-----|-----|
-| **C** | v0.1 MVP 公開後 3 ヶ月 経過時点（= 公開から 5–6 ヶ月目の四半期 review） | v0.1 MVP release tag（`v0.1.0`）を打った日を起点にカレンダー登録 |
-| **D** | v0.5 公開後 3 ヶ月（コミッター 3 名未満判定） | v0.5 release tag（`v0.5.0`）を打った日を起点にカレンダー登録。§2 のコマンドを流用 |
-| **K** | v0.5 公開時点 | v0.5.0 release tag と同時に本 runbook を実行 |
+| **C** | v0.1 MVP 公開後 3 ヶ月 経過時点（= 公開から 5–6 ヶ月目の四半期 review） | v0.1 MVP release tagを実際に打った日を起点にカレンダー登録（2026-08-30現在、tag/release 0件で未確定） |
+| **D** | v0.5 公開後 3 ヶ月（コミッター 3 名未満判定） | v0.5 release tagを実際に打った日を起点にカレンダー登録。§2 のコマンドを流用（現時点は未確定） |
+| **K** | v0.5 公開時点 | v0.5 release tag と同時に本 runbookを実行（現時点は未発行） |
 | **その他四半期** | 四半期毎（3 月末 / 6 月末 / 9 月末 / 12 月末） | 手動 Go/No-go review（NFR-MT-05） |
 
 **カレンダー登録は依頼者責任**（本 runbook は自動 CI に載せない = 2026-07-04 依頼者決定の

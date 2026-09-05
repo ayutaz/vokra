@@ -7,8 +7,10 @@
 //! ```
 //!
 //! The task is detected from the model architecture (see [`crate::engine`]);
-//! VAD prints per-frame speech-probability summary, ASR prints the transcript,
-//! and TTS writes a WAV (or reports the sample count when `--output` is absent).
+//! VAD prints per-frame speech-probability summary, text-capable ASR prints a
+//! transcript, omniASR-CTC prints native token IDs because its tokenizer is
+//! external, and TTS writes a WAV (or reports the sample count when `--output`
+//! is absent).
 
 use std::process::ExitCode;
 
@@ -32,6 +34,10 @@ USAGE:
                   [--deterministic] [--far-end <reference.wav>]
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
     vokra-cli run --model <parakeet-tdt.gguf> --input <16k-mono.wav>
+    vokra-cli run --model <omniasr-ctc-1b.gguf> --input <16k-mono.wav> \
+                  [--output <token-ids.txt>]
+    vokra-cli run --model <gigaam-multilingual.gguf> --input <16k-mono.wav> \
+                  [--output <transcript.txt>]
     vokra-cli run --model <canary-1b-flash.gguf> --input <16k-mono.wav> \
                   [--language en|de|es|fr] [--target-language en|de|es|fr]
     vokra-cli run --model <nemotron-asr.gguf> --input <16k-mono.wav> \
@@ -40,6 +46,8 @@ USAGE:
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <speaker.gguf> --input <a.wav> [--compare <b.wav>] [--output <embedding.f32>]
     vokra-cli run --model <lang-id.gguf> --input <16k-mono.wav> [--output <scores.f32>]
+    vokra-cli run --model <voice-gender-classifier.gguf> --input <16k-mono.wav> \
+                  [--backend cpu|metal] [--output <probabilities.f32>]
     vokra-cli run --model <audiobox-aesthetics.gguf> --input <16k-mono.wav> \
                   [--output <ce-cu-pc-pq.f32>]
     vokra-cli run --model <audioseal.gguf> --input <16k-mono.wav> \
@@ -138,6 +146,9 @@ USAGE:
     vokra-cli run --model <moss-tts-nano.gguf> \
                   --audio-tokenizer <moss-audio-tokenizer-nano.gguf> \
                   --max-new-frames <N> --input <prompt-rows.u32le> --output <stereo.wav>
+    vokra-cli run --model <moss-tts-local-v1.5.gguf> \
+                  --audio-tokenizer <moss-audio-tokenizer-v2.gguf> \
+                  --max-new-frames <N> --input <prompt-rows-13.u32le> --output <stereo.wav>
     vokra-cli run --model <moss-tts-v1.5.gguf> \
                   --audio-tokenizer <moss-audio-tokenizer-full.gguf> \
                   --max-new-frames <N> --input <prompt-rows.u32le> --output <mono.wav>
@@ -167,7 +178,8 @@ OPTIONS:
                                 strict manifest gate.
     --audio-tokenizer <path>    MOSS-TTS only, REQUIRED: exact companion GGUF.
                                 Nano requires Audio Tokenizer Nano; Base/v1.5
-                                require Audio Tokenizer Full. Both stages must
+                                require Audio Tokenizer Full; Local requires v2.
+                                Both stages must
                                 support the same selected backend.
     --vocoder <path>            SpeechT5 only, REQUIRED: strict
                                 microsoft/speecht5_hifigan companion GGUF
@@ -1530,6 +1542,9 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::AsrCanary1bFlash
         | ModelTask::AsrCanary1bV2
         | ModelTask::AsrParakeetTdt11b
+        | ModelTask::AsrOmniasrCtcTokens
+        | ModelTask::AsrGigaamMultilingual
+        | ModelTask::AsrGigaamV3Tokens
         | ModelTask::SpeechFeaturesWav2Vec2
         | ModelTask::Vad
         | ModelTask::VadFirered
@@ -1545,12 +1560,14 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::DiarizationPyannote
         | ModelTask::Separation
         | ModelTask::Tts
+        | ModelTask::TtsVibeVoice
         | ModelTask::TtsSpeechT5
         | ModelTask::TtsQwen3
         | ModelTask::TtsKokoro
         | ModelTask::TtsMelo
         | ModelTask::Speaker
         | ModelTask::LangId
+        | ModelTask::VoiceGenderClassification
         | ModelTask::AudioQualityAudiobox
         | ModelTask::EmotionClassification
         | ModelTask::DeepfakeClassification
@@ -1570,6 +1587,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Facodec
         | ModelTask::MossAudioTokenizerCodec
         | ModelTask::TtsMossNano
+        | ModelTask::TtsMossLocal
         | ModelTask::TtsMossDelay
         | ModelTask::TtsMossVoiceGenerator
         | ModelTask::S2sDuplex
@@ -1634,7 +1652,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if a.audio_tokenizer.is_some()
         && !matches!(
             task,
-            ModelTask::TtsMossNano | ModelTask::TtsMossDelay | ModelTask::TtsMossVoiceGenerator
+            ModelTask::TtsMossNano
+                | ModelTask::TtsMossLocal
+                | ModelTask::TtsMossDelay
+                | ModelTask::TtsMossVoiceGenerator
         )
     {
         return Err(
@@ -1664,7 +1685,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if a.max_new_frames.is_some()
         && !matches!(
             task,
-            ModelTask::TtsMossNano | ModelTask::TtsMossDelay | ModelTask::TtsMossVoiceGenerator
+            ModelTask::TtsMossNano
+                | ModelTask::TtsMossLocal
+                | ModelTask::TtsMossDelay
+                | ModelTask::TtsMossVoiceGenerator
         )
     {
         return Err(
@@ -2036,6 +2060,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::AsrParakeetTdt11b => {
             run_parakeet_tdt_1_1b(&session, &a)?;
         }
+        ModelTask::AsrOmniasrCtcTokens => {
+            run_omniasr_ctc_tokens(&session, &a)?;
+        }
+        ModelTask::AsrGigaamMultilingual => {
+            run_gigaam_multilingual(&session, &a)?;
+        }
+        ModelTask::AsrGigaamV3Tokens => {
+            run_gigaam_v3_tokens(&session, &a)?;
+        }
         ModelTask::SpeechFeaturesWav2Vec2 => {
             let path = a
                 .input
@@ -2095,6 +2128,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 a.output.as_deref(),
             )?;
         }
+        ModelTask::TtsVibeVoice => {
+            return Err(
+                "run (VibeVoice-1.5B): INSPECTION_ONLY — the strict partial GGUF binder does not imply a runnable composite; authenticated Qwen tokenizer companion, prompt/prefill state, streaming tokenizer, official DPMSolverMultistepScheduler, and 24-kHz decoder are required. No CPU fallback or synthetic waveform is permitted"
+                    .to_owned(),
+            );
+        }
         ModelTask::TtsSpeechT5 => {
             run_speecht5(&session, &a)?;
         }
@@ -2122,6 +2161,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::TtsMossNano => {
             run_moss_tts_nano(&session, &a)?;
         }
+        ModelTask::TtsMossLocal => {
+            run_moss_tts_local(&session, &a)?;
+        }
         ModelTask::TtsMossDelay => {
             run_moss_tts_delay(&session, &a)?;
         }
@@ -2142,6 +2184,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::LangId => {
             run_lang_id(&session, &a)?;
+        }
+        ModelTask::VoiceGenderClassification => {
+            run_voice_gender_classifier(&session, &a)?;
         }
         ModelTask::AudioQualityAudiobox => {
             run_audiobox_aesthetics(&session, &a)?;
@@ -2394,6 +2439,50 @@ fn run_lang_id(session: &Session, args: &RunArgs) -> Result<(), String> {
         println!(
             "lang-id: {} scores in official label order -> {output}",
             scores.len()
+        );
+    }
+    Ok(())
+}
+
+/// Runs the dedicated JaesungHuh male/female classifier. The model owns the
+/// strict 16 kHz input and provenance checks; this CLI layer intentionally
+/// performs one classification and preserves the official `[male, female]`
+/// probability order for both stdout and the optional binary output.
+fn run_voice_gender_classifier(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (voice-gender): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let rate = vokra_models::voice_gender_classifier::SAMPLE_RATE;
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (voice-gender): {path} is {} Hz, expected {rate} Hz — resample offline first",
+            clip.sample_rate
+        ));
+    }
+    let model =
+        vokra_models::voice_gender_classifier::VoiceGenderClassifier::from_gguf(session.gguf())
+            .map_err(|error| format!("run (voice-gender): {error}"))?
+            .with_backend(args.backend);
+    let prediction = model
+        .classify_pcm(&clip.samples, rate)
+        .map_err(|error| format!("run (voice-gender): {error}"))?;
+    println!(
+        "voice-gender: label={} male={:.9} female={:.9}",
+        prediction.label, prediction.probabilities[0], prediction.probabilities[1]
+    );
+    if let Some(output) = args.output.as_deref() {
+        let bytes = prediction
+            .probabilities
+            .iter()
+            .flat_map(|probability| probability.to_le_bytes())
+            .collect::<Vec<_>>();
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (voice-gender): --output {output}: {error}"))?;
+        println!(
+            "voice-gender: {} probabilities in official [male,female] order -> {output}",
+            prediction.probabilities.len()
         );
     }
     Ok(())
@@ -5126,6 +5215,85 @@ fn run_moss_tts_nano(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// MOSS-TTS Local Transformer v1.5 explicit `[rows,13]` prompt to the
+/// authenticated v2 48 kHz stereo codec. Raw text is intentionally refused:
+/// the fixed release does not bundle a tokenizer/template contract.
+fn run_moss_tts_local(session: &Session, a: &RunArgs) -> Result<(), String> {
+    const LABEL: &str = "run (moss_tts Local)";
+    if a.text.is_some() {
+        return Err(format!(
+            "{LABEL}: --text is unavailable because the public GGUF does not bundle the pinned tokenizer/template; pass explicit [rows,13] u32le prompt ids with --input"
+        ));
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or_else(|| format!("{LABEL}: --input <prompt-rows.u32le> is required"))?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or_else(|| format!("{LABEL}: --output <stereo.wav> is required"))?;
+    let codec_path = a.audio_tokenizer.as_deref().ok_or_else(|| {
+        format!("{LABEL}: --audio-tokenizer <moss-audio-tokenizer-v2.gguf> is required")
+    })?;
+    let max_new_frames = a
+        .max_new_frames
+        .ok_or_else(|| format!("{LABEL}: --max-new-frames <N> is required"))?;
+    let policy = vokra_core::CompliancePolicy::from_env();
+    vokra_core::check_weight_license(session.gguf(), &policy).map_err(|error| error.to_string())?;
+    let codec_file = std::sync::Arc::new(
+        vokra_mmap::open_gguf(codec_path)
+            .map_err(|error| format!("{LABEL}: codec {codec_path}: {error}"))?,
+    );
+    vokra_core::check_weight_license(&codec_file, &policy).map_err(|error| error.to_string())?;
+    let checkpoint =
+        vokra_models::moss_tts::MossTtsLocalCheckpoint::from_gguf_mapped(session.gguf_arc())
+            .map_err(|error| error.to_string())?;
+    let model = vokra_models::moss_tts::MossTtsLocal::from_checkpoint(checkpoint, a.backend)
+        .map_err(|error| error.to_string())?;
+    let codec =
+        vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_mapped_with_backend(
+            codec_file, a.backend,
+        )
+        .map_err(|error| error.to_string())?;
+    let bytes =
+        std::fs::read(input_path).map_err(|error| format!("{LABEL}: {input_path}: {error}"))?;
+    const ROW_BYTES: usize = 13 * 4;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(ROW_BYTES) {
+        return Err(format!(
+            "{LABEL}: {input_path} has {} bytes; expected a positive multiple of {ROW_BYTES} for [rows,13] u32le prompt ids",
+            bytes.len()
+        ));
+    }
+    let prompt_rows = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect::<Vec<_>>();
+    let synthesis = model
+        .synthesize_prompt_rows(
+            &codec,
+            &prompt_rows,
+            &vokra_models::moss_tts::MossTtsLocalGenerationOptions::greedy(max_new_frames),
+        )
+        .map_err(|error| error.to_string())?;
+    wav::write_wav_channels(
+        output_path,
+        &synthesis.audio.pcm,
+        synthesis.audio.sample_rate,
+        synthesis.audio.channels,
+    )
+    .map_err(|error| format!("{LABEL}: --output {output_path}: {error}"))?;
+    println!(
+        "moss_tts Local: {} prompt rows -> {} generated frames x 12 codebooks -> {} samples/channel x {} channels @ {} Hz -> {output_path}",
+        prompt_rows.len() / 13,
+        synthesis.generated.generated_frames,
+        synthesis.audio.samples_per_channel,
+        synthesis.audio.channels,
+        synthesis.audio.sample_rate,
+    );
+    Ok(())
+}
+
 /// MOSS-TTS Base/v1.5 explicit 33-column prompt to Full codec decode.
 ///
 /// The official tokenizer/template remains an explicit caller companion. The
@@ -6646,6 +6814,174 @@ fn run_qwen3_asr(a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs the manifest-authenticated omniASR-CTC-1B waveform-to-token path.
+///
+/// The released GGUF contains no tokenizer, so this route intentionally emits
+/// the native CTC token IDs. A caller that needs text must apply the separately
+/// versioned SentencePiece tokenizer; the CLI never fabricates a transcript.
+fn run_omniasr_ctc_tokens(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::omniasr_ctc::{OMNIASR_CTC_SAMPLE_RATE, OmniasrCtcAsr};
+
+    if a.text.is_some() {
+        return Err(
+            "run (omniASR-CTC): --text is not accepted; the external SentencePiece tokenizer is not embedded and this route emits token IDs"
+                .to_owned(),
+        );
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (omniASR-CTC): beam-search flags are not supported; the native route exposes deterministic greedy CTC token IDs"
+                .to_owned(),
+        );
+    }
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (omniASR-CTC): --input <16k-mono.wav> is required")?;
+    let clip =
+        wav::read_wav(path).map_err(|error| format!("run (omniASR-CTC): {path}: {error}"))?;
+    if clip.sample_rate != OMNIASR_CTC_SAMPLE_RATE {
+        return Err(format!(
+            "run (omniASR-CTC): {path} is {} Hz, expected {OMNIASR_CTC_SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if clip.samples.is_empty() {
+        return Err("run (omniASR-CTC): --input WAV contains no samples".to_owned());
+    }
+
+    let model = OmniasrCtcAsr::from_gguf(session.gguf())
+        .map_err(|error| format!("run (omniASR-CTC) bind: {error}"))?
+        .with_backend(a.backend);
+    let token_ids = model
+        .transcribe_tokens(&clip.samples)
+        .map_err(|error| format!("run (omniASR-CTC) forward: {error}"))?;
+    let rendered = token_ids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, format!("{rendered}\n"))
+            .map_err(|error| format!("run (omniASR-CTC): --output {output}: {error}"))?;
+        eprintln!(
+            "omniASR-CTC: wrote {} token ID(s) -> {output}",
+            token_ids.len()
+        );
+    } else {
+        println!("omniASR-CTC: token_ids={rendered}");
+    }
+    Ok(())
+}
+
+/// Runs the authenticated GigaAM Multilingual greedy CTC transcript route.
+fn run_gigaam_multilingual(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::gigaam::multilingual::{GigaamMultilingual, SAMPLE_RATE};
+
+    if a.text.is_some() {
+        return Err(
+            "run (GigaAM Multilingual): --text is not accepted; this is a waveform-to-transcript ASR route"
+                .to_owned(),
+        );
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (GigaAM Multilingual): beam-search flags are not supported; the native route uses deterministic greedy CTC decoding"
+                .to_owned(),
+        );
+    }
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (GigaAM Multilingual): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)
+        .map_err(|error| format!("run (GigaAM Multilingual): {path}: {error}"))?;
+    if clip.sample_rate != SAMPLE_RATE {
+        return Err(format!(
+            "run (GigaAM Multilingual): {path} is {} Hz, expected {SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if clip.samples.is_empty() {
+        return Err("run (GigaAM Multilingual): --input WAV contains no samples".to_owned());
+    }
+    let model = GigaamMultilingual::from_gguf(session.gguf())
+        .map_err(|error| format!("run (GigaAM Multilingual) bind: {error}"))?
+        .with_backend(a.backend)
+        .map_err(|error| format!("run (GigaAM Multilingual) backend: {error}"))?;
+    let transcript = model
+        .transcribe(&clip.samples)
+        .map_err(|error| format!("run (GigaAM Multilingual) forward: {error}"))?;
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, format!("{transcript}\n"))
+            .map_err(|error| format!("run (GigaAM Multilingual): --output {output}: {error}"))?;
+        eprintln!("GigaAM Multilingual: wrote transcript -> {output}");
+    } else {
+        println!("asr: {transcript}");
+    }
+    Ok(())
+}
+
+/// Runs GigaAM v3's greedy RNNT route and emits stable token IDs.
+fn run_gigaam_v3_tokens(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::gigaam::v3::{GigaamV3, SAMPLE_RATE};
+
+    if a.text.is_some() {
+        return Err(
+            "run (GigaAM v3): --text is not accepted; this route emits RNNT token IDs".to_owned(),
+        );
+    }
+    if a.beam_size != 1
+        || a.no_repeat_ngram != 0
+        || a.length_penalty.to_bits() != 0.6f32.to_bits()
+        || a.deterministic
+    {
+        return Err(
+            "run (GigaAM v3): beam/generation options are not supported; use deterministic greedy token IDs"
+                .to_owned(),
+        );
+    }
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (GigaAM v3): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path).map_err(|error| format!("run (GigaAM v3): {path}: {error}"))?;
+    if clip.sample_rate != SAMPLE_RATE {
+        return Err(format!(
+            "run (GigaAM v3): {path} is {} Hz, expected {SAMPLE_RATE} Hz — resample offline first",
+            clip.sample_rate
+        ));
+    }
+    if clip.samples.is_empty() {
+        return Err("run (GigaAM v3): --input WAV contains no samples".to_owned());
+    }
+    let model = GigaamV3::from_gguf(session.gguf())
+        .map_err(|error| format!("run (GigaAM v3) bind: {error}"))?
+        .with_backend(a.backend)
+        .map_err(|error| format!("run (GigaAM v3) backend: {error}"))?;
+    let token_ids = model
+        .transcribe_token_ids(&clip.samples)
+        .map_err(|error| format!("run (GigaAM v3) forward: {error}"))?;
+    let rendered = token_ids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, format!("{rendered}\n"))
+            .map_err(|error| format!("run (GigaAM v3): --output {output}: {error}"))?;
+        eprintln!(
+            "GigaAM v3: wrote {} token ID(s) -> {output}",
+            token_ids.len()
+        );
+    } else {
+        println!("gigaam-v3: token_ids={rendered}");
+    }
+    Ok(())
+}
+
 fn parse_canary_language(
     code: &str,
 ) -> Result<vokra_models::canary_1b_flash::CanaryLanguage, String> {
@@ -7314,6 +7650,144 @@ mod tests {
     }
 
     #[test]
+    fn gigaam_route_validates_a_16k_mono_wav_before_bind_gate() {
+        let stem = format!("vokra-cli-gigaam-route-{}", std::process::id());
+        let mut model_path = std::env::temp_dir();
+        model_path.push(format!("{stem}.gguf"));
+        let mut wav_path = std::env::temp_dir();
+        wav_path.push(format!("{stem}.wav"));
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            vokra_models::gigaam::multilingual::ARCH,
+        );
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            vokra_models::gigaam::multilingual::NAME,
+        );
+        for (key, value) in [
+            ("sample_rate", 16_000),
+            ("n_mels", 64),
+            ("n_fft", 320),
+            ("hop_length", 160),
+            ("win_length", 320),
+            ("n_layers", 16),
+            ("d_model", 768),
+            ("n_heads", 16),
+            ("ffn_dim", 3072),
+            ("conv_kernel_size", 5),
+            ("subsampling_kernel_size", 5),
+            ("subsampling_stride", 2),
+            ("subsampling_padding", 2),
+            (
+                "vocab_size",
+                vokra_models::gigaam::multilingual::VOCAB_SIZE as u32,
+            ),
+            (
+                "blank_id",
+                vokra_models::gigaam::multilingual::BLANK_ID as u32,
+            ),
+        ] {
+            builder.add_u32(&format!("vokra.gigaam_multilingual.{key}"), value);
+        }
+        for (key, value) in [
+            ("model_class", "ctc"),
+            ("model_name", "multilingual_ctc"),
+            ("topology", "CTC"),
+            ("revision", vokra_models::gigaam::multilingual::HF_REVISION),
+            (
+                "source_revision",
+                vokra_models::gigaam::multilingual::SOURCE_REVISION,
+            ),
+            (
+                "config_sha256",
+                vokra_models::gigaam::multilingual::CONFIG_SHA256,
+            ),
+            (
+                "checkpoint_sha256",
+                vokra_models::gigaam::multilingual::CHECKPOINT_SHA256,
+            ),
+            (
+                "prepared_sha256",
+                vokra_models::gigaam::multilingual::AUTHENTICATED_PREPARED_SHA256
+                    .expect("authenticated GigaAM Multilingual SHA"),
+            ),
+        ] {
+            builder.add_string(&format!("vokra.gigaam_multilingual.{key}"), value);
+        }
+        for (key, value) in [
+            ("weight_license", "permissive"),
+            ("license", "MIT"),
+            ("model_id", "ai-sage/GigaAM-Multilingual"),
+            (
+                "source",
+                "https://huggingface.co/ai-sage/GigaAM-Multilingual",
+            ),
+        ] {
+            builder.add_string(&format!("vokra.provenance.{key}"), value);
+        }
+        let bytes = builder.to_bytes().expect("serialize route fixture");
+        std::fs::write(&model_path, bytes).expect("write route fixture");
+        wav::write_wav(&wav_path, &[0.125; 320], 16_000).expect("write valid WAV fixture");
+        let (session, task) = engine::load_session(model_path.to_str().unwrap()).expect("route");
+        assert_eq!(task, ModelTask::AsrGigaamMultilingual);
+        let parsed = parse_args(&args(&[
+            "--model",
+            model_path.to_str().unwrap(),
+            "--input",
+            wav_path.to_str().unwrap(),
+        ]))
+        .expect("valid GigaAM route args");
+        let error = run_gigaam_multilingual(&session, &parsed).unwrap_err();
+        assert!(
+            error.contains("GigaAM tensor manifest mismatch"),
+            "valid WAV reached the authenticated binder gate: {error}"
+        );
+        let _ = std::fs::remove_file(model_path);
+        let _ = std::fs::remove_file(wav_path);
+    }
+
+    #[test]
+    fn gigaam_v3_route_validates_a_16k_mono_wav_before_bind_gate() {
+        let stem = format!("vokra-cli-gigaam-v3-route-{}", std::process::id());
+        let mut model_path = std::env::temp_dir();
+        model_path.push(format!("{stem}.gguf"));
+        let mut wav_path = std::env::temp_dir();
+        wav_path.push(format!("{stem}.wav"));
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            vokra_models::gigaam::v3::ARCH,
+        );
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            vokra_models::gigaam::v3::NAME,
+        );
+        std::fs::write(
+            &model_path,
+            builder.to_bytes().expect("serialize route fixture"),
+        )
+        .expect("write route fixture");
+        wav::write_wav(&wav_path, &[0.125; 320], 16_000).expect("write valid WAV fixture");
+        let (session, task) = engine::load_session(model_path.to_str().unwrap()).expect("route");
+        assert_eq!(task, ModelTask::AsrGigaamV3Tokens);
+        let parsed = parse_args(&args(&[
+            "--model",
+            model_path.to_str().unwrap(),
+            "--input",
+            wav_path.to_str().unwrap(),
+        ]))
+        .expect("valid GigaAM v3 route args");
+        let error = run_gigaam_v3_tokens(&session, &parsed).unwrap_err();
+        assert!(
+            !error.contains("expected 16000 Hz"),
+            "valid WAV was rejected before bind: {error}"
+        );
+        let _ = std::fs::remove_file(model_path);
+        let _ = std::fs::remove_file(wav_path);
+    }
+
+    #[test]
     fn parse_accepts_nemotron_tokenizer_and_language() {
         let parsed = parse_args(&args(&[
             "--model",
@@ -7664,6 +8138,24 @@ mod tests {
             ]))
             .is_err()
         );
+        let local = parse_args(&args(&[
+            "--model",
+            "moss-tts-local-v1.5.gguf",
+            "--audio-tokenizer",
+            "moss-audio-tokenizer-v2.gguf",
+            "--max-new-frames",
+            "8",
+            "--input",
+            "prompt-rows-13.u32le",
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("MOSS Local explicit v2 companion flags parse");
+        assert_eq!(
+            local.audio_tokenizer.as_deref(),
+            Some("moss-audio-tokenizer-v2.gguf")
+        );
+        assert_eq!(local.max_new_frames, Some(8));
     }
 
     #[test]
@@ -9063,15 +9555,17 @@ mod tests {
     }
 
     #[test]
-    fn s2s_host_only_smoke_batch_dialog_writes_a_wav() {
-        // T20: explicit CPU backend, synthesized-fixture GGUF, explicit
-        // fixture tokenizer (opt-in flag) → e2e run + WAV out.
+    fn s2s_host_only_smoke_rejects_incomplete_composite() {
+        // The old host-only smoke used synthesized CSM/Mimi weights. CSM is
+        // now explicitly INSPECTION_ONLY until the complete composite and
+        // parity evidence are authenticated, so no WAV may be written.
         let model = csm_fixture_gguf("batch");
         let out = std::env::temp_dir().join(format!(
             "vokra-cli-csm-smoke-out-{}.wav",
             std::process::id()
         ));
-        let code = main(&args(&[
+        let _ = std::fs::remove_file(&out);
+        let err = main(&args(&[
             "--model",
             model.to_str().unwrap(),
             "--text",
@@ -9081,18 +9575,25 @@ mod tests {
             "--output",
             out.to_str().unwrap(),
         ]))
-        .expect("s2s smoke runs");
-        assert_eq!(code, ExitCode::SUCCESS);
-        let clip = wav::read_wav(out.to_str().unwrap()).expect("output WAV parses");
-        assert!(!clip.samples.is_empty());
+        .unwrap_err();
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(
+            err.contains("authenticated CSM"),
+            "composite blocker: {err}"
+        );
+        assert!(
+            !out.exists(),
+            "inspection-only CSM must not fabricate a WAV output"
+        );
         let _ = std::fs::remove_file(&model);
         let _ = std::fs::remove_file(&out);
     }
 
     #[test]
-    fn s2s_streaming_barge_in_demo_stops_after_n_frames() {
+    fn s2s_streaming_barge_in_demo_rejects_incomplete_composite() {
+        // Streaming/barging cannot use a synthesized partial CSM handle.
         let model = csm_fixture_gguf("interrupt");
-        let code = main(&args(&[
+        let err = main(&args(&[
             "--model",
             model.to_str().unwrap(),
             "--text",
@@ -9102,13 +9603,20 @@ mod tests {
             "--interrupt-after",
             "2",
         ]))
-        .expect("s2s barge-in demo runs");
-        assert_eq!(code, ExitCode::SUCCESS);
+        .unwrap_err();
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(
+            err.contains("authenticated CSM"),
+            "composite blocker: {err}"
+        );
         let _ = std::fs::remove_file(&model);
     }
 
     #[test]
-    fn s2s_without_text_is_a_contract_error() {
+    fn s2s_without_text_is_inspection_only_before_text_contract() {
+        // Session loading precedes the S2S `--text` check. The incomplete
+        // composite therefore has to fail closed at the authenticated-loader
+        // boundary, without claiming the text contract was reached.
         let model = csm_fixture_gguf("no-text");
         let err = main(&args(&[
             "--model",
@@ -9116,7 +9624,11 @@ mod tests {
             "--fixture-tokenizer",
         ]))
         .unwrap_err();
-        assert!(err.contains("--text"), "actionable: {err}");
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(
+            err.contains("authenticated CSM"),
+            "composite blocker: {err}"
+        );
         let _ = std::fs::remove_file(&model);
     }
 
@@ -9392,6 +9904,12 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bFlash), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bV2), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrParakeetTdt11b), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrOmniasrCtcTokens), None);
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::AsrGigaamMultilingual),
+            None
+        );
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrGigaamV3Tokens), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Vad), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFirered), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadTen), None);
@@ -9404,6 +9922,10 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::AudioLlmUltravox), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::LangId), None);
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::VoiceGenderClassification),
+            None
+        );
         assert_eq!(cpu_only_engine_label(ModelTask::AudioQualityAudiobox), None);
         assert_eq!(cpu_only_engine_label(ModelTask::WatermarkAudioseal), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
@@ -9912,11 +10434,75 @@ mod tests {
         );
     }
 
-    /// (a) `--backend cuda` on the CSM (S2S) arch is a loud FR-EX-08 error.
-    /// The guard fires before the `--text` contract check, so no --text is
-    /// needed to trip it.
     #[test]
-    fn non_cpu_backend_on_csm_s2s_is_rejected_loudly() {
+    fn omniasr_cli_options_reject_text_and_beam_but_allow_backend_route() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            vokra_models::omniasr_ctc::EXPECTED_ARCH,
+        );
+        let bytes = builder.to_bytes().expect("serialize metadata-only GGUF");
+        let model = std::env::temp_dir().join(format!(
+            "vokra-cli-omniasr-options-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&model, bytes).expect("write metadata-only GGUF");
+
+        let model_arg = model.to_str().expect("temporary path is UTF-8");
+        let input = std::env::temp_dir().join(format!(
+            "vokra-cli-omniasr-options-{}-input.wav",
+            std::process::id()
+        ));
+        wav::write_wav(&input, &[0.1; 16_000], 16_000).expect("write valid 16k mono WAV");
+        let input_arg = input.to_str().expect("temporary input path is UTF-8");
+        let text_error = main(&args(&[
+            "--model",
+            model_arg,
+            "--text",
+            "must-not-be-decoded",
+        ]))
+        .expect_err("omniASR must not fabricate text without its tokenizer");
+        assert!(
+            text_error.contains("--text is not accepted"),
+            "{text_error}"
+        );
+
+        let beam_error = main(&args(&["--model", model_arg, "--beam-size", "2"]))
+            .expect_err("unsupported OmniASR beam options must fail explicitly");
+        assert!(
+            beam_error.contains("beam-search flags are not supported"),
+            "{beam_error}"
+        );
+
+        let backend_error = main(&args(&[
+            "--model",
+            model_arg,
+            "--input",
+            input_arg,
+            "--backend",
+            "metal",
+        ]))
+        .expect_err("metadata-only fixture must fail at the strict binder");
+        assert!(
+            !backend_error.contains("--backend metal is not supported for this model"),
+            "OmniASR is backend-honoring: {backend_error}"
+        );
+        assert!(
+            backend_error.contains("run (omniASR-CTC) bind"),
+            "Metal route reaches the concrete binder: {backend_error}"
+        );
+        let _ = std::fs::remove_file(model);
+        let _ = std::fs::remove_file(input);
+    }
+
+    /// (a) `--backend cuda` on the CSM (S2S) arch still reaches the explicit
+    /// inspection-only composite boundary. Loading fails before backend
+    /// dispatch, so this test must not claim the old CPU-only guard ran.
+    #[test]
+    fn non_cpu_backend_on_csm_s2s_is_rejected_at_composite_boundary() {
+        // Loading the CSM artifact is intentionally fail-closed before
+        // backend dispatch. Keep the `--backend cuda` option in the fixture,
+        // but assert the stronger authenticated-composite refusal now.
         let model = csm_fixture_gguf("backend-guard");
         let err = main(&args(&[
             "--model",
@@ -9926,13 +10512,10 @@ mod tests {
         ]))
         .unwrap_err();
         let _ = std::fs::remove_file(&model);
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
         assert!(
-            err.contains("--backend cuda is not supported"),
-            "names the backend: {err}"
-        );
-        assert!(
-            err.contains("CSM speech-to-speech"),
-            "names the engine: {err}"
+            err.contains("authenticated CSM"),
+            "composite blocker: {err}"
         );
     }
 

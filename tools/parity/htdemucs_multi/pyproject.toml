@@ -1,0 +1,29 @@
+[project]
+name = "vokra-htdemucs-multi-parity"
+version = "0.1.0"
+description = "VAST-only independent HT-Demucs reference and provenance audit sidecar."
+requires-python = "==3.12.*"
+dependencies = [
+    "dora-search",
+    "einops",
+    "julius>=0.2.3",
+    "numpy",
+    "openunmix",
+    "pyyaml",
+    "torch>=1.8.1",
+    "torchaudio>=0.8,<2.1",
+    "tqdm",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

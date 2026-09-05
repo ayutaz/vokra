@@ -25,7 +25,7 @@ in `docs/requirement-ids.md` and its Japanese twin.
 
 ## 2. CI required checks
 
-As re-verified through the GitHub branch-protection API on 2026-08-22, every
+As re-verified through the GitHub branch-protection API on 2026-08-30, every
 PR must pass **16 required status contexts**:
 
 | Check | What it runs |
@@ -74,7 +74,11 @@ after stable green runs. The exact required/advisory split is maintained in
 
 ## 3. Dependency license policy
 
-- **Allowed**: Apache-2.0, MIT, BSD-family licenses only.
+- **Default allowed**: Apache-2.0, MIT, and BSD-family licenses.
+- **Scoped exceptions**: MPL-2.0 may be used only where the file-level or
+  build-only scope has been reviewed and recorded in
+  [docs/license-audit.md](docs/license-audit.md); it is not a blanket runtime
+  allow-list entry.
 - **Forbidden**: GPL and LGPL in any form — Vokra targets Unity / Godot and
   other proprietary embedding scenarios where (L)GPL is not acceptable.
 - **MPL-2.0** (e.g. symphonia): limited use only, after evaluating the
@@ -97,9 +101,11 @@ A PR that adds model support must:
    zoo** and may only be exercised behind an explicit research flag
    (engine support without weight distribution).
 3. For TTS / VC models, go through the
-   [docs/legal-compliance.md](docs/legal-compliance.md) checklist
-   (EU AI Act Article 50 / California SB 942: AudioSeal watermarking ON by
-   default, C2PA manifest support, disclosure requirements).
+   [docs/legal-compliance.md](docs/legal-compliance.md) checklist. AudioSeal
+   and C2PA are project policy/technical-control options, not a blanket legal
+   conclusion; applicability, disclosure, marking, and any required controls
+   must be reviewed for the actual provider/deployer deployment. The current
+   runtime status and legal boundary in that document are authoritative.
 4. Update [NOTICE](NOTICE) when the addition carries attribution or
    distribution-relevant terms.
 
@@ -153,7 +159,7 @@ bash scripts/install-git-hooks.sh   # sets core.hooksPath -> .githooks
 since the tracking upstream (or `origin/main` for brand-new branches). When
 every file changed is Rust-build-neutral documentation/config, approved
 `tools/parity` Python/uv sidecars, fixture hash sidecars, publish helpers, or
-Claude hook helpers, the clippy + test legs are **skipped**; the compliance
+compatibility hook helpers, the clippy + test legs are **skipped**; the compliance
 scanner still runs. Any Rust/build input, general script/tool/test,
 integration, hook self-change, or unrecognised extension returns to the deep
 path. A deletion-only remote ref update also runs compliance and then skips
@@ -187,9 +193,11 @@ only sanctioned ways to reach outside the runtime graph:
   across a trait boundary (`vokra_piper_plus::Phonemizer`) — never linked into
   the runtime graph checked here.
 
-### Codex and Claude Code
+### Codex operation and legacy Claude Code compatibility
 
-Codex is the primary agent for this repository. Codex reads the committed
+Codex is the primary agent for this repository. The Sol manager owns
+requirements, planning, and review; the Luna implementer owns bounded
+implementation work. Codex reads the committed
 `AGENTS.md`, discovers reusable workflows under `.agents/skills/`, and loads
 the repository policy hooks from `.codex/hooks.json` after they are reviewed
 and trusted with `/hooks`.

@@ -12,7 +12,7 @@
 |---|---|---|---|
 | ロードするファイル形式 | ONNX（Protobuf） | GGUF（ggml-audio） | GGUF（`vokra.*` 音声 chunk） |
 | 音声 op（STFT / iSTFT / mel / VAD 状態 / Flow Matching sampler / KV cache） | ホストコード + graph glue の寄せ集め | Whisper 特化 inline | **第一級ネイティブオペレータ** |
-| バックエンドの継目 | Execution Providers（op カバレッジが非対称） | CPU + オプションで CUDA/Metal | CPU + Metal + CUDA（Vulkan / WebGPU / CoreML / QNN は段階対応） |
+| バックエンドの継目 | Execution Providers（op カバレッジが非対称） | CPU + オプションで CUDA/Metal | CPU + opt-in の Metal / CUDA / Vulkan / WebGPU、experimental CoreML whole-submodel delegate、SDK gate 下の QNN scaffold |
 | silent CPU fallback | 場合による | なし | **なし — 明示エラー（FR-EX-08）** |
 | ランタイムに ONNX | あり | なし | **なし** — ONNX はオフライン変換のみ |
 | weight ライセンス強制 | 外部 | 外部 | 内蔵の `vokra.provenance.*` ゲート（research flag なしで CC-BY-NC を拒否） |

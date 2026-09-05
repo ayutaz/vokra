@@ -1,5 +1,16 @@
 # CUDA large-v3 RTF variance analysis harness
 
+> **2026-08-30 current-state boundary:** This harness remains an owner-run
+> VAST measurement aid, not an always-on RTF gate. The current toolchain floor
+> is Rust **1.89**. Use the repository's
+> [`vastai-safe.sh`](../../scripts/publish/vast-ai/vastai-safe.sh) wrapper for
+> every Vast CLI invocation, then follow the current rent → provision → work
+> → transfer only the required evidence → destroy lifecycle. Never place an
+> API key in commands, logs, or committed files. The RTX 4090, CUDA image,
+> 30-second WAV, `0.081–0.115` range, medians, and other benchmark conditions
+> below are dated 2026-07-07 evidence and must not be read as current hardware
+> guarantees or as a promoted threshold.
+
 Reference-measurement harness that samples the Whisper large-v3 CUDA RTF `N`
 times on a real GPU and reduces the collected JSONL into a markdown report
 with **mean / median / stddev / CV / p50 / p95 / p99 / min / max /
@@ -45,15 +56,16 @@ the *only* CUDA linkage in the whole tree.
 
 ## Prerequisites
 
-- **CUDA host** — any Linux box with an NVIDIA GPU (Ampere or newer,
+- **CUDA host (dated baseline conditions)** — any Linux box with an NVIDIA GPU (Ampere or newer,
   `d_head=64` Whisper is FA v2-capable on RTX 30 / 40 / A100 / H100). The
   reference measurement in
   [`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`](../../docs/bench-baselines/whisper_large_v3_cuda_rtf.json)
   is a vast.ai RTX 4090 spot instance (`nvidia/cuda:12.6.2-devel-ubuntu22.04`).
-- **NVIDIA driver + CUDA toolkit** — driver `>= 555` and toolkit `>= 12.4`
+- **NVIDIA driver + CUDA toolkit (dated baseline conditions)** — driver `>= 555` and toolkit `>= 12.4`
   (matches the M2-03 follow-up baseline). Newer is fine; older may fail
   NVRTC compile.
-- **Rust `1.86+`** — same toolchain the baseline was collected with.
+- **Rust `1.86+`** — historical toolchain used when the baseline was collected;
+  the current repository floor for this harness is Rust `1.89`.
 - **Whisper large-v3 GGUF** — converted from the HF safetensors by
   `vokra-cli convert --model whisper --input model.safetensors --output whisper-large-v3.gguf`.
   Verify `sha256sum whisper-large-v3.gguf ==`
@@ -168,14 +180,16 @@ The vast.ai instance lifecycle (create / ssh / destroy / API key) is
 **deliberately not in the shell script**. Per
 `docs/adr/M2-03-followup-rtf.md` (`gitignore-local`) §D7 and the current
 `vast-ai-workflow` skill, the owner drives the
-rent → provision → work → destroy lifecycle from their local machine.
+rent → provision → work → transfer only the required evidence → destroy
+lifecycle from their local machine. The transfer/checksum/manifest evidence
+must be preserved before destruction.
 
 Current shape (adapt offer IDs and SSH details; never commit an API key):
 
 ```bash
 # 1. Rent an RTX 4090 offer with RAM >=64 GB and disk >=200 GB.
-vastai search offers 'gpu_name=RTX_4090 rentable=true' --order dph_total
-vastai create instance <offer-id> \
+scripts/publish/vast-ai/vastai-safe.sh search offers 'gpu_name=RTX_4090 rentable=true' --order dph_total
+scripts/publish/vast-ai/vastai-safe.sh create instance <offer-id> \
   --image nvidia/cuda:12.4.1-devel-ubuntu22.04 --disk 200 --ssh
 
 # 2. SSH in, clone the exact revision, and run the canonical provisioning.
@@ -195,7 +209,7 @@ uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh \
   --output /root/rtf-fa-v2.jsonl
 
 # 4. Copy back only small JSONL/report evidence, then always destroy.
-vastai destroy instance <instance-id>
+scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>
 ```
 
 **Cost estimate** — RTX 4090 spot at ~$0.4/h × 10 min setup + 4 min per

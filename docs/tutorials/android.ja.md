@@ -96,7 +96,7 @@ Android の目標は Whisper base で RTF < 0.7（`NFR-PF-06`）。この数値�
 
 ## Keeping this page current
 
-**最終確認日: 2026-07-21 — `scripts/build-android.sh`（CPU-only, API 24）と
+**最終確認日: 2026-08-30 — `scripts/build-android.sh`（CPU-only, API 24）と
 `godot-crossbuild` の NDK-linker 先例に対して確認。**
 
 - **更新責任**: Android ビルドスクリプト・NDK floor・Vulkan feature 配線を

@@ -79,6 +79,13 @@ Contrast with `integrations/vokra-piper-g2p`, which links a **Rust** G2P
 
 ## Usage
 
+**Execution policy:** this integration has a path dependency on
+`vokra-models`; its `cargo run` recipe compiles the model runtime and then
+executes a real Kokoro model. Run conversion, build, and model execution on
+VAST or another appropriately sized host, not on the 16 GB maintainer Mac.
+The uv environment setup above is the only local preparation expected here;
+this documentation update did not run the model.
+
 ```sh
 # American English with an inline voice name:
 cargo run --release -- \

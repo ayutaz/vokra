@@ -20,7 +20,7 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 - **CC-BY-NC / CC-BY-NC-SA / 学習データ権利不明 → 公式 model zoo から除外**。engine 対応のみ・research flag で weight 非配布（例: F5-TTS = CC-BY-NC 4.0、Fish-Speech = CC-BY-NC-SA 4.0、EnCodec weight = CC-BY-NC）。
 - 商用 OK 候補: DAC(MIT) / Mimi(CC-BY 4.0・**attribution 要**) / WavTokenizer(MIT) / X-Codec2(MIT) / Kokoro(Apache 2.0) / piper-plus(MIT・依頼者作)。
 - **Piper（OHF-Voice/piper1-gpl）は非対応**（GPL-3.0 + eSpeak-NG 二重汚染）。**eSpeak-NG（GPL-3.0）も core 非対応**。
-- **【2026-07-22 訂正】BigVGAN は MIT**（旧記述「NVIDIA Source Code License-NC → 論文からスクラッチ再実装」の**非商用前提は失効**、reference の直接移植が MIT 帰属表示で可能。AGENTS.md §Vocoder chain 参照）。旧「scratch reimpl」の `NOTICE` §1 記述は現在更新済。
+- **【2026-07-22 訂正】BigVGAN は MIT**（旧記述「NVIDIA Source Code License-NC → 論文からスクラッチ再実装」の**非商用前提は失効**、reference の直接移植が MIT 帰属表示で可能。根拠は `docs/license-audit.md` の BigVGAN 行と `NOTICE` §1）。旧「scratch reimpl」の `NOTICE` §1 記述は現在更新済。
 
 ## LicenseClass の SPDX 不整合ケース（converter 側で hard-map）
 
@@ -46,7 +46,7 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 
 `docs/license-audit.md` §3.1 の sign-off 欄は **依頼者（owner）の判断印**。fail-closed default = 空欄のままロックされ続けることが正しい振る舞い。以下 2 条件が **両方揃った時のみ** agent 側で埋めてよい:
 
-1. **依頼者が明示的に「自主判断で埋めてよい」と言った**（session 内の直接発話 or AGENTS.md 記載、暗黙推定は禁止）
+1. **依頼者が明示的に「自主判断で埋めてよい」と言った**（session 内の直接発話、または記入済みの owner sign-off record（例: `docs/license-audit.md` §3.1 の該当欄）による明示許可。既存のガイドや旧文書に許可がないことを暗黙に補わない）
 2. **primary source で license class が clean と確認できた**:
    - upstream repo の LICENSE ファイル本文（GitHub raw、fork の README ではない）
    - authenticated HF API（`hf_hub_download` の meta 経由、README の「license:」だけを信じない）

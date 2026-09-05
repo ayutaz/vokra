@@ -333,8 +333,9 @@ void vokra_aec_ref_writer_destroy(struct vokra_aec_ref_writer_t *writer);
 // - `pcm` / `num_samples`: mono `f32` samples (may be empty). `pcm` may be
 //   `NULL` only when `num_samples == 0`.
 // - `sample_rate`: the PCM sample rate in Hz. It must equal the model's front
-//   end sample rate — Vokra does not resample in M0 (FR-OP-04 is M1); a
-//   mismatch is `VOKRA_ERROR_INVALID_ARGUMENT`.
+//   end sample rate. A mismatch is rejected with
+//   `VOKRA_ERROR_INVALID_ARGUMENT`; callers must resample before calling the
+//   C API.
 // - `out_text_utf8`: on `VOKRA_OK`, receives a NUL-terminated UTF-8 transcript
 //   to be freed with `vokra_string_free`. Untouched on error.
 //

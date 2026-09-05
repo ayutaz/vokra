@@ -45,7 +45,7 @@ fn inputs() -> Option<(String, String)> {
 }
 
 #[test]
-fn released_cpu_encoder_and_tokens_match_official_nemo() {
+fn released_cpu_encoder_and_alsd_tokens_text_match_official_nemo() {
     let Some((gguf, reference)) = inputs() else {
         return;
     };
@@ -62,6 +62,10 @@ fn released_cpu_encoder_and_tokens_match_official_nemo() {
     let pcm = read_f32(&reference.join("pcm.f32"));
     let expected_encoder = read_f32(&reference.join("encoder.f32"));
     let expected_tokens = read_u32(&reference.join("tokens.u32"));
+    let expected_text = std::fs::read_to_string(reference.join("text.txt"))
+        .expect("read official ALSD text")
+        .trim_end_matches(&['\r', '\n'][..])
+        .to_owned();
     assert!(
         !expected_tokens.is_empty(),
         "official tokens must not be empty"
@@ -102,13 +106,20 @@ fn released_cpu_encoder_and_tokens_match_official_nemo() {
             .transcribe_tokens(&pcm)
             .expect("native CPU RNN-T decode"),
         expected_tokens,
-        "greedy emitted token IDs must exactly match official NeMo"
+        "ALSD emitted token IDs must exactly match official NeMo"
+    );
+    assert_eq!(
+        model
+            .transcribe_text(&pcm)
+            .expect("native ALSD text decode"),
+        expected_text,
+        "ALSD decoded text must exactly match official NeMo"
     );
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-fn released_metal_matches_cpu_encoder_and_tokens() {
+fn released_metal_matches_cpu_encoder_and_alsd_tokens_text() {
     let Some((gguf, reference)) = inputs() else {
         return;
     };
@@ -117,6 +128,7 @@ fn released_metal_matches_cpu_encoder_and_tokens() {
     let cpu = ReazonSpeechNemoV2::from_gguf(&file).expect("strict CPU bind");
     let (cpu_encoder, cpu_frames) = cpu.encode_pcm(&pcm).expect("CPU encoder");
     let cpu_tokens = cpu.transcribe_tokens(&pcm).expect("CPU tokens");
+    let cpu_text = cpu.transcribe_text(&pcm).expect("CPU text");
     let metal = cpu.with_backend(vokra_core::BackendKind::Metal);
     let (metal_encoder, metal_frames) = metal.encode_pcm(&pcm).expect("Metal encoder");
     assert_eq!(metal_frames, cpu_frames);
@@ -132,6 +144,11 @@ fn released_metal_matches_cpu_encoder_and_tokens() {
     assert_eq!(
         metal.transcribe_tokens(&pcm).expect("Metal tokens"),
         cpu_tokens,
-        "Metal RNN-T token sequence must match CPU exactly"
+        "Metal ALSD RNN-T token sequence must match CPU exactly"
+    );
+    assert_eq!(
+        metal.transcribe_text(&pcm).expect("Metal text"),
+        cpu_text,
+        "Metal ALSD text must match CPU exactly"
     );
 }

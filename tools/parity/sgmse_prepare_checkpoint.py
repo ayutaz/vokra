@@ -1,261 +1,1680 @@
 #!/usr/bin/env python3
-"""Bridge SpeechBrain SGMSE-VoiceBank ``score_model_ema.ckpt`` → single ``.safetensors``.
+"""Inspect or prepare the official SGMSE-VoiceBank checkpoint.
 
-Offline side-car (FR-LD-05: no Python / PyTorch ever enters the runtime).
-
-# Why this exists
-
-The upstream ``speechbrain/sgmse-voicebank`` HF repo ships a
-``hyperparams.yaml`` (SpeechBrain SGMSEEnhancement pretrainer config) + a
-single ``score_model_ema.ckpt`` (~250 MiB torch pickle, EMA weights of the
-internal NCSN++ v2 score network). The Rust converter
-(``crates/vokra-convert/src/models/sgmse.rs``) consumes **safetensors only**
-(no pickle in the runtime tree — FR-LD-05). This script bridges the two.
-
-Unlike the SepFormer 3-part bundle (``encoder.ckpt`` / ``decoder.ckpt`` /
-``masknet.ckpt``), SGMSE's checkpoint is a **single flat state_dict**: the
-upstream pretrainer maps ``score_model_ema.ckpt`` → the ``score_model`` module
-at load time, but the ``.ckpt`` file itself carries no ``score_model.``
-prefix on its keys (the state_dict is the internal NCSN++ v2 network
-directly). We preserve that flat layout so a future
-``Sgmse::from_gguf`` walks the same NCSN++ v2 tensor names
-(``input_layer.weight``, ``blocks.0.norm1.weight``, etc.) the upstream
-``sgmse`` code reference uses.
-
-# Layout
-
-=========================   ==========  =========================================
-file                        size        payload
-=========================   ==========  =========================================
-``score_model_ema.ckpt``    ~250 MiB    NCSN++ v2 EMA state_dict (torch pickle)
-``hyperparams.yaml``        ~1 KiB      SpeechBrain pretrainer config (advisory)
-=========================   ==========  =========================================
-
-Only ``score_model_ema.ckpt`` is bridged; ``hyperparams.yaml`` is a
-SpeechBrain-side pretrainer config the runtime binder consumes separately
-(the numerical hparams — theta, sigma_min, sigma_max, N, corrector iterations,
-SNR, STFT n_fft/hop — will land as ``vokra.sgmse.*`` GGUF chunks in the
-follow-up runtime wave, not through this bridge).
-
-Precedent: ``nemo_pt_to_safetensors.py`` (single-file .pt/.nemo → safetensors,
-handles ``.ckpt`` uniformly) + ``sepformer_prepare_checkpoint.py``
-(SpeechBrain-family torch_recovery unwrap). This script is the single-file
-cousin — same INT-dtype filter, same ``.stripped-manifest.json`` sidecar,
-same fail-loud posture.
-
-# Usage
-
-::
-
-    uv run --project tools/parity python tools/parity/sgmse_prepare_checkpoint.py \\
-        --ckpt /path/to/sgmse-voicebank/score_model_ema.ckpt \\
-        --output /tmp/sgmse-voicebank.safetensors \\
-        [--allow-strip-any]
-
-# Determinism
-
-Keys are ordered by ``torch.load`` state_dict iteration order (Python dict
-preserves insertion order since 3.7, and ``torch.load(weights_only=True)``
-is deterministic). Identical ``--ckpt`` input produces byte-identical
-output (safetensors serialization is deterministic for fixed key ordering).
-
-# Redistribution
-
-Upstream weight license is ``apache-2.0`` (SpeechBrain family) — see
-``docs/license-audit.md`` §3.1 row "SGMSE-VoiceBank
-(``speechbrain/sgmse-voicebank``)", ☑ Commercial 2026-08-04 yousan.
+The HF checkpoint is an untrusted pickle container.  Only
+``torch.load(weights_only=True)`` is attempted; SpeechBrain custom classes and
+any unsafe pickle fallback are intentionally forbidden.  This sidecar writes
+an evidence manifest.  The separate ``--prepare`` path is VAST-only in the
+caller and emits a deterministic safetensors file plus an authenticated
+sidecar from the reviewed typed contract fixture.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
+import os
+import re
+import struct
+import subprocess
 import sys
+import tempfile
+import zlib
 from pathlib import Path
 from typing import Any
 
-# Mirrors the classification in ``nemo_pt_to_safetensors.py`` +
-# ``sepformer_prepare_checkpoint.py``. INT dtypes come from BatchNorm
-# ``num_batches_tracked`` counters and similar training artefacts — safe to
-# strip. Any dtype outside both sets is refused unless --allow-strip-any is
-# passed (fail-loud posture: the runtime forward path would refuse them
-# anyway).
-INT_DTYPES = {
-    "torch.int8", "torch.int16", "torch.int32", "torch.int64",
-    "torch.uint8", "torch.uint16", "torch.uint32", "torch.uint64",
-    "torch.bool",
+
+MODEL_REPOSITORY = "speechbrain/sgmse-voicebank"
+MODEL_REVISION = "8f4ff7b65284c49492a43349b8106e094ac0d365"
+CHECKPOINT_NAME = "score_model_ema.ckpt"
+CHECKPOINT_SIZE = 262_593_305
+CHECKPOINT_SHA256 = "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3"
+SOURCE_REPOSITORY = "https://github.com/sp-uhh/sgmse.git"
+SOURCE_REVISION = "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
+SOURCE_LICENSE_SPDX = "mit"
+SOURCE_LICENSE_SHA256 = "8748956d2e5afe9dfc8311188b4119dacc7c5293b0561e7cca7a21cf80e54caa"
+SPEECHBRAIN_REPOSITORY = "https://github.com/speechbrain/speechbrain.git"
+SPEECHBRAIN_REVISION = "2b3f4f44351fd08a627c4ab307de5c420351bc19"
+SPEECHBRAIN_VERSION = "1.0.3"
+SPEECHBRAIN_LICENSE_SHA256 = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+SPEECHBRAIN_SDIST_SHA256 = "fcab3c6e90012cecb1eed40ea235733b550137e73da6bfa2340ba191ec714052"
+SPEECHBRAIN_WHEEL_SHA256 = "9859d4c1b1fb3af3b85523c0c89f52e45a04f305622ed55f31aa32dd2fba19e9"
+EXECUTABLE_SPEECHBRAIN_FILES = (
+    "speechbrain/integrations/models/sgmse_plus.py",
+    "speechbrain/inference/enhancement.py",
+)
+EXECUTABLE_SPEECHBRAIN_MARKERS = {
+    "speechbrain/integrations/models/sgmse_plus.py": ("class ScoreModel",),
+    "speechbrain/inference/enhancement.py": ("class SGMSEEnhancement", "enhance_batch"),
 }
-KEEP_DTYPES = {"torch.float32", "torch.float16", "torch.bfloat16"}
+ALGORITHM_SOURCE_ROLES = {
+    "score_model": ("class ScoreModel", "ScoreModel("),
+    "ncsnpp": ("NCSNpp", "ncsnpp_v2"),
+    "sde": ("OUVESDE", "SDERegistry"),
+    "sampler_predictor": ("reverse_diffusion",),
+    "sampler_corrector": ("ald", "CorrectorRegistry"),
+}
+ALGORITHM_SOURCE_FIXED_FILES = {
+    "sampler_predictor": "sgmse/sampling/predictors.py",
+    "sampler_corrector": "sgmse/sampling/correctors.py",
+}
+LOCKED_DISTRIBUTION_BLOCKER = "BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION"
+# The first VAST wave is an inspection, not a parity run.  Keep the missing
+# independent reference explicit in the JSON evidence instead of allowing a
+# safe-loaded checkpoint to look like a numerical validation.
+REFERENCE_BLOCKER = "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE"
+EMA_SELECTION_BLOCKER = "BLOCKED_EMA_SELECTION_UNVERIFIED"
+# A raw safe-loaded name/shape list does not identify which NCSN++ ModuleList
+# entry owns a tensor.  Keep this separate from the generic authenticated
+# manifest gate so the next VAST run has a machine-readable request for the
+# missing source construction proof.
+TENSOR_MAPPING_BLOCKER = "BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN"
+SOURCE_MAPPING_REVIEW_FORMAT = "vokra-sgmse-source-mapping-review-v1"
+TYPED_TENSOR_CONTRACT_FORMAT = "vokra-sgmse-typed-role-manifest-v2"
+TYPED_CANDIDATE_STATUS = "INSPECTION_CANDIDATE"
+PREPARED_FORMAT = "vokra-sgmse-voicebank-prepared-v1"
+TYPED_CONTRACT_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "sgmse_voicebank_typed_contract_v1.json"
+)
+# Compiled from the independently reviewed VAST reference manifest.  A caller
+# supplied contract must match this authority after its rows are re-derived.
+REVIEWED_TENSOR_MANIFEST_SHA256 = "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c"
+CONTRACT_MAX_BASE64_BYTES = 128 * 1024
+CONTRACT_MAX_COMPRESSED_BYTES = 96 * 1024
+CONTRACT_MAX_DECOMPRESSED_BYTES = 512 * 1024
+TYPED_FIXED_ROLES = {
+    "fourier_frequencies",
+    "sigma_first_projection",
+    "sigma_first_bias",
+    "sigma_second_projection",
+    "sigma_second_bias",
+}
+TYPED_STAGE_KINDS = {
+    "input",
+    "residual",
+    "attention",
+    "downsample",
+    "upsample",
+    "progressive_output",
+    "progressive_input",
+    "middle",
+    "output",
+}
+TYPED_STAGE_SLOTS = {
+    "weight",
+    "bias",
+    "norm_gamma",
+    "norm_beta",
+}
+TYPED_STAGE_MODULES = {
+    "input": {"input_projection"},
+    "residual": {
+        "residual_norm1",
+        "residual_conv1",
+        "residual_time_embedding",
+        "residual_norm2",
+        "residual_conv2",
+        "residual_skip",
+    },
+    "attention": {
+        "attention_norm",
+        "attention_query",
+        "attention_key",
+        "attention_value",
+        "attention_output",
+    },
+    "downsample": {
+        "residual_norm1",
+        "residual_conv1",
+        "residual_time_embedding",
+        "residual_norm2",
+        "residual_conv2",
+        "residual_skip",
+    },
+    "upsample": {
+        "residual_norm1",
+        "residual_conv1",
+        "residual_time_embedding",
+        "residual_norm2",
+        "residual_conv2",
+        "residual_skip",
+    },
+    "progressive_output": {"progressive_output", "progressive_output_norm"},
+    "progressive_input": {"progressive_input"},
+    "middle": {
+        "residual_norm1",
+        "residual_conv1",
+        "residual_time_embedding",
+        "residual_norm2",
+        "residual_conv2",
+        "residual_skip",
+    },
+    "output": {"output_projection"},
+}
+LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS = {
+    "speechbrain/integrations/models/sgmse_plus.py": {
+        "present": False,
+        "required_markers": {},
+    },
+    "speechbrain/inference/enhancement.py": {
+        "present": True,
+        "required_markers": {"class SGMSEEnhancement": False},
+    },
+}
+# The authenticated fixed HF revision contains exactly these two companions;
+# example.wav is not present in that snapshot and must not be downloaded or
+# treated as evidence.
+COMPANION_FILES = ("README.md", ".gitattributes")
+
+CONFIG_PATTERNS = {
+    "sample_rate": r"^sample_rate:\s*16000\s*$",
+    "n_fft": r"^n_fft:\s*510\s*$",
+    "hop_length": r"^hop_length:\s*128\s*$",
+    "window_type": r"^window_type:\s*hann\s*$",
+    "sampler_type": r"^\s*sampler_type:\s*pc\s*$",
+    "predictor": r"^\s*predictor:\s*reverse_diffusion\s*$",
+    "corrector": r"^\s*corrector:\s*ald\s*$",
+    "steps": r"^\s*N:\s*30\s*$",
+    "corrector_steps": r"^\s*corrector_steps:\s*1\s*$",
+    "snr": r"^\s*snr:\s*0\.5\s*$",
+    "score_model": r"!new:speechbrain\.integrations\.models\.sgmse_plus\.ScoreModel",
+    "backbone": r"^\s*backbone:\s*ncsnpp_v2\s*$",
+    "sde": r"^\s*sde:\s*ouve\s*$",
+    "theta": r"^\s*theta:\s*1\.5\s*$",
+    "sigma_min": r"^\s*sigma_min:\s*0\.05\s*$",
+    "sigma_max": r"^\s*sigma_max:\s*0\.5\s*$",
+    "ema_decay": r"^\s*ema_decay:\s*0\.999\s*$",
+    "network_scaling": r"^\s*network_scaling:\s*1/t\s*$",
+    "c_in": r"^\s*c_in:\s*['\"]?1['\"]?\s*$",
+    "c_out": r"^\s*c_out:\s*['\"]?1['\"]?\s*$",
+    "c_skip": r"^\s*c_skip:\s*['\"]?0['\"]?\s*$",
+    "sigma_data": r"^\s*sigma_data:\s*0\.1\s*$",
+}
 
 
-def _flatten(prefix: str, obj: Any) -> dict:
-    """Flatten a nested dict into dotted-key ``{name: Tensor}``.
-
-    SpeechBrain's ``torch_recovery`` normally pickles a flat state_dict, but
-    some Lightning-style forks / EMA wrappers wrap it as
-    ``{"state_dict": {...}}`` or ``{"ema_state_dict": {...}}`` — this walk
-    handles both without special-casing the wrapper name (the unwrap
-    happens in ``_load_ckpt`` before this walk is invoked).
-    """
-    import torch
-
-    out: dict = {}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            key = f"{prefix}.{k}" if prefix else str(k)
-            out.update(_flatten(key, v))
-    elif isinstance(obj, torch.Tensor):
-        out[prefix] = obj
-    # else: silently drop non-Tensor scalars/arrays — safetensors would
-    # refuse them anyway; the runtime doesn't need them (EMA decay float,
-    # step counter, etc).
-    return out
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _load_ckpt(path: Path) -> dict:
-    """Load ``score_model_ema.ckpt`` and return a flat ``{name: Tensor}``.
+def _reject_symlink_ancestry(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    for ancestor in (absolute, *absolute.parents):
+        if ancestor.is_symlink():
+            raise ValueError(f"path has symlink ancestry: {path}")
 
-    Fail-loud on any load failure OR on a payload that yields zero tensors —
-    better a hard exit than a silently-empty GGUF with a valid header but no
-    weights (the classic "silent partial" trap this project bans).
-    """
-    import torch
 
+def _require_absent_regular(path: Path, label: str) -> None:
+    _reject_symlink_ancestry(path)
+    if path.exists() or path.is_symlink():
+        raise ValueError(f"{label} must be absent: {path}")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _decode_contract_rows(encoded_rows: Any) -> Any:
+    if not isinstance(encoded_rows, str) or len(encoded_rows) > CONTRACT_MAX_BASE64_BYTES:
+        raise ValueError("SGMSE contract base64 payload exceeds the fixed limit")
     try:
-        raw = torch.load(str(path), map_location="cpu", weights_only=True)
-    except Exception as exc:  # noqa: BLE001
-        sys.exit(f"torch.load({path!s}, weights_only=True) failed: {exc}")
-
-    # Common Lightning-style / EMA-wrapper unwrap. SpeechBrain's default
-    # ``torch_recovery`` writes the flat state_dict; forks that wrap it are
-    # rare but do exist in the wild. We deliberately do NOT prepend a
-    # `score_model.` prefix — the upstream pretrainer adds that at load
-    # time, but the .ckpt file itself carries the internal NCSN++ v2
-    # network's names verbatim, and the Rust converter preserves them.
-    if isinstance(raw, dict):
-        for wrapper in ("state_dict", "model_state_dict", "model", "module", "ema_state_dict"):
-            inner = raw.get(wrapper)
-            if isinstance(inner, dict) and inner:
-                sample = next(iter(inner.values()), None)
-                if hasattr(sample, "dtype") and hasattr(sample, "shape"):
-                    print(f"  unwrapped ['{wrapper}']")
-                    raw = inner
-                    break
-
-    flat = _flatten("", raw)
-    if not flat:
-        sys.exit(
-            f"{path!s} yielded no tensors — expected an NCSN++ v2 state_dict "
-            f"pickled by SpeechBrain's SGMSE pretrainer (see "
-            f"upstream `hyperparams.yaml` `score_model:` block)."
-        )
-    return flat
-
-
-def _partition(sd: dict, allow_strip_any: bool):
-    """Split into ``(kept, dropped_int, unknown_other)`` — same taxonomy the
-    ``nemo_pt_to_safetensors.py`` + ``sepformer_prepare_checkpoint.py``
-    precedents use."""
-    kept: dict = {}
-    dropped: list[tuple[str, str, list[int]]] = []
-    unknown: list[tuple[str, str, list[int]]] = []
-    for name, t in sd.items():
-        if not hasattr(t, "dtype") or not hasattr(t, "shape"):
-            continue
-        dtype_s = str(t.dtype)
-        if dtype_s in KEEP_DTYPES:
-            if hasattr(t, "contiguous"):
-                t = t.contiguous()
-            if hasattr(t, "detach"):
-                t = t.detach()
-            kept[name] = t
-        elif dtype_s in INT_DTYPES:
-            dropped.append((name, dtype_s, list(t.shape)))
-        else:
-            unknown.append((name, dtype_s, list(t.shape)))
-    return kept, dropped, unknown
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        description=(
-            "Bridge SpeechBrain SGMSE-VoiceBank score_model_ema.ckpt → single .safetensors"
-        ),
-    )
-    ap.add_argument(
-        "--ckpt", required=True, type=Path,
-        help=(
-            "path to score_model_ema.ckpt — typically fetched via "
-            "`huggingface-cli download speechbrain/sgmse-voicebank score_model_ema.ckpt`."
-        ),
-    )
-    ap.add_argument(
-        "--output", required=True, type=Path,
-        help="destination .safetensors path (parent will be mkdir'd).",
-    )
-    ap.add_argument(
-        "--allow-strip-any", action="store_true",
-        help="also strip fp64 / complex tensors (default: refuse them loudly).",
-    )
-    args = ap.parse_args()
-
+        compressed = base64.b64decode(encoded_rows, validate=True)
+    except (ValueError, UnicodeError) as error:
+        raise ValueError(f"SGMSE contract base64 payload is invalid: {error}") from error
+    if len(compressed) > CONTRACT_MAX_COMPRESSED_BYTES:
+        raise ValueError("SGMSE contract compressed payload exceeds the fixed limit")
+    decompressor = zlib.decompressobj()
     try:
-        from safetensors.torch import save_file
-        import torch  # noqa: F401
-    except ImportError as exc:
-        print(
-            f"missing dep {exc}. run: uv sync (from tools/parity/)",
-            file=sys.stderr,
+        decoded = decompressor.decompress(compressed, CONTRACT_MAX_DECOMPRESSED_BYTES + 1)
+        if decompressor.unconsumed_tail:
+            raise ValueError("SGMSE contract decompressed payload exceeds the fixed limit")
+        tail = decompressor.flush()
+        if len(decoded) + len(tail) > CONTRACT_MAX_DECOMPRESSED_BYTES:
+            raise ValueError("SGMSE contract decompressed payload exceeds the fixed limit")
+        decoded += tail
+    except zlib.error as error:
+        raise ValueError(f"SGMSE contract compressed payload is invalid: {error}") from error
+    if len(decoded) > CONTRACT_MAX_DECOMPRESSED_BYTES:
+        raise ValueError("SGMSE contract decompressed payload exceeds the fixed limit")
+    if not decompressor.eof or decompressor.unused_data or decompressor.unconsumed_tail:
+        raise ValueError("SGMSE contract compressed payload is incomplete or has trailing data")
+    try:
+        return json.loads(decoded, object_pairs_hook=_reject_duplicate_json_keys)
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"SGMSE contract rows JSON is invalid: {error}") from error
+
+
+def _validate_fixture_contract(contract: Any) -> tuple[list[dict[str, Any]], str]:
+    """Validate the committed contract without trusting its digest declaration."""
+    if not isinstance(contract, dict) or set(contract) != {
+        "format", "repository", "model_revision", "source_repository",
+        "source_revision", "checkpoint", "container_path", "tensor_count",
+        "typed_manifest_sha256", "rows_zlib_base64",
+    }:
+        raise ValueError("SGMSE contract fixture has unknown or missing keys")
+    if contract["format"] != "vokra-sgmse-typed-contract-v1":
+        raise ValueError("SGMSE contract fixture format mismatch")
+    if contract["repository"] != MODEL_REPOSITORY or contract["model_revision"] != MODEL_REVISION:
+        raise ValueError("SGMSE contract model identity mismatch")
+    if contract["source_repository"] != SOURCE_REPOSITORY or contract["source_revision"] != SOURCE_REVISION:
+        raise ValueError("SGMSE contract source identity mismatch")
+    checkpoint = contract["checkpoint"]
+    if not isinstance(checkpoint, dict) or set(checkpoint) != {"filename", "size", "sha256"}:
+        raise ValueError("SGMSE contract checkpoint schema mismatch")
+    if checkpoint != {
+        "filename": CHECKPOINT_NAME, "size": CHECKPOINT_SIZE, "sha256": CHECKPOINT_SHA256
+    }:
+        raise ValueError("SGMSE contract checkpoint identity mismatch")
+    if contract["container_path"] != "<root>" or contract["tensor_count"] != 647:
+        raise ValueError("SGMSE contract tensor-container metadata mismatch")
+    encoded_rows = contract["rows_zlib_base64"]
+    if not isinstance(encoded_rows, str):
+        raise ValueError("SGMSE contract rows encoding is not a string")
+    rows = _decode_contract_rows(encoded_rows)
+    if not isinstance(rows, list):
+        raise ValueError("SGMSE contract rows are not a list")
+    roles = [row.get("role") for row in rows if isinstance(row, dict)]
+    validate_typed_manifest_rows(rows, roles)
+    if len(rows) != contract["tensor_count"]:
+        raise ValueError("SGMSE contract tensor count mismatch")
+    digest = typed_manifest_sha256(rows, roles)
+    declared = contract["typed_manifest_sha256"]
+    if (
+        not isinstance(declared, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", declared)
+        or declared != digest
+        or declared != REVIEWED_TENSOR_MANIFEST_SHA256
+    ):
+        raise ValueError("SGMSE contract typed manifest digest mismatch")
+    return rows, digest
+
+
+def load_contract(path: Path = TYPED_CONTRACT_FIXTURE) -> tuple[list[dict[str, Any]], str]:
+    _reject_symlink_ancestry(path)
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"SGMSE contract fixture is missing: {path}")
+    try:
+        contract = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
         )
-        return 2
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"SGMSE contract fixture cannot be read: {error}") from error
+    return _validate_fixture_contract(contract)
 
-    ckpt: Path = args.ckpt
-    if not ckpt.is_file():
-        print(f"--ckpt must be an existing file: {ckpt}", file=sys.stderr)
-        return 2
 
-    print(f"  loading {ckpt.name} ({ckpt.stat().st_size:,} bytes)")
-    sd = _load_ckpt(ckpt)
-
-    kept, dropped, unknown = _partition(sd, args.allow_strip_any)
-
-    if unknown and not args.allow_strip_any:
-        first = [(n, d, s) for n, d, s in unknown[:3]]
-        print(
-            f"refusing to drop {len(unknown)} tensors of unknown dtype "
-            f"(first 3: {first}); re-run with --allow-strip-any if verified "
-            f"inference-inert.",
-            file=sys.stderr,
-        )
-        return 3
-
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    save_file(kept, str(args.output))
-
-    manifest = {
-        "input": str(ckpt),
-        "output": str(args.output),
-        "kept_count": len(kept),
-        "dropped_count": len(dropped),
-        "dropped_tensors": [
-            {"name": n, "dtype": d, "shape": s} for n, d, s in dropped
-        ],
-        "unknown_stripped": (
-            [{"name": n, "dtype": d, "shape": s} for n, d, s in unknown]
-            if args.allow_strip_any else []
-        ),
+def _validate_prepared_sidecar(sidecar: Any, rows: list[dict[str, Any]], digest: str) -> None:
+    expected_keys = {
+        "format", "repository", "model_revision", "source_repository", "source_revision",
+        "checkpoint_filename", "checkpoint_size", "checkpoint_sha256", "prepared_sha256",
+        "tensor_count", "typed_manifest_sha256", "tensor_rows",
     }
-    manifest_path = args.output.with_suffix(args.output.suffix + ".stripped-manifest.json")
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    if not isinstance(sidecar, dict) or set(sidecar) != expected_keys:
+        raise ValueError("SGMSE prepared sidecar has unknown or missing keys")
+    if sidecar["format"] != PREPARED_FORMAT or sidecar["repository"] != MODEL_REPOSITORY:
+        raise ValueError("SGMSE prepared sidecar format/model mismatch")
+    if sidecar["model_revision"] != MODEL_REVISION or sidecar["source_repository"] != SOURCE_REPOSITORY or sidecar["source_revision"] != SOURCE_REVISION:
+        raise ValueError("SGMSE prepared sidecar revision mismatch")
+    if sidecar["checkpoint_filename"] != CHECKPOINT_NAME or sidecar["checkpoint_size"] != CHECKPOINT_SIZE or sidecar["checkpoint_sha256"] != CHECKPOINT_SHA256:
+        raise ValueError("SGMSE prepared sidecar checkpoint identity mismatch")
+    if sidecar["tensor_count"] != len(rows) or sidecar["typed_manifest_sha256"] != digest or sidecar["tensor_rows"] != rows:
+        raise ValueError("SGMSE prepared sidecar tensor contract mismatch")
+    if not isinstance(sidecar["prepared_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", sidecar["prepared_sha256"]):
+        raise ValueError("SGMSE prepared sidecar prepared SHA-256 is malformed")
 
-    print(
-        f"sgmse_prepare_checkpoint: kept {len(kept)}, "
-        f"dropped {len(dropped)} int, "
-        f"stripped {len(unknown) if args.allow_strip_any else 0} unknown; "
-        f"manifest -> {manifest_path.name}"
-    )
+
+def prepare_checkpoint(
+    ckpt: Path,
+    output: Path,
+    sidecar: Path,
+    contract_path: Path,
+) -> int:
+    """Prepare the one reviewed checkpoint; intended for the VAST wrapper."""
+    _reject_symlink_ancestry(ckpt)
+    if ckpt.name != CHECKPOINT_NAME or not ckpt.is_file() or ckpt.is_symlink():
+        raise ValueError("fixed SGMSE checkpoint must be a regular score_model_ema.ckpt")
+    if ckpt.stat().st_size != CHECKPOINT_SIZE or sha256(ckpt) != CHECKPOINT_SHA256:
+        raise ValueError("fixed checkpoint size/SHA-256 mismatch")
+    _require_absent_regular(output, "prepared output")
+    _require_absent_regular(sidecar, "sidecar")
+    if output == sidecar or output.resolve() == sidecar.resolve() or output.resolve() == ckpt.resolve() or sidecar.resolve() == ckpt.resolve():
+        raise ValueError("checkpoint and outputs must be distinct")
+    if output.parent != sidecar.parent:
+        raise ValueError("prepared output and sidecar must share a directory")
+    rows, digest = load_contract(contract_path)
+    import torch
+    from safetensors.torch import save_file
+
+    raw = torch.load(str(ckpt), map_location="cpu", weights_only=True)
+    candidates = _tensor_map_candidates(raw)
+    if len(candidates) != 1 or candidates[0][0] != "<root>":
+        raise ValueError("checkpoint tensor map route is not the reviewed root map")
+    state_dict = candidates[0][1]
+    expected_names = {row["name"] for row in rows}
+    if set(state_dict) != expected_names or len(state_dict) != len(expected_names):
+        raise ValueError("checkpoint tensor names do not exactly match the reviewed contract")
+    prepared: dict[str, torch.Tensor] = {}
+    for row in rows:
+        tensor = state_dict[row["name"]]
+        expected_dtype = row["dtype"].removeprefix("torch.")
+        if str(tensor.dtype) != row["dtype"] or list(tensor.shape) != row["shape"]:
+            raise ValueError(f"tensor {row['name']!r} dtype/shape mismatch")
+        if not bool(torch.isfinite(tensor).all().item()):
+            raise ValueError(f"tensor {row['name']!r} contains non-finite values")
+        if expected_dtype not in {"float32", "float16", "bfloat16"}:
+            raise ValueError(f"tensor {row['name']!r} has unsupported dtype")
+        prepared[row["name"]] = tensor.detach().cpu().contiguous()
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary: list[Path] = []
+    published: list[Path] = []
+    try:
+        with tempfile.NamedTemporaryFile(dir=output.parent, prefix=f".{output.name}.", suffix=".tmp", delete=False) as handle:
+            temporary_output = Path(handle.name)
+        temporary.append(temporary_output)
+        save_file(prepared, str(temporary_output), metadata={"vokra.sgmse.typed_manifest_sha256": digest})
+        with temporary_output.open("rb") as handle:
+            os.fsync(handle.fileno())
+        prepared_digest = sha256(temporary_output)
+        sidecar_payload = {
+            "format": PREPARED_FORMAT,
+            "repository": MODEL_REPOSITORY,
+            "model_revision": MODEL_REVISION,
+            "source_repository": SOURCE_REPOSITORY,
+            "source_revision": SOURCE_REVISION,
+            "checkpoint_filename": CHECKPOINT_NAME,
+            "checkpoint_size": CHECKPOINT_SIZE,
+            "checkpoint_sha256": CHECKPOINT_SHA256,
+            "prepared_sha256": prepared_digest,
+            "tensor_count": len(rows),
+            "typed_manifest_sha256": digest,
+            "tensor_rows": rows,
+        }
+        _validate_prepared_sidecar(sidecar_payload, rows, digest)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=sidecar.parent, prefix=f".{sidecar.name}.", suffix=".tmp", delete=False) as handle:
+            temporary_sidecar = Path(handle.name)
+            temporary.append(temporary_sidecar)
+            handle.write(json.dumps(sidecar_payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        for temporary_path, destination in ((temporary_output, output), (temporary_sidecar, sidecar)):
+            try:
+                os.link(temporary_path, destination)
+            except FileExistsError as error:
+                raise ValueError(f"output appeared concurrently: {destination}") from error
+            published.append(destination)
+        directory_fd = os.open(output.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        for path in published:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        for path in temporary:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    print(f"prepared {len(rows)} tensors: {output}")
+    print(f"prepared_sha256={prepared_digest}")
     return 0
 
 
+def write_manifest_no_replace(path: Path, payload: dict[str, Any]) -> None:
+    """Publish inspection evidence atomically without replacing prior evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        raise ValueError(f"inspection manifest already exists: {path}")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as error:
+            raise ValueError(f"inspection manifest appeared concurrently: {path}") from error
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def config_facts(text: str) -> tuple[dict[str, bool], list[str]]:
+    facts = {name: re.search(pattern, text, re.MULTILINE) is not None for name, pattern in CONFIG_PATTERNS.items()}
+    return facts, [name for name, present in facts.items() if not present]
+
+
+def tensor_contract_status(loaded: dict[str, Any]) -> str:
+    """Return the only safe status a checkpoint tensor contract may claim.
+
+    A successful ``weights_only`` load is not, by itself, native-model
+    authentication.  The native binder remains closed until this inspector's
+    concrete tensor manifest has been reviewed and bound to the model schema.
+    """
+    if loaded.get("safe_load_status") != "SAFE_LOADED":
+        return "AUTHENTICATED_MANIFEST_REQUIRED"
+    manifest = loaded.get("tensor_manifest")
+    if not isinstance(manifest, dict) or not manifest:
+        return "AUTHENTICATED_MANIFEST_REQUIRED"
+    bindings = loaded.get("typed_bindings")
+    required_roles = loaded.get("typed_required_roles")
+    if (
+        REVIEWED_TENSOR_MANIFEST_SHA256 is not None
+        and isinstance(bindings, list)
+        and bindings
+        and isinstance(required_roles, list)
+        and _reviewed_typed_binding(loaded, bindings, required_roles)
+    ):
+        return "SAFE_LOADED_TYPED_MANIFEST"
+    return "SAFE_LOADED_MANIFEST"
+
+
+def valid_typed_role(role: Any) -> bool:
+    """Accept only the native binder's closed role vocabulary.
+
+    The tensor *name* is still supplied by the reviewed checkpoint manifest;
+    this parser deliberately does not normalize or invent source names.
+    """
+    if isinstance(role, str) and role in TYPED_FIXED_ROLES:
+        return True
+    if not isinstance(role, str) or not role.startswith("stage:"):
+        return False
+    fields = role.split(":")
+    if len(fields) != 6:
+        return False
+    _, index, kind, block, module, slot = fields
+    if (
+        not index.isascii()
+        or not index.isdecimal()
+        or not block.isascii()
+        or not block.isdecimal()
+        or kind not in TYPED_STAGE_KINDS
+        or module not in TYPED_STAGE_MODULES.get(kind, set())
+        or slot not in TYPED_STAGE_SLOTS
+    ):
+        return False
+    norm_modules = {
+        "residual_norm1",
+        "residual_norm2",
+        "attention_norm",
+        "progressive_output_norm",
+    }
+    if module in norm_modules:
+        return slot in {"norm_gamma", "norm_beta"}
+    return slot in {"weight", "bias"}
+
+
+def validate_typed_manifest_rows(
+    rows: Any,
+    required_roles: Any,
+) -> None:
+    """Validate exact typed rows before a future GGUF writer can use them."""
+    if not isinstance(rows, list) or not isinstance(required_roles, list) or not required_roles:
+        raise ValueError("typed SGMSE manifest requires non-empty row and role lists")
+    if any(not isinstance(role, str) for role in required_roles):
+        raise ValueError("typed SGMSE required roles must be strings")
+    if len(set(required_roles)) != len(required_roles) or len(rows) != len(required_roles):
+        raise ValueError("typed SGMSE manifest role set is duplicate or incomplete")
+    if any(not valid_typed_role(role) for role in required_roles):
+        raise ValueError("typed SGMSE required roles contain an unknown structural role")
+    expected = set(required_roles)
+    names: set[str] = set()
+    roles: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("typed SGMSE manifest row is not an object")
+        name = row.get("name")
+        role = row.get("role")
+        shape = row.get("shape")
+        dtype = row.get("dtype")
+        dimensions = row.get("dimensions")
+        if (
+            set(row) != {"name", "role", "dtype", "shape", "dimensions"}
+            or not isinstance(name, str)
+            or not name
+            or any(ord(character) < 32 or ord(character) == 127 or character == "|" for character in name)
+            or name in names
+            or not isinstance(role, str)
+            or role in roles
+            or role not in expected
+            or not valid_typed_role(role)
+            or dtype not in {"torch.float32", "torch.float16", "torch.bfloat16"}
+            or not isinstance(shape, list)
+            or not shape
+            or any(not isinstance(axis, int) or isinstance(axis, bool) or axis <= 0 for axis in shape)
+            or not isinstance(dimensions, list)
+            or any(
+                not isinstance(axis, int) or isinstance(axis, bool) or axis <= 0
+                for axis in dimensions
+            )
+            or dimensions != list(reversed(shape))
+        ):
+            raise ValueError("typed SGMSE manifest row is duplicate, unknown, or malformed")
+        names.add(name)
+        roles.add(role)
+    if roles != expected:
+        raise ValueError("typed SGMSE manifest has missing or extra roles")
+
+
+def _dtype_tag(dtype: Any) -> int:
+    return {
+        "torch.float32": 0,
+        "torch.float16": 1,
+        "torch.bfloat16": 30,
+    }.get(dtype, -1)
+
+
+def typed_manifest_sha256(rows: Any, required_roles: Any) -> str:
+    """Hash rows exactly as ``SgmseTensorManifest::canonical_sha256``.
+
+    Framing is role bytes + NUL + exact name bytes + NUL + little-endian
+    GGML dtype tag + little-endian rank + little-endian GGUF dimensions, with
+    rows sorted by exact tensor name.  Source ``shape`` is PyTorch outermost
+    first; explicit ``dimensions`` is its reversed GGUF order.  The digest is
+    the only release authority; callers cannot choose an expected value.
+    """
+    validate_typed_manifest_rows(rows, required_roles)
+    canonical = bytearray()
+    for row in sorted(rows, key=lambda item: item["name"]):
+        canonical.extend(row["role"].encode("utf-8"))
+        canonical.append(0)
+        canonical.extend(row["name"].encode("utf-8"))
+        canonical.append(0)
+        canonical.extend(struct.pack("<I", _dtype_tag(row["dtype"])))
+        dimensions = row["dimensions"]
+        canonical.extend(struct.pack("<Q", len(dimensions)))
+        for dimension in dimensions:
+            canonical.extend(struct.pack("<Q", dimension))
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def derive_typed_binding_candidates(
+    source_records: Any,
+    tensor_manifest: Any,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Derive a closed candidate map from source-construction records.
+
+    ``source_records`` must be emitted by the pinned NCSN++ construction walk:
+    each stage row carries the exact state name, structural
+    stage/module/slot, dtype, and shape observed from ``named_parameters``;
+    fixed Fourier/sigma rows use the closed ``fixed_role`` vocabulary.  This
+    helper does not guess from prefixes or ordinals and never turns a
+    candidate into an authority; the reviewed digest gate remains separate.
+    """
+    if not isinstance(source_records, list) or not source_records:
+        raise ValueError("typed SGMSE source construction records are empty")
+    if not isinstance(tensor_manifest, dict) or not tensor_manifest:
+        raise ValueError("typed SGMSE safe-loaded tensor manifest is empty")
+    rows: list[dict[str, Any]] = []
+    names: set[str] = set()
+    roles: set[str] = set()
+    for record in source_records:
+        if not isinstance(record, dict):
+            raise ValueError("typed SGMSE source record is not a complete structural row")
+        stage_keys = {
+            "name", "stage_index", "kind", "block", "module", "slot", "dtype", "shape"
+        }
+        fixed_keys = {"name", "fixed_role", "dtype", "shape"}
+        if set(record) not in (stage_keys, fixed_keys):
+            raise ValueError("typed SGMSE source record is not a complete structural row")
+        name = record["name"]
+        dtype = record["dtype"]
+        shape = record["shape"]
+        if (
+            not isinstance(name, str)
+            or not name
+            or any(ord(character) < 32 or ord(character) == 127 or character == "|" for character in name)
+            or name in names
+            or dtype not in {"torch.float32", "torch.float16", "torch.bfloat16"}
+            or not isinstance(shape, list)
+            or not shape
+            or any(not isinstance(axis, int) or isinstance(axis, bool) or axis <= 0 for axis in shape)
+        ):
+            raise ValueError("typed SGMSE source record is malformed or unknown")
+        if set(record) == fixed_keys:
+            role = record["fixed_role"]
+            if role not in TYPED_FIXED_ROLES:
+                raise ValueError("typed SGMSE source record has an unknown fixed role")
+        else:
+            stage_index = record["stage_index"]
+            kind = record["kind"]
+            block = record["block"]
+            module = record["module"]
+            slot = record["slot"]
+            if (
+                not isinstance(stage_index, int)
+                or isinstance(stage_index, bool)
+                or stage_index < 0
+                or not isinstance(block, int)
+                or isinstance(block, bool)
+                or block < 0
+                or not isinstance(kind, str)
+                or kind not in TYPED_STAGE_KINDS
+                or not isinstance(module, str)
+                or not isinstance(slot, str)
+                or module not in TYPED_STAGE_MODULES.get(kind, set())
+            ):
+                raise ValueError("typed SGMSE source record has unknown structural fields")
+            role = f"stage:{stage_index}:{kind}:{block}:{module}:{slot}"
+        if not valid_typed_role(role) or role in roles:
+            raise ValueError("typed SGMSE source records contain a duplicate or invalid role")
+        descriptor = tensor_manifest.get(name)
+        if (
+            not isinstance(descriptor, dict)
+            or descriptor.get("shape") != shape
+            or descriptor.get("dtype") != dtype
+        ):
+            raise ValueError(f"typed SGMSE source record descriptor mismatch for {name!r}")
+        names.add(name)
+        roles.add(role)
+        rows.append({
+            "name": name,
+            "role": role,
+            "dtype": dtype,
+            "shape": list(shape),
+            "dimensions": list(reversed(shape)),
+        })
+    if names != set(tensor_manifest):
+        raise ValueError("typed SGMSE candidates do not exactly cover the safe-loaded manifest")
+    rows.sort(key=lambda row: row["name"])
+    required_roles = sorted(roles)
+    validate_typed_manifest_rows(rows, required_roles)
+    return rows, required_roles
+
+
+def _bind_typed_manifest_rows(
+    loaded: dict[str, Any],
+    rows: Any,
+    required_roles: Any,
+) -> list[dict[str, Any]]:
+    """Bind reviewed role rows to the exact safe-loaded tensor descriptors.
+
+    This function never maps by prefixes or ordinal position.  It is usable by
+    the VAST evidence step once source review supplies the role rows; without
+    those rows, inspection remains ``AUTHENTICATED_MANIFEST_REQUIRED``.
+    """
+    validate_typed_manifest_rows(rows, required_roles)
+    source = loaded.get("tensor_manifest")
+    if not isinstance(source, dict) or set(source) != {row["name"] for row in rows}:
+        raise ValueError("typed SGMSE rows do not exactly cover the safe-loaded tensor manifest")
+    for row in rows:
+        descriptor = source[row["name"]]
+        if not isinstance(descriptor, dict) or descriptor.get("shape") != row["shape"] or descriptor.get("dtype") != row["dtype"]:
+            raise ValueError(f"typed SGMSE row descriptor mismatch for {row['name']!r}")
+    return [dict(row) for row in rows]
+
+
+def _reviewed_typed_binding(
+    loaded: dict[str, Any],
+    rows: Any,
+    required_roles: Any,
+) -> bool:
+    if REVIEWED_TENSOR_MANIFEST_SHA256 is None or not re.fullmatch(
+        r"[0-9a-f]{64}", REVIEWED_TENSOR_MANIFEST_SHA256
+    ):
+        return False
+    try:
+        _bind_typed_manifest_rows(loaded, rows, required_roles)
+    except ValueError:
+        return False
+    return typed_manifest_sha256(rows, required_roles) == REVIEWED_TENSOR_MANIFEST_SHA256
+
+
+def bind_typed_manifest(
+    loaded: dict[str, Any],
+    rows: Any,
+    required_roles: Any,
+) -> list[dict[str, Any]]:
+    """Production gate for typed binding; closed until a reviewed digest exists."""
+    if REVIEWED_TENSOR_MANIFEST_SHA256 is None:
+        raise ValueError("AUTHENTICATED_MANIFEST_REQUIRED: reviewed SGMSE tensor digest is not compiled in")
+    if not _reviewed_typed_binding(loaded, rows, required_roles):
+        raise ValueError("AUTHENTICATED_MANIFEST_REQUIRED: typed SGMSE rows do not match the reviewed digest")
+    return _bind_typed_manifest_rows(loaded, rows, required_roles)
+
+
+def tensor_manifest(value: Any, path: str = "") -> tuple[dict[str, dict[str, Any]], list[str], bool]:
+    import torch
+
+    tensors: dict[str, dict[str, Any]] = {}
+    unsupported: list[str] = []
+    finite = True
+    if isinstance(value, torch.Tensor):
+        finite = bool(torch.isfinite(value).all().item()) if value.is_floating_point() else True
+        tensors[path or "<root>"] = {
+            "shape": [int(axis) for axis in value.shape],
+            "dtype": str(value.dtype),
+            "count": int(value.numel()),
+            "finite": finite,
+        }
+    elif isinstance(value, dict):
+        for key in sorted(value, key=str):
+            child, child_unsupported, child_finite = tensor_manifest(
+                value[key], f"{path}.{key}" if path else str(key)
+            )
+            tensors.update(child)
+            unsupported.extend(child_unsupported)
+            finite = finite and child_finite
+    elif isinstance(value, (list, tuple)):
+        for index, child_value in enumerate(value):
+            child, child_unsupported, child_finite = tensor_manifest(child_value, f"{path}[{index}]")
+            tensors.update(child)
+            unsupported.extend(child_unsupported)
+            finite = finite and child_finite
+    elif value is not None and not isinstance(value, (str, int, float, bool)):
+        unsupported.append(f"{path}:{type(value).__name__}")
+    return tensors, unsupported, finite
+
+
+def _tensor_map_candidates(value: Any, path: str = "") -> list[tuple[str, dict[str, Any]]]:
+    import torch
+
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(value, dict):
+        if value and all(isinstance(item, torch.Tensor) for item in value.values()):
+            candidates.append((path or "<root>", value))
+        for key in sorted(value, key=str):
+            candidates.extend(_tensor_map_candidates(value[key], f"{path}.{key}" if path else str(key)))
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            candidates.extend(_tensor_map_candidates(child, f"{path}[{index}]"))
+    return candidates
+
+
+def safe_load_manifest(path: Path) -> dict[str, Any]:
+    import torch
+
+    result: dict[str, Any] = {
+        "container_path": str(path),
+        "torch_loader": "torch.load(weights_only=True, map_location='cpu')",
+        "unsafe_pickle_fallback": False,
+    }
+    try:
+        raw = torch.load(str(path), map_location="cpu", weights_only=True)
+    except Exception as error:  # noqa: BLE001 - preserve loud safe-load evidence
+        result["safe_load_status"] = "BLOCKED_WEIGHTS_ONLY"
+        result["safe_load_error"] = f"{type(error).__name__}: {error}"
+        return result
+
+    candidates = _tensor_map_candidates(raw)
+    if len(candidates) != 1:
+        result["safe_load_status"] = "BLOCKED_AMBIGUOUS_TENSOR_CONTAINER"
+        result["candidate_paths"] = [candidate[0] for candidate in candidates]
+        return result
+    container_path, state_dict = candidates[0]
+    tensors, unsupported, finite = tensor_manifest(state_dict, "")
+    result["container_path"] = container_path
+    # A tensor map is safe to inspect, but its being stored in a file named
+    # ``score_model_ema.ckpt`` does not prove that the selected map is the EMA
+    # branch.  Keep this distinction explicit until the pinned loader route is
+    # reviewed on VAST.
+    result["ema_extraction"] = "UNVERIFIED"
+    result["ema_container_path"] = container_path
+    result["tensor_manifest"] = tensors
+    result["tensor_count"] = len(tensors)
+    result["parameter_count"] = sum(item["count"] for item in tensors.values())
+    result["unsupported_objects"] = unsupported
+    result["all_finite"] = finite
+    if unsupported:
+        result["safe_load_status"] = "BLOCKED_UNSUPPORTED_OBJECTS"
+    elif not tensors:
+        result["safe_load_status"] = "BLOCKED_EMPTY_TENSOR_MANIFEST"
+    elif not finite:
+        result["safe_load_status"] = "BLOCKED_NONFINITE_TENSOR"
+    else:
+        result["safe_load_status"] = "SAFE_LOADED"
+    return result
+
+
+def source_identity(source_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    result: dict[str, Any] = {
+        "repository": SOURCE_REPOSITORY,
+        "expected_revision": SOURCE_REVISION,
+        "license_spdx": SOURCE_LICENSE_SPDX,
+    }
+    blockers: list[str] = []
+    license_path = source_dir / "LICENSE"
+    if not license_path.is_file() or license_path.is_symlink():
+        blockers.append(f"missing source license: {license_path}")
+    else:
+        result["license_sha256"] = sha256(license_path)
+        result["license_text_is_mit"] = "MIT License" in license_path.read_text(encoding="utf-8", errors="replace")
+        if not result["license_text_is_mit"]:
+            blockers.append("source LICENSE does not contain the MIT notice")
+        if result["license_sha256"] != SOURCE_LICENSE_SHA256:
+            blockers.append("source LICENSE SHA-256 differs from the reviewed revision")
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        commit = ""
+        blockers.append(f"source revision unavailable: {error}")
+    result["resolved_revision"] = commit
+    if commit != SOURCE_REVISION:
+        blockers.append(f"source revision {commit!r} != {SOURCE_REVISION!r}")
+    return result, blockers
+
+
+def speechbrain_source_identity(source_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    result: dict[str, Any] = {
+        "repository": SPEECHBRAIN_REPOSITORY,
+        "expected_revision": SPEECHBRAIN_REVISION,
+        "locked_distribution": {
+            "version": SPEECHBRAIN_VERSION,
+            "sdist_sha256": SPEECHBRAIN_SDIST_SHA256,
+            "wheel_sha256": SPEECHBRAIN_WHEEL_SHA256,
+        },
+    }
+    blockers: list[str] = []
+    license_path = source_dir / "LICENSE"
+    if not license_path.is_file() or license_path.is_symlink():
+        blockers.append(f"missing SpeechBrain license: {license_path}")
+    else:
+        license_text = license_path.read_text(encoding="utf-8", errors="replace")
+        result["license_sha256"] = sha256(license_path)
+        result["license_spdx"] = "apache-2.0"
+        result["license_text_is_apache"] = "Apache License" in license_text
+        if not result["license_text_is_apache"]:
+            blockers.append("SpeechBrain LICENSE does not contain the Apache notice")
+        if result["license_sha256"] != SPEECHBRAIN_LICENSE_SHA256:
+            blockers.append("SpeechBrain LICENSE SHA-256 differs from the reviewed revision")
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        commit = ""
+        blockers.append(f"SpeechBrain revision unavailable: {error}")
+    result["resolved_revision"] = commit
+    if commit != SPEECHBRAIN_REVISION:
+        blockers.append(f"SpeechBrain revision {commit!r} != {SPEECHBRAIN_REVISION!r}")
+
+    files: dict[str, Any] = {}
+    for relative in EXECUTABLE_SPEECHBRAIN_FILES:
+        path = source_dir / relative
+        if not path.is_file() or path.is_symlink():
+            blockers.append(f"missing executable SpeechBrain source: {relative}")
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        markers = EXECUTABLE_SPEECHBRAIN_MARKERS[relative]
+        marker_status = {marker: marker in text for marker in markers}
+        files[relative] = {
+            "sha256": sha256(path),
+            "size": path.stat().st_size,
+            "required_markers": marker_status,
+        }
+        for marker, present in marker_status.items():
+            if not present:
+                blockers.append(
+                    f"SpeechBrain source {relative} is missing executable marker: {marker}"
+                )
+    result["executable_files"] = files
+    distribution, distribution_blockers = locked_distribution_source_audit_from_environment()
+    result["locked_distribution_audit"] = distribution
+    blockers.extend(distribution_blockers)
+    return result, blockers
+
+
+def locked_distribution_source_audit(
+    version: str,
+    files: set[str],
+    source_texts: dict[str, str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Audit the locked wheel without importing SpeechBrain runtime modules.
+
+    The reviewed 1.0.3 distribution is intentionally a dependency blocker:
+    its source tree lacks the SGMSE integration used by the authenticated
+    checkpoint.  A complete-looking replacement is also blocked until its
+    provenance is reviewed rather than silently treated as runtime-ready.
+    """
+
+    observed: dict[str, Any] = {}
+    for relative, expected in LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS.items():
+        present = relative in files
+        markers = {
+            marker: marker in source_texts.get(relative, "")
+            for marker in expected["required_markers"]
+        }
+        observed[relative] = {"present": present, "required_markers": markers}
+    result: dict[str, Any] = {
+        "version": version,
+        "expected_version": SPEECHBRAIN_VERSION,
+        "expected_source_roles": LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS,
+        "observed_source_roles": observed,
+        "status": LOCKED_DISTRIBUTION_BLOCKER,
+    }
+    blockers = [
+        f"{LOCKED_DISTRIBUTION_BLOCKER}: reviewed SpeechBrain {SPEECHBRAIN_VERSION} distribution lacks source-backed SGMSE integration"
+    ]
+    if version != SPEECHBRAIN_VERSION:
+        blockers.append(f"locked SpeechBrain version {version!r} != {SPEECHBRAIN_VERSION!r}")
+    expected_observed = {
+        relative: {
+            "present": expected["present"],
+            "required_markers": {
+                marker: expected_value
+                for marker, expected_value in expected["required_markers"].items()
+            },
+        }
+        for relative, expected in LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS.items()
+    }
+    if observed != expected_observed:
+        result["status"] = "BLOCKED_LOCKED_DISTRIBUTION_SOURCE_AUDIT_MISMATCH"
+        blockers.append("locked SpeechBrain source audit differs from the reviewed 1.0.3 evidence")
+    return result, blockers
+
+
+def locked_distribution_source_audit_from_environment() -> tuple[dict[str, Any], list[str]]:
+    """Read package metadata/source markers without importing SpeechBrain."""
+
+    try:
+        from importlib.metadata import distribution
+
+        package = distribution("speechbrain")
+        files = {str(path).replace("\\", "/") for path in (package.files or ())}
+        source_texts: dict[str, str] = {}
+        for relative in LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS:
+            if relative not in files:
+                continue
+            path = Path(package.locate_file(relative))
+            if path.is_file() and not path.is_symlink():
+                source_texts[relative] = path.read_text(encoding="utf-8", errors="replace")
+        return locked_distribution_source_audit(package.version, files, source_texts)
+    except Exception as error:  # noqa: BLE001 - dependency evidence must fail closed
+        return (
+            {
+                "version": None,
+                "expected_version": SPEECHBRAIN_VERSION,
+                "status": "BLOCKED_LOCKED_DISTRIBUTION_UNAVAILABLE",
+                "error": f"{type(error).__name__}: {error}",
+            },
+            [f"BLOCKED_LOCKED_DISTRIBUTION_UNAVAILABLE: {error}"],
+        )
+
+
+def algorithm_source_inventory(source_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    result: dict[str, Any] = {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION}
+    blockers: list[str] = []
+    inventory: dict[str, Any] = {}
+    try:
+        candidates = sorted(source_dir.rglob("*.py"))
+    except OSError as error:
+        return result, [f"algorithm source scan failed: {error}"]
+    for role, markers in ALGORITHM_SOURCE_ROLES.items():
+        matches = []
+        role_candidates = candidates
+        fixed_relative = ALGORITHM_SOURCE_FIXED_FILES.get(role)
+        if fixed_relative is not None:
+            role_candidates = [source_dir / fixed_relative]
+        for path in role_candidates:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if all(marker in text for marker in markers):
+                matches.append({"path": str(path.relative_to(source_dir)), "sha256": sha256(path)})
+        inventory[role] = matches
+        if not matches:
+            blockers.append(f"algorithm source role {role!r} has no pinned implementation file")
+    result["files_by_role"] = inventory
+    return result, blockers
+
+
+def source_mapping_review(
+    loaded: dict[str, Any], algorithm_source: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Describe the source proof still needed to derive all typed bindings.
+
+    The source inventory proves file identity and broad implementation roles,
+    but it is not a state-dict mapping.  In particular, a ModuleList ordinal or
+    a tensor-name prefix is not sufficient to bind a parameter to the native
+    graph.  This function therefore emits a review packet and candidate
+    contract request, never candidate rows, until an owner has supplied source
+    construction records for an authenticated one-to-one route.
+    Keeping the packet in the inspection manifest makes the next VAST run
+    actionable without allowing a caller to self-authorize a digest.
+    """
+    role_files = algorithm_source.get("files_by_role")
+    ncsnpp_files = role_files.get("ncsnpp", []) if isinstance(role_files, dict) else []
+    safe_manifest = loaded.get("tensor_manifest")
+    tensor_names = sorted(safe_manifest) if isinstance(safe_manifest, dict) else []
+    review = {
+        "format": SOURCE_MAPPING_REVIEW_FORMAT,
+        "status": TYPED_CANDIDATE_STATUS,
+        "method": "SOURCE_CONSTRUCTION_RECORDS_REQUIRED",
+        "checkpoint_tensor_count": loaded.get("tensor_count"),
+        "checkpoint_tensor_names_sha256": hashlib.sha256(
+            "\n".join(tensor_names).encode("utf-8")
+        ).hexdigest()
+        if tensor_names
+        else None,
+        "candidate_ncsnpp_source_files": ncsnpp_files,
+        "typed_bindings": None,
+        "candidate_bindings": None,
+        "candidate_required_roles": None,
+        "reviewed_manifest_sha256": REVIEWED_TENSOR_MANIFEST_SHA256,
+        "reason": (
+            "pinned source inventory identifies implementation files but does "
+            "not prove a one-to-one state_dict-to-NCSN++ role assignment"
+        ),
+        "required_evidence": [
+            "clean checkout at the pinned SGMSE revision and exact role-file hashes",
+            "source-executed NCSNpp ModuleList construction with every parameter path",
+            "strict state_dict load of the fixed checkpoint EMA selection",
+            "source-construction records with stage, module, slot, dtype, and shape for every parameter",
+            "one-to-one rows covering every safe-loaded tensor name, dtype, and shape",
+            "owner-reviewed canonical role/name/dtype/shape digest compiled into Vokra",
+        ],
+        "prohibited_derivations": [
+            "tensor-name prefix or substring guesses",
+            "ModuleList ordinal-only assignment",
+            "historical 647-tensor pass-through list",
+            "self-stamped or self-referential digest",
+        ],
+    }
+    blockers = [
+        f"{TENSOR_MAPPING_BLOCKER}: source construction has not yielded a reviewed one-to-one role map"
+    ]
+    if not ncsnpp_files:
+        blockers.append(
+            f"{TENSOR_MAPPING_BLOCKER}: no authenticated NCSN++ source candidate was inventoried"
+        )
+    return review, blockers
+
+
+def companion_identity(companion_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    companions: dict[str, Any] = {}
+    blockers: list[str] = []
+    for filename in COMPANION_FILES:
+        path = companion_dir / filename
+        if not path.is_file() or path.is_symlink():
+            blockers.append(f"missing HF companion file: {path}")
+            continue
+        companions[filename] = {"size": path.stat().st_size, "sha256": sha256(path)}
+    return companions, blockers
+
+
+def reference_evidence(
+    algorithm_source: dict[str, Any], speechbrain_source: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Describe the independent reference boundary without executing a model.
+
+    The locked SpeechBrain distribution is known to omit the executable
+    ``ScoreModel`` integration required by the checkpoint's hyperparams.  The
+    VAST inspector still records the pinned upstream source inventory so a
+    later owner-reviewed reference run has an exact route to start from, but
+    it must not call a self-authored mirror or claim parity today.
+    """
+    algorithm_roles = algorithm_source.get("files_by_role")
+    executable_files = speechbrain_source.get("executable_files")
+    source_ready = (
+        isinstance(algorithm_roles, dict)
+        and all(algorithm_roles.get(role) for role in ALGORITHM_SOURCE_ROLES)
+        and isinstance(executable_files, dict)
+        and all(executable_files.get(relative) for relative in EXECUTABLE_SPEECHBRAIN_FILES)
+    )
+    evidence: dict[str, Any] = {
+        "status": REFERENCE_BLOCKER,
+        "implementation": "pinned upstream source only; no local mirror",
+        "execution": "NOT_RUN",
+        "fixture_generation": "NOT_RUN",
+        "source_route": {
+            "algorithm_roles": sorted(algorithm_roles) if isinstance(algorithm_roles, dict) else [],
+            "speechbrain_executable_files": sorted(executable_files)
+            if isinstance(executable_files, dict)
+            else [],
+        },
+        "reason": (
+            "this inspection-only worker did not execute an independent "
+            "reference import or generate numerical fixtures"
+        ),
+    }
+    blockers = [
+        f"{REFERENCE_BLOCKER}: independent upstream reference was not executed"
+    ]
+    if not source_ready:
+        blockers.append(f"{REFERENCE_BLOCKER}: pinned source inventory is incomplete")
+    return evidence, blockers
+
+
+def inspect(
+    ckpt: Path,
+    hyperparams: Path,
+    companion_dir: Path,
+    algorithm_source_dir: Path,
+    speechbrain_source_dir: Path,
+    manifest_path: Path,
+) -> int:
+    blockers: list[str] = []
+    checkpoint: dict[str, Any] = {"filename": ckpt.name, "expected_filename": CHECKPOINT_NAME}
+    if ckpt.name != CHECKPOINT_NAME:
+        blockers.append(f"checkpoint filename {ckpt.name!r} != {CHECKPOINT_NAME!r}")
+    if ckpt.is_file() and not ckpt.is_symlink():
+        checkpoint["size"] = ckpt.stat().st_size
+        checkpoint["sha256"] = sha256(ckpt)
+        checkpoint["expected_size"] = CHECKPOINT_SIZE
+        checkpoint["expected_sha256"] = CHECKPOINT_SHA256
+        if checkpoint["size"] != CHECKPOINT_SIZE or checkpoint["sha256"] != CHECKPOINT_SHA256:
+            blockers.append("checkpoint exact size/SHA256 identity mismatch")
+    else:
+        blockers.append(f"missing checkpoint: {ckpt}")
+
+    config: dict[str, Any] = {"filename": hyperparams.name}
+    if hyperparams.is_file() and not hyperparams.is_symlink():
+        text = hyperparams.read_text(encoding="utf-8")
+        facts, missing = config_facts(text)
+        config.update({"sha256": sha256(hyperparams), "facts": facts, "raw": text})
+        blockers.extend(f"hyperparams missing or mismatched field: {name}" for name in missing)
+    else:
+        blockers.append(f"missing hyperparams: {hyperparams}")
+
+    algorithm_source, algorithm_blockers = source_identity(algorithm_source_dir)
+    blockers.extend(algorithm_blockers)
+    algorithm_inventory, inventory_blockers = algorithm_source_inventory(algorithm_source_dir)
+    blockers.extend(inventory_blockers)
+    speechbrain_source, speechbrain_blockers = speechbrain_source_identity(speechbrain_source_dir)
+    blockers.extend(speechbrain_blockers)
+    companions, companion_blockers = companion_identity(companion_dir)
+    blockers.extend(companion_blockers)
+    reference, reference_blockers = reference_evidence(
+        algorithm_inventory, speechbrain_source
+    )
+    blockers.extend(reference_blockers)
+    loaded: dict[str, Any] = {}
+    if ckpt.is_file() and checkpoint.get("size") == CHECKPOINT_SIZE and checkpoint.get("sha256") == CHECKPOINT_SHA256:
+        loaded = safe_load_manifest(ckpt)
+        if loaded.get("safe_load_status") != "SAFE_LOADED":
+            blockers.append(f"checkpoint safe-load: {loaded.get('safe_load_status')}")
+        else:
+            blockers.append(f"{EMA_SELECTION_BLOCKER}: safe-loaded tensor map was not selected by a reviewed EMA loader")
+    else:
+        loaded = {
+            "safe_load_status": "BLOCKED_CHECKPOINT_IDENTITY",
+            "unsafe_pickle_fallback": False,
+        }
+    mapping_review, mapping_blockers = source_mapping_review(
+        loaded, algorithm_inventory
+    )
+    blockers.extend(mapping_blockers)
+
+    manifest = {
+        "format": "vokra-sgmse-voicebank-inspection-v1",
+        "tensor_contract": {
+            "format": TYPED_TENSOR_CONTRACT_FORMAT,
+            # The inspector is the only producer of the checkpoint-specific
+            # contract.  Keep this explicit until a real safe-loaded manifest
+            # exists; a hand-written or historical 647-tensor list must never
+            # close the converter gate.
+            "status": tensor_contract_status(loaded),
+            "source": "safe_load.tensor_manifest",
+            "tensor_count": loaded.get("tensor_count"),
+            "reviewed_manifest_sha256": REVIEWED_TENSOR_MANIFEST_SHA256,
+            "typed_required_roles": loaded.get("typed_required_roles"),
+            # Role assignment is intentionally absent until the pinned source
+            # and this exact safe-loaded manifest are reviewed on VAST.  A raw
+            # tensor list, including the historical 647-tensor list, cannot
+            # be treated as a typed graph assignment.
+            "typed_bindings": loaded.get("typed_bindings"),
+            "source_mapping_review": mapping_review,
+        },
+        "model_repository": MODEL_REPOSITORY,
+        "model_revision": MODEL_REVISION,
+        "weight_license_spdx": "apache-2.0",
+        "checkpoint": checkpoint,
+        "hyperparams": config,
+        "companions": companions,
+        "algorithm_source": {**algorithm_source, **algorithm_inventory},
+        "speechbrain_source": speechbrain_source,
+        "reference": reference,
+        "safe_load": loaded,
+        "blockers": blockers,
+        "runtime_status": "INSPECTION_ONLY",
+        "parity_status": "INSPECTION_ONLY",
+        "publication": "NO_UPLOAD",
+    }
+    try:
+        write_manifest_no_replace(manifest_path, manifest)
+    except ValueError as error:
+        print(f"SGMSE inspection blocked; evidence was not replaced: {error}", file=sys.stderr)
+        return 2
+    if blockers:
+        print(f"SGMSE inspection blocked; evidence preserved at {manifest_path}", file=sys.stderr)
+        return 2
+    print(f"SGMSE inspection complete; evidence written to {manifest_path}")
+    return 0
+
+
+def self_test() -> None:
+    assert MODEL_REVISION == "8f4ff7b65284c49492a43349b8106e094ac0d365"
+    assert COMPANION_FILES == ("README.md", ".gitattributes")
+    assert "example.wav" not in COMPANION_FILES
+    assert CHECKPOINT_SIZE == 262_593_305
+    assert len(CHECKPOINT_SHA256) == 64
+    assert SOURCE_REVISION == "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
+    assert SOURCE_LICENSE_SHA256 == "8748956d2e5afe9dfc8311188b4119dacc7c5293b0561e7cca7a21cf80e54caa"
+    assert SPEECHBRAIN_REVISION == "2b3f4f44351fd08a627c4ab307de5c420351bc19"
+    assert SPEECHBRAIN_LICENSE_SHA256 == "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    assert SPEECHBRAIN_VERSION == "1.0.3"
+    contract_rows, contract_digest = load_contract()
+    assert len(contract_rows) == 647
+    assert contract_digest == REVIEWED_TENSOR_MANIFEST_SHA256
+    fixture_contract = json.loads(
+        TYPED_CONTRACT_FIXTURE.read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_json_keys,
+    )
+    tampered_rows = [dict(row) for row in contract_rows]
+    tampered_rows[0]["name"] = "dnn.all_modules.0.W.tampered"
+    tampered_digest = typed_manifest_sha256(tampered_rows, [row["role"] for row in tampered_rows])
+    tampered_contract = dict(fixture_contract)
+    tampered_contract["rows_zlib_base64"] = base64.b64encode(
+        zlib.compress(json.dumps(tampered_rows, sort_keys=True, separators=(",", ":")).encode(), 9)
+    ).decode()
+    tampered_contract["typed_manifest_sha256"] = tampered_digest
+    try:
+        _validate_fixture_contract(tampered_contract)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("different but internally consistent contract digest was accepted")
+    with tempfile.TemporaryDirectory() as duplicate_directory:
+        duplicate_fixture = Path(duplicate_directory) / "duplicate.json"
+        duplicate_fixture.write_text(
+            '{"format":"vokra-sgmse-typed-contract-v1","format":"tampered"}',
+            encoding="utf-8",
+        )
+        try:
+            load_contract(duplicate_fixture)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("duplicate outer JSON key was accepted")
+    duplicate_rows = base64.b64encode(
+        zlib.compress(b'[{"name":"x","name":"y"}]', 9)
+    ).decode()
+    try:
+        _decode_contract_rows(duplicate_rows)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate decompressed JSON key was accepted")
+    trailing = base64.b64encode(zlib.compress(b"[]", 9) + b"trailing").decode()
+    try:
+        _decode_contract_rows(trailing)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("trailing compressed data was accepted")
+    try:
+        _decode_contract_rows("A" * (CONTRACT_MAX_BASE64_BYTES + 1))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("oversize base64 payload was accepted")
+    oversized = base64.b64encode(
+        zlib.compress(b"x" * (CONTRACT_MAX_DECOMPRESSED_BYTES + 1), 9)
+    ).decode()
+    try:
+        _decode_contract_rows(oversized)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("oversize decompressed payload was accepted")
+    valid_sidecar = {
+        "format": PREPARED_FORMAT,
+        "repository": MODEL_REPOSITORY,
+        "model_revision": MODEL_REVISION,
+        "source_repository": SOURCE_REPOSITORY,
+        "source_revision": SOURCE_REVISION,
+        "checkpoint_filename": CHECKPOINT_NAME,
+        "checkpoint_size": CHECKPOINT_SIZE,
+        "checkpoint_sha256": CHECKPOINT_SHA256,
+        "prepared_sha256": "0" * 64,
+        "tensor_count": len(contract_rows),
+        "typed_manifest_sha256": contract_digest,
+        "tensor_rows": contract_rows,
+    }
+    _validate_prepared_sidecar(valid_sidecar, contract_rows, contract_digest)
+    for key, value in (("typed_manifest_sha256", "1" * 64), ("tensor_count", 646), ("unexpected", True)):
+        tampered = dict(valid_sidecar)
+        tampered[key] = value
+        try:
+            _validate_prepared_sidecar(tampered, contract_rows, contract_digest)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"tampered prepared sidecar field was accepted: {key}")
+    assert EXECUTABLE_SPEECHBRAIN_FILES[0].endswith("sgmse_plus.py")
+    assert EXECUTABLE_SPEECHBRAIN_FILES[1].endswith("enhancement.py")
+    assert "class SGMSEEnhancement" in EXECUTABLE_SPEECHBRAIN_MARKERS[EXECUTABLE_SPEECHBRAIN_FILES[1]]
+    blocked_audit, blocked = locked_distribution_source_audit(
+        SPEECHBRAIN_VERSION,
+        {"speechbrain/inference/enhancement.py"},
+        {"speechbrain/inference/enhancement.py": "def enhance_batch(self, noisy): pass"},
+    )
+    assert blocked_audit["status"] == LOCKED_DISTRIBUTION_BLOCKER
+    assert any(LOCKED_DISTRIBUTION_BLOCKER in message for message in blocked)
+    complete_audit, complete_blockers = locked_distribution_source_audit(
+        SPEECHBRAIN_VERSION,
+        set(LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS),
+        {
+            "speechbrain/integrations/models/sgmse_plus.py": "class ScoreModel: pass",
+            "speechbrain/inference/enhancement.py": "class SGMSEEnhancement: pass",
+        },
+    )
+    assert complete_audit["status"] == "BLOCKED_LOCKED_DISTRIBUTION_SOURCE_AUDIT_MISMATCH"
+    assert complete_blockers
+    with tempfile.TemporaryDirectory() as temporary:
+        source = Path(temporary)
+        (source / "sgmse" / "sampling").mkdir(parents=True)
+        (source / "score.py").write_text("class ScoreModel: pass\nScoreModel(\n", encoding="utf-8")
+        (source / "ncsnpp.py").write_text("NCSNpp ncsnpp_v2\n", encoding="utf-8")
+        (source / "sde.py").write_text("OUVESDE SDERegistry\n", encoding="utf-8")
+        (source / "sgmse/sampling/predictors.py").write_text("reverse_diffusion\n", encoding="utf-8")
+        (source / "sgmse/sampling/correctors.py").write_text("ald CorrectorRegistry\n", encoding="utf-8")
+        inventory, inventory_blockers = algorithm_source_inventory(source)
+        assert not inventory_blockers
+        assert inventory["files_by_role"]["sampler_predictor"][0]["path"] == "sgmse/sampling/predictors.py"
+        assert inventory["files_by_role"]["sampler_corrector"][0]["path"] == "sgmse/sampling/correctors.py"
+    facts, missing = config_facts("sample_rate: 16000\nn_fft: 510\nhop_length: 128\nwindow_type: hann\n")
+    assert facts["sample_rate"] and facts["n_fft"] and facts["hop_length"] and facts["window_type"]
+    assert "sampler_type" in missing
+    assert tensor_contract_status({"safe_load_status": "BLOCKED_WEIGHTS_ONLY"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
+    assert tensor_contract_status({"safe_load_status": "SAFE_LOADED"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
+    assert tensor_contract_status({"safe_load_status": "SAFE_LOADED", "tensor_manifest": {"x": {}}}) == "SAFE_LOADED_MANIFEST"
+    with tempfile.TemporaryDirectory() as manifest_temporary:
+        manifest_path = Path(manifest_temporary) / "evidence" / "manifest.json"
+        write_manifest_no_replace(manifest_path, {"status": "INSPECTION_ONLY"})
+        try:
+            write_manifest_no_replace(manifest_path, {"status": "clobber"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("inspection evidence was overwritten")
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["status"] == "INSPECTION_ONLY"
+    blocked_reference, reference_blockers = reference_evidence(
+        {"files_by_role": {"score_model": []}},
+        {"executable_files": {"speechbrain/inference/enhancement.py": {}}},
+    )
+    assert blocked_reference["status"] == REFERENCE_BLOCKER
+    assert blocked_reference["execution"] == "NOT_RUN"
+    assert blocked_reference["fixture_generation"] == "NOT_RUN"
+    assert reference_blockers and all(REFERENCE_BLOCKER in item for item in reference_blockers)
+    assert tensor_contract_status({"safe_load_status": "BLOCKED_UNSUPPORTED_OBJECTS"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
+    assert EMA_SELECTION_BLOCKER == "BLOCKED_EMA_SELECTION_UNVERIFIED"
+    assert TENSOR_MAPPING_BLOCKER == "BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN"
+    mapping_review, mapping_blockers = source_mapping_review(
+        {"safe_load_status": "SAFE_LOADED", "tensor_count": 647,
+         "tensor_manifest": {"a": {}}},
+        {"files_by_role": {"ncsnpp": [{"path": "sgmse/backbones/ncsnpp_v2.py"}]}},
+    )
+    assert mapping_review["format"] == SOURCE_MAPPING_REVIEW_FORMAT
+    assert mapping_review["status"] == TYPED_CANDIDATE_STATUS
+    assert mapping_review["typed_bindings"] is None
+    assert mapping_review["candidate_bindings"] is None
+    assert mapping_blockers == [
+        f"{TENSOR_MAPPING_BLOCKER}: source construction has not yielded a reviewed one-to-one role map"
+    ]
+    required_roles = ["fourier_frequencies", "stage:0:input:0:input_projection:weight"]
+    typed_rows = [
+        {"name": "source.frequency", "role": required_roles[0], "dtype": "torch.float32", "shape": [128], "dimensions": [128]},
+        {"name": "source.input.weight", "role": required_roles[1], "dtype": "torch.float32", "shape": [4, 4], "dimensions": [4, 4]},
+    ]
+    validate_typed_manifest_rows(typed_rows, required_roles)
+    assert valid_typed_role(
+        "stage:10:progressive_output:0:progressive_output_norm:norm_gamma"
+    )
+    assert not valid_typed_role(
+        "stage:10:progressive_output:0:progressive_output_norm:weight"
+    )
+    assert (
+        typed_manifest_sha256(typed_rows, required_roles)
+        == "33b1d5a8dd3d1013f4a16754c29ad7e910d1a44f89a517c74f411cff97c7f306"
+    )
+    bound_rows = _bind_typed_manifest_rows(
+        {"tensor_manifest": {row["name"]: {"shape": row["shape"], "dtype": row["dtype"]} for row in typed_rows}},
+        typed_rows,
+        required_roles,
+    )
+    assert bound_rows == typed_rows
+
+    source_records = [
+        {
+            "name": "source.input.weight",
+            "stage_index": 0,
+            "kind": "input",
+            "block": 0,
+            "module": "input_projection",
+            "slot": "weight",
+            "dtype": "torch.float32",
+            "shape": [4, 4],
+        },
+        {
+            "name": "source.input.bias",
+            "stage_index": 0,
+            "kind": "input",
+            "block": 0,
+            "module": "input_projection",
+            "slot": "bias",
+            "dtype": "torch.float32",
+            "shape": [4],
+        },
+    ]
+    source_manifest = {
+        row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+        for row in source_records
+    }
+    candidate_rows, candidate_roles = derive_typed_binding_candidates(
+        source_records, source_manifest
+    )
+    assert [row["name"] for row in candidate_rows] == [
+        "source.input.bias",
+        "source.input.weight",
+    ]
+    assert candidate_roles == sorted({row["role"] for row in candidate_rows})
+    assert candidate_roles[0].startswith("stage:0:input:0:input_projection:")
+    assert typed_manifest_sha256(candidate_rows, candidate_roles)
+    same_slot_records = [
+        dict(source_records[0], name="source.residual.conv1.weight", stage_index=1,
+             kind="residual", block=1, module="residual_conv1"),
+        dict(source_records[0], name="source.residual.conv2.weight", stage_index=1,
+             kind="residual", block=1, module="residual_conv2"),
+        dict(source_records[0], name="source.attention.query.weight", stage_index=2,
+             kind="attention", block=0, module="attention_query"),
+        dict(source_records[0], name="source.attention.key.weight", stage_index=2,
+             kind="attention", block=0, module="attention_key"),
+    ]
+    same_slot_manifest = {
+        row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+        for row in same_slot_records
+    }
+    same_slot_rows, same_slot_roles = derive_typed_binding_candidates(
+        same_slot_records, same_slot_manifest
+    )
+    assert len(same_slot_rows) == 4
+    assert len(same_slot_roles) == 4
+    assert len({row["role"] for row in same_slot_rows}) == 4
+    assert any("residual_conv1:weight" in role for role in same_slot_roles)
+    assert any("residual_conv2:weight" in role for role in same_slot_roles)
+    assert any("attention_query:weight" in role for role in same_slot_roles)
+    assert any("attention_key:weight" in role for role in same_slot_roles)
+    fixed_record = {
+        "name": "source.fourier_frequencies",
+        "fixed_role": "fourier_frequencies",
+        "dtype": "torch.float32",
+        "shape": [128],
+    }
+    fixed_rows, fixed_roles = derive_typed_binding_candidates(
+        [fixed_record],
+        {fixed_record["name"]: {"shape": [128], "dtype": "torch.float32"}},
+    )
+    assert fixed_rows[0]["role"] == "fourier_frequencies"
+    assert fixed_roles == ["fourier_frequencies"]
+    nonsymmetric = {
+        "name": "source.nonsymmetric",
+        "stage_index": 1,
+        "kind": "residual",
+        "block": 1,
+        "module": "residual_conv1",
+        "slot": "weight",
+        "dtype": "torch.float32",
+        "shape": [2, 3, 5],
+    }
+    nonsymmetric_rows, nonsymmetric_roles = derive_typed_binding_candidates(
+        [nonsymmetric],
+        {"source.nonsymmetric": {"shape": [2, 3, 5], "dtype": "torch.float32"}},
+    )
+    assert nonsymmetric_rows[0]["dimensions"] == [5, 3, 2]
+    assert (
+        typed_manifest_sha256(nonsymmetric_rows, nonsymmetric_roles)
+        == "39671d48bc116445a52d6e573a9045ca5a5d080960a3993923d64c319a6c54ef"
+    )
+    for tampered_record in (
+        source_records[:1],
+        source_records + [dict(source_records[1], name="source.extra")],
+        [dict(source_records[0], module="unknown_module"), source_records[1]],
+        [dict(source_records[0], slot="norm_gamma"), source_records[1]],
+        [dict(source_records[0], name="source|input"), source_records[1]],
+        [dict(source_records[0], shape=[0]), source_records[1]],
+        [dict(fixed_record, fixed_role="arbitrary_passthrough")],
+        [fixed_record, dict(fixed_record, name="source.other")],
+    ):
+        try:
+            derive_typed_binding_candidates(tampered_record, source_manifest)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("tampered source candidate was accepted")
+    try:
+        _bind_typed_manifest_rows(
+            {"tensor_manifest": {"source.frequency": {"shape": [128], "dtype": "torch.float32"}}},
+            typed_rows,
+            required_roles,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("typed SGMSE rows with missing source tensor were accepted")
+    try:
+        bind_typed_manifest(
+            {"tensor_manifest": {row["name"]: {"shape": row["shape"], "dtype": row["dtype"]} for row in typed_rows}},
+            typed_rows,
+            required_roles,
+        )
+    except ValueError as error:
+        assert "AUTHENTICATED_MANIFEST_REQUIRED" in str(error)
+    else:
+        raise AssertionError("production SGMSE typed binder opened without reviewed digest")
+    original_reviewed_digest = REVIEWED_TENSOR_MANIFEST_SHA256
+    globals()["REVIEWED_TENSOR_MANIFEST_SHA256"] = "0" * 64
+    try:
+        loaded_typed = {
+            "tensor_manifest": {
+                row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+                for row in typed_rows
+            },
+            "typed_bindings": typed_rows,
+            "typed_required_roles": required_roles,
+        }
+        assert tensor_contract_status(loaded_typed) != "SAFE_LOADED_TYPED_MANIFEST"
+        bind_typed_manifest(
+            loaded_typed,
+            typed_rows,
+            required_roles,
+        )
+    except ValueError as error:
+        assert "AUTHENTICATED_MANIFEST_REQUIRED" in str(error)
+    else:
+        raise AssertionError("non-matching compiled SGMSE digest was accepted")
+    finally:
+        globals()["REVIEWED_TENSOR_MANIFEST_SHA256"] = original_reviewed_digest
+    for tampered in (
+        typed_rows[:1],
+        typed_rows + [dict(typed_rows[1], name="source.extra")],
+        [dict(typed_rows[0], role="arbitrary_passthrough"), typed_rows[1]],
+        [dict(typed_rows[0], dtype="torch.int64"), typed_rows[1]],
+        [dict(typed_rows[0], shape=[0]), typed_rows[1]],
+        [dict(typed_rows[0], name="source|frequency"), typed_rows[1]],
+        [dict(typed_rows[0], metadata="unexpected"), typed_rows[1]],
+        [{key: value for key, value in typed_rows[0].items() if key != "shape"}, typed_rows[1]],
+    ):
+        try:
+            validate_typed_manifest_rows(tampered, required_roles)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("tampered typed SGMSE row was accepted")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--prepare", action="store_true")
+    parser.add_argument("--ckpt", type=Path)
+    parser.add_argument("--hyperparams", type=Path)
+    parser.add_argument("--companion-dir", type=Path)
+    parser.add_argument("--algorithm-source-dir", type=Path)
+    parser.add_argument("--speechbrain-source-dir", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--sidecar", type=Path)
+    parser.add_argument("--contract", type=Path, default=TYPED_CONTRACT_FIXTURE)
+    args = parser.parse_args()
+    if args.self_test:
+        if args.prepare or any(value is not None for value in (args.ckpt, args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest, args.output, args.sidecar)) or args.contract != TYPED_CONTRACT_FIXTURE:
+            parser.error("--self-test accepts no other arguments")
+        self_test()
+        print("sgmse_prepare_checkpoint self-test: OK")
+        return 0
+    if args.prepare:
+        if args.ckpt is None or args.output is None or args.sidecar is None or any(value is not None for value in (args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest)):
+            parser.error("--prepare requires --ckpt, --output, and --sidecar only")
+        try:
+            return prepare_checkpoint(args.ckpt, args.output, args.sidecar, args.contract)
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f"SGMSE preparation blocked: {error}", file=sys.stderr)
+            return 2
+    if None in (args.ckpt, args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest) or args.output is not None or args.sidecar is not None:
+        parser.error("normal runs require --ckpt, --hyperparams, --companion-dir, --algorithm-source-dir, --speechbrain-source-dir, and --manifest")
+    return inspect(
+        args.ckpt,
+        args.hyperparams,
+        args.companion_dir,
+        args.algorithm_source_dir,
+        args.speechbrain_source_dir,
+        args.manifest,
+    )
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

@@ -19,6 +19,7 @@ use vokra_models::distil_whisper::DistilWhisperAsr;
 use vokra_models::hubert::HubertCtc;
 use vokra_models::kotoba_whisper::KotobaWhisperAsr;
 use vokra_models::moonshine::Moonshine;
+use vokra_models::owsm_v4_medium_1b::OwsmV4Medium1b;
 use vokra_models::parakeet::ParakeetAsr;
 use vokra_models::parakeet_ctc::ParakeetCtcAsr;
 use vokra_models::piper_plus::PiperPlusTts;
@@ -92,8 +93,32 @@ pub(crate) enum ModelTask {
     /// SentencePiece vocabulary sidecar. The concrete engine binds once in
     /// run/bench so the 4.28 GB F32 payload is never duplicated.
     AsrParakeetTdt11b,
+    /// Meta omniASR-CTC-1B waveform-to-token transcription.
+    ///
+    /// The dispatch returns a bare session so `run`/`bench` bind the concrete
+    /// manifest-authenticated engine exactly once and preserve its token-ID
+    /// output. The SentencePiece tokenizer is an external consumer boundary;
+    /// this task never invents decoded text.
+    AsrOmniasrCtcTokens,
+    /// Sber GigaAM Multilingual CTC transcription.
+    ///
+    /// The dispatch returns a bare mmap-backed session so the concrete
+    /// authenticated binder is opened once in the run/bench arm. Its native
+    /// route is greedy CTC text transcription; beam/text-generation flags do
+    /// not apply.
+    AsrGigaamMultilingual,
+    /// Sber GigaAM v3 RNNT token-ID transcription.
+    ///
+    /// The route emits the authenticated greedy RNNT token IDs. Text and
+    /// SentencePiece decoding are deliberately outside this task boundary.
+    AsrGigaamV3Tokens,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
+    /// VibeVoice-1.5B composite TTS. The strict partial GGUF binder is
+    /// discoverable here, but run remains fail-closed until the authenticated
+    /// Qwen companion, prefill contract, streaming tokenizer, and official
+    /// DPMSolverMultistepScheduler path are available.
+    TtsVibeVoice,
     /// Microsoft SpeechT5 text-to-speech with an explicit 512-value x-vector
     /// and the strict 16 kHz SpeechT5 HiFi-GAN companion.
     ///
@@ -194,6 +219,12 @@ pub(crate) enum ModelTask {
     /// `run` arm so its ordered labels and task-specific result surface stay
     /// available without adding a generic session trait.
     LangId,
+    /// Binary male/female classification through the dedicated
+    /// JaesungHuh/voice-gender-classifier topology. The dispatch returns a
+    /// bare session so the concrete binder can preserve its official label
+    /// order and selected backend without conflating it with ECAPA speaker
+    /// embeddings or language identification.
+    VoiceGenderClassification,
     /// Four-axis CE / CU / PC / PQ audio-quality regression through Meta
     /// Audiobox Aesthetics. The concrete scorer binds in the run/bench arm so
     /// the selected CPU/Metal backend reaches its complete WavLM forward.
@@ -435,6 +466,9 @@ pub(crate) enum ModelTask {
     /// LLM and required MOSS Audio Tokenizer Nano sidecar bind in `run` so
     /// both large weight sets are loaded exactly once and select one backend.
     TtsMossNano,
+    /// OpenMOSS MOSS-TTS Local Transformer v1.5 generation with its exact
+    /// MOSS Audio Tokenizer v2 companion.
+    TtsMossLocal,
     /// OpenMOSS MOSS-TTS Base/v1.5 delayed prompt-token generation. The
     /// mmap-backed Qwen3 model and required Full codec sidecar bind in `run`
     /// and select the same CPU/Metal backend.
@@ -531,12 +565,15 @@ const ARCH_WHISPER: &str = "whisper";
 const ARCH_CRISPER_WHISPER: &str = "crisper-whisper";
 const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
+/// Microsoft VibeVoice-1.5B composite TTS (strict partial binder).
+const ARCH_VIBEVOICE: &str = "vibevoice";
 const ARCH_CSM: &str = "csm";
 const ARCH_MOSHI: &str = "moshi";
 const ARCH_CAMPPLUS: &str = "campplus";
 const ARCH_XVECTOR: &str = "xvector";
 const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
 const ARCH_LANG_ID: &str = "lang_id_ecapa";
+const ARCH_VOICE_GENDER_CLASSIFIER: &str = "voice_gender_classifier";
 const ARCH_AUDIOBOX_AESTHETICS: &str = "audiobox-aesthetics";
 const ARCH_EMOTION2VEC: &str = "emotion2vec";
 const ARCH_DEEPFAKE_DETECTION: &str = "deepfake_detection";
@@ -739,8 +776,16 @@ const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
 const ARCH_PARAKEET_TDT_1_1B: &str = "parakeet-tdt-1_1b";
 /// NVIDIA Parakeet-CTC-1.1B FastConformer + CTC ASR.
 const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
+/// ESPnet OWSM v4 medium 1B strict manifest binder (forward pending parity).
+const ARCH_OWSM_V4_MEDIUM_1B: &str = "owsm-v4-medium-1b";
 /// NVIDIA Nemotron-3.5-ASR-Streaming-0.6B causal FastConformer + RNN-T.
 const ARCH_NEMOTRON_ASR: &str = "nemotron_asr_streaming";
+/// StepFun omniASR-CTC-1B waveform-to-token transcription.
+const ARCH_OMNIASR_CTC: &str = "omniasr-ctc";
+/// Sber GigaAM Multilingual CTC transcription.
+const ARCH_GIGAAM_MULTILINGUAL: &str = "gigaam_multilingual";
+/// Sber GigaAM v3 RNNT token-ID transcription.
+const ARCH_GIGAAM_V3: &str = "sber_gigaam_v3";
 /// NVIDIA Canary-1B-Flash multilingual FastConformer + Transformer AED ASR/AST.
 const ARCH_CANARY_1B_FLASH: &str = "canary-1b-flash";
 /// NVIDIA Canary-1B-v2 multilingual FastConformer + Transformer AED ASR/AST.
@@ -1013,6 +1058,39 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::AsrParakeetTdt11b))
         }
+        ARCH_OMNIASR_CTC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{}`",
+                    ARCH_OMNIASR_CTC
+                ));
+            }
+            // Bind in run/bench so there is one concrete load site for the
+            // strict 807-F32 manifest and the selected CPU/Metal backend.
+            Ok((session, ModelTask::AsrOmniasrCtcTokens))
+        }
+        ARCH_GIGAAM_MULTILINGUAL => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{}`",
+                    ARCH_GIGAAM_MULTILINGUAL
+                ));
+            }
+            // Bind in run/bench so there is one concrete load site for the
+            // strict authenticated 552-tensor manifest and selected backend.
+            Ok((session, ModelTask::AsrGigaamMultilingual))
+        }
+        ARCH_GIGAAM_V3 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{}`",
+                    ARCH_GIGAAM_V3
+                ));
+            }
+            // Bind in run/bench so the strict prepared-SHA gate and the
+            // selected backend are applied at the concrete callsite.
+            Ok((session, ModelTask::AsrGigaamV3Tokens))
+        }
         ARCH_QWEN3_ASR => {
             if hint.is_some() {
                 return Err(format!(
@@ -1171,6 +1249,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // opens both mmap-backed artifacts once on the requested backend.
             Ok((session, ModelTask::TtsQwen3))
         }
+        ARCH_VIBEVOICE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_VIBEVOICE}`"
+                ));
+            }
+            // Bare session: the concrete VibeVoice binder validates the
+            // strict 1,204-tensor partial artifact in the run arm. The full
+            // composite remains explicitly blocked without its authenticated
+            // tokenizer/prefill/scheduler companions.
+            Ok((session, ModelTask::TtsVibeVoice))
+        }
         ARCH_KOKORO => {
             if hint.is_some() {
                 return Err(format!(
@@ -1217,6 +1307,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // Bare session: the run arm binds the task-specific handle once,
             // preserving ordered labels and the selected backend.
             Ok((session, ModelTask::LangId))
+        }
+        ARCH_VOICE_GENDER_CLASSIFIER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_VOICE_GENDER_CLASSIFIER}`"
+                ));
+            }
+            // Bare session: the run/bench arms bind the dedicated classifier
+            // from this already-loaded GGUF exactly once. Keeping this arm
+            // separate from the speaker family prevents an ecapa_tdnn stamp
+            // from silently changing the task semantics.
+            Ok((session, ModelTask::VoiceGenderClassification))
         }
         ARCH_AUDIOBOX_AESTHETICS => {
             if hint.is_some() {
@@ -1816,6 +1918,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 Ok((session, ModelTask::TtsMossVoiceGenerator))
             } else if name == vokra_models::moss_tts::NAME {
                 Ok((session, ModelTask::TtsMossNano))
+            } else if name == vokra_models::moss_tts::LOCAL_NAME {
+                Ok((session, ModelTask::TtsMossLocal))
             } else if name == vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name()
                 || name == vokra_models::moss_tts::MossTtsDelayRelease::V1_5.model_name()
             {
@@ -2142,6 +2246,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
             vokra_models::canary_qwen::CanaryQwenAsr::from_gguf(g).map(|_| ())
         }),
     },
+    BoundArch {
+        arch: ARCH_OWSM_V4_MEDIUM_1B,
+        module: "vokra_models::owsm_v4_medium_1b",
+        entry: "OwsmV4Medium1b::from_gguf → transcribe (NotImplemented until VAST parity)",
+        probe: Some(|g: &GgufFile| OwsmV4Medium1b::from_file(g).map(|_| ())),
+    },
     // `distil-whisper` and `kotoba-whisper` used to sit here as
     // `LoudPartialForward`. Both were false — each binder's `transcribe`
     // delegates to `vokra_models::whisper::WhisperAsr`, a real forward — so
@@ -2149,14 +2259,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // instead (see `ARCH_DISTIL_WHISPER` / `ARCH_KOTOBA_WHISPER` above). Do
     // not re-add them: `bound_arch_registry_is_disjoint_from_the_routed_arches`
     // now fails on a row that shadows either arch.
-    BoundArch {
-        arch: "omniasr-ctc",
-        module: "vokra_models::omniasr_ctc",
-        entry: "OmniasrCtcAsr::from_gguf → OmniasrCtcAsr::transcribe",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(g).map(|_| ())
-        }),
-    },
     BoundArch {
         arch: "sensevoicesmall",
         module: "vokra_models::sensevoicesmall_runtime",
@@ -2174,16 +2276,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
         }),
     },
     BoundArch {
-        arch: "sber_gigaam_v3",
-        module: "vokra_models::gigaam",
-        entry: "Gigaam::from_gguf → Gigaam::transcribe",
-        probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "gigaam_multilingual",
-        module: "vokra_models::gigaam",
-        entry: "Gigaam::from_gguf → Gigaam::transcribe",
-        probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
+        arch: "sgmse_voicebank",
+        module: "vokra_models::sgmse",
+        entry: "SgmseModel::from_gguf → native CPU score parity PASS; CPU enhancement parity pending; Metal FIR/score staged; Apple parity pending",
+        probe: Some(|g: &GgufFile| vokra_models::sgmse::SgmseModel::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "kyutai-stt",
@@ -2283,7 +2379,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "zonos",
         module: "vokra_models::zonos",
-        entry: "ZonosCheckpoint::from_gguf → ZonosCheckpoint::synthesize",
+        entry: "ZonosCheckpoint::from_gguf → INSPECTION_ONLY (no synthesize)",
         probe: Some(|g: &GgufFile| vokra_models::zonos::ZonosCheckpoint::from_gguf(g).map(|_| ())),
     },
     BoundArch {
@@ -2489,6 +2585,14 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // BigVGAN and Vocos left this registry on 2026-08-21 after strict
     // loaders, real forwards, parity, and explicit feature-file CLI
     // contracts landed.
+    BoundArch {
+        // Keep this literal in sync with `vokra_models::bicodec::ARCH`: the
+        // bound-arch coverage gate intentionally scans registry literals.
+        arch: "bicodec",
+        module: "vokra_models::bicodec",
+        entry: "Bicodec::from_gguf → Bicodec::decode",
+        probe: Some(|g: &GgufFile| vokra_models::bicodec::Bicodec::from_gguf(g).map(|_| ())),
+    },
     // --- Text / alignment side-cars ---------------------------------------
     // --- Wave H (2026-08-15) — five binders this registry had missed -------
     //
@@ -3045,6 +3149,49 @@ mod tests {
         assert!(
             BOUND_ARCHES.iter().all(|row| row.arch != ARCH_QWEN3_ASR),
             "a routed Qwen3-ASR forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_omniasr_ctc_to_the_token_task() {
+        let (_session, task) = with_arch_only_gguf(
+            vokra_models::omniasr_ctc::EXPECTED_ARCH,
+            "omniasr-routed",
+            |path| load_session(path).expect("omniASR-CTC binds in the concrete run/bench arm"),
+        );
+        assert_eq!(task, ModelTask::AsrOmniasrCtcTokens);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_OMNIASR_CTC),
+            "a routed omniASR-CTC forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_gigaam_multilingual_to_the_ctc_task() {
+        let (_session, task) = with_arch_only_gguf(
+            vokra_models::gigaam::multilingual::ARCH,
+            "gigaam-multilingual-routed",
+            |path| load_session(path).expect("GigaAM Multilingual session builds bare"),
+        );
+        assert_eq!(task, ModelTask::AsrGigaamMultilingual);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_GIGAAM_MULTILINGUAL),
+            "a routed GigaAM Multilingual forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_gigaam_v3_to_the_token_task() {
+        let (_session, task) =
+            with_arch_only_gguf(vokra_models::gigaam::v3::ARCH, "gigaam-v3-routed", |path| {
+                load_session(path).expect("GigaAM v3 session builds bare")
+            });
+        assert_eq!(task, ModelTask::AsrGigaamV3Tokens);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_GIGAAM_V3),
+            "a routed GigaAM v3 forward must not retain a bound-only row"
         );
     }
 
@@ -3713,6 +3860,27 @@ mod tests {
         );
     }
 
+    /// SGMSE is discoverable through its typed binder. An arch-only synthetic
+    /// GGUF still fails closed at the typed-manifest boundary because it has
+    /// no authenticated tensor metadata.
+    #[test]
+    fn load_session_binds_sgmse_arch_fail_closed() {
+        let err = assert_bound_arch(
+            "sgmse_voicebank",
+            "sgmse-voicebank-arch",
+            "vokra_models::sgmse",
+            "native CPU score parity PASS; CPU enhancement parity pending; Metal FIR/score staged; Apple parity pending",
+        );
+        assert!(
+            err.contains("typed tensor manifest metadata is missing"),
+            "arch-only SGMSE must fail at the missing typed manifest boundary: {err}"
+        );
+        assert!(
+            !err.contains("SOURCE_PLAN_ONLY") && !err.contains("VAST-reviewed tensor digest"),
+            "SGMSE must not report the retired pre-compiled-manifest blocker: {err}"
+        );
+    }
+
     /// Deepfake detection now has a complete printable fake/real classifier
     /// task instead of the retired bound-but-not-runnable diagnostic.
     #[test]
@@ -3730,6 +3898,17 @@ mod tests {
         let result = with_arch_only_gguf(ARCH_LANG_ID, "lang-id-arch", load_session);
         let (_session, task) = result.expect("Lang-ID session builds (bare)");
         assert_eq!(task, ModelTask::LangId);
+    }
+
+    #[test]
+    fn load_session_routes_voice_gender_to_dedicated_classification_task() {
+        let result = with_arch_only_gguf(
+            ARCH_VOICE_GENDER_CLASSIFIER,
+            "voice-gender-classifier-arch",
+            load_session,
+        );
+        let (_session, task) = result.expect("voice-gender session builds (bare)");
+        assert_eq!(task, ModelTask::VoiceGenderClassification);
     }
 
     /// Audiobox has a concrete CPU/Metal run task and binds after WAV rate
@@ -3878,10 +4057,10 @@ mod tests {
         );
     }
 
-    /// The registry must not carry either arch again. `assert_routed_to_whisper_asr`
-    /// checks the message a user sees; this checks the data behind it, so a
-    /// re-added row fails here with a direct explanation rather than only as a
-    /// downstream symptom.
+    /// The registry must not carry these concrete ASR routes again.
+    /// `assert_routed_to_whisper_asr` checks the message a user sees; this
+    /// checks the data behind it, so a re-added row fails here with a direct
+    /// explanation rather than only as a downstream symptom.
     #[test]
     fn bound_arch_registry_excludes_routed_asr_forwards() {
         for arch in [
@@ -3892,6 +4071,8 @@ mod tests {
             ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
             ARCH_QWEN3_ASR,
+            ARCH_OMNIASR_CTC,
+            ARCH_GIGAAM_MULTILINGUAL,
             ARCH_NEMOTRON_ASR,
             ARCH_CANARY_1B_FLASH,
             ARCH_REAZONSPEECH_NEMO_V2,
@@ -3899,8 +4080,8 @@ mod tests {
         ] {
             assert!(
                 BOUND_ARCHES.iter().all(|b| b.arch != arch),
-                "`{arch}` has a real ASR forward and is \
-                 routed to ModelTask::Asr — a BOUND_ARCHES row for it is both unreachable \
+                "`{arch}` has a real ASR forward and is routed to a concrete ModelTask — a \
+                 BOUND_ARCHES row for it is both unreachable \
                  and untrue"
             );
         }
@@ -4318,6 +4499,14 @@ mod tests {
             |path| load_session(path).expect("MOSS-TTS Nano session builds (bare)"),
         );
         assert_eq!(task, ModelTask::TtsMossNano);
+        let (_session, task) = with_named_arch_gguf(
+            ARCH_MOSS_TTS,
+            vokra_models::moss_tts::LOCAL_NAME,
+            None,
+            "moss-tts-local",
+            |path| load_session(path).expect("MOSS-TTS Local session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::TtsMossLocal);
         for release in [
             vokra_models::moss_tts::MossTtsDelayRelease::Base,
             vokra_models::moss_tts::MossTtsDelayRelease::V1_5,
@@ -4384,10 +4573,14 @@ mod tests {
             ARCH_CAMPPLUS,
             ARCH_XVECTOR,
             ARCH_ECAPA_TDNN,
+            ARCH_LANG_ID,
+            ARCH_VOICE_GENDER_CLASSIFIER,
             ARCH_WESPEAKER,
             ARCH_TITANET,
             ARCH_VOXTRAL,
             ARCH_QWEN3_ASR,
+            ARCH_OMNIASR_CTC,
+            ARCH_GIGAAM_MULTILINGUAL,
             ARCH_ULTRAVOX,
             ARCH_MOSS_AUDIO,
             ARCH_KOKORO,

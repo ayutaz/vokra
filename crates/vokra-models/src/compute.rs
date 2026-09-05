@@ -62,6 +62,7 @@ use vokra_ops::{
     Xcodec2FsqAttrs, dac_rvq_decode, encodec_rvq_decode, mimi_rvq_decode, qwen3_tts_codec_decode,
     wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
+use vokra_ops::{OuvEConfig, annealed_langevin_step, reverse_diffusion_step};
 
 /// A backend-dispatched hot op — the operators the imperative models route
 /// through a backend (as opposed to the model-internal scalar glue like
@@ -127,8 +128,33 @@ pub enum HotOp {
     /// the scalar mathematical reference; Metal dispatches the existing
     /// `vokra_silu_f32` kernel. Other backends remain explicitly uncovered.
     Silu,
+    /// OUVE-SDE predictor/corrector sampler steps used by SGMSE-VoiceBank.
+    /// Metal dispatches both updates through device-resident buffers; CUDA,
+    /// Vulkan, and WebGPU stay explicitly uncovered until matching kernels
+    /// land, so a model listing this op cannot silently run its sampler on CPU.
+    OuveSde,
     /// 1-D convolution (`conv1d_f32`) — Whisper encoder stem.
     Conv1d,
+    /// Stride/dilation-aware dense 1-D convolution.  This is distinct from
+    /// [`HotOp::Conv1d`] because the backend coverage and shape contract carry
+    /// an explicit effective kernel (`1 + (kernel - 1) * dilation`).
+    Conv1dDilation,
+    /// PyTorch-layout ConvTranspose1d used by waveform vocoders.  The
+    /// `output_padding` and output extent are explicit at every call site;
+    /// unsupported backends reject the complete model before execution.
+    ConvTranspose1d,
+    /// Dense/grouped PyTorch-layout Conv2d over channel-major `[C,H,W]`
+    /// buffers. CPU and Metal provide real FP32 kernels; other backends reject
+    /// this hot op explicitly until they gain matching seams.
+    Conv2d,
+    /// PyTorch-layout ConvTranspose2d with explicit stride, padding, dilation,
+    /// output-padding, and groups. CPU and Metal provide real FP32 kernels;
+    /// other backends remain explicitly unsupported.
+    ConvTranspose2d,
+    /// Fixed `[1,3,3,1]` separable FIR resampling over channel-major
+    /// `[C,H,W]` tensors. The SGMSE NCSN++ path uses the 2x upsample and
+    /// 2x downsample forms; CPU and Metal share this checked shape contract.
+    FirResample2d,
     /// Mimi (Kyutai) residual vector quantization codec decode
     /// (`mimi_rvq_decode`) — the M3-06 RVQ codec op family. The heterogeneous
     /// signature (u32 `codes` + `Vec<CodebookTable>` → `Vec<f32>`) drives the
@@ -477,7 +503,13 @@ impl HotOp {
                 | HotOp::Elu
                 | HotOp::Tanh
                 | HotOp::Silu
+                | HotOp::OuveSde
                 | HotOp::Conv1d
+                | HotOp::Conv1dDilation
+                | HotOp::ConvTranspose1d
+                | HotOp::Conv2d
+                | HotOp::ConvTranspose2d
+                | HotOp::FirResample2d
                 | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
                 | HotOp::DacRvq
@@ -1014,6 +1046,146 @@ impl Compute {
         }
     }
 
+    /// Row-major GEMM with f32 activations and raw BF16 weight bits.
+    ///
+    /// `a` is `[m, k]`, `b` is `[k, n]` of numeric BF16 bit patterns, and
+    /// `out` is `[m, n]`. CPU keeps activations in f32 and widens bounded
+    /// weight panels inside the kernel. Metal uploads raw bits to its
+    /// dedicated device primitive and widens in MSL; CUDA/WebGPU retain their
+    /// existing dense-F32 route in model callers because they do not advertise
+    /// this capability. No backend silently falls back to CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_f32_bf16_bits(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[u16],
+        out: &mut [f32],
+    ) -> Result<()> {
+        let mut scratch = kernels::GemmF32Bf16BitsScratch::new();
+        self.gemm_f32_bf16_bits_with_scratch(m, n, k, a, b, out, &mut scratch)
+    }
+
+    /// Mixed-BF16 GEMM using reusable CPU scratch where applicable. The Metal
+    /// arm uses its raw-BF16 host wrapper; the caller-owned CPU scratch remains
+    /// untouched there because the Metal context owns device storage and
+    /// widening.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_f32_bf16_bits_with_scratch(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[u16],
+        out: &mut [f32],
+        scratch: &mut kernels::GemmF32Bf16BitsScratch,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => {
+                    kernels::gemm_f32_bf16_bits_on_with_scratch(isa, m, n, k, a, b, out, scratch)
+                }
+                None => kernels::gemm_f32_bf16_bits_with_scratch(m, n, k, a, b, out, scratch),
+            },
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.gemm_f32_bf16_bits(m, n, k, a, b, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "mixed raw-BF16 GEMM is not exposed on CUDA; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "mixed raw-BF16 GEMM is not exposed on WebGPU; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Mixed-BF16 GEMM into a larger row-major destination.
+    ///
+    /// `out_stride` is the destination row width and must be at least `n`.
+    /// The CPU arm is the bounded-panel seam used by mapped model linears, so
+    /// its reusable `8 × 8` tile is the only output tile allocated. Metal model
+    /// linears use the non-strided method with one complete raw-BF16 logical
+    /// panel per submission; Metal rejects this strided seam explicitly rather
+    /// than hiding a per-row submission loop or allocating a complete F32
+    /// temporary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_f32_bf16_bits_strided_with_scratch(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[u16],
+        out: &mut [f32],
+        out_stride: usize,
+        scratch: &mut kernels::GemmF32Bf16BitsScratch,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => kernels::gemm_f32_bf16_bits_on_with_scratch_strided(
+                    isa, m, n, k, a, b, out, out_stride, scratch,
+                ),
+                None => kernels::gemm_f32_bf16_bits_on_with_scratch_strided(
+                    vokra_backend_cpu::active_isa(),
+                    m,
+                    n,
+                    k,
+                    a,
+                    b,
+                    out,
+                    out_stride,
+                    scratch,
+                ),
+            },
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => Err(VokraError::UnsupportedOp(
+                "strided mixed raw-BF16 GEMM is not exposed on Metal; use the contiguous raw-BF16 GEMM route"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "mixed raw-BF16 GEMM is not exposed on CUDA; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "mixed raw-BF16 GEMM is not exposed on WebGPU; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Whether this dispatcher is the explicit CPU backend.
+    #[must_use]
+    pub fn is_cpu(&self) -> bool {
+        matches!(&self.be, Be::Cpu)
+    }
+
+    /// Whether this backend can consume mapped raw-BF16 weight panels while
+    /// retaining FP32 activations. CPU uses the bounded scalar/SIMD panel
+    /// kernels and Metal uses its `ushort` device-storage path. CUDA and
+    /// WebGPU deliberately return `false`; model callers retain their dense
+    /// FP32 route there rather than invoking an unsupported seam or silently
+    /// transferring work to CPU.
+    #[must_use]
+    pub fn supports_mixed_bf16(&self) -> bool {
+        match &self.be {
+            Be::Cpu => true,
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => true,
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => false,
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => false,
+        }
+    }
+
     /// Row-major GEMM against a **K-quantized** weight
     /// (`out[t,j] = bias[j] + Σ_l a[t,l]·dequant(wq[j,l])`), the fused
     /// dequant-dot counterpart of [`Self::gemm_f32`] (M5-15-T27/T33).
@@ -1251,6 +1423,43 @@ impl Compute {
         }
     }
 
+    /// Affine multi-group GroupNorm over channel-major `[channels, positions]`.
+    /// The reduction is over `channels / groups × positions`, with per-channel
+    /// gamma/beta. CPU and Metal provide matching kernels; unsupported
+    /// backends reject explicitly rather than falling back to the host.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_groups_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        groups: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => vokra_backend_cpu::kernels::group_norm_groups_f32(
+                input, out, channels, positions, groups, gamma, beta, eps,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.group_norm_groups_f32(
+                input, out, channels, positions, groups, gamma, beta, eps,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "group_norm_groups_f32 has no wired CUDA kernel; Vokra does not silently run the op on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "group_norm_groups_f32 has no wired WebGPU kernel; Vokra does not silently run the op on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// Element-wise exact (erf) GELU (`x` and `out` equal length).
     pub fn gelu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
         match &self.be {
@@ -1387,6 +1596,107 @@ impl Compute {
         }
     }
 
+    /// Executes one OUVE-SDE predictor update through the selected backend.
+    /// Metal dispatches the device-resident predictor kernel and never falls
+    /// back to the CPU; CUDA/WebGPU remain explicit unsupported arms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_reverse_diffusion_step(
+        &self,
+        config: OuvEConfig,
+        x: &[f32],
+        y: &[f32],
+        score: &[f32],
+        t: f32,
+        step: f32,
+        noise: &[f32],
+        probability_flow: bool,
+        out: &mut [f32],
+        out_mean: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => reverse_diffusion_step(
+                config,
+                x,
+                y,
+                score,
+                t,
+                step,
+                noise,
+                probability_flow,
+                out,
+                out_mean,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.ouve_reverse_diffusion_f32(
+                config.theta,
+                config.sigma_min,
+                config.sigma_max,
+                x,
+                y,
+                score,
+                t,
+                step,
+                noise,
+                probability_flow,
+                out,
+                out_mean,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "OUVE reverse diffusion has no CUDA kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "OUVE reverse diffusion has no WebGPU kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Executes one OUVE annealed-Langevin corrector update through the
+    /// selected backend. Metal dispatches the device-resident corrector;
+    /// CUDA/WebGPU remain explicit unsupported arms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_annealed_langevin_step(
+        &self,
+        config: OuvEConfig,
+        x: &[f32],
+        score: &[f32],
+        t: f32,
+        snr: f32,
+        noise: &[f32],
+        out: &mut [f32],
+        out_mean: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => annealed_langevin_step(config, x, score, t, snr, noise, out, out_mean),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.ouve_annealed_langevin_f32(
+                config.theta,
+                config.sigma_min,
+                config.sigma_max,
+                x,
+                score,
+                t,
+                snr,
+                noise,
+                out,
+                out_mean,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "OUVE annealed Langevin has no CUDA kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "OUVE annealed Langevin has no WebGPU kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// 1-D convolution via im2col + GEMM (`input` is `in_ch × in_len`, `weight`
     /// is `out_ch × in_ch × kernel`, `out` is `out_ch × out_len`).
     #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set (matches kernels::conv1d_f32)
@@ -1427,6 +1737,112 @@ impl Compute {
         }
     }
 
+    /// Dense Conv1d with explicit stride, dilation, and symmetric zero
+    /// padding.  All shape arithmetic is checked before dispatch; GPU arms
+    /// never fall back to the CPU when their backend is unavailable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv1d_f32_dilated(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) if dilation == 1 => kernels::conv1d_f32_on(
+                    isa, input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+                ),
+                _ => kernels::conv1d_f32_dilated(
+                    input, in_ch, in_len, weight, out_ch, kernel, bias, stride, dilation, padding,
+                    out,
+                ),
+            },
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.conv1d_f32_dilated(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, dilation, padding,
+                out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "conv1d_f32_dilated has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "conv1d_f32_dilated has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// PyTorch-layout ConvTranspose1d (`weight = [in_ch, out_ch, kernel]`)
+    /// with explicit stride, padding, and output padding.  The CPU and Metal
+    /// arms share the same checked output-length formula and accumulation
+    /// layout; unsupported GPU backends reject explicitly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::conv_transpose1d_f32(
+                input,
+                in_ch,
+                in_len,
+                weight,
+                out_ch,
+                kernel,
+                bias,
+                stride,
+                padding,
+                output_padding,
+                out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.conv_transpose1d_f32(
+                input,
+                in_ch,
+                in_len,
+                weight,
+                out_ch,
+                kernel,
+                bias,
+                stride,
+                padding,
+                output_padding,
+                out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "conv_transpose1d_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "conv_transpose1d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// Grouped 1-D convolution. The CPU and Metal arms execute real grouped
     /// kernels; other GPU arms refuse explicitly because their coverage gate
     /// does not list [`HotOp::GroupedConv1d`].
@@ -1461,6 +1877,172 @@ impl Compute {
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "grouped_conv1d has no WebGPU Compute-seam kernel; no CPU fallback is performed"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Dense/grouped PyTorch-layout Conv2d over channel-major `[C,H,W]`
+    /// buffers. The CPU and Metal arms execute the matching scalar/reference
+    /// kernels; CUDA and WebGPU reject explicitly rather than falling back.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::conv2d_f32(
+                input, in_ch, in_h, in_w, weight, out_ch, kernel_h, kernel_w, bias, stride,
+                padding, dilation, groups, out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.conv2d_f32(
+                input, in_ch, in_h, in_w, weight, out_ch, kernel_h, kernel_w, bias, stride,
+                padding, dilation, groups, out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "conv2d_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "conv2d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Applies the fixed normalized `[1, 3, 3, 1]` separable FIR used by
+    /// SGMSE's NCSN++ graph to channel-major `[C,H,W]` data.
+    ///
+    /// `upsample = true` inserts a 2x2 zero lattice, uses asymmetric padding
+    /// `(pad_before, pad_after) = (2,1)`, and applies gain four; `false` uses
+    /// no insertion and symmetric `(1,1)` padding while sampling every second
+    /// convolution output. This is a narrow
+    /// backend hot op rather than a general resampler so that the CPU oracle
+    /// and Metal dispatch remain exactly aligned. The output shape is
+    /// `[C, H*2, W*2]` for upsampling and `[C, H/2, W/2]` for downsampling.
+    ///
+    /// Input and output must be disjoint, finite, correctly shaped buffers.
+    /// Unsupported GPU backends return [`VokraError::UnsupportedOp`] without
+    /// falling back to the CPU.
+    pub fn fir_resample_2d_f32(
+        &self,
+        input: &[f32],
+        channels: usize,
+        height: usize,
+        width: usize,
+        upsample: bool,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let (out_height, out_width) =
+            validate_fir_resample_2d(input, channels, height, width, upsample, output)?;
+        match &self.be {
+            Be::Cpu => fir_resample_2d_cpu(
+                input,
+                channels,
+                height,
+                width,
+                upsample,
+                out_height,
+                out_width,
+                output,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.fir_resample_2d_f32(
+                input, channels, height, width, upsample, output,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "fir_resample_2d_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU".to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "fir_resample_2d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU".to_owned(),
+            )),
+        }
+    }
+
+    /// Dense/grouped PyTorch-layout ConvTranspose2d over channel-major
+    /// `[C,H,W]` buffers. Weight layout is `[in_ch, out_ch/groups, kh, kw]`.
+    /// Unsupported backends return an explicit error with no CPU fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        output_padding: (usize, usize),
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::conv_transpose2d_f32(
+                input,
+                in_ch,
+                in_h,
+                in_w,
+                weight,
+                out_ch,
+                kernel_h,
+                kernel_w,
+                bias,
+                stride,
+                padding,
+                dilation,
+                output_padding,
+                groups,
+                out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.conv_transpose2d_f32(
+                input,
+                in_ch,
+                in_h,
+                in_w,
+                weight,
+                out_ch,
+                kernel_h,
+                kernel_w,
+                bias,
+                stride,
+                padding,
+                dilation,
+                output_padding,
+                groups,
+                out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "conv_transpose2d_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "conv_transpose2d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
                     .to_owned(),
             )),
         }
@@ -3639,6 +4221,509 @@ pub fn make_backend(kind: BackendKind) -> Result<Box<dyn Backend>> {
     }
 }
 
+/// Adapter for the shared Conformer primitive.  The primitive stores linear
+/// weights in the natural model layout `[out, in]`, while the backend GEMM
+/// seam consumes `[m, k] × [k, n]`; this adapter performs only the required
+/// host-side layout conversion and sends every learned operation itself to
+/// `Compute`.
+impl vokra_ops::conformer::ConformerCompute for Compute {
+    fn linear_row(
+        &self,
+        input: &[f32],
+        rows: usize,
+        in_dim: usize,
+        weight: &[f32],
+        bias: &[f32],
+        out_dim: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        if input.len()
+            != rows.checked_mul(in_dim).ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer linear input shape overflows usize".into())
+            })?
+            || output.len()
+                != rows.checked_mul(out_dim).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "Conformer linear output shape overflows usize".into(),
+                    )
+                })?
+            || weight.len()
+                != out_dim.checked_mul(in_dim).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "Conformer linear weight shape overflows usize".into(),
+                    )
+                })?
+            || bias.len() != out_dim
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer linear shape mismatch".to_owned(),
+            ));
+        }
+        let mut transposed = vec![0.0f32; weight.len()];
+        for out_index in 0..out_dim {
+            for in_index in 0..in_dim {
+                transposed[in_index * out_dim + out_index] = weight[out_index * in_dim + in_index];
+            }
+        }
+        self.gemm_f32(
+            rows,
+            out_dim,
+            in_dim,
+            input,
+            &transposed,
+            Some(bias),
+            output,
+        )
+    }
+
+    fn gemm(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+        output: &mut [f32],
+    ) -> Result<()> {
+        self.gemm_f32(m, n, k, a, b, bias, output)
+    }
+
+    fn layer_norm(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        self.layer_norm_f32(input, output, rows, cols, gamma, beta, eps)
+    }
+
+    fn softmax(&self, input: &[f32], output: &mut [f32], rows: usize, cols: usize) -> Result<()> {
+        self.softmax_f32(input, output, rows, cols)
+    }
+
+    fn log_softmax(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        let row_values = rows.checked_mul(cols).ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer log-softmax shape overflows usize".into())
+        })?;
+        if input.len() != row_values || output.len() != row_values || cols == 0 {
+            return Err(VokraError::InvalidArgument(
+                "Conformer log-softmax shape mismatch".to_owned(),
+            ));
+        }
+        if self.backend_name() == "cpu" {
+            for row in 0..rows {
+                let src = &input[row * cols..(row + 1) * cols];
+                let dst = &mut output[row * cols..(row + 1) * cols];
+                let max = src.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let sum = src.iter().map(|value| (*value - max).exp()).sum::<f32>();
+                if !sum.is_finite() || sum <= 0.0 {
+                    return Err(VokraError::ModelLoad(
+                        "Conformer log-softmax normalization failed".into(),
+                    ));
+                }
+                let log_sum = max + sum.ln();
+                for (dst, &value) in dst.iter_mut().zip(src) {
+                    *dst = value - log_sum;
+                }
+            }
+            return Ok(());
+        }
+        self.softmax_f32(input, output, rows, cols)?;
+        if output
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return Err(VokraError::ModelLoad(
+                "Conformer log-softmax device normalization failed".into(),
+            ));
+        }
+        for value in output {
+            *value = value.ln();
+        }
+        Ok(())
+    }
+
+    fn relu(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        self.relu_f32(input, output)
+    }
+
+    fn silu(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        self.silu_f32(input, output)
+    }
+
+    fn sigmoid(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        if input.len() != output.len() {
+            return Err(VokraError::InvalidArgument(
+                "Conformer sigmoid shape mismatch".to_owned(),
+            ));
+        }
+        if self.backend_name() == "cpu" {
+            for (dst, &src) in output.iter_mut().zip(input) {
+                *dst = if src >= 0.0 {
+                    1.0 / (1.0 + (-src).exp())
+                } else {
+                    let exp = src.exp();
+                    exp / (1.0 + exp)
+                };
+            }
+            return Ok(());
+        }
+        // Metal has a native SiLU kernel but no standalone sigmoid kernel.
+        // Since sigmoid(x) = SiLU(x) / x (with sigmoid(0)=1/2), this keeps
+        // the exponential on the selected device and performs only a scalar
+        // finalization on the host; it never dispatches the op to CPU.
+        self.silu_f32(input, output)?;
+        for (dst, &src) in output.iter_mut().zip(input) {
+            *dst = if src == 0.0 { 0.5 } else { *dst / src };
+        }
+        Ok(())
+    }
+
+    fn tanh(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        self.tanh_f32(input, output)
+    }
+
+    fn conv1d_time_major(
+        &self,
+        input: &[f32],
+        in_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        out_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let output_len = input_len
+            .checked_add(padding.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer padding shape overflows usize".into())
+            })?)
+            .and_then(|value| value.checked_sub(kernel))
+            .and_then(|value| value.checked_div(stride))
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer Conv1d output shape is invalid".into())
+            })?;
+        let input_values = input_len.checked_mul(in_channels).ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer Conv1d input shape overflows usize".into())
+        })?;
+        let weight_values = out_channels
+            .checked_mul(in_channels)
+            .and_then(|value| value.checked_mul(kernel))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer Conv1d weight shape overflows usize".into())
+            })?;
+        let output_values = output_len.checked_mul(out_channels).ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer Conv1d output shape overflows usize".into())
+        })?;
+        if input.len() != input_values
+            || weight.len() != weight_values
+            || output.len() != output_values
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer Conv1d shape mismatch".to_owned(),
+            ));
+        }
+        let mut channel_major = vec![0.0f32; input.len()];
+        for time in 0..input_len {
+            for channel in 0..in_channels {
+                channel_major[channel * input_len + time] = input[time * in_channels + channel];
+            }
+        }
+        let mut channel_output = vec![0.0f32; output.len()];
+        self.conv1d_f32(
+            &channel_major,
+            in_channels,
+            input_len,
+            weight,
+            out_channels,
+            kernel,
+            bias,
+            stride,
+            padding,
+            &mut channel_output,
+        )?;
+        for time in 0..output_len {
+            for channel in 0..out_channels {
+                output[time * out_channels + channel] = channel_output[channel * output_len + time];
+            }
+        }
+        Ok(())
+    }
+
+    fn grouped_conv1d_time_major(
+        &self,
+        input: &[f32],
+        in_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        out_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let output_len = input_len
+            .checked_add(padding.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer padding shape overflows usize".into())
+            })?)
+            .and_then(|value| value.checked_sub(kernel))
+            .and_then(|value| value.checked_div(stride))
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer Conv1d output shape is invalid".into())
+            })?;
+        let input_values = input_len.checked_mul(in_channels).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "Conformer grouped Conv1d input shape overflows usize".into(),
+            )
+        })?;
+        let channels_per_group = in_channels.checked_div(groups).ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer grouped Conv1d group shape is invalid".into())
+        })?;
+        let weight_values = out_channels
+            .checked_mul(channels_per_group)
+            .and_then(|value| value.checked_mul(kernel))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "Conformer grouped Conv1d weight shape overflows usize".into(),
+                )
+            })?;
+        let output_values = output_len.checked_mul(out_channels).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "Conformer grouped Conv1d output shape overflows usize".into(),
+            )
+        })?;
+        if groups == 0
+            || in_channels % groups != 0
+            || out_channels % groups != 0
+            || input.len() != input_values
+            || weight.len() != weight_values
+            || output.len() != output_values
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer grouped Conv1d shape mismatch".to_owned(),
+            ));
+        }
+        let mut channel_major = vec![0.0f32; input.len()];
+        for time in 0..input_len {
+            for channel in 0..in_channels {
+                channel_major[channel * input_len + time] = input[time * in_channels + channel];
+            }
+        }
+        let mut channel_output = vec![0.0f32; output.len()];
+        self.grouped_conv1d_f32(
+            &channel_major,
+            in_channels,
+            input_len,
+            weight,
+            out_channels,
+            kernel,
+            bias,
+            stride,
+            padding,
+            groups,
+            &mut channel_output,
+        )?;
+        for time in 0..output_len {
+            for channel in 0..out_channels {
+                output[time * out_channels + channel] = channel_output[channel * output_len + time];
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_fir_resample_2d(
+    input: &[f32],
+    channels: usize,
+    height: usize,
+    width: usize,
+    upsample: bool,
+    output: &[f32],
+) -> Result<(usize, usize)> {
+    if channels == 0 || height == 0 || width == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d dimensions must be non-zero".to_owned(),
+        ));
+    }
+    let input_plane = height.checked_mul(width).ok_or_else(|| {
+        VokraError::InvalidArgument("fir_resample_2d input plane overflows usize".to_owned())
+    })?;
+    let input_len = channels.checked_mul(input_plane).ok_or_else(|| {
+        VokraError::InvalidArgument("fir_resample_2d input length overflows usize".to_owned())
+    })?;
+    if input.len() != input_len || input.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d input shape or values are invalid".to_owned(),
+        ));
+    }
+    let (out_height, out_width) = if upsample {
+        (
+            height.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "fir_resample_2d upsample height overflows usize".to_owned(),
+                )
+            })?,
+            width.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "fir_resample_2d upsample width overflows usize".to_owned(),
+                )
+            })?,
+        )
+    } else {
+        (height / 2, width / 2)
+    };
+    if out_height == 0 || out_width == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d downsample output dimensions are zero".to_owned(),
+        ));
+    }
+    let output_len = channels
+        .checked_mul(out_height)
+        .and_then(|value| value.checked_mul(out_width))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d output length overflows usize".to_owned())
+        })?;
+    if output.len() != output_len {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d output shape is invalid".to_owned(),
+        ));
+    }
+    let expanded_height = height
+        .checked_mul(if upsample { 2 } else { 1 })
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "fir_resample_2d expanded height overflows usize".to_owned(),
+            )
+        })?;
+    let expanded_width = width
+        .checked_mul(if upsample { 2 } else { 1 })
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d expanded width overflows usize".to_owned())
+        })?;
+    let pad = if upsample { 2 } else { 1 };
+    expanded_height
+        .checked_add(pad)
+        .and_then(|value| value.checked_add(pad))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d padded height overflows usize".to_owned())
+        })?;
+    expanded_width
+        .checked_add(pad)
+        .and_then(|value| value.checked_add(pad))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("fir_resample_2d padded width overflows usize".to_owned())
+        })?;
+    if slices_overlap(input, output) {
+        return Err(VokraError::InvalidArgument(
+            "fir_resample_2d input and output must be disjoint".to_owned(),
+        ));
+    }
+    Ok((out_height, out_width))
+}
+
+fn slices_overlap(input: &[f32], output: &[f32]) -> bool {
+    if input.is_empty() || output.is_empty() {
+        return false;
+    }
+    let input_start = input.as_ptr() as usize;
+    let output_start = output.as_ptr() as usize;
+    let Some(input_bytes) = input.len().checked_mul(core::mem::size_of::<f32>()) else {
+        return true;
+    };
+    let Some(output_bytes) = output.len().checked_mul(core::mem::size_of::<f32>()) else {
+        return true;
+    };
+    let Some(input_end) = input_start.checked_add(input_bytes) else {
+        return true;
+    };
+    let Some(output_end) = output_start.checked_add(output_bytes) else {
+        return true;
+    };
+    input_start < output_end && output_start < input_end
+}
+
+// Intrinsic checked FIR shape/dispatch argument set for the Compute seam.
+#[allow(clippy::too_many_arguments)]
+fn fir_resample_2d_cpu(
+    input: &[f32],
+    channels: usize,
+    height: usize,
+    width: usize,
+    upsample: bool,
+    out_height: usize,
+    out_width: usize,
+    output: &mut [f32],
+) -> Result<()> {
+    const TAPS: [f32; 4] = [1.0 / 8.0, 3.0 / 8.0, 3.0 / 8.0, 1.0 / 8.0];
+    let (factor, down, pad, gain) = if upsample {
+        (2usize, 1usize, 2usize, 4.0f32)
+    } else {
+        (1usize, 2usize, 1usize, 1.0f32)
+    };
+    let input_plane = height * width;
+    let output_plane = out_height * out_width;
+    let expanded_height = height * factor;
+    let expanded_width = width * factor;
+    for channel in 0..channels {
+        let input_base = channel * input_plane;
+        let output_base = channel * output_plane;
+        for out_y in 0..out_height {
+            let conv_y = out_y * down;
+            for out_x in 0..out_width {
+                let conv_x = out_x * down;
+                let mut value = 0.0f32;
+                for (ky, &tap_y) in TAPS.iter().enumerate() {
+                    for (kx, &tap_x) in TAPS.iter().enumerate() {
+                        let padded_y = conv_y + ky;
+                        let padded_x = conv_x + kx;
+                        if padded_y < pad
+                            || padded_x < pad
+                            || padded_y >= pad + expanded_height
+                            || padded_x >= pad + expanded_width
+                        {
+                            continue;
+                        }
+                        let expanded_y = padded_y - pad;
+                        let expanded_x = padded_x - pad;
+                        if expanded_y % factor != 0 || expanded_x % factor != 0 {
+                            continue;
+                        }
+                        value += input
+                            [input_base + (expanded_y / factor) * width + expanded_x / factor]
+                            * tap_y
+                            * tap_x
+                            * gain;
+                    }
+                }
+                if !value.is_finite() {
+                    return Err(VokraError::InvalidArgument(
+                        "fir_resample_2d produced a non-finite value".to_owned(),
+                    ));
+                }
+                output[output_base + out_y * out_width + out_x] = value;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3660,6 +4745,158 @@ mod tests {
         kernels::gemm_f32(2, 2, 3, &a, &b, Some(&bias), &mut direct).unwrap();
 
         assert_eq!(via_compute, direct, "Compute::cpu gemm != direct kernel");
+    }
+
+    #[test]
+    fn cpu_fir_resample_matches_sgmse_fixed_kernel_contract() {
+        let mut up = vec![0.0f32; 16];
+        Compute::cpu()
+            .fir_resample_2d_f32(&[1.0, 0.0, 0.0, 0.0], 1, 2, 2, true, &mut up)
+            .unwrap();
+        assert_eq!(up[0], 9.0 / 16.0);
+        assert_eq!(up[1], 9.0 / 16.0);
+        assert_eq!(up[2], 3.0 / 16.0);
+        assert_eq!(up[4], 9.0 / 16.0);
+        assert_eq!(up[15], 0.0);
+
+        let mut down = vec![0.0f32; 4];
+        Compute::cpu()
+            .fir_resample_2d_f32(
+                &[
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ],
+                1,
+                4,
+                4,
+                false,
+                &mut down,
+            )
+            .unwrap();
+        assert_eq!(down[0], 9.0 / 64.0);
+        assert!(down[1..].iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn cpu_fir_resample_rejects_invalid_shape_and_values() {
+        let mut out = vec![0.0f32; 16];
+        assert!(
+            Compute::cpu()
+                .fir_resample_2d_f32(&[f32::NAN; 4], 1, 2, 2, true, &mut out)
+                .is_err()
+        );
+        assert!(
+            Compute::cpu()
+                .fir_resample_2d_f32(&[0.0; 4], 1, 1, 1, false, &mut [])
+                .is_err()
+        );
+        assert!(
+            Compute::cpu()
+                .fir_resample_2d_f32(&[0.0; 4], 1, 2, 2, true, &mut [0.0; 4])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cpu_compute_conv_dilation_and_transpose_validate_explicit_shapes() {
+        let mut dilated = [0.0f32; 5];
+        Compute::cpu()
+            .conv1d_f32_dilated(
+                &[1.0, 2.0, 3.0, 4.0, 5.0],
+                1,
+                5,
+                &[1.0, 10.0, 100.0],
+                1,
+                3,
+                None,
+                1,
+                2,
+                2,
+                &mut dilated,
+            )
+            .unwrap();
+        assert_eq!(dilated, [310.0, 420.0, 531.0, 42.0, 53.0]);
+
+        let mut transposed = [0.0f32; 5];
+        Compute::cpu()
+            .conv_transpose1d_f32(
+                &[1.0, 2.0],
+                1,
+                2,
+                &[1.0, 2.0],
+                1,
+                2,
+                None,
+                2,
+                0,
+                1,
+                &mut transposed,
+            )
+            .unwrap();
+        assert_eq!(transposed, [1.0, 2.0, 2.0, 4.0, 0.0]);
+
+        let mut conv2d = [0.0f32; 6];
+        Compute::cpu()
+            .conv2d_f32(
+                &[
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+                ],
+                2,
+                2,
+                3,
+                &[1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, -1.0],
+                2,
+                2,
+                2,
+                Some(&[0.5, -1.0]),
+                (1, 1),
+                (0, 1),
+                (1, 2),
+                2,
+                &mut conv2d,
+            )
+            .unwrap();
+        assert_eq!(conv2d, [5.5, 7.5, 2.5, -51.0, -41.0, 39.0]);
+
+        let mut transposed2d = [0.0f32; 36];
+        Compute::cpu()
+            .conv_transpose2d_f32(
+                &[1.0, 2.0, 10.0, 20.0],
+                2,
+                1,
+                2,
+                &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0],
+                2,
+                2,
+                2,
+                Some(&[0.5, -1.0]),
+                (2, 2),
+                (0, 0),
+                (1, 2),
+                (1, 1),
+                2,
+                &mut transposed2d,
+            )
+            .unwrap();
+        assert_eq!(
+            transposed2d,
+            [
+                1.5, 0.5, 2.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+                0.5, 0.5, 19.0, -1.0, 39.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
+                -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
+            ]
+        );
+
+        let mut bad = [0.0f32; 1];
+        assert!(
+            Compute::cpu()
+                .conv1d_f32_dilated(&[1.0], 1, 1, &[1.0], 1, 1, None, 1, 0, 0, &mut bad)
+                .is_err()
+        );
+        assert!(
+            Compute::cpu()
+                .conv_transpose1d_f32(&[1.0], 1, 1, &[1.0], 1, 1, None, 2, 0, 2, &mut bad)
+                .is_err()
+        );
     }
 
     #[test]
@@ -4354,6 +5591,59 @@ mod tests {
     }
 
     #[test]
+    fn cpu_mixed_bf16_gemm_keeps_f32_activation_and_gpu_seam_explicit() {
+        let a = [1.0039062f32, -2.0078125, 0.5, 3.25];
+        let b = [0x3F80u16, 0x4000, 0x4040, 0x4080];
+        let mut via_compute = [f32::NAN; 4];
+        Compute::cpu()
+            .gemm_f32_bf16_bits(2, 2, 2, &a, &b, &mut via_compute)
+            .expect("CPU mixed BF16 GEMM");
+        let mut expected = [0.0f32; 4];
+        for i in 0..2 {
+            for j in 0..2 {
+                expected[i * 2 + j] = (0..2)
+                    .map(|l| a[i * 2 + l] * kernels::bf16_to_f32(b[l * 2 + j]))
+                    .sum();
+            }
+        }
+        assert_eq!(via_compute, expected);
+        assert!(Compute::cpu().is_cpu());
+        assert!(Compute::cpu().supports_mixed_bf16());
+        assert_eq!(Compute::cpu().backend_name(), "cpu");
+        assert_ne!(a[0], kernels::bf16_to_f32(kernels::f32_to_bf16_rne(a[0])));
+    }
+
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn metal_strided_mixed_bf16_seam_is_explicitly_unsupported() {
+        let compute = match Compute::for_backend(BackendKind::Metal, &[]) {
+            Ok(compute) => compute,
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; strided mixed-BF16 seam test skipped");
+                return;
+            }
+            Err(error) => panic!("unexpected Metal setup error: {error}"),
+        };
+        let mut output = [f32::NAN; 4];
+        let mut scratch = kernels::GemmF32Bf16BitsScratch::new();
+        let error = compute
+            .gemm_f32_bf16_bits_strided_with_scratch(
+                2,
+                2,
+                2,
+                &[1.0, 2.0, 3.0, 4.0],
+                &[0x3f80, 0x4000, 0x4040, 0x4080],
+                &mut output,
+                2,
+                &mut scratch,
+            )
+            .expect_err("Metal must not hide per-row mixed-BF16 submissions");
+        assert!(
+            matches!(error, VokraError::UnsupportedOp(message) if message.contains("strided") && message.contains("contiguous"))
+        );
+    }
+
+    #[test]
     fn cpu_for_backend_covers_every_op() {
         // The CPU backend covers the full hot-op set unconditionally —
         // including MimiRvq (M3-06 T04 kernel via `vokra_ops::mimi_rvq_decode`).
@@ -4371,7 +5661,13 @@ mod tests {
             HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
+            HotOp::OuveSde,
             HotOp::Conv1d,
+            HotOp::Conv1dDilation,
+            HotOp::ConvTranspose1d,
+            HotOp::Conv2d,
+            HotOp::ConvTranspose2d,
+            HotOp::FirResample2d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
@@ -4452,6 +5748,10 @@ mod tests {
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::Conv1dDilation,
+            HotOp::ConvTranspose1d,
+            HotOp::Conv2d,
+            HotOp::ConvTranspose2d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
@@ -4564,6 +5864,15 @@ mod tests {
             }
             Err(e) => panic!("unexpected error for a Metal-covered Qwen3TtsCodec request: {e}"),
         }
+        // OUVE-SDE predictor/corrector uses two resident Metal kernels and is
+        // covered by the same device-gated contract.
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::OuveSde]) {
+            Ok(c) => assert_eq!(c.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; OuveSde covered path is device-gated");
+            }
+            Err(e) => panic!("unexpected error for a Metal-covered OuveSde request: {e}"),
+        }
         // Vocoder Metal wave common vocoder primitives (2026-08-14): each
         // is a covered request with the same device-gated posture as the
         // sibling codec / snake_activation ops above.
@@ -4665,6 +5974,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::Conv2d,
+            HotOp::ConvTranspose2d,
             HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
@@ -5131,6 +6442,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::Conv2d,
+            HotOp::ConvTranspose2d,
             HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,

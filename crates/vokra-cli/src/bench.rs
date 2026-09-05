@@ -691,6 +691,119 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("asr-qwen3", audio_seconds, samples)
         }
+        ModelTask::AsrOmniasrCtcTokens => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (omniASR-CTC): --input <16k-mono.wav> is required")?;
+            if args.text.is_some() {
+                return Err(
+                    "bench (omniASR-CTC): --text is not accepted; this route measures external-tokenizer-free token IDs"
+                        .to_owned(),
+                );
+            }
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::omniasr_ctc::OMNIASR_CTC_SAMPLE_RATE {
+                return Err(format!(
+                    "bench (omniASR-CTC): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::omniasr_ctc::OMNIASR_CTC_SAMPLE_RATE,
+                ));
+            }
+            if clip.samples.is_empty() {
+                return Err("bench (omniASR-CTC): --input WAV contains no samples".to_owned());
+            }
+            let audio_seconds = clip.samples.len() as f64
+                / f64::from(vokra_models::omniasr_ctc::OMNIASR_CTC_SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(session.gguf())
+                .map_err(|error| format!("bench (omniASR-CTC) bind: {error}"))?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe_tokens(&pcm)
+                    .map_err(|error| format!("bench (omniASR-CTC) forward: {error}"))?;
+                Ok(())
+            })?;
+            ("asr-omniasr-ctc-tokens", audio_seconds, samples)
+        }
+        ModelTask::AsrGigaamV3Tokens => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (GigaAM v3): --input <16k-mono.wav> is required")?;
+            if args.text.is_some() {
+                return Err(
+                    "bench (GigaAM v3): --text is not accepted; this route measures RNNT token IDs"
+                        .to_owned(),
+                );
+            }
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::gigaam::v3::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (GigaAM v3): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::gigaam::v3::SAMPLE_RATE,
+                ));
+            }
+            if clip.samples.is_empty() {
+                return Err("bench (GigaAM v3): --input WAV contains no samples".to_owned());
+            }
+            let audio_seconds =
+                clip.samples.len() as f64 / f64::from(vokra_models::gigaam::v3::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::gigaam::v3::GigaamV3::from_gguf(session.gguf())
+                .map_err(|error| format!("bench (GigaAM v3) bind: {error}"))?
+                .with_backend(args.backend)
+                .map_err(|error| format!("bench (GigaAM v3) backend: {error}"))?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe_token_ids(&pcm)
+                    .map_err(|error| format!("bench (GigaAM v3) forward: {error}"))?;
+                Ok(())
+            })?;
+            ("asr-gigaam-v3-tokens", audio_seconds, samples)
+        }
+        ModelTask::AsrGigaamMultilingual => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (GigaAM Multilingual): --input <16k-mono.wav> is required")?;
+            if args.text.is_some() {
+                return Err(
+                    "bench (GigaAM Multilingual): --text is not accepted; this route benchmarks waveform-to-transcript CTC"
+                        .to_owned(),
+                );
+            }
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::gigaam::multilingual::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (GigaAM Multilingual): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::gigaam::multilingual::SAMPLE_RATE,
+                ));
+            }
+            if clip.samples.is_empty() {
+                return Err(
+                    "bench (GigaAM Multilingual): --input WAV contains no samples".to_owned(),
+                );
+            }
+            let audio_seconds = clip.samples.len() as f64
+                / f64::from(vokra_models::gigaam::multilingual::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::gigaam::multilingual::GigaamMultilingual::from_gguf(session.gguf())
+                    .map_err(|error| format!("bench (GigaAM Multilingual) bind: {error}"))?
+                    .with_backend(args.backend)
+                    .map_err(|error| format!("bench (GigaAM Multilingual) backend: {error}"))?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe(&pcm)
+                    .map_err(|error| format!("bench (GigaAM Multilingual) forward: {error}"))?;
+                Ok(())
+            })?;
+            ("asr-gigaam-multilingual", audio_seconds, samples)
+        }
         // Same posture for the Moshi duplex (M4-06): per-frame latency
         // reference numbers ride the duplex demo + owner track (T26/T30).
         ModelTask::S2sDuplex => {
@@ -716,6 +829,35 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 "bench: arch `lang_id_ecapa` has no settled benchmark task yet — use `vokra-cli run --model <lang-id.gguf> --input <16k-mono.wav>` for the complete CPU/Metal forward"
                     .to_owned(),
             );
+        }
+        ModelTask::VoiceGenderClassification => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (voice-gender): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::voice_gender_classifier::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (voice-gender): {path} is {} Hz, expected {rate} Hz — resample offline first",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model = vokra_models::voice_gender_classifier::VoiceGenderClassifier::from_gguf(
+                session.gguf(),
+            )
+            .map_err(|error| error.to_string())?
+            .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let prediction = model
+                    .classify_pcm(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(prediction);
+                Ok(())
+            })?;
+            ("voice-gender-classifier", audio_seconds, samples)
         }
         ModelTask::AudioQualityAudiobox => {
             let path = args
@@ -1365,6 +1507,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsMossLocal => {
+            return Err(
+                "bench: MOSS-TTS Local requires an explicit [rows,13] prompt matrix and MOSS Audio Tokenizer v2 sidecar; use `vokra-cli run --model <moss-tts-local.gguf> --audio-tokenizer <moss-audio-tokenizer-v2.gguf> --max-new-frames <N> --input <prompt.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
         ModelTask::TtsMossDelay => {
             return Err(
                 "bench: MOSS-TTS Base/v1.5 requires an explicit 33-column prompt matrix and Full Audio Tokenizer sidecar; no raw-text benchmark contract is defined yet — use `vokra-cli run --model <moss-tts-v1.5.gguf> --audio-tokenizer <moss-audio-tokenizer-full.gguf> --max-new-frames <N> --input <prompt.u32le> --output <out.wav>`"
@@ -1527,6 +1675,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("tts", audio_seconds, samples)
+        }
+        ModelTask::TtsVibeVoice => {
+            return Err(
+                "bench: arch `vibevoice` is INSPECTION_ONLY — a strict partial GGUF has no authenticated Qwen tokenizer/prefill, streaming tokenizer, official DPMSolverMultistepScheduler, or composite PCM route; refusing to fabricate an RTF measurement"
+                    .to_owned(),
+            );
         }
         ModelTask::TtsSpeechT5 => {
             return Err(
@@ -2422,10 +2576,11 @@ mod tests {
     }
 
     #[test]
-    fn bench_cosyvoice2_synthetic_measures_rtf_without_a_gguf_fixture() {
-        // The T24 scaffold: no --model, no --input, deterministic
-        // synthetic path. The measurement must run to completion and
-        // report well-formed RTF / latency stats.
+    fn bench_cosyvoice2_synthetic_requires_authenticated_composite() {
+        // The standalone synthetic path used to construct a partial GGUF and
+        // run it through the pipeline. CosyVoice2 is now explicitly
+        // INSPECTION_ONLY until its complete composite is authenticated, so
+        // the bench must refuse before reporting fabricated RTF statistics.
         let a = BenchArgs {
             model: None,
             segmentation_model: None,
@@ -2446,34 +2601,18 @@ mod tests {
             budget_ms: 75,
             timeout_secs: 30,
         };
-        let outcome = execute(&a).expect("cosyvoice2-synthetic bench runs");
-        assert_eq!(outcome.report.task, "cosyvoice2-synthetic");
-        assert_eq!(outcome.report.iters, 2);
-        assert_eq!(outcome.report.latency.count, 2);
-        // Audio duration is the fixed 1 s target-frame budget.
-        assert!(
-            (outcome.report.audio_seconds - 1.0).abs() < 1e-9,
-            "audio_seconds should be exactly 1.0, got {}",
-            outcome.report.audio_seconds
-        );
-        // RTF must be a finite non-negative — the identity Mimi decoder
-        // path is fast, so we expect RTF << 1.0 on any modern CPU, but
-        // we do NOT assert a hard upper bound here (that's the T24
-        // deferred always-on gate against a self-hosted CUDA runner —
-        // mirrors M2-14 defer, `docs/m2-cuda-rtf-variance-2026-07-08.md`).
-        assert!(outcome.report.rtf.is_finite() && outcome.report.rtf >= 0.0);
-        assert!(outcome.regression.is_none());
-        // The report round-trips through the baseline parser (same shape
-        // any future baseline comparison consumes).
-        let rtf = report::parse_baseline_rtf(outcome.report.to_json().as_bytes()).unwrap();
-        assert!(rtf.is_finite());
+        let err = execute(&a)
+            .err()
+            .expect("incomplete CosyVoice2 composite must be rejected");
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(err.contains("composite"), "composite blocker: {err}");
     }
 
     #[test]
-    fn bench_cosyvoice2_synthetic_ignores_input_flag_gracefully() {
-        // Passing --input for the synthetic path is a no-op (the standalone
-        // path does not read the WAV) — the current implementation simply
-        // does not consult args.input. Verify the outcome is unchanged.
+    fn bench_cosyvoice2_synthetic_rejects_incomplete_composite_with_input_flag() {
+        // `--input` remains a valid parsed option, but it cannot turn an
+        // inspection-only CosyVoice2 partial artifact into a runnable
+        // composite. The refusal must happen before the input is consumed.
         let mut wav_path = std::env::temp_dir();
         wav_path.push(format!(
             "vokra-cli-bench-cosyv2-noise-{}.wav",
@@ -2500,18 +2639,19 @@ mod tests {
             budget_ms: 75,
             timeout_secs: 30,
         };
-        let outcome = execute(&a).expect("cosyvoice2-synthetic bench runs");
+        let err = execute(&a)
+            .err()
+            .expect("incomplete CosyVoice2 composite must be rejected");
         let _ = std::fs::remove_file(&wav_path);
-        // Audio duration is still the fixed 1 s target — the input WAV is
-        // not consulted for the synthetic path.
-        assert!((outcome.report.audio_seconds - 1.0).abs() < 1e-9);
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(err.contains("composite"), "composite blocker: {err}");
     }
 
     #[test]
-    fn bench_cosyvoice2_synthetic_reports_deterministic_target_seconds() {
-        // Two runs with identical BenchArgs report identical target
-        // seconds (the deterministic-fixture invariant). Latencies will
-        // differ (CPU scheduling), but the audio window is fixed.
+    fn bench_cosyvoice2_synthetic_refuses_before_measurement() {
+        // No deterministic target report may be emitted until the complete
+        // CosyVoice2 composite is authenticated; this test pins that the
+        // synthetic path fails closed instead of measuring a partial handle.
         let mk = || BenchArgs {
             model: None,
             segmentation_model: None,
@@ -2532,9 +2672,11 @@ mod tests {
             budget_ms: 75,
             timeout_secs: 30,
         };
-        let a1 = execute(&mk()).expect("run 1");
-        let a2 = execute(&mk()).expect("run 2");
-        assert_eq!(a1.report.audio_seconds, a2.report.audio_seconds);
+        let err = execute(&mk())
+            .err()
+            .expect("incomplete CosyVoice2 composite must be rejected");
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(err.contains("composite"), "composite blocker: {err}");
     }
 
     #[test]

@@ -4,18 +4,32 @@
 cron 時刻・required check name・trigger の記述に各 workflow file の comment との差異が
 あった場合、**本 file が真** とみなし、各 workflow file 側を後追いで揃えます。
 
-- 対象範囲: `.github/workflows/*.yml` 全件（**実数 45 file**。旧記載「2026-07-23 時点で 20 file」は
+- 対象範囲: `.github/workflows/*.yml` 全件（**実数 46 file**。旧記載「2026-07-23 時点で 20 file」は
   その後の parity workflow 増設で陳腐化していたため実測値に更新）
-- **2026-08-20 網羅確認**: 45 workflow file の全てを本 index に収録済み。
+- **2026-08-30 網羅確認**: 46 workflow file の全てを本 index に収録済み。
   required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
   明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
-  を primary source として取得し、本 file の §1 に転記
+  を primary source として取得し、本 file の §1 に転記。現行は **16 contexts、strict=true**。
+- Actions policy の実態: `sha_pinning_required=true`（2026-08-30確認）。
 - cron 時刻の実態: 各 workflow file 内の `schedule: - cron: '...'` 実定義から抽出。
   各 workflow の comment 側は本 file を参照する形に段階的に集約予定
 - 変更禁止事項: 本 file の書式や見出し名の変更は required check job id の追跡性を
   壊すことがあるため、**§1 の table 構造は変更しない** こと（job id / check name / 定義 file
   の列は追加・削除禁止、値の差替のみ許可）
+
+**Current 0.3.0 Apple/CI status**: the parity figures below are a
+pre-documentation-refresh snapshot from PR #79 head `d8a93bc3`, evaluated
+against `origin/main` `41ce9ffd`; that snapshot recorded 109 passes and 13
+expected skips. The live public audit currently is 194 repositories (193 GGUF
+repositories, 198 GGUF files), with CPU `full=131`, `partial=42`,
+`no-runtime-binder=20`, `not-artifact=1`, Metal `full=131`,
+`blocked-by-cpu=62`, `not-artifact=1`, and source-level CPU-only coverage 0.
+GigaAM v3/Multilingual have complete conservative Metal code routes but no
+Apple-hardware verdict; OmniASR awaits the authenticated Scaleway run. Both
+`hf-mac-coverage-unit` and the live advisory coverage check are green on the
+latest PR. These are CI/audit facts, not Apple-device sign-off.
+There are currently 0 release tags and 0 GitHub Releases.
 
 ---
 
@@ -73,6 +87,8 @@ main runが全てgreenかつ偽陽性0件だったため、同日にhard-failへ
 |---|---|---|
 | repo-hygiene | .github/workflows/ci-quality.yml | tracked file の scratch/gitignore drift 検査 |
 | catalog-audit | .github/workflows/ci-quality.yml | model catalog の実在性 audit (catalog-reality gate) |
+| hf-mac-coverage-unit | .github/workflows/ci-quality.yml | HF public architecture audit の offline unit suite（毎PR実行、weight downloadなし） |
+| hf-mac-coverage (advisory) | .github/workflows/ci-quality.yml | HF public Models API / README card の read-only Metal registry coverage（artifact parityとは別ゲート） |
 | unity-capi-lints | .github/workflows/ci-quality.yml | Unity C# 側 P/Invoke lint |
 | capi-smoke | .github/workflows/ci-quality.yml | C ABI smoke test (bytes error-path / session / stream / aec / s2s) |
 | msrv | .github/workflows/ci-quality.yml | Minimum Supported Rust Version 追随 |
@@ -131,12 +147,12 @@ private vulnerability reporting は 2026-08-22 に再照合し、root `SECURITY.
 private advisory URL と repository setting が一致することを確認した。email や
 個人連絡先は公開しない。
 
-**2026-08-20 post-merge audit**: full-SHA workflow移行と`workflow-security`での検証、
+**2026-08-30 post-merge audit refresh**: full-SHA workflow移行と`workflow-security`での検証、
 `workflow-security` / `dependency-review` / `documentation-links` / `codeql-rust`の
 required追加は完了した。repository Actions policyの`sha_pinning_required`と、branch
 protectionのstrict status checks / conversation resolution / linear history /
 administrator enforcementも有効化済みである。required contextsはcore 10 + security 5
-に`pins.yaml ↔ workflow sync` 1を加えた合計16、required approving reviewsはsingle-maintainer
+に`pins.yaml ↔ workflow sync` 1を加えた合計16（strict status checks=true）、required approving reviewsはsingle-maintainer
 運用のため0、force pushとbranch deletionは禁止、merge方式はsquashのみである。
 
 ### 2.4 release.yml 内 (tag v* 起動、advisory & release パイプ)
@@ -206,7 +222,9 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 
 | trigger | workflow | 主要 job (定義順) |
 |---|---|---|
-| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python（同一runでpython-wheels.ymlをcall）/ Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
+| push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python / Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
+| reusable workflow call / workflow_dispatch | .github/workflows/python-wheels.yml | 4 native Python wheels の version normalize、native build、repair、archive/architecture/RECORD検証。`release.yml` から同一runでcall |
+| reusable workflow call / workflow_dispatch | .github/workflows/release-desktop-preflight.yml | macOS/Windows CPU-only C ABI release artifactを同一release run内でbuild・検証・upload |
 
 release パイプ内の job は全て advisory (branch protection 対象外)。crate publish は
 `crates-io-dry-run` の green を人手で確認したうえで `crates-io-publish` を走らせる 2 段。

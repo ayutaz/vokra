@@ -1,489 +1,559 @@
-//! **FireRedTeam/FireRedASR-AED-L** — Chinese ASR AED (Attention-Encoder-Decoder)
-//! safetensors → GGUF conversion (coverage-audit wave-b, 2026-08-03).
+//! FireRedASR-AED-L prepared-safetensors → GGUF converter.
 //!
-//! Input: the upstream `FireRedTeam/FireRedASR-AED-L` release —
-//! `huggingface.co/FireRedTeam/FireRedASR-AED-L`, an Apache-2.0
-//! Whisper-style AED Chinese ASR model (~2.2 GB). Output: a GGUF
-//! carrying every float tensor plus the `vokra.provenance.*`,
-//! `vokra.model.*` and `vokra.schema.*` metadata chunks a future native
-//! `vokra-models::firered_asr_aed_l::*` implementation will read.
-//!
-//! # Model class
-//!
-//! FireRedASR-AED-L is a Whisper-topology AED (Attention-Encoder-Decoder)
-//! model tuned for Chinese ASR. Category is `"asr"` — same tier as the
-//! Whisper / Canary / Kotoba-Whisper / distil-Whisper family, but the
-//! trained language / release lineage is FireRedTeam's; the arch tag is
-//! deliberately distinct (`firered_asr_aed_l`) so a runtime dispatch that
-//! keys on arch cannot silently confuse this checkpoint with any of the
-//! sibling Whisper-family loaders.
-//!
-//! # License
-//!
-//! Both code and weights ship **Apache-2.0** end-to-end per the model
-//! card at `huggingface.co/FireRedTeam/FireRedASR-AED-L` (recorded in
-//! the coverage-audit-2026-08-03 wave-b ticket
-//! `docs/tickets/coverage-audit-2026-08-03/wave-b/firered-asr-aed-l.md`).
-//! Apache-2.0 is a `Permissive` license class — no runtime-side
-//! attribution obligation (unlike NVIDIA's CC-BY 4.0 Parakeet-CTC /
-//! Canary which stamp FR-MD-09 attribution text). The `license`
-//! override parameter to [`convert_firered_asr_aed_l_file`] follows
-//! the standing "implementation is clean-room MIT but the redistributed
-//! checkpoint carries a distinct SPDX" precedent.
-//!
-//! # BF16 pass-through (mirror of `qwen3_tts` / `vibevoice` /
-//! # `voxcpm2` / `wespeaker` / `emotion2vec` / `neucodec`)
-//!
-//! Every F32 / F16 / BF16 tensor passes through **verbatim** as the
-//! matching GGUF type (BF16 emits type 30 = `GgmlType::BF16`, no
-//! convert-time widening — the runtime widens BF16 → f32 losslessly at
-//! load via the single choke point `crates/vokra-core/src/gguf/quant/
-//! mod.rs decode_bf16`). Mirror of the landed sibling posture that
-//! keeps the CI cache footprint at the smallest tensor payload while
-//! preserving the exact upstream bit pattern.
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / WeSpeaker / emotion2vec / neucodec contract). Real-weight
-//! parity binding is a follow-up wave gated on the upstream tensor-name
-//! manifest fetch + license §3.1 sign-off (`docs/license-audit.md`);
-//! this converter passes every float tensor through unchanged, and the
-//! runtime binder `vokra_models::firered_asr_aed` walks those names for
-//! real: it carries `ARCH = "firered_asr_aed_l"` matching this
-//! converter's stamp, and the weight entry point is
-//! `FireredAsrAedWeights::from_gguf` (note: no `L` in the type name).
-//! Its forward is loud-partial; the binder itself is not deferred.
-//!
-//! # Prep script bridge
-//!
-//! The upstream FireRedASR-AED-L release ships PyTorch `.pt` (or
-//! `.pth`) checkpoints, so a downstream user runs the sidecar
-//! `tools/parity/firered_asr_aed_l_prepare_checkpoint.py` (uv-managed,
-//! Python 3.12) to flatten the pickle to safetensors before invoking
-//! this converter — the same posture the DFN3 / DAC / Kokoro / UTMOS /
-//! SBV2 / FRCRN converters use. The runtime never sees Python / torch
-//! (FR-LD-05).
-//!
-//! # No ONNX (permanent)
-//!
-//! FireRedASR-AED-L is distributed as torch pickles / safetensors + a
-//! Python pipeline; this converter **never** touches ONNX (FR-LD-05).
-//! The ASR pipeline is re-implemented natively in a future
-//! `crates/vokra-models/src/firered_asr_aed_l/` module (whisper.cpp 型
-//! self re-implementation, CLAUDE.md 設計判断 4).
+//! The only accepted input is the exact safetensors artifact emitted by the
+//! VAST-only preparation sidecar. Every authenticated float tensor is copied
+//! under its verbatim prepared name, and the complete name list is stamped as
+//! a required-tensor manifest for the runtime binder. Native execution remains
+//! fail-closed until CMVN values, decoder mapping, and an independent oracle
+//! are authenticated.
 
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufStreamWriter, GgufTensorDecl,
+    GgufValueType, chunks,
+};
 
 use crate::ConvertError;
-use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` for FireRedASR-AED-L GGUFs. Intentionally distinct
-/// from every sibling ASR arch tag (`whisper` / `distil-whisper` /
-/// `kotoba-whisper` / `canary` / `parakeet` / `parakeet_ctc` /
-/// `omniasr_ctc` / `kyutai_stt`) — silently aliasing any Whisper-family
-/// tag would misroute the runtime dispatch (the FireRedTeam release has
-/// its own tensor manifest / tokenizer / hparam contract; a future
-/// `FireredAsrAedLWeights::from_gguf` will diverge from
-/// `WhisperWeights::from_gguf`).
-pub const ARCH: &str = "firered_asr_aed_l";
-
-/// `vokra.model.name` value written for the canonical
-/// `FireRedTeam/FireRedASR-AED-L` release.
-pub const NAME: &str = "firered-asr-aed-l";
-
-/// `vokra.model.category` value — `"asr"`, same tier as the Whisper /
-/// Canary / Kotoba-Whisper / distil-Whisper family. Consumed by the
-/// model-card generator + zoo manifest tier gate.
-pub const CATEGORY: &str = "asr";
-
-/// Ad-hoc metadata key for the model category. Kept as a converter-side
-/// constant (not a `chunks::KEY_*` alias) until a sibling `category`
-/// consumer lands in `vokra-core` — mirror of the wespeaker /
-/// speaker_3d / emotion2vec / neucodec / frcrn local constant.
-const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-
-/// Upstream repository slug (`org/name`) recorded under
-/// `vokra.provenance.upstream_hf` so a downstream consumer can trace
-/// the artifact back to its serving location.
-const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
-
-/// Canonical upstream HF slug for the FireRedASR-AED-L release.
-pub const UPSTREAM_HF: &str = "FireRedTeam/FireRedASR-AED-L";
-
-/// Canonical weight license SPDX (`apache-2.0`). Overrides via the
-/// [`convert_firered_asr_aed_l_file`] `license` parameter — the standing
-/// mechanism for "implementation is clean-room MIT but the upstream
-/// distributed checkpoint is another license" scenarios (mirror of
-/// `convert_file_licensed` in `lib.rs` and the `license` arg on
-/// `convert_wespeaker_file` / `convert_emotion2vec_file` /
-/// `convert_frcrn_file` / `convert_neucodec_file`).
-pub const DEFAULT_LICENSE: &str = "apache-2.0";
-
-/// Outcome of a FireRedASR-AED-L conversion.
-///
-/// All counters are additive and default to zero — a zero-tensor
-/// checkpoint returns `FireredAsrAedLReport::default()` and the caller
-/// remains responsible for surfacing the "no float tensors" loud note
-/// (mirror of the qwen3_tts / vibevoice / voxcpm2 / wespeaker /
-/// emotion2vec / neucodec / frcrn `Report` pattern). `read ==
-/// written + skipped_non_float` is an invariant preserved by
-/// [`convert_firered_asr_aed_l_file`].
+/// Compatibility report retained by the converter dispatch API.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FireredAsrAedLReport {
-    /// Total tensors observed in the input safetensors header.
+    /// Source tensors observed by a successful conversion.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16 all ride the
-    /// same byte-copy pass-through arm).
+    /// Tensors written by a successful conversion.
     pub written: usize,
-    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
-    /// safetensors reader rejects unknown dtypes at parse time; anything
-    /// that reaches this arm signals a reader change upstream).
+    /// Non-floating tensors skipped by a successful conversion.
     pub skipped_non_float: usize,
-    /// Of the tensors in `written`, how many were BF16 (subset counter).
-    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
-    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
-    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    /// BF16 tensors passed through by a successful conversion.
     pub bf16_passthrough: usize,
 }
 
-/// Reads a safetensors checkpoint at `input` and writes a
-/// FireRedASR-AED-L GGUF to `output`.
-///
-/// Every F32 / F16 / BF16 tensor is emitted verbatim under its upstream
-/// name; the `vokra.provenance.*` + `vokra.model.*` chunk groups pin
-/// the upstream slug, weight license, and model category so the zoo
-/// manifest + model-card generator can gate on the artifact alone (no
-/// side-car lookup). `vokra.schema.*` is written unconditionally by
-/// the GGUF writer.
-///
-/// `license` overrides `DEFAULT_LICENSE` (`"apache-2.0"`) — the
-/// same mechanism `lib.rs::convert_file_licensed` uses when the
-/// implementation is clean-room but the redistributed checkpoint
-/// carries a different SPDX.
-///
-/// # Errors
-///
-/// [`ConvertError::Io`] for I/O failures reading `input` or writing
-/// `output`; [`ConvertError::Parse`] for malformed safetensors input;
-/// [`ConvertError::Gguf`] if the GGUF serialization fails.
+/// Canonical architecture identifier retained for alias and dispatch tests.
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until native parity is authenticated.
+pub const ARCH: &str = "firered_asr_aed_l";
+
+/// Canonical model name retained for metadata consumers.
+#[allow(dead_code)] // Retained as inspection-only model metadata until native parity is authenticated.
+pub const NAME: &str = "firered-asr-aed-l";
+
+/// Canonical upstream repository.
+#[allow(dead_code)] // Retained as inspection-only provenance until the checkpoint is authenticated.
+pub const UPSTREAM_HF: &str = "FireRedTeam/FireRedASR-AED-L";
+
+/// Fixed identity of the prepared artifact produced by the VAST bridge.
+pub const UPSTREAM_REVISION: &str = "e57f5960d03cff1071ff7acbb409314d1e70ed3d";
+pub const SOURCE_REVISION: &str = "834635e4cf277ed8ca92049fc375b17c3dc20748";
+pub const CHECKPOINT_BYTES: u64 = 4_678_597_714;
+pub const CHECKPOINT_SHA256: &str =
+    "12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3";
+pub const PREPARED_BYTES: u64 = 4_678_403_512;
+pub const PREPARED_SHA256: &str =
+    "5e8608d5a23af0761cb6bb52d08ee19a6476b8c324799eff3c63c9785cef583e";
+pub const TENSOR_COUNT: usize = 940;
+
+// Values observed and hash-bound by the authenticated VAST inspection.
+pub const SAMPLE_RATE: u32 = 16_000;
+pub const N_MELS: u32 = 80;
+pub const VOCAB_SIZE: u32 = 7_832;
+pub const ENCODER_LAYERS: u32 = 16;
+pub const DECODER_LAYERS: u32 = 16;
+pub const D_MODEL: u32 = 1_280;
+pub const N_HEAD: u32 = 20;
+pub const FFN_DIM: u32 = 5_120;
+pub const KERNEL_SIZE: u32 = 33;
+pub const BLANK_ID: u32 = 0;
+pub const SOS_ID: u32 = 3;
+pub const EOS_ID: u32 = 4;
+pub const PAD_ID: u32 = 2;
+
+const SHA256_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+
+fn sha256_block(state: &mut [u32; 8], block: &[u8; 64]) {
+    let mut words = [0u32; 64];
+    for (index, chunk) in block.chunks_exact(4).take(16).enumerate() {
+        words[index] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    }
+    for index in 16..64 {
+        let s0 = words[index - 15].rotate_right(7)
+            ^ words[index - 15].rotate_right(18)
+            ^ (words[index - 15] >> 3);
+        let s1 = words[index - 2].rotate_right(17)
+            ^ words[index - 2].rotate_right(19)
+            ^ (words[index - 2] >> 10);
+        words[index] = words[index - 16]
+            .wrapping_add(s0)
+            .wrapping_add(words[index - 7])
+            .wrapping_add(s1);
+    }
+    let mut work = *state;
+    for index in 0..64 {
+        let sum1 = work[4].rotate_right(6) ^ work[4].rotate_right(11) ^ work[4].rotate_right(25);
+        let choice = (work[4] & work[5]) ^ (!work[4] & work[6]);
+        let temp1 = work[7]
+            .wrapping_add(sum1)
+            .wrapping_add(choice)
+            .wrapping_add(SHA256_K[index])
+            .wrapping_add(words[index]);
+        let sum0 = work[0].rotate_right(2) ^ work[0].rotate_right(13) ^ work[0].rotate_right(22);
+        let majority = (work[0] & work[1]) ^ (work[0] & work[2]) ^ (work[1] & work[2]);
+        let temp2 = sum0.wrapping_add(majority);
+        work = [
+            temp1.wrapping_add(temp2),
+            work[0],
+            work[1],
+            work[2],
+            work[3].wrapping_add(temp1),
+            work[4],
+            work[5],
+            work[6],
+        ];
+    }
+    for (value, delta) in state.iter_mut().zip(work) {
+        *value = value.wrapping_add(delta);
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String, ConvertError> {
+    let mut file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    let mut state = [
+        0x6a09e667u32,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let mut block = [0u8; 64];
+    let mut buffered = 0usize;
+    let mut chunk = [0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let mut offset = 0;
+        while offset < read {
+            let count = (64 - buffered).min(read - offset);
+            block[buffered..buffered + count].copy_from_slice(&chunk[offset..offset + count]);
+            buffered += count;
+            offset += count;
+            if buffered == 64 {
+                sha256_block(&mut state, &block);
+                buffered = 0;
+            }
+        }
+    }
+    block[buffered] = 0x80;
+    buffered += 1;
+    if buffered > 56 {
+        block[buffered..].fill(0);
+        sha256_block(&mut state, &block);
+        buffered = 0;
+    }
+    block[buffered..56].fill(0);
+    block[56..].copy_from_slice(&(length * 8).to_be_bytes());
+    sha256_block(&mut state, &block);
+    let mut out = String::with_capacity(64);
+    for value in state {
+        out.push_str(&format!("{value:08x}"));
+    }
+    Ok(out)
+}
+
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_PROVENANCE_SOURCE_REVISION: &str = "vokra.provenance.source_revision";
+const KEY_PROVENANCE_CHECKPOINT_BYTES: &str = "vokra.provenance.checkpoint_bytes";
+const KEY_PROVENANCE_CHECKPOINT_SHA256: &str = "vokra.provenance.checkpoint_sha256";
+const KEY_PROVENANCE_PREPARED_BYTES: &str = "vokra.provenance.prepared_bytes";
+const KEY_PROVENANCE_PREPARED_SHA256: &str = "vokra.provenance.prepared_sha256";
+const KEY_REQUIRED_TENSORS: &str = "vokra.firered_asr_aed_l.required_tensors";
+const KEY_TENSOR_MANIFEST: &str = "vokra.firered_asr_aed_l.tensor_manifest";
+const SPEC_KEYS: [(&str, u32); 16] = [
+    ("vokra.firered_asr_aed_l.sample_rate", SAMPLE_RATE),
+    ("vokra.firered_asr_aed_l.n_mels", N_MELS),
+    ("vokra.firered_asr_aed_l.vocab_size", VOCAB_SIZE),
+    ("vokra.firered_asr_aed_l.encoder.n_layer", ENCODER_LAYERS),
+    ("vokra.firered_asr_aed_l.encoder.d_model", D_MODEL),
+    ("vokra.firered_asr_aed_l.encoder.n_head", N_HEAD),
+    ("vokra.firered_asr_aed_l.encoder.ffn_dim", FFN_DIM),
+    ("vokra.firered_asr_aed_l.decoder.n_layer", DECODER_LAYERS),
+    ("vokra.firered_asr_aed_l.decoder.d_model", D_MODEL),
+    ("vokra.firered_asr_aed_l.decoder.n_head", N_HEAD),
+    ("vokra.firered_asr_aed_l.decoder.ffn_dim", FFN_DIM),
+    ("vokra.firered_asr_aed_l.encoder.kernel_size", KERNEL_SIZE),
+    ("vokra.firered_asr_aed_l.blank_id", BLANK_ID),
+    ("vokra.firered_asr_aed_l.sos_id", SOS_ID),
+    ("vokra.firered_asr_aed_l.eos_id", EOS_ID),
+    ("vokra.firered_asr_aed_l.pad_id", PAD_ID),
+];
+
+/// Owns a sibling temporary and removes it if conversion fails before the
+/// final publish.  Keeping this guard local to this converter prevents a
+/// failed 4.7 GB stream from leaving a file that looks like a valid GGUF.
+struct AtomicOutputGuard {
+    path: PathBuf,
+    published: bool,
+}
+
+impl Drop for AtomicOutputGuard {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Publishes a completed sibling temporary without replacing a destination
+/// that appeared after the initial path validation.  `hard_link` is an
+/// atomic same-directory create and therefore gives this converter a
+/// no-clobber finalization primitive on the Linux VAST worker.
+fn publish_no_clobber(temp: &Path, destination: &Path) -> Result<(), ConvertError> {
+    std::fs::hard_link(temp, destination).map_err(ConvertError::Io)?;
+    if let Err(error) = std::fs::remove_file(temp) {
+        // The destination was created by this call.  Do not leave a claimed
+        // output behind if retiring our own temporary fails.
+        let _ = std::fs::remove_file(destination);
+        return Err(ConvertError::Io(error));
+    }
+    Ok(())
+}
+
+/// Converts the exact VAST-prepared FireRedASR-AED-L safetensors artifact to
+/// GGUF while preserving the authenticated release provenance and tensor
+/// manifest. The optional license override is intentionally rejected; the
+/// converter accepts only the fixed upstream license contract.
 pub fn convert_firered_asr_aed_l_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<FireredAsrAedLReport, ConvertError> {
-    // Whole-file read: FireRedASR-AED-L ships as ~2.2 GB BF16 safetensors
-    // (Whisper-topology AED, upstream `FireRedTeam/FireRedASR-AED-L`),
-    // which is well under the streaming threshold the Moshi 15 GB /
-    // Voxtral 8.7 GB converters run. A future larger sibling would swap
-    // this call for `SafetensorsFileReader::open` +
-    // `GgufStreamWriter::begin` per the moshi.rs / qwen3_tts.rs ADR.
-    let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
-    let st = SafetensorsFile::parse(bytes)?;
-
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
-
-    // Self-describing redistribution: the artifact carries its own
-    // licence. Default = apache-2.0 (upstream
-    // `huggingface.co/FireRedTeam/FireRedASR-AED-L` model-card
-    // header). `license` overrides for callers who obtained the weight
-    // under a different SPDX (see `convert_file_licensed` in `lib.rs`).
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE.to_owned(), LicenseClass::Permissive),
-    };
-    vokra_core::stamp_provenance(
-        &mut b,
-        class,
-        &spdx,
-        Some(NAME),
-        Some(
-            "FireRedTeam/FireRedASR-AED-L (Whisper-topology AED for \
-             Chinese ASR, apache-2.0)",
-        ),
-    );
-
-    let mut report = FireredAsrAedLReport::default();
-    // Float tensors pass through **verbatim** — no convert-time widening.
-    // BF16 stays GGUF `BF16` (type 30) per the accepted ADR
-    // (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough); the runtime
-    // widens BF16 → f32 exactly at load via the single choke point
-    // `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. Mirrors
-    // `qwen3_tts::convert` / `vibevoice::convert` / `voxcpm2::convert` /
-    // `wespeaker::convert` / `emotion2vec::convert` / `neucodec::convert`.
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )
-                .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
-        }
+    if license.is_some() {
+        return Err(ConvertError::Usage(
+            "FireRedASR-AED-L conversion has a fixed Apache-2.0 weight license; arbitrary --license overrides are refused".to_owned(),
+        ));
+    }
+    // This operation is intentionally VAST-only: the prepared artifact is
+    // ~4.7 GB and is never acquired or executed on the maintainer machine.
+    // Hashing is streamed, and only one tensor payload is buffered below.
+    if input.is_symlink() || output.is_symlink() {
+        return Err(ConvertError::Usage(
+            "FireRedASR-AED-L input/output must not be symlinks".to_owned(),
+        ));
+    }
+    let input_path = input.canonicalize().map_err(ConvertError::Io)?;
+    let output_path = output
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()
+        .map_err(ConvertError::Io)?
+        .join(output.file_name().ok_or_else(|| {
+            ConvertError::Usage("FireRedASR-AED-L output must name a file".to_owned())
+        })?);
+    if input_path == output_path {
+        return Err(ConvertError::Usage(
+            "FireRedASR-AED-L output must not alias the prepared input".to_owned(),
+        ));
+    }
+    if output.exists() && !output.is_file() {
+        return Err(ConvertError::Usage(
+            "FireRedASR-AED-L output must be a regular file".to_owned(),
+        ));
+    }
+    if output.exists() {
+        return Err(ConvertError::Usage(
+            "FireRedASR-AED-L output already exists; refusing to clobber an authenticated artifact"
+                .to_owned(),
+        ));
+    }
+    let output_name = output_path.file_name().ok_or_else(|| {
+        ConvertError::Usage("FireRedASR-AED-L output must name a file".to_owned())
+    })?;
+    let temporary_path = output_path
+        .parent()
+        .expect("canonical output path has a parent")
+        .join(format!(
+            ".{}.tmp-{}",
+            output_name.to_string_lossy(),
+            std::process::id()
+        ));
+    if temporary_path.exists() || temporary_path.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L temporary output already exists or is a symlink: {}",
+            temporary_path.display()
+        )));
+    }
+    let input_bytes = std::fs::metadata(input)?.len();
+    if input_bytes != PREPARED_BYTES {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L converter accepts only the VAST prepared safetensors artifact ({PREPARED_BYTES} bytes); got {} bytes",
+            input_bytes
+        )));
+    }
+    let digest = sha256_file(input)?;
+    if digest != PREPARED_SHA256 {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L prepared safetensors SHA-256 mismatch: expected {PREPARED_SHA256}, got {digest}"
+        )));
+    }
+    let mut st = crate::safetensors::SafetensorsFileReader::open(input)?;
+    if st.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L prepared tensor-count mismatch: expected {TENSOR_COUNT}, got {}",
+            st.tensors().len()
+        )));
+    }
+    if st
+        .tensors()
+        .iter()
+        .any(|tensor| tensor.dtype != GgmlType::F32)
+    {
+        return Err(ConvertError::Usage(
+            "FireRedASR-AED-L prepared artifact contains a non-F32 tensor; regenerate with the audited VAST bridge".to_owned(),
+        ));
     }
 
-    let out_bytes = b
-        .to_bytes()
-        .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_MODEL_CATEGORY, "asr");
+    builder.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    builder.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
+    builder.add_string(KEY_PROVENANCE_SOURCE_REVISION, SOURCE_REVISION);
+    builder.add_string(KEY_PROVENANCE_CHECKPOINT_SHA256, CHECKPOINT_SHA256);
+    builder.add_metadata(
+        KEY_PROVENANCE_CHECKPOINT_BYTES,
+        GgufMetadataValue::U64(CHECKPOINT_BYTES),
+    );
+    builder.add_metadata(
+        KEY_PROVENANCE_PREPARED_BYTES,
+        GgufMetadataValue::U64(PREPARED_BYTES),
+    );
+    builder.add_string(KEY_PROVENANCE_PREPARED_SHA256, PREPARED_SHA256);
+    let spdx = "apache-2.0";
+    let class = LicenseClass::Permissive;
+    vokra_core::stamp_provenance(
+        &mut builder,
+        class,
+        spdx,
+        Some(NAME),
+        Some("FireRedTeam/FireRedASR-AED-L prepared F32 checkpoint"),
+    );
+    for (key, value) in SPEC_KEYS {
+        builder.add_u32(key, value);
+    }
+    builder.add_metadata(
+        KEY_REQUIRED_TENSORS,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: st
+                .tensors()
+                .iter()
+                .map(|tensor| GgufMetadataValue::String(tensor.name.clone()))
+                .collect(),
+        }),
+    );
+    // The name-only declaration catches truncation; this parallel field
+    // carries the exact dtype and GGUF dimension contract.  It is encoded as
+    // `name|dtype-tag|dim,dim,...` to stay within GGUF Array<String> and is
+    // checked against the actual tensor descriptors by the native binder.
+    builder.add_metadata(
+        KEY_TENSOR_MANIFEST,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: st
+                .tensors()
+                .iter()
+                .map(|tensor| {
+                    let dims = tensor
+                        .shape
+                        .iter()
+                        .map(|dim| dim.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    GgufMetadataValue::String(format!(
+                        "{}|{}|{}",
+                        tensor.name,
+                        tensor.dtype.tag(),
+                        dims
+                    ))
+                })
+                .collect(),
+        }),
+    );
+    let declarations: Vec<GgufTensorDecl> = st
+        .tensors()
+        .iter()
+        .map(|tensor| GgufTensorDecl {
+            name: tensor.name.clone(),
+            dtype: tensor.dtype,
+            dimensions: tensor.shape.clone(),
+        })
+        .collect();
+    let output_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_path)?;
+    let mut temporary = AtomicOutputGuard {
+        path: temporary_path,
+        published: false,
+    };
+    let mut writer = GgufStreamWriter::begin(
+        std::io::BufWriter::new(output_file),
+        &builder,
+        &declarations,
+    )
+    .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+    let mut payload = Vec::new();
+    let mut report = FireredAsrAedLReport::default();
+    for tensor in &declarations {
+        report.read += 1;
+        st.read_tensor_into(&tensor.name, &mut payload)?;
+        writer
+            .write_tensor(&tensor.name, &payload)
+            .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+        report.written += 1;
+    }
+    let output_file = writer
+        .finish()
+        .map_err(|error| ConvertError::Gguf(error.to_string()))?
+        .into_inner()
+        .map_err(|error| ConvertError::Io(error.into_error()))?;
+    output_file.sync_all().map_err(ConvertError::Io)?;
+    // The destination was validated absent above and the temporary lives in
+    // the same canonical directory.  A hard-link create is atomic and
+    // no-clobber, so a concurrent creator wins rather than being overwritten.
+    publish_no_clobber(&temporary.path, &output_path)?;
+    temporary.published = true;
     Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vokra_core::gguf::GgufFile;
 
-    /// Per-process, per-test scratch path in the system temp dir (moshi
-    /// / emotion2vec / wespeaker / frcrn test pattern — no external
-    /// `tempfile` dep, preserving zero-dep NFR-DS-02). The nanosecond
-    /// suffix separates parallel `cargo test` runs so they cannot
-    /// clobber each other's files.
-    fn scratch_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-firered-asr-aed-l-{}-{}-{}.bin",
-            tag,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default(),
+    #[test]
+    fn arbitrary_inputs_are_refused_without_output() {
+        let root =
+            std::env::temp_dir().join(format!("vokra-firered-refusal-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp directory");
+        let input = root.join("arbitrary.safetensors");
+        let output = root.join("must-not-exist.gguf");
+        std::fs::write(&input, b"arbitrary").expect("input");
+        let error = convert_firered_asr_aed_l_file(&input, &output, None)
+            .expect_err("non-authenticated prepared input must refuse");
+        assert!(error.to_string().contains("prepared safetensors artifact"));
+        assert!(!output.exists());
+        let error = convert_firered_asr_aed_l_file(&input, &output, Some("mit"))
+            .expect_err("license override must be refused");
+        assert!(error.to_string().contains("fixed Apache-2.0"));
+        assert!(!output.exists());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn existing_output_is_never_clobbered() {
+        let root =
+            std::env::temp_dir().join(format!("vokra-firered-no-clobber-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp directory");
+        let input = root.join("arbitrary.safetensors");
+        let output = root.join("existing.gguf");
+        std::fs::write(&input, b"arbitrary").expect("input");
+        std::fs::write(&output, b"sentinel").expect("output");
+        let error = convert_firered_asr_aed_l_file(&input, &output, None)
+            .expect_err("existing output must be rejected before any stream");
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(std::fs::read(&output).expect("sentinel"), b"sentinel");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn failed_atomic_output_guard_removes_only_its_temp() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-firered-atomic-cleanup-{}",
+            std::process::id()
         ));
-        p
+        std::fs::create_dir_all(&root).expect("temp directory");
+        let temporary = root.join(".output.gguf.tmp-test");
+        std::fs::write(&temporary, b"partial").expect("partial temp");
+        {
+            let _guard = AtomicOutputGuard {
+                path: temporary.clone(),
+                published: false,
+            };
+        }
+        assert!(!temporary.exists(), "failed stream temp must be cleaned");
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
-    /// Builds a synthetic safetensors buffer with a single BF16 tensor.
-    ///
-    /// The payload is chosen from a known set of non-zero BF16 bit
-    /// patterns so a byte-identity assert catches any silent widen /
-    /// downcast attempt — the raw zeroed payload would round-trip
-    /// trivially through F32 / F16 widen and defeat the pin (mirror of
-    /// emotion2vec / frcrn / neucodec fixtures).
-    fn synthetic_bf16_safetensors() -> (Vec<u8>, Vec<u8>) {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        assert_eq!(bf16.len(), 12, "6 elements × 2 bytes BF16 payload");
-        let header = r#"{"encoder.blocks.0.attn.qkv_proj.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(&bf16);
-        (buf, bf16)
-    }
-
-    /// Builds a synthetic safetensors buffer with one F32 tensor
-    /// (`shape=[2,3]`, 24 B) followed by one F16 tensor
-    /// (`shape=[1,4]`, 8 B). The offsets are chosen so the tensors are
-    /// contiguous in the data region.
-    fn synthetic_f32_and_f16_safetensors() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let f32_vals: [f32; 6] = [1.0, -2.0, 3.5, -0.25, 100.0, 0.001];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(f32_bytes.len(), 24, "6 elements × 4 bytes F32 payload");
-        let f16_patterns: [u16; 4] = [0x3C00, 0xC000, 0x4200, 0x0001];
-        let f16_bytes: Vec<u8> = f16_patterns.iter().flat_map(|p| p.to_le_bytes()).collect();
-        assert_eq!(f16_bytes.len(), 8, "4 elements × 2 bytes F16 payload");
-        let header = r#"{"encoder.blocks.0.mlp.fc1.weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},"decoder.blocks.0.self_attn.out_proj.weight":{"dtype":"F16","shape":[1,4],"data_offsets":[24,32]}}"#;
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(&f32_bytes);
-        buf.extend_from_slice(&f16_bytes);
-        (buf, f32_bytes, f16_bytes)
-    }
-
-    /// BF16 pass-through: the upstream BF16 checkpoint must survive the
-    /// file-based converter round-trip with its dtype preserved (GGUF
-    /// type 30 = `GgmlType::BF16`) and its payload byte-identical to the
-    /// input. Mirror of the emotion2vec / wespeaker / frcrn / neucodec
-    /// equivalent.
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let (input_bytes, bf16_payload) = synthetic_bf16_safetensors();
-        let input = scratch_path("bf16-in");
-        let output = scratch_path("bf16-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
-
-        let report = convert_firered_asr_aed_l_file(&input, &output, None).expect("convert");
-
-        // Counters: single BF16 tensor read + written + BF16 subset.
-        assert_eq!(report.read, 1, "one tensor visible in safetensors header");
+    fn concurrent_destination_is_rejected_without_clobbering() {
+        let root =
+            std::env::temp_dir().join(format!("vokra-firered-publish-race-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp directory");
+        let temporary = root.join(".output.gguf.tmp");
+        let destination = root.join("output.gguf");
+        std::fs::write(&temporary, b"complete").expect("temporary");
+        std::fs::write(&destination, b"racing-writer").expect("destination");
+        let error = publish_no_clobber(&temporary, &destination)
+            .expect_err("a destination created after validation must win");
+        assert!(matches!(
+            error,
+            ConvertError::Io(ref io_error)
+                if io_error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
         assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of emotion2vec / frcrn)"
-        );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 subset counter must record the pass-through"
-        );
-
-        // Round-trip: dtype preserved, payload byte-identical (no silent widen).
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        let info = file
-            .tensor_info("encoder.blocks.0.attn.qkv_proj.weight")
-            .expect("BF16 tensor present after pass-through");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            bf16_payload.as_slice(),
-            "BF16 payload must be byte-identical to input"
-        );
-
-        // Provenance + category chunks pinned on the artifact itself.
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY),
-            "category chunk pins the ASR-family membership"
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_HF),
-            "upstream slug pins traceability back to FireRedTeam/FireRedASR-AED-L"
+            std::fs::read(&destination).expect("destination"),
+            b"racing-writer"
         );
         assert!(
-            file.get(chunks::KEY_SCHEMA_VERSION).is_some(),
-            "vokra.schema.version must be stamped"
+            temporary.exists(),
+            "failed publication retains its own temp for guard cleanup"
         );
-        assert!(
-            file.get(chunks::KEY_SCHEMA_PRODUCER).is_some(),
-            "vokra.schema.producer must be stamped"
-        );
-
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
-    /// F32 + F16 pass-through: two float tensors of distinct dtypes in
-    /// the same input must both reach the pass-through arm without
-    /// collapsing into a single dtype branch, and the BF16 counter must
-    /// remain 0. Guards against a naive `if bf16 { … } else` refactor.
     #[test]
-    fn f32_and_f16_tensors_pass_through() {
-        let (input_bytes, f32_payload, f16_payload) = synthetic_f32_and_f16_safetensors();
-        let input = scratch_path("f32f16-in");
-        let output = scratch_path("f32f16-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
+    fn streaming_sha256_matches_standard_vectors() {
+        let root = std::env::temp_dir().join(format!("vokra-firered-sha-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp directory");
+        let path = root.join("payload");
 
-        let report = convert_firered_asr_aed_l_file(&input, &output, None).expect("convert");
-
-        assert_eq!(report.read, 2, "two tensors visible in header");
-        assert_eq!(report.written, 2, "both F32 and F16 must pass through");
+        std::fs::write(&path, []).expect("empty input");
         assert_eq!(
-            report.skipped_non_float, 0,
-            "no tensor may reach the skipped arm"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32+F16-only input must leave the BF16 subset counter at Default 0"
+            sha256_file(&path).expect("empty hash"),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
 
-        // Both tensors survive the round-trip with their upstream names
-        // and dtypes preserved.
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        let f32_info = file
-            .tensor_info("encoder.blocks.0.mlp.fc1.weight")
-            .expect("F32 tensor present");
-        assert_eq!(f32_info.dtype, GgmlType::F32, "F32 stays F32");
-        assert_eq!(f32_info.dimensions, vec![2, 3]);
-        assert_eq!(file.tensor_bytes(f32_info), f32_payload.as_slice());
-
-        let f16_info = file
-            .tensor_info("decoder.blocks.0.self_attn.out_proj.weight")
-            .expect("F16 tensor present");
-        assert_eq!(f16_info.dtype, GgmlType::F16, "F16 stays F16");
-        assert_eq!(f16_info.dimensions, vec![1, 4]);
-        assert_eq!(file.tensor_bytes(f16_info), f16_payload.as_slice());
-
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
-    }
-
-    /// License override: the caller-supplied SPDX must replace the
-    /// default `apache-2.0` stamp on the artifact (mirror of the
-    /// wespeaker / emotion2vec / frcrn / nkf-aec / neucodec test —
-    /// proves the standing `convert_file_licensed` override reaches
-    /// this arm).
-    #[test]
-    fn license_override_replaces_default_stamp() {
-        let (input_bytes, _) = synthetic_bf16_safetensors();
-        let input = scratch_path("license-in");
-        let output = scratch_path("license-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
-
-        // Override with `mit` (a Permissive alternative to apache-2.0)
-        // — the SPDX must land in the license stamp and the class must
-        // re-derive to Permissive.
-        convert_firered_asr_aed_l_file(&input, &output, Some("mit"))
-            .expect("convert with license override");
-
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
+        std::fs::write(&path, b"abc").expect("abc input");
         assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("mit"),
-            "override SPDX must land in vokra.provenance.license"
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "MIT still resolves to Permissive"
+            sha256_file(&path).expect("hash"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
 
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+        // This crosses the 64-byte compression-block boundary many times and
+        // is the standard SHA-256 million-'a' test vector.
+        std::fs::write(&path, vec![b'a'; 1_000_000]).expect("multi-block input");
+        assert_eq!(
+            sha256_file(&path).expect("multi-block hash"),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 }

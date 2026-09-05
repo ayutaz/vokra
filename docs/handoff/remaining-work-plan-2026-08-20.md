@@ -1,5 +1,21 @@
 # Remaining-work execution plan (2026-08-20)
 
+> **2026-08-31 current-state notice:** this is a dated execution plan, not the
+> current ledger. Its historical counts, branch/HEAD references and completion
+> boundaries are superseded by the authenticated current snapshot in
+> `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md` and the live
+> `docs/m5-owner-verification-checklist.md`. The pre-documentation
+> implementation/code baseline observed on 2026-08-31 was branch
+> `feat/mac-cpu-metal-full-coverage-2026-08-28` at
+> `9f69277d8a0d5df574c1ee95563bd1f005de91d0`, with evidence/package checkpoint
+> `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; those checkpoints are historical
+> workspace `0.2.0` evidence. The active branch is workspace `0.3.0`; its
+> remote head immediately before this documentation refresh was
+> `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109 passing
+> checks, 13 expected skips, and no failures or pending checks. The current C
+> ABI is 57 functions / 15 typedefs and M5 is 49 checked / 33 unchecked. The
+> GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
+
 > 2026-08-21 refinement: the runtime portion of Phase C is superseded by
 > `docs/handoff/runtime-gap-execution-plan-2026-08-21.md`. The newer audit
 > corrects the stale DeBERTa-v2 mapping item, records the public RNNoise

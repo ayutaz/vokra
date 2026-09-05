@@ -124,7 +124,7 @@ impl ConvDims {
     /// well-formed microWakeWord model never emits, but the sidecar is not the
     /// runtime — validate at the boundary).
     pub fn out_h(&self) -> Option<usize> {
-        let padded = self.in_h.checked_add(2 * self.pad_h)?;
+        let padded = self.in_h.checked_add(self.pad_h.checked_mul(2)?)?;
         if self.kh > padded || self.stride_h == 0 {
             return None;
         }
@@ -133,7 +133,7 @@ impl ConvDims {
 
     /// Output width. See [`Self::out_h`].
     pub fn out_w(&self) -> Option<usize> {
-        let padded = self.in_w.checked_add(2 * self.pad_w)?;
+        let padded = self.in_w.checked_add(self.pad_w.checked_mul(2)?)?;
         if self.kw > padded || self.stride_w == 0 {
             return None;
         }
@@ -158,8 +158,12 @@ impl ConvDims {
 /// `debug_assert` in debug builds; release paths trust the sidecar's
 /// quantisation metadata (validated at model-load time, follow-up WP).
 #[inline]
-fn requantize(acc_with_bias: i32, output_scale: f32, output_zero_point: i8) -> i8 {
-    debug_assert!(output_scale > 0.0, "requantize: output_scale must be > 0");
+fn requantize(
+    acc_with_bias: i32,
+    output_scale: f32,
+    output_zero_point: i8,
+    fused_relu: bool,
+) -> i8 {
     let scaled = (acc_with_bias as f32) * output_scale;
     // Round-half-away-from-zero (matches `quantize_int8` in `features.rs`).
     let rounded = if scaled >= 0.0 {
@@ -172,7 +176,56 @@ fn requantize(acc_with_bias: i32, output_scale: f32, output_zero_point: i8) -> i
     // `as i32` cast on an out-of-range f32 saturates by Rust semantics
     // (2021 edition; see `f32 as i32` conversion rules).
     let requant = (rounded as i32).saturating_add(output_zero_point as i32);
-    requant.clamp(i8::MIN as i32, i8::MAX as i32) as i8
+    let lower = if fused_relu {
+        (i8::MIN as i32).max(output_zero_point as i32)
+    } else {
+        i8::MIN as i32
+    };
+    requant.clamp(lower, i8::MAX as i32) as i8
+}
+
+enum Requantization<'a> {
+    Scalar { scale: f32, zero_point: i8 },
+    PerChannel { scales: &'a [f32], zero_point: i8 },
+}
+
+impl<'a> Requantization<'a> {
+    fn validate(&self, channels: usize, op: &str) -> Result<()> {
+        match self {
+            Self::Scalar { scale, .. } => {
+                if !scale.is_finite() || *scale <= 0.0 {
+                    return Err(VokraError::InvalidArgument(alloc::format!(
+                        "{op}: output_scale must be finite and > 0"
+                    )));
+                }
+            }
+            Self::PerChannel { scales, .. } => {
+                if scales.len() != channels {
+                    return Err(VokraError::InvalidArgument(alloc::format!(
+                        "{op}: output scales must have {channels} channels (scales={})",
+                        scales.len()
+                    )));
+                }
+                if scales
+                    .iter()
+                    .any(|scale| !scale.is_finite() || *scale <= 0.0)
+                {
+                    return Err(VokraError::InvalidArgument(alloc::format!(
+                        "{op}: output scales must be finite and > 0"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn at(&self, channel: usize) -> (f32, i8) {
+        match self {
+            Self::Scalar { scale, zero_point } => (*scale, *zero_point),
+            Self::PerChannel { scales, zero_point } => (scales[channel], *zero_point),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +274,65 @@ pub fn conv2d_int8(
     output_scale: f32,
     dims: ConvDims,
 ) -> Result<()> {
+    conv2d_int8_impl(
+        input,
+        weight,
+        bias,
+        output,
+        input_zero_point,
+        Requantization::Scalar {
+            scale: output_scale,
+            zero_point: output_zero_point,
+        },
+        false,
+        dims,
+    )
+}
+
+/// Standard convolution with per-output-channel float-scale requantisation.
+///
+/// `output_scales` is indexed by output channel; the output zero-point is
+/// per-tensor and therefore supplied once.
+/// When `fused_relu` is true, the quantised result is clamped to the TFLite
+/// quantised representation of `[0, +inf)` for each channel.
+#[allow(clippy::too_many_arguments)]
+pub fn conv2d_int8_per_channel(
+    input: &[i8],
+    weight: &[i8],
+    bias: &[i32],
+    output: &mut [i8],
+    input_zero_point: i8,
+    output_scales: &[f32],
+    output_zero_point: i8,
+    fused_relu: bool,
+    dims: ConvDims,
+) -> Result<()> {
+    conv2d_int8_impl(
+        input,
+        weight,
+        bias,
+        output,
+        input_zero_point,
+        Requantization::PerChannel {
+            scales: output_scales,
+            zero_point: output_zero_point,
+        },
+        fused_relu,
+        dims,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn conv2d_int8_impl(
+    input: &[i8],
+    weight: &[i8],
+    bias: &[i32],
+    output: &mut [i8],
+    input_zero_point: i8,
+    quantization: Requantization<'_>,
+    fused_relu: bool,
+    dims: ConvDims,
+) -> Result<()> {
     let out_h = dims
         .out_h()
         .ok_or_else(|| VokraError::InvalidArgument("conv2d_int8: invalid out_h".into()))?;
@@ -239,6 +351,7 @@ pub fn conv2d_int8(
         /*depthwise=*/ false,
     )?;
 
+    quantization.validate(dims.out_c, "conv2d_int8")?;
     let input_zp = input_zero_point as i32;
 
     for oy in 0..out_h {
@@ -268,8 +381,9 @@ pub fn conv2d_int8(
                     }
                 }
                 let acc_with_bias = acc.saturating_add(bias[oc]);
+                let (output_scale, output_zero_point) = quantization.at(oc);
                 output[(oy * out_w + ox) * dims.out_c + oc] =
-                    requantize(acc_with_bias, output_scale, output_zero_point);
+                    requantize(acc_with_bias, output_scale, output_zero_point, fused_relu);
             }
         }
     }
@@ -306,6 +420,61 @@ pub fn depthwise_conv2d_int8(
     output_scale: f32,
     dims: ConvDims,
 ) -> Result<()> {
+    depthwise_conv2d_int8_impl(
+        input,
+        weight,
+        bias,
+        output,
+        input_zero_point,
+        Requantization::Scalar {
+            scale: output_scale,
+            zero_point: output_zero_point,
+        },
+        false,
+        dims,
+    )
+}
+
+/// Depthwise convolution with per-output-channel float-scale requantisation
+/// and an optional TFLite fused RELU clamp.
+#[allow(clippy::too_many_arguments)]
+pub fn depthwise_conv2d_int8_per_channel(
+    input: &[i8],
+    weight: &[i8],
+    bias: &[i32],
+    output: &mut [i8],
+    input_zero_point: i8,
+    output_scales: &[f32],
+    output_zero_point: i8,
+    fused_relu: bool,
+    dims: ConvDims,
+) -> Result<()> {
+    depthwise_conv2d_int8_impl(
+        input,
+        weight,
+        bias,
+        output,
+        input_zero_point,
+        Requantization::PerChannel {
+            scales: output_scales,
+            zero_point: output_zero_point,
+        },
+        fused_relu,
+        dims,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn depthwise_conv2d_int8_impl(
+    input: &[i8],
+    weight: &[i8],
+    bias: &[i32],
+    output: &mut [i8],
+    input_zero_point: i8,
+    quantization: Requantization<'_>,
+    fused_relu: bool,
+    dims: ConvDims,
+) -> Result<()> {
     let out_h = dims.out_h().ok_or_else(|| {
         VokraError::InvalidArgument("depthwise_conv2d_int8: invalid out_h".into())
     })?;
@@ -324,6 +493,7 @@ pub fn depthwise_conv2d_int8(
         /*depthwise=*/ true,
     )?;
 
+    quantization.validate(dims.in_c, "depthwise_conv2d_int8")?;
     let input_zp = input_zero_point as i32;
     let effective_out_c = dims.in_c;
 
@@ -354,8 +524,9 @@ pub fn depthwise_conv2d_int8(
                     }
                 }
                 let acc_with_bias = acc.saturating_add(bias[oc]);
+                let (output_scale, output_zero_point) = quantization.at(oc);
                 output[(oy * out_w + ox) * effective_out_c + oc] =
-                    requantize(acc_with_bias, output_scale, output_zero_point);
+                    requantize(acc_with_bias, output_scale, output_zero_point, fused_relu);
             }
         }
     }
@@ -388,15 +559,69 @@ pub fn fully_connected_int8(
     output_zero_point: i8,
     output_scale: f32,
 ) -> Result<()> {
+    fully_connected_int8_impl(
+        input,
+        weight,
+        bias,
+        output,
+        input_zero_point,
+        Requantization::Scalar {
+            scale: output_scale,
+            zero_point: output_zero_point,
+        },
+        false,
+    )
+}
+
+/// Fully-connected layer with per-output-channel float-scale requantisation
+/// and an optional TFLite fused RELU clamp.
+#[allow(clippy::too_many_arguments)]
+pub fn fully_connected_int8_per_channel(
+    input: &[i8],
+    weight: &[i8],
+    bias: &[i32],
+    output: &mut [i8],
+    input_zero_point: i8,
+    output_scales: &[f32],
+    output_zero_point: i8,
+    fused_relu: bool,
+) -> Result<()> {
+    fully_connected_int8_impl(
+        input,
+        weight,
+        bias,
+        output,
+        input_zero_point,
+        Requantization::PerChannel {
+            scales: output_scales,
+            zero_point: output_zero_point,
+        },
+        fused_relu,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fully_connected_int8_impl(
+    input: &[i8],
+    weight: &[i8],
+    bias: &[i32],
+    output: &mut [i8],
+    input_zero_point: i8,
+    quantization: Requantization<'_>,
+    fused_relu: bool,
+) -> Result<()> {
     let in_dim = input.len();
     let out_dim = output.len();
-    if weight.len() != out_dim * in_dim {
+    let expected_weight = out_dim.checked_mul(in_dim).ok_or_else(|| {
+        VokraError::InvalidArgument("fully_connected_int8: dimensions overflow".into())
+    })?;
+    if weight.len() != expected_weight {
         return Err(VokraError::InvalidArgument(alloc::format!(
             "fully_connected_int8: weight len {} != out_dim * in_dim ({} * {} = {})",
             weight.len(),
             out_dim,
             in_dim,
-            out_dim * in_dim,
+            expected_weight,
         )));
     }
     if bias.len() != out_dim {
@@ -407,6 +632,8 @@ pub fn fully_connected_int8(
         )));
     }
 
+    quantization.validate(out_dim, "fully_connected_int8")?;
+
     let input_zp = input_zero_point as i32;
     for j in 0..out_dim {
         let mut acc: i32 = 0;
@@ -415,7 +642,8 @@ pub fn fully_connected_int8(
             acc += ((input[i] as i32) - input_zp) * (row[i] as i32);
         }
         let acc_with_bias = acc.saturating_add(bias[j]);
-        output[j] = requantize(acc_with_bias, output_scale, output_zero_point);
+        let (output_scale, output_zero_point) = quantization.at(j);
+        output[j] = requantize(acc_with_bias, output_scale, output_zero_point, fused_relu);
     }
     Ok(())
 }
@@ -432,9 +660,8 @@ pub fn fully_connected_int8(
 /// subsequent element is then a single indexed lookup — the same technique
 /// TFLite's reference `LOGISTIC` kernel uses (Apache-2.0).
 ///
-/// Allocating the LUT once per call is cheap (~256 f32 ops) and keeps the
-/// signature simple; a persistent LUT can be added when the forward is
-/// wired if profiling shows it matters.
+/// The LUT is a fixed 256-entry stack array, so this path performs no heap
+/// allocation and keeps the signature simple.
 ///
 /// # Errors
 ///
@@ -477,8 +704,8 @@ fn build_sigmoid_lut(
     input_zero_point: i8,
     output_scale: f32,
     output_zero_point: i8,
-) -> Vec<i8> {
-    let mut lut = vec![0i8; 256];
+) -> [i8; 256] {
+    let mut lut = [0i8; 256];
     for (idx, entry) in lut.iter_mut().enumerate() {
         let input_i8 = (idx as i32) - 128; // -128 ..= 127
         let x = ((input_i8 - input_zero_point as i32) as f32) * input_scale;
@@ -672,7 +899,11 @@ fn validate_conv_buffers(
     out_w: usize,
     depthwise: bool,
 ) -> Result<()> {
-    let expected_input = dims.in_h * dims.in_w * dims.in_c;
+    let expected_input = dims
+        .in_h
+        .checked_mul(dims.in_w)
+        .and_then(|v| v.checked_mul(dims.in_c))
+        .ok_or_else(|| VokraError::InvalidArgument("conv: input dimensions overflow".into()))?;
     if input_len != expected_input {
         return Err(VokraError::InvalidArgument(alloc::format!(
             "conv: input len {input_len} != in_h * in_w * in_c = {expected_input}"
@@ -680,10 +911,16 @@ fn validate_conv_buffers(
     }
     let effective_out_c = if depthwise { dims.in_c } else { dims.out_c };
     let expected_weight = if depthwise {
-        dims.kh * dims.kw * dims.in_c
+        dims.kh
+            .checked_mul(dims.kw)
+            .and_then(|v| v.checked_mul(dims.in_c))
     } else {
-        dims.out_c * dims.kh * dims.kw * dims.in_c
-    };
+        dims.out_c
+            .checked_mul(dims.kh)
+            .and_then(|v| v.checked_mul(dims.kw))
+            .and_then(|v| v.checked_mul(dims.in_c))
+    }
+    .ok_or_else(|| VokraError::InvalidArgument("conv: weight dimensions overflow".into()))?;
     if weight_len != expected_weight {
         return Err(VokraError::InvalidArgument(alloc::format!(
             "conv: weight len {weight_len} != expected {expected_weight}"
@@ -694,7 +931,10 @@ fn validate_conv_buffers(
             "conv: bias len {bias_len} != out_c {effective_out_c}"
         )));
     }
-    let expected_output = out_h * out_w * effective_out_c;
+    let expected_output = out_h
+        .checked_mul(out_w)
+        .and_then(|v| v.checked_mul(effective_out_c))
+        .ok_or_else(|| VokraError::InvalidArgument("conv: output dimensions overflow".into()))?;
     if output_len != expected_output {
         return Err(VokraError::InvalidArgument(alloc::format!(
             "conv: output len {output_len} != out_h * out_w * out_c = {expected_output}"
@@ -1237,5 +1477,90 @@ mod tests {
         assert_eq!(exp_int8(-200.0), 0.0);
         // NaN passthrough (matches f32::exp).
         assert!(exp_int8(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn per_channel_conv_scales_and_fused_relu_are_applied() {
+        let dims = ConvDims {
+            in_h: 1,
+            in_w: 1,
+            in_c: 2,
+            out_c: 2,
+            kh: 1,
+            kw: 1,
+            stride_h: 1,
+            stride_w: 1,
+            pad_h: 0,
+            pad_w: 0,
+        };
+        let weight = [1i8, 0, 0, 1];
+        let bias = [0i32, 0];
+        let mut out = [0i8; 2];
+        conv2d_int8_per_channel(
+            &[1, -1],
+            &weight,
+            &bias,
+            &mut out,
+            0,
+            &[1.0, 2.0],
+            0,
+            false,
+            dims,
+        )
+        .unwrap();
+        assert_eq!(out, [1, -2]);
+        conv2d_int8_per_channel(
+            &[1, -1],
+            &weight,
+            &bias,
+            &mut out,
+            0,
+            &[1.0, 2.0],
+            0,
+            true,
+            dims,
+        )
+        .unwrap();
+        assert_eq!(out, [1, 0]);
+        assert!(conv2d_int8_per_channel(
+            &[1, -1],
+            &weight,
+            &bias,
+            &mut out,
+            0,
+            &[1.0],
+            0,
+            false,
+            dims,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn per_channel_dense_scales_are_independent() {
+        let mut out = [0i8; 2];
+        fully_connected_int8_per_channel(
+            &[3],
+            &[1, 1],
+            &[0, 0],
+            &mut out,
+            0,
+            &[1.0, 0.5],
+            0,
+            false,
+        )
+        .unwrap();
+        assert_eq!(out, [3, 2]);
+        assert!(fully_connected_int8_per_channel(
+            &[3],
+            &[1, 1],
+            &[0, 0],
+            &mut out,
+            0,
+            &[f32::NAN, 0.5],
+            0,
+            false,
+        )
+        .is_err());
     }
 }

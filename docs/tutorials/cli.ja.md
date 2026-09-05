@@ -220,7 +220,7 @@ CPU を*意図的に*選ぶには `--backend cpu` を使う — それはあな�
 
 ## Keeping this page current
 
-**最終確認日: 2026-08-21 — `crates/vokra-cli/src/` の `run` / `convert` /
+**最終確認日: 2026-08-30 — `crates/vokra-cli/src/` の `run` / `convert` /
 `bench` / `f0` 引数パーサに対して確認。**
 
 - **更新責任**: CLI フラグを追加・改名した PR が、同一 PR で本ページと英語版を

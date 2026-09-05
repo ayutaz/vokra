@@ -117,6 +117,106 @@ pub trait BigVganBackendOps: HifiGanBackendOps {
     ) -> Result<Vec<f32>>;
 }
 
+/// Backend-independent resident execution seam for the complete BigVGAN graph.
+///
+/// The associated tensor is intentionally opaque: an implementation may keep
+/// activations on a device for the whole forward and perform only the final
+/// [`download`](Self::download). Weight and parameter slices are host-owned and
+/// may be uploaded by each operation; activation tensors must never be read
+/// back between operations. Implementations must return an explicit error for
+/// unsupported device semantics rather than falling back to host execution.
+pub trait BigVganResidentOps {
+    /// Opaque resident tensor handle.
+    type Tensor;
+
+    /// Upload a host tensor (mel, weight, bias, alpha, beta, or FIR filter).
+    fn upload(&mut self, data: &[f32]) -> Result<Self::Tensor>;
+
+    /// Device-resident Conv1d with row-major `[out, in, kernel]` weights.
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+    fn conv1d(
+        &mut self,
+        input: &Self::Tensor,
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        dilation: usize,
+        padding: usize,
+    ) -> Result<Self::Tensor>;
+
+    /// Device-resident ConvTranspose1d with `[in, out, kernel]` weights.
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+    fn conv_transpose1d(
+        &mut self,
+        input: &Self::Tensor,
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Self::Tensor>;
+
+    /// Resident Snake activation.
+    fn snake(
+        &mut self,
+        input: &Self::Tensor,
+        alpha: &[f32],
+        channels: usize,
+        time: usize,
+    ) -> Result<Self::Tensor>;
+
+    /// Resident SnakeBeta activation.
+    fn snake_beta(
+        &mut self,
+        input: &Self::Tensor,
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+    ) -> Result<Self::Tensor>;
+
+    /// Resident alias-free upsample using an even-tap FIR filter.
+    fn anti_aliased_upsample(
+        &mut self,
+        input: &Self::Tensor,
+        channels: usize,
+        time: usize,
+        ratio: usize,
+        filter: &[f32],
+    ) -> Result<Self::Tensor>;
+
+    /// Resident alias-free downsample using an even-tap FIR filter.
+    fn anti_aliased_downsample(
+        &mut self,
+        input: &Self::Tensor,
+        channels: usize,
+        time: usize,
+        ratio: usize,
+        filter: &[f32],
+    ) -> Result<Self::Tensor>;
+
+    /// In-place resident residual add (`dst += src`).
+    fn residual_add(&mut self, dst: &mut Self::Tensor, src: &Self::Tensor) -> Result<()>;
+
+    /// Resident scalar multiply.
+    fn scale(&mut self, input: &Self::Tensor, scale: f32) -> Result<Self::Tensor>;
+
+    /// Resident terminal tanh.
+    fn tanh(&mut self, input: &Self::Tensor) -> Result<Self::Tensor>;
+
+    /// Resident terminal clamp.
+    fn clamp(&mut self, input: &Self::Tensor, lower: f32, upper: f32) -> Result<Self::Tensor>;
+
+    /// The sole permitted activation readback.
+    fn download(&mut self, input: &Self::Tensor, output: &mut [f32]) -> Result<()>;
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ScalarBigVganBackendOps;
 
@@ -400,6 +500,25 @@ impl AmpActivation {
         x.copy_from_slice(&output);
         Ok(())
     }
+
+    fn forward_resident<O: BigVganResidentOps>(
+        &self,
+        input: &O::Tensor,
+        channels: usize,
+        time: usize,
+        ops: &mut O,
+    ) -> Result<O::Tensor> {
+        match self {
+            Self::Snake(snake) => {
+                let alpha = snake.effective_alpha();
+                ops.snake(input, &alpha, channels, time)
+            }
+            Self::SnakeBeta(snake) => {
+                let (alpha, beta) = snake.effective_parameters();
+                ops.snake_beta(input, &alpha, &beta, channels, time)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +635,39 @@ impl AliasFreeActivation {
         )?;
         x.copy_from_slice(&downsampled);
         Ok(())
+    }
+
+    fn forward_resident<O: BigVganResidentOps>(
+        &self,
+        input: &O::Tensor,
+        channels: usize,
+        time: usize,
+        ops: &mut O,
+    ) -> Result<O::Tensor> {
+        let upsampled = ops.anti_aliased_upsample(
+            input,
+            channels,
+            time,
+            Self::RATIO,
+            &self.weights.upsample_filter,
+        )?;
+        let activated = self.activation.forward_resident(
+            &upsampled,
+            channels,
+            time.checked_mul(Self::RATIO).ok_or_else(|| {
+                VokraError::InvalidArgument("BigVGAN resident activation time overflow".to_owned())
+            })?,
+            ops,
+        )?;
+        ops.anti_aliased_downsample(
+            &activated,
+            channels,
+            time.checked_mul(Self::RATIO).ok_or_else(|| {
+                VokraError::InvalidArgument("BigVGAN resident activation time overflow".to_owned())
+            })?,
+            Self::RATIO,
+            &self.weights.downsample_filter,
+        )
     }
 }
 
@@ -854,6 +1006,50 @@ impl AmpBlock1 {
             }
         }
         Ok(())
+    }
+
+    fn forward_resident<O: BigVganResidentOps>(
+        &self,
+        input: &O::Tensor,
+        t: usize,
+        ops: &mut O,
+    ) -> Result<O::Tensor> {
+        let ch = self.channels as usize;
+        let kernel = self.kernel_size as usize;
+        let mut current: Option<O::Tensor> = None;
+        for (index, &dilation) in self.dilations.iter().enumerate() {
+            let dilation = dilation as usize;
+            let source = current.as_ref().unwrap_or(input);
+            let mut branch = self.activations1[index].forward_resident(source, ch, t, ops)?;
+            branch = ops.conv1d(
+                &branch,
+                ch,
+                t,
+                &self.weights.convs1_w[index],
+                ch,
+                kernel,
+                Some(&self.weights.convs1_b[index]),
+                dilation,
+                get_padding(kernel, dilation),
+            )?;
+            branch = self.activations2[index].forward_resident(&branch, ch, t, ops)?;
+            branch = ops.conv1d(
+                &branch,
+                ch,
+                t,
+                &self.weights.convs2_w[index],
+                ch,
+                kernel,
+                Some(&self.weights.convs2_b[index]),
+                1,
+                get_padding(kernel, 1),
+            )?;
+            ops.residual_add(&mut branch, source)?;
+            current = Some(branch);
+        }
+        current.ok_or_else(|| {
+            VokraError::InvalidArgument("BigVGAN resident AMP block has no branches".to_owned())
+        })
     }
 }
 
@@ -1370,6 +1566,125 @@ impl BigVGanGenerator {
         }
         Ok(y)
     }
+
+    /// Runs the entire BigVGAN graph through a resident backend. The mel is
+    /// uploaded once by `ops`; all convolution, alias-free activation, MRF,
+    /// and terminal operations consume opaque resident tensors. Exactly one
+    /// backend `download` is issued for the final waveform.
+    pub fn forward_with_resident_ops<O: BigVganResidentOps>(
+        &self,
+        mel: &[f32],
+        t_mel: usize,
+        ops: &mut O,
+        output: &mut [f32],
+    ) -> Result<()> {
+        if t_mel == 0 {
+            return Err(VokraError::InvalidArgument(
+                "BigVGan resident forward: t_mel must be > 0".to_owned(),
+            ));
+        }
+        let inc = self.cfg.in_channels as usize;
+        let expected_mel = inc.checked_mul(t_mel).ok_or_else(|| {
+            VokraError::InvalidArgument("BigVGAN resident mel shape overflow".to_owned())
+        })?;
+        if mel.len() != expected_mel {
+            return Err(VokraError::InvalidArgument(format!(
+                "BigVGan resident forward: mel length {} != in_channels * t_mel = {}",
+                mel.len(),
+                expected_mel
+            )));
+        }
+        let expected_output = t_mel
+            .checked_mul(self.cfg.total_upsample_factor() as usize)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("BigVGAN resident output length overflow".to_owned())
+            })?;
+        if output.len() != expected_output {
+            return Err(VokraError::InvalidArgument(format!(
+                "BigVGan resident output length {} != expected {expected_output}",
+                output.len()
+            )));
+        }
+        let n_ups = self.cfg.num_upsamples();
+        let n_kernels = self.cfg.num_kernels();
+        let bc = self.cfg.upsample_initial_channel as usize;
+        let mel_tensor = ops.upload(mel)?;
+        let mut x = ops.conv1d(
+            &mel_tensor,
+            inc,
+            t_mel,
+            &self.weights.conv_pre_w,
+            bc,
+            7,
+            Some(&self.weights.conv_pre_b),
+            1,
+            3,
+        )?;
+        let mut t_cur = t_mel;
+
+        for i in 0..n_ups {
+            let in_ch = (self.cfg.upsample_initial_channel >> i as u32) as usize;
+            let out_ch = (self.cfg.upsample_initial_channel >> (i as u32 + 1)) as usize;
+            let kernel = self.cfg.upsample_kernel_sizes[i] as usize;
+            let stride = self.cfg.upsample_rates[i] as usize;
+            x = ops.conv_transpose1d(
+                &x,
+                in_ch,
+                t_cur,
+                &self.weights.ups_w[i],
+                out_ch,
+                kernel,
+                Some(&self.weights.ups_b[i]),
+                stride,
+                (kernel - stride) / 2,
+            )?;
+            t_cur = t_cur.checked_mul(stride).ok_or_else(|| {
+                VokraError::InvalidArgument("BigVGAN resident time overflow".to_owned())
+            })?;
+
+            let mut fused: Option<O::Tensor> = None;
+            for j in 0..n_kernels {
+                let branch = self.amp_blocks[i * n_kernels + j].forward_resident(&x, t_cur, ops)?;
+                if let Some(accumulator) = fused.as_mut() {
+                    ops.residual_add(accumulator, &branch)?;
+                } else {
+                    fused = Some(branch);
+                }
+            }
+            x = ops.scale(
+                &fused.ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "BigVGAN resident stage has no MRF branches".to_owned(),
+                    )
+                })?,
+                1.0 / n_kernels as f32,
+            )?;
+        }
+
+        let last_ch = self.cfg.output_channels_at(n_ups - 1) as usize;
+        x = self
+            .activation_post
+            .forward_resident(&x, last_ch, t_cur, ops)?;
+        let bias = self.weights.conv_post_b.as_deref().unwrap_or(&[0.0f32; 1]);
+        x = ops.conv1d(
+            &x,
+            last_ch,
+            t_cur,
+            &self.weights.conv_post_w,
+            1,
+            7,
+            Some(bias),
+            1,
+            3,
+        )?;
+        x = if self.cfg.use_tanh_at_final {
+            ops.tanh(&x)?
+        } else {
+            ops.clamp(&x, -1.0, 1.0)?
+        };
+        debug_assert_eq!(t_cur, expected_output);
+        ops.download(&x, output)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1878,7 +2193,7 @@ mod tests {
     #[test]
     fn amp_block1_rejects_empty_dilations() {
         let w = snake_amp_weights(4, 3, 1);
-        // Pass empty dilations but n_branches weights — expected to fail on
+        // Pass empty dilations but one kernel's weights — expected to fail on
         // the dilations check first.
         let err = AmpBlock1::new(4, 3, vec![], SnakeKind::Snake, false, w).unwrap_err();
         assert!(
@@ -1967,8 +2282,8 @@ mod tests {
     // ---- BigVGanGenerator: mini synthetic config for shape flow -------
 
     /// Build a mini `(cfg, weights)` bundle for shape-flow testing. Two
-    /// upsample stages, one MRF branch each, small channel counts so the
-    /// scalar loops finish in ms.
+    /// upsample stages, two MRF branches per stage, small channel counts so
+    /// the scalar loops finish in ms.
     fn mini_bundle(
         activation: SnakeKind,
         logscale: bool,
@@ -1980,8 +2295,8 @@ mod tests {
             upsample_initial_channel: 8, // stage 0 out=4, stage 1 out=2
             upsample_rates: vec![2, 2],
             upsample_kernel_sizes: vec![4, 4],
-            resblock_kernel_sizes: vec![3],
-            resblock_dilation_sizes: vec![vec![1, 3]],
+            resblock_kernel_sizes: vec![3, 5],
+            resblock_dilation_sizes: vec![vec![1, 3], vec![1, 3]],
             activation,
             snake_logscale: logscale,
             use_bias_at_final: bias,
@@ -2043,6 +2358,250 @@ mod tests {
             conv_post_b: if bias { Some(vec![0.0f32]) } else { None },
         };
         (cfg, weights)
+    }
+
+    #[derive(Default)]
+    struct FakeResident {
+        readbacks: usize,
+        terminal: &'static str,
+        events: Vec<&'static str>,
+        fail_before_download: bool,
+    }
+
+    impl BigVganResidentOps for FakeResident {
+        type Tensor = Vec<f32>;
+
+        fn upload(&mut self, data: &[f32]) -> Result<Self::Tensor> {
+            Ok(data.to_vec())
+        }
+
+        fn conv1d(
+            &mut self,
+            input: &Self::Tensor,
+            in_ch: usize,
+            in_len: usize,
+            weight: &[f32],
+            out_ch: usize,
+            kernel: usize,
+            bias: Option<&[f32]>,
+            dilation: usize,
+            padding: usize,
+        ) -> Result<Self::Tensor> {
+            self.events.push("conv1d");
+            if self.fail_before_download {
+                return Err(VokraError::BackendUnavailable(
+                    "injected fake resident convolution failure".to_owned(),
+                ));
+            }
+            ScalarBigVganBackendOps.conv1d(
+                input,
+                in_ch,
+                in_len,
+                weight,
+                out_ch,
+                kernel,
+                bias,
+                1,
+                dilation,
+                padding,
+                HifiGanConvPadding::Zero,
+            )
+        }
+
+        fn conv_transpose1d(
+            &mut self,
+            input: &Self::Tensor,
+            in_ch: usize,
+            in_len: usize,
+            weight: &[f32],
+            out_ch: usize,
+            kernel: usize,
+            bias: Option<&[f32]>,
+            stride: usize,
+            padding: usize,
+        ) -> Result<Self::Tensor> {
+            self.events.push("conv_transpose1d");
+            ScalarBigVganBackendOps.conv_transpose1d(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding,
+            )
+        }
+
+        fn snake(
+            &mut self,
+            input: &Self::Tensor,
+            alpha: &[f32],
+            channels: usize,
+            time: usize,
+        ) -> Result<Self::Tensor> {
+            self.events.push("snake");
+            let mut output = input.clone();
+            crate::snake_activation_f32(input, alpha, channels, time, &mut output)?;
+            Ok(output)
+        }
+
+        fn snake_beta(
+            &mut self,
+            input: &Self::Tensor,
+            alpha: &[f32],
+            beta: &[f32],
+            channels: usize,
+            time: usize,
+        ) -> Result<Self::Tensor> {
+            self.events.push("snake_beta");
+            let mut output = input.clone();
+            crate::snake_beta_f32(input, alpha, beta, channels, time, &mut output)?;
+            Ok(output)
+        }
+
+        fn anti_aliased_upsample(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            time: usize,
+            ratio: usize,
+            filter: &[f32],
+        ) -> Result<Self::Tensor> {
+            self.events.push("upsample");
+            alias_free_upsample(input, channels, time, ratio, filter)
+        }
+
+        fn anti_aliased_downsample(
+            &mut self,
+            input: &Self::Tensor,
+            channels: usize,
+            time: usize,
+            ratio: usize,
+            filter: &[f32],
+        ) -> Result<Self::Tensor> {
+            self.events.push("downsample");
+            alias_free_downsample(input, channels, time, ratio, filter)
+        }
+
+        fn residual_add(&mut self, dst: &mut Self::Tensor, src: &Self::Tensor) -> Result<()> {
+            self.events.push("residual_add");
+            if dst.len() != src.len() {
+                return Err(VokraError::InvalidArgument(
+                    "fake residual shape mismatch".to_owned(),
+                ));
+            }
+            for (left, right) in dst.iter_mut().zip(src) {
+                *left += *right;
+            }
+            Ok(())
+        }
+
+        fn scale(&mut self, input: &Self::Tensor, scale: f32) -> Result<Self::Tensor> {
+            self.events.push("scale");
+            Ok(input.iter().map(|value| value * scale).collect())
+        }
+
+        fn tanh(&mut self, input: &Self::Tensor) -> Result<Self::Tensor> {
+            self.terminal = "tanh";
+            self.events.push("tanh");
+            Ok(input.iter().map(|value| value.tanh()).collect())
+        }
+
+        fn clamp(&mut self, input: &Self::Tensor, lower: f32, upper: f32) -> Result<Self::Tensor> {
+            self.terminal = "clamp";
+            self.events.push("clamp");
+            Ok(input
+                .iter()
+                .map(|value| value.clamp(lower, upper))
+                .collect())
+        }
+
+        fn download(&mut self, input: &Self::Tensor, output: &mut [f32]) -> Result<()> {
+            self.readbacks += 1;
+            if input.len() != output.len() {
+                return Err(VokraError::InvalidArgument(
+                    "fake download shape mismatch".to_owned(),
+                ));
+            }
+            output.copy_from_slice(input);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn resident_fake_matches_scalar_and_reads_back_once() {
+        let (cfg, mut w) = mini_bundle(SnakeKind::SnakeBeta, false, true, true);
+        fn seed(values: &mut [f32], base: f32) {
+            for (index, value) in values.iter_mut().enumerate() {
+                *value = base * (1.0 + (index % 5) as f32 * 0.1);
+            }
+        }
+        seed(&mut w.conv_pre_w, 0.002);
+        seed(&mut w.conv_pre_b, 0.001);
+        for (stage, (weight, bias)) in w.ups_w.iter_mut().zip(w.ups_b.iter_mut()).enumerate() {
+            seed(weight, 0.0015 + stage as f32 * 0.0002);
+            seed(bias, 0.0008);
+        }
+        for block in &mut w.amp_blocks {
+            for (weight, bias) in block.convs1_w.iter_mut().zip(block.convs1_b.iter_mut()) {
+                seed(weight, 0.0007);
+                seed(bias, 0.0004);
+            }
+            for (weight, bias) in block.convs2_w.iter_mut().zip(block.convs2_b.iter_mut()) {
+                seed(weight, 0.0006);
+                seed(bias, 0.0003);
+            }
+        }
+        seed(&mut w.conv_post_w, 0.001);
+        if let Some(bias) = &mut w.conv_post_b {
+            seed(bias, 0.0005);
+        }
+        let vg = BigVGanGenerator::new(cfg.clone(), w).unwrap();
+        let mel: Vec<f32> = (0..12).map(|i| 0.03 * i as f32).collect();
+        let scalar = vg.forward(&mel, 3).unwrap();
+        assert!(scalar.iter().any(|value| value.abs() > 1e-6));
+        let mut fake = FakeResident::default();
+        let mut resident = vec![0.0; scalar.len()];
+        vg.forward_with_resident_ops(&mel, 3, &mut fake, &mut resident)
+            .unwrap();
+        assert_eq!(resident, scalar);
+        assert_eq!(fake.readbacks, 1);
+        assert!(fake.events.contains(&"snake_beta"));
+        assert!(fake.events.contains(&"upsample"));
+        assert!(fake.events.contains(&"downsample"));
+        assert!(fake.events.contains(&"residual_add"));
+        assert_eq!(
+            fake.events
+                .iter()
+                .filter(|&&event| event == "upsample")
+                .count(),
+            17,
+            "two MRF kernels × two stages × two dilations × two activations + terminal"
+        );
+        assert_eq!(fake.terminal, "tanh");
+    }
+
+    #[test]
+    fn resident_fake_propagates_failure_before_download() {
+        let (cfg, w) = mini_bundle(SnakeKind::Snake, false, true, true);
+        let vg = BigVGanGenerator::new(cfg, w).unwrap();
+        let mut fake = FakeResident {
+            fail_before_download: true,
+            ..Default::default()
+        };
+        let mut output = vec![0.0; 2 * 4];
+        let err = vg
+            .forward_with_resident_ops(&[0.0; 4 * 2], 2, &mut fake, &mut output)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::BackendUnavailable(_)));
+        assert_eq!(fake.readbacks, 0);
+    }
+
+    #[test]
+    fn resident_fake_uses_terminal_clamp_without_extra_readback() {
+        let (cfg, w) = mini_bundle(SnakeKind::Snake, false, false, true);
+        let vg = BigVGanGenerator::new(cfg, w).unwrap();
+        let mel = vec![0.0f32; 4 * 2];
+        let mut fake = FakeResident::default();
+        let mut output = vec![0.0; 2 * 4];
+        vg.forward_with_resident_ops(&mel, 2, &mut fake, &mut output)
+            .unwrap();
+        assert_eq!(fake.readbacks, 1);
+        assert_eq!(fake.terminal, "clamp");
     }
 
     #[test]
@@ -2145,7 +2704,7 @@ mod tests {
     #[test]
     fn bigvgan_new_rejects_resblock_dilation_length_mismatch() {
         let (mut cfg, w) = mini_bundle(SnakeKind::Snake, false, true, true);
-        cfg.resblock_dilation_sizes = vec![]; // len 0 vs resblock_kernel_sizes len 1
+        cfg.resblock_dilation_sizes = vec![]; // len 0 vs resblock_kernel_sizes len 2
         let err = BigVGanGenerator::new(cfg, w).unwrap_err();
         assert!(
             matches!(err, VokraError::InvalidArgument(ref m) if m.contains("resblock_dilation_sizes")),

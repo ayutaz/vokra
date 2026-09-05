@@ -39,20 +39,55 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 1. **rent**: vast.ai 上で GPU instance を借りる（cheapest でも RAM ≥64 GB / disk ≥200 GB は必須、convert 用途なら GPU は 4090 で十分、H100 は FA v3 bench 用）
 2. **provision**: `scripts/publish/vast-ai/provision.sh` を SSH 上で実行（4 gotcha を pre-handle）
 3. **work**: `run-one.sh` per model or 直接 cargo コマンド
-4. **destroy**: **必ず `vastai destroy` で auto-destroy**（走らせっぱなしは $/h で課金継続、ADR §D6）
+4. **destroy**: **必ず `vastai-safe.sh destroy instance <instance-id>` で auto-destroy**（走らせっぱなしは $/h で課金継続、ADR §D6）。ただし、直近に再開することが明示された retained handoff（たとえば別環境への転送待ち）に限り、一時的な `stop` を許可できる。Stop は compute 課金を止めてデータを保持するが storage 課金は継続し、再開時の GPU 確保は保証されない。重要データは外部にも backup し、handoff 完了後は必ず destroy する。
+
+### 一時停止の限定例外（retained handoff のみ）
+
+通常原則は **work 完了後に destroy** であり、アイドル時間の節約を理由に
+借りっぱなしの instance を一般的に stop してよい、という意味ではない。次の
+条件をすべて満たす場合だけ、直近の再開予定が明示された retained handoff
+として stop を選べる:
+
+- 保持するデータと再開目的（例: Scaleway への転送待ち）が記録されている。
+- 重要データを外部 backup 済みである（stop は backup の代替ではない）。
+- stop 後も storage 課金が続くこと、再開時に GPU を確保できないリスクを了承する。
+- 転送・再開・検証が完了したら、直ちに `destroy` する。
+
+Vast の公式仕様では、Stop は compute 課金を止めてデータを保持しますが、
+storage 課金は継続し、再開時の GPU 確保は保証されません。Destroy はデータを
+削除して課金を停止します。詳細は [Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
+と [Storage types](https://docs.vast.ai/guides/instances/storage/types) を参照してください。
+
+**retained handoff の現状 (2026-09-01)**: owner は Scaleway 実行までの待機が
+長期化するため、instance `49168183` (`vokra-mac-coverage-771970dc`,
+500 GB storage) と `49261078` (`vokra-htdemucs-inspection-20260830`,
+200 GB storage) を保存データごと destroy する方針へ変更した。両方とも
+`vastai-safe.sh destroy instance <id> -y` の後、個別 API が
+`instances: null` を返した。`apple-transfer-bc9d1db2`、
+`apple-transfer-reazon-a59c48c8`、`apple-transfer-bicodec-5cd97d12` は
+VAST 上に存在しない。現在 Vokra 用の retained handoff はない。Apple 実機
+検証を再開するときは、固定 revision/hash 契約から VAST で artefact と
+reference packet を再生成し、新しい disposable instance から直接転送する。
+旧2件を restart target として扱わない。
 
 ## 2. Rent phase（vast.ai 側）
 
 ```bash
 # 手元 CLI（vastai）で GPU offer 検索
-vastai search offers 'gpu_name=RTX_4090 rentable=true' --order 'dph_total'
+scripts/publish/vast-ai/vastai-safe.sh search offers 'gpu_name=RTX_4090 rentable=true' --order 'dph_total'
 # ↑ 一番安いのを選ぶ
 
-vastai create instance <offer-id> \
+scripts/publish/vast-ai/vastai-safe.sh create instance <offer-id> \
   --image nvidia/cuda:12.4.1-devel-ubuntu22.04 \
   --disk 200 \
   --ssh
 ```
+
+ローカルから Vast CLI を呼ぶときは、必ず
+`scripts/publish/vast-ai/vastai-safe.sh` を経由する。ラッパーは stdout と
+stderr の URL クエリに含まれる `api_key` 等の資格情報値を
+`[REDACTED]` に置換し、CLI 本来の終了コードを返す。`VASTAI_BIN` を設定すれば
+固定した CLI パスやオフラインのテストコマンドを指定できる。
 
 **image 選定注意**: `nvidia/cuda:13.0.0` の stock image は 4 個の gotcha を含む（下記 §3）→ `12.4.1-devel-ubuntu22.04` が実績 stable。H100 bakeoff で 13.0.0 が必要な場合も `provision.sh` の `harden_vast_docker_image` が pre-handle する。
 
@@ -118,19 +153,19 @@ scripts/publish/vast-ai/run-one.sh \
 
 ```bash
 # 1. RAM で選ぶ（GPU 性能は無関係）。48 core / 125 GB が $0.082/hr だった
-vastai search offers 'rentable=true cpu_ram>=64 disk_space>=150 num_gpus=1' \
+scripts/publish/vast-ai/vastai-safe.sh search offers 'rentable=true cpu_ram>=64 disk_space>=150 num_gpus=1' \
   --order 'dph_total' --raw | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" \
   uv run --no-project --python 3.12 python -c "
 import json,sys
 for o in json.load(sys.stdin)[:10]:
     print(o['id'], o['dph_total'], o['cpu_cores_effective'], int(o['cpu_ram']/1024))"
 
-vastai create instance <offer-id> --image nvidia/cuda:12.4.1-devel-ubuntu22.04 \
+scripts/publish/vast-ai/vastai-safe.sh create instance <offer-id> --image nvidia/cuda:12.4.1-devel-ubuntu22.04 \
   --disk 150 --ssh --direct --label vokra-verify
 
 # 2. 接続は direct endpoint を使う（public_ipaddr + direct_port_start）。
 #    ssh_host/ssh_port 側は Connection refused になることがある
-vastai show instance <id> --raw | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" \
+scripts/publish/vast-ai/vastai-safe.sh show instance <id> --raw | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" \
   uv run --no-project --python 3.12 python -c "
 import json,sys; d=json.load(sys.stdin); print(d['public_ipaddr'], d['direct_port_start'])"
 
@@ -162,14 +197,21 @@ git rev-parse --short HEAD    # 手元と一致することを必ず確認
 
 ```bash
 # 手元 CLI から
-vastai destroy instance <instance-id>
+scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>
 ```
 
-**auto-destroy を仕込む**: measure が終わったら trap で自動 destroy する pattern（ADR §D6）:
+ラッパーの契約（資格情報クエリの redaction、通常出力、終了コード保持）は
+ネットワークなしで確認できる:
+
 ```bash
-# vast.ai instance 上
-trap 'vastai destroy instance $VAST_CONTAINERLABEL' EXIT
-# ↑ SSH セッション終了時に自動 destroy
+scripts/publish/vast-ai/test-vastai-safe.sh
+```
+
+**auto-destroy を仕込む**: ローカルの lifecycle controller で、measure が終わったら trap で自動 destroy する pattern（ADR §D6）。Vast ホスト上ではローカル CLI/credential を前提にしない:
+```bash
+# 手元の lifecycle controller 内（VAST_CONTAINERLABEL は instance id）
+trap 'scripts/publish/vast-ai/vastai-safe.sh destroy instance "$VAST_CONTAINERLABEL"' EXIT
+# ↑ ローカル controller 終了時に自動 destroy
 ```
 
 **destroy 忘れは $/h で継続課金**。H100 は $1.7-2.5/h、8h 忘れると $15+ 溶ける。
@@ -197,7 +239,7 @@ trap 'vastai destroy instance $VAST_CONTAINERLABEL' EXIT
 
 - **「今回くらいはローカルで」**: これが 2026-08-16 に mac を再起動させた。現在の閾値は artefact 合計 2 GB、Cargo は workspace 全体または `-p vokra-models`。**判断で防げなかったので hook で強制した** = `guard-local-memory.sh`。`VOKRA_ALLOW_LOCAL_HEAVY=1` は依頼者がその1回を明示承認した場合だけ使う
 - **未検証のまま `VOKRA_SKIP_HOOKS=1` で push**: bypass の根拠はリモート検証結果であって、急いでいることではない
-- **vast.ai を借りっぱなしで放置**: $/h 課金継続、trap `vastai destroy` を必ず仕込む
+- **vast.ai を借りっぱなしで放置**: $/h 課金継続、trap `vastai-safe.sh destroy instance <instance-id>` を必ず仕込む
 - **provision.sh を skip して pip 手打ちで頑張る**: 4 gotcha に順番にハマる（実績 1 day 溶かす）
 - **`huggingface_hub` を local と同じ最新版で使う**: vast.ai 上では <0.30 pin 必須（xet-token regression）、local との差分を明示的に持つ
 - **`HF_TOKEN` を CLI 引数で渡す**: shell history + `ps` に残る → 環境変数経由で

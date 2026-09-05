@@ -1,0 +1,40 @@
+[project]
+name = "vokra-csm-1b-reference"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy==2.2.6",
+    "torch==2.7.1",
+    "transformers==5.10.4",
+    # The source route declares Transformers 4.52.1 with huggingface-hub
+    # >=0.30,<1.0; the isolated secure pin below follows Transformers 5.10.4's
+    # requirement of huggingface-hub >=1.5.0.
+    "huggingface-hub==1.5.0",
+]
+
+[tool.csm_reference]
+dependency_status = "LOCKED_ADAPTED_SELECTION_LICENSE_AUDIT_PENDING"
+transformers_compatibility = "source transformers==4.52.1 + huggingface-hub>=0.30,<1.0; isolated transformers==5.10.4 + huggingface-hub==1.5.0; BLOCKED_UNVERIFIED_API_SMOKE"
+source_transformers_requirement = "transformers==4.52.1"
+source_huggingface_hub_requirement = "huggingface-hub>=0.30,<1.0"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+isolated_huggingface_hub_pin = "1.5.0"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
+lock_sha256 = "62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
+selection_note = "Python 3.12 reference selection; torch/numpy/audio versions are adapted review pins, not upstream Sesame requirements."
+license_status = "BLOCKED_LICENSE_METADATA_REVIEW"
+license_evidence_lock_sha256 = "62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
+license_blocker = "The caller-owned PCM16 WAV decoder uses Python stdlib wave and NumPy only; soundfile/libsndfile and the forbidden librosa/soxr closure are excluded. The explicit PyTorch CPU index avoids NVIDIA/triton packages. The lock audit still has owner-policy blockers: certifi MPL-2.0, tqdm MPL-2.0 AND MIT, typing-extensions PSF-2.0, and NumPy bundled runtime notices (including GPL/LGPL components); every locked package row and source/marker identity must remain bound to the lock before installation or VAST execution."
+
+# uv.lock is required and its SHA is bound above. The license gate remains
+# fail-closed until the transitive package notices are reviewed.
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

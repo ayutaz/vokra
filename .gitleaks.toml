@@ -242,6 +242,42 @@ regexes = [
   # gitleaks' entropy heuristic occasionally fires on longer paths.
   # The `.weight` / `.bias` / … suffix anchors the pattern.
   '''\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+){2,}\.(?:weight|bias|gamma|beta|running_mean|running_var|weight_ih_l\d+|weight_hh_l\d+|bias_ih_l\d+|bias_hh_l\d+)\b''',
+
+  # Upstream source-revision constants are immutable Git object ids, not
+  # credentials.  Keep the assignment name and exact SHA-1 width in the
+  # match so ordinary 40-character strings remain scanned.
+  '''(?i)\bTOKENIZER_(?:REV|REVISION|GIT_BLOB)\s*=\s*['"]?[a-f0-9]{40}['"]?''',
+
+  # Parity manifests pin the Git blob for a named upstream source file.  The
+  # filename suffix is part of the allowlist: arbitrary quoted key/value
+  # pairs must continue to be reported by generic-api-key.
+  '''(?i)['"](?:[^'"]*/)?(?:audio_tokenizer|token_parser|tokenizer|s3tokenizer|token2wav|special_tokens_map|modular_vibevoice_tokenizer|modular_vibevoice_text_tokenizer|vibevoice_tokenizer_processor|tokenization_qwen2|xy_tokenizer_config)\.(?:json|py|yaml)['"]\s*:\s*['"][a-f0-9]{40}['"]''',
+
+  # Some model manifests enumerate a fixed safetensors filename immediately
+  # after `special_tokens_map.json`; the filename is data, not a secret.
+  '''['"]special_tokens_map\.json['"]\s*,\s*['"]t3_(?:nano|turbo)_v1\.safetensors['"]''',
+
+  # A small number of source-file maps use a SHA-256 value instead of a
+  # SHA-1 Git blob.  Keep the same named-file scope and exact width.
+  '''(?i)['"](?:[^'"]*/)?(?:tokenizer|token2wav)\.py['"]\s*:\s*['"][a-f0-9]{64}['"]''',
+
+  # These two README entries bind a versioned license-evidence digest.  The
+  # prose label is required; a bare 64-hex value is never allowlisted.
+  '''(?i)version-keyed license (?:digest|evidence)\s*:\s*`[a-f0-9]{64}`''',
+  '''(?i)version-keyed license digest is''',
+
+  # The Qwen3 validation harness uses a literal sentinel in its shell
+  # control path.  Require the variable name and the complete sentinel
+  # prefix so arbitrary token-looking shell values remain visible.
+  '''\bcpu_sentinel_token\s*=\s*"QWEN3_TTS_PARITY[^\"]*"''',
+
+  # Fixed SHA-256 sidecar identity in the OWSM inspection harness.
+  '''\bTOKEN_SHA\s*=\s*"[a-f0-9]{64}"''',
+
+  # Model architecture names written into GGUF metadata are schema values,
+  # not secrets.  Keep this exact key/value assertion scoped to the model-name
+  # field rather than allowlisting all string metadata.
+  '''\b(?:[A-Za-z_][A-Za-z0-9_]*::)?KEY_MODEL_NAME\s*,\s*"omniasr-ctc-1b"''',
 ]
 
 # -----------------------------------------------------------------------------

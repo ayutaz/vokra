@@ -3081,6 +3081,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // decoder.
         | ModelKind::FireredAsrLlmL
         | ModelKind::SortformerDiar4spkV1
+        | ModelKind::VoiceGenderClassifier
         | ModelKind::SenseVoiceSmall
         | ModelKind::WhisperMedusaV1
         | ModelKind::NemotronSpeechStreamingV2603

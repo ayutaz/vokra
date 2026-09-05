@@ -1,11 +1,31 @@
-# Vokra ABI Changelog (pre-1.0 prerelease window: v0.9 + v1.0-rc)
+# Vokra ABI Changelog (historical prerelease buckets; current line: v0.3.0)
 
-This file tracks **binary-facing** surface changes between v0.1.0 (the M0/M1
-baseline, tagged 2026-07-04) and v1.0 GA (the IF-01 freeze point, owned by
-**M5-13** — 2026-07-14 v-label reassignment #2, see the note below; M4-12
-before that date). It is **narrower and machine-checkable** vs. the
-human-readable `CHANGELOG.md`: only symbols that cross the ABI boundary
-belong here.
+This file tracks **binary-facing** surface changes on the way to v1.0 GA (the
+IF-01 freeze point, owned by **M5-13** — see the historical reassignment note
+below). It is **narrower and machine-checkable** than the human-readable
+`CHANGELOG.md`: only symbols that cross the ABI boundary belong here.
+
+> **Current state (2026-08-31):** The authoritative workspace version is
+> **`0.3.0`** (`Cargo.toml`). The pre-documentation-refresh PR #79 snapshot
+> was `d8a93bc3` (109 pass / 13 expected skip), against GitHub `main` at
+> `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. The 2026-08-31 documentation refresh
+> cross-checked the pre-documentation implementation/code baseline at
+> `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
+> documentation/evidence checkpoint was
+> `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; GitHub `main` is
+> `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. There are **0 git tags and 0
+> GitHub releases**. The former description of a `v0.1.0` tag on 2026-07-04
+> was incorrect; no such release/tag was created.
+>
+> The existing `v0.9` and `v1.0-rc` entry headings and snapshot filenames are
+> **historical milestone buckets and tooling anchors**, not current Cargo
+> versions or published releases. They remain as dated ABI history and because
+> `scripts/check-abi-changelog.sh` still compares the header against the
+> `docs/abi/vokra.h.v1.0-rc-baseline.symbols` anchor. As of this date,
+> `bash scripts/check-abi-changelog.sh --list` reports the current header as
+> **57 FUNC / 15 TYPEDEF**; that live count must not be confused with the
+> historical v1.0-rc snapshot count. The ABI freeze at **v1.0 GA** remains the
+> planned policy and is unchanged.
 
 > **2026-07-14 v-label reassignment #2** (owner decision): M4 = **v1.0-rc**
 > (was v1.0 GA), M5 = **v1.0 GA** (was v2.0 GA); the scope through the former
@@ -249,6 +269,27 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
   - `struct vokra_stream_t`         (opaque)
 
 ## Entries
+
+### 2026-09-01 — 0.3.0-dev (microWakeWord dense I8 GGUF wire support)
+
+The dense signed-I8 GGUF leg is additive within the current `0.3.0` prerelease
+line. `GGML_TYPE_I8 = 24` is a scalar one-byte-per-element storage type; it is
+kept distinct from Q8_0 so source tensors whose element counts are not 32-byte
+blocks retain their exact logical shape and bytes. The new accessor rejects
+float dequantization and the microWakeWord loader requires the indexed source
+name, shape, affine vectors, and exact byte count before binding. There is no C
+ABI or existing GGUF dtype change; legacy Q8_0 files remain supported.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-core::gguf` | `GgmlType::I8` | Added | `enum GgmlType { …, I8 = 24 }`; `block_size() = 1`, `type_size() = 1` | Additive public Rust enum variant and GGUF reader support; current pre-1.0 policy permits the variant addition, while unknown older readers reject tag 24 explicitly | yes | (this commit) |
+| `vokra-core::gguf::reader` | `GgufFile::tensor_i8` | Added | `pub fn tensor_i8(&self, name: &str) -> Result<Vec<i8>, GgufError>` | Exact signed-byte accessor; `tensor_f32` deliberately rejects I8 rather than widening it | no | (this commit) |
+| `vokra-kws-micro::model` | `TensorData::I8` | Added | `I8(Vec<i8>)` | Public model crate surface, outside the three-crate Rust snapshot scan; generic/candidate loading remains untrusted, while the fixed reviewed stateful binder is separately authenticated and its numerical parity remains VAST-gated | yes | (this commit) |
+
+The active `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is not
+rotated by this entry. `scripts/rust-public-api-list.sh --list` reports the
+new `tensor_i8` row and the changed `GgmlType` declaration; rotation remains
+the M5-13/IF-01 freeze owner's action under the policy above.
 
 ### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS explicit companion synthesis)
 
@@ -1236,6 +1277,7 @@ released module-0 model rather than silently omitting it.
 | `gguf:vokra.charsiu.*` | canonical Charsiu metadata group | Added | 16 keys: `revision`/`checkpoint_sha256` (`string`), `hidden_size`/`ffn_dim`/`n_layer`/`n_head`/`vocab_size`/`silence_id`/`pad_id`/`sample_rate`/`pos_conv_kernel`/`pos_conv_groups`/`silence_threshold` (`u32`), `frame_shift_sec`/`layer_norm_eps` (`f32`), `vocab` (`string[]`) | Writer/reader handshake for the canonical 10 ms frame classifier; no topology or label default is inferred. | no | #44 |
 | `gguf:vokra.fsmn_vad.*` | canonical FSMN-VAD metadata group | Changed / Breaking | removes scaffold `hidden_dim`, `n_class`, `cmvn_mean`, `cmvn_var`; adds `input_affine_dim`, `linear_dim`, `lstride`, `rstride`, `output_affine_dim`, `output_dim` (`u32`), `cmvn_add_shift`, `cmvn_rescale` (`f32[]`), pinned HF/ModelScope identities, revision and three source hashes (`string`) | Corrects invented topology/identity CMVN to the official 24-weight, 248-pdf release. Old scaffold GGUFs are deliberately rejected before inference. | yes (artifact schema) | #44 |
 | `gguf:vokra.firered_vad.*` | canonical Stream-VAD metadata group | Added / persisted | `variant` (`string`), `sample_rate`/`n_mels`/`window_length`/`hop_length`/`n_blocks`/`hidden_dim`/`projection_dim`/`memory_order`/`memory_stride`/`n_class` (`u32`), `required_tensors` (`string[]`) | Selects the official causal DFSMN variant and makes every frontend/cache/tensor axis load-bearing; unknown variants and partial manifests fail closed. | no | #44 |
+| `gguf:vokra.firered_asr_aed_l.*` | canonical FireRedASR-AED-L metadata group | Added / persisted | `sample_rate`/`n_mels`/`vocab_size`/`encoder.n_layer`/`encoder.d_model`/`encoder.n_head`/`encoder.ffn_dim`/`decoder.n_layer`/`decoder.d_model`/`decoder.n_head`/`decoder.ffn_dim`/`encoder.kernel_size`/`blank_id`/`sos_id`/`eos_id`/`pad_id` (`u32`), `required_tensors`/`tensor_manifest` (`string[]`) | Stamped by the exact VAST-prepared FireRedTeam/FireRedASR-AED-L converter; the native binder consumes the all-or-nothing topology and typed tensor declarations, while missing or mismatched manifests fail closed. Provenance additionally persists upstream HF/source revisions, checkpoint/prepared byte counts and SHA-256 identities under `vokra.provenance.*`. | no | #79 |
 | `gguf:vokra.parakeet.*` | executable Parakeet-TDT metadata | Added / persisted | `vokra.parakeet.joint.eos_token_id` (`u32`) and `vokra.parakeet.tokenizer.json` (`u8[]`) | Pins official generation termination and embeds the exact BPE + Metaspace decoder needed to render text. Older head-parity artifacts use the fixed official EOS default but remain tokenizer-free. | no | #44 |
 | `gguf:vokra.smart_turn.*` | canonical SmartTurn v2 metadata group | Added | `revision`/`checkpoint_sha256`/`config_sha256`/`preprocessor_config_sha256`/`reference_revision` (`string`), `sample_rate`/`max_input_samples`/`hidden_size`/`feature_dim`/`ffn_dim`/`n_layer`/`n_head`/`pos_conv_kernel`/`pos_conv_groups` (`u32`), `max_segment_seconds`/`layer_norm_eps`/`normalization_eps`/`completion_threshold` (`f32`) | Pins the official processor, Wav2Vec2-base topology, endpoint threshold, and independent reference revision; absent or mismatched canonical fields fail closed. | no | #44 |
 | `gguf:vokra.ten_vad.*` | canonical TEN-VAD v1.0 metadata group | Added | `revision`/`onnx_sha256`/`frontend_license_spdx` (`string`), `sample_rate`/`hop_size`/`n_features`/`context_frames`/`hidden_dim`/`n_layers` (`u32`) | Pins the exact official graph and frontend contract. Missing/mismatched fields fail closed; canonical provenance also changes to `LicenseRef-Agora-TEN-VAD-Open-Source-License-2025` / `RedistributionForbidden`, preventing model-zoo republication under the formerly incorrect Apache label. | yes (artifact schema/provenance) | #44 |
@@ -2124,8 +2166,9 @@ without a major bump.
    could not be chosen from C.
 2. **Speaker embedding** (`speaker_encode` / `speaker_verify`, FR-OP-80 /
    FR-OP-81). `SpeakerEncoder::embed` and `speaker_verify` had no C entry.
-   CLAUDE.md design note 8 keeps voice *cloning* in the separate
-   `vokra-voiceclone-experimental` repo under the ELVIS Act split while
+   The current `docs/legal-compliance.md` §§3–4 and
+   `docs/system-requirements.md` FR-CP-04 keep voice *cloning* in the separate
+   `vokra-voiceclone-experimental` repo under the legal/scope split while
    speaker *embedding* stays in core; exposing it here is that decision's
    consequence, and it is what makes zero-shot TTS usable from a binding.
 
@@ -3740,6 +3783,7 @@ Notes:
 | runtime-gap Wave 4 prerequisite + 2026-08-24 native completion | `vokra.conv_tasnet.*` | `n_filters`, `n_kernel`, `stride`, `n_blocks`, `n_repeats`, `bn_chan`, `hid_chan`, `skip_chan`, `conv_kernel_size`, `sample_rate`, `n_src`, `causal` | `u32` | persisted | Asteroid `JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k` topology contract — written by `crates/vokra-convert/src/models/conv_tasnet_libri1mix.rs` and required by `ConvTasnet::from_gguf`. **Additive**: the group is new; no existing key is renamed. The completed strict loader pins the official `n_kernel=32` / `stride=16`, 345-tensor, 24-block non-causal topology; the former 16/8 public artifact fails closed. Rust `SeparationEngine`, CLI and the pre-existing C `vokra_separate` symbol use this metadata without adding a new C ABI symbol. | PR #44 / 2026-08-21; native completion 2026-08-24 |
 | runtime-gap Wave 4 prerequisite | `vokra.jasco.*` | `d_model`, `num_layers`, `n_heads`, `ffn_dim`, `num_codebooks`, `codec_frame_rate_hz`, `sample_rate_hz`, `text_prefix_len`, `chord_vocab_size`, `drum_vocab_size`, `num_flow_steps`, `cfg_scale` | `u32` + `f32` | persisted | Official AudioCraft JASCO 400M chords+drums configuration contract — written by `crates/vokra-convert/src/models/jasco_400m_chords_drums.rs` and read by `JascoConfig::from_gguf`. **Additive**: the group is new; no existing key is renamed or changes meaning. `chord_vocab_size = 195` includes the null condition; the legacy-named drum axis records the official 128-wide EnCodec latent input; `num_flow_steps = 100` is the official Euler fallback and `cfg_scale = 5.0` is the official default. | PR #44 / 2026-08-21 |
 | Mac CPU/Metal coverage — Lang-ID | `vokra.lang_id.*` | `upstream_revision`, `sample_rate`, `n_mels`, `tdnn_channels`, `mfa_channels`, `attention_channels`, `res2net_scale`, `embedding_dim`, `classifier_kind`, `classifier_hidden_dim` (XVector only), `class_count`, `labels`, `bn_eps`, `stats_eps`, `leaky_relu_slope` (XVector only), `artifact_layout`; `block_kernels[]`, `block_dilations[]` | `string` + `u32` + `u32-array` + `string-array` + `f32` | persisted | Strict prepared-checkpoint contract for the two official SpeechBrain ECAPA Lang-ID variants. The converter accepts only the v2 sidecar layout, preserves the ordered official label encoder, canonicalizes the complete classifier head, and records each residual block's actual kernel/dilation instead of assuming VoxLingua107 and CommonLanguage share one topology. Historical embedding-only files remain explicit load errors. | 2026-08-26 / `e73a8c8c` |
+| M5 Mac coverage | `vokra.sgmse.*` | `manifest_status`, `tensor_manifest_sha256`, `source_repository`, `source_revision`, `model_revision`, `checkpoint_filename`, `checkpoint_sha256`, `prepared_sha256` (`string`), `checkpoint_size` (`u64`), and `tensor_manifest` (`string[]`) | `string` + `u64` + `string[]` | persisted | Strict 647-tensor SGMSE-VoiceBank prepared-artifact contract, written by `crates/vokra-convert/src/models/sgmse.rs` and consumed by the authenticated `vokra-models::sgmse` binder. The group is additive: no existing `vokra.*` key is renamed or reinterpreted. The full STFT/OUVE enhancement/sampling composite and Apple CPU/Metal validation remain separate gates; the score graph is CPU-only until backend FIR/operator support exists. Incomplete or mismatched manifests fail closed. | (this commit) |
 
 ### 2026-07-30 — VoxCPM2 2B variant support (Option C hybrid)
 
@@ -3805,6 +3849,7 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.atst.*` | **34** keys — `act_layer`, `amp_to_db_stype`, `amp_to_db_top_db`, `depth`, …  | `u32` + `f32` + `bool` + `string` | persisted | `atst-base`, `github.com/Audio-WestlakeU/audiossl/tree/main/audiossl/methods/atst` — written by `crates/vokra-convert/src/models/atst.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `a8867cf` (2026-08-13) |
 | backfill | `vokra.audiosr.*` | **32** keys — `attention_resolution_`, `attention_resolutions_count`, `beta_schedule`, `channel_mult_`, …  | `u32` + `string` | persisted | `audiosr` — written by `crates/vokra-convert/src/models/audiosr.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `10e42e5` (2026-08-15) |
 | backfill + correction | `vokra.bark.*` | **16** keys — `block_size`, `coarse.input_vocab_size`, `coarse.output_vocab_size`, `codec.sample_rate`, `tensor_manifest_sha256`, …  | `u32` + `string` | persisted | `bark` — written by `crates/vokra-convert/src/models/bark.rs`. **Correction (2026-08-27)**: full Bark is `hidden_size=1024` / `num_heads=16`; only Bark Small is `768` / `12`. `tensor_manifest_sha256` is additive and pins the complete 758-tensor Full or 518-tensor Small checkpoint, including the embedded `codec_model.*` EnCodec decoder. The exact historical public Full artifact may carry the old width/head metadata only when its immutable full manifest authenticates it; unrelated or partial checkpoints fail closed. | `02664f6` (2026-08-06); `6c00beca` (2026-08-27) |
+| backfill + native decode | `vokra.bicodec.*` | **12** keys — `upstream_revision`, `checkpoint_sha256`, `config_sha256`, `source_repository`, `source_revision`, `inspection_status`, `input_authenticated`, `sample_rate`, `frame_hop`, `semantic_vocab`, `global_vocab`, `global_tokens` | `string` (6) + `bool` (1) + `u32` (5) | persisted (`NATIVE_DECODE_ONLY`) | `crates/vokra-convert/src/models/bicodec.rs` writes the exact staged-identity, source and decode-topology fields for `SparkAudio/Spark-TTS-0.5B` (`UPSTREAM_HF_REVISION=642071559bfc6346c2359d19dcb6be3f9dd8a05d`, checkpoint SHA `e9940cd48d4446e4340ced82d234bf5618350dd9f5db900ebe47a4fdb03867ec`, config SHA `744f4093ae2381a2eb44ea8c4a5268a8d1e581498e9bf0808c034d1b076429be`, source `https://github.com/SparkAudio/Spark-TTS` at `2f1ea9082400547242641f5271b6f941c9f439d1`). The strict binder authenticates the complete 840-F32-tensor checkpoint. Decode is native; PCM encode remains explicitly unsupported. Identity/authentication mismatches fail closed and no generic codec route is implied. | `9f69277d` (2026-08-31) |
 | backfill | `vokra.beat_this.*` | **6** keys — `d_model`, `n_classes`, `n_frames`, `n_head`, …  | `u32` | persisted | `beat-this`, `github.com/CPJKU/beat_this` — written by `crates/vokra-convert/src/models/beat_this.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `173fea8` (2026-08-14) |
 | backfill | `vokra.bigvgan.*` | **1** keys — `variant` | `string` | persisted | `bigvgan` — written by `crates/vokra-convert/src/models/bigvgan.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.canary_qwen.*` | **22** keys — `arch.cross_attn.hidden_dim`, `arch.decoder.ffn_dim`, `arch.decoder.head_dim`, `arch.decoder.hidden_dim`, …  | `u32` + `f32` | persisted | `canary-qwen-2.5b` — written by `crates/vokra-convert/src/models/canary_qwen.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
@@ -3849,7 +3894,7 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.qwen3_asr.*` | **31** keys — 26 original topology keys (`audio.conv_chunksize`, `audio.d_model`, `audio.downsample_hidden_size`, `audio.ffn_dim`, …), `source_revision`, `tensor_manifest_sha256`, plus `audio.layer_norm_eps`, `audio.activation_function`, `audio.scale_embedding` | `u32` + `f32` + `bool` + `string` | persisted | `qwen3_asr` — written by `crates/vokra-convert/src/models/qwen3_asr.rs`. The 26-key topology group was introduced by `02664f6`; the two immutable source-identity keys and three exact audio-execution keys are additive in the 2026-08-27 waves. Historical exact public headers may omit the final three only on descriptor-only binding; executable mmap loading requires them. No pre-existing key changed meaning. | `02664f6` (topology, 2026-08-06) + (TBD) (identity/audio execution) |
 | backfill | `vokra.redimnet.*` | **12** keys — `c`, `do_preemph`, `embed_dim`, `f`, …  | `u32` | persisted | `wespeaker-voxceleb-redimnet2-b6-lm`, `Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM` — written by `crates/vokra-convert/src/models/redimnet.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `56581d7` (2026-08-14) |
 | backfill | `vokra.rmvpe.*` | **11** keys — `base_hz`, `cents_per_class`, `fmax`, `fmin`, `hop`, `n_class`, `n_fft`, `n_mels`, `sample_rate`, `win_length`, `upstream_revision` | `u32` + `f32` + `string` | persisted | `rmvpe`, fixed `yxlllc/RMVPE` commit `0aabafba18289ca938a73af0b0297686abf4922d` — written by `crates/vokra-convert/src/models/rmvpe.rs`. The first ten keys landed in `02664f6`; `upstream_revision` is additive on 2026-08-26. The strict loader permits that key to be absent only on the exact audited historical public metadata pair after provenance is corrected to Unknown. | `02664f6` (2026-08-06); working tree (2026-08-26) |
-| runtime-gap | `vokra.reazonspeech_nemo_v2.*` | **26** keys — fixed source/archive/config/tensor/tokenizer hashes, `tokenizer.vocab`, sample rate, encoder/decoder/RNN-T joint topology and decode limits | `string` + `u32` + `u8[]` | persisted | `reazonspeech-nemo-v2`, fixed `reazon-research/reazonspeech-nemo-v2` revision — written by `crates/vokra-convert/src/models/reazonspeech_nemo_v2.rs` and strictly consumed by `crates/vokra-models/src/reazonspeech_nemo_v2`. The group makes the 965-F32-tensor checkpoint executable only with its exact 3,000-piece tokenizer and pins all runtime axes. The audited historical public GGUF lacks the tokenizer/new metadata and therefore remains an explicit non-executable boundary pending an authorized gated replacement. | `b115282a` (2026-08-26); documentation repaired in working tree |
+| runtime-gap + exact ALSD decode | `vokra.reazonspeech_nemo_v2.*` | **34** keys — the prior 26 fixed source/archive/config/tensor/tokenizer hashes, `tokenizer.vocab`, sample rate, encoder/decoder/RNN-T joint topology and decode limits, plus `decoding.{strategy,beam_size,alsd_max_target_len,score_norm,search_type,softmax_temperature,return_best_hypothesis,preserve_alignments}` | `string` + `u32` + `f32` + `bool` + `u8[]` | persisted | `reazonspeech-nemo-v2`, fixed `reazon-research/reazonspeech-nemo-v2` revision — written by `crates/vokra-convert/src/models/reazonspeech_nemo_v2.rs` and strictly consumed by `crates/vokra-models/src/reazonspeech_nemo_v2`. The group makes the 965-F32-tensor checkpoint executable only with its exact 3,000-piece tokenizer, pins all runtime axes and locks the official ALSD decoder contract. The audited historical public GGUF lacks the tokenizer/new metadata and therefore remains an explicit non-executable boundary pending an authorized gated replacement. | `b115282a` (2026-08-26); ALSD additions `a59c48c8` (2026-08-30) |
 | runtime-gap | `vokra.rnnoise.*` | **11** keys — `release_tarball_sha256`, `sample_rate`, `frame_size`, `window_size`, `n_bands`, `n_features`, `conv1_width`, `hidden_size`, `n_gru`, `quantization`, `gate_order` | `u32` + `string` | persisted | Xiph RNNoise v0.2 — written by `crates/vokra-convert/src/models/rnnoise.rs`, read and cross-checked by `crates/vokra-models/src/rnnoise.rs`. The group pins the 36-array canonical network manifest and its signed-int8-in-F32-container semantics; opaque-blob artifacts are rejected. **Additive**: this replaces no existing key, but old blob-only GGUFs do not satisfy the new strict binder. | `235dca6` (2026-08-21) |
 | backfill | `vokra.sbv2.*` | **32** keys — `converter_zero_defaults`, `d_bert`, `d_ff`, `d_model`, …  | `u32` + `f32` + `bool` + `string` | persisted | `sbv2-v2-multilingual-base`, `litagin02/style_bert_vits2` — written by `crates/vokra-convert/src/models/sbv2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `f7af1ba` (2026-07-28) |
 | backfill | `vokra.sepformer.*` | **2** keys — `n_out`, `variant` | `u32` + `string` | persisted | `sepformer` — written by `crates/vokra-convert/src/models/sepformer.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
@@ -3859,9 +3904,11 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.styletts2.*` | **12** keys — `decoder.dim_in`, `decoder.gen_istft_hop_size`, `decoder.gen_istft_n_fft`, `diffusion.steps`, …  | `u32` + `bool` + `string` | persisted | `styletts2-ljspeech-24khz` — written by `crates/vokra-convert/src/models/styletts2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.tiger.*` | **28** keys — `variant`, `upstream_revision`, `source_revision`, `source_file_sha256`, `source_license`, `source_license_sha256`, `model_sha256`, `config_sha256`, `public_revision`, `public_model_sha256`, `manifest_sha256`, `sample_rate`, `n_fft`, `hop_length`, `feature_channels`, `internal_channels`, `num_blocks`, `num_sources`, `upsampling_depth`, `attention_heads`, `attention_hidden_channels`, `attention_kernel_size`, `attention_stride`, `band_widths`, `stft_center`, `stft_normalized`, `stft_onesided`, `hann_periodic` | `string` + `u32` + `bool` + `u32[]` | persisted | `tiger_separator` DnR/speech — written by `crates/vokra-convert/src/models/tiger.rs`, strictly read by `crates/vokra-models/src/tiger`. The original `variant` key remains unchanged; the other 27 keys are additive and pin the exact official F32 manifests, upstream/config/source/public hashes, topology, band partition and STFT convention. The audited historical public GGUF pair may omit the additive keys only when its exact immutable revision/hash/provenance/manifest tuple matches. | `02664f6` (2026-08-06); working tree (2026-08-26) |
 | backfill | `vokra.vieneu.*` | **35** keys — `audio_pad_token_id`, `audio_ref_slot_token_id`, `audio_sample_rate`, `audio_tokenizer_ref`, …  | `u32` + `f32` + `bool` + `string` | persisted | `vieneu-tts-v3-turbo`, `pnnbao-ump/VieNeu-TTS-v3-Turbo` — written by `crates/vokra-convert/src/models/vieneu.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.voice_gender.*` | **17** keys — `upstream_revision`, `upstream_hf_revision`, `sample_rate`, `n_mels`, `n_fft`, `win_length`, `hop_length`, `f_min`, `f_max`, `tdnn_channels`, `mfa_channels`, `attention_channels`, `embed_dim`, `class_count`, `labels`, `frontend`, `artifact_layout` | `u32` (10) + `f32` (2) + `string` (5) | persisted | `crates/vokra-convert/src/models/voice_gender_classifier.rs` writes the exact classifier contract for `JaesungHuh/voice-gender-classifier` (`UPSTREAM_REVISION=49bcbecfd929ba5a043bde645fdff1a375eb79c7`, `UPSTREAM_HF_REVISION=db1222153bd60337e900be22add7af180452adc0`). The group is additive; the fixed 202-tensor manifest, dimensions, and labels are enforced by the converter, and malformed or mismatched metadata fails closed. | working tree (2026-08-29) |
 | backfill | `vokra.vocos.*` | **1** keys — `variant` | `string` | persisted | `vocos` — written by `crates/vokra-convert/src/models/vocos.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.wav2vec2_ctc.*` | **16** keys — `conv_dim`, `conv_kernel`, `conv_stride`, `do_stable_layer_norm`, …  | `u32` + `f32` + `bool` + `string` | persisted | `wav2vec2_ctc` — written by `crates/vokra-convert/src/models/wav2vec2_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.wavlm.*` | **19** keys — `conv_dim`, `conv_kernel`, `conv_stride`, `feat_extract_norm_group`, …  | `u32` | persisted | `wavlm-base-plus-sv`, `microsoft/wavlm-base-plus-sv` — written by `crates/vokra-convert/src/models/wavlm_sv.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7a0f823` (2026-08-14) |
+| backfill | `vokra.xy_tokenizer.*` | **6** keys — `upstream_revision`, `checkpoint_sha256`, `config_sha256`, `source_repository`, `source_revision`, `inspection_status` | `string` (6) | persisted (inspection-only) | `crates/vokra-convert/src/models/xy_tokenizer.rs` writes the fixed staged-identity fields for `OpenMOSS-Team/XY_Tokenizer_TTSD_V0` (`UPSTREAM_REVISION=c83433728e698ed0698e88cb5096bc221fb8f8c5`, checkpoint SHA `37c7ac18d0a48f5a1d0687e31af7c0264861232c500206718c98acd8e37d1671`, config `config/xy_tokenizer_config.yaml` SHA `e7d48677e34f77e5b9fd7dc7a3e0eef7f2d2dd9be9a245d5c1d56489dc748938`, source `https://github.com/gyt1145028706/XY-Tokenizer` at `5df5609c5883e555bd39a2d0b1005ca8f1a8f12e`). The group is additive; the converter remains `INSPECTION_ONLY`, and any unreviewed or mismatched identity fails closed rather than enabling a generic tokenizer route. | working tree (2026-08-29) |
 | backfill | `vokra.yue_bundle.*` | **1** keys — `variant` | `string` | persisted | YuE bundle (`yue-upsampler` + `yue-xcodec-mini`, `m-a-p/YuE-upsampler` / `m-a-p/xcodec_mini_infer`) — written by `crates/vokra-convert/src/models/yue_bundle.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | runtime-gap | `vokra.yue_upsampler.*` | **18** keys — `upstream_revision`, `checkpoint_file`, `checkpoint_sha256`, `checkpoint_bytes`, `source_package`, `source_package_sha256`, `tensor_manifest_sha256`, `public_revision`, `public_gguf_sha256`, `public_gguf_bytes`, `sample_rate`, `input_channels`, `dim`, `intermediate_dim`, `num_layers`, `n_fft`, `hop_length`, `padding` | `string` + `u32` | persisted | `yue_upsampler` — written by the strict converter and read by `vokra-models::yue_upsampler`. The group pins the exact official 151k checkpoint, independent `vocos==0.1.0` oracle, historical public artifact and complete 81-tensor/44.1 kHz topology. The audited historical public GGUF may omit the group while its immutable manifest and generic provenance match; a partial/conflicting group fails closed. | working tree (2026-08-26) |
 | backfill | `vokra.zonos.*` | **22** keys — `arch.backbone.causal`, `arch.backbone.d_intermediate`, `arch.backbone.d_model`, `arch.backbone.n_layer`, …  | `u32` + `f32` + `bool` | persisted | `zonos-v0.1` — written by `crates/vokra-convert/src/models/zonos.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
@@ -4103,6 +4150,110 @@ surface against all of these to build the "0.1 → 1.0" (cumulative) and
       deliberate scope: M3-16 ships the tool + baseline advisory, and the
       CI required-check wiring is M4-12's call so that PRs are not
       blocked on a still-churning v0.9 header.
+
+### 2026-08-30 — GigaAM Conv1d/RoPE public Rust source change (pre-1.0 advisory)
+
+`vokra-ops::conformer` extends the existing public Rust surface with the
+authenticated GigaAM stem and attention semantics. `ConvSubsampleKind::Conv1d`
+now carries explicit `kernel`, `stride`, and symmetric `padding`, and
+`PositionEncoding::GigaamRope` records the pre-projection rotate-half variant
+(`theta=5000`, `max_len=5000`): rotate-half is applied to the raw hidden input
+for Q/K before their linear projections, while V is projected from the
+original unrotated hidden input. `ConformerSubsampleWeights` carries the four
+explicit stem tensors, and `ConformerEncoder::forward_with_valid_frames`
+exposes the padded-batch tail mask contract. The existing post-projection
+adjacent-pair `PositionEncoding::Rope` is unchanged.
+
+This is a Rust source-level change; the C ABI is unchanged. These public types
+are not marked `#[non_exhaustive]`: adding enum variants can break external
+exhaustive matches, and adding fields to the public subsample struct can break
+external struct literals. That source compatibility impact is accepted under
+the pre-1.0 Rust contract. The execution meaning of all existing variants is
+unchanged; the new Conv1d and GigaAM RoPE variants are explicit additions.
+The generated public API snapshot keeps the type entries; method/field details
+are recorded here until the next snapshot refresh. Source semantics are pinned to
+`salute-developers/GigaAM@7447938d791c4f3e643386ee22c33777004293a5`.
+The fixed multilingual `config.json` is SHA-256
+`c830232c7d51688a630a221517b52585ab5ee57e1d3c21bcbae01759351d2653` and
+explicitly sets `preprocessor.center=false`; this is a checkpoint config
+override, not an assumption about the upstream processor default. The
+multilingual binder/converter remain fail-closed until an independently
+reviewed VAST SHA-256 for the prepared safetensors artifact is recorded.
+This does not claim source-complete behavior or Metal support; Metal remains
+explicitly unsupported until every learned operation is dispatched.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.gigaam_multilingual.*` | authenticated Multilingual CTC metadata group | Added | converter-stamped `u32` topology/config keys and string identity keys, including the prepared-artifact SHA-256; consumed by `sber_gigaam_multilingual.rs` and `gigaam::multilingual` | Additive GGUF schema for newly converted artifacts; no existing `vokra.*` key is renamed or reinterpreted, and strict binders continue to reject incomplete or unauthenticated files | no | (this commit) |
+
+### 2026-08-30 — GigaAM v3 RNNT native token route
+
+The fixed `ai-sage/GigaAM-v3` route now has a strict 561-tensor RNNT binder,
+native CPU encoder/predictor/joint greedy decoding, and a diagnostic trace for
+frontend, encoded frames, per-decision log-softmax rows, argmax IDs, and token
+IDs. The official decoder is greedy-only with `blank_id=1024` and a maximum of
+10 symbols per frame; no beam or SentencePiece text route is invented. The
+converter and runtime remain fail-closed while the independently reviewed
+prepared safetensors SHA is absent (`AUTHENTICATED_PREPARED_SHA256=None`).
+Metal/CUDA are explicitly unsupported, and dataset provenance keeps
+publication `NO_UPLOAD`.
+
+### 2026-08-30 — OmniASR-CTC-1B strict identity and native binder (pre-1.0 advisory)
+
+The OmniASR-CTC-1B conversion/runtime contract is now strict and additive.
+Only `facebook/omniASR-CTC-1B@8c22e3ffdaa4aab6431b128b84b991a7d9c2515c`
+is accepted, with source SHA-256
+`e8564fa59dab7caedbcdb54ab7fb9bd6c96989f4d19add2ad81ddd969716952c` and
+prepared-artifact SHA-256
+`cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`.
+The converter and native binder require and consume the complete authenticated
+807-tensor F32 manifest, including the source q/k/v ordering and positional
+convolution weight-normalization contract; arbitrary, partial, or alternate
+dtype GGUFs fail closed.
+
+The native waveform frontend, grouped positional convolution, projected
+48-layer encoder, and CTC token-ID path are staged for the CPU and Metal
+Compute routes. This entry records no real VAST numerical-parity result and no
+Apple verdict: both validations remain pending. Tokenization remains an
+external SentencePiece boundary, so the runtime produces token IDs rather than
+claiming an embedded tokenizer. It also makes no claim that a live public
+artifact was replaced or published.
+
+### 2026-08-31 — Generic convolution seams and authenticated native routes (pre-1.0 advisory)
+
+The current Rust source supersedes the pending source-level statements in the
+dated 2026-08-30 GigaAM and OmniASR entries above. It adds the public CPU kernel
+functions `vokra_backend_cpu::kernels::{conv1d_f32_dilated,
+conv_transpose1d_f32, conv2d_f32, conv_transpose2d_f32}`, the public
+`vokra_ops::conformer::{ConformerCompute, ConformerEncoder::forward_with_compute}`
+compute seam, and the public `vokra_models::bicodec::{Bicodec, ...}` module and
+native decode-only binder. Unsupported complete graphs return an error; these
+surfaces do not authorize a silent CPU fallback.
+
+GigaAM v3, GigaAM Multilingual and OmniASR now have authenticated native CPU
+routes, and OmniASR has a complete source-level Metal route. ReazonSpeech NeMo
+v2 locks the exact official ALSD decode contract, and BiCodec authenticates its
+840-F32-tensor native decode route. Real Apple CPU/Metal execution for the five
+staged models is still pending and no artifact upload is implied. These are
+pre-1.0 Rust/GGUF additions only: the C ABI remains unchanged at **57 FUNC / 15
+TYPEDEF**. The source baseline for this advisory is
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`.
+
+### 2026-09-01 — microWakeWord reviewed stateful binder (pre-1.0 advisory)
+
+The `vokra-kws-micro` Rust surface now adds
+`model::Model::bind_authenticated_streaming()` and the
+`AuthenticatedHeyJarvisBinder` / `AuthenticatedHeyJarvisTrace` types. The
+entry point accepts no caller topology or digest: it authenticates the fixed
+`hey_jarvis` provenance, reviewed topology, all 20 compute weight/bias names,
+shapes, quantization vectors, and exact source payload SHA-256 values before
+returning a stateful eleven-layer INT8 executor. Its public result is the
+exact uint8 value after the model's final quantize, and the diagnostic seam
+exposes the eleven intermediate stages. The stateless
+`bind_authenticated_chain()` remains an explicit error because it cannot
+represent persistent streaming state. This is an implemented binding surface,
+not a numerical or Apple-hardware verdict: the 512-invocation LiteRT
+stage-trace parity run remains VAST-gated, and no publication is implied.
 
 ### Post-1.0 semver contract (rejection of the pre-1.0 free-change rule)
 

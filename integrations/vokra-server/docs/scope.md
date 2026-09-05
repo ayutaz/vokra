@@ -1,5 +1,15 @@
 # vokra-server — Scope Boundary (M2-09-T01 kickoff)
 
+**Current-status note (2026-08-30):** This is the T01 kickoff boundary and its
+M2 target language is retained as historical context. Current behavior is
+authoritatively described by [`../README.md`](../README.md) and the source:
+the service-aware accept loop routes configured connections through the full
+ASR/TTS Wyoming handler, with scheduler-backed sessions and TTS barge-in. The
+HTTP `stream=true`/word-timestamp surfaces and built-in authentication remain
+unexposed; authentication is handled by a reverse proxy. Repository policy is
+in [`AGENTS.md`](../../../AGENTS.md), [`CONTRIBUTING.md`](../../../CONTRIBUTING.md),
+and [`docs/legal-compliance.md`](../../../docs/legal-compliance.md).
+
 This document nails down the scope of the `vokra-server` crate at the
 WP kickoff (T01), so subsequent tickets can be graded against a fixed
 target. Source of truth for the WP is `docs/milestones.md` §6 M2-09 and
@@ -53,7 +63,8 @@ the M2-09 ticket spec (`docs/tickets/m2/M2-09-vokra-server`).
   This crate ships the Wyoming server + docs (T15..T17, T23).
 - **No voice-cloning endpoints (RVC / GPT-SoVITS / speaker-only VC).**
   Those live in the separate `vokra-voiceclone-experimental` repo under
-  ELVIS Act / NO FAKES Act isolation (see CLAUDE.md item 8).
+  ELVIS Act / NO FAKES Act isolation (see repository policy and
+  [`docs/legal-compliance.md`](../../../docs/legal-compliance.md)).
 - **No ONNX / protobuf / gRPC dependency.** The runtime is `vokra-*`
   only; the server layer adds `tokio` + `axum` + `hyper` + `serde` +
   `tower` (all MIT) confined to this crate's own `Cargo.lock`. Root

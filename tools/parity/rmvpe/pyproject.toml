@@ -2,19 +2,39 @@
 name = "rmvpe-parity"
 version = "0.2.0"
 description = "Offline sidecar importing fixed yxlllc/RMVPE upstream code for the vokra-models RMVPE parity harness. Not shipped in the runtime."
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 dependencies = [
-    # The fixed upstream source is a PyTorch/torchaudio/librosa reference.
-    # uv.lock pins the concrete offline sidecar environment; none of these
-    # packages reaches root Cargo.lock or a Vokra runtime artifact.
-    "torch>=2.0",
-    "torchaudio>=2.0",
-    "librosa>=0.10",
-    # numpy: raw f32/u32 little-endian buffer materialisation (the parity
-    #        harness reads via chunks_exact(4) and does not require an
-    #        .npy header — see parity_rmvpe.rs L83-85).
-    "numpy>=1.26",
-    # WAV input is required to be 16 kHz so Rust and upstream receive the
-    # same PCM without introducing a second resampler reference.
-    "soundfile>=0.13",
+    # Exact pins are intentional: this is an offline VAST-only reference
+    # environment, not a runtime dependency.  The source frontend imports
+    # librosa.filters.mel and therefore brings the native audio closure below.
+    "librosa==0.11.0",
+    "numpy==2.3.5",
+    "safetensors==0.8.0",
+    "soundfile==0.14.0",
+    "torch==2.7.1",
+    "torchaudio==2.7.1",
 ]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.vokra.rmvpe_reference]
+status = "BLOCKED_LICENSE_AND_ARTIFACT_REVIEW_VAST_ONLY"
+upstream_repository = "https://github.com/yxlllc/RMVPE"
+upstream_revision = "0aabafba18289ca938a73af0b0297686abf4922d"
+upstream_license = "UNKNOWN_NO_LICENSE_FILE"
+checkpoint_license = "UNKNOWN"
+checkpoint_sha256 = "UNSET_UNTIL_VAST_ACQUISITION"
+torch_index = "https://download.pytorch.org/whl/cpu"
+forbidden_packages = ["soxr", "soundfile bundled libsndfile", "numba native wheel", "llvmlite native wheel", "triton", "nvidia-cuda"]
+license_blocker = "The source frontend requires librosa.filters.mel, whose locked closure includes soxr and soundfile/libcffi. Every native/bundled notice remains unreviewed; lock resolution is not approval."
+publication = "NO_UPLOAD"

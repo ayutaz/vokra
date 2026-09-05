@@ -49,10 +49,11 @@
 # `reference_dump.manifest.json` to `tests/fixtures/sbv2/reference_dump/`).
 # Any nonzero exit from the dumper
 # is now a REAL failure, not a documented deferral — the tail-position
-# "Fail if ..." step propagates it and the job goes red. The Rust parity
-# test step still runs `if: always()` for diagnostic value (loading the
-# freshly-converted GGUFs even if the dump failed), but its outcome does
-# not mask the dumper's exit.
+# "Fail if ..." step propagates it and the job goes red. A precondition step
+# below records whether the independent dump is complete; the Rust numeric
+# parity step is skipped when the dump failed or a required side file is
+# absent, while the final gate still propagates the producer/precondition
+# failure.
 #
 # ## Clean-room reminder
 #
@@ -687,6 +688,94 @@ jobs:
             echo "### No fixture drift" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Check independent reference fixture precondition
+        # The Rust consumer has a deliberate loud panic for a partial fixture,
+        # which is useful for an already-started local run but noisy and
+        # misleading in CI when the independent dumper failed before writing
+        # its side files. Gate the numeric test here so missing reference data
+        # is a visible precondition result, never a numeric parity failure.
+        id: reference_fixture
+        if: always()
+        shell: bash
+        env:
+          RUN_ZH: ${{ needs.setup.outputs.run_zh }}
+        run: |
+          set -euo pipefail
+          dump_dir="$FIXTURE_DIR/reference_dump"
+          available=false
+          precondition_exit=0
+          missing=()
+
+          # A nonzero dumper exit means any files left in the checkout are
+          # stale and cannot be used as an independent oracle for this run.
+          if [ "${DUMP_EXIT:-1}" != "0" ]; then
+            missing+=("fresh reference dump (sbv2_dump_reference.py exit ${DUMP_EXIT:-?})")
+          else
+            required=(
+              "$FIXTURE_DIR/reference_dump.manifest.json"
+              "$dump_dir/phoneme_embed.bin"
+              "$dump_dir/text_hidden.bin"
+              "$dump_dir/bert_hidden_ja.bin"
+              "$dump_dir/bert_hidden_en.bin"
+              "$dump_dir/bert_bridge_out.bin"
+              "$dump_dir/speaker_embed.bin"
+              "$dump_dir/style_projected.bin"
+              "$dump_dir/sdp_sample.bin"
+              "$dump_dir/mel_hidden.bin"
+              "$dump_dir/z_latent.bin"
+              "$dump_dir/waveform.bin"
+              "$dump_dir/phoneme_ids.bin"
+              "$dump_dir/tones.bin"
+              "$dump_dir/word_boundaries.bin"
+              "$dump_dir/language_id.bin"
+            )
+            if [ "$RUN_ZH" = "true" ]; then
+              required+=("$dump_dir/bert_hidden_zh.bin")
+            fi
+            for fixture in "${required[@]}"; do
+              if [ ! -s "$fixture" ]; then
+                missing+=("$fixture")
+              fi
+            done
+            shopt -s nullglob
+            flow_layers=("$dump_dir"/flow_layer_*_output.bin)
+            shopt -u nullglob
+            if [ "${#flow_layers[@]}" -eq 0 ]; then
+              missing+=("$dump_dir/flow_layer_*_output.bin")
+            fi
+          fi
+
+          # A skipped numeric step must not turn into an unset PARITY_EXIT
+          # failure; the independent precondition has its own explicit result.
+          echo "PARITY_EXIT=0" >> "$GITHUB_ENV"
+          if [ "${#missing[@]}" -eq 0 ]; then
+            available=true
+            echo "REFERENCE_FIXTURE_EXIT=0" >> "$GITHUB_ENV"
+            {
+              echo "### Independent reference fixture precondition: PASS"
+              echo ""
+              echo "Fresh dumper output is complete; numeric parity may run."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            if [ "${DUMP_EXIT:-1}" = "0" ]; then
+              precondition_exit=1
+            fi
+            echo "REFERENCE_FIXTURE_EXIT=${precondition_exit}" >> "$GITHUB_ENV"
+            {
+              echo "### Independent reference fixture precondition: SKIPPED"
+              echo ""
+              echo "Numeric parity is explicitly skipped; no reference result is claimed."
+              echo ""
+              for fixture in "${missing[@]}"; do
+                echo "- missing or stale: $fixture"
+              done
+              echo ""
+              echo "FR-EX-08 visible precondition gate; inspect the dumper output above."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::parity-sbv2-real: independent reference fixture precondition failed; numeric parity skipped"
+          fi
+          echo "available=${available}" >> "$GITHUB_OUTPUT"
+
       - name: Prepare UTMOS22-strong GGUF (WP-24 UTMOS quality gate)
         # Opt-in tail-position quality gate: when repository variable
         # `VOKRA_SBV2_UTMOS_ENABLE == "1"` the SBV2 parity test asserts
@@ -772,8 +861,9 @@ jobs:
         # WP-06 removed `#[ignore]` on 2026-08-11 after the real fixture path
         # landed. Run the named non-ignored test explicitly: `--ignored`
         # would now filter OUT the numerical consumer and fabricate a green
-        # no-op. `if: always()` still exercises the loud partial-fixture
-        # failure path when the dumper failed.
+        # no-op. The independent-reference precondition above is the only
+        # route to this step; a missing/failed dump is an explicit visible
+        # skip, not a Rust panic pretending to be a numeric result.
         #
         # WP-24: when `vars.VOKRA_SBV2_UTMOS_ENABLE == "1"`, the two
         # `VOKRA_SBV2_UTMOS_*` env vars below opt the tail-position UTMOS
@@ -782,7 +872,7 @@ jobs:
         # (var unset OR prep step skipped) triggers the Rust-side clean
         # skip.
         id: parity
-        if: always()
+        if: always() && steps.reference_fixture.outputs.available == 'true'
         env:
           VOKRA_SBV2_UTMOS_ENABLE: ${{ vars.VOKRA_SBV2_UTMOS_ENABLE }}
           VOKRA_SBV2_UTMOS_GGUF: ${{ steps.utmos_prep.outputs.utmos_gguf }}
@@ -907,15 +997,15 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      - name: Fail if the dumper or the Rust parity test failed (honest exit propagation)
+      - name: Fail if the dumper, fixture precondition, or Rust parity test failed (honest exit propagation)
         # Placed after artifact upload (artifacts-first, exit-last — same
         # ordering parity-whisper-real.yml / parity-kokoro-real.yml use) so
         # a failing job still ships the diagnostic bundle. Empty env values
         # (a step that never ran because an earlier hard-required step
         # failed) compare != '0' too, so an upstream failure still fails
         # the job here.
-        if: env.DUMP_EXIT != '0' || env.PARITY_EXIT != '0'
+        if: env.DUMP_EXIT != '0' || env.REFERENCE_FIXTURE_EXIT != '0' || env.PARITY_EXIT != '0'
         shell: bash
         run: |
-          echo "::error::parity-sbv2-real failed — sbv2_dump_reference.py exit ${DUMP_EXIT:-?}, parity_sbv2_real exit ${PARITY_EXIT:-?} — see step summary + artifacts"
+          echo "::error::parity-sbv2-real failed — sbv2_dump_reference.py exit ${DUMP_EXIT:-?}, reference fixture precondition ${REFERENCE_FIXTURE_EXIT:-?}, parity_sbv2_real exit ${PARITY_EXIT:-?} — see step summary + artifacts"
           exit 1

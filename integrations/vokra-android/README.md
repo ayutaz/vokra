@@ -135,13 +135,13 @@ dominate over binary size in real deployments.
 - **AAR packaging** — the raw-JNI branch (B) does not itself produce an
   AAR; consumers integrate as source (`kotlin/com/vokra/`) + prebuilt
   `.so`. Branch (A) JNA is the AAR-natural path.
-- **RVC / GPT-SoVITS / voice-cloning bindings** — deliberately absent per
-  CLAUDE.md §8 (ELVIS Act separation); those live in the
+- **RVC / GPT-SoVITS / voice-cloning bindings** — deliberately absent per the
+  current legal-compliance boundary (ELVIS/voice-cloning separation); those live in the
   `vokra-voiceclone-experimental` separate repo, never in this main
   repo binding.
 - **NNAPI delegate wiring** — Google-deprecated in Android 15 (2024-10);
-  Android GPU work goes through Vulkan (M3-02) or CPU. See CLAUDE.md
-  §6 "なぜ NNAPI に対応しないか".
+  Android GPU work goes through Vulkan (M3-02) or CPU. See
+  `docs/platform-support/v1.0-rc-support-matrix.md` and `AGENTS.md`.
 
 ## Related documents
 

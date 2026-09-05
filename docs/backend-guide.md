@@ -10,10 +10,11 @@ map, the execution model, the six-file pattern), then come here to actually
 build one. To resolve any `FR-*` / `NFR-*` / `IF-*` ID cited below, see
 [requirement-ids.md](requirement-ids.md).
 
-Vokra ships five compute backends today — CPU, Metal, CUDA, Vulkan and WebGPU
-— and two delegate scaffolds (CoreML, QNN). Every one of them is a first-party
-`vokra-*` crate with **no external binding crate**, because that is what keeps
-the zero-dependency invariant (`NFR-DS-02`) intact.
+Vokra currently implements five compute backends — CPU, Metal, CUDA, Vulkan and WebGPU
+— plus an experimental CoreML whole-submodel delegate and an SDK-gated QNN
+delegate scaffold. Every one of them is a first-party `vokra-*` crate with
+**no external binding crate**, because that is what keeps the zero-dependency
+invariant (`NFR-DS-02`) intact.
 
 ## 1. Before you start: the two invariants a backend must not break
 
@@ -90,12 +91,18 @@ execution and prove it numerically.
 
 ## 4. Worked example: the most recent backend
 
-The newest backends added are the **CoreML** (Apple ANE) and **QNN** (Qualcomm
-Hexagon) *delegates* (`FR-BE-06`). They are the freshest example of the
-crate-scaffold steps 1–4 above: `crates/vokra-backend-coreml/`
+The newest additions are the **CoreML** (Apple ANE) and **QNN** (Qualcomm
+Hexagon) *delegates* (`FR-BE-06`). `crates/vokra-backend-coreml/`
 <!-- anchor: crates/vokra-backend-coreml/src/lib.rs --> is a first-party crate
 with `sys.rs` / `probe.rs` / `backend.rs` / `lib.rs`, gated behind a
-default-OFF `coreml` feature and target-gated to macOS / iOS.
+default-OFF `coreml` feature and target-gated to macOS / iOS. CoreML now also
+has a validated, hash-bound `.mlmodelc` sidecar path that executes the complete
+Whisper encoder through `DelegateBackend`; generic per-op `Backend` coverage
+stays empty by design.
+
+`crates/vokra-backend-qnn/` remains an SDK-gated scaffold. Its runtime-loaded
+QNN probe and backend contract are present, but graph construction and
+execution remain zero-op until the official Qualcomm SDK ABI is transcribed.
 
 **A delegate differs from the six-file GPU backends, and the guide says so
 honestly.** A delegate hands a declared submodel to the vendor framework and
@@ -103,13 +110,17 @@ lets *it* place work onto ANE / GPU / CPU internally; that is not a Vokra-side
 op partition (the `Backend` trait's uniform-coverage rule forbids one) and not
 a silent fallback. So:
 
-- The canonical **six-file** template is still the five GPU/FFI backends
-  (Metal / CUDA / Vulkan / WebGPU) — use those when you add another *kernel*
+- The canonical **six-file** template is still the four accelerator GPU/FFI
+  backends (Metal / CUDA / Vulkan / WebGPU) — use those when you add another *kernel*
   backend.
-- CoreML / QNN are the template for a *delegate*; their op-execution path lands
-  only after the model-supply ADR is ratified, so today every hot op is an
-  explicit `UnsupportedOp` and a host with no reachable NPU is an explicit
-  `BackendUnavailable`. That is the honest scaffold state, not a bug.
+- CoreML is the template for a whole-submodel *delegate*: its declared Whisper
+  encoder path executes through the vendor framework, while generic hot ops
+  remain explicit `UnsupportedOp` and a host with no reachable ANE is an
+  explicit `BackendUnavailable`. The 2026-08-24 M1 bakeoff passed 99.63% ANE
+  placement but failed parity and the 2x speed gate, so no C selector is
+  exported. QNN follows the scaffold state above: its hot ops remain explicit
+  `UnsupportedOp` until the SDK-gated graph path lands, and an unavailable
+  runtime is an explicit `BackendUnavailable`.
 
 A C-level selector for the delegates is deliberately **not** exported during
 the v1.0-rc window; the Rust surface (`with_backend`) is the only way to select
@@ -133,6 +144,21 @@ the meta block below).
 
 ## 6. Owner / contributor boundary
 
+The current CPU and Metal compute seams also expose generic dilated Conv1d,
+ConvTranspose1d, Conv2d and ConvTranspose2d kernels. Model routes must preflight
+their complete learned-op inventory before selecting Metal; these seams do not
+authorize a silent CPU fallback. Their source-level contracts were verified at
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; real Apple CPU/Metal evidence for
+the staged GigaAM, OmniASR, ReazonSpeech and BiCodec packets remains pending.
+In the current 0.3.0 line, GigaAM v3 and GigaAM Multilingual have complete
+conservative Metal code routes, but their Apple-hardware verdict is still
+unmeasured. OmniASR likewise remains pending the authenticated Scaleway run;
+source-level route completeness is not an Apple-device result. The live public
+coverage snapshot is CPU `full=131`, `partial=42`, `no-runtime-binder=20`,
+`not-artifact=1`, and Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`,
+with source-level CPU-only coverage at 0.
+There are currently 0 release tags and 0 GitHub Releases.
+
 This guide documents the *procedure*. It does **not** run devices: real GPU /
 NPU parity and soak on physical hardware (an Apple Neural Engine, a Hexagon
 device, an Android phone) are owner tasks. A contributor lands the crate, the
@@ -141,8 +167,9 @@ metal and signs off.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — against the five shipping backends + the CoreML /
-QNN delegate scaffolds.**
+**Last verified: 2026-08-31 — against the five implemented compute backends,
+the generic convolution seams above, the CoreML whole-submodel delegate path,
+and the SDK-gated QNN delegate scaffold.**
 
 - **Update responsibility**: whoever lands a new backend (or changes the
   six-file layout / the `Backend` trait) updates this page and its Japanese

@@ -33,6 +33,7 @@ import numpy as np
 REVISION = "e9bf8dd314313fc57f6e4d0b5425bde4bbeac80f"
 CHECKPOINT_SHA256 = "6dc8a18422db7c22e951d5f72dc2afc267b942eb0b8459ac6dcc0cf412536de1"
 CONFIG_SHA256 = "7406aa4f917267640865688aa62f2337664a3abb9a49a2f204d932b53aeb6cb7"
+PCM_SHA256 = "77658830c60a39ff6269db6d3c5bd6b3a3d596e8ba4c61d3b30c7c9b27343e5c"
 
 
 def die(message: str) -> "NoReturn":
@@ -68,12 +69,30 @@ def deterministic_pcm() -> np.ndarray:
     return np.asarray(pcm, dtype="<f4")
 
 
+def self_test() -> None:
+    pcm = deterministic_pcm()
+    if pcm.shape != (400,) or pcm.dtype != np.dtype("<f4"):
+        raise AssertionError(f"unexpected deterministic PCM shape/dtype: {pcm.shape} {pcm.dtype}")
+    actual = hashlib.sha256(pcm.tobytes()).hexdigest()
+    if actual != PCM_SHA256:
+        raise AssertionError(f"deterministic PCM SHA-256 {actual} != {PCM_SHA256}")
+    print("charsiu_dump_reference self-test: PASS")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint-bin", required=True, type=Path)
-    parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--outdir", required=True, type=Path)
+    parser.add_argument("--checkpoint-bin", type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--outdir", type=Path)
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        if args.checkpoint_bin or args.config or args.outdir:
+            parser.error("--self-test accepts no other arguments")
+        self_test()
+        return 0
+    if not args.checkpoint_bin or not args.config or not args.outdir:
+        parser.error("--checkpoint-bin, --config, and --outdir are required")
 
     checkpoint_hash = verify_file(
         args.checkpoint_bin, CHECKPOINT_SHA256, "canonical checkpoint"

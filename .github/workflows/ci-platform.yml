@@ -119,6 +119,17 @@ jobs:
         run: cargo clippy -p vokra-models -p vokra-cli --features ${{ matrix.feature }} --all-targets -- -D warnings
       - name: Test (--features ${{ matrix.feature }})
         run: cargo test -p vokra-models --features ${{ matrix.feature }}
+      # M2-01-T21: the model crate tests above do not guarantee that
+      # vokra-backend-metal's own probe and integration parity targets are
+      # selected. Keep this Apple-only and explicit so the CI log proves that
+      # the real-device probe plus every Metal backend integration target ran.
+      # A missing device is intentionally a test failure in the probe target;
+      # it must not be converted into a green skip by this workflow.
+      - name: Test Metal backend crate (probe + integration parity)
+        if: matrix.feature == 'metal'
+        run: |
+          echo 'Metal backend crate test: probe + integration parity (--nocapture)'
+          cargo test -p vokra-backend-metal -- --nocapture
       # 2026-08-14 (C ABI backend selector): vokra-capi's GPU arms only compile
       # when vokra-capi itself carries the feature, so without this leg every
       # CI configuration short-circuits on `ensure_backend_available` and the
@@ -167,22 +178,29 @@ jobs:
             https://huggingface.co/vokra/campplus-speaker-encoder/resolve/main/campplus.gguf
           curl -fsSL --retry 3 -o "${DEST}/whisper-base.gguf" \
             https://huggingface.co/vokra/whisper-base/resolve/main/whisper-base.gguf
-          cat > "${DEST}/SHA256SUMS" <<'EOF'
-          c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea  campplus.gguf
-          7e774425585d6e9ba58ac5337b406522b1408ab6ff6765d2938b092aef4c8e27  whisper-base.gguf
-          EOF
-          cd "${DEST}"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum -c SHA256SUMS
-          else
-            shasum -a 256 -c SHA256SUMS
-          fi
+      - name: Verify real GGUFs (pinned SHA-256)
+        if: matrix.feature == 'metal' || matrix.feature == 'cuda'
+        env:
+          GGUF_DIR: ${{ runner.temp }}/vokra-ci-gguf
+        run: |
+          set -euo pipefail
+          [[ -f "${GGUF_DIR}/campplus.gguf" && ! -L "${GGUF_DIR}/campplus.gguf" ]]
+          [[ -f "${GGUF_DIR}/whisper-base.gguf" && ! -L "${GGUF_DIR}/whisper-base.gguf" ]]
+          sha256_of() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            else
+              shasum -a 256 "$1" | awk '{print $1}'
+            fi
+          }
+          [[ "$(sha256_of "${GGUF_DIR}/campplus.gguf")" == "c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea" ]]
+          [[ "$(sha256_of "${GGUF_DIR}/whisper-base.gguf")" == "7e774425585d6e9ba58ac5337b406522b1408ab6ff6765d2938b092aef4c8e27" ]]
       - name: C ABI backend selector (--features ${{ matrix.feature }})
         if: matrix.feature == 'metal' || matrix.feature == 'cuda'
         env:
-          # Absent on a runner where the download step was skipped for any
-          # reason: the test then takes its documented skip path rather than
-          # failing, which keeps this leg honest instead of red-for-infra.
+          # The preceding verification is unconditional for this required
+          # wiring leg; missing or corrupt real GGUFs must fail the job before
+          # the selector can take a runtime skip path.
           VOKRA_CAMPLUS_GGUF: ${{ runner.temp }}/vokra-ci-gguf/campplus.gguf
           VOKRA_WHISPER_GGUF: ${{ runner.temp }}/vokra-ci-gguf/whisper-base.gguf
         run: |
@@ -622,6 +640,24 @@ jobs:
         # NFR-DS-02: the server tiers are std::arch + inline asm only — no
         # new crate may appear in the root Cargo.lock.
         run: git diff --exit-code Cargo.lock
+
+  # Apple worker contract coverage is deliberately separate from the CPU ISA
+  # job above: it checks all 45 (and any future) worker scripts without
+  # compiling the model crate or running a model. The real CPU/Metal execution
+  # remains owned by the authenticated worker and gpu-backends Metal arm.
+  apple-silicon-worker-contracts:
+    name: apple-silicon-worker-contracts
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - name: Verify uv runtime for Apple worker self-tests
+        run: uv run --no-project --python 3.12 python -c 'print("uv runtime ready")'
+      - name: Check every Apple worker syntax and --self-test contract
+        run: bash scripts/check-apple-silicon-contracts.sh
 
   # Performance regression gate (NFR-PF-13, M2-04). Runs the fused log-mel
   # `mel-frontend` bench through `vokra-cli bench --baseline` against a

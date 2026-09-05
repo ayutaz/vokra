@@ -5,10 +5,9 @@
 //! `Qwen2-0.5B` backbone in the `iic/CosyVoice2-0.5B` release) whose output
 //! token stream drives the Flow Matching CFM (T10). This file lands the
 //! **module + primitive surface + full Mistral-style forward body**
-//! (T07 embedding + T08 transformer blocks) driven from **synthesized,
-//! seed-deterministic weights**. Real HF-checkpoint parity (T02 tensor
-//! manifest) is wired but the harness only runs when the checkpoint arrives
-//! — no fabricated pass.
+//! (T07 embedding + T08 transformer blocks) driven from explicitly named
+//! synthetic fixtures for numerical tests. Production GGUF loading requires
+//! real tensors; metadata-only inputs fail closed and are never synthesized.
 //!
 //! # What lands in this session (M3-09 Wave 8 follow-on)
 //!
@@ -120,12 +119,8 @@ pub const DEFAULT_ROPE_BASE_QWEN2: f32 = 1_000_000.0;
 /// (`rms_norm_eps`).
 pub const DEFAULT_RMS_NORM_EPS: f32 = 1e-5;
 
-/// Seed for the synthesized weight fixture built by
-/// [`LlmBackbone::from_gguf`] on the **metadata-only** GGUF path (test
-/// fixtures without weight tensors; a tensor-carrying GGUF binds real
-/// weights instead). Arbitrary but stable so callers can reproduce
-/// byte-for-byte; the constant reads as ASCII `"cosyv0.9\0"` mixed with
-/// `0xC0DE_C0DE` to make it distinct from the Voxtral / Kokoro fixtures.
+/// Seed reserved for the explicitly named [`LlmBackbone::synthesized`]
+/// numerical fixture path. Production `from_gguf` never uses it.
 pub const FROM_GGUF_DEFAULT_SEED: u64 = 0xC0DE_C0DE_C0DE_C0DE;
 
 /// LLM-side hparam snapshot resolved from the CosyVoice2 GGUF metadata.
@@ -825,29 +820,16 @@ impl LlmBackbone {
         Self::new(config, weights)
     }
 
-    /// Loads the LLM backbone from a CosyVoice2 GGUF file.
-    ///
-    /// Reads the shape config verbatim from the GGUF metadata, then:
-    ///
-    /// - **Backbone tensors present** ([`LlmWeights::has_backbone_tensors`],
-    ///   i.e. a real converter output) → binds the **real weights** via
-    ///   [`LlmWeights::from_gguf`]; any tensor problem is a loud
-    ///   [`VokraError::ModelLoad`] — never a fall-back to the synthesized
-    ///   fixture (FR-EX-08).
-    /// - **Metadata-only GGUF** (synthetic test fixtures) → builds the
-    ///   seed-deterministic **synthesized** store against the metadata
-    ///   shape, the numerical-stability bridge the T09 harness uses.
+    /// Loads the LLM backbone from a CosyVoice2 GGUF file only when the
+    /// complete real backbone tensor set is present. Metadata-only GGUFs are
+    /// rejected; numerical tests must call the explicitly named
+    /// [`LlmBackbone::synthesized`] constructor instead.
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] on any GGUF metadata key with a
     ///   wrong type.
-    /// - [`VokraError::InvalidArgument`] if the config carries a
-    ///   0-placeholder sentinel — for a tensor-carrying GGUF that means a
-    ///   pre-hparam-fix conversion (re-convert with `--config`); for a
-    ///   metadata-only GGUF no synthesized fixture is meaningful at zero
-    ///   dims. (`CosyVoice2Tts::from_gguf_with_policy` maps this variant
-    ///   to a `None` LLM handle so scaffold GGUFs still load.)
+    /// - [`VokraError::ModelLoad`] when no real backbone tensors are present.
     /// - [`VokraError::ModelLoad`] from the real tensor binding.
     pub fn from_gguf(file: &GgufFile, cfg: &CosyVoice2Config) -> Result<Self> {
         let llm_cfg = LlmBackboneConfig::from_gguf(file, cfg)?;
@@ -875,27 +857,12 @@ impl LlmBackbone {
             let weights = LlmWeights::from_gguf(file, &llm_cfg)?;
             return Self::new(llm_cfg, weights);
         }
-        // Reject the 0-placeholder path — a converter without dims cannot
-        // host a fixture (FR-EX-08, no silent zero-fill fallback).
-        if zero_shape {
-            return Err(VokraError::InvalidArgument(format!(
-                "cosyvoice2 LLM backbone: GGUF carries a 0-placeholder shape config \
-                 (vocab={}, n_layer={}, n_head_q={}, n_head_kv={}, hidden={}, ffn={}) — \
-                 the shape-only converter path cannot host a synthesized fixture. \
-                 Re-convert with real hparams (T04) or bind against a fixture-shaped \
-                 config via LlmBackbone::synthesized directly.",
-                llm_cfg.vocab_size,
-                llm_cfg.n_layer,
-                llm_cfg.n_head_q,
-                llm_cfg.n_head_kv,
-                llm_cfg.hidden_dim,
-                llm_cfg.ffn_dim,
-            )));
-        }
-        // Default seed for the metadata-only path: arbitrary but stable
-        // 64-bit constant, documented so callers can reproduce the
-        // synthesized fixture bit-for-bit.
-        Self::synthesized(llm_cfg, FROM_GGUF_DEFAULT_SEED)
+        // Metadata-only GGUFs must never become a production backbone.  The
+        // deterministic fixture remains available only through the explicit
+        // `LlmBackbone::synthesized` constructor used by numerical tests.
+        Err(VokraError::ModelLoad(
+            "cosyvoice2 LLM from_gguf: no real backbone tensors are present; metadata-only and synthesized GGUFs are inspection-only".to_owned(),
+        ))
     }
 
     /// Loads the LLM backbone from a CosyVoice2 GGUF **with real weights**
@@ -1874,7 +1841,7 @@ mod tests {
         b.add_u32(super::super::config::KEY_STREAMING_CHUNK_HOP, 0);
         let (file, cfg) = parse_config(b.to_bytes().unwrap());
         let err = LlmBackbone::from_gguf(&file, &cfg).expect_err("0-placeholder must be rejected");
-        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        assert!(matches!(err, VokraError::ModelLoad(_)));
     }
 
     #[test]
@@ -1897,13 +1864,15 @@ mod tests {
     }
 
     #[test]
-    fn from_gguf_produces_working_synthesized_backbone() {
+    fn synthesized_constructor_produces_working_fixture() {
         let mut b = GgufBuilder::new();
         seed_config(&mut b);
         b.add_u32(KEY_LLM_N_HEAD_KV, 2);
         b.add_u32(KEY_LLM_N_CTX, 8);
         let (file, cfg) = parse_config(b.to_bytes().unwrap());
-        let backbone = LlmBackbone::from_gguf(&file, &cfg).expect("synthesized build");
+        let llm_cfg = LlmBackboneConfig::from_gguf(&file, &cfg).expect("read LLM config");
+        let backbone = LlmBackbone::synthesized(llm_cfg, FROM_GGUF_DEFAULT_SEED)
+            .expect("explicit synthesized build");
         assert!(backbone.weights().is_synthesized);
         // A trivial forward runs.
         let logits = backbone.forward(&[0, 1, 2], 0).expect("forward runs");

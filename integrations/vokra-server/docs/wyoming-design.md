@@ -1,5 +1,15 @@
 # Wyoming Protocol — Server Design (M2-09 T14)
 
+**Current-status note (2026-08-30):** This design record keeps the historical
+wire and safety decisions, while the implementation is no longer a planned
+accept-loop follow-up: the service-aware accept loop invokes
+`run_wyoming_connection` for configured services, covering discovery, ASR, TTS,
+and connection-scoped barge-in. TTS is currently batch synthesis with chunked
+emission; a true streaming synthesis implementation and owner Home Assistant
+device/UI validation remain follow-ups. Current public behavior is in
+[`../README.md`](../README.md) and repository policy is in
+[`AGENTS.md`](../../../AGENTS.md) / [`CONTRIBUTING.md`](../../../CONTRIBUTING.md).
+
 Scope: design record for Vokra's Wyoming Protocol server implementation
 (ASR + TTS surface). Consumed by T15 (Wyoming ASR) and T16 (Wyoming TTS).
 Implementation details (event handlers, streaming bridge) live in `src/api/wyoming.rs`.
@@ -12,7 +22,8 @@ Implementation details (event handlers, streaming bridge) live in `src/api/wyomi
   format, event catalogue (info / describe / audio-start / audio-chunk /
   audio-stop / transcribe / synthesize), and PCM audio conventions.
 - No invention: any field or event not documented upstream is deferred to a
-  follow-up ticket rather than added speculatively (CLAUDE.md hallucination-ban).
+  follow-up ticket rather than added speculatively (repository no-invention
+  policy in [`AGENTS.md`](../../../AGENTS.md)).
 
 ## 2. Wire format (JSONL over TCP + binary payload)
 
@@ -171,7 +182,7 @@ barge-in on the TTS emit path. Semantics and provenance:
   connection *while a TTS `synthesize` is emitting* is treated as the barge-in
   trigger (the satellite's wake word / next utterance beginning). `audio-start`
   is a documented upstream `rhasspy/wyoming` event (§2.1); we do **not** invent
-  a bespoke control event (CLAUDE.md 発明禁止). **Owner-confirmable follow-up**:
+  a bespoke control event (repository no-invention policy). **Owner-confirmable follow-up**:
   if upstream defines a *dedicated* barge-in / interrupt control event, adopt
   it here and keep the `audio-start` heuristic as a fallback — recorded so the
   choice is a deliberate future edit, not silent drift.

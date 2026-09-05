@@ -2,16 +2,5 @@
 name = "microwakeword-prep"
 version = "0.1.0"
 description = "Offline sidecar: kahrendt/microWakeWord TFLite → Vokra GGUF (vokra.kws.* metadata). NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
-requires-python = ">=3.12"
-dependencies = [
-    # gguf: writes the vokra.kws.* GGUF that vokra_core::gguf::GgufFile parses
-    #       (same reader vokra-vad-micro uses for silero_vad.gguf). Apache-2.0.
-    "gguf>=0.19.0",
-    # numpy: tensor manipulation (dequantize INT8 → F32, byte-order sanity).
-    "numpy>=1.26",
-    # ai-edge-litert: the current TFLite runtime (Google renamed `tflite-runtime`
-    #       to `ai-edge-litert` in 2024-Q3; the old name has no py3.12 wheels).
-    #       Provides `Interpreter.get_tensor_details()` for topology + weights.
-    #       Apache-2.0.
-    "ai-edge-litert>=1.0",
-]
+requires-python = "==3.12.*"
+dependencies = []

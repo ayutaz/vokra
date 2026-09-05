@@ -29,6 +29,10 @@
 //! struct additively (new `Option<Vec<f32>>` fields) without breaking
 //! this constructor's existing callers.
 
+use vokra_core::Result;
+
+use crate::compute::Compute;
+
 /// AdaIN-style per-utterance style conditioning: projects a `d_style`-dim
 /// style vector into a per-channel `(scale, bias)` pair over `d_target`
 /// channels, then applies `h[i, d] = h[i, d] * (1 + scale[d]) + bias[d]`
@@ -145,6 +149,26 @@ impl StyleVectorInjector {
         out
     }
 
+    /// Backend sibling of [`Self::project`]. The projection is one learned
+    /// matrix-vector operation; the returned tensor is still host-owned.
+    pub(crate) fn project_with_compute(
+        &self,
+        compute: &Compute,
+        style_vec: &[f32],
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(style_vec.len(), self.d_style);
+        let mut out = vec![0.0_f32; self.d_target];
+        compute.gemv_f32(
+            self.d_target,
+            self.d_style,
+            &self.proj_bias,
+            style_vec,
+            None,
+            &mut out,
+        )?;
+        Ok(out)
+    }
+
     /// Applies AdaIN-style style conditioning to `hidden` in place.
     ///
     /// `hidden` is a flat `[seq_len, d_target]` row-major buffer (i.e.
@@ -199,5 +223,33 @@ impl StyleVectorInjector {
                 *h = *h * (1.0 + sc) + bi;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bias_projection_compute_matches_scalar_and_does_not_use_scale() {
+        let injector = StyleVectorInjector::from_projections(
+            // Deliberately different scale weights: `project` is the
+            // reference for the dedicated bias projection and must not use
+            // this matrix.
+            vec![100.0, -100.0, 7.0, 11.0, -13.0, 17.0],
+            vec![1.5, -2.0, 0.25, 3.0, 4.0, -0.5],
+            2,
+            3,
+        );
+        let style = [0.75, -1.25];
+        let scalar = injector.project(&style);
+        let computed = injector
+            .project_with_compute(&Compute::cpu(), &style)
+            .expect("valid CPU Compute style projection");
+        assert_eq!(computed.len(), scalar.len());
+        for (actual, expected) in computed.iter().zip(scalar.iter().copied()) {
+            assert!((actual - expected).abs() <= 1e-6, "{actual} != {expected}");
+        }
+        assert_eq!(scalar, vec![3.625, -3.5625, 3.625]);
     }
 }

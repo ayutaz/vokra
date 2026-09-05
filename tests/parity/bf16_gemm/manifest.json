@@ -1,0 +1,136 @@
+{
+  "cases": {
+    "full_k32_m8_n64": {
+      "shape": {
+        "k": 96,
+        "m": 8,
+        "n": 64
+      },
+      "tensors": {
+        "a": {
+          "bytes": 3072,
+          "dtype": "float32",
+          "path": "full_k32_m8_n64_a.f32",
+          "sha256": "282a02285486d78143da8c00793da1f93571c7efe35645d751de652b7f21c715",
+          "shape": [
+            8,
+            96
+          ]
+        },
+        "b": {
+          "bytes": 24576,
+          "dtype": "float32",
+          "path": "full_k32_m8_n64_b.f32",
+          "sha256": "4bce8eddd102f18ae4ef169079ba12c395c8a28e3385f0a88425228c6de49036",
+          "shape": [
+            96,
+            64
+          ]
+        },
+        "output": {
+          "bytes": 2048,
+          "dtype": "float32",
+          "path": "full_k32_m8_n64_output.f32",
+          "sha256": "e7247ba4fc0a8d5ef05e6fb31caa816603f4a490b5460add23b84822ef478325",
+          "shape": [
+            8,
+            64
+          ]
+        }
+      }
+    },
+    "tails_m3_n35_k65": {
+      "shape": {
+        "k": 65,
+        "m": 3,
+        "n": 35
+      },
+      "tensors": {
+        "a": {
+          "bytes": 780,
+          "dtype": "float32",
+          "path": "tails_m3_n35_k65_a.f32",
+          "sha256": "c312992e4e808f76e729ee8bcef8cd600cca75d923f5b31ae3461b3d436615cd",
+          "shape": [
+            3,
+            65
+          ]
+        },
+        "b": {
+          "bytes": 9100,
+          "dtype": "float32",
+          "path": "tails_m3_n35_k65_b.f32",
+          "sha256": "7d60d46524a18d252c591f3db963c655986b8e419c6ecdb1b5f14cda2bede0e3",
+          "shape": [
+            65,
+            35
+          ]
+        },
+        "output": {
+          "bytes": 420,
+          "dtype": "float32",
+          "path": "tails_m3_n35_k65_output.f32",
+          "sha256": "4485c00d80f7c94fe82c0d90bb7d006539d298ce0de0258aae421cc45299b627",
+          "shape": [
+            3,
+            35
+          ]
+        }
+      }
+    },
+    "tails_m9_n33_k31": {
+      "shape": {
+        "k": 31,
+        "m": 9,
+        "n": 33
+      },
+      "tensors": {
+        "a": {
+          "bytes": 1116,
+          "dtype": "float32",
+          "path": "tails_m9_n33_k31_a.f32",
+          "sha256": "8def0df1680e33c3cb34a3674a9b12bd4e1d77563d3c8ae0ae3490e7acb875b6",
+          "shape": [
+            9,
+            31
+          ]
+        },
+        "b": {
+          "bytes": 4092,
+          "dtype": "float32",
+          "path": "tails_m9_n33_k31_b.f32",
+          "sha256": "864c37ad7a242e7ada61750cfe53d12f889e30892568251ef1f8578e38b8b35b",
+          "shape": [
+            31,
+            33
+          ]
+        },
+        "output": {
+          "bytes": 1188,
+          "dtype": "float32",
+          "path": "tails_m9_n33_k31_output.f32",
+          "sha256": "f01cb1caff693b508f414fceb0d46be69b2ca14096c4a22e378945b2dcdc040f",
+          "shape": [
+            9,
+            33
+          ]
+        }
+      }
+    }
+  },
+  "comparison": {
+    "atol": 0.001,
+    "rtol": 0.0
+  },
+  "provenance": {
+    "byte_order": "little-endian",
+    "device": "cpu",
+    "dtype": "float32",
+    "generator": "tools/parity/bf16_gemm/dump_reference.py",
+    "generator_identity": "deterministic torch.matmul BF16-widened oracle",
+    "oracle": "torch.matmul(a.to(torch.bfloat16).to(torch.float32), b.to(torch.bfloat16).to(torch.float32))",
+    "randomness": "none",
+    "torch_version": "2.13.0+cpu"
+  },
+  "schema": "vokra-bf16-gemm-parity-v1"
+}

@@ -110,12 +110,12 @@ impl GgufBuilder {
     /// Queues a tensor for writing.
     ///
     /// `data` must be the little-endian payload whose length equals
-    /// [`dtype.payload_size(product(dimensions))`](GgmlType::payload_size) —
-    /// `elements * type_size` for dense dtypes, or `(elements / 256) *
-    /// type_size` for K-quants; otherwise [`GgufError::TensorSizeMismatch`] is
-    /// returned. A K-quant element count that is not a whole number of
-    /// super-blocks yields [`GgufError::BlockSizeMisaligned`], and a duplicate
-    /// tensor name yields [`GgufError::DuplicateTensor`].
+    /// [`dtype.payload_size_for_dimensions`](GgmlType::payload_size_for_dimensions)
+    /// — `elements * type_size` for dense dtypes, or `(elements / block_size) *
+    /// type_size` for quantized dtypes. Quantized tensors must have a total
+    /// element count aligned to their block size. Otherwise [`GgufError::TensorSizeMismatch`] or
+    /// [`GgufError::BlockSizeMisaligned`] is returned, and a duplicate tensor
+    /// name yields [`GgufError::DuplicateTensor`].
     pub fn add_tensor(
         &mut self,
         name: &str,
@@ -129,11 +129,7 @@ impl GgufBuilder {
         if self.tensors.iter().any(|t| t.name == name) {
             return Err(GgufError::DuplicateTensor(name.to_owned()));
         }
-        let mut elems: u64 = 1;
-        for &d in &dimensions {
-            elems = elems.checked_mul(d).ok_or(GgufError::Overflow)?;
-        }
-        let expected = dtype.payload_size(elems)?;
+        let expected = dtype.payload_size_for_dimensions(&dimensions)?;
         if data.len() as u64 != expected {
             return Err(GgufError::TensorSizeMismatch {
                 name: name.to_owned(),
@@ -315,7 +311,8 @@ pub struct GgufTensorDecl {
 ///   queued tensors is rejected ([`GgufError::InvalidStreamUse`]) rather
 ///   than silently merged.
 /// - Payloads must arrive exactly once each, in declaration order, sized
-///   exactly `dtype.payload_size(product(dimensions))`.
+///   exactly `dtype.payload_size_for_dimensions(dimensions)`; quantized
+///   tensors are block-aligned by total element count.
 /// - [`Self::finish`] fails unless every declared payload was written (a
 ///   truncated tensor-data region must never look like success).
 pub struct GgufStreamWriter<W: std::io::Write> {
@@ -379,11 +376,7 @@ impl<W: std::io::Write> GgufStreamWriter<W> {
             if !seen.insert(d.name.as_str()) {
                 return Err(GgufError::DuplicateTensor(d.name.clone()));
             }
-            let mut elems: u64 = 1;
-            for &dim in &d.dimensions {
-                elems = elems.checked_mul(dim).ok_or(GgufError::Overflow)?;
-            }
-            let size = d.dtype.payload_size(elems)?;
+            let size = d.dtype.payload_size_for_dimensions(&d.dimensions)?;
             plan.push((d.name.clone(), size, cursor));
             cursor = align_up(
                 cursor.checked_add(size).ok_or(GgufError::Overflow)?,
@@ -707,6 +700,30 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn q8_total_alignment_accepts_split_inner_dimension() {
+        let mut b = GgufBuilder::new();
+        b.add_tensor("split", GgmlType::Q8_0, vec![16, 2], vec![0u8; 34])
+            .unwrap();
+
+        b.add_tensor("q", GgmlType::Q8_0, vec![32, 1], vec![0u8; 34])
+            .unwrap();
+        b.add_tensor("next", GgmlType::F32, vec![1], vec![0u8; 4])
+            .unwrap();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let q = file.tensor_info("q").unwrap();
+        let next = file.tensor_info("next").unwrap();
+        let split = file.tensor_info("split").unwrap();
+        assert_eq!(split.dimensions, vec![16, 2]);
+        assert_eq!(split.byte_len().unwrap(), 34);
+        assert_eq!(q.dimensions, vec![32, 1]);
+        assert_eq!(q.dtype, GgmlType::Q8_0);
+        assert_eq!(q.byte_len().unwrap(), 34);
+        assert_eq!(split.offset, 0);
+        assert_eq!(q.offset, 64);
+        assert_eq!(next.offset, 128);
     }
 
     #[test]

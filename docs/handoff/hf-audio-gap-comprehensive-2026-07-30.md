@@ -1,5 +1,15 @@
 # HuggingFace 音声・音楽 AI 総合 gap 調査 (2026-07-30 拡張版)
 
+> **2026-08-30 legal supersession boundary:** This is a historical research
+> inventory. Current legal analysis is `docs/legal-compliance.md`: automatic
+> watermark/C2PA integration is **Deferred**, the NO FAKES Act is not
+> established/enacted, Apple Guideline 5.5 is **Mobile Device Management
+> (MDM)**, and California SB 942 is operative. The legal conclusions and
+> “Article 50対応”/“NO FAKES” wording below are design-era context only and
+> must not be used as current compliance guidance; applicable role, use,
+> jurisdiction, disclosure/marking, consent, and rights require owner/deployer
+> review.
+
 ## 1. 前文
 
 **依頼者 2026-07-30 指示**: 「音楽関連も対応する。前回の hf-audio-gap-2026-07-30.md より広い調査範囲を再度洗い直せ」= [[project-scope-expansion-2026-07-30]] anchor に基づく scope 拡張版。
@@ -274,7 +284,7 @@
 | ★★ | dima806/music_genres_classification | 3k | GTZAN-style 10-class music genre |
 | ★★ | dima806/musical_instrument_detection | 765 | Instrument classifier (drums/guitar/piano/vocals) |
 | ★★ | StanislavKo28/music_moods_classification | 4k | Music mood (happy/sad/energetic/calm) |
-| ★★ | MelodyMachine/Deepfake-audio-detection-V2 | 5k | Deepfake / AI-generated music detection (EU AI Act 対応) |
+| ★★ | MelodyMachine/Deepfake-audio-detection-V2 | 5k | Deepfake / AI-generated music detection (法務・marking review の技術候補。自動的な法令対応は主張しない) |
 | ★★ | awsaf49/sonics-spectttra-gamma-5s | 41k | SONICS SpecTTTra Gamma-5s (synthetic music discrimination SoTA) |
 | ★★ | awsaf49/sonics-spectttra-beta-5s | 33k | SONICS Beta-5s variant |
 | ★★ | awsaf49/sonics-spectttra-alpha-120s | 12k | SONICS Alpha-120s (long-clip full-song detection) |
@@ -395,7 +405,7 @@
 
 | ★ | HF ID | dl | 用途 |
 |---|---|---|---|
-| ★★★ | facebook/audioseal | 12k | AudioSeal proactive watermark、EU AI Act Article 50 (2026-08-02 施行) + SB 942 対応。M5-05 T04 ADR ratify で first-class op 化 |
+| ★★★ | facebook/audioseal | 12k | AudioSeal proactive watermark（法務・marking review の技術候補。automatic integration は Deferred、EU AI Act/SB 942 の適合は主張しない）。M5-05 T04 ADR ratify で first-class op 化を検討 |
 
 ## 4. TIER 2 (cc-by、attribution 要)
 
@@ -638,7 +648,13 @@
 
 ## 7. TIER 5 (voice-cloning、別リポ管轄)
 
-**設計判断 8 (CLAUDE.md) anchor**: 「Tennessee ELVIS Act (2024-07-01) は "primary purpose or effect" 判定で tool distributor に責任を負わせる。連邦 NO FAKES Act も同様。voice cloning (RVC/VC/speaker cloning) を core に含めると米国配布時に Unity/Godot Asset Store banned リスク + right of publicity 訴訟。→ `vokra-voiceclone-experimental` 別リポジトリに完全分離。」
+**Historical design judgment 8 anchor (superseded as current legal guidance)**: the
+2026-07 research record described Tennessee ELVIS Act / a proposed federal NO
+FAKES Act risk for voice-cloning tools and proposed a separate
+`vokra-voiceclone-experimental` repository. Current legal applicability,
+disclosure/marking, consent, and rights must be checked by the owner/deployer
+under `docs/legal-compliance.md` §§3–4 and FR-CP-04; this row does not claim
+automatic compliance.
 
 **該当モデルは main repo (ayutaz/vokra) には publish しない**、`staging/vokra-voiceclone-experimental` scaffold (M5-05、`6dc9f86` land) から別リポへ移送。tier は "license" ではなく "primary use = voice-clone" で判定。license 自体は permissive (MIT) を含む。
 

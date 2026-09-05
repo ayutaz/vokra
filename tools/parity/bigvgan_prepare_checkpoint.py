@@ -72,6 +72,10 @@ dispatch (FR-EX-08 posture inherited from ``dfn3_prepare_checkpoint`` /
         --pt   /tmp/bigvgan_v2_22khz/bigvgan_generator.pt \\
         --config /tmp/bigvgan_v2_22khz/config.json \\
         --variant v2_22khz_80band_256x \\
+        --source-dir /tmp/BigVGAN \\
+        --source-revision <40-char-upstream-commit> \\
+        --checkpoint-sha256 <64-char-checkpoint-digest> \\
+        --config-sha256 <64-char-config-digest> \\
         --output /tmp/bigvgan_v2_22khz/bigvgan.safetensors \\
         --config-out /tmp/bigvgan_v2_22khz/config.publish.json
 
@@ -87,8 +91,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import struct
+import subprocess
 import sys
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 
@@ -125,6 +132,66 @@ VARIANT_UPSTREAM_HF: dict[str, str] = {
     "v2_44khz_128band_512x": "nvidia/bigvgan_v2_44khz_128band_512x",
     "base_v1_24khz_100band": "nvidia/bigvgan_base_24khz_100band",
 }
+
+SOURCE_REPOSITORY = "https://github.com/NVIDIA/BigVGAN"
+
+
+class _UnsafePickle:
+    pass
+
+
+def verify_source_checkout(path: Path, revision: str) -> None:
+    """Require an immutable, clean checkout of the audited upstream source."""
+    if not (path / "bigvgan.py").is_file():
+        raise SystemExit(f"bigvgan_prepare: source checkout lacks bigvgan.py: {path}")
+    try:
+        resolved = subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "HEAD"], text=True
+        ).strip()
+        origin = subprocess.check_output(
+            ["git", "-C", str(path), "remote", "get-url", "origin"], text=True
+        ).strip().removesuffix(".git")
+        dirty = subprocess.check_output(
+            ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=all"],
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SystemExit(f"bigvgan_prepare: source is not a git checkout: {path}: {exc}") from exc
+    if resolved != revision:
+        raise SystemExit(f"bigvgan_prepare: source revision {resolved!r} != required {revision!r}")
+    if origin != SOURCE_REPOSITORY:
+        raise SystemExit(f"bigvgan_prepare: source origin {origin!r} != {SOURCE_REPOSITORY!r}")
+    if dirty:
+        raise SystemExit(f"bigvgan_prepare: source checkout is dirty: {path}")
+
+
+def safe_load(path: Path) -> object:
+    # Safe tensor-only unpickling is deliberate. There is no unrestricted
+    # pickle fallback for an untrusted or mismatched checkpoint.
+    return torch.load(path, map_location="cpu", weights_only=True)
+
+
+def self_test() -> None:
+    """Exercise the safe-load contract without network or model artifacts."""
+    with tempfile.TemporaryDirectory(prefix="bigvgan-prepare-selftest-") as directory:
+        root = Path(directory)
+        safe = root / "safe.pt"
+        torch.save({"generator": {"weight": torch.ones(1)}}, safe)
+        loaded = safe_load(safe)
+        if not isinstance(loaded, dict) or "generator" not in loaded:
+            raise SystemExit("bigvgan_prepare self-test: safe checkpoint did not load")
+
+        unsafe = root / "unsafe.pt"
+        torch.save(_UnsafePickle(), unsafe)
+        try:
+            safe_load(unsafe)
+        except Exception as exc:  # noqa: BLE001 - any safe-loader refusal is expected
+            if "Weights only load failed" not in str(exc) and "Unsupported global" not in str(exc):
+                raise SystemExit(f"bigvgan_prepare self-test: unexpected safe-load error: {exc}") from exc
+        else:
+            raise SystemExit("bigvgan_prepare self-test: unsafe pickle was accepted")
+
+    print("bigvgan_prepare_checkpoint.py self-test: OK")
 
 
 def write_safetensors(path: str, tensors: "OrderedDict[str, torch.Tensor]") -> None:
@@ -264,31 +331,96 @@ def main() -> int:
         description=__doc__ or "bigvgan_prepare_checkpoint",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    ap.add_argument("--self-test", action="store_true")
     ap.add_argument(
-        "--pt", type=Path, required=True,
+        "--pt", type=Path,
         help="upstream bigvgan_generator.pt (torch pickle from nvidia/bigvgan_*)",
     )
     ap.add_argument(
-        "--config", type=Path, required=True,
+        "--config", type=Path,
         help="upstream config.json (bundled next to bigvgan_generator.pt)",
     )
     ap.add_argument(
-        "--variant", required=True, choices=sorted(VARIANTS.keys()),
+        "--variant", choices=sorted(VARIANTS.keys()),
         help="target BigVGAN variant — cross-checked against config.json",
     )
+    ap.add_argument("--source-dir", type=Path)
+    ap.add_argument("--source-revision")
+    ap.add_argument("--checkpoint-sha256")
+    ap.add_argument("--config-sha256")
     ap.add_argument(
-        "--output", type=Path, required=True,
+        "--output", type=Path,
         help="output safetensors path (fed to `vokra-cli convert --model bigvgan_*`)",
     )
     ap.add_argument(
-        "--config-out", type=Path, required=True,
+        "--config-out", type=Path,
         help="output config.json path (verbatim copy for provenance)",
     )
     args = ap.parse_args()
 
+    if args.self_test:
+        if any(
+            value is not None
+            for value in (
+                args.pt,
+                args.config,
+                args.variant,
+                args.source_dir,
+                args.source_revision,
+                args.checkpoint_sha256,
+                args.config_sha256,
+                args.output,
+                args.config_out,
+            )
+        ):
+            ap.error("--self-test accepts no other arguments")
+        self_test()
+        return 0
+
+    required = {
+        "--pt": args.pt,
+        "--config": args.config,
+        "--variant": args.variant,
+        "--source-dir": args.source_dir,
+        "--source-revision": args.source_revision,
+        "--checkpoint-sha256": args.checkpoint_sha256,
+        "--config-sha256": args.config_sha256,
+        "--output": args.output,
+        "--config-out": args.config_out,
+    }
+    missing_args = [name for name, value in required.items() if value is None]
+    if missing_args:
+        ap.error("the following arguments are required: " + ", ".join(missing_args))
+    if not re.fullmatch(r"[0-9a-f]{40}", args.source_revision):
+        ap.error("--source-revision must be a 40-character lowercase git revision")
+    if not re.fullmatch(r"[0-9a-f]{64}", args.checkpoint_sha256):
+        ap.error("--checkpoint-sha256 must be 64 lowercase hex characters")
+    if not re.fullmatch(r"[0-9a-f]{64}", args.config_sha256):
+        ap.error("--config-sha256 must be 64 lowercase hex characters")
+    if not args.pt.is_file():
+        print(f"bigvgan_prepare: --pt not found: {args.pt}", file=sys.stderr)
+        return 2
+    actual_checkpoint_sha256 = sha256_of(args.pt)
+    if actual_checkpoint_sha256 != args.checkpoint_sha256:
+        print(
+            f"bigvgan_prepare: checkpoint SHA-256 {actual_checkpoint_sha256} != "
+            f"required {args.checkpoint_sha256}",
+            file=sys.stderr,
+        )
+        return 2
+    verify_source_checkout(args.source_dir.resolve(), args.source_revision)
+
     # -------- config sanity + variant cross-check --------
     if not args.config.is_file():
         print(f"bigvgan_prepare: --config not found: {args.config}", file=sys.stderr)
+        return 2
+    actual_config_sha256 = sha256_of(args.config)
+    if actual_config_sha256 != args.config_sha256:
+        print(
+            f"bigvgan_prepare: config SHA-256 {actual_config_sha256} != "
+            f"required {args.config_sha256}",
+            file=sys.stderr,
+        )
         return 2
     try:
         cfg = json.loads(args.config.read_text())
@@ -328,13 +460,7 @@ def main() -> int:
         return 2
 
     # -------- load .pt --------
-    # ``weights_only=False`` is required (and safe) here: the file is
-    # downloaded from a fixed NVIDIA HF release (nvidia/bigvgan_*), not user
-    # input, and the pickle is the plain torch state-dict format upstream
-    # loads with ``torch.load(filepath, map_location=device)`` (no
-    # weights_only arg — verified 2026-07-31 by reading upstream utils.py::
-    # load_checkpoint). Same posture as fcpe_prepare_checkpoint.
-    state = torch.load(args.pt, map_location="cpu", weights_only=False)
+    state = safe_load(args.pt)
 
     if not isinstance(state, dict) or "generator" not in state:
         keys_hint = (

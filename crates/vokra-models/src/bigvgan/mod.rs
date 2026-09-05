@@ -85,6 +85,11 @@ use vokra_ops::bigvgan_generator::{
 use crate::compute::{Compute, HotOp};
 use crate::hifigan::HifiGanComputeOps;
 
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+mod metal_resident;
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+use metal_resident::MetalBigVganResidentOps;
+
 /// Complete learned-op registry for every released BigVGAN variant.
 pub const BIGVGAN_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::SnakeActivation, HotOp::SnakeBeta];
 
@@ -471,22 +476,52 @@ impl BigVGan {
     /// returns the raw PCM waveform bounded to `[-1, 1]` by the op's
     /// terminal `tanh` (or `clamp` when `use_tanh_at_final` is false).
     ///
-    /// Delegates verbatim to [`BigVGanGenerator::forward`] — this
-    /// binder adds no extra pre / post processing.
+    /// CPU and non-Metal backends delegate to the established host route.
+    /// On Apple with the `metal` feature, Metal uses the dedicated resident
+    /// route and performs exactly one final device-to-host readback; there is
+    /// no implicit CPU fallback.
     ///
     /// # Errors
     ///
-    /// See [`BigVGanGenerator::forward`]. In practice, once `self` has
-    /// passed [`Self::new`], the only reachable errors are
-    /// [`VokraError::InvalidArgument`] on a `mel.len()` mismatch or a
-    /// `t_mel == 0`.
+    /// See [`BigVGanGenerator::forward`]. Metal additionally reports
+    /// [`VokraError::BackendUnavailable`] when the feature/device is absent,
+    /// when the resident graph cannot be constructed, or when its final
+    /// readback count is not exactly one. No backend silently falls back to
+    /// CPU execution.
     pub fn decode(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
-        if self.backend == BackendKind::Cpu {
-            self.generator.forward(mel, t_mel)
-        } else {
-            let compute = Compute::for_backend(self.backend, BIGVGAN_HOT_OPS)?;
-            let ops = HifiGanComputeOps { compute: &compute };
-            self.generator.forward_with_backend_ops(mel, t_mel, &ops)
+        match self.backend {
+            BackendKind::Cpu => self.generator.forward(mel, t_mel),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            BackendKind::Metal => {
+                let context = vokra_backend_metal::MetalContext::new()?;
+                let mut ops = MetalBigVganResidentOps::new(&context);
+                let readbacks_before = context.readback_count();
+                let output_len = t_mel
+                    .checked_mul(self.config().total_upsample_factor() as usize)
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument("BigVGAN output length overflow".to_owned())
+                    })?;
+                let mut output = vec![0.0; output_len];
+                self.generator
+                    .forward_with_resident_ops(mel, t_mel, &mut ops, &mut output)?;
+                let readbacks = context.readback_count().saturating_sub(readbacks_before);
+                if readbacks != 1 {
+                    return Err(VokraError::BackendUnavailable(format!(
+                        "BigVGAN Metal resident forward performed {readbacks} readbacks; expected exactly one final readback"
+                    )));
+                }
+                Ok(output)
+            }
+            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+            BackendKind::Metal => Err(VokraError::BackendUnavailable(
+                "BigVGAN Metal resident execution requires the `metal` feature on Apple targets"
+                    .to_owned(),
+            )),
+            _ => {
+                let compute = Compute::for_backend(self.backend, BIGVGAN_HOT_OPS)?;
+                let ops = HifiGanComputeOps { compute: &compute };
+                self.generator.forward_with_backend_ops(mel, t_mel, &ops)
+            }
         }
     }
 

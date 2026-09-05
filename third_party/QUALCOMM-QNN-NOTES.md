@@ -13,15 +13,15 @@ NOTICE entry landed with M2-03 substance rather than at scaffold time — this
 scaffold ships no functional QNN artifact.
 
 > Requirement source IDs: FR-BE-06, NFR-PF-12, NFR-DS-02, NFR-PT-01, NFR-LG-04,
-> FR-EX-08, `docs/milestones.md` §9 M5-02, CLAUDE.md backend-priority + zero-dep
-> sections. **Not NNAPI** (FR-BE-07): QNN is the Qualcomm Hexagon NPU delegate
+> FR-EX-08, `docs/milestones.md` §9 M5-02, `AGENTS.md` backend/zero-dependency
+> invariants. **Not NNAPI** (FR-BE-07): QNN is the Qualcomm Hexagon NPU delegate
 > reached through Qualcomm's own SDK; NNAPI — the Android abstraction Google
 > deprecated in Android 15 — is permanently unsupported and is a different thing.
 
 ## Authoritative license texts (owner confirms at ship time)
 
 Read the current text before shipping; **do not paraphrase clause numbers or
-terms from memory** (they change between SDK versions — CLAUDE.md hallucination
+terms from memory** (they change between SDK versions — repository no-invention
 red line, the same rule NVIDIA-EULA.md applies). Confirm the applicable license
 and version at implementation / release time from the SDK you actually install:
 

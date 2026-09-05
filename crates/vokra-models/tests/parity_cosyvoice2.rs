@@ -38,7 +38,7 @@ use std::path::Path;
 
 use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
 use vokra_core::gguf::{GgufArray, GgufBuilder, GgufFile, GgufMetadataValue, GgufValueType};
-use vokra_core::{CompliancePolicy, SynthesisRequest, TtsEngine, VokraError};
+use vokra_core::{CompliancePolicy, VokraError};
 use vokra_models::cosyvoice2::llm::{LlmBackbone, parity};
 use vokra_models::cosyvoice2::{CosyVoice2Config, CosyVoice2Tokenizer, CosyVoice2Tts, MimiBridge};
 
@@ -114,19 +114,13 @@ fn parity_cosyvoice2_wrong_arch_fails_top_level() {
     }
 }
 
-/// Fixture-free: the synthetic GGUF loads (arch OK, compliance registry
-/// classifies `cosyvoice2` permissive), but every forward path returns
-/// NotImplemented because the numeric layers are the scaffold-only path.
+/// Fixture-free: the synthetic GGUF has the right architecture, but the
+/// composite runtime remains inspection-only until all authenticated
+/// components are bound.
 #[test]
 fn parity_cosyvoice2_synthetic_load_succeeds_but_synthesize_is_stub() {
     let bytes = synthetic_gguf("cosyvoice2", "linear");
-    let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-        .expect("apache-2.0 registry entry admits it");
-    assert_eq!(tts.config().sample_rate, 24_000);
-    let err = tts
-        .synthesize(&SynthesisRequest::new("hello"))
-        .expect_err("scaffold must not produce audio");
-    assert!(matches!(err, VokraError::NotImplemented(_)));
+    assert_cosyvoice2_load_is_inspection_only(&bytes);
 }
 
 /// Fixture-free: the Mimi bridge accepts the canonical shape emitted by
@@ -445,51 +439,66 @@ fn synthetic_gguf_with_tokenizer(vocab: &[u8], merges: &[u8]) -> Vec<u8> {
     b.to_bytes().expect("gguf serialize")
 }
 
-/// Fixture-free: a GGUF carrying the embedded tokenizer chunks loads, exposes
-/// the tokenizer, and round-trips through the engine `encode` + tokenizer
-/// `decode` — the T06 wiring, exercised without any HuggingFace download.
+const COSYVOICE2_INSPECTION_ONLY_MESSAGE: &str = "CosyVoice2 composite runtime is INSPECTION_ONLY: the reviewed llm.pt + flow.pt + hift.pt + speech-tokenizer contract is not bound; no partial LLM handle is accepted";
+
+/// Assert the public loader's exact fail-closed boundary. Architecture and
+/// GGUF parsing are still exercised by the caller; a correctly identified
+/// composite must not become a partial runtime handle.
+fn assert_cosyvoice2_load_is_inspection_only(bytes: &[u8]) {
+    let err = CosyVoice2Tts::from_gguf_with_policy(bytes, &CompliancePolicy::strict())
+        .expect_err("an incomplete CosyVoice2 composite must not load");
+    match err {
+        VokraError::UnsupportedOp(message) => {
+            assert_eq!(message, COSYVOICE2_INSPECTION_ONLY_MESSAGE);
+        }
+        other => panic!("expected the explicit inspection-only refusal, got {other:?}"),
+    }
+}
+
+/// Fixture-free: embedded tokenizer serialization remains independently
+/// testable, while the complete engine loader refuses the unbound composite.
 #[test]
 fn parity_cosyvoice2_tokenizer_embedded_roundtrips_via_engine() {
     let (vocab, merges) = small_ascii_tokenizer_files();
     let bytes = synthetic_gguf_with_tokenizer(&vocab, &merges);
-    let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-        .expect("tokenizer-carrying GGUF must load");
-    let tok = tts.tokenizer().expect("tokenizer must be present");
+    let file = GgufFile::parse(bytes.clone()).expect("GGUF parse");
+    let tok = CosyVoice2Tokenizer::from_gguf(&file).expect("embedded tokenizer must parse");
 
-    let ids = tts.encode("hello").expect("encode");
+    let ids = tok.encode("hello").expect("encode");
     assert!(!ids.is_empty(), "encode must not be empty");
     assert_eq!(tok.decode(&ids).expect("decode"), "hello");
 
     for s in ["he", "hello there", "abc xyz"] {
-        let e = tts
+        let e = tok
             .encode(s)
             .unwrap_or_else(|err| panic!("encode {s:?}: {err}"));
         assert_eq!(tok.decode(&e).expect("decode"), s, "round-trip {s:?}");
     }
     // The (h,e) merge fires: "he" collapses to a single token id.
     assert_eq!(
-        tts.encode("he").unwrap().len(),
+        tok.encode("he").unwrap().len(),
         1,
         "`he` must merge to one token, not two single-byte tokens"
     );
+    assert_cosyvoice2_load_is_inspection_only(&bytes);
 }
 
-/// Fixture-free: a GGUF with no tokenizer chunks loads (the tokenizer is
-/// optional), but `encode` is a loud `NotImplemented` — never a silent empty
-/// id list (FR-EX-08).
+/// Fixture-free: tokenizer absence is diagnosed independently, and the
+/// tokenizer-less composite still reaches the same explicit engine boundary.
 #[test]
 fn parity_cosyvoice2_tokenizer_absent_encode_is_loud() {
     let bytes = synthetic_gguf("cosyvoice2", "linear");
-    let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-        .expect("tokenizer-less GGUF still loads");
-    assert!(
-        tts.tokenizer().is_none(),
-        "no tokenizer chunks → tokenizer() is None"
-    );
-    let err = tts
-        .encode("hello")
-        .expect_err("encode without a tokenizer must be loud");
-    assert!(matches!(err, VokraError::NotImplemented(_)), "got {err:?}");
+    let file = GgufFile::parse(bytes.clone()).expect("GGUF parse");
+    let err = CosyVoice2Tokenizer::from_gguf(&file)
+        .expect_err("tokenizer-less metadata must not fabricate a tokenizer");
+    match err {
+        VokraError::ModelLoad(message) => {
+            assert!(message.contains("vokra.cosyvoice2.tokenizer.vocab"));
+            assert!(message.contains("missing"));
+        }
+        other => panic!("expected an explicit missing-tokenizer error, got {other:?}"),
+    }
+    assert_cosyvoice2_load_is_inspection_only(&bytes);
 }
 
 /// Gated real-vocab round-trip: with [`TOKENIZER_DIR_ENV`] pointing at the

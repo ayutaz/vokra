@@ -1,0 +1,35 @@
+[project]
+name = "vokra-moss-audio-tokenizer-v2-parity"
+version = "0.1.0"
+description = "Pinned official MOSS Audio Tokenizer v2 reference; VAST only"
+requires-python = "==3.12.*"
+dependencies = [
+    "accelerate==1.10.1",
+    "huggingface-hub==1.27.0",
+    "numpy==2.3.5",
+    "safetensors==0.8.0",
+    "torch==2.7.1",
+    "transformers==5.10.4",
+]
+
+[tool.uv]
+package = false
+environments = ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cuda" }
+
+[tool.vokra.moss_audio_tokenizer_v2]
+# This is a security-remediated isolated pin, not proof that the authenticated
+# source API remains compatible. Only an authorized VAST model smoke test may
+# clear this fail-closed status.
+previous_isolated_transformers_pin = "transformers==5.5.0"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"

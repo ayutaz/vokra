@@ -114,12 +114,12 @@
 //!   [`Qwen3TtsWeights::synthesized`] fixture (SplitMix64 + Xavier)
 //!   against `config` so shape / dtype / size flow can be exercised
 //!   without the real HF checkpoint.
-//! - [`Qwen3TtsTts`] — engine handle carrying config + weights.
-//!   [`Qwen3TtsTts::synthesize`] returns [`VokraError::NotImplemented`]
-//!   until real weights are bound and the talker → code-predictor →
-//!   [`Qwen3TtsTokenizer12HzDecoder`] chain is wired end-to-end. The companion
-//!   decoder itself is native CPU/Metal; the remaining gap is the main
-//!   talker/code-predictor generation path (T29-equivalent follow-up wave).
+//! - [`Qwen3TtsTts`] — legacy deterministic-fixture handle carrying config +
+//!   synthesized weights. Its compatibility [`Qwen3TtsTts::synthesize`]
+//!   entry point intentionally remains unsupported for non-real weights;
+//!   real-weight callers use [`Qwen3TtsMain::synthesize_with_decoder`], which
+//!   executes the mapped talker, code predictor, and authenticated companion
+//!   decoder on one explicit CPU or Metal backend.
 //!
 //! # Code-layout seam and waveform companion
 //!
@@ -1029,12 +1029,13 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// Carries the resolved config, weight store, and an optional
 /// [`Qwen3TtsCodecConfig`] override for the shared
 /// [`vokra_ops::qwen3_tts_codec`] seam (default = the canonical
-/// released variant). [`Self::synthesize`] is the primary text → PCM
-/// entry point; until real weights are bound and the talker → code-
-/// predictor → [`Qwen3TtsTokenizer12HzDecoder`] chain is
-/// wired end-to-end (T29-equivalent follow-up wave), it returns
-/// [`VokraError::NotImplemented`] with a message naming the blocker
-/// (FR-EX-08 — never a silent zero-fill or empty audio buffer).
+/// released variant). [`Self::synthesize`] is a legacy fixture-only
+/// compatibility entry point and intentionally returns
+/// [`VokraError::NotImplemented`] for synthesized weights. Real checkpoints
+/// use [`Qwen3TtsMain::synthesize_with_decoder`], which executes the complete
+/// mapped talker → code-predictor → authenticated
+/// [`Qwen3TtsTokenizer12HzDecoder`] chain on an explicit backend (FR-EX-08 —
+/// never a silent zero-fill or empty audio buffer).
 #[derive(Debug, Clone)]
 pub struct Qwen3TtsTts {
     cfg: Qwen3TtsConfig,
@@ -1104,22 +1105,16 @@ impl Qwen3TtsTts {
         self.weights.is_synthesized
     }
 
-    /// Synthesizes PCM for `text` at [`Self::config`]'s sample rate.
-    ///
-    /// This is the primary text → PCM entry point. **Real weights
-    /// required**: synthesized-weight builds cannot produce meaningful
-    /// audio, so this returns [`VokraError::NotImplemented`] naming
-    /// the blocker. Callers verify the shape flow through
-    /// [`Qwen3TtsTts::new`] + [`Qwen3TtsWeights::synthesized`] today;
-    /// a follow-up wave binds real Qwen3-TTS-0.6B weights and wires
-    /// the forward (talker → code-predictor → authenticated 12 Hz
-    /// tokenizer decoder → PCM).
+    /// Compatibility synthesis entry point for the deterministic fixture
+    /// handle. **Real-weight synthesis is provided by
+    /// [`Qwen3TtsMain::synthesize_with_decoder`];** this legacy API does not
+    /// fabricate PCM from synthesized weights and therefore refuses them.
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] if `text` is empty.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not
-    ///   yet bound — FR-EX-08).
+    /// - [`VokraError::NotImplemented`] for the legacy synthesized-weight
+    ///   path (FR-EX-08).
     pub fn synthesize(&self, text: &str) -> Result<Vec<f32>> {
         if text.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -1131,24 +1126,19 @@ impl Qwen3TtsTts {
                 "qwen3_tts synthesize: this engine holds synthesized weights \
                  (deterministic fixture from Qwen3TtsWeights::synthesized) — \
                  synthesized-weight audio would be a hallucinated waveform, not real \
-                 speech. Bind real Qwen3-TTS-0.6B weights (apache-2.0, \
-                 huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) before invoking synthesize. \
-                 The shape flow (config validation, weight-store construction, text-empty \
-                 check) is exercised through Qwen3TtsTts::new; real-checkpoint binding \
-                 lands in a follow-up wave (T29-equivalent).",
+                 speech. Bind real Qwen3-TTS weights before invoking this legacy \
+                 compatibility API. Use Qwen3TtsMain::synthesize_with_decoder for \
+                 real-weight speech. The shape flow (config validation, weight-store \
+                 construction, text-empty check) is exercised through \
+                 Qwen3TtsTts::new.",
             ));
         }
         Err(VokraError::NotImplemented(
-            "qwen3_tts synthesize: real weights are bound but the Qwen3 talker → \
-             code-predictor → Qwen3TtsTokenizer12HzDecoder → PCM forward \
-             path has not landed yet. Follow-up wave: (1) run the talker (Qwen3 GQA 16 Q \
-             ÷ 8 KV / RoPE θ=1000000 / RMSNorm ε=1e-6 / SwiGLU) with the Qwen2Tokenizer \
-             text prompt + speaker embedding + text-encoder side-car; (2) sample per-step \
-             16 codebook rows from the 5-layer code predictor; (3) reject control ids, then \
-             pass the exact 16-row matrix to the separately bound 271-tensor tokenizer \
-             decoder; (4) execute its learned Euclidean RVQ, sliding Transformer, ConvNeXt \
-             and causal transposed-convolution stack to 24 kHz PCM. The smaller \
-             vokra_ops::qwen3_tts_codec feature-fold helper is not a waveform fallback.",
+            "qwen3_tts synthesize: this legacy weight-store handle cannot execute \
+             real-weight speech. Use Qwen3TtsMain::synthesize_with_decoder with a \
+             strictly mapped main checkpoint and authenticated 12-Hz decoder. The \
+             smaller vokra_ops::qwen3_tts_codec feature-fold helper is not a waveform \
+             fallback.",
         ))
     }
 }

@@ -7,7 +7,8 @@ Vokra への最初のコントリビューションに向いた、独立して�
 入れ条件、おおよその規模を付けています。着手前に「自分の時間を使う価値がある
 か」を判断できるようにするためです。
 
-**最終確認日: 2026-08-18。**
+**最終確認日: 2026-08-30。** 現行ソースを確認した結果、下記 6 件はいずれも
+未解決である。完了した項目は意図的に掲載しない。
 
 ## この一覧の使い方
 
@@ -61,11 +62,13 @@ Vokra への最初のコントリビューションに向いた、独立して�
 
 **やること**: dangling な参照を、公開されている記述へのポインタに置き換え
 ます。ツリー内で該当する参照はこの 1 箇所だけです
-（`grep -rn "scratchpad/" crates/ --include="*.rs"` はちょうど 1 行を返します）。
+（`rg -n "scratchpad/graph-engine-plan\\.md" crates/vokra-models/src/compute.rs`
+は未解決の参照を返します）。
 
 **受け入れ条件**
 
-- `grep -rn "scratchpad/" crates/ --include="*.rs"` が何も返さない
+- `rg -n "scratchpad/graph-engine-plan\\.md" crates/vokra-models/src/compute.rs` が
+  何も返さない
 - `cargo doc -p vokra-models` がVAST/CIで引き続きビルドできる
 - localの`cargo fmt --all -- --check`とVAST/CIのall-target clippyが通る
 
@@ -89,7 +92,7 @@ Vokra への最初のコントリビューションに向いた、独立して�
 rg --files-without-match -- '--help' scripts/check-*.sh
 ```
 
-2026-08-18の確認では **18本**が出力されます。
+2026-08-30の確認では **19本**が出力されます。
 
 **やること**: `scripts/check-platform-support.sh` と
 `scripts/check-doc-references.sh` が既に使っている形（ヘッダのコメント
@@ -97,7 +100,7 @@ rg --files-without-match -- '--help' scripts/check-*.sh
 **各 check の挙動と終了コードは一切変えないでください** — 目的は発見しやすさ
 だけです。
 
-2〜3本だけのPRでも十分です。18本すべてを対象にする必要はありません。
+2〜3本だけのPRでも十分です。19本すべてを対象にする必要はありません。
 
 **受け入れ条件**
 

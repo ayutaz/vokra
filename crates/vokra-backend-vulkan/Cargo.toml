@@ -1,6 +1,6 @@
 [package]
 name = "vokra-backend-vulkan"
-description = "Vokra Vulkan backend (Linux / Android / Windows): raw Vulkan API FFI loaded at RUNTIME via dlopen / LoadLibrary — NO binding crate (no ash / vulkano / erupt / gpu-alloc) — with pre-compiled SPIR-V compute shaders (subgroup + cooperative-matrix, with subgroup-only fallback) and a device probe. Foundation slice of M3-02; the runtime bundles no Vulkan library and the workspace stays dependency-free (NFR-DS-02)."
+description = "Vokra Vulkan backend for Linux/Android/Windows: runtime-loaded raw Vulkan FFI, pre-compiled SPIR-V compute shaders, and device probing without a binding crate or bundled Vulkan library"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

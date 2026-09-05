@@ -101,7 +101,7 @@ turbo / large-v3 を cover し、それぞれ `-tokenizer` の相棒を持つ。
 
 ## Keeping this page current
 
-**最終確認日: 2026-07-21 — `integrations/vokra-server/src/config.rs`
+**最終確認日: 2026-08-30 — `integrations/vokra-server/src/config.rs`
 <!-- anchor: integrations/vokra-server/src/config.rs --> のフラグ surface に
 対して確認。**
 

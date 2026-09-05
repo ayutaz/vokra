@@ -203,6 +203,7 @@ use crate::safetensors::SafetensorsFile;
 /// is identical, only the model dims + optional variant-specific heads
 /// differ (the same arch-shared / name-distinct posture snac / vocos /
 /// bigvgan / musicgen use).
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until the bundle is authenticated.
 pub const ARCH: &str = "audioldm2";
 
 /// `vokra.model.name` value written for the canonical AudioLDM 2 base
@@ -215,6 +216,7 @@ pub const ARCH: &str = "audioldm2";
 /// as a distinct `NAME` under the shared [`ARCH`] tag — the same
 /// shared-arch / distinct-name split every future family sibling will
 /// use.
+#[allow(dead_code)] // Retained as inspection-only model metadata until the bundle is authenticated.
 pub const NAME: &str = "audioldm2";
 
 /// `vokra.model.category` value — AudioLDM 2 is a text-to-audio
@@ -223,12 +225,14 @@ pub const NAME: &str = "audioldm2";
 /// (`[[project-scope-expansion-2026-07-30]]`). A separate
 /// `audio-generation` tag would be premature before a second
 /// non-music-tree generator lands.
+#[allow(dead_code)] // Retained as inspection-only model metadata until the bundle is authenticated.
 pub const CATEGORY: &str = "music";
 
 /// Upstream HF repository slug (`org/name`), recorded under
 /// `vokra.provenance.upstream_hf` so a downstream can trace the artifact
 /// back to its serving location without parsing the free-text
 /// `vokra.provenance.source`.
+#[allow(dead_code)] // Retained as inspection-only provenance until the bundle is authenticated.
 pub const UPSTREAM_HF: &str = "cvssp/audioldm2";
 
 /// `vokra.model.name` value written for the AudioLDM 2 **Large**
@@ -244,6 +248,7 @@ pub const UPSTREAM_HF: &str = "cvssp/audioldm2";
 /// `source`, `upstream_hf`) flip. Mirror of the
 /// musicgen_medium / musicgen_melody in-place sibling landing pattern
 /// (2026-08-02 precedent).
+#[allow(dead_code)] // Retained as inspection-only variant metadata until the bundle is authenticated.
 pub const LARGE_NAME: &str = "audioldm2-large";
 
 /// Upstream HF repository slug for the AudioLDM 2 Large sibling
@@ -251,6 +256,7 @@ pub const LARGE_NAME: &str = "audioldm2-large";
 /// `vokra.provenance.upstream_hf`. See [`LARGE_NAME`] for the base /
 /// large topology relationship (identical multi-encoder bundle,
 /// only dims differ).
+#[allow(dead_code)] // Retained as inspection-only variant provenance until the bundle is authenticated.
 pub const LARGE_UPSTREAM_HF: &str = "cvssp/audioldm2-large";
 
 /// The default upstream weight license — `cc-by-nc-sa-4.0` per the
@@ -262,12 +268,14 @@ pub const LARGE_UPSTREAM_HF: &str = "cvssp/audioldm2-large";
 /// `convert_audioldm2_file(_, _, license=Some(_))` boundary when the
 /// source distribution declares a different SPDX id (a permissive
 /// re-training on public-domain audio, for example).
+#[allow(dead_code)] // Retained as inspection-only license metadata until the bundle is authenticated.
 pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-sa-4.0";
 
 /// Human-readable upstream source note stored in
 /// `vokra.provenance.source` (`KEY_PROVENANCE_SOURCE`). Kept short —
 /// the license machine class is carried separately in the
 /// `vokra.provenance.weight_license` chunk.
+#[allow(dead_code)] // Retained as inspection-only provenance until the bundle is authenticated.
 const UPSTREAM_SOURCE: &str =
     "cvssp/audioldm2 (Liu et al. 2024 arXiv:2308.05734 text-to-audio LDM, cc-by-nc-sa-4.0)";
 
@@ -275,12 +283,15 @@ const UPSTREAM_SOURCE: &str =
 /// sibling (`cvssp/audioldm2-large`, Liu et al. 2024 arXiv:2308.05734
 /// text-to-audio LDM, wider/deeper multi-encoder bundle,
 /// cc-by-nc-sa-4.0). Stored in `vokra.provenance.source`.
+#[allow(dead_code)] // Retained as inspection-only provenance until the bundle is authenticated.
 const LARGE_UPSTREAM_SOURCE: &str = "cvssp/audioldm2-large (Liu et al. 2024 arXiv:2308.05734 text-to-audio LDM, large variant, cc-by-nc-sa-4.0)";
 
 // Raw string keys not covered by `crate::gguf::chunks` — kept as
 // converter-side constants (the cross-crate constant duplication rule
 // the sibling BF16 pass-through converters use applies).
+#[allow(dead_code)] // Retained as metadata keys for the future authenticated converter.
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+#[allow(dead_code)] // Retained as metadata keys for the future authenticated converter.
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
 /// Outcome of an AudioLDM 2 conversion.
@@ -351,7 +362,10 @@ pub fn convert_audioldm2_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<AudioLdm2Report, ConvertError> {
-    convert_audioldm2_family_file(input, output, license, NAME, UPSTREAM_HF, UPSTREAM_SOURCE)
+    let _ = (input, output, license);
+    Err(ConvertError::Usage(
+        "audioldm2 conversion is BLOCKED: a complete authenticated cvssp/audioldm2 bundle manifest (all fixed components, projection_model, sidecars, and source/model revisions) is required before binding; the legacy single-file pass-through is disabled".into(),
+    ))
 }
 
 /// Converts a `cvssp/audioldm2-large` safetensors checkpoint at
@@ -401,14 +415,10 @@ pub fn convert_audioldm2_large_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<AudioLdm2Report, ConvertError> {
-    convert_audioldm2_family_file(
-        input,
-        output,
-        license,
-        LARGE_NAME,
-        LARGE_UPSTREAM_HF,
-        LARGE_UPSTREAM_SOURCE,
-    )
+    let _ = (input, output, license);
+    Err(ConvertError::Usage(
+        "audioldm2-large conversion is BLOCKED: a complete authenticated cvssp/audioldm2-large bundle manifest (all fixed components, projection_model, sidecars, and source/model revisions) is required before binding; the legacy single-file pass-through is disabled".into(),
+    ))
 }
 
 /// Shared implementation for the AudioLDM 2 family (base + large,
@@ -422,6 +432,7 @@ pub fn convert_audioldm2_large_file(
 /// variant-specific wrappers ([`convert_audioldm2_file`] /
 /// [`convert_audioldm2_large_file`]) so the correct built-in defaults
 /// stay in one place.
+#[allow(dead_code)] // Staged behind the inspection-only public conversion gates.
 pub(crate) fn convert_audioldm2_family_file(
     input: &Path,
     output: &Path,
@@ -511,6 +522,19 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use vokra_core::gguf::{GgmlType, GgufFile};
 
+    #[test]
+    fn conversion_refuses_legacy_single_file_without_authenticated_bundle() {
+        let input = tmp_path("blocked-in");
+        let output = tmp_path("blocked-out");
+        std::fs::write(&input, b"not a complete AudioLDM2 bundle").expect("write input");
+        let error = convert_audioldm2_file(&input, &output, None).unwrap_err();
+        assert!(
+            matches!(error, ConvertError::Usage(message) if message.contains("BLOCKED") && message.contains("projection_model"))
+        );
+        assert!(!output.exists());
+        let _ = std::fs::remove_file(input);
+    }
+
     /// A unique temp path — per-process id **plus** a monotonic counter
     /// so two tests in the same process never race on the same file.
     fn tmp_path(tag: &str) -> PathBuf {
@@ -590,6 +614,7 @@ mod tests {
     /// (`GgmlType::BF16`) with byte-identical payload — mirror of the
     /// musicgen / xcodec2 / wavtokenizer / neucodec pin.
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn bf16_tensor_passes_through_verbatim() {
         // Non-zero BF16 bit patterns so a subsequent byte-identity
         // assert catches any silent widen / downcast (zeroed payloads
@@ -645,6 +670,7 @@ mod tests {
     /// cc-by-nc-sa-4.0 flip vs. sibling MusicGen NonCommercial
     /// converters).
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn f32_and_f16_tensors_pass_through_and_default_license_is_noncommercial_sharealike() {
         let f32_vals: [f32; 2] = [7.0, -8.25];
         let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -746,6 +772,7 @@ mod tests {
     /// pattern as `convert_file_licensed` — the model_id / arch /
     /// category / upstream stamps survive but the license triple flips.
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn caller_license_override_swaps_the_stamp() {
         // Non-zero payloads that are NOT approximations of π/e —
         // clippy::approx_constant would flag 3.14/2.71 as a naked
@@ -814,6 +841,7 @@ mod tests {
     /// (mirror of xcodec2 / wavtokenizer / musicgen empty-string guard
     /// test).
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn empty_string_license_override_keeps_the_default_stamp() {
         let f32_vals: [f32; 2] = [0.5, -0.5];
         let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -854,6 +882,7 @@ mod tests {
     /// provenance stamp (fail-closed license posture applies
     /// unconditionally, mirror of musicgen precedent).
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn empty_safetensors_still_stamps_provenance() {
         // An empty safetensors requires the header `{}` (2 bytes)
         // prefixed by its little-endian u64 length (8 bytes) = 10
@@ -935,6 +964,7 @@ mod tests {
     /// four-chunk delta so a silent regression on the shared helper
     /// fires here first.
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn large_sibling_flips_name_and_upstream_but_keeps_arch_category_and_license() {
         // Non-zero BF16 bit patterns so the byte-identity assert also
         // catches any silent widen / downcast on the sibling path.

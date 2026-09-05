@@ -1,0 +1,143 @@
+[project]
+name = "vokra-chattts-reference"
+version = "0.1.0"
+description = "VAST-only official ChatTTS composite reference evidence"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # These are the minimal packages imported by the fixed source's custom
+    # local-load path plus the authenticated inspection/reference harness.
+    # The source setup.py constraints are intentionally looser; exact adapted
+    # Python-3.12 selections are recorded in the lock and metadata below.
+    # transformers 5.10.4 requires huggingface-hub>=1.5.0; the fixed source
+    # uses snapshot_download-compatible APIs, so the minimum compatible hub
+    # release is pinned here as part of the authenticated reference closure.
+    "huggingface-hub==1.5.0",
+    "numba==0.63.1",
+    "numpy==2.3.5",
+    "pybase16384==0.3.0",
+    "pyyaml==6.0.3",
+    "safetensors==0.7.0",
+    "torch==2.7.1",
+    "torchaudio==2.7.1",
+    "tqdm==4.67.1",
+    # The source declares transformers>=4.41.1. GHSA-xrqw-3rrv-vx5w is fixed
+    # at 5.10.0; 5.10.4 is the current non-yanked isolated runtime pin.
+    "transformers==5.10.4",
+    "vector-quantize-pytorch==1.27.15",
+    "vocos==0.1.0",
+    # GHSA-gc5v-m9x4-r6x2 affects requests <2.33.0; keep the reference
+    # environment on the first upstream patched release.
+    "requests==2.33.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.vokra.chattts_reference]
+source_repository = "https://github.com/2noise/ChatTTS.git"
+source_revision = "77b89ee281cd479f5b1a787ada330dc975ca1f2a"
+source_license = "AGPLv3+"
+weight_license = "CC-BY-NC-4.0"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "5.10.4"
+selection_status = "AUTHENTICATED_CPU_INDEX_METADATA_LOCKED"
+selection_note = "Exact Python 3.12 adapted selections for the fixed source's local custom-load path and authenticated inspector; not a copy of upstream loose install_requires."
+upstream_install_requires = [
+    "numba",
+    "numpy<3.0.0",
+    "pybase16384",
+    "torch>=2.1.0",
+    "torchaudio",
+    "tqdm",
+    "transformers>=4.41.1",
+    "vector_quantize_pytorch",
+    "vocos",
+]
+excluded_upstream_optional = [
+    "IPython",
+    "gradio",
+    "pynini",
+    "WeTextProcessing",
+    "nemo_text_processing",
+    "av",
+    "pydub",
+]
+torch_index = "https://download.pytorch.org/whl/cpu"
+forbidden_packages = ["soxr", "rubberband", "triton", "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"]
+lock_sha256 = "6099870e3685fec99e8ae68745d37ce4e71138d353cf056540d092b3d55ac4c5"
+package_inventory_sha256 = "74c0c3ef9afd095594e24afc48e0d2148717308aa317ea9762eb9b10d2f0ec7f"
+lock_package_rows_sha256 = "19395b8e7796dc26af01df77e3b786299391c38f3f861d2e9b59e29175b1cb4c"
+
+[tool.vokra.chattts_reference.license_audit]
+status = "BLOCKED_UNRESOLVED"
+primary_metadata = "PyPI JSON release metadata, upstream package LICENSE files, and official PyTorch CPU index metadata; wheel/native notices are reviewed separately."
+source_route = "AGPLv3+ source is independent VAST-only reference code and must never be copied into Vokra runtime/product artifacts."
+weight_route = "CC-BY-NC-4.0 weights are inspection/reference-only and are not eligible for model-zoo publication."
+blocker = "Owner approval is required before dedicated uv sync or authenticated model/source acquisition. The lock contains PSF-2.0 typing-extensions, MPL-2.0 certifi/tqdm files, Unlicense filelock, and bundled numerical-library notices; no project exception/sign-off exists."
+record_sha256 = "3e5b662aa2134be84ee6645a7c483345d46550b690c582f414896c990a7f1dff"
+package_records = [
+    { name = "annotated-doc", version = "0.0.5", license = "MIT", primary_source = "https://pypi.org/pypi/annotated-doc/0.0.5/json", route = "reference-only" },
+    { name = "anyio", version = "4.14.2", license = "MIT", primary_source = "https://pypi.org/pypi/anyio/4.14.2/json", route = "reference-only" },
+    { name = "certifi", version = "2026.7.22", license = "MPL-2.0", primary_source = "https://pypi.org/pypi/certifi/2026.7.22/json", route = "reference-only" },
+    { name = "cffi", version = "2.1.1", license = "MIT", primary_source = "https://pypi.org/pypi/cffi/2.1.1/json", route = "reference-only" },
+    { name = "charset-normalizer", version = "3.5.1", license = "MIT", primary_source = "https://pypi.org/pypi/charset-normalizer/3.5.1/json", route = "reference-only" },
+    { name = "colorama", version = "0.4.6", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/colorama/0.4.6/json", route = "reference-only" },
+    { name = "einops", version = "0.8.2", license = "MIT", primary_source = "https://pypi.org/pypi/einops/0.8.2/json", route = "reference-only" },
+    { name = "einx", version = "0.4.3", license = "MIT", primary_source = "https://pypi.org/pypi/einx/0.4.3/json", route = "reference-only" },
+    { name = "encodec", version = "0.1.1", license = "MIT", primary_source = "https://pypi.org/pypi/encodec/0.1.1/json", route = "reference-only" },
+    { name = "filelock", version = "3.32.4", license = "Unlicense", primary_source = "https://pypi.org/pypi/filelock/3.32.4/json", route = "reference-only" },
+    { name = "frozendict", version = "2.4.7", license = "MIT", primary_source = "https://pypi.org/pypi/frozendict/2.4.7/json", route = "reference-only" },
+    { name = "fsspec", version = "2026.7.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/fsspec/2026.7.0/json", route = "reference-only" },
+    { name = "h11", version = "0.16.0", license = "MIT", primary_source = "https://pypi.org/pypi/h11/0.16.0/json", route = "reference-only" },
+    { name = "hf-xet", version = "1.6.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/hf-xet/1.6.0/json", route = "reference-only" },
+    { name = "httpcore", version = "1.0.9", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/httpcore/1.0.9/json", route = "reference-only" },
+    { name = "httpx", version = "0.28.1", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/httpx/0.28.1/json", route = "reference-only" },
+    { name = "huggingface-hub", version = "1.5.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/huggingface-hub/1.5.0/json", route = "reference-only" },
+    { name = "idna", version = "3.19", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/idna/3.19/json", route = "reference-only" },
+    { name = "jinja2", version = "3.1.6", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/jinja2/3.1.6/json", route = "reference-only" },
+    { name = "llvmlite", version = "0.46.0", license = "BSD-2-Clause", primary_source = "https://pypi.org/pypi/llvmlite/0.46.0/json", route = "reference-only" },
+    { name = "markdown-it-py", version = "4.2.0", license = "MIT", primary_source = "https://pypi.org/pypi/markdown-it-py/4.2.0/json", route = "reference-only" },
+    { name = "markupsafe", version = "3.0.3", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/markupsafe/3.0.3/json", route = "reference-only" },
+    { name = "mdurl", version = "0.1.2", license = "MIT", primary_source = "https://pypi.org/pypi/mdurl/0.1.2/json", route = "reference-only" },
+    { name = "mpmath", version = "1.3.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/mpmath/1.3.0/json", route = "reference-only" },
+    { name = "networkx", version = "3.6.1", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/networkx/3.6.1/json", route = "reference-only" },
+    { name = "numba", version = "0.63.1", license = "BSD-2-Clause", primary_source = "https://pypi.org/pypi/numba/0.63.1/json", route = "reference-only" },
+    { name = "numpy", version = "2.3.5", license = "BSD-3-Clause-plus-bundled-notices", primary_source = "https://pypi.org/pypi/numpy/2.3.5/json", route = "reference-only" },
+    { name = "packaging", version = "26.3", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/packaging/26.3/json", route = "reference-only" },
+    { name = "pybase16384", version = "0.3.0", license = "MIT", primary_source = "https://pypi.org/pypi/pybase16384/0.3.0/json", route = "reference-only" },
+    { name = "pycparser", version = "3.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/pycparser/3.0/json", route = "reference-only" },
+    { name = "pygments", version = "2.21.0", license = "BSD-2-Clause", primary_source = "https://pypi.org/pypi/pygments/2.21.0/json", route = "reference-only" },
+    { name = "pyyaml", version = "6.0.3", license = "MIT", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json", route = "reference-only" },
+    { name = "regex", version = "2026.7.19", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/regex/2026.7.19/json", route = "reference-only" },
+    { name = "requests", version = "2.33.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/requests/2.33.0/json", route = "reference-only" },
+    { name = "rich", version = "15.0.0", license = "MIT", primary_source = "https://pypi.org/pypi/rich/15.0.0/json", route = "reference-only" },
+    { name = "safetensors", version = "0.7.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/safetensors/0.7.0/json", route = "reference-only" },
+    { name = "scipy", version = "1.18.1", license = "BSD-3-Clause-plus-bundled-notices", primary_source = "https://pypi.org/pypi/scipy/1.18.1/json", route = "reference-only" },
+    { name = "setuptools", version = "84.0.0", license = "MIT", primary_source = "https://pypi.org/pypi/setuptools/84.0.0/json", route = "reference-only" },
+    { name = "shellingham", version = "1.5.4", license = "ISC", primary_source = "https://pypi.org/pypi/shellingham/1.5.4/json", route = "reference-only" },
+    { name = "sympy", version = "1.14.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/sympy/1.14.0/json", route = "reference-only" },
+    { name = "tokenizers", version = "0.22.2", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/tokenizers/0.22.2/json", route = "reference-only" },
+    { name = "torch", version = "2.7.1", license = "BSD-3-Clause", primary_source = "https://download.pytorch.org/whl/cpu/torch-2.7.1-cp312-none-macosx_11_0_arm64.whl", route = "reference-only" },
+    { name = "torch", version = "2.7.1+cpu", license = "BSD-3-Clause", primary_source = "https://download.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", route = "reference-only" },
+    { name = "torchaudio", version = "2.7.1", license = "BSD-2-Clause", primary_source = "https://download.pytorch.org/whl/cpu/torchaudio-2.7.1-cp312-cp312-macosx_11_0_arm64.whl", route = "reference-only" },
+    { name = "torchaudio", version = "2.7.1+cpu", license = "BSD-2-Clause", primary_source = "https://download.pytorch.org/whl/cpu/torchaudio-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", route = "reference-only" },
+    { name = "tqdm", version = "4.67.1", license = "MIT-plus-MPL-2.0-files", primary_source = "https://pypi.org/pypi/tqdm/4.67.1/json", route = "reference-only" },
+    { name = "transformers", version = "5.10.4", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/transformers/5.10.4/json", route = "reference-only" },
+    { name = "typer", version = "0.27.2", license = "MIT", primary_source = "https://pypi.org/pypi/typer/0.27.2/json", route = "reference-only" },
+    { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json", route = "reference-only" },
+    { name = "urllib3", version = "2.7.0", license = "MIT", primary_source = "https://pypi.org/pypi/urllib3/2.7.0/json", route = "reference-only" },
+    { name = "vector-quantize-pytorch", version = "1.27.15", license = "MIT", primary_source = "https://pypi.org/pypi/vector-quantize-pytorch/1.27.15/json", route = "reference-only" },
+    { name = "vocos", version = "0.1.0", license = "MIT", primary_source = "https://pypi.org/pypi/vocos/0.1.0/json", route = "reference-only" },
+]
+source_license_evidence = "https://raw.githubusercontent.com/2noise/ChatTTS/77b89ee281cd479f5b1a787ada330dc975ca1f2a/LICENSE"
+weight_license_evidence = "https://huggingface.co/api/models/2Noise/ChatTTS?revision=1a3c04a8b0651689bd9242fbb55b1f4b5a9aef84"

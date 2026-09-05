@@ -1,5 +1,19 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-31 supersession boundary:** This is a dated coverage ledger. Its
+> model counts, size labels, and pending statements are historical campaign
+> evidence. The authoritative current snapshot is
+> `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md` at code
+> `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and evidence/package checkpoint
+> `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; those are historical workspace
+> `0.2.0` checkpoints. The active branch is workspace `0.3.0`; immediately
+> before this documentation refresh its remote head was
+> `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79. The current live
+> audit is CPU `full=131`, `partial=42`, `no-runtime-binder=20`,
+> `not-artifact=1`; Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`,
+> with zero source-level CPU-only rows. Do not infer current completion, Apple
+> parity, or publication status from this older ledger.
+
 > **2026-08-27 Qwen3-TTS mapped-generation wave:** all five official Base,
 > CustomVoice and VoiceDesign main checkpoints now have strict fixed-revision
 > conversion contracts with authenticated Qwen2 BPE/prompt assets and exact

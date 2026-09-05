@@ -36,6 +36,17 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(routed, {"whisper", "moonshine"})
         self.assertEqual(bound, {"snac"})
 
+    def test_engine_parser_resolves_bound_arch_constants(self):
+        source = '''
+const ARCH_OWSM_V4_MEDIUM_1B: &str = "owsm-v4-medium-1b";
+const BOUND_ARCHES: &[BoundArch] = &[
+    BoundArch { arch: ARCH_OWSM_V4_MEDIUM_1B, reason: "partial" },
+];
+'''
+        routed, bound = audit.parse_engine_arches(source)
+        self.assertEqual(routed, {"owsm-v4-medium-1b"})
+        self.assertEqual(bound, {"owsm-v4-medium-1b"})
+
     def test_public_artifact_blockers_preserve_live_file_failures(self):
         cases = (
             (
@@ -103,6 +114,18 @@ const BOUND_ARCHES: &[BoundArch] = &[
                 self.assertEqual(coverage.cpu_code, cpu_code)
                 self.assertEqual(coverage.metal_code, "blocked-by-cpu")
                 self.assertIn(reason_fragment, coverage.reason)
+
+    def test_owsm_manifest_binder_stays_cpu_partial_until_forward_exists(self):
+        record = audit.RepoRecord(
+            "vokra/owsm-v4-medium-1b",
+            "abc",
+            ("owsm-v4-medium-1b.gguf",),
+            "owsm-v4-medium-1b",
+        )
+        coverage = audit.classify(record, {"owsm-v4-medium-1b"}, set())
+        self.assertEqual(coverage.cpu_code, "partial")
+        self.assertEqual(coverage.metal_code, "blocked-by-cpu")
+        self.assertIn("released-artifact CPU forward is incomplete", coverage.reason)
 
     def test_classification_never_turns_partial_into_metal(self):
         routed = {
@@ -511,7 +534,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(snac, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(routed_partial, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(csm, routed, bound).cpu_code, "partial")
-        self.assertEqual(audit.classify(sbv2, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(sbv2, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(sbv2, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(nsnet2, routed, bound).cpu_code, "partial")
         self.assertEqual(
             audit.classify(nsnet2, routed, bound).metal_code, "blocked-by-cpu"
@@ -594,6 +618,51 @@ const BOUND_ARCHES: &[BoundArch] = &[
             audit.cpu_only_repositories([qwen, missing_metal], routed, set()),
             ["vokra/new-cpu-model"],
         )
+
+    def test_new_native_arches_are_explicitly_registered_for_metal_audit(self):
+        self.assertIn("sbv2", audit.METAL_CODE_ARCHES)
+        self.assertNotIn("sbv2", audit.ROUTED_PARTIAL_ARCHES)
+        self.assertIn("voice_gender_classifier", audit.METAL_CODE_ARCHES)
+        self.assertIn("omniasr-ctc", audit.METAL_CODE_ARCHES)
+        self.assertNotIn("omniasr-ctc", audit.ROUTED_PARTIAL_ARCHES)
+        self.assertIn("gigaam_multilingual", audit.METAL_CODE_ARCHES)
+        self.assertIn("sber_gigaam_v3", audit.METAL_CODE_ARCHES)
+        self.assertNotIn("gigaam_multilingual", audit.ROUTED_PARTIAL_ARCHES)
+        self.assertNotIn("sber_gigaam_v3", audit.ROUTED_PARTIAL_ARCHES)
+
+    def test_gigaam_repositories_are_full_when_their_arches_are_routed(self):
+        for repo, architecture in (
+            ("vokra/sber-gigaam-multilingual", "gigaam_multilingual"),
+            ("vokra/sber-gigaam-v3", "sber_gigaam_v3"),
+        ):
+            with self.subTest(repo=repo):
+                coverage = audit.classify(
+                    audit.RepoRecord(repo, "abc", ("model.gguf",), architecture),
+                    {architecture},
+                    set(),
+                )
+                self.assertEqual(coverage.cpu_code, "full")
+                self.assertEqual(coverage.metal_code, "full")
+
+    def test_omniasr_ctc_is_classified_full_when_artifact_is_routed(self):
+        record = audit.RepoRecord(
+            "vokra/omniasr-ctc-1b",
+            "abc",
+            ("omniasr-ctc-1b.gguf",),
+            "omniasr-ctc",
+        )
+        coverage = audit.classify(record, {"omniasr-ctc"}, set())
+        self.assertEqual(coverage.cpu_code, "full")
+        self.assertEqual(coverage.metal_code, "full")
+
+    def test_parsed_metal_registry_has_no_invalid_arches(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "crates/vokra-cli/src/engine.rs").read_text(encoding="utf-8")
+        routed, bound = audit.parse_engine_arches(source)
+        invalid_metal = audit.METAL_CODE_ARCHES - (
+            routed - audit.ROUTED_PARTIAL_ARCHES
+        )
+        self.assertEqual(invalid_metal, set())
 
 
 if __name__ == "__main__":

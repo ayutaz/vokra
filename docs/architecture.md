@@ -46,7 +46,7 @@ Twenty crates live under `crates/`. Every one of them is a first-party
 | `vokra-cli` <!-- anchor: crates/vokra-cli/src/main.rs --> | The umbrella command-line tool (`FR-TL-02`): `run`, `convert`, `bench`, `f0`, and the release-only `npu-bakeoff` parity/performance gate. **A binary crate** — it is the one crate with no `src/lib.rs`. Argument parsing is hand-written. `f0` is its own subcommand rather than a `run --task` because YIN / PyIN carry no weights, so there is no `--model` a caller could pass. |
 | `vokra-eval` <!-- anchor: crates/vokra-eval/src/lib.rs --> | Evaluation metrics (`FR-OP-93`, `FR-TL-03`) — mel loss, WER, CER, UTMOS, and the separation / intelligibility metrics SI-SNR, SI-SDR, SDR and STOI — as a reusable library plus a CLI. PESQ is deliberately absent: ITU-T P.862's redistribution terms are incompatible with Apache-2.0, and the reason is recorded next to the metrics that are present. |
 | `vokra-vad-micro` <!-- anchor: crates/vokra-vad-micro/src/lib.rs --> | The `#![no_std] + alloc` subset of Silero VAD v5 for IoT Tier 3 (Cortex-M55 / thumbv8m, `NFR-PT-03`, M5-03). Shares its forward with `vokra-models::silero_vad` **bit-identically by construction** (same source; the std wrapper re-exports this crate). `publish = true` is intentional so downstream MCU embedders can list a stable crate name. |
-| `vokra-kws-micro` <!-- anchor: crates/vokra-kws-micro/src/lib.rs --> | Sister crate to `vokra-vad-micro`: `#![no_std] + alloc` KWS (`FR-OP-51`, microWakeWord-style) on the same M5-03 topology. The forward is **real** — 40-band log-mel features → INT8 quantisation → an INT8 chain → per-keyword threshold — for whatever chain the caller attached. What is missing is the checkpoint side: no path builds a chain from a GGUF yet, so the crate carries `publish = false`. Before a chain is attached `detect()` refuses with `ModelLoad` rather than answering `KwsEvent::Idle`, because `Idle` legitimately means "nothing woke on this frame" and returning it unconfigured would hide the misconfiguration behind a plausible null result (`FR-EX-08`). |
+| `vokra-kws-micro` <!-- anchor: crates/vokra-kws-micro/src/lib.rs --> | Sister crate to `vokra-vad-micro`: `#![no_std] + alloc` KWS (`FR-OP-51`, microWakeWord-style) on the same M5-03 topology. The forward is **real** — 40-band log-mel features → INT8 quantisation → an INT8 chain → per-keyword threshold — for whatever chain the caller attached. The fixed reviewed `hey_jarvis` GGUF can now be bound through the fail-closed stateful `Model::bind_authenticated_streaming()` API, which checks exact provenance, topology, and tensor fingerprints; the 512-invocation stage-trace verdict remains VAST-gated, so `publish = false` is retained. The `KwsMicro` convenience detector still accepts an explicitly attached `ChainConfig` and does not silently install model state. Before a chain is attached `detect()` refuses with `ModelLoad` rather than answering `KwsEvent::Idle`, because `Idle` legitimately means "nothing woke on this frame" and returning it unconfigured would hide the misconfiguration behind a plausible null result (`FR-EX-08`). |
 
 Two further workspace members are test-only:
 
@@ -88,7 +88,7 @@ not make the build graph cyclic.
 ### 1.3 `integrations/` — outside the invariant, on purpose
 
 `integrations/` is **excluded** from the root workspace. It currently holds
-five crates:
+seven crates:
 
 | Path | Purpose |
 |---|---|
@@ -96,7 +96,9 @@ five crates:
 | `integrations/vokra-piper-g2p` <!-- anchor: integrations/vokra-piper-g2p --> | The real 8-language G2P bridge |
 | `integrations/vokra-godot` <!-- anchor: integrations/vokra-godot --> | The Godot GDExtension |
 | `integrations/vokra-server-bench` <!-- anchor: integrations/vokra-server-bench --> | Server latency benchmark harness |
-| `integrations/vokra-cli-bench-server` <!-- anchor: integrations/vokra-cli-bench-server --> | CLI-side benchmark server |
+| `integrations/vokra-cli-bench-server` <!-- anchor: integrations/vokra-cli-bench-server --> | Pure-std HTTP-boundary TTS latency benchmark client |
+| `integrations/vokra-android` | Opt-in Android JNI binding over the Vokra C ABI |
+| `integrations/vokra-misaki-g2p` | Opt-in misaki (Python) G2P bridge driving native Kokoro TTS |
 
 **Why they are allowed to use external crates.** The zero-dependency
 invariant is a statement about *one specific file*: the root `Cargo.lock` must
