@@ -5,7 +5,9 @@ The audit is intentionally separate from :mod:`preflight_gate`: the gate
 authenticates the inputs before synchronization, while this script inspects
 the already synchronized, exact environment.  It never imports qwen-asr,
 torch, or any model code.  It only inspects exact locked PyPI sdists for
-missing publisher files and the two allow-listed model LICENSE URLs below.
+missing publisher files and the two allow-listed model LICENSE URLs below;
+their exact HF revision metadata endpoint is queried only after a raw LICENSE
+HTTP 404.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.parse import urljoin
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import tomllib
 
@@ -53,7 +55,7 @@ MODEL_LICENSES = (
         "revision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
     },
 )
-LICENSE_FILE_NAMES = {"license", "copying", "notice", "copyright"}
+LICENSE_FILE_NAMES = {"license", "licence", "copying", "notice", "copyright"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd"}
 ELF_MAGIC = b"\x7fELF"
 MAX_LICENSE_BYTES = 2 * 1024 * 1024
@@ -80,6 +82,31 @@ HF_LICENSE_REDIRECT_HOSTS = {
     "cdn-lfs.huggingface.co",
     "cdn-lfs-us-1.hf.co",
 }
+HF_API_HOSTS = {"huggingface.co", "hf.co"}
+MODEL_INFO_SCHEMA = "vokra-hf-model-info-license-v1"
+MODEL_INFO_MAX_BYTES = 256 * 1024
+MODEL_INFO_TREE_COUNTS = {
+    "Qwen/Qwen3-ASR-0.6B": 10,
+    "Qwen/Qwen3-ASR-1.7B": 12,
+}
+MODEL_INFO_TREE_FILES = {
+    "Qwen/Qwen3-ASR-0.6B": (
+        ".gitattributes", "README.md", "chat_template.json", "config.json",
+        "generation_config.json", "merges.txt", "model.safetensors",
+        "preprocessor_config.json", "tokenizer_config.json", "vocab.json",
+    ),
+    "Qwen/Qwen3-ASR-1.7B": (
+        ".gitattributes", "README.md", "chat_template.json", "config.json",
+        "generation_config.json", "merges.txt", "model-00001-of-00002.safetensors",
+        "model-00002-of-00002.safetensors", "model.safetensors.index.json",
+        "preprocessor_config.json", "tokenizer_config.json", "vocab.json",
+    ),
+}
+MODEL_INFO_TREE_SHA256 = {
+    "Qwen/Qwen3-ASR-0.6B": "facd07518a5b735287721d26ddffd9e58dfcf255aff067a3a1cec99c918c1e78",
+    "Qwen/Qwen3-ASR-1.7B": "3ff7cffe4d90d319a5433ff27ffecad06bddb992508df1dc48d2ecb37d970537",
+}
+MAX_MODEL_INFO_REDIRECTS = 3
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -100,6 +127,22 @@ def canonical_json(value: Any) -> str:
 
 def model_license_url(repo: str, revision: str) -> str:
     return f"https://huggingface.co/{repo}/raw/{revision}/LICENSE"
+
+
+def model_info_url(repo: str, revision: str) -> str:
+    return f"https://huggingface.co/api/models/{repo}/revision/{revision}"
+
+
+def _strict_json_loads(value: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = item
+        return result
+
+    return json.loads(value, object_pairs_hook=reject_duplicate_keys)
 
 
 def _validate_license_url(url: str, repo: str, revision: str, *, initial: bool) -> None:
@@ -470,6 +513,30 @@ class _BoundedSdistRedirectHandler(HTTPRedirectHandler):
 
     def redirect_request(self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Request:
         resolved = self._validated_target(req.full_url, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+
+class _BoundedModelLicenseRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, repo: str, revision: str) -> None:
+        super().__init__()
+        self.repo = repo
+        self.revision = revision
+        self.trace = [model_license_url(repo, revision)]
+
+    def redirect_request(
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> Request:
+        if len(self.trace) - 1 >= MAX_MODEL_INFO_REDIRECTS:
+            raise ValueError("model LICENSE redirect limit exceeded")
+        resolved = urljoin(req.full_url, newurl)
+        _validate_license_url(resolved, self.repo, self.revision, initial=False)
+        self.trace.append(resolved)
         return super().redirect_request(req, fp, code, msg, headers, resolved)
 
 
@@ -1097,6 +1164,159 @@ def _blocked_license_record(repo: str, revision: str, exc: Exception) -> dict[st
     }
 
 
+def _validate_model_info_url(url: str, repo: str, revision: str, *, initial: bool) -> None:
+    expected = model_info_url(repo, revision)
+    if initial and url != expected:
+        raise ValueError(f"unexpected initial model-info URL: {url}")
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid model-info URL: {url}") from exc
+    expected_path = urlparse(expected).path
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in HF_API_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != expected_path
+    ):
+        raise ValueError(f"unsafe model-info URL: {url}")
+
+
+class _BoundedModelInfoRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, repo: str, revision: str) -> None:
+        super().__init__()
+        self.repo = repo
+        self.revision = revision
+        self.trace = [model_info_url(repo, revision)]
+
+    def redirect_request(
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> Request:
+        if len(self.trace) - 1 >= MAX_MODEL_INFO_REDIRECTS:
+            raise ValueError("model-info redirect limit exceeded")
+        resolved = urljoin(req.full_url, newurl)
+        _validate_model_info_url(resolved, self.repo, self.revision, initial=False)
+        self.trace.append(resolved)
+        return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+
+def _model_info_projection(repo: str, revision: str, body: bytes) -> dict[str, Any]:
+    if not isinstance(body, bytes) or len(body) > MODEL_INFO_MAX_BYTES:
+        raise ValueError("HF model-info response exceeds the bounded audit size")
+    try:
+        payload = _strict_json_loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("HF model-info response is not strict UTF-8 JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("HF model-info response is not an object")
+    required = {"id", "sha", "private", "gated", "disabled", "cardData", "siblings"}
+    if not required.issubset(payload):
+        raise ValueError("HF model-info response is missing required fields")
+    if payload["id"] != repo or not isinstance(payload["id"], str):
+        raise ValueError("HF model-info repository identity drifted")
+    if not isinstance(payload["sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", payload["sha"]):
+        raise ValueError("HF model-info returned sha is malformed")
+    if payload["sha"] != revision:
+        raise ValueError("HF model-info returned sha does not match pinned revision")
+    if payload["private"] is not False or payload["gated"] is not False or payload["disabled"] is not False:
+        raise ValueError("HF model-info repository is private, gated, or disabled")
+    card_data = payload["cardData"]
+    if not isinstance(card_data, dict) or card_data.get("license") != "apache-2.0":
+        raise ValueError("HF model-info cardData.license is not apache-2.0")
+    siblings = payload["siblings"]
+    expected_count = MODEL_INFO_TREE_COUNTS.get(repo)
+    if not isinstance(siblings, list) or not siblings or len(siblings) != expected_count:
+        raise ValueError("HF model-info sibling tree count drifted")
+    tree_files: list[str] = []
+    for entry in siblings:
+        if not isinstance(entry, dict) or set(entry) != {"rfilename"} or not isinstance(entry["rfilename"], str):
+            raise ValueError("HF model-info sibling schema drifted")
+        path = entry["rfilename"]
+        if (
+            not path
+            or "\x00" in path
+            or "\\" in path
+            or path.startswith("/")
+            or path.endswith("/")
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or str(PurePosixPath(path)) != path
+        ):
+            raise ValueError("HF model-info sibling path is unsafe")
+        if path in tree_files:
+            raise ValueError("HF model-info sibling tree contains duplicate paths")
+        if _is_license_candidate(path):
+            raise ValueError("HF model-info sibling tree contains a license file")
+        tree_files.append(path)
+    tree_files.sort()
+    if tuple(tree_files) != MODEL_INFO_TREE_FILES[repo]:
+        raise ValueError("HF model-info sibling tree identity drifted")
+    tree_hash = sha256_bytes(canonical_json(tree_files).encode("utf-8"))
+    if tree_hash != MODEL_INFO_TREE_SHA256[repo]:
+        raise ValueError("HF model-info sibling tree hash drifted")
+    return {
+        "schema": MODEL_INFO_SCHEMA,
+        "repo": repo,
+        "revision": revision,
+        "returned_repo": payload["id"],
+        "requested_revision": revision,
+        "returned_sha": payload["sha"],
+        "license": card_data["license"],
+        "license_source": "HF_API_CARD_DATA_LICENSE",
+        "tree_file_count": len(tree_files),
+        "tree_files": tree_files,
+        "tree_files_sha256": tree_hash,
+        "payload_sha256": sha256_bytes(body),
+        "payload_size": len(body),
+        "owner_review": "PENDING_OWNER_APPROVAL",
+    }
+
+
+def fetch_model_license_metadata(
+    repo: str,
+    revision: str,
+    fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+) -> dict[str, Any]:
+    """Fetch only the fixed HF revision metadata used for a 404 LICENSE fallback."""
+    url = model_info_url(repo, revision)
+    _validate_model_info_url(url, repo, revision, initial=True)
+    trace = [url]
+    if fetcher is None:
+        redirect_handler = _BoundedModelInfoRedirectHandler(repo, revision)
+        request = Request(url, headers={"Accept": "application/json", "User-Agent": "vokra-qwen3-asr-audit/1"})
+        opener = build_opener(redirect_handler)
+        with opener.open(request, timeout=30) as response:
+            length = response.headers.get("Content-Length")
+            if length is not None and (not length.isdigit() or int(length) > MODEL_INFO_MAX_BYTES):
+                raise ValueError("HF model-info Content-Length exceeds bound")
+            final_url = response.geturl()
+            body = response.read(MODEL_INFO_MAX_BYTES + 1)
+            trace = list(redirect_handler.trace)
+    else:
+        final_url, body = fetcher(url)
+        if final_url != url:
+            trace.append(final_url)
+    _validate_model_info_url(final_url, repo, revision, initial=False)
+    return {
+        "requested_url": url,
+        "final_url": final_url,
+        "redirect_trace": trace,
+        "resolved_host": urlparse(final_url).hostname,
+        "resolved_path": urlparse(final_url).path,
+        **_model_info_projection(repo, revision, body),
+    }
+
+
 def _fetch_license(
     repo: str,
     revision: str,
@@ -1108,7 +1328,8 @@ def _fetch_license(
     _validate_license_url(url, repo, revision, initial=True)
     if fetcher is None:
         request = Request(url, headers={"Accept": "text/plain", "User-Agent": "vokra-qwen3-asr-audit/1"})
-        with urlopen(request, timeout=30) as response:  # noqa: S310 - exact URL is allow-listed below
+        redirect_handler = _BoundedModelLicenseRedirectHandler(repo, revision)
+        with build_opener(redirect_handler).open(request, timeout=30) as response:  # noqa: S310 - exact URL is allow-listed below
             final_url = response.geturl()
             _validate_license_url(final_url, repo, revision, initial=False)
             parsed = urlparse(final_url)
@@ -1134,15 +1355,54 @@ def _fetch_license(
 
 def audit_model_licenses(
     fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+    metadata_records: list[dict[str, Any]] | None = None,
+    metadata_fetcher: Callable[[str, str], dict[str, Any]] = fetch_model_license_metadata,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     records: list[dict[str, Any]] = []
     failures: list[str] = []
+    if metadata_records is None:
+        metadata_records = []
     for item in MODEL_LICENSES:
         try:
             records.append(_fetch_license(item["repo"], item["revision"], fetcher))
         except (OSError, UnicodeError, ValueError) as exc:
             records.append(_blocked_license_record(item["repo"], item["revision"], exc))
             error = _controlled_license_error(exc)
+            if isinstance(exc, HTTPError) and exc.code == 404:
+                try:
+                    metadata_records.append(metadata_fetcher(item["repo"], item["revision"]))
+                    continue
+                except (OSError, UnicodeError, ValueError) as metadata_error:
+                    metadata_error_value = _controlled_license_error(metadata_error)
+                    metadata_records.append(
+                        {
+                            "requested_url": model_info_url(item["repo"], item["revision"]),
+                            "final_url": None,
+                            "redirect_trace": [model_info_url(item["repo"], item["revision"])],
+                            "resolved_host": None,
+                            "resolved_path": None,
+                            "schema": MODEL_INFO_SCHEMA,
+                            "repo": item["repo"],
+                            "revision": item["revision"],
+                            "returned_repo": None,
+                            "requested_revision": item["revision"],
+                            "returned_sha": None,
+                            "license": None,
+                            "license_source": None,
+                            "tree_file_count": None,
+                            "tree_files": None,
+                            "tree_files_sha256": None,
+                            "payload_sha256": None,
+                            "payload_size": None,
+                            "owner_review": "PENDING_OWNER_APPROVAL",
+                            "error": metadata_error_value,
+                        }
+                    )
+                    failures.append(
+                        "BLOCKED_FACTUAL_MODEL_METADATA_LICENSE: "
+                        f"{item['repo']}@{item['revision']}: {canonical_json(metadata_error_value)}"
+                    )
+                    continue
             failures.append(
                 "BLOCKED_FACTUAL_LICENSE_PATH: "
                 f"{item['repo']}@{item['revision']}: {canonical_json(error)}"
@@ -1198,6 +1458,15 @@ def _minimal_blocked_report(project: Path, exc: Exception) -> dict[str, Any]:
             "model_files": [],
         },
         "packages": [],
+        "model_license_files": [],
+        "model_license_metadata": [],
+        "model_acquisition": {
+            "policy": "allowlist-only LICENSE URLs; exact HF revision metadata only after raw LICENSE HTTP 404",
+            "requested_files": [],
+            "requested_metadata": [],
+            "non_license_files": [],
+            "model_files": [],
+        },
         "failures": [failure],
     }
 
@@ -1209,18 +1478,28 @@ def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
     except Exception as exc:  # fail closed while preserving a reviewable blocked report
         report = _minimal_blocked_report(project, exc)
         environment_blocked = True
+    records: list[dict[str, Any]] = []
+    license_failures: list[str] = []
+    metadata_records: list[dict[str, Any]] = []
     if fetch_model_licenses and not environment_blocked:
-        records, license_failures = audit_model_licenses()
+        # The raw LICENSE pass above is deliberately kept separate from the
+        # metadata fallback request list.  Metadata is attempted only for a
+        # factual HTTP 404 from the exact raw path.
+        records, license_failures = audit_model_licenses(metadata_records=metadata_records)
+        report["model_license_files"] = records
+        report["failures"] = sorted([*report.get("failures", []), *license_failures])
     else:
-        records, license_failures = [], []
-    report["model_license_files"] = records
+        report["model_license_files"] = records
+    report["model_license_metadata"] = metadata_records
     report["model_acquisition"] = {
-        "policy": "allowlist-only LICENSE URLs",
+        "policy": "allowlist-only LICENSE URLs; exact HF revision metadata only after raw LICENSE HTTP 404",
         "requested_files": [item["requested_url"] if "requested_url" in item else item["url"] for item in records],
+        "requested_metadata": [item["requested_url"] for item in metadata_records],
         "non_license_files": [],
         "model_files": [],
     }
-    report["failures"] = sorted([*report.get("failures", []), *license_failures])
+    if not (fetch_model_licenses and not environment_blocked):
+        report["failures"] = sorted([*report.get("failures", []), *license_failures])
     report["status"] = "BLOCKED" if report["failures"] else "PASS"
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -1329,13 +1608,36 @@ def self_test() -> int:
     )["size"] == len(good_body)
     second_url = model_license_url(MODEL_LICENSES[1]["repo"], MODEL_LICENSES[1]["revision"])
 
+    def synthetic_metadata(repo: str, revision: str) -> dict[str, Any]:
+        tree = list(MODEL_INFO_TREE_FILES[repo])
+        payload = {
+            "id": repo,
+            "sha": revision,
+            "private": False,
+            "gated": False,
+            "disabled": False,
+            "cardData": {"license": "apache-2.0"},
+            "siblings": [{"rfilename": name} for name in tree],
+        }
+        return {
+            "requested_url": model_info_url(repo, revision),
+            "final_url": model_info_url(repo, revision),
+            "redirect_trace": [model_info_url(repo, revision)],
+            "resolved_host": "huggingface.co",
+            "resolved_path": urlparse(model_info_url(repo, revision)).path,
+            **_model_info_projection(repo, revision, canonical_json(payload).encode("utf-8")),
+        }
+
+    assert synthetic_metadata(MODEL_LICENSES[1]["repo"], MODEL_LICENSES[1]["revision"])["tree_file_count"] == 12
+
     def blocked_record_test(
         fetcher: Callable[[str], tuple[str, bytes]],
         blocked_count: int,
+        failure_count: int | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        records, failures = audit_model_licenses(fetcher)
+        records, failures = audit_model_licenses(fetcher, [], synthetic_metadata)
         assert len(records) == len(MODEL_LICENSES)
-        assert len(failures) == blocked_count
+        assert len(failures) == (blocked_count if failure_count is None else failure_count)
         assert sum(item.get("status") == "BLOCKED_FACTUAL_LICENSE_PATH" for item in records) == blocked_count
         for item in records:
             if item.get("status") == "BLOCKED_FACTUAL_LICENSE_PATH":
@@ -1348,10 +1650,75 @@ def self_test() -> int:
             raise HTTPError(url, 404, "not found", {}, None)
         return url, good_body
 
-    first_failed, first_failures = blocked_record_test(fail_first, 1)
+    first_failed, first_failures = blocked_record_test(fail_first, 1, 0)
     assert first_failed[0]["status"] == "BLOCKED_FACTUAL_LICENSE_PATH"
     assert first_failed[1]["sha256"] == sha256_bytes(good_body)
-    assert first_failures[0].startswith("BLOCKED_FACTUAL_LICENSE_PATH:")
+    metadata_item = MODEL_LICENSES[0]
+    metadata_body = canonical_json(
+        {
+            "id": metadata_item["repo"],
+            "sha": metadata_item["revision"],
+            "private": False,
+            "gated": False,
+            "disabled": False,
+            "cardData": {"license": "apache-2.0", "README": "not a license source"},
+            "siblings": [{"rfilename": name} for name in MODEL_INFO_TREE_FILES[metadata_item["repo"]]],
+        }
+    ).encode("utf-8")
+    assert fetch_model_license_metadata(
+        metadata_item["repo"], metadata_item["revision"], lambda url: (url, metadata_body)
+    )["tree_file_count"] == 10
+    metadata_failure_records: list[dict[str, Any]] = []
+    _, metadata_failure_messages = audit_model_licenses(
+        fail_first,
+        metadata_failure_records,
+        lambda repo, revision: (_ for _ in ()).throw(HTTPError(model_info_url(repo, revision), 500, "server error", {}, None)),
+    )
+    assert len(metadata_failure_records) == 1
+    assert metadata_failure_records[0]["schema"] == MODEL_INFO_SCHEMA
+    assert metadata_failure_messages[0].startswith("BLOCKED_FACTUAL_MODEL_METADATA_LICENSE:")
+    for unsafe in (
+        model_info_url(metadata_item["repo"], metadata_item["revision"]) + "?download=1",
+        model_info_url(metadata_item["repo"], metadata_item["revision"]) + "#fragment",
+        model_info_url(metadata_item["repo"], metadata_item["revision"]).replace("https://", "https://user:password@"),
+        model_info_url(metadata_item["repo"], metadata_item["revision"]).replace("huggingface.co", "huggingface.co:8443"),
+        model_info_url(metadata_item["repo"], metadata_item["revision"]).replace("/revision/", "/raw/"),
+    ):
+        try:
+            fetch_model_license_metadata(metadata_item["repo"], metadata_item["revision"], lambda url, unsafe=unsafe: (unsafe, metadata_body))
+        except ValueError:
+            pass
+        else:
+            print("qwen3-asr dependency audit: unsafe model-info URL accepted", file=sys.stderr)
+            return 1
+    invalid_metadata = [
+        metadata_body.replace(b'"apache-2.0"', b'"mit"'),
+        metadata_body.replace(b'"private":false', b'"private":true'),
+        metadata_body.replace(b'"id":"Qwen/Qwen3-ASR-0.6B"', b'"id":"other/model"'),
+        metadata_body.replace(b'"sha":"5eb144179a02acc5e5ba31e748d22b0cf3e303b0"', b'"sha":"' + b"0" * 40 + b'"'),
+        metadata_body.replace(b'"rfilename":".gitattributes"', b'"rfilename":"../config.json"'),
+        metadata_body.replace(b'{"rfilename":".gitattributes"}', b'{"rfilename":"LICENSE"}'),
+        metadata_body.replace(b'{"rfilename":".gitattributes"}', b'{"rfilename":"config\\\\0.json"}'),
+        b'{"id":"x","id":"y"}',
+    ]
+    for invalid in invalid_metadata:
+        try:
+            fetch_model_license_metadata(metadata_item["repo"], metadata_item["revision"], lambda url, invalid=invalid: (url, invalid))
+        except ValueError:
+            pass
+        else:
+            print("qwen3-asr dependency audit: invalid model-info accepted", file=sys.stderr)
+            return 1
+    try:
+        fetch_model_license_metadata(
+            metadata_item["repo"], metadata_item["revision"],
+            lambda url: (url, b"x" * (MODEL_INFO_MAX_BYTES + 1)),
+        )
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: oversized model-info accepted", file=sys.stderr)
+        return 1
 
     def fail_second(url: str) -> tuple[str, bytes]:
         if url == second_url:
@@ -1441,7 +1808,15 @@ def self_test() -> int:
     assert archive_evidence["archive"]["redirect_trace"] == [archive_row["sdist"]["url"]]
     assert archive_evidence["archive"]["upload-time"] == archive_row["sdist"]["upload-time"]
     assert archive_evidence["license_files"][0]["path"] == "cython-3.3.0/LICENSE"
+    tqdm_body = synthetic_tar(["tqdm-4.70.0/LICENCE"], b"MPL-2.0\n")
+    tqdm_row = synthetic_row(tqdm_body)
+    tqdm_row["name"] = "tqdm"
+    tqdm_row["version"] = "4.70.0"
+    tqdm_evidence = _fetch_sdist_license(tqdm_row, lambda url: (url, tqdm_body))
+    assert tqdm_evidence["license_files"][0]["path"] == "tqdm-4.70.0/LICENCE"
     assert _is_license_candidate("LICENSE")
+    assert _is_license_candidate("LICENCE")
+    assert _is_license_candidate("license")
     assert _is_license_candidate("license.txt")
     assert _is_license_candidate("LICENSE-notice")
     assert not _is_license_candidate("unlicensed-file")
@@ -1690,7 +2065,7 @@ def self_test() -> int:
             "acquired_bytes": False,
             "content_base64": None,
         }
-        globals()["audit_model_licenses"] = lambda: ([blocked], ["BLOCKED_FACTUAL_LICENSE_PATH: test"])
+        globals()["audit_model_licenses"] = lambda **kwargs: ([blocked], ["BLOCKED_FACTUAL_LICENSE_PATH: test"])
         try:
             assert run(Path(directory) / "project", output, True) == 2
         finally:

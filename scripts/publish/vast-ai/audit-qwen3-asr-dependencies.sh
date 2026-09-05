@@ -21,7 +21,8 @@ The target environment must already have been synchronized by the named,
 authorized VAST Qwen3-ASR worker after its approval gate. This command is
 VAST/Linux-only, never runs uv sync, and never downloads model weights. The
 audit itself fetches only exact locked PyPI sdist URLs when present for a
-missing wheel license file, plus the two fixed upstream LICENSE URLs. It
+missing wheel license file, plus the two fixed upstream LICENSE URLs and the
+exact HF revision metadata endpoint only after a raw LICENSE HTTP 404. It
 never fetches weights, imports model packages, or runs Cargo, and rejects
 unsafe or redirected non-license paths.
 EOF
