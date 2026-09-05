@@ -66,7 +66,7 @@ Before any Scaleway allocation:
 
 ### 2026-09-06 exact-head progress
 
-The branch has advanced to `7d0119c9` locally. The PR remote remains at
+The branch has advanced to `8b7064d4` locally. The PR remote remains at
 `559b8b36`; all checks at that remote commit are green and GitHub reports the
 PR mergeable. Do not merge it as the final Mac-coverage change yet: the local
 audit and BF16 commits have not been pushed or checked by GitHub.
@@ -91,12 +91,13 @@ recorded in the commits immediately before `7d0119c9`:
   SHA-256 is
   `082ac1bfa899366f97cfee23387a25041ae58954c96a04b2c58e1c35364dd012`.
 
-Commit `7d0119c9` adds the independent PyTorch BF16 GEMM parity contract without
-running PyTorch on the maintainer Mac. The comparison limit was registered
-before measurement as `atol=1e-3`, `rtol=0`; fixtures, a Linux-x86_64 lock and
-an actual AVX-512 BF16 verdict still have to be generated on the active VAST
-worker. Compatible Arm-BF16 evidence remains part of the final Apple-hardware
-work.
+Commits `7d0119c9` and `8b7064d4` add and bind the independent PyTorch BF16
+GEMM parity contract without running PyTorch on the maintainer Mac. The
+fixtures and Linux-x86_64 lock were generated on VAST instance `49972360` with
+Torch `2.13.0+cpu`. The forced AVX-512 BF16 Rust path passed all three cases
+twice at the pre-registered `atol=1e-3`, `rtol=0`; the observed global maximum
+absolute difference was `7.629394531e-6`. Compatible Arm-BF16 evidence and a
+real BF16 checkpoint remain part of the final Apple/model work.
 
 The remaining factual dependency-license cases were checked against primary
 release sources and must stay fail-closed:
