@@ -234,6 +234,35 @@ and `a8bed39fba4e56a271d44b0a70491587e5b8a4d977b66fe38e9ad7f89e150d48`.
 All three VAST instances and their storage were destroyed; the final instance
 and independent-volume inventories both returned `[]`.
 
+The follow-on HiFT implementation and model-free closure wave is recorded at
+exact local HEAD `ea07cfc2`. Commits `6a13c005` through `3d62f5c2` add the
+strict 328-tensor HiFT GGUF binder, CPU generator route, resident Apple Metal
+SineGen2 phase-cache route, explicit Apache-2.0 conversion attestation,
+Linux-wheel closure audit and authenticated real-parity harness. No model was
+downloaded or executed on the maintainer Mac.
+
+Disposable VAST instance `49994756` staged the exact Linux CPython 3.12 CPU
+wheel closure without installing or importing it. The first two real archive
+audits exposed valid setuptools vendored metadata and RFC-822 Description
+body parsing cases; commits `2a56c11e` and `5fbcc487` corrected those without
+relaxing the top-level package identity or dependency checks. Commit
+`2a7244e8` excludes ZIP directory entries from file evidence while retaining
+their path, mode, duplicate and member-count validation. The final candidate
+contains 12 wheels, 13 lock package rows, 44 license files, 285 native
+payloads and 1,964 owner-review suspicion markers. Its SHA-256 is
+`2f5174af6cff51dc2b71121861e989de793e6121d5ed88c890a45a308daf55f9`;
+the wheel aggregate SHA-256 is
+`dd7f26947e07f490e858d6311ba14008db6aa3ef2359de8742ec4093a5cabd3c`.
+The separately recovered, hash-linked license-text evidence SHA-256 is
+`475d246a732794f3627882965155d4cc4c395a6011fc3d20ad7c408a8bd24687`.
+Commit `ea07cfc2` binds every value into the pending owner-approval scope. The
+state remains deliberately `OWNER_REVIEW_REQUIRED`,
+`PENDING_PACKAGE_AND_NATIVE_PAYLOAD_REVIEW` and `NO_UPLOAD`; neither source,
+model nor closure approval is inferred. Instance `49994756` and its storage
+were destroyed after the two small evidence files were recovered. The
+post-destroy individual query returned `instances: null`, and the complete
+VAST inventory returned `[]`.
+
 The authenticated topology has 80 mel channels, a 512-channel base, three
 upsample stages whose weight shapes imply rates/kernels `[8, 5, 3]` /
 `[16, 11, 7]`, three source residual stages with kernels `[7, 7, 11]`, nine
