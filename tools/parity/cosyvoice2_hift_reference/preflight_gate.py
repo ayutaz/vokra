@@ -58,6 +58,20 @@ EXPECTED_CONFIG = {
     "git_blob_sha1": "bc19267bbfd373c9a760b7667a74349ddd487db1",
 }
 EXPECTED_CLOSURE_STATUS = "PENDING_PACKAGE_AND_NATIVE_PAYLOAD_REVIEW"
+EXPECTED_AUDIT_EVIDENCE = {
+    "candidate_format": "vokra-cosyvoice2-hift-linux-closure-candidate-v1",
+    "candidate_sha256": "2f5174af6cff51dc2b71121861e989de793e6121d5ed88c890a45a308daf55f9",
+    "license_evidence_format": "vokra-wheel-license-evidence-v1",
+    "license_evidence_sha256": "475d246a732794f3627882965155d4cc4c395a6011fc3d20ad7c408a8bd24687",
+    "archive_aggregate_sha256": "dd7f26947e07f490e858d6311ba14008db6aa3ef2359de8742ec4093a5cabd3c",
+    "wheel_count": 12,
+    "package_row_count": 13,
+    "license_file_count": 44,
+    "native_payload_count": 285,
+    "suspicious_marker_count": 1964,
+    "audit_source_commit": "2a7244e8eda9a49cdf54df138f4aed193d4ec419",
+    "publication": "NO_UPLOAD",
+}
 EXPECTED_EVIDENCE = {
     "tensor_count": 328,
     "tensor_dtype": "F32",
@@ -303,7 +317,7 @@ def validate_license_manifest(path: Path, project_sha256: str, lock_sha256: str)
         fail("license model row schema drifted")
     if not isinstance(data.get("config"), dict) or data["config"] != EXPECTED_CONFIG:
         fail("license config row drifted")
-    if not isinstance(closure, dict) or set(closure) != {"runtime_pins", "platform", "license_status", "forbidden_packages"}:
+    if not isinstance(closure, dict) or set(closure) != {"runtime_pins", "platform", "license_status", "forbidden_packages", "audit_evidence"}:
         fail("license Python closure row schema drifted")
     approval = data.get("approval")
     if not isinstance(approval, dict) or set(approval) != {"schema", "signer", "scope_sha256"} or approval.get("schema") != APPROVAL_SCHEMA:
@@ -314,6 +328,8 @@ def validate_license_manifest(path: Path, project_sha256: str, lock_sha256: str)
         fail("license manifest dependency pins drifted")
     if tuple(closure.get("forbidden_packages", [])) != FORBIDDEN:
         fail("license manifest forbidden package list drifted")
+    if closure.get("audit_evidence") != EXPECTED_AUDIT_EVIDENCE:
+        fail("license audit evidence drifted")
     if closure.get("license_status") not in {EXPECTED_CLOSURE_STATUS, *APPROVED_COMPONENT_STATUSES}:
         fail("license Python closure status is unknown")
     if data.get("evidence") != EXPECTED_EVIDENCE:
@@ -412,12 +428,17 @@ def self_test() -> None:
             "config identity": ("config", "sha256", "0" * 64),
             "evidence facts": ("evidence", "tensor_count", 327),
             "source role blob": ("evidence", "source_roles", {"cosyvoice/hifigan/generator.py": "0" * 40}),
+            "audit evidence": ("python_closure", "audit_evidence", None),
             "decision": ("decision", None, "ALLOW_UPLOAD"),
         }
         for label, (row_name, field, value) in drift_cases.items():
             candidate = copy.deepcopy(approved_manifest)
             if row_name == "evidence" and field == "source_roles":
                 candidate[row_name][field]["cosyvoice/hifigan/generator.py"] = value["cosyvoice/hifigan/generator.py"]
+            elif row_name == "python_closure" and field == "audit_evidence":
+                original = candidate[row_name][field]["candidate_sha256"]
+                assert original.startswith("2")
+                candidate[row_name][field]["candidate_sha256"] = "3" + original[1:]
             elif row_name == "decision":
                 candidate[row_name] = value
             else:

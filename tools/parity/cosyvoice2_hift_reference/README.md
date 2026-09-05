@@ -24,6 +24,25 @@ No model or source checkout is downloaded by these tools.  First stage and
 audit the Linux wheels, then have the owner review the candidate and update the
 exact license manifest and approval scope.  Only after that review run the
 stdlib license gate; only a passing gate permits project sync or model scripts.
+
+The owner review scope must cover both the complete closure candidate and its
+license evidence, recorded under `python_closure.audit_evidence` in the
+manifest.  The exact reviewed facts are:
+
+* candidate format
+  `vokra-cosyvoice2-hift-linux-closure-candidate-v1`, SHA-256
+  `2f5174af6cff51dc2b71121861e989de793e6121d5ed88c890a45a308daf55f9`;
+* license evidence format `vokra-wheel-license-evidence-v1`, SHA-256
+  `475d246a732794f3627882965155d4cc4c395a6011fc3d20ad7c408a8bd24687`;
+* archive aggregate SHA-256
+  `dd7f26947e07f490e858d6311ba14008db6aa3ef2359de8742ec4093a5cabd3c`;
+* counts: 12 wheels, 13 package rows, 44 license files, 285 native payloads,
+  and 1,964 suspicious markers;
+* audit source commit `2a7244e8eda9a49cdf54df138f4aed193d4ec419`;
+* publication remains `NO_UPLOAD`.
+
+Every value above is schema-checked and included in the approval-scope digest;
+any evidence drift requires a newly recorded owner review and scope digest.
 All steps below are VAST-only.  The stage/audit commands are stdlib-only and
 must run before any project sync; do not invoke model scripts via their shebang
 or the project environment before the license gate succeeds:
