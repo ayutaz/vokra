@@ -15,6 +15,9 @@
 pub(crate) mod chunk_pipeline;
 pub(crate) mod config;
 pub(crate) mod flow_matching;
+// Staged authenticated binder; runtime wiring is deliberately deferred.
+#[allow(dead_code)]
+pub(crate) mod flow_weights;
 pub(crate) mod native;
 #[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) mod speech_lm;
