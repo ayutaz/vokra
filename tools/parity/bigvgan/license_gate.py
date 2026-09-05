@@ -28,7 +28,7 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 MANIFEST_KEYS = {
     "gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows",
     "package_review_rows_sha256", "identities", "required_package_rows", "forbidden_dependencies",
-    "license_rows", "license_rows_sha256", "publication", "approval",
+    "license_rows", "license_rows_sha256", "audit_evidence", "publication", "approval",
 }
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
@@ -44,6 +44,30 @@ DEPENDENCY_SCHEMAS = {
 METADATA_REQUIREMENT_SCHEMAS = {frozenset({"name", "specifier", "index"})}
 LICENSE_ROW_KEYS = {"id", "status", "component", "source", "license", "payload_sha256", "required_evidence_fields", "approval_schema", "approval_signer", "approval_digest", "review"}
 REVIEW_PLACEHOLDERS = {"", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo", "null", "none"}
+AUDIT_EVIDENCE_KEYS = {
+    "candidate_schema",
+    "candidate_sha256",
+    "license_evidence_schema",
+    "license_evidence_sha256",
+    "lock_sha256",
+    "active_linux_package_count",
+    "license_payload_count",
+    "native_payload_count",
+    "audit_source_commit",
+    "publication",
+}
+EXPECTED_AUDIT_EVIDENCE = {
+    "candidate_schema": "bigvgan-linux-closure-candidate-v1",
+    "candidate_sha256": "fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086",
+    "license_evidence_schema": "bigvgan-license-payload-evidence-v1",
+    "license_evidence_sha256": "88f0a6e98b5000243f32471c6a9a1274db5c38bbbcad0d271c11cb7176ab7f9f",
+    "lock_sha256": "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e",
+    "active_linux_package_count": 10,
+    "license_payload_count": 28,
+    "native_payload_count": 142,
+    "audit_source_commit": "1ce957dfdacc38be9530d0b0931bd92e99d447f2",
+    "publication": "NO_UPLOAD",
+}
 
 
 def digest_bytes(data: bytes) -> str:
@@ -218,6 +242,7 @@ def approval_scope(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         "identities": manifest.get("identities"),
         "license_rows": manifest.get("license_rows"),
         "license_rows_sha256": manifest.get("license_rows_sha256"),
+        "audit_evidence": manifest.get("audit_evidence"),
         "publication": manifest.get("publication"),
         "expected_decision": "APPROVED",
         "expected_status": "OWNER_SIGNOFF_APPROVED",
@@ -245,6 +270,13 @@ def run(
         fail("unsupported gate manifest version")
     if set(manifest) != MANIFEST_KEYS:
         fail("gate manifest top-level schema drifted")
+    audit_evidence = manifest.get("audit_evidence")
+    if (
+        not isinstance(audit_evidence, dict)
+        or set(audit_evidence) != AUDIT_EVIDENCE_KEYS
+        or audit_evidence != EXPECTED_AUDIT_EVIDENCE
+    ):
+        fail("model-free VAST audit evidence is missing or drifted")
     lock_bytes = lock_path.read_bytes()
     project_bytes = project_path.read_bytes()
     if digest_bytes(lock_bytes) != manifest.get("lock_sha256"):
@@ -539,6 +571,7 @@ source = { registry = 'https://pypi.org/simple' }
             "forbidden_dependencies": [],
             "license_rows": license_rows,
             "license_rows_sha256": canonical_digest(license_rows),
+            "audit_evidence": dict(EXPECTED_AUDIT_EVIDENCE),
             "publication": "NO_UPLOAD",
             "approval": {"status": "OWNER_SIGNOFF_APPROVED", "signer": "self-test-signer", "digest": ""},
         }
@@ -694,6 +727,8 @@ source = { registry = 'https://pypi.org/simple' }
         expect_manifest_blocked("license-row-extra", lambda value: value["license_rows"][0].update(extra="unexpected"))
         expect_manifest_blocked("license-row-reordered", lambda value: value.update(license_rows=list(reversed(value["license_rows"]))))
         expect_manifest_blocked("license-row-duplicate", lambda value: value["license_rows"].__setitem__(1, dict(value["license_rows"][0])))
+        expect_manifest_blocked("audit-evidence-tamper", lambda value: value["audit_evidence"].update(native_payload_count=143))
+        expect_manifest_blocked("audit-evidence-missing", lambda value: value.pop("audit_evidence"))
         expect_blocked("evidence-row-missing", lambda value: value["rows"].pop())
         expect_blocked("evidence-row-extra", lambda value: value["rows"].append(dict(value["rows"][0])))
         expect_blocked("evidence-row-duplicate", lambda value: value["rows"].__setitem__(1, dict(value["rows"][0])))

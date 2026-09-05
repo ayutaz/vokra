@@ -59,6 +59,18 @@
     }
   ],
   "license_rows_sha256": "615860d4777759f2c0a693ddf93b69fcc496c3a04e60a3d2cb7c1045dd95e238",
+  "audit_evidence": {
+    "candidate_schema": "bigvgan-linux-closure-candidate-v1",
+    "candidate_sha256": "fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086",
+    "license_evidence_schema": "bigvgan-license-payload-evidence-v1",
+    "license_evidence_sha256": "88f0a6e98b5000243f32471c6a9a1274db5c38bbbcad0d271c11cb7176ab7f9f",
+    "lock_sha256": "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e",
+    "active_linux_package_count": 10,
+    "license_payload_count": 28,
+    "native_payload_count": 142,
+    "audit_source_commit": "1ce957dfdacc38be9530d0b0931bd92e99d447f2",
+    "publication": "NO_UPLOAD"
+  },
   "publication": "NO_UPLOAD",
   "approval": {"status":"OWNER_SIGNOFF_REQUIRED","signer":null,"digest":null}
 }
