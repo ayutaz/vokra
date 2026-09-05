@@ -113,6 +113,25 @@ No model, package install/import or upload was involved. The candidate remains
 fail-closed as `OWNER_REVIEW_REQUIRED`, `BLOCKED_UNREVIEWED_TRANSITIVE` and
 `NO_UPLOAD`; it is evidence for owner review, not approval or real parity.
 
+That closure was regenerated from the exact unpushed branch state
+`78cfb9b7b9ba661c7404ccc287ca6101a168bf01` on disposable VAST instance
+`49996341`, without installing/importing packages or acquiring a model. The
+candidate reproduced byte-for-byte at SHA-256
+`fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086`.
+The separately recovered 28-file exact license-payload evidence has SHA-256
+`88f0a6e98b5000243f32471c6a9a1274db5c38bbbcad0d271c11cb7176ab7f9f`;
+the candidate records 10 active Linux packages and 142 native/bundled
+payloads. The license payloads include the expected MIT/BSD/PSF terms plus
+setuptools' vendored LGPL-3.0, Apache/BSD dual-license and MPL/GPL notice
+material, and PyTorch's large bundled-license/NOTICE set. These are facts for
+owner/legal review, not an inferred approval. Commit `eb4d8c00` binds the
+candidate/evidence identities and counts into the future approval scope while
+leaving every package row unresolved and publication `NO_UPLOAD`. The active
+Linux candidate still does not audit the inactive Darwin `torch==2.7.1` wheel
+or the first-party virtual project row. Instance `49996341` was destroyed with
+its storage immediately after evidence recovery; the individual query returned
+`instances: null` and the complete VAST inventory returned `[]`.
+
 Four additional reviewed commits close source-level gaps without downloading
 or running a model on the maintainer Mac:
 
