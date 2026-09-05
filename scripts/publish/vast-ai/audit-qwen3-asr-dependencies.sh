@@ -116,8 +116,8 @@ require_absent_output() {
 
 run_audit() {
   local output="$1"
-  require_vast_linux
-  require_clean_checkout
+  require_vast_linux || return 2
+  require_clean_checkout || return 2
   command -v uv >/dev/null 2>&1 || {
     echo "qwen3-asr dependency audit: uv is unavailable" >&2
     return 2
@@ -142,26 +142,33 @@ run_audit() {
     echo "qwen3-asr dependency audit: --output must be absolute" >&2
     return 2
   }
-  require_absent_output "$output"
+  require_absent_output "$output" || return 2
   command -v git >/dev/null 2>&1 || {
     echo "qwen3-asr dependency audit: git is unavailable" >&2
     return 2
   }
-  mkdir -p "$(dirname "$output")"
+  mkdir -p "$(dirname "$output")" || return 2
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 \
     python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses
 }
 
 self_test() {
-  local failed=0 probe_root probe_parent=/tmp
+  local failed=0 probe_root blocked_parent blocked_output probe_parent=/tmp
   [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- '--fetch-model-licenses' "$0" || failed=1
   grep -Fq -- 'exact locked PyPI sdist' "$0" || failed=1
   grep -Fq -- 'never downloads model' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(uv sync|snapshot_download|cargo (build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
-  if VOKRA_PUBLISH_ON_VAST=0 run_audit /private/tmp/qwen3-asr-audit-self-test.json >/dev/null 2>&1; then failed=1; fi
   probe_root="$(mktemp -d "$probe_parent/qwen3-asr-audit-wrapper.XXXXXX")"
+  blocked_parent="$probe_root/blocked-parent"
+  blocked_output="$blocked_parent/audit.json"
+  mkdir "$probe_root/bin"
+  printf '%s\n' '#!/usr/bin/env bash' "touch '$probe_root/auditor-invoked'" > "$probe_root/bin/uv"
+  chmod +x "$probe_root/bin/uv"
+  if PATH="$probe_root/bin:$PATH" VOKRA_PUBLISH_ON_VAST=0 run_audit "$blocked_output" >/dev/null 2>&1; then failed=1; fi
+  [[ ! -e "$probe_root/auditor-invoked" ]] || failed=1
+  [[ ! -e "$blocked_parent" && ! -e "$blocked_output" ]] || failed=1
   if require_absent_output "$VOKRA_ROOT" >/dev/null 2>&1; then failed=1; fi
   if require_absent_output "$PARITY_PROJECT" >/dev/null 2>&1; then failed=1; fi
   if ! require_absent_output "$probe_root/nested/audit.json" >/dev/null 2>&1; then failed=1; fi

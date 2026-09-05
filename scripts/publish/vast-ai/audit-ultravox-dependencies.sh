@@ -67,7 +67,7 @@ require_absent_output() {
 
 run_audit() {
   local output="$1" input root
-  require_vast_linux
+  require_vast_linux || return 2
   [[ -d "$VOKRA_ROOT/.git" || -f "$VOKRA_ROOT/.git" ]] || return 2
   root="$(git -C "$VOKRA_ROOT" rev-parse --show-toplevel 2>/dev/null)" || return 2
   [[ "$(canonicalize_uncreated "$VOKRA_ROOT")" == "$(canonicalize_uncreated "$root")" ]] || return 2
@@ -77,21 +77,28 @@ run_audit() {
   for input in pyproject.toml uv.lock license_gate_manifest.json dependency_audit.py; do
     [[ -f "$PARITY_PROJECT/$input" && ! -L "$PARITY_PROJECT/$input" ]] || { echo "ultravox dependency audit: missing/symlinked input: $input" >&2; return 2; }
   done
-  require_absent_output "$output"
-  mkdir -p "$(dirname "$output")"
+  require_absent_output "$output" || return 2
+  mkdir -p "$(dirname "$output")" || return 2
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 \
     python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses
 }
 
 self_test() {
-  local failed=0 probe_root probe_parent=/tmp
+  local failed=0 probe_root blocked_parent blocked_output probe_parent=/tmp
   [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- 'exact locked PyPI sdist' "$0" || failed=1
   grep -Fq -- 'fixed source/model/Meta companion LICENSE paths' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
-  if VOKRA_PUBLISH_ON_VAST=0 run_audit /private/tmp/ultravox-audit-self-test.json >/dev/null 2>&1; then failed=1; fi
   probe_root="$(mktemp -d "$probe_parent/ultravox-audit-wrapper.XXXXXX")"
+  blocked_parent="$probe_root/blocked-parent"
+  blocked_output="$blocked_parent/audit.json"
+  mkdir "$probe_root/bin"
+  printf '%s\n' '#!/usr/bin/env bash' "touch '$probe_root/auditor-invoked'" > "$probe_root/bin/uv"
+  chmod +x "$probe_root/bin/uv"
+  if PATH="$probe_root/bin:$PATH" VOKRA_PUBLISH_ON_VAST=0 run_audit "$blocked_output" >/dev/null 2>&1; then failed=1; fi
+  [[ ! -e "$probe_root/auditor-invoked" ]] || failed=1
+  [[ ! -e "$blocked_parent" && ! -e "$blocked_output" ]] || failed=1
   if require_absent_output "$VOKRA_ROOT" >/dev/null 2>&1; then failed=1; fi
   if require_absent_output "$PARITY_PROJECT" >/dev/null 2>&1; then failed=1; fi
   require_absent_output "$probe_root/nested/audit.json" || failed=1

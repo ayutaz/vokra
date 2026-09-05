@@ -76,24 +76,31 @@ require_absent_output() {
 
 run_audit() {
   local output="$1"
-  require_vast_linux
-  require_clean_checkout
+  require_vast_linux || return 2
+  require_clean_checkout || return 2
   command -v uv >/dev/null 2>&1 || return 2
   command -v readelf >/dev/null 2>&1 || return 2
   [[ -f "$PARITY_PROJECT/pyproject.toml" && ! -L "$PARITY_PROJECT/pyproject.toml" ]] || return 2
   [[ -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" ]] || return 2
   [[ -f "$AUDIT" && ! -L "$AUDIT" ]] || return 2
-  require_absent_output "$output"
-  mkdir -p "$(dirname "$output")"
+  require_absent_output "$output" || return 2
+  mkdir -p "$(dirname "$output")" || return 2
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 \
     python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses
 }
 
 self_test() {
-  local failed=0 probe temp_parent=/tmp
+  local failed=0 probe blocked_parent blocked_output temp_parent=/tmp
   [[ -d /private/tmp && ! -L /private/tmp ]] && temp_parent=/private/tmp
   probe="$(mktemp -d "$temp_parent/neutts-air-audit-wrapper.XXXXXX")"
-  if VOKRA_PUBLISH_ON_VAST=0 run_audit "$probe/audit.json" >/dev/null 2>&1; then failed=1; fi
+  blocked_parent="$probe/blocked-parent"
+  blocked_output="$blocked_parent/audit.json"
+  mkdir "$probe/bin"
+  printf '%s\n' '#!/usr/bin/env bash' "touch '$probe/auditor-invoked'" > "$probe/bin/uv"
+  chmod +x "$probe/bin/uv"
+  if PATH="$probe/bin:$PATH" VOKRA_PUBLISH_ON_VAST=0 run_audit "$blocked_output" >/dev/null 2>&1; then failed=1; fi
+  [[ ! -e "$probe/auditor-invoked" ]] || failed=1
+  [[ ! -e "$blocked_parent" && ! -e "$blocked_output" ]] || failed=1
   if require_absent_output "$VOKRA_ROOT" >/dev/null 2>&1; then failed=1; fi
   if require_absent_output "$PARITY_PROJECT" >/dev/null 2>&1; then failed=1; fi
   if ! require_absent_output "$probe/nested/audit.json"; then failed=1; fi
