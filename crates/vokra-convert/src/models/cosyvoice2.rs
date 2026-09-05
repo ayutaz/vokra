@@ -206,9 +206,9 @@ pub(crate) fn convert_cosyvoice2_llm_file(
     })
 }
 
-/// Validate the VAST handoff paths before reading any payload.  Symlinks are
-/// rejected so an operator cannot redirect an authenticated sidecar or input
-/// after the path contract has been reviewed.
+/// Validate the VAST handoff paths before reading any payload. Symlink paths
+/// are rejected at this handoff boundary; callers must keep the reviewed
+/// regular files in place for the conversion operation.
 fn require_regular_file(path: &Path, label: &str) -> Result<(), ConvertError> {
     if !path.is_absolute() {
         return Err(ConvertError::Usage(format!(

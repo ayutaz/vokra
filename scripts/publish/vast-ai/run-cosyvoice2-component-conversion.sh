@@ -9,7 +9,7 @@ log() { printf '[cosyvoice2-component-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
 self_test() {
   local token
-  for token in '--convert' '--component llm|flow' 'PREPARED_SAFETENSORS_READY' 'NOT_RUN' 'NO_UPLOAD' 'INSPECTION_ONLY' '295' '1121' 'Linux x86_64' 'clean checkout' 'uv run --no-project --python 3.12 python -c'; do grep -Fq -- "$token" "$0" || die "self-test missing contract: $token"; done
+  for token in '--convert' '--component llm|flow' 'PREPARED_SAFETENSORS_READY' 'NOT_RUN' 'NO_UPLOAD' 'INSPECTION_ONLY' '295' '1121' 'Linux x86_64' 'clean checkout' '24 GiB' 'uv run --no-project --python 3.12 python -c'; do grep -Fq -- "$token" "$0" || die "self-test missing contract: $token"; done
   if grep -En '(^|[[:space:]])(curl|wget|git[[:space:]]+clone|git[[:space:]]+push|upload\.sh|publish-one\.sh)([[:space:]]|$)' "$0" >/dev/null; then die 'network/publish command found in runner'; fi
   bash -n "$0"
   log 'self-test: OK (no cargo, model, or network command executed)'
@@ -33,7 +33,7 @@ if ((self)); then ((convert == 0)) && [[ -z "$component" ]] || die '--self-test 
 [[ -d "$ROOT/.git" && -f "$ROOT/Cargo.toml" ]] || die 'Vokra checkout required'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'clean checkout required'
 for tool in awk cargo df findmnt git sha256sum stat uv; do command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"; done
-mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"; [[ "$mem_kib" =~ ^[0-9]+$ && "$mem_kib" -ge $((8 * 1024 * 1024)) ]] || die 'RAM below 8 GiB'
+mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"; [[ "$mem_kib" =~ ^[0-9]+$ && "$mem_kib" -ge $((24 * 1024 * 1024)) ]] || die 'RAM below 24 GiB'
 parent="$(dirname "$WORK")"; [[ "$(findmnt -T "$parent" -no FSTYPE 2>/dev/null || true)" == tmpfs ]] || die 'work parent must be tmpfs'
 free_kib="$(df -Pk "$parent" | awk 'NR == 2 {print $4}')"; [[ "$free_kib" =~ ^[0-9]+$ && "$free_kib" -ge $((8 * 1024 * 1024)) ]] || die 'tmpfs below 8 GiB'
 required_env() { local name="$1" value="${!1-}"; [[ -n "$value" ]] || die "$name is required"; printf '%s' "$value"; }
