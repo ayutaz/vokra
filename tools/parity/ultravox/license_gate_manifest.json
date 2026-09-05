@@ -162,6 +162,15 @@
     }
   ],
   "license_rows_sha256": "4d5db673dc476c2a273da95431912a90c0c8d2c445122a06396171ca775ef257",
+  "dependency_audit_evidence": {
+    "schema": "vokra-ultravox-dependency-audit-compact-v1",
+    "path": "dependency_audit_evidence.json",
+    "sha256": "64fde03fcb8e8e770ba8cb51bc9963ab97efd56d530725eea304f0d542c91b03",
+    "full_audit_sha256": "22698a69938a657327a6ef074d4505e060ede67f4e8e3f3ece97d4085a92e6df",
+    "status": "PENDING_OWNER_APPROVAL",
+    "approval_scope_sha256": "35e73acdfdffa729464400a11cdc2f890b216dc59476a79acebd24bfe8ae555b"
+  },
+  "approval_scope_sha256": "35e73acdfdffa729464400a11cdc2f890b216dc59476a79acebd24bfe8ae555b",
   "approval": {
     "status": "OWNER_SIGNOFF_REQUIRED",
     "signer": null,

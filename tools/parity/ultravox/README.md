@@ -71,3 +71,19 @@ scripts/verify/apple-silicon-ultravox.sh \
 That script performs no download, upload, conversion, publication, or model
 deletion. It runs the same real-weight gate on Apple CPU and Metal, recording
 unsupported operations as failures rather than using a CPU fallback.
+
+The tracked `dependency_audit_evidence.json` is a compact, model-free VAST
+proof for the exact clean audit head. It binds all 37 active Linux rows and
+three inactive/virtual lock rows, declared licenses/classifiers, publisher and
+native counts/canonical hashes/unsafe lists, the locked-sdist
+`tokenizers-0.22.2/tokenizers/LICENSE` fallback, and the exact closure. Fixie
+metadata is authenticated at its exact HF revision; the gated Meta companion
+records `LICENSE.txt` existence and
+`401` for its raw license request, without claiming that its bytes were
+reviewed. The proof also records the public model LICENSE bytes and the
+Fixie/Meta `404`/`401` fallback facts, and explicitly records no model import,
+no Cargo, and `NO_UPLOAD`. It is evidence, not owner sign-off: package/license
+rows and signer/digest remain pending, and publication stays blocked until the
+owner reviews the bound scope. The evidence proof is independent of numerical
+model parity; the parity result and Apple CPU/Metal result must come from their
+respective VAST/Apple runs.

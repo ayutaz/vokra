@@ -185,11 +185,36 @@ def _contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, 
     manifest = strict_json(manifest_path)
     if not isinstance(manifest, dict) or manifest.get("gate_version") != license_gate.GATE_VERSION:
         raise AuditError("Ultravox manifest version is unsupported")
-    expected_keys = {"gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "required_package_rows", "package_review_rows", "package_review_rows_sha256", "forbidden_dependencies", "identities", "license_rows", "license_rows_sha256", "approval", "publication"}
+    expected_keys = {"gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "required_package_rows", "package_review_rows", "package_review_rows_sha256", "forbidden_dependencies", "identities", "license_rows", "license_rows_sha256", "dependency_audit_evidence", "approval_scope_sha256", "approval", "publication"}
     if set(manifest) != expected_keys:
         raise AuditError("Ultravox manifest schema drifted")
     if sha256_bytes(project_bytes) != manifest["project_sha256"] or sha256_bytes(lock_bytes) != manifest["lock_sha256"]:
         raise AuditError("pyproject.toml/uv.lock bytes differ from the reviewed contract")
+    evidence_ref = manifest["dependency_audit_evidence"]
+    if (
+        not isinstance(evidence_ref, dict)
+        or set(evidence_ref) != {"schema", "path", "sha256", "full_audit_sha256", "status", "approval_scope_sha256"}
+        or evidence_ref["schema"] != license_gate.COMPACT_SCHEMA
+        or evidence_ref["path"] != "dependency_audit_evidence.json"
+        or evidence_ref["status"] != "PENDING_OWNER_APPROVAL"
+        or not isinstance(evidence_ref["sha256"], str)
+        or not license_gate.HEX64.fullmatch(evidence_ref["sha256"])
+        or evidence_ref["full_audit_sha256"] != license_gate.FULL_AUDIT_SHA256
+        or not isinstance(evidence_ref["approval_scope_sha256"], str)
+        or not license_gate.HEX64.fullmatch(evidence_ref["approval_scope_sha256"])
+        or not isinstance(manifest.get("approval_scope_sha256"), str)
+        or not license_gate.HEX64.fullmatch(manifest["approval_scope_sha256"])
+        or evidence_ref["approval_scope_sha256"] != manifest["approval_scope_sha256"]
+        or license_gate.canonical_digest(license_gate.approval_scope(manifest)) != manifest["approval_scope_sha256"]
+    ):
+        raise AuditError("Ultravox compact dependency evidence contract is malformed or unbound")
+    evidence_path = project / evidence_ref["path"]
+    if not regular_file(evidence_path) or sha256_bytes(evidence_path.read_bytes()) != evidence_ref["sha256"]:
+        raise AuditError("Ultravox compact dependency evidence is missing or hash-mismatched")
+    try:
+        license_gate.validate_dependency_audit_evidence(evidence_path, evidence_ref, manifest)
+    except SystemExit as exc:
+        raise AuditError("Ultravox compact dependency evidence failed strict validation") from exc
     try:
         _validate_lock_shape(lock_data, project_data)
     except (KeyError, TypeError, ValueError, AuditError) as exc:
