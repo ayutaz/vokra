@@ -66,10 +66,12 @@ Before any Scaleway allocation:
 
 ### 2026-09-06 exact-head progress
 
-The branch has advanced through `1ce957df` locally. The PR remote remains at
-`559b8b36`; all checks at that remote commit are green and GitHub reports the
-PR mergeable. Do not merge it as the final Mac-coverage change yet: the local
-audit and BF16 commits have not been pushed or checked by GitHub.
+The implementation head advanced through `316f6ab5` in this wave. The PR
+remote at the start of the wave was `d241305f`; all checks at that remote
+commit were green and GitHub reported the PR mergeable. The four
+implementation/test commits below were deliberately kept unpushed until their
+VAST verification completed. Do not merge the PR as the final Mac-coverage
+change while the remaining inventory below is still open.
 
 The dependency-audit hardening and exact model-free VAST reruns are now
 recorded in the commits immediately before `7d0119c9`:
@@ -110,6 +112,37 @@ the 10-package owner-review candidate SHA-256 is
 No model, package install/import or upload was involved. The candidate remains
 fail-closed as `OWNER_REVIEW_REQUIRED`, `BLOCKED_UNREVIEWED_TRANSITIVE` and
 `NO_UPLOAD`; it is evidence for owner review, not approval or real parity.
+
+Four additional reviewed commits close source-level gaps without downloading
+or running a model on the maintainer Mac:
+
+- `e21aaedd` adds a nonzero synthetic whole-chain HiFTNet CPU/Metal parity
+  harness, including the one-final-readback contract and explicit off-Apple
+  no-fallback result.
+- `53e3e011` fixes BigVGAN's resident Metal alias-free upsample to preserve the
+  upstream replicate-pad, grouped transposed-convolution and asymmetric-crop
+  semantics instead of routing it through the distinct causal FIR primitive.
+- `a956d5f3` exposes raw-BF16 activation x raw-BF16 weight GEMM through the
+  common compute seam. CPU selects the existing Scalar, AVX-512 BF16 or Arm
+  BFMMLA implementation; Metal retains both inputs as `ushort` storage and
+  accumulates in FP32; CUDA/WebGPU fail explicitly without a CPU fallback.
+- `316f6ab5` confines Apple-only HiFTNet parity helpers to their actual target,
+  eliminating the Linux dead-code warnings found by the first VAST compile.
+
+Disposable VAST instance `49982196` checked exact implementation HEAD
+`316f6ab51ed5288ae5ab54e443e0e77128c5e914` on an AMD EPYC 9554 whose runtime
+CPU flags included `avx512_bf16`. The following gates completed successfully:
+
+- `cargo test --locked --workspace` (all executed unit, integration and
+  doctest suites passed; no failures), repeated after the warning fix at the
+  final implementation HEAD;
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`;
+- the ignored AVX-512 BF16 independent PyTorch-fixture parity test;
+- `cargo deny check`, `cargo audit` and `scripts/check-zero-deps.sh`.
+
+No model was acquired, executed or published during that run. Instance
+`49982196` was destroyed with its storage immediately after verification, and
+the post-destroy VAST inventory returned `[]`.
 
 The remaining factual dependency-license cases were checked against primary
 release sources and must stay fail-closed:
