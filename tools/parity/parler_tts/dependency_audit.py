@@ -51,7 +51,7 @@ MAX_ARCHIVE_MEMBERS = 10000
 MAX_SDIST_REDIRECTS = 4
 ELF_MAGIC = b"\x7fELF"
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd"}
-LICENSE_FILE_NAMES = {"license", "copying", "notice", "copyright"}
+LICENSE_FILE_NAMES = {"license", "licence", "copying", "notice", "copyright"}
 HF_LICENSE_HOSTS = {
     "huggingface.co",
     "hf.co",
@@ -263,7 +263,7 @@ def _is_license_path(relative: str) -> bool:
     basename = Path(relative).name.casefold()
     stem = Path(basename).stem
     return stem in LICENSE_FILE_NAMES or any(
-        token in basename for token in ("license", "copying", "notice", "copyright")
+        token in basename for token in ("license", "licence", "copying", "notice", "copyright")
     )
 
 
@@ -458,7 +458,7 @@ def _license_candidates_from_archive_impl(body: bytes, archive_format: str, arch
                         raise AuditError(f"sdist publisher license member size changed: {path}")
                     add_candidate(path, payload)
     if not candidates:
-        raise AuditError("locked sdist contains no LICENSE/COPYING/NOTICE/COPYRIGHT candidate")
+        raise AuditError("locked sdist contains no LICENSE/LICENCE/COPYING/NOTICE/COPYRIGHT candidate")
     return candidates
 
 
@@ -1018,6 +1018,8 @@ def self_test() -> int:
     assert duplicate["duplicate_identities"] == ["foo-bar==1.0"]
     assert duplicate["unexpected"] == ["foo-bar==1.0"]
     assert canonical_json({"b": 2, "a": 1}) == '{"a":1,"b":2}'
+    assert all(_is_license_path(path) for path in ("LICENCE", "licence.txt", "pkg/License.md"))
+    assert not _is_license_path("pkg/README.md")
 
     manifest = load_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
     items = _fixed_license_items(manifest)
@@ -1132,6 +1134,14 @@ def self_test() -> int:
     assert good_sdist["publisher_files"][0]["content_base64"] == base64.b64encode(b"demo license\n").decode("ascii")
     assert good_sdist["archive_identity"]["sha256"] == good_artifact["hash"]
     assert good_sdist["archive_identity"]["url_trace"] == [good_artifact["url"]]
+    british_archive = synthetic_tar([
+        ("demo-1/", b"", "dir"),
+        ("demo-1/LICENCE", b"british spelling\n", "file"),
+    ])
+    british_row, _ = synthetic_row(british_archive)
+    british_sdist = _fetch_locked_sdist(british_row, lambda url: (url, british_archive))
+    assert british_sdist["status"] == "PASS"
+    assert british_sdist["publisher_files"][0]["path"] == "demo-1/LICENCE"
     for label, mutate in (
         ("hash", lambda artifact: artifact.update(hash="sha256:" + "0" * 64)),
         ("size", lambda artifact: artifact.update(size=artifact["size"] + 1)),

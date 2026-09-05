@@ -44,9 +44,21 @@ output directory. The worker performs frozen `uv sync`, then runs the
 model-free auditor with `--no-sync` to record the exact installed closure,
 publisher license metadata/files, native and bundled payloads, and build-only
 facts in full and compact JSON. The dependency-only frozen `uv sync` may use
-the locked package indexes; the auditor itself performs no network requests.
-It does not acquire model/source weights,
+the locked package indexes. If an installed wheel has no publisher file, the
+auditor may make a bounded license-only request for that package's exact
+locked PyPI sdist, validating the host, path, redirects, size, and SHA256
+before recording archive license bytes/hashes. The `auditor_network_requests`
+field covers only these fallback requests, including failed fetch attempts; it
+does not count dependency sync traffic. It does not acquire model weights or
+any non-license source files,
 import Torch/Transformers, run Cargo, upload, or update the manifest/reviews.
+In the evidence, `publisher_license_files_missing` means the installed wheel
+did not contain a publisher file; `publisher_license_evidence_missing` means
+neither that wheel nor the locked-sdist fallback yielded license evidence.
+The latter is the fail-closed blocker, so a successful fallback is not reported
+as missing overall evidence. Compact evidence retains the network count and
+scope without credentials or response-body URLs beyond the locked artifact
+facts.
 The existing compact evidence and preflight gate remain unchanged until the
 fresh evidence is reviewed by the owner.
 

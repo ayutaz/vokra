@@ -49,7 +49,7 @@ REPORT_FIELDS = {
 PYPI_HOST = "files.pythonhosted.org"
 HF_HOSTS = {"huggingface.co", "hf.co", "cdn-lfs.huggingface.co", "cdn-lfs-us-1.hf.co"}
 ELF_MAGIC = b"\x7fELF"
-LICENSE_NAMES = {"license", "copying", "notice", "copyright"}
+LICENSE_NAMES = {"license", "licence", "copying", "notice", "copyright"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd"}
 MAX_LICENSE_BYTES = 2 * 1024 * 1024
 MAX_SDIST_BYTES = 64 * 1024 * 1024
@@ -566,10 +566,10 @@ def self_test() -> int:
         body = io.BytesIO()
         with tarfile.open(fileobj=body, mode="w:gz") as archive:
             directory_entry = tarfile.TarInfo("demo/"); directory_entry.type = tarfile.DIRTYPE; archive.addfile(directory_entry)
-            member = tarfile.TarInfo("demo/LICENSE"); payload = b"license"; member.size = len(payload); archive.addfile(member, io.BytesIO(payload))
+            member = tarfile.TarInfo("demo/LICENCE"); payload = b"licence"; member.size = len(payload); archive.addfile(member, io.BytesIO(payload))
         url = "https://files.pythonhosted.org/packages/demo-1.tar.gz"; artifact = {"url": url, "hash": "sha256:" + sha256_bytes(body.getvalue()), "size": len(body.getvalue()), "upload-time": "2026-01-01T00:00:00Z"}
         result = fetch_sdist({"name": "demo", "version": "1", "sdist": artifact}, lambda value: (value, body.getvalue()))
-        assert result["license_files"][0]["path"] == "demo/LICENSE"
+        assert result["license_files"][0]["path"] == "demo/LICENCE"
         for bad in (url.replace("https://", "https://audit-user@", 1), url.replace("files.pythonhosted.org", "files.pythonhosted.org:8443", 1), url + "?download=1", url + "#fragment"):
             try: fetch_sdist({"name": "demo", "version": "1", "sdist": {**artifact, "url": bad}}, lambda value: (_ for _ in ()).throw(AssertionError("unsafe sdist URL reached fetcher")))
             except AuditError: pass
@@ -594,6 +594,13 @@ def self_test() -> int:
         try: bounded.redirect_request(Request(item["requested_url"]), None, 302, "found", {}, item["requested_url"])
         except AuditError: pass
         else: raise AssertionError("overlong fixed LICENSE redirect accepted")
+        installed_root = Path(directory) / "installed"; installed_root.mkdir()
+        installed_license = installed_root / "LICENCE"; installed_license.write_bytes(b"installed licence")
+        class InstalledDistribution:
+            files = ["LICENCE"]
+            def locate_file(self, entry: Any) -> Path: return installed_root / str(entry)
+        installed_files, unsafe = publisher_files(InstalledDistribution())
+        assert not unsafe and installed_files[0]["path"] == "LICENCE"
     try: validate_report({"schema": SCHEMA, "status": "BLOCKED", "failures": [], "unknown": True})
     except AuditError: pass
     else: raise AssertionError("unknown report field accepted")

@@ -86,7 +86,7 @@ After the authorized frozen `uv sync`, the worker invokes
 `scripts/publish/vast-ai/audit-parler-tts-dependencies.sh` before acquiring any
 checkpoint or building Cargo. The audit is VAST/Linux x86_64-only and uses
 `--frozen --no-sync`; it records every lock row, the exact normalized installed
-name/version multiset, package license/NOTICE bytes and hashes, and native ELF
+name/version multiset, package LICENSE/LICENCE/COPYING/NOTICE/COPYRIGHT bytes and hashes, and native ELF
 `readelf -d` `NEEDED` entries. It fetches only the exact `LICENSE` paths for the
 Parler source, two pinned models, and DAC revision. Missing or redirected
 non-license paths are factual blockers, and no license class is inferred from
