@@ -25,6 +25,8 @@ import tomllib
 
 from audit_linux_closure import active_rows, audit, canonical_wheel_name, locked_artifact, sha256_file
 
+HTTP_USER_AGENT = "vokra-bigvgan-preflight/1.0"
+
 
 def fail(message: str) -> None:
     raise SystemExit(f"bigvgan Linux preflight: BLOCKED: {message}")
@@ -50,17 +52,24 @@ def download_locked(url: str, destination: Path, expected_size: int) -> None:
     """Stream one locked URL; no package manager or archive import is used."""
     initial_name = canonical_wheel_name(url)
     opened = False
+    request = urllib.request.Request(url, headers={"User-Agent": HTTP_USER_AGENT})
     try:
-        with urllib.request.urlopen(url, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=120) as response:
             if getattr(response, "status", 200) != 200:
-                fail(f"HTTP {response.status} fetching locked wheel")
+                fail(f"HTTP {response.status} fetching locked wheel {initial_name}")
             redirect_url = response.geturl()
-            if canonical_wheel_name(redirect_url) != initial_name:
-                fail(f"redirect changed locked wheel filename: {redirect_url}")
+            try:
+                redirect_name = canonical_wheel_name(redirect_url)
+            except SystemExit as exc:
+                fail(f"redirect for locked wheel {initial_name} rejected: {exc}")
+            if redirect_name != initial_name:
+                fail(f"redirect changed locked wheel filename {initial_name}: {redirect_url}")
             content_length = response.headers.get("Content-Length")
             if content_length is not None:
                 if not content_length.isdecimal() or int(content_length) != expected_size:
-                    fail(f"locked wheel Content-Length {content_length!r} != {expected_size}")
+                    fail(
+                        f"locked wheel {initial_name} Content-Length {content_length!r} != {expected_size}"
+                    )
             with destination.open("wb") as stream:
                 opened = True
                 written = 0
@@ -70,14 +79,21 @@ def download_locked(url: str, destination: Path, expected_size: int) -> None:
                         break
                     written += len(chunk)
                     if written > expected_size:
-                        fail(f"locked wheel response exceeded expected size {expected_size}")
+                        fail(
+                            f"locked wheel {initial_name} response exceeded expected size {expected_size}"
+                        )
                     stream.write(chunk)
                 if written != expected_size:
-                    fail(f"locked wheel response size {written} != {expected_size}")
+                    fail(f"locked wheel {initial_name} response size {written} != {expected_size}")
+    except urllib.error.HTTPError as exc:
+        if opened:
+            destination.unlink(missing_ok=True)
+        reason = f" ({exc.reason})" if exc.reason else ""
+        fail(f"HTTP {exc.code}{reason} fetching locked wheel {initial_name}")
     except (OSError, urllib.error.URLError) as exc:
         if opened:
             destination.unlink(missing_ok=True)
-        fail(f"download failed for locked wheel: {exc}")
+        fail(f"download failed for locked wheel {initial_name}: {exc}")
     except BaseException:
         if opened:
             destination.unlink(missing_ok=True)
@@ -118,11 +134,13 @@ def stage(
                 fetch(url, temporary, expected_size)
                 if temporary.stat().st_size != expected_size:
                     fail(
-                        f"{row['name']} wheel size {temporary.stat().st_size} != locked {expected_size}"
+                        f"{row['name']} wheel {filename} size {temporary.stat().st_size} != locked {expected_size}"
                     )
                 actual_hash = sha256_file(temporary)
                 if actual_hash != expected_hash:
-                    fail(f"{row['name']} wheel SHA-256 {actual_hash} != locked {expected_hash}")
+                    fail(
+                        f"{row['name']} wheel {filename} SHA-256 {actual_hash} != locked {expected_hash}"
+                    )
                 try:
                     os.link(temporary, destination)
                 except FileExistsError:
@@ -187,7 +205,14 @@ def self_test() -> None:
             return b""
 
     original_urlopen = urllib.request.urlopen
-    urllib.request.urlopen = lambda *_args, **_kwargs: RedirectResponse()
+    redirect_requests: list[urllib.request.Request] = []
+
+    def redirect_fetch(request: Any, **_kwargs: Any) -> RedirectResponse:
+        assert isinstance(request, urllib.request.Request)
+        redirect_requests.append(request)
+        return RedirectResponse()
+
+    urllib.request.urlopen = redirect_fetch
     redirect_destination = Path(tempfile.mkdtemp(prefix="bigvgan-redirect-")).joinpath("wheel.whl")
     try:
         try:
@@ -196,6 +221,8 @@ def self_test() -> None:
             assert "allowlisted" in str(exc)
         else:
             raise AssertionError("redirect to an untrusted host was accepted")
+        assert len(redirect_requests) == 1
+        assert redirect_requests[0].get_header("User-agent") == HTTP_USER_AGENT
     finally:
         urllib.request.urlopen = original_urlopen
         shutil.rmtree(redirect_destination.parent)
@@ -242,6 +269,37 @@ def self_test() -> None:
     finally:
         urllib.request.urlopen = original_urlopen
         shutil.rmtree(payload_destination.parent)
+
+    http_error_destination = Path(tempfile.mkdtemp(prefix="bigvgan-http-error-")).joinpath("wheel.whl")
+    original_urlopen = urllib.request.urlopen
+
+    def raise_http_error(*_args: Any, **_kwargs: Any) -> Any:
+        raise urllib.error.HTTPError(
+            "https://files.pythonhosted.org/packages/wheel.whl",
+            403,
+            "Cloudflare test response",
+            hdrs=None,
+            fp=None,
+        )
+
+    try:
+        urllib.request.urlopen = raise_http_error
+        try:
+            download_locked(
+                "https://files.pythonhosted.org/packages/wheel.whl",
+                http_error_destination,
+                3,
+            )
+        except SystemExit as exc:
+            message = str(exc)
+            assert "HTTP 403" in message
+            assert "wheel.whl" in message
+        else:
+            raise AssertionError("HTTP error was accepted")
+        assert not http_error_destination.exists()
+    finally:
+        urllib.request.urlopen = original_urlopen
+        shutil.rmtree(http_error_destination.parent)
 
     with tempfile.TemporaryDirectory(prefix="bigvgan-preflight-") as directory:
         root = Path(directory)
