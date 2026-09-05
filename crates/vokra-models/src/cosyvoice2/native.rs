@@ -134,6 +134,123 @@ pub trait RandomSource {
     fn next_f32(&mut self) -> f32;
 }
 
+/// Samples one token using the official CosyVoice2 RAS ordering.
+///
+/// The first draw is always from the stable, descending top-k/top-p nucleus.
+/// If that selected token is over-represented in the recent window, a second
+/// draw is made from the full stable softmax.  The otherwise-unused upstream
+/// `random_sampling(..., sampling)` parameter is intentionally not propagated
+/// into the fallback helper.
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
+pub fn ras_sampling(
+    logits: &[f32],
+    decoded_tokens: &[u32],
+    sampling: SamplingConfig,
+    random: &mut dyn RandomSource,
+) -> Result<u32> {
+    if logits.is_empty()
+        || logits.iter().any(|value| !value.is_finite())
+        || !sampling.top_p.is_finite()
+        || !(0.0 < sampling.top_p && sampling.top_p <= 1.0)
+        || sampling.top_k == 0
+        || sampling.win_size == 0
+        || !sampling.tau_r.is_finite()
+        || sampling.tau_r <= 0.0
+    {
+        return Err(VokraError::InvalidArgument(
+            "cosyvoice2 native: RAS logits and configuration must be finite and valid".into(),
+        ));
+    }
+
+    let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !max_logit.is_finite() {
+        return Err(VokraError::InvalidArgument(
+            "cosyvoice2 native: RAS logits have no finite maximum".into(),
+        ));
+    }
+    let mut weights = Vec::with_capacity(logits.len());
+    let mut total = 0.0f32;
+    for &logit in logits {
+        let weight = (logit - max_logit).exp();
+        if !weight.is_finite() {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 native: RAS softmax produced a non-finite weight".into(),
+            ));
+        }
+        total += weight;
+        weights.push(weight);
+    }
+    if !total.is_finite() || total <= 0.0 {
+        return Err(VokraError::InvalidArgument(
+            "cosyvoice2 native: RAS softmax has no positive probability mass".into(),
+        ));
+    }
+
+    let mut ranked: Vec<usize> = (0..weights.len()).collect();
+    ranked.sort_by(
+        |&left, &right| match weights[right].partial_cmp(&weights[left]) {
+            Some(std::cmp::Ordering::Equal) | None => left.cmp(&right),
+            Some(ordering) => ordering,
+        },
+    );
+    ranked.truncate(sampling.top_k.min(ranked.len()));
+    let mut nucleus = Vec::with_capacity(ranked.len());
+    let mut nucleus_total = 0.0f32;
+    for index in ranked {
+        nucleus_total += weights[index];
+        nucleus.push(index);
+        if nucleus_total / total >= sampling.top_p {
+            break;
+        }
+    }
+    if !nucleus_total.is_finite() || nucleus_total <= 0.0 || nucleus.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "cosyvoice2 native: RAS nucleus has no positive probability mass".into(),
+        ));
+    }
+
+    let draw = random.next_f32();
+    let nucleus_selected = sample_weighted(&nucleus, &weights, nucleus_total, draw)?;
+    let recent_start = decoded_tokens.len().saturating_sub(sampling.win_size);
+    let repeats = decoded_tokens[recent_start..]
+        .iter()
+        .filter(|&&token| token == nucleus_selected as u32)
+        .count();
+    if (repeats as f32) >= (sampling.win_size as f32) * sampling.tau_r {
+        let fallback_draw = random.next_f32();
+        return sample_weighted(
+            &(0..weights.len()).collect::<Vec<_>>(),
+            &weights,
+            total,
+            fallback_draw,
+        );
+    }
+    Ok(nucleus_selected as u32)
+}
+
+fn sample_weighted(indices: &[usize], weights: &[f32], total: f32, draw: f32) -> Result<u32> {
+    if !draw.is_finite() || !(0.0..1.0).contains(&draw) {
+        return Err(VokraError::InvalidArgument(
+            "cosyvoice2 native: RAS random draw must be finite and in [0, 1)".into(),
+        ));
+    }
+    let threshold = draw * total;
+    let mut cumulative = 0.0f32;
+    for &index in indices {
+        cumulative += weights[index];
+        if threshold < cumulative {
+            return Ok(index as u32);
+        }
+    }
+    indices
+        .last()
+        .copied()
+        .map(|index| index as u32)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("cosyvoice2 native: RAS sample set is empty".into())
+        })
+}
+
 /// A captured prefix of upstream CausalConditionalCFM's fixed noise packet,
 /// stored in `[80, frames]` row-major layout. Arbitrary caller noise is not a
 /// CosyVoice2 parity oracle.
@@ -1328,5 +1445,174 @@ mod tests {
                 .synthesize(&conditioning(), &noise, &mut Random)
                 .is_err()
         );
+    }
+
+    struct Draws {
+        values: Vec<f32>,
+        cursor: usize,
+    }
+
+    impl Draws {
+        fn new(values: &[f32]) -> Self {
+            Self {
+                values: values.to_vec(),
+                cursor: 0,
+            }
+        }
+    }
+
+    impl RandomSource for Draws {
+        fn next_f32(&mut self) -> f32 {
+            let value = self.values[self.cursor];
+            self.cursor += 1;
+            value
+        }
+    }
+
+    #[test]
+    fn ras_sampling_applies_top_p_after_stable_top_k() {
+        let mut draws = Draws::new(&[0.8]);
+        let selected = ras_sampling(
+            &[4.0, 3.0, 2.0, 1.0],
+            &[],
+            SamplingConfig {
+                top_p: 0.7,
+                top_k: 3,
+                ..SamplingConfig::default()
+            },
+            &mut draws,
+        )
+        .unwrap();
+        assert_eq!(selected, 1);
+        assert_eq!(draws.cursor, 1);
+
+        let mut top_k_draw = Draws::new(&[0.99]);
+        let selected = ras_sampling(
+            &[0.0, 10.0, 20.0],
+            &[],
+            SamplingConfig {
+                top_p: 1.0,
+                top_k: 1,
+                ..SamplingConfig::default()
+            },
+            &mut top_k_draw,
+        )
+        .unwrap();
+        assert_eq!(selected, 2);
+    }
+
+    #[test]
+    fn ras_sampling_uses_lower_index_for_probability_ties() {
+        let mut first = Draws::new(&[0.49]);
+        assert_eq!(
+            ras_sampling(
+                &[1.0, 1.0],
+                &[],
+                SamplingConfig {
+                    top_p: 1.0,
+                    top_k: 2,
+                    ..SamplingConfig::default()
+                },
+                &mut first,
+            )
+            .unwrap(),
+            0
+        );
+        let mut second = Draws::new(&[0.51]);
+        assert_eq!(
+            ras_sampling(
+                &[1.0, 1.0],
+                &[],
+                SamplingConfig {
+                    top_p: 1.0,
+                    top_k: 2,
+                    ..SamplingConfig::default()
+                },
+                &mut second,
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn ras_sampling_repetition_fallback_consumes_a_second_draw() {
+        let mut draws = Draws::new(&[0.4, 0.99]);
+        let selected = ras_sampling(
+            &[2.0, 3.0, 0.0],
+            &[1, 1, 0, 2],
+            SamplingConfig {
+                top_p: 1.0,
+                top_k: 3,
+                win_size: 4,
+                tau_r: 0.5,
+            },
+            &mut draws,
+        )
+        .unwrap();
+        assert_eq!(selected, 2);
+        assert_eq!(draws.cursor, 2);
+
+        let mut no_fallback = Draws::new(&[0.4]);
+        let selected = ras_sampling(
+            &[2.0, 3.0, 0.0],
+            &[0, 0, 2, 2],
+            SamplingConfig {
+                top_p: 1.0,
+                top_k: 3,
+                win_size: 4,
+                tau_r: 0.5,
+            },
+            &mut no_fallback,
+        )
+        .unwrap();
+        assert_eq!(selected, 1);
+        assert_eq!(no_fallback.cursor, 1);
+    }
+
+    #[test]
+    fn ras_sampling_rejects_empty_nonfinite_and_invalid_inputs() {
+        let valid = SamplingConfig::default();
+        for logits in [&[][..], &[f32::NAN][..], &[f32::INFINITY][..]] {
+            let mut draws = Draws::new(&[0.0]);
+            assert!(ras_sampling(logits, &[], valid, &mut draws).is_err());
+            assert_eq!(draws.cursor, 0);
+        }
+        for config in [
+            SamplingConfig {
+                top_p: 0.0,
+                ..valid
+            },
+            SamplingConfig {
+                top_p: f32::NAN,
+                ..valid
+            },
+            SamplingConfig {
+                top_p: 1.1,
+                ..valid
+            },
+            SamplingConfig { top_k: 0, ..valid },
+            SamplingConfig {
+                win_size: 0,
+                ..valid
+            },
+            SamplingConfig {
+                tau_r: 0.0,
+                ..valid
+            },
+            SamplingConfig {
+                tau_r: f32::NAN,
+                ..valid
+            },
+        ] {
+            let mut draws = Draws::new(&[0.0]);
+            assert!(ras_sampling(&[1.0], &[], config, &mut draws).is_err());
+            assert_eq!(draws.cursor, 0);
+        }
+        for draw in [f32::NAN, -0.1, 1.0] {
+            let mut draws = Draws::new(&[draw]);
+            assert!(ras_sampling(&[1.0], &[], valid, &mut draws).is_err());
+            assert_eq!(draws.cursor, 1);
+        }
     }
 }
