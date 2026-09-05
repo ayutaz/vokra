@@ -15,6 +15,10 @@ CONFIG_PATH='cosyvoice2.yaml'
 CONFIG_BYTES=7330
 CONFIG_SHA256='0af2c0d010c477187c39f3e8fd5f1ae2e4e6f90ad03ba37c10ed6c6a87b05959'
 CONFIG_GIT_BLOB_SHA1='bc19267bbfd373c9a760b7667a74349ddd487db1'
+QWEN_CONFIG_PATH='CosyVoice-BlankEN/config.json'
+QWEN_CONFIG_BYTES=659
+QWEN_CONFIG_SHA256='168aa1bd401abc3bc262ba15ba4e499627a8b4e006e9d050b47c22de20660185'
+QWEN_CONFIG_GIT_BLOB_SHA1='463b055262b6c66c4629a74a4b300bfe2ed31d3c'
 LLM_BYTES=2023316821
 LLM_SHA256='b144ef55b51ce8cfb79a73c90dbba0bdaba4e451c0ebcfab20f769264f84a608'
 FLOW_BYTES=450575567
@@ -36,9 +40,10 @@ self_test() {
   for token in \
     "$MODEL_REPOSITORY" "$MODEL_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" \
     "$LICENSE_SHA256" "$CONFIG_PATH" "$CONFIG_BYTES" "$CONFIG_SHA256" "$CONFIG_GIT_BLOB_SHA1" \
+    "$QWEN_CONFIG_PATH" "$QWEN_CONFIG_BYTES" "$QWEN_CONFIG_SHA256" "$QWEN_CONFIG_GIT_BLOB_SHA1" \
     "$LLM_BYTES" "$LLM_SHA256" "$FLOW_BYTES" "$FLOW_SHA256" \
     'MIN_MEM_GIB=8' 'MIN_TMPFS_GIB=4' 'Linux x86_64 VAST' \
-    '--component' '--config' 'llm|flow' 'INSPECTION_ONLY' 'NOT_RUN' 'NO_UPLOAD' \
+    '--component' '--config' '--qwen-config' 'llm|flow' 'Qwen' 'ACQUIRED_AND_HASH_VERIFIED' 'INSPECTION_ONLY' 'NOT_RUN' 'NO_UPLOAD' \
     'DATA_PKL_ONLY' 'torch_pickle_manifest.py' 'TENSOR_STORAGE_MEMBERS_NOT_OPENED' \
     '--retry 4' '--retry-delay 5' '--retry-max-time 120' '--retry-all-errors'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test missing contract: $token"; fail=1; }
@@ -87,6 +92,7 @@ case "$component" in
 esac
 MODEL_URL="https://huggingface.co/$MODEL_REPOSITORY/resolve/$MODEL_REVISION/$MODEL_PATH?download=true"
 CONFIG_URL="https://huggingface.co/$MODEL_REPOSITORY/resolve/$MODEL_REVISION/$CONFIG_PATH?download=true"
+QWEN_CONFIG_URL="https://huggingface.co/$MODEL_REPOSITORY/resolve/$MODEL_REVISION/$QWEN_CONFIG_PATH?download=true"
 
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'Linux x86_64 VAST required'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 required'
@@ -105,6 +111,7 @@ WORK="$(cd "$WORK" && pwd)"
 
 checkpoint="$WORK/model/$MODEL_PATH"
 config="$WORK/model/$CONFIG_PATH"
+qwen_config=''
 source="$WORK/source/CosyVoice"
 evidence="$WORK/evidence"
 log_file="$WORK/validation.log"
@@ -116,6 +123,15 @@ log "downloading only the pinned $CONFIG_PATH sidecar"
 curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-delay 5 --retry-max-time 120 --retry-all-errors --output "$config" "$CONFIG_URL" >>"$log_file" 2>&1
 [[ "$(stat -c '%s' "$config")" == "$CONFIG_BYTES" ]] || die 'downloaded cosyvoice2.yaml byte count mismatch'
 [[ "$(sha256sum "$config" | awk '{print $1}')" == "$CONFIG_SHA256" ]] || die 'downloaded cosyvoice2.yaml SHA-256 mismatch'
+if [[ "$component" == llm ]]; then
+  qwen_config="$WORK/model/$QWEN_CONFIG_PATH"
+  mkdir -p "$(dirname "$qwen_config")"
+  log "downloading only the pinned $QWEN_CONFIG_PATH sidecar for llm"
+  curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-delay 5 --retry-max-time 120 --retry-all-errors --output "$qwen_config" "$QWEN_CONFIG_URL" >>"$log_file" 2>&1
+  [[ "$(stat -c '%s' "$qwen_config")" == "$QWEN_CONFIG_BYTES" ]] || die 'downloaded Qwen config.json byte count mismatch'
+  [[ "$(sha256sum "$qwen_config" | awk '{print $1}')" == "$QWEN_CONFIG_SHA256" ]] || die 'downloaded Qwen config.json SHA-256 mismatch'
+  [[ "$(git hash-object "$qwen_config")" == "$QWEN_CONFIG_GIT_BLOB_SHA1" ]] || die 'downloaded Qwen config.json Git blob mismatch'
+fi
 
 git clone --no-tags --filter=blob:none "$SOURCE_URL" "$source" >>"$log_file" 2>&1
 git -C "$source" checkout --detach "$SOURCE_REVISION" >>"$log_file" 2>&1
@@ -123,8 +139,12 @@ git -C "$source" checkout --detach "$SOURCE_REVISION" >>"$log_file" 2>&1
 [[ -z "$(git -C "$source" status --porcelain --untracked-files=all)" ]] || die 'source checkout is dirty'
 [[ "$(sha256sum "$source/LICENSE" | awk '{print $1}')" == "$LICENSE_SHA256" ]] || die 'Apache LICENSE SHA-256 mismatch'
 
+inspector_args=(--component "$component" --checkpoint "$checkpoint" --source "$source" --config "$config" --output "$evidence")
+if [[ "$component" == llm ]]; then
+  inspector_args+=(--qwen-config "$qwen_config")
+fi
 set +e
-"${UV_CMD[@]}" "$INSPECTOR" --component "$component" --checkpoint "$checkpoint" --source "$source" --config "$config" --output "$evidence" >>"$log_file" 2>&1
+"${UV_CMD[@]}" "$INSPECTOR" "${inspector_args[@]}" >>"$log_file" 2>&1
 rc=$?
 set -e
 [[ "$rc" == 2 ]] || die "inspector returned unexpected status $rc"
@@ -155,6 +175,18 @@ if checkpoint.get("payload_reads") != "DATA_PKL_ONLY; TENSOR_STORAGE_MEMBERS_NOT
 config = manifest.get("model_config", {})
 if config.get("verification") != "ACQUIRED_AND_HASH_VERIFIED":
     raise SystemExit("config acquisition contract missing")
+qwen = manifest.get("qwen_config")
+if manifest["component"] == "llm":
+    if qwen != {
+        "path": "CosyVoice-BlankEN/config.json",
+        "bytes": 659,
+        "sha256": "168aa1bd401abc3bc262ba15ba4e499627a8b4e006e9d050b47c22de20660185",
+        "git_blob_sha1": "463b055262b6c66c4629a74a4b300bfe2ed31d3c",
+        "verification": "ACQUIRED_AND_HASH_VERIFIED",
+    }:
+        raise SystemExit("LLM Qwen config authentication contract missing")
+elif qwen is not None:
+    raise SystemExit("flow must not claim a Qwen config")
 print(f"component={manifest['component']} tensor_count={checkpoint.get('tensor_count')} manifest_sha256={checkpoint.get('manifest_sha256')}")
 PY
 mv "$log_file" "$evidence/validation.log"

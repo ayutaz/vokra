@@ -34,6 +34,10 @@ CONFIG_PATH = "cosyvoice2.yaml"
 CONFIG_BYTES = 7_330
 CONFIG_SHA256 = "0af2c0d010c477187c39f3e8fd5f1ae2e4e6f90ad03ba37c10ed6c6a87b05959"
 CONFIG_GIT_BLOB_SHA1 = "bc19267bbfd373c9a760b7667a74349ddd487db1"
+QWEN_CONFIG_PATH = "CosyVoice-BlankEN/config.json"
+QWEN_CONFIG_BYTES = 659
+QWEN_CONFIG_SHA256 = "168aa1bd401abc3bc262ba15ba4e499627a8b4e006e9d050b47c22de20660185"
+QWEN_CONFIG_GIT_BLOB_SHA1 = "463b055262b6c66c4629a74a4b300bfe2ed31d3c"
 
 # These are the authenticated source roles already recorded for this exact
 # CosyVoice revision.  Keeping the role hashes here makes this standalone
@@ -313,6 +317,30 @@ def authenticate_config(config: Path) -> dict[str, Any]:
     return {**MODEL_CONFIG, "sha256": actual_sha, "git_blob_sha1": actual_blob, "verification": "ACQUIRED_AND_HASH_VERIFIED"}
 
 
+def authenticate_qwen_config(config: Path) -> dict[str, Any]:
+    require_regular(config, QWEN_CONFIG_PATH)
+    if config.stat().st_size != QWEN_CONFIG_BYTES:
+        raise InspectionError("Qwen config.json byte count does not match pinned config")
+    actual_sha = sha256_file(config)
+    actual_blob = git_blob_sha1(config)
+    if actual_sha != QWEN_CONFIG_SHA256 or actual_blob != QWEN_CONFIG_GIT_BLOB_SHA1:
+        raise InspectionError("Qwen config.json identity mismatch")
+    return {
+        "path": QWEN_CONFIG_PATH,
+        "bytes": QWEN_CONFIG_BYTES,
+        "sha256": actual_sha,
+        "git_blob_sha1": actual_blob,
+        "verification": "ACQUIRED_AND_HASH_VERIFIED",
+    }
+
+
+def validate_component_config_requirements(component: str, qwen_config: Path | None) -> None:
+    if component == "llm" and qwen_config is None:
+        raise InspectionError("llm inspection requires the exact Qwen config.json sidecar")
+    if component == "flow" and qwen_config is not None:
+        raise InspectionError("flow inspection must not receive a Qwen config sidecar")
+
+
 def authenticate_source(source: Path, component: str) -> dict[str, Any]:
     if not source.is_absolute() or source.is_symlink() or not source.is_dir():
         raise InspectionError("source checkout must be an absolute regular directory")
@@ -387,13 +415,22 @@ def write_error(output: Path, component: str, message: str) -> None:
     (output / "manifest.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def inspect(checkpoint: Path, source: Path, config: Path, output: Path, root: Path, component: str) -> int:
+def inspect(
+    checkpoint: Path,
+    source: Path,
+    config: Path,
+    qwen_config: Path | None,
+    output: Path,
+    root: Path,
+    component: str,
+) -> int:
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise InspectionError("Linux x86_64 VAST is required")
     if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
         raise InspectionError("VOKRA_PUBLISH_ON_VAST=1 is required")
     if output.is_symlink() or (output.exists() and (not output.is_dir() or any(output.iterdir()))):
         raise InspectionError("inspection output must be absent or empty")
+    validate_component_config_requirements(component, qwen_config)
     require_regular(checkpoint, COMPONENTS[component]["path"])
     expected = COMPONENTS[component]
     if checkpoint.stat().st_size != expected["bytes"]:
@@ -402,6 +439,7 @@ def inspect(checkpoint: Path, source: Path, config: Path, output: Path, root: Pa
     if actual_sha != expected["sha256"]:
         raise InspectionError(f"{expected['path']} SHA-256 does not match pinned artifact")
     config_record = authenticate_config(config)
+    qwen_config_record = authenticate_qwen_config(qwen_config) if qwen_config is not None else None
     source_record = authenticate_source(source, component)
     checkpoint_manifest = inspect_checkpoint(checkpoint, root, component)
     payload = {
@@ -431,6 +469,8 @@ def inspect(checkpoint: Path, source: Path, config: Path, output: Path, root: Pa
             "No CPU, Metal, or numerical parity execution was performed.",
         ],
     }
+    if qwen_config_record is not None:
+        payload["qwen_config"] = qwen_config_record
     output.mkdir(parents=True, exist_ok=True)
     (output / "manifest.json").write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     return 2
@@ -475,6 +515,29 @@ def self_test() -> None:
         assert raw == synthetic_pickle() and info["data_pickle_member"] == "archive/data.pkl"
         manifest = inspect_checkpoint(valid, root, "flow")
         assert manifest["tensor_count"] == 1 and manifest["tensors"]["w"]["shape"] == [2, 2]
+        assert QWEN_CONFIG_BYTES == 659
+        assert QWEN_CONFIG_SHA256 == "168aa1bd401abc3bc262ba15ba4e499627a8b4e006e9d050b47c22de20660185"
+        assert QWEN_CONFIG_GIT_BLOB_SHA1 == "463b055262b6c66c4629a74a4b300bfe2ed31d3c"
+        try:
+            validate_component_config_requirements("llm", None)
+        except InspectionError:
+            pass
+        else:
+            raise AssertionError("LLM accepted a missing Qwen config")
+        try:
+            validate_component_config_requirements("flow", work / "qwen-config.json")
+        except InspectionError:
+            pass
+        else:
+            raise AssertionError("flow accepted a Qwen config")
+        tampered_qwen = work / "tampered-qwen-config.json"
+        tampered_qwen.write_bytes(b"tampered" + b"\0" * (QWEN_CONFIG_BYTES - len(b"tampered")))
+        try:
+            authenticate_qwen_config(tampered_qwen)
+        except InspectionError:
+            pass
+        else:
+            raise AssertionError("tampered Qwen config accepted")
         unsafe = work / "unsafe.pt"
         with zipfile.ZipFile(unsafe, "w") as archive:
             archive.writestr("../archive/data.pkl", synthetic_pickle())
@@ -511,7 +574,7 @@ def self_test() -> None:
                 pass
             else:
                 raise AssertionError(f"unsafe member accepted: {name!r}")
-        for flag in ("--self-test", "--component", "--checkpoint", "--source", "--config", "--output"):
+        for flag in ("--self-test", "--component", "--checkpoint", "--source", "--config", "--qwen-config", "--output"):
             try:
                 cli_flag_counts([flag, flag])
             except InspectionError:
@@ -525,7 +588,7 @@ def cli_flag_counts(argv: list[str]) -> dict[str, int]:
     def flag_count(name: str) -> int:
         return sum(arg == name or arg.startswith(name + "=") for arg in argv)
 
-    counts = {name: flag_count(name) for name in ("--self-test", "--component", "--checkpoint", "--source", "--config", "--output")}
+    counts = {name: flag_count(name) for name in ("--self-test", "--component", "--checkpoint", "--source", "--config", "--qwen-config", "--output")}
     if any(count > 1 for count in counts.values()):
         raise InspectionError("duplicate CLI option is not allowed")
     return counts
@@ -538,6 +601,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--source", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--qwen-config", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
@@ -549,10 +613,15 @@ def parse_args() -> argparse.Namespace:
     component_flags = counts["--component"]
     if not args.self_test and component_flags != 1:
         parser.error("normal run requires exactly one --component llm|flow")
-    if args.self_test and (component_flags or any(value is not None for value in (args.checkpoint, args.source, args.config, args.output))):
+    if args.self_test and (component_flags or any(value is not None for value in (args.checkpoint, args.source, args.config, args.qwen_config, args.output))):
         parser.error("--self-test accepts no component or paths")
     if not args.self_test and any(value is None for value in (args.checkpoint, args.source, args.config, args.output)):
         parser.error("normal run requires --component, --checkpoint, --source, --config, and --output")
+    if not args.self_test:
+        if args.component == "llm" and args.qwen_config is None:
+            parser.error("llm inspection requires --qwen-config")
+        if args.component == "flow" and args.qwen_config is not None:
+            parser.error("flow inspection must not receive --qwen-config")
     return args
 
 
@@ -566,7 +635,7 @@ def main() -> int:
             return 1
         return 0
     try:
-        return inspect(args.checkpoint, args.source, args.config, args.output, Path(__file__).resolve().parents[2], args.component)
+        return inspect(args.checkpoint, args.source, args.config, args.qwen_config, args.output, Path(__file__).resolve().parents[2], args.component)
     except Exception as error:
         write_error(args.output, args.component, str(error))
         print(f"cosyvoice2_component_inspect: {error}", file=sys.stderr)
