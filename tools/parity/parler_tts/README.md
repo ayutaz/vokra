@@ -41,6 +41,38 @@ config is bound to its immutable Git blob identity. DAC license/native/bundled
 review still requires owner approval, so production is intentionally
 fail-closed.
 
+The release-to-HF DAC identity proof is generated only on a disposable VAST
+Linux/x86_64 worker by
+`uv run --project tools/parity/parler_tts --frozen python dac_provenance.py`.
+It takes four existing files (`weights.pth`, `model.safetensors`, the exact
+`config.json`, and the release-tag `LICENSE`) plus an absent output path. The
+generator verifies fixed byte counts and SHA-256 values, loads the PTH only
+with `torch.load(..., weights_only=True)`, checks the exact DAC kwargs/config and
+MIT release license, then proves the 301-tensor `model.` prefix bijection with
+shape, dtype, value, and canonical byte digests. It refuses non-VAST hosts,
+dirty or symlinked inputs/checkouts, and output overwrite. The JSON contains no
+tensor values and is `NO_UPLOAD`; this is provenance evidence only, not
+inference or numerical parity evidence.
+
+Example VAST invocation:
+
+```sh
+VOKRA_PUBLISH_ON_VAST=1 uv run --project tools/parity/parler_tts --frozen \
+  python tools/parity/parler_tts/dac_provenance.py \
+  --official-weights /root/dac/weights.pth \
+  --hf-safetensors /root/dac/model.safetensors \
+  --hf-config /root/dac/config.json \
+  --release-license /root/dac/LICENSE \
+  --output /root/evidence/dac-provenance.json
+```
+
+The offline synthetic contract test is safe to run locally:
+
+```sh
+uv run --project tools/parity/parler_tts --frozen \
+  python tools/parity/parler_tts/dac_provenance.py --self-test
+```
+
 The Transformers route is explicitly `BLOCKED_UNVERIFIED_API_SMOKE`; the
 dumper exits before third-party imports or model acquisition until an owner
 records authenticated API-smoke evidence. The API-smoke probe is
