@@ -2754,7 +2754,7 @@ mod tests {
             backbone.step_embeddings(&mut state, &[f32::NAN; 8], 1),
             Err(VokraError::InvalidArgument(_))
         ));
-        let mut nonfinite_weights = LlmWeights::synthesized(test_config(), 7).unwrap();
+        let mut nonfinite_weights = LlmWeights::synthesized(&test_config(), 7).unwrap();
         nonfinite_weights.token_emb[0] = f32::INFINITY;
         let nonfinite_backbone = LlmBackbone::new(test_config(), nonfinite_weights).unwrap();
         assert!(matches!(

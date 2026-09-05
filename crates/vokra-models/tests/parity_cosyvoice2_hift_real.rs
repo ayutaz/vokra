@@ -79,7 +79,7 @@ fn field<'a>(root: &'a JsonValue, path: &[&str]) -> &'a JsonValue {
             .unwrap_or_else(|| panic!("missing manifest field {}", path.join(".")))
     })
 }
-fn string(root: &JsonValue, path: &[&str]) -> &str {
+fn string<'a>(root: &'a JsonValue, path: &[&str]) -> &'a str {
     field(root, path)
         .as_str()
         .unwrap_or_else(|| panic!("manifest field {} is not a string", path.join(".")))
@@ -574,7 +574,10 @@ fn cosyvoice2_hift_real_cpu_parity() {
         CONFIG_BLOB_SHA1
     );
     assert_eq!(string(&manifest, &["source", "revision"]), SOURCE_REVISION);
-    assert_eq!(field(&manifest, &["source", "clean"]).as_bool(), Some(true));
+    assert!(matches!(
+        field(&manifest, &["source", "clean"]),
+        JsonValue::Bool(true)
+    ));
     assert_eq!(
         string(&manifest, &["source", "repository"]),
         "https://github.com/FunAudioLLM/CosyVoice.git"
@@ -633,10 +636,10 @@ fn cosyvoice2_hift_real_cpu_parity() {
         string(&manifest, &["uv_lock_sha256"])
     );
     assert_eq!(string(&manifest, &["execution", "device"]), "cpu");
-    assert_eq!(
-        field(&manifest, &["execution", "torch_deterministic_algorithms"]).as_bool(),
-        Some(true)
-    );
+    assert!(matches!(
+        field(&manifest, &["execution", "torch_deterministic_algorithms"]),
+        JsonValue::Bool(true)
+    ));
     assert_eq!(number(&manifest, &["execution", "threads"]), 1);
     assert_eq!(
         string(&manifest, &["execution", "entropy_override"]),
