@@ -27,7 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover
 SCHEMA = "vokra-moss-audio-tokenizer-v2-dependency-audit-v1"
 PYPI_HOST = "files.pythonhosted.org"
 LICENSE_HOSTS = {"cdn-lfs.huggingface.co", "cdn-lfs-us-1.hf.co"}
-LICENSE_NAMES = {"license", "copying", "notice", "copyright"}
+LICENSE_NAMES = {"license", "licence", "copying", "notice", "copyright"}
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
 ELF_MAGIC = b"\x7fELF"
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd"}
@@ -638,12 +638,31 @@ def self_test() -> int:
     mismatch = compare_multiset(["a==1"], ["a==2"]); assert mismatch["missing"] == ["a==1"] and mismatch["unexpected"] == ["a==2"]
     duplicate = compare_multiset(["a==1"], ["a==1", "a==1"]); assert duplicate["duplicate_identities"] == ["a==1"]
     assert not is_license_path("unlicensed-file") and not is_license_path("project-license")
+    assert not is_license_path("README")
     assert is_license_path("LICENSE") and is_license_path("LICENSE.txt") and is_license_path("COPYING-extra")
+    assert is_license_path("LICENCE") and is_license_path("licence.txt")
     body = io.BytesIO()
     with tarfile.open(fileobj=body, mode="w:gz") as t:
         info = tarfile.TarInfo("demo/LICENSE"); data = b"Apache\n"; info.size = len(data); t.addfile(info, io.BytesIO(data))
     raw = body.getvalue(); row = {"name": "demo", "version": "1", "source": {"registry": "https://pypi.org/simple"}, "sdist": {"url": f"https://{PYPI_HOST}/packages/demo-1.tar.gz", "hash": "sha256:"+sha(raw), "size": len(raw), "upload-time": "2026-01-01T00:00:00Z"}}
     got = fetch_locked_sdist(row, lambda u: ("demo-1.tar.gz", raw)); assert got["license_files"][0]["sha256"] == sha(b"Apache\n")
+    licence_body = io.BytesIO()
+    with tarfile.open(fileobj=licence_body, mode="w:gz") as t:
+        info = tarfile.TarInfo("tqdm-4.70.0/LICENCE"); data = b"Apache\n"; info.size = len(data); t.addfile(info, io.BytesIO(data))
+        info = tarfile.TarInfo("tqdm-4.70.0/README"); data = b"not license\n"; info.size = len(data); t.addfile(info, io.BytesIO(data))
+    licence_raw = licence_body.getvalue()
+    tqdm = next(row for row in rows if row["name"] == "tqdm" and row["version"] == "4.70.0")
+    tqdm_row = {**tqdm, "sdist": {**tqdm["sdist"], "hash": "sha256:"+sha(licence_raw), "size": len(licence_raw)}}
+    got = fetch_locked_sdist(tqdm_row, lambda u: (u, licence_raw))
+    assert got["license_files"][0]["path"] == "tqdm-4.70.0/LICENCE"
+    readme_only = io.BytesIO()
+    with zipfile.ZipFile(readme_only, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("tqdm-4.70.0/README", b"not license\n")
+    readme_raw = readme_only.getvalue()
+    readme_row = {**tqdm, "sdist": {**tqdm["sdist"], "hash": "sha256:"+sha(readme_raw), "size": len(readme_raw)}}
+    try: fetch_locked_sdist(readme_row, lambda u: (u, readme_raw))
+    except SdistError as exc: assert exc.acquired is True and exc.verified is True
+    else: raise AssertionError("accepted README-only archive")
     zipped = io.BytesIO()
     with zipfile.ZipFile(zipped, "w", compression=zipfile.ZIP_DEFLATED) as z:
         z.writestr("demo-1/COPYING", b"copying\n")
