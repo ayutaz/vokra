@@ -38,7 +38,24 @@ fail-closed.
 
 The Transformers route is explicitly `BLOCKED_UNVERIFIED_API_SMOKE`; the
 dumper exits before third-party imports or model acquisition until an owner
-records authenticated API-smoke evidence. Before any worker scratch creation,
+records authenticated API-smoke evidence. The API-smoke probe is
+`scripts/publish/vast-ai/run-parler-tts-api-smoke.sh`: on disposable
+Linux/x86_64 VAST it loads both exact checkpoints through
+`ParlerTTSForConditionalGeneration`, calls its official greedy `generate`
+with the fixed description/prompt IDs, and reaches the embedded DAC decode.
+It writes strict JSON evidence with revision, lock, package, input, output,
+and call-checkpoint hashes, including generated code and PCM shapes and
+digests. It is always
+`NO_UPLOAD`; it does not claim parity and does not alter the blocked status.
+It is staged behind the existing `preflight_gate.py` contract: the worker
+accepts only the gate's exact `v1` approval evidence (including scope,
+manifest, lock, pyproject, signer, and digest bindings), and runs that gate
+before scratch creation, dependency sync, source checkout, or model download.
+The Python worker also re-invokes that exact checked-in gate on direct
+production and evidence-validation calls, so the shell gate cannot be bypassed.
+The checked-in manifest is currently `PENDING_REVIEW`, so a legitimate audit
+and operator sign-off are required before this worker can execute.
+Before any worker scratch creation,
 source checkout, sync, or model download,
 `preflight_gate.py` binds exact project/lock bytes, canonical package
 version/source/marker/dependency rows, model/source/DAC identities, and
