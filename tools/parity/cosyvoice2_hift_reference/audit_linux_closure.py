@@ -354,14 +354,15 @@ def inspect_wheel(path: Path, expected_name: str, expected_version: str) -> dict
                     fail("METADATA exceeds bounded read limit")
                 if metadata_candidate is None:
                     metadata_candidate = (size, captured)
-            text = captured[:MAX_READ].decode("utf-8", "ignore").casefold()
-            for marker in ("cuda", "nvidia", "triton", "librosa", "soxr", "soundfile"):
-                if marker in lower or marker in text:
-                    suspicious.append({"path": name, "marker": marker, "kind": "owner_review_suspicion"})
-            if Path(name).name.casefold().startswith(LICENSE_NAMES) or any(Path(name).name.casefold().startswith(prefix) for prefix in LICENSE_NAMES):
-                licenses.append({"path": name, "bytes": size, "sha256": digest})
-            if lower.endswith(NATIVE_SUFFIXES) or any(captured.startswith(magic) for magic in NATIVE_MAGICS):
-                native.append({"path": name, "bytes": size, "sha256": digest})
+            if not info.is_dir():
+                text = captured[:MAX_READ].decode("utf-8", "ignore").casefold()
+                for marker in ("cuda", "nvidia", "triton", "librosa", "soxr", "soundfile"):
+                    if marker in lower or marker in text:
+                        suspicious.append({"path": name, "marker": marker, "kind": "owner_review_suspicion"})
+                if Path(name).name.casefold().startswith(LICENSE_NAMES) or any(Path(name).name.casefold().startswith(prefix) for prefix in LICENSE_NAMES):
+                    licenses.append({"path": name, "bytes": size, "sha256": digest})
+                if lower.endswith(NATIVE_SUFFIXES) or any(captured.startswith(magic) for magic in NATIVE_MAGICS):
+                    native.append({"path": name, "bytes": size, "sha256": digest})
     if metadata_members != 1 or metadata_candidate is None:
         fail(f"wheel must contain exactly one .dist-info/METADATA (found {metadata_members})")
     _, metadata_bytes = metadata_candidate
@@ -495,6 +496,15 @@ def self_test() -> None:
             )
         nested_record = inspect_wheel(nested_metadata, "setuptools", "78.1.0")
         assert nested_record["metadata"]["name"] == "setuptools"
+        license_directory = root / "license-directory-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(license_directory, "w") as archive:
+            archive.writestr(
+                "markupsafe-3.0.3.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: markupsafe\nVersion: 3.0.3\n",
+            )
+            archive.writestr("markupsafe-3.0.3.dist-info/licenses/", b"")
+        directory_record = inspect_wheel(license_directory, "markupsafe", "3.0.3")
+        assert directory_record["license_notice"] == []
         duplicate_top_level = root / "duplicate-top-level-1.0-py3-none-any.whl"
         with zipfile.ZipFile(duplicate_top_level, "w") as archive:
             for directory in ("first-1.0.dist-info", "second-1.0.dist-info"):
