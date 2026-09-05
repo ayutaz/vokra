@@ -176,8 +176,8 @@ def inspect_checkpoint(path: Path, root: Path) -> dict[str, Any]:
     parser = load_restricted_parser(root)
     try:
         state_dict = parser.load_manifest(io.BytesIO(raw))
-        if not isinstance(state_dict, collections.OrderedDict):
-            raise InspectionError("restricted parser did not return an OrderedDict")
+        if type(state_dict) not in (dict, collections.OrderedDict):
+            raise InspectionError("restricted parser did not return a plain dict or OrderedDict")
         if len(state_dict) > MAX_TENSORS:
             raise InspectionError("tensor count bound exceeded")
         for name, tensor in state_dict.items():
@@ -268,10 +268,27 @@ def synthetic_pickle() -> bytes:
     stream = io.BytesIO()
     Pickler(stream, protocol=2).dump(collections.OrderedDict([("w", _SyntheticTensor())]))
     raw = stream.getvalue().replace(
-        f"c{__name__}\n_synthetic_rebuild\nq\x03".encode(),
-        b"ctorch._utils\n_rebuild_tensor_v2\nq\x03",
+        f"c{__name__}\n_synthetic_rebuild\n".encode(),
+        b"ctorch._utils\n_rebuild_tensor_v2\n",
     )
-    return raw.replace(b"X\x0c\x00\x00\x00FloatStorageq\x05", b"ctorch\nFloatStorage\nq\x05")
+    return raw.replace(b"X\x0c\x00\x00\x00FloatStorage", b"ctorch\nFloatStorage\n")
+
+
+def synthetic_plain_dict_pickle() -> bytes:
+    """Build the same safe tensor record with a built-in dict root."""
+    class Pickler(pickle.Pickler):
+        def persistent_id(self, value: Any) -> Any:
+            if isinstance(value, _SyntheticStorage):
+                return ("storage", "FloatStorage", "0", "cpu", 4)
+            return None
+
+    stream = io.BytesIO()
+    Pickler(stream, protocol=2).dump({"w": _SyntheticTensor()})
+    raw = stream.getvalue().replace(
+        f"c{__name__}\n_synthetic_rebuild\n".encode(),
+        b"ctorch._utils\n_rebuild_tensor_v2\n",
+    )
+    return raw.replace(b"X\x0c\x00\x00\x00FloatStorage", b"ctorch\nFloatStorage\n")
 
 
 def self_test() -> None:
@@ -286,6 +303,12 @@ def self_test() -> None:
         assert raw == synthetic_pickle() and info["data_pickle_member"] == "archive/data.pkl"
         manifest = inspect_checkpoint(valid, Path(__file__).resolve().parents[2])
         assert manifest["tensor_count"] == 1 and manifest["tensors"]["w"]["shape"] == [2, 2]
+        plain = root / "plain-dict.pt"
+        with zipfile.ZipFile(plain, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("archive/data.pkl", synthetic_plain_dict_pickle())
+            archive.writestr("archive/data/0", b"\0" * 16)
+        plain_manifest = inspect_checkpoint(plain, Path(__file__).resolve().parents[2])
+        assert plain_manifest["tensor_count"] == 1
         unsafe = root / "unsafe.pt"
         with zipfile.ZipFile(unsafe, "w") as archive:
             archive.writestr("../archive/data.pkl", synthetic_pickle())
