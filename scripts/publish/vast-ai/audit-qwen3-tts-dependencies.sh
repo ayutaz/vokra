@@ -20,7 +20,10 @@ usage: audit-qwen3-tts-dependencies.sh --output <audit.json>
 The synchronized environment must have been prepared by a separately
 authorized VAST job. This worker performs no uv sync, model download, model
 import, Cargo operation, upload, or publication. It inspects exact installed
-rows and may fetch only locked PyPI sdists and fixed LICENSE paths.
+rows and may fetch only locked PyPI sdists, fixed source LICENSE paths, and
+the exact HF model-info API cardData.license projection and sibling tree only
+as a fallback for a pinned model revision whose exact LICENSE path returns
+HTTP 404. Other LICENSE errors remain blocking.
 EOF
 }
 
@@ -102,7 +105,7 @@ self_test() {
   local failed=0 probe_root probe_parent=/tmp
   [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
-  grep -Fq -- 'fixed LICENSE paths' "$0" || failed=1
+  grep -Fq -- 'fixed source LICENSE paths' "$0" || failed=1
   grep -Fq -- 'no model download' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   grep -Fq -- 'uv run --no-cache --no-project --offline --python 3.12' "$0" || failed=1

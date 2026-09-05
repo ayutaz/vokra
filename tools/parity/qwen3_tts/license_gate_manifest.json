@@ -1,11 +1,11 @@
 {
-  "gate_version": 1,
+  "gate_version": 2,
   "pyproject_sha256": "1d988815b5a7dd0560cf0c9f7d5d8b70cc765059933a6b48d1d84399af0b5857",
   "lock_sha256": "662d92f45f5554be78bdf88934b7e7e0b59d01e3b5953558534b903119714f2a",
   "package_rows_sha256": "5c72dec8fa3a5ac47878dcbed0f4d4f953b47fce94dda5a5572bff7cdb1e507b",
   "review_rows_sha256": "5d75b3a65b2cfd626def7d2e9c3dda30b7250b819e03f13c589fd0bf5fccadc9",
   "component_rows_sha256": "8700cea9fac4646ae65925adbb0e11b4d41e859db4127c2abdb0ba518fe01019",
-  "approval_scope_sha256": "434a8922c0a4c614a379f1000597401b4d49016368c35c703fb2967e612f6764",
+  "approval_scope_sha256": "350bebabb77db9c9bd8837e39076e5cb8949c8b05aa13d85decaa392ed2b0c97",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -56,6 +56,33 @@
         "sha256": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"
       }
     }
+  },
+  "model_license_metadata": {
+    "schema": "vokra-hf-model-info-license-v1",
+    "endpoint": "https://huggingface.co/api/models/{repo}?revision={revision}",
+    "api_host": "huggingface.co",
+    "max_response_bytes": 262144,
+    "license_field": "cardData.license",
+    "required_license": "apache-2.0",
+    "tree_field": "siblings",
+    "tree_entry_fields": [
+      "rfilename"
+    ],
+    "fallback_trigger": "exact model LICENSE path HTTP 404 only",
+    "fallback_failure": "blocked",
+    "accept_private_false": true,
+    "accept_gated_false": true,
+    "accept_disabled_false": true,
+    "siblings_nonempty": true,
+    "siblings_safe_unique": true,
+    "reject_license_like_siblings": true,
+    "components": [
+      "decoder_tokenizer",
+      "0.6b-base",
+      "0.6b-customvoice",
+      "1.7b-base",
+      "1.7b-customvoice"
+    ]
   },
   "review_rows": [
     {

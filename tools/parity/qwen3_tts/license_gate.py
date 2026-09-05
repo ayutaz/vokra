@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 
-GATE_VERSION = 1
+GATE_VERSION = 2
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 DEPENDENCY_KEYS = (
@@ -64,6 +64,38 @@ FIXED_IDENTITIES = {
         "tokenizer_config.json": {"bytes": 7344, "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"},
         "generation_config.json": {"bytes": 245, "sha256": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"},
     },
+}
+
+# The five HF model components do not currently publish a LICENSE blob at the
+# pinned revisions.  Their factual license source is the authenticated
+# model-info API projection implemented by dependency_audit.py.  Keep this
+# policy in the gate manifest so the owner approval scope covers the endpoint,
+# bounded response, and the exact cardData field we consume.  The API payload
+# may contain other fields, but none of those fields are accepted as evidence.
+MODEL_LICENSE_METADATA_POLICY = {
+    "schema": "vokra-hf-model-info-license-v1",
+    "endpoint": "https://huggingface.co/api/models/{repo}?revision={revision}",
+    "api_host": "huggingface.co",
+    "max_response_bytes": 262144,
+    "license_field": "cardData.license",
+    "required_license": "apache-2.0",
+    "tree_field": "siblings",
+    "tree_entry_fields": ["rfilename"],
+    "fallback_trigger": "exact model LICENSE path HTTP 404 only",
+    "fallback_failure": "blocked",
+    "accept_private_false": True,
+    "accept_gated_false": True,
+    "accept_disabled_false": True,
+    "siblings_nonempty": True,
+    "siblings_safe_unique": True,
+    "reject_license_like_siblings": True,
+    "components": [
+        "decoder_tokenizer",
+        "0.6b-base",
+        "0.6b-customvoice",
+        "1.7b-base",
+        "1.7b-customvoice",
+    ],
 }
 
 
@@ -234,6 +266,7 @@ def approval_scope(manifest: dict[str, Any]) -> dict[str, Any]:
         "review_rows_sha256": manifest.get("review_rows_sha256"),
         "component_rows_sha256": manifest.get("component_rows_sha256"),
         "identities": manifest.get("identities"),
+        "model_license_metadata": manifest.get("model_license_metadata"),
         "publication": manifest.get("publication"),
         "package_decision": "APPROVED",
         "component_decision": "APPROVED",
@@ -336,6 +369,12 @@ def component_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(normalized, key=lambda row: row["component"])
 
 
+def validate_model_license_metadata_policy(value: Any) -> None:
+    """Validate the exact, bounded HF model-info evidence contract."""
+    if value != MODEL_LICENSE_METADATA_POLICY:
+        fail("HF model-info license metadata policy drifted")
+
+
 def fail(message: str) -> None:
     print(f"qwen3-tts license gate: BLOCKED: {message}", file=sys.stderr)
     raise SystemExit(2)
@@ -390,7 +429,7 @@ def run(
         manifest = strict_json_loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as error:
         fail(f"gate manifest is unreadable: {error}")
-    if not isinstance(manifest, dict) or set(manifest) != {"gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "review_rows", "review_rows_sha256", "component_rows", "component_rows_sha256", "identities", "forbidden_packages", "publication", "approval_scope_sha256"}:
+    if not isinstance(manifest, dict) or set(manifest) != {"gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "review_rows", "review_rows_sha256", "component_rows", "component_rows_sha256", "identities", "model_license_metadata", "forbidden_packages", "publication", "approval_scope_sha256"}:
         fail("gate manifest schema drifted")
     if manifest.get("gate_version") != GATE_VERSION:
         fail("unsupported manifest version")
@@ -417,6 +456,7 @@ def run(
         fail("version-keyed license/native/bundled review rows drifted")
     if manifest.get("forbidden_packages") != list(FORBIDDEN_PACKAGES):
         fail("manifest forbidden package policy drifted")
+    validate_model_license_metadata_policy(manifest.get("model_license_metadata"))
     present = sorted(set(FORBIDDEN_PACKAGES) & {row["name"] for row in rows})
     if present:
         fail(f"forbidden broad/native/audio packages are locked: {present}")
@@ -596,6 +636,7 @@ def self_test() -> None:
                 for identity in fixed_component_identities()
             ],
             "identities": json.loads(json.dumps(FIXED_IDENTITIES)),
+            "model_license_metadata": json.loads(json.dumps(MODEL_LICENSE_METADATA_POLICY)),
             "forbidden_packages": list(FORBIDDEN_PACKAGES),
             "publication": "NO_UPLOAD",
         }

@@ -58,13 +58,22 @@ The separate model-free dependency/license audit is
 `scripts/publish/vast-ai/audit-qwen3-tts-dependencies.sh`. It is restricted to
 an already synchronized Linux x86_64 VAST environment and records the active
 Python 3.12 lock closure, installed publisher files, native ELF `NEEDED`
-entries, and only exact locked-sdist plus fixed source/model/decoder LICENSE
-path evidence. It never acquires weights, imports model code, invokes Cargo,
-or uploads anything. The audit itself currently reports `BLOCKED` at the
-existing unresolved license manifest (first blocker `accelerate==1.12.0`);
-the model-free audit may still run on an already synchronized, authorized VAST
-environment and emit this factual blocker evidence. The unresolved gate means
-that dependency synchronization, model download, and API/model smoke cannot
-progress until legitimate dependency/component reviews and authenticated owner
-evidence are recorded. Run its `--self-test` locally; do not run the production
-audit on the maintainer machine.
+entries, and exact locked-sdist plus fixed source LICENSE path evidence. For
+the five HF model revisions whose exact `LICENSE` path returns HTTP 404, it
+additionally fetches only
+`https://huggingface.co/api/models/{repo}?revision={revision}` and
+accepts the bounded `cardData.license` projection when the API-returned `id`
+and `sha` match the pinned repository and revision, `private`/`gated`/`disabled`
+are exactly false, and `siblings` is a non-empty safe, duplicate-free
+`{rfilename}` tree with no LICENSE-like file. The audit records only the tree
+count/list/hash and response SHA/size; it does not retain arbitrary API JSON.
+README text and arbitrary metadata are never accepted as license evidence. It never acquires weights,
+imports model code, invokes Cargo, or uploads anything. The audit itself
+currently reports `BLOCKED` at the existing unresolved license manifest (first
+blocker `accelerate==1.12.0`); the model-free audit may still run on an already
+synchronized, authorized VAST environment and emit this factual blocker
+evidence. The unresolved gate means that dependency synchronization, model
+download, and API/model smoke cannot progress until legitimate
+dependency/component reviews and authenticated owner evidence are recorded.
+Run its `--self-test` locally; do not run the production audit on the
+maintainer machine.
