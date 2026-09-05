@@ -14,10 +14,10 @@ are bound by `license_gate_manifest.json`.
 `uv run --no-project --offline` before scratch creation, synchronization,
 source/model download, conversion, or Cargo. It binds the exact Linux lock,
 including uv's build-constraint manifest for the isolated NumPy source build.
-The compact `dependency_audit_evidence.json` records the full historical VAST
-audit digest for the prior isolated pin without committing the 1.3 MB report;
-its old input hashes intentionally fail the active-lock gate until a fresh
-audit is produced. `patchelf` is GPL build-only and
+The compact `dependency_audit_evidence.json` records the full fresh VAST
+audit digest for the active isolated pin without committing the 252 KiB report.
+Its input hashes bind the current lock and project bytes; the operator review
+state remains pending. `patchelf` is GPL build-only and
 is not installed in or redistributed with the final environment; its operator
 approval remains an explicit gate.
 
@@ -59,8 +59,9 @@ The latter is the fail-closed blocker, so a successful fallback is not reported
 as missing overall evidence. Compact evidence retains the network count and
 scope without credentials or response-body URLs beyond the locked artifact
 facts.
-The existing compact evidence and preflight gate remain unchanged until the
-fresh evidence is reviewed by the owner.
+The committed compact evidence is the fresh audit for the active lock. The
+preflight gate remains fail-closed until the owner reviews the evidence and
+supplies the separate authenticated approval file.
 
 ## API smoke prerequisite
 

@@ -22,7 +22,7 @@ GATE_VERSION = 2
 # production remains blocked until a fresh audit binds these active bytes.
 LOCK_SHA256 = "418fb6b6516e0284b503ed20872e2dc6dd375aff918e253f3e7f9d27b62f904c"
 PYPROJECT_SHA256 = "1e61ad26749c1ad5ba05fe139ef8bfcf4698e3b030cad6182e18309789779346"
-FULL_AUDIT_SHA256 = "b7a4c6ffcbc68109d8743b127432dfedb4897cd52641b251433945da3f4b4d3d"
+FULL_AUDIT_SHA256 = "a1d267f4b2e744fc67a5be3cf8737ee410c89ccc8a4f0f5c94e4d425a3b75bb8"
 COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
 EXPECTED_BUILD_CONSTRAINTS = [
     "Cython==3.0.12",

@@ -455,7 +455,7 @@
       "bundled_review": "First-party repository tooling; not redistributed"
     }
   ],
-  "approval_scope_sha256": "e4eb0f23132d1afcf682e050ae7735a7794f31d9c0be7d63b3cb524b6a7e1fb7",
+  "approval_scope_sha256": "22b73def867d09d4c50786a6d3b24c4433022848b1bc494e1b0885b0a5f71647",
   "build_dependency_reviews": [
     {
       "id": "Cython@3.0.12",
@@ -552,8 +552,8 @@
   "dependency_audit_evidence": {
     "schema": "vokra-speecht5-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "sha256": "f84d9a97fb9cb3e27b3ebd3ca71729ea8826c0444a64b55dc1de757b10222d10",
-    "full_audit_sha256": "b7a4c6ffcbc68109d8743b127432dfedb4897cd52641b251433945da3f4b4d3d"
+    "sha256": "e68a875f0faba9edf88c338bb45b83b89735eda36b40de5bbbe3c265067da884",
+    "full_audit_sha256": "a1d267f4b2e744fc67a5be3cf8737ee410c89ccc8a4f0f5c94e4d425a3b75bb8"
   },
   "build_dependency_reviews_sha256": "fb96fc36ad72378e301961762868ddc57b285ab4d2f74baa87064c0e5abb81d6"
 }
