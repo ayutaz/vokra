@@ -671,7 +671,7 @@ fn cosyvoice2_hift_real_cpu_parity() {
         "input",
         "input",
     );
-    assert_eq!(number(&manifest, &["input", "seed"]), 2_026_0906);
+    assert_eq!(number(&manifest, &["input", "seed"]), 20_260_906);
     assert_eq!(
         string(&manifest, &["input", "formula"]),
         "torch.linspace(-0.25,0.25,640).reshape(1,80,8)"
