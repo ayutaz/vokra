@@ -53,6 +53,25 @@ LICENSE_NAMES = {
     "license", "license.txt", "license.md", "copying", "copying.txt",
     "notice", "notice.txt", "notice.md",
 }
+# Core Metadata permits these headers to occur more than once. Keep this
+# allowlist explicit: all other headers remain single-valued so duplicate
+# metadata cannot be silently accepted. Names are normalized with casefold()
+# by parse_metadata().
+CORE_METADATA_MULTIPLE_USE_FIELDS = frozenset({
+    "dynamic",
+    "platform",
+    "supported-platform",
+    "license-file",
+    "classifier",
+    "requires-dist",
+    "requires-external",
+    "project-url",
+    "provides-extra",
+    "import-name",
+    "import-namespace",
+    "provides-dist",
+    "obsoletes-dist",
+})
 
 
 def sha256_bytes(payload: bytes) -> str:
@@ -537,7 +556,6 @@ def parse_metadata(metadata: bytes, row: dict[str, Any], path: str) -> dict[str,
         fail(f"{row['name']} METADATA is not UTF-8: {exc}")
     fields: dict[str, list[str]] = {}
     current: str | None = None
-    multi = {"classifier", "project-url", "provides-extra", "requires-dist"}
     for line in text.splitlines():
         if not line:
             break
@@ -550,7 +568,7 @@ def parse_metadata(metadata: bytes, row: dict[str, Any], path: str) -> dict[str,
             fail(f"{row['name']} METADATA has a malformed header: {path}")
         key, value = line.split(":", 1)
         key = key.casefold()
-        if not key or key in fields and key not in multi:
+        if not key or key in fields and key not in CORE_METADATA_MULTIPLE_USE_FIELDS:
             fail(f"{row['name']} METADATA has an ambiguous duplicate header: {key}")
         fields.setdefault(key, []).append(value.strip())
         current = key
@@ -778,6 +796,18 @@ def self_test() -> None:
             assert "Name does not match" in str(exc)
         else:
             raise SystemExit("bigvgan closure self-test accepted a metadata Name mismatch")
+        platform_fields = parse_metadata(
+            b"Metadata-Version: 2.4\n"
+            b"Name: demo\n"
+            b"Version: 1.0\n"
+            b"Platform: Linux\n"
+            b"Platform: Mac OSX\n"
+            b"Platform: Windows\n"
+            b"Platform: Unix\n",
+            lock_row,
+            "METADATA",
+        )
+        assert platform_fields["platform"] == ["Linux", "Mac OSX", "Windows", "Unix"]
         try:
             parse_metadata(
                 b"Metadata-Version: 2.1\nName: demo\nName: demo\nVersion: 1.0\n",
