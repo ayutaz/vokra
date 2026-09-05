@@ -1,8 +1,7 @@
 # AVX-512 BF16 GEMM parity fixture contract
 
-This directory is intentionally empty of numerical fixtures in Phase 1.
-The packet will be generated on the authorized VAST host by
-`tools/parity/bf16_gemm/dump_reference.py` and must contain exactly:
+The packet was generated on the authorized VAST host by
+`tools/parity/bf16_gemm/dump_reference.py` and contains exactly:
 
 ```text
 README.md
@@ -32,6 +31,8 @@ investigate; the bound must not be widened from the observed result.
 
 The three cases cover a complete `k` block (`k=96`), `m/n/k` tails
 (`3x35x65`), and an additional odd `m/n/k` shape (`9x33x31`).  The Rust
-consumer is ignored until this exact packet has been generated.  A host
-without AVX-512 BF16 must report a skip; it must never run the test through a
+consumer remains explicitly ignored in ordinary local test runs and is
+enabled with `--ignored` on a matching VAST host.  This exact packet passed
+there with the pre-registered bound.  A host without AVX-512 BF16 must report a
+skip; it must never run the test through a
 different ISA or silently fall back to scalar.
