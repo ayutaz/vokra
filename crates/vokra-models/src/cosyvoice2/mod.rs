@@ -16,6 +16,8 @@ pub(crate) mod chunk_pipeline;
 pub(crate) mod config;
 pub(crate) mod flow_matching;
 pub(crate) mod native;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
+pub(crate) mod speech_lm;
 // SoTA plan Phase 1-3 (2026-07-24): the correct terminal vocoder for
 // CosyVoice2 — mel → PCM via NSF + ISTFTNet. Replaces the wrong-premise
 // `mimi_bridge` module (which is now `#[deprecated]` and retained only for
