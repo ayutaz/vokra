@@ -38,7 +38,7 @@ pub(crate) struct SpeechLmTensors {
 /// authorize a CosyVoice2 model for production use.
 pub(crate) struct SpeechLm<'a> {
     backbone: &'a LlmBackbone,
-    tensors: SpeechLmTensors,
+    tensors: &'a SpeechLmTensors,
     hidden_dim: usize,
 }
 
@@ -46,7 +46,7 @@ impl<'a> SpeechLm<'a> {
     /// Binds wrapper tensors after strict shape, finite-value, and dimension
     /// checks.  The backbone remains borrowed and supplies the Compute-backed
     /// untied-head projection.
-    pub(crate) fn new(backbone: &'a LlmBackbone, tensors: SpeechLmTensors) -> Result<Self> {
+    pub(crate) fn new(backbone: &'a LlmBackbone, tensors: &'a SpeechLmTensors) -> Result<Self> {
         let hidden_dim = backbone.config().hidden_dim;
         if hidden_dim == 0 {
             return Err(VokraError::InvalidArgument(
@@ -358,7 +358,8 @@ mod tests {
     #[test]
     fn prompt_prefix_becomes_single_speech_row() {
         let backbone = backbone();
-        let model = SpeechLm::new(&backbone, tensors(&[0.0; HEAD_SIZE])).unwrap();
+        let wrapper = tensors(&[0.0; HEAD_SIZE]);
+        let model = SpeechLm::new(&backbone, &wrapper).unwrap();
         let mut draws = Draws::new(&[0.0, 0.0]);
         let generated = model
             .generate(
@@ -384,7 +385,8 @@ mod tests {
     #[test]
     fn ignored_eos_retries_without_an_extra_llm_call() {
         let backbone = backbone();
-        let model = SpeechLm::new(&backbone, tensors(&[0.0; HEAD_SIZE])).unwrap();
+        let wrapper = tensors(&[0.0; HEAD_SIZE]);
+        let model = SpeechLm::new(&backbone, &wrapper).unwrap();
         let mut draws = Draws::new(&[0.9996, 0.0, 0.9996]);
         let generated = model
             .generate(
@@ -414,7 +416,8 @@ mod tests {
     #[test]
     fn control_skip_preserves_single_row_transition() {
         let backbone = backbone();
-        let model = SpeechLm::new(&backbone, tensors(&[0.0; HEAD_SIZE])).unwrap();
+        let wrapper = tensors(&[0.0; HEAD_SIZE]);
+        let model = SpeechLm::new(&backbone, &wrapper).unwrap();
         let mut draws = Draws::new(&[0.0, 0.99975, 0.9996]);
         let generated = model
             .generate(
@@ -446,7 +449,8 @@ mod tests {
     #[test]
     fn eos_and_max_termination_are_distinct() {
         let backbone = backbone();
-        let model = SpeechLm::new(&backbone, tensors(&[0.0; HEAD_SIZE])).unwrap();
+        let wrapper = tensors(&[0.0; HEAD_SIZE]);
+        let model = SpeechLm::new(&backbone, &wrapper).unwrap();
         let sampling = SamplingConfig {
             top_p: 1.0,
             top_k: HEAD_SIZE,
@@ -471,7 +475,8 @@ mod tests {
     #[test]
     fn first_control_reuses_full_multirow_prefix_without_reset() {
         let backbone = backbone_with_context(32);
-        let model = SpeechLm::new(&backbone, tensors(&[0.0; HEAD_SIZE])).unwrap();
+        let wrapper = tensors(&[0.0; HEAD_SIZE]);
+        let model = SpeechLm::new(&backbone, &wrapper).unwrap();
         let mut draws = Draws::new(&[0.99975, 0.0, 0.9996]);
         let generated = model
             .generate(
@@ -503,7 +508,8 @@ mod tests {
     #[test]
     fn control_preserves_context_capacity_without_reset() {
         let backbone = backbone_with_context(9);
-        let model = SpeechLm::new(&backbone, tensors(&[0.0; HEAD_SIZE])).unwrap();
+        let wrapper = tensors(&[0.0; HEAD_SIZE]);
+        let model = SpeechLm::new(&backbone, &wrapper).unwrap();
         let mut draws = Draws::new(&[0.99975]);
         let error = model
             .generate(
@@ -526,7 +532,8 @@ mod tests {
     #[test]
     fn eos_retry_guard_allows_initial_plus_one_hundred_retries() {
         let backbone = backbone();
-        let model = SpeechLm::new(&backbone, tensors(&[0.0; HEAD_SIZE])).unwrap();
+        let wrapper = tensors(&[0.0; HEAD_SIZE]);
+        let model = SpeechLm::new(&backbone, &wrapper).unwrap();
         let mut draws = Draws::new(&[0.9996; 101]);
         let error = model
             .generate(
@@ -559,13 +566,14 @@ mod tests {
         let backbone = backbone();
         let mut invalid = tensors(&[0.0; HEAD_SIZE]);
         invalid.decoder_bias.pop();
-        assert!(SpeechLm::new(&backbone, invalid).is_err());
+        assert!(SpeechLm::new(&backbone, &invalid).is_err());
 
         let mut invalid = tensors(&[0.0; HEAD_SIZE]);
         invalid.speech_embedding[0] = f32::NAN;
-        assert!(SpeechLm::new(&backbone, invalid).is_err());
+        assert!(SpeechLm::new(&backbone, &invalid).is_err());
 
-        let model = SpeechLm::new(&backbone, tensors(&[0.0; HEAD_SIZE])).unwrap();
+        let wrapper = tensors(&[0.0; HEAD_SIZE]);
+        let model = SpeechLm::new(&backbone, &wrapper).unwrap();
         let mut draws = Draws::new(&[0.0]);
         assert!(
             model

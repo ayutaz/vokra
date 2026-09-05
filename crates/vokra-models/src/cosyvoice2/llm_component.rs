@@ -168,7 +168,7 @@ impl BoundCosyVoice2Llm {
     }
 
     pub(crate) fn speech_lm(&self) -> Result<SpeechLm<'_>> {
-        SpeechLm::new(&self.backbone, self.speech.clone())
+        SpeechLm::new(&self.backbone, &self.speech)
     }
 }
 
@@ -229,7 +229,11 @@ fn require_sha256(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
                 "{LABEL}: metadata {key} is missing or not a string"
             ))
         })?;
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
         return Err(VokraError::ModelLoad(format!(
             "{LABEL}: metadata {key} is not a 64-digit hexadecimal digest"
         )));
@@ -251,7 +255,11 @@ fn require_digest_format(file: &GgufFile, key: &str) -> Result<()> {
                 "{LABEL}: metadata {key} is missing or not a string"
             ))
         })?;
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
         return Err(VokraError::ModelLoad(format!(
             "{LABEL}: metadata {key} is not a 64-digit hexadecimal digest"
         )));
@@ -271,6 +279,7 @@ fn validate_metadata(file: &GgufFile) -> Result<()> {
         (KEY_WEIGHT_LICENSE, "permissive"),
         (KEY_LICENSE, "apache-2.0"),
         (KEY_MODEL_ID, MODEL_NAME),
+        (chunks::KEY_PROVENANCE_SOURCE, SOURCE_REPOSITORY),
         (KEY_UPSTREAM_COMPONENT_FILE, CHECKPOINT_FILE),
         (KEY_CONFIG_FILE, CONFIG_FILE),
         (KEY_CONFIG_SHA256, CONFIG_SHA256),
@@ -472,9 +481,12 @@ mod tests {
             .collect()
     }
 
-    fn metadata_file(tamper_status: bool) -> GgufFile {
+    fn metadata_file(
+        status: &str,
+        prepared_bytes: Option<GgufMetadataValue>,
+        prepared_sha: &str,
+    ) -> GgufFile {
         let mut builder = GgufBuilder::new();
-        let prepared_sha = "a".repeat(64);
         for (key, value) in [
             (chunks::KEY_MODEL_ARCH, ARCH),
             (chunks::KEY_MODEL_NAME, MODEL_NAME),
@@ -486,6 +498,7 @@ mod tests {
             (KEY_WEIGHT_LICENSE, "permissive"),
             (KEY_LICENSE, "apache-2.0"),
             (KEY_MODEL_ID, MODEL_NAME),
+            (chunks::KEY_PROVENANCE_SOURCE, SOURCE_REPOSITORY),
             (KEY_UPSTREAM_COMPONENT_FILE, CHECKPOINT_FILE),
             (KEY_UPSTREAM_COMPONENT_SHA256, CHECKPOINT_SHA256),
             (KEY_CONFIG_FILE, CONFIG_FILE),
@@ -501,15 +514,8 @@ mod tests {
             (KEY_SOURCE_LICENSE_SHA256, SOURCE_LICENSE_SHA256),
             (KEY_SOURCE_LICENSE_BLOB, SOURCE_LICENSE_BLOB),
             (KEY_SOURCE_LICENSE_SPDX, SOURCE_LICENSE_SPDX),
-            (
-                KEY_PREPARED_STATUS,
-                if tamper_status {
-                    "NOT_AUTHENTICATED"
-                } else {
-                    PREPARED_STATUS
-                },
-            ),
-            (KEY_PREPARED_SHA256, prepared_sha.as_str()),
+            (KEY_PREPARED_STATUS, status),
+            (KEY_PREPARED_SHA256, prepared_sha),
         ] {
             builder.add_string(key, value);
         }
@@ -537,8 +543,10 @@ mod tests {
             .add_metadata(
                 KEY_SOURCE_LICENSE_BYTES,
                 GgufMetadataValue::U64(SOURCE_LICENSE_BYTES),
-            )
-            .add_metadata(KEY_PREPARED_BYTES, GgufMetadataValue::U64(1));
+            );
+        if let Some(value) = prepared_bytes {
+            builder.add_metadata(KEY_PREPARED_BYTES, value);
+        }
         GgufFile::parse(builder.to_bytes().expect("metadata GGUF")).expect("parse")
     }
 
@@ -624,8 +632,53 @@ mod tests {
 
     #[test]
     fn metadata_tamper_and_prepared_status_are_fail_closed() {
-        validate_metadata(&metadata_file(false)).expect("converter metadata contract");
-        let error = validate_metadata(&metadata_file(true)).expect_err("tampered status");
+        validate_metadata(&metadata_file(
+            PREPARED_STATUS,
+            Some(GgufMetadataValue::U64(1)),
+            &"a".repeat(64),
+        ))
+        .expect("converter metadata contract");
+        let error = validate_metadata(&metadata_file(
+            "NOT_AUTHENTICATED",
+            Some(GgufMetadataValue::U64(1)),
+            &"a".repeat(64),
+        ))
+        .expect_err("tampered status");
         assert!(error.to_string().contains("authentication_status"));
+    }
+
+    #[test]
+    fn prepared_metadata_missing_wrong_type_zero_and_bad_digest_fail_closed() {
+        for (bytes, digest, needle) in [
+            (
+                None,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "prepared_input.bytes",
+            ),
+            (
+                Some(GgufMetadataValue::U32(1)),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "prepared_input.bytes",
+            ),
+            (
+                Some(GgufMetadataValue::U64(0)),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "prepared_input.bytes",
+            ),
+            (
+                Some(GgufMetadataValue::U64(1)),
+                "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+                "prepared_input.sha256",
+            ),
+            (
+                Some(GgufMetadataValue::U64(1)),
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "prepared_input.sha256",
+            ),
+        ] {
+            let error = validate_metadata(&metadata_file(PREPARED_STATUS, bytes, digest))
+                .expect_err("invalid prepared metadata");
+            assert!(error.to_string().contains(needle), "{error}");
+        }
     }
 }
