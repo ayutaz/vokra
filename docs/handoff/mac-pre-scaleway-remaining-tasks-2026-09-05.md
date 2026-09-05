@@ -61,8 +61,68 @@ Before any Scaleway allocation:
    on VAST, recover only small evidence, and destroy the worker.
 5. Push the four reviewed commits together with this management-ledger commit,
    and require PR #79's `dependency-review` and all other checks to pass. The
-   remote PR is currently mergeable, with this single failing check at remote
-   head `7edae28f`.
+   remote PR was mergeable but still had one failing dependency-review check
+   at the earlier remote head `7edae28f`; the current result is recorded below.
+
+### 2026-09-06 exact-head progress
+
+The branch has advanced to `7d0119c9` locally. The PR remote remains at
+`559b8b36`; all checks at that remote commit are green and GitHub reports the
+PR mergeable. Do not merge it as the final Mac-coverage change yet: the local
+audit and BF16 commits have not been pushed or checked by GitHub.
+
+The dependency-audit hardening and exact model-free VAST reruns are now
+recorded in the commits immediately before `7d0119c9`:
+
+- Ultravox: exact-head model-free audit remains blocked only by 37 package
+  reviews, four license-row reviews and three approvals. The compact evidence
+  is bound at `6f987ae2`; the audit JSON SHA-256 is
+  `22698a69938a657327a6ef074d4505e060ede67f4e8e3f3ece97d4085a92e6df`.
+- NeuTTS Air: exact-head model-free audit passes with 36/36 active dependency
+  rows and one authenticated model-license response. The audit JSON SHA-256 is
+  `007c58177deb84e9323741409a5200853c179abbe581227e96660312980738d3`.
+- Qwen3-ASR: exact-head model-free audit has four factual package-license
+  blockers after closing the generic HF metadata failure. The audit JSON
+  SHA-256 is
+  `ca53d22a4c0b1c96b0eb272b0ba1be88682a3d82a93413c2e519fdaf55173fa5`.
+- MOSS Audio Tokenizer v2: exact-head model-free audit has one factual Triton
+  package-license blocker after accepting the exact `tqdm` `LICENCE` file.
+  Review/sign-off rows remain intentionally unresolved. The audit JSON
+  SHA-256 is
+  `082ac1bfa899366f97cfee23387a25041ae58954c96a04b2c58e1c35364dd012`.
+
+Commit `7d0119c9` adds the independent PyTorch BF16 GEMM parity contract without
+running PyTorch on the maintainer Mac. The comparison limit was registered
+before measurement as `atol=1e-3`, `rtol=0`; fixtures, a Linux-x86_64 lock and
+an actual AVX-512 BF16 verdict still have to be generated on the active VAST
+worker. Compatible Arm-BF16 evidence remains part of the final Apple-hardware
+work.
+
+The remaining factual dependency-license cases were checked against primary
+release sources and must stay fail-closed:
+
+- `gradio-client==2.5.0` has official annotated tag
+  `gradio_client@2.5.0` at commit
+  `43f5de68579919b0632ceb6107a99c629483ea2f`, whose project metadata and root
+  license both say Apache-2.0. The tag was created after the PyPI artifacts,
+  so an exact artifact-to-tag binding still needs to be recorded before this
+  can replace the absent sdist license file.
+- `dynet38==2.2` has Apache-2.0 PyPI metadata but no sdist and the official
+  `clab/dynet` repository has no exact 2.2 tag; its native wheel therefore has
+  no authenticated exact-release source/license mapping.
+- `qwen-omni-utils==0.0.9` has Apache-2.0 PyPI metadata but no license in its
+  exact sdist. The official Qwen repository remains at 0.0.8 and its public
+  issue tracker confirms the published wheel/source desynchronization, so no
+  source revision may be inferred.
+- `soynlp==0.0.493` was uploaded after source commit
+  `264a05c96f0ccd1961f1a669a9df132076a67a15`, but that checkout still declares
+  version 0.0.492. Its source says LGPL-3.0 while the 0.0.493 PyPI classifier
+  says GPL-3.0, so the exact release license is an owner/legal blocker.
+- `triton==3.3.1` maps to official tag commit
+  `d654e0f2d91f07496454e0fcbec2a9b97df37d47` and a root MIT license. The wheel
+  build also copies separately downloaded NVIDIA toolchain binaries and CUPTI
+  material, while the exact wheel carries no publisher license/notice file;
+  the root Triton license alone cannot authenticate those bundled payloads.
 
 ## Cross-cutting implementation before the final Apple run
 
