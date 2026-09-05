@@ -93,6 +93,10 @@ recorded in the commits immediately before `7d0119c9`:
   SHA-256 is
   `082ac1bfa899366f97cfee23387a25041ae58954c96a04b2c58e1c35364dd012`.
 
+The live, read-only Hugging Face audit was repeated again on 2026-09-06 with
+the same result: 194 public repositories, 193 GGUF-bearing repositories and
+198 GGUF files; the 63 unresolved-row classification above is unchanged.
+
 Commits `7d0119c9` and `8b7064d4` add and bind the independent PyTorch BF16
 GEMM parity contract without running PyTorch on the maintainer Mac. The
 fixtures and Linux-x86_64 lock were generated on VAST instance `49972360` with
@@ -126,11 +130,31 @@ setuptools' vendored LGPL-3.0, Apache/BSD dual-license and MPL/GPL notice
 material, and PyTorch's large bundled-license/NOTICE set. These are facts for
 owner/legal review, not an inferred approval. Commit `eb4d8c00` binds the
 candidate/evidence identities and counts into the future approval scope while
-leaving every package row unresolved and publication `NO_UPLOAD`. The active
-Linux candidate still does not audit the inactive Darwin `torch==2.7.1` wheel
-or the first-party virtual project row. Instance `49996341` was destroyed with
-its storage immediately after evidence recovery; the individual query returned
-`instances: null` and the complete VAST inventory returned `[]`.
+leaving every package row unresolved and publication `NO_UPLOAD`. Instance
+`49996341` was destroyed with its storage immediately after evidence recovery;
+the individual query returned `instances: null` and the complete VAST inventory
+returned `[]`.
+
+Commits `0e6f7ab2`, `e55a712a` and `011d2fba` close the corresponding
+dependency-archive evidence gap for the supported Darwin arm64 target. The
+audit authenticates uv's exact size-less PyTorch CPU lock row without making
+that exception generic, selects the exact Darwin wheels and binds both Linux
+and Darwin evidence into one fail-closed approval scope. The Darwin candidate
+schema is `bigvgan-darwin-closure-candidate-v1`, its SHA-256 is
+`148e44365efa92c2cd95feeef156e327975be465aad21c6b20c979433f6d25fa`,
+and the linked 28-file license evidence SHA-256 is
+`cd1e28d9449dc4a1e6fac1a13f1611042bcb8dddf68bc53b50026a646cbd0e42`.
+It records 10 active packages and 21 native/bundled payloads. The exact
+`torch==2.7.1` Darwin wheel is 68,578,858 bytes with SHA-256
+`7b4f8b2b83bd08f7d399025a9a7b323bdbb53d20566f1e0d584689bb92d82f9a`;
+its archive contains two license payloads and 12 native payloads. The other
+native payloads are one MarkupSafe binary and eight setuptools Windows
+launchers. This is evidence, not approval: package/license/native review is
+still unresolved and publication remains `NO_UPLOAD`. Disposable VAST
+instance `49997708` performed only the streamed wheel audit, without package
+installation/import or model acquisition, and was destroyed with storage. Its
+individual query returned `instances: null` and the complete inventory
+returned `[]`.
 
 Four additional reviewed commits close source-level gaps without downloading
 or running a model on the maintainer Mac:
@@ -288,9 +312,12 @@ upsample stages whose weight shapes imply rates/kernels `[8, 5, 3]` /
 main residual blocks with kernels `[3, 7, 11]`, dilations `[1, 3, 5]`, eight
 harmonics, an 18-channel iSTFT head, and five 512-channel F0 convolutions plus
 a one-channel classifier. It contains 82 weight-normalized `g`/`v` pairs.
-The exact pinned model configuration is not yet hash-authenticated, so these
-shape-derived facts must not be substituted for converter metadata by
-assumption.
+The HiFT converter now also authenticates the exact 7,330-byte pinned model
+configuration at the same immutable release revision: SHA-256
+`0af2c0d010c477187c39f3e8fd5f1ae2e4e6f90ad03ba37c10ed6c6a87b05959`
+and Git blob `bc19267bbfd373c9a760b7667a74349ddd487db1`. The topology constants are
+therefore source-bound rather than shape-inferred. Owner closure and
+independent real-weight CPU parity remain open.
 
 ## Cross-cutting implementation before the final Apple run
 
@@ -307,9 +334,11 @@ work:
   weight-normalized pairs under an explicit contract, bind the real weights,
   VAST-compile the adapter, and obtain an independent real-weight CPU oracle
   before the Apple run.
-- **BigVGAN full GPU path:** finish the dependency/native graph closure and
-  owner sign-off, VAST-compile the model adapter, then run a fixed real artifact
-  against an independent reference.
+- **BigVGAN full GPU path:** the Linux and Darwin dependency/native archive
+  graphs are evidence-complete, but owner/legal sign-off remains fail-closed.
+  After that approval, VAST-compile the model adapter and run a fixed real
+  artifact against an independent reference; leave Metal hardware parity for
+  the final Scaleway run.
 - **Coverage invariant:** after every wave, rerun the live audit and keep the
   CPU-complete/Metal-unsupported count at zero. Unsupported learned operations
   must return an explicit error; silent CPU fallback is forbidden.
