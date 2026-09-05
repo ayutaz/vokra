@@ -44,6 +44,10 @@ DEPENDENCY_SCHEMAS = {
 METADATA_REQUIREMENT_SCHEMAS = {frozenset({"name", "specifier", "index"})}
 LICENSE_ROW_KEYS = {"id", "status", "component", "source", "license", "payload_sha256", "required_evidence_fields", "approval_schema", "approval_signer", "approval_digest", "review"}
 REVIEW_PLACEHOLDERS = {"", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo", "null", "none"}
+DARWIN_MARKER = "platform_machine == 'arm64' and sys_platform == 'darwin'"
+DARWIN_TORCH_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
+DARWIN_TORCH_HASH = "sha256:7b4f8b2b83bd08f7d399025a9a7b323bdbb53d20566f1e0d584689bb92d82f9a"
+DARWIN_TORCH_UPLOAD_TIME = "2025-06-03T18:28:06Z"
 AUDIT_EVIDENCE_KEYS = {
     "candidate_schema",
     "candidate_sha256",
@@ -99,8 +103,15 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
 
 
-def validate_artifact(value: Any, label: str, registry: str) -> None:
-    if not isinstance(value, dict) or set(value) != ARTIFACT_KEYS:
+def validate_artifact(
+    value: Any,
+    label: str,
+    registry: str,
+    *,
+    allow_authenticated_darwin_torch_size_omission: bool = False,
+) -> None:
+    expected_keys = ARTIFACT_KEYS - {"size"} if allow_authenticated_darwin_torch_size_omission else ARTIFACT_KEYS
+    if not isinstance(value, dict) or set(value) != expected_keys:
         fail(f"{label} artifact schema is malformed")
     expected_host = "download-r2.pytorch.org" if registry == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
     parsed = urlsplit(value["url"]) if isinstance(value["url"], str) else None
@@ -108,10 +119,27 @@ def validate_artifact(value: Any, label: str, registry: str) -> None:
         fail(f"{label} artifact URL is not the authenticated {expected_host} host")
     if not isinstance(value["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["hash"]):
         fail(f"{label} artifact hash is not a SHA-256")
-    if isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0:
+    if allow_authenticated_darwin_torch_size_omission:
+        if (
+            registry != "https://download.pytorch.org/whl/cpu"
+            or value["url"] != DARWIN_TORCH_URL
+            or value["hash"] != DARWIN_TORCH_HASH
+            or value["upload-time"] != DARWIN_TORCH_UPLOAD_TIME
+        ):
+            fail(f"{label} is not the authenticated Darwin torch artifact")
+    elif isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0:
         fail(f"{label} artifact size is not positive")
     if not isinstance(value["upload-time"], str) or not value["upload-time"].strip():
         fail(f"{label} artifact upload-time is missing")
+
+
+def is_authenticated_darwin_torch_row(package: dict[str, Any], registry: str) -> bool:
+    return (
+        package.get("name") == "torch"
+        and package.get("version") == "2.7.1"
+        and registry == "https://download.pytorch.org/whl/cpu"
+        and package.get("resolution-markers") == [DARWIN_MARKER]
+    )
 
 
 def validate_metadata(value: Any, label: str) -> None:
@@ -188,7 +216,12 @@ def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
                 if not isinstance(package["wheels"], list) or not package["wheels"]:
                     fail(f"{identity!r} wheels table is malformed")
                 for artifact in package["wheels"]:
-                    validate_artifact(artifact, f"{identity!r} wheel", registry)
+                    validate_artifact(
+                        artifact,
+                        f"{identity!r} wheel",
+                        registry,
+                        allow_authenticated_darwin_torch_size_omission=is_authenticated_darwin_torch_row(package, registry),
+                    )
             if "sdist" not in package and not package.get("wheels"):
                 fail(f"{identity!r} registry package has no authenticated artifacts")
         rows.append(package)
@@ -489,6 +522,48 @@ publication = "NO_UPLOAD"
             mutate(candidate)
             try:
                 validate_artifact(candidate, f"self-test {label}", "https://pypi.org/simple")
+            except SystemExit as exc:
+                if exc.code != 2:
+                    raise
+            else:
+                raise SystemExit(f"bigvgan license gate self-test accepted {label} artifact")
+        darwin_package = {
+            "name": "torch",
+            "version": "2.7.1",
+            "resolution-markers": [DARWIN_MARKER],
+        }
+        assert is_authenticated_darwin_torch_row(
+            darwin_package, "https://download.pytorch.org/whl/cpu"
+        )
+        assert not is_authenticated_darwin_torch_row(
+            dict(darwin_package, version="2.7.1+cpu"),
+            "https://download.pytorch.org/whl/cpu",
+        )
+        darwin_artifact = {
+            "url": DARWIN_TORCH_URL,
+            "hash": DARWIN_TORCH_HASH,
+            "upload-time": DARWIN_TORCH_UPLOAD_TIME,
+        }
+        validate_artifact(
+            darwin_artifact,
+            "self-test Darwin torch",
+            "https://download.pytorch.org/whl/cpu",
+            allow_authenticated_darwin_torch_size_omission=True,
+        )
+        for label, mutate in {
+            "Darwin-size-present": lambda value: value.update(size=1),
+            "Darwin-hash-tampered": lambda value: value.update(hash="sha256:" + "0" * 64),
+            "Darwin-upload-time-tampered": lambda value: value.update(**{"upload-time": "2025-06-03T18:28:07Z"}),
+        }.items():
+            candidate = dict(darwin_artifact)
+            mutate(candidate)
+            try:
+                validate_artifact(
+                    candidate,
+                    f"self-test {label}",
+                    "https://download.pytorch.org/whl/cpu",
+                    allow_authenticated_darwin_torch_size_omission=True,
+                )
             except SystemExit as exc:
                 if exc.code != 2:
                     raise
