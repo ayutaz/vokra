@@ -35,6 +35,21 @@ Transformers import and model acquisition while
 test to report exactly one passed, zero failed/ignored, and require each
 model-level parity sentinel exactly once. No upload path is present.
 
+## Fresh dependency audit
+
+Before operator preflight is closed, an explicitly authorized VAST job may
+run `scripts/publish/vast-ai/audit-speecht5-tts-dependencies.sh`. It requires
+`VOKRA_PUBLISH_ON_VAST=1`, Linux x86_64, a clean checkout, and an absent
+output directory. The worker performs frozen `uv sync`, then runs the
+model-free auditor with `--no-sync` to record the exact installed closure,
+publisher license metadata/files, native and bundled payloads, and build-only
+facts in full and compact JSON. The dependency-only frozen `uv sync` may use
+the locked package indexes; the auditor itself performs no network requests.
+It does not acquire model/source weights,
+import Torch/Transformers, run Cargo, upload, or update the manifest/reviews.
+The existing compact evidence and preflight gate remain unchanged until the
+fresh evidence is reviewed by the owner.
+
 ## API smoke prerequisite
 
 Before changing the reviewed compatibility status, run the dedicated
