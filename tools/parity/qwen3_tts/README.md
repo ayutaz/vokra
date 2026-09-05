@@ -32,3 +32,24 @@ affected by `GHSA-xrqw-3rrv-vx5w` (<5.10.0). The reviewed dependency is now
 `transformers==5.10.4`; source/API compatibility remains
 `BLOCKED_UNVERIFIED_API_SMOKE` until an authorized VAST model smoke test is
 completed. This dependency remediation does not claim API parity.
+
+The bounded API smoke is `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh`.
+It is VAST/Linux x86_64-only, requires `VOKRA_PUBLISH_ON_VAST=1`, and stages
+only the fixed 0.6B-Base release plus the authenticated 12-Hz decoder. The
+worker is currently fail-closed at the existing unresolved license manifest
+(the first reported blocker is `accelerate==1.12.0`), so it cannot sync,
+download, import, or run a model until legitimate dependency/component reviews
+and authenticated owner evidence are recorded. After all gates pass it calls
+the official `Qwen3TTSModel.from_pretrained` wrapper
+with `local_files_only=True`, `dtype=float32`, and `device_map="cpu"`, then
+emits `api-smoke.json` under the disposable work directory. The evidence is a
+strict `vokra-qwen3-tts-api-smoke-v1` JSON document containing the exact source,
+model, decoder, lock, approval-evidence SHA-256 plus the existing license gate
+manifest digest/approval scope/owner sign-offs, Vokra checkout HEAD/clean
+status, package-version, input-hash, and call-checkpoint records; its
+publication value is always `NO_UPLOAD`. The Python worker repeats the VAST
+platform gate and rejects direct output paths that overlap any authenticated
+input or have symlink ancestry. Run
+`scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh --self-test` locally for
+the no-model/no-network contract checks. The full four-variant validation
+remains blocked until this API smoke has an authenticated VAST result.
