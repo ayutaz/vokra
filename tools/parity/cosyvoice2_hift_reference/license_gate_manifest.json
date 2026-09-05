@@ -1,0 +1,58 @@
+{
+  "gate_version": 1,
+  "status": "PENDING_REVIEW",
+  "owner_signoff": "OWNER_SIGNOFF_REQUIRED",
+  "publication": "NO_UPLOAD",
+  "source": {
+    "repository": "https://github.com/FunAudioLLM/CosyVoice.git",
+    "revision": "8555549e882236e6541748b1042d95693caa82ba",
+    "license_status": "PENDING_PRIMARY_SOURCE_REVIEW"
+  },
+  "model": {
+    "repository": "FunAudioLLM/CosyVoice2-0.5B",
+    "revision": "eec1ae6c79877dbd9379285cf8789c9e0879293d",
+    "file": "hift.pt",
+    "bytes": 83390254,
+    "sha256": "3386cc880324d4e98e05987b99107f49e40ed925b8ecc87c1f4939432d429879",
+    "weight_license_status": "PENDING_PRIMARY_SOURCE_REVIEW"
+  },
+  "config": {
+    "file": "cosyvoice2.yaml",
+    "bytes": 7330,
+    "sha256": "0af2c0d010c477187c39f3e8fd5f1ae2e4e6f90ad03ba37c10ed6c6a87b05959",
+    "git_blob_sha1": "bc19267bbfd373c9a760b7667a74349ddd487db1"
+  },
+  "python_closure": {
+    "runtime_pins": {
+      "torch": "2.7.1",
+      "numpy": "2.3.5",
+      "scipy": "1.16.3"
+    },
+    "platform": "linux-x86_64-cpu",
+    "license_status": "PENDING_PACKAGE_AND_NATIVE_PAYLOAD_REVIEW",
+    "forbidden_packages": [
+      "triton",
+      "nvidia",
+      "librosa",
+      "soxr",
+      "soundfile"
+    ]
+  },
+  "evidence": {
+    "tensor_count": 328,
+    "tensor_dtype": "F32",
+    "tensor_manifest_sha256": "cecbb2d68f91337f263db0f0333c75573516e7087b6e75d6ea647b3f86afec7c",
+    "source_roles": {
+      "cosyvoice/hifigan/generator.py": "326a1a70ae7707662939c20493b3a8e4b0906216",
+      "cosyvoice/hifigan/f0_predictor.py": "5797c31aada757ac7ef65a70ff8ee21867a25df8",
+      "cosyvoice/transformer/activation.py": "8cea54816385d3b6585ccc2417bc71630d578177",
+      "cosyvoice/utils/common.py": "6f5a3dd8b7ae99601783c3a4ed91b3b64270fab3"
+    }
+  },
+  "decision": "DO_NOT_DISTRIBUTE_UNTIL_OWNER_SIGNOFF",
+  "approval": {
+    "schema": "cosyvoice2-hift-approval-scope-v1",
+    "signer": "",
+    "scope_sha256": ""
+  }
+}
