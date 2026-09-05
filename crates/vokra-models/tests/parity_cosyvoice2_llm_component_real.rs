@@ -324,13 +324,8 @@ fn parity_cosyvoice2_llm_component_real_transformers() {
     assert_eq!(report.vocab, vocab);
     assert_eq!(report.argmax_matches, rows);
     eprintln!(
-        "CosyVoice2 LLM parity PASS: rows={} vocab={} max_abs={:.6e} mean_abs={:.6e} argmax={}/{} atol={ATOL:.1e}",
-        report.t,
-        report.vocab,
-        report.max_abs_delta,
-        report.mean_abs_delta,
-        report.argmax_matches,
-        report.t,
+        "COSYVOICE2_LLM_PARITY_RESULT max_abs_delta={:.9e} mean_abs_delta={:.9e} argmax_matches={} argmax_total={} atol={ATOL:.9e}",
+        report.max_abs_delta, report.mean_abs_delta, report.argmax_matches, report.t,
     );
 }
 
