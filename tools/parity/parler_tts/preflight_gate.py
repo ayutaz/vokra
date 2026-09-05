@@ -23,8 +23,8 @@ from typing import Any
 import tomllib
 
 GATE_VERSION = 1
-LOCK_SHA256 = "0b37648f20d26197ba4a5dbeac5e6336b57454b5f7d2306dd1ddcbf321952bac"
-PYPROJECT_SHA256 = "bea3b5f3c5e83b7af88e37a156a3ac8df2eccc5a1883a5daa229eecd080f3a1e"
+LOCK_SHA256 = "683c1c2324f3dbcd543b86fce0b71ec1c1ee32254cdf03b0361064b4b8d4901c"
+PYPROJECT_SHA256 = "eacb62df8ffc207f2d8d860607da93d1fdc6980cbb3fe657bf8664bc20675793"
 SOURCE_REPO = "https://github.com/huggingface/parler-tts.git"
 SOURCE_REVISION = "d108732cd57788ec86bc857d99a6cabd66663d68"
 PREVIOUS_ISOLATED_TRANSFORMERS_PIN = "4.46.1"
@@ -181,7 +181,7 @@ def validate_project_schema(project: dict[str, Any]) -> None:
     if p["requires-python"] != "==3.12.*" or not isinstance(p["dependencies"], list) or any(not isinstance(x, str) or not x.strip() for x in p["dependencies"]):
         raise ValueError("pyproject.toml project contract drifted")
     uv = project["tool"].get("uv") if isinstance(project["tool"], dict) else None
-    if set(project["tool"]) != {"uv"} or not isinstance(uv, dict) or set(uv) != {"package", "environments", "override-dependencies", "sources", "index"} or uv["package"] is not False or uv["environments"] != ["sys_platform == 'linux' and platform_machine == 'x86_64'"] or uv["override-dependencies"] != ["setuptools==83.0.0"] or uv["sources"] != {"torch": {"index": "pytorch-cpu"}, "torchaudio": {"index": "pytorch-cpu"}} or uv["index"] != [{"name": "pytorch-cpu", "url": "https://download.pytorch.org/whl/cpu", "explicit": True}]:
+    if set(project["tool"]) != {"uv"} or not isinstance(uv, dict) or set(uv) != {"package", "environments", "override-dependencies", "sources", "index"} or uv["package"] is not False or uv["environments"] != ["sys_platform == 'linux' and platform_machine == 'x86_64'"] or uv["override-dependencies"] != ["setuptools ; python_version < '0'"] or uv["sources"] != {"torch": {"index": "pytorch-cpu"}, "torchaudio": {"index": "pytorch-cpu"}} or uv["index"] != [{"name": "pytorch-cpu", "url": "https://download.pytorch.org/whl/cpu", "explicit": True}]:
         raise ValueError("pyproject.toml uv contract drifted")
 
 
@@ -244,7 +244,7 @@ def validate_metadata(value: Any, label: str) -> None:
 
 def canonical_package_rows(lock: dict[str, Any], project: dict[str, Any]) -> list[dict[str, Any]]:
     packages = lock.get("package")
-    if not isinstance(packages, list) or not packages or set(lock) != LOCK_KEYS or lock.get("version") != 1 or lock.get("revision") != 3 or lock.get("requires-python") != "==3.12.*" or lock.get("manifest") != {"overrides": [{"name": "setuptools", "specifier": "==83.0.0"}]} or not isinstance(lock.get("resolution-markers"), list) or any(not isinstance(item, str) or not item.strip() for item in lock["resolution-markers"]) or not isinstance(lock.get("supported-markers"), list) or any(not isinstance(item, str) or not item.strip() for item in lock["supported-markers"]):
+    if not isinstance(packages, list) or not packages or set(lock) != LOCK_KEYS or lock.get("version") != 1 or lock.get("revision") != 3 or lock.get("requires-python") != "==3.12.*" or lock.get("manifest") != {"overrides": [{"name": "setuptools", "marker": "python_full_version < '0'"}]} or not isinstance(lock.get("resolution-markers"), list) or any(not isinstance(item, str) or not item.strip() for item in lock["resolution-markers"]) or not isinstance(lock.get("supported-markers"), list) or any(not isinstance(item, str) or not item.strip() for item in lock["supported-markers"]):
         raise ValueError("uv.lock package table is missing")
     rows = []
     identities: set[tuple[str, str]] = set()
@@ -259,6 +259,8 @@ def canonical_package_rows(lock: dict[str, Any], project: dict[str, Any]) -> lis
             raise ValueError("uv.lock contains malformed dependencies")
         if not isinstance(package.get("name"), str) or not package["name"].strip() or not isinstance(package.get("version"), str) or not package["version"].strip():
             raise ValueError("uv.lock has a package row without an exact name/version")
+        if package["name"].casefold() == "setuptools":
+            raise ValueError("uv.lock must omit forbidden setuptools closure")
         identity = (package["name"], package["version"])
         if identity in identities:
             raise ValueError(f"uv.lock has duplicate package identity: {identity!r}")
@@ -287,6 +289,8 @@ def canonical_package_rows(lock: dict[str, Any], project: dict[str, Any]) -> lis
                 raise ValueError(f"uv.lock dependency row is malformed: {identity!r}")
             if not dependency["name"].strip() or not isinstance(dependency.get("marker"), str) or not dependency["marker"].strip():
                 raise ValueError(f"uv.lock dependency fields are malformed: {identity!r}")
+            if dependency["name"].casefold() == "setuptools":
+                raise ValueError("uv.lock must not reintroduce setuptools dependency")
             for field in ("marker", "version"):
                 if field in dependency and not isinstance(dependency[field], str):
                     raise ValueError(f"uv.lock dependency field is malformed: {identity!r}")

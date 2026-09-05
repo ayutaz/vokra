@@ -27,9 +27,9 @@ from typing import Any
 
 SOURCE_REPOSITORY = "https://github.com/huggingface/parler-tts.git"
 SOURCE_REVISION = "d108732cd57788ec86bc857d99a6cabd66663d68"
-LOCK_SHA256 = "0b37648f20d26197ba4a5dbeac5e6336b57454b5f7d2306dd1ddcbf321952bac"
-PYPROJECT_SHA256 = "bea3b5f3c5e83b7af88e37a156a3ac8df2eccc5a1883a5daa229eecd080f3a1e"
-PACKAGE_ROWS_SHA256 = "fd2b296630195079d54a79a0c911dacda6249f196b9b68df78149d60c58012f8"
+LOCK_SHA256 = "683c1c2324f3dbcd543b86fce0b71ec1c1ee32254cdf03b0361064b4b8d4901c"
+PYPROJECT_SHA256 = "eacb62df8ffc207f2d8d860607da93d1fdc6980cbb3fe657bf8664bc20675793"
+PACKAGE_ROWS_SHA256 = "15a98098c9eaae24795fe37fbab411c97379cc3ff44e6e1b009cfbf26d262dff"
 TRANSFORMERS_VERSION = "5.10.4"
 TORCH_VERSION = "2.11.0+cpu"
 TORCHAUDIO_VERSION = "2.11.0+cpu"
@@ -311,6 +311,20 @@ def verify_project(project: Path, manifest_path: Path) -> dict[str, Any]:
     require_fixed(sha256_file(lock_file), LOCK_SHA256, "uv.lock hash")
     require_fixed(manifest.get("pyproject_sha256", ""), PYPROJECT_SHA256, "manifest pyproject hash")
     require_fixed(sha256_file(project_file), PYPROJECT_SHA256, "pyproject.toml hash")
+    packages = tomllib.loads(lock_file.read_text(encoding="utf-8")).get("package")
+    if not isinstance(packages, list) or any(
+        isinstance(package, dict)
+        and (
+            str(package.get("name", "")).casefold() == "setuptools"
+            or any(
+                isinstance(dependency, dict)
+                and str(dependency.get("name", "")).casefold() == "setuptools"
+                for dependency in package.get("dependencies", [])
+            )
+        )
+        for package in packages
+    ):
+        raise RuntimeError("uv.lock reintroduces forbidden setuptools closure")
     package_rows_sha256 = manifest.get("package_rows_sha256")
     if package_rows_sha256 != PACKAGE_ROWS_SHA256:
         raise RuntimeError("authenticated package-row hash is missing or malformed")

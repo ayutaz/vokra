@@ -158,6 +158,15 @@ def _contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, 
         raise AuditError(f"Parler pyproject/uv.lock schema is invalid: {exc}") from exc
     if preflight_gate.canonical_digest(rows) != manifest.get("package_rows_sha256"):
         raise AuditError("canonical Parler lock rows differ from the manifest")
+    if any(row["name"].casefold() == "setuptools" for row in rows):
+        raise AuditError("forbidden setuptools closure is present in uv.lock")
+    if any(
+        dependency.get("name", "").casefold() == "setuptools"
+        for row in rows
+        for dependency in row.get("dependencies", [])
+        if isinstance(dependency, dict)
+    ):
+        raise AuditError("forbidden setuptools dependency is present in uv.lock")
     if manifest.get("source_identity") != {
         "repo": preflight_gate.SOURCE_REPO,
         "revision": preflight_gate.SOURCE_REVISION,
@@ -1251,6 +1260,8 @@ def self_test() -> int:
     assert canonical_json({"b": 2, "a": 1}) == '{"a":1,"b":2}'
     assert all(_is_license_path(path) for path in ("LICENCE", "licence.txt", "pkg/License.md"))
     assert not _is_license_path("pkg/README.md")
+    _project, _lock, _manifest, _project_bytes, _lock_bytes = _contract(Path(__file__).resolve().parent)
+    assert all(row["name"].casefold() != "setuptools" for row in preflight_gate.canonical_package_rows(_lock, _project["project"]))
 
     manifest = load_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
     items = _fixed_license_items(manifest)

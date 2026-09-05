@@ -1,9 +1,9 @@
 {
   "gate_version": 1,
-  "lock_sha256": "0b37648f20d26197ba4a5dbeac5e6336b57454b5f7d2306dd1ddcbf321952bac",
-  "pyproject_sha256": "bea3b5f3c5e83b7af88e37a156a3ac8df2eccc5a1883a5daa229eecd080f3a1e",
-  "package_rows_sha256": "fd2b296630195079d54a79a0c911dacda6249f196b9b68df78149d60c58012f8",
-  "review_rows_sha256": "2b7ef12ed8d6ecc98bfac5e08e50c91c303deb8fc8ddc559d4152ea62e8537cd",
+  "lock_sha256": "683c1c2324f3dbcd543b86fce0b71ec1c1ee32254cdf03b0361064b4b8d4901c",
+  "pyproject_sha256": "eacb62df8ffc207f2d8d860607da93d1fdc6980cbb3fe657bf8664bc20675793",
+  "package_rows_sha256": "15a98098c9eaae24795fe37fbab411c97379cc3ff44e6e1b009cfbf26d262dff",
+  "review_rows_sha256": "8412a0a9674da7c95b1f026a9e4debeca0788b0774bb5cacc6a5b7e841e5d1ab",
   "source_identity": {"repo": "https://github.com/huggingface/parler-tts.git", "revision": "d108732cd57788ec86bc857d99a6cabd66663d68", "license": "Apache-2.0"},
   "variants": [
     {"slug":"english","upstream_repo":"parler-tts/parler-tts-mini-v1","upstream_revision":"0392b9451a601e528fd863bbb0598431fee810d9","upstream_license":"Apache-2.0","checkpoint_bytes":3511490560,"checkpoint_sha256":"bc430eb6752b96ffb3f67036d1a6e207fbd031575a775716ffa64ef1eeb03692","config_bytes":6930,"config_sha256":"d8d2afa72bf3b098263a073c4d4df18627b76e1eb454c48f60bc5f787b2433b1","generation_bytes":265,"generation_sha256":"77831b39a5e0c4dba09b4dcbe37ce082e10f94c646920b20678c9c5289e52440","public_repo":"vokra/parler-tts-mini-v1","public_license":"Apache-2.0","public_revision":"cb02a124c8d125231b396a293608f2488ae2e4d2","public_file":"parler-tts-mini-v1.gguf","public_bytes":3511459168,"public_sha256":"7f69b811edae6cbe82fdfa8e72e6181945d4466748349aa74d994fb566785ddc"},
@@ -44,7 +44,6 @@
     {"id":"regex@2026.7.19","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"rich@15.0.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"safetensors@0.8.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
-    {"id":"setuptools@83.0.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"shellingham@1.5.4","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"sympy@1.14.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"tokenizers@0.22.2","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},

@@ -22,6 +22,11 @@ runtime DAC path. The official setup metadata declares `descript-audio-codec`,
 `descript-audiotools`, `librosa`, `soxr`, `soundfile`, and `protobuf`, but this
 fixed dumper path does not import them; they are not silently pulled into this
 inference closure. Any future change must be reviewed and added explicitly.
+The fixed inference path also never imports `setuptools`; its transitive
+requirement is overridden with the impossible marker `python_version < '0'`,
+so the frozen runtime closure contains no `setuptools` or its forbidden
+LGPLv3-vendored `autocommand` payload. The preflight gate and dependency audit
+fail closed if either the lock or installed environment reintroduces it.
 
 The fixed model identities are English
 `parler-tts/parler-tts-mini-v1@0392b9451a601e528fd863bbb0598431fee810d9` and

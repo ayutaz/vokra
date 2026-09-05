@@ -18,11 +18,12 @@ package = false
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
-# torch==2.11.0+cpu declares setuptools<82, but that range includes
-# GHSA-h35f-9h28-mq5c (fixed in 83.0.0). The Parler reference path does not
-# import setuptools at runtime, so force the exact patched build-tool version
-# while retaining the immutable torch reference route.
-override-dependencies = ["setuptools==83.0.0"]
+# The fixed inference route never imports setuptools.  Keep the transitive
+# build-tool requirement impossible so uv omits setuptools, including its
+# forbidden LGPLv3 vendored autocommand payload, from the frozen runtime
+# closure.  Do not replace this with a newer setuptools pin: the payload is
+# still bundled there.
+override-dependencies = ["setuptools ; python_version < '0'"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
