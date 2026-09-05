@@ -96,7 +96,9 @@ name/version multiset, package LICENSE/LICENCE/COPYING/NOTICE/COPYRIGHT bytes an
 Parler source, two pinned models, and DAC revision. Missing or redirected
 non-license paths are factual blockers, except that a 404 on either of the two
 model `LICENSE` paths may use the checked-in, bounded HF model-info fallback.
-That fallback authenticates the exact repo/revision/`sha`, public/non-gated,
+That fallback authenticates the exact revision endpoint
+`https://huggingface.co/api/models/{repo}/revision/{revision}`, exact
+repo/revision/`sha`, public/non-gated,
 enabled (`disabled=false`) flags, `cardData.license=apache-2.0`, and an exact
 tree with no license-like file. It is not enabled for the source or DAC identity; a missing DAC
 checkpoint LICENSE therefore remains blocked, and the official DAC code

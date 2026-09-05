@@ -31,7 +31,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -869,7 +869,7 @@ def _fetch_license(
 
 
 def _model_info_url(item: dict[str, Any]) -> str:
-    return f"https://huggingface.co/api/models/{item['repo']}?revision={item['revision']}"
+    return f"https://huggingface.co/api/models/{item['repo']}/revision/{item['revision']}"
 
 
 def _model_info_entry(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -889,6 +889,8 @@ def _model_info_entry(item: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _validate_model_info_url(item: dict[str, Any], url: str, *, initial: bool = False) -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}", str(item.get("revision", ""))):
+        raise AuditError(f"HF model-info revision is not a full commit SHA: {url}")
     expected = _model_info_url(item)
     parsed = urlsplit(url)
     try:
@@ -901,13 +903,10 @@ def _validate_model_info_url(item: dict[str, Any], url: str, *, initial: bool = 
         raise AuditError(f"HF model-info URL contains userinfo: {url}")
     if parsed.fragment:
         raise AuditError(f"HF model-info URL contains a fragment: {url}")
-    expected_parts = urlsplit(expected)
     if initial and url != expected:
         raise AuditError(f"initial HF model-info URL is not the generated fixed URL: {url}")
-    if parsed.path != expected_parts.path:
+    if parsed.path != f"/api/models/{item['repo']}/revision/{item['revision']}" or parsed.query:
         raise AuditError(f"HF model-info URL changed the exact repository path: {url}")
-    if parse_qsl(parsed.query, keep_blank_values=True) != [("revision", item["revision"])] or parsed.query != expected_parts.query:
-        raise AuditError(f"HF model-info URL does not carry the exact revision query: {url}")
 
 
 class _ModelInfoRedirects(HTTPRedirectHandler):
@@ -1335,6 +1334,10 @@ def self_test() -> int:
         "siblings": [{"rfilename": "config.json"}, {"rfilename": "model.safetensors"}],
     }
     model_body = canonical_json(model_payload).encode()
+    expected_model_info_url = (
+        f"https://huggingface.co/api/models/{model_item['repo']}/revision/{model_item['revision']}"
+    )
+    assert _model_info_url(model_item) == expected_model_info_url
     model_result = _fetch_model_info(model_item, lambda url: (url, model_body))
     assert model_result["schema"] == MODEL_METADATA_SCHEMA
     assert model_result["repo"] == model_item["repo"] and model_result["sha"] == model_item["revision"]
@@ -1344,8 +1347,10 @@ def self_test() -> int:
     assert _fetch_model_info(model_item, lambda _url: (short_host, model_body))["final_url"] == short_host
     for unsafe in (
         _model_info_url(model_item).replace("huggingface.co", "evil.example", 1),
-        _model_info_url(model_item).replace(model_item["revision"], "0" * 40, 1),
-        _model_info_url(model_item) + "&extra=1",
+        f"https://huggingface.co/api/models/{model_item['repo']}?revision={model_item['revision']}",
+        _model_info_url(model_item) + "?revision=" + model_item["revision"],
+        _model_info_url(model_item).replace(model_item["revision"], "main"),
+        _model_info_url(model_item).replace(f"/revision/{model_item['revision']}", "/revision/" + "0" * 40),
         _model_info_url(model_item).replace("https://", "https://audit-user@", 1),
         _model_info_url(model_item) + "#fragment",
     ):

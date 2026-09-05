@@ -66,7 +66,7 @@ Python 3.12 lock closure, installed publisher files, native ELF `NEEDED`
 entries, and exact locked-sdist plus fixed source LICENSE path evidence. For
 the five HF model revisions whose exact `LICENSE` path returns HTTP 404, it
 additionally fetches only
-`https://huggingface.co/api/models/{repo}?revision={revision}` and
+`https://huggingface.co/api/models/{repo}/revision/{revision}` and
 accepts the bounded `cardData.license` projection when the API-returned `id`
 and `sha` match the pinned repository and revision, `private`/`gated`/`disabled`
 are exactly false, and `siblings` is a non-empty safe, duplicate-free

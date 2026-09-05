@@ -77,7 +77,7 @@ FIXED_IDENTITIES = {
 # may contain other fields, but none of those fields are accepted as evidence.
 MODEL_LICENSE_METADATA_POLICY = {
     "schema": "vokra-hf-model-info-license-v1",
-    "endpoint": "https://huggingface.co/api/models/{repo}?revision={revision}",
+    "endpoint": "https://huggingface.co/api/models/{repo}/revision/{revision}",
     "api_host": "huggingface.co",
     "max_response_bytes": 262144,
     "license_field": "cardData.license",

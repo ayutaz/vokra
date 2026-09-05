@@ -5,7 +5,7 @@
   "package_rows_sha256": "96b9e02c836283426189e223cf8b2c48ac7d8888819a834bbbb2bc15b26e575f",
   "review_rows_sha256": "29e8ac64e9d75e84ba3571f2107fd4deb2035b8834f2b7a1829577aa1da0b4f2",
   "component_rows_sha256": "8700cea9fac4646ae65925adbb0e11b4d41e859db4127c2abdb0ba518fe01019",
-  "approval_scope_sha256": "ccfcff4d4fca695f8136edf018ad7a5b2ba726a89ea2b276c4778381217a4463",
+  "approval_scope_sha256": "17b17d7fc41cc31bade2cbf4c756a3794fd9da2e5ec22b88d94f7653b7e498db",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -59,7 +59,7 @@
   },
   "model_license_metadata": {
     "schema": "vokra-hf-model-info-license-v1",
-    "endpoint": "https://huggingface.co/api/models/{repo}?revision={revision}",
+    "endpoint": "https://huggingface.co/api/models/{repo}/revision/{revision}",
     "api_host": "huggingface.co",
     "max_response_bytes": 262144,
     "license_field": "cardData.license",

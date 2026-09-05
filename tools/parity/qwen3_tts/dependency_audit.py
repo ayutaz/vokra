@@ -29,7 +29,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import tomllib
@@ -375,7 +375,7 @@ def fixed_model_info_items() -> list[dict[str, str]]:
             "kind": component["kind"],
             "repo": component["repo"],
             "revision": component["revision"],
-            "requested_url": f"https://huggingface.co/api/models/{component['repo']}?revision={component['revision']}",
+            "requested_url": f"https://huggingface.co/api/models/{component['repo']}/revision/{component['revision']}",
         }
         for component in license_gate.fixed_component_identities()
         if component["kind"] == "model"
@@ -421,7 +421,9 @@ def fetch_license(item: dict[str, str], fetcher: Callable[[str], tuple[str, byte
 
 
 def _validate_model_info_url(item: dict[str, str], value: str, initial: bool) -> None:
-    """Allow only the exact HF API path/query for one pinned repository."""
+    """Allow only the exact HF API revision path for one pinned repository."""
+    if not isinstance(item.get("revision"), str) or not license_gate.HEX40.fullmatch(item["revision"]):
+        raise AuditError("HF model-info revision is not a full commit SHA")
     expected = item["requested_url"]
     if initial and value != expected:
         raise AuditError("initial HF model-info URL drifted")
@@ -437,15 +439,10 @@ def _validate_model_info_url(item: dict[str, str], value: str, initial: bool) ->
         or parsed.password
         or port not in (None, 443)
         or parsed.fragment
-        or parsed.path != f"/api/models/{item['repo']}"
+        or parsed.path != f"/api/models/{item['repo']}/revision/{item['revision']}"
+        or parsed.query
     ):
         raise AuditError("unsafe HF model-info URL")
-    try:
-        query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
-    except ValueError as exc:
-        raise AuditError("malformed HF model-info query") from exc
-    if query != [("revision", item["revision"])]:
-        raise AuditError("HF model-info query is not the fixed revision")
 
 
 class _ModelInfoRedirects(HTTPRedirectHandler):
@@ -799,6 +796,10 @@ def self_test() -> int:
             "siblings": [{"rfilename": "config.json"}],
             "cardData": {"license": "apache-2.0", "README": "not a license source"},
         }, separators=(",", ":")).encode("utf-8")
+        expected_model_info_url = (
+            f"https://huggingface.co/api/models/{model_item['repo']}/revision/{model_item['revision']}"
+        )
+        assert model_item["requested_url"] == expected_model_info_url
         model_result = fetch_model_license_metadata(model_item, lambda value: (value, model_payload))
         assert model_result["returned_sha"] == model_item["revision"]
         assert model_result["license"] == "apache-2.0"
@@ -815,8 +816,10 @@ def self_test() -> int:
             raise AssertionError("duplicate HF model-info JSON keys were accepted")
         for bad in (
             model_item["requested_url"].replace("https://huggingface.co", "https://example.invalid"),
-            model_item["requested_url"].replace("?revision=", "?other="),
-            model_item["requested_url"] + "&revision=" + model_item["revision"],
+            f"https://huggingface.co/api/models/{model_item['repo']}?revision={model_item['revision']}",
+            model_item["requested_url"] + "?revision=" + model_item["revision"],
+            model_item["requested_url"].replace(model_item["revision"], "main"),
+            model_item["requested_url"].replace(f"/revision/{model_item['revision']}", "/revision/" + "0" * 40),
             model_item["requested_url"].replace("/api/models/", "/README.md/"),
         ):
             try:
