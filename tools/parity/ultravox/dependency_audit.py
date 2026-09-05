@@ -421,7 +421,7 @@ def _entry_path(dist: metadata.Distribution, entry: Any) -> Path | None:
 
 def _is_license_path(relative: str) -> bool:
     basename = Path(relative).name.casefold()
-    return bool(re.fullmatch(r"(?:license|copying|notice|copyright)(?:[._-].*)?", basename))
+    return bool(re.fullmatch(r"(?:licen[cs]e|copying|notice|copyright)(?:[._-].*)?", basename))
 
 
 def _publisher_files(dist: metadata.Distribution) -> tuple[list[dict[str, Any]], list[str]]:
@@ -622,7 +622,7 @@ def _archive_license_files(body: bytes, archive_format: str, archive_identity: d
     except Exception as exc:  # noqa: BLE001 - malformed archive is a blocker
         raise AuditError(f"sdist archive inspection failed: {exc}") from exc
     if not candidates:
-        raise AuditError("locked sdist contains no LICENSE/COPYING/NOTICE/COPYRIGHT candidate")
+        raise AuditError("locked sdist contains no LICENSE/LICENCE/COPYING/NOTICE/COPYRIGHT candidate")
     return candidates
 
 
@@ -853,7 +853,7 @@ def self_test() -> int:
     assert "manifest:license_rows_sha256 does not match the recorded license_rows bytes" in _approval_blockers(stale_manifest)
     assert _approval_blockers(checked_manifest)
     item = _fixed_license_items(manifest)[0]; body = b"self-test LICENSE\n"; url = _license_url(item)
-    assert _is_license_path("LICENSE.txt") and _is_license_path("NOTICE-3")
+    assert _is_license_path("LICENSE.txt") and _is_license_path("LICENCE") and _is_license_path("licence.md") and _is_license_path("NOTICE-3")
     assert not _is_license_path("unlicensed-file") and not _is_license_path("noticeable")
     assert _fetch_license(item, lambda requested: (requested, body))["url_trace"] == [url]
     for bad_url in (
@@ -897,6 +897,13 @@ def self_test() -> int:
     good = tar_bytes([("demo-1/", b"", "dir"), ("demo-1/LICENSE", b"license", "file")]); good_row = row(good)
     assert _fetch_sdist(good_row, lambda url: (url, good))["publisher_files"][0]["size"] == 7
     assert _fetch_sdist(good_row, lambda url: ("./demo-1.tar.gz", good))["archive_identity"]["final_url"] == good_row["sdist"]["url"]
+    british = tar_bytes([("demo-1/", b"", "dir"), ("demo-1/LICENCE", b"licence", "file")]); british_row = row(british)
+    assert _fetch_sdist(british_row, lambda url: (url, british))["publisher_files"][0]["path"] == "demo-1/LICENCE"
+    zip_body = io.BytesIO()
+    with zipfile.ZipFile(zip_body, "w") as archive:
+        archive.writestr("demo-1/LICENCE", b"licence")
+    british_zip = zip_body.getvalue(); british_zip_row = row(british_zip, ".zip")
+    assert _fetch_sdist(british_zip_row, lambda url: (url, british_zip))["publisher_files"][0]["path"] == "demo-1/LICENCE"
     redirect_trace = [good_row["sdist"]["url"]]
     _SdistRedirects(good_row["sdist"], redirect_trace).redirect_request(Request(redirect_trace[0]), None, 302, "", {}, "demo-1.tar.gz")
     assert redirect_trace == [good_row["sdist"]["url"]] * 2
@@ -904,6 +911,12 @@ def self_test() -> int:
         try: _fetch_sdist(row(bad), lambda url, payload=bad: (url, payload))
         except AuditError: pass
         else: raise AssertionError("accepted unsafe/no-license archive")
+    zip_traversal = io.BytesIO()
+    with zipfile.ZipFile(zip_traversal, "w") as archive:
+        archive.writestr("../LICENCE", b"x")
+    try: _archive_license_files(zip_traversal.getvalue(), "zip", {"requested_url": "self-test"})
+    except AuditError: pass
+    else: raise AssertionError("accepted ZIP traversal archive")
     bounded_members = MAX_ARCHIVE_MEMBERS
     try:
         globals()["MAX_ARCHIVE_MEMBERS"] = 1
@@ -912,6 +925,22 @@ def self_test() -> int:
         else: raise AssertionError("accepted archive beyond member bound")
     finally:
         globals()["MAX_ARCHIVE_MEMBERS"] = bounded_members
+    bounded_member_bytes = MAX_ARCHIVE_MEMBER_BYTES
+    try:
+        globals()["MAX_ARCHIVE_MEMBER_BYTES"] = 1
+        try: _fetch_sdist(good_row, lambda url: (url, good))
+        except AuditError: pass
+        else: raise AssertionError("accepted oversized archive member")
+    finally:
+        globals()["MAX_ARCHIVE_MEMBER_BYTES"] = bounded_member_bytes
+    bounded_total_bytes = MAX_ARCHIVE_TOTAL_BYTES
+    try:
+        globals()["MAX_ARCHIVE_TOTAL_BYTES"] = 1
+        try: _fetch_sdist(good_row, lambda url: (url, good))
+        except AuditError: pass
+        else: raise AssertionError("accepted oversized archive aggregate")
+    finally:
+        globals()["MAX_ARCHIVE_TOTAL_BYTES"] = bounded_total_bytes
     special_zip = io.BytesIO()
     with zipfile.ZipFile(special_zip, "w") as archive:
         special = zipfile.ZipInfo("demo-1/LICENSE/")
