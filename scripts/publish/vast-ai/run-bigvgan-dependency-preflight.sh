@@ -18,12 +18,13 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-bigvgan-dependency-preflight.sh --artifacts-dir <absent-dir> --output <absent-json> [--lock <uv.lock>]
+usage: run-bigvgan-dependency-preflight.sh --artifacts-dir <absent-dir> --output <absent-json> [--target x86_64-linux|arm64-darwin] [--lock <uv.lock>]
        run-bigvgan-dependency-preflight.sh --self-test
 
-The real path is VAST/Linux-only. It downloads the active x86_64 CPython
-3.12 glibc wheels selected from the supplied pinned uv.lock, verifies each
-locked URL/hash/size, and emits a no-upload owner-review candidate. No
+The real path is VAST/Linux-only. It downloads the active target-specific
+CPython 3.12 wheels selected from the supplied pinned uv.lock, verifies each
+locked URL/hash/size (or the exact Darwin torch URL/hash with a bounded
+Content-Length), and emits a no-upload owner-review candidate. No
 package-manager installation, package import, model acquisition, native build
 execution, owner signature, or publication is performed.
 EOF
@@ -69,7 +70,29 @@ run_python() {
 }
 
 verify_candidate() {
-  local output="$1" marker
+  local output="$1" target="$2" marker schema platform
+  case "$target" in
+    x86_64-linux)
+      schema='bigvgan-linux-closure-candidate-v1'
+      platform='x86_64-linux'
+      ;;
+    arm64-darwin)
+      schema='bigvgan-darwin-closure-candidate-v1'
+      platform='arm64-darwin'
+      ;;
+    *)
+      die "unsupported target: $target"
+      return 2
+      ;;
+  esac
+  grep -Fq -- "\"schema\": \"$schema\"" "$output" || {
+    die "audit output schema does not match target: $target"
+    return 2
+  }
+  grep -Fq -- "\"platform\": \"$platform\"" "$output" || {
+    die "audit output platform does not match target: $target"
+    return 2
+  }
   grep -Fq -- "\"lock_sha256\": \"$EXPECTED_LOCK_SHA256\"" "$output" || {
     die 'audit output lock identity does not match the committed BigVGAN lock'
     return 2
@@ -85,11 +108,12 @@ verify_candidate() {
 }
 
 run_self_test() {
-  local path="${BASH_SOURCE[0]}" fail=0 bad_uv bad_install bad_native bad_model bad_upload bad_publisher
+  local path="${BASH_SOURCE[0]}" fail=0 bad_uv bad_install bad_native bad_model bad_upload bad_publisher target
   for token in 'run-bigvgan-dependency-preflight.sh --self-test' \
     'preflight_linux_closure.py' 'audit_linux_closure.py' '--no-project --offline --python 3.12' \
     'OWNER_REVIEW_REQUIRED' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'NO_UPLOAD' 'VOKRA_PUBLISH_ON_VAST=1' \
-    'EXPECTED_LOCK_SHA256' 'lock_sha256' 'git status --porcelain --untracked-files=all'; do
+    'EXPECTED_LOCK_SHA256' 'lock_sha256' 'git status --porcelain --untracked-files=all' \
+    '--target x86_64-linux|arm64-darwin' 'bigvgan-darwin-closure-candidate-v1' 'arm64-darwin'; do
     grep -Fq -- "$token" "$path" || { log "self-test FAIL: missing contract: $token"; fail=1; }
   done
   bad_uv='u'; bad_uv+='v sync'
@@ -118,10 +142,23 @@ run_self_test() {
   fi
   local probe custom_lock
   probe="$(mktemp -d "${TMPDIR:-/tmp}/bigvgan-preflight-gate.XXXXXX")"
-  if VOKRA_PUBLISH_ON_VAST=0 "$path" --artifacts-dir "$probe/artifacts" --output "$probe/candidate.json" >/dev/null 2>&1; then
-    log 'self-test FAIL: non-VAST invocation was accepted'
+  if "$path" --self-test --target arm64-darwin >/dev/null 2>&1; then
+    log 'self-test FAIL: Python-style self-test/target combination was accepted'
     fail=1
   fi
+  if "$path" --target x86_64-linux --target arm64-darwin \
+    --artifacts-dir "$probe/duplicate-artifacts" --output "$probe/duplicate-candidate.json" \
+    >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate target option was accepted'
+    fail=1
+  fi
+  for target in x86_64-linux arm64-darwin; do
+    if VOKRA_PUBLISH_ON_VAST=0 "$path" --target "$target" \
+      --artifacts-dir "$probe/artifacts" --output "$probe/candidate.json" >/dev/null 2>&1; then
+      log "self-test FAIL: non-VAST invocation was accepted for $target"
+      fail=1
+    fi
+  done
   [[ ! -e "$probe/artifacts" && ! -e "$probe/candidate.json" ]] \
     || { log 'self-test FAIL: non-VAST gate created output'; fail=1; }
   custom_lock="$probe/tampered.lock"
@@ -142,12 +179,12 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 lock="$DEFAULT_LOCK" artifacts="" output="" arg
+  local self_test=0 target_seen=0 lock="$DEFAULT_LOCK" artifacts="" output="" target=x86_64-linux arg
   while (($#)); do
     arg="$1"
     case "$arg" in
       --self-test)
-        [[ "$self_test" -eq 0 && -z "$artifacts" && -z "$output" && "$lock" == "$DEFAULT_LOCK" ]] \
+        [[ "$self_test" -eq 0 && "$target_seen" -eq 0 && -z "$artifacts" && -z "$output" && "$lock" == "$DEFAULT_LOCK" ]] \
           || { usage; return 2; }
         self_test=1
         shift
@@ -166,6 +203,15 @@ main() {
       --output)
         [[ "$self_test" -eq 0 && $# -ge 2 && -z "$output" ]] || { usage; return 2; }
         output="$2"
+        shift 2
+        ;;
+      --target)
+        [[ "$self_test" -eq 0 && "$target_seen" -eq 0 && $# -ge 2 ]] || { usage; return 2; }
+        case "$2" in
+          x86_64-linux|arm64-darwin) target="$2" ;;
+          *) usage; return 2 ;;
+        esac
+        target_seen=1
         shift 2
         ;;
       *) usage; return 2 ;;
@@ -187,10 +233,10 @@ main() {
   verify_committed_lock "$lock"
   require_absent_destination "$artifacts"
   require_absent_destination "$output"
-  run_python "$PREFLIGHT" --lock "$lock" --artifacts-dir "$artifacts"
-  run_python "$AUDITOR" --lock "$lock" --artifacts-dir "$artifacts" --output "$output"
-  verify_candidate "$output"
-  log "PASS: locked Linux closure staged and candidate emitted at $output; owner review and NO_UPLOAD remain required"
+  run_python "$PREFLIGHT" --lock "$lock" --artifacts-dir "$artifacts" --target "$target"
+  run_python "$AUDITOR" --lock "$lock" --artifacts-dir "$artifacts" --output "$output" --target "$target"
+  verify_candidate "$output" "$target"
+  log "PASS: locked $target closure staged and candidate emitted at $output; owner review and NO_UPLOAD remain required"
 }
 
 main "$@"

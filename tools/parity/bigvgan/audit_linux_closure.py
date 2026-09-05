@@ -26,7 +26,27 @@ import tomllib
 
 
 LINUX_MARKER = "platform_machine == 'x86_64' and sys_platform == 'linux'"
-LINUX_ENV = {"platform_machine": "x86_64", "sys_platform": "linux"}
+DARWIN_MARKER = "platform_machine == 'arm64' and sys_platform == 'darwin'"
+TARGETS = {
+    "x86_64-linux": {
+        "marker": LINUX_MARKER,
+        "env": {"platform_machine": "x86_64", "sys_platform": "linux"},
+        "platform": "x86_64-linux",
+        "schema": "bigvgan-linux-closure-candidate-v1",
+        "missing_size_message": "Linux wheel lock rows require a positive size",
+    },
+    "arm64-darwin": {
+        "marker": DARWIN_MARKER,
+        "env": {"platform_machine": "arm64", "sys_platform": "darwin"},
+        "platform": "arm64-darwin",
+        "schema": "bigvgan-darwin-closure-candidate-v1",
+        "missing_size_message": "Darwin wheel lock rows require a positive size except the exact torch row",
+    },
+}
+DARWIN_TORCH_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
+DARWIN_TORCH_HASH = "7b4f8b2b83bd08f7d399025a9a7b323bdbb53d20566f1e0d584689bb92d82f9a"
+DARWIN_TORCH_UPLOAD_TIME = "2025-06-03T18:28:06Z"
+DARWIN_MAX_WHEEL_BYTES = 1 << 30
 REGISTRY_HOSTS = {"pypi.org", "download.pytorch.org"}
 DOWNLOAD_HOSTS = {"files.pythonhosted.org", "download-r2.pytorch.org"}
 NATIVE_SUFFIXES = (".so", ".dylib", ".dll", ".a")
@@ -90,7 +110,14 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(f"bigvgan closure audit: BLOCKED: {message}")
 
 
-def marker_applies(marker: str) -> bool:
+def target_config(target: str) -> dict[str, Any]:
+    try:
+        return TARGETS[target]
+    except KeyError:
+        fail(f"unsupported target: {target!r}")
+
+
+def marker_applies(marker: str, target: str = "x86_64-linux") -> bool:
     """Evaluate the deliberately small marker grammar used by this lock."""
     if not isinstance(marker, str) or not marker.strip():
         fail("empty or non-string resolution marker")
@@ -116,6 +143,8 @@ def marker_applies(marker: str) -> bool:
         cursor += 1
         return token
 
+    config = target_config(target)
+
     def parse_atom() -> bool:
         if peek() == "(":
             consume("(")
@@ -123,7 +152,7 @@ def marker_applies(marker: str) -> bool:
             consume(")")
             return value
         variable = consume()
-        if variable not in LINUX_ENV:
+        if variable not in config["env"]:
             fail(f"unsupported resolution marker variable {variable!r}: {marker!r}")
         operator = consume()
         if operator not in {"==", "!="}:
@@ -131,7 +160,7 @@ def marker_applies(marker: str) -> bool:
         literal = consume()
         if len(literal) < 2 or literal[0] not in {"'", '"'} or literal[-1] != literal[0]:
             fail(f"resolution marker comparison must use a quoted value: {marker!r}")
-        result = LINUX_ENV[variable] == literal[1:-1]
+        result = config["env"][variable] == literal[1:-1]
         return result if operator == "==" else not result
 
     def parse_and() -> bool:
@@ -154,18 +183,18 @@ def marker_applies(marker: str) -> bool:
     return value
 
 
-def marker_list(row: dict[str, Any], field: str) -> list[str]:
+def marker_list(row: dict[str, Any], field: str, target: str = "x86_64-linux") -> list[str]:
     markers = row.get(field, [])
     if not isinstance(markers, list) or not all(isinstance(marker, str) for marker in markers):
         fail(f"{row.get('name', '<root>')} {field} is malformed")
     for marker in markers:
-        marker_applies(marker)
+        marker_applies(marker, target)
     return markers
 
 
-def row_applies(row: dict[str, Any]) -> bool:
-    markers = marker_list(row, "resolution-markers")
-    return not markers or any(marker_applies(marker) for marker in markers)
+def row_applies(row: dict[str, Any], target: str = "x86_64-linux") -> bool:
+    markers = marker_list(row, "resolution-markers", target)
+    return not markers or any(marker_applies(marker, target) for marker in markers)
 
 
 def validate_registry_url(url: Any) -> str:
@@ -215,25 +244,43 @@ def canonical_wheel_name(url: Any) -> str:
     return filename
 
 
-def locked_artifact(row: dict[str, Any]) -> tuple[dict[str, Any], str, str, str, int]:
-    candidate, basis = select_artifact(row)
+def locked_artifact(
+    row: dict[str, Any], target: str = "x86_64-linux"
+) -> tuple[dict[str, Any], str, str, str, int | None]:
+    candidate, basis = select_artifact(row, target)
     filename = canonical_wheel_name(candidate.get("url"))
     digest = candidate.get("hash")
     size = candidate.get("size")
+    config = target_config(target)
+    exact_darwin_torch = (
+        target == "arm64-darwin"
+        and row.get("name") == "torch"
+        and row.get("version") == "2.7.1"
+        and row.get("source") == {"registry": "https://download.pytorch.org/whl/cpu"}
+        and candidate.get("url") == DARWIN_TORCH_URL
+        and candidate.get("hash") == f"sha256:{DARWIN_TORCH_HASH}"
+        and candidate.get("upload-time") == DARWIN_TORCH_UPLOAD_TIME
+    )
     if (
         not isinstance(digest, str)
         or not digest.startswith("sha256:")
         or len(digest.removeprefix("sha256:")) != 64
         or any(char not in "0123456789abcdef" for char in digest.removeprefix("sha256:"))
         or isinstance(size, bool)
-        or not isinstance(size, int)
-        or size <= 0
+        or (size is None and not exact_darwin_torch)
+        or (size is not None and (not isinstance(size, int) or size <= 0))
     ):
-        fail(f"{row.get('name', '<unknown>')} selected wheel lock row is malformed")
+        fail(f"{row.get('name', '<unknown>')} selected wheel lock row is malformed: {config['missing_size_message']}")
+    if exact_darwin_torch:
+        if filename != "torch-2.7.1-cp312-none-macosx_11_0_arm64.whl":
+            fail("Darwin torch wheel filename is not the exact locked macOS arm64 artifact")
+    elif target == "arm64-darwin" and row.get("name") == "torch":
+        fail("Darwin torch row is not the exact locked package identity")
     return candidate, basis, filename, digest.removeprefix("sha256:"), size
 
 
-def active_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
+def active_rows(lock: dict[str, Any], target: str = "x86_64-linux") -> list[dict[str, Any]]:
+    target_config(target)
     packages = lock.get("package")
     if not isinstance(packages, list):
         fail("uv.lock package table is missing")
@@ -242,7 +289,7 @@ def active_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(markers, list) or not all(isinstance(marker, str) for marker in markers):
             fail(f"uv.lock {field} is malformed")
         for marker in markers:
-            marker_applies(marker)
+            marker_applies(marker, target)
     virtual_rows: list[dict[str, Any]] = []
     registry_rows: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in packages:
@@ -251,7 +298,7 @@ def active_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         source = row.get("source")
         if not isinstance(source, dict):
             fail(f"{row['name']} package source is malformed")
-        marker_list(row, "resolution-markers")
+        marker_list(row, "resolution-markers", target)
         dependencies = row.get("dependencies", [])
         if not isinstance(dependencies, list) or not all(isinstance(dep, dict) for dep in dependencies):
             fail(f"{row['name']} dependencies table is malformed")
@@ -259,7 +306,7 @@ def active_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
             if "marker" in dep:
                 if not isinstance(dep["marker"], str):
                     fail(f"{row['name']} dependency marker is malformed")
-                marker_applies(dep["marker"])
+                marker_applies(dep["marker"], target)
         if "virtual" in source:
             if source.get("virtual") != ".":
                 fail(f"{row['name']} virtual source is not the repository root")
@@ -295,7 +342,7 @@ def active_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
             candidates = [
                 row for row in candidates if row["source"]["registry"] == registry_url
             ]
-        candidates = [row for row in candidates if row_applies(row)]
+        candidates = [row for row in candidates if row_applies(row, target)]
         if len(candidates) != 1:
             fail(f"ambiguous or missing reachable dependency row: {name!r}")
         return candidates[0]
@@ -305,12 +352,14 @@ def active_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(dependency, dict):
             fail("repository root dependency is malformed")
         marker = dependency.get("marker")
-        if marker is not None and (not isinstance(marker, str) or not marker_applies(marker)):
+        if marker is not None and (
+            not isinstance(marker, str) or not marker_applies(marker, target)
+        ):
             continue
         row = resolve_dependency(dependency)
         registry = urlparse(row["source"]["registry"]).hostname
         key = (row["name"], row["version"], registry)
-        if not row_applies(row):
+        if not row_applies(row, target):
             fail(f"reachable dependency row is inactive for Linux: {key!r}")
         if key in reached:
             continue
@@ -318,7 +367,7 @@ def active_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         dependencies = row.get("dependencies", [])
         for child in dependencies:
             child_marker = child.get("marker")
-            if child_marker is None or marker_applies(child_marker):
+            if child_marker is None or marker_applies(child_marker, target):
                 pending.append(child)
     rows = list(reached.values())
     if not rows:
@@ -333,8 +382,11 @@ def artifact_candidates(row: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in wheels if isinstance(item, dict) and isinstance(item.get("url"), str)]
 
 
-def wheel_compatibility(filename: str) -> str | None:
-    """Return the only two accepted CPython 3.12 x86_64 glibc classes."""
+def wheel_compatibility(
+    filename: str, target: str = "x86_64-linux", package_name: str | None = None
+) -> str | None:
+    """Return the accepted universal or target-specific CPython 3.12 class."""
+    target_config(target)
     if not filename.endswith(".whl"):
         return None
     parts = filename[:-4].rsplit("-", 3)
@@ -343,32 +395,58 @@ def wheel_compatibility(filename: str) -> str | None:
     _name_version, python_tag, abi_tag, platform_tag = parts
     if python_tag == "py3" and abi_tag == "none" and platform_tag == "any":
         return "py3-none-any-universal"
-    platforms = platform_tag.split(".")
-    if python_tag == "cp312" and abi_tag == "cp312" and platforms and all(
-        tag.startswith("manylinux") and tag.endswith("_x86_64") for tag in platforms
-    ):
-        return "cp312-cp312-manylinux-x86_64-glibc"
+    if target == "x86_64-linux":
+        platforms = platform_tag.split(".")
+        if python_tag == "cp312" and abi_tag == "cp312" and platforms and all(
+            tag.startswith("manylinux") and tag.endswith("_x86_64") for tag in platforms
+        ):
+            return "cp312-cp312-manylinux-x86_64-glibc"
+    if target == "arm64-darwin":
+        if (
+            python_tag == "cp312"
+            and abi_tag == "cp312"
+            and platform_tag.startswith("macosx_")
+            and platform_tag.endswith("_arm64")
+        ):
+            return "cp312-cp312-macosx-arm64"
+        if (
+            package_name == "torch"
+            and filename == "torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
+        ):
+            return "cp312-none-macosx_11_0-arm64-locked-torch"
     return None
 
 
-def select_artifact(row: dict[str, Any]) -> tuple[dict[str, Any], str]:
+def select_artifact(
+    row: dict[str, Any], target: str = "x86_64-linux"
+) -> tuple[dict[str, Any], str]:
+    target_config(target)
     compatible: list[tuple[dict[str, Any], str]] = []
     for candidate in artifact_candidates(row):
-        filename = Path(unquote(urlparse(candidate["url"]).path)).name
-        basis = wheel_compatibility(filename)
+        filename = canonical_wheel_name(candidate["url"])
+        basis = wheel_compatibility(filename, target, row.get("name"))
+        if target == "arm64-darwin" and row.get("name") == "torch":
+            if (
+                candidate.get("url") != DARWIN_TORCH_URL
+                or candidate.get("hash") != f"sha256:{DARWIN_TORCH_HASH}"
+                or candidate.get("upload-time") != DARWIN_TORCH_UPLOAD_TIME
+            ):
+                basis = None
         if basis is not None:
             compatible.append((candidate, basis))
     compatible.sort(key=lambda item: (0 if item[1].startswith("cp312") else 1, item[0]["url"]))
     if not compatible:
         fail(
-            f"{row['name']} has no CPython 3.12 x86_64 glibc wheel; "
-            "musllinux/aarch64/macOS/cp311 and sdist fallback are refused"
+            f"{row['name']} has no compatible CPython 3.12 {target} wheel; "
+            "wrong architecture/ABI/platform and sdist fallback are refused"
         )
     return compatible[0]
 
 
-def artifact_path(row: dict[str, Any], artifacts_dir: Path) -> tuple[Path, dict[str, Any], str]:
-    candidate, basis, filename, _digest, _size = locked_artifact(row)
+def artifact_path(
+    row: dict[str, Any], artifacts_dir: Path, target: str = "x86_64-linux"
+) -> tuple[Path, dict[str, Any], str]:
+    candidate, basis, filename, _digest, _size = locked_artifact(row, target)
     path = artifacts_dir / filename
     if path.is_file() and not path.is_symlink():
         return path, candidate, basis
@@ -670,7 +748,13 @@ def inspect_package(row: dict[str, Any], path: Path, locked_artifact: dict[str, 
     }
 
 
-def audit(lock_path: Path, artifacts_dir: Path, output: Path) -> None:
+def audit(
+    lock_path: Path,
+    artifacts_dir: Path,
+    output: Path,
+    target: str = "x86_64-linux",
+) -> None:
+    config = target_config(target)
     if not lock_path.is_file() or lock_path.is_symlink():
         fail("lock is missing or symlinked")
     if not artifacts_dir.is_dir() or artifacts_dir.is_symlink():
@@ -682,35 +766,53 @@ def audit(lock_path: Path, artifacts_dir: Path, output: Path) -> None:
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         fail(f"uv.lock is not valid TOML: {exc}")
     packages = []
-    for row in active_rows(lock):
-        path, locked_artifact, selection_basis = artifact_path(row, artifacts_dir)
+    for row in active_rows(lock, target):
+        path, locked_artifact, selection_basis = artifact_path(row, artifacts_dir, target)
         actual = sha256_file(path)
         expected = locked_artifact["hash"].removeprefix("sha256:")
         if actual != expected:
             fail(f"{row['name']} payload SHA-256 {actual} != locked {expected}")
-        if path.stat().st_size != locked_artifact["size"]:
+        locked_size = locked_artifact.get("size")
+        if locked_size is not None and path.stat().st_size != locked_size:
             fail(f"{row['name']} payload size does not match uv.lock")
         packages.append(inspect_package(row, path, locked_artifact, selection_basis))
     candidate = {
-        "schema": "bigvgan-linux-closure-candidate-v1",
+        "schema": config["schema"],
         "decision": "OWNER_REVIEW_REQUIRED",
-        "platform": "x86_64-linux",
+        "platform": config["platform"],
         "lock_sha256": sha256_bytes(lock_bytes),
         "active_package_count": len(packages),
         "packages": packages,
         "dependency_review": "BLOCKED_UNREVIEWED_TRANSITIVE",
         "approval": {"status": "OWNER_SIGNOFF_REQUIRED", "signer": None, "digest": None},
         "review_scope": {
-            "execution_closure": "active x86_64-linux packages only",
-            "supported_platform_license_review": "license_gate_manifest still covers all 12 lock rows, including inactive Darwin torch",
+            "execution_closure": f"active {config['platform']} packages only",
+            "supported_platform_license_review": (
+                "license_gate_manifest still covers all 12 lock rows, including inactive Darwin torch"
+                if target == "x86_64-linux"
+                else "license_gate_manifest covers the active arm64-darwin lock rows"
+            ),
         },
         "publication": "NO_UPLOAD",
     }
     atomic_write_json(output, candidate)
-    print(f"bigvgan Linux closure candidate: {len(packages)} packages, owner approval remains required")
+    print(
+        f"bigvgan {config['platform']} closure candidate: "
+        f"{len(packages)} packages, owner approval remains required"
+    )
 
 
 def self_test() -> None:
+    for misuse in (
+        ["--self-test", "--target", "x86_64-linux"],
+        ["--self-test", "--target", "arm64-darwin"],
+    ):
+        try:
+            parse_arguments(misuse)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"self-test misuse was accepted: {misuse}")
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="bigvgan-closure-") as directory:
@@ -884,6 +986,53 @@ wheels = [{ url = 'https://files.pythonhosted.org/packages/inactive.whl', hash =
             "THIRD_PARTY_LICENSES.txt",
         }
         assert value["packages"][0]["dependency_review"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
+        darwin_lock = root / "darwin.lock"
+        darwin_lock.write_text(
+            lock.read_text(encoding="utf-8").replace(LINUX_MARKER, DARWIN_MARKER),
+            encoding="utf-8",
+        )
+        darwin_candidate = root / "darwin-candidate.json"
+        audit(darwin_lock, artifacts, darwin_candidate, target="arm64-darwin")
+        darwin_value = json.loads(darwin_candidate.read_text(encoding="utf-8"))
+        assert darwin_value["schema"] == "bigvgan-darwin-closure-candidate-v1"
+        assert darwin_value["platform"] == "arm64-darwin"
+        assert darwin_value["decision"] == "OWNER_REVIEW_REQUIRED"
+        assert darwin_value["dependency_review"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
+        checked_in_lock = tomllib.loads(
+            Path(__file__).with_name("uv.lock").read_text(encoding="utf-8")
+        )
+        darwin_rows = active_rows(checked_in_lock, target="arm64-darwin")
+        darwin_torch = next(row for row in darwin_rows if row["name"] == "torch")
+        torch_artifact, torch_basis, torch_filename, torch_hash, torch_size = locked_artifact(
+            darwin_torch, target="arm64-darwin"
+        )
+        assert torch_artifact["url"] == DARWIN_TORCH_URL
+        assert torch_basis == "cp312-none-macosx_11_0-arm64-locked-torch"
+        assert torch_filename == "torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
+        assert torch_hash == DARWIN_TORCH_HASH
+        assert torch_size is None
+        bad_torch = {**darwin_torch, "wheels": [{**torch_artifact, "hash": "sha256:" + "0" * 64}]}
+        try:
+            locked_artifact(bad_torch, target="arm64-darwin")
+        except SystemExit as exc:
+            assert "compatible" in str(exc)
+        else:
+            raise SystemExit("Darwin torch identity exception was not enforced")
+        assert wheel_compatibility(
+            "demo-1.0-cp312-cp312-macosx_11_0_arm64.whl", "arm64-darwin", "demo"
+        ) == "cp312-cp312-macosx-arm64"
+        assert wheel_compatibility(
+            "torch-2.7.1-cp312-none-macosx_11_0_arm64.whl", "arm64-darwin", "torch"
+        ) == "cp312-none-macosx_11_0-arm64-locked-torch"
+        for label, filename in {
+            "darwin-x86": "demo-1.0-cp312-cp312-macosx_11_0_x86_64.whl",
+            "darwin-cp311": "demo-1.0-cp311-cp311-macosx_11_0_arm64.whl",
+            "darwin-abi": "demo-1.0-cp312-none-macosx_11_0_arm64.whl",
+            "linux-musl": "demo-1.0-cp312-cp312-musllinux_1_2_x86_64.whl",
+        }.items():
+            target = "x86_64-linux" if label == "linux-musl" else "arm64-darwin"
+            package = "torch" if label == "darwin-abi" else "demo"
+            assert wheel_compatibility(filename, target, package) is None, label
         root_duplicate_buffer = io.BytesIO()
         with zipfile.ZipFile(wheel_path) as source, zipfile.ZipFile(root_duplicate_buffer, "w") as archive:
             for info in source.infolist():
@@ -982,7 +1131,7 @@ wheels = [{ url = 'https://files.pythonhosted.org/packages/inactive.whl', hash =
             try:
                 select_artifact(row)
             except SystemExit as exc:
-                assert "no CPython 3.12 x86_64 glibc wheel" in str(exc), label
+                assert "no compatible CPython 3.12 x86_64-linux wheel" in str(exc), label
             else:
                 raise SystemExit(f"bigvgan closure self-test accepted wrong-only {label} wheel")
         linked_parent = root / "linked-parent"
@@ -996,21 +1145,31 @@ wheels = [{ url = 'https://files.pythonhosted.org/packages/inactive.whl', hash =
     print("audit_linux_closure.py self-test: PASS")
 
 
-def main() -> None:
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--lock", type=Path)
     parser.add_argument("--artifacts-dir", type=Path)
     parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
+    parser.add_argument("--target", choices=("x86_64-linux", "arm64-darwin"))
+    args = parser.parse_args(argv)
+    if args.self_test and (
+        any(value is not None for value in (args.lock, args.artifacts_dir, args.output))
+        or args.target is not None
+    ):
+        parser.error("--self-test accepts no other arguments")
+    return args
+
+
+def main() -> None:
+    args = parse_arguments()
     if args.self_test:
-        if any(value is not None for value in (args.lock, args.artifacts_dir, args.output)):
-            parser.error("--self-test accepts no other arguments")
         self_test()
         return
     if args.lock is None or args.artifacts_dir is None or args.output is None:
-        parser.error("--lock, --artifacts-dir, and --output are required")
-    audit(args.lock, args.artifacts_dir, args.output)
+        argparse.ArgumentParser().error("--lock, --artifacts-dir, and --output are required")
+    target = args.target or "x86_64-linux"
+    audit(args.lock, args.artifacts_dir, args.output, target=target)
 
 
 if __name__ == "__main__":

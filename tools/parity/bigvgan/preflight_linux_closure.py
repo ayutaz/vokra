@@ -1,9 +1,9 @@
 #!/usr/bin/env -S uv run --no-project --python 3.12 python
-"""Stage the active BigVGAN Linux wheel closure without installing anything.
+"""Stage the active BigVGAN target wheel closure without installing anything.
 
 This is a model-free VAST preflight. It reads the pinned ``uv.lock``, selects
-the CPython 3.12 x86_64 glibc wheel for every active registry row, downloads
-only those hash/size-bound URLs, and leaves inspection to
+the target-compatible CPython 3.12 wheel for every active registry row,
+downloads only those hash/size-bound URLs, and leaves inspection to
 ``audit_linux_closure.py``. It never imports a third-party package, changes an
 environment, or touches a checkpoint/model.
 """
@@ -23,13 +23,21 @@ from typing import Any, Callable
 
 import tomllib
 
-from audit_linux_closure import active_rows, audit, canonical_wheel_name, locked_artifact, sha256_file
+from audit_linux_closure import (
+    DARWIN_MAX_WHEEL_BYTES,
+    DARWIN_TORCH_URL,
+    active_rows,
+    audit,
+    canonical_wheel_name,
+    locked_artifact,
+    sha256_file,
+)
 
 HTTP_USER_AGENT = "vokra-bigvgan-preflight/1.0"
 
 
 def fail(message: str) -> None:
-    raise SystemExit(f"bigvgan Linux preflight: BLOCKED: {message}")
+    raise SystemExit(f"bigvgan dependency preflight: BLOCKED: {message}")
 
 
 def load_lock(path: Path) -> dict[str, Any]:
@@ -41,14 +49,19 @@ def load_lock(path: Path) -> dict[str, Any]:
         fail(f"uv.lock is unreadable: {exc}")
 
 
-def locked_wheel(row: dict[str, Any]) -> tuple[str, str, int]:
-    candidate, _basis, _filename, digest, size = locked_artifact(row)
+def locked_wheel(row: dict[str, Any], target: str = "x86_64-linux") -> tuple[str, str, int | None]:
+    candidate, _basis, _filename, digest, size = locked_artifact(row, target)
     url = candidate["url"]
     canonical_wheel_name(url)
     return url, digest, size
 
 
-def download_locked(url: str, destination: Path, expected_size: int) -> None:
+def download_locked(
+    url: str,
+    destination: Path,
+    expected_size: int | None,
+    target: str = "x86_64-linux",
+) -> None:
     """Stream one locked URL; no package manager or archive import is used."""
     initial_name = canonical_wheel_name(url)
     opened = False
@@ -65,11 +78,24 @@ def download_locked(url: str, destination: Path, expected_size: int) -> None:
             if redirect_name != initial_name:
                 fail(f"redirect changed locked wheel filename {initial_name}: {redirect_url}")
             content_length = response.headers.get("Content-Length")
+            if content_length is None and target == "arm64-darwin" and expected_size is None:
+                fail(f"Darwin wheel {initial_name} requires a positive Content-Length")
             if content_length is not None:
-                if not content_length.isdecimal() or int(content_length) != expected_size:
+                if not content_length.isdecimal() or int(content_length) <= 0:
+                    fail(f"locked wheel {initial_name} Content-Length is not positive")
+                advertised_size = int(content_length)
+                if advertised_size > DARWIN_MAX_WHEEL_BYTES and target == "arm64-darwin":
+                    fail(f"Darwin wheel {initial_name} exceeds the 1 GiB hard cap")
+                if expected_size is not None and advertised_size != expected_size:
                     fail(
                         f"locked wheel {initial_name} Content-Length {content_length!r} != {expected_size}"
                     )
+                if expected_size is None:
+                    expected_size = advertised_size
+            if expected_size is None:
+                fail(f"locked wheel {initial_name} has no usable expected size")
+            if target == "arm64-darwin" and expected_size > DARWIN_MAX_WHEEL_BYTES:
+                fail(f"Darwin wheel {initial_name} exceeds the 1 GiB hard cap")
             with destination.open("wb") as stream:
                 opened = True
                 written = 0
@@ -111,17 +137,18 @@ def require_absent_directory(path: Path) -> None:
 def stage(
     lock_path: Path,
     artifacts_dir: Path,
-    fetch: Callable[[str, Path, int], None] = download_locked,
+    fetch: Callable[[str, Path, int | None], None] = download_locked,
+    target: str = "x86_64-linux",
 ) -> list[dict[str, Any]]:
     """Materialize exact active Linux wheels and return their lock identities."""
     lock = load_lock(lock_path)
-    rows = active_rows(lock)
+    rows = active_rows(lock, target)
     require_absent_directory(artifacts_dir)
     created = True
     staged: list[dict[str, Any]] = []
     try:
         for row in rows:
-            url, expected_hash, expected_size = locked_wheel(row)
+            url, expected_hash, expected_size = locked_wheel(row, target)
             filename = canonical_wheel_name(url)
             destination = artifacts_dir / filename
             temporary: Path | None = None
@@ -131,10 +158,14 @@ def stage(
                 )
                 os.close(fd)
                 temporary = Path(temporary_name)
-                fetch(url, temporary, expected_size)
-                if temporary.stat().st_size != expected_size:
+                if fetch is download_locked:
+                    download_locked(url, temporary, expected_size, target)
+                else:
+                    fetch(url, temporary, expected_size)
+                actual_size = temporary.stat().st_size
+                if expected_size is not None and actual_size != expected_size:
                     fail(
-                        f"{row['name']} wheel {filename} size {temporary.stat().st_size} != locked {expected_size}"
+                        f"{row['name']} wheel {filename} size {actual_size} != locked {expected_size}"
                     )
                 actual_hash = sha256_file(temporary)
                 if actual_hash != expected_hash:
@@ -160,6 +191,16 @@ def stage(
 
 
 def self_test() -> None:
+    for misuse in (
+        ["--self-test", "--target", "x86_64-linux"],
+        ["--self-test", "--target", "arm64-darwin"],
+    ):
+        try:
+            parse_arguments(misuse)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"self-test misuse was accepted: {misuse}")
     import io
 
     source = Path(__file__).read_text(encoding="utf-8")
@@ -230,9 +271,15 @@ def self_test() -> None:
     class PayloadResponse:
         status = 200
 
-        def __init__(self, payload: bytes, content_length: str | None = None) -> None:
+        def __init__(
+            self,
+            payload: bytes,
+            content_length: str | None = None,
+            redirect_url: str = "https://files.pythonhosted.org/packages/wheel.whl",
+        ) -> None:
             self.payload = payload
             self.headers = {} if content_length is None else {"Content-Length": content_length}
+            self.redirect_url = redirect_url
 
         def __enter__(self) -> "PayloadResponse":
             return self
@@ -241,7 +288,7 @@ def self_test() -> None:
             return None
 
         def geturl(self) -> str:
-            return "https://files.pythonhosted.org/packages/wheel.whl"
+            return self.redirect_url
 
         def read(self, size: int) -> bytes:
             chunk, self.payload = self.payload[:size], self.payload[size:]
@@ -269,6 +316,52 @@ def self_test() -> None:
     finally:
         urllib.request.urlopen = original_urlopen
         shutil.rmtree(payload_destination.parent)
+
+    darwin_root = Path(tempfile.mkdtemp(prefix="bigvgan-darwin-size-"))
+    darwin_destination = darwin_root / "torch.whl"
+    darwin_normal_url = (
+        "https://files.pythonhosted.org/packages/demo-1.0-cp312-cp312-"
+        "macosx_11_0_arm64.whl"
+    )
+    try:
+        original_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = lambda *_args, **_kwargs: PayloadResponse(
+            b"abcd", None, DARWIN_TORCH_URL
+        )
+        try:
+            download_locked(DARWIN_TORCH_URL, darwin_destination, None, "arm64-darwin")
+        except SystemExit as exc:
+            assert "Content-Length" in str(exc)
+        else:
+            raise AssertionError("Darwin missing Content-Length was accepted")
+        assert not darwin_destination.exists()
+
+        urllib.request.urlopen = lambda *_args, **_kwargs: PayloadResponse(
+            b"abcd", None, darwin_normal_url
+        )
+        download_locked(darwin_normal_url, darwin_destination, 4, "arm64-darwin")
+        assert darwin_destination.read_bytes() == b"abcd"
+        darwin_destination.unlink()
+
+        urllib.request.urlopen = lambda *_args, **_kwargs: PayloadResponse(
+            b"", str(DARWIN_MAX_WHEEL_BYTES + 1), DARWIN_TORCH_URL
+        )
+        try:
+            download_locked(DARWIN_TORCH_URL, darwin_destination, None, "arm64-darwin")
+        except SystemExit as exc:
+            assert "1 GiB" in str(exc)
+        else:
+            raise AssertionError("oversized Darwin Content-Length was accepted")
+        assert not darwin_destination.exists()
+
+        urllib.request.urlopen = lambda *_args, **_kwargs: PayloadResponse(
+            b"abcd", "4", DARWIN_TORCH_URL
+        )
+        download_locked(DARWIN_TORCH_URL, darwin_destination, None, "arm64-darwin")
+        assert darwin_destination.read_bytes() == b"abcd"
+    finally:
+        urllib.request.urlopen = original_urlopen
+        shutil.rmtree(darwin_root)
 
     http_error_destination = Path(tempfile.mkdtemp(prefix="bigvgan-http-error-")).joinpath("wheel.whl")
     original_urlopen = urllib.request.urlopen
@@ -352,10 +445,24 @@ wheels = [{{ url = '{url}', hash = 'sha256:{hashlib.sha256(wheel).hexdigest()}',
         assert (artifacts / wheel_name).read_bytes() == wheel
         assert not (artifacts / encoded_wheel_name).exists()
         assert not list(artifacts.glob(".*.tmp"))
+        darwin_lock = root / "darwin.lock"
+        darwin_lock.write_text(
+            lock.read_text(encoding="utf-8").replace(
+                "platform_machine == 'x86_64' and sys_platform == 'linux'",
+                "platform_machine == 'arm64' and sys_platform == 'darwin'",
+            ),
+            encoding="utf-8",
+        )
+        darwin_artifacts = root / "darwin-artifacts"
+        darwin_staged = stage(
+            darwin_lock, darwin_artifacts, fake_fetch, target="arm64-darwin"
+        )
+        assert darwin_staged == [{"name": "demo", "version": "1.0", "filename": wheel_name}]
+        assert (darwin_artifacts / wheel_name).read_bytes() == wheel
         candidate = root / "candidate.json"
         audit(lock, artifacts, candidate)
         assert candidate.is_file() and candidate.read_text(encoding="utf-8").endswith("\n")
-        assert fetch_calls == [(url, len(wheel))]
+        assert fetch_calls == [(url, len(wheel)), (url, len(wheel))]
         try:
             stage(lock, artifacts, fake_fetch)
         except SystemExit as exc:
@@ -405,21 +512,32 @@ wheels = [{{ url = '{url}', hash = 'sha256:{hashlib.sha256(wheel).hexdigest()}',
     print("preflight_linux_closure.py self-test: PASS")
 
 
-def main() -> None:
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--lock", type=Path)
     parser.add_argument("--artifacts-dir", type=Path)
-    args = parser.parse_args()
+    parser.add_argument("--target", choices=("x86_64-linux", "arm64-darwin"))
+    args = parser.parse_args(argv)
+    if args.self_test and (
+        args.lock is not None
+        or args.artifacts_dir is not None
+        or args.target is not None
+    ):
+        parser.error("--self-test accepts no other arguments")
+    return args
+
+
+def main() -> None:
+    args = parse_arguments()
     if args.self_test:
-        if args.lock is not None or args.artifacts_dir is not None:
-            parser.error("--self-test accepts no other arguments")
         self_test()
         return
     if args.lock is None or args.artifacts_dir is None:
-        parser.error("--lock and --artifacts-dir are required")
-    stage(args.lock, args.artifacts_dir)
-    print(f"bigvgan Linux preflight: staged active locked wheels in {args.artifacts_dir}")
+        argparse.ArgumentParser().error("--lock and --artifacts-dir are required")
+    target = args.target or "x86_64-linux"
+    stage(args.lock, args.artifacts_dir, target=target)
+    print(f"bigvgan {target} preflight: staged active locked wheels in {args.artifacts_dir}")
 
 
 if __name__ == "__main__":
