@@ -1,5 +1,10 @@
 # Mac CPU / Metal completion plan (2026-08-30)
 
+The 2026-09-05 live-audit reconciliation and exact pre-Scaleway backlog are in
+`docs/handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md`. Use that ledger
+for current counts and execution ordering; this file retains the earlier
+checkpoint evidence and completion contract.
+
 ## Objective and authority boundary
 
 The objective is full Mac CPU and Apple Metal coverage for every public Vokra
