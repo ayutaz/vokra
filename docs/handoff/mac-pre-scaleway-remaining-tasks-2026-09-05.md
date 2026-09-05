@@ -196,6 +196,54 @@ release sources and must stay fail-closed:
   material, while the exact wheel carries no publisher license/notice file;
   the root Triton license alone cannot authenticate those bundled payloads.
 
+CosyVoice2's HiFT checkpoint structure is now authenticated without importing
+the upstream Python environment or opening tensor-storage members. The first
+disposable attempt, VAST instance `49986565`, stopped before downloading a
+model because the official full reference closure reaches the forbidden
+`librosa -> soxr` dependency and therefore has no approved `uv.lock`. Commits
+`94efb1be`, `df82b085` and `de928330` add a dependency-free restricted-pickle
+inspection path, keep its output contract fail-closed, and accept both exact
+built-in `dict` and `OrderedDict` state-dict roots without expanding the
+allowed pickle globals. An intermediate runner-order failure on instance
+`49988805` produced no model execution and was fixed before the final run.
+
+VAST instance `49989591` then authenticated the 83,390,254-byte `hift.pt` at
+Hugging Face revision `eec1ae6c79877dbd9379285cf8789c9e0879293d`, checkpoint
+SHA-256
+`3386cc880324d4e98e05987b99107f49e40ed925b8ecc87c1f4939432d429879`,
+and upstream generator revision
+`8555549e882236e6541748b1042d95693caa82ba`. The generator SHA-256 is
+`f74601e6febeb410a961e8ed8931b44074d385ded7f6f77ee918a029b3d42626`,
+its Git blob identity is `326a1a70ae7707662939c20493b3a8e4b0906216`,
+and the source `LICENSE` SHA-256 is
+`c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`.
+
+The restricted manifest contains 328 F32 tensors and 328 storage members. Its
+tensor-name/dtype/shape manifest SHA-256 is
+`cecbb2d68f91337f263db0f0333c75573516e7087b6e75d6ea647b3f86afec7c`,
+the storage manifest SHA-256 is
+`44d9b17e9794cecd65b74537ce74c2c9ff7e1342b3d40a7f79b57599f86e84cb`,
+and the 41,754-byte `data.pkl` SHA-256 is
+`1e71121d0cd47db0eaa93d5d9a6628ac73ab0f828433c8bfc60adc0118d9312d`.
+Only `data.pkl` was read; tensor storage payloads were not opened. The evidence
+is explicitly `INSPECTION_ONLY`, `NOT_IMPLEMENTED_FAIL_CLOSED`, with CPU,
+Metal and parity all `NOT_RUN`, and publication `NO_UPLOAD`. The final evidence
+manifest and validation-log SHA-256 values are respectively
+`6a134122b4b0bdc851b38ca1d41d42e185d70d513ebb3c2e8d15a42b279462ea`
+and `a8bed39fba4e56a271d44b0a70491587e5b8a4d977b66fe38e9ad7f89e150d48`.
+All three VAST instances and their storage were destroyed; the final instance
+and independent-volume inventories both returned `[]`.
+
+The authenticated topology has 80 mel channels, a 512-channel base, three
+upsample stages whose weight shapes imply rates/kernels `[8, 5, 3]` /
+`[16, 11, 7]`, three source residual stages with kernels `[7, 7, 11]`, nine
+main residual blocks with kernels `[3, 7, 11]`, dilations `[1, 3, 5]`, eight
+harmonics, an 18-channel iSTFT head, and five 512-channel F0 convolutions plus
+a one-channel classifier. It contains 82 weight-normalized `g`/`v` pairs.
+The exact pinned model configuration is not yet hash-authenticated, so these
+shape-derived facts must not be substituted for converter metadata by
+assumption.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
@@ -204,9 +252,13 @@ work:
 - **Native BF16 compute:** replace the remaining upcast-to-F32 shim; validate a
   real BF16 checkpoint plus independent AVX512-BF16 and Arm-BF16 parity. The
   raw-BF16 Metal foundation exists, but that does not close the full task.
-- **HiFTNet full GPU generator:** finish and bind the complete resident graph,
-  VAST-compile the `vokra-models` adapter, and obtain a real-weight CPU oracle
-  and performance evidence.
+- **HiFTNet full GPU generator:** the complete resident CPU/Metal graph and a
+  nonzero synthetic one-final-readback parity harness exist, and CosyVoice2's
+  328-tensor HiFT structure is authenticated. Hash-authenticate its exact
+  pinned config, define the strict component artifact, fold or preserve all 82
+  weight-normalized pairs under an explicit contract, bind the real weights,
+  VAST-compile the adapter, and obtain an independent real-weight CPU oracle
+  before the Apple run.
 - **BigVGAN full GPU path:** finish the dependency/native graph closure and
   owner sign-off, VAST-compile the model adapter, then run a fixed real artifact
   against an independent reference.
@@ -268,7 +320,7 @@ portable no-fallback Apple worker for the final Scaleway batch.
 | `vokra/chatterbox-turbo-v1` | Full generation, conditioning, watermark and PCM-output path. |
 | `vokra/chattts` | Clean native composite plus AGPL/source, CC-BY-NC weight, dependency and personality/voice policy closure. |
 | `vokra/clap-htsat-fused` | Complete the released audio/text preprocessing and fused inference contract with real parity. |
-| `vokra/cosyvoice2-0.5b` | Find an exact allowed source/reference route: the current upstream closure imports forbidden `soxr`; then finish LLM, flow, codec and vocoder composition. |
+| `vokra/cosyvoice2-0.5b` | HiFT checkpoint/source structure is authenticated at fixed revisions without tensor-payload reads. Hash-pin the exact config; implement its strict weight-normalization/converter/binder contract; obtain independent VAST CPU parity through an allowed narrow reference route; then finish LLM, flow, codec and vocoder composition. The official full closure still imports forbidden `soxr`. |
 | `vokra/dia-1.6b` | Exact DAC proof, dependency review and complete native composition. |
 | `vokra/firered-asr-aed-l` | Resolve the remaining dependency rows and binary CMVN/tokenizer/config contracts, then implement complete AED inference. |
 | `vokra/fun-cosyvoice3-0.5b-2512` | Find an exact allowed route around the current `soxr` closure, then finish the full composite. |
