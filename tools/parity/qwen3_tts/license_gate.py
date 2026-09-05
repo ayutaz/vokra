@@ -48,6 +48,7 @@ PYPROJECT_SHA256 = "7ef84e96d4fb486aa4b6c922fbbe06cb42f8ab56108958106287ccd613ac
 # package bundles the LGPLv3 autocommand payload.
 FORBIDDEN_PACKAGES = ("gradio", "onnxruntime", "protobuf", "setuptools", "sox")
 PLACEHOLDER_SENTINELS = {"UNRESOLVED", "OWNER_REVIEW_REQUIRED", "PENDING_REVIEW", "REVIEW_REQUIRED"}
+COMPACT_SCHEMA = "vokra-qwen3-tts-dependency-audit-compact-v1"
 VARIANTS = ("0.6b-base", "0.6b-customvoice", "1.7b-base", "1.7b-customvoice")
 FIXED_IDENTITIES = {
     "official_source_repo": "QwenLM/Qwen3-TTS",
@@ -100,6 +101,14 @@ MODEL_LICENSE_METADATA_POLICY = {
         "1.7b-customvoice",
     ],
 }
+EXPECTED_MODEL_METADATA = {
+    "decoder_tokenizer": {"payload_sha256": "5c051d4d49df3a341f06c58ca2b4fe6d803fdd4ce5ef44505a885a7bfdc715d8", "payload_size": 1060, "tree_file_count": 6, "tree_files_sha256": "ee7815e8d725c6921f6317a84602493b8786e9bab0832753f3e4a77fe8b91cc3"},
+    "0.6b-base": {"payload_sha256": "14288b43ce3742c0075b242b1d0ebf626915b76709abfa6c7bc20aa572ebc9b7", "payload_size": 4026, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
+    "0.6b-customvoice": {"payload_sha256": "7714645967db213d0f57ed0e8817bec6baa2b0a26b7e6e107a8aec0af713f5bb", "payload_size": 3644, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
+    "1.7b-base": {"payload_sha256": "18eb177f0ceb345478f90986c8ff9796d58a31b5a43c727319e0e1be3e67663d", "payload_size": 3775, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
+    "1.7b-customvoice": {"payload_sha256": "349ea9bd92172d664896f7abd8eecd156b35e7c55eb02a278a9d27b3e43f88a5", "payload_size": 3977, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
+}
+EXPECTED_SOURCE_LICENSE = {"sha256": "a44a6081c73ad75f0255bb2bb5cab74ef1829565a895a24e53a4f11290ab7655", "size": 11343}
 
 
 def fixed_component_identities() -> list[dict[str, Any]]:
@@ -276,6 +285,13 @@ def approval_scope(manifest: dict[str, Any]) -> dict[str, Any]:
         "component_rows_sha256": manifest.get("component_rows_sha256"),
         "identities": manifest.get("identities"),
         "model_license_metadata": manifest.get("model_license_metadata"),
+        # The compact file digest is deliberately excluded to avoid a
+        # self-referential hash cycle; its bytes are checked separately.
+        "dependency_audit_evidence": {
+            key: value
+            for key, value in (manifest.get("dependency_audit_evidence") or {}).items()
+            if key != "sha256"
+        },
         "publication": manifest.get("publication"),
         "package_decision": "APPROVED",
         "component_decision": "APPROVED",
@@ -384,6 +400,139 @@ def validate_model_license_metadata_policy(value: Any) -> None:
         fail("HF model-info license metadata policy drifted")
 
 
+def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dict[str, Any], reviews: list[dict[str, Any]], components: list[dict[str, Any]]) -> None:
+    """Validate the exact, fail-closed projection of the VAST audit."""
+    if not isinstance(reference, dict) or set(reference) != {"schema", "path", "sha256", "full_audit_sha256", "status"}:
+        fail("compact dependency audit reference is malformed")
+    if reference.get("schema") != COMPACT_SCHEMA or reference.get("path") != "dependency_audit_evidence.json" or reference.get("status") != "PENDING_OWNER_APPROVAL":
+        fail("compact dependency audit reference is not fail-closed")
+    if not isinstance(reference.get("sha256"), str) or not HEX64.fullmatch(reference["sha256"]):
+        fail("compact dependency audit digest is malformed")
+    if not isinstance(reference.get("full_audit_sha256"), str) or not HEX64.fullmatch(reference["full_audit_sha256"]):
+        fail("full VAST audit digest is malformed")
+    if path.is_symlink() or not path.is_file():
+        fail("compact dependency audit bytes are missing")
+    compact_bytes = path.read_bytes()
+    if digest_bytes(compact_bytes) != reference["sha256"]:
+        fail("compact dependency audit bytes drifted")
+    try:
+        compact = strict_json_loads(compact_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        fail(f"compact dependency audit is unreadable: {error}")
+    expected_top = {"schema", "status", "full_audit_status", "full_audit_sha256", "inputs", "repository", "environment", "closure", "license_facts", "native_facts", "model_facts", "inactive_facts", "component_facts", "approval"}
+    if not isinstance(compact, dict) or set(compact) != expected_top or compact.get("schema") != COMPACT_SCHEMA or compact.get("status") != "PENDING_OWNER_APPROVAL" or compact.get("full_audit_sha256") != reference["full_audit_sha256"]:
+        fail("compact dependency audit schema/status/hash drifted")
+    synthetic = reference["full_audit_sha256"] == "e" * 64
+    expected_inputs = {"pyproject_sha256": manifest.get("pyproject_sha256"), "uv_lock_sha256": manifest.get("lock_sha256"), "package_rows_sha256": manifest.get("package_rows_sha256"), "review_rows_sha256": manifest.get("review_rows_sha256"), "component_rows_sha256": manifest.get("component_rows_sha256"), "approval_scope_sha256": manifest.get("approval_scope_sha256")}
+    if compact.get("inputs") != expected_inputs or any(not isinstance(value, str) or not HEX64.fullmatch(value) for value in expected_inputs.values()):
+        fail("compact dependency audit is not bound to the manifest inputs")
+    repository = compact["repository"]
+    if set(repository) != {"head", "clean", "audit_script_sha256"} or repository["clean"] is not True or not HEX40.fullmatch(str(repository["head"])) or not HEX64.fullmatch(str(repository["audit_script_sha256"])):
+        fail("compact dependency audit repository identity is malformed")
+    environment = compact["environment"]
+    expected_environment = {"python": "3.12", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False} if synthetic else {"python": "3.12.14", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False}
+    if set(environment) != set(expected_environment) or environment != expected_environment:
+        fail("compact dependency audit scope is unsafe or drifted")
+    closure = compact["closure"]
+    expected_closure = {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True} if synthetic else {"active_rows": 57, "inactive_rows": 3, "expected_count": 57, "installed_count": 57, "missing": [], "unexpected": [], "exact": True}
+    if set(closure) != {"active_rows", "inactive_rows", "expected_count", "installed_count", "missing", "unexpected", "exact", "expected_sha256", "installed_sha256"} or any(closure.get(key) != value for key, value in expected_closure.items()):
+        fail("compact dependency audit closure counts are not exact")
+    if any(not isinstance(closure.get(key), int) or closure[key] < 0 for key in ("active_rows", "inactive_rows", "expected_count", "installed_count")) or any(not isinstance(closure.get(key), str) or not HEX64.fullmatch(closure[key]) for key in ("expected_sha256", "installed_sha256")):
+        fail("compact dependency audit closure fields are malformed")
+    if synthetic:
+        model_facts = compact.get("model_facts")
+        if not isinstance(model_facts, dict) or model_facts.get("metadata_fallback_count") != 5 or {row.get("component") for row in model_facts.get("metadata_records", []) if isinstance(row, dict)} != set(MODEL_LICENSE_METADATA_POLICY["components"]):
+            fail("synthetic compact model metadata drifted")
+        if compact.get("approval") != {"status": "PENDING_OWNER_APPROVAL", "signer": None, "digest": None}:
+            fail("synthetic compact approval drifted")
+        return
+    inactive = compact["inactive_facts"]
+    expected_inactive = {
+        ("colorama", "0.4.6", json.dumps({"registry": "https://pypi.org/simple"}, sort_keys=True), "resolution marker is false or row is unreachable from the virtual project"),
+        ("torch", "2.7.1", json.dumps({"registry": "https://download.pytorch.org/whl/cpu"}, sort_keys=True), "resolution marker is false or row is unreachable from the virtual project"),
+        ("vokra-qwen3-tts-parity", "0.1.0", json.dumps({"virtual": "."}, sort_keys=True), "virtual project row; no installed distribution is expected"),
+    }
+    if not isinstance(inactive, list) or len(inactive) != 3 or [row.get("name") for row in inactive] != sorted(row.get("name") for row in inactive):
+        fail("compact dependency audit inactive rows are malformed or unsorted")
+    inactive_keys = set()
+    for row in inactive:
+        if not isinstance(row, dict) or set(row) != {"name", "version", "source", "reason", "owner_review", "fact_sha256"} or row.get("owner_review") != "PENDING_OWNER_APPROVAL" or not isinstance(row.get("fact_sha256"), str) or not HEX64.fullmatch(row["fact_sha256"]):
+            fail("compact inactive fact schema drifted")
+        key = (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), row["reason"])
+        if key not in expected_inactive or key in inactive_keys or digest_bytes(json.dumps({k: row[k] for k in row if k != "fact_sha256"}, sort_keys=True, separators=(",", ":")).encode()) != row["fact_sha256"]:
+            fail("compact inactive fact identity/reason/hash drifted")
+        inactive_keys.add(key)
+    active_reviews = {(row["name"], row["version"], json.dumps(row["source"], sort_keys=True)): row for row in reviews if (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), next((item[3] for item in expected_inactive if item[:3] == (row["name"], row["version"], json.dumps(row["source"], sort_keys=True))), None)) not in expected_inactive}
+    package_facts = compact["license_facts"].get("packages")
+    package_fields = {"name", "version", "source", "declared_license", "declared_license_bytes", "declared_license_sha256", "declared_license_truncated", "license_classifiers", "publisher_file_count", "publisher_files_sha256", "publisher_files_unsafe", "native_file_count", "native_files_sha256", "native_files_unsafe", "sdist_license_status", "review_license", "review_native_bundled", "owner_review", "fact_sha256"}
+    if set(compact["license_facts"]) != {"package_count", "declared_license_missing", "publisher_file_count", "unsafe_publisher_file_count", "packages", "classification"} or not isinstance(package_facts, list) or len(package_facts) != len(active_reviews) or set((row.get("name"), row.get("version"), json.dumps(row.get("source"), sort_keys=True)) for row in package_facts) != set(active_reviews):
+        fail("compact dependency audit package key set is not the exact active closure")
+    for fact in package_facts:
+        if set(fact) != package_fields or fact.get("owner_review") != "PENDING_OWNER_APPROVAL" or fact.get("publisher_files_unsafe") != [] or fact.get("native_files_unsafe") != []:
+            fail("compact package fact schema/safety drifted")
+        if not isinstance(fact.get("license_classifiers"), list) or fact["license_classifiers"] != sorted(fact["license_classifiers"]) or any(not isinstance(x, str) for x in fact["license_classifiers"]):
+            fail("compact package classifier facts are malformed")
+        for key in ("publisher_files_sha256", "native_files_sha256", "fact_sha256"):
+            if not isinstance(fact.get(key), str) or not HEX64.fullmatch(fact[key]): fail("compact package hash is malformed")
+        for key in ("publisher_file_count", "native_file_count"):
+            if not isinstance(fact.get(key), int) or fact[key] < 0: fail("compact package count is malformed")
+        if fact["declared_license_truncated"]:
+            if fact["declared_license"] is not None or not isinstance(fact["declared_license_bytes"], int) or fact["declared_license_bytes"] <= 256 or not HEX64.fullmatch(str(fact["declared_license_sha256"])): fail("compact truncated license fact is malformed")
+        elif fact["declared_license_bytes"] is not None or fact["declared_license_sha256"] is not None or fact["declared_license"] is not None and not isinstance(fact["declared_license"], str): fail("compact declared license fact is malformed")
+        expected_review = active_reviews[(fact["name"], fact["version"], json.dumps(fact["source"], sort_keys=True))]
+        if fact["review_license"] != expected_review["license"] or fact["review_native_bundled"] != expected_review["native_bundled"] or expected_review["status"] != "PENDING_OWNER_APPROVAL" or expected_review["approval_signer"] is not None or expected_review["approval_digest"] is not None:
+            fail("compact package fact is not bound to pending manifest review")
+        fact_without_hash = {key: fact[key] for key in fact if key != "fact_sha256"}
+        if digest_bytes(json.dumps(fact_without_hash, sort_keys=True, separators=(",", ":")).encode()) != fact["fact_sha256"] or expected_review["payload_sha256"] != fact["fact_sha256"]:
+            fail("compact package fact digest is not bound to the manifest row")
+    if compact["license_facts"]["package_count"] != len(package_facts) or compact["license_facts"]["declared_license_missing"] != sum(fact["declared_license"] is None for fact in package_facts) or compact["license_facts"]["publisher_file_count"] != sum(fact["publisher_file_count"] for fact in package_facts) or compact["license_facts"]["unsafe_publisher_file_count"] != 0:
+        fail("compact package license aggregates drifted")
+    native = compact["native_facts"]
+    if set(native) != {"bundled_file_count", "unsafe_native_file_count", "packages_with_native", "classification"} or native["bundled_file_count"] != sum(fact["native_file_count"] for fact in package_facts) or native["unsafe_native_file_count"] != 0 or native["packages_with_native"] != sorted(fact["name"] for fact in package_facts if fact["native_file_count"]):
+        fail("compact native aggregates drifted")
+    model_facts = compact["model_facts"]
+    if set(model_facts) != {"license_file_records", "metadata_records", "metadata_fallback_count", "classification"} or model_facts["metadata_fallback_count"] != 5:
+        fail("compact model fact aggregate schema drifted")
+    metadata_fields = {"component", "kind", "repo", "requested_revision", "revision", "requested_url", "final_url", "returned_repo", "returned_sha", "license", "license_source", "payload_sha256", "payload_size", "tree_file_count", "tree_files_sha256", "owner_review"}
+    metadata = model_facts["metadata_records"]
+    expected_components = {item["component"]: item for item in components if item["component"] != "official_source"}
+    if not isinstance(metadata, list) or [row.get("component") for row in metadata] != sorted(expected_components) or len(metadata) != 5:
+        fail("compact model metadata order/count drifted")
+    for row in metadata:
+        if set(row) != metadata_fields or row["kind"] != "model" or row["license"] != "apache-2.0" or row["license_source"] != "HF_API_CARD_DATA_LICENSE" or row["owner_review"] != "PENDING_OWNER_APPROVAL" or row["returned_repo"] != row["repo"] or row["returned_sha"] != row["revision"] or row["final_url"] != row["requested_url"] or not HEX64.fullmatch(str(row["payload_sha256"])) or not HEX64.fullmatch(str(row["tree_files_sha256"])) or not isinstance(row["payload_size"], int) or row["payload_size"] <= 0 or not isinstance(row["tree_file_count"], int) or row["tree_file_count"] <= 0:
+            fail("compact HF model metadata fact drifted")
+        expected = expected_components[row["component"]]["identity"]
+        url = f"https://huggingface.co/api/models/{expected['repo']}/revision/{expected['revision']}"
+        if row["repo"] != expected["repo"] or row["revision"] != expected["revision"] or row["requested_revision"] != expected["revision"] or row["requested_url"] != url:
+            fail("compact HF model identity/URL drifted")
+        if {key: row[key] for key in ("payload_sha256", "payload_size", "tree_file_count", "tree_files_sha256")} != EXPECTED_MODEL_METADATA[row["component"]]:
+            fail("compact HF model payload/tree facts drifted")
+    license_fields = {"component", "kind", "repo", "revision", "requested_url", "acquired_bytes", "size", "sha256", "license_classification", "error_status"}
+    license_records = model_facts["license_file_records"]
+    if not isinstance(license_records, list) or [row.get("component") for row in license_records] != sorted(item["component"] for item in components):
+        fail("compact fixed LICENSE records are incomplete or unsorted")
+    for row in license_records:
+        if set(row) != license_fields or row["license_classification"] != "UNCLASSIFIED_PRIMARY_SOURCE_BYTES_ONLY": fail("compact LICENSE fact schema drifted")
+        expected = next(item for item in components if item["component"] == row["component"])["identity"]
+        if row["component"] == "official_source":
+            if row["kind"] != "source" or row["repo"] != expected["repo"] or row["revision"] != expected["revision"] or row["requested_url"] != f"https://raw.githubusercontent.com/{expected['repo']}/{expected['revision']}/LICENSE" or row["acquired_bytes"] is not True or row["size"] != EXPECTED_SOURCE_LICENSE["size"] or row["sha256"] != EXPECTED_SOURCE_LICENSE["sha256"] or row["error_status"] is not None: fail("compact source LICENSE fact drifted")
+        else:
+            if row["kind"] != "model" or row["repo"] != expected["repo"] or row["revision"] != expected["revision"] or row["requested_url"] != f"https://huggingface.co/{expected['repo']}/raw/{expected['revision']}/LICENSE" or row["acquired_bytes"] is not False or row["size"] is not None or row["sha256"] is not None or row["error_status"] != 404: fail("compact model LICENSE 404 fact drifted")
+    component_facts = compact["component_facts"]
+    component_fields = {"component", "identity", "review_license", "review_native_bundled", "license_file", "metadata", "owner_review", "fact_sha256"}
+    if not isinstance(component_facts, list) or [row.get("component") for row in component_facts] != sorted(item["component"] for item in components) or len(component_facts) != 6:
+        fail("compact component facts are incomplete or unsorted")
+    for fact in component_facts:
+        if set(fact) != component_fields or fact["owner_review"] != "PENDING_OWNER_APPROVAL" or not HEX64.fullmatch(str(fact["fact_sha256"])): fail("compact component fact schema drifted")
+        expected = next(item for item in components if item["component"] == fact["component"])
+        if fact["identity"] != expected["identity"] or fact["review_license"] != expected["license"] or fact["review_native_bundled"] != expected["native_bundled"] or expected["status"] != "PENDING_OWNER_APPROVAL" or expected["approval_signer"] is not None or expected["approval_digest"] is not None: fail("compact component fact is not bound to pending manifest review")
+        if (fact["metadata"] is None) != (fact["component"] == "official_source") or fact["metadata"] is not None and fact["metadata"]["component"] != fact["component"]: fail("compact component metadata binding drifted")
+        if fact["license_file"] is None or fact["license_file"]["component"] != fact["component"]: fail("compact component LICENSE binding drifted")
+        if digest_bytes(json.dumps({key: fact[key] for key in fact if key != "fact_sha256"}, sort_keys=True, separators=(",", ":")).encode()) != fact["fact_sha256"] or expected["payload_sha256"] != fact["fact_sha256"]: fail("compact component fact digest is not bound to manifest")
+    if compact["approval"] != {"status": "PENDING_OWNER_APPROVAL", "signer": None, "digest": None}:
+        fail("compact dependency audit contains an owner/operator decision")
+
+
 def fail(message: str) -> None:
     print(f"qwen3-tts license gate: BLOCKED: {message}", file=sys.stderr)
     raise SystemExit(2)
@@ -438,7 +587,7 @@ def run(
         manifest = strict_json_loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as error:
         fail(f"gate manifest is unreadable: {error}")
-    if not isinstance(manifest, dict) or set(manifest) != {"gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "review_rows", "review_rows_sha256", "component_rows", "component_rows_sha256", "identities", "model_license_metadata", "forbidden_packages", "publication", "approval_scope_sha256"}:
+    if not isinstance(manifest, dict) or set(manifest) != {"gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "review_rows", "review_rows_sha256", "component_rows", "component_rows_sha256", "identities", "model_license_metadata", "forbidden_packages", "publication", "dependency_audit_evidence", "approval_scope_sha256"}:
         fail("gate manifest schema drifted")
     if manifest.get("gate_version") != GATE_VERSION:
         fail("unsupported manifest version")
@@ -469,6 +618,16 @@ def run(
     present = sorted(set(FORBIDDEN_PACKAGES) & {row["name"] for row in rows})
     if present:
         fail(f"forbidden broad/native/audio packages are locked: {present}")
+    components = component_rows(manifest)
+    if canonical_digest(components) != manifest.get("component_rows_sha256"):
+        fail("fixed component/model license rows drifted")
+    validate_dependency_audit_evidence(
+        manifest_path.with_name("dependency_audit_evidence.json"),
+        manifest.get("dependency_audit_evidence"),
+        manifest,
+        reviews,
+        components,
+    )
     for review in reviews:
         if is_placeholder(review["status"]) or review["status"] != "REVIEWED":
             fail(f"package review status is not REVIEWED: {review['name']}=={review['version']}")
@@ -481,9 +640,6 @@ def run(
                 fail(f"package review field {field} is an unresolved placeholder: {review['name']}=={review['version']}")
         if review["status"] == "REVIEWED" and not HEX64.fullmatch(str(review["payload_sha256"] or "")):
             fail(f"reviewed package lacks a manifest payload SHA-256: {review['name']}=={review['version']}")
-    components = component_rows(manifest)
-    if canonical_digest(components) != manifest.get("component_rows_sha256"):
-        fail("fixed component/model license rows drifted")
     if canonical_digest(approval_scope(manifest)) != manifest.get("approval_scope_sha256"):
         fail("approval scope is not bound to the reviewed closure and identities")
     for component in components:
@@ -598,6 +754,41 @@ def run(
 
 def self_test() -> None:
     global LOCK_SHA256, PYPROJECT_SHA256
+    # Exercise semantic tamper checks against the committed production
+    # projection, updating only the outer file digest in each candidate.
+    production_root = Path(__file__).resolve().parent
+    production_manifest = strict_json_loads((production_root / "license_gate_manifest.json").read_text(encoding="utf-8"))
+    production_lock = tomllib.loads((production_root / "uv.lock").read_text(encoding="utf-8"))
+    production_rows = package_rows(production_lock)
+    production_reviews = review_rows(production_rows, production_manifest)
+    production_components = component_rows(production_manifest)
+    production_compact = strict_json_loads((production_root / "dependency_audit_evidence.json").read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(prefix="qwen3-tts-compact-tamper-") as directory:
+        compact_path = Path(directory) / "dependency_audit_evidence.json"
+        compact_base = json.loads(json.dumps(production_compact))
+        reference_base = json.loads(json.dumps(production_manifest["dependency_audit_evidence"]))
+        for label, mutate in (
+            ("declared license", lambda value: value["license_facts"]["packages"][0].update(declared_license="GPL-3.0-only")),
+            ("native count", lambda value: value["license_facts"]["packages"][0].update(native_file_count=99)),
+            ("model repo", lambda value: value["model_facts"]["metadata_records"][0].update(repo="tampered/model")),
+            ("model revision", lambda value: value["model_facts"]["metadata_records"][0].update(revision="0" * 40)),
+            ("model license", lambda value: value["model_facts"]["metadata_records"][0].update(license="mit")),
+            ("model tree hash", lambda value: value["model_facts"]["metadata_records"][0].update(tree_files_sha256="0" * 64)),
+            ("source license", lambda value: value["model_facts"]["license_file_records"][-1].update(sha256="0" * 64)),
+            ("aggregate count", lambda value: value["native_facts"].update(bundled_file_count=0)),
+        ):
+            candidate = json.loads(json.dumps(compact_base))
+            mutate(candidate)
+            compact_path.write_text(json.dumps(candidate), encoding="utf-8")
+            candidate_reference = json.loads(json.dumps(reference_base))
+            candidate_reference["sha256"] = digest_bytes(compact_path.read_bytes())
+            try:
+                validate_dependency_audit_evidence(compact_path, candidate_reference, production_manifest, production_reviews, production_components)
+            except SystemExit as error:
+                if error.code != 2:
+                    raise SystemExit(f"qwen3-tts gate self-test production {label}: exit {error.code}") from error
+            else:
+                raise SystemExit(f"qwen3-tts gate self-test production {label}: tamper accepted")
     with tempfile.TemporaryDirectory(prefix="qwen3-tts-license-gate-") as directory:
         root = Path(directory)
         lock = root / "uv.lock"
@@ -648,6 +839,13 @@ def self_test() -> None:
             "model_license_metadata": json.loads(json.dumps(MODEL_LICENSE_METADATA_POLICY)),
             "forbidden_packages": list(FORBIDDEN_PACKAGES),
             "publication": "NO_UPLOAD",
+            "dependency_audit_evidence": {
+                "schema": COMPACT_SCHEMA,
+                "path": "dependency_audit_evidence.json",
+                "sha256": "0" * 64,
+                "full_audit_sha256": "e" * 64,
+                "status": "PENDING_OWNER_APPROVAL",
+            },
         }
         reviews = review_rows(rows, manifest)
         manifest["review_rows_sha256"] = canonical_digest(reviews)
@@ -658,9 +856,63 @@ def self_test() -> None:
         LOCK_SHA256 = digest_bytes(lock.read_bytes())
         PYPROJECT_SHA256 = digest_bytes(project.read_bytes())
         manifest["pyproject_sha256"] = digest_bytes(project.read_bytes())
-        manifest["approval_scope_sha256"] = canonical_digest(approval_scope(manifest))
         manifest_path = root / "manifest.json"
+        compact_path = root / "dependency_audit_evidence.json"
+        compact = {
+            "schema": COMPACT_SCHEMA,
+            "status": "PENDING_OWNER_APPROVAL",
+            "full_audit_status": "BLOCKED",
+            "full_audit_sha256": "e" * 64,
+            "inputs": {
+                "pyproject_sha256": manifest["pyproject_sha256"],
+                "uv_lock_sha256": manifest["lock_sha256"],
+                "package_rows_sha256": manifest["package_rows_sha256"],
+                "review_rows_sha256": manifest["review_rows_sha256"],
+                "component_rows_sha256": manifest["component_rows_sha256"],
+                "approval_scope_sha256": "0" * 64,
+            },
+            "repository": {"head": "a" * 40, "clean": True, "audit_script_sha256": "b" * 64},
+            "environment": {"python": "3.12", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False},
+            "closure": {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True, "expected_sha256": "c" * 64, "installed_sha256": "d" * 64},
+            "license_facts": {"package_count": 2, "declared_license_missing": 0, "publisher_file_count": 0, "unsafe_publisher_file_count": 0, "packages": [{"name": row["name"], "version": row["version"], "source": row["source"]} for row in rows], "classification": "self-test"},
+            "native_facts": {"bundled_file_count": 0, "unsafe_native_file_count": 0, "packages_with_native": [], "classification": "self-test"},
+            "model_facts": {"license_file_records": [], "metadata_records": [{"component": component, "revision": "a" * 40} for component in MODEL_LICENSE_METADATA_POLICY["components"]], "metadata_fallback_count": 5, "classification": "self-test"},
+            "inactive_facts": [],
+            "component_facts": [],
+            "approval": {"status": "PENDING_OWNER_APPROVAL", "signer": None, "digest": None},
+        }
+        manifest["approval_scope_sha256"] = canonical_digest(approval_scope(manifest))
+        compact["inputs"]["approval_scope_sha256"] = manifest["approval_scope_sha256"]
+        compact_path.write_text(json.dumps(compact), encoding="utf-8")
+        manifest["dependency_audit_evidence"]["sha256"] = digest_bytes(compact_path.read_bytes())
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        validate_dependency_audit_evidence(
+            compact_path,
+            manifest["dependency_audit_evidence"],
+            manifest,
+            reviews,
+            components,
+        )
+        compact_base = json.loads(json.dumps(compact))
+        compact_reference = json.loads(json.dumps(manifest["dependency_audit_evidence"]))
+        for label, mutate in (
+            ("compact closure tamper", lambda value: value["closure"].update(exact=False)),
+            ("compact model metadata tamper", lambda value: value["model_facts"]["metadata_records"][0].update(component="tampered")),
+            ("compact approval tamper", lambda value: value["approval"].update(signer="a" * 40)),
+        ):
+            candidate = json.loads(json.dumps(compact_base))
+            mutate(candidate)
+            compact_path.write_text(json.dumps(candidate), encoding="utf-8")
+            candidate_reference = json.loads(json.dumps(compact_reference))
+            candidate_reference["sha256"] = digest_bytes(compact_path.read_bytes())
+            try:
+                validate_dependency_audit_evidence(compact_path, candidate_reference, manifest, reviews, components)
+            except SystemExit as error:
+                if error.code != 2:
+                    raise SystemExit(f"qwen3-tts gate self-test {label}: exit {error.code}") from error
+            else:
+                raise SystemExit(f"qwen3-tts gate self-test {label}: tamper accepted")
+        compact_path.write_text(json.dumps(compact_base), encoding="utf-8")
         evidence_path = root / "evidence.json"
         key_rows = [
             {

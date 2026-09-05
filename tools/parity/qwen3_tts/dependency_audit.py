@@ -41,6 +41,7 @@ except ModuleNotFoundError:  # direct execution from repository root
 
 
 SCHEMA = "vokra-qwen3-tts-dependency-audit-v2"
+COMPACT_SCHEMA = "vokra-qwen3-tts-dependency-audit-compact-v1"
 REPORT_FIELDS = {
     "schema", "status", "environment", "repository", "project", "license_gate",
     "closure", "locked_rows", "inactive_rows", "packages",
@@ -60,6 +61,11 @@ MAX_MEMBER_BYTES = 32 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 MAX_MEMBERS = 4096
 MAX_SDIST_REDIRECTS = 3
+
+
+def compact_digest(value: Any) -> str:
+    """Digest a canonical factual projection without retaining raw payloads."""
+    return sha256_bytes(canonical_json(value).encode("utf-8"))
 
 
 class AuditError(ValueError):
@@ -694,6 +700,204 @@ def audit_environment(project: Path, fetch_model_licenses: bool) -> dict[str, An
     return {"schema": SCHEMA, "status": "BLOCKED" if failures else "PASS", "environment": {"python": platform.python_version(), "platform": sys.platform, "machine": platform.machine(), "model_code_imported": False, "cargo_invoked": False, "upload_performed": False}, "repository": repository, "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"], "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes)}, "license_gate": gate, "closure": {"expected": sorted(expected), "installed": sorted(installed), "missing": missing, "unexpected": unexpected, "active_rows": len(expected_rows), "inactive_rows": len(inactive)}, "locked_rows": [{"name": x["name"], "version": x["version"], "source": x["source"]} for x in lock["package"]], "inactive_rows": [{"identity": identity(x["name"], x["version"]), "reason": reason} for x, reason in ((next(r for r in lock["package"] if _row_key(r) == key), reason) for key, reason in inactive.items())], "packages": packages, "fixed_source_model_decoder_license_paths": [{"component": x["component"], "kind": x["kind"], "repo": x["repo"], "revision": x["revision"], "requested_url": x["requested_url"]} for x in fixed_license_items()], "model_license_files": model_records, "model_license_metadata": model_metadata, "model_acquisition": {"policy": "fixed LICENSE paths plus exact HF model-info API cardData.license; no model weights", "requested_files": [x["requested_url"] for x in model_records], "requested_metadata": requested_model_metadata_urls(model_metadata), "non_license_files": [], "model_files": []}, "failures": sorted(set(failures))}
 
 
+def compact_report(full: dict[str, Any], full_sha256: str, manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return the deterministic, non-sensitive projection committed to git.
+
+    The full VAST report remains an external audit artifact.  This projection
+    retains exact identities, counts, hashes, and bounded API facts, but never
+    embeds license bytes, arbitrary API JSON, or installed filesystem paths.
+    It is evidence only: owner/operator approval is intentionally pending.
+    """
+    if not isinstance(full, dict) or full.get("schema") != SCHEMA:
+        raise AuditError("cannot compact a non-Qwen audit report")
+    if not isinstance(full_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", full_sha256):
+        raise AuditError("full audit SHA-256 is malformed")
+
+    manifest_reviews = {
+        (row.get("name"), row.get("version"), canonical_json(row.get("source"))): row
+        for row in (manifest or {}).get("review_rows", [])
+        if isinstance(row, dict)
+    }
+    package_facts: list[dict[str, Any]] = []
+    for package in full.get("packages", []):
+        if not isinstance(package, dict) or not isinstance(package.get("lock"), dict) or not isinstance(package.get("installed"), dict):
+            raise AuditError("package fact projection is malformed")
+        lock = package["lock"]
+        installed = package["installed"]
+        publisher = installed.get("publisher_files", [])
+        native = installed.get("native_files", [])
+        if not isinstance(publisher, list) or not isinstance(native, list):
+            raise AuditError("package license/native fact lists are malformed")
+        declared = installed.get("license")
+        declared_fact: dict[str, Any]
+        if isinstance(declared, str) and len(declared.encode("utf-8")) > 256:
+            declared_fact = {
+                "declared_license": None,
+                "declared_license_bytes": len(declared.encode("utf-8")),
+                "declared_license_sha256": sha256_bytes(declared.encode("utf-8")),
+                "declared_license_truncated": True,
+            }
+        else:
+            declared_fact = {
+                "declared_license": declared,
+                "declared_license_bytes": None,
+                "declared_license_sha256": None,
+                "declared_license_truncated": False,
+            }
+        key = (lock.get("name"), lock.get("version"), canonical_json(lock.get("source")))
+        review = manifest_reviews.get(key, {})
+        fact = {
+            "name": lock.get("name"),
+            "version": lock.get("version"),
+            "source": lock.get("source"),
+            **declared_fact,
+            "license_classifiers": installed.get("license_classifiers", []),
+            "publisher_file_count": len(publisher),
+            "publisher_files_sha256": compact_digest(publisher),
+            "publisher_files_unsafe": installed.get("publisher_files_unsafe", []),
+            "native_file_count": len(native),
+            "native_files_sha256": compact_digest(native),
+            "native_files_unsafe": installed.get("native_files_unsafe", []),
+            "sdist_license_status": (installed.get("sdist_license_evidence") or {}).get("status") if isinstance(installed.get("sdist_license_evidence"), dict) else None,
+            "review_license": review.get("license", "UNRESOLVED"),
+            "review_native_bundled": review.get("native_bundled", "UNRESOLVED"),
+            "owner_review": "PENDING_OWNER_APPROVAL",
+        }
+        fact["fact_sha256"] = compact_digest(fact)
+        package_facts.append(fact)
+    package_facts.sort(key=lambda row: (str(row["name"]), str(row["version"]), canonical_json(row["source"])))
+
+    model_facts: list[dict[str, Any]] = []
+    for record in full.get("model_license_metadata", []):
+        if not isinstance(record, dict):
+            raise AuditError("model license metadata projection is malformed")
+        model_facts.append({
+            key: record.get(key)
+            for key in (
+                "component", "kind", "repo", "requested_revision", "revision", "requested_url",
+                "final_url", "returned_repo", "returned_sha", "license", "license_source",
+                "payload_sha256", "payload_size", "tree_file_count", "tree_files_sha256",
+            )
+        } | {"owner_review": "PENDING_OWNER_APPROVAL"})
+    model_facts.sort(key=lambda row: str(row["component"]))
+
+    model_file_facts = []
+    for record in full.get("model_license_files", []):
+        if not isinstance(record, dict):
+            raise AuditError("model LICENSE fact projection is malformed")
+        model_file_facts.append({
+            key: record.get(key)
+            for key in ("component", "kind", "repo", "revision", "requested_url", "acquired_bytes", "size", "sha256", "license_classification")
+        } | {"error_status": (record.get("error") or {}).get("status") if isinstance(record.get("error"), dict) else None})
+    model_file_facts.sort(key=lambda row: str(row["component"]))
+
+    metadata_by_component = {row["component"]: row for row in model_facts}
+    license_file_by_component = {row["component"]: row for row in model_file_facts}
+    component_facts: list[dict[str, Any]] = []
+    for component_identity in license_gate.fixed_component_identities():
+        component = component_identity["component"]
+        review = next((row for row in (manifest or {}).get("component_rows", []) if row.get("component") == component), {})
+        fact = {
+            "component": component,
+            "identity": component_identity,
+            "review_license": review.get("license", "UNRESOLVED"),
+            "review_native_bundled": review.get("native_bundled", "UNRESOLVED"),
+            "license_file": license_file_by_component.get(component),
+            "metadata": metadata_by_component.get(component),
+            "owner_review": "PENDING_OWNER_APPROVAL",
+        }
+        fact["fact_sha256"] = compact_digest(fact)
+        component_facts.append(fact)
+    component_facts.sort(key=lambda row: row["component"])
+
+    locked_rows = full.get("locked_rows", [])
+    locked_by_identity = {
+        identity(row["name"], row["version"]): row
+        for row in locked_rows
+        if isinstance(row, dict) and isinstance(row.get("name"), str) and isinstance(row.get("version"), str)
+    }
+    inactive_facts: list[dict[str, Any]] = []
+    for inactive in full.get("inactive_rows", []):
+        if not isinstance(inactive, dict) or not isinstance(inactive.get("identity"), str) or not isinstance(inactive.get("reason"), str):
+            raise AuditError("inactive fact projection is malformed")
+        locked = locked_by_identity.get(inactive["identity"])
+        if locked is None:
+            raise AuditError(f"inactive fact is not bound to a locked row: {inactive['identity']}")
+        fact = {
+            "name": locked["name"],
+            "version": locked["version"],
+            "source": locked["source"],
+            "reason": inactive["reason"],
+            "owner_review": "PENDING_OWNER_APPROVAL",
+        }
+        fact["fact_sha256"] = compact_digest(fact)
+        inactive_facts.append(fact)
+    inactive_facts.sort(key=lambda row: (row["name"], row["version"], canonical_json(row["source"])))
+
+    gate = full.get("license_gate") or {}
+    closure = full.get("closure") or {}
+    environment = full.get("environment") or {}
+    repository = full.get("repository") or {}
+    project = full.get("project") or {}
+    return {
+        "schema": COMPACT_SCHEMA,
+        "status": "PENDING_OWNER_APPROVAL",
+        "full_audit_status": full.get("status"),
+        "full_audit_sha256": full_sha256,
+        "inputs": {
+            "pyproject_sha256": project.get("pyproject_sha256"),
+            "uv_lock_sha256": project.get("uv_lock_sha256"),
+            "package_rows_sha256": gate.get("package_rows_sha256"),
+            "review_rows_sha256": gate.get("review_rows_sha256"),
+            "component_rows_sha256": gate.get("component_rows_sha256"),
+            "approval_scope_sha256": gate.get("approval_scope_sha256"),
+        },
+        "repository": {
+            "head": repository.get("head"),
+            "clean": repository.get("clean"),
+            "audit_script_sha256": repository.get("audit_script_sha256"),
+        },
+        "environment": {
+            key: environment.get(key)
+            for key in ("python", "platform", "machine", "model_code_imported", "cargo_invoked", "upload_performed")
+        },
+        "closure": {
+            "active_rows": closure.get("active_rows"),
+            "inactive_rows": closure.get("inactive_rows"),
+            "expected_count": len(closure.get("expected", [])),
+            "installed_count": len(closure.get("installed", [])),
+            "missing": closure.get("missing"),
+            "unexpected": closure.get("unexpected"),
+            "exact": not closure.get("missing") and not closure.get("unexpected") and closure.get("expected") == closure.get("installed"),
+            "expected_sha256": compact_digest(closure.get("expected", [])),
+            "installed_sha256": compact_digest(closure.get("installed", [])),
+        },
+        "license_facts": {
+            "package_count": len(package_facts),
+            "declared_license_missing": sum(item["declared_license"] is None for item in package_facts),
+            "publisher_file_count": sum(item["publisher_file_count"] for item in package_facts),
+            "unsafe_publisher_file_count": sum(len(item["publisher_files_unsafe"]) for item in package_facts),
+            "packages": package_facts,
+            "classification": "installed publisher metadata/files and exact hashes only; no owner legal conclusion",
+        },
+        "native_facts": {
+            "bundled_file_count": sum(item["native_file_count"] for item in package_facts),
+            "unsafe_native_file_count": sum(len(item["native_files_unsafe"]) for item in package_facts),
+            "packages_with_native": [item["name"] for item in package_facts if item["native_file_count"]],
+            "classification": "installed native file inventory and ELF dependency hashes only; owner review pending",
+        },
+        "model_facts": {
+            "license_file_records": model_file_facts,
+            "metadata_records": model_facts,
+            "metadata_fallback_count": len(model_facts),
+            "classification": "authenticated fixed-revision HF API cardData.license projection only; no README/card legal inference",
+        },
+        "inactive_facts": inactive_facts,
+        "component_facts": component_facts,
+        "approval": {"status": "PENDING_OWNER_APPROVAL", "signer": None, "digest": None},
+    }
+
+
 def validate_report(report: Any) -> None:
     if not isinstance(report, dict) or set(report) != REPORT_FIELDS or report.get("schema") != SCHEMA:
         raise AuditError("audit report schema is not exact")
@@ -701,9 +905,13 @@ def validate_report(report: Any) -> None:
         raise AuditError("audit report status/failures are malformed")
 
 
-def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
+def run(project: Path, output: Path, fetch_model_licenses: bool, compact_output: Path | None = None) -> int:
     try:
         production_preflight(project, output)
+        if compact_output is not None:
+            validate_output_path(project, compact_output)
+            if paths_overlap(output, compact_output):
+                raise AuditError("full and compact outputs overlap")
     except (AuditError, OSError, UnicodeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         print(f"qwen3-tts dependency audit: BLOCKED before evidence write: {_controlled(exc)}", file=sys.stderr)
         return 2
@@ -715,6 +923,10 @@ def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
         report = {"schema": SCHEMA, "status": "BLOCKED", "environment": {"python": None, "platform": None, "machine": None, "model_code_imported": False, "cargo_invoked": False, "upload_performed": False}, "repository": repository, "project": {"name": project.name, "version": None, "pyproject_sha256": None, "uv_lock_sha256": None}, "license_gate": {"status": "BLOCKED", "unresolved_rows": []}, "closure": {"expected": [], "installed": [], "missing": [], "unexpected": [], "active_rows": 0, "inactive_rows": 0}, "locked_rows": [], "inactive_rows": [], "packages": [], "fixed_source_model_decoder_license_paths": fixed_license_items(), "model_license_files": [], "model_license_metadata": [], "model_acquisition": {"policy": "fixed LICENSE paths plus exact HF model-info API cardData.license; no model weights", "requested_files": [], "requested_metadata": [], "non_license_files": [], "model_files": []}, "failures": [f"ENVIRONMENT_AUDIT_BLOCKED: {_controlled(exc)}"]}
     validate_report(report)
     output.parent.mkdir(parents=True, exist_ok=True); output.write_text(canonical_json(report) + "\n", encoding="utf-8")
+    if compact_output is not None:
+        compact_output.parent.mkdir(parents=True, exist_ok=True)
+        manifest = load_json(project / "license_gate_manifest.json")
+        compact_output.write_text(canonical_json(compact_report(report, sha256_file(output), manifest)) + "\n", encoding="utf-8")
     if report.get("status") != "PASS": print("qwen3-tts dependency audit: BLOCKED: " + "; ".join(report.get("failures", [])), file=sys.stderr); return 2
     print(f"qwen3-tts dependency audit: PASS ({output})"); return 0
 
@@ -918,12 +1130,12 @@ def self_test() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--project", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--fetch-model-licenses", action="store_true"); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--project", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--compact-output", type=Path); parser.add_argument("--fetch-model-licenses", action="store_true"); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
     if args.self_test:
-        if args.project or args.output or args.fetch_model_licenses: parser.error("--self-test accepts no audit arguments")
+        if args.project or args.output or args.compact_output or args.fetch_model_licenses: parser.error("--self-test accepts no audit arguments")
         return self_test()
     if args.project is None or args.output is None: parser.error("--project and --output are required")
-    return run(args.project, args.output, args.fetch_model_licenses)
+    return run(args.project, args.output, args.fetch_model_licenses, args.compact_output)
 
 
 if __name__ == "__main__": raise SystemExit(main())

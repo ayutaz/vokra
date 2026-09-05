@@ -3,9 +3,9 @@
   "pyproject_sha256": "7ef84e96d4fb486aa4b6c922fbbe06cb42f8ab56108958106287ccd613ac100e",
   "lock_sha256": "b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2",
   "package_rows_sha256": "96b9e02c836283426189e223cf8b2c48ac7d8888819a834bbbb2bc15b26e575f",
-  "review_rows_sha256": "29e8ac64e9d75e84ba3571f2107fd4deb2035b8834f2b7a1829577aa1da0b4f2",
-  "component_rows_sha256": "8700cea9fac4646ae65925adbb0e11b4d41e859db4127c2abdb0ba518fe01019",
-  "approval_scope_sha256": "17b17d7fc41cc31bade2cbf4c756a3794fd9da2e5ec22b88d94f7653b7e498db",
+  "review_rows_sha256": "ff22b0182479241998841c28da9f3de24e147e5753323a53b0f2f93a815c6f4c",
+  "component_rows_sha256": "cf3c477dcae8e6eb86a9019b4bed4e243a360aceb1c9a710a31ec34fbea62c9d",
+  "approval_scope_sha256": "6ce6cdb73d1ac8824a763e45654d5a69df061389e8ed32e5aa67652d06dec103",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -91,10 +91,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "28c1877f42fbab52085a1565422d4a6e6d523cb5b0f884f57f1752b31c6fbea1",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -105,10 +105,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "47282189fe5a63309d0d0fff3f5a91ee6af1b4ec39867edcd0a000875fbda8ac",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -119,10 +119,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "e6394fd3d9771b8833c8e22908880bd16d0753a1c47c0b4b15faa48e1af4de57",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -133,10 +133,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MPL-2.0",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "805a0aca7821c0646833eed8610567888df80edad55f4edb9b7a5dfd9b3d6b44",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -147,10 +147,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT-0",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "7e171db69bc899867744d66c4bcebc5a0e74cead3658551837389b8d532ace55",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -161,10 +161,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "installed distribution contains 2 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "a32f7417ddc1de3942bc3441cbcbafddaa58fe22191fd686dd74ec7ef08db965",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -175,10 +175,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "a77807f5e5164b8d193f49c8a850794e8231609908ce67cf7a77fa4bb234713a",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -189,7 +189,7 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
       "native_bundled": "UNRESOLVED",
       "payload_sha256": null,
@@ -203,10 +203,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-2-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "c9745dccd6339aae409e0966071cd46f005512cc49d1d4f3df97842ba32e9ebf",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -217,10 +217,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "50e6864401eeb2c468c3b7a47c4579cf5e6f2dabfc7c849c25530821ccc4521b",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -231,10 +231,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "11d8eb094823e6c090fdbb192a8a6c6e2730e9eb52b939a3eb945735882f9f61",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -245,10 +245,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "425c75b0f8d7911ae020b7c2b6cd2da7c80a5aa66be6144878101298f9dcaa6c",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -259,10 +259,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "d65378df136299c0ffb56ed2951251fde3fc82f8a53ab3e81996432e0ef09028",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -273,10 +273,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache-2.0",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "31e1b752dab350d52bbb7a0bdfae9698464b0d70bfda82ba59abe84d29f0901b",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -287,10 +287,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "757ed88d167c05864fb4c78ef35c0f631fc9140885f28b8997c8896a009ed9ad",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -301,10 +301,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "72f44ba78a9ab9ab426f6c86cc3fd58702193741910c5e6492ea3b331a9b3c3f",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -315,10 +315,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache-2.0",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "f9cda16106fca6f5fce9ce9860c870aa30b06e91c566237e31c1ab8d9ec68250",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -329,10 +329,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "a778af13275df3cd8eac03a2e9768ac3dba0b1a566c6fd30cf79a91d050bb59a",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -343,10 +343,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "387e7c0473f8b09be0052351db21f29c995e9fd020b6ac8c40557edfb33aec8d",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -357,10 +357,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "0091cbeda66496ac60ffb3e7bd540d0b126bc28be22eb72e25647e68fe800dd3",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -371,10 +371,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "af24d0c3bc40df9fcb40caa68ea339dfd218b760221600573f013e87e03b9eb1",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -385,10 +385,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "ISC",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "1c637f33d65d4e4bbb4b3ec5e6806f56c928f29bf857006c6695aec487257300",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -399,10 +399,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-2-Clause AND Apache-2.0 WITH LLVM-exception",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "c65c492bad14c4b3bd35d85641041c0a2ce12edfc95e373234e058a59c38327c",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -413,10 +413,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "d7d44a2c0b5cfd1e26979efd6603bac11116b9dd3b02742dcdd982b20553a80e",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -427,10 +427,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "6d5426814bc4069a1de7e83a4c28337cc74aee42c9eebea88a9277e662da073c",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -441,10 +441,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "fa440d178a0af394189095fa98d70f7a7771c56f48c0c1961576e7862ef08f04",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -455,10 +455,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "f891eca6b1c275e9325858d557d1e3e068f1da7f41a47a8593f09d642aca931d",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -469,10 +469,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache-2.0",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "2ab9a9828de62989d8f85b746afc89ff5135d31f18311b634503d087c80262be",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -483,10 +483,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "7d8338ae558c2d1e498e45e0d0911610c0af9a22924c434f71670d1981d25f63",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -497,10 +497,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "51a1335f7846f1954e676178c790d6506c3ee850697709a5fd9adb28feaa15b4",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -511,10 +511,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD",
+      "native_bundled": "installed distribution contains 14 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "c1d89f05de63136d9ed773ab3b522ce37d4b15066a6a5ed77af6fda8d526a8c9",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -525,10 +525,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "native_bundled": "installed distribution contains 22 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "b200882f8ff8e03d4716cf84ee3c3655866c12f6b4d6bc84d69ec06a31e22f89",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -539,10 +539,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "bd0b428ee835c67214ad0fb3dc005991f6477c65cd35ead1f75593c598172531",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -553,10 +553,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "50f717a295bd470c15d29cc9ae19a463baccebd6304f3f5c41a872a3bf75c7d0",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -567,10 +567,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "be714a684b5005db1493563a62c9606405306f2e48f12c59ed19969aba5dad76",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -581,10 +581,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "0c1c14563148cf7b9698311a90824602710cb2e3e456843d8a1106cdf7a67974",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -595,10 +595,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "7cd04523be57e1cc33b631d791defffe97aa3e93f269560a96de1d70020f431a",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -609,10 +609,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-2-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "576c752fc369a39573677d7601e42751e0d2155795a97eefd199aeae43bfa0d1",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -623,10 +623,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "fa463452b6b6363c38e503e97f66658ef443d89cd74b73f2ecf61e162db76237",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -637,10 +637,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache-2.0 AND CNRI-Python",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "ef463ed78edbe5bcd6a54feb6ff351cf1ad0b1cffd3911a61268bf13323ce990",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -651,10 +651,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache-2.0",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "9f620df225c55a381d314bd55ff9a671eae5cb9fa83cfa2cf1aa5449efd8bf6c",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -665,10 +665,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "d28e47e051166e6d90e24c4a3f0f1d468393654d07d2a4a44fdc1b6d31c5fe9e",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -679,10 +679,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "5cc01fa2f43c4054f8c98e2d8e604c661277ed4701c2c1f3c281f6b00d9e4668",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -693,10 +693,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "installed distribution contains 70 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "102dbba9ae8f76548cf1a8a5a94b68e6843df5e8982ab097a57e336ae7b05732",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -707,10 +707,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "native_bundled": "installed distribution contains 111 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "87e7f1058c52332fdca020218773ac81a0f63137bfd26f76777951a326b63937",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -721,10 +721,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "ISC License",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "ac457c0f80db94b12de7f8156b203bd86b405775fe856a562f6acd1703e6699d",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -735,10 +735,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD 3-Clause License",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "37805e67b6f5adef6c771c554c58822db8808610965ec00dce5b586608bba19a",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -749,10 +749,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "LGPL-2.1-or-later",
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "682b1ae83620558a56d943d1ab7b56de4e9474d1aa8417237f5bd1f59bdd7b9b",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -763,10 +763,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "ee845aceea60c62307dbb3deb121141f70ee4a0ea893862f6f753b9540b05bbc",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -777,10 +777,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "d7f3bbb16c2b5381683c3ee2c1cabcbe827765ec10150b467a011d6cbe87ee17",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -791,10 +791,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "16ab6ebfda708002f332dde3835dedc5fdb0fd9a6a70b157f5152854d384229a",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -805,7 +805,7 @@
       "source": {
         "registry": "https://download.pytorch.org/whl/cpu"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
       "native_bundled": "UNRESOLVED",
       "payload_sha256": null,
@@ -819,10 +819,10 @@
       "source": {
         "registry": "https://download.pytorch.org/whl/cpu"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "BSD-3-Clause",
+      "native_bundled": "installed distribution contains 13 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "536078cc66f949b629dec57ea5290bf45ca530c9d84c0ed82c4fa9dba995bbcd",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -833,10 +833,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "native_bundled": "installed distribution contains 3 bundled native file(s); exact inventory/hash is in compact VAST evidence",
+      "payload_sha256": "34dd384db16a339f503cdc7349332ea1559c145c5aad6ec5fb2a9d2d1123dcfc",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -847,10 +847,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MPL-2.0 AND MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "949e5803cc3f7d35804d4a6f5dfd20ac89b4d1e84e85f1056e2c0e39e62628ef",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -861,10 +861,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache 2.0 License",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "ce71e45124849a3b44992b474b7b1f1dd7a7dd1ba1f7b0d4ffaf3d7531357c25",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -875,10 +875,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "aa429e9507252f53b8cad368d0ca1888620e84f0959c416c5cbc44b54cbc016c",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -889,10 +889,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "PSF-2.0",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "80bb461fe8567e130f6598bcc8c4126990d46d8e19ee668db7771702a8074c7a",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -903,10 +903,10 @@
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "MIT",
+      "native_bundled": "no native files observed in the installed distribution",
+      "payload_sha256": "6871d71eb231eaae52a64e5dc0660782f0eb5473ed4dfd8897b94496f809d7bf",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -917,7 +917,7 @@
       "source": {
         "virtual": "."
       },
-      "status": "UNRESOLVED",
+      "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
       "native_bundled": "UNRESOLVED",
       "payload_sha256": null,
@@ -935,10 +935,10 @@
         "repo": "QwenLM/Qwen3-TTS",
         "revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "Apache-2.0 (exact pinned upstream LICENSE bytes; owner decision pending)",
+      "native_bundled": "source tree native/bundled closure not assessed; owner review required",
+      "payload_sha256": "cc1520350e95f5998bb5ee77f9490e7df48daa26d1ec06327675b2ed98303361",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -952,10 +952,10 @@
         "revision": "a87c50897bb00837eb857d0538b29d117541d7f6",
         "checkpoint_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
+      "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
+      "payload_sha256": "0a9931a7b6ad78a8b81557fd5ef60b5aa4f007bca7fc6cebf2d202bdadfae612",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -970,10 +970,10 @@
         "config_bytes": 4494,
         "config_sha256": "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
+      "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
+      "payload_sha256": "31a3bc01d26f3ef55d95dd6bc9ec5494027adc31c3d310722d786d07c408eac8",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -988,10 +988,10 @@
         "config_bytes": 4908,
         "config_sha256": "81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
+      "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
+      "payload_sha256": "290406f79190d483fab2870113c3f42ec55c6fd2a4072ecea9f0d8cf684324c9",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1006,10 +1006,10 @@
         "config_bytes": 4494,
         "config_sha256": "b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
+      "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
+      "payload_sha256": "410f6da1a73ba67824580eb4eac4d38c799a04d4e2f97a5b47d91a2d379ffd06",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1024,10 +1024,10 @@
         "config_bytes": 4908,
         "config_sha256": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
       },
-      "status": "UNRESOLVED",
-      "license": "UNRESOLVED",
-      "native_bundled": "UNRESOLVED",
-      "payload_sha256": null,
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
+      "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
+      "payload_sha256": "e597c26c8d117043e140d925a13a8118b0b756103fb651d9424eeca2774682f8",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1040,5 +1040,12 @@
     "setuptools",
     "sox"
   ],
-  "publication": "NO_UPLOAD"
+  "publication": "NO_UPLOAD",
+  "dependency_audit_evidence": {
+    "schema": "vokra-qwen3-tts-dependency-audit-compact-v1",
+    "path": "dependency_audit_evidence.json",
+    "sha256": "ea971561acec9f98626f20f5f078bb75fd102986895a5415d9dc59f424175c88",
+    "full_audit_sha256": "a6e519c863f70967e51c343abed6ced5bb197f503e6d54141dc87386b44e0459",
+    "status": "PENDING_OWNER_APPROVAL"
+  }
 }

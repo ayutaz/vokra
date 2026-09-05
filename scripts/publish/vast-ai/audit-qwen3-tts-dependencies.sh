@@ -9,12 +9,14 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/qwen3_tts"
 AUDIT="$PARITY_PROJECT/dependency_audit.py"
 OUTPUT=""
+COMPACT_OUTPUT=""
 SELF_TEST=0
 MIN_VAST_MEM_KIB=60000000
 
 usage() {
   cat <<'EOF' >&2
 usage: audit-qwen3-tts-dependencies.sh --output <audit.json>
+       audit-qwen3-tts-dependencies.sh --output <audit.json> --compact-output <compact.json>
        audit-qwen3-tts-dependencies.sh --self-test
 
 The synchronized environment must have been prepared by a separately
@@ -85,7 +87,7 @@ require_absent_output() {
 }
 
 run_audit() {
-  local output="$1" input
+  local output="$1" compact_output="$2" input
   require_vast_linux
   require_clean_checkout
   command -v uv >/dev/null 2>&1 || { echo "qwen3-tts dependency audit: uv unavailable" >&2; return 2; }
@@ -96,9 +98,19 @@ run_audit() {
   done
   [[ "$output" == /* ]] || return 2
   require_absent_output "$output"
+  if [[ -n "$compact_output" ]]; then
+    [[ "$compact_output" == /* ]] || return 2
+    require_absent_output "$compact_output"
+    paths_overlap "$output" "$compact_output" && return 2
+  fi
   mkdir -p "$(dirname "$output")"
+  local -a compact_args=()
+  if [[ -n "$compact_output" ]]; then
+    mkdir -p "$(dirname "$compact_output")"
+    compact_args=(--compact-output "$compact_output")
+  fi
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 \
-    python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses
+    python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" "${compact_args[@]}" --fetch-model-licenses
 }
 
 self_test() {
@@ -112,7 +124,7 @@ self_test() {
   ! grep -Eq '^[[:space:]]*\{[[:space:]]*name[[:space:]]*=[[:space:]]*"setuptools"([,[:space:]])' "$PARITY_PROJECT/uv.lock" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   grep -Fq -- 'uv run --no-cache --no-project --offline --python 3.12' "$0" || failed=1
-  if VOKRA_PUBLISH_ON_VAST=0 run_audit /private/tmp/qwen3-tts-audit-self-test.json >/dev/null 2>&1; then failed=1; fi
+  if VOKRA_PUBLISH_ON_VAST=0 run_audit /private/tmp/qwen3-tts-audit-self-test.json "" >/dev/null 2>&1; then failed=1; fi
   probe_root="$(mktemp -d "$probe_parent/qwen3-tts-audit-wrapper.XXXXXX")"
   if require_absent_output "$VOKRA_ROOT" >/dev/null 2>&1; then failed=1; fi
   if require_absent_output "$PARITY_PROJECT" >/dev/null 2>&1; then failed=1; fi
@@ -133,6 +145,7 @@ self_test() {
 while (( $# > 0 )); do
   case "$1" in
     --output) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$OUTPUT" ]] || { usage; exit 2; }; OUTPUT="$2"; shift 2 ;;
+    --compact-output) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$COMPACT_OUTPUT" ]] || { usage; exit 2; }; COMPACT_OUTPUT="$2"; shift 2 ;;
     --self-test) (( SELF_TEST == 0 )) || { usage; exit 2; }; SELF_TEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
@@ -140,9 +153,9 @@ while (( $# > 0 )); do
 done
 
 if (( SELF_TEST != 0 )); then
-  [[ -z "$OUTPUT" ]] || { usage; exit 2; }
+  [[ -z "$OUTPUT" && -z "$COMPACT_OUTPUT" ]] || { usage; exit 2; }
   self_test
 else
   [[ -n "$OUTPUT" ]] || { usage; exit 2; }
-  run_audit "$OUTPUT"
+  run_audit "$OUTPUT" "$COMPACT_OUTPUT"
 fi

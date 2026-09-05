@@ -74,11 +74,22 @@ are exactly false, and `siblings` is a non-empty safe, duplicate-free
 count/list/hash and response SHA/size; it does not retain arbitrary API JSON.
 README text and arbitrary metadata are never accepted as license evidence. It never acquires weights,
 imports model code, invokes Cargo, or uploads anything. The audit itself
-currently reports `BLOCKED` at the existing unresolved license manifest (first
-blocker `accelerate==1.12.0`); the model-free audit may still run on an already
-synchronized, authorized VAST environment and emit this factual blocker
-evidence. The unresolved gate means that dependency synchronization, model
+currently reports `BLOCKED` because owner approval is still pending. The
+reviewed VAST report is retained externally by SHA-256; the repository carries
+only `dependency_audit_evidence.json`, a deterministic compact projection of
+the exact active/inactive closure rows, full publisher/native fact hashes,
+fixed-revision model metadata, and the no-model/no-Cargo/no-upload scope.
+Every factual package/component record has a canonical full-fact digest bound
+back to its manifest row; inactive rows remain pending and carry no installed
+license/native claim. Its status is
+`PENDING_OWNER_APPROVAL`, and both signer and digest are null. The license gate
+binds this compact file, its full-report SHA-256, all closure row digests, and
+the fixed HF model metadata policy to the manifest; tampering with any of those
+inputs is rejected. The compact evidence records factual installed metadata
+only and is not an owner legal conclusion. Dependency synchronization, model
 download, and API/model smoke cannot progress until legitimate
 dependency/component reviews and authenticated owner evidence are recorded.
 Run its `--self-test` locally; do not run the production audit on the
-maintainer machine.
+maintainer machine. The production audit can optionally emit the compact
+projection with `--compact-output <absent-path>` when a separately authorized
+VAST job is collecting a fresh full report.
