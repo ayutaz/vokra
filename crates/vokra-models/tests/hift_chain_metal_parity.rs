@@ -24,6 +24,7 @@ const T_MEL: usize = 2;
 // 5e-4 for transcendental differences, while the resident linear/conv/STFT
 // paths are tighter.  Keep this bound fixed until a failing run is diagnosed;
 // it must not be widened to make a parity run green.
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 const METAL_ATOL: f32 = 5e-4;
 
 /// The small HiFTNet shape used by `vokra-ops`'s resident graph tests and the
@@ -97,6 +98,7 @@ fn small_nonzero_bundle() -> (HiFTChainConfig, HiFTChainWeights) {
     (cfg, weights)
 }
 
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 fn max_delta(a: &[f32], b: &[f32]) -> f32 {
     a.iter()
         .zip(b)
