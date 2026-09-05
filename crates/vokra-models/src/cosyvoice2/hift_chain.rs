@@ -1085,9 +1085,9 @@ mod tests {
         // ConvTranspose1d stores [input_channel, output_channel, kernel],
         // and PyTorch weight_norm(dim=0) normalizes the input-channel rows.
         let g = [2.0, 3.0];
-        let v = [3.0, 4.0, 0.0, 0.0, 0.0, 12.0];
+        let v = [3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0];
         let folded = fold_weight_norm(&g, &v, 2, 2, 2, "ups.0").expect("finite rows");
-        assert_eq!(folded, vec![1.2, 1.6, 0.0, 0.0, 0.0, 3.0]);
+        assert_eq!(folded, vec![1.2, 1.6, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0]);
     }
 
     #[test]
