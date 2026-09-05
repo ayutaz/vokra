@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 COMPACT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
-FULL_AUDIT_SHA256 = "a1d267f4b2e744fc67a5be3cf8737ee410c89ccc8a4f0f5c94e4d425a3b75bb8"
+FULL_AUDIT_SHA256 = "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
 TORCH_GOMP = "torch/lib/libgomp-a34b3233.so.1"
 TORCH_GOMP_SHA256 = "570455c2902d6cc2a7f367703c06dac07495dd7f8a1ed2c8fc4cea628c881b13"
 BUILD_ONLY = {"cython", "meson-python", "meson", "pyproject-metadata", "ninja", "patchelf"}

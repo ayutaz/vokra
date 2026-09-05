@@ -17,12 +17,11 @@ import tomllib
 from urllib.parse import urlparse
 
 GATE_VERSION = 2
-# These are the exact active closure inputs.  The retained dependency audit is
-# historical evidence for the previous lock and is independently checked below;
-# production remains blocked until a fresh audit binds these active bytes.
+# These are the exact active closure inputs. The dependency audit binds these
+# active bytes, while the separate owner and operator gates remain fail-closed.
 LOCK_SHA256 = "3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075"
 PYPROJECT_SHA256 = "b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8"
-FULL_AUDIT_SHA256 = "a1d267f4b2e744fc67a5be3cf8737ee410c89ccc8a4f0f5c94e4d425a3b75bb8"
+FULL_AUDIT_SHA256 = "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
 COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
 EXPECTED_BUILD_CONSTRAINTS = [
     "Cython==3.0.12",

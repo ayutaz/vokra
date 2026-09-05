@@ -19,12 +19,12 @@ requirement is overridden with the impossible marker `python_version < '0'`,
 so the frozen runtime closure contains no `setuptools` or its forbidden
 LGPLv3-vendored `autocommand` payload. The preflight and post-sync audits fail
 closed if either the lock or installed environment reintroduces it.
-The checked-in compact `dependency_audit_evidence.json` is historical evidence
-for the superseded setuptools-containing closure; its input hashes intentionally
-do not match the active lock/project, so preflight remains blocked until a
-fresh model-free VAST audit replaces it. `patchelf` is GPL build-only and
-is not installed in or redistributed with the final environment; its operator
-approval remains an explicit gate.
+The checked-in compact `dependency_audit_evidence.json` is fresh model-free
+VAST evidence for the active 28-package runtime closure. Its exact lock and
+project inputs match the active contract, and the evidence records that
+`setuptools` is absent. `patchelf` is GPL build-only and is not installed in or
+redistributed with the final environment; its operator approval remains an
+explicit gate.
 
 `post_sync_audit.py` runs immediately after `uv sync` and before any source or
 model acquisition. It independently checks the synchronized package closure,
@@ -64,11 +64,10 @@ The latter is the fail-closed blocker, so a successful fallback is not reported
 as missing overall evidence. Compact evidence retains the network count and
 scope without credentials or response-body URLs beyond the locked artifact
 facts.
-The committed compact evidence is historical evidence for the superseded
-setuptools-containing closure; a fresh VAST audit must replace it for the
-active lock. The preflight gate remains fail-closed until that evidence is
-imported and the owner reviews it and supplies the separate authenticated
-approval file.
+The committed compact evidence now binds the active lock/project and records
+28 packages, two bounded license-only fallback requests, and no missing
+publisher license evidence. The preflight gate remains fail-closed for the
+separate owner/operator reviews and authenticated approval file.
 
 ## API smoke prerequisite
 
