@@ -681,4 +681,32 @@ mod tests {
             assert!(error.to_string().contains(needle), "{error}");
         }
     }
+
+    fn required_vast_gguf() -> GgufFile {
+        let value = std::env::var("VOKRA_COSYVOICE2_LLM_GGUF")
+            .expect("VOKRA_COSYVOICE2_LLM_GGUF is required");
+        let path = std::path::PathBuf::from(value);
+        assert!(path.is_absolute(), "LLM GGUF path must be absolute");
+        let metadata = std::fs::symlink_metadata(&path).expect("LLM GGUF must exist");
+        assert!(metadata.file_type().is_file(), "LLM GGUF must be regular");
+        assert!(
+            !metadata.file_type().is_symlink(),
+            "LLM GGUF must not be a symlink"
+        );
+        GgufFile::open(path).expect("open VAST LLM GGUF")
+    }
+
+    /// VAST-only: bind the real converted component without executing it.
+    #[test]
+    #[ignore = "requires the authenticated VAST CosyVoice2 LLM GGUF"]
+    fn vast_real_llm_gguf_binds_exact_component() {
+        let file = required_vast_gguf();
+        assert_eq!(file.tensors().len(), TENSOR_COUNT);
+        let bound = BoundCosyVoice2Llm::from_gguf(&file).expect("strict LLM bind");
+        assert_eq!(bound.backbone().config().vocab_size, VOCAB_SIZE as usize);
+        assert_eq!(bound.backbone().config().n_layer, N_LAYER as usize);
+        bound
+            .speech_lm()
+            .expect("wrapper tensors are finite and exact");
+    }
 }

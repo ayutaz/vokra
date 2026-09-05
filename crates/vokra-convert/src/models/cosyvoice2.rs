@@ -184,6 +184,10 @@ pub(crate) fn convert_cosyvoice2_llm_file(
     license: Option<&str>,
 ) -> Result<ConvertCosyVoice2LlmReport, ConvertError> {
     require_explicit_license(license)?;
+    require_regular_file(input, "prepared LLM safetensors")?;
+    require_regular_file(config, CONFIG_FILE)?;
+    require_regular_file(qwen_config, QWEN_CONFIG_FILE)?;
+    require_absent_output(output)?;
     let input_bytes = std::fs::read(input).map_err(ConvertError::Io)?;
     let config_bytes = std::fs::read(config).map_err(ConvertError::Io)?;
     let qwen_config_bytes = std::fs::read(qwen_config).map_err(ConvertError::Io)?;
@@ -200,6 +204,40 @@ pub(crate) fn convert_cosyvoice2_llm_file(
         metadata_count: builder.metadata_count(),
         output_bytes: output_bytes.len() as u64,
     })
+}
+
+/// Validate the VAST handoff paths before reading any payload.  Symlinks are
+/// rejected so an operator cannot redirect an authenticated sidecar or input
+/// after the path contract has been reviewed.
+fn require_regular_file(path: &Path, label: &str) -> Result<(), ConvertError> {
+    if !path.is_absolute() {
+        return Err(ConvertError::Usage(format!(
+            "{ARCH} LLM: {label} path must be absolute"
+        )));
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(ConvertError::Io)?;
+    let file_type = metadata.file_type();
+    if !file_type.is_file() || file_type.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "{ARCH} LLM: {label} must be a regular non-symlink file"
+        )));
+    }
+    Ok(())
+}
+
+fn require_absent_output(path: &Path) -> Result<(), ConvertError> {
+    if !path.is_absolute() {
+        return Err(ConvertError::Usage(
+            "cosyvoice2 LLM: output path must be absolute".to_owned(),
+        ));
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(ConvertError::Usage(
+            "cosyvoice2 LLM: output path must be absent (no replacement)".to_owned(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ConvertError::Io(error)),
+    }
 }
 
 fn require_explicit_license(license: Option<&str>) -> Result<(), ConvertError> {
@@ -608,6 +646,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vokra_core::gguf::GgufFile;
 
     #[test]
     fn authenticated_manifest_has_exact_295_tensor_contract() {
@@ -707,5 +746,115 @@ mod tests {
             convert_cosyvoice2_llm_file(&input, &config, &qwen_config, &output, Some("apache-2.0"));
         assert!(!output.exists(), "validation failure must leave no output");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vast_handoff_paths_fail_closed_for_relative_missing_symlink_and_output() {
+        let root =
+            std::env::temp_dir().join(format!("vokra-cosyvoice2-llm-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).expect("temporary test directory");
+        let regular = root.join("prepared.safetensors");
+        std::fs::write(&regular, b"placeholder").expect("regular input");
+        assert!(require_regular_file(Path::new("relative.safetensors"), "input").is_err());
+        assert!(require_regular_file(&root.join("missing"), "input").is_err());
+        #[cfg(unix)]
+        {
+            let link = root.join("link.safetensors");
+            std::os::unix::fs::symlink(&regular, &link).expect("symlink");
+            assert!(require_regular_file(&link, "input").is_err());
+        }
+        let existing = root.join("existing.gguf");
+        std::fs::write(&existing, b"keep").expect("existing output");
+        assert!(require_absent_output(&existing).is_err());
+        assert!(require_absent_output(Path::new("relative.gguf")).is_err());
+        assert!(require_absent_output(&root.join("new.gguf")).is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn required_vast_path(name: &str) -> std::path::PathBuf {
+        let value = std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"));
+        let path = std::path::PathBuf::from(value);
+        require_regular_file(&path, name).unwrap_or_else(|error| panic!("{name}: {error}"));
+        path
+    }
+
+    fn required_vast_license(name: &str) -> String {
+        let license = std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"));
+        require_explicit_license(Some(&license)).unwrap_or_else(|error| panic!("{name}: {error}"));
+        license
+    }
+
+    fn validate_vast_prepared_manifest(path: &Path, component: &str, input: &Path) {
+        let bytes = std::fs::read(path).expect("prepared manifest");
+        let root = crate::json::parse(&bytes).expect("prepared manifest JSON");
+        let string = |object: &vokra_core::json::JsonValue, key: &str| {
+            object
+                .get(key)
+                .and_then(vokra_core::json::JsonValue::as_str)
+        };
+        assert_eq!(
+            string(&root, "format"),
+            Some("vokra-cosyvoice2-component-prepared-safetensors-v1")
+        );
+        assert_eq!(string(&root, "status"), Some("PREPARED_SAFETENSORS_READY"));
+        assert_eq!(string(&root, "component"), Some(component));
+        let output_record = root.get("output").expect("prepared output record");
+        assert_eq!(string(output_record, "path"), input.to_str());
+        assert_eq!(
+            output_record
+                .get("bytes")
+                .and_then(vokra_core::json::JsonValue::as_u64),
+            Some(std::fs::metadata(input).unwrap().len())
+        );
+        let sha = crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(
+            &std::fs::read(input).expect("prepared input"),
+        ));
+        assert_eq!(string(output_record, "sha256"), Some(sha.as_str()));
+        let execution = root.get("execution").expect("execution contract");
+        assert_eq!(string(execution, "model_execution"), Some("NOT_RUN"));
+        assert_eq!(string(execution, "torch_import"), Some("NOT_RUN"));
+        assert_eq!(string(execution, "publication"), Some("NO_UPLOAD"));
+    }
+
+    /// VAST-only: converts one authenticated prepared component and leaves
+    /// bind-only verification to the matching model-crate ignored test.
+    #[test]
+    #[ignore = "requires the authenticated VAST prepared CosyVoice2 LLM artifact"]
+    fn vast_real_prepared_llm_conversion() {
+        let input = required_vast_path("VOKRA_COSYVOICE2_LLM_PREPARED");
+        let config = required_vast_path("VOKRA_COSYVOICE2_LLM_CONFIG");
+        let qwen_config = required_vast_path("VOKRA_COSYVOICE2_LLM_QWEN_CONFIG");
+        let manifest = required_vast_path("VOKRA_COSYVOICE2_LLM_PREPARED_MANIFEST");
+        validate_vast_prepared_manifest(&manifest, "llm", &input);
+        let license = required_vast_license("VOKRA_COSYVOICE2_LLM_LICENSE");
+        let output = std::path::PathBuf::from(
+            std::env::var("VOKRA_COSYVOICE2_LLM_OUTPUT")
+                .expect("VOKRA_COSYVOICE2_LLM_OUTPUT is required"),
+        );
+        require_absent_output(&output).expect("LLM output must be an absent absolute path");
+        let report =
+            convert_cosyvoice2_llm_file(&input, &config, &qwen_config, &output, Some(&license))
+                .expect("VAST prepared LLM conversion");
+        let file = GgufFile::open(&output).expect("converted LLM GGUF");
+        assert_eq!(file.tensors().len(), TENSOR_COUNT);
+        assert_eq!(report.written, TENSOR_COUNT);
+        assert_eq!(
+            report.output_bytes,
+            std::fs::metadata(&output).unwrap().len()
+        );
+        assert_eq!(
+            file.get(KEY_COMPONENT).and_then(GgufMetadataValue::as_str),
+            Some("llm")
+        );
+        assert_eq!(
+            file.get(KEY_COMPOSITE_STATUS)
+                .and_then(GgufMetadataValue::as_str),
+            Some("INSPECTION_ONLY")
+        );
+        assert!(
+            manifest.is_file(),
+            "manifest was validated as a regular file"
+        );
     }
 }

@@ -6250,4 +6250,28 @@ mod tests {
                 .contains("outside the authenticated flow component")
         );
     }
+
+    fn required_vast_gguf() -> GgufFile {
+        let value = std::env::var("VOKRA_COSYVOICE2_FLOW_GGUF")
+            .expect("VOKRA_COSYVOICE2_FLOW_GGUF is required");
+        let path = std::path::PathBuf::from(value);
+        assert!(path.is_absolute(), "flow GGUF path must be absolute");
+        let metadata = std::fs::symlink_metadata(&path).expect("flow GGUF must exist");
+        assert!(metadata.file_type().is_file(), "flow GGUF must be regular");
+        assert!(
+            !metadata.file_type().is_symlink(),
+            "flow GGUF must not be a symlink"
+        );
+        GgufFile::open(path).expect("open VAST flow GGUF")
+    }
+
+    /// VAST-only: bind the real converted component without executing it.
+    #[test]
+    #[ignore = "requires the authenticated VAST CosyVoice2 flow GGUF"]
+    fn vast_real_flow_gguf_binds_exact_component() {
+        let file = required_vast_gguf();
+        assert_eq!(file.tensors().len(), FLOW_TENSOR_COUNT);
+        let bound = FlowWeights::bind(&file).expect("strict flow bind");
+        assert_eq!(bound.file().tensors().len(), FLOW_TENSOR_COUNT);
+    }
 }
