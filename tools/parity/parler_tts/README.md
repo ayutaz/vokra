@@ -89,7 +89,13 @@ checkpoint or building Cargo. The audit is VAST/Linux x86_64-only and uses
 name/version multiset, package LICENSE/LICENCE/COPYING/NOTICE/COPYRIGHT bytes and hashes, and native ELF
 `readelf -d` `NEEDED` entries. It fetches only the exact `LICENSE` paths for the
 Parler source, two pinned models, and DAC revision. Missing or redirected
-non-license paths are factual blockers, and no license class is inferred from
-the returned bytes. The audit can inspect only an environment synchronized by a
+non-license paths are factual blockers, except that a 404 on either of the two
+model `LICENSE` paths may use the checked-in, bounded HF model-info fallback.
+That fallback authenticates the exact repo/revision/`sha`, public/non-gated,
+enabled (`disabled=false`) flags, `cardData.license=apache-2.0`, and an exact
+tree with no license-like file. It is not enabled for the source or DAC identity; a missing DAC
+checkpoint LICENSE therefore remains blocked, and the official DAC code
+license is not inferred as a weight license. No license class is inferred from
+raw LICENSE bytes. The audit can inspect only an environment synchronized by a
 separately authorized, named VAST job; it does not download weights, import
 model/Torch code, or invoke Cargo.

@@ -31,7 +31,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
+from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import tomllib
@@ -58,11 +59,24 @@ HF_LICENSE_HOSTS = {
     "cdn-lfs.huggingface.co",
     "cdn-lfs-us-1.hf.co",
 }
+HF_MODEL_INFO_HOSTS = {"huggingface.co", "hf.co"}
+MAX_MODEL_INFO_BYTES = 2 * 1024 * 1024
+MAX_MODEL_INFO_REDIRECTS = 4
+MODEL_METADATA_SCHEMA = "vokra-parler-tts-hf-model-metadata-v1"
+MODEL_INFO_REQUIRED_KEYS = {"id", "sha", "private", "gated", "disabled", "cardData", "siblings"}
 PYPI_FILE_HOST = "files.pythonhosted.org"
 
 
 class AuditError(ValueError):
     """A fail-closed contract or factual environment error."""
+
+
+class LicensePathError(AuditError):
+    """A fixed LICENSE path could not be fetched, with HTTP status if known."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -97,17 +111,18 @@ def identity(name: str, version: str) -> str:
     return f"{normalized_name(name)}=={normalized_version(version)}"
 
 
-def load_json(path: Path) -> Any:
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise AuditError(f"duplicate JSON key: {key}")
-            result[key] = value
-        return result
+def reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise AuditError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
+
+def load_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_json_keys)
     except (OSError, UnicodeError, json.JSONDecodeError, AuditError) as exc:
         raise AuditError(f"cannot read JSON {path}: {exc}") from exc
 
@@ -153,6 +168,8 @@ def _contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, 
         raise AuditError("Parler model variant identities drifted from the reviewed manifest")
     if manifest.get("dac_identity") != preflight_gate.DAC_IDENTITY:
         raise AuditError("Parler DAC identity drifted from the reviewed manifest")
+    if manifest.get("model_metadata_fallback") != preflight_gate.MODEL_METADATA_FALLBACK:
+        raise AuditError("Parler HF model-metadata fallback contract drifted from the reviewed manifest")
     return project_data, lock_data, manifest, project_bytes, lock_bytes
 
 
@@ -810,8 +827,13 @@ def _fetch_license(
                 body = response.read(MAX_LICENSE_BYTES + 1)
         except AuditError:
             raise
+        except HTTPError as exc:
+            raise LicensePathError(
+                f"exact LICENSE path is not retrievable: HTTP {exc.code}",
+                status_code=exc.code,
+            ) from exc
         except Exception as exc:  # noqa: BLE001 - network failures become factual blockers
-            raise AuditError(f"exact LICENSE path is not retrievable: {exc}") from exc
+            raise LicensePathError(f"exact LICENSE path is not retrievable: {exc}") from exc
     else:
         final_url, body = fetcher(requested_url)
         _validate_license_url(item, final_url)
@@ -834,6 +856,160 @@ def _fetch_license(
         "sha256": sha256_bytes(body),
         "content_base64": base64.b64encode(body).decode("ascii"),
         "license_classification": "UNCLASSIFIED_PRIMARY_SOURCE_BYTES_ONLY",
+    }
+
+
+def _model_info_url(item: dict[str, Any]) -> str:
+    return f"https://huggingface.co/api/models/{item['repo']}?revision={item['revision']}"
+
+
+def _model_info_entry(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the narrow metadata fallback contract for one fixed model.
+
+    The fallback is intentionally unavailable for source and DAC identities:
+    their license evidence must remain an authenticated LICENSE/provenance
+    path, rather than treating an unrelated API card as a weight license.
+    """
+    if item.get("kind") != "huggingface":
+        return None
+    fallback = preflight_gate.MODEL_METADATA_FALLBACK
+    for entry in fallback["entries"]:
+        if entry["repo"] == item.get("repo") and entry["revision"] == item.get("revision"):
+            return entry
+    return None
+
+
+def _validate_model_info_url(item: dict[str, Any], url: str, *, initial: bool = False) -> None:
+    expected = _model_info_url(item)
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise AuditError(f"HF model-info URL has an invalid port: {url}") from exc
+    if parsed.scheme != "https" or parsed.hostname not in HF_MODEL_INFO_HOSTS or port not in (None, 443):
+        raise AuditError(f"non-allow-listed HF model-info host or scheme: {url}")
+    if parsed.username is not None or parsed.password is not None:
+        raise AuditError(f"HF model-info URL contains userinfo: {url}")
+    if parsed.fragment:
+        raise AuditError(f"HF model-info URL contains a fragment: {url}")
+    expected_parts = urlsplit(expected)
+    if initial and url != expected:
+        raise AuditError(f"initial HF model-info URL is not the generated fixed URL: {url}")
+    if parsed.path != expected_parts.path:
+        raise AuditError(f"HF model-info URL changed the exact repository path: {url}")
+    if parse_qsl(parsed.query, keep_blank_values=True) != [("revision", item["revision"])] or parsed.query != expected_parts.query:
+        raise AuditError(f"HF model-info URL does not carry the exact revision query: {url}")
+
+
+class _ModelInfoRedirects(HTTPRedirectHandler):
+    def __init__(self, item: dict[str, Any], trace: list[str]) -> None:
+        super().__init__()
+        self.item = item
+        self.trace = trace
+
+    def redirect_request(self, request: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Request | None:
+        if len(self.trace) - 1 >= MAX_MODEL_INFO_REDIRECTS:
+            raise AuditError("HF model-info redirect chain exceeds the bounded limit")
+        _validate_model_info_url(self.item, newurl)
+        self.trace.append(newurl)
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
+def _validate_model_info_payload(payload: Any, expected: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+    if not isinstance(payload, dict) or not MODEL_INFO_REQUIRED_KEYS.issubset(payload):
+        raise AuditError("HF model-info response is missing required schema fields")
+    if payload.get("id") != expected["repo"] or payload.get("sha") != expected["sha"]:
+        raise AuditError("HF model-info response identity does not match the pinned repo/revision")
+    if payload.get("private") is not False or payload.get("gated") is not False or payload.get("disabled") is not False:
+        raise AuditError("HF model-info response is not public, non-gated, and enabled")
+    card_data = payload.get("cardData")
+    if not isinstance(card_data, dict) or card_data.get("license") != expected["card_data_license"]:
+        raise AuditError("HF model-info cardData.license does not match the pinned contract")
+    siblings = payload.get("siblings")
+    if not isinstance(siblings, list) or not siblings:
+        raise AuditError("HF model-info response has no exact repository tree")
+    names: list[str] = []
+    for sibling in siblings:
+        if not isinstance(sibling, dict) or set(sibling) != {"rfilename"} or not isinstance(sibling["rfilename"], str):
+            raise AuditError("HF model-info sibling schema is not the unexpanded exact tree shape")
+        name = sibling["rfilename"]
+        if not name or "\x00" in name or name.startswith("/") or "\\" in name or any(part in {"", ".", ".."} for part in name.split("/")):
+            raise AuditError(f"HF model-info tree contains an unsafe filename: {name!r}")
+        names.append(name)
+    if len(set(names)) != len(names):
+        raise AuditError("HF model-info tree contains duplicate filenames")
+    license_files = sorted(
+        name for name in names
+        if Path(name).name.casefold() in LICENSE_FILE_NAMES
+        or any(token in Path(name).name.casefold() for token in ("license", "licence", "copying", "notice", "copyright"))
+    )
+    if license_files:
+        raise AuditError("HF model-info exact tree contains license-like files; metadata fallback is not applicable")
+    return sorted(names), card_data
+
+
+def _fetch_model_info(
+    item: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None
+) -> dict[str, Any]:
+    expected = _model_info_entry(item)
+    if expected is None:
+        raise AuditError("HF model-info fallback is not allow-listed for this identity")
+    requested_url = _model_info_url(item)
+    _validate_model_info_url(item, requested_url, initial=True)
+    trace = [requested_url]
+    if fetcher is None:
+        opener = build_opener(_ModelInfoRedirects(item, trace))
+        request = Request(requested_url, headers={"Accept": "application/json", "User-Agent": "vokra-parler-tts-audit/1"})
+        try:
+            with opener.open(request, timeout=30) as response:  # noqa: S310 - exact host/path/query are validated
+                final_url = response.geturl()
+                _validate_model_info_url(item, final_url)
+                if final_url not in trace:
+                    trace.append(final_url)
+                content_length = response.headers.get("Content-Length")
+                if content_length and content_length.isdigit() and int(content_length) > MAX_MODEL_INFO_BYTES:
+                    raise AuditError("HF model-info Content-Length exceeds the bounded response size")
+                body = response.read(MAX_MODEL_INFO_BYTES + 1)
+        except AuditError:
+            raise
+        except HTTPError as exc:
+            raise AuditError(f"HF model-info endpoint is not retrievable: HTTP {exc.code}") from exc
+        except Exception as exc:  # noqa: BLE001 - network failures become factual blockers
+            raise AuditError(f"HF model-info endpoint is not retrievable: {exc}") from exc
+    else:
+        final_url, body = fetcher(requested_url)
+        _validate_model_info_url(item, final_url)
+        if final_url not in trace:
+            trace.append(final_url)
+    if not isinstance(body, bytes) or len(body) > MAX_MODEL_INFO_BYTES:
+        raise AuditError("HF model-info response is not bounded bytes")
+    try:
+        payload = json.loads(body.decode("utf-8"), object_pairs_hook=reject_duplicate_json_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise AuditError(f"HF model-info response is not strict JSON: {exc}") from exc
+    names, card_data = _validate_model_info_payload(payload, expected)
+    return {
+        "schema": MODEL_METADATA_SCHEMA,
+        "repo": expected["repo"],
+        "revision": expected["revision"],
+        "sha": payload["sha"],
+        "requested_url": requested_url,
+        "final_url": final_url,
+        "url_trace": trace,
+        "response_bytes": len(body),
+        "response_sha256": sha256_bytes(body),
+        "id": payload["id"],
+        "private": payload["private"],
+        "gated": payload["gated"],
+        "disabled": payload["disabled"],
+        "card_data_license": card_data["license"],
+        "tree": {
+            "file_count": len(names),
+            "files": names,
+            "license_files": [],
+            "files_sha256": sha256_bytes(canonical_json(names).encode()),
+        },
+        "license_classification": "AUTHENTICATED_HF_CARD_DATA_ONLY",
     }
 
 
@@ -871,13 +1047,62 @@ def _fixed_license_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def audit_model_licenses(
-    manifest: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None
+    manifest: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+    metadata_fetcher: Callable[[str], tuple[str, bytes]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     files: list[dict[str, Any]] = []
     failures: list[str] = []
     for item in _fixed_license_items(manifest):
         try:
             files.append(_fetch_license(item, fetcher))
+        except LicensePathError as exc:
+            fallback = _model_info_entry(item)
+            if exc.status_code == 404 and fallback is not None:
+                try:
+                    metadata = _fetch_model_info(item, metadata_fetcher)
+                except AuditError as metadata_exc:
+                    files.append({
+                        "id": item["id"],
+                        "kind": item["kind"],
+                        "repo": item["repo"],
+                        "revision": item["revision"],
+                        "claimed_license": item["claimed_license"],
+                        "requested_url": _license_url(item),
+                        "final_url": None,
+                        "acquired_file": None,
+                        "status": "BLOCKED_FACTUAL_LICENSE_PATH",
+                        "error": str(exc),
+                        "metadata_fallback": {"status": "BLOCKED", "error": str(metadata_exc)},
+                    })
+                    failures.append(f"{item['id']}: {exc}; HF model-info fallback: {metadata_exc}")
+                else:
+                    files.append({
+                        "id": item["id"],
+                        "kind": item["kind"],
+                        "repo": item["repo"],
+                        "revision": item["revision"],
+                        "claimed_license": item["claimed_license"],
+                        "requested_url": _license_url(item),
+                        "final_url": None,
+                        "acquired_file": None,
+                        "status": "PASS_METADATA_FALLBACK",
+                        "error": str(exc),
+                        "metadata_fallback": metadata,
+                    })
+                continue
+            files.append({
+                "id": item["id"],
+                "kind": item["kind"],
+                "repo": item["repo"],
+                "revision": item["revision"],
+                "claimed_license": item["claimed_license"],
+                "requested_url": _license_url(item),
+                "final_url": None,
+                "acquired_file": None,
+                "status": "BLOCKED_FACTUAL_LICENSE_PATH",
+                "error": str(exc),
+            })
+            failures.append(f"{item['id']}: {exc}")
         except AuditError as exc:
             files.append({
                 "id": item["id"],
@@ -974,12 +1199,18 @@ def audit_environment(
         "fixed_source_model_dac_identities": _fixed_license_items(manifest),
         "model_license_files": model_license_files,
         "model_acquisition": {
-            "scope": "fixed source/model/DAC LICENSE paths only",
-            "policy": "allow-listed exact primary-source LICENSE-only fetch",
+            "scope": "fixed source/model/DAC LICENSE paths plus exact HF model-info metadata fallback",
+            "policy": "allow-listed exact primary-source LICENSE fetch, with model-only 404 fallback to authenticated HF API metadata",
             "requested_files": [item["requested_url"] for item in model_license_files],
+            "metadata_requests": [
+                item["metadata_fallback"]["requested_url"]
+                for item in model_license_files
+                if isinstance(item.get("metadata_fallback"), dict)
+                and isinstance(item["metadata_fallback"].get("requested_url"), str)
+            ],
             "non_license_requests": [],
             "non_license_files": [],
-            "proof": "audit code has no model-weight acquisition path and imports no model/Torch code",
+            "proof": "audit code has no model-weight acquisition path and imports no model/Torch code; HF metadata responses are bounded JSON only",
         },
         "failures": sorted(set(failures)),
     }
@@ -993,7 +1224,7 @@ def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
             "schema": SCHEMA,
             "status": "BLOCKED",
             "environment": {"model_code_imported": False, "cargo_invoked": False},
-            "model_acquisition": {"requested_files": [], "non_license_requests": [], "non_license_files": []},
+            "model_acquisition": {"requested_files": [], "metadata_requests": [], "non_license_requests": [], "non_license_files": []},
             "failures": [str(exc)],
         }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1076,6 +1307,91 @@ def self_test() -> int:
         pass
     else:
         raise AssertionError("accepted an over-sized LICENSE response")
+
+    # A model LICENSE 404 may use only the exact, bounded HF model-info
+    # response.  Source and DAC identities are deliberately not eligible for
+    # this fallback, so a missing DAC LICENSE remains a factual blocker.
+    model_item = items[1]
+    expected_model = _model_info_entry(model_item)
+    assert expected_model is not None
+    model_payload = {
+        "id": expected_model["repo"],
+        "sha": expected_model["sha"],
+        "private": False,
+        "gated": False,
+        "disabled": False,
+        "cardData": {"license": "apache-2.0"},
+        "siblings": [{"rfilename": "config.json"}, {"rfilename": "model.safetensors"}],
+    }
+    model_body = canonical_json(model_payload).encode()
+    model_result = _fetch_model_info(model_item, lambda url: (url, model_body))
+    assert model_result["schema"] == MODEL_METADATA_SCHEMA
+    assert model_result["repo"] == model_item["repo"] and model_result["sha"] == model_item["revision"]
+    assert model_result["tree"]["license_files"] == []
+    assert model_result["license_classification"] == "AUTHENTICATED_HF_CARD_DATA_ONLY"
+    short_host = _model_info_url(model_item).replace("https://huggingface.co", "https://hf.co", 1)
+    assert _fetch_model_info(model_item, lambda _url: (short_host, model_body))["final_url"] == short_host
+    for unsafe in (
+        _model_info_url(model_item).replace("huggingface.co", "evil.example", 1),
+        _model_info_url(model_item).replace(model_item["revision"], "0" * 40, 1),
+        _model_info_url(model_item) + "&extra=1",
+        _model_info_url(model_item).replace("https://", "https://audit-user@", 1),
+        _model_info_url(model_item) + "#fragment",
+    ):
+        try:
+            _validate_model_info_url(model_item, unsafe)
+        except AuditError:
+            pass
+        else:
+            raise AssertionError(f"accepted unsafe HF model-info URL: {unsafe}")
+    try:
+        _fetch_model_info(model_item, lambda url: (url, b"{}"))
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("accepted an incomplete HF model-info schema")
+    disabled_model = dict(model_payload)
+    disabled_model["disabled"] = True
+    try:
+        _fetch_model_info(model_item, lambda url: (url, canonical_json(disabled_model).encode()))
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("accepted a disabled HF model-info response")
+    licensed_tree = dict(model_payload)
+    licensed_tree["siblings"] = [{"rfilename": "LICENSE"}]
+    try:
+        _fetch_model_info(model_item, lambda url: (url, canonical_json(licensed_tree).encode()))
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("accepted an HF model-info tree containing LICENSE")
+    try:
+        _fetch_model_info(model_item, lambda url: (url, b"x" * (MAX_MODEL_INFO_BYTES + 1)))
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("accepted an over-sized HF model-info response")
+
+    def missing_model_license(url: str) -> tuple[str, bytes]:
+        if "huggingface.co/" in url:
+            raise LicensePathError("exact LICENSE path is not retrievable: HTTP 404", status_code=404)
+        return url, body
+
+    def model_info_fetcher(url: str) -> tuple[str, bytes]:
+        matching = next(entry for entry in preflight_gate.MODEL_METADATA_FALLBACK["entries"] if entry["repo"] in url)
+        payload = {
+            "id": matching["repo"], "sha": matching["sha"], "private": False, "gated": False, "disabled": False,
+            "cardData": {"license": matching["card_data_license"]},
+            "siblings": [{"rfilename": "config.json"}, {"rfilename": "model.safetensors"}],
+        }
+        return url, canonical_json(payload).encode()
+
+    fallback_files, fallback_failures = audit_model_licenses(manifest, missing_model_license, model_info_fetcher)
+    assert [item.get("status", "PASS") for item in fallback_files] == [
+        "PASS", "PASS_METADATA_FALLBACK", "PASS_METADATA_FALLBACK", "BLOCKED_FACTUAL_LICENSE_PATH"
+    ]
+    assert len(fallback_failures) == 1 and "dac_44khZ_8kbps" in fallback_failures[0]
 
     def synthetic_tar(entries: list[tuple[str, bytes, str]]) -> bytes:
         output = io.BytesIO()

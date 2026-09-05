@@ -42,6 +42,7 @@ REVIEW_PLACEHOLDERS = {
 MANIFEST_KEYS = {
     "gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "review_rows",
     "review_rows_sha256", "source_identity", "variants", "dac_identity", "reference_route",
+    "model_metadata_fallback",
     "model_reviews", "approval_scope_sha256", "operator_approval",
 }
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "manifest", "package"}
@@ -133,6 +134,32 @@ MODEL_REVIEW_IDENTITIES = [
     "parler-tts-mini-multilingual-v1.1@11b27d57855dec1ce0914ba1f12363bf2ea75ba3",
     "dac_44khZ_8kbps@5cf6b8ad50fbb17e52c341410a1d00083201b6a9",
 ]
+MODEL_METADATA_FALLBACK = {
+    "schema": "vokra-parler-tts-hf-model-metadata-v1",
+    "max_response_bytes": 2 * 1024 * 1024,
+    "max_redirects": 4,
+    "api_hosts": ["huggingface.co", "hf.co"],
+    "entries": [
+        {
+            "repo": "parler-tts/parler-tts-mini-v1",
+            "revision": "0392b9451a601e528fd863bbb0598431fee810d9",
+            "sha": "0392b9451a601e528fd863bbb0598431fee810d9",
+            "card_data_license": "apache-2.0",
+            "private": False,
+            "gated": False,
+            "disabled": False,
+        },
+        {
+            "repo": "parler-tts/parler-tts-mini-multilingual-v1.1",
+            "revision": "11b27d57855dec1ce0914ba1f12363bf2ea75ba3",
+            "sha": "11b27d57855dec1ce0914ba1f12363bf2ea75ba3",
+            "card_data_license": "apache-2.0",
+            "private": False,
+            "gated": False,
+            "disabled": False,
+        },
+    ],
+}
 
 
 def digest_bytes(value: bytes) -> str:
@@ -354,6 +381,8 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         return blocked("official source identity drifted")
     if manifest.get("variants") != VARIANTS or manifest.get("dac_identity") != DAC_IDENTITY:
         return blocked("fixed model or DAC identities drifted")
+    if manifest.get("model_metadata_fallback") != MODEL_METADATA_FALLBACK:
+        return blocked("HF model-metadata fallback contract drifted")
     route = manifest.get("reference_route")
     if route != {
         "entrypoint": "ParlerTTSForConditionalGeneration",
@@ -401,7 +430,8 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         "lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256,
         "package_rows_sha256": manifest["package_rows_sha256"], "package_rows": rows, "review_rows": review_rows,
         "source_identity": manifest["source_identity"], "variants": VARIANTS,
-        "dac_identity": DAC_IDENTITY, "reference_route": route,
+        "dac_identity": DAC_IDENTITY, "model_metadata_fallback": MODEL_METADATA_FALLBACK,
+        "reference_route": route,
         "model_reviews": model_reviews,
     }
     scope_sha256 = canonical_digest(scope)
@@ -555,7 +585,8 @@ def self_test() -> int:
         scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256,
                  "package_rows_sha256": approved["package_rows_sha256"], "package_rows": test_rows, "review_rows": approved["review_rows"],
                  "source_identity": approved["source_identity"], "variants": VARIANTS,
-                 "dac_identity": DAC_IDENTITY, "reference_route": approved["reference_route"],
+                 "dac_identity": DAC_IDENTITY, "model_metadata_fallback": MODEL_METADATA_FALLBACK,
+                 "reference_route": approved["reference_route"],
                  "model_reviews": approved["model_reviews"]}
         approved["approval_scope_sha256"] = canonical_digest(scope)
         approved["operator_approval"] = {"schema": "v1", "decision": "APPROVED", "signer": "self-test", "digest": approved["approval_scope_sha256"]}
@@ -586,6 +617,7 @@ def self_test() -> int:
             "model": lambda value: value["variants"][0].update(upstream_revision="0" * 40),
             "source": lambda value: value["source_identity"].update(revision="0" * 40),
             "dac": lambda value: value["dac_identity"].update(revision="0" * 40),
+            "model-metadata": lambda value: value["model_metadata_fallback"]["entries"][0].update(sha="0" * 40),
             "route": lambda value: value["reference_route"].update(transformers="0.0.0"),
             "scope": lambda value: value.update(approval_scope_sha256="0" * 64),
             "signer": lambda value: value["operator_approval"].update(signer="other"),
