@@ -2136,6 +2136,107 @@ kernel void vokra_sinegen_deterministic_channel_major_f32(
     }
 }
 
+// CosyVoice2's non-22050-Hz source path (`SineGen2`).  This intentionally
+// stays a single device-resident pass: each harmonic thread performs the
+// align_corners=False linear downsample, sequential cumulative phase, and
+// align_corners=False linear upsample without a host readback or an old
+// SineGen fallback.  `t` is exactly `t_down * scale` by the Rust-side shape
+// contract.
+struct Sinegen2DeterministicDims {
+    uint t;
+    uint h1;
+    uint scale;
+    float samp_rate_f;
+    float sine_amp;
+    float voiced_threshold;
+};
+
+kernel void vokra_sinegen2_deterministic_channel_major_f32(
+    device const float*                    f0    [[buffer(0)]],
+    device float*                          out   [[buffer(1)]],
+    constant Sinegen2DeterministicDims&    d     [[buffer(2)]],
+    uint                                   gid   [[thread_position_in_grid]])
+{
+    const uint harmonic_index = gid;
+    if (harmonic_index >= d.h1 || d.scale == 0u) {
+        return;
+    }
+    const uint t_down = d.t / d.scale;
+    if (t_down == 0u || t_down * d.scale != d.t) {
+        return;
+    }
+    const float scale = float(d.scale);
+    const float inv_scale = 1.0f / scale;
+    const float harmonic = float(harmonic_index) + 1.0f;
+    const float inv_sr = 1.0f / d.samp_rate_f;
+    const float two_pi = 6.28318530717958647692f;
+    float accumulated = 0.0f;
+    uint next_down = 0u;
+    const uint last_down = t_down - 1u;
+    uint cached_phase_index0 = 0xffffffffu;
+    uint cached_phase_index1 = 0xffffffffu;
+    float cached_phase0 = 0.0f;
+    float cached_phase1 = 0.0f;
+
+    for (uint j = 0u; j < d.t; ++j) {
+        const float source = max((float(j) + 0.5f) * inv_scale - 0.5f, 0.0f);
+        const uint left = min((uint)source, last_down);
+        const uint right = min(left + 1u, last_down);
+        float phase_left = 0.0f;
+        float phase_right = 0.0f;
+        if (left == cached_phase_index0) {
+            phase_left = cached_phase0;
+        }
+        if (left == cached_phase_index1) {
+            phase_left = cached_phase1;
+        }
+        if (right == cached_phase_index0) {
+            phase_right = cached_phase0;
+        }
+        if (right == cached_phase_index1) {
+            phase_right = cached_phase1;
+        }
+
+        // Advance the cumulative phase only as far as the two interpolation
+        // samples needed by this output point.  The radian source is itself
+        // interpolated with half-pixel coordinates, matching torch's
+        // `F.interpolate(..., mode="linear", align_corners=False)`.
+        while (next_down <= right) {
+            const float rad_source = max(
+                (float(next_down) + 0.5f) * scale - 0.5f,
+                0.0f);
+            const uint rad_left = min((uint)rad_source, d.t - 1u);
+            const uint rad_right = min(rad_left + 1u, d.t - 1u);
+            const float rad_fraction = rad_source - float(rad_left);
+            const float rad_left_value = (f0[rad_left] * harmonic) * inv_sr;
+            const float rad_right_value = (f0[rad_right] * harmonic) * inv_sr;
+            const float rad = (1.0f - rad_fraction) *
+                    (rad_left_value - floor(rad_left_value)) +
+                rad_fraction * (rad_right_value - floor(rad_right_value));
+            accumulated += rad;
+            const float phase = accumulated * two_pi * scale;
+            cached_phase_index0 = cached_phase_index1;
+            cached_phase0 = cached_phase1;
+            cached_phase_index1 = next_down;
+            cached_phase1 = phase;
+            if (next_down == left) {
+                phase_left = phase;
+            }
+            if (next_down == right) {
+                phase_right = phase;
+            }
+            ++next_down;
+        }
+
+        const float phase_fraction = source - float(left);
+        const float phase_value = (1.0f - phase_fraction) * phase_left +
+            phase_fraction * phase_right;
+        const float uv = f0[j] > d.voiced_threshold ? 1.0f : 0.0f;
+        out[harmonic_index * d.t + j] =
+            d.sine_amp * sin(phase_value) * uv;
+    }
+}
+
 // ---- Vocoder Metal wave common vocoder primitive: anti_aliased_upsample ---
 //
 // Semantics identical to `vokra_ops::anti_aliased_upsample_f32` — polyphase
@@ -3091,6 +3192,20 @@ struct SinegenDeterministicDims {
     voiced_threshold: f32,
 }
 
+/// Vocoder Metal wave CosyVoice2 SineGen2 dimensions
+/// (`setBytes:` index 2).  This is intentionally separate from the legacy
+/// dimensions because the integer source-rate scale is part of the v2 ABI.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Sinegen2DeterministicDims {
+    t: u32,
+    h1: u32,
+    scale: u32,
+    samp_rate_f: f32,
+    sine_amp: f32,
+    voiced_threshold: f32,
+}
+
 /// Vocoder Metal wave common vocoder primitive: anti_aliased_upsample dims
 /// (`setBytes:` index 3). Field order / `u32` widths mirror the MSL
 /// `struct AntiAliasedUpsampleDims`.
@@ -3620,6 +3735,9 @@ pub struct MetalContext {
     sinegen_deterministic_pipeline: Id,
     /// Channel-major `[H+1, T]` deterministic SineGen for HiFTResidentOps.
     sinegen_deterministic_channel_major_pipeline: Id,
+    /// Channel-major `[H+1, T]` deterministic CosyVoice2 SineGen2 for
+    /// non-22050-Hz HiFTResidentOps.
+    sinegen2_deterministic_channel_major_pipeline: Id,
     /// Vocoder Metal wave common vocoder primitive: generic causal polyphase
     /// anti-aliased upsample (`vokra_anti_aliased_upsample_f32`), the GPU
     /// implementation of [`vokra_ops::anti_aliased_upsample_f32`]. BigVGAN's
@@ -3922,6 +4040,17 @@ impl MetalContext {
                 c"vokra_sinegen_deterministic_channel_major_f32",
             )
         }?;
+        // CosyVoice2's non-22050-Hz HiFT source path.  This is a separate
+        // pipeline because its interpolation/cumulative-phase ordering is
+        // not the legacy SineGen kernel's contract.
+        // SAFETY: as above.
+        let sinegen2_deterministic_channel_major_pipeline = unsafe {
+            make_pipeline(
+                device,
+                klib.0,
+                c"vokra_sinegen2_deterministic_channel_major_f32",
+            )
+        }?;
         // SAFETY: as above.
         let anti_aliased_upsample_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_anti_aliased_upsample_f32") }?;
@@ -4032,6 +4161,8 @@ impl MetalContext {
             sinegen_deterministic_pipeline: sinegen_deterministic_pipeline.into_raw(),
             sinegen_deterministic_channel_major_pipeline:
                 sinegen_deterministic_channel_major_pipeline.into_raw(),
+            sinegen2_deterministic_channel_major_pipeline:
+                sinegen2_deterministic_channel_major_pipeline.into_raw(),
             anti_aliased_upsample_pipeline: anti_aliased_upsample_pipeline.into_raw(),
             bigvgan_alias_free_upsample_pipeline: bigvgan_alias_free_upsample_pipeline.into_raw(),
             anti_aliased_downsample_pipeline: anti_aliased_downsample_pipeline.into_raw(),
@@ -9896,6 +10027,83 @@ impl MetalContext {
         })
     }
 
+    /// Device-resident deterministic CosyVoice2 `SineGen2`.  The input is
+    /// nearest-upsampled `[T]`; the output is channel-major `[H+1, T]`.
+    /// Each harmonic thread mirrors the upstream linear downsample,
+    /// cumulative phase, and linear upsample ordering in one kernel, so no
+    /// intermediate tensor is read back to the host.
+    pub fn sinegen2_deterministic_channel_major_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        f0: &MetalDeviceTensor<'_>,
+        samp_rate: u32,
+        harmonic_num: u32,
+        sine_amp: f32,
+        voiced_threshold: f32,
+        upsample_scale: usize,
+    ) -> Result<()> {
+        self.expect_owner(out, "sinegen2_deterministic_channel_major_dev output")?;
+        self.expect_owner(f0, "sinegen2_deterministic_channel_major_dev f0")?;
+        if f0.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "sinegen2_deterministic_channel_major_dev f0 must be non-empty".to_owned(),
+            ));
+        }
+        if samp_rate == 0 || upsample_scale == 0 {
+            return Err(VokraError::InvalidArgument(
+                "sinegen2_deterministic_channel_major_dev sample rate and scale must be > 0"
+                    .to_owned(),
+            ));
+        }
+        if f0.len % upsample_scale != 0 {
+            return Err(VokraError::InvalidArgument(
+                "sinegen2_deterministic_channel_major_dev f0 length must be divisible by scale"
+                    .to_owned(),
+            ));
+        }
+        let h1 = (harmonic_num as usize).checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "sinegen2_deterministic_channel_major_dev harmonic count overflow".to_owned(),
+            )
+        })?;
+        let expected = checked_mul(
+            f0.len,
+            h1,
+            "sinegen2_deterministic_channel_major_dev output",
+        )?;
+        expect_len(
+            "sinegen2_deterministic_channel_major_dev output",
+            out.len,
+            expected,
+        )?;
+        let dims = Sinegen2DeterministicDims {
+            t: checked_u32(f0.len, "sinegen2_deterministic_channel_major_dev time")?,
+            h1: checked_u32(h1, "sinegen2_deterministic_channel_major_dev harmonics")?,
+            scale: checked_u32(
+                upsample_scale,
+                "sinegen2_deterministic_channel_major_dev scale",
+            )?,
+            samp_rate_f: samp_rate as f32,
+            sine_amp,
+            voiced_threshold,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("sinegen2_deterministic_channel_major_dev")?;
+            let (grid, tg) = grid_1d(h1);
+            self.encode_pass(
+                cmd,
+                self.sinegen2_deterministic_channel_major_pipeline,
+                &[&f0.buf, &out.buf],
+                (&dims as *const Sinegen2DeterministicDims).cast::<c_void>(),
+                size_of::<Sinegen2DeterministicDims>(),
+                grid,
+                tg,
+                "sinegen2_deterministic_channel_major_dev",
+            )?;
+            self.commit_and_wait(cmd, "sinegen2_deterministic_channel_major_dev")
+        })
+    }
+
     /// Device-resident HiFT source STFT. The input is `[T]`; the output is
     /// channel-major `[Re F, frames; Im F, frames]`, using periodic Hann,
     /// centered `n_fft/2` reflect padding, backward (unscaled) RFFT, and the
@@ -11447,6 +11655,7 @@ impl Drop for MetalContext {
             release(self.anti_aliased_downsample_pipeline);
             release(self.bigvgan_alias_free_upsample_pipeline);
             release(self.anti_aliased_upsample_pipeline);
+            release(self.sinegen2_deterministic_channel_major_pipeline);
             release(self.sinegen_deterministic_channel_major_pipeline);
             release(self.sinegen_deterministic_pipeline);
             release(self.snake_beta_pipeline);
@@ -13678,10 +13887,89 @@ impl vokra_core::KvQuantDequantGemvOps for MetalContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        GroupNormGroupsArgs, checked_i32, checked_u32, validate_conv_transpose2d, validate_conv2d,
-        validate_group_norm_groups, validate_mixed_bf16_dims, validate_ouve_host_buffers,
-        validate_ouve_params,
+        GroupNormGroupsArgs, MetalContext, checked_i32, checked_u32, validate_conv_transpose2d,
+        validate_conv2d, validate_group_norm_groups, validate_mixed_bf16_dims,
+        validate_ouve_host_buffers, validate_ouve_params,
     };
+
+    #[test]
+    #[ignore = "requires a Metal device; model-free hardware parity test"]
+    fn sinegen2_device_matches_cpu_on_repeated_interpolation_window() {
+        // scale=4 and t_down=2 deliberately gives several output positions
+        // with the same [left=0,right=1] phase window.  This catches a GPU
+        // implementation that retains only one cached phase sample after its
+        // first window, without allocating or loading any model payload.
+        let f0 = [240.0f32, 360.0, 480.0, 600.0, 720.0, 840.0, 960.0, 1080.0];
+        let scale = 4usize;
+        let t = f0.len();
+        let harmonic_num = 1usize;
+        let h1 = harmonic_num + 1;
+        let samp_rate = 24_000.0f32;
+        let sine_amp = 0.1f32;
+        let threshold = 10.0f32;
+        let inv_sr = 1.0f32 / samp_rate;
+        let inv_scale = 1.0f32 / scale as f32;
+        let t_down = t / scale;
+
+        let mut expected = vec![0.0f32; h1 * t];
+        for harmonic_index in 0..h1 {
+            let harmonic = (harmonic_index + 1) as f32;
+            let rad_full: Vec<f32> = f0
+                .iter()
+                .map(|&value| (value * harmonic * inv_sr).rem_euclid(1.0))
+                .collect();
+            let rad_down: Vec<f32> = (0..t_down)
+                .map(|index| {
+                    let source = ((index as f32 + 0.5) * scale as f32 - 0.5).max(0.0);
+                    let left = source as usize;
+                    let right = (left + 1).min(t - 1);
+                    let fraction = source - left as f32;
+                    (1.0 - fraction) * rad_full[left] + fraction * rad_full[right]
+                })
+                .collect();
+            let mut phase = vec![0.0f32; t_down];
+            let mut accumulated = 0.0f32;
+            for (destination, &rad) in phase.iter_mut().zip(&rad_down) {
+                accumulated += rad;
+                *destination = accumulated * 2.0 * std::f32::consts::PI * scale as f32;
+            }
+            for index in 0..t {
+                let source = ((index as f32 + 0.5) * inv_scale - 0.5).max(0.0);
+                let left = source as usize;
+                let right = (left + 1).min(t_down - 1);
+                let fraction = source - left as f32;
+                let phase_value = (1.0 - fraction) * phase[left] + fraction * phase[right];
+                let uv = if f0[index] > threshold { 1.0 } else { 0.0 };
+                expected[harmonic_index * t + index] = sine_amp * phase_value.sin() * uv;
+            }
+        }
+
+        let context = MetalContext::new().expect("test requires a Metal device");
+        let f0_dev = context.upload(&f0).expect("upload f0");
+        let mut output = context.alloc_dev(expected.len()).expect("allocate output");
+        context
+            .sinegen2_deterministic_channel_major_dev(
+                &mut output,
+                &f0_dev,
+                24_000,
+                harmonic_num as u32,
+                sine_amp,
+                threshold,
+                scale,
+            )
+            .expect("run SineGen2");
+        let mut actual = vec![0.0f32; expected.len()];
+        context
+            .download(&output, &mut actual)
+            .expect("download output");
+        assert_eq!(context.readback_count(), 1);
+        for (index, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+            assert!(
+                (actual - expected).abs() <= 5e-5,
+                "sample {index}: {actual} vs {expected}"
+            );
+        }
+    }
 
     #[test]
     fn device_dimension_conversions_fail_closed() {

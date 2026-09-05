@@ -6,6 +6,8 @@
 //!
 //! - `SineGen`     — F0-driven multi-harmonic sine wave source, L163-214.
 //! - `SourceModuleHnNSF` — thin Linear + Tanh mix over `SineGen`, L310-368.
+//! - `SourceModuleHnNSF2` — the 24-kHz HiFT variant using the upstream
+//!   `SineGen2` interpolation path.
 //!
 //! Consumed by [`crate::hiftnet::HiFTGenerator`], which upstream calls
 //! "HiFTNet Generator: Neural Source Filter + ISTFTNet"
@@ -390,6 +392,212 @@ impl SourceModuleHnNSF {
             noise,
             uv: sine_out.uv,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SourceModuleHnNSF2 (upstream SineGen2 / 24-kHz path)
+// ---------------------------------------------------------------------------
+
+/// SourceModuleHnNSF2 (upstream `generator.py`'s 24-kHz source path).
+///
+/// Unlike [`SourceModuleHnNSF`], this variant receives an already nearest-
+/// upsampled F0 sequence.  It computes the harmonic phase at the original
+/// frame rate, linearly downsamples the fractional radian sequence, performs
+/// the cumulative sum, and linearly upsamples the phase back to the source
+/// rate before applying `sin`.  This is the exact `SineGen2` ordering used by
+/// CosyVoice2's `sampling_rate != 22050` branch.
+#[derive(Debug, Clone)]
+pub struct SourceModuleHnNSF2 {
+    cfg: SourceModuleHnNSFConfig,
+    weights: SourceModuleHnNSFWeights,
+}
+
+impl SourceModuleHnNSF2 {
+    /// Builds the 24-kHz source module and validates its linear-head width.
+    pub fn new(cfg: SourceModuleHnNSFConfig, weights: SourceModuleHnNSFWeights) -> Result<Self> {
+        let h1 = cfg.sine_gen.out_channels();
+        if weights.linear_w.len() != h1 {
+            return Err(VokraError::InvalidArgument(format!(
+                "SourceModuleHnNSF2 linear_w must be length {h1} (harmonic_num+1), got {}",
+                weights.linear_w.len(),
+            )));
+        }
+        Ok(Self { cfg, weights })
+    }
+
+    /// Immutable access to this module's source configuration.
+    pub fn config(&self) -> &SourceModuleHnNSFConfig {
+        &self.cfg
+    }
+
+    /// Deterministic 24-kHz source forward.
+    ///
+    /// `f0` is the nearest-upsampled sequence (`T = t_mel * upsample_scale`)
+    /// and `upsample_scale` is the same total factor.  The stochastic phase
+    /// and Gaussian branches of upstream training are intentionally rejected
+    /// here; the runtime's deterministic contract supplies zero phase/noise.
+    pub fn forward(
+        &self,
+        f0: &[f32],
+        upsample_scale: usize,
+        entropy: NsfEntropy,
+    ) -> Result<SourceModuleHnNSFOutput> {
+        if f0.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "SourceModuleHnNSF2 forward: empty f0 sequence".to_owned(),
+            ));
+        }
+        if upsample_scale == 0 {
+            return Err(VokraError::InvalidArgument(
+                "SourceModuleHnNSF2 forward: upsample_scale must be > 0".to_owned(),
+            ));
+        }
+        if !matches!(entropy, NsfEntropy::Deterministic) {
+            return Err(VokraError::UnsupportedOp(
+                "SourceModuleHnNSF2 only supports deterministic phase/noise".to_owned(),
+            ));
+        }
+        let t_full = f0.len();
+        let t_down = t_full / upsample_scale;
+        if t_down == 0 || t_down.checked_mul(upsample_scale) != Some(t_full) {
+            return Err(VokraError::InvalidArgument(format!(
+                "SourceModuleHnNSF2 forward: f0 length {t_full} is not divisible by upsample_scale {upsample_scale}"
+            )));
+        }
+        if self.cfg.sine_gen.samp_rate == 0 {
+            return Err(VokraError::InvalidArgument(
+                "SourceModuleHnNSF2 forward: samp_rate must be > 0".to_owned(),
+            ));
+        }
+        let mut sine_waves = vec![0.0f32; self.cfg.sine_gen.out_channels() * t_full];
+        sinegen2_deterministic_channel_major_f32(
+            f0,
+            upsample_scale,
+            &self.cfg.sine_gen,
+            &mut sine_waves,
+        )?;
+        let mut mix = vec![0.0f32; t_full];
+        for (index, destination) in mix.iter_mut().enumerate() {
+            let mut value = self.weights.linear_b;
+            for (harmonic, &weight) in self.weights.linear_w.iter().enumerate() {
+                value += weight * sine_waves[harmonic * t_full + index];
+            }
+            *destination = value;
+        }
+        for value in &mut mix {
+            *value = value.tanh();
+        }
+        Ok(SourceModuleHnNSFOutput {
+            sine_merge: mix,
+            noise: vec![0.0; t_full],
+            uv: f0
+                .iter()
+                .map(|&value| {
+                    if value > self.cfg.sine_gen.voiced_threshold {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                })
+                .collect(),
+        })
+    }
+}
+
+/// Device-resident-friendly deterministic `SineGen2` mirror.  The output is
+/// channel-major `[harmonic_num + 1, time]`; unlike [`SineGen::forward`], this
+/// follows the CosyVoice2 non-22050 branch's linear downsample → cumulative
+/// phase → linear upsample ordering.  Phase and Gaussian noise are fixed at
+/// zero by the deterministic runtime contract.
+pub(crate) fn sinegen2_deterministic_channel_major_f32(
+    f0: &[f32],
+    upsample_scale: usize,
+    config: &SineGenConfig,
+    out: &mut [f32],
+) -> Result<()> {
+    if f0.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "SineGen2 forward: empty f0 sequence".to_owned(),
+        ));
+    }
+    if upsample_scale == 0 {
+        return Err(VokraError::InvalidArgument(
+            "SineGen2 forward: upsample_scale must be > 0".to_owned(),
+        ));
+    }
+    if config.samp_rate == 0 {
+        return Err(VokraError::InvalidArgument(
+            "SineGen2 forward: samp_rate must be > 0".to_owned(),
+        ));
+    }
+    let t_full = f0.len();
+    let t_down = t_full / upsample_scale;
+    if t_down == 0 || t_down.checked_mul(upsample_scale) != Some(t_full) {
+        return Err(VokraError::InvalidArgument(format!(
+            "SineGen2 forward: f0 length {t_full} is not divisible by upsample_scale {upsample_scale}"
+        )));
+    }
+    let h1 = config.out_channels();
+    let expected = h1.checked_mul(t_full).ok_or_else(|| {
+        VokraError::InvalidArgument("SineGen2 forward: output shape overflow".to_owned())
+    })?;
+    if out.len() != expected {
+        return Err(VokraError::InvalidArgument(format!(
+            "SineGen2 forward: output length {} != harmonic channels * time = {expected}",
+            out.len()
+        )));
+    }
+
+    let inv_sr = 1.0f32 / config.samp_rate as f32;
+    let scale = upsample_scale as f32;
+    let inv_scale = 1.0f32 / scale;
+    let mut rad_full = vec![0.0f32; t_full];
+    let mut rad_down = vec![0.0f32; t_down];
+    let mut phase = vec![0.0f32; t_down];
+    for harmonic_index in 0..h1 {
+        let harmonic = (harmonic_index + 1) as f32;
+        for (index, destination) in rad_full.iter_mut().enumerate() {
+            *destination = (f0[index] * harmonic * inv_sr).rem_euclid(1.0);
+        }
+        linear_interpolate_1d(&rad_full, &mut rad_down, scale);
+
+        let mut accumulated = 0.0f32;
+        for (destination, &rad) in phase.iter_mut().zip(&rad_down) {
+            accumulated += rad;
+            *destination = accumulated * 2.0 * std::f32::consts::PI * scale;
+        }
+
+        let row = &mut out[harmonic_index * t_full..(harmonic_index + 1) * t_full];
+        for (index, destination) in row.iter_mut().enumerate() {
+            let source = (((index as f32 + 0.5) * inv_scale) - 0.5).max(0.0);
+            let left = source as usize;
+            let right = (left + 1).min(t_down - 1);
+            let fraction = source - left as f32;
+            let phase_value = (1.0 - fraction) * phase[left] + fraction * phase[right];
+            let uv = if f0[index] > config.voiced_threshold {
+                1.0
+            } else {
+                0.0
+            };
+            *destination = phase_value.sin() * config.sine_amp * uv;
+        }
+    }
+    Ok(())
+}
+
+/// PyTorch `F.interpolate(..., mode="linear", align_corners=False)` for a
+/// one-dimensional sequence represented by `input` and `output` buffers.
+/// `scale` is `input_len / output_len`; the caller supplies the exact output
+/// length implied by the upstream integer scale factor.
+fn linear_interpolate_1d(input: &[f32], output: &mut [f32], scale: f32) {
+    debug_assert!(!input.is_empty() && !output.is_empty());
+    for (index, destination) in output.iter_mut().enumerate() {
+        let source = ((index as f32 + 0.5) * scale - 0.5).max(0.0);
+        let left = source as usize;
+        let right = (left + 1).min(input.len() - 1);
+        let fraction = source - left as f32;
+        *destination = (1.0 - fraction) * input[left] + fraction * input[right];
     }
 }
 
@@ -1107,6 +1315,64 @@ mod tests {
         );
         assert_eq!(out.noise[0], 0.0);
         assert_eq!(out.uv[0], 1.0);
+    }
+
+    #[test]
+    fn source_module_hnnsf2_uses_deterministic_24khz_phase_path() {
+        let cfg = SourceModuleHnNSFConfig {
+            sine_gen: SineGenConfig {
+                samp_rate: 24_000,
+                harmonic_num: 1,
+                sine_amp: 0.1,
+                noise_std: 0.003,
+                voiced_threshold: 10.0,
+            },
+        };
+        let source = SourceModuleHnNSF2::new(
+            cfg,
+            SourceModuleHnNSFWeights {
+                linear_w: vec![1.0, 0.0],
+                linear_b: 0.0,
+            },
+        )
+        .unwrap();
+        let f0 = vec![240.0f32; 8];
+        let output = source
+            .forward(&f0, 4, NsfEntropy::Deterministic)
+            .expect("24-kHz deterministic source must build");
+        assert_eq!(output.sine_merge.len(), f0.len());
+        assert_eq!(output.noise, vec![0.0; f0.len()]);
+        assert!(output.uv.iter().all(|&value| value == 1.0));
+        assert!(output.sine_merge.iter().all(|value| value.is_finite()));
+        assert!(output.sine_merge.iter().any(|&value| value != 0.0));
+        // The first phase is the first downsampled radian increment multiplied
+        // by `2π * scale`: `(240 / 24000) * 2π * 4`.  The old 22050 path
+        // would incorrectly use only `(240 / 24000) * 2π` here.
+        let expected_first = (0.1 * (2.0 * std::f32::consts::PI * 0.04).sin()).tanh();
+        assert!((output.sine_merge[0] - expected_first).abs() < 1e-6);
+    }
+
+    #[test]
+    fn source_module_hnnsf2_rejects_non_deterministic_entropy() {
+        let cfg = SourceModuleHnNSFConfig {
+            sine_gen: SineGenConfig {
+                samp_rate: 24_000,
+                harmonic_num: 0,
+                ..Default::default()
+            },
+        };
+        let source = SourceModuleHnNSF2::new(
+            cfg,
+            SourceModuleHnNSFWeights {
+                linear_w: vec![1.0],
+                linear_b: 0.0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            source.forward(&[100.0; 4], 2, NsfEntropy::Seeded(7)),
+            Err(VokraError::UnsupportedOp(_))
+        ));
     }
 
     /// Pins the RNG **sub-stream disjointness** invariant. Three separator

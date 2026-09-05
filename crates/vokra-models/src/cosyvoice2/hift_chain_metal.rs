@@ -342,6 +342,26 @@ impl<'ctx> HiFTResidentOps for MetalHiFTResidentOps<'ctx> {
         Ok(output)
     }
 
+    fn sinegen2_deterministic(
+        &mut self,
+        f0: &Self::Tensor,
+        time: usize,
+        upsample_scale: usize,
+        config: &SineGenConfig,
+    ) -> Result<Self::Tensor> {
+        let mut output = self.alloc(config.out_channels(), time, "SineGen2")?;
+        self.context.sinegen2_deterministic_channel_major_dev(
+            &mut output,
+            f0,
+            config.samp_rate,
+            config.harmonic_num,
+            config.sine_amp,
+            config.voiced_threshold,
+            upsample_scale,
+        )?;
+        Ok(output)
+    }
+
     fn stft_concat(
         &mut self,
         input: &Self::Tensor,

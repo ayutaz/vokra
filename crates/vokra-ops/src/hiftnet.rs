@@ -18,7 +18,8 @@ use vokra_core::ir::graph::{IstftAttrs, StftAttrs};
 use vokra_core::{Result, VokraError};
 
 use crate::nsf::{
-    NsfEntropy, SineGenConfig, SourceModuleHnNSF, SourceModuleHnNSFConfig, SourceModuleHnNSFWeights,
+    NsfEntropy, SineGenConfig, SourceModuleHnNSF, SourceModuleHnNSF2, SourceModuleHnNSFConfig,
+    SourceModuleHnNSFOutput, SourceModuleHnNSFWeights,
 };
 use crate::{Spectrogram, istft, stft};
 
@@ -984,6 +985,40 @@ pub struct HiFTGeneratorWeights {
     pub f0_predictor_weights: F0PredictorWeights,
 }
 
+/// The upstream HiFT source branch selected by sampling rate.
+#[derive(Debug, Clone)]
+enum HiFTSourceModule {
+    /// The original 22050-Hz `SineGen` path.
+    HnNsf(SourceModuleHnNSF),
+    /// The exact 24-kHz `SineGen2` interpolation path.
+    HnNsf2(SourceModuleHnNSF2),
+}
+
+impl HiFTSourceModule {
+    fn config(&self) -> &SourceModuleHnNSFConfig {
+        match self {
+            Self::HnNsf(module) => module.config(),
+            Self::HnNsf2(module) => module.config(),
+        }
+    }
+
+    fn forward(
+        &self,
+        f0: &[f32],
+        upsample_scale: usize,
+        entropy: NsfEntropy,
+    ) -> Result<SourceModuleHnNSFOutput> {
+        match self {
+            Self::HnNsf(module) => module.forward(f0, entropy),
+            Self::HnNsf2(module) => module.forward(f0, upsample_scale, entropy),
+        }
+    }
+
+    fn is_v2(&self) -> bool {
+        matches!(self, Self::HnNsf2(_))
+    }
+}
+
 /// Backend-independent seam for running the complete HiFTNet graph while
 /// keeping intermediates in a caller-owned tensor representation.
 ///
@@ -1121,6 +1156,17 @@ pub trait HiFTResidentOps {
         time: usize,
         config: &SineGenConfig,
     ) -> Result<Self::Tensor>;
+    /// Device-resident deterministic HiFT `SineGen2` source.  `f0` is the
+    /// nearest-upsampled `[1, time]` sequence and the result is channel-major
+    /// `[harmonic_num + 1, time]`.  This is the non-22050-Hz branch used by
+    /// CosyVoice2; implementations must not route it through legacy SineGen.
+    fn sinegen2_deterministic(
+        &mut self,
+        f0: &Self::Tensor,
+        time: usize,
+        upsample_scale: usize,
+        config: &SineGenConfig,
+    ) -> Result<Self::Tensor>;
 
     /// Centered Hann STFT followed by `[Re; Im]` concatenation.  Returns the
     /// concatenated tensor `[n_fft + 2, frames]` and its frame count.
@@ -1166,7 +1212,7 @@ pub trait HiFTResidentOps {
 pub struct HiFTGenerator {
     cfg: HiFTGeneratorConfig,
     f0_predictor: F0Predictor,
-    m_source: SourceModuleHnNSF,
+    m_source: HiFTSourceModule,
     // Keep the NSF mixer in the generator as well as in `m_source`: the
     // resident graph needs to hand the exact checkpoint bytes to its backend
     // Linear+tanh primitive without materialising a host source waveform.
@@ -1254,21 +1300,24 @@ impl HiFTGenerator {
 
         let m_source_linear_w = weights.m_source_linear_w.clone();
         let m_source_linear_b = weights.m_source_linear_b;
-        let m_source = SourceModuleHnNSF::new(
-            SourceModuleHnNSFConfig {
-                sine_gen: SineGenConfig {
-                    samp_rate: cfg.sampling_rate,
-                    harmonic_num: cfg.nb_harmonics,
-                    sine_amp: cfg.nsf_alpha,
-                    noise_std: cfg.nsf_sigma,
-                    voiced_threshold: cfg.nsf_voiced_threshold,
-                },
+        let source_config = SourceModuleHnNSFConfig {
+            sine_gen: SineGenConfig {
+                samp_rate: cfg.sampling_rate,
+                harmonic_num: cfg.nb_harmonics,
+                sine_amp: cfg.nsf_alpha,
+                noise_std: cfg.nsf_sigma,
+                voiced_threshold: cfg.nsf_voiced_threshold,
             },
-            SourceModuleHnNSFWeights {
-                linear_w: weights.m_source_linear_w,
-                linear_b: weights.m_source_linear_b,
-            },
-        )?;
+        };
+        let source_weights = SourceModuleHnNSFWeights {
+            linear_w: weights.m_source_linear_w,
+            linear_b: weights.m_source_linear_b,
+        };
+        let m_source = if cfg.sampling_rate == 22_050 {
+            HiFTSourceModule::HnNsf(SourceModuleHnNSF::new(source_config, source_weights)?)
+        } else {
+            HiFTSourceModule::HnNsf2(SourceModuleHnNSF2::new(source_config, source_weights)?)
+        };
 
         // ---- conv_pre --------------------------------------------------
         let bc = cfg.base_channels as usize;
@@ -1326,20 +1375,9 @@ impl HiFTGenerator {
 
         // ---- source_downs (upstream `downsample_rates` + `downsample_cum_rates`)
         // downsample_rates = [1] + upsample_rates[::-1][:-1]
-        // → e.g. upsample [8, 8] gives [1, 8]
+        // → e.g. upsample [8, 5, 3] gives [1, 3, 5]
         // downsample_cum_rates reversed gives the per-stage `u`.
-        let mut downsample_rates: Vec<u32> = Vec::with_capacity(n_ups);
-        downsample_rates.push(1);
-        for i in (0..n_ups - 1).rev() {
-            downsample_rates.push(cfg.upsample_rates[i]);
-        }
-        let mut downsample_cum: Vec<u32> = Vec::with_capacity(n_ups);
-        let mut acc: u32 = 1;
-        for &r in &downsample_rates {
-            acc = acc.saturating_mul(r);
-            downsample_cum.push(acc);
-        }
-        let downsample_us: Vec<u32> = downsample_cum.iter().rev().copied().collect();
+        let downsample_us = source_downsample_factors(&cfg.upsample_rates)?;
 
         let (mut source_downs_kernel, mut source_downs_stride, mut source_downs_padding) = (
             Vec::with_capacity(n_ups),
@@ -1518,7 +1556,7 @@ impl HiFTGenerator {
         // s, _, _ = self.m_source(s) — [t_source]
         let src_out = self
             .m_source
-            .forward(&s_upsampled, NsfEntropy::Deterministic)?;
+            .forward(&s_upsampled, factor, NsfEntropy::Deterministic)?;
         if src_out.sine_merge.len() != t_source {
             return Err(VokraError::InvalidArgument(format!(
                 "HiFTGenerator forward: source module returned {} samples, expected {t_source}",
@@ -1627,7 +1665,11 @@ impl HiFTGenerator {
             )
         })?;
         let f0_up = ops.nearest_upsample(&f0, 1, t_mel, factor)?;
-        let sine = ops.sinegen_deterministic(&f0_up, t_source, &self.m_source.config().sine_gen)?;
+        let sine = if self.m_source.is_v2() {
+            ops.sinegen2_deterministic(&f0_up, t_source, factor, &self.m_source.config().sine_gen)?
+        } else {
+            ops.sinegen_deterministic(&f0_up, t_source, &self.m_source.config().sine_gen)?
+        };
         let source = ops.linear_tanh(
             &sine,
             self.m_source.config().sine_gen.out_channels(),
@@ -2025,6 +2067,43 @@ impl HiFTGenerator {
     }
 }
 
+/// Mirrors upstream `downsample_rates = [1] + upsample_rates[::-1][:-1]`.
+///
+/// The first `1` describes the finest-resolution source stream.  The
+/// remaining rates are the reversed upsample stages with the final (already
+/// finest) stage omitted.  Keeping this as a small pure helper makes the
+/// ordering contract independently testable: `[8, 5, 3]` must become
+/// `[1, 3, 5]`, not `[1, 5, 8]`.
+fn source_downsample_rates(upsample_rates: &[u32]) -> Vec<u32> {
+    let mut rates = Vec::with_capacity(upsample_rates.len());
+    rates.push(1);
+    rates.extend(
+        upsample_rates
+            .iter()
+            .rev()
+            .take(upsample_rates.len().saturating_sub(1))
+            .copied(),
+    );
+    rates
+}
+
+/// Returns the per-stage cumulative factors in the order consumed by
+/// `source_downs`.
+fn source_downsample_factors(upsample_rates: &[u32]) -> Result<Vec<u32>> {
+    let mut cumulative = Vec::with_capacity(upsample_rates.len());
+    let mut product = 1u32;
+    for rate in source_downsample_rates(upsample_rates) {
+        product = product.checked_mul(rate).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "HiFTGenerator source_downs cumulative rate overflow".to_owned(),
+            )
+        })?;
+        cumulative.push(product);
+    }
+    cumulative.reverse();
+    Ok(cumulative)
+}
+
 /// Conv1d output-time formula shared by the resident graph's shape checks.
 fn conv1d_time(
     input_time: usize,
@@ -2312,6 +2391,28 @@ fn conv1d_strided_no_dilation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_downsample_factors_follow_cosyvoice_stage_order() {
+        // Official HiFTGenerator code uses
+        // `[1] + upsample_rates[::-1][:-1]`, then reverses cumulative
+        // products.  This is the observed companion shape contract:
+        // source_downs kernels are [30, 6, 1] for [8, 5, 3].
+        assert_eq!(source_downsample_rates(&[8, 5, 3]), vec![1, 3, 5]);
+        assert_eq!(
+            source_downsample_factors(&[8, 5, 3]).unwrap(),
+            vec![15, 3, 1]
+        );
+        assert_eq!(source_downsample_rates(&[8, 8]), vec![1, 8]);
+        assert_eq!(source_downsample_factors(&[8, 8]).unwrap(), vec![8, 1]);
+    }
+
+    #[test]
+    fn source_downsample_factors_preserve_two_stage_small_fixture() {
+        assert_eq!(source_downsample_rates(&[2, 2]), vec![1, 2]);
+        assert_eq!(source_downsample_factors(&[2, 2]).unwrap(), vec![2, 1]);
+        assert!(source_downsample_factors(&[2, u32::MAX, 2]).is_err());
+    }
 
     /// Build a small synthesized F0Predictor for shape / determinism tests.
     /// Every weight is set to a fixed pattern that keeps outputs bounded
@@ -2970,6 +3071,21 @@ mod tests {
         HiFTGenerator::new(cfg, weights).expect("small hift generator must build")
     }
 
+    #[test]
+    fn hift_generator_selects_upstream_source_variant_by_sample_rate() {
+        let (mut cfg_22050, weights_22050) = small_hift_generator_bundle();
+        cfg_22050.sampling_rate = 22_050;
+        let generator_22050 = HiFTGenerator::new(cfg_22050, weights_22050)
+            .expect("22050-Hz source fixture must build");
+        assert!(!generator_22050.m_source.is_v2());
+
+        let (mut cfg_24000, weights_24000) = small_hift_generator_bundle();
+        cfg_24000.sampling_rate = 24_000;
+        let generator_24000 = HiFTGenerator::new(cfg_24000, weights_24000)
+            .expect("24000-Hz source fixture must build");
+        assert!(generator_24000.m_source.is_v2());
+    }
+
     /// Return the `(config, weights)` bundle that backs [`small_hift_generator`]
     /// so Wave 3c-3 `new(...)` validation tests can mutate a single field
     /// before calling `HiFTGenerator::new` — the goal is to isolate exactly
@@ -3030,7 +3146,7 @@ mod tests {
         let ups_b = vec![vec![0.0f32; 4], vec![0.0f32; 2]];
 
         // downsample_us for upsample_rates=[2, 2] resolves to [2, 1]:
-        //   downsample_rates = [1, 2], cum = [1, 2], reversed = [2, 1].
+        //   downsample_rates = [1, 2], cumulative = [1, 2], reversed = [2, 1].
         // Stage 0 uses u = 2 → k = 4, stride = 2, pad = 1; stage 1 uses u = 1
         // → k = 1, stride = 1, pad = 0.
         let n_fft_plus_2 = 10;
@@ -3901,6 +4017,7 @@ mod tests {
         linear_tanh_calls: usize,
         nearest_calls: usize,
         sinegen_calls: usize,
+        sinegen2_calls: usize,
         stft_calls: usize,
         complex_calls: usize,
         istft_calls: usize,
@@ -4268,6 +4385,27 @@ mod tests {
             self.tensor(channels, harmonics, time)
         }
 
+        fn sinegen2_deterministic(
+            &mut self,
+            f0: &Self::Tensor,
+            time: usize,
+            upsample_scale: usize,
+            config: &SineGenConfig,
+        ) -> Result<Self::Tensor> {
+            self.check("sinegen2_deterministic")?;
+            self.sinegen2_calls += 1;
+            Self::expect_shape(f0, 1, time, "sinegen2_deterministic")?;
+            let harmonics = config.out_channels();
+            let mut channels = vec![0.0; harmonics * time];
+            crate::nsf::sinegen2_deterministic_channel_major_f32(
+                &f0.data,
+                upsample_scale,
+                config,
+                &mut channels,
+            )?;
+            self.tensor(channels, harmonics, time)
+        }
+
         fn stft_concat(
             &mut self,
             input: &Self::Tensor,
@@ -4464,7 +4602,8 @@ mod tests {
         assert_eq!(resident.linear_abs_calls, 1);
         assert_eq!(resident.linear_tanh_calls, 1);
         assert_eq!(resident.nearest_calls, 1);
-        assert_eq!(resident.sinegen_calls, 1);
+        assert_eq!(resident.sinegen_calls, 0);
+        assert_eq!(resident.sinegen2_calls, 1);
         assert_eq!(resident.stft_calls, 1);
         assert_eq!(resident.complex_calls, 1);
         assert_eq!(resident.istft_calls, 1);
