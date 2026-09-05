@@ -28,7 +28,9 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Callable
+from urllib.error import HTTPError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -53,10 +55,37 @@ ELF_MAGIC = b"\x7fELF"
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd"}
 LICENSE_NAMES = {"license", "copying", "notice", "copyright"}
 HF_CDN_LICENSE_HOSTS = {"cdn-lfs.huggingface.co", "cdn-lfs-us-1.hf.co"}
+HF_API_HOSTS = {"huggingface.co", "hf.co"}
+MAX_MODEL_INFO_BYTES = 2 * 1024 * 1024
+MAX_MODEL_INFO_REDIRECTS = 4
+MAX_MODEL_INFO_MEMBERS = 10000
+MODEL_INFO_SCHEMA = "vokra-ultravox-hf-model-metadata-v1"
+MODEL_INFO_EXPECTED = {
+    "fixie-ai/ultravox-v0_5-llama-3_2-1b": {
+        "revision": "b95bec8ab291eeb04b5cd600dd473377f6b79026",
+        "license": "mit",
+        "gated": False,
+        "license_files": [],
+    },
+    "meta-llama/Llama-3.2-1B-Instruct": {
+        "revision": "9213176726f574b556790deb65791e0c5aa438b6",
+        "license": "llama3.2",
+        "gated": "manual",
+        "license_files": ["LICENSE.txt"],
+    },
+}
 
 
 class AuditError(ValueError):
     """A factual or structural blocker."""
+
+
+class LicensePathError(AuditError):
+    """The exact LICENSE path failed with an HTTP status."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -738,6 +767,25 @@ def _fixed_license_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"id": "ultravox-public", "repo": identities["public_repo"], "revision": identities["public_revision"]}, {"id": "ultravox-upstream", "repo": identities["upstream_repo"], "revision": identities["upstream_revision"]}, {"id": "llama-companion", "repo": identities["companion_repo"], "revision": identities["companion_revision"]}]
 
 
+def fixed_model_info_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only the two exact upstream/companion model-info identities."""
+    items = []
+    for item in _fixed_license_items(manifest):
+        expected = MODEL_INFO_EXPECTED.get(item["repo"])
+        if expected is None or expected["revision"] != item["revision"]:
+            continue
+        items.append({
+            **item,
+            "requested_url": f"https://huggingface.co/api/models/{item['repo']}/revision/{item['revision']}",
+            "expected_license": expected["license"],
+            "expected_gated": expected["gated"],
+            "expected_license_files": expected["license_files"],
+        })
+    if {item["repo"] for item in items} != set(MODEL_INFO_EXPECTED):
+        raise AuditError("Ultravox exact HF model-info identity set is incomplete")
+    return items
+
+
 def _license_url(item: dict[str, Any]) -> str:
     return f"https://huggingface.co/{item['repo']}/raw/{item['revision']}/LICENSE"
 
@@ -782,14 +830,232 @@ def _fetch_license(item: dict[str, Any], fetcher: Callable[[str], tuple[str, byt
                 body = response.read(MAX_LICENSE_BYTES + 1)
         except AuditError:
             raise
+        except HTTPError as exc:
+            raise LicensePathError(f"exact LICENSE path is not retrievable: HTTP {exc.code}", status_code=exc.code) from exc
         except Exception as exc:  # noqa: BLE001
-            raise AuditError(f"exact LICENSE path is not retrievable: {exc}") from exc
+            raise LicensePathError(f"exact LICENSE path is not retrievable: {exc}") from exc
     else:
-        final_url, body = fetcher(requested); _validate_license_url(item, final_url)
+        try:
+            final_url, body = fetcher(requested)
+        except HTTPError as exc:
+            raise LicensePathError(f"exact LICENSE path is not retrievable: HTTP {exc.code}", status_code=exc.code) from exc
+        _validate_license_url(item, final_url)
         if final_url != trace[-1]: trace.append(final_url)
     if not isinstance(body, bytes) or len(body) > MAX_LICENSE_BYTES:
         raise AuditError("LICENSE response exceeds the bounded audit size")
     return {"id": item["id"], "repo": item["repo"], "revision": item["revision"], "requested_url": requested, "final_url": final_url, "url_trace": trace, "acquired_file": "LICENSE", "size": len(body), "sha256": sha256_bytes(body), "content_base64": base64.b64encode(body).decode("ascii"), "license_classification": "UNCLASSIFIED_PRIMARY_SOURCE_BYTES_ONLY"}
+
+
+def _model_info_url(item: dict[str, Any]) -> str:
+    return item["requested_url"]
+
+
+def _validate_model_info_url(item: dict[str, Any], url: str, *, initial: bool = False) -> None:
+    expected = _model_info_url(item)
+    if initial and url != expected:
+        raise AuditError("initial HF model-info URL is not the exact revision endpoint")
+    try:
+        parsed = urlsplit(url)
+    except TypeError as exc:
+        raise AuditError("HF model-info URL is not a string") from exc
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise AuditError("HF model-info URL has an invalid port") from exc
+    if (
+        parsed.scheme != "https" or parsed.hostname not in HF_API_HOSTS or parsed.username or parsed.password
+        or parsed.query or parsed.fragment or port not in (None, 443)
+        or parsed.path != f"/api/models/{item['repo']}/revision/{item['revision']}"
+    ):
+        raise AuditError("HF model-info URL is not the exact revision endpoint")
+
+
+class _ModelInfoRedirects(HTTPRedirectHandler):
+    def __init__(self, item: dict[str, Any], trace: list[str]) -> None:
+        super().__init__()
+        self.item = item
+        self.trace = trace
+
+    def redirect_request(self, request: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Request | None:
+        if len(self.trace) - 1 >= MAX_MODEL_INFO_REDIRECTS:
+            raise AuditError("HF model-info redirect chain exceeds the bounded limit")
+        resolved = urljoin(request.full_url, newurl)
+        _validate_model_info_url(self.item, resolved)
+        self.trace.append(resolved)
+        return super().redirect_request(request, fp, code, msg, headers, resolved)
+
+
+def _model_info_projection(item: dict[str, Any], body: bytes) -> dict[str, Any]:
+    if not isinstance(body, bytes) or len(body) > MAX_MODEL_INFO_BYTES:
+        raise AuditError("HF model-info response exceeds the bounded audit size")
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AuditError(f"duplicate HF model-info JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(body.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError, AuditError) as exc:
+        raise AuditError("HF model-info response is not strict UTF-8 JSON") from exc
+    if not isinstance(payload, dict):
+        raise AuditError("HF model-info response is not an object")
+    required = {"id", "sha", "private", "gated", "disabled", "cardData", "siblings"}
+    if not required.issubset(payload):
+        raise AuditError("HF model-info response is missing required fields")
+    if payload["id"] != item["repo"]:
+        raise AuditError("HF model-info returned repository identity drifted")
+    if not isinstance(payload["sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", payload["sha"]):
+        raise AuditError("HF model-info returned sha is malformed")
+    if payload["sha"] != item["revision"]:
+        raise AuditError("HF model-info returned sha does not match the pinned revision")
+    if payload["private"] is not False or payload["disabled"] is not False:
+        raise AuditError("HF model-info repository is private or disabled")
+    if payload["gated"] != item["expected_gated"]:
+        raise AuditError("HF model-info gated state does not match the reviewed identity")
+    card_data = payload["cardData"]
+    if not isinstance(card_data, dict) or card_data.get("license") != item["expected_license"]:
+        raise AuditError("HF model-info cardData.license does not match the reviewed tag")
+    siblings = payload["siblings"]
+    if not isinstance(siblings, list) or not siblings or len(siblings) > MAX_MODEL_INFO_MEMBERS:
+        raise AuditError("HF model-info sibling tree is missing, empty, or oversized")
+    tree_files: list[str] = []
+    for entry in siblings:
+        if not isinstance(entry, dict) or set(entry) != {"rfilename"} or not isinstance(entry["rfilename"], str):
+            raise AuditError("HF model-info sibling schema drifted")
+        path = entry["rfilename"]
+        if (
+            not path or "\x00" in path or "\\" in path or path.startswith("/") or path.endswith("/")
+            or any(part in {"", ".", ".."} for part in path.split("/")) or str(PurePosixPath(path)) != path
+        ):
+            raise AuditError("HF model-info sibling path is unsafe")
+        if path in tree_files:
+            raise AuditError("HF model-info sibling tree contains duplicate paths")
+        tree_files.append(path)
+    tree_files.sort()
+    license_files = sorted(path for path in tree_files if _is_license_path(path))
+    if license_files != sorted(item["expected_license_files"]):
+        raise AuditError("HF model-info sibling license-file set does not match the reviewed identity")
+    return {
+        "schema": MODEL_INFO_SCHEMA,
+        "id": item["id"],
+        "repo": item["repo"],
+        "requested_revision": item["revision"],
+        "returned_repo": payload["id"],
+        "returned_sha": payload["sha"],
+        "private": payload["private"],
+        "gated": payload["gated"],
+        "disabled": payload["disabled"],
+        "license": card_data["license"],
+        "license_source": "HF_API_CARD_DATA_LICENSE",
+        "license_files": license_files,
+        "tree_file_count": len(tree_files),
+        "tree_files_sha256": sha256_bytes(canonical_json(tree_files).encode("utf-8")),
+        "payload_sha256": sha256_bytes(body),
+        "payload_size": len(body),
+    }
+
+
+def _fetch_model_info(item: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None) -> dict[str, Any]:
+    requested = _model_info_url(item)
+    _validate_model_info_url(item, requested, initial=True)
+    trace = [requested]
+    try:
+        if fetcher is not None:
+            final_url, body = fetcher(requested)
+        else:
+            opener = build_opener(_ModelInfoRedirects(item, trace))
+            request = Request(requested, headers={"Accept": "application/json", "User-Agent": "vokra-ultravox-audit/1"})
+            with opener.open(request, timeout=30) as response:
+                length = response.headers.get("Content-Length")
+                if length is not None and (not length.isdigit() or int(length) > MAX_MODEL_INFO_BYTES):
+                    raise AuditError("HF model-info Content-Length exceeds the bounded audit size")
+                final_url, body = response.geturl(), response.read(MAX_MODEL_INFO_BYTES + 1)
+    except HTTPError:
+        raise
+    except AuditError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - network/decoder failures are factual blockers
+        raise AuditError(f"HF model-info request failed: {type(exc).__name__}") from exc
+    if final_url != trace[-1]:
+        trace.append(final_url)
+    _validate_model_info_url(item, final_url)
+    return {
+        "id": item["id"],
+        "repo": item["repo"],
+        "revision": item["revision"],
+        "requested_url": requested,
+        "final_url": final_url,
+        "redirect_trace": trace,
+        "resolved_host": urlsplit(final_url).hostname,
+        "resolved_path": urlsplit(final_url).path,
+        **_model_info_projection(item, body),
+    }
+
+
+def fetch_model_license_metadata(item: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None) -> dict[str, Any]:
+    """Public model-info fallback entrypoint for focused offline tests."""
+    return _fetch_model_info(item, fetcher)
+
+
+def requested_model_metadata_urls(records: list[dict[str, Any]]) -> list[str]:
+    """Return only exact model-info URLs that were actually requested."""
+    return [record["requested_url"] for record in records]
+
+
+def _http_status(exc: BaseException) -> int | None:
+    if isinstance(exc, HTTPError):
+        return exc.code
+    return getattr(exc, "status_code", None)
+
+
+def audit_model_licenses(
+    manifest: dict[str, Any],
+    license_fetcher: Callable[[dict[str, Any]], dict[str, Any]] = _fetch_license,
+    metadata_fetcher: Callable[[dict[str, Any]], dict[str, Any]] = fetch_model_license_metadata,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    files: list[dict[str, Any]] = []
+    metadata: list[dict[str, Any]] = []
+    failures: list[str] = []
+    model_items = {item["id"]: item for item in fixed_model_info_items(manifest)}
+    for item in _fixed_license_items(manifest):
+        try:
+            files.append(license_fetcher(item))
+            continue
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            status = _http_status(exc)
+            error = {"kind": "HTTP_ERROR", "status": status} if status is not None else {"kind": type(exc).__name__}
+            record = {
+                **item,
+                "requested_url": _license_url(item),
+                "final_url": None,
+                "status": "BLOCKED_FACTUAL_LICENSE_PATH",
+                "error": error,
+            }
+            model_item = model_items.get(item["id"])
+            if status not in {401, 404} or model_item is None:
+                files.append(record)
+                failures.append(f"BLOCKED_FACTUAL_LICENSE_PATH: {item['id']}: {error}")
+                continue
+            try:
+                metadata_record = metadata_fetcher(model_item)
+            except (OSError, UnicodeError, ValueError, TypeError) as metadata_error:
+                metadata_status = _http_status(metadata_error)
+                metadata_error_value = {"kind": "HTTP_ERROR", "status": metadata_status} if metadata_status is not None else {"kind": type(metadata_error).__name__}
+                record["error"] = error
+                record["metadata_fallback"] = {"status": "BLOCKED", "error": metadata_error_value}
+                files.append(record)
+                failures.append(f"BLOCKED_FACTUAL_MODEL_METADATA_LICENSE: {item['id']}: {metadata_error_value}")
+            else:
+                record["status"] = "PASS_AUTHENTICATED_HF_METADATA_LICENSE"
+                record["error"] = error
+                record["metadata_fallback"] = {"status": "PASS", "requested_url": metadata_record["requested_url"]}
+                files.append(record)
+                metadata.append(metadata_record)
+    return files, metadata, failures
 
 
 def audit_environment(project: Path, fetch_model_licenses: bool = True, sdist_fetcher: Callable[[str], tuple[str, bytes]] | None = None) -> dict[str, Any]:
@@ -808,13 +1074,11 @@ def audit_environment(project: Path, fetch_model_licenses: bool = True, sdist_fe
     if not closure["exact"]: failures.append("installed normalized name+version multiset does not exactly match active Linux lock rows")
     if sys.version_info[:2] != (3, 12): failures.append(f"Python runtime is not 3.12: {platform.python_version()}")
     if sys.platform != "linux" or platform.machine().casefold() not in {"x86_64", "amd64"}: failures.append(f"audit host is not Linux x86_64: {sys.platform}/{platform.machine()}")
-    model_files, model_failures = [], []
+    model_files, model_metadata, model_failures = [], [], []
     if fetch_model_licenses:
-        for item in _fixed_license_items(manifest):
-            try: model_files.append(_fetch_license(item))
-            except AuditError as exc: model_files.append({**item, "requested_url": _license_url(item), "final_url": None, "status": "BLOCKED_FACTUAL_LICENSE_PATH", "error": str(exc)}); model_failures.append(f"{item['id']}: {exc}")
+        model_files, model_metadata, model_failures = audit_model_licenses(manifest)
     failures.extend(model_failures)
-    return {"schema": SCHEMA, "status": "BLOCKED" if failures else "PASS", "publication_permitted": False, "environment": {"python": platform.python_version(), "platform": sys.platform, "machine": platform.machine(), "model_code_imported": False, "cargo_invoked": False, "readelf_required": True}, "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"], "pyproject_bytes": len(project_bytes), "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_bytes": len(lock_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes)}, "manifest_reviews": _manifest_reviews(manifest), "approval_blockers": sorted(set(_approval_blockers(manifest))), "lock_rows": {"accounted_rows": len(lock["package"]), "active_linux_installed": active_rows, "inactive_or_virtual": inactive_rows, "all_rows_accounted": len(active_rows) + len(inactive_rows) == len(lock["package"])}, "closure": closure, "packages": packages, "dependency_acquisition": _dependency_acquisition(packages), "fixed_source_model_companion_identities": _fixed_license_items(manifest), "model_license_files": model_files, "model_acquisition": {"scope": "fixed source/model/Meta companion LICENSE paths only", "policy": "allow-listed exact primary-source LICENSE-only fetch", "requested_files": [item["requested_url"] for item in model_files], "non_license_requests": [], "non_license_files": []}, "failures": sorted(set(failures))}
+    return {"schema": SCHEMA, "status": "BLOCKED" if failures else "PASS", "publication_permitted": False, "environment": {"python": platform.python_version(), "platform": sys.platform, "machine": platform.machine(), "model_code_imported": False, "cargo_invoked": False, "readelf_required": True}, "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"], "pyproject_bytes": len(project_bytes), "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_bytes": len(lock_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes)}, "manifest_reviews": _manifest_reviews(manifest), "approval_blockers": sorted(set(_approval_blockers(manifest))), "lock_rows": {"accounted_rows": len(lock["package"]), "active_linux_installed": active_rows, "inactive_or_virtual": inactive_rows, "all_rows_accounted": len(active_rows) + len(inactive_rows) == len(lock["package"])}, "closure": closure, "packages": packages, "dependency_acquisition": _dependency_acquisition(packages), "fixed_source_model_companion_identities": _fixed_license_items(manifest), "model_license_files": model_files, "model_license_metadata": model_metadata, "model_acquisition": {"scope": "fixed source/model/Meta companion LICENSE paths plus exact HF model-info metadata fallback", "policy": "allow-listed exact primary-source LICENSE-only fetch; 401/404 model LICENSE failures may use exact-revision HF cardData.license and sibling-name metadata", "requested_files": [item["requested_url"] for item in model_files], "requested_metadata": [item["requested_url"] for item in model_metadata], "non_license_requests": [], "non_license_files": [], "proof": "bounded metadata only; no README/card text retention and no model-weight acquisition"}, "failures": sorted(set(failures))}
 
 
 def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
@@ -878,6 +1142,98 @@ def self_test() -> int:
     try: _LicenseRedirects(item, [url] * (MAX_LICENSE_REDIRECTS + 1)).redirect_request(Request(url), None, 302, "", {}, cdn_url)
     except AuditError: pass
     else: raise AssertionError("accepted overlong LICENSE redirect chain")
+
+    model_items = fixed_model_info_items(manifest)
+    assert {item["repo"] for item in model_items} == set(MODEL_INFO_EXPECTED)
+
+    def model_payload(item: dict[str, Any]) -> dict[str, Any]:
+        siblings = [{"rfilename": "README.md"}, {"rfilename": "config.json"}, {"rfilename": "model.safetensors"}]
+        siblings.extend({"rfilename": name} for name in item["expected_license_files"])
+        return {
+            "id": item["repo"], "sha": item["revision"], "private": False,
+            "gated": item["expected_gated"], "disabled": False,
+            "cardData": {"license": item["expected_license"], "README": "ignored card text"},
+            "siblings": siblings,
+        }
+
+    for model_item in model_items:
+        model_result = _fetch_model_info(
+            model_item,
+            lambda requested, payload=model_payload(model_item): (requested, canonical_json(payload).encode("utf-8")),
+        )
+        assert model_result["requested_url"] == model_item["requested_url"]
+        assert model_result["returned_sha"] == model_item["revision"]
+        assert model_result["license"] == model_item["expected_license"]
+        assert model_result["license_files"] == model_item["expected_license_files"]
+        assert "README" not in model_result and "content_base64" not in model_result
+    fixie_item = next(item for item in model_items if item["repo"].startswith("fixie-ai/"))
+    expected_model_info_url = f"https://huggingface.co/api/models/{fixie_item['repo']}/revision/{fixie_item['revision']}"
+    assert fixie_item["requested_url"] == expected_model_info_url
+    for bad_url in (
+        f"https://huggingface.co/api/models/{fixie_item['repo']}?revision={fixie_item['revision']}",
+        fixie_item["requested_url"] + "?download=1",
+        fixie_item["requested_url"].replace(f"/revision/{fixie_item['revision']}", "/revision/main"),
+        fixie_item["requested_url"].replace("https://huggingface.co", "https://evil.example"),
+        fixie_item["requested_url"].replace("https://", "https://audit-user@"),
+        fixie_item["requested_url"] + "#fragment",
+        fixie_item["requested_url"].replace("/api/models/", "/README.md/"),
+    ):
+        try:
+            _fetch_model_info({**fixie_item, "requested_url": bad_url}, lambda _: (_ for _ in ()).throw(AssertionError("unsafe model-info URL reached fetcher")))
+        except AuditError: pass
+        else: raise AssertionError(f"accepted unsafe HF model-info URL: {bad_url}")
+    model_trace = [fixie_item["requested_url"]]
+    _ModelInfoRedirects(fixie_item, model_trace).redirect_request(Request(model_trace[0]), None, 302, "", {}, model_trace[0])
+    assert len(model_trace) == 2
+    try:
+        _ModelInfoRedirects(fixie_item, [fixie_item["requested_url"]] * (MAX_MODEL_INFO_REDIRECTS + 1)).redirect_request(Request(fixie_item["requested_url"]), None, 302, "", {}, fixie_item["requested_url"])
+    except AuditError: pass
+    else: raise AssertionError("accepted overlong HF model-info redirect chain")
+    base_payload = model_payload(fixie_item)
+    invalid_payloads = (
+        {**base_payload, "id": "other/model"}, {**base_payload, "sha": "0" * 40},
+        {**base_payload, "private": True}, {**base_payload, "gated": "manual"},
+        {**base_payload, "disabled": True}, {**base_payload, "cardData": {"license": "apache-2.0"}},
+        {**base_payload, "siblings": []},
+        {**base_payload, "siblings": [{"rfilename": "../config.json"}]},
+        {**base_payload, "siblings": [{"rfilename": "config\\\\json"}]},
+        {**base_payload, "siblings": [{"rfilename": "config.json"}, {"rfilename": "config.json"}]},
+        {**base_payload, "siblings": [{"rfilename": "LICENSE"}]},
+        {**base_payload, "siblings": [{"rfilename": "README.md", "size": 1}]},
+    )
+    for invalid in invalid_payloads:
+        try:
+            _fetch_model_info(fixie_item, lambda requested, invalid=invalid: (requested, canonical_json(invalid).encode("utf-8")))
+        except AuditError: pass
+        else: raise AssertionError("accepted invalid HF model-info projection")
+    try:
+        _fetch_model_info(fixie_item, lambda requested: (requested, b'{"id":"x","id":"x"}'))
+    except AuditError: pass
+    else: raise AssertionError("accepted duplicate HF model-info JSON keys")
+    try:
+        _fetch_model_info(fixie_item, lambda requested: (requested, b"x" * (MAX_MODEL_INFO_BYTES + 1)))
+    except AuditError: pass
+    else: raise AssertionError("accepted oversized HF model-info response")
+
+    def synthetic_license_fetcher(license_item: dict[str, Any]) -> dict[str, Any]:
+        if license_item["id"] == "ultravox-upstream":
+            raise HTTPError(_license_url(license_item), 404, "missing", {}, None)
+        if license_item["id"] == "llama-companion":
+            raise HTTPError(_license_url(license_item), 401, "gated", {}, None)
+        return {**license_item, "status": "PASS", "requested_url": _license_url(license_item)}
+
+    def synthetic_metadata_fetcher(metadata_item: dict[str, Any]) -> dict[str, Any]:
+        return _fetch_model_info(metadata_item, lambda requested: (requested, canonical_json(model_payload(metadata_item)).encode("utf-8")))
+
+    fallback_files, fallback_metadata, fallback_failures = audit_model_licenses(
+        manifest, synthetic_license_fetcher, synthetic_metadata_fetcher
+    )
+    assert not fallback_failures and len(fallback_metadata) == 2
+    assert [record["status"] for record in fallback_files] == [
+        "PASS", "PASS_AUTHENTICATED_HF_METADATA_LICENSE", "PASS_AUTHENTICATED_HF_METADATA_LICENSE"
+    ]
+    meta_record = next(record for record in fallback_metadata if record["repo"].startswith("meta-llama/"))
+    assert meta_record["license_files"] == ["LICENSE.txt"] and "content_base64" not in meta_record
 
     def tar_bytes(entries: list[tuple[str, bytes, str]]) -> bytes:
         output = io.BytesIO()
