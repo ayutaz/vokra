@@ -117,7 +117,7 @@ const SOURCE_ROLES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct BoundCosyVoice2Llm {
     backbone: LlmBackbone,
     speech: SpeechLmTensors,
