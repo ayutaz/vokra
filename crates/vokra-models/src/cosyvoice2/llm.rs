@@ -677,8 +677,15 @@ fn bound_tensor(file: &GgufFile, name: &str, want: &[usize]) -> Result<Vec<f32>>
             "cosyvoice2 LLM from_gguf: `{name}` shape {got:?} != expected {want:?}"
         )));
     }
-    file.tensor_f32(name)
-        .map_err(|e| VokraError::ModelLoad(format!("cosyvoice2 LLM from_gguf: `{name}`: {e}")))
+    let values = file
+        .tensor_f32(name)
+        .map_err(|e| VokraError::ModelLoad(format!("cosyvoice2 LLM from_gguf: `{name}`: {e}")))?;
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(format!(
+            "cosyvoice2 LLM from_gguf: `{name}` contains non-finite values"
+        )));
+    }
+    Ok(values)
 }
 
 /// Binds a `[out, in]` projection weight (safetensors convention) and

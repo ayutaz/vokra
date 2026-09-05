@@ -18,6 +18,9 @@ pub(crate) mod flow_matching;
 // Staged authenticated binder; runtime wiring is deliberately deferred.
 #[allow(dead_code)]
 pub(crate) mod flow_weights;
+// Private staged strict binder; public production enablement remains deferred.
+#[allow(dead_code)]
+pub(crate) mod llm_component;
 pub(crate) mod native;
 #[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) mod speech_lm;
