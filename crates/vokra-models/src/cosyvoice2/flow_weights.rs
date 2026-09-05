@@ -47,9 +47,15 @@ pub(crate) const FLOW_STORAGE_MANIFEST_SHA256: &str =
     "e2ec1a5009a0bf4f63eaebe82d4a1bc037f1cb26e82360f7d40c4c9700fc68ee";
 
 const FLOW_ARCH: &str = "cosyvoice2";
+const FLOW_NAME: &str = "cosyvoice2-0.5b-flow";
 const FLOW_COMPONENT: &str = "flow";
 const FLOW_COMPOSITE_STATUS: &str = "INSPECTION_ONLY";
 const KEY_ARCH: &str = chunks::KEY_MODEL_ARCH;
+const KEY_NAME: &str = chunks::KEY_MODEL_NAME;
+const KEY_PROVENANCE_WEIGHT_LICENSE: &str = chunks::KEY_PROVENANCE_WEIGHT_LICENSE;
+const KEY_PROVENANCE_LICENSE: &str = chunks::KEY_PROVENANCE_LICENSE;
+const KEY_PROVENANCE_MODEL_ID: &str = chunks::KEY_PROVENANCE_MODEL_ID;
+const KEY_PROVENANCE_SOURCE: &str = chunks::KEY_PROVENANCE_SOURCE;
 const KEY_COMPONENT: &str = "vokra.cosyvoice2_flow.component";
 const KEY_COMPOSITE_STATUS: &str = "vokra.cosyvoice2.composite_status";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
@@ -73,6 +79,9 @@ const KEY_SOURCE_LICENSE_DECLARED: &str = "vokra.cosyvoice2_flow.source_license_
 const KEY_MANIFEST_SHA256: &str = "vokra.cosyvoice2_flow.tensor_manifest_sha256";
 const KEY_DATA_PICKLE_SHA256: &str = "vokra.cosyvoice2_flow.data_pickle_sha256";
 const KEY_STORAGE_MANIFEST_SHA256: &str = "vokra.cosyvoice2_flow.storage_manifest_sha256";
+const KEY_PREPARED_BYTES: &str = "vokra.cosyvoice2_flow.prepared_input.bytes";
+const KEY_PREPARED_SHA256: &str = "vokra.cosyvoice2_flow.prepared_input.sha256";
+const KEY_PREPARED_STATUS: &str = "vokra.cosyvoice2_flow.prepared_input.authentication_status";
 const SOURCE_ROLES: &[(&str, &str, &str)] = &[
     (
         "cosyvoice/cli/cosyvoice.py",
@@ -5827,9 +5836,44 @@ fn require_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
     }
 }
 
+fn require_positive_u64(file: &GgufFile, key: &str) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::U64(value)) if *value > 0 => Ok(()),
+        Some(value) => Err(VokraError::ModelLoad(format!(
+            "cosyvoice2_flow: metadata {key}={value:?}, expected positive U64"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "cosyvoice2_flow: missing/non-u64 metadata {key}"
+        ))),
+    }
+}
+
+fn require_lowercase_sha256(file: &GgufFile, key: &str) -> Result<()> {
+    match file.get(key).and_then(GgufMetadataValue::as_str) {
+        Some(value)
+            if value.len() == 64
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && value.bytes().all(|byte| !byte.is_ascii_uppercase()) =>
+        {
+            Ok(())
+        }
+        Some(value) => Err(VokraError::ModelLoad(format!(
+            "cosyvoice2_flow: metadata {key}={value:?}, expected lowercase SHA-256"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "cosyvoice2_flow: missing/non-string metadata {key}"
+        ))),
+    }
+}
+
 fn validate_metadata(file: &GgufFile) -> Result<()> {
     for (key, expected) in [
         (KEY_ARCH, FLOW_ARCH),
+        (KEY_NAME, FLOW_NAME),
+        (KEY_PROVENANCE_WEIGHT_LICENSE, "permissive"),
+        (KEY_PROVENANCE_LICENSE, FLOW_SOURCE_LICENSE_DECLARED),
+        (KEY_PROVENANCE_MODEL_ID, FLOW_NAME),
+        (KEY_PROVENANCE_SOURCE, FLOW_SOURCE_REPOSITORY),
         (KEY_COMPONENT, FLOW_COMPONENT),
         (KEY_COMPOSITE_STATUS, FLOW_COMPOSITE_STATUS),
         (KEY_UPSTREAM_HF, FLOW_UPSTREAM_HF),
@@ -5871,6 +5915,13 @@ fn validate_metadata(file: &GgufFile) -> Result<()> {
     require_u32(file, KEY_SOURCE_LICENSE_BYTES, FLOW_SOURCE_LICENSE_BYTES)?;
     require_u32(file, KEY_CHECKPOINT_BYTES, FLOW_ARTIFACT_BYTES)?;
     require_u32(file, KEY_CONFIG_BYTES, FLOW_CONFIG_BYTES)?;
+    require_positive_u64(file, KEY_PREPARED_BYTES)?;
+    require_lowercase_sha256(file, KEY_PREPARED_SHA256)?;
+    require_string(
+        file,
+        KEY_PREPARED_STATUS,
+        "PREPARED_INPUT_DIGEST_RECORDED_NOT_PINNED",
+    )?;
     Ok(())
 }
 
@@ -5915,7 +5966,10 @@ fn validate_tensor_schema(file: &GgufFile) -> Result<()> {
     let mut seen = BTreeSet::new();
     for info in file.tensors() {
         if !is_flow_tensor_name(&info.name) {
-            continue;
+            return Err(VokraError::ModelLoad(format!(
+                "cosyvoice2_flow: tensor {} is outside the authenticated flow component",
+                info.name
+            )));
         }
         if !seen.insert(info.name.as_str()) {
             return Err(VokraError::ModelLoad(format!(
@@ -5976,9 +6030,18 @@ mod tests {
     use vokra_core::gguf::{GgmlType, GgufBuilder};
 
     fn metadata_builder() -> GgufBuilder {
+        metadata_builder_with_prepared(true)
+    }
+
+    fn metadata_builder_with_prepared(include_prepared: bool) -> GgufBuilder {
         let mut builder = GgufBuilder::new();
         for (key, value) in [
             (KEY_ARCH, FLOW_ARCH),
+            (KEY_NAME, FLOW_NAME),
+            (KEY_PROVENANCE_WEIGHT_LICENSE, "permissive"),
+            (KEY_PROVENANCE_LICENSE, FLOW_SOURCE_LICENSE_DECLARED),
+            (KEY_PROVENANCE_MODEL_ID, FLOW_NAME),
+            (KEY_PROVENANCE_SOURCE, FLOW_SOURCE_REPOSITORY),
             (KEY_COMPONENT, FLOW_COMPONENT),
             (KEY_COMPOSITE_STATUS, FLOW_COMPOSITE_STATUS),
             (KEY_UPSTREAM_HF, FLOW_UPSTREAM_HF),
@@ -6020,6 +6083,15 @@ mod tests {
             .add_u32(KEY_SOURCE_LICENSE_BYTES, FLOW_SOURCE_LICENSE_BYTES)
             .add_u32(KEY_CHECKPOINT_BYTES, FLOW_ARTIFACT_BYTES)
             .add_u32(KEY_CONFIG_BYTES, FLOW_CONFIG_BYTES);
+        if include_prepared {
+            builder
+                .add_metadata(KEY_PREPARED_BYTES, GgufMetadataValue::U64(1))
+                .add_string(KEY_PREPARED_SHA256, &"a".repeat(64))
+                .add_string(
+                    KEY_PREPARED_STATUS,
+                    "PREPARED_INPUT_DIGEST_RECORDED_NOT_PINNED",
+                );
+        }
         builder
     }
 
@@ -6080,6 +6152,44 @@ mod tests {
     }
 
     #[test]
+    fn prepared_input_metadata_is_required_and_strictly_typed() {
+        let missing = tiny_file(metadata_builder_with_prepared(false));
+        let error = FlowWeights::bind(&missing).expect_err("prepared metadata is required");
+        assert!(error.to_string().contains(KEY_PREPARED_BYTES));
+
+        let mut wrong_type = metadata_builder();
+        wrong_type.add_metadata(KEY_PREPARED_BYTES, GgufMetadataValue::U32(1));
+        let error =
+            FlowWeights::bind(&tiny_file(wrong_type)).expect_err("prepared bytes must remain U64");
+        assert!(error.to_string().contains("positive U64"));
+
+        let mut zero = metadata_builder();
+        zero.add_metadata(KEY_PREPARED_BYTES, GgufMetadataValue::U64(0));
+        let error = FlowWeights::bind(&tiny_file(zero)).expect_err("zero bytes must fail");
+        assert!(error.to_string().contains("positive U64"));
+
+        let mut malformed_digest = metadata_builder();
+        malformed_digest.add_string(KEY_PREPARED_SHA256, "not-a-sha");
+        let error = FlowWeights::bind(&tiny_file(malformed_digest))
+            .expect_err("prepared digest must be lowercase SHA-256");
+        assert!(error.to_string().contains(KEY_PREPARED_SHA256));
+
+        let mut malformed_status = metadata_builder();
+        malformed_status.add_string(KEY_PREPARED_STATUS, "APPROVED");
+        let error = FlowWeights::bind(&tiny_file(malformed_status))
+            .expect_err("prepared status must remain unpinned");
+        assert!(error.to_string().contains(KEY_PREPARED_STATUS));
+    }
+
+    #[test]
+    fn standard_identity_metadata_is_required() {
+        let mut builder = metadata_builder();
+        builder.add_string(KEY_NAME, "wrong-name");
+        let error = FlowWeights::bind(&tiny_file(builder)).expect_err("name must be authenticated");
+        assert!(error.to_string().contains(KEY_NAME));
+    }
+
+    #[test]
     fn wrong_shape_fails_closed_without_payload_allocation() {
         let mut builder = metadata_builder();
         builder
@@ -6119,5 +6229,25 @@ mod tests {
         let file = GgufFile::parse(builder.to_bytes().expect("GGUF")).expect("parse");
         let error = FlowWeights::bind(&file).expect_err("unexpected flow tensor");
         assert!(error.to_string().contains("unexpected flow tensor"));
+    }
+
+    #[test]
+    fn foreign_extra_tensor_is_rejected_in_standalone_component() {
+        let mut builder = metadata_builder();
+        builder
+            .add_tensor(
+                "llm.model.layers.0.weight",
+                GgmlType::F32,
+                vec![1],
+                vec![0; 4],
+            )
+            .expect("foreign tensor");
+        let file = GgufFile::parse(builder.to_bytes().expect("GGUF")).expect("parse");
+        let error = FlowWeights::bind(&file).expect_err("foreign tensor must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("outside the authenticated flow component")
+        );
     }
 }
