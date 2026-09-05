@@ -32,6 +32,18 @@ MAX_MEMBER = 512 * 1024 * 1024
 MAX_TOTAL = 2 * 1024 * 1024 * 1024
 MAX_RATIO = 1000
 MAX_READ = 16 * 1024 * 1024
+MULTI_VALUE_METADATA_HEADERS = {
+    "classifier",
+    "dynamic",
+    "license-file",
+    "obsoletes-dist",
+    "platform",
+    "project-url",
+    "provides-dist",
+    "provides-extra",
+    "requires-dist",
+    "requires-external",
+}
 
 
 def fail(message: str) -> "NoReturn":
@@ -260,12 +272,13 @@ def inspect_wheel(path: Path, expected_name: str, expected_version: str) -> dict
     names: set[str] = set()
     canonical_names: set[str] = set()
     total = 0
-    metadata: dict[str, str] = {}
+    metadata: dict[str, Any] = {}
     requires_dist: list[str] = []
     licenses = []
     native = []
     suspicious = []
     metadata_members = 0
+    metadata_candidate: tuple[int, bytes] | None = None
     with archive:
         for info in archive.infolist():
             name = normalize_member(info.filename)
@@ -279,21 +292,23 @@ def inspect_wheel(path: Path, expected_name: str, expected_version: str) -> dict
             if total > MAX_TOTAL:
                 fail("wheel total expansion limit exceeded")
             lower = name.casefold()
-            if lower.endswith(".dist-info/metadata"):
+            metadata_parts = name.split("/")
+            is_metadata = (
+                len(metadata_parts) >= 2
+                and metadata_parts[-1].casefold() == "metadata"
+                and metadata_parts[-2].casefold().endswith(".dist-info")
+            )
+            is_top_level_metadata = (
+                is_metadata
+                and len(metadata_parts) == 2
+                and metadata_parts[0].casefold().endswith(".dist-info")
+            )
+            if is_top_level_metadata:
                 metadata_members += 1
                 if size > MAX_READ:
                     fail("METADATA exceeds bounded read limit")
-                for line in captured.decode("utf-8", "replace").splitlines():
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        key = key.casefold()
-                        value = value.strip()
-                        if key in {"name", "version"} and key in metadata:
-                            fail(f"duplicate METADATA {key} header")
-                        if key == "requires-dist":
-                            requires_dist.append(value)
-                        else:
-                            metadata.setdefault(key, value)
+                if metadata_candidate is None:
+                    metadata_candidate = (size, captured)
             text = captured[:MAX_READ].decode("utf-8", "ignore").casefold()
             for marker in ("cuda", "nvidia", "triton", "librosa", "soxr", "soundfile"):
                 if marker in lower or marker in text:
@@ -302,8 +317,22 @@ def inspect_wheel(path: Path, expected_name: str, expected_version: str) -> dict
                 licenses.append({"path": name, "bytes": size, "sha256": digest})
             if lower.endswith(NATIVE_SUFFIXES) or any(captured.startswith(magic) for magic in NATIVE_MAGICS):
                 native.append({"path": name, "bytes": size, "sha256": digest})
-    if metadata_members != 1:
+    if metadata_members != 1 or metadata_candidate is None:
         fail(f"wheel must contain exactly one .dist-info/METADATA (found {metadata_members})")
+    _, metadata_bytes = metadata_candidate
+    for line in metadata_bytes.decode("utf-8", "replace").splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            key = key.casefold()
+            value = value.strip()
+            if key in MULTI_VALUE_METADATA_HEADERS:
+                metadata.setdefault(key, []).append(value)
+            elif key in metadata:
+                fail(f"duplicate METADATA {key} header")
+            else:
+                metadata[key] = value
+            if key == "requires-dist":
+                requires_dist.append(value)
     if (
         normalize_package_name(metadata.get("name", ""))
         != normalize_package_name(expected_name)
@@ -397,10 +426,65 @@ def self_test() -> None:
         wheel = root / "demo-1.0-py3-none-any.whl"
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr("demo-1.0.dist-info/", b"")
-            archive.writestr("demo-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: Demo_Pkg\nVersion: 1.0\nLicense: MIT\n")
+            archive.writestr(
+                "demo-1.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\n"
+                "Name: Demo_Pkg\n"
+                "Version: 1.0\n"
+                "Classifier: License :: OSI Approved :: MIT License\n"
+                "Classifier: Programming Language :: Python :: 3\n"
+                "Requires-Dist: packaging>=20\n"
+                "Requires-Dist: wheel\n"
+                "License: MIT\n",
+            )
             archive.writestr("LICENSE", "MIT\n")
         record = inspect_wheel(wheel, "demo-pkg", "1.0")
         assert record["license_notice"][0]["sha256"] == digest_bytes(b"MIT\n")
+        assert record["metadata"]["classifier"] == [
+            "License :: OSI Approved :: MIT License",
+            "Programming Language :: Python :: 3",
+        ]
+        assert record["requires_dist"] == ["packaging>=20", "wheel"]
+        nested_metadata = root / "nested-metadata-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(nested_metadata, "w") as archive:
+            archive.writestr(
+                "setuptools-78.1.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: setuptools\nVersion: 78.1.0\n",
+            )
+            archive.writestr(
+                "setuptools/_vendor/more_itertools-10.8.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: more-itertools\nVersion: 10.8.0\n",
+            )
+        nested_record = inspect_wheel(nested_metadata, "setuptools", "78.1.0")
+        assert nested_record["metadata"]["name"] == "setuptools"
+        duplicate_top_level = root / "duplicate-top-level-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(duplicate_top_level, "w") as archive:
+            for directory in ("first-1.0.dist-info", "second-1.0.dist-info"):
+                archive.writestr(
+                    f"{directory}/METADATA",
+                    "Metadata-Version: 2.1\nName: duplicate\nVersion: 1.0\n",
+                )
+        try:
+            inspect_wheel(duplicate_top_level, "duplicate", "1.0")
+        except SystemExit as error:
+            assert "exactly one" in str(error)
+        else:
+            raise AssertionError("multiple top-level METADATA files accepted")
+        duplicate_header = root / "duplicate-header-1.0-py3-none-any.whl"
+        with zipfile.ZipFile(duplicate_header, "w") as archive:
+            archive.writestr(
+                "duplicate-header-1.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\n"
+                "Name: duplicate-header\n"
+                "Name: duplicate-header\n"
+                "Version: 1.0\n",
+            )
+        try:
+            inspect_wheel(duplicate_header, "duplicate-header", "1.0")
+        except SystemExit as error:
+            assert "duplicate METADATA name header" in str(error)
+        else:
+            raise AssertionError("duplicate singleton METADATA header accepted")
         for bad in ("../x", "/x", "a\\x"):
             try:
                 normalize_member(bad)
