@@ -54,4 +54,3 @@ set -e
 mv "$log_file" "$WORK/evidence/validation.log"
 log "closure evidence written to $report; owner review remains required; publication=NO_UPLOAD"
 exit 2
-
