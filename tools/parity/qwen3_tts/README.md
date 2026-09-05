@@ -53,3 +53,18 @@ input or have symlink ancestry. Run
 `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh --self-test` locally for
 the no-model/no-network contract checks. The full four-variant validation
 remains blocked until this API smoke has an authenticated VAST result.
+
+The separate model-free dependency/license audit is
+`scripts/publish/vast-ai/audit-qwen3-tts-dependencies.sh`. It is restricted to
+an already synchronized Linux x86_64 VAST environment and records the active
+Python 3.12 lock closure, installed publisher files, native ELF `NEEDED`
+entries, and only exact locked-sdist plus fixed source/model/decoder LICENSE
+path evidence. It never acquires weights, imports model code, invokes Cargo,
+or uploads anything. The audit itself currently reports `BLOCKED` at the
+existing unresolved license manifest (first blocker `accelerate==1.12.0`);
+the model-free audit may still run on an already synchronized, authorized VAST
+environment and emit this factual blocker evidence. The unresolved gate means
+that dependency synchronization, model download, and API/model smoke cannot
+progress until legitimate dependency/component reviews and authenticated owner
+evidence are recorded. Run its `--self-test` locally; do not run the production
+audit on the maintainer machine.
