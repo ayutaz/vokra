@@ -147,10 +147,10 @@ PY
 }
 
 require_approval() {
-  local approval="$1"
+  local approval="$1" expected_head="$2"
   require_absolute 'approval evidence' "$approval"; require_file 'approval evidence' "$approval"
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 \
-    python - "$approval" "$VOKRA_EXPECTED_COMMIT" "$CHECKPOINT_SHA256" "$CONFIG_SHA256" <<'PY'
+    python - "$approval" "$expected_head" "$CHECKPOINT_SHA256" "$CONFIG_SHA256" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -195,7 +195,8 @@ try:
             raise ValueError(f"approval identity drift: {key}")
     if type(approval["no_upload"]) is not bool:
         raise ValueError("approval no_upload must be a JSON boolean")
-    if not isinstance(approval["signer"], str) or not approval["signer"].strip():
+    if (not isinstance(approval["signer"], str) or not approval["signer"].strip()
+            or approval["signer"].strip().upper() in {"TODO", "TBD", "UNRESOLVED", "UNKNOWN", "PENDING"}):
         raise ValueError("approval signer is unresolved")
     if len(approval["git_commit"]) != 40 or any(c not in "0123456789abcdef" for c in approval["git_commit"]):
         raise ValueError("approval git commit is not lowercase 40-hex")
@@ -229,12 +230,12 @@ require_remote_host() {
 }
 
 require_tooling() {
-  local tool actual_commit
+  local expected_head="$1" tool actual_commit
   for tool in cargo rustc git shasum awk find tee grep sysctl sw_vers system_profiler xcrun uv; do command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"; done
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" && -f "$TEST_SOURCE" && ! -L "$TEST_SOURCE" ]] || die 'Vokra checkout or BiCodec test source is missing'
-  [[ -n "${VOKRA_EXPECTED_COMMIT:-}" && "$VOKRA_EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die 'VOKRA_EXPECTED_COMMIT must be the exact lowercase 40-hex checkout commit'
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die 'expected checkout commit must be lowercase 40-hex'
   actual_commit="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
-  [[ "$actual_commit" == "$VOKRA_EXPECTED_COMMIT" ]] || die 'checkout commit does not match VOKRA_EXPECTED_COMMIT'
+  [[ "$actual_commit" == "$expected_head" ]] || die 'checkout commit does not match --expected-head'
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
   xcrun -f metal >/dev/null 2>&1 || die 'Xcode Metal compiler is unavailable'
 }
@@ -248,11 +249,11 @@ require_backend_contract() {
 }
 
 record_environment() {
-  local output="$1"
+  local output="$1" expected_head="$2"
   {
     echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
-    echo "expected_commit=$VOKRA_EXPECTED_COMMIT"
+    echo "expected_commit=$expected_head"
     echo "uname=$(uname -a)"; echo "machine=$(uname -m)"
     echo "memory_bytes=$(sysctl -n hw.memsize)"; echo "physical_cpu=$(sysctl -n hw.physicalcpu)"; echo "logical_cpu=$(sysctl -n hw.logicalcpu)"
     sw_vers; rustc --version --verbose; cargo --version; echo "metal_compiler=$(xcrun -f metal)"
@@ -271,6 +272,10 @@ require_test_pass() {
   [[ "$(grep -Fxc "BICODEC_MEASURED_PARITY_BACKEND backend=$backend verdict=PASS" "$log_path" || true)" == 1 ]] \
     || { die "$backend log lacks one backend-specific PASS sentinel"; return 2; }
   if [[ "$backend" == metal ]]; then
+    for stage in semantic_latent d_vector prenet_output waveform; do
+      count="$(grep -Ec "^BICODEC_METAL_CPU_METRICS stage=$stage max_abs=[0-9.e+-]+ rmse=[0-9.e+-]+ verdict=PASS$" "$log_path" || true)"
+      [[ "$count" == 1 ]] || { die "Metal log lacks one direct metric line for $stage"; return 2; }
+    done
     [[ "$(grep -Fxc 'BICODEC_METAL_CPU stages=semantic_latent,d_vector,prenet_output,waveform verdict=PASS' "$log_path" || true)" == 1 ]] \
       || { die 'Metal log lacks one direct Metal/CPU parity sentinel'; return 2; }
   fi
@@ -310,11 +315,12 @@ run_self_test() (
   require_test_pass "$temporary/filtered.log" cpu
   cp "$temporary/valid.log" "$temporary/metal.log"
   sed 's/backend=cpu/backend=metal/' "$temporary/valid.log" > "$temporary/metal.log"
+  for stage in semantic_latent d_vector prenet_output waveform; do printf '%s\n' "BICODEC_METAL_CPU_METRICS stage=$stage max_abs=0.000000000e+00 rmse=0.000000000e+00 verdict=PASS" >> "$temporary/metal.log"; done
   printf '%s\n' 'BICODEC_METAL_CPU stages=semantic_latent,d_vector,prenet_output,waveform verdict=PASS' >> "$temporary/metal.log"
   require_test_pass "$temporary/metal.log" metal
   if bash "$0" --help >"$temporary/help.txt" 2>&1; then :; else die 'help invocation failed'; fi
   grep -Fq 'usage: apple-silicon-bicodec.sh' "$temporary/help.txt" || die 'help output is incomplete'
-  for token in 'run_parity cpu' 'run_parity metal' 'VOKRA_BICODEC_PARITY_BACKEND' 'backend=metal verdict=PASS' 'BICODEC_METAL_CPU stages=semantic_latent,d_vector,prenet_output,waveform verdict=PASS' '--expected-head' '--locked --offline'; do
+  for token in 'run_parity cpu' 'run_parity metal' 'VOKRA_BICODEC_PARITY_BACKEND' 'backend=metal verdict=PASS' 'BICODEC_METAL_CPU_METRICS stage=' 'BICODEC_METAL_CPU stages=semantic_latent,d_vector,prenet_output,waveform verdict=PASS' '--expected-head' '--locked --offline'; do
     grep -Fq -- "$token" "$0" || die "self-test missing backend contract: $token"
   done
   grep -Fq "require_file 'GGUF'" "$0" || die 'self-test missing regular-file helper call'
@@ -350,13 +356,13 @@ main() {
   [[ -n "$gguf$gguf_digest$reference$reference_digest$approval$evidence$expected_head" ]] || { usage; die 'all inputs are required'; }
   for pair in "GGUF path|$gguf" "reference directory|$reference" "approval evidence|$approval" "evidence directory|$evidence"; do label="${pair%%|*}"; value="${pair#*|}"; require_absolute "$label" "$value"; done
   [[ "$gguf_digest" =~ ^[0-9a-f]{64}$ && "$reference_digest" =~ ^[0-9a-f]{64}$ ]] || die 'input hashes must be lowercase 64-hex'
-  require_tooling; require_remote_host; require_backend_contract
+  require_tooling "$expected_head"; require_remote_host; require_backend_contract
   actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
   [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
   require_file 'GGUF' "$gguf"; [[ "$(sha256_file "$gguf")" == "$gguf_digest" ]] || die 'GGUF SHA-256 mismatch'
   require_reference_manifest "$reference"; [[ "$(sha256_file "$reference/manifest.json")" == "$reference_digest" ]] || die 'reference manifest SHA-256 mismatch'
-  require_approval "$approval"; require_disjoint_evidence "$evidence" "$VOKRA_ROOT" "$gguf" "$reference" "$approval"
-  record_environment "$evidence/environment.txt"
+  require_approval "$approval" "$expected_head"; require_disjoint_evidence "$evidence" "$VOKRA_ROOT" "$gguf" "$reference" "$approval"
+  record_environment "$evidence/environment.txt" "$expected_head"
   printf '%s\n' "gguf_sha256=$gguf_digest" "reference_manifest_sha256=$reference_digest" "checkpoint_sha256=$CHECKPOINT_SHA256" "config_sha256=$CONFIG_SHA256" "upstream_hf_revision=$UPSTREAM_HF_REVISION" "source_repository=$SOURCE_REPOSITORY" "source_revision=$SOURCE_REVISION" > "$evidence/input-hashes.txt"
   log 'running authenticated BiCodec CPU parity'; run_parity cpu "$gguf" "$reference" "$evidence/parity-cpu.log"; require_test_pass "$evidence/parity-cpu.log" cpu
   log 'running authenticated BiCodec Metal parity'; run_parity metal "$gguf" "$reference" "$evidence/parity-metal.log"; require_test_pass "$evidence/parity-metal.log" metal

@@ -12,6 +12,38 @@ die() {
   exit 1
 }
 
+require_output_closure() {
+  local output="$1" entry relative name
+  local expected='bicodec.gguf input-hashes.txt apple-transfer-args.txt parity-cpu.log summary.txt reference reference/manifest.json reference/semantic_latent.f32 reference/d_vector.f32 reference/prenet_output.f32 reference/waveform.f32'
+  while IFS= read -r entry; do
+    relative="${entry#"$output/"}"
+    [[ "$entry" != *'/'./* && "$entry" != *'/'../* ]] || die "output contains lexical dot path: $relative"
+    [[ -e "$entry" && ! -L "$entry" ]] || die "output contains missing or symlinked entry: $relative"
+    case " $expected " in *" $relative "*) ;; *) die "output contains unexpected entry: $relative" ;; esac
+  done < <(find -P "$output" -mindepth 1 -print)
+  for relative in $expected; do
+    entry="$output/$relative"
+    [[ -e "$entry" && ! -L "$entry" ]] || die "output closure is missing: $relative"
+    if [[ "$relative" == reference ]]; then
+      [[ -d "$entry" ]] || die "reference closure is not a directory"
+    else
+      [[ -f "$entry" && -s "$entry" ]] || die "output closure entry is not a non-empty file: $relative"
+    fi
+  done
+}
+
+write_apple_transfer_args() {
+  local output="$1" gguf_sha="$2" reference_sha="$3" expected_head="$4"
+  {
+    printf '%q ' apple-silicon-bicodec.sh \
+      --gguf '<BICODEC_GGUF>' --gguf-sha256 "$gguf_sha" \
+      --reference '<BICODEC_REFERENCE_DIR>' --reference-sha256 "$reference_sha" \
+      --approval-evidence '<BICODEC_APPROVAL_JSON>' --evidence-dir '<BICODEC_EVIDENCE_DIR>' \
+      --expected-head "$expected_head"
+    printf '\n'
+  } > "$output"
+}
+
 require_approval() {
   local approval="$1" expected_head="$2"
   [[ "$approval" == /* && -f "$approval" && ! -L "$approval" ]] || die 'approval evidence must be an absolute regular non-symlink file'
@@ -46,7 +78,9 @@ try:
     for key, expected_value in expected.items():
         if value[key] != expected_value:
             raise ValueError(f"approval identity drift: {key}")
-    if type(value["no_upload"]) is not bool or not isinstance(value["signer"], str) or not value["signer"].strip():
+    if (type(value["no_upload"]) is not bool or not isinstance(value["signer"], str)
+            or not value["signer"].strip()
+            or value["signer"].strip().upper() in {"TODO", "TBD", "UNRESOLVED", "UNKNOWN", "PENDING"}):
         raise ValueError("approval signer/no_upload is invalid")
     if not isinstance(value["git_commit"], str) or len(value["git_commit"]) != 40 or any(c not in "0123456789abcdef" for c in value["git_commit"]):
         raise ValueError("approval git_commit is not lowercase 40-hex")
@@ -111,13 +145,31 @@ run_self_test() (
   if (require_cpu_parity_pass "$temporary/failure.log") >/dev/null 2>&1; then die 'failure marker accepted'; fi
   sed '/BICODEC_MEASURED_PARITY_BACKEND/d' "$temporary/valid.log" > "$temporary/missing-sentinel.log"
   if (require_cpu_parity_pass "$temporary/missing-sentinel.log") >/dev/null 2>&1; then die 'missing backend sentinel accepted'; fi
+  mkdir "$temporary/closure" "$temporary/closure/reference"
+  for name in bicodec.gguf input-hashes.txt apple-transfer-args.txt parity-cpu.log summary.txt; do printf x > "$temporary/closure/$name"; done
+  for name in manifest.json semantic_latent.f32 d_vector.f32 prenet_output.f32 waveform.f32; do printf x > "$temporary/closure/reference/$name"; done
+  require_output_closure "$temporary/closure"
+  mkdir "$temporary/closure/unexpected-dir"
+  if (require_output_closure "$temporary/closure") >/dev/null 2>&1; then die 'unexpected output directory accepted'; fi
   grep -Fq -- 'VOKRA_BICODEC_PARITY_BACKEND=cpu' "$0" || die 'CPU selector missing from production command'
   grep -Fq -- '--expected-head' "$0" || die 'exact checkout HEAD gate is missing'
   grep -Fq -- '--approval-evidence' "$0" || die 'owner approval gate is missing'
+  grep -Fq -- '--evidence-dir' "$0" || die 'Apple transfer args lack evidence directory'
+  grep -Fq -- "reference_dir=\"\$output/reference\"" "$0" || die 'reference packet is not isolated from evidence output'
+  grep -Fq -- 'verdict=CPU_PASS_METAL_NOT_RUN' "$0" || die 'CPU-only verdict is not explicit'
   grep -Fq -- 'signoff_match.py --check-repo bicodec' "$0" || die 'repository owner signoff gate is missing'
   if bash "$0" --self-test --self-test >/dev/null 2>&1; then die 'duplicate --self-test accepted'; fi
   grep -Fq -- 'cargo test --locked --offline --lib -p vokra-models' "$0" || die 'production command lacks locked offline --lib'
   grep -Fq -- '-- --ignored --exact --show-output' "$0" || die 'production command lacks harness --exact/show-output'
+  write_apple_transfer_args "$temporary/transfer-args.txt" \
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+    'cccccccccccccccccccccccccccccccccccccccc'
+  [[ "$(wc -l < "$temporary/transfer-args.txt" | tr -d ' ')" == 1 ]] || die 'Apple transfer args are not one line'
+  read -r -a transfer_args < "$temporary/transfer-args.txt"
+  for flag in --gguf --gguf-sha256 --reference --reference-sha256 --approval-evidence --evidence-dir --expected-head; do
+    printf '%s\n' "${transfer_args[@]}" | grep -Fqx -- "$flag" || die "Apple transfer args omit $flag"
+  done
   echo 'run-bicodec-native-parity.sh self-test: OK'
 )
 
@@ -175,9 +227,10 @@ command -v cargo >/dev/null 2>&1 || die "cargo is required"
 [[ "$(findmnt -T "$(dirname "$output")" -no FSTYPE 2>/dev/null || true)" == "tmpfs" ]] \
   || die "output parent must be tmpfs/RAM disk"
 [[ ! -e "$output" && ! -L "$output" ]] || die "output must be absent (no-clobber)"
+reference_dir="$output/reference"
 uv run --frozen --project tools/parity --python 3.12 python \
   tools/parity/bicodec_dump_reference.py \
-  --source-dir "$source_dir" --model-dir "$model_dir" --output "$output"
+  --source-dir "$source_dir" --model-dir "$model_dir" --output "$reference_dir"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
 cargo build --locked --offline --release -p vokra-cli
 gguf_path="$output/bicodec.gguf"
@@ -188,27 +241,27 @@ target/release/vokra-cli convert \
   --license cc-by-nc-sa-4.0
 [[ -s "$gguf_path" ]] || die "authenticated BiCodec conversion produced no GGUF"
 for artifact in manifest.json semantic_latent.f32 d_vector.f32 prenet_output.f32 waveform.f32; do
-  [[ -f "$output/$artifact" && ! -L "$output/$artifact" && -s "$output/$artifact" ]] || die "reference artifact missing or symlinked: $artifact"
+  [[ -f "$reference_dir/$artifact" && ! -L "$reference_dir/$artifact" && -s "$reference_dir/$artifact" ]] || die "reference artifact missing or symlinked: $artifact"
 done
-[[ "$(find "$output" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]] || die 'reference/conversion output contains an unexpected entry'
+[[ "$(find -P "$reference_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" == 5 ]] || die 'reference packet contains an unexpected entry'
 gguf_sha256="$(sha256sum "$gguf_path" | awk '{print $1}')"
-reference_manifest_sha256="$(sha256sum "$output/manifest.json" | awk '{print $1}')"
+reference_manifest_sha256="$(sha256sum "$reference_dir/manifest.json" | awk '{print $1}')"
 {
   echo "expected_head=$expected_head"
   echo "gguf_sha256=$gguf_sha256"
   echo "reference_manifest_sha256=$reference_manifest_sha256"
   for artifact in semantic_latent.f32 d_vector.f32 prenet_output.f32 waveform.f32; do
-    echo "${artifact}_sha256=$(sha256sum "$output/$artifact" | awk '{print $1}')"
+    echo "${artifact}_sha256=$(sha256sum "$reference_dir/$artifact" | awk '{print $1}')"
   done
   echo 'publication=NO_UPLOAD'
 } > "$output/input-hashes.txt"
-printf '%s\n' "apple-silicon-bicodec.sh --gguf %q --gguf-sha256 %s --reference %q --reference-sha256 %s --approval-evidence %q --expected-head %s" \
-  '<BICODEC_GGUF>' "$gguf_sha256" '<BICODEC_REFERENCE_DIR>' "$reference_manifest_sha256" '<BICODEC_APPROVAL_JSON>' "$expected_head" > "$output/apple-transfer-args.txt"
+write_apple_transfer_args "$output/apple-transfer-args.txt" "$gguf_sha256" "$reference_manifest_sha256" "$expected_head"
 VOKRA_BICODEC_PARITY_GGUF="$gguf_path" \
-VOKRA_BICODEC_PARITY_REFERENCE="$output" \
+VOKRA_BICODEC_PARITY_REFERENCE="$reference_dir" \
 VOKRA_BICODEC_PARITY_BACKEND=cpu \
   cargo test --locked --offline --lib -p vokra-models \
     bicodec::tests::official_reference_measured_parity -- --ignored --exact --show-output 2>&1 | tee "$output/parity-cpu.log"
 require_cpu_parity_pass "$output/parity-cpu.log"
-printf '%s\n' "verdict=MEASURED_ONLY" "expected_head=$expected_head" "gguf_sha256=$gguf_sha256" "reference_manifest_sha256=$reference_manifest_sha256" 'publication=NO_UPLOAD' > "$output/summary.txt"
+printf '%s\n' "verdict=CPU_PASS_METAL_NOT_RUN" "expected_head=$expected_head" "gguf_sha256=$gguf_sha256" "reference_manifest_sha256=$reference_manifest_sha256" 'cpu_vs_official=PASS' 'metal_vs_official=NOT_RUN' 'metal_vs_cpu=NOT_RUN' 'publication=NO_UPLOAD' > "$output/summary.txt"
+require_output_closure "$output"
 echo "BiCodec official reference evidence: $output"

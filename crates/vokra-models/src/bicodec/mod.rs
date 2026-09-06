@@ -1493,9 +1493,13 @@ mod tests {
                 ("prenet_output", prenet, &cpu.2),
                 ("waveform", waveform, &cpu.3),
             ] {
+                let (max_abs, rmse) = parity_metrics(metal, cpu_values);
                 assert!(
                     parity_passes(role, metal, cpu_values),
                     "BiCodec Metal/CPU {role} exceeds the fixed measured bound"
+                );
+                println!(
+                    "BICODEC_METAL_CPU_METRICS stage={role} max_abs={max_abs:.9e} rmse={rmse:.9e} verdict=PASS"
                 );
             }
             println!(
