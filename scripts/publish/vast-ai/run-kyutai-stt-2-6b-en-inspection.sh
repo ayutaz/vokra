@@ -38,12 +38,16 @@ self_test() {
     '6a93b7d998b32cb65f07e8948508004421042f100130c3572de13af5cab9e4f9' \
     'c8f5779f1471f34734aafe1999082ca33862bc5e' 'd25302da6650309c094d0cbf10cfecfb507c31408b820304bda0c3195482f990' \
     '5618985925' 'model_info' 'list_repo_tree' 'path_in_repo' 'git_blob_sha1' 'lfs_sha256' \
+    'git_commit=' 'evidence_dir=' '--work-dir must be absolute' \
     '128' '32' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' \
     'evidence_stage' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NO_UPLOAD'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"; fail=1
     fi
   done
+  if ! grep -Fq "cd \"\$ROOT\"" "$path"; then
+    log 'self-test FAIL: Cargo commands are not rooted at checkout'; fail=1
+  fi
   if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
 import re
 import sys
@@ -125,6 +129,7 @@ if (( self )); then
   self_test; exit $?
 fi
 
+[[ "$work_dir" == /* ]] || die '--work-dir must be absolute'
 [[ "$(uname -s)" == Linux ]] || die 'inspection requires Linux VAST'
 [[ "$(uname -m)" == x86_64 ]] || die 'inspection requires x86_64 VAST'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
@@ -132,11 +137,24 @@ fi
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
 [[ -f "$ROOT/tools/parity/pyproject.toml" && -f "$ROOT/tools/parity/uv.lock" ]] || die 'locked parity project missing'
 [[ -f "$INSPECTOR" ]] || die 'inspector missing'
+assert_no_symlink_path() {
+  local current="$1"
+  while [[ "$current" != / && "$current" != . && -n "$current" ]]; do
+    [[ ! -L "$current" ]] || die "path contains symlink: $current"
+    current="$(dirname "$current")"
+  done
+}
 mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
 [[ "$mem_kib" =~ ^[0-9]+$ ]] || die 'invalid memory value'
 (( mem_kib >= MIN_MEM_KIB )) || die '128 GiB memory guard failed'
-mkdir -p "$(dirname "$work_dir")"
+work_parent="$(dirname "$work_dir")"
+assert_no_symlink_path "$work_parent"
+mkdir -p "$work_parent"
+assert_no_symlink_path "$work_parent"
+[[ ! -L "$work_dir" ]] || die 'work directory must not be a symlink'
 [[ ! -e "$work_dir" || -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die 'work directory must be empty'
+git_commit="$(git -C "$ROOT" rev-parse --verify HEAD)" || die 'unable to resolve checkout commit'
+[[ "$git_commit" =~ ^[0-9a-f]{40}$ ]] || die 'checkout commit is not a full SHA-1'
 mount_kind="$(findmnt -T "$(dirname "$work_dir")" -no FSTYPE 2>/dev/null || true)"
 [[ "$mount_kind" == tmpfs ]] || die 'work directory parent must be tmpfs'
 tmpfs_kib="$(df -Pk "$(dirname "$work_dir")" | awk 'NR == 2 {print $4}')"
@@ -156,9 +174,14 @@ export UV_CACHE_DIR
   echo 'metal_status=BLOCKED_BY_CPU'
   echo 'parity_status=NOT_RUN'
   echo 'publication=NO_UPLOAD'
+  echo "git_commit=$git_commit"
+  echo "evidence_dir=$work_dir/evidence"
   echo "hf_total_bytes=$TOTAL_BYTES"
-  cargo fmt --all -- --check
-  cargo metadata --locked --no-deps --format-version 1 >/dev/null
+  (
+    cd "$ROOT"
+    cargo fmt --all -- --check
+    cargo metadata --locked --no-deps --format-version 1 >/dev/null
+  )
 } > "$work_dir/evidence/validation.log" 2>&1
 
 emit_tree() {
@@ -282,4 +305,4 @@ row = tree.get(tokenizer_name)
 if not isinstance(row, dict) or row.get("size") != int(tokenizer_bytes) or row.get("git_blob_sha1") != tokenizer_blob or row.get("lfs_sha256") != tokenizer_lfs:
     raise SystemExit("server-tree tokenizer identity mismatch")
 PY
-die 'Kyutai STT inspection evidence preserved; native runtime/parity remain blocked'
+die "Kyutai STT inspection evidence preserved at $work_dir/evidence; native runtime/parity remain blocked"

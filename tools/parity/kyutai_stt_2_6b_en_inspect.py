@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Inspect fixed Kyutai STT-2.6B-EN evidence without conversion or runtime."""
 from __future__ import annotations
-import argparse, hashlib, io, json, os, re, subprocess, tarfile, tempfile, zipfile
+import argparse, hashlib, io, json, os, platform, re, subprocess, sys, tarfile, tempfile, zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -156,6 +156,34 @@ def source(root:Path,url:str,rev:str,roles:tuple[str,...])->dict[str,Any]:
  return {"origin":origin,"revision":head,"roles":role_rows,"license_records":license_rows}
 def base()->dict[str,Any]:
  return {"format":"vokra-kyutai-stt-2.6b-en-inspection-v1","status":"BLOCKED","inspection_status":"PENDING","evidence_stage":"INSPECTION_ONLY","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":REPO,"revision":REV,"license":"CC-BY-4.0","files":ARTIFACTS,"total_bytes":TOTAL},"historical_public_artifact":HISTORICAL_PUBLIC_ARTIFACT,"blockers":["real model/Mimi/tokenizer tensor binder is not implemented","native STT forward and independent CPU parity are not complete","dataset provenance and dependencies require separate review","Metal backend is blocked by CPU completion"]}
+def require_vast()->None:
+ if platform.system()!="Linux" or platform.machine()!="x86_64": raise RuntimeError("inspection requires Linux x86_64 VAST")
+ if os.environ.get("VOKRA_PUBLISH_ON_VAST")!="1": raise RuntimeError("VOKRA_PUBLISH_ON_VAST=1 is absent")
+def write_manifest_no_replace(evidence:Path, manifest:dict[str,Any])->None:
+ if evidence.is_symlink() or not evidence.is_dir(): raise ValueError("evidence directory must be an existing regular directory")
+ output=evidence/"manifest.json"
+ if output.exists() or output.is_symlink(): raise ValueError("manifest output already exists")
+ fd, temporary=tempfile.mkstemp(prefix=".manifest.",suffix=".tmp",dir=evidence)
+ try:
+  try: stream=os.fdopen(fd,"w",encoding="utf-8",newline="")
+  except BaseException:
+   try: os.close(fd)
+   except OSError: pass
+   raise
+  with stream:
+   stream.write(json.dumps(manifest,indent=2,sort_keys=True)+"\n"); stream.flush(); os.fsync(stream.fileno())
+  os.link(temporary,output)
+  try:
+   directory_fd=os.open(evidence,os.O_RDONLY)
+  except OSError:
+   directory_fd=None
+  if directory_fd is not None:
+   try: os.fsync(directory_fd)
+   except OSError: pass
+   finally: os.close(directory_fd)
+ finally:
+  try: os.unlink(temporary)
+  except FileNotFoundError: pass
 def inspect(a:argparse.Namespace)->int:
  m=base()
  try:
@@ -182,7 +210,10 @@ def inspect(a:argparse.Namespace)->int:
   m["inspection_status"]="AUTHENTICATED_EVIDENCE_COMPLETE"
  except Exception as e:
   m["inspection_status"]="INSPECTION_ERROR"; m["blockers"].append(f"inspection error: {type(e).__name__}: {e}")
- Path(a.evidence).mkdir(parents=True,exist_ok=True); (Path(a.evidence)/"manifest.json").write_text(json.dumps(m,indent=2,sort_keys=True)+"\n")
+ try: write_manifest_no_replace(Path(a.evidence),m)
+ except Exception as e:
+  print(f"failed to write inspection evidence: {type(e).__name__}: {e}",file=sys.stderr)
+  return 2
  return 2
 def self_test()->None:
  assert TOKENIZER_NAME=="tokenizer_en_audio_4000.model" and ARTIFACTS[TOKENIZER_NAME]==(59339,"1820a7cbb15efc6a33dd365113c07e3df9d28d80","d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6")
@@ -255,12 +286,28 @@ def self_test()->None:
   try:archive_inventory(duplicate_archive)
   except ValueError:pass
   else:raise AssertionError("duplicate archive member accepted")
-  out=Path(d)/"e"; assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out)))==2
+  out=Path(d)/"e"; out.mkdir(); assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out)))==2
   mm=json.loads((out/"manifest.json").read_text()); assert mm["inspection_status"]=="INSPECTION_ERROR"
+  preserved=out/"manifest.json"; before=preserved.read_bytes()
+  assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out)))==2
+  assert preserved.read_bytes()==before
+  assert not list(out.glob(".manifest.*"))
+  fd_failure=Path(d)/"fd-failure"; fd_failure.mkdir()
+  original_fdopen,original_close=os.fdopen,os.close; closed=[]
+  def fail_fdopen(raw_fd,*args,**kwargs): raise OSError("synthetic fdopen failure")
+  def record_close(raw_fd): closed.append(raw_fd); return original_close(raw_fd)
+  os.fdopen,os.close=fail_fdopen,record_close
+  try:
+   try: write_manifest_no_replace(fd_failure,{"status":"BLOCKED"})
+   except OSError: pass
+   else: raise AssertionError("fdopen failure was accepted")
+  finally: os.fdopen,os.close=original_fdopen,original_close
+  assert closed and not list(fd_failure.iterdir())
  print("kyutai STT inspector self-test PASS")
 def main()->int:
  p=argparse.ArgumentParser();p.add_argument("--self-test",action="store_true");p.add_argument("--snapshot");p.add_argument("--server-tree");p.add_argument("--source");p.add_argument("--moshi-source");p.add_argument("--evidence",default="evidence");a=p.parse_args()
  if a.self_test:self_test();return 0
+ require_vast()
  if not a.snapshot or not a.server_tree:p.error("snapshot and server-tree required")
  return inspect(a)
 if __name__=="__main__":raise SystemExit(main())
