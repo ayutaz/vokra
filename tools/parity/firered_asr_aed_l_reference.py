@@ -20,6 +20,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+import firered_asr_aed_l_gate as gate
 
 MODEL_REPOSITORY = "FireRedTeam/FireRedASR-AED-L"
 MODEL_REVISION = "e57f5960d03cff1071ff7acbb409314d1e70ed3d"
@@ -417,10 +418,21 @@ def main() -> int:
     parser.add_argument("--cmvn", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--expected-head")
     args = parser.parse_args()
     if args.self_test:
+        if args.approval_evidence or args.approval_sha256 or args.expected_head or args.source or args.checkpoint or args.cmvn or args.output:
+            parser.error("--self-test accepts no gate arguments")
         self_test()
         return 0
+    if not args.approval_evidence or not args.approval_sha256 or not args.expected_head:
+        parser.error("--approval-evidence, --approval-sha256 and --expected-head are required before model import")
+    try:
+        gate.enforce_blocked_approval(args.approval_evidence, args.approval_sha256, args.expected_head, Path(__file__).resolve().parents[2])
+    except (gate.GateBlocked, gate.GateError) as error:
+        print(error, file=sys.stderr); return 2
     if not args.source or not args.checkpoint or not args.cmvn or not args.output:
         parser.error("--source, --checkpoint, --cmvn and --output are required")
     guard_output_path(args.output, args.checkpoint, args.cmvn)

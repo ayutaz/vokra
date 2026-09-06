@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse, hashlib, io, json, os, platform, re, subprocess, sys, tarfile, tempfile, zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
+import firered_asr_aed_l_gate as gate
 
 REPOSITORY = "FireRedTeam/FireRedASR-AED-L"
 REVISION = "e57f5960d03cff1071ff7acbb409314d1e70ed3d"
@@ -710,9 +711,22 @@ def main() -> int:
     parser.add_argument("--server-tree")
     parser.add_argument("--source")
     parser.add_argument("--evidence", default="evidence")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--expected-head")
     args = parser.parse_args()
     if args.self_test:
+        if args.approval_evidence or args.approval_sha256 or args.expected_head or args.snapshot or args.server_tree or args.source or args.evidence != "evidence":
+            parser.error("--self-test accepts no gate arguments")
         self_test(); return 0
+    if not args.approval_evidence or not args.approval_sha256 or not args.expected_head:
+        parser.error("--approval-evidence, --approval-sha256 and --expected-head are required before any input inspection")
+    try:
+        gate.enforce_blocked_approval(args.approval_evidence, args.approval_sha256, args.expected_head, Path(__file__).resolve().parents[2])
+    except gate.GateBlocked as error:
+        print(error, file=sys.stderr); return 2
+    except gate.GateError as error:
+        print(f"blocked approval validation failed: {error}", file=sys.stderr); return 2
     if not args.snapshot or not args.server_tree:
         parser.error("--snapshot and --server-tree required")
     return inspect(args)

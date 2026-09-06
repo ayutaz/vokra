@@ -26,6 +26,7 @@ import tempfile
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
+import firered_asr_aed_l_gate as gate
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -526,18 +527,28 @@ def self_test() -> None:
         preparation_path = root / "preparation.json"
         write_json(inspection_path, main_manifest)
         write_json(preparation_path, preparation_manifest)
-        validator_args = [sys.executable, str(Path(__file__)), "--validate-manifest", "--inspection-manifest", str(inspection_path), "--preparation-manifest", str(preparation_path), "--prepared", str(prepared_path)]
-        result = subprocess.run(validator_args, capture_output=True, text=True, check=False)
-        assert result.returncode == 0, result.stderr
+        validate_preparation_manifest(
+            json.loads(inspection_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs),
+            json.loads(preparation_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs),
+            prepared_path,
+        )
         swapped = json.loads(json.dumps(preparation_manifest))
         swapped["model"]["repository"], swapped["model"]["revision"] = swapped["model"]["revision"], swapped["model"]["repository"]
         swapped["checkpoint"]["repository"], swapped["checkpoint"]["revision"] = swapped["checkpoint"]["revision"], swapped["checkpoint"]["repository"]
         write_json(preparation_path, swapped)
-        result = subprocess.run(validator_args, capture_output=True, text=True, check=False)
-        assert result.returncode == 2, "swapped identity accepted by CLI validator"
+        try:
+            validate_preparation_manifest(main_manifest, swapped, prepared_path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("swapped identity accepted by validator")
         preparation_path.write_text('{"format":"x","format":"y"}\n', encoding="utf-8")
-        result = subprocess.run(validator_args, capture_output=True, text=True, check=False)
-        assert result.returncode == 2, "duplicate JSON key accepted by CLI validator"
+        try:
+            json.loads(preparation_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("duplicate JSON key accepted by validator")
         write_json(preparation_path, preparation_manifest)
         malformed = json.loads(json.dumps(preparation_manifest))
         del malformed["output"]["sha256"]
@@ -574,4 +585,15 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--self-test"]:
         self_test()
     else:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--approval-evidence", required=True)
+        parser.add_argument("--approval-sha256", required=True)
+        parser.add_argument("--expected-head", required=True)
+        gate_args, remaining = parser.parse_known_args()
+        try:
+            gate.enforce_blocked_approval(gate_args.approval_evidence, gate_args.approval_sha256, gate_args.expected_head, Path(__file__).resolve().parents[2])
+        except (gate.GateBlocked, gate.GateError) as error:
+            print(error, file=sys.stderr)
+            raise SystemExit(2)
+        sys.argv = [sys.argv[0], *remaining]
         raise SystemExit(main())

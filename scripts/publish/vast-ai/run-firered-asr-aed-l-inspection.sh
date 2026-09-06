@@ -24,10 +24,65 @@ WORK="/dev/shm/vokra-firered-asr-aed-l-inspection"
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_DISK_KIB=$((32 * 1024 * 1024))
 UV_CACHE_DIR="${FIRERED_ASR_UV_CACHE_DIR:-/tmp/vokra-firered-asr-uv-cache}"
+APPROVAL_SCHEMA="vokra-firered-asr-aed-l-blocked-approval-v1"
+APPROVAL_SCOPE_JSON='{"cmvn_status":"BLOCKED_STRUCTURAL_REVIEW_REQUIRED","config_status":"BLOCKED_EMPTY_CONFIG","dependency_status":"BLOCKED_UNREVIEWED_TRANSITIVE","kaldi_native_fbank_revision":"f68c6b43f739697d7ab02ff6debacee130e1d541","kaldi_native_fbank_url":"https://github.com/csukuangfj/kaldi-native-fbank.git","license_status":"BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE","model_repository":"FireRedTeam/FireRedASR-AED-L","model_revision":"e57f5960d03cff1071ff7acbb409314d1e70ed3d","native_status":"BLOCKED_NATIVE_BINDING","source_revision":"834635e4cf277ed8ca92049fc375b17c3dc20748","source_status":"AUTHENTICATED_SOURCE_CONTRACT","source_url":"https://github.com/FireRedTeam/FireRedASR.git","tokenizer_status":"BLOCKED_TOKENIZER_BINDING"}'
 
 log() { printf '[firered-asr-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
-usage() { echo 'usage: run-firered-asr-aed-l-inspection.sh [--work-dir DIR] [--owner-approval JSON] | --self-test'; }
+usage() { echo 'usage: run-firered-asr-aed-l-inspection.sh --expected-head HEX40 --approval-sha256 SHA256 --owner-approval JSON [--work-dir DIR] | --self-test'; }
+
+sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+require_clean_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die 'expected HEAD must be exactly 40 lowercase hexadecimal characters'
+  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean before FireRed acquisition'
+  actual="$(git -C "$ROOT" rev-parse --verify HEAD)"
+  [[ "$actual" == "$expected" ]] || die "HEAD mismatch: expected $expected, observed $actual"
+}
+require_approval_path() {
+  local path="$1" parent
+  [[ "$path" == /* && "$path" != *'/../'* && "$path" != */.. && "$path" != *'/./'* && "$path" != *'/.' ]] || return 1
+  [[ "$path" != "$ROOT" && "$path" != "$ROOT"/* ]] || return 1
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  parent="$path"
+  while [[ -n "$parent" ]]; do
+    parent="$(dirname "$parent")"
+    [[ ! -L "$parent" ]] || return 1
+    [[ "$parent" == / ]] && break
+  done
+}
+require_approval_binding() {
+  local path="$1" expected_sha="$2"
+  [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || die 'approval SHA-256 must be exactly 64 lowercase hexadecimal characters'
+  require_approval_path "$path" || die 'approval must be an external regular non-symlink JSON file with safe ancestry'
+  [[ "$(sha256_file "$path")" == "$expected_sha" ]] || die 'approval SHA-256 differs from caller binding'
+}
+require_blocked_approval() {
+  local path="$1" expected_head="$2"
+  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" "$expected_head" "$APPROVAL_SCOPE_JSON" "$APPROVAL_SCHEMA" <<'PY'
+import hashlib, json, re, sys
+path, expected_head, scope, schema = sys.argv[1:]
+def pairs(items):
+    out = {}
+    for key, value in items:
+        if key in out:
+            raise ValueError(f"duplicate JSON key: {key}")
+        out[key] = value
+    return out
+with open(path, encoding="utf-8") as handle:
+    value = json.load(handle, object_pairs_hook=pairs)
+keys = {"schema", "decision", "status", "evidence_stage", "no_upload", "expected_head", "model_repository", "model_revision", "source_url", "source_revision", "kaldi_native_fbank_url", "kaldi_native_fbank_revision", "cmvn_status", "config_status", "dependency_status", "license_status", "native_status", "source_status", "tokenizer_status", "scope_sha256"}
+if set(value) != keys:
+    raise ValueError("approval key set mismatch")
+scope_value = json.loads(scope, object_pairs_hook=pairs)
+canonical = json.dumps(scope_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+expected = {"schema": schema, "decision": "BLOCKED", "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "no_upload": True, "expected_head": expected_head, **scope_value, "scope_sha256": hashlib.sha256(canonical.encode()).hexdigest()}
+if value != expected or not re.fullmatch(r"[0-9a-f]{40}", value["expected_head"]):
+    raise ValueError("approval identity or blocked disposition mismatch")
+print("FIRERED_APPROVAL_VALID_BUT_BLOCKED: BLOCKED/INSPECTION_ONLY/NO_UPLOAD")
+PY
+  then return 0; else return 1; fi
+}
 
 canonical_absent_candidate() {
   local candidate="$1" parent suffix resolved
@@ -72,6 +127,17 @@ self_test() {
   paths_overlap "$path_test" "$path_test/nested" || fail=1
   paths_overlap "$path_test/nested" "$path_test" || fail=1
   if paths_overlap "$path_test" "/tmp/another-root"; then fail=1; fi
+  local approval approval_head scope_sha approval_sha
+  approval="$path_test/approval.json"; approval_head="$(printf '0%.0s' {1..40})"; scope_sha="$(printf '%s\n' "$APPROVAL_SCOPE_JSON" | sha256sum | awk '{print $1}')"
+  printf '{"schema":"%s","decision":"BLOCKED","status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","no_upload":true,"expected_head":"%s",%s,"scope_sha256":"%s"}\n' "$APPROVAL_SCHEMA" "$approval_head" "$(printf '%s' "$APPROVAL_SCOPE_JSON" | sed 's/^{//; s/}$//')" "$scope_sha" >"$approval"
+  approval_sha="$(sha256_file "$approval")"; require_approval_binding "$approval" "$approval_sha" || fail=1
+  require_blocked_approval "$approval" "$approval_head" >/dev/null || fail=1
+  cp "$approval" "$path_test/wrong-head.json"; sed -i.bak 's/"expected_head":"[0-9a-f][0-9a-f]*/"expected_head":"1111111111111111111111111111111111111111/' "$path_test/wrong-head.json"
+  if require_blocked_approval "$path_test/wrong-head.json" "$approval_head" >/dev/null 2>&1; then fail=1; fi
+  cp "$approval" "$path_test/wrong-scope.json"; sed -i.bak 's/"scope_sha256":"[0-9a-f][0-9a-f]*/"scope_sha256":"0000000000000000000000000000000000000000000000000000000000000000/' "$path_test/wrong-scope.json"
+  if require_blocked_approval "$path_test/wrong-scope.json" "$approval_head" >/dev/null 2>&1; then fail=1; fi
+  printf '%s\n' '{"schema":"x","schema":"y"}' >"$path_test/duplicate.json"
+  if require_blocked_approval "$path_test/duplicate.json" "$approval_head" >/dev/null 2>&1; then fail=1; fi
   rm -rf "$path_test"
   (( fail == 0 )) || { log 'self-test FAIL: path candidate/overlap contract'; return 1; }
   for token in \
@@ -94,6 +160,7 @@ self_test() {
     'uv lock --check' 'source/kaldi-native-fbank' 'setup.py' 'cmake' 'make' 'cc' 'c++' 'g++' 'native build toolchain' \
     'forbidden CUDA dependency row' 'download.pytorch.org/whl/cpu' 'license hash is not authenticated' \
     '--no-sync' 'FIRERED_PROJECT' 'firered_asr_aed_l/pyproject.toml' 'firered_asr_aed_l/uv.lock' \
+    '--expected-head' '--approval-sha256' 'FIRERED_APPROVAL_VALID_BUT_BLOCKED' 'BLOCKED_STRUCTURAL_REVIEW_REQUIRED' 'BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE' 'AUTHENTICATED_SOURCE_CONTRACT' \
     "cargo fmt --manifest-path \"\$ROOT/Cargo.toml\" --all -- --check" \
     "cargo metadata --manifest-path \"\$ROOT/Cargo.toml\" --locked --no-deps --format-version 1"; do
     if ! grep -Fq -- "$token" "$path"; then log "self-test FAIL: missing token $token"; fail=1; fi
@@ -153,6 +220,11 @@ from pathlib import Path
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 audit = source.index('dependency-audit.json')
 snapshot = source.index('\nfrom huggingface_hub import snapshot_download')
+approval = source.index('\nrequire_blocked_approval "$owner_approval_path"')
+host = source.index('\n[[ "$(uname -s)" == Linux ]]')
+work = source.index('\nmkdir "$work_dir" || die')
+if not approval < host < work:
+    raise SystemExit("blocked approval must precede host/work gates")
 if audit >= snapshot:
     raise SystemExit("dependency audit must precede model snapshot")
 if source.index('BLOCKED_UNREVIEWED_TRANSITIVE; owner review') < audit:
@@ -220,17 +292,30 @@ PY
 
 work_dir="$WORK"
 owner_approval_path=""
+approval_sha256=""
+expected_head=""
 self=0
+seen_self=0
+seen_approval=0
+seen_sha=0
+seen_head=0
 while (($#)); do
   case "$1" in
-    --self-test) self=1; shift ;;
+    --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
     --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2 ;;
-    --owner-approval) (($# >= 2)) || die '--owner-approval requires JSON'; owner_approval_path="$2"; shift 2 ;;
+    --owner-approval) (( seen_approval == 0 && $# >= 2 )) || die 'duplicate or missing --owner-approval'; owner_approval_path="$2"; seen_approval=1; shift 2 ;;
+    --approval-sha256) (( seen_sha == 0 && $# >= 2 )) || die 'duplicate or missing --approval-sha256'; approval_sha256="$2"; seen_sha=1; shift 2 ;;
+    --expected-head) (( seen_head == 0 && $# >= 2 )) || die 'duplicate or missing --expected-head'; expected_head="$2"; seen_head=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-if (( self )); then [[ "$work_dir" == "$WORK" && -z "$owner_approval_path" ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
+if (( self )); then [[ "$work_dir" == "$WORK" && -z "$owner_approval_path" && -z "$approval_sha256" && -z "$expected_head" ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
+[[ $seen_approval == 1 && $seen_sha == 1 && $seen_head == 1 ]] || die '--owner-approval, --approval-sha256, and --expected-head are required'
+require_clean_expected_head "$expected_head"
+require_approval_binding "$owner_approval_path" "$approval_sha256"
+require_blocked_approval "$owner_approval_path" "$expected_head" || die 'approval schema/identity/disposition validation failed'
+die 'BLOCKED_APPROVAL/INSPECTION_ONLY: FireRed dependency/license/source/CMVN/tokenizer/config/native facts remain unresolved; no acquisition or upload'
 [[ "$(uname -s)" == Linux ]] || die 'Linux VAST required'
 [[ "$(uname -m)" == x86_64 ]] || die 'x86_64 VAST required'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
