@@ -210,7 +210,8 @@ run_self_test() {
   cases=$((cases + 1))
   for required in 'uname -s' 'VOKRA_PUBLISH_ON_VAST' 'git status --porcelain --untracked-files=all' \
     'cargo fmt --all -- --check' 'cargo test --offline --locked --workspace' \
-    'cargo clippy --offline --locked --workspace --all-targets -- -D warnings'; do
+    'cargo clippy --offline --locked --workspace --all-targets -- -D warnings' \
+    'verdict=CPU_PASS_METAL_NOT_RUN' 'expected_head=$expected_head'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-canary-1b-flash-validation: self-test FAIL: fail-closed guard lost token: $required" >&2
       fail=1
@@ -465,6 +466,7 @@ run_logged cargo audit
   echo "archive_bytes=$ARCHIVE_BYTES"
   echo "archive_sha256=$ARCHIVE_SHA256"
   echo "commit=$(git rev-parse HEAD)"
+  echo "expected_head=$expected_head"
   echo "branch=$(git branch --show-current)"
   echo "rustc=$(rustc --version)"
   echo "cargo=$(cargo --version)"
@@ -477,7 +479,7 @@ run_logged cargo audit
   echo "reference_packet_sha256=$(cat "$evidence_dir/reference/reference-packet.sha256")"
   echo "reference_en_en_sha256=$(sha256sum "$evidence_dir/reference/reference-en-en.json" | awk '{print $1}')"
   echo "reference_en_de_sha256=$(sha256sum "$evidence_dir/reference/reference-en-de.json" | awk '{print $1}')"
-  echo "verdict=PASS"
+  echo "verdict=CPU_PASS_METAL_NOT_RUN"
 } > "$evidence_dir/validation-summary.txt"
 
 {
