@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity/audioldm2_reference --frozen --python 3.12 python
 """Prepare a ``cvssp/audioldm2`` checkpoint for the Vokra
 ``vokra-convert --model audioldm2`` converter.
 

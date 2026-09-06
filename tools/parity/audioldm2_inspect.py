@@ -35,6 +35,7 @@ SOURCE_ROLE_BLOBS = {
     "scripts/convert_original_audioldm2_to_diffusers.py": "f0b22cb4b4c7f93299e43406c5875780fdc8f78f",
 }
 LOCK = Path(__file__).with_name("audioldm2_reference") / "uv.lock"
+APPROVAL_SCHEMA = "vokra-audioldm2-inspection-approval-v1"
 REQUIRED_ROLES = {"vae", "unet", "vocoder", "language_model", "projection_model", "text_encoder", "text_encoder_2", "feature_extractor", "tokenizer", "tokenizer_2", "scheduler"}
 EXPECTED_COMPONENT_CLASSES = {
     "feature_extractor": ["transformers", "ClapFeatureExtractor"],
@@ -128,6 +129,35 @@ def _validate_source_identity(source: Path) -> dict[str, object]:
 
 def _fail(message: str) -> None:
     raise RuntimeError(f"audioldm2 inspector BLOCKED: {message}")
+
+
+def validate_approval(path: Path, expected_head: str, expected_sha256: str, large: bool = False) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise RuntimeError("expected HEAD must be exactly 40 lowercase hexadecimal characters")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise RuntimeError("approval SHA-256 must be exactly 64 lowercase hexadecimal characters")
+    if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("approval evidence must be a non-empty regular non-symlink file")
+    if _file_digest(path) != expected_sha256:
+        raise RuntimeError("approval evidence SHA-256 mismatch")
+    approval = _load_json(path)
+    required = {"schema", "status", "owner", "expected_head", "upstream_repository", "upstream_revision", "source_repository", "source_revision", "license", "scope", "publication"}
+    if not isinstance(approval, dict) or set(approval) != required:
+        raise RuntimeError("approval evidence schema is not exact")
+    repository = LARGE_REPOSITORY if large else BASE_REPOSITORY
+    revision = LARGE_REVISION if large else BASE_REVISION
+    expected = {
+        "schema": APPROVAL_SCHEMA, "status": "APPROVED", "expected_head": expected_head,
+        "upstream_repository": repository, "upstream_revision": revision,
+        "source_repository": SOURCE_ORIGIN, "source_revision": SOURCE_COMMIT,
+        "license": "CC-BY-NC-SA-4.0", "scope": "INSPECTION_ONLY", "publication": "NO_UPLOAD",
+    }
+    for key, value in expected.items():
+        if approval.get(key) != value:
+            raise RuntimeError(f"approval evidence identity drift: {key}")
+    if not isinstance(approval["owner"], str) or not approval["owner"].strip() or approval["owner"].strip().lower() in {"todo", "pending", "owner", "example", "example.com", "tbd", "unknown"}:
+        raise RuntimeError("approval owner is empty")
+    return approval
 
 
 def _strict_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -324,7 +354,7 @@ def _write_error_manifest(output: Path, error: Exception) -> None:
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def inspect(root: Path, source: Path, output: Path, large: bool = False) -> dict[str, object]:
+def inspect(root: Path, source: Path, output: Path, large: bool = False, expected_head: str | None = None, approval_sha256: str | None = None) -> dict[str, object]:
     if not LOCK.is_file():
         _fail("dedicated transitive uv.lock is absent; fail before downloads")
     revision = LARGE_REVISION if large else BASE_REVISION
@@ -363,6 +393,8 @@ def inspect(root: Path, source: Path, output: Path, large: bool = False) -> dict
         "cpu_status": "BLOCKED",
         "metal_status": "BLOCKED",
         "publication": "NO_UPLOAD",
+        "expected_head": expected_head,
+        "approval_sha256": approval_sha256,
         "repository": repository,
         "resolved_revision": revision,
         "server_tree_sha256": hashlib.sha256(packet_path.read_bytes()).hexdigest(),
@@ -394,6 +426,10 @@ def main() -> int:
     parser.add_argument("--source", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--large", action="store_true")
+    parser.add_argument("--validate-approval", action="store_true")
+    parser.add_argument("--approval-evidence", type=Path)
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--expected-head")
     args = parser.parse_args()
     if args.self_test:
         assert not LOCK.is_file() or LOCK.stat().st_size > 0
@@ -450,12 +486,46 @@ def main() -> int:
                 pass
             else:
                 raise AssertionError("dirty source identity was accepted")
+            approval_path = Path(td) / "approval.json"
+            approval = {
+                "schema": APPROVAL_SCHEMA, "status": "APPROVED", "owner": "test-owner",
+                "expected_head": "0" * 40, "upstream_repository": BASE_REPOSITORY,
+                "upstream_revision": BASE_REVISION, "source_repository": SOURCE_ORIGIN,
+                "source_revision": SOURCE_COMMIT, "license": "CC-BY-NC-SA-4.0",
+                "scope": "INSPECTION_ONLY", "publication": "NO_UPLOAD",
+            }
+            approval_path.write_text(json.dumps(approval), encoding="utf-8")
+            assert validate_approval(approval_path, "0" * 40, _file_digest(approval_path))["owner"] == "test-owner"
+            approval["upstream_repository"] = LARGE_REPOSITORY
+            approval["upstream_revision"] = LARGE_REVISION
+            approval_path.write_text(json.dumps(approval), encoding="utf-8")
+            assert validate_approval(approval_path, "0" * 40, _file_digest(approval_path), True)["upstream_repository"] == LARGE_REPOSITORY
+            approval["upstream_repository"] = BASE_REPOSITORY
+            approval["upstream_revision"] = BASE_REVISION
+            approval["publication"] = "UPLOAD"
+            approval_path.write_text(json.dumps(approval), encoding="utf-8")
+            try:
+                validate_approval(approval_path, "0" * 40, _file_digest(approval_path))
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("approval publication drift was accepted")
         print("audioldm2_inspect --self-test: OK")
         return 0
-    if args.snapshot is None or args.source is None or args.output is None:
-        parser.error("--snapshot, --source and --output are required")
+    if args.validate_approval:
+        if not (args.approval_evidence and args.approval_sha256 and args.expected_head):
+            parser.error("--validate-approval requires approval, SHA-256, and expected HEAD")
+        try:
+            validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256, args.large)
+        except (OSError, RuntimeError, ValueError, KeyError, AttributeError) as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        return 0
+    if args.snapshot is None or args.source is None or args.output is None or not args.approval_evidence or not args.approval_sha256 or not args.expected_head:
+        parser.error("--snapshot, --source, --output, --approval-evidence, --approval-sha256, and --expected-head are required")
     try:
-        inspect(args.snapshot, args.source, args.output, args.large)
+        validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256, args.large)
+        inspect(args.snapshot, args.source, args.output, args.large, args.expected_head, args.approval_sha256)
     except (OSError, RuntimeError, ValueError, KeyError, AttributeError) as exc:
         _write_error_manifest(args.output, exc)
         print(exc, file=sys.stderr)

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity/audioldm2_reference --frozen --python 3.12 python
 """Merge a ``cvssp/audioldm2-large`` HF snapshot → single ``.safetensors``.
 
 Offline side-car (FR-LD-05: no Python / PyTorch ever enters the runtime).
@@ -433,8 +433,6 @@ def _partition_and_dedup(sd: dict[str, Any], strict: bool):
     so safetensors accepts them). ``shared_pairs`` records the
     (clone_name, original_name) tuples for the audit manifest.
     """
-    import torch  # noqa: F401  # needed indirectly for tensor accessors
-
     kept: dict[str, Any] = {}
     dropped: list[tuple[str, str, list[int]]] = []
     unknown: list[tuple[str, str, list[int]]] = []
@@ -553,15 +551,15 @@ def _run_pipeline(
     return 0
 def _self_test() -> int:
     """Run only the negative fixed-contract test; no synthetic bundle is promoted."""
+    class _RejectedTensor:
+        dtype = "torch.int64"
+        shape = (1,)
+
     try:
-        import torch
-        _partition_and_dedup({"forbidden.int": torch.tensor(1, dtype=torch.int64)}, False)
+        _partition_and_dedup({"forbidden.int": _RejectedTensor()}, False)
     except SystemExit:
         print("audioldm2-large-prep --self-test: OK")
         return 0
-    except ImportError as exc:
-        print(f"audioldm2-large-prep --self-test: torch missing ({exc})", file=sys.stderr)
-        return 2
     print("audioldm2-large-prep --self-test: integer rejection did not fire", file=sys.stderr)
     return 4
 
