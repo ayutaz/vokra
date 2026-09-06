@@ -18,5 +18,8 @@ exactly one explicit `adapter.<language>.safetensors`, and its matching
 `vocabs/<language>.txt`; the public ~8.9 MB adapter must never be represented as
 the 1B backbone.  Package license/native-bundled review rows and independent
 owner approval are mandatory.  Publication remains `NO_UPLOAD`, and all
-reference/runtime statuses remain `INSPECTION_ONLY` until separate real
-evidence is reviewed.
+reference/runtime statuses remain `BLOCKED_PENDING_AUTHENTICATED_MANIFEST`
+until separate real evidence is reviewed. The VAST and Apple entry points
+also require the exact clean Vokra HEAD to be supplied and bound into the
+external approval evidence; they do not acquire or execute a checkpoint when
+the closure is absent.

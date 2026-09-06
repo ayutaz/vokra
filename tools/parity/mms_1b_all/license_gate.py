@@ -40,13 +40,13 @@ LICENSE_ROW_KEYS = {"id", "status", "license", "conclusion", "evidence"}
 APPROVAL_KEYS = {
     "schema", "model", "upstream_repo", "upstream_revision", "language",
     "license_spdx", "project_sha256", "lock_sha256", "manifest_sha256",
-    "no_upload", "decision", "signer", "scope_sha256",
+    "expected_head", "no_upload", "decision", "signer", "scope_sha256",
 }
 REFERENCE_KEYS = {
     "contract", "repository", "revision", "resolved_snapshot", "language",
     "composition", "selected_vocabulary", "source_files", "transformers_source",
     "runtime", "state_dict_tensor_manifest", "logits_shape", "logits_finite",
-    "logits_nonzero", "logits_dtype", "greedy_token_ids_sha256", "decoded_text", "license",
+    "state_dict_tensor_manifest_sha256", "artifacts", "logits_nonzero", "logits_dtype", "greedy_token_ids_sha256", "decoded_text", "license",
     "runtime_status", "parity_status", "tolerance",
 }
 PREPARED_KEYS = {"contract", "repository", "revision", "language", "source_files", "composition", "license", "runtime_status", "parity_status"}
@@ -59,6 +59,14 @@ def blocked(message: str) -> None:
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def sha_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def canon(value: Any) -> str:
@@ -74,6 +82,10 @@ def regular_file(path: Path) -> bool:
 
 
 def load_json(path: Path) -> Any:
+    return load_json_bytes(path.read_bytes())
+
+
+def load_json_bytes(data: bytes) -> Any:
     def reject(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in items:
@@ -82,7 +94,7 @@ def load_json(path: Path) -> Any:
             result[key] = value
         return result
 
-    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
+    return json.loads(data.decode("utf-8"), object_pairs_hook=reject)
 
 
 def resolved(value: Any) -> bool:
@@ -228,16 +240,19 @@ def validate_reference(path: Path) -> None:
     snapshot = Path(value["resolved_snapshot"])
     if not snapshot.is_absolute() or snapshot.name != REVISION or any(part in {".", ".."} for part in snapshot.parts) or not snapshot.is_dir() or any(part.is_symlink() for part in (snapshot, *snapshot.parents)):
         raise ValueError("reference snapshot is not an absolute pinned symlink-free directory")
-    if value["license"] != LICENSE or value["runtime_status"] != "INSPECTION_ONLY" or value["parity_status"] != "INSPECTION_ONLY" or value["tolerance"] is not None:
-        raise ValueError("reference is not inspection-only")
+    if value["license"] != LICENSE or value["runtime_status"] != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or value["parity_status"] != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or value["tolerance"] is not None:
+        raise ValueError("reference is not blocked pending authenticated manifest")
     selected = value["selected_vocabulary"]
     if not isinstance(selected, dict) or set(selected) != {"path", "sha256", "sidecar_path", "sidecar_sha256", "labels"} or selected["path"] != f"vocab.json[{language}]" or selected["sidecar_path"] != f"vocabs/{language}.txt" or not HEX64.fullmatch(str(selected["sha256"])) or not HEX64.fullmatch(str(selected["sidecar_sha256"])) or isinstance(selected["labels"], bool) or not isinstance(selected["labels"], int) or selected["labels"] <= 0:
         raise ValueError("reference vocabulary identity is malformed")
-    if not isinstance(value["source_files"], dict) or set(value["source_files"]) != {"config.json", "preprocessor_config.json", "model.safetensors", "vocab.json", f"adapter.{language}.safetensors", f"vocabs/{language}.txt"}:
+    if not isinstance(value["source_files"], dict) or set(value["source_files"]) != {"config.json", "preprocessor_config.json", "tokenizer_config.json", "special_tokens_map.json", "model.safetensors", "vocab.json", f"adapter.{language}.safetensors", f"vocabs/{language}.txt"}:
         raise ValueError("reference source file set is not exact")
     for label, row in value["source_files"].items():
         if not isinstance(row, dict) or set(row) != {"sha256", "bytes"} or not HEX64.fullmatch(str(row["sha256"])) or isinstance(row["bytes"], bool) or not isinstance(row["bytes"], int) or row["bytes"] <= 0:
             raise ValueError(f"reference source file row is malformed: {label}")
+        source_path = snapshot / label
+        if not regular_file(source_path) or source_path.stat().st_size != row["bytes"] or sha_file(source_path) != row["sha256"]:
+            raise ValueError(f"reference source file bytes do not match authenticated row: {label}")
     source = value["transformers_source"]
     source_path = Path(source["path"]) if isinstance(source, dict) and isinstance(source.get("path"), str) else Path(".")
     if not isinstance(source, dict) or set(source) != {"path", "sha256"} or not source_path.is_absolute() or not source_path.is_file() or source_path.is_symlink() or any(parent.is_symlink() for parent in source_path.parents) or not isinstance(source["sha256"], str) or not HEX64.fullmatch(source["sha256"]):
@@ -246,6 +261,17 @@ def validate_reference(path: Path) -> None:
     if not isinstance(runtime, dict) or set(runtime) != {"python", "platform", "torch", "transformers"} or any(not isinstance(runtime[key], str) or not runtime[key].strip() for key in runtime):
         raise ValueError("reference runtime schema is malformed")
     validate_tensor_manifest(value["state_dict_tensor_manifest"], "reference")
+    if not HEX64.fullmatch(str(value["state_dict_tensor_manifest_sha256"])) or value["state_dict_tensor_manifest_sha256"] != canon(value["state_dict_tensor_manifest"]):
+        raise ValueError("reference tensor manifest digest is malformed")
+    artifacts = value["artifacts"]
+    if not isinstance(artifacts, dict) or set(artifacts) != {"logits.npy", "greedy_token_ids.npy"}:
+        raise ValueError("reference artifact set is not exact")
+    for name, row in artifacts.items():
+        if not isinstance(row, dict) or set(row) != {"sha256", "bytes"} or not HEX64.fullmatch(str(row["sha256"])) or isinstance(row["bytes"], bool) or not isinstance(row["bytes"], int) or row["bytes"] <= 0:
+            raise ValueError(f"reference artifact row is malformed: {name}")
+        artifact_path = path.parent / name
+        if not regular_file(artifact_path) or artifact_path.stat().st_size != row["bytes"] or sha_file(artifact_path) != row["sha256"]:
+            raise ValueError(f"reference artifact bytes do not match authenticated row: {name}")
     if not isinstance(value["logits_shape"], list) or len(value["logits_shape"]) != 3 or any(isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0 for dim in value["logits_shape"]) or not isinstance(value["logits_finite"], bool) or not isinstance(value["logits_nonzero"], bool) or not value["logits_finite"] or not value["logits_nonzero"] or value["logits_dtype"] != "torch.float32" or not HEX64.fullmatch(str(value["greedy_token_ids_sha256"])) or not isinstance(value["decoded_text"], str):
         raise ValueError("reference output schema is malformed")
 
@@ -256,7 +282,7 @@ def validate_prepared(path: Path) -> None:
     value = load_json(path)
     if not isinstance(value, dict) or set(value) != PREPARED_KEYS:
         raise ValueError("prepared manifest schema is not exact")
-    if value["contract"] != "vokra-mms-1b-all-backbone-adapter-v1" or value["repository"] != REPOSITORY or value["revision"] != REVISION or value["composition"] != "UNAUTHENTICATED; compare official Transformers composed state_dict before conversion" or value["license"] != LICENSE or value["runtime_status"] != "INSPECTION_ONLY" or value["parity_status"] != "INSPECTION_ONLY":
+    if value["contract"] != "vokra-mms-1b-all-backbone-adapter-v1" or value["repository"] != REPOSITORY or value["revision"] != REVISION or value["composition"] != "UNAUTHENTICATED; compare official Transformers composed state_dict before conversion" or value["license"] != LICENSE or value["runtime_status"] != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or value["parity_status"] != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST":
         raise ValueError("prepared manifest identity/status drifted")
     language = value["language"]
     if not isinstance(language, str) or not LANGUAGE.fullmatch(language):
@@ -281,7 +307,7 @@ def validate_prepared(path: Path) -> None:
 
 
 def approval_scope(value: dict[str, Any]) -> str:
-    return canon({key: value[key] for key in ("schema", "model", "upstream_repo", "upstream_revision", "language", "license_spdx", "project_sha256", "lock_sha256", "manifest_sha256", "no_upload", "decision")})
+    return canon({key: value[key] for key in ("schema", "model", "upstream_repo", "upstream_revision", "language", "license_spdx", "project_sha256", "lock_sha256", "manifest_sha256", "expected_head", "no_upload", "decision")})
 
 
 def validate_evidence_bindings(identities: dict[str, Any], prepared: dict[str, Any], reference: dict[str, Any], explicit_language: str) -> None:
@@ -295,7 +321,7 @@ def validate_evidence_bindings(identities: dict[str, Any], prepared: dict[str, A
             raise ValueError(f"{source_path} identity differs across closure evidence")
 
 
-def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path: Path, reference_path: Path | None, prepared_path: Path | None, explicit_language: str) -> None:
+def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path: Path, reference_path: Path | None, prepared_path: Path | None, explicit_language: str, expected_head: str) -> None:
     for path, label in ((lock_path, "dedicated uv.lock"), (project_path, "dedicated pyproject"), (manifest_path, "closure manifest"), (approval_path, "approval evidence")):
         if not regular_file(path):
             blocked(f"{label} is missing; authenticated MMS closure is not committed")
@@ -304,8 +330,10 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
         project_bytes = project_path.read_bytes()
         lock = tomllib.loads(lock_bytes.decode("utf-8"))
         project = tomllib.loads(project_bytes.decode("utf-8"))
-        manifest = load_json(manifest_path)
-        approval = load_json(approval_path)
+        manifest_bytes = manifest_path.read_bytes()
+        approval_bytes = approval_path.read_bytes()
+        manifest = load_json_bytes(manifest_bytes)
+        approval = load_json_bytes(approval_bytes)
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, json.JSONDecodeError, ValueError) as error:
         blocked(f"closure input is unreadable: {error}")
     if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS or manifest.get("gate_version") != GATE_VERSION:
@@ -314,6 +342,8 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
         blocked("approval evidence schema is not exact")
     if not LANGUAGE.fullmatch(explicit_language):
         blocked("explicit language adapter is malformed")
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        blocked("expected Vokra HEAD must be exactly 40 lowercase hexadecimal characters")
     try:
         project_schema(project)
         rows = lock_rows(lock)
@@ -354,7 +384,7 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
         blocked("license/native bundled review is unresolved")
     if manifest.get("publication_decision") != "NO_UPLOAD":
         blocked("publication decision is not NO_UPLOAD")
-    if approval.get("schema") != "vokra-mms-1b-all-approval-v1" or approval.get("model") != MODEL or approval.get("upstream_repo") != REPOSITORY or approval.get("upstream_revision") != REVISION or approval.get("license_spdx") != LICENSE or approval.get("project_sha256") != project_digest or approval.get("lock_sha256") != lock_digest or approval.get("no_upload") is not True or approval.get("decision") != "APPROVED" or not isinstance(approval.get("language"), str) or not LANGUAGE.fullmatch(approval["language"]) or not isinstance(approval.get("manifest_sha256"), str) or not HEX64.fullmatch(approval["manifest_sha256"]) or approval["manifest_sha256"] != sha(manifest_path.read_bytes()) or not isinstance(approval.get("signer"), str) or not approval["signer"].strip() or approval["signer"].strip().casefold() in PLACEHOLDERS or approval.get("scope_sha256") != approval_scope(approval):
+    if approval.get("schema") != "vokra-mms-1b-all-approval-v1" or approval.get("model") != MODEL or approval.get("upstream_repo") != REPOSITORY or approval.get("upstream_revision") != REVISION or approval.get("license_spdx") != LICENSE or approval.get("project_sha256") != project_digest or approval.get("lock_sha256") != lock_digest or approval.get("expected_head") != expected_head or approval.get("no_upload") is not True or approval.get("decision") != "APPROVED" or not isinstance(approval.get("language"), str) or not LANGUAGE.fullmatch(approval["language"]) or not isinstance(approval.get("manifest_sha256"), str) or not HEX64.fullmatch(approval["manifest_sha256"]) or approval["manifest_sha256"] != sha(manifest_bytes) or not isinstance(approval.get("signer"), str) or not approval["signer"].strip() or approval["signer"].strip().casefold() in PLACEHOLDERS or approval.get("scope_sha256") != approval_scope(approval):
         blocked("owner approval does not bind exact noncommercial NO_UPLOAD scope")
     prepared = None
     reference = None
@@ -436,12 +466,20 @@ def self_test() -> None:
             raise SystemExit("self-test accepted symlinked ancestry")
         snapshot = root / REVISION
         snapshot.mkdir()
-        digest = "a" * 64
-        source_files = {name: {"sha256": digest, "bytes": 1} for name in ("config.json", "preprocessor_config.json", "model.safetensors", "vocab.json", "adapter.eng.safetensors", "vocabs/eng.txt")}
-        source_file = root / "Wav2Vec2ForCTC.py"; source_file.write_text("source", encoding="utf-8")
-        reference = {"contract": "vokra-mms-1b-all-backbone-adapter-v1", "repository": REPOSITORY, "revision": REVISION, "resolved_snapshot": str(snapshot), "language": "eng", "composition": "AutoProcessor.from_pretrained(target_lang=language) + Wav2Vec2ForCTC.from_pretrained(target_lang=language)", "selected_vocabulary": {"path": "vocab.json[eng]", "sha256": digest, "sidecar_path": "vocabs/eng.txt", "sidecar_sha256": digest, "labels": 1}, "source_files": source_files, "transformers_source": {"path": str(source_file), "sha256": digest}, "runtime": {"python": "3.12.0", "platform": "Linux", "torch": "2.0", "transformers": "5.0"}, "state_dict_tensor_manifest": {"weight": {"shape": [1], "dtype": "torch.float32"}}, "logits_shape": [1, 2, 3], "logits_finite": True, "logits_nonzero": True, "logits_dtype": "torch.float32", "greedy_token_ids_sha256": digest, "decoded_text": "", "license": LICENSE, "runtime_status": "INSPECTION_ONLY", "parity_status": "INSPECTION_ONLY", "tolerance": None}
+        digest = sha(b"x")
+        source_files = {name: {"sha256": digest, "bytes": 1} for name in ("config.json", "preprocessor_config.json", "tokenizer_config.json", "special_tokens_map.json", "model.safetensors", "vocab.json", "adapter.eng.safetensors", "vocabs/eng.txt")}
+        (snapshot / "vocabs").mkdir()
+        for name in source_files:
+            source_path = snapshot / name
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_bytes(b"x")
+        source_file = root / "Wav2Vec2ForCTC.py"; source_file.write_bytes(b"x")
+        reference_tensor_manifest = {"weight": {"shape": [1], "dtype": "torch.float32"}}
+        reference = {"contract": "vokra-mms-1b-all-backbone-adapter-v1", "repository": REPOSITORY, "revision": REVISION, "resolved_snapshot": str(snapshot), "language": "eng", "composition": "AutoProcessor.from_pretrained(target_lang=language) + Wav2Vec2ForCTC.from_pretrained(target_lang=language)", "selected_vocabulary": {"path": "vocab.json[eng]", "sha256": digest, "sidecar_path": "vocabs/eng.txt", "sidecar_sha256": digest, "labels": 1}, "source_files": source_files, "transformers_source": {"path": str(source_file), "sha256": digest}, "runtime": {"python": "3.12.0", "platform": "Linux", "torch": "2.0", "transformers": "5.0"}, "state_dict_tensor_manifest": reference_tensor_manifest, "state_dict_tensor_manifest_sha256": canon(reference_tensor_manifest), "artifacts": {"logits.npy": {"sha256": digest, "bytes": 1}, "greedy_token_ids.npy": {"sha256": digest, "bytes": 1}}, "logits_shape": [1, 2, 3], "logits_finite": True, "logits_nonzero": True, "logits_dtype": "torch.float32", "greedy_token_ids_sha256": digest, "decoded_text": "", "license": LICENSE, "runtime_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST", "parity_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST", "tolerance": None}
         reference_path = root / "reference.json"
         reference_path.write_text(json.dumps(reference), encoding="utf-8")
+        for name in ("logits.npy", "greedy_token_ids.npy"):
+            (root / name).write_bytes(b"x")
         validate_reference(reference_path)
         for field, bad in (("composition", "unverified"), ("transformers_source", {"path": "x", "sha256": "bad"}), ("logits_shape", [1, 2, 3, 4])):
             candidate = json.loads(json.dumps(reference)); candidate[field] = bad; reference_path.write_text(json.dumps(candidate), encoding="utf-8")
@@ -452,7 +490,7 @@ def self_test() -> None:
             else:
                 raise SystemExit(f"self-test accepted reference tamper: {field}")
         reference_path.write_text(json.dumps(reference), encoding="utf-8")
-        prepared = {"contract": "vokra-mms-1b-all-backbone-adapter-v1", "repository": REPOSITORY, "revision": REVISION, "language": "eng", "source_files": {"model.safetensors": {"sha256": digest, "bytes": 1, "tensor_manifest": {"weight": {"shape": [1], "dtype": "torch.float32"}}}, "adapter.eng.safetensors": {"sha256": digest, "bytes": 1, "tensor_manifest": {"weight": {"shape": [1], "dtype": "torch.float32"}}}, "vocabs/eng.txt": {"sha256": digest, "bytes": 1}, "vocab.json": {"sha256": digest, "selected_labels": 1}}, "composition": "UNAUTHENTICATED; compare official Transformers composed state_dict before conversion", "license": LICENSE, "runtime_status": "INSPECTION_ONLY", "parity_status": "INSPECTION_ONLY"}
+        prepared = {"contract": "vokra-mms-1b-all-backbone-adapter-v1", "repository": REPOSITORY, "revision": REVISION, "language": "eng", "source_files": {"model.safetensors": {"sha256": digest, "bytes": 1, "tensor_manifest": {"weight": {"shape": [1], "dtype": "torch.float32"}}}, "adapter.eng.safetensors": {"sha256": digest, "bytes": 1, "tensor_manifest": {"weight": {"shape": [1], "dtype": "torch.float32"}}}, "vocabs/eng.txt": {"sha256": digest, "bytes": 1}, "vocab.json": {"sha256": digest, "selected_labels": 1}}, "composition": "UNAUTHENTICATED; compare official Transformers composed state_dict before conversion", "license": LICENSE, "runtime_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST", "parity_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST"}
         prepared_path = root / "prepared.json"; prepared_path.write_text(json.dumps(prepared), encoding="utf-8"); validate_prepared(prepared_path)
         identities = {"backbone": {"path": "model.safetensors", "bytes": 1, "sha256": digest}, "adapter": {"path": "adapter.eng.safetensors", "bytes": 1, "sha256": digest}, "vocabulary": {"path": "vocabs/eng.txt", "bytes": 1, "sha256": digest}}
         validate_evidence_bindings(identities, prepared, reference, "eng")
@@ -490,17 +528,18 @@ def main() -> int:
     parser.add_argument("--reference-manifest", type=Path)
     parser.add_argument("--prepared-manifest", type=Path)
     parser.add_argument("--language")
+    parser.add_argument("--expected-head")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.lock, args.project, args.manifest, args.approval_evidence, args.reference_manifest, args.prepared_manifest, args.language)):
+        if any(value is not None for value in (args.lock, args.project, args.manifest, args.approval_evidence, args.reference_manifest, args.prepared_manifest, args.language, args.expected_head)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
     if any(value is None for value in (args.lock, args.project, args.manifest, args.approval_evidence)):
         parser.error("normal runs require --lock, --project, --manifest, and --approval-evidence")
-    if args.language is None:
-        parser.error("normal runs require --language")
-    run(args.lock, args.project, args.manifest, args.approval_evidence, args.reference_manifest, args.prepared_manifest, args.language)
+    if args.language is None or args.expected_head is None:
+        parser.error("normal runs require --language and --expected-head")
+    run(args.lock, args.project, args.manifest, args.approval_evidence, args.reference_manifest, args.prepared_manifest, args.language, args.expected_head)
     return 0
 
 

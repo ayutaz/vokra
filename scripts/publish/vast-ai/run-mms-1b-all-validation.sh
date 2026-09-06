@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VAST/Linux-only MMS backbone plus one-language-adapter inspection.
+# VAST/Linux-only MMS backbone plus one-language-adapter evidence staging.
 # This worker never uploads or claims native CPU/Metal parity: the Rust MMS
 # binder remains fail-closed until the complete manifest is independently
 # reviewed.
@@ -23,26 +23,34 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF'
-usage: run-mms-1b-all-validation.sh --language <official-code> --approval-evidence <file> [--work-dir <absent-dir>]
+usage: run-mms-1b-all-validation.sh --language <official-code> --expected-head <HEX40> --approval-evidence <file> [--work-dir <absent-dir>]
        run-mms-1b-all-validation.sh --self-test
 
 The normal path is Linux/VAST-only. It resolves only the full upstream
 backbone and one explicitly selected official language adapter at the pinned
-revision, records hashes and complete manifests, and remains INSPECTION_ONLY.
+revision, records hashes and complete manifests, and remains
+BLOCKED_PENDING_AUTHENTICATED_MANIFEST until the composed state is reviewed.
 No upload, publication, native runtime parity, or tolerance is produced.
 EOF
 }
 
 license_preflight() {
-  local language="$1" approval="$2"
+  local language="$1" expected_head="$2" approval="$3"
+  for required in "$PARITY_PROJECT/pyproject.toml" "$PARITY_PROJECT/uv.lock" "$PREFLIGHT_MANIFEST"; do
+    [[ -f "$required" ]] || die "BLOCKED_PENDING_AUTHENTICATED_MANIFEST: missing MMS closure input $required"
+  done
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
     --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
     --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval" --language "$language" \
+    --expected-head "$expected_head" \
     || die 'dedicated MMS closure/license/approval gate is unresolved'
 }
 
 canonical_absent_path() {
   local path="$1" suffix='' rest component scan name parent
+  case "/$path/" in
+    */./*|*/../*) return 1 ;;
+  esac
   [[ "$path" == /* ]] || path="$PWD/$path"
   rest="${path#/}"; scan=''
   while [[ -n "$rest" ]]; do
@@ -83,9 +91,9 @@ self_test() {
     'member.is_symlink' 'not member.is_file() and not member.is_dir()' '.cache/' 'extra non-cache directory' \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$PREPARER" "$REFERENCE_DUMPER" \
     'prepared_manifest.json' 'reference_manifest.json' 'tensor_manifest' \
-    'INSPECTION_ONLY' 'no upload' 'MMS_LANGUAGE' 'azj-script_cyrillic' \
+    'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' 'no upload' 'MMS_LANGUAGE' 'azj-script_cyrillic' \
     'cac-dialect_sanmateoixtatan' 'vocabs/' 'git status --porcelain' \
-    'tools/parity/mms_1b_all/license_gate.py' '--prepared-manifest' '--reference-manifest' \
+    'tools/parity/mms_1b_all/license_gate.py' '--prepared-manifest' '--reference-manifest' '--expected-head' 'pyproject.toml' 'uv.lock' \
     '--language "$language"' 'work_disk_root' 'nearest existing canonical ancestor' \
     'mms_1b_all_prepare_checkpoint.py --self-test' \
     'mms_1b_all_dump_reference.py --self-test'; do
@@ -95,7 +103,7 @@ self_test() {
     fi
   done
   # shellcheck disable=SC2016 # literal source contract token
-  if ! grep -Fq -- 'license_preflight "$language" "$approval_evidence"' "$path"; then
+  if ! grep -Fq -- 'license_preflight "$language" "$expected_head" "$approval_evidence"' "$path"; then
     log 'self-test FAIL: approval scope is not bound to selected language'
     fail=1
   fi
@@ -115,19 +123,20 @@ self_test() {
     log 'self-test FAIL: unknown argument accepted'
     fail=1
   fi
-  for bad in '--language' '--language -bad' '--language eng --language spa' '--approval-evidence' '--approval-evidence -bad' '--approval-evidence a --approval-evidence b'; do
+  for bad in '--language' '--language -bad' '--language eng --language spa' '--expected-head' '--expected-head bad' '--expected-head a --expected-head b' '--approval-evidence' '--approval-evidence -bad' '--approval-evidence a --approval-evidence b'; do
     if eval "\"$path\" $bad" >/dev/null 2>&1; then
       log "self-test FAIL: malformed or duplicate option accepted: $bad"
       fail=1
     fi
   done
-  local gate_line host_line path_line
+  local gate_line host_line path_line head_line
   # shellcheck disable=SC2016 # match literal source token
-  gate_line="$(grep -n 'license_preflight "\$language" "\$approval_evidence"' "$path" | tail -n 1 | cut -d: -f1)"
+  gate_line="$(grep -n 'license_preflight "\$language" "\$expected_head" "\$approval_evidence"' "$path" | tail -n 1 | cut -d: -f1)"
   host_line="$(grep -n 'uname -s' "$path" | tail -n 1 | cut -d: -f1)"
+  head_line="$(grep -n 'require_clean_expected_head' "$path" | tail -n 1 | cut -d: -f1)"
   # shellcheck disable=SC2016 # match literal source token
   path_line="$(grep -n 'require_absent_work_dir "\$work_dir"' "$path" | tail -n 1 | cut -d: -f1)"
-  [[ "$gate_line" =~ ^[0-9]+$ && "$path_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$gate_line" -lt "$path_line" && "$path_line" -lt "$host_line" ]] || {
+  [[ "$head_line" =~ ^[0-9]+$ && "$gate_line" =~ ^[0-9]+$ && "$path_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$head_line" -lt "$gate_line" && "$gate_line" -lt "$path_line" && "$path_line" -lt "$host_line" ]] || {
     log 'self-test FAIL: closure/path gate is not before host probe'
     fail=1
   }
@@ -155,13 +164,15 @@ self_test() {
 
 work_dir="/workspace/vokra-mms-1b-all-validation"
 language=""
+expected_head=""
 approval_evidence=""
 self=0
-seen_self=0; seen_language=0; seen_work=0; seen_approval=0
+seen_self=0; seen_language=0; seen_head=0; seen_work=0; seen_approval=0
 while (($#)); do
   case "$1" in
     --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
     --language) (( seen_language == 0 )) || die 'duplicate --language'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--language requires a nonempty official adapter code'; seen_language=1; language="$2"; shift 2 ;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires exactly 40 lowercase hexadecimal characters'; seen_head=1; expected_head="$2"; shift 2 ;;
     --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty path'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
     --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--work-dir requires a nonempty path'; seen_work=1; work_dir="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -169,20 +180,26 @@ while (($#)); do
   esac
 done
 if (( self )); then
-  [[ "$seen_self" == 1 && -z "$language$approval_evidence" && "$work_dir" == "/workspace/vokra-mms-1b-all-validation" ]] || die '--self-test accepts no other arguments'
+  [[ "$seen_self" == 1 && -z "$language$expected_head$approval_evidence" && "$work_dir" == "/workspace/vokra-mms-1b-all-validation" ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
-[[ "$seen_approval" == 1 ]] || die '--approval-evidence is required'
+[[ "$seen_approval" == 1 && "$seen_head" == 1 ]] || die '--expected-head and --approval-evidence are required'
 [[ -n "$language" ]] || die '--language is required; refusing to assume English'
 [[ "$language" =~ ^[a-z0-9]+([_-][a-z0-9]+)*$ ]] || die '--language contains unsafe filename characters'
-license_preflight "$language" "$approval_evidence"
+require_clean_expected_head() {
+  [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
+  [[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
+}
+require_clean_expected_head
+license_preflight "$language" "$expected_head" "$approval_evidence"
 require_absent_work_dir "$work_dir" "$approval_evidence"
 [[ "$(uname -s)" == Linux ]] || die 'inspection is Linux/VAST-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
-[[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
-[[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
+[[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] || die 'checkout HEAD changed after approval gate'
+[[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout changed before model acquisition'
 [[ -f "$PREFLIGHT_GATE" ]] || die 'dedicated MMS license gate is missing'
 [[ -f "$VOKRA_ROOT/$PREPARER" && -f "$VOKRA_ROOT/$REFERENCE_DUMPER" ]] || die 'MMS parity tools are missing'
 
@@ -204,8 +221,8 @@ work_dir="$(cd "$work_dir" && pwd)"
 export CARGO_BUILD_JOBS=1
 {
   printf 'repository=%s\nrevision=%s\nlanguage=%s\n' "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$language"
-  echo 'runtime_status=INSPECTION_ONLY'
-  echo 'parity_status=INSPECTION_ONLY'
+  echo 'runtime_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST'
+  echo 'parity_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST'
 } > "$work_dir/validation.log"
 cargo fmt --all -- --check >> "$work_dir/validation.log" 2>&1
 cargo metadata --no-deps --format-version 1 >> "$work_dir/validation.log" 2>&1
@@ -274,6 +291,7 @@ UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --frozen --proj
 UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
   --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
   --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval_evidence" --language "$language" \
+  --expected-head "$expected_head" \
   --prepared-manifest "$work_dir/prepared/prepared_manifest.json" \
   --reference-manifest "$work_dir/reference/reference_manifest.json" \
   >> "$work_dir/validation.log" || die 'generated MMS manifests failed strict validation'
@@ -285,9 +303,9 @@ done > "$work_dir/upstream-file-sha256.txt"
 sha256sum "$work_dir/prepared/prepared_manifest.json" "$work_dir/reference/reference_manifest.json" \
   > "$work_dir/evidence-sha256.txt"
 {
-  echo 'runtime_status=INSPECTION_ONLY'
-  echo 'parity_status=INSPECTION_ONLY'
+  echo 'runtime_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST'
+  echo 'parity_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST'
   echo 'verdict=NO_UPLOAD'
-  echo 'reason=complete manifest and native CPU/Metal route are not yet reviewed'
+  echo 'reason=complete composed manifest and native CPU/Metal route are not yet reviewed'
 } | tee -a "$work_dir/validation.log"
-log "inspection complete: evidence remains at $work_dir; no upload or publication was performed"
+log "staging complete but runtime remains BLOCKED_PENDING_AUTHENTICATED_MANIFEST; evidence remains at $work_dir; no upload or publication was performed"
