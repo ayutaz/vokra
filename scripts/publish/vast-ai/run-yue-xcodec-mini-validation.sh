@@ -224,6 +224,16 @@ validate_work_dir() {
   printf '%s\n' "$canonical_work"
 }
 
+claim_work_dir() {
+  local candidate="$1" parent
+  parent="$(dirname "$candidate")"
+  [[ -d "$parent" && ! -L "$parent" ]] \
+    || { die "work-dir parent is not a real directory: $parent"; return 2; }
+  canonical_candidate "$parent" >/dev/null || return 2
+  mkdir "$candidate" \
+    || { die "work-dir was concurrently claimed or already exists: $candidate"; return 2; }
+}
+
 require_vast_host() {
   local mem_kib free_kib disk_root
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == '1' ]] \
@@ -379,6 +389,19 @@ run_self_test() {
   if validate_work_dir "$temporary/approval-child" "$approval" >/dev/null 2>&1; then :; else
     log 'self-test FAIL: unrelated work-dir was rejected'; fail=1
   fi
+  if claim_work_dir "$temporary/claimed" >/dev/null 2>&1 && [[ -d "$temporary/claimed" ]]; then :; else
+    log 'self-test FAIL: absent work-dir was not atomically claimed'; fail=1
+  fi
+  if claim_work_dir "$temporary/claimed" >/dev/null 2>&1; then
+    log 'self-test FAIL: competing work-dir claim was accepted'; fail=1
+  fi
+  mkdir "$temporary/existing"
+  if claim_work_dir "$temporary/existing" >/dev/null 2>&1; then
+    log 'self-test FAIL: existing empty work-dir claim was accepted'; fail=1
+  fi
+  if ! grep -Fq 'claim_work_dir' "$script_path" || ! grep -Fq "mkdir \"\$candidate\"" "$script_path"; then
+    log 'self-test FAIL: atomic work-dir claim source contract is missing'; fail=1
+  fi
   rm -rf "$temporary"
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-yue-xcodec-gate-proof.XXXXXX")"
   temporary="$(cd -P "$temporary" && pwd)"
@@ -409,7 +432,7 @@ on_exit() {
 }
 
 main() {
-  local self_test=0 requested_work_dir='' approval_evidence='' approval_sha='' expected_head='' seen_self_test=0 seen_approval_sha=0 seen_expected_head=0 run_stamp work_dir inputs logs reference
+  local self_test=0 requested_work_dir='' approval_evidence='' approval_sha='' expected_head='' seen_self_test=0 seen_approval_sha=0 seen_expected_head=0 run_stamp work_dir default_parent inputs logs reference
   local public_dir upstream_dir gguf codec semantic decoder source_root env_log cpu_log summary_file run_log transfer_manifest transfer_sha reference_sha gguf_sha cpu_sha
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -438,6 +461,13 @@ main() {
   work_dir="$(validate_work_dir "$work_dir" "$approval_evidence")" || return 2
   require_vast_host
   require_tooling
+  if [[ -z "$requested_work_dir" ]]; then
+    default_parent="$(dirname "$work_dir")"
+    if [[ ! -e "$default_parent" && ! -L "$default_parent" ]]; then
+      mkdir -p "$default_parent" || { die "could not create default work-dir parent: $default_parent"; return 2; }
+    fi
+  fi
+  claim_work_dir "$work_dir"
   inputs="$work_dir/inputs"
   logs="$work_dir/logs"
   reference="$work_dir/reference"
@@ -448,7 +478,8 @@ main() {
   codec="$upstream_dir/$CODEC_FILE"
   semantic="$upstream_dir/$SEMANTIC_FILE"
   decoder="$upstream_dir/$DECODER_FILE"
-  mkdir -p "$public_dir" "$upstream_dir" "$logs" "$reference"
+  mkdir "$inputs" "$logs" "$reference"
+  mkdir "$public_dir" "$upstream_dir" "$source_root"
   export UV_CACHE_DIR="$VOKRA_SCRATCH/uv-cache-yue-xcodec-mini"
   export HF_HOME="$VOKRA_SCRATCH/hf-home-yue-xcodec-mini"
   run_log="$logs/run.log"

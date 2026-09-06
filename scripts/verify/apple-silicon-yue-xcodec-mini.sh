@@ -116,6 +116,14 @@ require_file() {
     || { die "$label is missing, empty, or symlinked: $path"; return 2; }
 }
 
+claim_evidence_dir() {
+  local directory="$1"
+  [[ ! -e "$directory" && ! -L "$directory" ]] \
+    || { die "evidence directory must be absent and non-symlinked: $directory"; return 2; }
+  mkdir "$directory" \
+    || { die "evidence directory was concurrently claimed or already exists: $directory"; return 2; }
+}
+
 verify_file() {
   local label="$1" path="$2" expected_bytes="$3" expected_hash="$4" actual_bytes actual_hash
   require_file "$label" "$path"
@@ -270,7 +278,8 @@ run_self_test() (
     '--expected-head' '--approval-evidence' '--approval-evidence-sha256' '--transfer-manifest' '--transfer-manifest-sha256' '--cpu-log' '--cpu-log-sha256' 'pre_sync_gate' 'canonical_path' 'paths_overlap' \
     'YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET' \
     'YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET' \
-    'DECODE_ONLY' 'ENCODE_NOT_IMPLEMENTED' 'verdict=MEASURED_NOT_GATED' 'numeric_bounds=UNSET' 'upload=NOT_PERFORMED'; do
+    'DECODE_ONLY' 'ENCODE_NOT_IMPLEMENTED' 'verdict=MEASURED_NOT_GATED' 'numeric_bounds=UNSET' 'upload=NOT_PERFORMED' \
+    'claim_evidence_dir' "mkdir \"\$directory\""; do
     grep -Fq -- "$required" "$script_path" || die "self-test contract token is missing: $required"
   done
   printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nYUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED\n' "$CPU_TEST" > "$temporary/cpu.log"
@@ -359,6 +368,11 @@ run_self_test() (
     die 'missing approval unexpectedly passed'
   fi
   [[ ! -e "$temporary/evidence" ]] || die 'missing approval created evidence'
+  local claimed="$temporary/claimed-evidence"
+  claim_evidence_dir "$claimed"
+  if claim_evidence_dir "$claimed"; then die 'competing evidence-dir claim accepted'; fi
+  mkdir "$temporary/existing-evidence"
+  if claim_evidence_dir "$temporary/existing-evidence"; then die 'existing empty evidence-dir claim accepted'; fi
   log 'self-test PASS'
 )
 
@@ -445,7 +459,7 @@ main() {
     die 'YuE reference validator rejected the generated manifest or payloads'
     return 2
   fi
-  mkdir -p "$evidence_dir"
+  claim_evidence_dir "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
   {
     echo "public_repo=$PUBLIC_REPO"
