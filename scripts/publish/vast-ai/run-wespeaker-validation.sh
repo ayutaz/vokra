@@ -59,7 +59,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-wespeaker-validation.sh --approval-evidence <json> [--work-dir <absent-dir>]
+usage: run-wespeaker-validation.sh --approval-evidence <json> --expected-head <40-lowercase-hex> [--work-dir <absent-dir>]
        run-wespeaker-validation.sh --self-test
 
 VAST-only, no-upload WeSpeaker worker. It stages the exact official avg_model
@@ -167,7 +167,7 @@ require_official_cpu_sentinel() {
 }
 
 write_apple_args() {
-  local output="$1" gguf_sha="$2" reference_sha="$3"
+  local output="$1" gguf_sha="$2" reference_sha="$3" expected_head="$4"
   {
     printf '# Generated for the separate no-upload Apple WeSpeaker validation.\n'
     printf "scripts/verify/apple-silicon-wespeaker.sh \\\n"
@@ -176,7 +176,8 @@ write_apple_args() {
     printf "  --reference '%s' \\\n" '<APPLE_WESPEAKER_REFERENCE_DIR>'
     printf "  --reference-manifest-sha256 '%s' \\\n" "$reference_sha"
     printf "  --approval-evidence '%s' \\\n" '<APPLE_WESPEAKER_APPROVAL_EVIDENCE>'
-    printf "  --evidence-dir '%s'\n" '<APPLE_EMPTY_EVIDENCE_DIR>'
+    printf "  --evidence-dir '%s' \\\n" '<APPLE_EMPTY_EVIDENCE_DIR>'
+    printf "  --expected-head '%s'\n" "$expected_head"
   } > "$output"
 }
 
@@ -292,7 +293,8 @@ run_self_test() {
     "run::tests::speaker_real_gguf_e2e_identical_inputs_gated" "require_one_cargo_result" "upload=NOT_RUN" "--frozen --python 3.12" \
     "VOKRA_PUBLISH_ON_VAST" "uname -s" "uname -m" "x86_64" "MIN_VAST_MEM_KIB=67108864" "MemTotal:" \
     "MIN_FREE_DISK_KIB=150000000" "df -Pk" 'git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all' \
-    "cargo test --locked --workspace" "cargo clippy --locked --workspace --all-targets -- -D warnings"; do
+    "cargo test --locked --offline --workspace" "cargo clippy --locked --offline --workspace --all-targets -- -D warnings" \
+    "--expected-head" "duplicate --expected-head" "--ignored --exact --nocapture" "cargo build --manifest-path \"\$VOKRA_ROOT/Cargo.toml\" --locked --offline"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
@@ -329,11 +331,13 @@ run_self_test() {
     log "self-test FAIL: dedicated preparer is not safe-loader-only"; fail=1
   fi
   local apple_args="$tmp/apple.args.sh"
-  write_apple_args "$apple_args" "$PUBLIC_SHA256" "$PUBLIC_SHA256"
+  write_apple_args "$apple_args" "$PUBLIC_SHA256" "$PUBLIC_SHA256" "0123456789abcdef0123456789abcdef01234567"
   bash -n "$apple_args" || { log "self-test FAIL: generated Apple args are not shell syntax"; fail=1; }
   for placeholder in APPLE_WESPEAKER_GGUF_PATH APPLE_WESPEAKER_REFERENCE_DIR APPLE_WESPEAKER_APPROVAL_EVIDENCE APPLE_EMPTY_EVIDENCE_DIR; do
     grep -Fq -- "'<${placeholder}>'" "$apple_args" || { log "self-test FAIL: Apple placeholder is not quoted: $placeholder"; fail=1; }
   done
+  grep -Fq -- "--expected-head '0123456789abcdef0123456789abcdef01234567'" "$apple_args" \
+    || { log "self-test FAIL: Apple args omit expected checkout HEAD"; fail=1; }
   if grep -F "$VOKRA_SCRATCH" "$apple_args" >/dev/null 2>&1; then
     log "self-test FAIL: generated Apple args contain a VAST-local path"; fail=1
   fi
@@ -343,6 +347,10 @@ run_self_test() {
   fi
   if "$script_path" --unknown-self-test-flag >/dev/null 2>&1; then
     log "self-test FAIL: unknown argument accepted"; fail=1
+  fi
+  if "$script_path" --expected-head 0123456789abcdef0123456789abcdef01234567 \
+    --expected-head 0123456789abcdef0123456789abcdef01234567 >/dev/null 2>&1; then
+    log "self-test FAIL: duplicate expected HEAD accepted"; fail=1
   fi
   cases=$((cases + 1))
   set +e
@@ -387,7 +395,7 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir
+  local self_test=0 requested_work_dir="" approval_evidence="" expected_head="" run_stamp work_dir actual_head
   local inputs_dir sources_dir logs_dir reference_dir public_dir
   local checkpoint checkpoint_config public_gguf source_dir prepared_safetensors
   local corrected_gguf run_log env_log public_log parity_log cli_log workspace_log summary_file
@@ -401,7 +409,12 @@ main() {
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--approval-evidence requires a file"; return 2; }
         [[ -z "$approval_evidence" ]] || { die "duplicate --approval-evidence"; return 2; }
         approval_evidence="$2"; shift 2 ;;
+      --expected-head)
+        [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || { die "--expected-head requires a lowercase 40-hex commit"; return 2; }
+        [[ -z "$expected_head" ]] || { die "duplicate --expected-head"; return 2; }
+        expected_head="$2"; shift 2 ;;
       --self-test)
+        [[ "$self_test" == 0 ]] || { die "duplicate --self-test"; return 2; }
         self_test=1; shift ;;
       -h|--help)
         usage; return 0 ;;
@@ -410,11 +423,13 @@ main() {
     esac
   done
   if [[ $self_test -eq 1 ]]; then
-    [[ -z "$requested_work_dir$approval_evidence" ]] || { die "--self-test accepts no other arguments"; return 2; }
+    [[ -z "$requested_work_dir$approval_evidence$expected_head" ]] || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test
     return $?
   fi
-  [[ -n "$approval_evidence" ]] || { die "--approval-evidence is required"; return 2; }
+  [[ -n "$approval_evidence" && -n "$expected_head" ]] || { die "--approval-evidence and --expected-head are required"; return 2; }
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  [[ "$actual_head" == "$expected_head" ]] || { die "checkout HEAD does not match --expected-head"; return 2; }
   pre_sync_gate "$approval_evidence"
   require_tooling
   cd "$VOKRA_ROOT"
@@ -462,27 +477,27 @@ main() {
     --checkpoint "$checkpoint" --output "$prepared_safetensors"
   cp "$prepared_safetensors.manifest.json" "$logs_dir/prepared-manifest.json"
   step "Build converter and CLI"
-  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli 2>&1 | tee "$workspace_log"
+  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-cli 2>&1 | tee "$workspace_log"
   target/release/vokra-cli convert --model wespeaker --input "$prepared_safetensors" --output "$corrected_gguf" 2>&1 | tee -a "$workspace_log"
   [[ -s "$corrected_gguf" ]] || die "converter did not produce corrected GGUF"
   write_apple_args "$logs_dir/apple-silicon-wespeaker.args.sh" \
-    "$(sha256_file "$corrected_gguf")" "$(sha256_file "$reference_dir/manifest.json")"
+    "$(sha256_file "$corrected_gguf")" "$(sha256_file "$reference_dir/manifest.json")" "$expected_head"
   step "Run existing real WeSpeaker parity against canonical public artifact"
-  VOKRA_WESPEAKER_GGUF="$public_gguf" cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+  VOKRA_WESPEAKER_GGUF="$public_gguf" cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release \
     -p vokra-models --test parity_wespeaker_real public_pyannote_artifact_matches_upstream_wespeaker \
-    -- --exact --nocapture 2>&1 | tee "$public_log"
+    -- --ignored --exact --nocapture 2>&1 | tee "$public_log"
   require_one_cargo_result "$public_log" public_pyannote_artifact_matches_upstream_wespeaker
   grep -F "WeSpeaker CPU end-to-end" "$public_log" >/dev/null || die "existing parity sentinel missing"
   step "Run corrected official GGUF CLI smoke and gated speaker e2e"
   target/release/vokra-cli run --model "$corrected_gguf" --input "$JFK_WAV" --backend cpu 2>&1 | tee "$cli_log"
   VOKRA_WESPEAKER_OFFICIAL_GGUF="$corrected_gguf" \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release \
       -p vokra-models --test parity_wespeaker_real \
-      official_combined_artifact_matches_upstream_wespeaker -- --exact --nocapture \
+      official_combined_artifact_matches_upstream_wespeaker -- --ignored --exact --nocapture \
       2>&1 | tee -a "$parity_log"
   require_one_cargo_result "$parity_log" official_combined_artifact_matches_upstream_wespeaker
   require_official_cpu_sentinel "$parity_log"
-  VOKRA_WESPEAKER_GGUF="$corrected_gguf" cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+  VOKRA_WESPEAKER_GGUF="$corrected_gguf" cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release \
     -p vokra-cli run::tests::speaker_real_gguf_e2e_identical_inputs_gated -- --exact --nocapture 2>&1 | tee -a "$cli_log"
   require_one_cargo_result "$cli_log" run::tests::speaker_real_gguf_e2e_identical_inputs_gated
   step "Run workspace verification gates on VAST"
@@ -490,10 +505,11 @@ main() {
   bash "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh" 2>&1 | tee -a "$workspace_log"
   bash "$VOKRA_ROOT/scripts/check-zero-deps.sh" 2>&1 | tee -a "$workspace_log"
   bash "$VOKRA_ROOT/scripts/check-bound-arch-coverage.sh" 2>&1 | tee -a "$workspace_log"
-  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace 2>&1 | tee -a "$workspace_log"
-  cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace --all-targets -- -D warnings 2>&1 | tee -a "$workspace_log"
+  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace 2>&1 | tee -a "$workspace_log"
+  cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace --all-targets -- -D warnings 2>&1 | tee -a "$workspace_log"
   {
     echo "execution_status=PASS"
+    echo "expected_head=$expected_head"
     echo "pyannote_182_cpu_parity=PASS"
     echo "official_combined_219_cpu_parity=PASS"
     echo "official_combined_gguf=generated_corrected_provenance"

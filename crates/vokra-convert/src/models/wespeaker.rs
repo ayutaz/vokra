@@ -178,6 +178,12 @@ pub fn convert_wespeaker_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<WespeakerReport, ConvertError> {
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "wespeaker: input must be a regular non-symlink file",
+        )));
+    }
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
     let layout = validate_manifest(&st)?;

@@ -14,6 +14,7 @@ REFERENCE_KEYS=(bytes_embedding_f32_bin bytes_features_f32_bin bytes_pcm_f32_bin
 TEST_NAME="official_combined_artifact_matches_upstream_wespeaker"
 CPU_SENTINEL="WESPEAKER_OFFICIAL_COMBINED_CPU_VS_UPSTREAM PASS"
 METAL_SENTINEL="WESPEAKER_OFFICIAL_COMBINED_METAL_VS_CPU PASS"
+METAL_UPSTREAM_SENTINEL="WESPEAKER_OFFICIAL_COMBINED_METAL_VS_UPSTREAM PASS"
 log() { printf '[wespeaker-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
@@ -23,7 +24,7 @@ drop_last_line() {
   sed -n "1,$((lines - 1))p" "$file" > "$file.tmp"
   mv "$file.tmp" "$file"
 }
-usage() { printf '%s\n' 'usage: apple-silicon-wespeaker.sh --gguf PATH --gguf-sha256 HEX64 --reference DIR --reference-manifest-sha256 HEX64 --approval-evidence JSON --evidence-dir ABSENT_DIR' '       apple-silicon-wespeaker.sh --self-test' >&2; }
+usage() { printf '%s\n' 'usage: apple-silicon-wespeaker.sh --gguf PATH --gguf-sha256 HEX64 --reference DIR --reference-manifest-sha256 HEX64 --approval-evidence JSON --evidence-dir ABSENT_DIR --expected-head HEX40' '       apple-silicon-wespeaker.sh --self-test' >&2; }
 require_file() {
   local label="$1" path="$2"
   [[ -f "$path" && ! -L "$path" ]] || { die "$label is missing, symlinked, or not regular"; return 2; }
@@ -87,15 +88,15 @@ require_cargo_result() {
 }
 require_sentinel() {
   local file="$1" expected="$2" family count
-  family="$(grep -Ec '^WESPEAKER_OFFICIAL_COMBINED_(CPU_VS_UPSTREAM|METAL_VS_CPU) (PASS|FAIL)$' "$file" || true)"
+  family="$(grep -Ec '^WESPEAKER_OFFICIAL_COMBINED_(CPU_VS_UPSTREAM|METAL_VS_CPU|METAL_VS_UPSTREAM) (PASS|FAIL)$' "$file" || true)"
   count="$(grep -Ec "^${expected// /[[:space:]]+}$" "$file" || true)"
   [[ "$family" == 1 && "$count" == 1 ]] || { die "sentinel family is not one exact PASS"; return 2; }
 }
 require_both_sentinels() {
   local file="$1"
-  [[ "$(grep -Ec '^WESPEAKER_OFFICIAL_COMBINED_(CPU_VS_UPSTREAM|METAL_VS_CPU) PASS$' "$file" || true)" == 2 ]] || { die "CPU/Metal sentinel family is incomplete"; return 2; }
+  [[ "$(grep -Ec '^WESPEAKER_OFFICIAL_COMBINED_(CPU_VS_UPSTREAM|METAL_VS_CPU|METAL_VS_UPSTREAM) PASS$' "$file" || true)" == 3 ]] || { die "CPU/Metal/reference sentinel family is incomplete"; return 2; }
   local expected
-  for expected in "$CPU_SENTINEL" "$METAL_SENTINEL"; do
+  for expected in "$CPU_SENTINEL" "$METAL_SENTINEL" "$METAL_UPSTREAM_SENTINEL"; do
     [[ "$(grep -Ec "^${expected// /[[:space:]]+}$" "$file" || true)" == 1 ]] || { die "missing or duplicate sentinel"; return 2; }
   done
 }
@@ -147,6 +148,7 @@ require_absent_evidence_dir() {
   for protected in "$VOKRA_ROOT" "$@"; do
     require_disjoint_path "$target" "$protected" || return 2
   done
+  mkdir -m 700 "$target" || { die "evidence directory appeared during reservation"; return 2; }
   return 0
 }
 run_self_test() {
@@ -163,6 +165,10 @@ run_self_test() {
   fi
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|huggingface-cli[[:space:]]+upload|hf[[:space:]]+upload|scp|rsync)([[:space:]]|$)' "$script_path" >/dev/null; then
     die "publication command found in no-upload Apple worker"
+  fi
+  if "$script_path" --expected-head 0123456789abcdef0123456789abcdef01234567 \
+    --expected-head 0123456789abcdef0123456789abcdef01234567 >/dev/null 2>&1; then
+    die "duplicate expected HEAD accepted"
   fi
   mkdir "$tmp/reference"
   for name in "${REFERENCE_FILES[@]}"; do [[ "$name" == manifest.json ]] || printf abc > "$tmp/reference/$name"; done
@@ -229,7 +235,7 @@ EOF
   if require_cargo_result "$tmp/log" >/dev/null 2>&1; then die "malformed Cargo timing accepted"; fi
   drop_last_line "$tmp/log"
   if require_both_sentinels "$tmp/log" >/dev/null 2>&1; then die "missing Metal sentinel accepted"; fi
-  printf '%s\n' "$METAL_SENTINEL" >> "$tmp/log"
+  printf '%s\n' "$METAL_SENTINEL" "$METAL_UPSTREAM_SENTINEL" >> "$tmp/log"
   require_both_sentinels "$tmp/log"
   printf '%s\n' "$METAL_SENTINEL" >> "$tmp/log"
   if require_both_sentinels "$tmp/log" >/dev/null 2>&1; then die "duplicate sentinel accepted"; fi
@@ -237,20 +243,20 @@ EOF
 }
 main() {
   if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || { usage; return 2; }; run_self_test; return; fi
-  local gguf='' gguf_sha='' reference='' reference_sha='' approval='' evidence='' arg seen=''
+  local gguf='' gguf_sha='' reference='' reference_sha='' approval='' evidence='' expected_head='' arg seen=''
   while [[ $# -gt 0 ]]; do
     arg="$1"; shift
     case "$arg" in
-      --gguf|--gguf-sha256|--reference|--reference-manifest-sha256|--approval-evidence|--evidence-dir)
+      --gguf|--gguf-sha256|--reference|--reference-manifest-sha256|--approval-evidence|--evidence-dir|--expected-head)
         [[ "$seen" != *"|$arg|"* ]] || { usage; die "duplicate argument: $arg"; }
         seen+="|$arg|"
         [[ $# -gt 0 && -n "$1" && "$1" != -* ]] || { usage; return 2; }
-        case "$arg" in --gguf) gguf="$1";; --gguf-sha256) gguf_sha="$1";; --reference) reference="$1";; --reference-manifest-sha256) reference_sha="$1";; --approval-evidence) approval="$1";; --evidence-dir) evidence="$1";; esac
+        case "$arg" in --gguf) gguf="$1";; --gguf-sha256) gguf_sha="$1";; --reference) reference="$1";; --reference-manifest-sha256) reference_sha="$1";; --approval-evidence) approval="$1";; --evidence-dir) evidence="$1";; --expected-head) expected_head="$1";; esac
         shift;;
       -h|--help) usage; return 0;; *) usage; die "unknown argument: $arg";;
     esac
   done
-  [[ -n "$gguf" && -n "$gguf_sha" && -n "$reference" && -n "$reference_sha" && -n "$approval" && -n "$evidence" ]] || { usage; return 2; }
+  [[ -n "$gguf" && -n "$gguf_sha" && -n "$reference" && -n "$reference_sha" && -n "$approval" && -n "$evidence" && "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { usage; return 2; }
   license_preflight "$approval"
   require_host
   require_hash "WeSpeaker GGUF" "$gguf" "$gguf_sha"
@@ -258,10 +264,11 @@ main() {
   require_reference "$reference"
   require_absent_evidence_dir "$evidence" "$gguf" "$reference" "$approval"
   [[ -d "$VOKRA_ROOT/.git" && -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
-  mkdir -p "$evidence"
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD does not match --expected-head"
   local log_file="$evidence/parity.log"
-  env VOKRA_WESPEAKER_OFFICIAL_GGUF="$gguf" RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-models --features metal --test parity_wespeaker_real "$TEST_NAME" -- --exact --nocapture 2>&1 | tee "$log_file"
+  env VOKRA_WESPEAKER_OFFICIAL_GGUF="$gguf" RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-models --features metal --test parity_wespeaker_real "$TEST_NAME" -- --ignored --exact --nocapture 2>&1 | tee "$log_file"
   require_cargo_result "$log_file"; require_both_sentinels "$log_file"
-  printf 'verdict=PASS\ngguf_sha256=%s\nreference_manifest_sha256=%s\nupload=NOT_PERFORMED\n' "$gguf_sha" "$reference_sha" > "$evidence/summary.txt"
+  printf 'verdict=PASS\ngit_commit=%s\nexpected_head=%s\ngguf_sha256=%s\nreference_manifest_sha256=%s\nmetal_vs_cpu=PASS\nmetal_vs_upstream=PASS\nupload=NOT_PERFORMED\n' "$actual_head" "$expected_head" "$gguf_sha" "$reference_sha" > "$evidence/summary.txt"
 }
 main "$@"

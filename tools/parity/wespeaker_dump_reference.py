@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --frozen --project tools/parity/wespeaker --python 3.12 python
 """Dump an independent WeSpeaker ResNet34-LM reference fixture.
 
 The oracle imports the pinned upstream WeSpeaker source tree, loads the
@@ -31,6 +31,23 @@ CHECKPOINT_BYTES = 45_053_131
 CHECKPOINT_SHA256 = "9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449"
 SAMPLE_RATE = 16_000
 PCM_SAMPLES = 32_000
+
+
+def validate_raw_path(raw: str, label: str) -> Path:
+    """Reject lexical dot components and every symlinked path ancestor."""
+    if not isinstance(raw, str) or not raw.startswith("/"):
+        raise SystemExit(f"{label} must be an absolute path")
+    components = raw.split("/")
+    probe = Path("/")
+    for component in components[1:]:
+        if component in {".", ".."}:
+            raise SystemExit(f"{label} must not contain lexical dot components")
+        if not component:
+            continue
+        probe /= component
+        if probe.is_symlink():
+            raise SystemExit(f"{label} has a symlinked ancestor: {probe}")
+    return Path(raw)
 
 
 def sha256(path: Path) -> str:
@@ -102,20 +119,28 @@ def stdlib_self_test() -> None:
         raise SystemExit("unsafe or missing checkpoint loader contract")
     if "_load_runtime()" not in source or "global np, torch, torchaudio" not in source:
         raise SystemExit("model helpers are not bound to the lazy runtime loader")
-    for guard in ("args.checkpoint.is_symlink()", "args.output_dir.is_symlink()", "source_input.is_symlink()"):
+    for guard in ("checkpoint.is_symlink()", "output_dir.is_symlink()", "source_input.is_symlink()"):
         if guard not in source:
             raise SystemExit(f"missing symlink guard: {guard}")
+    for raw in ("/tmp/./output", "/tmp/../output"):
+        try:
+            validate_raw_path(raw, "self-test")
+        except SystemExit:
+            continue
+        raise SystemExit(f"lexical dot path accepted: {raw}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--wespeaker-source", type=Path)
+    parser.add_argument("--output-dir")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--wespeaker-source")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
     if args.self_test:
+        if sys.argv.count("--self-test") != 1:
+            parser.error("--self-test may be provided exactly once")
         if args.output_dir or args.checkpoint or args.wespeaker_source:
             parser.error("--self-test accepts no model paths")
         stdlib_self_test()
@@ -123,19 +148,21 @@ def main() -> int:
         return 0
     if args.output_dir is None or args.checkpoint is None or args.wespeaker_source is None:
         parser.error("--output-dir, --checkpoint and --wespeaker-source are required")
-    if args.output_dir.is_symlink() or args.output_dir.exists() and (
-        not args.output_dir.is_dir() or any(args.output_dir.iterdir())
+    output_dir = validate_raw_path(args.output_dir, "output directory")
+    checkpoint = validate_raw_path(args.checkpoint, "checkpoint")
+    source_input = validate_raw_path(args.wespeaker_source, "WeSpeaker source")
+    if output_dir.is_symlink() or output_dir.exists() and (
+        not output_dir.is_dir() or any(output_dir.iterdir())
     ):
         parser.error("--output-dir must be absent or an empty regular directory")
 
-    if args.checkpoint.is_symlink() or not args.checkpoint.is_file() or args.checkpoint.name != CHECKPOINT_FILE:
+    if checkpoint.is_symlink() or not checkpoint.is_file() or checkpoint.name != CHECKPOINT_FILE:
         raise SystemExit(f"checkpoint must be the exact regular {CHECKPOINT_FILE} file")
-    if args.checkpoint.stat().st_size != CHECKPOINT_BYTES or sha256(args.checkpoint) != CHECKPOINT_SHA256:
+    if checkpoint.stat().st_size != CHECKPOINT_BYTES or sha256(checkpoint) != CHECKPOINT_SHA256:
         raise SystemExit("checkpoint identity mismatch")
 
     _load_runtime()
 
-    source_input = args.wespeaker_source
     if source_input.is_symlink() or not source_input.is_dir():
         raise SystemExit(f"not a regular WeSpeaker source tree: {source_input}")
     source_root = source_input.resolve()
@@ -170,7 +197,7 @@ def main() -> int:
         two_emb_layer=False,
     ).eval()
     state = unwrap_state_dict(
-        torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+        torch.load(checkpoint, map_location="cpu", weights_only=True)
     )
     expected_names = set(model.state_dict())
     available_names = set(state)
@@ -209,7 +236,7 @@ def main() -> int:
     if not torch.isfinite(features).all() or not torch.isfinite(embedding).all():
         raise SystemExit("reference tensors contain non-finite values")
 
-    output = args.output_dir
+    output = output_dir
     output.mkdir(parents=True, exist_ok=True)
     write_f32(output / "pcm.f32.bin", pcm)
     write_f32(output / "features.f32.bin", features.cpu().numpy())
