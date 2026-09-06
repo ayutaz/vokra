@@ -40,9 +40,13 @@ usage() {
 usage: apple-silicon-canary-1b-v2.sh \
   --gguf <vast-generated-canary-1b-v2.gguf> \
   --reference <vast-official-reference-dir> \
-  --approval-evidence <owner-approval.json> --expected-head <40-hex> \
+  --approval-evidence <owner-approval.json> --approval-sha256 <64-hex> --expected-head <40-hex> \
   --gguf-sha256 <64-hex> --reference-manifest-sha256 <64-hex> \
   --reference-packet-sha256 <64-hex> \
+  --cpu-evidence <vast-cpu-summary.txt> --cpu-evidence-sha256 <64-hex> \
+  --cpu-asr-log <vast-cpu-asr.log> --cpu-asr-log-sha256 <64-hex> \
+  --cpu-ast-log <vast-cpu-ast.log> --cpu-ast-log-sha256 <64-hex> \
+  --transfer-manifest <portable-transfer-manifest.txt> --transfer-manifest-sha256 <64-hex> \
   --evidence-dir <absent-dir>
        apple-silicon-canary-1b-v2.sh --self-test
 
@@ -66,6 +70,46 @@ require_file() {
   [[ -f "$path" && ! -L "$path" && -s "$path" ]] || die "$label is missing, empty, or symlinked: $path"
 }
 
+require_cpu_evidence() {
+  local path="$1" expected_head="$2" approval_sha256="$3" actual
+  require_file "VAST CPU evidence" "$path"
+  actual="$(sha256_file "$path")"
+  [[ "$actual" == "$4" ]] || { die "CPU evidence SHA-256 does not match --cpu-evidence-sha256"; return 2; }
+  for marker in \
+    "format=canary-1b-cpu-evidence-v1" "variant=canary-1b-v2" \
+    "expected_head=$expected_head" "approval_sha256=$approval_sha256" \
+    'cpu_vs_official=PASS' 'asr_cpu_vs_official=PASS' 'ast_cpu_vs_official=PASS' \
+    'metal_vs_official=NOT_RUN' 'metal_vs_cpu=NOT_RUN' \
+    'verdict=CPU_PASS_METAL_NOT_RUN'; do
+    [[ "$(grep -Fxc "$marker" "$path" || true)" == 1 ]] || { die "CPU evidence marker is missing or non-singleton: $marker"; return 2; }
+  done
+}
+
+require_cpu_log() {
+  local path="$1" expected_sha="$2" test_name="$3" sentinel="$4"
+  require_file "VAST CPU log" "$path"
+  [[ "$(sha256_file "$path")" == "$expected_sha" ]] || { die "CPU log SHA-256 mismatch: $path"; return 2; }
+  [[ "$(grep -Fxc "test $test_name ... ok" "$path" || true)" == 1 ]] || { die "CPU log named test is not singleton: $path"; return 2; }
+  [[ "$(grep -Ecx 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in .+)?' "$path" || true)" == 1 ]] || { die "CPU log result is not singleton: $path"; return 2; }
+  [[ "$(grep -Fxc "$sentinel" "$path" || true)" == 1 ]] || { die "CPU log sentinel is not singleton: $path"; return 2; }
+}
+
+require_transfer_manifest() {
+  local path="$1" expected_sha="$2" expected_head="$3" gguf_sha="$4" ref_manifest_sha="$5" ref_packet_sha="$6" approval_sha="$7" asr_sha="$8" ast_sha="$9" summary_sha="${10}" actual
+  require_file "portable transfer manifest" "$path"
+  actual="$(sha256_file "$path")"
+  [[ "$actual" == "$expected_sha" ]] || { die "portable transfer manifest SHA-256 mismatch"; return 2; }
+  [[ "$(wc -l < "$path" | tr -d '[:space:]')" == 10 ]] || { die "portable transfer manifest is not exact 10-line closure"; return 2; }
+  for marker in \
+    'format=canary-1b-portable-transfer-v1' "expected_head=$expected_head" \
+    "gguf_sha256=$gguf_sha" "reference_manifest_sha256=$ref_manifest_sha" \
+    "reference_packet_sha256=$ref_packet_sha" "approval_sha256=$approval_sha" \
+    "cpu_asr_log_sha256=$asr_sha" "cpu_ast_log_sha256=$ast_sha" \
+    "cpu_summary_sha256=$summary_sha" 'publication=NO_UPLOAD'; do
+    [[ "$(grep -Fxc "$marker" "$path" || true)" == 1 ]] || { die "portable transfer manifest marker is missing/non-singleton: $marker"; return 2; }
+  done
+}
+
 require_expected_head() {
   local expected="$1" actual
   [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be 40 lowercase hex characters"
@@ -76,13 +120,13 @@ require_expected_head() {
 }
 
 license_preflight() {
-  local approval="$1"
+  local approval="$1" approval_sha256="$2"
   [[ -f "$PREFLIGHT_GATE" && ! -L "$PREFLIGHT_GATE" && \
     -f "$PREFLIGHT_MANIFEST" && ! -L "$PREFLIGHT_MANIFEST" ]] \
     || die "Canary-1B approval gate or manifest is missing or symlinked"
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
     "$PREFLIGHT_GATE" --manifest "$PREFLIGHT_MANIFEST" \
-    --approval "$approval" --variant "$VARIANT" \
+    --approval "$approval" --approval-sha256 "$approval_sha256" --variant "$VARIANT" \
     || die "Canary-1B-v2 approval preflight is unresolved"
 }
 
@@ -134,13 +178,17 @@ canonical_absent_path() {
 paths_overlap() { local left="$1" right="$2"; [[ "$left" == "$right" || "$left/" == "$right/"* || "$right/" == "$left/"* ]]; }
 
 require_disjoint_evidence() {
-  local evidence="$1" gguf="$2" reference="$3" approval="$4" root_real evidence_real protected
+  local evidence="$1" gguf="$2" reference="$3" approval="$4" cpu_evidence="$5" cpu_asr_log="$6" cpu_ast_log="$7" transfer_manifest="$8" root_real evidence_real protected
   root_real="$(canonical_existing_path "$VOKRA_ROOT")" || return 2
   canonical_existing_path "$gguf" >/dev/null || return 2
   canonical_existing_path "$reference" >/dev/null || return 2
   canonical_existing_path "$approval" >/dev/null || return 2
+  canonical_existing_path "$cpu_evidence" >/dev/null || return 2
+  canonical_existing_path "$cpu_asr_log" >/dev/null || return 2
+  canonical_existing_path "$cpu_ast_log" >/dev/null || return 2
+  canonical_existing_path "$transfer_manifest" >/dev/null || return 2
   evidence_real="$(canonical_absent_path "$evidence")" || return 2
-  for protected in "$root_real" "$(canonical_existing_path "$gguf")" "$(canonical_existing_path "$reference")" "$(canonical_existing_path "$approval")"; do
+  for protected in "$root_real" "$(canonical_existing_path "$gguf")" "$(canonical_existing_path "$reference")" "$(canonical_existing_path "$approval")" "$(canonical_existing_path "$cpu_evidence")" "$(canonical_existing_path "$cpu_asr_log")" "$(canonical_existing_path "$cpu_ast_log")" "$(canonical_existing_path "$transfer_manifest")"; do
     paths_overlap "$evidence_real" "$protected" && { die "evidence directory overlaps protected input"; return 2; }
   done
 }
@@ -289,14 +337,30 @@ run_self_test() (
   if require_absent_directory "$temporary/evidence"; then :; else die "absent evidence self-test failed"; fi
   mkdir "$temporary/evidence"
   if require_absent_directory "$temporary/evidence" >/dev/null 2>&1; then die "existing empty evidence accepted"; fi
+  local cpu_log="$temporary/cpu.log" cpu_empty="$temporary/cpu-empty.log" transfer="$temporary/transfer.txt" digest transfer_hash expected_head='0000000000000000000000000000000000000000'
+  printf '%s\n' "test $TEST_TARGET ... ok" 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' 'CANARY_1B_V2_CPU_VS_OFFICIAL PASS' > "$cpu_log"
+  digest="$(sha256_file "$cpu_log")"
+  require_cpu_log "$cpu_log" "$digest" "$TEST_TARGET" 'CANARY_1B_V2_CPU_VS_OFFICIAL PASS'
+  printf '%s\n' 'test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s' > "$cpu_empty"
+  if require_cpu_log "$cpu_empty" "$(sha256_file "$cpu_empty")" "$TEST_TARGET" 'CANARY_1B_V2_CPU_VS_OFFICIAL PASS' >/dev/null 2>&1; then die "zero-test CPU log accepted"; fi
+  printf '%s\n' \
+    'format=canary-1b-portable-transfer-v1' "expected_head=$expected_head" \
+    "gguf_sha256=$digest" "reference_manifest_sha256=$digest" "reference_packet_sha256=$digest" \
+    "approval_sha256=$digest" "cpu_asr_log_sha256=$digest" "cpu_ast_log_sha256=$digest" \
+    "cpu_summary_sha256=$digest" 'publication=NO_UPLOAD' > "$transfer"
+  transfer_hash="$(sha256_file "$transfer")"
+  require_transfer_manifest "$transfer" "$transfer_hash" "$expected_head" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest"
+  printf '%s\n' 'duplicate=marker' >> "$transfer"
+  if require_transfer_manifest "$transfer" "$transfer_hash" "$expected_head" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" >/dev/null 2>&1; then die "tampered transfer manifest accepted"; fi
   for required in \
     'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' \
     'MIN_MEMORY_BYTES=32000000000' 'MIN_FREE_DISK_KIB=20000000' \
     'xcrun -f metal' "$GGUF_ENV" "$REFERENCE_PCM_ENV" \
     "$REFERENCE_TOKENS_ENV" "$REFERENCE_TEXT_ENV" "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
-    'license_preflight' '--approval-evidence' 'preflight_gate.py' \
+    'license_preflight' '--approval-evidence' '--approval-sha256' 'preflight_gate.py' \
     'license_gate_manifest.json' "--variant \"\$VARIANT\"" \
-    '--gguf-sha256' '--reference-manifest-sha256' '--reference-packet-sha256' \
+    '--gguf-sha256' '--reference-manifest-sha256' '--reference-packet-sha256' '--cpu-evidence' '--cpu-evidence-sha256' \
+    '--cpu-asr-log' '--cpu-asr-log-sha256' '--cpu-ast-log' '--cpu-ast-log-sha256' '--transfer-manifest' '--transfer-manifest-sha256' \
     'verify_reference_packet.py' 'find -P' 'execution-args.txt' \
     "$TEST_TARGET" '--features metal' '-- --exact --ignored --nocapture' \
     'CanaryAsr::from_gguf_with_backend' 'BackendKind::Metal' \
@@ -305,7 +369,8 @@ run_self_test() (
     'test result: ok. 1 passed' \
     'CANARY_1B_V2_CPU_VS_OFFICIAL PASS' \
     'CANARY_1B_V2_METAL_VS_OFFICIAL PASS' \
-    'CANARY_1B_V2_METAL_VS_CPU PASS' \
+    'CANARY_1B_V2_METAL_VS_CPU PASS' 'format=canary-1b-portable-transfer-v1' \
+    'apple-transfer-manifest.txt' '<APPLE_CPU_ASR_LOG>' '<APPLE_CPU_AST_LOG>' '<APPLE_TRANSFER_MANIFEST>' \
     'network=NOT_PERFORMED' 'conversion=NOT_PERFORMED'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: contract token missing: $required"
@@ -317,7 +382,7 @@ run_self_test() (
     log "self-test FAIL: download, direct Python, or publication command found"
     fail=1
   fi
-  local gate_pattern='^[[:space:]]*license_preflight "\$approval"[[:space:]]*$'
+  local gate_pattern='^[[:space:]]*license_preflight "\$approval" "\$approval_sha256"[[:space:]]*$'
   local host_pattern='^[[:space:]]*require_remote_apple_host[[:space:]]*$'
   local resource_pattern='^[[:space:]]*require_tooling[[:space:]]*$'
   local checkpoint_pattern='^[[:space:]]*require_file "VAST-generated complete Canary-1B-v2 GGUF" "\$gguf"[[:space:]]*$'
@@ -391,7 +456,7 @@ run_case() {
 }
 
 main() {
-  local gguf='' reference='' approval='' expected_head='' gguf_sha256='' reference_manifest_sha256='' reference_packet_sha256='' evidence_dir='' self_test=0 seen_gguf=0 seen_reference=0 seen_approval=0 seen_expected_head=0 seen_gguf_sha256=0 seen_reference_manifest_sha256=0 seen_reference_packet_sha256=0 seen_evidence=0 seen_self_test=0
+  local gguf='' reference='' approval='' approval_sha256='' expected_head='' gguf_sha256='' reference_manifest_sha256='' reference_packet_sha256='' cpu_evidence='' cpu_evidence_sha256='' cpu_asr_log='' cpu_asr_log_sha256='' cpu_ast_log='' cpu_ast_log_sha256='' transfer_manifest='' transfer_manifest_sha256='' evidence_dir='' self_test=0 seen_gguf=0 seen_reference=0 seen_approval=0 seen_approval_sha=0 seen_expected_head=0 seen_gguf_sha256=0 seen_reference_manifest_sha256=0 seen_reference_packet_sha256=0 seen_cpu_evidence=0 seen_cpu_evidence_sha=0 seen_cpu_asr_log=0 seen_cpu_asr_log_sha=0 seen_cpu_ast_log=0 seen_cpu_ast_log_sha=0 seen_transfer_manifest=0 seen_transfer_manifest_sha=0 seen_evidence=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --gguf)
@@ -406,6 +471,10 @@ main() {
         (( seen_approval == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
         seen_approval=1
         approval="$2"; shift 2 ;;
+      --approval-sha256)
+        (( seen_approval_sha == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
+        seen_approval_sha=1
+        approval_sha256="$2"; shift 2 ;;
       --expected-head)
         (( seen_expected_head == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{40}$ ]] || { usage; return 2; }
         seen_expected_head=1
@@ -422,6 +491,32 @@ main() {
         (( seen_reference_packet_sha256 == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
         seen_reference_packet_sha256=1
         reference_packet_sha256="$2"; shift 2 ;;
+      --cpu-evidence)
+        (( seen_cpu_evidence == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
+        seen_cpu_evidence=1
+        cpu_evidence="$2"; shift 2 ;;
+      --cpu-evidence-sha256)
+        (( seen_cpu_evidence_sha == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
+        seen_cpu_evidence_sha=1
+        cpu_evidence_sha256="$2"; shift 2 ;;
+      --cpu-asr-log)
+        (( seen_cpu_asr_log == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
+        seen_cpu_asr_log=1; cpu_asr_log="$2"; shift 2 ;;
+      --cpu-asr-log-sha256)
+        (( seen_cpu_asr_log_sha == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
+        seen_cpu_asr_log_sha=1; cpu_asr_log_sha256="$2"; shift 2 ;;
+      --cpu-ast-log)
+        (( seen_cpu_ast_log == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
+        seen_cpu_ast_log=1; cpu_ast_log="$2"; shift 2 ;;
+      --cpu-ast-log-sha256)
+        (( seen_cpu_ast_log_sha == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
+        seen_cpu_ast_log_sha=1; cpu_ast_log_sha256="$2"; shift 2 ;;
+      --transfer-manifest)
+        (( seen_transfer_manifest == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
+        seen_transfer_manifest=1; transfer_manifest="$2"; shift 2 ;;
+      --transfer-manifest-sha256)
+        (( seen_transfer_manifest_sha == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
+        seen_transfer_manifest_sha=1; transfer_manifest_sha256="$2"; shift 2 ;;
       --evidence-dir)
         (( seen_evidence == 0 )) && (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
         seen_evidence=1
@@ -438,31 +533,39 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ "$seen_gguf$seen_reference$seen_approval$seen_expected_head$seen_gguf_sha256$seen_reference_manifest_sha256$seen_reference_packet_sha256$seen_evidence" == 00000000 ]] \
+    [[ "$seen_gguf$seen_reference$seen_approval$seen_approval_sha$seen_expected_head$seen_gguf_sha256$seen_reference_manifest_sha256$seen_reference_packet_sha256$seen_cpu_evidence$seen_cpu_evidence_sha$seen_cpu_asr_log$seen_cpu_asr_log_sha$seen_cpu_ast_log$seen_cpu_ast_log_sha$seen_transfer_manifest$seen_transfer_manifest_sha$seen_evidence" == 00000000000000000 ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
-  [[ "$seen_gguf$seen_reference$seen_approval$seen_expected_head$seen_gguf_sha256$seen_reference_manifest_sha256$seen_reference_packet_sha256$seen_evidence" == 11111111 ]] \
+  [[ "$seen_gguf$seen_reference$seen_approval$seen_approval_sha$seen_expected_head$seen_gguf_sha256$seen_reference_manifest_sha256$seen_reference_packet_sha256$seen_cpu_evidence$seen_cpu_evidence_sha$seen_cpu_asr_log$seen_cpu_asr_log_sha$seen_cpu_ast_log$seen_cpu_ast_log_sha$seen_transfer_manifest$seen_transfer_manifest_sha$seen_evidence" == 11111111111111111 ]] \
     || { usage; die "all input, expected hash, approval, HEAD, and evidence arguments are required"; }
 
   # Keep approval ahead of every normal-run host/resource or input operation.
   require_expected_head "$expected_head"
-  license_preflight "$approval"
+  license_preflight "$approval" "$approval_sha256"
   require_remote_apple_host
   require_tooling
   require_file "VAST-generated complete Canary-1B-v2 GGUF" "$gguf"
   [[ "$(sha256_file "$gguf")" == "$gguf_sha256" ]] || die "GGUF SHA-256 does not match --gguf-sha256"
   require_reference "$reference" "$reference_manifest_sha256" "$reference_packet_sha256"
+  require_cpu_evidence "$cpu_evidence" "$expected_head" "$approval_sha256" "$cpu_evidence_sha256"
+  require_cpu_log "$cpu_asr_log" "$cpu_asr_log_sha256" "$TEST_TARGET" 'CANARY_1B_V2_CPU_VS_OFFICIAL PASS'
+  require_cpu_log "$cpu_ast_log" "$cpu_ast_log_sha256" "$TEST_TARGET" 'CANARY_1B_V2_CPU_VS_OFFICIAL PASS'
+  require_transfer_manifest "$transfer_manifest" "$transfer_manifest_sha256" "$expected_head" "$gguf_sha256" "$reference_manifest_sha256" "$reference_packet_sha256" "$approval_sha256" "$cpu_asr_log_sha256" "$cpu_ast_log_sha256" "$cpu_evidence_sha256"
   require_absent_directory "$evidence_dir"
-  require_disjoint_evidence "$evidence_dir" "$gguf" "$reference" "$approval"
+  require_disjoint_evidence "$evidence_dir" "$gguf" "$reference" "$approval" "$cpu_evidence" "$cpu_asr_log" "$cpu_ast_log" "$transfer_manifest"
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
   {
     printf '%q ' "$0" --gguf "$gguf" --reference "$reference" \
-      --approval-evidence "$approval" --expected-head "$expected_head" \
+      --approval-evidence "$approval" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" \
       --gguf-sha256 "$gguf_sha256" --reference-manifest-sha256 "$reference_manifest_sha256" \
-      --reference-packet-sha256 "$reference_packet_sha256" --evidence-dir "$evidence_dir"
+      --reference-packet-sha256 "$reference_packet_sha256" --cpu-evidence "$cpu_evidence" \
+      --cpu-evidence-sha256 "$cpu_evidence_sha256" --cpu-asr-log "$cpu_asr_log" \
+      --cpu-asr-log-sha256 "$cpu_asr_log_sha256" --cpu-ast-log "$cpu_ast_log" \
+      --cpu-ast-log-sha256 "$cpu_ast_log_sha256" --transfer-manifest "$transfer_manifest" \
+      --transfer-manifest-sha256 "$transfer_manifest_sha256" --evidence-dir "$evidence_dir"
     printf '\n'
   } > "$evidence_dir/execution-args.txt"
   {
@@ -471,7 +574,11 @@ main() {
     echo "expected_gguf_sha256=$gguf_sha256"
     echo "reference_manifest_sha256=$reference_manifest_sha256"
     echo "reference_packet_sha256=$reference_packet_sha256"
-    echo "approval_sha256=$(sha256_file "$approval")"
+    echo "approval_sha256=$approval_sha256"
+    echo "cpu_evidence_sha256=$cpu_evidence_sha256"
+    echo "cpu_asr_log_sha256=$cpu_asr_log_sha256"
+    echo "cpu_ast_log_sha256=$cpu_ast_log_sha256"
+    echo "transfer_manifest_sha256=$transfer_manifest_sha256"
     hash_reference_directory "$reference" "$evidence_dir/reference-hashes.txt"
   } > "$evidence_dir/input-hashes.txt"
 
@@ -499,6 +606,7 @@ main() {
   [[ "$(grep -Fxc 'CANARY_1B_V2_METAL_VS_CPU PASS' \
     "$evidence_dir/parity-en-de.log" || true)" == 1 ]] \
     || die "Canary-v2 AST Metal/CPU marker is absent"
+  require_expected_head "$expected_head"
 
   {
     echo "verdict=PASS"
@@ -518,6 +626,7 @@ main() {
     echo "upload=NOT_PERFORMED"
     echo "publication=NOT_PERFORMED"
   } > "$evidence_dir/summary.txt"
+  require_expected_head "$expected_head"
   log "PASS: pull only $evidence_dir, then remove staged inputs or destroy the remote worker"
 }
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
 """Prepare the pinned NVIDIA Canary-1B-Flash `.nemo` release on VAST.
 
 This is a large-model sidecar, never a runtime dependency. It authenticates
@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 UPSTREAM_HF = "nvidia/canary-1b-flash"
@@ -62,6 +63,16 @@ def digest_file(path: Path) -> str:
         while chunk := stream.read(8 * 1024 * 1024):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def write_bytes_exclusive(path: Path, payload: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(payload)
+
+
+def write_text_exclusive(path: Path, payload: str) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(payload)
 
 
 def require_vast() -> None:
@@ -178,12 +189,21 @@ def extract_small_assets(archive: Path, output_dir: Path) -> tuple[list[str], Pa
     order, aggregate = resolve_aggregate_vocab(vocab)
     config_path = output_dir / "model_config.yaml"
     aggregate_path = output_dir / "canary-1b-flash.aggregate.vocab"
-    config_path.write_bytes(config)
-    aggregate_path.write_bytes(aggregate)
+    write_bytes_exclusive(config_path, config)
+    write_bytes_exclusive(aggregate_path, aggregate)
     return order, config_path, aggregate_path
 
 
 def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="canary-flash-prepare-") as directory:
+        path = Path(directory) / "sentinel"
+        write_bytes_exclusive(path, b"one")
+        try:
+            write_bytes_exclusive(path, b"two")
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("pre-existing output was clobbered")
     manifest: dict[str, object] = {
         "kept_count": FLOAT_TENSOR_COUNT,
         "dropped_count": COUNTER_COUNT,
@@ -334,8 +354,8 @@ def main() -> int:
         "aggregate_vocab_sha256": digest_file(aggregate_path),
         "aggregate_vocab_member_order": tokenizer_order,
     }
-    (output_dir / "prepare-audit.json").write_text(
-        json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    write_text_exclusive(
+        output_dir / "prepare-audit.json", json.dumps(audit, indent=2, sort_keys=True) + "\n"
     )
     print(json.dumps(audit, sort_keys=True))
     return 0

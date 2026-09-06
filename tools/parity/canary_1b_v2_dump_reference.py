@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
 """Dump an independent official NVIDIA NeMo Canary-1B-v2 reference.
 
 The oracle is ``EncDecMultiTaskModel.restore_from`` from NVIDIA NeMo. This
@@ -67,6 +67,16 @@ def digest_file(path: Path) -> str:
         while chunk := stream.read(8 * 1024 * 1024):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def write_text_exclusive(path: Path, payload: str) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(payload)
+
+
+def write_bytes_exclusive(path: Path, payload: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(payload)
 
 
 def require_vast() -> None:
@@ -409,7 +419,7 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="vokra-canary-v2-reference-") as temp_dir:
         manifest_path = Path(temp_dir) / "manifest.jsonl"
-        manifest_path.write_text(json.dumps(manifest_row) + "\n", encoding="utf-8")
+        write_text_exclusive(manifest_path, json.dumps(manifest_row) + "\n")
         with torch.inference_mode():
             hypotheses = model.transcribe(
                 str(manifest_path), batch_size=1, return_hypotheses=True
@@ -451,16 +461,10 @@ def main() -> int:
         "text": text,
         "tokens": tokens,
     }
-    args.output.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    args.output.with_suffix(".tokens.txt").write_text(
-        " ".join(str(token) for token in tokens) + "\n", encoding="utf-8"
-    )
-    args.output.with_suffix(".text.txt").write_text(text + "\n", encoding="utf-8")
-    args.output.with_suffix(".pcm.f32").write_bytes(
-        np.asarray(pcm[:, 0], dtype="<f4").tobytes(order="C")
-    )
+    write_text_exclusive(args.output, json.dumps(report, indent=2, sort_keys=True) + "\n")
+    write_text_exclusive(args.output.with_suffix(".tokens.txt"), " ".join(str(token) for token in tokens) + "\n")
+    write_text_exclusive(args.output.with_suffix(".text.txt"), text + "\n")
+    write_bytes_exclusive(args.output.with_suffix(".pcm.f32"), np.asarray(pcm[:, 0], dtype="<f4").tobytes(order="C"))
     print(json.dumps(report, sort_keys=True))
     return 0
 

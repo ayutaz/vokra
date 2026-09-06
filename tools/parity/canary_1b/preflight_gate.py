@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --offline --python 3.12 python
 """Offline approval gate for the two complete NVIDIA Canary-1B releases.
 
 The gate is deliberately dependency-free and must be called before a worker
@@ -226,11 +226,15 @@ def validate(
     approval_path: Path,
     variant_name: str,
     *,
+    approval_sha256: str | None = None,
     allow_self_test_signer: bool = False,
 ) -> tuple[bool, str]:
     try:
         manifest_bytes = require_regular(manifest_path, "gate manifest")
-        require_regular(approval_path, "external approval evidence")
+        approval_bytes = require_regular(approval_path, "external approval evidence")
+        if approval_sha256 is not None:
+            if not HEX64.fullmatch(approval_sha256) or digest_bytes(approval_bytes) != approval_sha256:
+                raise ValueError("external approval SHA-256 mismatch")
         manifest = load_json(manifest_path)
         approval = load_json(approval_path)
         expected = expected_manifest()
@@ -317,6 +321,15 @@ def self_test() -> int:
         if not ok:
             print(f"canary gate valid approval rejected: {reason}", file=sys.stderr)
             return 1
+        if validate(
+            manifest_path,
+            approval_path,
+            "canary-1b-flash",
+            approval_sha256="0" * 64,
+            allow_self_test_signer=True,
+        )[0]:
+            print("canary gate accepted a mismatched approval SHA-256", file=sys.stderr)
+            return 1
         if validate(manifest_path, approval_path, "canary-1b-flash")[0]:
             print("canary gate accepted self-test signer in production mode", file=sys.stderr)
             return 1
@@ -394,15 +407,16 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--approval", type=Path)
     parser.add_argument("--variant", choices=[variant["variant"] for variant in VARIANTS])
+    parser.add_argument("--approval-sha256")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.manifest, args.approval, args.variant)):
+        if any(value is not None for value in (args.manifest, args.approval, args.variant, args.approval_sha256)):
             parser.error("--self-test accepts no other arguments")
         return self_test()
-    if any(value is None for value in (args.manifest, args.approval, args.variant)):
-        parser.error("normal runs require --manifest, --approval, and --variant")
-    ok, reason = validate(args.manifest, args.approval, args.variant)
+    if any(value is None for value in (args.manifest, args.approval, args.variant, args.approval_sha256)):
+        parser.error("normal runs require --manifest, --approval, --approval-sha256, and --variant")
+    ok, reason = validate(args.manifest, args.approval, args.variant, approval_sha256=args.approval_sha256)
     if ok:
         print("canary_1b preflight gate: PASS")
         return 0

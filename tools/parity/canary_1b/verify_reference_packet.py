@@ -15,6 +15,7 @@ import math
 import re
 import struct
 import sys
+import tempfile
 from pathlib import Path
 
 DATA_FILES = tuple(
@@ -161,16 +162,70 @@ def verify_packet(args: argparse.Namespace) -> None:
         parse_report(directory / name, args.variant, args.revision, args.checkpoint_sha256, args.audio_sha256)
 
 
+def self_test() -> int:
+    try:
+        reject_duplicate_keys([("x", 1), ("x", 2)])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate JSON key was accepted")
+    with tempfile.TemporaryDirectory(prefix="canary-reference-verifier-") as directory:
+        root = Path(directory)
+        revision = "a" * 40
+        checkpoint = "b" * 64
+        audio_sha = "c" * 64
+        for case in ("en-en", "en-de"):
+            report = {
+                "format": "vokra-canary-1b-flash-nemo-reference-v1",
+                "reference_implementation": "nemo.collections.asr.models.EncDecMultiTaskModel.restore_from",
+                "reference_package": "nemo-toolkit[asr]==3.0.0",
+                "reference_source_audit_commit": "837a31fa7a810a3de9e4826837e97dea837a5c42",
+                "nemo_version": "3.0.0", "torch_version": "test", "environment": {},
+                "upstream_hf": "nvidia/canary-1b-flash", "upstream_revision": revision,
+                "checkpoint_sha256": checkpoint, "audio": "tests/fixtures/audio/jfk-30s.wav",
+                "audio_sha256": audio_sha, "sample_rate": 16_000, "sample_count": 1,
+                "source_language": "en", "target_language": "en" if case == "en-en" else "de",
+                "taskname": "asr" if case == "en-en" else "ast", "text": "ok", "tokens": [1],
+            }
+            (root / f"reference-{case}.json").write_text(json.dumps(report), encoding="utf-8")
+            (root / f"reference-{case}.tokens.txt").write_text("1\n", encoding="utf-8")
+            (root / f"reference-{case}.text.txt").write_text("ok\n", encoding="utf-8")
+            (root / f"reference-{case}.pcm.f32").write_bytes(struct.pack("<f", 1.0))
+        lines = [f"{digest_file(root / name)}  {name}" for name in DATA_FILES]
+        (root / MANIFEST_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        packet = b"".join((root / name).read_bytes() for name in DATA_FILES)
+        packet_sha = digest_bytes(packet)
+        (root / PACKET_DIGEST_NAME).write_text(packet_sha + "\n", encoding="utf-8")
+        args = argparse.Namespace(directory=root, variant="flash", revision=revision, checkpoint_sha256=checkpoint, audio_sha256=audio_sha, manifest_sha256=digest_file(root / MANIFEST_NAME), packet_sha256=packet_sha)
+        verify_packet(args)
+        (root / "extra").write_text("x", encoding="utf-8")
+        try:
+            verify_packet(args)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("extra packet entry was accepted")
+    print("verify_reference_packet --self-test: PASS")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--directory", type=Path, required=True)
-    parser.add_argument("--variant", choices=("flash", "v2"), required=True)
-    parser.add_argument("--revision", required=True)
-    parser.add_argument("--checkpoint-sha256", required=True)
-    parser.add_argument("--audio-sha256", required=True)
-    parser.add_argument("--manifest-sha256", required=True)
-    parser.add_argument("--packet-sha256", required=True)
+    parser.add_argument("--directory", type=Path)
+    parser.add_argument("--variant", choices=("flash", "v2"))
+    parser.add_argument("--revision")
+    parser.add_argument("--checkpoint-sha256")
+    parser.add_argument("--audio-sha256")
+    parser.add_argument("--manifest-sha256")
+    parser.add_argument("--packet-sha256")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        if any(getattr(args, name) is not None for name in ("directory", "variant", "revision", "checkpoint_sha256", "audio_sha256", "manifest_sha256", "packet_sha256")):
+            parser.error("--self-test accepts no other arguments")
+        return self_test()
+    if any(getattr(args, name) is None for name in ("directory", "variant", "revision", "checkpoint_sha256", "audio_sha256", "manifest_sha256", "packet_sha256")):
+        parser.error("normal runs require all packet identity arguments")
     if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         parser.error("--revision must be a 40-character lowercase commit SHA")
     for name, value in (("checkpoint", args.checkpoint_sha256), ("audio", args.audio_sha256)):
