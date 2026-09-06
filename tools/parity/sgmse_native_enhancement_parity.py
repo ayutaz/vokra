@@ -32,6 +32,7 @@ from sgmse_dump_reference import (
     CHECKPOINT_SHA256,
     CHECKPOINT_SIZE,
     CHECKPOINT_LICENSE_SPDX,
+    EMA_ROUTE_STATUS,
     HYPERPARAMS_RAW,
     MODEL_REPOSITORY,
     MODEL_REVISION,
@@ -61,7 +62,6 @@ from sgmse_dump_reference import (
 
 PACKET_FORMAT = "vokra-sgmse-native-enhancement-reference-v1"
 PACKET_STATUS = "REFERENCE_COMPLETE_NO_UPLOAD"
-EMA_ROUTE_STATUS = "SOURCE_ROUTE_VERIFIED_STRICT_LOAD"
 COMPARISON_FORMAT = "vokra-sgmse-native-enhancement-comparison-v1"
 HARNESS_STATUS = "HARNESS_READY"
 CPU_STATUS_BEFORE_RUN = "CPU_ENHANCEMENT_PARITY_NOT_RUN"
@@ -135,6 +135,69 @@ def verify_official_enhancement_source(
         row["sha256"],
         ENHANCEMENT_SOURCE_MARKERS,
     )
+
+
+def verify_speechbrain_source_manifest(
+    speechbrain: dict[str, Any],
+    ema_route: dict[str, Any],
+    runtime: dict[str, Any],
+    *,
+    allow_missing_source_for_self_test: bool,
+) -> None:
+    """Re-hash the exact clean SpeechBrain checkout named by the packet.
+
+    The model-free self-test explicitly opts into synthetic source rows. A
+    generated VAST packet must carry a real clean checkout; its
+    three executable source files are re-hashed at verification time rather
+    than trusting hashes copied into the manifest.
+    """
+    source_path = Path(speechbrain["path"])
+    if allow_missing_source_for_self_test and not source_path.exists():
+        return
+    if not source_path.is_absolute() or source_path.is_symlink():
+        raise ValueError("SpeechBrain source checkout must be an absolute non-symlink directory")
+    if speechbrain.get("clean") is not True:
+        raise ValueError("SpeechBrain source checkout is not marked clean")
+    observed = require_clean_revision(
+        source_path, SPEECHBRAIN_REVISION, "SpeechBrain source"
+    )
+    if observed["path"] != str(source_path):
+        raise ValueError("SpeechBrain source path was normalized unexpectedly")
+
+    expected_files: dict[str, dict[str, Any]] = {}
+    source_rows = speechbrain.get("files")
+    if isinstance(source_rows, list):
+        for row in source_rows:
+            if isinstance(row, dict) and isinstance(row.get("path"), str):
+                expected_files[row["path"]] = row
+    ema_files = ema_route.get("source_files")
+    if isinstance(ema_files, dict):
+        for row in ema_files.values():
+            if isinstance(row, dict) and isinstance(row.get("path"), str):
+                expected_files[row["path"]] = row
+    required = {
+        ENHANCEMENT_SOURCE_FILE: ENHANCEMENT_SOURCE_MARKERS,
+        "speechbrain/integrations/models/sgmse_plus.py": ("class ScoreModel",),
+        "speechbrain/utils/parameter_transfer.py": (
+            "class Pretrainer",
+            "filename = name + PARAMFILE_EXT",
+            "def load_collected",
+        ),
+    }
+    if set(expected_files) != set(required):
+        raise ValueError("SpeechBrain source file inventory is incomplete")
+    for relative, markers in required.items():
+        row = expected_files[relative]
+        if (
+            not isinstance(row.get("sha256"), str)
+            or len(row["sha256"]) != 64
+            or not isinstance(row.get("size"), int)
+            or row["size"] <= 0
+        ):
+            raise ValueError(f"SpeechBrain source evidence is malformed: {relative}")
+        actual = require_source_file(source_path, relative, row["sha256"], markers)
+        if actual["size"] != row["size"]:
+            raise ValueError(f"SpeechBrain source size differs: {relative}")
 
 
 def reviewed_sampling_config(hyperparams_evidence: dict[str, Any]) -> dict[str, Any]:
@@ -420,7 +483,12 @@ def _validate_noise_calls(packet: Path, manifest: dict[str, Any]) -> list[dict[s
     return calls
 
 
-def verify_reference(packet: Path, vokra_root: Path | None = None) -> dict[str, Any]:
+def verify_reference(
+    packet: Path,
+    vokra_root: Path | None = None,
+    *,
+    allow_missing_source_for_self_test: bool = False,
+) -> dict[str, Any]:
     require_exact_files(packet, EXPECTED_PACKET_FILES, "reference packet")
     manifest = json.loads(
         (packet / MANIFEST_NAME).read_text(encoding="utf-8"),
@@ -471,10 +539,8 @@ def verify_reference(packet: Path, vokra_root: Path | None = None) -> dict[str, 
         or not isinstance(speechbrain_files[0], dict)
         or speechbrain_files[0].get("path") != ENHANCEMENT_SOURCE_FILE
         or speechbrain_files[0].get("markers") != {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS}
-        or not isinstance(speechbrain_files[0].get("sha256"), str)
-        or len(speechbrain_files[0]["sha256"]) != 64
-        or not isinstance(speechbrain_files[0].get("size"), int)
-        or speechbrain_files[0]["size"] <= 0
+        or speechbrain_files[0].get("sha256") != "019e79bb489ba4c7f1ddd681e0cc007d7034386636ffd156128ec85058476995"
+        or speechbrain_files[0].get("size") != 11693
     ):
         raise ValueError("reference SpeechBrain enhancement source evidence mismatch")
     if manifest["licenses"] != {
@@ -541,6 +607,12 @@ def verify_reference(packet: Path, vokra_root: Path | None = None) -> dict[str, 
         or not runtime.get("numpy_version")
     ):
         raise ValueError("reference runtime is not VAST Linux x86_64")
+    verify_speechbrain_source_manifest(
+        speechbrain,
+        ema_route,
+        runtime,
+        allow_missing_source_for_self_test=allow_missing_source_for_self_test,
+    )
     vokra = manifest["vokra"]
     if not isinstance(vokra, dict) or set(vokra) != {
         "path", "commit", "clean", "tool_sha256", "uv_lock_sha256"
@@ -982,7 +1054,7 @@ def self_test() -> int:
             "model_repository": MODEL_REPOSITORY, "model_revision": MODEL_REVISION,
             "checkpoint": {"filename": CHECKPOINT_NAME, "size": CHECKPOINT_SIZE, "sha256": CHECKPOINT_SHA256, "license_spdx": CHECKPOINT_LICENSE_SPDX},
             "source": {"path": "/source", "revision": SOURCE_REVISION, "clean": True, "repository": "https://github.com/sp-uhh/sgmse.git", "license_spdx": SOURCE_LICENSE_SPDX, "license_sha256": SOURCE_LICENSE_SHA256, "files": []},
-            "speechbrain_source": {"path": "/speechbrain", "revision": SPEECHBRAIN_REVISION, "clean": True, "repository": "https://github.com/speechbrain/speechbrain.git", "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256, "files": [{"path": ENHANCEMENT_SOURCE_FILE, "sha256": "0" * 64, "size": 1, "markers": {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS}}]},
+            "speechbrain_source": {"path": "/speechbrain", "revision": SPEECHBRAIN_REVISION, "clean": True, "repository": "https://github.com/speechbrain/speechbrain.git", "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256, "files": [{"path": ENHANCEMENT_SOURCE_FILE, "sha256": "019e79bb489ba4c7f1ddd681e0cc007d7034386636ffd156128ec85058476995", "size": 11693, "markers": {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS}}]},
             "licenses": {"algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256}, "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256}, "checkpoint": CHECKPOINT_LICENSE_SPDX},
             "ema_route": {"status": EMA_ROUTE_STATUS, "loadable": "score_model_ema", "checkpoint_filename": CHECKPOINT_NAME, "parameter_load": "strict_state_dict", "unsafe_pickle_fallback": False, "source_files": {"score_model": {"path": "speechbrain/integrations/models/sgmse_plus.py", "sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935", "size": 21777}, "parameter_transfer": {"path": "speechbrain/utils/parameter_transfer.py", "sha256": "0" * 64, "size": 1}}},
             "model": {"load": "torch.load(weights_only=True)+load_state_dict(strict=True)", "tensor_count": 647, "parameter_count": 65_590_822},
@@ -996,7 +1068,23 @@ def self_test() -> int:
             "run_log": {"path": RUN_LOG_NAME, "size": (packet / RUN_LOG_NAME).stat().st_size, "sha256": sha256(packet / RUN_LOG_NAME)},
         }
         (packet / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
-        assert verify_reference(packet)["status"] == PACKET_STATUS
+        verify_for_self_test = lambda path: verify_reference(
+            path, allow_missing_source_for_self_test=True
+        )
+        assert verify_for_self_test(packet)["status"] == PACKET_STATUS
+        missing_checkout = root / "missing-speechbrain-checkout"
+        candidate = root / "candidate-missing-speechbrain-checkout"
+        shutil.copytree(packet, candidate)
+        candidate_manifest = json.loads((candidate / MANIFEST_NAME).read_text())
+        candidate_manifest["runtime"]["platform_node"] = "vast-self-test"
+        candidate_manifest["speechbrain_source"]["path"] = str(missing_checkout)
+        (candidate / MANIFEST_NAME).write_text(json.dumps(candidate_manifest), encoding="utf-8")
+        try:
+            verify_reference(candidate)
+        except ValueError:
+            pass
+        else:
+            return 1
         for field in ("ema_route", "model"):
             candidate = root / f"missing-{field}"
             shutil.copytree(packet, candidate)
@@ -1004,7 +1092,7 @@ def self_test() -> int:
             del candidate_manifest[field]
             (candidate / MANIFEST_NAME).write_text(json.dumps(candidate_manifest), encoding="utf-8")
             try:
-                verify_reference(candidate)
+                verify_for_self_test(candidate)
             except ValueError:
                 pass
             else:
@@ -1026,7 +1114,7 @@ def self_test() -> int:
                     candidate_manifest["noise_calls"][1]["count"] = 2
                 (candidate / MANIFEST_NAME).write_text(json.dumps(candidate_manifest), encoding="utf-8")
             try:
-                verify_reference(candidate)
+                verify_for_self_test(candidate)
             except (ValueError, struct.error):
                 pass
             else:

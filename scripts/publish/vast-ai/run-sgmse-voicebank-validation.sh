@@ -173,7 +173,7 @@ for name, (digest, size) in expected_speech_files.items():
     if row.get("sha256") != digest or row.get("size") != size:
         raise SystemExit(f"inspection SpeechBrain source mismatch: {name}")
 safe_load = data.get("safe_load")
-if not isinstance(safe_load, dict) or safe_load.get("safe_load_status") != "SAFE_LOADED" or safe_load.get("tensor_count") != 647 or safe_load.get("all_finite") is not True or safe_load.get("parameter_count") != 65590822:
+if not isinstance(safe_load, dict) or safe_load.get("safe_load_status") != "SAFE_LOADED" or safe_load.get("tensor_count") != 647 or safe_load.get("all_finite") is not True or safe_load.get("parameter_count") != 65590822 or safe_load.get("container_path") != "<root>" or safe_load.get("ema_container_path") != "<root>" or safe_load.get("ema_extraction") != "UNVERIFIED" or safe_load.get("unsafe_pickle_fallback") is not False or safe_load.get("unsupported_objects") != []:
     raise SystemExit("inspection safe-load identity mismatch")
 tensor_manifest = safe_load.get("tensor_manifest")
 if not isinstance(tensor_manifest, dict) or len(tensor_manifest) != 647 or any(
@@ -185,7 +185,8 @@ hyperparams = data.get("hyperparams")
 if not isinstance(hyperparams, dict) or hyperparams.get("filename") != "hyperparams.yaml" or hyperparams.get("sha256") != "5ebd87c6257537c3997c134b279d85cd7bebccce0e6d3fc68f7a36f15096aa51":
     raise SystemExit("inspection hyperparams identity mismatch")
 tensor_contract = data.get("tensor_contract")
-if not isinstance(tensor_contract, dict) or tensor_contract.get("format") != "vokra-sgmse-typed-role-manifest-v2" or tensor_contract.get("reviewed_manifest_sha256") != "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c" or tensor_contract.get("checkpoint_tensor_count") != 647:
+mapping_review = tensor_contract.get("source_mapping_review") if isinstance(tensor_contract, dict) else None
+if not isinstance(tensor_contract, dict) or tensor_contract.get("format") != "vokra-sgmse-typed-role-manifest-v2" or tensor_contract.get("status") != "SAFE_LOADED_MANIFEST" or tensor_contract.get("source") != "safe_load.tensor_manifest" or tensor_contract.get("tensor_count") != 647 or tensor_contract.get("reviewed_manifest_sha256") != "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c" or not isinstance(mapping_review, dict) or mapping_review.get("format") != "vokra-sgmse-source-mapping-review-v1" or mapping_review.get("status") != "INSPECTION_CANDIDATE" or mapping_review.get("method") != "SOURCE_CONSTRUCTION_RECORDS_REQUIRED" or mapping_review.get("checkpoint_tensor_count") != 647 or mapping_review.get("checkpoint_tensor_names_sha256") != "630c86e9aa5e2b794dfc35cc2989fc0efa4bdfedcdffb76785d2d9f4e5847370" or mapping_review.get("reviewed_manifest_sha256") != "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c":
     raise SystemExit("inspection typed contract identity mismatch")
 if data.get("weight_license_spdx") != "apache-2.0":
     raise SystemExit("inspection weight license mismatch")
@@ -194,16 +195,24 @@ PY
 }
 
 write_resolution_ledger() {
+  local ledger_path="${1:-$LEDGER}"
+  local inspection_path="${2:-$INSPECTION_DIR/evidence/sgmse_voicebank_manifest.json}"
+  local prepared_path="${3:-$PREPARED}"
+  local prepared_manifest_path="${4:-$PREPARED_MANIFEST}"
+  local score_path="${5:-$SCORE_REFERENCE_DIR/manifest.json}"
+  local enhancement_path="${6:-$ENHANCEMENT_REFERENCE_DIR/manifest.json}"
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-sgmse-uv-cache}" uv run --no-project --offline --python 3.12 python - \
-    "$LEDGER" "$INSPECTION_DIR/evidence/sgmse_voicebank_manifest.json" "$PREPARED" \
-    "$PREPARED_MANIFEST" "$SCORE_REFERENCE_DIR/manifest.json" "$ENHANCEMENT_REFERENCE_DIR/manifest.json" <<'PY'
+    "$ledger_path" "$inspection_path" "$prepared_path" \
+    "$prepared_manifest_path" "$score_path" "$enhancement_path" "$VOKRA_ROOT" <<'PY'
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
+import struct
 import sys
 
-ledger, inspection_path, prepared, prepared_manifest, score_path, enhancement_path = map(pathlib.Path, sys.argv[1:])
+ledger, inspection_path, prepared, prepared_manifest, score_path, enhancement_path, vokra_root = map(pathlib.Path, sys.argv[1:])
 
 def reject_duplicates(pairs):
     result = {}
@@ -231,10 +240,34 @@ expected_keys = {
     "checkpoint_filename", "checkpoint_size", "checkpoint_sha256", "prepared_sha256",
     "tensor_count", "typed_manifest_sha256", "tensor_rows",
 }
-if set(prepared_data) != expected_keys or prepared_data["tensor_count"] != 647 or prepared_data["typed_manifest_sha256"] != "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c":
+expected_prepared = {
+    "format": "vokra-sgmse-voicebank-prepared-v1",
+    "repository": "speechbrain/sgmse-voicebank",
+    "model_revision": "8f4ff7b65284c49492a43349b8106e094ac0d365",
+    "source_repository": "https://github.com/sp-uhh/sgmse.git",
+    "source_revision": "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e",
+    "checkpoint_filename": "score_model_ema.ckpt",
+    "checkpoint_size": 262593305,
+    "checkpoint_sha256": "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3",
+}
+if set(prepared_data) != expected_keys or any(prepared_data.get(key) != value for key, value in expected_prepared.items()) or prepared_data["tensor_count"] != 647 or not isinstance(prepared_data.get("tensor_rows"), list) or len(prepared_data["tensor_rows"]) != 647 or prepared_data["typed_manifest_sha256"] != "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c":
     raise SystemExit("prepared mapping evidence is not the reviewed 647-row contract")
 if prepared_data["prepared_sha256"] != hashlib.sha256(prepared.read_bytes()).hexdigest():
     raise SystemExit("prepared artifact digest is not bound")
+spec = importlib.util.spec_from_file_location(
+    "sgmse_prepare_checkpoint", vokra_root / "tools/parity/sgmse_prepare_checkpoint.py"
+)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load the canonical SGMSE tensor digest helper")
+prepare_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(prepare_module)
+rows = prepared_data["tensor_rows"]
+try:
+    canonical_digest = prepare_module.typed_manifest_sha256(rows, [row["role"] for row in rows])
+except (KeyError, TypeError, ValueError, struct.error) as error:
+    raise SystemExit(f"prepared tensor rows failed canonical validation: {error}") from error
+if canonical_digest != prepared_data["typed_manifest_sha256"]:
+    raise SystemExit("prepared tensor rows do not match their canonical typed digest")
 score = load(score_path)
 enhancement = load(enhancement_path)
 ema_transfer_hashes = []
@@ -445,13 +478,13 @@ base = {
     "checkpoint": {"expected_filename": "score_model_ema.ckpt", "expected_size": 262593305, "expected_sha256": "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3", "filename": "score_model_ema.ckpt", "size": 262593305, "sha256": "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3"},
     "algorithm_source": {"repository": "https://github.com/sp-uhh/sgmse.git", "expected_revision": "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e", "resolved_revision": "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e", "revision": "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e", "license_spdx": "mit", "license_sha256": "8748956d2e5afe9dfc8311188b4119dacc7c5293b0561e7cca7a21cf80e54caa", "files_by_role": algorithm_roles},
     "speechbrain_source": {"repository": "https://github.com/speechbrain/speechbrain.git", "expected_revision": "2b3f4f44351fd08a627c4ab307de5c420351bc19", "resolved_revision": "2b3f4f44351fd08a627c4ab307de5c420351bc19", "license_spdx": "apache-2.0", "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4", "locked_distribution": {"version": "1.0.3", "sdist_sha256": "fcab3c6e90012cecb1eed40ea235733b550137e73da6bfa2340ba191ec714052", "wheel_sha256": "9859d4c1b1fb3af3b85523c0c89f52e45a04f305622ed55f31aa32dd2fba19e9"}, "locked_distribution_audit": {"status": "BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION", "expected_version": "1.0.3", "version": "1.0.3", "expected_source_roles": distribution_roles, "observed_source_roles": distribution_roles}, "executable_files": {"speechbrain/inference/enhancement.py": {"sha256": "019e79bb489ba4c7f1ddd681e0cc007d7034386636ffd156128ec85058476995", "size": 11693}, "speechbrain/integrations/models/sgmse_plus.py": {"sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935", "size": 21777}}},
-    "safe_load": {"safe_load_status": "SAFE_LOADED", "tensor_count": 647, "all_finite": True, "parameter_count": 65590822, "tensor_manifest": {f"tensor.{i}": {"dtype": "torch.float32", "finite": True, "count": 1} for i in range(647)}},
+    "safe_load": {"safe_load_status": "SAFE_LOADED", "tensor_count": 647, "all_finite": True, "parameter_count": 65590822, "container_path": "<root>", "ema_container_path": "<root>", "ema_extraction": "UNVERIFIED", "unsafe_pickle_fallback": False, "unsupported_objects": [], "tensor_manifest": {f"tensor.{i}": {"dtype": "torch.float32", "finite": True, "count": 1} for i in range(647)}},
     "hyperparams": {"filename": "hyperparams.yaml", "sha256": "5ebd87c6257537c3997c134b279d85cd7bebccce0e6d3fc68f7a36f15096aa51"},
-    "tensor_contract": {"format": "vokra-sgmse-typed-role-manifest-v2", "reviewed_manifest_sha256": "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c", "checkpoint_tensor_count": 647},
+    "tensor_contract": {"format": "vokra-sgmse-typed-role-manifest-v2", "reviewed_manifest_sha256": "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c", "status": "SAFE_LOADED_MANIFEST", "source": "safe_load.tensor_manifest", "tensor_count": 647, "source_mapping_review": {"format": "vokra-sgmse-source-mapping-review-v1", "status": "INSPECTION_CANDIDATE", "method": "SOURCE_CONSTRUCTION_RECORDS_REQUIRED", "checkpoint_tensor_count": 647, "checkpoint_tensor_names_sha256": "630c86e9aa5e2b794dfc35cc2989fc0efa4bdfedcdffb76785d2d9f4e5847370", "reviewed_manifest_sha256": "409690f70b534771055dc4f740cc66bdb4d1b25dba5e22fd066109adce77278c"}},
     "weight_license_spdx": "apache-2.0",
 }
 (root / "base.json").write_text(json.dumps(base), encoding="utf-8")
-for name, mutate in (("missing", lambda value: value["blockers"].pop()), ("extra", lambda value: value["blockers"].append("EXTRA")), ("wrong-safe-load", lambda value: value["safe_load"].update(safe_load_status="BLOCKED")), ("wrong-count", lambda value: value["safe_load"].update(tensor_count=646)), ("wrong-digest", lambda value: value["tensor_contract"].update(reviewed_manifest_sha256="0" * 64)), ("wheel-integration", lambda value: value.update(wheel_integration=True))):
+for name, mutate in (("missing", lambda value: value["blockers"].pop()), ("extra", lambda value: value["blockers"].append("EXTRA")), ("wrong-safe-load", lambda value: value["safe_load"].update(safe_load_status="BLOCKED")), ("wrong-container", lambda value: value["safe_load"].update(container_path="ema")), ("wrong-unsupported", lambda value: value["safe_load"].update(unsupported_objects=["object"])), ("wrong-count", lambda value: value["safe_load"].update(tensor_count=646)), ("wrong-digest", lambda value: value["tensor_contract"].update(reviewed_manifest_sha256="0" * 64)), ("wrong-mapping-digest", lambda value: value["tensor_contract"]["source_mapping_review"].update(reviewed_manifest_sha256="0" * 64)), ("wheel-integration", lambda value: value.update(wheel_integration=True))):
     candidate = copy.deepcopy(base)
     mutate(candidate)
     (root / f"{name}.json").write_text(json.dumps(candidate), encoding="utf-8")
@@ -471,13 +504,105 @@ PY
     fi
   done
   validate_inspection_manifest "$inspection_tmp/base.json" >/dev/null || fail=1
-  for case_file in missing extra wrong-safe-load wrong-count wrong-digest wheel-integration duplicate; do
+  for case_file in missing extra wrong-safe-load wrong-container wrong-unsupported wrong-count wrong-digest wrong-mapping-digest wheel-integration duplicate; do
     if validate_inspection_manifest "$inspection_tmp/$case_file.json" >/dev/null 2>&1; then
       log "self-test FAIL: inspection mutation accepted: $case_file"
       fail=1
     fi
   done
   rm -rf -- "$inspection_tmp"
+  local ledger_tmp ledger_case
+  ledger_tmp="$(mktemp -d "${TMPDIR:-/tmp}/sgmse-validation-ledger-selftest.XXXXXX")"
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-sgmse-uv-cache}" uv run --no-project --offline --python 3.12 python - \
+    "$ledger_tmp" "$VOKRA_ROOT" <<'PY'
+import copy
+import hashlib
+import importlib.util
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+vokra_root = pathlib.Path(sys.argv[2])
+inspection = {
+    "runtime_status": "INSPECTION_ONLY",
+    "blockers": [
+        "BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION: reviewed SpeechBrain 1.0.3 distribution lacks source-backed SGMSE integration",
+        "BLOCKED_INDEPENDENT_REFERENCE_UNAVAILABLE: independent upstream reference was not executed",
+        "BLOCKED_EMA_SELECTION_UNVERIFIED: safe-loaded tensor map was not selected by a reviewed EMA loader",
+        "BLOCKED_EXACT_NCSNPP_TENSOR_MAPPING_UNPROVEN: source construction has not yielded a reviewed one-to-one role map",
+    ],
+}
+(root / "inspection.json").write_text(json.dumps(inspection), encoding="utf-8")
+artifact = root / "prepared.safetensors"
+artifact.write_bytes(b"ledger-synthetic-artifact")
+spec = importlib.util.spec_from_file_location(
+    "sgmse_prepare_checkpoint", vokra_root / "tools/parity/sgmse_prepare_checkpoint.py"
+)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load the canonical SGMSE tensor digest helper")
+prepare_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(prepare_module)
+tensor_rows, tensor_digest = prepare_module.load_contract()
+prepared = {
+    "format": "vokra-sgmse-voicebank-prepared-v1", "repository": "speechbrain/sgmse-voicebank",
+    "model_revision": "8f4ff7b65284c49492a43349b8106e094ac0d365", "source_repository": "https://github.com/sp-uhh/sgmse.git",
+    "source_revision": "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e", "checkpoint_filename": "score_model_ema.ckpt",
+    "checkpoint_size": 262593305, "checkpoint_sha256": "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3",
+    "prepared_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(), "tensor_count": 647,
+    "typed_manifest_sha256": tensor_digest,
+    "tensor_rows": tensor_rows,
+}
+(root / "prepared.manifest.json").write_text(json.dumps(prepared), encoding="utf-8")
+ema = {"status": "SOURCE_ROUTE_VERIFIED_STRICT_LOAD", "unsafe_pickle_fallback": False, "parameter_load": "strict_state_dict", "loadable": "score_model_ema", "source_files": {"score_model": {"path": "speechbrain/integrations/models/sgmse_plus.py", "sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935", "size": 21777}, "parameter_transfer": {"path": "speechbrain/utils/parameter_transfer.py", "sha256": "0" * 64, "size": 1}}}
+def reference():
+    return {"status": "REFERENCE_COMPLETE_NO_UPLOAD", "publication": "NO_UPLOAD", "ema_route": copy.deepcopy(ema), "model": {"load": "torch.load(weights_only=True)+load_state_dict(strict=True)", "tensor_count": 647, "parameter_count": 65590822}, "source": {"repository": "https://github.com/sp-uhh/sgmse.git", "revision": "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"}, "speechbrain_source": {"repository": "https://github.com/speechbrain/speechbrain.git", "revision": "2b3f4f44351fd08a627c4ab307de5c420351bc19"}}
+(root / "score.json").write_text(json.dumps(reference()), encoding="utf-8")
+(root / "enhancement.json").write_text(json.dumps(reference()), encoding="utf-8")
+for name, mutate in (
+    ("wrong-reference-status", lambda value: value["score"].update(status="MISSING")),
+    ("wrong-publication", lambda value: value["score"].update(publication="UPLOAD")),
+    ("wrong-ema", lambda value: value["score"]["ema_route"].update(status="BAD")),
+    ("wrong-model", lambda value: value["score"]["model"].update(load="unsafe")),
+    ("wrong-source", lambda value: value["score"]["source"].update(revision="0")),
+    ("wrong-prepared-repository", lambda value: value["prepared"].update(repository="other/model")),
+    ("wrong-prepared-checkpoint", lambda value: value["prepared"].update(checkpoint_sha256="0" * 64)),
+    ("wrong-digest", lambda value: value["prepared"].update(typed_manifest_sha256="0" * 64)),
+    ("wrong-count", lambda value: value["prepared"].update(tensor_count=646)),
+    ("wrong-rows", lambda value: value["prepared"]["tensor_rows"][0].update(name="tampered")),
+    ("wrong-prepared-bytes", lambda value: value["artifact"].write_bytes(b"tampered")),
+    ("wrong-transfer", lambda value: value["enhancement"]["ema_route"]["source_files"]["parameter_transfer"].update(sha256="1" * 64)),
+    ("missing-blocker", lambda value: value["inspection"]["blockers"].pop()),
+    ("extra-blocker", lambda value: value["inspection"]["blockers"].append("EXTRA_BLOCKER")),
+    ("duplicate-blocker", lambda value: value["inspection"]["blockers"].append(value["inspection"]["blockers"][-1])),
+):
+    candidate = root / name
+    candidate.mkdir()
+    for filename in ("inspection.json", "prepared.manifest.json", "score.json", "enhancement.json"):
+        source = root / filename
+        (candidate / filename).write_text(source.read_text(), encoding="utf-8")
+    (candidate / "prepared.safetensors").write_bytes(artifact.read_bytes())
+    values = {"inspection": json.loads((candidate / "inspection.json").read_text()), "prepared": json.loads((candidate / "prepared.manifest.json").read_text()), "artifact": candidate / "prepared.safetensors", "score": json.loads((candidate / "score.json").read_text()), "enhancement": json.loads((candidate / "enhancement.json").read_text())}
+    mutate(values)
+    (candidate / "inspection.json").write_text(json.dumps(values["inspection"]), encoding="utf-8")
+    (candidate / "prepared.manifest.json").write_text(json.dumps(values["prepared"]), encoding="utf-8")
+    (candidate / "score.json").write_text(json.dumps(values["score"]), encoding="utf-8")
+    (candidate / "enhancement.json").write_text(json.dumps(values["enhancement"]), encoding="utf-8")
+PY
+  write_resolution_ledger "$ledger_tmp/ledger.json" "$ledger_tmp/inspection.json" "$ledger_tmp/prepared.safetensors" "$ledger_tmp/prepared.manifest.json" "$ledger_tmp/score.json" "$ledger_tmp/enhancement.json" >/dev/null || fail=1
+  for ledger_case in wrong-reference-status wrong-publication wrong-ema wrong-model wrong-source wrong-prepared-repository wrong-prepared-checkpoint wrong-digest wrong-count wrong-rows wrong-prepared-bytes wrong-transfer missing-blocker extra-blocker duplicate-blocker; do
+    if write_resolution_ledger "$ledger_tmp/$ledger_case/ledger.json" "$ledger_tmp/$ledger_case/inspection.json" "$ledger_tmp/$ledger_case/prepared.safetensors" "$ledger_tmp/$ledger_case/prepared.manifest.json" "$ledger_tmp/$ledger_case/score.json" "$ledger_tmp/$ledger_case/enhancement.json" >/dev/null 2>&1; then
+      log "self-test FAIL: ledger mutation accepted: $ledger_case"
+      fail=1
+    fi
+  done
+  mkdir "$ledger_tmp/missing-reference"
+  cp "$ledger_tmp/inspection.json" "$ledger_tmp/prepared.safetensors" "$ledger_tmp/prepared.manifest.json" "$ledger_tmp/score.json" "$ledger_tmp/missing-reference/"
+  if write_resolution_ledger "$ledger_tmp/missing-reference/ledger.json" "$ledger_tmp/missing-reference/inspection.json" "$ledger_tmp/missing-reference/prepared.safetensors" "$ledger_tmp/missing-reference/prepared.manifest.json" "$ledger_tmp/missing-reference/score.json" "$ledger_tmp/missing-reference/enhancement.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: missing reference evidence accepted'
+    fail=1
+  fi
+  rm -rf -- "$ledger_tmp"
   local schema_tmp
   schema_tmp="$(mktemp -d "${TMPDIR:-/tmp}/sgmse-validation-selftest.XXXXXX")"
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-sgmse-uv-cache}" uv run --no-project --offline --python 3.12 python - \
