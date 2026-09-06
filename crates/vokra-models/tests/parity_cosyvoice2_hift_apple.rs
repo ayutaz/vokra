@@ -34,6 +34,7 @@ const GGUF_SHA_ENV: &str = "VOKRA_COSYVOICE2_HIFT_GGUF_SHA256";
 const REFERENCE_ENV: &str = "VOKRA_COSYVOICE2_HIFT_REFERENCE_DIR";
 const REFERENCE_SHA_ENV: &str = "VOKRA_COSYVOICE2_HIFT_REFERENCE_MANIFEST_SHA256";
 const LICENSE_ENV: &str = "VOKRA_COSYVOICE2_HIFT_LICENSE_MANIFEST";
+const LICENSE_SHA_ENV: &str = "VOKRA_COSYVOICE2_HIFT_LICENSE_MANIFEST_SHA256";
 const EVIDENCE_ENV: &str = "VOKRA_COSYVOICE2_HIFT_APPLE_EVIDENCE_DIR";
 const SOURCE_ROLES: &[(&str, &str)] = &[
     (
@@ -372,6 +373,17 @@ fn hash(value: &str, label: &str) {
     );
 }
 
+fn authenticated_license_manifest(path: &Path) -> (String, JsonValue) {
+    let expected =
+        std::env::var(LICENSE_SHA_ENV).unwrap_or_else(|_| panic!("{LICENSE_SHA_ENV} is required"));
+    hash(&expected, LICENSE_SHA_ENV);
+    let bytes = fs::read(path).expect("external owner-signed license manifest bytes");
+    assert_eq!(sha256(&bytes), expected, "external license manifest digest");
+    let manifest = json::parse(&bytes).expect("external owner-signed license manifest JSON");
+    reject_duplicate_keys(&manifest);
+    (expected, manifest)
+}
+
 fn f32_artifact(
     path: &Path,
     expected_bytes: usize,
@@ -462,8 +474,9 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
         "Apple parity requires the explicit remote Apple worker gate"
     );
     let gguf = file(GGUF_ENV);
-    let reference = directory(REFERENCE_ENV);
     let license = file(LICENSE_ENV);
+    let (license_sha, license_json) = authenticated_license_manifest(&license);
+    let reference = directory(REFERENCE_ENV);
     let evidence = env_path(EVIDENCE_ENV);
     assert!(
         !evidence.exists() && !evidence.is_symlink(),
@@ -641,11 +654,7 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
         reference_sha,
         "reference manifest digest"
     );
-    let license_sha = sha256_file(&license);
     assert_eq!(license_sha, text(&manifest, &["license_manifest_sha256"]));
-    let license_json = json::parse(&fs::read(&license).expect("read license manifest"))
-        .expect("parse license manifest");
-    reject_duplicate_keys(&license_json);
     exact_keys(
         &license_json,
         &[

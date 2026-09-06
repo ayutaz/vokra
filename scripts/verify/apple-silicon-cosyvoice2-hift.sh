@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GATE="$ROOT/tools/parity/cosyvoice2_hift_reference/preflight_gate.py"
 TEST_NAME=cosyvoice2_hift_apple_cpu_metal_parity
 die(){ echo "cosyvoice2-hift-apple: ERROR: $*" >&2; exit 2; }
-usage(){ echo "usage: $0 --gguf FILE --gguf-sha256 SHA --reference-dir DIR --reference-manifest-sha256 SHA --license-manifest FILE --evidence-dir ABSENT_DIR" >&2; }
+usage(){ echo "usage: $0 --gguf FILE --gguf-sha256 SHA --reference-dir DIR --reference-manifest-sha256 SHA --license-manifest FILE --license-manifest-sha256 SHA --evidence-dir ABSENT_DIR" >&2; }
 reject_path(){
   local p label current
   p="$1"
@@ -34,18 +34,20 @@ require_dir(){
   [[ -d "$path" && ! -L "$path" ]] || die "$label must be a regular non-symlink directory"
 }
 scope(){
-  local path parent
+  local path suffix name parent
   path="$1"
-  if [[ -e "$path" ]]; then
-    realpath "$path"
-  else
-    parent="$(dirname "$path")"
-    [[ -d "$parent" && ! -L "$parent" ]] || die "scope parent is missing or symlinked: $parent"
-    (
-      cd -P "$parent"
-      printf '%s/%s\n' "$PWD" "$(basename "$path")"
-    ) || die "cannot canonicalize scope parent: $parent"
-  fi
+  suffix=''
+  while [[ ! -d "$path" || -L "$path" ]]; do
+    name="${path##*/}"
+    [[ -n "$name" ]] && suffix="/$name$suffix"
+    parent="${path%/*}"
+    [[ "$parent" == "$path" ]] && parent=/
+    path="$parent"
+  done
+  (
+    cd -P "$path"
+    printf '%s%s\n' "$PWD" "$suffix"
+  ) || die "cannot canonicalize scope: $1"
 }
 disjoint(){
   local a b
@@ -54,6 +56,16 @@ disjoint(){
 }
 sha(){ shasum -a 256 "$1" | awk '{print $1}'; }
 valid_sha(){ [[ "$1" =~ ^[0-9a-f]{64}$ ]] || die "$2 must be lowercase SHA-256"; }
+require_expected_sha256(){
+  local label expected path actual
+  label="$1"
+  expected="$2"
+  path="$3"
+  valid_sha "$expected" "$label"
+  require_file "$path" "$label"
+  actual="$(sha "$path")"
+  [[ "$actual" == "$expected" ]] || die "$label digest mismatch"
+}
 reject_checked_in(){
   local candidate checked_in
   candidate="$1"
@@ -112,17 +124,32 @@ for key in ("f0_cpu_reference_max_abs","pcm_cpu_reference_max_abs","pcm_metal_re
     if type(value) not in (int, float) or not math.isfinite(value) or value < 0 or value > 0.01: raise SystemExit(f"invalid metric: {key}")
 PY
 }
+require_cargo_singleton(){
+  local log_file
+  log_file="$1"
+  [[ "$(grep -Ec '^test [^[:space:]].* \.\.\. (ok|ignored|FAILED)$' "$log_file" || true)" == 1 ]] || { echo 'Cargo did not report exactly one test case result' >&2; return 2; }
+  [[ "$(grep -Ec "^test $TEST_NAME \.\.\. ok$" "$log_file" || true)" == 1 ]] || { echo 'named test did not pass exactly once' >&2; return 2; }
+  grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_file" || { echo 'Cargo did not report one exact passing result summary' >&2; return 2; }
+  [[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_file" || true)" == 1 ]] || { echo 'Cargo did not report exactly one passing result summary' >&2; return 2; }
+}
 self_test(){
   local fail token duplicate_output temp
   fail=0
   temp="$(mktemp -d "${TMPDIR:-/tmp}/vokra-hift-self-test.XXXXXX")"
   mkdir "$temp/nested"
   trap '[[ -n "${temp:-}" ]] && rm -rf -- "$temp"' EXIT
-  for token in "$TEST_NAME" "VOKRA_REMOTE_APPLE_SILICON=1" "CARGO_NET_OFFLINE=true" "NO_UPLOAD" "preflight_gate.py" "create_new"; do
+  for token in "$TEST_NAME" "VOKRA_REMOTE_APPLE_SILICON=1" "CARGO_NET_OFFLINE=true" "NO_UPLOAD" "preflight_gate.py" "create_new" "license-manifest-sha256" "VOKRA_COSYVOICE2_HIFT_LICENSE_MANIFEST_SHA256"; do
     grep -Fq -- "$token" "$0" "$ROOT/crates/vokra-models/tests/parity_cosyvoice2_hift_apple.rs" || { echo "missing contract: $token" >&2; fail=1; }
   done
   if grep -En 'curl|wget|git[[:space:]]+(clone|pull|fetch|push)|upload\.sh|publish-one\.sh|--upload|--push|cargo[[:space:]]+add' "$0" | grep -v 'grep -En' >/dev/null; then fail=1; fi
   if duplicate_output="$("$0" --gguf /tmp/a --gguf /tmp/b --gguf-sha256 00 --reference-dir /tmp/r --reference-manifest-sha256 00 --license-manifest /tmp/l --evidence-dir /tmp/e 2>&1)"; then fail=1; else grep -Fq 'duplicate option' <<<"$duplicate_output" || fail=1; fi
+  if "$0" --license-manifest-sha256 "$(printf 'a%.0s' {1..64})" --license-manifest-sha256 "$(printf 'b%.0s' {1..64})" >/dev/null 2>&1; then fail=1; fi
+  if "$0" --license-manifest-sha256 >/dev/null 2>&1; then fail=1; fi
+  if "$0" --license-manifest-sha256 bad >/dev/null 2>&1; then fail=1; fi
+  if (disjoint "$temp/evidence-leaf" "$temp") 2>/dev/null; then fail=1; fi
+  printf '%s\n' fixture >"$temp/license.json"
+  if (require_expected_sha256 license-manifest bad "$temp/license.json") >/dev/null 2>&1; then fail=1; fi
+  if (require_expected_sha256 license-manifest "0000000000000000000000000000000000000000000000000000000000000000" "$temp/license.json") >/dev/null 2>&1; then fail=1; fi
   if (disjoint "$temp" "$temp/nested") 2>/dev/null; then fail=1; fi
   if (reject_checked_in "$ROOT/tools/parity/cosyvoice2_hift_reference/license_gate_manifest.json") 2>/dev/null; then fail=1; fi
   if (reject_checked_in "//$ROOT/tools/parity/cosyvoice2_hift_reference/license_gate_manifest.json") 2>/dev/null; then fail=1; fi
@@ -136,6 +163,14 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(evidence), encoding="utf-8")
 PY
   validate_preflight_json "$temp/preflight.json" "p" "l" "2222222222222222222222222222222222222222222222222222222222222222" || fail=1
   validate_evidence_json "$temp/evidence.json" "0000000000000000000000000000000000000000000000000000000000000000" "1111111111111111111111111111111111111111111111111111111111111111" "2222222222222222222222222222222222222222222222222222222222222222" || fail=1
+  printf '%s\n' \
+    "test $TEST_NAME ... ok" \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s' >"$temp/cargo.log"
+  require_cargo_singleton "$temp/cargo.log" || fail=1
+  sed -n '1p;2p;2p' "$temp/cargo.log" >"$temp/cargo-duplicate-summary.log"
+  if require_cargo_singleton "$temp/cargo-duplicate-summary.log" >/dev/null 2>&1; then fail=1; fi
+  sed 's/finished in 1.25s/finished in .25s/' "$temp/cargo.log" >"$temp/cargo-bad-duration.log"
+  if require_cargo_singleton "$temp/cargo-bad-duration.log" >/dev/null 2>&1; then fail=1; fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$temp/evidence.json" "$temp/bool.json" <<'PY'
 import json, pathlib, sys
 document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -163,6 +198,7 @@ parse_args(){
   REFERENCE=""
   REFERENCE_SHA=""
   LICENSE=""
+  LICENSE_SHA=""
   EVIDENCE=""
   seen=""
   while [[ $# -gt 0 ]]; do
@@ -176,12 +212,13 @@ parse_args(){
       --reference-dir) [[ "$seen" != *'|reference-dir|'* ]] || die 'duplicate option: --reference-dir'; REFERENCE="$value"; seen="$seen|reference-dir|";;
       --reference-manifest-sha256) [[ "$seen" != *'|reference-manifest-sha256|'* ]] || die 'duplicate option: --reference-manifest-sha256'; REFERENCE_SHA="$value"; seen="$seen|reference-manifest-sha256|";;
       --license-manifest) [[ "$seen" != *'|license-manifest|'* ]] || die 'duplicate option: --license-manifest'; LICENSE="$value"; seen="$seen|license-manifest|";;
+      --license-manifest-sha256) [[ "$seen" != *'|license-manifest-sha256|'* ]] || die 'duplicate option: --license-manifest-sha256'; LICENSE_SHA="$value"; seen="$seen|license-manifest-sha256|";;
       --evidence-dir) [[ "$seen" != *'|evidence-dir|'* ]] || die 'duplicate option: --evidence-dir'; EVIDENCE="$value"; seen="$seen|evidence-dir|";;
       *) usage; die "unknown argument: $key";;
     esac
     shift 2
   done
-  [[ -n "$GGUF" && -n "$GGUF_SHA" && -n "$REFERENCE" && -n "$REFERENCE_SHA" && -n "$LICENSE" && -n "$EVIDENCE" ]] || die 'all six options are required'
+  [[ -n "$GGUF" && -n "$GGUF_SHA" && -n "$REFERENCE" && -n "$REFERENCE_SHA" && -n "$LICENSE" && -n "$LICENSE_SHA" && -n "$EVIDENCE" ]] || die 'all seven options are required'
 }
 parse_args "$@"
 [[ "$(uname -s)" == Darwin ]] || die 'non-Apple host refused'
@@ -191,7 +228,8 @@ parse_args "$@"
 require_file "$GGUF" GGUF; require_dir "$REFERENCE" reference; require_file "$LICENSE" license-manifest; reject_path "$EVIDENCE" evidence
 [[ ! -e "$EVIDENCE" && ! -L "$EVIDENCE" ]] || die 'evidence directory must be absent'
 valid_sha "$GGUF_SHA" gguf-sha256; valid_sha "$REFERENCE_SHA" reference-manifest-sha256
-[[ "$(sha "$GGUF")" == "$GGUF_SHA" ]] || die 'GGUF digest mismatch'
+require_expected_sha256 GGUF "$GGUF_SHA" "$GGUF"
+require_expected_sha256 license-manifest "$LICENSE_SHA" "$LICENSE"
 [[ -f "$REFERENCE/manifest.json" && ! -L "$REFERENCE/manifest.json" ]] || die 'reference manifest missing'
 [[ "$(sha "$REFERENCE/manifest.json")" == "$REFERENCE_SHA" ]] || die 'reference manifest digest mismatch'
 REFERENCE_FILES="$(find "$REFERENCE" -mindepth 1 -maxdepth 1 -print | sort)"
@@ -205,11 +243,9 @@ for pair in "$GGUF|$REFERENCE" "$GGUF|$LICENSE" "$GGUF|$EVIDENCE" "$REFERENCE|$L
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/vokra-hift-apple.XXXXXX")"
 trap 'rm -rf -- "$TMP"' EXIT
 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --license-manifest "$LICENSE" >"$TMP/license.log" 2>&1 || { cat "$TMP/license.log" >&2; die 'external approved license preflight failed'; }
-validate_preflight_json "$TMP/license.log" "$ROOT/tools/parity/cosyvoice2_hift_reference/pyproject.toml" "$ROOT/tools/parity/cosyvoice2_hift_reference/uv.lock" "$(sha "$LICENSE")" || die 'license preflight JSON was not an exact PASS object'
-VOKRA_REMOTE_APPLE_SILICON=1 VOKRA_COSYVOICE2_HIFT_GGUF="$GGUF" VOKRA_COSYVOICE2_HIFT_GGUF_SHA256="$GGUF_SHA" VOKRA_COSYVOICE2_HIFT_REFERENCE_DIR="$REFERENCE" VOKRA_COSYVOICE2_HIFT_REFERENCE_MANIFEST_SHA256="$REFERENCE_SHA" VOKRA_COSYVOICE2_HIFT_LICENSE_MANIFEST="$LICENSE" VOKRA_COSYVOICE2_HIFT_APPLE_EVIDENCE_DIR="$EVIDENCE" CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=1 cargo test --offline --locked --release -p vokra-models --test parity_cosyvoice2_hift_apple "$TEST_NAME" -- --ignored --exact --nocapture >"$TMP/cargo.log" 2>&1 || { cat "$TMP/cargo.log" >&2; die 'Apple HiFT parity failed'; }
-[[ "$(grep -Ec '^test [^[:space:]].* \.\.\. (ok|ignored|FAILED)$' "$TMP/cargo.log")" == 1 ]] || die 'Cargo did not report exactly one test case result'
-[[ "$(grep -Ec "^test $TEST_NAME \.\.\. ok$" "$TMP/cargo.log")" == 1 ]] || die 'named test did not pass exactly once'
-[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9.]+s$' "$TMP/cargo.log")" == 1 ]] || die 'Cargo did not report one exact passing result summary'
+validate_preflight_json "$TMP/license.log" "$ROOT/tools/parity/cosyvoice2_hift_reference/pyproject.toml" "$ROOT/tools/parity/cosyvoice2_hift_reference/uv.lock" "$LICENSE_SHA" || die 'license preflight JSON was not an exact PASS object'
+VOKRA_REMOTE_APPLE_SILICON=1 VOKRA_COSYVOICE2_HIFT_GGUF="$GGUF" VOKRA_COSYVOICE2_HIFT_GGUF_SHA256="$GGUF_SHA" VOKRA_COSYVOICE2_HIFT_REFERENCE_DIR="$REFERENCE" VOKRA_COSYVOICE2_HIFT_REFERENCE_MANIFEST_SHA256="$REFERENCE_SHA" VOKRA_COSYVOICE2_HIFT_LICENSE_MANIFEST="$LICENSE" VOKRA_COSYVOICE2_HIFT_LICENSE_MANIFEST_SHA256="$LICENSE_SHA" VOKRA_COSYVOICE2_HIFT_APPLE_EVIDENCE_DIR="$EVIDENCE" CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=1 cargo test --offline --locked --release -p vokra-models --test parity_cosyvoice2_hift_apple "$TEST_NAME" -- --ignored --exact --nocapture >"$TMP/cargo.log" 2>&1 || { cat "$TMP/cargo.log" >&2; die 'Apple HiFT parity failed'; }
+require_cargo_singleton "$TMP/cargo.log"
 [[ -f "$EVIDENCE/evidence.json" && ! -L "$EVIDENCE/evidence.json" ]] || die 'evidence marker missing'
-validate_evidence_json "$EVIDENCE/evidence.json" "$GGUF_SHA" "$REFERENCE_SHA" "$(sha "$LICENSE")" || die 'evidence JSON failed strict validation'
+validate_evidence_json "$EVIDENCE/evidence.json" "$GGUF_SHA" "$REFERENCE_SHA" "$LICENSE_SHA" || die 'evidence JSON failed strict validation'
 echo "COSYVOICE2_HIFT_APPLE_PARITY_PASS evidence=$EVIDENCE/evidence.json gguf_sha256=$GGUF_SHA reference_manifest_sha256=$REFERENCE_SHA"
