@@ -507,7 +507,7 @@ impl AsrEngine for ReazonSpeechNemoV2 {
 }
 
 fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Result<()> {
-    for &&key in RUNTIME_KEYS {
+    for &key in RUNTIME_KEYS {
         let occurrences = file
             .metadata()
             .iter()

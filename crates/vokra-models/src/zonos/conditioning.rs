@@ -99,6 +99,21 @@ impl ZonosPrefixConditionerWeights {
                 "zonos prefix conditioner weight shape mismatch".to_owned(),
             ));
         }
+        if !self.all_finite() {
+            return Err(VokraError::InvalidArgument(
+                "zonos prefix weights contain non-finite values".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns whether every authenticated conditioner tensor is finite.
+    ///
+    /// Keep this check inside the conditioner module so the weight fields stay
+    /// private to the binder/forward implementation.  Callers that only need
+    /// a finiteness check must not gain a way to fabricate or inspect the
+    /// individual tensors.
+    pub(crate) fn all_finite(&self) -> bool {
         let all = [
             &self.phoneme_embedder,
             &self.speaker_project,
@@ -119,15 +134,8 @@ impl ZonosPrefixConditionerWeights {
             &self.norm_weight,
             &self.norm_bias,
         ];
-        if all
-            .iter()
-            .any(|values| values.iter().any(|value| !value.is_finite()))
-        {
-            return Err(VokraError::InvalidArgument(
-                "zonos prefix weights contain non-finite values".to_owned(),
-            ));
-        }
-        Ok(())
+        all.iter()
+            .all(|values| values.iter().all(|value| value.is_finite()))
     }
 
     pub(crate) fn from_parts(parts: ZonosPrefixConditionerParts) -> Result<Self> {

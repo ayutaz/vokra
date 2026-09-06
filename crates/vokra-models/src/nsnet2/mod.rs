@@ -75,7 +75,7 @@ use std::sync::Arc;
 
 use vokra_core::backend::BackendKind;
 use vokra_core::engines::{DenoiseEngine, DenoiseStreamHandle};
-use vokra_core::gguf::{GgmlType, GgufFile, chunks};
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, chunks};
 use vokra_core::ir::graph::{IstftAttrs, IstftStreamingAttrs, StftAttrs, Window, WindowSymmetry};
 use vokra_core::{LicenseClass, Result, VokraError};
 use vokra_ops::{IstftStreamingState, Spectrogram, stft};

@@ -788,11 +788,11 @@ mod tests {
     fn validate_vast_prepared_manifest(path: &Path, component: &str, input: &Path) {
         let bytes = std::fs::read(path).expect("prepared manifest");
         let root = crate::json::parse(&bytes).expect("prepared manifest JSON");
-        let string = |object: &vokra_core::json::JsonValue, key: &str| {
+        fn string<'a>(object: &'a vokra_core::json::JsonValue, key: &str) -> Option<&'a str> {
             object
                 .get(key)
                 .and_then(vokra_core::json::JsonValue::as_str)
-        };
+        }
         assert_eq!(
             string(&root, "format"),
             Some("vokra-cosyvoice2-component-prepared-safetensors-v1")

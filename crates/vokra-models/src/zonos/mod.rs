@@ -1082,30 +1082,10 @@ fn weights_are_finite(weights: &ZonosWeights) -> bool {
         && weights.logit_heads.iter().all(|head| finite(head))
         && finite(&weights.norm_f_w)
         && finite(&weights.norm_f_b)
-        && weights.prefix_conditioner.as_ref().is_none_or(|prefix| {
-            [
-                &prefix.phoneme_embedder,
-                &prefix.speaker_project,
-                &prefix.speaker_uncond,
-                &prefix.emotion_weight,
-                &prefix.emotion_uncond,
-                &prefix.fmax_weight,
-                &prefix.fmax_uncond,
-                &prefix.pitch_std_weight,
-                &prefix.pitch_std_uncond,
-                &prefix.speaking_rate_weight,
-                &prefix.speaking_rate_uncond,
-                &prefix.language_embedder,
-                &prefix.language_uncond,
-                &prefix.speaker_bias,
-                &prefix.project,
-                &prefix.project_bias,
-                &prefix.norm_weight,
-                &prefix.norm_bias,
-            ]
-            .into_iter()
-            .all(|values| values.iter().all(|value| value.is_finite()))
-        })
+        && weights
+            .prefix_conditioner
+            .as_ref()
+            .is_none_or(|prefix| prefix.all_finite())
 }
 
 // ---------------------------------------------------------------------------
