@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # VAST/Linux-only Conv-TasNet validation.  The upstream license declarations
-# conflict, so this worker permits an explicit research policy only and never
-# uploads or publishes a model.
+# conflict and unresolved owner review, so this worker remains
+# BLOCKED_LICENSE/NO_UPLOAD until the factual license contract is resolved.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,10 +29,9 @@ usage: run-conv-tasnet-validation.sh --checkpoint-sha256 <64-hex> --expected-hea
        run-conv-tasnet-validation.sh --self-test
 
 VAST/Linux-only validation of the pinned Asteroid Conv-TasNet checkpoint.
-The worker uses the safe weights-only preparer, the independent Asteroid
-oracle, and an explicit CompliancePolicy research opt-in for the upstream
-license conflict. It requires exact committed fixture hashes, runs native
-CPU parity on VAST, and performs no upload or publication.
+The worker is currently blocked before sync, download, conversion, model, or
+Cargo work: the upstream license conflict and redistribution terms are not
+resolved. It remains NO_UPLOAD even when an approval file is supplied.
 EOF
 }
 

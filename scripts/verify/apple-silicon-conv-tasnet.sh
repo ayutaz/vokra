@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Apple Silicon Conv-TasNet verification using VAST-produced artifacts.
+# The upstream license conflict remains unresolved, so this worker is blocked
+# before artifact or Cargo execution and remains NO_UPLOAD. If resolved later,
 # CPU bounds are existing 2026-08-24 measurements; Metal is intentionally
 # reported as MEASURED_NOT_GATED until a reviewed Metal bound exists.
 set -euo pipefail
@@ -22,10 +24,12 @@ usage: apple-silicon-conv-tasnet.sh --gguf <vast.gguf> --gguf-sha256 <64-hex> \
          --evidence-dir <absent-dir>
        apple-silicon-conv-tasnet.sh --self-test
 
-Runs the existing CPU official bounds and explicit Metal execution against
-VAST-produced artifacts on Darwin arm64. CPU is allowed to use the reviewed
-2026-08-24 bounds; Metal remains MEASURED_NOT_GATED and no Metal PASS is
-manufactured. This verifier never downloads, converts, uploads, or publishes.
+Requires the unresolved license gate to be resolved before any artifact or
+Cargo execution. Until then it exits BLOCKED_LICENSE/NO_UPLOAD. If resolved,
+it runs the existing CPU official bounds and explicit Metal execution against
+VAST-produced artifacts on Darwin arm64; Metal remains MEASURED_NOT_GATED and
+no Metal PASS is manufactured. This verifier never downloads, converts,
+uploads, or publishes.
 EOF
 }
 
@@ -276,7 +280,7 @@ self_test() {
   local gate_line host_line cargo_line mkdir_line
   gate_line="$(grep -n 'PREFLIGHT_GATE' "$path" | tail -n 1 | cut -d: -f1)"
   host_line="$(grep -n 'uname -s' "$path" | tail -n 1 | cut -d: -f1)"
-  cargo_line="$(grep -n '^cargo test --locked' "$path" | tail -n 1 | cut -d: -f1)"
+  cargo_line="$(grep -n 'cargo test --manifest-path .* --locked --offline -p vokra-models' "$path" | tail -n 1 | cut -d: -f1 || true)"
   # shellcheck disable=SC2016 # match the literal source token, not its value
   mkdir_line="$(grep -n 'mkdir -p "\$evidence_dir"' "$path" | tail -n 1 | cut -d: -f1)"
   [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$cargo_line" =~ ^[0-9]+$ && "$mkdir_line" =~ ^[0-9]+$ && "$gate_line" -lt "$host_line" && "$gate_line" -lt "$cargo_line" && "$gate_line" -lt "$mkdir_line" ]] || {
