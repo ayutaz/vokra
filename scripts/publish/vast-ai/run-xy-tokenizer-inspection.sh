@@ -68,7 +68,7 @@ run_self_test() {
     "SOURCE_README_BLOB_SHA1" "SOURCE_README_SHA256" "SOURCE_LICENSE_HEADING" \
     "SOURCE_LICENSE_DECLARATION" \
     "SELECTED_MODEL_FILES" "source_config" "prepared_config" "AUTHENTICATED_OFFICIAL_SOURCE" \
-    "all_tracked_regular_files" "inference.py" "xy_tokenizer/model.py" \
+    "all_tracked_regular_files" "inference.py" "xy_tokenizer/model.py" "vokra_head" \
     "MIN_VAST_MEM_KIB" "MIN_FREE_DISK_KIB" "tmpfs"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
       echo "run-xy-tokenizer-inspection: self-test FAIL: missing contract: $required" >&2
@@ -349,16 +349,19 @@ set +e
 run_logged "${UV_CMD[@]}" "$INSPECTOR" \
   --checkpoint "$assets_dir/$CHECKPOINT_FILENAME" \
   --config "$prepared_config" --source "$source_dir" \
-  --server-packet "$server_packet" --prepared "$prepared_dir/model.safetensors" --output "$evidence_dir"
+  --server-packet "$server_packet" --prepared "$prepared_dir/model.safetensors" --output "$evidence_dir" \
+  --expected-head "$expected_head"
 inspect_rc=$?
 set -e
 [[ "$inspect_rc" == "2" ]] || die "inspector must remain fail-closed with exit 2: $inspect_rc"
 cp "$evidence_dir/manifest.json" "$prepared_dir/xy_tokenizer_prepared_manifest.json"
 set +e
-run_logged "${UV_CMD[@]}" - "$evidence_dir/manifest.json" <<'PY'
+run_logged "${UV_CMD[@]}" - "$evidence_dir/manifest.json" "$expected_head" <<'PY'
 import json
 import sys
 manifest = json.loads(open(sys.argv[1], encoding="utf-8").read())
+if manifest.get("vokra_head") != sys.argv[2].lower():
+    raise SystemExit("inspection manifest is not bound to the expected Vokra head")
 if manifest.get("status") != "BLOCKED":
     raise SystemExit("inspection manifest is not BLOCKED")
 if manifest.get("inspection_status") != "AUTHENTICATED_EVIDENCE_COMPLETE" or manifest.get("collection_status") != "AUTHENTICATED":

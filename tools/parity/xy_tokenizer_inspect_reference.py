@@ -408,7 +408,17 @@ def source_inventory(source: Path) -> dict[str, Any]:
     }
 
 
-def inspect(checkpoint: Path, config: Path, source: Path, prepared: Path, output: Path, server_packet: Path) -> None:
+def inspect(
+    checkpoint: Path,
+    config: Path,
+    source: Path,
+    prepared: Path,
+    output: Path,
+    server_packet: Path,
+    expected_head: str,
+) -> None:
+    if re.fullmatch(r"[0-9a-fA-F]{40}", expected_head) is None:
+        raise ValueError("expected Vokra checkout head must be exactly 40 hexadecimal characters")
     server = validate_server_packet(checkpoint.parent, server_packet)
     require_file(checkpoint, CHECKPOINT_SHA256, "XY-Tokenizer checkpoint", CHECKPOINT_BYTES)
     require_file(config, CONFIG_SHA256, "XY-Tokenizer config")
@@ -445,6 +455,7 @@ def inspect(checkpoint: Path, config: Path, source: Path, prepared: Path, output
     (output / "server-packet.json").write_bytes(server_packet.read_bytes())
     manifest = {
         "format": FORMAT,
+        "vokra_head": expected_head.lower(),
         "status": "BLOCKED",
         "evidence_stage": "INSPECTION_ONLY",
         "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
@@ -495,6 +506,8 @@ def self_test() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
     assert hashlib.sha256(b"abc").hexdigest() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     assert FORMAT == "vokra-xy-tokenizer-prepared-v1"
+    assert "vokra_head" in source
+    assert re.fullmatch(r"[0-9a-fA-F]{40}", "a" * 40)
     assert "weights_only=True" in source
     assert "safetensors.torch" in source
     assert SOURCE_README_PATH == "readme.md"
@@ -680,17 +693,18 @@ def main() -> int:
     parser.add_argument("--prepared", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--server-packet", type=Path)
+    parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet)):
+        if any(value is not None for value in (args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet, args.expected_head)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
-    if any(value is None for value in (args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet)):
-        parser.error("--checkpoint, --config, --source, --prepared, --output, and --server-packet are required")
+    if any(value is None for value in (args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet, args.expected_head)):
+        parser.error("--checkpoint, --config, --source, --prepared, --output, --server-packet, and --expected-head are required")
     try:
-        inspect(args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet)
+        inspect(args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet, args.expected_head)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         write_error_manifest(args.output, error)
         print(f"XY-Tokenizer inspection: {error}", file=sys.stderr)

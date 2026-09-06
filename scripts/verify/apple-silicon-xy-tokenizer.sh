@@ -64,7 +64,7 @@ require_blocked_manifest() {
   [[ "$(sha256_file "$manifest")" == "$expected_sha" ]] \
     || die 'inspection manifest SHA-256 does not match the externally supplied digest'
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
-    "$manifest" <<'PY'
+    "$manifest" "$EXPECTED_HEAD" <<'PY'
 import json
 import pathlib
 import sys
@@ -79,6 +79,8 @@ def reject(pairs):
 
 try:
     manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=reject)
+    if manifest.get("vokra_head") != sys.argv[2].lower():
+        raise ValueError("inspection manifest is not bound to the expected Vokra head")
     expected = {
         "format": "vokra-xy-tokenizer-prepared-v1",
         "status": "BLOCKED",
@@ -113,7 +115,7 @@ require_apple_host() {
 run_self_test() {
   local script_path="${BASH_SOURCE[0]}" fail=0
   for required in '--expected-head' '--expected-manifest-sha256' 'require_clean_expected_head' \
-    'TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER' 'NOT_IMPLEMENTED_FAIL_CLOSED' \
+    'vokra_head' 'TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER' 'NOT_IMPLEMENTED_FAIL_CLOSED' \
     'VOKRA_REMOTE_APPLE_SILICON' 'Darwin' 'arm64' 'NO_UPLOAD' 'NOT_RUN' \
     'no-download' 'no-model'; do
     grep -Fq -- "$required" "$script_path" || { printf 'self-test missing: %s\n' "$required" >&2; fail=1; }
