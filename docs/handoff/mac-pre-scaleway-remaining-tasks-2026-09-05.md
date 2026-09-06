@@ -66,8 +66,9 @@ Before any Scaleway allocation:
 
 ### 2026-09-06 exact-head progress
 
-The later source-only continuation adds three reviewed, model-free slices at
-local commits `ef2997be`, `3ae4d351` and `589f4337`:
+The later source-only continuation adds six reviewed, model-free slices at
+local commits `ef2997be`, `3ae4d351`, `589f4337`, `c8d1a170`, `3ac16e00` and
+`a98eb45b`:
 
 - FireRedASR-AED-L now has a native 16-kHz/80-bin Kaldi-fbank seam, an exact
   raw-byte authenticated `cmvn.txt` constructor, and an explicit
@@ -83,18 +84,47 @@ local commits `ef2997be`, `3ae4d351` and `589f4337`:
   channel aligner. It deliberately has no GGUF binder or runtime claim until
   the 418 tensor roles/shapes, source-level second-stream demux, conditioners,
   Mimi composition and licenses are authenticated.
+- Hibiki 2B now records the pinned model/Mimi/tokenizer and Hibiki/Moshi source
+  identities, exact scalar configuration, 33-channel delay vector and
+  depformer schedule, plus a pure delayed-stream aligner. It deliberately
+  makes no binder, translation, demux, Moshi-forward or Mimi-forward claim.
+- FireRedASR-AED-L now also authenticates the exact 71,448-byte, 7,832-row
+  `dict.txt` by SHA-256, records its distinct Git-blob SHA-1, validates
+  contiguous ids and fixed anchors, and exposes a content-token renderer with
+  the pinned SentencePiece boundary transform. Structural decoder markers,
+  the official beam policy and artifact-side sidecar binding remain open.
+- Dia 1.6B now requires the legacy DAC bind to match exactly nine codebooks at
+  44.1 kHz; a larger codec can no longer be accepted while silently leaving
+  extra codebooks outside the authenticated Dia contract.
+
+Read-only source audits also corrected four stale ledger assumptions without
+inventing implementation:
+
+- Kyutai STT's dedicated `dep_q=0` text decoder, strict 323-BF16-tensor binder
+  and official Moshi reference packet already exist. The remaining work is
+  complete Mimi/tokenizer/streaming ASR, a reviewed fixed bound and real
+  VAST/Apple execution.
+- Qwen3-ASR's converter and runtime already require all three execution keys
+  and authenticate/embed all five tokenizer/chat/generation sidecars for both
+  variants. The public GGUFs, not the source contracts, must be regenerated.
+- OWSM cannot yet take an honest PCM or forward slice: exact ESPnet frontend
+  semantics, global-MVN application, 1,172-tensor payload mapping and an
+  independent reference fixture are still missing.
+- CLAP cannot yet take an honest preprocessing or fused-forward slice: its
+  dedicated reference lock/license closure, exact HTSAT preprocessing and
+  state-dict role/shape manifest are absent.
 
 These commits passed repository formatting, locked metadata and diff-hygiene
 checks without model acquisition or execution. `vokra-models` compile/test is
-reserved for VAST under the maintainer-Mac memory policy, so none of the three
+reserved for VAST under the maintainer-Mac memory policy, so none of the six
 is a numerical verdict and the 63-row unresolved classification is unchanged.
 
-The implementation head advanced through `316f6ab5` in this wave. The PR
+The implementation head advanced through `a98eb45b` in this wave. The PR
 remote at the start of the wave was `d241305f`; all checks at that remote
-commit were green and GitHub reported the PR mergeable. The four
-implementation/test commits below were deliberately kept unpushed until their
-VAST verification completed. Do not merge the PR as the final Mac-coverage
-change while the remaining inventory below is still open.
+commit were green and GitHub reported the PR mergeable. The local
+implementation/test commits are deliberately kept unpushed until their VAST
+verification completes. Do not merge the PR as the final Mac-coverage change
+while the remaining inventory below is still open.
 
 The dependency-audit hardening and exact model-free VAST reruns are now
 recorded in the commits immediately before `7d0119c9`:
@@ -878,8 +908,8 @@ authorization.
 | `vokra/moss-audio-tokenizer-nano` | Replace the artifact mis-stamped as the Full variant with correct Nano name, variant and provenance. |
 | `vokra/moss-tts-local-transformer-v1.5` | Complete the distinct 48-kHz stereo tokenizer-v2 companion boundary. |
 | `vokra/nsnet2` | Resolve live MIT provenance against the audited upstream CC-BY-4.0 identity before replacement. |
-| `vokra/qwen3-asr-0.6b` | Regenerate with the three execution metadata keys and all five authenticated tokenizer/chat/generation sidecars. |
-| `vokra/qwen3-asr-1.7b` | Regenerate with the three execution metadata keys and all five authenticated tokenizer/chat/generation sidecars. |
+| `vokra/qwen3-asr-0.6b` | The converter/runtime source already binds the three execution metadata keys and all five authenticated tokenizer/chat/generation sidecars. Regenerate the public GGUF on VAST and rerun independent CPU plus Apple evidence. |
+| `vokra/qwen3-asr-1.7b` | The converter/runtime source already binds the three execution metadata keys and all five authenticated tokenizer/chat/generation sidecars. Regenerate the public GGUF on VAST and rerun independent CPU plus Apple evidence. |
 | `vokra/qwen3-tts-12hz-0.6b-base` | Regenerate with variant topology, speaker-encoder contract, embedded BPE sidecars and the explicit 12-Hz speech-tokenizer companion. |
 | `vokra/qwen3-tts-12hz-0.6b-customvoice` | Correct the Base mis-stamp, add variant metadata/BPE sidecars and authenticate the 12-Hz companion. |
 | `vokra/qwen3-tts-12hz-1.7b-base` | Correct the 0.6B mis-stamp/topology, add BPE sidecars and authenticate the 12-Hz companion. |
@@ -909,14 +939,14 @@ portable no-fallback Apple worker for the final Scaleway batch.
 | `vokra/chatterbox-nano-v1` | Full generation, conditioning, watermark and PCM-output path. |
 | `vokra/chatterbox-turbo-v1` | Full generation, conditioning, watermark and PCM-output path. |
 | `vokra/chattts` | Clean native composite plus AGPL/source, CC-BY-NC weight, dependency and personality/voice policy closure. |
-| `vokra/clap-htsat-fused` | Complete the released audio/text preprocessing and fused inference contract with real parity. |
+| `vokra/clap-htsat-fused` | Add a dedicated authenticated reference lock/license gate, exact released HTSAT audio/text preprocessing and state-dict role/shape manifest before implementing the fused binder/forward; then run real parity. |
 | `vokra/cosyvoice2-0.5b` | HiFT checkpoint/source/config, strict converter/binder and guarded VAST CPU-parity runner are complete at source level. Run the model-free closure phase, obtain explicit owner approval before any HiFT model/reference execution, then obtain exact-head VAST CPU parity. LLM/Flow are component-bound but the full flow/codec/vocoder composition remains incomplete; the official broad closure still imports forbidden `soxr`. |
-| `vokra/dia-1.6b` | Exact DAC proof, dependency review and complete native composition. |
-| `vokra/firered-asr-aed-l` | The source-only PCM/fbank/CMVN/encoder/greedy-token seam and exact `cmvn.txt` raw-byte gate are landed at `ef2997be`. Bind the sidecar into the artifact/worker, resolve dependency/config/tokenizer contracts, implement the official beam/rendering route and run independent real parity. |
+| `vokra/dia-1.6b` | The strict 343-tensor binder and DAC connection already exist, and the legacy bind now requires exact 44.1-kHz/nine-codebook composition at `a98eb45b`. Complete tokenizer/generation and real delayed-AR/DAC parity plus dependency review. |
+| `vokra/firered-asr-aed-l` | The PCM/fbank/CMVN/encoder/greedy-token seam and exact `cmvn.txt` gate are landed at `ef2997be`; exact external `dict.txt` authentication and content-token rendering are landed at `3ac16e00`. Bind both sidecars into the artifact/worker, resolve dependency/config contracts, implement the official beam and structural-marker policy, and run independent real parity. |
 | `vokra/fun-cosyvoice3-0.5b-2512` | Find an exact allowed route around the current `soxr` closure, then finish the full composite. |
 | `vokra/irodori-tts-500m-v3` | Find an authenticated Python-3.12 reference route that avoids the current `librosa -> soxr` dependency; more RAM or Scaleway cannot solve this. |
-| `vokra/kyutai-stt-2.6b-en` | Implement the dedicated decoder seam required by its `dep_q=0` release instead of forcing the shared Moshi `dep_q>=1` contract. |
-| `vokra/owsm-v4-medium-1b` | Finish writer contract, ESPnet S2T frontend/subsampling/E-Branchformer/decoder, joint CTC-attention search and token semantics. |
+| `vokra/kyutai-stt-2.6b-en` | The dedicated `dep_q=0` text decoder and strict 323-BF16-tensor binder already exist. Complete Mimi/tokenizer/streaming ASR, review and register a fixed parity bound from the first VAST measurement, then run Apple CPU/Metal. |
+| `vokra/owsm-v4-medium-1b` | Authenticate the missing ESPnet frontend/MVN semantics and 1,172-tensor payload map with independent fixtures; then finish the writer, subsampling/E-Branchformer/decoder, joint CTC-attention search and token semantics. |
 | `vokra/sortformer-diar-4spk-v1` | Bind the real archive/config and complete native diarization plus independent real parity. |
 | `vokra/vibevoice-1.5b` | Close dependency approvals, complete native runtime and execute the real workers. |
 | `vokra/voxcpm-0.5b` | Add the missing AudioVAE/tokenizer companions and full native composite. |
@@ -934,7 +964,7 @@ and a final Apple worker.
 | `vokra/ace-step-1.5` | License/dependency/dataset decisions and native DiT/LM/VAE composition remain open. |
 | `vokra/baichuan-audio` | Matcha/source roles are not fully pinned; MPL/PSF dependency policy and the native composite remain open. |
 | `vokra/granite-speech-4.1-2b` | Verify Sigstore/crypto evidence, dependencies/datasets and the native speech-language composite. |
-| `vokra/hibiki-2b` | Complete native streaming translation, dependency and dataset contracts. |
+| `vokra/hibiki-2b` | Pinned artifacts/sources, exact config/delay/depformer schedule and a pure delay aligner are landed at `c8d1a170`. Authenticate tensor roles and implement native translation/demux/Moshi/Mimi plus dependency, license and dataset contracts. |
 | `vokra/kimi-audio` | Authenticate and implement the roughly 42.6-GB multi-component release; all model work is VAST-only. |
 | `vokra/kyutai-tts-1.6b-en-fr` | Pinned artifact/source identities, the exact scalar config/depformer schedule and a pure delay aligner are landed at `589f4337`. Authenticate the 418 tensor roles/shapes before adding a GGUF binder; then separate voice/model/source licenses and implement the actual second-stream demux, conditioners, native forward and Mimi composition. |
 | `vokra/qwen2-5-omni-7b` | Complete native multimodal streaming, dependency/license and independent parity contracts. |
