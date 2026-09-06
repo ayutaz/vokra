@@ -21,8 +21,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from safetensors import safe_open
-
 HF_REPOSITORY = "microsoft/VibeVoice-Realtime-0.5B"
 HF_REVISION = "6bce5f06044837fe6d2c5d7a71a84f0416bd57e4"
 SOURCE_REPOSITORY = "https://github.com/microsoft/VibeVoice.git"
@@ -33,6 +31,8 @@ TRANSFORMERS_REVISION = "5f4ecf2d9f867a1255131d2461d75793c0cf1db2"
 TOKENIZER_REPOSITORY = "Qwen/Qwen2.5-0.5B"
 TOKENIZER_REVISION = "060db6499f32faf8b98477b0a26969ef7d8b9987"
 FORMAT = "vokra-vibevoice-realtime-0.5b-inspection-v1"
+APPROVAL_SCHEMA = "vokra-vibevoice-realtime-0.5b-blocked-approval-v1"
+APPROVAL_SCOPE = "VIBEVOICE_REALTIME_0_5B_INSPECTION"
 MAX_HEADER_BYTES = 64 * 1024 * 1024
 TOKENIZER_SELECTED = {"LICENSE", "tokenizer_config.json", "tokenizer.json", "vocab.json", "merges.txt"}
 MODEL_FILES = {
@@ -124,9 +124,89 @@ def load_json(path: Path) -> Any:
         raise RuntimeError(f"strict JSON failure at {path}: {error}") from error
 
 
+def external_path(raw: str, label: str, repo_root: Path, require_file: bool = False) -> Path:
+    if not isinstance(raw, str) or not raw.startswith("/") or "//" in raw or "/./" in raw or "/../" in raw or raw.endswith(("/.", "/..")):
+        raise RuntimeError(f"{label} must be an absolute dot-free path")
+    path = Path(raw)
+    if not path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts[1:]):
+        raise RuntimeError(f"{label} must be an absolute dot-free path")
+    current = Path("/")
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise RuntimeError(f"{label} contains a symlink ancestor")
+    root = repo_root.resolve()
+    resolved = path.resolve(strict=False)
+    if resolved == root or root in resolved.parents:
+        raise RuntimeError(f"{label} must be outside the checkout")
+    if path.is_symlink():
+        raise RuntimeError(f"{label} must not be a symlink")
+    if require_file and (not path.is_file() or path.is_symlink()):
+        raise RuntimeError(f"{label} must be a regular file")
+    return path
+
+
+def validate_approval(path: str, expected_head: str, expected_sha256: str, repo_root: Path) -> dict[str, Any]:
+    if len(expected_head) != 40 or any(character not in "0123456789abcdef" for character in expected_head) or len(expected_sha256) != 64 or any(character not in "0123456789abcdef" for character in expected_sha256):
+        raise RuntimeError("approval binding must use lowercase HEAD40 and SHA25664")
+    approval = external_path(path, "approval evidence", repo_root, require_file=True)
+    raw = approval.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise RuntimeError("approval evidence SHA-256 mismatch")
+    try:
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=strict_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError, RuntimeError) as error:
+        raise RuntimeError(f"approval evidence is not strict UTF-8 JSON: {error}") from error
+    keys = {
+        "schema", "status", "decision", "expected_head", "model_repository", "model_revision",
+        "source_repository", "source_revision", "transformers_repository", "transformers_tag", "transformers_revision",
+        "tokenizer_repository", "tokenizer_revision", "model_license", "source_license_status",
+        "dependency_license_status", "tokenizer_license_status", "dataset_status", "streaming_state_status",
+        "diffusion_cfg_status", "acoustic_decoder_status", "tokenizer_policy_status", "native_parity_status",
+        "no_upload", "scope",
+    }
+    if not isinstance(data, dict) or set(data) != keys:
+        raise RuntimeError("approval schema is not exact")
+    if data.get("no_upload") is not True:
+        raise RuntimeError("approval no_upload must be a JSON boolean true")
+    expected = {
+        "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "BLOCKED_INSPECTION_ONLY",
+        "expected_head": expected_head, "model_repository": HF_REPOSITORY, "model_revision": HF_REVISION,
+        "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
+        "transformers_repository": TRANSFORMERS_REPOSITORY, "transformers_tag": TRANSFORMERS_TAG, "transformers_revision": TRANSFORMERS_REVISION,
+        "tokenizer_repository": TOKENIZER_REPOSITORY, "tokenizer_revision": TOKENIZER_REVISION,
+        "model_license": "MIT", "source_license_status": "REQUIRES_PRIMARY_REVIEW",
+        "dependency_license_status": "REQUIRES_PRIMARY_REVIEW", "tokenizer_license_status": "SEPARATE_REVIEW_REQUIRED",
+        "dataset_status": "BLOCKED_UNAUTHENTICATED", "streaming_state_status": "BLOCKED_UNIMPLEMENTED",
+        "diffusion_cfg_status": "BLOCKED_UNIMPLEMENTED", "acoustic_decoder_status": "BLOCKED_UNIMPLEMENTED",
+        "tokenizer_policy_status": "BLOCKED_UNAUTHENTICATED", "native_parity_status": "NOT_RUN",
+        "no_upload": True, "scope": APPROVAL_SCOPE,
+    }
+    if data != expected:
+        raise RuntimeError("approval identity/scope/disposition mismatch")
+    return data
+
+
+def require_clean_head(expected_head: str) -> Path:
+    root = Path(__file__).resolve().parents[2]
+    if len(expected_head) != 40 or any(character not in "0123456789abcdef" for character in expected_head):
+        raise RuntimeError("expected_head must be lowercase HEX40")
+    if git(root, "rev-parse", "HEAD") != expected_head or subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True, stderr=subprocess.STDOUT):
+        raise RuntimeError("checkout must be clean and match --expected-head")
+    return root
+
+
+def blocked_preflight(expected_head: str, approval_evidence: str, approval_sha256: str) -> dict[str, Any]:
+    root = require_clean_head(expected_head)
+    approval = validate_approval(approval_evidence, expected_head, approval_sha256, root)
+    if approval["status"] != "BLOCKED" or approval["decision"] != "BLOCKED_INSPECTION_ONLY":
+        raise RuntimeError("only the exact blocked inspection disposition is accepted")
+    return approval
+
+
 def safe_relative(value: str, label: str) -> None:
     path = Path(value)
-    if not value or "\x00" in value or "\\" in value or path.is_absolute() or ".." in path.parts:
+    if not value or "\x00" in value or "\\" in value or path.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
         raise RuntimeError(f"unsafe {label} path: {value!r}")
 
 
@@ -287,6 +367,8 @@ def validate_preprocessor(preprocessor: Any) -> dict[str, Any]:
 
 
 def inspect_safetensors(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    from safetensors import safe_open
+
     size = path.stat().st_size
     with path.open("rb") as stream:
         prefix = stream.read(8)
@@ -539,9 +621,10 @@ def manifest_license_evidence(model_license: dict[str, Any], sources: dict[str, 
 
 
 def blocked(output: Path, error: Exception, inspection_status: str = "INSPECTION_ERROR", **extra: Any) -> None:
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=False)
     payload = {"format": FORMAT, "status": "BLOCKED", "inspection_status": inspection_status, "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "task": "Realtime streaming TTS inspection only; no native runtime claim", "upstream": {"repository": HF_REPOSITORY, "revision": HF_REVISION}, "official_source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION}, "transformers": {"repository": TRANSFORMERS_REPOSITORY, "tag": TRANSFORMERS_TAG, "revision": TRANSFORMERS_REVISION}, "error_type": type(error).__name__, "reason": str(error), "blockers": [str(error)], **extra}
-    (output / "manifest.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    with (output / "manifest.json").open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
 
 
 def inspect(snapshot: Path, companion: Path, source: Path, transformers: Path, model_tree: Path, companion_tree: Path, output: Path) -> int:
@@ -575,13 +658,86 @@ def inspect(snapshot: Path, companion: Path, source: Path, transformers: Path, m
     companion_names = {row["path"] for row in tokenizer_files}
     validate_tokenizer_file_set(companion_names)
     companion_json = {row["path"]: {"sha256": sha256(companion / row["path"]), "json": load_json(companion / row["path"])} for row in tokenizer_files if row["path"].endswith(".json")}
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=False)
     evidence = {"snapshot-inventory.json": {"server_tree": model_identity, "files": model_files}, "tensor-inventory.json": {"header": tensor_evidence, "tensors": tensors}, "parsed-json.json": parsed, "companion-inventory.json": {"server_tree": tokenizer_identity, "files": tokenizer_files, "json": companion_json}, "source-inventory.json": sources}
     for name, value in evidence.items():
-        (output / name).write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        with (output / name).open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(value, sort_keys=True, indent=2) + "\n")
     packets = {path.name: {"bytes": path.stat().st_size, "sha256": sha256(path)} for path in output.glob("*-inventory.json")}
     blocked(output, RuntimeError("streaming state, diffusion/CFG, acoustic decoder, tokenizer behavior, policy, and dataset provenance remain unauthenticated"), inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE", model_license=model_license, policy=policy, config=config_evidence, preprocessor=preprocessor_evidence, tensors=tensor_evidence, companion_tokenizer={"repository": TOKENIZER_REPOSITORY, "revision": TOKENIZER_REVISION, "model_weights": "NOT_DOWNLOADED", "files": tokenizer_files}, official_source=sources, license_evidence=manifest_license_evidence(model_license, sources), dataset_provenance={"status": "BLOCKED_UNAUTHENTICATED"}, packets=packets)
     return 2
+
+
+def gate_self_test() -> None:
+    head = "a" * 40
+    payload = {
+        "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "BLOCKED_INSPECTION_ONLY", "expected_head": head,
+        "model_repository": HF_REPOSITORY, "model_revision": HF_REVISION, "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
+        "transformers_repository": TRANSFORMERS_REPOSITORY, "transformers_tag": TRANSFORMERS_TAG, "transformers_revision": TRANSFORMERS_REVISION,
+        "tokenizer_repository": TOKENIZER_REPOSITORY, "tokenizer_revision": TOKENIZER_REVISION, "model_license": "MIT",
+        "source_license_status": "REQUIRES_PRIMARY_REVIEW", "dependency_license_status": "REQUIRES_PRIMARY_REVIEW",
+        "tokenizer_license_status": "SEPARATE_REVIEW_REQUIRED", "dataset_status": "BLOCKED_UNAUTHENTICATED",
+        "streaming_state_status": "BLOCKED_UNIMPLEMENTED", "diffusion_cfg_status": "BLOCKED_UNIMPLEMENTED",
+        "acoustic_decoder_status": "BLOCKED_UNIMPLEMENTED", "tokenizer_policy_status": "BLOCKED_UNAUTHENTICATED",
+        "native_parity_status": "NOT_RUN", "no_upload": True, "scope": APPROVAL_SCOPE,
+    }
+    with tempfile.TemporaryDirectory(prefix="vokra-vibevoice-gate-") as directory:
+        root = Path(directory); approval = root / "approval.json"
+        approval.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        path = str(approval.resolve()); digest = sha256(approval)
+        validate_approval(path, head, digest, Path.cwd().parent)
+        try:
+            validate_approval(path, head, "0" * 64, Path.cwd().parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong approval SHA accepted")
+        for invalid in (1, 0, "true"):
+            approval.write_text(json.dumps({**payload, "no_upload": invalid}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            try:
+                validate_approval(path, head, sha256(approval), Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("non-boolean no_upload accepted")
+        for bad_bytes in (b"{\xff", b"not-json", b'{"schema":1,"schema":2}'):
+            approval.write_bytes(bad_bytes)
+            try:
+                validate_approval(path, head, sha256(approval), Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("malformed/duplicate approval accepted")
+        approval.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        link = root / "approval-link.json"; link.symlink_to(approval)
+        try:
+            validate_approval(str(link), head, digest, Path.cwd().parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlink approval accepted")
+        for bad in ("/tmp/../approval.json", "/tmp/./approval.json", "relative.json"):
+            try:
+                validate_approval(bad, head, digest, Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unsafe approval path accepted")
+        with tempfile.TemporaryDirectory(prefix=".vibevoice-gate-", dir=Path.cwd()) as checkout_directory:
+            checkout_approval = Path(checkout_directory) / "approval.json"; checkout_approval.write_bytes(approval.read_bytes())
+            try:
+                validate_approval(str(checkout_approval), head, sha256(checkout_approval), Path.cwd())
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("checkout-contained approval accepted")
+        clean_head = globals()["require_clean_head"]
+        globals()["require_clean_head"] = lambda _expected: Path.cwd()  # noqa: E731 - isolated gate test injection
+        try:
+            assert blocked_preflight(head, path, sha256(approval))["status"] == "BLOCKED"
+        finally:
+            globals()["require_clean_head"] = clean_head
+    print("vibevoice_realtime_0_5b gate self-test: PASS")
 
 
 def self_test() -> None:
@@ -823,10 +979,19 @@ def self_test() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--snapshot", type=Path); parser.add_argument("--companion", type=Path); parser.add_argument("--source", type=Path); parser.add_argument("--transformers", type=Path); parser.add_argument("--server-tree", type=Path); parser.add_argument("--companion-server-tree", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--snapshot", type=Path); parser.add_argument("--companion", type=Path); parser.add_argument("--source", type=Path); parser.add_argument("--transformers", type=Path); parser.add_argument("--server-tree", type=Path); parser.add_argument("--companion-server-tree", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--self-test", action="store_true"); parser.add_argument("--gate-self-test", action="store_true"); parser.add_argument("--expected-head"); parser.add_argument("--approval-evidence"); parser.add_argument("--approval-sha256"); args = parser.parse_args()
+    if args.gate_self_test:
+        if args.self_test or any(value is not None for value in (args.snapshot, args.companion, args.source, args.transformers, args.server_tree, args.companion_server_tree, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)): parser.error("--gate-self-test accepts no paths")
+        gate_self_test(); return 0
     if args.self_test:
-        if any(value is not None for value in (args.snapshot, args.companion, args.source, args.transformers, args.server_tree, args.companion_server_tree, args.output)): parser.error("--self-test accepts no paths")
+        if any(value is not None for value in (args.snapshot, args.companion, args.source, args.transformers, args.server_tree, args.companion_server_tree, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)): parser.error("--self-test accepts no paths")
         self_test(); return 0
+    if any(value is None for value in (args.expected_head, args.approval_evidence, args.approval_sha256)): parser.error("--expected-head, --approval-evidence, and --approval-sha256 are required")
+    try:
+        blocked_preflight(args.expected_head, args.approval_evidence, args.approval_sha256)
+    except Exception as error:
+        print(f"VIBEVOICE_BLOCKED_APPROVAL_INVALID: {type(error).__name__}: {error}", file=sys.stderr); return 2
+    print("VIBEVOICE_BLOCKED_APPROVAL: status=BLOCKED decision=BLOCKED_INSPECTION_ONLY NO_UPLOAD", file=sys.stderr); return 2
     if any(value is None for value in (args.snapshot, args.companion, args.source, args.transformers, args.server_tree, args.companion_server_tree, args.output)): parser.error("all inspection paths are required")
     try:
         return inspect(args.snapshot, args.companion, args.source, args.transformers, args.server_tree, args.companion_server_tree, args.output)

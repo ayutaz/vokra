@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # VAST-only VibeVoice Realtime 0.5B inspection. Never converts, uploads, or publishes.
+# shellcheck disable=SC2317,SC2329
 set -euo pipefail
 
 HF_REPOSITORY="microsoft/VibeVoice-Realtime-0.5B"
@@ -21,28 +22,50 @@ self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0 required status
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
   [[ -f "$root/$INSPECTOR" ]] || die "inspector missing"
-  for required in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$TOKENIZER_REPOSITORY" "$TOKENIZER_REVISION" "$INSPECTOR" "MODEL_FILES" "PARAMETERS" "BF16" "MAX_HEADER_BYTES" "INSPECTION_ONLY" "BLOCKED" "NO_UPLOAD" "local_dir" ".cache/huggingface" "requested_revision" "recursive_file_only" "RepoFolder" "isinstance(item, RepoFolder)" "expand=True" "re.fullmatch" "git_blob_sha1" "lfs_pointer_git_blob_sha1" "lfs_sha256" "companion-server-tree" "SOURCE_ROLE_BLOBS" "TRANSFORMERS_ROLE_BLOBS" "vibevoice/modular/modular_vibevoice_text_tokenizer.py" "inspection_status" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "model_weights" "NOT_DOWNLOADED"; do
+  for required in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$TOKENIZER_REPOSITORY" "$TOKENIZER_REVISION" "$INSPECTOR" "MODEL_FILES" "PARAMETERS" "BF16" "MAX_HEADER_BYTES" "INSPECTION_ONLY" "BLOCKED" "NO_UPLOAD" "local_dir" ".cache/huggingface" "requested_revision" "recursive_file_only" "RepoFolder" "isinstance(item, RepoFolder)" "expand=True" "re.fullmatch" "git_blob_sha1" "lfs_pointer_git_blob_sha1" "lfs_sha256" "companion-server-tree" "SOURCE_ROLE_BLOBS" "TRANSFORMERS_ROLE_BLOBS" "vibevoice/modular/modular_vibevoice_text_tokenizer.py" "inspection_status" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "model_weights" "NOT_DOWNLOADED" "gate-self-test" "BLOCKED_INSPECTION_ONLY"; do
     if ! grep -Fq -- "$required" "$self" && ! grep -Fq -- "$required" "$root/$INSPECTOR"; then echo "self-test FAIL: missing $required" >&2; fail=1; fi
   done
   for required in 'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' 'findmnt' 'git status --porcelain --untracked-files=all' 'snapshot_download' 'model_info' 'CARGO_BUILD_JOBS'; do
     if ! grep -Fq -- "$required" "$self"; then echo "self-test FAIL: missing VAST gate $required" >&2; fail=1; fi
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|vokra-cli[[:space:]]+convert|cargo[[:space:]]+(run|test|check))([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: mutation/conversion/Cargo found" >&2; fail=1; fi
-  if grep -En '(^|[[:space:]])(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: raw Python/pip found" >&2; fail=1; fi
+  if grep -En '(^|[;&|])[[:space:]]*(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: raw Python/pip found" >&2; fail=1; fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$root/$INSPECTOR" --gate-self-test >/dev/null; then echo "self-test FAIL: stdlib approval gate" >&2; fail=1; fi
+  local gate_line uname_line work_line snapshot_line
+  gate_line="$(grep -n '^marker=' "$self" | cut -d: -f1)"
+  uname_line="$(grep -n 'uname -s' "$self" | tail -n1 | cut -d: -f1)"
+  work_line="$(grep -n 'mkdir -p' "$self" | grep 'work_dir' | tail -n1 | cut -d: -f1)"
+  snapshot_line="$(grep -n 'snapshot_download' "$self" | tail -n1 | cut -d: -f1)"
+  if [[ "$gate_line" =~ ^[0-9]+$ && "$uname_line" =~ ^[0-9]+$ && "$work_line" =~ ^[0-9]+$ && "$snapshot_line" =~ ^[0-9]+$ ]] && (( gate_line < uname_line && gate_line < work_line && gate_line < snapshot_line )); then :; else echo "self-test FAIL: terminal gate ordering drift" >&2; fail=1; fi
   if bash "$self" --self-test --work-dir /tmp/vibevoice-realtime-self-test >/dev/null 2>&1; then echo "self-test FAIL: extra argument accepted" >&2; fail=1; else status=$?; [[ "$status" == 2 ]] || { echo "self-test FAIL: expected exit 2, got $status" >&2; fail=1; }; fi
   (( fail == 0 )) && echo "run-vibevoice-realtime-0-5b-inspection.sh self-test: OK" || return 1
 }
 
-work_dir="/dev/shm/vokra-vibevoice-realtime-0-5b-inspection"; self=0
+work_dir="/dev/shm/vokra-vibevoice-realtime-0-5b-inspection"; self=0; expected_head=''; approval_evidence=''; approval_sha256=''; seen_expected=0; seen_approval=0; seen_sha=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --self-test) self=1; shift;;
+    --self-test) (( self == 0 )) || die "duplicate --self-test"; self=1; shift;;
+    --expected-head) (( seen_expected == 0 )) || die "duplicate --expected-head"; [[ $# -ge 2 ]] || die "--expected-head requires HEX40"; expected_head="$2"; seen_expected=1; shift 2;;
+    --approval-evidence) (( seen_approval == 0 )) || die "duplicate --approval-evidence"; [[ $# -ge 2 ]] || die "--approval-evidence requires absolute file"; approval_evidence="$2"; seen_approval=1; shift 2;;
+    --approval-sha256) (( seen_sha == 0 )) || die "duplicate --approval-sha256"; [[ $# -ge 2 ]] || die "--approval-sha256 requires HEX64"; approval_sha256="$2"; seen_sha=1; shift 2;;
     --work-dir) [[ $# -ge 2 ]] || die "--work-dir requires path"; work_dir="$2"; shift 2;;
     -h|--help) echo "usage: $0 [--work-dir TMPFS] | --self-test"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
-if (( self == 1 )); then [[ "$work_dir" == "/dev/shm/vokra-vibevoice-realtime-0-5b-inspection" ]] || die "--self-test accepts no other arguments"; self_test; exit $?; fi
+if (( self == 1 )); then [[ "$work_dir" == "/dev/shm/vokra-vibevoice-realtime-0-5b-inspection" && $seen_expected -eq 0 && $seen_approval -eq 0 && $seen_sha -eq 0 ]] || die "--self-test accepts no other arguments"; self_test; exit $?; fi
+(( seen_expected == 1 && seen_approval == 1 && seen_sha == 1 )) || die "expected-head, approval-evidence and approval-sha256 are required"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# Validate the exact external blocked disposition before host/cache/work,
+# source/model/tokenizer input, output, or network operations.
+set +e
+marker="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$root/$INSPECTOR" --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" 2>&1)"
+gate_status=$?
+set -e
+[[ "$gate_status" == 2 ]] || die "approval gate returned unexpected exit $gate_status"
+grep -Fqx 'VIBEVOICE_BLOCKED_APPROVAL: status=BLOCKED decision=BLOCKED_INSPECTION_ONLY NO_UPLOAD' <<<"$marker" || die "blocked approval marker missing"
+printf '%s\n' "$marker" >&2
+die "VibeVoice Realtime route is BLOCKED before acquisition; downstream inspection is unreachable"
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Linux x86_64 VAST required"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$root"; [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "worktree is not clean"
