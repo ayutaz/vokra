@@ -165,6 +165,10 @@ def self_test(source: Path, input_args: list[str], input_marker: str) -> None:
         try: validate_approval(duplicate, head, hashlib.sha256(duplicate).hexdigest())
         except RuntimeError: pass
         else: raise AssertionError("duplicate key accepted")
+        malformed = b"{not-json"
+        try: validate_approval(malformed, head, hashlib.sha256(malformed).hexdigest())
+        except (RuntimeError, ValueError): pass
+        else: raise AssertionError("malformed approval accepted")
         link = Path(approval_tmp).resolve() / "link.json"; link.symlink_to(approval)
         try: _safe_file(str(link))
         except RuntimeError: pass
