@@ -272,6 +272,18 @@ fn validate_checkpoint(st: &SafetensorsFile) -> Result<(), ConvertError> {
             expected.len()
         )));
     }
+
+    // Do not collapse the ordered header into a set until the descriptor
+    // count is exact.  This keeps duplicate-key or partial encoder artifacts
+    // out of the GGUF writer even though the lightweight safetensors reader
+    // retains duplicate JSON entries for diagnostics.
+    if st.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "Canary-1B-Flash prepared checkpoint tensor count {}, expected {TENSOR_COUNT}; the public 1,292-tensor encoder-only or duplicate/partial artifact is not executable",
+            st.tensors().len()
+        )));
+    }
+
     let actual_names = st
         .tensors()
         .iter()
@@ -658,5 +670,19 @@ mod tests {
     fn wrong_tokenizer_hash_is_rejected_before_structure() {
         let error = validate_tokenizer_vocab(b"<unk>\t0\n").expect_err("wrong hash");
         assert!(error.to_string().contains("SHA-256"));
+    }
+
+    #[test]
+    fn encoder_only_or_duplicate_partial_checkpoint_is_rejected_by_exact_count() {
+        let header = br#"{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"x":{"dtype":"F32","shape":[1],"data_offsets":[4,8]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(&[0; 8]);
+        let checkpoint = SafetensorsFile::parse(bytes).expect("synthetic duplicate header");
+        let error = validate_checkpoint(&checkpoint).expect_err("partial checkpoint");
+        let message = error.to_string();
+        assert!(message.contains("tensor count 2"));
+        assert!(message.contains("encoder-only"));
     }
 }

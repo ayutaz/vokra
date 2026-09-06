@@ -250,6 +250,18 @@ fn validate_checkpoint(safetensors: &SafetensorsFile) -> Result<(), ConvertError
         )));
     }
 
+    // Compare the descriptor count before collapsing names into a set.  The
+    // safetensors header is ordered JSON and the lightweight reader preserves
+    // duplicate keys; an exact count plus exact name set therefore makes the
+    // main-checkpoint contract reject duplicate/partial timestamp artifacts
+    // before any tensor payload is copied to GGUF.
+    if safetensors.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "Canary-1B-v2 prepared main-checkpoint tensor count {}, expected {TENSOR_COUNT}; the public 688-tensor timestamp auxiliary or duplicate/partial artifact is not executable",
+            safetensors.tensors().len()
+        )));
+    }
+
     let actual_names = safetensors
         .tensors()
         .iter()
@@ -372,5 +384,19 @@ mod tests {
     fn wrong_tokenizer_hash_is_rejected() {
         let error = validate_tokenizer_vocab(b"<unk>\t0\n").expect_err("wrong hash");
         assert!(error.to_string().contains("SHA-256"));
+    }
+
+    #[test]
+    fn timestamp_or_duplicate_partial_checkpoint_is_rejected_by_exact_count() {
+        let header = br#"{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"x":{"dtype":"F32","shape":[1],"data_offsets":[4,8]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(&[0; 8]);
+        let checkpoint = SafetensorsFile::parse(bytes).expect("synthetic duplicate header");
+        let error = validate_checkpoint(&checkpoint).expect_err("partial checkpoint");
+        let message = error.to_string();
+        assert!(message.contains("tensor count 2"));
+        assert!(message.contains("timestamp auxiliary"));
     }
 }
