@@ -139,14 +139,12 @@ impl Drop for TempPath {
 
 fn valid_language(value: &str) -> bool {
     !value.is_empty()
-        && value
-            .split(|byte| byte == '-' || byte == '_')
-            .all(|segment| {
-                !segment.is_empty()
-                    && segment
-                        .bytes()
-                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-            })
+        && value.split(['-', '_']).all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
 }
 
 #[test]
