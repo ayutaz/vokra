@@ -9,6 +9,7 @@ usage() {
   cat <<'EOF'
 Usage:
   run-reazonspeech-nemo-v2-validation.sh --nemo <reazonspeech-nemo-v2.nemo> \
+    --expected-head <exact-40-hex-git-commit> \
     --approval-evidence <owner-approval.json> [--work-dir /workspace/vokra-reazonspeech-validation]
   run-reazonspeech-nemo-v2-validation.sh --self-test
 
@@ -106,6 +107,7 @@ run_self_test() {
   for required in \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$MODEL_KIND" "$PARITY_TEST" \
     "$GGUF_ENV" "$REFERENCE_DIR_ENV" \
+    "--expected-head" "expected_head" "actual_head" \
     "tools/parity/reazonspeech_nemo_v2/preflight_gate.py" \
     "tools/parity/reazonspeech_nemo_v2/license_gate_manifest.json" \
     '--manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval"' \
@@ -143,7 +145,8 @@ run_self_test() {
   cases=$((cases + 1))
   for required in 'uname -s' 'VOKRA_PUBLISH_ON_VAST' 'git status --porcelain --untracked-files=all' \
     'cargo fmt --all -- --check' 'cargo test --locked --workspace' \
-    'cargo clippy --locked --workspace --all-targets -- -D warnings'; do
+    'cargo clippy --locked --workspace --all-targets -- -D warnings' \
+    'export CARGO_NET_OFFLINE=true'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-reazonspeech-nemo-v2-validation: self-test FAIL: fail-closed guard lost token: $required" >&2
       fail=1
@@ -172,7 +175,7 @@ run_self_test() {
     echo "run-reazonspeech-nemo-v2-validation: self-test FAIL: missing --nemo value accepted" >&2
     fail=1
   fi
-  if "$script_path" --nemo -bad >/dev/null 2>&1 || "$script_path" --nemo a --nemo b >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --self-test --self-test >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1; then
+  if "$script_path" --nemo -bad >/dev/null 2>&1 || "$script_path" --nemo a --nemo b >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --expected-head >/dev/null 2>&1 || "$script_path" --expected-head bad >/dev/null 2>&1 || "$script_path" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1 || "$script_path" --self-test --self-test >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1; then
     echo "run-reazonspeech-nemo-v2-validation: self-test FAIL: malformed or duplicate options accepted" >&2
     fail=1
   fi
@@ -198,11 +201,13 @@ run_self_test() {
 }
 
 nemo_path=""
+expected_head=""
 work_dir="/workspace/vokra-reazonspeech-validation"
 approval_evidence=""
 self_test=0
 seen_self_test=0
 seen_nemo=0
+seen_head=0
 seen_work=0
 seen_approval=0
 while [[ $# -gt 0 ]]; do
@@ -217,6 +222,13 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "--nemo requires a nonempty path"
       seen_nemo=1
       nemo_path="$2"
+      shift 2
+      ;;
+    --expected-head)
+      (( seen_head == 0 )) || die "duplicate --expected-head"
+      [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head requires a lowercase 40-hex commit"
+      seen_head=1
+      expected_head="$2"
       shift 2
       ;;
     --work-dir)
@@ -244,13 +256,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $self_test -eq 1 ]]; then
-  [[ $seen_self_test -eq 1 && -z "$nemo_path$approval_evidence" && "$work_dir" == "/workspace/vokra-reazonspeech-validation" ]] \
+  [[ $seen_self_test -eq 1 && -z "$nemo_path$expected_head$approval_evidence" && "$work_dir" == "/workspace/vokra-reazonspeech-validation" ]] \
     || die "--self-test accepts no other arguments"
   run_self_test
   exit $?
 fi
 
 [[ $seen_approval -eq 1 ]] || die "--approval-evidence is required"
+[[ $seen_head -eq 1 ]] || die "--expected-head is required"
 license_preflight "$approval_evidence"
 require_absent_work_dir "$work_dir" "$approval_evidence"
 
@@ -268,8 +281,11 @@ for command in rustfmt cargo-deny cargo-audit; do
 done
 cargo clippy --version >/dev/null 2>&1 \
   || die "the clippy component is missing; install rustfmt/clippy on the VAST host"
-[[ -z "$(git status --porcelain --untracked-files=normal)" ]] \
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] \
   || die "worktree changes or untracked files are present; validate a clean committed git-bundle checkpoint"
+actual_head="$(git rev-parse HEAD)" || die "could not read checkout HEAD"
+[[ "$actual_head" == "$expected_head" ]] \
+  || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
 
 mkdir -p "$work_dir"
 work_dir="$(cd "$work_dir" && pwd)"
@@ -296,6 +312,7 @@ require_cargo_result() {
 
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
 export RUST_BACKTRACE=1
+export CARGO_NET_OFFLINE=true
 
 run_logged cargo fmt --all -- --check
 run_logged bash scripts/check-forbidden-symbols.sh
@@ -335,7 +352,8 @@ run_logged cargo deny check licenses advisories bans
 run_logged cargo audit
 
 {
-  echo "commit=$(git rev-parse HEAD)"
+  echo "commit=$actual_head"
+  echo "expected_head=$expected_head"
   echo "branch=$(git branch --show-current)"
   echo "rustc=$(rustc --version)"
   echo "cargo=$(cargo --version)"

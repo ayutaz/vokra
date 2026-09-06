@@ -18,7 +18,7 @@
 //! CPU and Metal share the imperative [`Compute`] seam. Unsupported backends
 //! fail through `Compute::for_backend`; there is no silent CPU fallback.
 
-use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{AsrEngine, BackendKind, LicenseClass, Result, Transcription, VokraError};
 use vokra_ops::conformer::ConformerCompute;
 
@@ -45,9 +45,8 @@ pub const MODEL_CONFIG_SHA256: &str =
 /// SHA-256 of the official 3,000-line plaintext SentencePiece vocabulary.
 pub const TOKENIZER_VOCAB_SHA256: &str =
     "989e4950cf53c0fee66f632cdd966bdd840b851a9e0e812322fd667e4b1c07bb";
-/// Optional embedded decode-only tokenizer. The existing public GGUF predates
-/// this key and therefore binds for token-level APIs but fails text decoding
-/// explicitly until it is replaced through the gated publishing workflow.
+/// Required embedded decode-only tokenizer for the authenticated release.
+/// Older public GGUFs that predate this key are rejected before tensor loading.
 pub const KEY_TOKENIZER_VOCAB: &str = "vokra.reazonspeech_nemo_v2.tokenizer.vocab";
 
 /// Decoder strategy selected by the released NeMo configuration.
@@ -92,6 +91,7 @@ const KEY_SOURCE_TAR_MANIFEST_SHA256: &str =
     "vokra.reazonspeech_nemo_v2.source_tar_manifest_sha256";
 const KEY_MODEL_CONFIG_SHA256: &str = "vokra.reazonspeech_nemo_v2.model_config_sha256";
 const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.reazonspeech_nemo_v2.tensor_manifest_sha256";
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const KEY_SAMPLE_RATE: &str = "vokra.reazonspeech_nemo_v2.sample_rate";
 const KEY_ENC_N_LAYER: &str = "vokra.reazonspeech_nemo_v2.encoder.n_layer";
@@ -113,6 +113,13 @@ const KEY_JOINT_VOCAB_SIZE: &str = "vokra.reazonspeech_nemo_v2.joint.vocab_size"
 const KEY_JOINT_BLANK_ID: &str = "vokra.reazonspeech_nemo_v2.joint.blank_token_id";
 const KEY_JOINT_MAX_SYMBOLS: &str = "vokra.reazonspeech_nemo_v2.joint.max_symbols_per_step";
 const KEY_TOKENIZER_VOCAB_SHA256: &str = "vokra.reazonspeech_nemo_v2.tokenizer.vocab_sha256";
+const KEY_FRONTEND_N_FFT: &str = "vokra.frontend.n_fft";
+const KEY_FRONTEND_HOP: &str = "vokra.frontend.hop_length";
+const KEY_FRONTEND_WIN: &str = "vokra.frontend.win_length";
+const KEY_FRONTEND_WINDOW: &str = "vokra.frontend.window_type";
+const KEY_FRONTEND_N_MELS: &str = "vokra.frontend.n_mels";
+const KEY_FRONTEND_NORMALIZE: &str = "vokra.frontend.normalize";
+const KEY_FRONTEND_DITHER: &str = "vokra.frontend.dither";
 
 const SOURCE_NEMO_SHA256: &str = "d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae";
 const SOURCE_TAR_MANIFEST_SHA256: &str =
@@ -132,6 +139,9 @@ const DECODING_RETURN_BEST: bool = true;
 const DECODING_PRESERVE_ALIGNMENTS: bool = false;
 
 const RUNTIME_KEYS: &[&str] = &[
+    chunks::KEY_MODEL_ARCH,
+    chunks::KEY_MODEL_NAME,
+    KEY_MODEL_CATEGORY,
     KEY_SOURCE_REVISION,
     KEY_SOURCE_NEMO_SHA256,
     KEY_SOURCE_TAR_MANIFEST_SHA256,
@@ -157,6 +167,15 @@ const RUNTIME_KEYS: &[&str] = &[
     KEY_JOINT_VOCAB_SIZE,
     KEY_JOINT_BLANK_ID,
     KEY_JOINT_MAX_SYMBOLS,
+    KEY_TOKENIZER_VOCAB,
+    KEY_TOKENIZER_VOCAB_SHA256,
+    KEY_FRONTEND_N_FFT,
+    KEY_FRONTEND_HOP,
+    KEY_FRONTEND_WIN,
+    KEY_FRONTEND_WINDOW,
+    KEY_FRONTEND_N_MELS,
+    KEY_FRONTEND_NORMALIZE,
+    KEY_FRONTEND_DITHER,
     KEY_DECODING_STRATEGY,
     KEY_DECODING_BEAM_SIZE,
     KEY_DECODING_ALSD_MAX_TARGET_LEN,
@@ -333,6 +352,7 @@ impl ReazonSpeechNemoV2 {
     /// decoder metadata are rejected before tensor loading and must be
     /// replaced through the gated publishing workflow.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        validate_metadata_contract(file)?;
         let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
         let config = ReazonSpeechConfig::official();
         config.validate()?;
@@ -468,7 +488,7 @@ impl ReazonSpeechNemoV2 {
     pub fn transcribe_text(&self, pcm: &[f32]) -> Result<String> {
         let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
             VokraError::ModelLoad(format!(
-                "{LABEL}: `{KEY_TOKENIZER_VOCAB}` is absent from the legacy public GGUF; token-level inference is available through `transcribe_tokens`, but text decoding requires a gated replacement converted with the pinned official tokenizer vocabulary"
+                "{LABEL}: authenticated GGUF is missing `{KEY_TOKENIZER_VOCAB}`; text decoding requires the exact pinned official tokenizer vocabulary"
             ))
         })?;
         let tokens = self.transcribe_tokens(pcm)?;
@@ -524,6 +544,9 @@ fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Re
     required_string(file, KEY_MODEL_CONFIG_SHA256, MODEL_CONFIG_SHA256)?;
     required_string(file, KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256)?;
     required_string(file, KEY_UPSTREAM_HF, UPSTREAM_HF)?;
+    required_string(file, chunks::KEY_MODEL_ARCH, EXPECTED_ARCH)?;
+    required_string(file, chunks::KEY_MODEL_NAME, MODEL_NAME)?;
+    required_string(file, KEY_MODEL_CATEGORY, "asr")?;
     required_string(file, chunks::KEY_PROVENANCE_LICENSE, "apache-2.0")?;
     required_string(
         file,
@@ -532,6 +555,13 @@ fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Re
     )?;
     required_string(file, chunks::KEY_PROVENANCE_MODEL_ID, MODEL_NAME)?;
     required_string(file, chunks::KEY_PROVENANCE_SOURCE, UPSTREAM_SOURCE)?;
+    required_u32(file, KEY_FRONTEND_N_FFT, 512)?;
+    required_u32(file, KEY_FRONTEND_HOP, 160)?;
+    required_u32(file, KEY_FRONTEND_WIN, 400)?;
+    required_string(file, KEY_FRONTEND_WINDOW, "hann")?;
+    required_u32(file, KEY_FRONTEND_N_MELS, 80)?;
+    required_string(file, KEY_FRONTEND_NORMALIZE, "per_feature")?;
+    required_f32(file, KEY_FRONTEND_DITHER, 1.0e-5)?;
     required_string(file, KEY_DECODING_STRATEGY, config.decoding_strategy)?;
     required_string(file, KEY_DECODING_BEAM_MODE, config.decoding_search_type)?;
     required_f32(
@@ -586,6 +616,48 @@ fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Re
         required_u32(file, key, expected)?;
     }
     Ok(())
+}
+
+/// Validate metadata keys whose values are consumed by a last-wins GGUF lookup.
+/// This gate runs before [`StrictCheckpoint::bind`] so duplicate or unowned
+/// Reazon/frontend keys cannot shadow an authenticated value.
+fn validate_metadata_contract(file: &GgufFile) -> Result<()> {
+    for &key in RUNTIME_KEYS {
+        let occurrences = metadata_occurrences(file.metadata(), key);
+        if occurrences != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: authenticated metadata `{key}` occurs {occurrences} times; expected exactly once"
+            )));
+        }
+    }
+    for (key, _) in file.metadata() {
+        if is_owned_metadata_key(key) && !RUNTIME_KEYS.contains(&key.as_str()) {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: unexpected authenticated metadata key `{key}`"
+            )));
+        }
+    }
+    required_string(file, chunks::KEY_MODEL_ARCH, EXPECTED_ARCH)?;
+    required_string(file, chunks::KEY_MODEL_NAME, MODEL_NAME)?;
+    required_string(file, KEY_MODEL_CATEGORY, "asr")?;
+    required_string(file, KEY_UPSTREAM_HF, UPSTREAM_HF)?;
+    required_string(file, chunks::KEY_PROVENANCE_LICENSE, "apache-2.0")?;
+    required_string(
+        file,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::Permissive.as_str(),
+    )?;
+    required_string(file, chunks::KEY_PROVENANCE_MODEL_ID, MODEL_NAME)?;
+    required_string(file, chunks::KEY_PROVENANCE_SOURCE, UPSTREAM_SOURCE)?;
+    Ok(())
+}
+
+fn metadata_occurrences(metadata: &[(String, GgufMetadataValue)], key: &str) -> usize {
+    metadata.iter().filter(|(name, _)| name == key).count()
+}
+
+fn is_owned_metadata_key(key: &str) -> bool {
+    key.starts_with("vokra.reazonspeech_nemo_v2.") || key.starts_with("vokra.frontend.")
 }
 
 fn required_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
@@ -668,14 +740,20 @@ fn load_tokenizer(
     file: &GgufFile,
     config: &ReazonSpeechConfig,
 ) -> Result<Option<ParakeetTokenizer>> {
-    let Some(value) = file.get(KEY_TOKENIZER_VOCAB) else {
-        return Ok(None);
-    };
+    let value = file.get(KEY_TOKENIZER_VOCAB).ok_or_else(|| {
+        VokraError::ModelLoad(format!("{LABEL}: missing `{KEY_TOKENIZER_VOCAB}`"))
+    })?;
     let GgufMetadataValue::Array(array) = value else {
         return Err(VokraError::ModelLoad(format!(
             "{LABEL}: `{KEY_TOKENIZER_VOCAB}` must be a u8 array"
         )));
     };
+    if array.element_type != GgufValueType::U8 {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: `{KEY_TOKENIZER_VOCAB}` must declare U8 elements, found {:?}",
+            array.element_type
+        )));
+    }
     let bytes = array
         .values
         .iter()
@@ -1273,6 +1351,26 @@ mod tests {
         builder.add_metadata("decoder.temperature", GgufMetadataValue::F64(1.0));
         let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
         assert!(required_f32(&file, "decoder.temperature", 1.0).is_err());
+    }
+
+    #[test]
+    fn metadata_contract_rejects_duplicate_and_unowned_keys() {
+        let metadata = vec![
+            (
+                chunks::KEY_MODEL_ARCH.to_owned(),
+                GgufMetadataValue::String(EXPECTED_ARCH.to_owned()),
+            ),
+            (
+                chunks::KEY_MODEL_ARCH.to_owned(),
+                GgufMetadataValue::String(EXPECTED_ARCH.to_owned()),
+            ),
+        ];
+        assert_eq!(metadata_occurrences(&metadata, chunks::KEY_MODEL_ARCH), 2);
+        assert!(is_owned_metadata_key("vokra.frontend.unexpected"));
+        assert!(is_owned_metadata_key(
+            "vokra.reazonspeech_nemo_v2.delay.999"
+        ));
+        assert!(!is_owned_metadata_key("vokra.provenance.unrelated"));
     }
 
     #[test]

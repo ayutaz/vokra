@@ -633,6 +633,7 @@ main() {
     echo "expected_head=$expected_head"
     echo "gguf_sha256=$(sha256_file "$gguf")"
     echo "cpu_vs_official=PASS"
+    echo "metal_vs_official=PASS"
     echo "metal_vs_cpu=PASS"
     echo "cpu_test=$CPU_TEST"
     echo "metal_test=$METAL_TEST"
