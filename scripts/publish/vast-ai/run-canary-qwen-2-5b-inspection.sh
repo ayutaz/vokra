@@ -14,7 +14,7 @@ INSPECTOR="tools/parity/canary_qwen_2_5b_inspect.py"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TOKENIZER_COMPLETE_FILES=".gitattributes LICENSE README.md config.json generation_config.json merges.txt model-00001-of-00002.safetensors model-00002-of-00002.safetensors model.safetensors.index.json tokenizer.json tokenizer_config.json vocab.json"
 TOKENIZER_SELECTED_FILES="LICENSE README.md config.json generation_config.json merges.txt tokenizer.json tokenizer_config.json vocab.json"
-UV_CMD=(uv run --frozen --project tools/parity --python 3.12 python)
+UV_CMD=(uv run --no-cache --frozen --project tools/parity --python 3.12 python)
 UV_GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python)
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_TMPFS_KIB=$((32 * 1024 * 1024))
@@ -76,7 +76,8 @@ self_test() {
   if grep -Fq "$selector_bad" "$self" || ! grep -Fq "${selector_prefix}selected]" "$self"; then echo "self-test FAIL: download selector is not selected-row bound" >&2; fail=1; fi
   if [[ "$(normalize_origin 'https://github.com/NVIDIA/NeMo.git/')" != "https://github.com/NVIDIA/NeMo" || "$(normalize_origin "$SOURCE_REPOSITORY")" != "https://github.com/NVIDIA/NeMo" ]]; then echo "self-test FAIL: origin normalization contract" >&2; fail=1; fi
   if ! grep -Fq 'UV_GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python)' "$self"; then echo "self-test FAIL: stdlib offline gate missing" >&2; fail=1; fi
-  UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" "$root/$INSPECTOR" --self-test >/dev/null || fail=1
+  UV_NO_CACHE=1 "${UV_CMD[@]}" "$root/$INSPECTOR" --self-test >/dev/null || fail=1
+  UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" "$root/$INSPECTOR" --stdlib-self-test >/dev/null || fail=1
   if bash "$self" --self-test --work-dir /tmp/canary-qwen-self-test >/dev/null 2>&1; then
     echo "self-test FAIL: extra argument accepted" >&2; fail=1
   else

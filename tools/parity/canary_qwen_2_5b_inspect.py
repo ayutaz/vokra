@@ -106,7 +106,7 @@ def require_canonical_input_length(text:str)->None:
     if CANONICAL_INPUT_LENGTH_MARKER not in text: raise RuntimeError("Canary exact input-length contract missing")
 def safe_path(value:str,label:str)->None:
     p=Path(value)
-    if not value or "\0" in value or "\\" in value or p.is_absolute() or ".." in p.parts: raise RuntimeError(f"unsafe {label}: {value!r}")
+    if not value or "\0" in value or "\\" in value or p.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")): raise RuntimeError(f"unsafe {label}: {value!r}")
 def canonical_file(path:Path|str,label:str)->Path:
     raw=os.fspath(path); p=Path(raw)
     if not p.is_absolute() or raw.endswith("/") or "/./" in raw or "/../" in raw or any(part in {".",".."} for part in p.parts): raise RuntimeError(f"{label} must be absolute and dot-free")
@@ -314,6 +314,7 @@ def inspect(snapshot:Path,tokenizer:Path,source:Path,model_tree:Path,tok_tree:Pa
     for n,v in evidence.items(): (out/n).write_text(json.dumps(v,sort_keys=True,indent=2)+"\n",encoding="utf-8")
     packets={p.name:{"bytes":p.stat().st_size,"sha256":sha256(p)} for p in out.glob("*-inventory.json")}; blocked(out,RuntimeError("native runtime, tokenizer, dependency, and dataset provenance remain unauthenticated"),"AUTHENTICATED_EVIDENCE_COMPLETE",config=config,tensors={k:v for k,v in tensors.items() if k!="tensors"},tokenizer={"repository":TOKENIZER_REPOSITORY,"revision":TOKENIZER_REVISION,"files":tokfiles,"model_weights":"NOT_DOWNLOADED","semantic_validation":tokconfig},source=sources,historical_public_artifact=HISTORICAL_PUBLIC,policy={"status":"BLOCKED_REVIEW_REQUIRED","research_or_out_of_scope":"UNRESOLVED"},packets=packets); return 2
 def self_test()->None:
+    if yaml is None: raise RuntimeError("strict self-test requires PyYAML; use the frozen parity project")
     src=Path(__file__).read_text(encoding="utf-8"); assert "inspect_st" in src and "safe_"+"open" not in src and "1_"+"017_626_722" not in src
     assert len(HF_REVISION)==len(SOURCE_REVISION)==len(TOKENIZER_REVISION)==40
     for name, identity in MODEL_FILES.items():
@@ -443,11 +444,24 @@ def self_test()->None:
         bad_scope=root/"scope.json"; bad_scope.write_text(json.dumps({**approval,"scope":"EXECUTION"}),encoding="utf-8"); reject(bad_scope,head,sha256(bad_scope))
         link=root/"approval-link.json"; link.symlink_to(valid); reject(link)
     print("canary_qwen_2_5b_inspect.py self-test: OK")
+def stdlib_self_test()->None:
+    for value in ("", "a//b", "./x", "a/../b", "tensor\\name"):
+        try: safe_path(value,"fixture")
+        except RuntimeError: pass
+        else: raise AssertionError(f"unsafe path accepted: {value!r}")
+    try: json.loads('{"x":1,"x":2}',object_pairs_hook=pairs)
+    except RuntimeError: pass
+    else: raise AssertionError("duplicate JSON accepted")
+    assert dependency_gate()==2
+    print("canary_qwen_2_5b_inspect.py stdlib gate self-test: OK")
 def main()->int:
-    p=argparse.ArgumentParser(); p.add_argument("--snapshot",type=Path); p.add_argument("--tokenizer",type=Path); p.add_argument("--source",type=Path); p.add_argument("--server-tree",type=Path); p.add_argument("--tokenizer-complete-tree",type=Path); p.add_argument("--tokenizer-server-tree",type=Path); p.add_argument("--output",type=Path); p.add_argument("--expected-head"); p.add_argument("--approval-evidence",type=Path); p.add_argument("--approval-sha256"); p.add_argument("--validate-approval",action="store_true"); p.add_argument("--dependency-gate",action="store_true"); p.add_argument("--self-test",action="store_true"); a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument("--snapshot",type=Path); p.add_argument("--tokenizer",type=Path); p.add_argument("--source",type=Path); p.add_argument("--server-tree",type=Path); p.add_argument("--tokenizer-complete-tree",type=Path); p.add_argument("--tokenizer-server-tree",type=Path); p.add_argument("--output",type=Path); p.add_argument("--expected-head"); p.add_argument("--approval-evidence",type=Path); p.add_argument("--approval-sha256"); p.add_argument("--validate-approval",action="store_true"); p.add_argument("--dependency-gate",action="store_true"); p.add_argument("--self-test",action="store_true"); p.add_argument("--stdlib-self-test",action="store_true"); a=p.parse_args()
     if a.self_test:
-        if any(v is not None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output,a.expected_head,a.approval_evidence,a.approval_sha256)) or a.validate_approval or a.dependency_gate: p.error("--self-test accepts no other arguments")
+        if any(v is not None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output,a.expected_head,a.approval_evidence,a.approval_sha256)) or a.validate_approval or a.dependency_gate or a.stdlib_self_test: p.error("--self-test accepts no other arguments")
         self_test(); return 0
+    if a.stdlib_self_test:
+        if any(v is not None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output,a.expected_head,a.approval_evidence,a.approval_sha256)) or a.validate_approval or a.dependency_gate: p.error("--stdlib-self-test accepts no other arguments")
+        stdlib_self_test(); return 0
     if a.dependency_gate:
         if any(v is not None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output,a.expected_head,a.approval_evidence,a.approval_sha256)) or a.validate_approval: p.error("--dependency-gate accepts no inspection arguments")
         return dependency_gate()
