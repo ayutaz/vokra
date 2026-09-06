@@ -107,18 +107,9 @@ pub fn convert_canary_file_with_tokenizer(
     license: Option<&str>,
     tokenizer_vocab: &Path,
 ) -> Result<CanaryReport, ConvertError> {
-    if input.is_symlink() || !input.is_file() {
-        return Err(ConvertError::Usage(format!(
-            "canary-1b-v2 checkpoint must be a regular non-symlink file: {}",
-            input.display()
-        )));
-    }
-    if output.exists() || output.is_symlink() {
-        return Err(ConvertError::Usage(format!(
-            "canary-1b-v2 output already exists or is symlinked: {}",
-            output.display()
-        )));
-    }
+    // Authenticate the small tokenizer sidecar before touching or stat'ing
+    // the multi-gigabyte checkpoint. This keeps malformed/unauthenticated
+    // tokenizer inputs fail-closed without probing the large payload.
     if tokenizer_vocab.is_symlink() || !tokenizer_vocab.is_file() {
         return Err(ConvertError::Usage(format!(
             "canary-1b-v2 tokenizer must be a regular non-symlink file: {}",
@@ -135,6 +126,20 @@ pub fn convert_canary_file_with_tokenizer(
 
     let tokenizer = std::fs::read(tokenizer_vocab).map_err(ConvertError::Io)?;
     validate_tokenizer_vocab(&tokenizer)?;
+
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 output already exists or is symlinked: {}",
+            output.display()
+        )));
+    }
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 checkpoint must be a regular non-symlink file: {}",
+            input.display()
+        )));
+    }
+
     let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
     let safetensors = SafetensorsFile::parse(bytes)?;
     validate_checkpoint(&safetensors)?;
