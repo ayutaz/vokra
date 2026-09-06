@@ -128,11 +128,20 @@ def validate_lock(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
             for artifact in artifacts:
                 if not isinstance(artifact, dict) or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("hash", ""))):
                     fail(f"artifact hash missing for {name}")
-                if not isinstance(artifact.get("size"), int) or artifact["size"] <= 0:
-                    fail(f"artifact size missing for {name}")
                 url = artifact.get("url")
                 if not isinstance(url, str) or not (url.startswith("https://files.pythonhosted.org/") or url.startswith("https://download-r2.pytorch.org/")):
                     fail(f"artifact URL host is not approved for {name}")
+                if "size" not in artifact:
+                    allowed_torch_size_omission = (
+                        name == "torch"
+                        and key == "wheels"
+                        and source == {"registry": TORCH_INDEX}
+                        and url.startswith("https://download-r2.pytorch.org/")
+                    )
+                    if not allowed_torch_size_omission:
+                        fail(f"artifact size missing for {name}")
+                elif type(artifact["size"]) is not int or artifact["size"] <= 0:
+                    fail(f"artifact size missing for {name}")
                 if not isinstance(artifact.get("upload-time"), str) or not artifact["upload-time"].strip():
                     fail(f"artifact upload-time is missing for {name}")
         result[name] = row
@@ -239,6 +248,48 @@ def self_test() -> None:
         ],
     }
     validate_lock(valid_lock)
+    torch_artifact = {
+        "url": "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "hash": "sha256:" + "0" * 64,
+        "upload-time": "2025-06-03T18:27:57Z",
+    }
+    allowed_missing_size = copy.deepcopy(valid_lock)
+    next(row for row in allowed_missing_size["package"] if row["name"] == "torch")["wheels"] = [torch_artifact]
+    validate_lock(allowed_missing_size)
+    missing_pypi_size = copy.deepcopy(valid_lock)
+    next(row for row in missing_pypi_size["package"] if row["name"] == "numpy")["wheels"] = [
+        {"url": "https://files.pythonhosted.org/packages/numpy.whl", "hash": "sha256:" + "0" * 64, "upload-time": "2026-01-01T00:00:00Z"}
+    ]
+    try:
+        validate_lock(missing_pypi_size)
+    except GateError as error:
+        assert "artifact size missing" in str(error)
+    else:
+        raise AssertionError("missing PyPI artifact size accepted")
+    missing_non_torch_size = copy.deepcopy(valid_lock)
+    missing_non_torch_size["package"].append(
+        {
+            "name": "not-torch",
+            "version": "1.0",
+            "source": {"registry": TORCH_INDEX},
+            "wheels": [{"url": "https://download-r2.pytorch.org/whl/cpu/not-torch.whl", "hash": "sha256:" + "0" * 64, "upload-time": "2026-01-01T00:00:00Z"}],
+        }
+    )
+    try:
+        validate_lock(missing_non_torch_size)
+    except GateError as error:
+        assert "artifact size missing" in str(error)
+    else:
+        raise AssertionError("missing non-torch artifact size accepted")
+    for invalid_size in (0, -1):
+        invalid_torch_size = copy.deepcopy(allowed_missing_size)
+        next(row for row in invalid_torch_size["package"] if row["name"] == "torch")["wheels"][0]["size"] = invalid_size
+        try:
+            validate_lock(invalid_torch_size)
+        except GateError as error:
+            assert "artifact size missing" in str(error)
+        else:
+            raise AssertionError("invalid torch artifact size accepted")
     forbidden_lock = copy.deepcopy(valid_lock)
     forbidden_lock["package"].append(
         {
@@ -321,7 +372,7 @@ def self_test() -> None:
     try:
         gate(here / "pyproject.toml", here / "uv.lock", here / "license_gate_manifest.json")
     except GateError as error:
-        assert "blocked" in str(error) or "missing" in str(error)
+        assert any(marker in str(error) for marker in ("blocked", "missing", "exact lock closure"))
     else:
         raise AssertionError("pending/missing-lock gate unexpectedly passed")
     with tempfile.TemporaryDirectory(prefix="cosyvoice2-llm-gate-") as temp:
