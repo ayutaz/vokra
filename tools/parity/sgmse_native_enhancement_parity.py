@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -83,6 +84,21 @@ EXPECTED_PACKET_FILES = {
     NOISE_CALLS_NAME,
 }
 EXPECTED_NATIVE_FILES = {"enhanced_pcm.f32"}
+
+
+def validate_official_enhance_signature(signature: inspect.Signature) -> None:
+    """Pin the upstream model.py API without requiring a denoise parameter."""
+    parameters = signature.parameters
+    required = {
+        "y", "sampler_type", "predictor", "corrector", "N",
+        "corrector_steps", "snr", "timeit",
+    }
+    if not required.issubset(parameters) or "denoise" in parameters:
+        raise ValueError(f"official ScoreModel.enhance signature drifted: {signature}")
+    if parameters["timeit"].default is inspect.Parameter.empty or not any(
+        item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values()
+    ):
+        raise ValueError(f"official ScoreModel.enhance must expose timeit/**kwargs: {signature}")
 
 
 def reject_duplicate_json(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -243,7 +259,7 @@ def _validate_noise_calls(packet: Path, manifest: dict[str, Any]) -> list[dict[s
     return calls
 
 
-def verify_reference(packet: Path) -> dict[str, Any]:
+def verify_reference(packet: Path, vokra_root: Path | None = None) -> dict[str, Any]:
     require_exact_files(packet, EXPECTED_PACKET_FILES, "reference packet")
     manifest = json.loads(
         (packet / MANIFEST_NAME).read_text(encoding="utf-8"),
@@ -253,7 +269,7 @@ def verify_reference(packet: Path) -> dict[str, Any]:
         "format", "status", "publication", "model_repository", "model_revision",
         "checkpoint", "source", "speechbrain_source", "licenses", "input",
         "runtime", "artifacts", "noise_calls", "noise_payload", "tolerance",
-        "identity", "run_log",
+        "identity", "run_log", "vokra",
     }:
         raise ValueError("reference packet manifest schema drifted")
     if (
@@ -320,6 +336,22 @@ def verify_reference(packet: Path) -> dict[str, Any]:
         or not runtime.get("numpy_version")
     ):
         raise ValueError("reference runtime is not VAST Linux x86_64")
+    vokra = manifest["vokra"]
+    if not isinstance(vokra, dict) or set(vokra) != {
+        "path", "commit", "clean", "tool_sha256", "uv_lock_sha256"
+    }:
+        raise ValueError("reference Vokra provenance schema drifted")
+    if vokra.get("clean") is not True or not isinstance(vokra.get("commit"), str):
+        raise ValueError("reference Vokra provenance is not clean")
+    if vokra_root is not None:
+        current = require_vokra_checkout(vokra_root)
+        if (
+            Path(vokra["path"]).resolve(strict=False) != vokra_root.resolve(strict=False)
+            or vokra["commit"] != current["commit"]
+            or vokra["tool_sha256"] != sha256(vokra_root / "tools/parity/sgmse_native_enhancement_parity.py")
+            or vokra["uv_lock_sha256"] != sha256(vokra_root / "tools/parity/uv.lock")
+        ):
+            raise ValueError("reference Vokra checkout/tool/lock provenance mismatch")
     artifacts = manifest["artifacts"]
     if not isinstance(artifacts, dict) or set(artifacts) != {INPUT_NAME, REFERENCE_NAME, NOISE_NAME, NOISE_CALLS_NAME}:
         raise ValueError("reference artifact set mismatch")
@@ -367,10 +399,12 @@ def verify_reference(packet: Path) -> dict[str, Any]:
     return manifest
 
 
-def compare_native(reference_dir: Path, native_dir: Path) -> dict[str, Any]:
+def compare_native(
+    reference_dir: Path, native_dir: Path, vokra_root: Path
+) -> dict[str, Any]:
     if not reference_dir.is_absolute() or not native_dir.is_absolute() or path_overlaps(reference_dir, native_dir):
         raise ValueError("reference and native paths must be absolute and disjoint")
-    manifest = verify_reference(reference_dir)
+    manifest = verify_reference(reference_dir, vokra_root)
     require_exact_files(native_dir, EXPECTED_NATIVE_FILES, "native enhancement output")
     expected = read_f32(reference_dir / REFERENCE_NAME, "reference enhanced PCM")
     actual = read_f32(native_dir / "enhanced_pcm.f32", "native enhanced PCM")
@@ -460,10 +494,8 @@ def _run_official_reference(
         torch.randn_like = capture_like
         torch.randn = capture_randn
         try:
-            signature = __import__("inspect").signature(model.enhance)
-            required_names = {"y", "sampler_type", "predictor", "corrector", "N", "corrector_steps", "snr", "denoise"}
-            if not required_names.issubset(signature.parameters):
-                raise ValueError(f"official ScoreModel.enhance signature drifted: {signature}")
+            signature = inspect.signature(model.enhance)
+            validate_official_enhance_signature(signature)
             with torch.no_grad():
                 enhanced = model.enhance(
                     torch.from_numpy(np.asarray(pcm, dtype=np.float32)).unsqueeze(0),
@@ -473,6 +505,7 @@ def _run_official_reference(
                     N=30,
                     corrector_steps=1,
                     snr=0.5,
+                    timeit=False,
                     denoise=True,
                 )
         finally:
@@ -480,10 +513,13 @@ def _run_official_reference(
             torch.randn = original_randn
         if len(calls) != NOISE_CALL_COUNT:
             raise ValueError(f"official enhance consumed {len(calls)} noise tensors, expected {NOISE_CALL_COUNT}")
-        enhanced_tensor = enhanced.detach().cpu().reshape(-1)
-        if enhanced_tensor.numel() != len(pcm) or not bool(torch.isfinite(enhanced_tensor).all()):
+        # The pinned upstream API returns a squeezed CPU NumPy array, not a
+        # torch tensor. Keep this conversion at the official boundary: the
+        # reference is still produced by ScoreModel.enhance itself.
+        enhanced_values_array = np.asarray(enhanced, dtype=np.float32).reshape(-1)
+        if enhanced_values_array.size != len(pcm) or not bool(np.isfinite(enhanced_values_array).all()):
             raise ValueError("official enhancement returned invalid PCM")
-        enhanced_values = enhanced_tensor.numpy().astype(np.float32).tolist()
+        enhanced_values = enhanced_values_array.tolist()
         reference_artifact = write_f32(temporary / REFERENCE_NAME, enhanced_values)
         noise_path = temporary / NOISE_NAME
         noise_rows: list[dict[str, Any]] = []
@@ -568,10 +604,11 @@ def _run_official_reference(
             "noise_payload": {"filename": NOISE_NAME, "call_count": len(noise_rows), "dtype": "float32", "complete": True},
             "tolerance": {"metric": "waveform_max_abs_and_rmse", "max_abs": FP32_ATOL, "rmse": FP32_ATOL, "basis": "repository FP32_ATOL=0.01; preregistered before real run"},
             "identity": {"reference_tool": "sgmse_native_enhancement_parity.py", "official_call": "ScoreModel.enhance", "noise_capture": "torch.randn_like+torch.randn during one official enhance call", "self_test": "sgmse_native_enhancement_parity.py --self-test"},
+            "vokra": {**vokra_tree, "tool_sha256": sha256(vokra_root / "tools/parity/sgmse_native_enhancement_parity.py"), "uv_lock_sha256": sha256(vokra_root / "tools/parity/uv.lock")},
             "run_log": {"path": RUN_LOG_NAME, "size": run_log.stat().st_size, "sha256": sha256(run_log)},
         }
         (temporary / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        verify_reference(temporary)
+        verify_reference(temporary, vokra_root)
         if os.path.lexists(output_dir):
             raise ValueError("reference output appeared before no-replace publication")
         atomic_rename_noreplace(temporary, output_dir)
@@ -593,6 +630,17 @@ def self_test() -> int:
         "NO_UPLOAD",
     )
     assert "ScoreModel.enhance" in "official ScoreModel.enhance"
+    validate_official_enhance_signature(inspect.signature(
+        lambda self, y, sampler_type, predictor, corrector, N, corrector_steps, snr, timeit=False, **kwargs: None
+    ))
+    try:
+        validate_official_enhance_signature(inspect.signature(
+            lambda self, y, sampler_type, predictor, corrector, N, corrector_steps, snr, denoise=False, timeit=False, **kwargs: None
+        ))
+    except ValueError:
+        pass
+    else:
+        return 1
     assert serialize_noise_planes([1.0, 2.0], [3.0, 4.0]) == [1.0, 2.0, 3.0, 4.0]
     assert serialize_noise_planes([1.0, 2.0], None) == [1.0, 2.0]
     with tempfile.TemporaryDirectory(prefix="sgmse-enhancement-self-test-") as directory:
@@ -643,6 +691,7 @@ def self_test() -> int:
             "noise_payload": {"filename": NOISE_NAME, "call_count": NOISE_CALL_COUNT, "dtype": "float32", "complete": True},
             "tolerance": {"metric": "waveform_max_abs_and_rmse", "max_abs": FP32_ATOL, "rmse": FP32_ATOL, "basis": "repository FP32_ATOL=0.01; preregistered before real run"},
             "identity": {"reference_tool": "sgmse_native_enhancement_parity.py", "official_call": "ScoreModel.enhance", "noise_capture": "torch.randn_like+torch.randn during one official enhance call", "self_test": "sgmse_native_enhancement_parity.py --self-test"},
+            "vokra": {"path": "/source", "commit": "self-test", "clean": True, "tool_sha256": "0" * 64, "uv_lock_sha256": "0" * 64},
             "run_log": {"path": RUN_LOG_NAME, "size": (packet / RUN_LOG_NAME).stat().st_size, "sha256": sha256(packet / RUN_LOG_NAME)},
         }
         (packet / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
@@ -694,7 +743,7 @@ def self_test() -> int:
         else:
             return 1
         try:
-            compare_native(packet, packet)
+            compare_native(packet, packet, root)
         except ValueError:
             pass
         else:
@@ -740,20 +789,31 @@ def main() -> int:
         print(json.dumps({"status": manifest["status"], "output_dir": str(args.output_dir)}, sort_keys=True))
         return 0
     if args.verify_reference:
-        if args.reference_dir is None or args.compare or args.generate_reference or any(value is not None for value in (args.source_dir, args.speechbrain_source_dir, args.checkpoint, args.hyperparams, args.inspection_manifest, args.input_wav, args.output_dir, args.native_dir, args.vokra_root)):
-            parser.error("--verify-reference requires --reference-dir only")
+        if (
+            args.reference_dir is None
+            or args.vokra_root is None
+            or args.compare
+            or args.generate_reference
+            or any(value is not None for value in (args.source_dir, args.speechbrain_source_dir, args.checkpoint, args.hyperparams, args.inspection_manifest, args.input_wav, args.output_dir, args.native_dir))
+        ):
+            parser.error("--verify-reference requires --reference-dir and --vokra-root only")
         try:
-            manifest = verify_reference(args.reference_dir)
+            manifest = verify_reference(args.reference_dir, args.vokra_root)
         except Exception as error:
             print(f"sgmse enhancement verifier BLOCKED: {type(error).__name__}: {error}", file=sys.stderr)
             return 2
         print(json.dumps({"status": manifest["status"], "reference_dir": str(args.reference_dir)}, sort_keys=True))
         return 0
     if args.compare:
-        if args.reference_dir is None or args.native_dir is None or any(value is not None for value in (args.source_dir, args.speechbrain_source_dir, args.checkpoint, args.hyperparams, args.inspection_manifest, args.input_wav, args.output_dir, args.vokra_root)):
-            parser.error("--compare requires --reference-dir and --native-dir only")
+        if (
+            args.reference_dir is None
+            or args.native_dir is None
+            or args.vokra_root is None
+            or any(value is not None for value in (args.source_dir, args.speechbrain_source_dir, args.checkpoint, args.hyperparams, args.inspection_manifest, args.input_wav, args.output_dir))
+        ):
+            parser.error("--compare requires --reference-dir, --native-dir, and --vokra-root only")
         try:
-            result = compare_native(args.reference_dir, args.native_dir)
+            result = compare_native(args.reference_dir, args.native_dir, args.vokra_root)
         except Exception as error:
             print(f"sgmse enhancement comparator BLOCKED: {type(error).__name__}: {error}", file=sys.stderr)
             return 2
