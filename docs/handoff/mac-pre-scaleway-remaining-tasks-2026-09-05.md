@@ -642,6 +642,21 @@ families without acquiring or executing their weights locally:
   hash and clean expected HEAD for a future resolved contract. Source-only
   self-tests pass; real replacement and parity are prohibited until those
   factual license rows are resolved under a new reviewed gate contract.
+- AudioLDM2 commit `82ac36d1` keeps both Base and Large inspection routes
+  fail-closed before environment sync, cache use, download, model import or
+  Cargo. Each route requires an external approval bound to the exact clean
+  HEAD, an exact approval digest, and disjoint atomic work/evidence paths. The
+  dedicated dependency lock and authenticated dependency/license identity do
+  not yet exist, so neither route can emit a runtime or parity verdict. The
+  projection model, scheduler/sidecars, complete native diffusion composite,
+  independent reference and real VAST/Apple measurements remain open.
+- Sortformer commit `e19d6ba1` makes its current inspection route accept only
+  an exact-head, hash-bound external `BLOCKED` disposition for the pinned
+  model/source identities. It rejects ambiguous or overlapping paths and then
+  exits `BLOCKED_PROVENANCE/NO_UPLOAD` before checkout, model download, cache
+  use or Cargo. Mutable NeMo weight-build provenance, the native diarization
+  forward and independent CPU parity remain unresolved; the source-only
+  runner self-test passes but no CPU or Metal result is claimed.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
