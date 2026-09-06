@@ -139,12 +139,39 @@ already has its exact 965-tensor, 3,000-piece vocabulary and runtime-axis
 contracts. Their remaining work is factual input closure and VAST/Apple
 execution, not another speculative local shim.
 
+The final no-model source sweep adds six more commits and closes the static
+audit of all 27 public-artifact-specific rows, all 19 bound-runtime rows, all
+14 generic rows and both intentionally partial composites:
+
+- XY Tokenizer's arbitrary synthetic tensor-to-GGUF helper is test-only at
+  `aea7dc10`; production remains inspection-only until an exact manifest and
+  native runtime exist.
+- SBV2 now stamps and requires the real JP-Extra model/repository/AGPL identity
+  and rejects the retired generic multilingual label at `0ee8359c`.
+- Sortformer's model-kind documentation now records its actual
+  CC-BY-NC-4.0 research-only tier at `1f31deda`.
+- ChatTTS now validates every represented DVAE/GFSQ/decoder/Vocos axis against
+  the fixed source contract at `d2cca9f5`; no tensor/runtime claim was added.
+- Ultravox public and separately licensed companion conversion outputs are
+  create-new/no-clobber at `240737b8`.
+- The current Rust path-component spelling is restored in RMVPE at
+  `6aeb4278`; a serial `cargo check -p vokra-convert --lib` then passes at the
+  exact local head.
+
+The no-change audits are equally important: they preserve terminal gates where
+exact source, dependency, license, dataset, tokenizer/codec or complete tensor
+facts are absent, and identify source-ready rows whose next operation is
+artifact regeneration or real-weight parity on VAST. No audit converted an
+inspection disposition into execution approval. The only local dirty file
+outside these commits remains the user's CosyVoice2 license-gate manifest.
+
 These commits passed repository formatting, locked metadata and diff-hygiene
 checks without model acquisition or execution. `vokra-models` compile/test is
-reserved for VAST under the maintainer-Mac memory policy, so none of the eleven
-is a numerical verdict and the 63-row unresolved classification is unchanged.
+reserved for VAST under the maintainer-Mac memory policy, so none of the
+seventeen is a numerical verdict and the 63-row unresolved classification is
+unchanged.
 
-The implementation head advanced through `66811766` in this wave. The PR
+The implementation head advanced through `6aeb4278` in this wave. The PR
 remote at the start of the wave was `d241305f`; all checks at that remote
 commit were green and GitHub reported the PR mergeable. The local
 implementation/test commits are deliberately kept unpushed until their VAST
@@ -888,12 +915,13 @@ These tasks affect multiple model rows and must not be mistaken for Scaleway
 work:
 
 - **Native BF16 compute:** raw-BF16 CPU/Metal storage and GEMM seams plus the
-  independent kernel fixture are landed. Model-level integration remains open:
-  Ultravox currently keeps BF16 weights raw but uses FP32 activations and FP32
-  accumulation, while projector/encoder/norm/embedding paths still widen to
-  FP32. Define that precision contract, then validate a real BF16 checkpoint
-  with AVX512-BF16 model parity and Arm-BF16/Apple evidence. This is not a
-  single remaining shim replacement.
+  independent kernel fixture are landed. The Ultravox audit confirms the
+  current mixed-precision contract is already explicit: audio/projector
+  weights widen into F32 scratch; activations, norms, residuals, KV state and
+  accumulation are F32; the Meta companion uses raw-BF16 panels with F32
+  activation/output on CPU/Metal and no CPU fallback. What remains is a real
+  BF16 checkpoint against AVX512-BF16 reference plus Arm-BF16/Apple evidence,
+  not an unreviewed claim of end-to-end BF16 activations.
 - **HiFTNet full GPU generator:** the complete resident CPU/Metal graph, strict
   328-tensor converter/binder, exact pinned config and a nonzero synthetic
   one-final-readback parity harness now exist. The no-upload VAST runner binds
@@ -903,8 +931,11 @@ work:
   exact-head VAST result, preserve the GGUF/reference packet for the final
   Apple CPU/Metal worker.
 - **BigVGAN full GPU path:** the Linux and Darwin dependency/native archive
-  graphs are evidence-complete, but owner/legal sign-off remains fail-closed.
-  After that approval, VAST-compile the model adapter and run a fixed real
+  graphs and runtime variant binders are evidence-complete, but owner/legal
+  sign-off remains fail-closed. The converter still accepts an arbitrary
+  safetensors set before the runtime binder rejects it; share the authoritative
+  four-variant tensor manifests with the converter once those facts are
+  authenticated. After approval, VAST-compile the adapter and run a fixed real
   artifact against an independent reference; leave Metal hardware parity for
   the final Scaleway run.
 - **Coverage invariant:** after every wave, rerun the live audit and keep the
@@ -941,11 +972,11 @@ authorization.
 | `vokra/qwen3-tts-12hz-1.7b-customvoice` | The source contract already rejects model-size/variant drift and binds sidecars/12-Hz companion; sidecar/no-clobber gates are hardened at `dd60e76e`. Regenerate the public GGUF and verify it on VAST. |
 | `vokra/reazonspeech-nemo-v2` | The source converter/runtime already bind the exact 965-tensor checkpoint, embedded 3,000-piece vocabulary and runtime axes. Regenerate the stale public artifact and repeat exact-head VAST plus Apple evidence. |
 | `vokra/rmvpe` | Resolve the absence of an upstream license for the exact source repository; the live MIT stamp cannot be accepted by inference. |
-| `vokra/sbv2-v2-jp-extra-base` | Replace raw legacy tensor names with the strict converter/runtime metadata and close the production Japanese G2P boundary. |
+| `vokra/sbv2-v2-jp-extra-base` | Exact JP-Extra model/repository/AGPL identity and retired-label rejection are landed at `0ee8359c`; strict tensor renames already exist. Update the remaining parity-helper legacy filenames/defaults, close production Japanese G2P, regenerate and verify the artifact. |
 | `vokra/speechbrain-spkrec-ecapa-voxceleb` | Replace or repair the artifact whose tensor data extends outside the declared file bounds, then rerun strict parity. |
 | `vokra/voice-gender-classifier` | Exact-head corrected conversion and official CPU parity are green at `df7f5574`; regenerate its authenticated Apple packet for the final CPU/Metal worker. Publish the replacement only after that passes and separate upload authorization is given. |
 | `vokra/wespeaker` | Resolve Apache-vs-CC-BY-4.0 provenance and attribution, then produce the strict artifact. |
-| `vokra/xy-tokenizer` | Provide a real authenticated tensor payload and verify topology/dependency closure; the live file is metadata-only. |
+| `vokra/xy-tokenizer` | Production conversion remains inspection-only and the arbitrary synthetic payload helper is test-confined at `aea7dc10`. Authenticate a real tensor manifest/topology, implement the native route and regenerate the metadata-only public file. |
 | `vokra/yue-xcodec-mini` | Add the missing PCM encode path: acoustic/HuBERT, RepCodec, fusion and RVQ contracts. Decode-only is incomplete. |
 
 ## Bound but incomplete native runtimes (19)
@@ -963,7 +994,7 @@ portable no-fallback Apple worker for the final Scaleway batch.
 | `vokra/chatterbox-multilingual-v3` | Full generation, conditioning, watermark and PCM-output path. |
 | `vokra/chatterbox-nano-v1` | Full generation, conditioning, watermark and PCM-output path. |
 | `vokra/chatterbox-turbo-v1` | Full generation, conditioning, watermark and PCM-output path. |
-| `vokra/chattts` | Clean native composite plus AGPL/source, CC-BY-NC weight, dependency and personality/voice policy closure. |
+| `vokra/chattts` | Fixed DVAE/GFSQ/decoder/Vocos axes are exact at `d2cca9f5`, but no tensor binder is implied. Complete the native GPT+Embed+DVAE+decoder+Vocos composite plus AGPL/source, CC-BY-NC weight, dependency and personality/voice policy closure. |
 | `vokra/clap-htsat-fused` | Add a dedicated authenticated reference lock/license gate, exact released HTSAT audio/text preprocessing and state-dict role/shape manifest before implementing the fused binder/forward; then run real parity. |
 | `vokra/cosyvoice2-0.5b` | HiFT checkpoint/source/config, strict converter/binder and guarded VAST CPU-parity runner are complete at source level. Run the model-free closure phase, obtain explicit owner approval before any HiFT model/reference execution, then obtain exact-head VAST CPU parity. LLM/Flow are component-bound but the full flow/codec/vocoder composition remains incomplete; the official broad closure still imports forbidden `soxr`. |
 | `vokra/dia-1.6b` | The strict 343-tensor binder and DAC connection already exist, and the legacy bind now requires exact 44.1-kHz/nine-codebook composition at `a98eb45b`. Complete tokenizer/generation and real delayed-AR/DAC parity plus dependency review. |
@@ -972,7 +1003,7 @@ portable no-fallback Apple worker for the final Scaleway batch.
 | `vokra/irodori-tts-500m-v3` | Find an authenticated Python-3.12 reference route that avoids the current `librosa -> soxr` dependency; more RAM or Scaleway cannot solve this. |
 | `vokra/kyutai-stt-2.6b-en` | The dedicated `dep_q=0` text decoder and strict 323-BF16-tensor binder already exist. Complete Mimi/tokenizer/streaming ASR, review and register a fixed parity bound from the first VAST measurement, then run Apple CPU/Metal. |
 | `vokra/owsm-v4-medium-1b` | Authenticate the missing ESPnet frontend/MVN semantics and 1,172-tensor payload map with independent fixtures; then finish the writer, subsampling/E-Branchformer/decoder, joint CTC-attention search and token semantics. |
-| `vokra/sortformer-diar-4spk-v1` | Bind the real archive/config and complete native diarization plus independent real parity. |
+| `vokra/sortformer-diar-4spk-v1` | The inspection gate correctly records CC-BY-NC-4.0 research-only at `1f31deda`. Resolve mutable NeMo build provenance, bind the real archive/config and complete native FastConformer/Transformer/arrival-order diarization plus independent parity. |
 | `vokra/vibevoice-1.5b` | Close dependency approvals, complete native runtime and execute the real workers. |
 | `vokra/voxcpm-0.5b` | Add the missing AudioVAE/tokenizer companions and full native composite. |
 | `vokra/zonos-v0.1-transformer` | The typed transformer/conditioner/DAC path now strictly rejects dtype, non-finite, delay, packet, codebook and sample-rate drift at `3ae4d351`. Authenticate the real 246-tensor artifact, conditioning packet and exact DAC, then execute independent CPU parity and the Apple worker. |
@@ -1006,9 +1037,11 @@ and a final Apple worker.
 - `vokra/csm-1b`: replace the synthesized bridge with the complete released
   companion and audio-generation contract; resolve certifi/tqdm/
   typing-extensions/NumPy policy and run independent real parity.
-- `vokra/ultravox-v0-5-llama-3-2-1b`: authenticate the gated Meta companion
-  digest/tokenizer/chat boundary and its license/dependency closure; a native
-  Whisper tower plus projector alone is not a complete model.
+- `vokra/ultravox-v0-5-llama-3-2-1b`: output conversion is no-clobber at
+  `240737b8`, and its mixed BF16/F32 precision boundary is explicit. Authenticate
+  the gated Meta companion digest/tokenizer/chat boundary and its
+  license/dependency closure; a native Whisper tower plus projector alone is
+  not a complete model.
 
 ## Non-artifact repository (1)
 
