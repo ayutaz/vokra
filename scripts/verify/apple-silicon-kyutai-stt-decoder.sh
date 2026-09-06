@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="${VOKRA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 TEST_NAME="parity_kyutai_stt_decoder_real_apple_cpu_metal"
-usage() { printf '%s\n' "usage: apple-silicon-kyutai-stt-decoder.sh --gguf ABS --gguf-sha256 HEX64 --reference ABS --reference-manifest-sha256 HEX64 --evidence ABS | --self-test"; }
+usage() { printf '%s\n' "usage: apple-silicon-kyutai-stt-decoder.sh --gguf ABS --gguf-sha256 HEX64 --reference ABS --reference-manifest-sha256 HEX64 --evidence ABS --expected-head HEX40 | --self-test"; }
 die() { printf '[kyutai-stt-apple] ERROR: %s\n' "$*" >&2; exit 2; }
 
 self_test() {
@@ -24,14 +24,14 @@ self_test() {
 
 [[ "${1:-}" == --self-test ]] && { [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit $?; }
 gguf=""; gguf_sha=""; reference=""; reference_sha=""; evidence=""; expected_head=""
-expected_head_seen=0
+gguf_seen=0; gguf_sha_seen=0; reference_seen=0; reference_sha_seen=0; evidence_seen=0; expected_head_seen=0
 while (($#)); do
   case "$1" in
-    --gguf) (($# >= 2)) || die '--gguf requires ABS'; gguf="$2"; shift 2;;
-    --gguf-sha256) (($# >= 2)) || die '--gguf-sha256 requires HEX64'; gguf_sha="$2"; shift 2;;
-    --reference) (($# >= 2)) || die '--reference requires ABS'; reference="$2"; shift 2;;
-    --reference-manifest-sha256) (($# >= 2)) || die '--reference-manifest-sha256 requires HEX64'; reference_sha="$2"; shift 2;;
-    --evidence) (($# >= 2)) || die '--evidence requires ABS'; evidence="$2"; shift 2;;
+    --gguf) (($# >= 2)) || die '--gguf requires ABS'; (( gguf_seen == 0 )) || die 'duplicate --gguf'; gguf="$2"; gguf_seen=1; shift 2;;
+    --gguf-sha256) (($# >= 2)) || die '--gguf-sha256 requires HEX64'; (( gguf_sha_seen == 0 )) || die 'duplicate --gguf-sha256'; gguf_sha="$2"; gguf_sha_seen=1; shift 2;;
+    --reference) (($# >= 2)) || die '--reference requires ABS'; (( reference_seen == 0 )) || die 'duplicate --reference'; reference="$2"; reference_seen=1; shift 2;;
+    --reference-manifest-sha256) (($# >= 2)) || die '--reference-manifest-sha256 requires HEX64'; (( reference_sha_seen == 0 )) || die 'duplicate --reference-manifest-sha256'; reference_sha="$2"; reference_sha_seen=1; shift 2;;
+    --evidence) (($# >= 2)) || die '--evidence requires ABS'; (( evidence_seen == 0 )) || die 'duplicate --evidence'; evidence="$2"; evidence_seen=1; shift 2;;
     --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; (( expected_head_seen == 0 )) || die 'duplicate --expected-head'; expected_head="$2"; expected_head_seen=1; shift 2;;
     -h|--help) usage; exit 0;;
     *) usage; die "unknown argument: $1";;

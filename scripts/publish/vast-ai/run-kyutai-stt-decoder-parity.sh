@@ -47,6 +47,7 @@ self_test() {
 
 work_dir="$WORK"
 expected_head=""
+work_dir_seen=0
 if [[ "${1:-}" == --self-test ]]; then
   [[ $# == 1 ]] || die '--self-test accepts no other arguments'
   self_test
@@ -55,7 +56,7 @@ fi
 while (($#)); do
   case "$1" in
     --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; [[ -z "$expected_head" ]] || die 'duplicate --expected-head'; expected_head="$2"; shift 2;;
-    --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2;;
+    --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; (( work_dir_seen == 0 )) || die 'duplicate --work-dir'; work_dir="$2"; work_dir_seen=1; shift 2;;
     -h|--help) usage; exit 0;;
     *) usage; die "unknown argument: $1";;
   esac
@@ -136,7 +137,7 @@ if {item.name for item in root.iterdir()} != expected:
 if any(item.is_symlink() or not item.is_file() for item in root.iterdir()):
     raise SystemExit("model snapshot contains a non-regular or symlink entry")
 PY
-  cargo build --release -p vokra-convert
+  cargo build --locked --offline --release -p vokra-convert
   "$ROOT/target/release/vokra-convert" --model kyutai-stt --input "$work_dir/model/model.safetensors" --output "$work_dir/decoder.gguf"
   UV_NO_CACHE=1 uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$DUMPER" real \
     --model "$work_dir/model" --dsm-source "$work_dir/dsm" --moshi-source "$work_dir/moshi" --out "$work_dir/reference"
@@ -155,7 +156,7 @@ PY
   VOKRA_KYUTAI_STT_DECODER_REFERENCE="$work_dir/reference" \
   VOKRA_KYUTAI_STT_DECODER_REFERENCE_MANIFEST_SHA256="$reference_sha" \
   VOKRA_KYUTAI_STT_DECODER_MEASUREMENT_ONLY=1 \
-    cargo test --test parity_kyutai_stt_decoder_real -p vokra-models --offline -- \
+    cargo test --locked --offline --test parity_kyutai_stt_decoder_real -p vokra-models -- \
       --ignored --exact parity_kyutai_stt_decoder_real_cpu --nocapture
 } > "$validation_log" 2>&1 || die 'VAST decoder measurement failed; evidence log preserved'
 set +o noclobber
