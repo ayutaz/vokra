@@ -769,6 +769,36 @@ families without acquiring or executing their weights locally:
   activity. Existing authenticated inspection code is retained but remains
   unreachable until a new reviewed contract resolves the native S2S,
   component/license/dependency/dataset and tokenizer/vocoder boundaries.
+- VibeVoice-ASR commit `d24f2e95` preserves its recorded Microsoft MIT model
+  and source plus pinned Transformers Apache-2.0 facts, but makes the unresolved
+  external Qwen2.5 dependency, training provenance, native ASR,
+  diarization/timestamp semantics and independent parity disposition terminal.
+  The runner and direct inspector stop before host, work, cache, network or
+  tensor imports, and all evidence records are create-exclusive.
+- VibeVoice Realtime commits `89d208c4`, `a10828cd` and `c60ffb58` bind its
+  exact model/source/Transformers/tokenizer identities to one external blocked
+  approval and preserve partial inspection failures without writing into a
+  caller-owned, symlinked or replaced output directory. Streaming state,
+  diffusion/CFG, acoustic decoding, tokenizer policy, dataset provenance and
+  native parity remain unresolved.
+- VieNeu v3 Turbo commit `a03ba6b2` records the authenticated Apache-2.0 model
+  and source separately from the declared-but-unverified MOSS dependency,
+  dependency/license closure, voice policy, native composite and parity
+  blockers. Its runner and direct inspector now terminate before any model or
+  output access.
+- XTTS-v2 commit `bd13eba5` preserves the owner-signed CPML Research-only/T4
+  decision while separating source, dependency, voice-consent/policy, dataset,
+  native GPT, DVAE, HiFiGAN and parity blockers. The runner, inspector and
+  checkpoint preparer all validate one external approval SHA and clean exact
+  HEAD before touching source/model/output paths or importing tensor tooling;
+  the preparer also refuses existing or symlinked outputs.
+- CSM-1B commit `e742407c` preserves the owner-signed, already-published
+  Apache-2.0 model and authenticated Apache-2.0 source facts while separately
+  blocking the Meta tokenizer license, Mimi companion mapping, complete audio
+  generation, certifi/tqdm/typing-extensions/NumPy policy, Transformers API
+  smoke, native runtime and independent parity. Both VAST runners and the
+  direct inspector/reference dumper terminate before dependency lock reads,
+  inputs, output, imports, acquisition or execution.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
