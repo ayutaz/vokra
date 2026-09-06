@@ -4,8 +4,8 @@
 //! It does not enable a public flow runtime, synthesize payloads, or make
 //! CPU/Metal/parity/publication claims. Tensor names and shapes below are
 //! generated from the authenticated component evidence, not inferred from a
-//! model implementation. The repo-local source closure remains explicitly
-//! external-Matcha-pending, so this binder stays fail-closed/staged.
+//! model implementation. The fixed Matcha gitlink is authenticated by the
+//! source-closure gate, while this binder remains fail-closed/staged.
 //!
 //! Flow tensor roots are accepted as a narrow staged contract. A future
 //! composite converter must reserve or prefix these roots so unrelated
@@ -47,7 +47,7 @@ pub(crate) const FLOW_DATA_PICKLE_SHA256: &str =
 pub(crate) const FLOW_STORAGE_MANIFEST_SHA256: &str =
     "e2ec1a5009a0bf4f63eaebe82d4a1bc037f1cb26e82360f7d40c4c9700fc68ee";
 pub(crate) const FLOW_SOURCE_CLOSURE_MANIFEST_SHA256: &str =
-    "7c6d5da3fa037a2d89d6f9db298d3570cccdbeb6a7dad238cbb36732539a6090";
+    "cc391a4a63e95b9cdf6373b5b41ac94239a89d6594a235bc142a17c542532673";
 
 const FLOW_ARCH: &str = "cosyvoice2";
 const FLOW_NAME: &str = "cosyvoice2-0.5b-flow";

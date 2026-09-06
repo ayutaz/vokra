@@ -43,6 +43,8 @@ const MANIFEST_SHA256: &str = "68abcdcdc961091b9c9e6456146ac9da06cda9f86e45a8faa
 const DATA_PICKLE_SHA256: &str = "d8977bfb852a57439b8e6ca0a656b69bf171c6f86e434bce2210d2c05f0a2448";
 const STORAGE_MANIFEST_SHA256: &str =
     "e2ec1a5009a0bf4f63eaebe82d4a1bc037f1cb26e82360f7d40c4c9700fc68ee";
+const SOURCE_CLOSURE_MANIFEST_SHA256: &str =
+    "cc391a4a63e95b9cdf6373b5b41ac94239a89d6594a235bc142a17c542532673";
 
 const KEY_COMPONENT: &str = "vokra.cosyvoice2_flow.component";
 const KEY_COMPOSITE_STATUS: &str = "vokra.cosyvoice2.composite_status";
@@ -67,6 +69,8 @@ const KEY_SOURCE_LICENSE_DECLARED: &str = "vokra.cosyvoice2_flow.source_license_
 const KEY_MANIFEST_SHA256: &str = "vokra.cosyvoice2_flow.tensor_manifest_sha256";
 const KEY_DATA_PICKLE_SHA256: &str = "vokra.cosyvoice2_flow.data_pickle_sha256";
 const KEY_STORAGE_MANIFEST_SHA256: &str = "vokra.cosyvoice2_flow.storage_manifest_sha256";
+const KEY_SOURCE_CLOSURE_MANIFEST_SHA256: &str =
+    "vokra.cosyvoice2_flow.source_closure_manifest_sha256";
 const KEY_PREPARED_BYTES: &str = "vokra.cosyvoice2_flow.prepared_input.bytes";
 const KEY_PREPARED_SHA256: &str = "vokra.cosyvoice2_flow.prepared_input.sha256";
 const KEY_PREPARED_STATUS: &str = "vokra.cosyvoice2_flow.prepared_input.authentication_status";
@@ -234,6 +238,10 @@ fn stamp_metadata(builder: &mut GgufBuilder, prepared_bytes: u64, prepared_sha25
         .add_string(KEY_MANIFEST_SHA256, MANIFEST_SHA256)
         .add_string(KEY_DATA_PICKLE_SHA256, DATA_PICKLE_SHA256)
         .add_string(KEY_STORAGE_MANIFEST_SHA256, STORAGE_MANIFEST_SHA256)
+        .add_string(
+            KEY_SOURCE_CLOSURE_MANIFEST_SHA256,
+            SOURCE_CLOSURE_MANIFEST_SHA256,
+        )
         .add_metadata(KEY_PREPARED_BYTES, GgufMetadataValue::U64(prepared_bytes))
         .add_string(KEY_PREPARED_SHA256, prepared_sha256)
         .add_string(
