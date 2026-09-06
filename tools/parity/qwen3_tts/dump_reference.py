@@ -11,6 +11,7 @@ the same official tokenizer decodes it to PCM.
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -38,6 +39,21 @@ DECODER_REPO = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
 TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
+SNAPSHOT_TOP_LEVEL_ALLOWED = frozenset({
+    "LICENSE", "README.md", "config.json", "generation_config.json", "merges.txt",
+    "model.safetensors", "preprocessor_config.json", "tokenizer_config.json", "vocab.json",
+    "speech_tokenizer",
+})
+_PRIVATE_OUTPUTS: set[Path] = set()
+
+
+def _cleanup_private_outputs() -> None:
+    for path in tuple(_PRIVATE_OUTPUTS):
+        import shutil
+        shutil.rmtree(path, ignore_errors=True)
+
+
+atexit.register(_cleanup_private_outputs)
 
 
 @dataclass(frozen=True)
@@ -91,6 +107,35 @@ def die(message: str) -> "None":
     raise SystemExit(f"qwen3_tts reference: {message}")
 
 
+def validate_raw_path(value: str | os.PathLike[str], label: str) -> Path:
+    """Reject lexical dot components and symlink ancestry before resolution."""
+    raw = os.fspath(value)
+    if not os.path.isabs(raw):
+        die(f"{label} must be absolute")
+    components = raw.split(os.sep)
+    if any(component in {".", ".."} for component in components):
+        die(f"{label} contains a dot path component")
+    cursor = Path(os.sep)
+    for component in components[1:]:
+        if not component:
+            continue
+        cursor /= component
+        if cursor.is_symlink():
+            die(f"{label} has symlink ancestry: {cursor}")
+    return Path(raw)
+
+
+def strict_json_loads(text: str) -> Any:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    return json.loads(text, object_pairs_hook=reject_duplicates)
+
+
 def require_transformers_api_smoke() -> None:
     if TRANSFORMERS_COMPATIBILITY_STATUS == "AUTHENTICATED_API_SMOKE":
         return
@@ -125,7 +170,9 @@ def require_snapshot(model_dir: Path, variant: Variant) -> dict[str, Any]:
     config_path = model_dir / "config.json"
     if not config_path.is_file():
         die(f"missing {config_path}")
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if config_path.is_symlink() or not config_path.is_file():
+        die(f"config is missing or symlinked: {config_path}")
+    config = strict_json_loads(config_path.read_text(encoding="utf-8"))
     if config.get("model_type") != "qwen3_tts":
         die(f"config model_type={config.get('model_type')!r} is not qwen3_tts")
     if config.get("architectures") != ["Qwen3TTSForConditionalGeneration"]:
@@ -138,14 +185,24 @@ def require_snapshot(model_dir: Path, variant: Variant) -> dict[str, Any]:
     actual = (config_path.stat().st_size, sha256_file(config_path))
     if actual != expected:
         die(f"config identity drift: got {actual}, expected {expected}")
+    if model_dir.is_symlink() or not model_dir.is_dir():
+        die(f"model snapshot is missing or symlinked: {model_dir}")
+    entries = list(model_dir.iterdir())
+    names = {entry.name for entry in entries}
+    if any(entry.is_symlink() for entry in entries):
+        die("model snapshot contains a symlinked entry")
+    if names - SNAPSHOT_TOP_LEVEL_ALLOWED:
+        die(f"model snapshot contains unexpected top-level entries: {sorted(names - SNAPSHOT_TOP_LEVEL_ALLOWED)}")
+    safetensors = [entry for entry in entries if entry.name.endswith(".safetensors")]
+    if [entry.name for entry in safetensors] != ["model.safetensors"]:
+        die(f"model snapshot must contain exactly model.safetensors, found {[entry.name for entry in safetensors]}")
     for name, identity in COMMON_ASSETS.items():
         path = model_dir / name
         actual = (path.stat().st_size, sha256_file(path)) if path.is_file() else None
         if actual != identity:
             die(f"{name} identity drift: got {actual}, expected {identity}")
-    if not list(model_dir.glob("*.safetensors")):
-        die(f"no main safetensors file in {model_dir}")
-    if not (model_dir / "speech_tokenizer").is_dir():
+    tokenizer_dir = model_dir / "speech_tokenizer"
+    if tokenizer_dir.is_symlink() or not tokenizer_dir.is_dir():
         die(f"official speech_tokenizer directory is missing in {model_dir}")
     return config
 
@@ -157,15 +214,42 @@ def prepare_output(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{path.name}.", dir=path.parent))
     os.chmod(temporary, 0o700)
+    _PRIVATE_OUTPUTS.add(temporary)
     return temporary
+
+
+def publish_output(temporary: Path, final: Path) -> None:
+    if final.exists() or final.is_symlink():
+        die(f"output appeared during generation (no-clobber): {final}")
+    os.replace(temporary, final)
+    _PRIVATE_OUTPUTS.discard(temporary)
+    try:
+        descriptor = os.open(final.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        pass
 
 
 def require_decoder_snapshot(model_dir: Path, decoder_dir: Path) -> tuple[str, str]:
     standalone = decoder_dir / "model.safetensors"
     nested = model_dir / "speech_tokenizer" / "model.safetensors"
-    if not standalone.is_file() or sha256_file(standalone) != DECODER_CHECKPOINT_SHA256:
+    if decoder_dir.is_symlink() or not decoder_dir.is_dir():
+        die(f"decoder snapshot is missing or symlinked: {decoder_dir}")
+    entries = list(decoder_dir.iterdir())
+    if any(entry.is_symlink() for entry in entries):
+        die("decoder snapshot contains a symlinked entry")
+    names = {entry.name for entry in entries}
+    if names - SNAPSHOT_TOP_LEVEL_ALLOWED:
+        die(f"decoder snapshot contains unexpected top-level entries: {sorted(names - SNAPSHOT_TOP_LEVEL_ALLOWED)}")
+    safetensors = [entry for entry in entries if entry.name.endswith(".safetensors")]
+    if [entry.name for entry in safetensors] != ["model.safetensors"]:
+        die(f"decoder snapshot must contain exactly model.safetensors, found {[entry.name for entry in safetensors]}")
+    if standalone.is_symlink() or not standalone.is_file() or sha256_file(standalone) != DECODER_CHECKPOINT_SHA256:
         die("standalone decoder checkpoint is missing or has the wrong authenticated SHA-256")
-    if not nested.is_file():
+    if nested.is_symlink() or not nested.is_file():
         die(f"nested decoder checkpoint is missing: {nested}")
     nested_sha = sha256_file(nested)
     if nested_sha != DECODER_CHECKPOINT_SHA256:
@@ -218,6 +302,35 @@ def run_self_test() -> int:
             die("unknown Transformers API smoke status was accepted")
     finally:
         TRANSFORMERS_COMPATIBILITY_STATUS = saved_status
+    try:
+        strict_json_loads('{"key": 1, "key": 2}')
+    except ValueError:
+        pass
+    else:
+        die("strict JSON parser accepted duplicate keys")
+    path_probe = Path(tempfile.mkdtemp(prefix=".qwen3-tts-path-selftest.", dir=Path.cwd()))
+    try:
+        validate_raw_path(str(path_probe / "new-output"), "self-test path")
+        for invalid in (f"{path_probe}/./dot", f"{path_probe}/../parent"):
+            try:
+                validate_raw_path(invalid, "self-test path")
+            except SystemExit:
+                pass
+            else:
+                die("raw dot path component was accepted")
+        real_parent = path_probe / "real-parent"
+        real_parent.mkdir()
+        alias = path_probe / "symlink-parent"
+        alias.symlink_to(real_parent, target_is_directory=True)
+        try:
+            validate_raw_path(f"{alias}/child", "self-test path")
+        except SystemExit:
+            pass
+        else:
+            die("symlink path ancestry was accepted")
+    finally:
+        import shutil
+        shutil.rmtree(path_probe, ignore_errors=True)
     if len(SOURCE_REVISION) != 40 or any(c not in "0123456789abcdef" for c in SOURCE_REVISION):
         die("official source revision is not an immutable SHA-1")
     if len(VARIANTS) != 4 or set(VARIANTS) != {"0.6b-base", "0.6b-customvoice", "1.7b-base", "1.7b-customvoice"}:
@@ -245,11 +358,13 @@ def run_self_test() -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", choices=sorted(VARIANTS))
-    parser.add_argument("--model-dir", type=Path)
-    parser.add_argument("--decoder-dir", type=Path)
-    parser.add_argument("--source-dir", type=Path, help="authenticated official Qwen3-TTS source checkout")
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--reference-audio", type=Path, help="required for Base speaker embedding")
+    # Keep these as strings: pathlib normalizes lexical ./ and ../ components
+    # before the fail-closed path validation can inspect them.
+    parser.add_argument("--model-dir")
+    parser.add_argument("--decoder-dir")
+    parser.add_argument("--source-dir", help="authenticated official Qwen3-TTS source checkout")
+    parser.add_argument("--output")
+    parser.add_argument("--reference-audio", help="required for Base speaker embedding")
     parser.add_argument("--self-test", action="store_true", help="check the packet contract without loading weights")
     return parser.parse_args()
 
@@ -264,16 +379,17 @@ def main() -> int:
     if args.variant is None or args.model_dir is None or args.decoder_dir is None or args.source_dir is None or args.output is None:
         die("--variant, --model-dir, --decoder-dir, --source-dir, and --output are required")
     variant = VARIANTS[args.variant]
-    model_dir = args.model_dir.resolve()
-    output = args.output.resolve()
+    model_dir = validate_raw_path(args.model_dir, "model directory").resolve()
+    output = validate_raw_path(args.output, "output directory").resolve()
     if not model_dir.is_dir():
         die(f"model directory is missing: {model_dir}")
-    decoder_dir = args.decoder_dir.resolve()
+    decoder_dir = validate_raw_path(args.decoder_dir, "decoder directory").resolve()
     if not decoder_dir.is_dir():
         die(f"decoder directory is missing: {decoder_dir}")
-    if variant.kind == "base" and (args.reference_audio is None or not args.reference_audio.is_file()):
+    reference_audio = validate_raw_path(args.reference_audio, "reference audio").resolve() if args.reference_audio is not None else None
+    if variant.kind == "base" and (reference_audio is None or not reference_audio.is_file()):
         die("Base variants require --reference-audio")
-    source_dir = args.source_dir.resolve()
+    source_dir = validate_raw_path(args.source_dir, "official source directory").resolve()
     require_source_tree(source_dir)
     sys.path.insert(0, str(source_dir))
     output = prepare_output(output)
@@ -302,7 +418,7 @@ def main() -> int:
     input_ids = tts._tokenize_texts([tts._build_assistant_text(TEXT)])[0][0].detach().cpu()
     prompt = None
     if variant.kind == "base":
-        prompt = tts.create_voice_clone_prompt(ref_audio=str(args.reference_audio), x_vector_only_mode=True)[0]
+        prompt = tts.create_voice_clone_prompt(ref_audio=str(reference_audio), x_vector_only_mode=True)[0]
         if prompt.ref_spk_embedding.numel() != variant.speaker_dim:
             die(f"speaker embedding has {prompt.ref_spk_embedding.numel()} values, expected {variant.speaker_dim}")
         write_f32(output / "speaker_embedding.f32le", prompt.ref_spk_embedding.detach().cpu().numpy(), numpy)
@@ -357,10 +473,8 @@ def main() -> int:
     entries = {path.name for path in output.iterdir()}
     if entries != expected_outputs or any(path.is_symlink() or not path.is_file() for path in output.iterdir()):
         die(f"reference output contains unexpected or non-regular entries: {sorted(entries)}")
-    final_output = args.output.resolve()
-    if final_output.exists() or final_output.is_symlink():
-        die(f"output appeared during generation (no-clobber): {final_output}")
-    os.replace(output, final_output)
+    final_output = validate_raw_path(args.output, "output directory").resolve()
+    publish_output(output, final_output)
     output = final_output
     print(f"QWEN3_TTS_OFFICIAL_REFERENCE variant={variant.slug} frames={codes.shape[0]} codebooks={CODEBOOKS} output={output}", flush=True)
     return 0

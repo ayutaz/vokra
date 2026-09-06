@@ -249,7 +249,8 @@ download_source_tree() {
 }
 
 require_single_file_snapshot() {
-  local directory="$1" shards index
+  local directory="$1" shards index item name
+  local -a entries nested_entries
   if [[ -L "$directory/.cache" ]]; then
     die "snapshot contains a symlinked .cache directory: $directory/.cache"
   elif [[ -d "$directory/.cache" ]]; then
@@ -259,6 +260,16 @@ require_single_file_snapshot() {
   elif [[ -e "$directory/.cache" ]]; then
     die "snapshot contains a non-directory .cache entry: $directory/.cache"
   fi
+  mapfile -t entries < <(find "$directory" -mindepth 1 -maxdepth 1 -print)
+  for item in "${entries[@]}"; do
+    name="${item##*/}"
+    case "$name" in
+      LICENSE|README.md|config.json|generation_config.json|merges.txt|model.safetensors|preprocessor_config.json|tokenizer_config.json|vocab.json|speech_tokenizer) ;;
+      *) die "snapshot contains an unexpected top-level entry: $item" ;;
+    esac
+    [[ ! -L "$item" ]] || die "snapshot contains a symlinked entry: $item"
+    [[ -f "$item" || -d "$item" ]] || die "snapshot contains a non-regular entry: $item"
+  done
   [[ -f "$directory/model.safetensors" ]] || die "single-file checkpoint missing: $directory/model.safetensors"
   shards=("$directory"/model-*.safetensors)
   if [[ -e "${shards[0]}" ]]; then
@@ -266,6 +277,12 @@ require_single_file_snapshot() {
   fi
   index="$directory/model.safetensors.index.json"
   [[ ! -e "$index" ]] || die "sharded index detected at $index; refusing implicit merge"
+  if [[ -d "$directory/speech_tokenizer" ]]; then
+    mapfile -t nested_entries < <(find "$directory/speech_tokenizer" -mindepth 1 -maxdepth 1 -print)
+    for item in "${nested_entries[@]}"; do
+      [[ ! -L "$item" && -f "$item" ]] || die "speech_tokenizer contains a non-regular or symlinked entry: $item"
+    done
+  fi
   [[ ! -e "$directory/.cache/huggingface" && ! -L "$directory/.cache/huggingface" ]] || die "snapshot contains a .cache/huggingface entry that could invalidate exact closure"
 }
 
@@ -327,6 +344,9 @@ run_self_test() {
   if grep -Fq "$forbidden_marker" "$script_path"; then failed=1; fi
   if grep -En '(upload|publish|push|--push|huggingface-cli)' "$script_path" | grep -Ev 'never uploads|never.*publish|no upload|not.*push|NOT_PERFORMED|--push|scripts/publish/' >/dev/null; then failed=1; fi
   grep -Fq -- '--expected-head' "$script_path" || { log 'self-test missing expected HEAD contract'; failed=1; }
+  if "$script_path" --self-test --self-test >/dev/null 2>&1; then
+    log 'self-test accepted duplicate --self-test'; failed=1
+  fi
   local download_block path_probe
   download_block="$(awk '/^download_snapshot\(\)/,/^\}/ {print}' "$script_path")"
   [[ "$download_block" != *"--with"* && "$download_block" != *"--no-project"* ]] || { log 'self-test download path uses an unreviewed uv environment'; failed=1; }
@@ -448,14 +468,14 @@ run_variant() {
 }
 
 main() {
-  local selection='all' work_dir='' approval='' expected_head='' self_test=0 variant_seen=0
+  local selection='all' work_dir='' approval='' expected_head='' self_test=0 self_test_seen=0 variant_seen=0
   while (( $# > 0 )); do
     case "$1" in
       --variant) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$variant_seen" == 0 ]] || { usage; return 2; }; selection="$2"; variant_seen=1; shift 2 ;;
       --work-dir) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$work_dir" ]] || { usage; return 2; }; work_dir="$2"; shift 2 ;;
       --approval-evidence) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$approval" ]] || { usage; return 2; }; approval="$2"; shift 2 ;;
       --expected-head) [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ && -z "$expected_head" ]] || { usage; return 2; }; expected_head="$2"; shift 2 ;;
-      --self-test) self_test=1; shift ;;
+      --self-test) (( self_test_seen == 0 )) || { usage; return 2; }; self_test=1; self_test_seen=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) usage; die "unknown argument: $1" ;;
     esac
@@ -484,7 +504,7 @@ main() {
   export HF_HOME="$work_dir/hf-home" HF_HUB_CACHE="$work_dir/hf-home/hub"
   exec > >(tee -a "$evidence/run.log") 2>&1
   step 'Install frozen official reference environment'
-  uv sync --project "$PARITY_PROJECT" --frozen --offline --python 3.12
+  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
   step 'Build Vokra CLI on VAST'
   cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-cli 2>&1 | tee "$evidence/build-cli.log"
   step "Stage authenticated official source $OFFICIAL_SOURCE_REPO@$OFFICIAL_SOURCE_REVISION"

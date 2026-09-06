@@ -302,7 +302,7 @@ run_self_test() {
 }
 
 main() {
-  local base06='' custom06='' base17='' custom17='' ref_base06='' ref_custom06='' ref_base17='' ref_custom17='' decoder='' approval='' evidence='' base06_sha='' custom06_sha='' base17_sha='' custom17_sha='' decoder_sha='' ref_base06_sha='' ref_custom06_sha='' ref_base17_sha='' ref_custom17_sha='' expected_head='' self_test=0 seen=''
+  local base06='' custom06='' base17='' custom17='' ref_base06='' ref_custom06='' ref_base17='' ref_custom17='' decoder='' approval='' evidence='' base06_sha='' custom06_sha='' base17_sha='' custom17_sha='' decoder_sha='' ref_base06_sha='' ref_custom06_sha='' ref_base17_sha='' ref_custom17_sha='' expected_head='' self_test=0 self_test_seen=0 seen=''
   while (( $# > 0 )); do
     case "$1" in
       --gguf-*|--reference-*|--decoder-gguf|--decoder-gguf-sha256|--approval-evidence|--evidence-dir|--expected-head)
@@ -316,7 +316,7 @@ main() {
       --gguf-1.7b-base) base17="$2"; shift 2 ;; --gguf-1.7b-base-sha256) base17_sha="$2"; shift 2 ;; --reference-1.7b-base) ref_base17="$2"; shift 2 ;; --reference-1.7b-base-sha256) ref_base17_sha="$2"; shift 2 ;;
       --gguf-1.7b-customvoice) custom17="$2"; shift 2 ;; --gguf-1.7b-customvoice-sha256) custom17_sha="$2"; shift 2 ;; --reference-1.7b-customvoice) ref_custom17="$2"; shift 2 ;; --reference-1.7b-customvoice-sha256) ref_custom17_sha="$2"; shift 2 ;;
       --decoder-gguf) decoder="$2"; shift 2 ;; --decoder-gguf-sha256) decoder_sha="$2"; shift 2 ;; --approval-evidence) approval="$2"; shift 2 ;; --evidence-dir) evidence="$2"; shift 2 ;; --expected-head) expected_head="$2"; shift 2 ;;
-      --self-test) self_test=1; shift ;; -h|--help) usage; return 0 ;; *) usage; die "unknown argument: $1" ;;
+      --self-test) (( self_test_seen == 0 )) || { usage; return 2; }; self_test=1; self_test_seen=1; shift ;; -h|--help) usage; return 0 ;; *) usage; die "unknown argument: $1" ;;
     esac
   done
   if (( self_test == 1 )); then [[ -z "$base06$custom06$base17$custom17$ref_base06$ref_custom06$ref_base17$ref_custom17$decoder$approval$evidence$base06_sha$custom06_sha$base17_sha$custom17_sha$decoder_sha$ref_base06_sha$ref_custom06_sha$ref_base17_sha$ref_custom17_sha$expected_head" ]] || die '--self-test accepts no other arguments'; run_self_test; return; fi
