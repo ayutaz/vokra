@@ -380,6 +380,34 @@ confirmed formatting, diff hygiene and workspace metadata parsing. No Cargo
 test/check, model download or model execution was performed on the maintainer
 Mac.
 
+The SGMSE source and worker path has since advanced through exact local HEAD
+`bacb3bcc`. The VAST run at `dc0fc08a` authenticated the 647-tensor score
+checkpoint, built the strict GGUF and completed the independent official score
+reference plus one release native score forward. Its output hashes matched the
+registered score packet, but the comparator stopped because the observed
+`cpu_model=1` runtime variant was not yet allowlisted. Commit `a2a1da3e` admits
+only that exact reviewed runtime/provenance combination; arbitrary runtime
+variants remain rejected. Commits `c5b75ddb` and `bacb3bcc` add the final Apple
+worker for both the single-score check and the complete 4,096-sample
+enhancement: prior noise plus all 60 corrector/predictor calls, CPU/reference,
+Metal/reference and Metal/CPU at the fixed `atol=0.01`, with no CPU fallback.
+The worker verifies the complete independent VAST reference packet before any
+Apple Cargo execution. The score comparator must still be rerun at the exact
+new head, then the full independent enhancement reference and Linux CPU parity
+must run on VAST before the packet is eligible for Scaleway.
+
+Commit `9d9c006f` adds the missing CosyVoice2 HiFT VAST validation
+orchestrator. Its model-free `--closure-only` phase reproduces and verifies the
+12-wheel/13-package Linux closure without accepting an owner decision. The
+full path verifies the exact inspection file SHA-256, extracts only the
+authenticated 328 F32 tensor name/shape contract, and keeps frozen Python sync,
+source/model acquisition, conversion and real CPU parity behind a separately
+supplied `APPROVED` / `OWNER_SIGNED_OFF` manifest. The runner is no-upload and
+records exact named-test evidence. It has passed model-free local self-tests and
+the recovered inspection manifest was accepted byte-for-byte, but no model was
+downloaded or executed. The full run remains blocked on direct owner approval;
+the checked-in pending manifest is not approval.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
@@ -388,13 +416,14 @@ work:
 - **Native BF16 compute:** replace the remaining upcast-to-F32 shim; validate a
   real BF16 checkpoint plus independent AVX512-BF16 and Arm-BF16 parity. The
   raw-BF16 Metal foundation exists, but that does not close the full task.
-- **HiFTNet full GPU generator:** the complete resident CPU/Metal graph and a
-  nonzero synthetic one-final-readback parity harness exist, and CosyVoice2's
-  328-tensor HiFT structure is authenticated. Hash-authenticate its exact
-  pinned config, define the strict component artifact, fold or preserve all 82
-  weight-normalized pairs under an explicit contract, bind the real weights,
-  VAST-compile the adapter, and obtain an independent real-weight CPU oracle
-  before the Apple run.
+- **HiFTNet full GPU generator:** the complete resident CPU/Metal graph, strict
+  328-tensor converter/binder, exact pinned config and a nonzero synthetic
+  one-final-readback parity harness now exist. The no-upload VAST runner binds
+  the authenticated inspection evidence to conversion and independent
+  real-weight CPU parity. Run its model-free closure phase first; the reference
+  and real-weight phases require explicit owner license approval. After a green
+  exact-head VAST result, preserve the GGUF/reference packet for the final
+  Apple CPU/Metal worker.
 - **BigVGAN full GPU path:** the Linux and Darwin dependency/native archive
   graphs are evidence-complete, but owner/legal sign-off remains fail-closed.
   After that approval, VAST-compile the model adapter and run a fixed real
@@ -458,7 +487,7 @@ portable no-fallback Apple worker for the final Scaleway batch.
 | `vokra/chatterbox-turbo-v1` | Full generation, conditioning, watermark and PCM-output path. |
 | `vokra/chattts` | Clean native composite plus AGPL/source, CC-BY-NC weight, dependency and personality/voice policy closure. |
 | `vokra/clap-htsat-fused` | Complete the released audio/text preprocessing and fused inference contract with real parity. |
-| `vokra/cosyvoice2-0.5b` | HiFT checkpoint/source structure is authenticated at fixed revisions without tensor-payload reads. Hash-pin the exact config; implement its strict weight-normalization/converter/binder contract; obtain independent VAST CPU parity through an allowed narrow reference route; then finish LLM, flow, codec and vocoder composition. The official full closure still imports forbidden `soxr`. |
+| `vokra/cosyvoice2-0.5b` | HiFT checkpoint/source/config, strict converter/binder and guarded VAST CPU-parity runner are complete at source level. Run the model-free closure phase, obtain explicit owner approval before any HiFT model/reference execution, then obtain exact-head VAST CPU parity. LLM/Flow are component-bound but the full flow/codec/vocoder composition remains incomplete; the official broad closure still imports forbidden `soxr`. |
 | `vokra/dia-1.6b` | Exact DAC proof, dependency review and complete native composition. |
 | `vokra/firered-asr-aed-l` | Resolve the remaining dependency rows and binary CMVN/tokenizer/config contracts, then implement complete AED inference. |
 | `vokra/fun-cosyvoice3-0.5b-2512` | Find an exact allowed route around the current `soxr` closure, then finish the full composite. |
@@ -487,7 +516,7 @@ and a final Apple worker.
 | `vokra/kyutai-tts-1.6b-en-fr` | Separate voice/model/source licenses and implement native demux plus Mimi composition. |
 | `vokra/qwen2-5-omni-7b` | Complete native multimodal streaming, dependency/license and independent parity contracts. |
 | `vokra/qwen2-audio-7b-instruct` | Resolve the missing exact source-repository license, then implement the native audio-language path. |
-| `vokra/sgmse-voicebank` | Finish exact NCSN++ tensor-role mapping, score model and CPU parity; inspection/reference construction is not runtime parity. |
+| `vokra/sgmse-voicebank` | Exact NCSN++ role mapping, strict binder, score graph, sampler and Apple score/full-enhancement worker are source-complete. Rerun the exact runtime-bound score comparator, then generate/verify the full 4,096-sample official enhancement packet and run Linux CPU parity on VAST. Only the resulting packet proceeds to final Scaleway CPU/Metal execution. |
 | `vokra/step-audio2-mini` | Complete multi-component native S2S and all source/weight/dependency licenses. |
 | `vokra/vibevoice-asr` | Authenticate the release and implement the complete native ASR path, dependencies and parity. |
 | `vokra/vibevoice-realtime-0.5b` | Replace arbitrary BF16 pass-through staging with a strict complete realtime runtime and parity. |
