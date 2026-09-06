@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 
 use vokra_core::VokraError;
 use vokra_core::gguf::{GgufBuilder, GgufFile};
-use vokra_models::sbv2::{EXPECTED_ARCH as SBV2_ARCH, SbV2Model};
+use vokra_models::sbv2::{
+    EXPECTED_ARCH as SBV2_ARCH, EXPECTED_MODEL_NAME as SBV2_MODEL_NAME,
+    EXPECTED_UPSTREAM_HF as SBV2_UPSTREAM_HF, SbV2Model,
+};
 
 /// Repo-root-relative real-fixture directory for SBV2 loader smoke tests
 /// (`tests/fixtures/sbv2/`, sibling of the existing `tests/fixtures/audio/`
@@ -90,9 +93,53 @@ fn from_gguf_on_empty_main_file_fails_loudly_naming_first_missing_key() {
         Ok(_) => panic!("an empty main GGUF must fail to load, not succeed"),
         Err(VokraError::ModelLoad(msg)) => {
             assert!(
-                msg.contains("vokra.sbv2.d_model"),
-                "error message should name the first missing metadata key, got: {msg}"
+                msg.contains("vokra.model.name"),
+                "error message should name the first missing identity key, got: {msg}"
             );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
+/// A generic `sbv2` arch stamp is insufficient: the loader must reject the
+/// retired multilingual placeholder and mismatched upstream provenance before
+/// it reaches the strict topology binder.
+#[test]
+fn from_gguf_rejects_non_jp_extra_identity() {
+    let mut b = GgufBuilder::new();
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_MODEL_NAME,
+        "sbv2-v2-multilingual-base",
+    );
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID,
+        "sbv2-v2-multilingual-base",
+    );
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_SOURCE,
+        "litagin02/style_bert_vits2",
+    );
+    b.add_string(vokra_core::gguf::chunks::KEY_PROVENANCE_LICENSE, "agpl-3.0");
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        vokra_core::LicenseClass::Copyleft.as_str(),
+    );
+    let main = GgufFile::parse(b.to_bytes().expect("build identity fixture"))
+        .expect("parse identity fixture");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!("a retired multilingual identity must not load"),
+        Err(VokraError::ModelLoad(message)) => {
+            assert!(message.contains(SBV2_MODEL_NAME));
+            assert!(message.contains("sbv2-v2-multilingual-base"));
+            assert!(!message.contains(SBV2_UPSTREAM_HF));
         }
         Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
     }

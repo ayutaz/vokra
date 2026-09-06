@@ -234,15 +234,13 @@ use crate::safetensors::SafetensorsFile;
 
 /// `vokra.model.arch` for SBV2 GGUFs.
 pub(crate) const ARCH: &str = "sbv2";
-/// `vokra.model.name` — short slug (design doc §9 SKU table:
-/// `vokra/sbv2-v2-multilingual-base`), distinct from the full HF
-/// `org/repo` path in [`UPSTREAM_HF`] (mirrors the `funcodec` /
-/// `wespeaker` / `deberta_v2` convention).
-pub(crate) const NAME: &str = "sbv2-v2-multilingual-base";
-/// Upstream source family — provenance breadcrumb. Not a single pinned HF
-/// repo id: `litagin02`'s SBV2 v2 releases span several checkpoint repos
-/// under this account (design doc §2/§9).
-pub(crate) const UPSTREAM_HF: &str = "litagin02/style_bert_vits2";
+/// `vokra.model.name` — exact live SKU slug for the JP-Extra base artifact.
+/// This must not use the retired multilingual placeholder: the inspected
+/// checkpoint and the four-file parity packet are specifically
+/// `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`.
+pub(crate) const NAME: &str = "sbv2-v2-jp-extra-base";
+/// Exact upstream HF repository for the authenticated JP-Extra artifact.
+pub(crate) const UPSTREAM_HF: &str = "litagin/Style-Bert-VITS2-2.0-base-JP-Extra";
 /// Upstream declared weight license (SPDX id, lower-case per
 /// `docs/license-audit.md` §3.1). `agpl-3.0` classifies as
 /// [`LicenseClass::Copyleft`] (design doc §9 — redistribution is permitted
@@ -940,18 +938,19 @@ fn rewrite_sdp_tensor_name(tail: &str) -> String {
 /// `vokra.sbv2.*` hparam (see `SbV2Config::parse` for the schema); when
 /// `None`, tensors still pass through but the `vokra.sbv2.*` chunk is
 /// omitted entirely rather than filled with invented placeholders (module
-/// doc "Hparams" section). `license` overrides the upstream `agpl-3.0`
-/// stamp (mirror of the `convert_file --license <spdx>` boundary in
-/// `lib.rs`).
+/// doc "Hparams" section). `license`, when supplied, must be the canonical
+/// `agpl-3.0` value for this fixed JP-Extra artifact; attempts to relabel the
+/// weights with another license are rejected before the output is written.
 ///
 /// # Errors
 ///
-/// [`ConvertError::Io`] for I/O failures reading `input` / `config_side_car`
-/// or writing `output`; [`ConvertError::Parse`] for malformed safetensors
-/// input, or a malformed/incomplete config side-car (see
-/// `SbV2Config::parse`'s doc for the full list of required fields and
-/// consistency checks); [`ConvertError::Gguf`] if the GGUF serialization
-/// fails.
+/// [`ConvertError::Usage`] when `license` attempts to override the fixed
+/// `agpl-3.0` provenance; [`ConvertError::Io`] for I/O failures reading
+/// `input` / `config_side_car` or writing `output`; [`ConvertError::Parse`]
+/// for malformed safetensors input, or a malformed/incomplete config
+/// side-car (see `SbV2Config::parse`'s doc for the full list of required
+/// fields and consistency checks); [`ConvertError::Gguf`] if the GGUF
+/// serialization fails.
 pub fn convert_sbv2_file(
     input: &Path,
     output: &Path,
@@ -1260,6 +1259,11 @@ pub fn convert_sbv2_file(
     emit_converter_zero_defaults(&mut b, cfg.as_ref(), &mut report)?;
 
     let spdx = license.unwrap_or(DEFAULT_LICENSE);
+    if spdx.trim().to_ascii_lowercase() != DEFAULT_LICENSE {
+        return Err(ConvertError::Usage(format!(
+            "SBV2 JP-Extra weights are {DEFAULT_LICENSE}; refusing license override `{spdx}`"
+        )));
+    }
     let class = LicenseClass::from_license_str(spdx);
     vokra_core::stamp_provenance(&mut b, class, spdx, Some(NAME), Some(UPSTREAM_HF));
 
@@ -2384,6 +2388,16 @@ mod tests {
             Some(NAME)
         );
         assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|v| v.as_str()),
+            Some(NAME)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_SOURCE)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF)
+        );
+        assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)
                 .and_then(|v| v.as_str()),
             Some(DEFAULT_LICENSE)
@@ -2737,26 +2751,16 @@ mod tests {
     // ---- license override -------------------------------------------------
 
     #[test]
-    fn license_override_replaces_default() {
+    fn license_override_cannot_relabel_jp_extra_weights() {
         let blob = safetensors_multi(&base_fixture());
         let input = temp_path("license-override-in", "safetensors");
         let output = temp_path("license-override-out", "gguf");
         std::fs::write(&input, &blob).expect("write input");
 
-        convert_sbv2_file(&input, &output, None, Some("apache-2.0")).expect("convert");
-
-        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("apache-2.0")
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
+        let error = convert_sbv2_file(&input, &output, None, Some("apache-2.0"))
+            .expect_err("fixed JP-Extra provenance must not be relabelled");
+        assert!(error.to_string().contains("agpl-3.0"));
+        assert!(!output.exists());
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();

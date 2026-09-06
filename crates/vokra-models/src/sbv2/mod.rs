@@ -119,7 +119,9 @@ use vokra_bert::tokenizer::SbertTokenizer;
 use vokra_bert::wordpiece::BertWordpieceTokenizer;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::{GaussianSplitMix64, TorchRandnStream};
-use vokra_core::{BackendKind, Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
+use vokra_core::{
+    BackendKind, LicenseClass, Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError,
+};
 use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
     GinCondition, HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
@@ -162,6 +164,39 @@ pub(crate) const SBV2_HOT_OPS: &[HotOp] = &[
 /// here: they are the arch tags of this loader's *own* `bert_ja` /
 /// `bert_en` arguments, so an argument-order slip is a live failure mode.
 pub const EXPECTED_ARCH: &str = "sbv2";
+/// Exact live SBV2 JP-Extra artifact identity. The older multilingual
+/// placeholder is not an authenticated checkpoint and must not bind here.
+pub const EXPECTED_MODEL_NAME: &str = "sbv2-v2-jp-extra-base";
+/// Exact upstream HF source recorded for the JP-Extra checkpoint.
+pub const EXPECTED_UPSTREAM_HF: &str = "litagin/Style-Bert-VITS2-2.0-base-JP-Extra";
+
+fn require_main_string(main: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    match main.get(key).and_then(|value| value.as_str()) {
+        Some(value) if value == expected => Ok(()),
+        Some(value) => Err(VokraError::ModelLoad(format!(
+            "SbV2Model::from_gguf: `{key}` is `{value}`, expected authenticated JP-Extra value `{expected}`"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "SbV2Model::from_gguf: missing authenticated JP-Extra metadata key `{key}`"
+        ))),
+    }
+}
+
+/// Authenticates the fixed JP-Extra identity before any tensor binding. This
+/// prevents a generic `sbv2` arch stamp or a relabelled legacy GGUF from
+/// reaching the strict topology loader.
+fn verify_main_identity(main: &GgufFile) -> Result<()> {
+    require_main_string(main, chunks::KEY_MODEL_NAME, EXPECTED_MODEL_NAME)?;
+    require_main_string(main, chunks::KEY_PROVENANCE_MODEL_ID, EXPECTED_MODEL_NAME)?;
+    require_main_string(main, chunks::KEY_PROVENANCE_SOURCE, EXPECTED_UPSTREAM_HF)?;
+    require_main_string(main, chunks::KEY_PROVENANCE_LICENSE, "agpl-3.0")?;
+    require_main_string(
+        main,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::Copyleft.as_str(),
+    )?;
+    Ok(())
+}
 
 /// Rejects a **main** GGUF whose `vokra.model.arch` is absent or is not
 /// [`EXPECTED_ARCH`].
@@ -2524,6 +2559,7 @@ impl SbV2Model {
         // down; gating their tags too (which would also catch a JA/EN
         // argument swap) is a follow-up.
         verify_main_arch(main)?;
+        verify_main_identity(main)?;
         // Blocker 2c defensive check (2026-08-10): the converter
         // (`crates/vokra-convert/src/models/sbv2.rs::rewrite_sdp_tensor_name`)
         // maps even-index upstream `sdp.flows.<even>.*` production tensors
