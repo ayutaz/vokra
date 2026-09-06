@@ -64,6 +64,8 @@ DSM_ROLES = (
 )
 MAX_HEADER_BYTES = 64 * 1024 * 1024
 FORMAT = "vokra-kyutai-tts-1.6b-en-fr-inspection-v1"
+APPROVAL_SCHEMA = "vokra-kyutai-tts-1.6b-en-fr-blocked-approval-v1"
+APPROVAL_SCOPE = "KYUTAI_TTS_1_6B_EN_FR_INSPECTION"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 DTYPE_BYTES = {"F32": 4, "BF16": 2, "F16": 2, "I64": 8, "I32": 4, "U8": 1, "I8": 1}
@@ -102,8 +104,90 @@ def json_file(path: Path) -> Any:
 
 def safe_path(name: str) -> None:
     parts = PurePosixPath(name).parts
-    if not name or "\x00" in name or "\\" in name or PurePosixPath(name).is_absolute() or ".." in parts:
+    if not name or "\x00" in name or "\\" in name or PurePosixPath(name).is_absolute() or any(part in {"", ".", ".."} for part in name.split("/")):
         raise ValueError(f"unsafe path: {name!r}")
+
+
+def external_path(raw: str, label: str, repo_root: Path, require_file: bool = False) -> Path:
+    if not isinstance(raw, str) or not raw.startswith("/") or "//" in raw or "/./" in raw or "/../" in raw or raw.endswith(("/.", "/..")):
+        raise ValueError(f"{label} must be an absolute dot-free path")
+    path = Path(raw)
+    if not path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts[1:]):
+        raise ValueError(f"{label} must be an absolute dot-free path")
+    current = Path("/")
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"{label} contains a symlink ancestor")
+    root = repo_root.resolve()
+    resolved = path.resolve(strict=False)
+    if resolved == root or root in resolved.parents:
+        raise ValueError(f"{label} must be outside the checkout")
+    if path.is_symlink():
+        raise ValueError(f"{label} must not be a symlink")
+    if require_file and (not path.is_file() or path.is_symlink()):
+        raise ValueError(f"{label} must be a regular file")
+    return path
+
+
+def validate_approval(path: str, expected_head: str, expected_sha256: str, repo_root: Path) -> dict[str, Any]:
+    if not HEX40.fullmatch(expected_head) or not HEX64.fullmatch(expected_sha256):
+        raise ValueError("approval binding must use lowercase HEAD40 and SHA25664")
+    approval = external_path(path, "approval evidence", repo_root, require_file=True)
+    raw = approval.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("approval evidence SHA-256 mismatch")
+    try:
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"approval evidence is not strict UTF-8 JSON: {error}") from error
+    keys = {
+        "schema", "status", "decision", "expected_head", "model_repository", "model_revision",
+        "voice_repository", "voice_revision", "source_repository", "source_revision",
+        "dsm_repository", "dsm_revision", "model_license", "voice_license",
+        "source_license_status", "dependency_license_status", "dataset_status",
+        "native_runtime_status", "native_demux_mimi_status", "no_upload", "scope",
+    }
+    if not isinstance(data, dict) or set(data) != keys:
+        raise ValueError("approval schema is not exact")
+    if data.get("no_upload") is not True:
+        raise ValueError("approval no_upload must be a JSON boolean true")
+    expected = {
+        "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "BLOCKED_INSPECTION_ONLY",
+        "expected_head": expected_head, "model_repository": HF_REPOSITORY, "model_revision": HF_REVISION,
+        "voice_repository": VOICE_REPOSITORY, "voice_revision": VOICE_REVISION,
+        "source_repository": MOSHI_URL, "source_revision": MOSHI_REVISION,
+        "dsm_repository": DSM_URL, "dsm_revision": DSM_REVISION,
+        "model_license": "CC-BY-4.0", "voice_license": "CC0_README_DECLARED",
+        "source_license_status": "REQUIRES_PRIMARY_REVIEW",
+        "dependency_license_status": "REQUIRES_PRIMARY_REVIEW",
+        "dataset_status": "REQUIRES_PRIMARY_REVIEW",
+        "native_runtime_status": "BLOCKED_UNIMPLEMENTED",
+        "native_demux_mimi_status": "BLOCKED_UNIMPLEMENTED",
+        "no_upload": True, "scope": APPROVAL_SCOPE,
+    }
+    if data != expected:
+        raise ValueError("approval identity/scope/disposition mismatch")
+    return data
+
+
+def require_clean_head(expected_head: str) -> Path:
+    root = Path(__file__).resolve().parents[2]
+    if not HEX40.fullmatch(expected_head):
+        raise ValueError("expected_head must be lowercase HEX40")
+    actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, stderr=subprocess.STDOUT).strip()
+    dirty = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True, stderr=subprocess.STDOUT)
+    if dirty or actual != expected_head:
+        raise ValueError("checkout must be clean and match --expected-head")
+    return root
+
+
+def blocked_preflight(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
+    root = require_clean_head(args.expected_head)
+    approval = validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256, root)
+    if approval["status"] != "BLOCKED" or approval["decision"] != "BLOCKED_INSPECTION_ONLY":
+        raise ValueError("only the exact blocked inspection disposition is accepted")
+    return root, approval
 
 
 def selected_voice_readme_is_cc0(text: str) -> bool:
@@ -122,8 +206,8 @@ def local_files(root: Path) -> dict[str, Path]:
         resolved = item.resolve(strict=False)
         if not str(resolved).startswith(str(root) + os.sep):
             raise ValueError(f"path escapes snapshot: {relative}")
-        if item.is_symlink() and not resolved.is_file():
-            raise ValueError(f"dangling/non-regular symlink: {relative}")
+        if item.is_symlink():
+            raise ValueError(f"symlink snapshot entry: {relative}")
         if item.is_file():
             output[relative] = item
         elif not item.is_dir():
@@ -369,11 +453,19 @@ def base_manifest() -> dict[str, Any]:
 
 
 def write_manifest(evidence: Path, manifest: dict[str, Any]) -> None:
-    evidence.mkdir(parents=True, exist_ok=True)
-    (evidence / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    evidence.mkdir(parents=True, exist_ok=False)
+    payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    fd = os.open(evidence / "manifest.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
 
 
 def inspect(args: argparse.Namespace) -> int:
+    blocked_preflight(args)
+    print("KYUTAI_TTS_BLOCKED_APPROVAL: status=BLOCKED decision=BLOCKED_INSPECTION_ONLY NO_UPLOAD", file=sys.stderr)
+    return 2
     manifest = base_manifest()
     try:
         snapshot = Path(args.snapshot)
@@ -429,7 +521,7 @@ def inspect(args: argparse.Namespace) -> int:
 
 def self_test() -> None:
     assert safe_path("ok/name") is None
-    for bad in ("../escape", "/absolute", "a\\b", "a\x00b"):
+    for bad in ("../escape", "/absolute", "a\\b", "a\x00b", "a//b", "./x", "a/../b"):
         try:
             safe_path(bad)
         except ValueError:
@@ -574,19 +666,124 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("dirty source checkout accepted")
-        evidence = Path(directory) / "evidence"
-        rc = inspect(argparse.Namespace(snapshot=str(root / "missing"), server_tree=str(root / "missing.json"), voice_snapshot=None, voice_server_tree=None, source=None, dsm_source=None, evidence=str(evidence)))
-        if rc != 2:
-            raise AssertionError("inspection failure did not return exit 2")
-        manifest = json_file(evidence / "manifest.json")
-        if manifest.get("status") != "BLOCKED" or manifest.get("evidence_stage") != "INSPECTION_ONLY" or not manifest.get("blockers"):
-            raise AssertionError("failure manifest is not a blocker evidence packet")
+        head = "a" * 40
+        approval_data = {
+            "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "BLOCKED_INSPECTION_ONLY",
+            "expected_head": head, "model_repository": HF_REPOSITORY, "model_revision": HF_REVISION,
+            "voice_repository": VOICE_REPOSITORY, "voice_revision": VOICE_REVISION,
+            "source_repository": MOSHI_URL, "source_revision": MOSHI_REVISION,
+            "dsm_repository": DSM_URL, "dsm_revision": DSM_REVISION,
+            "model_license": "CC-BY-4.0", "voice_license": "CC0_README_DECLARED",
+            "source_license_status": "REQUIRES_PRIMARY_REVIEW",
+            "dependency_license_status": "REQUIRES_PRIMARY_REVIEW", "dataset_status": "REQUIRES_PRIMARY_REVIEW",
+            "native_runtime_status": "BLOCKED_UNIMPLEMENTED", "native_demux_mimi_status": "BLOCKED_UNIMPLEMENTED",
+            "no_upload": True, "scope": APPROVAL_SCOPE,
+        }
+        approval = Path(directory) / "approval.json"
+        approval.write_text(json.dumps(approval_data, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        approval_sha = sha256(approval)
+        approval_path = str(approval.resolve())
+        validate_approval(approval_path, head, approval_sha, Path.cwd().parent)
+        try:
+            validate_approval(approval_path, head, "0" * 64, Path.cwd().parent)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("wrong approval SHA accepted")
+        for invalid in (1, 0, "true"):
+            approval.write_text(json.dumps(dict(approval_data, no_upload=invalid), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            try:
+                validate_approval(approval_path, head, sha256(approval), Path.cwd().parent)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("non-boolean no_upload accepted")
+        approval.write_bytes(b"{\xff")
+        try:
+            validate_approval(approval_path, head, sha256(approval), Path.cwd().parent)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("malformed UTF-8 approval accepted")
+        approval.write_text(json.dumps(approval_data, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        for key, value in (("expected_head", "b" * 40), ("scope", "WRONG"), ("model_revision", "0" * 40)):
+            approval.write_text(json.dumps(dict(approval_data, **{key: value}), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            try:
+                validate_approval(approval_path, head, sha256(approval), Path.cwd().parent)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid approval identity accepted")
+        approval.write_text(json.dumps(approval_data, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        link = Path(directory) / "approval-link.json"
+        link.symlink_to(approval)
+        try:
+            validate_approval(str(link), head, approval_sha, Path.cwd().parent)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("symlink approval accepted")
+        approval.write_bytes(b"not-json")
+        try:
+            validate_approval(approval_path, head, sha256(approval), Path.cwd().parent)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("malformed JSON approval accepted")
+        approval.write_text(json.dumps(approval_data, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        for bad in ("/tmp/../approval.json", "/tmp/./approval.json", "relative.json"):
+            try:
+                validate_approval(bad, head, approval_sha, Path.cwd().parent)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("unsafe approval path accepted")
+        duplicate = Path(directory) / "duplicate.json"
+        duplicate.write_bytes(b'{"schema":1,"schema":2}')
+        try:
+            validate_approval(str(duplicate), head, sha256(duplicate), Path.cwd().parent)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("duplicate approval key accepted")
+        with tempfile.TemporaryDirectory(prefix=".kyutai-tts-approval-", dir=Path.cwd()) as checkout_directory:
+            checkout_approval = Path(checkout_directory) / "approval.json"
+            checkout_approval.write_bytes(approval.read_bytes())
+            try:
+                validate_approval(str(checkout_approval), head, sha256(checkout_approval), Path.cwd())
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("checkout-contained approval accepted")
+        blocked_args = argparse.Namespace(expected_head=head, approval_evidence=approval_path, approval_sha256=sha256(approval))
+        clean_head = globals()["require_clean_head"]
+        globals()["require_clean_head"] = lambda _expected: Path.cwd()  # noqa: E731 - isolated self-test gate injection
+        try:
+            _, disposition = blocked_preflight(blocked_args)
+            if disposition["status"] != "BLOCKED":
+                raise AssertionError("valid blocked approval was not preserved")
+            if inspect(blocked_args) != 2:
+                raise AssertionError("blocked approval did not return exit 2")
+        finally:
+            globals()["require_clean_head"] = clean_head
+        existing_evidence = Path(directory) / "existing-evidence"
+        existing_evidence.mkdir()
+        (existing_evidence / "manifest.json").write_text("keep", encoding="utf-8")
+        try:
+            write_manifest(existing_evidence, base_manifest())
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing evidence was clobbered")
     print("kyutai TTS inspector self-test PASS")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     parser.add_argument("--snapshot")
     parser.add_argument("--server-tree")
     parser.add_argument("--voice-snapshot")
@@ -596,11 +793,17 @@ def main() -> int:
     parser.add_argument("--evidence", required=False, default="evidence")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.expected_head, args.approval_evidence, args.approval_sha256, args.snapshot, args.server_tree, args.voice_snapshot, args.voice_server_tree, args.source, args.dsm_source)) or args.evidence != "evidence":
+            parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
-    if not args.snapshot or not args.server_tree:
-        parser.error("--snapshot and --server-tree are required")
-    return inspect(args)
+    if not args.expected_head or not args.approval_evidence or not args.approval_sha256:
+        parser.error("--expected-head, --approval-evidence and --approval-sha256 are required")
+    try:
+        return inspect(args)
+    except Exception as error:  # fail closed before any input/output acquisition
+        print(f"KYUTAI_TTS_BLOCKED_APPROVAL_INVALID: {type(error).__name__}: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

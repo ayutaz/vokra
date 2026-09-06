@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # VAST/Linux-only Kyutai TTS composite inspection. This worker never
 # converts, publishes, uploads, or claims runtime/parity support.
+# shellcheck disable=SC2086,SC2317,SC2329
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +33,7 @@ UV_CACHE_DIR="${KYUTAI_TTS_UV_CACHE_DIR:-/tmp/vokra-kyutai-tts-uv-cache}"
 
 log() { printf '[kyutai-tts-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
-usage() { echo 'usage: run-kyutai-tts-1-6b-en-fr-inspection.sh [--work-dir DIR] | --self-test'; }
+usage() { echo 'usage: run-kyutai-tts-1-6b-en-fr-inspection.sh --expected-head HEX40 --approval-evidence ABSOLUTE_FILE --approval-sha256 HEX64 [--work-dir DIR]'; echo '       run-kyutai-tts-1-6b-en-fr-inspection.sh --self-test'; }
 
 self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token
@@ -48,7 +49,7 @@ self_test() {
     'cd87dd5d17169151782ac700280ec057e5d658a9afbe238a048ea5ff318cce69' \
     'bc79b0162c94862aadd6c5d351b5b4984274af0616e3a56b0df9973ff7c793c7' \
     'model_info' 'list_repo_tree' 'path_in_repo' 'RepoFile' 'RepoFolder' 'type=None' 'unknown HF tree entry' 'lfs_sha256' 'git_blob_sha1' 'weights_only=True' \
-    '64' '40' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'evidence_stage' 'NO_UPLOAD' 'exit 2'; do
+    '64' '40' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'evidence_stage' 'NO_UPLOAD' 'exit 2' 'BLOCKED_INSPECTION_ONLY' 'KYUTAI_TTS_1_6B_EN_FR_INSPECTION' 'expected-head' 'approval-evidence' 'approval-sha256' '--no-project'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
@@ -113,26 +114,82 @@ PY
     fail=1
   fi
   UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
   (( fail == 0 )) || return 1
   log 'self-test PASS'
 }
 
 work_dir="$WORK"
+expected_head=''
+approval_evidence=''
+approval_sha256=''
+seen_expected=0
+seen_approval=0
+seen_sha=0
 self=0
 while (($#)); do
   case "$1" in
-    --self-test) self=1; shift ;;
-    --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
+    --self-test)
+      (( self == 0 )) || die 'duplicate --self-test'
+      self=1
+      shift
+      ;;
+    --expected-head)
+      (( seen_expected == 0 )) || die 'duplicate --expected-head'
+      (($# >= 2)) || die '--expected-head requires HEX40'
+      expected_head="$2"
+      seen_expected=1
+      shift 2
+      ;;
+    --approval-evidence)
+      (( seen_approval == 0 )) || die 'duplicate --approval-evidence'
+      (($# >= 2)) || die '--approval-evidence requires an absolute file'
+      approval_evidence="$2"
+      seen_approval=1
+      shift 2
+      ;;
+    --approval-sha256)
+      (( seen_sha == 0 )) || die 'duplicate --approval-sha256'
+      (($# >= 2)) || die '--approval-sha256 requires HEX64'
+      approval_sha256="$2"
+      seen_sha=1
+      shift 2
+      ;;
+    --work-dir)
+      (($# >= 2)) || die '--work-dir requires DIR'
+      work_dir="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$work_dir" == "$WORK" ]] || die '--self-test accepts no other arguments'
+  [[ "$work_dir" == "$WORK" && $seen_expected == 0 && $seen_approval == 0 && $seen_sha == 0 ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
 
+(( seen_expected == 1 && seen_approval == 1 && seen_sha == 1 )) || die 'expected-head, approval-evidence and approval-sha256 are required'
+
+# The external blocked approval is validated first with stdlib only.  A valid
+# disposition returns a terminal marker and exit 2; no host/cache/work,
+# source, model, voice, input, output, or network action follows.
+set +e
+marker="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 \
+  python "$INSPECTOR" --expected-head "$expected_head" \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" 2>&1)"
+gate_rc=$?
+set -e
+[[ "$gate_rc" == 2 ]] || die "approval gate returned unexpected exit $gate_rc"
+grep -Fqx 'KYUTAI_TTS_BLOCKED_APPROVAL: status=BLOCKED decision=BLOCKED_INSPECTION_ONLY NO_UPLOAD' <<<"$marker" || die 'blocked approval marker missing'
+printf '%s\n' "$marker" >&2
+die 'Kyutai TTS route is BLOCKED before acquisition; downstream evidence collection is unreachable'
+
+# shellcheck disable=SC2317,SC2329,SC2086
 [[ "$(uname -s)" == Linux ]] || die 'inspection requires Linux VAST'
 [[ "$(uname -m)" == x86_64 ]] || die 'inspection requires x86_64 VAST'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
