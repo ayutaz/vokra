@@ -23,11 +23,73 @@ MIN_FREE_DISK_KIB=20000000
 log() { printf '[moss-tts-local-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hexadecimal characters'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'Apple checkout must be clean'; return 2; }
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || { die "checkout HEAD $actual_head does not match expected $expected_head"; return 2; }
+}
 require_hash() {
   local path="$1" expected="$2"
   [[ -n "$path" && -f "$path" && ! -L "$path" ]] || { die "input is not a regular non-symlink file: $path"; return 2; }
   [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { die "expected hash is not lowercase SHA-256: $path"; return 2; }
   [[ "$(sha256_file "$path")" == "$expected" ]] || { die "input SHA-256 mismatch: $path"; return 2; }
+}
+verify_transfer_manifest() {
+  local manifest="$1" expected_sha="$2" expected_head="$3"
+  shift 3
+  require_hash "$manifest" "$expected_sha"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
+    "$manifest" "$expected_head" "$@" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+manifest = Path(sys.argv[1])
+expected_head = sys.argv[2]
+if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+    raise SystemExit("transfer manifest expected head is not lowercase 40-hex")
+values: dict[str, str] = {}
+for line in manifest.read_text(encoding="utf-8").splitlines():
+    if not line or "=" not in line:
+        raise SystemExit("transfer manifest contains a malformed line")
+    key, value = line.split("=", 1)
+    if not key or key in values or not value:
+        raise SystemExit("transfer manifest contains duplicate/empty fields")
+    values[key] = value
+expected_keys = {
+    "format", "expected_head", "git_commit", "cpu_vs_official",
+    "metal_vs_official", "metal_vs_cpu", "composite_pcm", "publication",
+    "native_cpu_log", "native_cpu_log_sha256",
+    "local_gguf", "local_gguf_sha256", "v2_gguf", "v2_gguf_sha256",
+    "prompt", "prompt_sha256", "reference_rows", "reference_rows_sha256",
+    "assistant_codes", "assistant_codes_sha256", "local_reference_manifest",
+    "local_reference_manifest_sha256", "v2_reference", "v2_reference_sha256",
+    "local_approval_evidence", "local_approval_evidence_sha256",
+    "v2_approval_evidence", "v2_approval_evidence_sha256",
+}
+if set(values) != expected_keys:
+    raise SystemExit("transfer manifest key set drifted")
+if values["format"] != "moss-tts-local-transfer-v1" or values["expected_head"] != expected_head or values["git_commit"] != expected_head:
+    raise SystemExit("transfer manifest identity is not bound to expected head")
+if values["cpu_vs_official"] != "MEASURED_NOT_GATED" or values["metal_vs_official"] != "NOT_RUN" or values["metal_vs_cpu"] != "NOT_RUN" or values["composite_pcm"] != "NOT_RUN" or values["publication"] != "NO_UPLOAD":
+    raise SystemExit("transfer manifest measurement status is not the VAST CPU-only contract")
+
+args = sys.argv[3:]
+if len(args) != 20:
+    raise SystemExit("transfer manifest input binding cardinality drifted")
+for index in range(0, len(args), 2):
+    path, supplied_sha = Path(args[index]), args[index + 1]
+    key = ("native_cpu_log", "local_gguf", "v2_gguf", "prompt", "reference_rows", "assistant_codes",
+           "local_reference_manifest", "v2_reference", "local_approval_evidence",
+           "v2_approval_evidence")[index // 2]
+    hash_key = f"{key}_sha256"
+    if path.name != values[key] or "/" in values[key] or values[key].startswith("."):
+        raise SystemExit(f"transfer manifest path mismatch: {key}")
+    if values[hash_key] != supplied_sha or not re.fullmatch(r"[0-9a-f]{64}", values[hash_key]):
+        raise SystemExit(f"transfer manifest digest mismatch: {key}")
+PY
 }
 require_approval_file() {
   local path="$1"
@@ -237,6 +299,52 @@ PY
   verify_v2_reference "$tmp/v2-reference.csv"
   printf '%s\n' 'extra,unexpected' >> "$tmp/v2-reference.csv"
   if verify_v2_reference "$tmp/v2-reference.csv" >/dev/null 2>&1; then die 'v2 extra row was accepted'; fi
+  local transfer_head transfer_hash native_hash transfer_manifest
+  transfer_head="$(printf '%040d' 1)"
+  for name in local.gguf v2.gguf prompt rows codes local-reference-manifest.json v2-reference.csv local-approval.json v2-approval.json; do printf 'fixture\n' > "$tmp/$name"; done
+  printf '%s\n' "test moss_tts::local_transformer::tests::measure_local_real_cpu_and_optional_metal_against_official ... ok" 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' 'MOSS_TTS_LOCAL_ROWS_MEASURED backend=cpu exact=true differing_values=0' 'MOSS_TTS_LOCAL_CODES_MEASURED backend=cpu exact=true differing_values=0' 'MOSS_TTS_LOCAL_PCM_MEASURED backend=cpu samples=3840 channels=2 rms=0.000000000e+00 peak=0.000000000e+00' 'COMPOSITE_PCM_NOT_RUN reason=official_v2_pcm_sidecar_not_supplied' > "$tmp/native-cpu.log"
+  transfer_hash="$(sha256_file "$tmp/local.gguf")"
+  native_hash="$(sha256_file "$tmp/native-cpu.log")"
+  transfer_manifest="$tmp/apple-transfer-manifest.txt"
+  {
+    printf '%s\n' 'format=moss-tts-local-transfer-v1'
+    printf '%s\n' "expected_head=$transfer_head"
+    printf '%s\n' "git_commit=$transfer_head"
+    printf '%s\n' 'cpu_vs_official=MEASURED_NOT_GATED'
+    printf '%s\n' 'metal_vs_official=NOT_RUN'
+    printf '%s\n' 'metal_vs_cpu=NOT_RUN'
+    printf '%s\n' 'composite_pcm=NOT_RUN'
+    printf '%s\n' 'publication=NO_UPLOAD'
+    printf '%s\n' 'native_cpu_log=native-cpu.log'
+    printf '%s\n' "native_cpu_log_sha256=$native_hash"
+    for name in local_gguf v2_gguf prompt reference_rows assistant_codes local_reference_manifest v2_reference local_approval_evidence v2_approval_evidence; do
+      case "$name" in
+        local_gguf) file_name=local.gguf;;
+        v2_gguf) file_name=v2.gguf;;
+        prompt) file_name=prompt;;
+        reference_rows) file_name=rows;;
+        assistant_codes) file_name=codes;;
+        local_reference_manifest) file_name=local-reference-manifest.json;;
+        v2_reference) file_name=v2-reference.csv;;
+        local_approval_evidence) file_name=local-approval.json;;
+        v2_approval_evidence) file_name=v2-approval.json;;
+      esac
+      printf '%s=%s\n' "$name" "$file_name"
+      printf '%s_sha256=%s\n' "$name" "$transfer_hash"
+    done
+  } > "$transfer_manifest"
+  require_one_result "$tmp/native-cpu.log" cpu
+  verify_transfer_manifest "$transfer_manifest" "$(sha256_file "$transfer_manifest")" "$transfer_head" \
+    "$tmp/native-cpu.log" "$native_hash" "$tmp/local.gguf" "$transfer_hash" "$tmp/v2.gguf" "$transfer_hash" "$tmp/prompt" "$transfer_hash" \
+    "$tmp/rows" "$transfer_hash" "$tmp/codes" "$transfer_hash" "$tmp/local-reference-manifest.json" "$transfer_hash" \
+    "$tmp/v2-reference.csv" "$transfer_hash" "$tmp/local-approval.json" "$transfer_hash" "$tmp/v2-approval.json" "$transfer_hash"
+  printf '%s\n' 'unexpected=x' >> "$transfer_manifest"
+  if verify_transfer_manifest "$transfer_manifest" "$(sha256_file "$transfer_manifest")" "$transfer_head" \
+    "$tmp/native-cpu.log" "$native_hash" "$tmp/local.gguf" "$transfer_hash" "$tmp/v2.gguf" "$transfer_hash" "$tmp/prompt" "$transfer_hash" \
+    "$tmp/rows" "$transfer_hash" "$tmp/codes" "$transfer_hash" "$tmp/local-reference-manifest.json" "$transfer_hash" \
+    "$tmp/v2-reference.csv" "$transfer_hash" "$tmp/local-approval.json" "$transfer_hash" "$tmp/v2-approval.json" "$transfer_hash" >/dev/null 2>&1; then
+    die 'transfer manifest extra key was accepted'
+  fi
   ln -s "$tmp/prompt" "$tmp/prompt-symlink"
   if require_hash "$tmp/prompt-symlink" "$prompt_sha" >/dev/null 2>&1; then die 'input symlink was accepted'; fi
   printf '{}\n' > "$tmp/local-approval.json"
@@ -249,11 +357,14 @@ PY
     --assistant-codes "$tmp/missing-codes" --assistant-codes-sha256 "$(printf '%064d' 5)" \
     --local-reference-manifest "$tmp/missing-manifest" --local-reference-manifest-sha256 "$(printf '%064d' 6)" \
     --v2-reference "$tmp/missing-v2-reference" --v2-reference-sha256 "$(printf '%064d' 7)" \
+    --expected-head "$(git -C "$VOKRA_ROOT" rev-parse HEAD)" \
+    --transfer-manifest "$tmp/missing-transfer-manifest" --transfer-manifest-sha256 "$(printf '%064d' 8)" \
+    --native-cpu-log "$tmp/missing-native-cpu.log" --native-cpu-log-sha256 "$(printf '%064d' 9)" \
     --local-approval-evidence "$tmp/local-approval.json" --v2-approval-evidence "$tmp/v2-approval.json" \
     --evidence-dir "$tmp/evidence" > "$tmp/gate-first.log" 2>&1; then
     die 'production-shaped invocation unexpectedly passed pending approval gates'
   fi
-  grep -Eq 'BLOCKED|approval|license' "$tmp/gate-first.log" || die 'gate-first production proof emitted no gate diagnostics'
+  grep -Eq 'BLOCKED|approval|license|checkout must be clean' "$tmp/gate-first.log" || die 'gate-first production proof emitted no gate diagnostics'
   [[ ! -e "$tmp/evidence" ]] || die 'blocked Apple invocation created evidence'
   mkdir "$tmp/inputs"
   validate_evidence_target "$tmp/evidence-valid" "$tmp/inputs/input.bin" || die 'disjoint absent evidence target was rejected'
@@ -267,6 +378,11 @@ PY
   if validate_evidence_target "$tmp/inputs/input-dir/child" "$tmp/inputs/input-dir" >/dev/null 2>&1; then die 'input-overlapping evidence directory was accepted'; fi
   if validate_evidence_target "$VOKRA_ROOT/outside-evidence" "$tmp/inputs/input.bin" >/dev/null 2>&1; then die 'checkout-overlapping evidence directory was accepted'; fi
   grep -Fq -- '--features metal' "$0" || die 'Metal feature is not enabled'; grep -Fq -- 'UV_NO_CACHE=1 uv run --no-cache' "$0" || die 'stdlib validation is not no-cache'; grep -Fq 'pre_sync_gates' "$0" || die 'dual approval gates are missing'
+  grep -Fq -- '--expected-head' "$0" || die 'exact-head option is missing'; grep -Fq 'require_clean_expected_head' "$0" || die 'exact-head gate is missing'; grep -Fq -- '--offline --locked' "$0" || die 'Cargo must be locked and offline'
+  grep -Fq -- '--test-threads=1' "$0" || die 'named Cargo test must be serial'
+  for status in 'cpu_vs_official=MEASURED_NOT_GATED' 'metal_vs_official=MEASURED_NOT_GATED' 'metal_vs_cpu=MEASURED_NOT_GATED' 'publication=NO_UPLOAD'; do grep -Fq "$status" "$0" || die "Apple summary status is missing: $status"; done
+  grep -Fq -- '--transfer-manifest' "$0" || die 'transfer manifest option is missing'; grep -Fq 'verify_transfer_manifest' "$0" || die 'transfer manifest validator is missing'
+  grep -Fq -- '--native-cpu-log' "$0" || die 'native CPU evidence option is missing'; grep -Fq "require_one_result \"\$native_cpu_log\" cpu" "$0" || die 'native CPU sentinel validation is missing'
   for token in "$PREVIOUS_ISOLATED_TRANSFORMERS_PIN" "$TRANSFORMERS_SECURITY_ADVISORY" "$TRANSFORMERS_SECURITY_PATCHED_MINIMUM" "$ISOLATED_TRANSFORMERS_PIN" 'BLOCKED_UNVERIFIED_API_SMOKE'; do
     grep -F "$token" "$LOCAL_PROJECT/pyproject.toml" >/dev/null || die "Local Transformers provenance is missing: $token"
   done
@@ -278,13 +394,18 @@ PY
 }
 main() {
   if [[ "${1:-}" == --self-test ]]; then (($# == 1)) || { die '--self-test does not accept extra arguments'; return 2; }; self_test; return 0; fi
-  local local_gguf='' local_gguf_sha='' v2_gguf='' v2_gguf_sha='' prompt='' prompt_sha='' rows='' rows_sha='' codes='' codes_sha='' manifest='' manifest_sha='' v2_reference='' v2_reference_sha='' local_approval='' v2_approval='' evidence=''
-  local seen_local_gguf=0 seen_local_gguf_sha=0 seen_v2_gguf=0 seen_v2_gguf_sha=0 seen_prompt=0 seen_prompt_sha=0 seen_rows=0 seen_rows_sha=0 seen_codes=0 seen_codes_sha=0 seen_manifest=0 seen_manifest_sha=0 seen_v2_reference=0 seen_v2_reference_sha=0 seen_local_approval=0 seen_v2_approval=0 seen_evidence=0
+  local expected_head='' transfer_manifest='' transfer_manifest_sha='' native_cpu_log='' native_cpu_log_sha='' local_gguf='' local_gguf_sha='' v2_gguf='' v2_gguf_sha='' prompt='' prompt_sha='' rows='' rows_sha='' codes='' codes_sha='' manifest='' manifest_sha='' v2_reference='' v2_reference_sha='' local_approval='' v2_approval='' evidence=''
+  local seen_expected_head=0 seen_transfer_manifest=0 seen_transfer_manifest_sha=0 seen_native_cpu_log=0 seen_native_cpu_log_sha=0 seen_local_gguf=0 seen_local_gguf_sha=0 seen_v2_gguf=0 seen_v2_gguf_sha=0 seen_prompt=0 seen_prompt_sha=0 seen_rows=0 seen_rows_sha=0 seen_codes=0 seen_codes_sha=0 seen_manifest=0 seen_manifest_sha=0 seen_v2_reference=0 seen_v2_reference_sha=0 seen_local_approval=0 seen_v2_approval=0 seen_evidence=0
   while (($#)); do
     local option="$1"
     [[ "$option" == --* ]] || { usage; die "unexpected trailing argument: $option"; return 2; }
     (($# >= 2)) && [[ -n "${2:-}" && "${2:-}" != -* ]] || { usage; die "$option requires a non-empty value that does not begin with a dash"; return 2; }
     case "$option" in
+      --expected-head) ((seen_expected_head == 0)) || { die 'duplicate --expected-head'; return 2; }; seen_expected_head=1; expected_head="$2";;
+      --transfer-manifest) ((seen_transfer_manifest == 0)) || { die 'duplicate --transfer-manifest'; return 2; }; seen_transfer_manifest=1; transfer_manifest="$2";;
+      --transfer-manifest-sha256) ((seen_transfer_manifest_sha == 0)) || { die 'duplicate --transfer-manifest-sha256'; return 2; }; seen_transfer_manifest_sha=1; transfer_manifest_sha="$2";;
+      --native-cpu-log) ((seen_native_cpu_log == 0)) || { die 'duplicate --native-cpu-log'; return 2; }; seen_native_cpu_log=1; native_cpu_log="$2";;
+      --native-cpu-log-sha256) ((seen_native_cpu_log_sha == 0)) || { die 'duplicate --native-cpu-log-sha256'; return 2; }; seen_native_cpu_log_sha=1; native_cpu_log_sha="$2";;
       --local-gguf) ((seen_local_gguf == 0)) || { die 'duplicate --local-gguf'; return 2; }; seen_local_gguf=1; local_gguf="$2";;
       --local-gguf-sha256) ((seen_local_gguf_sha == 0)) || { die 'duplicate --local-gguf-sha256'; return 2; }; seen_local_gguf_sha=1; local_gguf_sha="$2";;
       --v2-gguf) ((seen_v2_gguf == 0)) || { die 'duplicate --v2-gguf'; return 2; }; seen_v2_gguf=1; v2_gguf="$2";;
@@ -306,12 +427,13 @@ main() {
     esac
     shift 2
   done
-  [[ -n "$local_gguf" && -n "$local_gguf_sha" && -n "$v2_gguf" && -n "$v2_gguf_sha" && -n "$prompt" && -n "$prompt_sha" && -n "$rows" && -n "$rows_sha" && -n "$codes" && -n "$codes_sha" && -n "$manifest" && -n "$manifest_sha" && -n "$v2_reference" && -n "$v2_reference_sha" && -n "$local_approval" && -n "$v2_approval" && -n "$evidence" ]] || die 'all input paths, hashes, approvals, and evidence directory are required'
+  [[ "$seen_expected_head" == 1 && "$seen_transfer_manifest" == 1 && "$seen_transfer_manifest_sha" == 1 && "$seen_native_cpu_log" == 1 && "$seen_native_cpu_log_sha" == 1 && -n "$native_cpu_log" && -n "$native_cpu_log_sha" && -n "$local_gguf" && -n "$local_gguf_sha" && -n "$v2_gguf" && -n "$v2_gguf_sha" && -n "$prompt" && -n "$prompt_sha" && -n "$rows" && -n "$rows_sha" && -n "$codes" && -n "$codes_sha" && -n "$manifest" && -n "$manifest_sha" && -n "$v2_reference" && -n "$v2_reference_sha" && -n "$local_approval" && -n "$v2_approval" && -n "$evidence" ]] || die 'exact head, transfer manifest, native CPU evidence, all input paths, hashes, approvals, and evidence directory are required'
+  require_clean_expected_head "$expected_head"
   pre_sync_gates "$local_approval" "$v2_approval"
   require_remote_host
-  require_approval_file "$local_approval"; require_approval_file "$v2_approval"; require_hash "$local_gguf" "$local_gguf_sha"; require_hash "$v2_gguf" "$v2_gguf_sha"; require_hash "$prompt" "$prompt_sha"; require_prompt_shape "$prompt"; require_hash "$rows" "$rows_sha"; require_prompt_shape "$rows"; require_hash "$codes" "$codes_sha"; require_codes_shape "$codes"; require_hash "$v2_reference" "$v2_reference_sha"; verify_reference_manifest "$manifest" "$manifest_sha" "$prompt" "$rows" "$codes" "$prompt_sha" "$rows_sha" "$codes_sha"; verify_v2_reference "$v2_reference"
-  validate_evidence_target "$evidence" "$local_gguf" "$v2_gguf" "$prompt" "$rows" "$codes" "$manifest" "$v2_reference" "$local_approval" "$v2_approval"
-  mkdir -p "$evidence"
+  require_approval_file "$local_approval"; require_approval_file "$v2_approval"; require_hash "$native_cpu_log" "$native_cpu_log_sha"; require_one_result "$native_cpu_log" cpu; require_hash "$local_gguf" "$local_gguf_sha"; require_hash "$v2_gguf" "$v2_gguf_sha"; require_hash "$prompt" "$prompt_sha"; require_prompt_shape "$prompt"; require_hash "$rows" "$rows_sha"; require_prompt_shape "$rows"; require_hash "$codes" "$codes_sha"; require_codes_shape "$codes"; require_hash "$v2_reference" "$v2_reference_sha"; verify_reference_manifest "$manifest" "$manifest_sha" "$prompt" "$rows" "$codes" "$prompt_sha" "$rows_sha" "$codes_sha"; verify_v2_reference "$v2_reference"; verify_transfer_manifest "$transfer_manifest" "$transfer_manifest_sha" "$expected_head" "$native_cpu_log" "$native_cpu_log_sha" "$local_gguf" "$local_gguf_sha" "$v2_gguf" "$v2_gguf_sha" "$prompt" "$prompt_sha" "$rows" "$rows_sha" "$codes" "$codes_sha" "$manifest" "$manifest_sha" "$v2_reference" "$v2_reference_sha" "$local_approval" "$(sha256_file "$local_approval")" "$v2_approval" "$(sha256_file "$v2_approval")"
+  validate_evidence_target "$evidence" "$native_cpu_log" "$local_gguf" "$v2_gguf" "$prompt" "$rows" "$codes" "$manifest" "$v2_reference" "$local_approval" "$v2_approval" "$transfer_manifest"
+  mkdir "$evidence"
   local selector='moss_tts::local_transformer::tests::measure_local_real_cpu_and_optional_metal_against_official'
   local common_env=(
     "VOKRA_MOSS_TTS_LOCAL_GGUF=$local_gguf"
@@ -322,8 +444,18 @@ main() {
     "VOKRA_MOSS_TTS_LOCAL_MAX_FRAMES=${VOKRA_MOSS_TTS_LOCAL_MAX_FRAMES:-1}"
   )
   for backend in cpu metal; do
-    if [[ "$backend" == metal ]]; then env "${common_env[@]}" VOKRA_MOSS_TTS_LOCAL_RUN_METAL=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release --features metal -p vokra-models --lib "$selector" -- --ignored --exact --nocapture 2>&1 | tee "$evidence/$backend.log"; else env "${common_env[@]}" cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-models --lib "$selector" -- --ignored --exact --nocapture 2>&1 | tee "$evidence/$backend.log"; fi
+    if [[ "$backend" == metal ]]; then env "${common_env[@]}" VOKRA_MOSS_TTS_LOCAL_RUN_METAL=1 CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release --features metal -p vokra-models --lib "$selector" -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/$backend.log"; else env "${common_env[@]}" CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release -p vokra-models --lib "$selector" -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/$backend.log"; fi
     require_one_result "$evidence/$backend.log" "$backend"
   done
+  {
+    printf '%s\n' 'format=moss-tts-local-apple-evidence-v1'
+    printf '%s\n' "expected_head=$expected_head"
+    printf '%s\n' "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    printf '%s\n' 'cpu_vs_official=MEASURED_NOT_GATED'
+    printf '%s\n' 'metal_vs_official=MEASURED_NOT_GATED'
+    printf '%s\n' 'metal_vs_cpu=MEASURED_NOT_GATED'
+    printf '%s\n' 'composite_pcm=NOT_RUN'
+    printf '%s\n' 'publication=NO_UPLOAD'
+  } > "$evidence/summary.txt"
 }
 main "$@"

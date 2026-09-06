@@ -47,5 +47,13 @@ must all match.
 Prompt rows are caller-supplied, non-empty `[rows,13]` little-endian `u32`
 files. The VAST worker hashes them before and after copying. Apple receives
 only a separate evidence bundle and requires every caller-supplied hash before
-Cargo. Publication is always `NO_UPLOAD`; numeric and composite PCM status
-remain measurement-only and are never manufactured by these scripts.
+Cargo. Both workers require the same caller-supplied lowercase 40-hex
+`--expected-head` and a clean exact checkout. VAST emits
+`apple-transfer-manifest.txt` alongside the executable command record; it binds
+both GGUFs, all prompt/reference payloads, their SHA-256 digests, and the
+native CPU Cargo log (including its exact singleton sentinels), its digest,
+and the measurement-only CPU/Metal status. A detached
+`apple-transfer-manifest.sha256` authenticates the manifest itself.
+Publication is always `NO_UPLOAD`; numeric
+and composite PCM status remain measurement-only and are never manufactured by
+these scripts.

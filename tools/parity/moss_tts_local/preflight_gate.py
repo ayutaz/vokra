@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 LOCK_SHA256 = "08913641842901d416b17bc2adcc1d9a252a3284a9c34373086c8868a0eeb33a"
 PROJECT_SHA256 = "9d8974ffedea83bb9e69d2d1e5b82507f6baf41ac1720bee1ead77044a1f8243"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-PLACEHOLDERS = {"", "null", "none", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo"}
+PLACEHOLDERS = {"", "null", "none", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo", "tbd", "unknown"}
 REPOSITORY = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
 REVISION = "be7766a6735b98bd793f7c79fb720b4d0f5d13b8"
 SOURCE_DIGESTS = {
@@ -352,7 +352,7 @@ def self_test() -> int:
     if ok or "unresolved" not in reason:
         print(f"moss Local gate: expected unresolved blocker, got {reason}", file=sys.stderr)
         return 1
-    for value in (None, "", " PENDING_REVIEW ", "owner review required"):
+    for value in (None, "", " PENDING_REVIEW ", "owner review required", "TBD", "UNKNOWN"):
         if reviewed(value):
             print(f"placeholder normalization failed: {value!r}", file=sys.stderr)
             return 1

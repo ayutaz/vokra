@@ -133,7 +133,8 @@ PY
 
 usage() {
   cat >&2 <<'EOF'
-usage: run-moss-tts-local-composite-validation.sh --local-approval-evidence FILE --v2-approval-evidence FILE [--work-dir DIR]
+usage: run-moss-tts-local-composite-validation.sh --expected-head 40-HEX \
+       --local-approval-evidence FILE --v2-approval-evidence FILE [--work-dir DIR]
        run-moss-tts-local-composite-validation.sh --self-test
 
 VAST-only real-weight staging. It authenticates the fixed Local Transformer
@@ -143,6 +144,14 @@ MEASURED_NOT_GATED. It never uploads, publishes, or pushes a model.
 The disposable Apple worker consumes this bundle for the corresponding Metal
 comparison.
 EOF
+}
+
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hexadecimal characters'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || { die "checkout HEAD $actual_head does not match expected $expected_head"; return 2; }
 }
 
 require_host() {
@@ -219,7 +228,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
     "$VOKRA_ROOT/tools/parity/moss_audio_tokenizer_prepare_checkpoint.py" \
     --hf-repo "$CODEC_REPO" --revision "$CODEC_REVISION" \
     --local-dir "$codec_snapshot" --output "$codec_merged"
-  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli
+  CARGO_NET_OFFLINE=true cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release -p vokra-cli
   "$VOKRA_ROOT/target/release/vokra-cli" convert \
     --model moss-tts-local --input "$local_input" --output "$work_dir/moss-tts-local.gguf"
   "$VOKRA_ROOT/target/release/vokra-cli" convert \
@@ -246,8 +255,8 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
     VOKRA_MOSS_TTS_LOCAL_REFERENCE_ROWS="$work_dir/reference-rows.u32le" \
     VOKRA_MOSS_TTS_LOCAL_REFERENCE_CODES="$work_dir/reference-assistant-codes.u32le" \
     VOKRA_MOSS_TTS_LOCAL_MAX_FRAMES="${MOSS_TTS_LOCAL_MAX_NEW_FRAMES:-1}" \
-    CARGO_BUILD_JOBS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
-      -p vokra-models --lib "$test_selector" -- --ignored --exact --nocapture \
+    CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release \
+      -p vokra-models --lib "$test_selector" -- --ignored --exact --nocapture --test-threads=1 \
       > "$work_dir/native-cpu.log" 2>&1
   require_cpu_evidence "$work_dir/native-cpu.log"
   grep -F 'MOSS_TTS_LOCAL_ROWS_MEASURED' "$work_dir/native-cpu.log" > "$work_dir/native-row-metrics.txt"
@@ -258,7 +267,46 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
     > "$work_dir/reference-sha256.txt"
   sha256sum "$work_dir/moss-tts-local.gguf" "$work_dir/moss-audio-tokenizer-v2.gguf" \
     > "$work_dir/artifact-sha256.txt"
-  write_apple_command "$work_dir/apple-verifier-command.txt" \
+  log 'Native CPU rows and decoded PCM were executed; official composite PCM comparison remains explicitly not run.'
+  require_clean_expected_head "$expected_head"
+  [[ ! -e "$work_dir/apple-transfer-manifest.txt" && ! -L "$work_dir/apple-transfer-manifest.txt" && ! -e "$work_dir/apple-transfer-manifest.sha256" && ! -L "$work_dir/apple-transfer-manifest.sha256" && ! -e "$work_dir/apple-verifier-command.txt" && ! -L "$work_dir/apple-verifier-command.txt" ]] \
+    || die 'Apple transfer outputs must be absent before packet emission'
+  {
+    printf '%s\n' 'format=moss-tts-local-transfer-v1'
+    printf '%s\n' "expected_head=$expected_head"
+    printf '%s\n' "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    printf '%s\n' 'cpu_vs_official=MEASURED_NOT_GATED'
+    printf '%s\n' 'metal_vs_official=NOT_RUN'
+    printf '%s\n' 'metal_vs_cpu=NOT_RUN'
+    printf '%s\n' 'composite_pcm=NOT_RUN'
+    printf '%s\n' 'publication=NO_UPLOAD'
+    printf '%s\n' "native_cpu_log=$(basename "$work_dir/native-cpu.log")"
+    printf '%s\n' "native_cpu_log_sha256=$(sha256sum "$work_dir/native-cpu.log" | awk '{print $1}')"
+    printf '%s\n' "local_gguf=$(basename "$work_dir/moss-tts-local.gguf")"
+    printf '%s\n' "local_gguf_sha256=$(sha256sum "$work_dir/moss-tts-local.gguf" | awk '{print $1}')"
+    printf '%s\n' "v2_gguf=$(basename "$work_dir/moss-audio-tokenizer-v2.gguf")"
+    printf '%s\n' "v2_gguf_sha256=$(sha256sum "$work_dir/moss-audio-tokenizer-v2.gguf" | awk '{print $1}')"
+    printf '%s\n' "prompt=$(basename "$prompt_copy")"
+    printf '%s\n' "prompt_sha256=$(sha256sum "$prompt_copy" | awk '{print $1}')"
+    printf '%s\n' "reference_rows=$(basename "$work_dir/reference-rows.u32le")"
+    printf '%s\n' "reference_rows_sha256=$(sha256sum "$work_dir/reference-rows.u32le" | awk '{print $1}')"
+    printf '%s\n' "assistant_codes=$(basename "$work_dir/reference-assistant-codes.u32le")"
+    printf '%s\n' "assistant_codes_sha256=$(sha256sum "$work_dir/reference-assistant-codes.u32le" | awk '{print $1}')"
+    printf '%s\n' "local_reference_manifest=$(basename "$work_dir/reference-manifest.json")"
+    printf '%s\n' "local_reference_manifest_sha256=$(sha256sum "$work_dir/reference-manifest.json" | awk '{print $1}')"
+    printf '%s\n' "v2_reference=$(basename "$work_dir/v2-reference.csv")"
+    printf '%s\n' "v2_reference_sha256=$(sha256sum "$work_dir/v2-reference.csv" | awk '{print $1}')"
+    printf '%s\n' "local_approval_evidence=$(basename "$local_approval")"
+    printf '%s\n' "local_approval_evidence_sha256=$(sha256sum "$local_approval" | awk '{print $1}')"
+    printf '%s\n' "v2_approval_evidence=$(basename "$v2_approval")"
+    printf '%s\n' "v2_approval_evidence_sha256=$(sha256sum "$v2_approval" | awk '{print $1}')"
+  } > "$work_dir/apple-transfer-manifest.txt"
+  local transfer_manifest_sha
+  transfer_manifest_sha="$(sha256sum "$work_dir/apple-transfer-manifest.txt" | awk '{print $1}')"
+  printf '%s  %s\n' "$transfer_manifest_sha" "$(basename "$work_dir/apple-transfer-manifest.txt")" > "$work_dir/apple-transfer-manifest.sha256"
+  write_apple_command "$work_dir/apple-verifier-command.txt" "$expected_head" \
+    "$(basename "$work_dir/apple-transfer-manifest.txt")" "$transfer_manifest_sha" \
+    "$(sha256sum "$work_dir/native-cpu.log" | awk '{print $1}')" \
     "$(sha256sum "$work_dir/moss-tts-local.gguf" | awk '{print $1}')" \
     "$(sha256sum "$work_dir/moss-audio-tokenizer-v2.gguf" | awk '{print $1}')" \
     "$(sha256sum "$prompt_copy" | awk '{print $1}')" \
@@ -266,7 +314,6 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
     "$(sha256sum "$work_dir/reference-assistant-codes.u32le" | awk '{print $1}')" \
     "$(sha256sum "$work_dir/reference-manifest.json" | awk '{print $1}')" \
     "$(sha256sum "$work_dir/v2-reference.csv" | awk '{print $1}')"
-  log 'Native CPU rows and decoded PCM were executed; official composite PCM comparison remains explicitly not run.'
 }
 
 pre_sync_gates() {
@@ -282,10 +329,16 @@ pre_sync_gates() {
 }
 
 write_apple_command() {
-  local output="$1" local_sha="$2" v2_sha="$3" prompt_sha="$4" rows_sha="$5" codes_sha="$6" local_manifest_sha="$7" v2_reference_sha="$8"
+  local output="$1" expected_head="$2" transfer_manifest="$3" transfer_manifest_sha="$4" native_cpu_log_sha="$5" local_sha="$6" v2_sha="$7" prompt_sha="$8" rows_sha="$9" codes_sha="${10}" local_manifest_sha="${11}" v2_reference_sha="${12}"
+  : "$transfer_manifest"
   {
     printf '%s\n' "VOKRA_REMOTE_APPLE_SILICON=1 \\"
     printf '%s\n' "scripts/verify/apple-silicon-moss-tts-local.sh \\"
+    printf '%s\n' "  --expected-head $expected_head \\"
+    printf '%s\n' "  --transfer-manifest '<APPLE_TRANSFER_MANIFEST_PATH>' \\"
+    printf '%s\n' "  --transfer-manifest-sha256 $transfer_manifest_sha \\"
+    printf '%s\n' "  --native-cpu-log '<APPLE_NATIVE_CPU_LOG_PATH>' \\"
+    printf '%s\n' "  --native-cpu-log-sha256 $native_cpu_log_sha \\"
     printf '%s\n' "  --local-gguf '<APPLE_LOCAL_GGUF_PATH>' \\"
     printf '%s\n' "  --local-gguf-sha256 $local_sha \\"
     printf '%s\n' "  --v2-gguf '<APPLE_V2_GGUF_PATH>' \\"
@@ -369,6 +422,10 @@ self_test() {
   sync_line="$(grep -n '^  run_remote_validation' "$0" | tail -1 | cut -d: -f1)"
   (( gate_line > 0 && gate_line < host_line && gate_line < sync_line )) || die 'preflight gates are not first'
   grep -F 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12' "$0" >/dev/null || die 'gates must disable UV cache'
+  grep -F -- '--expected-head' "$0" >/dev/null || die 'VAST exact-head option is missing'
+  grep -F 'require_clean_expected_head' "$0" >/dev/null || die 'VAST exact-head gate is missing'
+  grep -F -- '--offline --locked' "$0" >/dev/null || die 'Cargo must be locked and offline'
+  grep -F -- '--test-threads=1' "$0" >/dev/null || die 'named Cargo test must be serial'
   grep -F 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$V2_GATE"' "$0" >/dev/null || die 'v2 gate must disable UV cache'
   grep -F -- '--approval-evidence "$local_approval_path"' "$0" >/dev/null || die 'Local external approval evidence option is missing'
   grep -F -- '--approval-evidence "$v2_approval_path"' "$0" >/dev/null || die 'v2 external approval evidence option is missing'
@@ -404,8 +461,13 @@ self_test() {
   grep -F 'require_resolver_artifacts "$V2_PROJECT/uv.lock"' "$0" >/dev/null || die 'v2 resolver artifact validation is missing'
   grep -F 'exact=true' "$0" >/dev/null
   grep -F 'exact_to_cpu=true' "$0" >/dev/null
+  for token in 'apple-transfer-manifest.txt' 'format=moss-tts-local-transfer-v1' 'cpu_vs_official=MEASURED_NOT_GATED' 'metal_vs_official=NOT_RUN' 'metal_vs_cpu=NOT_RUN' 'publication=NO_UPLOAD' 'native_cpu_log=' 'native_cpu_log_sha256='; do grep -Fq "$token" "$0" || die "transfer packet field is missing: $token"; done
+  grep -Fq 'apple-transfer-manifest.sha256' "$0" || die 'detached transfer manifest digest is missing'
+  grep -Fq 'Apple transfer outputs must be absent before packet emission' "$0" || die 'transfer output no-clobber gate is missing'
   if "$0" --self-test unexpected >/dev/null 2>&1; then die '--self-test accepted an extra argument'; fi
-  if VOKRA_PUBLISH_ON_VAST=1 "$0" --work-dir >/dev/null 2>&1; then die 'missing work-dir value was accepted'; fi
+  if VOKRA_PUBLISH_ON_VAST=1 "$0" --expected-head >/dev/null 2>&1; then die 'missing expected-head value was accepted'; fi
+  if VOKRA_PUBLISH_ON_VAST=1 "$0" --expected-head "$(printf '%040d' 1)" --expected-head "$(printf '%040d' 2)" >/dev/null 2>&1; then die 'duplicate expected-head was accepted'; fi
+  if VOKRA_PUBLISH_ON_VAST=1 "$0" --expected-head "$(printf '%040d' 1)" --work-dir >/dev/null 2>&1; then die 'missing work-dir value was accepted'; fi
   if VOKRA_PUBLISH_ON_VAST=1 "$0" --work-dir a --work-dir b >/dev/null 2>&1; then die 'duplicate work-dir was accepted'; fi
   if VOKRA_PUBLISH_ON_VAST=1 "$0" trailing >/dev/null 2>&1; then die 'unknown/trailing argument was accepted'; fi
   local evidence_log
@@ -435,7 +497,22 @@ self_test() {
   done
   rm -f "$evidence_log" "$evidence_log."* "$v2_fixture"
   command_file="$(mktemp "${TMPDIR:-/tmp}/moss-tts-local-command.XXXXXX")"
-  write_apple_command "$command_file" "$(printf '%064d' 1)" "$(printf '%064d' 2)" "$(printf '%064d' 3)" "$(printf '%064d' 4)" "$(printf '%064d' 5)" "$(printf '%064d' 6)" "$(printf '%064d' 7)"
+  write_apple_command "$command_file" "$(printf '%040d' 1)" 'apple-transfer-manifest.txt' \
+    "$(printf '%064d' 0)" "$(printf '%064d' 1)" "$(printf '%064d' 2)" "$(printf '%064d' 3)" \
+    "$(printf '%064d' 4)" "$(printf '%064d' 5)" "$(printf '%064d' 6)" "$(printf '%064d' 7)" \
+    "$(printf '%064d' 8)" "$(printf '%064d' 9)" "$(printf '%064d' 10)"
+  grep -Fq -- '--expected-head' "$command_file" || die 'portable Apple command lacks expected head'
+  grep -Fq -- '--transfer-manifest' "$command_file" || die 'portable Apple command lacks transfer manifest'
+  grep -Fq -- '--transfer-manifest-sha256' "$command_file" || die 'portable Apple command lacks transfer manifest hash'
+  [[ "$(grep -Fc -- '--transfer-manifest ' "$command_file")" == 1 && "$(grep -Fc -- '--transfer-manifest-sha256 ' "$command_file")" == 1 ]] || die 'portable Apple command duplicated transfer manifest options'
+  grep -Fq -- "--native-cpu-log-sha256 $(printf '%064d' 1)" "$command_file" || die 'portable Apple command lost native CPU evidence hash'
+  grep -Fq -- "--local-gguf-sha256 $(printf '%064d' 2)" "$command_file" || die 'portable Apple command lost Local GGUF hash'
+  grep -Fq -- "--v2-gguf-sha256 $(printf '%064d' 3)" "$command_file" || die 'portable Apple command lost v2 GGUF hash'
+  grep -Fq -- "--prompt-sha256 $(printf '%064d' 4)" "$command_file" || die 'portable Apple command lost prompt hash'
+  grep -Fq -- "--reference-rows-sha256 $(printf '%064d' 5)" "$command_file" || die 'portable Apple command lost rows hash'
+  grep -Fq -- "--assistant-codes-sha256 $(printf '%064d' 6)" "$command_file" || die 'portable Apple command lost codes hash'
+  grep -Fq -- "--local-reference-manifest-sha256 $(printf '%064d' 7)" "$command_file" || die 'portable Apple command lost manifest hash'
+  grep -Fq -- "--v2-reference-sha256 $(printf '%064d' 8)" "$command_file" || die 'portable Apple command lost v2 reference hash'
   grep -Fq "'<APPLE_LOCAL_GGUF_PATH>'" "$command_file" || die 'portable Local GGUF placeholder is not quoted'
   grep -Fq "'<APPLE_REFERENCE_ROWS_PATH>'" "$command_file" || die 'portable reference placeholder is not quoted'
   grep -Fq "'<APPLE_EMPTY_EVIDENCE_DIR>'" "$command_file" || die 'portable absent evidence placeholder is not quoted'
@@ -484,11 +561,11 @@ self_test() {
   printf '{}\n' > "$probe_root/local-approval.json"
   printf '{}\n' > "$probe_root/v2-approval.json"
   if VOKRA_PUBLISH_ON_VAST=1 VOKRA_SCRATCH="$probe_root/scratch" UV_CACHE_DIR="$probe_root/cache" \
-    "$0" --local-approval-evidence "$probe_root/local-approval.json" --v2-approval-evidence "$probe_root/v2-approval.json" --work-dir "$probe_root/work" > "$probe_root/production.log" 2>&1; then
+    "$0" --expected-head "$(git -C "$VOKRA_ROOT" rev-parse HEAD)" --local-approval-evidence "$probe_root/local-approval.json" --v2-approval-evidence "$probe_root/v2-approval.json" --work-dir "$probe_root/work" > "$probe_root/production.log" 2>&1; then
     rm -rf "$probe_root"
     die 'production-shaped self-test unexpectedly passed with unresolved gates'
   fi
-  grep -Fq 'moss Local gate: BLOCKED' "$probe_root/production.log" || { rm -rf "$probe_root"; die 'production self-test did not stop at Local gate'; }
+  grep -Eq 'moss Local gate: BLOCKED|checkout must be clean' "$probe_root/production.log" || { rm -rf "$probe_root"; die 'production self-test did not stop at a preflight gate'; }
   [[ ! -e "$probe_root/work" && ! -e "$probe_root/scratch" && ! -e "$probe_root/cache" ]] || { rm -rf "$probe_root"; die 'blocked production path created work/scratch/cache'; }
   rm -rf "$probe_root"
   log 'self-test: OK (contract and no-upload guards)'
@@ -496,9 +573,13 @@ self_test() {
 
 main() {
   if [[ "${1:-}" == --self-test ]]; then (($# == 1)) || { die '--self-test does not accept extra arguments'; return 2; }; self_test; return 0; fi
-  local work_dir="${VOKRA_SCRATCH}/moss-tts-local-composite" local_approval='' v2_approval='' seen_work_dir=0 seen_local_approval=0 seen_v2_approval=0
+  local work_dir="${VOKRA_SCRATCH}/moss-tts-local-composite" expected_head='' local_approval='' v2_approval='' seen_work_dir=0 seen_expected_head=0 seen_local_approval=0 seen_v2_approval=0
   while (($#)); do
     case "$1" in
+      --expected-head)
+        (($# >= 2)) && [[ -n "${2:-}" && "${2:-}" != -* ]] || { usage; die '--expected-head requires a non-empty value'; return 2; }
+        ((seen_expected_head == 0)) || { die 'duplicate --expected-head'; return 2; }
+        seen_expected_head=1; expected_head="$2"; shift 2;;
       --work-dir)
         (($# >= 2)) && [[ -n "${2:-}" && "${2:-}" != -* ]] || { usage; die '--work-dir requires a non-empty value'; return 2; }
         ((seen_work_dir == 0)) || { die 'duplicate --work-dir'; return 2; }
@@ -514,6 +595,8 @@ main() {
       *) usage; die "unknown or trailing argument: $1"; return 2;;
     esac
   done
+  [[ "$seen_expected_head" == 1 ]] || die 'exact lowercase --expected-head is required'
+  require_clean_expected_head "$expected_head"
   [[ -n "$local_approval" && -n "$v2_approval" ]] || die 'both explicit approval evidence files are required'
   [[ -f "$local_approval" && ! -L "$local_approval" && -s "$local_approval" ]] || die 'Local approval evidence must be nonempty regular file'
   [[ -f "$v2_approval" && ! -L "$v2_approval" && -s "$v2_approval" ]] || die 'v2 approval evidence must be nonempty regular file'
