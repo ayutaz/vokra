@@ -515,17 +515,33 @@ families without acquiring or executing their weights locally:
   `UNRESOLVED`. No model was acquired or executed locally, and the real VAST
   run, reviewed Metal bounds, production G2P closure and final Apple execution
   remain open.
-- MOSS Audio 4B/8B commit `00932737` converts the real-weight checks into
+- MOSS Audio 4B/8B commits `00932737`, `e14bc2cd`, `ad36dfe4` and `4312b69a`
+  convert the real-weight checks into
   explicit ignored gates, rejects incomplete or ambiguous reference manifests,
   and authenticates the complete VAST-to-Apple reference packets rather than
   a manifest file alone. VAST and Apple must share one exact clean HEAD and
   emit distinct CPU/official, Metal/official and Metal/CPU sentinels. The
-  existing official-source environment is pinned to Transformers 5.5.0, below
-  the recorded patched 5.10.x floor, so the preflight now stops before model
-  acquisition with `BLOCKED_UNVERIFIED_API_SMOKE`. A patched model-free API
-  smoke, exact source/model license and checkpoint identities, distinct strict
+  historical Transformers 5.5.0 lock is retained only for its existing
+  license/closure gate. The model-free API probe and actual official-reference
+  execution use a separate Python-3.12 project pinned to Transformers 5.10.4;
+  its exact project, lock, full package rows, source/metadata files, owner
+  approval and no-checkpoint/no-upload evidence are validated before the main
+  worker may synchronize dependencies or acquire weights. The dependencies
+  were re-applied with `uv add --offline --no-sync`. The exact-head VAST API
+  smoke, source/model license and checkpoint approvals, distinct strict
   topology/binders, VAST real-weight parity and final Apple execution remain
   open.
+- MOSS-TTS Local commits `d496c08d` and `fb7ec430` bind the VAST and Apple
+  workers to one clean exact HEAD, keep Cargo offline/locked/serial, and emit a
+  no-clobber transfer manifest whose external SHA-256 covers both GGUFs, prompt
+  and reference inputs, both approval records, and the complete VAST native
+  CPU log. The Apple worker revalidates that CPU log's exact named-test and
+  measurement sentinels before running anything, then rechecks the checkout
+  again after CPU/Metal execution and before writing its summary. CPU/official,
+  Metal/official and Metal/CPU remain measurement-only, composite PCM remains
+  `NOT_RUN`, and publication remains `NO_UPLOAD`. The approved Transformers API
+  smoke, actual VAST CPU run, reviewed numerical bounds and final Apple run are
+  still open.
 - RMVPE commit `7ab0d5ec` rejects the historical public object's inferred MIT
   provenance and every permissive converter override. The fixed
   `yxlllc/RMVPE` source has no authenticated license grant, so only explicit
@@ -536,6 +552,25 @@ families without acquiring or executing their weights locally:
   declaration from the unrelated `Dream-High/RMVPE` repository is not reused.
   Real VAST/Apple parity and any replacement remain prohibited until an exact
   upstream license decision and checkpoint/dependency identities exist.
+- XY-Tokenizer commits `04bb4a3d` and `7b091cf6` remove the stale `fnlp`
+  identity, make all three VAST stages require a clean exact HEAD, and add a
+  no-download Apple consumer for the authenticated inspection manifest. The
+  inspection manifest itself now carries the Vokra HEAD, so its externally
+  supplied SHA-256 binds the VAST producer and Apple consumer to the same
+  source commit. The worker remains executable and intentionally exits
+  `BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST`; no CPU, Metal or publication
+  success is emitted until the tensor topology, native runtime and independent
+  reference exist.
+- MMS-1B-All commit `b00857ed` hardens the adapter-only replacement staging
+  around one explicit language, the exact backbone/adapter/vocabulary file
+  set, symlink-safe paths, exclusive output publication and streaming
+  reference/approval digest checks. Its ignored Rust gate no longer silently
+  skips missing real inputs. The dedicated Python project, lock and reviewed
+  license manifest are intentionally absent because their dependency
+  identities have not yet been authenticated; both VAST and Apple therefore
+  stop as `BLOCKED_PENDING_AUTHENTICATED_MANIFEST` before acquiring or running
+  a model. The native backbone-plus-adapter binder and parity route remain
+  open.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
