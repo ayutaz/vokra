@@ -291,6 +291,8 @@ def main() -> int:
         parser.error("--input and --output-dir are required unless --self-test is used")
 
     require_vast()
+    if args.input.is_symlink():
+        parser.error(f"input must not be a symlink: {args.input}")
     archive = args.input.resolve()
     if not archive.is_file():
         parser.error(f"input is not a regular file: {archive}")
@@ -304,7 +306,11 @@ def main() -> int:
             f"archive SHA-256 {archive_sha256} != pinned {ARCHIVE_SHA256}"
         )
 
+    if args.output_dir.exists() and (args.output_dir.is_symlink() or not args.output_dir.is_dir()):
+        parser.error(f"output directory must be a non-symlink directory: {args.output_dir}")
     output_dir = args.output_dir.resolve()
+    if output_dir.exists() and any(output_dir.iterdir()):
+        parser.error(f"output directory must be empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     prepared = output_dir / "canary-1b-v2.prepared.safetensors"
     helper = Path(__file__).resolve().with_name("nemo_pt_to_safetensors.py")

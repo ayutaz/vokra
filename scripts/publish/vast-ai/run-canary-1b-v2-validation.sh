@@ -10,6 +10,7 @@ usage() {
 Usage:
   run-canary-1b-v2-validation.sh --nemo <canary-1b-v2.nemo> \
     --approval-evidence <owner-approval.json> \
+    --expected-head <40-hex> \
     [--work-dir /workspace/vokra-canary-v2-validation]
   run-canary-1b-v2-validation.sh --self-test
 
@@ -69,13 +70,53 @@ PARITY_TEST="canary::tests::canary_v2_released_checkpoint_matches_official_nemo_
 GGUF_ENV="VOKRA_CANARY_V2_REAL_GGUF"
 REFERENCE_PCM_ENV="VOKRA_CANARY_V2_REFERENCE_PCM"
 REFERENCE_TOKENS_ENV="VOKRA_CANARY_V2_REFERENCE_TOKENS"
+REFERENCE_TEXT_ENV="VOKRA_CANARY_V2_REFERENCE_TEXT"
+REFERENCE_AUDIO_SHA256="58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+REFERENCE_PACKET_VERIFIER="tools/parity/canary_1b/verify_reference_packet.py"
 SOURCE_LANGUAGE_ENV="VOKRA_CANARY_V2_SOURCE_LANGUAGE"
 TARGET_LANGUAGE_ENV="VOKRA_CANARY_V2_TARGET_LANGUAGE"
 VARIANT="canary-1b-v2"
 ARCHIVE_BYTES=6358958080
 ARCHIVE_SHA256="ae5ef1bf06812a95a1594a8f5f0ee9c51f35418e5ba96939fa6b98ab00431094"
+
+build_reference_packet() {
+  local directory="$1" name path packet_sha manifest_sha
+  local names=(
+    reference-en-en.json reference-en-en.pcm.f32 reference-en-en.tokens.txt reference-en-en.text.txt
+    reference-en-de.json reference-en-de.pcm.f32 reference-en-de.tokens.txt reference-en-de.text.txt
+  )
+  for name in "${names[@]}"; do
+    path="$directory/$name"
+    [[ -f "$path" && ! -L "$path" && -s "$path" ]] || die "reference packet member is missing or symlinked: $name"
+  done
+  while IFS= read -r -d '' path; do
+    name="${path##*/}"
+    case " ${names[*]} " in *" $name "*) ;; *) die "reference packet has unexpected entry: $name" ;; esac
+  done < <(find -P "$directory" -mindepth 1 -maxdepth 1 -print0)
+  : > "$directory/reference-manifest.sha256"
+  for name in "${names[@]}"; do
+    printf '%s  %s\n' "$(sha256sum "$directory/$name" | awk '{print $1}')" "$name" \
+      >> "$directory/reference-manifest.sha256"
+  done
+  packet_sha="$({ for name in "${names[@]}"; do cat "$directory/$name"; done; } | sha256sum | awk '{print $1}')"
+  printf '%s\n' "$packet_sha" > "$directory/reference-packet.sha256"
+  manifest_sha="$(sha256sum "$directory/reference-manifest.sha256" | awk '{print $1}')"
+  UV_NO_CACHE=1 uv run --frozen --offline --project tools/parity --python 3.12 python \
+    "$REFERENCE_PACKET_VERIFIER" --directory "$directory" --variant v2 \
+    --revision "$UPSTREAM_REVISION" --checkpoint-sha256 "$ARCHIVE_SHA256" \
+    --audio-sha256 "$REFERENCE_AUDIO_SHA256" --manifest-sha256 "$manifest_sha" \
+    --packet-sha256 "$packet_sha"
+}
 MAIN_CHECKPOINT_MEMBER="./model_weights.ckpt"
 MAIN_CHECKPOINT_BYTES=3853798427
+
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be 40 lowercase hex characters"
+  [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "VAST checkout must be clean"
+  actual="$(git rev-parse HEAD)" || die "could not read checkout HEAD"
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual != expected $expected"
+}
 
 license_preflight() {
   local approval="$1"
@@ -130,14 +171,15 @@ run_self_test() {
   for required in \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$MODEL_KIND" "$PARITY_TEST" \
     "$GGUF_ENV" "$REFERENCE_PCM_ENV" "$REFERENCE_TOKENS_ENV" \
-    "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
+    "$REFERENCE_TEXT_ENV" "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
     "--approval-evidence" "tools/parity/canary_1b/preflight_gate.py" \
     "license_gate_manifest.json" "--variant \"\$VARIANT\"" \
     "$MAIN_CHECKPOINT_MEMBER" "$MAIN_CHECKPOINT_BYTES" \
     "tools/parity/canary_1b_v2_prepare_checkpoint.py" \
     "tools/parity/canary_1b_v2_dump_reference.py" \
     "--frozen --project tools/parity --python 3.12 python" \
-    "--target-language de"; do
+    "--target-language de" "$REFERENCE_PACKET_VERIFIER" \
+    "reference-manifest.sha256" "reference-packet.sha256" "apple-transfer-args.txt"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-canary-1b-v2-validation: self-test FAIL: contract lost token: $required" >&2
       fail=1
@@ -170,8 +212,8 @@ run_self_test() {
 
   cases=$((cases + 1))
   for required in 'uname -s' 'VOKRA_PUBLISH_ON_VAST' 'git status --porcelain --untracked-files=all' \
-    'cargo fmt --all -- --check' 'cargo test --locked --workspace' \
-    'cargo clippy --locked --workspace --all-targets -- -D warnings'; do
+    'cargo fmt --all -- --check' 'cargo test --offline --locked --workspace' \
+    'cargo clippy --offline --locked --workspace --all-targets -- -D warnings'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-canary-1b-v2-validation: self-test FAIL: fail-closed guard lost token: $required" >&2
       fail=1
@@ -226,6 +268,18 @@ run_self_test() {
     echo "run-canary-1b-v2-validation: self-test FAIL: duplicate approval accepted" >&2
     fail=1
   fi
+  if "$script_path" --nemo "$tmp/a" --approval-evidence "$tmp/a" --expected-head 0 >/dev/null 2>&1; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: malformed expected head accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --nemo "$tmp/a" --approval-evidence "$tmp/a" --expected-head "$(printf 'a%.0s' {1..40})" --expected-head "$(printf 'b%.0s' {1..40})" >/dev/null 2>&1; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: duplicate expected head accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --self-test --self-test >/dev/null 2>&1; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: duplicate --self-test accepted" >&2
+    fail=1
+  fi
 
   rm -rf "$tmp"
   trap - EXIT
@@ -238,13 +292,18 @@ run_self_test() {
 
 nemo_path=""
 approval_evidence=""
+expected_head=""
 work_dir="/workspace/vokra-canary-v2-validation"
 seen_nemo=0
 seen_approval=0
+seen_expected_head=0
+seen_self_test=0
 self_test=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --self-test)
+      (( seen_self_test == 0 )) || die "duplicate --self-test"
+      seen_self_test=1
       self_test=1
       shift
       ;;
@@ -260,6 +319,13 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "--approval-evidence requires a path"
       seen_approval=1
       approval_evidence="$2"
+      shift 2
+      ;;
+    --expected-head)
+      (( seen_expected_head == 0 )) || die "duplicate --expected-head"
+      [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head requires 40 lowercase hex characters"
+      seen_expected_head=1
+      expected_head="$2"
       shift 2
       ;;
     --work-dir)
@@ -278,7 +344,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $self_test -eq 1 ]]; then
-  [[ -z "$nemo_path$approval_evidence" && "$work_dir" == "/workspace/vokra-canary-v2-validation" ]] \
+  [[ -z "$nemo_path$approval_evidence$expected_head" && "$work_dir" == "/workspace/vokra-canary-v2-validation" ]] \
     || die "--self-test accepts no other arguments"
   run_self_test
   exit $?
@@ -287,6 +353,8 @@ fi
 # Keep the approval gate before any host/resource probe, input inspection,
 # scratch/evidence creation, environment sync, model operation, or Cargo.
 [[ -n "$approval_evidence" ]] || die "--approval-evidence is required"
+[[ -n "$expected_head" ]] || die "--expected-head is required"
+require_expected_head "$expected_head"
 license_preflight "$approval_evidence"
 
 [[ "$(uname -s)" == "Linux" ]] || die "actual validation is Linux/VAST-only"
@@ -320,7 +388,7 @@ nemo_path="$(cd "$(dirname "$nemo_path")" && pwd)/$(basename "$nemo_path")"
 log_path="$work_dir/validation.log"
 evidence_dir="$work_dir/evidence"
 prepared_dir="$work_dir/prepared"
-mkdir -p "$evidence_dir" "$prepared_dir"
+mkdir -p "$evidence_dir/reference" "$prepared_dir"
 
 run_logged() {
   echo "+ $*" | tee -a "$log_path"
@@ -339,7 +407,7 @@ run_logged uv run --frozen --project tools/parity --python 3.12 python \
   tools/parity/canary_1b_v2_prepare_checkpoint.py \
   --input "$nemo_path" --output-dir "$prepared_dir"
 
-run_logged cargo build --locked --release -p vokra-cli
+run_logged env CARGO_NET_OFFLINE=true cargo build --offline --locked --release -p vokra-cli
 run_logged target/release/vokra-cli convert \
   --model "$MODEL_KIND" \
   --input "$prepared_dir/canary-1b-v2.prepared.safetensors" \
@@ -350,27 +418,30 @@ run_logged uv run --frozen --project tools/parity --extra titanet --python 3.12 
   tools/parity/canary_1b_v2_dump_reference.py \
   --nemo "$nemo_path" \
   --source-language en --target-language en \
-  --output "$evidence_dir/reference-en-en.json"
+  --output "$evidence_dir/reference/reference-en-en.json"
 run_logged uv run --frozen --project tools/parity --extra titanet --python 3.12 python \
   tools/parity/canary_1b_v2_dump_reference.py \
   --nemo "$nemo_path" \
   --source-language en --target-language de \
-  --output "$evidence_dir/reference-en-de.json"
+  --output "$evidence_dir/reference/reference-en-de.json"
+run_logged build_reference_packet "$evidence_dir/reference"
 
 export "$GGUF_ENV=$work_dir/canary-1b-v2.gguf"
-export "$REFERENCE_PCM_ENV=$evidence_dir/reference-en-en.pcm.f32"
-export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference-en-en.tokens.txt"
+export "$REFERENCE_PCM_ENV=$evidence_dir/reference/reference-en-en.pcm.f32"
+export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference/reference-en-en.tokens.txt"
+export "$REFERENCE_TEXT_ENV=$evidence_dir/reference/reference-en-en.text.txt"
 export "$SOURCE_LANGUAGE_ENV=en"
 export "$TARGET_LANGUAGE_ENV=en"
-run_logged cargo test --locked -p vokra-models \
+run_logged env CARGO_NET_OFFLINE=true cargo test --offline --locked -p vokra-models \
   "$PARITY_TEST" -- --exact --ignored
 
 # A different target language changes the prompt and independently exercises
 # AST; it is never inferred from the English-ASR pass.
-export "$REFERENCE_PCM_ENV=$evidence_dir/reference-en-de.pcm.f32"
-export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference-en-de.tokens.txt"
+export "$REFERENCE_PCM_ENV=$evidence_dir/reference/reference-en-de.pcm.f32"
+export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference/reference-en-de.tokens.txt"
+export "$REFERENCE_TEXT_ENV=$evidence_dir/reference/reference-en-de.text.txt"
 export "$TARGET_LANGUAGE_ENV=de"
-run_logged cargo test --locked -p vokra-models \
+run_logged env CARGO_NET_OFFLINE=true cargo test --offline --locked -p vokra-models \
   "$PARITY_TEST" -- --exact --ignored
 
 run_logged target/release/vokra-cli run \
@@ -382,8 +453,8 @@ run_logged target/release/vokra-cli run \
   --input tests/fixtures/audio/jfk-30s.wav \
   --backend cpu --language en --target-language de
 
-run_logged cargo test --locked --workspace
-run_logged cargo clippy --locked --workspace --all-targets -- -D warnings
+run_logged env CARGO_NET_OFFLINE=true cargo test --offline --locked --workspace
+run_logged env CARGO_NET_OFFLINE=true cargo clippy --offline --locked --workspace --all-targets -- -D warnings
 run_logged cargo deny check licenses advisories bans
 run_logged cargo audit
 
@@ -396,6 +467,7 @@ run_logged cargo audit
   echo "main_checkpoint_member=$MAIN_CHECKPOINT_MEMBER"
   echo "main_checkpoint_bytes=$MAIN_CHECKPOINT_BYTES"
   echo "commit=$(git rev-parse HEAD)"
+  echo "expected_head=$expected_head"
   echo "branch=$(git branch --show-current)"
   echo "rustc=$(rustc --version)"
   echo "cargo=$(cargo --version)"
@@ -403,10 +475,24 @@ run_logged cargo audit
   echo "cpu=$(awk -F ': ' '/^model name/{print $2; exit}' /proc/cpuinfo)"
   echo "nemo_sha256=$(sha256sum "$nemo_path" | awk '{print $1}')"
   echo "gguf_sha256=$(sha256sum "$work_dir/canary-1b-v2.gguf" | awk '{print $1}')"
-  echo "reference_en_en_sha256=$(sha256sum "$evidence_dir/reference-en-en.json" | awk '{print $1}')"
-  echo "reference_en_de_sha256=$(sha256sum "$evidence_dir/reference-en-de.json" | awk '{print $1}')"
+  echo "apple_transfer_args=--gguf-sha256 $(sha256sum "$work_dir/canary-1b-v2.gguf" | awk '{print $1}') --reference-manifest-sha256 $(sha256sum "$evidence_dir/reference/reference-manifest.sha256" | awk '{print $1}') --reference-packet-sha256 $(cat "$evidence_dir/reference/reference-packet.sha256")"
+  echo "reference_manifest_sha256=$(sha256sum "$evidence_dir/reference/reference-manifest.sha256" | awk '{print $1}')"
+  echo "reference_packet_sha256=$(cat "$evidence_dir/reference/reference-packet.sha256")"
+  echo "reference_en_en_sha256=$(sha256sum "$evidence_dir/reference/reference-en-en.json" | awk '{print $1}')"
+  echo "reference_en_de_sha256=$(sha256sum "$evidence_dir/reference/reference-en-de.json" | awk '{print $1}')"
   echo "verdict=PASS"
 } > "$evidence_dir/validation-summary.txt"
+
+{
+  printf '%q ' "$REPO_ROOT/scripts/verify/apple-silicon-canary-1b-v2.sh" \
+    --gguf "$work_dir/canary-1b-v2.gguf" --reference "$evidence_dir/reference" \
+    --approval-evidence "$approval_evidence" --expected-head "$expected_head" \
+    --gguf-sha256 "$(sha256sum "$work_dir/canary-1b-v2.gguf" | awk '{print $1}')" \
+    --reference-manifest-sha256 "$(sha256sum "$evidence_dir/reference/reference-manifest.sha256" | awk '{print $1}')" \
+    --reference-packet-sha256 "$(cat "$evidence_dir/reference/reference-packet.sha256")" \
+    --evidence-dir "$evidence_dir/apple"
+  printf '\n'
+} > "$evidence_dir/apple-transfer-args.txt"
 
 cp "$prepared_dir/prepare-audit.json" "$evidence_dir/prepare-audit.json"
 echo "run-canary-1b-v2-validation: PASS"

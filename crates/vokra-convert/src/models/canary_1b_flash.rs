@@ -128,6 +128,24 @@ pub fn convert_canary_1b_flash_file_with_tokenizer(
     license: Option<&str>,
     tokenizer_vocab: &Path,
 ) -> Result<Canary1bFlashReport, ConvertError> {
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-flash checkpoint must be a regular non-symlink file: {}",
+            input.display()
+        )));
+    }
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-flash output already exists or is symlinked: {}",
+            output.display()
+        )));
+    }
+    if tokenizer_vocab.is_symlink() || !tokenizer_vocab.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-flash tokenizer must be a regular non-symlink file: {}",
+            tokenizer_vocab.display()
+        )));
+    }
     if let Some(value) = license.filter(|value| !value.is_empty()) {
         if !value.eq_ignore_ascii_case(DEFAULT_LICENSE) {
             return Err(ConvertError::Usage(format!(

@@ -2688,6 +2688,8 @@ mod tests {
             .expect("set VOKRA_CANARY_V2_REFERENCE_PCM from the NeMo dumper");
         let tokens_path = std::env::var("VOKRA_CANARY_V2_REFERENCE_TOKENS")
             .expect("set VOKRA_CANARY_V2_REFERENCE_TOKENS from the NeMo dumper");
+        let text_path = std::env::var("VOKRA_CANARY_V2_REFERENCE_TEXT")
+            .expect("set VOKRA_CANARY_V2_REFERENCE_TEXT from the NeMo dumper");
 
         let gguf_bytes = std::fs::read(&gguf_path).expect("read complete Canary-v2 GGUF on VAST");
         let gguf = GgufFile::parse(gguf_bytes).expect("parse complete Canary-v2 GGUF");
@@ -2712,6 +2714,14 @@ mod tests {
         assert!(
             !expected.is_empty(),
             "official NeMo tokens must not be empty"
+        );
+        let expected_text = std::fs::read_to_string(&text_path)
+            .expect("read official NeMo text fixture")
+            .trim_end_matches(['\r', '\n'])
+            .to_owned();
+        assert!(
+            !expected_text.is_empty(),
+            "official NeMo text fixture must not be empty"
         );
 
         let language = |variable: &str, default: CanaryLanguage| {
@@ -2783,6 +2793,16 @@ mod tests {
             actual, expected,
             "Vokra greedy token sequence must exactly match official NeMo"
         );
+        let actual_text = model
+            .tokenizer
+            .as_ref()
+            .expect("complete Canary-v2 release must bind tokenizer")
+            .decode(&actual)
+            .expect("decode Canary-v2 CPU token output");
+        assert_eq!(
+            actual_text, expected_text,
+            "Vokra decoded text must exactly match official NeMo"
+        );
         eprintln!("CANARY_1B_V2_CPU_VS_OFFICIAL PASS");
 
         // The CPU result above is the independent official-NeMo oracle. On a
@@ -2799,6 +2819,18 @@ mod tests {
                 .transcribe_with_options(&pcm, options)
                 .expect("run Canary-v2 Metal forward");
             assert_eq!(metal_actual, actual, "Canary-v2 Metal IDs must equal CPU");
+            let metal_text = metal_model
+                .tokenizer
+                .as_ref()
+                .expect("complete Canary-v2 release must bind tokenizer")
+                .decode(&metal_actual)
+                .expect("decode Canary-v2 Metal token output");
+            assert_eq!(metal_text, actual_text, "Canary-v2 Metal text equals CPU");
+            assert_eq!(
+                metal_text, expected_text,
+                "Canary-v2 Metal text equals official"
+            );
+            eprintln!("CANARY_1B_V2_METAL_VS_OFFICIAL PASS");
             eprintln!("CANARY_1B_V2_METAL_VS_CPU PASS");
         }
     }

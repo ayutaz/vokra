@@ -20,6 +20,11 @@ REFERENCE_PCM_ENV="VOKRA_CANARY_REFERENCE_PCM"
 REFERENCE_TOKENS_ENV="VOKRA_CANARY_REFERENCE_TOKENS"
 SOURCE_LANGUAGE_ENV="VOKRA_CANARY_SOURCE_LANGUAGE"
 TARGET_LANGUAGE_ENV="VOKRA_CANARY_TARGET_LANGUAGE"
+REFERENCE_TEXT_ENV="VOKRA_CANARY_REFERENCE_TEXT"
+UPSTREAM_REVISION="2b6e4d2dacb11cc1b1724de31bb48fe68c26c12e"
+ARCHIVE_SHA256="3887cce1afdd425429cfc5109575a8f2cffeb07c02c503a9faff7612bd74e324"
+REFERENCE_AUDIO_SHA256="58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+REFERENCE_PACKET_VERIFIER="$VOKRA_ROOT/tools/parity/canary_1b/verify_reference_packet.py"
 PARITY_SOURCE="$VOKRA_ROOT/crates/vokra-models/src/canary_1b_flash/mod.rs"
 TEST_TARGET="canary_1b_flash::tests::released_checkpoint_matches_official_nemo_greedy_tokens"
 TEST_NAME="released_checkpoint_matches_official_nemo_greedy_tokens"
@@ -35,7 +40,10 @@ usage() {
 usage: apple-silicon-canary-1b-flash.sh \
   --gguf <vast-generated-canary-1b-flash.gguf> \
   --reference <vast-official-reference-dir> \
-  --approval-evidence <owner-approval.json> --evidence-dir <absent-dir>
+  --approval-evidence <owner-approval.json> --expected-head <40-hex> \
+  --gguf-sha256 <64-hex> --reference-manifest-sha256 <64-hex> \
+  --reference-packet-sha256 <64-hex> \
+  --evidence-dir <absent-dir>
        apple-silicon-canary-1b-flash.sh --self-test
 
 Runs the exact existing Canary-1B-Flash real-weight test for the English ASR
@@ -56,6 +64,15 @@ sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 require_file() {
   local label="$1" path="$2"
   [[ -f "$path" && ! -L "$path" && -s "$path" ]] || die "$label is missing, empty, or symlinked: $path"
+}
+
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be 40 lowercase hex characters"
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die "Apple checkout must be clean before parity execution"
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die "could not read checkout HEAD"
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual != expected $expected"
 }
 
 license_preflight() {
@@ -146,7 +163,7 @@ production_order_ok() {
 }
 
 require_reference() {
-  local directory="$1" suffix name
+  local directory="$1" manifest_sha="$2" packet_sha="$3" suffix name path
   [[ -d "$directory" && ! -L "$directory" ]] || die "reference is missing or symlinked: $directory"
   for suffix in en-en en-de; do
     for name in json pcm.f32 tokens.txt text.txt; do
@@ -154,6 +171,22 @@ require_reference() {
         "$directory/reference-${suffix}.${name}"
     done
   done
+  while IFS= read -r -d '' path; do
+    name="${path##*/}"
+    case "$name" in
+      reference-en-en.json|reference-en-en.pcm.f32|reference-en-en.tokens.txt|reference-en-en.text.txt|\
+      reference-en-de.json|reference-en-de.pcm.f32|reference-en-de.tokens.txt|reference-en-de.text.txt|\
+      reference-manifest.sha256|reference-packet.sha256) : ;;
+      *) die "reference packet has unexpected entry: $name" ;;
+    esac
+  done < <(find -P "$directory" -mindepth 1 -maxdepth 1 -print0)
+  require_file "reference manifest" "$directory/reference-manifest.sha256"
+  require_file "reference packet digest" "$directory/reference-packet.sha256"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$REFERENCE_PACKET_VERIFIER" --directory "$directory" --variant flash \
+    --revision "$UPSTREAM_REVISION" --checkpoint-sha256 "$ARCHIVE_SHA256" \
+    --audio-sha256 "$REFERENCE_AUDIO_SHA256" --manifest-sha256 "$manifest_sha" \
+    --packet-sha256 "$packet_sha" || die "reference packet authentication failed"
 }
 
 require_remote_apple_host() {
@@ -176,7 +209,7 @@ require_remote_apple_host() {
 
 require_tooling() {
   local tool
-  for tool in cargo rustc git shasum awk find tee grep sysctl sw_vers \
+  for tool in cargo rustc git uv shasum awk find tee grep sysctl sw_vers \
     system_profiler xcrun sed; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
@@ -206,6 +239,8 @@ require_tooling() {
     || die "Canary test lacks exact Metal-vs-CPU token equality"
   grep -Fq 'CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS' <<<"$test_body" \
     || die "Canary test lacks its CPU-vs-official sentinel"
+  grep -Fq 'CANARY_1B_FLASH_METAL_VS_OFFICIAL PASS' <<<"$test_body" \
+    || die "Canary test lacks its Metal-vs-official sentinel"
   grep -Fq 'CANARY_1B_FLASH_METAL_VS_CPU PASS' <<<"$test_body" \
     || die "Canary test lacks its Metal-vs-CPU sentinel"
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
@@ -235,7 +270,7 @@ record_environment() {
 
 hash_reference_directory() {
   local directory="$1" output="$2" path
-  find "$directory" -mindepth 1 -maxdepth 1 -type f -print \
+  find -P "$directory" -mindepth 1 -maxdepth 1 -type f -print \
     | LC_ALL=C sort \
     | while IFS= read -r path; do
         printf '%s  %s\n' "$(sha256_file "$path")" "${path#"$directory"/}"
@@ -258,15 +293,18 @@ run_self_test() (
     'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' \
     'MIN_MEMORY_BYTES=32000000000' 'MIN_FREE_DISK_KIB=20000000' \
     'xcrun -f metal' "$GGUF_ENV" "$REFERENCE_PCM_ENV" \
-    "$REFERENCE_TOKENS_ENV" "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
+    "$REFERENCE_TOKENS_ENV" "$REFERENCE_TEXT_ENV" "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
     'license_preflight' '--approval-evidence' 'preflight_gate.py' \
     'license_gate_manifest.json' "--variant \"\$VARIANT\"" \
+    '--gguf-sha256' '--reference-manifest-sha256' '--reference-packet-sha256' \
+    'verify_reference_packet.py' 'find -P' 'execution-args.txt' \
     "$TEST_TARGET" '--features metal' '-- --exact --ignored --nocapture' \
     'Canary1bFlashAsr::from_gguf_with_backend' 'BackendKind::Metal' \
     'assert_eq!(metal_actual, actual, "Flash Metal IDs equal CPU");' \
     'test released_checkpoint_matches_official_nemo_greedy_tokens ... ok' \
     'test result: ok. 1 passed' \
     'CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS' \
+    'CANARY_1B_FLASH_METAL_VS_OFFICIAL PASS' \
     'CANARY_1B_FLASH_METAL_VS_CPU PASS' \
     'network=NOT_PERFORMED' 'conversion=NOT_PERFORMED'; do
     if ! grep -Fq -- "$required" "$script_path"; then
@@ -332,25 +370,28 @@ run_case() {
     "$GGUF_ENV=$gguf" \
     "$REFERENCE_PCM_ENV=$reference/reference-${language_pair}.pcm.f32" \
     "$REFERENCE_TOKENS_ENV=$reference/reference-${language_pair}.tokens.txt" \
+    "$REFERENCE_TEXT_ENV=$reference/reference-${language_pair}.text.txt" \
     "$SOURCE_LANGUAGE_ENV=$source_language" \
     "$TARGET_LANGUAGE_ENV=$target_language" \
     CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    CARGO_NET_OFFLINE=true cargo test --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
       -p vokra-models --features metal --lib "$TEST_TARGET" \
       -- --exact --ignored --nocapture --test-threads=1 \
       2>&1 | tee "$log_path"
-  grep -F "test $TEST_TARGET ... ok" "$log_path" >/dev/null \
+  [[ "$(grep -Fxc "test $TEST_TARGET ... ok" "$log_path" || true)" == 1 ]] \
     || die "Canary ${language_pair} exact real-weight test did not report success"
-  grep -F 'test result: ok. 1 passed' "$log_path" >/dev/null \
+  [[ "$(grep -Ecx 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in .+)?' "$log_path" || true)" == 1 ]] \
     || die "Canary ${language_pair} log does not prove one nonzero test ran"
-  grep -F 'CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS' "$log_path" >/dev/null \
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS' "$log_path" || true)" == 1 ]] \
     || die "Canary ${language_pair} CPU-vs-official sentinel is absent"
-  grep -F 'CANARY_1B_FLASH_METAL_VS_CPU PASS' "$log_path" >/dev/null \
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_METAL_VS_OFFICIAL PASS' "$log_path" || true)" == 1 ]] \
+    || die "Canary ${language_pair} Metal-vs-official sentinel is absent"
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_METAL_VS_CPU PASS' "$log_path" || true)" == 1 ]] \
     || die "Canary ${language_pair} Metal-vs-CPU sentinel is absent"
 }
 
 main() {
-  local gguf='' reference='' approval='' evidence_dir='' self_test=0 seen_gguf=0 seen_reference=0 seen_approval=0 seen_evidence=0
+  local gguf='' reference='' approval='' expected_head='' gguf_sha256='' reference_manifest_sha256='' reference_packet_sha256='' evidence_dir='' self_test=0 seen_gguf=0 seen_reference=0 seen_approval=0 seen_expected_head=0 seen_gguf_sha256=0 seen_reference_manifest_sha256=0 seen_reference_packet_sha256=0 seen_evidence=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --gguf)
@@ -365,11 +406,29 @@ main() {
         (( seen_approval == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
         seen_approval=1
         approval="$2"; shift 2 ;;
+      --expected-head)
+        (( seen_expected_head == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{40}$ ]] || { usage; return 2; }
+        seen_expected_head=1
+        expected_head="$2"; shift 2 ;;
+      --gguf-sha256)
+        (( seen_gguf_sha256 == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
+        seen_gguf_sha256=1
+        gguf_sha256="$2"; shift 2 ;;
+      --reference-manifest-sha256)
+        (( seen_reference_manifest_sha256 == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
+        seen_reference_manifest_sha256=1
+        reference_manifest_sha256="$2"; shift 2 ;;
+      --reference-packet-sha256)
+        (( seen_reference_packet_sha256 == 0 && $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }
+        seen_reference_packet_sha256=1
+        reference_packet_sha256="$2"; shift 2 ;;
       --evidence-dir)
         (( seen_evidence == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
         seen_evidence=1
         evidence_dir="$2"; shift 2 ;;
       --self-test)
+        (( seen_self_test == 0 )) || die "duplicate --self-test"
+        seen_self_test=1
         self_test=1; shift ;;
       -h|--help)
         usage; return 0 ;;
@@ -379,27 +438,39 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ "$seen_gguf$seen_reference$seen_approval$seen_evidence" == 0000 ]] \
+    [[ "$seen_gguf$seen_reference$seen_approval$seen_expected_head$seen_gguf_sha256$seen_reference_manifest_sha256$seen_reference_packet_sha256$seen_evidence" == 00000000 ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
-  [[ "$seen_gguf$seen_reference$seen_approval$seen_evidence" == 1111 ]] \
-    || { usage; die "--gguf, --reference, --approval-evidence and --evidence-dir are required"; }
+  [[ "$seen_gguf$seen_reference$seen_approval$seen_expected_head$seen_gguf_sha256$seen_reference_manifest_sha256$seen_reference_packet_sha256$seen_evidence" == 11111111 ]] \
+    || { usage; die "all input, expected hash, approval, HEAD, and evidence arguments are required"; }
 
   # Keep approval ahead of every normal-run host/resource or input operation.
+  require_expected_head "$expected_head"
   license_preflight "$approval"
   require_remote_apple_host
   require_tooling
   require_file "VAST-generated complete Canary-1B-Flash GGUF" "$gguf"
-  require_reference "$reference"
+  [[ "$(sha256_file "$gguf")" == "$gguf_sha256" ]] || die "GGUF SHA-256 does not match --gguf-sha256"
+  require_reference "$reference" "$reference_manifest_sha256" "$reference_packet_sha256"
   require_absent_directory "$evidence_dir"
   require_disjoint_evidence "$evidence_dir" "$gguf" "$reference" "$approval"
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
   {
+    printf '%q ' "$0" --gguf "$gguf" --reference "$reference" \
+      --approval-evidence "$approval" --expected-head "$expected_head" \
+      --gguf-sha256 "$gguf_sha256" --reference-manifest-sha256 "$reference_manifest_sha256" \
+      --reference-packet-sha256 "$reference_packet_sha256" --evidence-dir "$evidence_dir"
+    printf '\n'
+  } > "$evidence_dir/execution-args.txt"
+  {
     echo "gguf=$gguf"
     echo "gguf_sha256=$(sha256_file "$gguf")"
+    echo "expected_gguf_sha256=$gguf_sha256"
+    echo "reference_manifest_sha256=$reference_manifest_sha256"
+    echo "reference_packet_sha256=$reference_packet_sha256"
     echo "approval_sha256=$(sha256_file "$approval")"
     hash_reference_directory "$reference" "$evidence_dir/reference-hashes.txt"
   } > "$evidence_dir/input-hashes.txt"
@@ -410,27 +481,36 @@ main() {
   log "running exact real-weight Canary AST CPU/official/Metal comparison"
   run_case en-de en de "$gguf" "$reference" \
     "$evidence_dir/parity-en-de.log"
-  grep -F 'CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS' \
-    "$evidence_dir/parity-en-en.log" >/dev/null \
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS' \
+    "$evidence_dir/parity-en-en.log" || true)" == 1 ]] \
     || die "Canary ASR CPU/official marker is absent"
-  grep -F 'CANARY_1B_FLASH_METAL_VS_CPU PASS' \
-    "$evidence_dir/parity-en-en.log" >/dev/null \
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_METAL_VS_OFFICIAL PASS' \
+    "$evidence_dir/parity-en-en.log" || true)" == 1 ]] \
+    || die "Canary ASR Metal/official marker is absent"
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_METAL_VS_CPU PASS' \
+    "$evidence_dir/parity-en-en.log" || true)" == 1 ]] \
     || die "Canary ASR Metal/CPU marker is absent"
-  grep -F 'CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS' \
-    "$evidence_dir/parity-en-de.log" >/dev/null \
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS' \
+    "$evidence_dir/parity-en-de.log" || true)" == 1 ]] \
     || die "Canary AST CPU/official marker is absent"
-  grep -F 'CANARY_1B_FLASH_METAL_VS_CPU PASS' \
-    "$evidence_dir/parity-en-de.log" >/dev/null \
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_METAL_VS_OFFICIAL PASS' \
+    "$evidence_dir/parity-en-de.log" || true)" == 1 ]] \
+    || die "Canary AST Metal/official marker is absent"
+  [[ "$(grep -Fxc 'CANARY_1B_FLASH_METAL_VS_CPU PASS' \
+    "$evidence_dir/parity-en-de.log" || true)" == 1 ]] \
     || die "Canary AST Metal/CPU marker is absent"
 
   {
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
     echo "gguf_sha256=$(sha256_file "$gguf")"
     echo "approval_sha256=$(sha256_file "$approval")"
     echo "asr_cpu_vs_official=PASS"
+    echo "asr_metal_vs_official=PASS"
     echo "asr_metal_vs_cpu=PASS"
     echo "ast_cpu_vs_official=PASS"
+    echo "ast_metal_vs_official=PASS"
     echo "ast_metal_vs_cpu=PASS"
     echo "test=$TEST_TARGET"
     echo "network=NOT_PERFORMED"

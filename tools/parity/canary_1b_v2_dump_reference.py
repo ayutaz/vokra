@@ -309,6 +309,10 @@ def main() -> int:
     require_vast()
     source = validate_language(args.source_language)
     target = validate_language(args.target_language or source)
+    if args.nemo.is_symlink() or args.audio.is_symlink():
+        parser.error("--nemo and --audio must not be symlinks")
+    if args.output.is_symlink() or args.output.exists():
+        parser.error(f"--output must be absent and non-symlink: {args.output}")
     nemo_path = args.nemo.resolve()
     audio_path = args.audio.resolve()
     if not nemo_path.is_file() or nemo_path.stat().st_size != ARCHIVE_SIZE:
