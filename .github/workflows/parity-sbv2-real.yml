@@ -326,9 +326,28 @@ jobs:
           set -euo pipefail
           uv run --project "${PARITY_PROJECT}" --frozen python - <<'PYEOF'
           import os
+          import time
+          from huggingface_hub.errors import HfHubHTTPError
           from huggingface_hub import snapshot_download
 
-          snapshot_download(
+          def snapshot_download_with_429_retry(**kwargs):
+              delays = (15, 30, 60)
+              for attempt in range(len(delays) + 1):
+                  try:
+                      return snapshot_download(**kwargs)
+                  except HfHubHTTPError as exc:
+                      status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                      if status_code != 429 or attempt == len(delays):
+                          raise
+                      delay = delays[attempt]
+                      print(
+                          f"snapshot_download HTTP 429; retry {attempt + 2}/4 after {delay}s",
+                          flush=True,
+                      )
+                      time.sleep(delay)
+              raise AssertionError("unreachable retry state")
+
+          snapshot_download_with_429_retry(
               repo_id=os.environ["BERT_JA_HF_REPO"],
               revision=os.environ["BERT_JA_REVISION"],
               repo_type="model",
@@ -342,7 +361,7 @@ jobs:
               # vokra.bert.tokenizer.pieces").
               allow_patterns=["*.safetensors", "*.json", "vocab.txt"],
           )
-          snapshot_download(
+          snapshot_download_with_429_retry(
               repo_id=os.environ["BERT_EN_HF_REPO"],
               revision=os.environ["BERT_EN_REVISION"],
               repo_type="model",
@@ -373,9 +392,28 @@ jobs:
           set -euo pipefail
           uv run --project "${PARITY_PROJECT}" --frozen python - <<'PYEOF'
           import os
+          import time
+          from huggingface_hub.errors import HfHubHTTPError
           from huggingface_hub import snapshot_download
 
-          snapshot_download(
+          def snapshot_download_with_429_retry(**kwargs):
+              delays = (15, 30, 60)
+              for attempt in range(len(delays) + 1):
+                  try:
+                      return snapshot_download(**kwargs)
+                  except HfHubHTTPError as exc:
+                      status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                      if status_code != 429 or attempt == len(delays):
+                          raise
+                      delay = delays[attempt]
+                      print(
+                          f"snapshot_download HTTP 429; retry {attempt + 2}/4 after {delay}s",
+                          flush=True,
+                      )
+                      time.sleep(delay)
+              raise AssertionError("unreachable retry state")
+
+          snapshot_download_with_429_retry(
               repo_id=os.environ["BERT_ZH_HF_REPO"],
               revision=os.environ["BERT_ZH_REVISION"],
               repo_type="model",
