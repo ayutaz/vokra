@@ -3,8 +3,9 @@
   "lock_sha256": "3a7809a06bcaa9e18d89c8fab77860054098726a8cfcd51a658cf461c5c89d42",
   "pyproject_sha256": "adf757e1349d365dcda13c4944dbdd435470e9db4c201049e8f49bfba60bfecb",
   "package_rows_sha256": "18286b29a4e3605c960603c9e754a298a2866f35e7487a7cb45c60881cad7801",
+  "gradio_client_source_evidence_sha256": "3e582bc2dc7651e3f7196786d3b222d1cf1d00c932f136e516cdb8c3696e3c12",
   "review_rows_sha256": "2831ee9dcc32e5ed5bbfdf327c1480007f2ef1e48353f554161b71a114b00fe3",
-  "approval_scope_sha256": "be2f17eaee871b84c780ca96fffeb452adcff8878fba7e88340ecb324811087a",
+  "approval_scope_sha256": "0491b036e0e8feffbee30c730e2b5d8a19ca034664b58cfac64a5a81a30ab2d3",
   "variants": [
     {"slug":"0.6b","repo":"Qwen/Qwen3-ASR-0.6B","revision":"5eb144179a02acc5e5ba31e748d22b0cf3e303b0","model_kind":"qwen3-asr-0.6b","cpu_test":"qwen3_asr_0_6b_cpu_matches_official_reference"},
     {"slug":"1.7b","repo":"Qwen/Qwen3-ASR-1.7B","revision":"7278e1e70fe206f11671096ffdd38061171dd6e5","model_kind":"qwen3-asr-1.7b","cpu_test":"qwen3_asr_1_7b_cpu_matches_official_reference"}

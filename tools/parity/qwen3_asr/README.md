@@ -30,6 +30,19 @@ human review records an approval digest equal to the complete scope digest.
 The gate also rejects `UNRESOLVED` rows even if an approval-shaped value is
 later supplied.
 
+The factual source-mapping record
+`gradio_client_2_5_0_source_evidence.json` binds both exact PyPI 2.5.0
+artifacts (sdist and wheel), their upload timestamps and Sigstore/Trusted
+Publishing provenance, and the four exact source blobs at the upstream commit
+`43f5de68579919b0632ceb6107a99c629483ea2f`. Its SHA-256 is included in the
+manifest and operator approval scope. This closes only the factual
+source-mapping gap for `gradio-client`; the package row remains
+`PENDING_REVIEW`, operator approval remains pending, and publication remains
+`NO_UPLOAD`. Any changed, duplicate-key, missing, or mismatched evidence is a
+preflight block. The dependency audit reports this row as
+`SOURCE_MAPPING_EVIDENCE_COMPLETE_PENDING_REVIEW` and still cannot make the
+overall audit or owner gate pass.
+
 The factual-audit route is a separately authorized, named VAST/Linux setup
 step. It performs only the exact frozen environment sync (no model download,
 reference execution, or Cargo):

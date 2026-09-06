@@ -107,6 +107,7 @@ MODEL_INFO_TREE_SHA256 = {
     "Qwen/Qwen3-ASR-1.7B": "3ff7cffe4d90d319a5433ff27ffecad06bddb992508df1dc48d2ecb37d970537",
 }
 MAX_MODEL_INFO_REDIRECTS = 3
+GRADIO_CLIENT_IDENTITY = ("gradio-client", "2.5.0")
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -271,6 +272,11 @@ def _license_metadata_satisfied(
             sdist_license_evidence is not None
             and sdist_license_evidence.get("status") == "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES"
             and bool(sdist_license_evidence.get("license_files"))
+        )
+        or (
+            sdist_license_evidence is not None
+            and sdist_license_evidence.get("status")
+            == "SOURCE_MAPPING_EVIDENCE_COMPLETE_PENDING_REVIEW"
         )
     )
 
@@ -966,6 +972,11 @@ def audit_environment(
         raise ValueError("uv.lock bytes do not match the reviewed preflight digest")
     if sha256_file(pyproject_path) != preflight_gate.PYPROJECT_SHA256:
         raise ValueError("pyproject.toml bytes do not match the reviewed preflight digest")
+    gradio_source_evidence, gradio_source_evidence_sha256 = (
+        preflight_gate.load_gradio_client_source_evidence(
+            project / preflight_gate.GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME
+        )
+    )
 
     all_rows = sorted(lock["package"], key=lambda row: (row["name"], row["version"], canonical_json(row["source"])))
     expected, inactive_reasons = _active_lock_graph(lock)
@@ -984,6 +995,16 @@ def audit_environment(
     failures: list[str] = []
     dependency_acquisition_rows: list[dict[str, Any]] = []
     dependency_acquisition_not_needed: list[dict[str, Any]] = []
+    source_mapping_evidence: dict[str, Any] = {
+        "gradio-client@2.5.0": {
+            "status": "SOURCE_MAPPING_EVIDENCE_COMPLETE_PENDING_REVIEW",
+            "sha256": gradio_source_evidence_sha256,
+            "artifact_filenames": [
+                item["filename"] for item in gradio_source_evidence["package"]["artifacts"]
+            ],
+            "source_paths": [item["path"] for item in gradio_source_evidence["source_files"]],
+        }
+    }
 
     def acquisition_row(row: dict[str, Any]) -> dict[str, Any]:
         artifact = row.get("sdist") if isinstance(row.get("sdist"), dict) else {}
@@ -1021,7 +1042,23 @@ def audit_environment(
                     "status": "NOT_NEEDED",
                 }
             )
-        if not publisher_files:
+        if acquisition_key == GRADIO_CLIENT_IDENTITY and not publisher_files:
+            sdist_license_evidence = {
+                "status": "SOURCE_MAPPING_EVIDENCE_COMPLETE_PENDING_REVIEW",
+                "package": row["name"],
+                "version": row["version"],
+                "evidence_sha256": gradio_source_evidence_sha256,
+                "license_files": [],
+            }
+            dependency_acquisition_not_needed.append(
+                {
+                    "package": row["name"],
+                    "version": row["version"],
+                    "url": row.get("sdist", {}).get("url") if isinstance(row.get("sdist"), dict) else None,
+                    "status": "SOURCE_MAPPING_EVIDENCE_COMPLETE_PENDING_REVIEW",
+                }
+            )
+        elif not publisher_files:
             if acquisition_key in MISSING_PUBLISHER_LICENSE_ROWS:
                 request = acquisition_row(row)
                 dependency_acquisition_rows.append(request)
@@ -1094,6 +1131,10 @@ def audit_environment(
             "installed closure mismatch: "
             + canonical_json({"missing": missing, "unexpected": unexpected})
         )
+    failures.append(
+        "OWNER_REVIEW_REQUIRED: gradio-client==2.5.0 source mapping is evidence-complete; "
+        "the package review row remains PENDING_REVIEW"
+    )
     return {
         "schema": SCHEMA,
         "repository": _repository_identity(project),
@@ -1130,6 +1171,7 @@ def audit_environment(
             "model_files": [],
         },
         "packages": packages,
+        "source_mapping_evidence": source_mapping_evidence,
         "failures": sorted(failures),
     }
 
@@ -1516,6 +1558,41 @@ def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
 
 def self_test() -> int:
     project = Path(__file__).resolve().parent
+    evidence_path = project / preflight_gate.GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME
+    evidence, evidence_sha256 = preflight_gate.load_gradio_client_source_evidence(evidence_path)
+    assert evidence_sha256 == preflight_gate.GRADIO_CLIENT_SOURCE_EVIDENCE_SHA256
+    assert evidence["package"]["artifacts"][0]["bytes"] == 59013
+    for mutation in ("artifact-hash", "source-blob", "commit"):
+        tampered = copy.deepcopy(evidence)
+        if mutation == "artifact-hash":
+            tampered["package"]["artifacts"][0]["sha256"] = "0" * 64
+        elif mutation == "source-blob":
+            tampered["source_files"][0]["git_blob"] = "0" * 40
+        else:
+            tampered["source_commit"] = "0" * 40
+        try:
+            preflight_gate.validate_gradio_client_source_evidence(tampered)
+        except ValueError:
+            pass
+        else:
+            print(f"qwen3-asr dependency audit: gradio evidence {mutation} accepted", file=sys.stderr)
+            return 1
+    try:
+        preflight_gate.strict_json_loads('{"schema":"x","schema":"y"}')
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: duplicate gradio evidence key accepted", file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory(prefix="qwen3-asr-gradio-evidence-") as directory:
+        missing_evidence = Path(directory) / evidence_path.name
+        try:
+            preflight_gate.load_gradio_client_source_evidence(missing_evidence)
+        except ValueError:
+            pass
+        else:
+            print("qwen3-asr dependency audit: missing gradio evidence accepted", file=sys.stderr)
+            return 1
     lock = tomllib.loads((project / "uv.lock").read_text(encoding="utf-8"))
     assert len(_active_lock_packages(lock)) == 91
     expected_torch = {"2.13.0"} if sys.platform == "darwin" else {"2.13.0+cpu"}

@@ -28,6 +28,13 @@ PYPROJECT_SHA256 = "adf757e1349d365dcda13c4944dbdd435470e9db4c201049e8f49bfba60b
 REFERENCE_AUDIO_SHA256 = "241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME = "gradio_client_2_5_0_source_evidence.json"
+GRADIO_CLIENT_SOURCE_EVIDENCE_SCHEMA = "vokra-qwen3-asr-gradio-client-source-evidence-v1"
+GRADIO_CLIENT_SOURCE_EVIDENCE_SHA256 = "3e582bc2dc7651e3f7196786d3b222d1cf1d00c932f136e516cdb8c3696e3c12"
+GRADIO_CLIENT_SOURCE_COMMIT = "43f5de68579919b0632ceb6107a99c629483ea2f"
+GRADIO_CLIENT_SOURCE_REPOSITORY = "gradio-app/gradio"
+GRADIO_CLIENT_PACKAGE = "gradio-client"
+GRADIO_CLIENT_VERSION = "2.5.0"
 PYTORCH_CPU_REGISTRY = "https://download.pytorch.org/whl/cpu"
 PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE = {
     (
@@ -128,6 +135,106 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def strict_json_loads(text: str) -> Any:
     """Parse gate JSON without accepting last-key-wins duplicate objects."""
     return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+
+
+def validate_gradio_client_source_evidence(value: Any) -> None:
+    """Validate the fixed primary-source mapping without inferring approval."""
+    expected_artifacts = [
+        {
+            "kind": "sdist",
+            "filename": "gradio_client-2.5.0.tar.gz",
+            "url": "https://files.pythonhosted.org/packages/e8/e6/6b6029f5fe2ad7f1211105d530e34d991014c2cae463f9223033031cfc4f/gradio_client-2.5.0.tar.gz",
+            "bytes": 59013,
+            "sha256": "4cde99bad62149595c30c90876ca2e405e3a13687ecf895474f3412cb476673d",
+            "upload_time": "2026-04-20T23:16:21.518Z",
+            "sigstore_entry": 1343702326,
+            "integrity_url": "https://pypi.org/integrity/gradio-client/2.5.0/gradio_client-2.5.0.tar.gz/provenance",
+        },
+        {
+            "kind": "wheel",
+            "filename": "gradio_client-2.5.0-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/78/81/0a861b8e1ff42960139c6cd4c7dd591292fa09ea1ae2d87677441cba4c00/gradio_client-2.5.0-py3-none-any.whl",
+            "bytes": 59952,
+            "sha256": "d43e2179c29076292a76485ad7ed2e6eaa19d14ac58283bd7f5beabfe4ca958c",
+            "upload_time": "2026-04-20T23:16:20.186Z",
+            "sigstore_entry": 1343702371,
+            "integrity_url": "https://pypi.org/integrity/gradio-client/2.5.0/gradio_client-2.5.0-py3-none-any.whl/provenance",
+        },
+    ]
+    expected_sources = [
+        {
+            "path": "client/python/gradio_client/package.json",
+            "git_blob": "aeaddd5b21f53e9b5d121f8a9cadb2a3e0e8700d",
+            "bytes": 132,
+            "sha256": "c5b4ca18417503a049c351fd5af142436f2464d4cd85d14cec4fe66239e07b90",
+            "url": f"https://github.com/{GRADIO_CLIENT_SOURCE_REPOSITORY}/blob/{GRADIO_CLIENT_SOURCE_COMMIT}/client/python/gradio_client/package.json",
+            "declarations": {"version": "2.5.0"},
+        },
+        {
+            "path": "client/python/pyproject.toml",
+            "git_blob": "c7dcf0846f28d69ae5ef19d35027eed15f10ec34",
+            "bytes": 2141,
+            "sha256": "6ae27b2aa511b1f84305d601e948dfb22021c8488d3025a66e01612879745787",
+            "url": f"https://github.com/{GRADIO_CLIENT_SOURCE_REPOSITORY}/blob/{GRADIO_CLIENT_SOURCE_COMMIT}/client/python/pyproject.toml",
+            "declarations": {
+                "project": "gradio_client",
+                "dynamic_version_path": "gradio_client/package.json",
+                "license": "Apache-2.0",
+            },
+        },
+        {
+            "path": "LICENSE",
+            "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+            "bytes": 11357,
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "url": f"https://github.com/{GRADIO_CLIENT_SOURCE_REPOSITORY}/blob/{GRADIO_CLIENT_SOURCE_COMMIT}/LICENSE",
+            "declarations": {"license": "Apache-2.0"},
+        },
+        {
+            "path": ".github/workflows/publish.yml",
+            "git_blob": "90ce46c10e1d22311344aebc4def23049ab6a758",
+            "bytes": 3272,
+            "sha256": "c880b48223142ac679714df18e4f7ddb127e9cbc567125e11d1008231897e9a6",
+            "url": f"https://github.com/{GRADIO_CLIENT_SOURCE_REPOSITORY}/blob/{GRADIO_CLIENT_SOURCE_COMMIT}/.github/workflows/publish.yml",
+            "declarations": {"workflow": ".github/workflows/publish.yml"},
+        },
+    ]
+    expected = {
+        "schema": GRADIO_CLIENT_SOURCE_EVIDENCE_SCHEMA,
+        "package": {
+            "name": GRADIO_CLIENT_PACKAGE,
+            "version": GRADIO_CLIENT_VERSION,
+            "pypi_project_url": "https://pypi.org/project/gradio-client/2.5.0/",
+            "artifacts": expected_artifacts,
+        },
+        "trusted_publishing": {
+            "repository": GRADIO_CLIENT_SOURCE_REPOSITORY,
+            "workflow": ".github/workflows/publish.yml",
+            "ref": "refs/heads/main",
+            "commit": GRADIO_CLIENT_SOURCE_COMMIT,
+            "event": "push",
+        },
+        "source_commit": GRADIO_CLIENT_SOURCE_COMMIT,
+        "source_files": expected_sources,
+        "license": "Apache-2.0",
+        "factual_status": "SOURCE_MAPPING_EVIDENCE_COMPLETE",
+        "package_review_status": "PENDING_REVIEW",
+        "operator_approval": "PENDING",
+        "publication": "NO_UPLOAD",
+    }
+    if not isinstance(value, dict) or set(value) != set(expected):
+        raise ValueError("gradio-client source evidence schema drifted")
+    if value != expected:
+        raise ValueError("gradio-client source evidence identity drifted")
+
+
+def load_gradio_client_source_evidence(path: Path) -> tuple[dict[str, Any], str]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("gradio-client source evidence is missing")
+    raw = path.read_bytes()
+    evidence = strict_json_loads(raw.decode("utf-8"))
+    validate_gradio_client_source_evidence(evidence)
+    return evidence, digest_bytes(raw)
 
 
 def _artifact(value: Any, *, allow_missing_size: bool = False) -> dict[str, Any]:
@@ -300,7 +407,12 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         return blocked(f"gate inputs are unreadable: {exc}")
     if not isinstance(manifest, dict):
         return blocked("gate manifest root must be an object")
-    if set(manifest) != {"gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "review_rows", "review_rows_sha256", "variants", "model_identities", "reference_audio", "approval_scope_sha256", "operator_approval"}:
+    if set(manifest) != {
+        "gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256",
+        "review_rows", "review_rows_sha256", "variants", "model_identities",
+        "reference_audio", "gradio_client_source_evidence_sha256",
+        "approval_scope_sha256", "operator_approval",
+    }:
         return blocked("gate manifest schema drifted")
     if manifest.get("gate_version") != GATE_VERSION:
         return blocked("unsupported gate manifest version")
@@ -317,6 +429,42 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         return blocked("pyproject.toml bytes are not the reviewed exact project")
     if canonical_digest(rows) != manifest.get("package_rows_sha256"):
         return blocked("canonical version/source/marker/dependency rows drifted")
+    gradio_evidence_path = manifest_path.with_name(GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME)
+    try:
+        gradio_evidence, gradio_evidence_sha256 = load_gradio_client_source_evidence(gradio_evidence_path)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return blocked(f"gradio-client source evidence is invalid: {exc}")
+    if (
+        manifest.get("gradio_client_source_evidence_sha256") != GRADIO_CLIENT_SOURCE_EVIDENCE_SHA256
+        or gradio_evidence_sha256 != GRADIO_CLIENT_SOURCE_EVIDENCE_SHA256
+    ):
+        return blocked("gradio-client source evidence digest is not the reviewed exact evidence")
+    gradio_lock_rows = [
+        row for row in lock["package"]
+        if row.get("name") == GRADIO_CLIENT_PACKAGE and row.get("version") == GRADIO_CLIENT_VERSION
+    ]
+    if len(gradio_lock_rows) != 1:
+        return blocked("gradio-client exact lock row is missing or duplicated")
+    gradio_lock_row = gradio_lock_rows[0]
+    gradio_lock_artifacts = [gradio_lock_row.get("sdist"), *(gradio_lock_row.get("wheels") or [])]
+    gradio_evidence_artifacts = gradio_evidence["package"]["artifacts"]
+    if len(gradio_lock_artifacts) != len(gradio_evidence_artifacts) or any(
+        not isinstance(lock_artifact, dict)
+        or {
+            "url": lock_artifact.get("url"),
+            "hash": lock_artifact.get("hash"),
+            "size": lock_artifact.get("size"),
+            "upload-time": lock_artifact.get("upload-time"),
+        }
+        != {
+            "url": evidence_artifact["url"],
+            "hash": f"sha256:{evidence_artifact['sha256']}",
+            "size": evidence_artifact["bytes"],
+            "upload-time": evidence_artifact["upload_time"],
+        }
+        for lock_artifact, evidence_artifact in zip(gradio_lock_artifacts, gradio_evidence_artifacts)
+    ):
+        return blocked("gradio-client exact sdist/wheel identities are not bound to uv.lock")
     identities = [f'{row["name"]}@{row["version"]}' for row in rows]
     review_rows = manifest.get("review_rows")
     if not isinstance(review_rows, list):
@@ -362,6 +510,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         "variants": VARIANTS,
         "model_identities": model_identities,
         "reference_audio": audio,
+        "gradio_client_source_evidence_sha256": manifest["gradio_client_source_evidence_sha256"],
         "review_rows": review_rows,
     }
     scope_sha256 = canonical_digest(scope)
@@ -443,6 +592,10 @@ def self_test() -> int:
         test_project.mkdir()
         shutil.copy2(project / "uv.lock", test_project / "uv.lock")
         shutil.copy2(project / "pyproject.toml", test_project / "pyproject.toml")
+        shutil.copy2(
+            project / GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME,
+            root / GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME,
+        )
         # Complete only the disposable baseline with positive fixture sizes so
         # this self-test exercises the approved path as well as the strict
         # missing-size rejection above. Production accepts missing sizes only
@@ -462,6 +615,7 @@ def self_test() -> int:
         approved = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         approved["lock_sha256"] = test_lock_sha
         approved["package_rows_sha256"] = canonical_digest(test_rows)
+        approved["gradio_client_source_evidence_sha256"] = GRADIO_CLIENT_SOURCE_EVIDENCE_SHA256
         for row in approved["review_rows"]:
             row.update({"status": "REVIEWED", "license": "SELF_TEST", "native_review": "SELF_TEST", "bundled_review": "SELF_TEST", "evidence": "self-test-evidence"})
         for identity in approved["model_identities"]:
@@ -474,6 +628,7 @@ def self_test() -> int:
             "variants": VARIANTS,
             "model_identities": approved["model_identities"],
             "reference_audio": approved["reference_audio"],
+            "gradio_client_source_evidence_sha256": approved["gradio_client_source_evidence_sha256"],
             "review_rows": approved["review_rows"],
         }
         approved["approval_scope_sha256"] = canonical_digest(scope)
@@ -539,6 +694,28 @@ def self_test() -> int:
                 return 1
         if not assert_blocked("audio-tamper", lambda value: value["reference_audio"].update(sha256="2" * 64)):
             print("qwen3-asr preflight gate: audio tamper self-test failed", file=sys.stderr)
+            return 1
+        evidence_path = root / GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME
+        evidence_bytes = evidence_path.read_bytes()
+        evidence_path.write_bytes(evidence_bytes.replace(b"gradio-client", b"tampered-client", 1))
+        ok, _ = validate(test_project, approved_manifest, evidence)
+        evidence_path.write_bytes(evidence_bytes)
+        if ok:
+            print("qwen3-asr preflight gate: gradio source evidence tamper self-test failed", file=sys.stderr)
+            return 1
+        if not assert_blocked(
+            "gradio-evidence-digest-tamper",
+            lambda value: value.update(gradio_client_source_evidence_sha256="5" * 64),
+        ):
+            print("qwen3-asr preflight gate: gradio evidence digest tamper self-test failed", file=sys.stderr)
+            return 1
+        duplicate_gradio = root / "duplicate-gradio-evidence.json"
+        duplicate_gradio.write_text('{"schema":"v1","schema":"v1"}', encoding="utf-8")
+        evidence_path.write_bytes(duplicate_gradio.read_bytes())
+        ok, _ = validate(test_project, approved_manifest, evidence)
+        evidence_path.write_bytes(evidence_bytes)
+        if ok:
+            print("qwen3-asr preflight gate: duplicate gradio evidence key accepted", file=sys.stderr)
             return 1
         def unresolved_row(value: dict[str, Any]) -> None:
             value["review_rows"][0]["native_review"] = "UNRESOLVED"
