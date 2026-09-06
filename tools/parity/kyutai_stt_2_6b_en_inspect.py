@@ -26,6 +26,8 @@ MAX_HEADER=64*1024*1024
 ROLES=("configs/config-stt-en-hf.toml","scripts/stt_evaluate_on_dataset.py","scripts/stt_from_file_mlx.py","scripts/stt_from_file_pytorch.py","scripts/stt_from_file_rust_server.py","scripts/stt_from_file_with_prompt_pytorch.py","scripts/stt_from_mic_mlx.py","scripts/stt_from_mic_rust_server.py","stt-rs/src/main.rs","README.md","LICENSE-APACHE","LICENSE-MIT")
 MOSHI_ROLES=("moshi/moshi/models/lm.py","moshi/moshi/models/lm_utils.py","moshi/moshi/models/loaders.py","moshi/moshi/conditioners/__init__.py","moshi/moshi/conditioners/base.py","moshi/moshi/conditioners/tensors.py","moshi/moshi/conditioners/text.py","rust/moshi-core/src/lm.rs","rust/moshi-core/src/lm_generate.rs","rust/moshi-core/src/lm_generate_multistream.rs","rust/moshi-core/src/mimi.rs","rust/moshi-core/src/conditioner.rs")
 HEX40=re.compile(r"^[0-9a-f]{40}$"); HEX64=re.compile(r"^[0-9a-f]{64}$")
+APPROVAL_SCHEMA="vokra-kyutai-stt-2.6b-en-approval-v1"
+APPROVAL_SCOPE="KYUTAI_STT_2_6B_EN_INSPECTION"
 
 def require_fixed_model_files(names:set[str])->None:
  if LEGACY_TOKENIZER_NAME in names: raise ValueError("legacy tokenizer filename is not accepted")
@@ -37,6 +39,36 @@ def sha(path:Path)->str:
  with path.open("rb") as f:
   for b in iter(lambda:f.read(1<<20),b""): h.update(b)
  return h.hexdigest()
+
+def approval_file(raw_path:Path|str)->Path:
+ raw=str(raw_path)
+ if not raw or not raw.startswith("/") or "//" in raw or "/./" in raw or "/../" in raw or raw.endswith(("/.","/..")):
+  raise ValueError("approval path must be absolute and dot-free")
+ path=Path(raw)
+ if not path.is_absolute() or any(part in ("", ".", "..") for part in path.parts[1:]):
+  raise ValueError("approval path must be absolute and dot-free")
+ current=Path("/")
+ for part in path.parts[1:]:
+  current /= part
+  if current.is_symlink(): raise ValueError("approval path contains a symlink ancestor")
+ if not path.is_file() or path.is_symlink(): raise ValueError("approval evidence must be a regular file")
+ return path
+
+def validate_approval(path:Path|str, expected_head:str, expected_sha256:str, repo_root:Path|None=None)->dict[str,Any]:
+ if not HEX40.fullmatch(expected_head): raise ValueError("expected_head must be lowercase HEX40")
+ if not HEX64.fullmatch(expected_sha256): raise ValueError("approval_sha256 must be lowercase HEX64")
+ path=approval_file(path)
+ if repo_root is not None:
+  root=repo_root.resolve(); resolved=path.resolve()
+  if resolved==root or root in resolved.parents: raise ValueError("approval evidence must be outside the checkout")
+ raw=path.read_bytes()
+ if hashlib.sha256(raw).hexdigest()!=expected_sha256: raise ValueError("approval evidence SHA-256 mismatch")
+ data=json.loads(raw.decode("utf-8"),object_pairs_hook=unique)
+ keys={"schema","status","decision","expected_head","model_repository","model_revision","source_repository","source_revision","moshi_repository","moshi_revision","no_upload","scope"}
+ if not isinstance(data,dict) or set(data)!=keys: raise ValueError("approval schema is not exact")
+ expected={"schema":APPROVAL_SCHEMA,"status":"APPROVED","decision":"APPROVED_FOR_NO_UPLOAD_INSPECTION","expected_head":expected_head,"model_repository":REPO,"model_revision":REV,"source_repository":SOURCE_URL,"source_revision":SOURCE_REV,"moshi_repository":MOSHI_URL,"moshi_revision":MOSHI_REV,"no_upload":True,"scope":APPROVAL_SCOPE}
+ if data!=expected: raise ValueError("approval identity/scope mismatch")
+ return data
 def blob(path:Path)->str:
  h=hashlib.sha1(); h.update(f"blob {path.stat().st_size}\0".encode())
  with path.open("rb") as f:
@@ -186,7 +218,12 @@ def write_manifest_no_replace(evidence:Path, manifest:dict[str,Any])->None:
   except FileNotFoundError: pass
 def inspect(a:argparse.Namespace)->int:
  m=base()
+ m["expected_head"]=a.expected_head
+ m["approval_sha256"]=a.approval_sha256
  try:
+  approval=getattr(a,"approval_data",None)
+  if approval is None: approval=validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256,Path(__file__).resolve().parents[2])
+  m["approval_decision"]=approval["decision"]; m["approval_scope"]=approval["scope"]
   snap=Path(a.snapshot); m["server_tree"]=server_tree(json.loads(Path(a.server_tree).read_text(encoding="utf-8"),object_pairs_hook=unique),snap); fs=files(snap)
   require_fixed_model_files(set(fs))
   if sum(p.stat().st_size for p in fs.values())!=TOTAL: raise ValueError("fixed six-file tree/total mismatch")
@@ -226,6 +263,10 @@ def self_test()->None:
  try:json.loads('{"x":1,"x":2}',object_pairs_hook=unique)
  except ValueError:pass
  else:raise AssertionError("duplicate JSON key accepted")
+ for bad in ("", ".", "../approval.json", "/tmp/./approval.json", "/tmp/../approval.json"):
+  try: approval_file(bad)
+  except ValueError: pass
+  else: raise AssertionError("unsafe approval path accepted")
  try:json.loads('{"x":{"dtype":"F32","dtype":"BF16"}}',object_pairs_hook=unique)
  except ValueError:pass
  else:raise AssertionError("duplicate descriptor key accepted")
@@ -233,8 +274,32 @@ def self_test()->None:
   try:safe(bad)
   except ValueError:pass
   else:raise AssertionError("unsafe path accepted")
- with tempfile.TemporaryDirectory(prefix="kyutai-stt-") as d:
+ with tempfile.TemporaryDirectory(prefix=".kyutai-stt-",dir=Path.cwd()) as d:
   root=Path(d)/"s";root.mkdir(); p=root/"x";p.write_text("x")
+  head="a"*40
+  approval_data={"schema":APPROVAL_SCHEMA,"status":"APPROVED","decision":"APPROVED_FOR_NO_UPLOAD_INSPECTION","expected_head":head,"model_repository":REPO,"model_revision":REV,"source_repository":SOURCE_URL,"source_revision":SOURCE_REV,"moshi_repository":MOSHI_URL,"moshi_revision":MOSHI_REV,"no_upload":True,"scope":APPROVAL_SCOPE}
+  approval=Path(d)/"approval.json"; approval.write_text(json.dumps(approval_data,sort_keys=True,separators=(",",":"))+"\n")
+  approval_digest=sha(approval); assert validate_approval(approval,head,approval_digest)==approval_data
+  try: validate_approval(approval,head,approval_digest,Path.cwd())
+  except ValueError: pass
+  else: raise AssertionError("checkout-contained approval accepted")
+  try: validate_approval(approval,head,"0"*64)
+  except ValueError: pass
+  else: raise AssertionError("wrong approval SHA accepted")
+  for key,value in (("expected_head","b"*40),("scope","WRONG"),("source_revision","0"*40)):
+   approval.write_text(json.dumps(dict(approval_data,**{key:value}),sort_keys=True,separators=(",",":"))+"\n")
+   try: validate_approval(approval,head,sha(approval))
+   except ValueError: pass
+   else: raise AssertionError("invalid approval identity accepted")
+  approval.write_text('{"schema":"x","schema":"y"}\n')
+  try: validate_approval(approval,head,sha(approval))
+  except ValueError: pass
+  else: raise AssertionError("duplicate approval key accepted")
+  approval.write_text(json.dumps(approval_data,sort_keys=True,separators=(",",":"))+"\n")
+  approval_link=Path(d)/"approval-link.json"; approval_link.symlink_to(approval)
+  try: validate_approval(approval_link,head,approval_digest)
+  except ValueError: pass
+  else: raise AssertionError("symlink approval accepted")
   (root/".cache").mkdir();(root/".cache"/"bad.json").write_text("{}")
   assert set(files(root))=={"x"}
   packet={"repository":REPO,"revision":REV,"resolved_revision":REV,"files":[{"path":"x","type":"file","size":1,"git_blob_sha1":"1"*40,"lfs_sha256":sha(p)}]}
@@ -286,10 +351,10 @@ def self_test()->None:
   try:archive_inventory(duplicate_archive)
   except ValueError:pass
   else:raise AssertionError("duplicate archive member accepted")
-  out=Path(d)/"e"; out.mkdir(); assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out)))==2
+  out=Path(d)/"e"; out.mkdir(); assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out),expected_head="0"*40,approval_evidence=str(root/"missing-approval.json"),approval_sha256="0"*64))==2
   mm=json.loads((out/"manifest.json").read_text()); assert mm["inspection_status"]=="INSPECTION_ERROR"
   preserved=out/"manifest.json"; before=preserved.read_bytes()
-  assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out)))==2
+  assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out),expected_head="0"*40,approval_evidence=str(root/"missing-approval.json"),approval_sha256="0"*64))==2
   assert preserved.read_bytes()==before
   assert not list(out.glob(".manifest.*"))
   fd_failure=Path(d)/"fd-failure"; fd_failure.mkdir()
@@ -305,9 +370,26 @@ def self_test()->None:
   assert closed and not list(fd_failure.iterdir())
  print("kyutai STT inspector self-test PASS")
 def main()->int:
- p=argparse.ArgumentParser();p.add_argument("--self-test",action="store_true");p.add_argument("--snapshot");p.add_argument("--server-tree");p.add_argument("--source");p.add_argument("--moshi-source");p.add_argument("--evidence",default="evidence");a=p.parse_args()
- if a.self_test:self_test();return 0
+ p=argparse.ArgumentParser();p.add_argument("--self-test",action="store_true");p.add_argument("--validate-approval",action="store_true");p.add_argument("--snapshot");p.add_argument("--server-tree");p.add_argument("--source");p.add_argument("--moshi-source");p.add_argument("--evidence",default="evidence");p.add_argument("--expected-head");p.add_argument("--approval-evidence");p.add_argument("--approval-sha256");a=p.parse_args()
+ if a.self_test:
+  if any(v is not None for v in (a.snapshot,a.server_tree,a.source,a.moshi_source,a.expected_head,a.approval_evidence,a.approval_sha256)) or a.evidence!="evidence" or a.validate_approval: p.error("--self-test accepts no other arguments")
+  self_test();return 0
+ def require_clean_checkout() -> Path:
+  root=Path(__file__).resolve().parents[2]
+  try:
+   head=subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True,stderr=subprocess.STDOUT).strip()
+   dirty=subprocess.check_output(["git","-C",str(root),"status","--porcelain","--untracked-files=all"],text=True,stderr=subprocess.STDOUT)
+  except (OSError,subprocess.CalledProcessError) as exc: raise SystemExit(f"checkout identity unavailable: {exc}") from exc
+  if dirty or not a.expected_head or head!=a.expected_head: raise SystemExit("checkout must be clean and match --expected-head before approval validation")
+  return root
+ if a.validate_approval:
+  root=require_clean_checkout()
+  if any(v is not None for v in (a.snapshot,a.server_tree,a.source,a.moshi_source)) or a.evidence!="evidence" or not all((a.expected_head,a.approval_evidence,a.approval_sha256)): p.error("--validate-approval requires only approval evidence, SHA, and expected HEAD")
+  validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256,root); print("Kyutai STT approval: PASS"); return 0
+ root=require_clean_checkout()
+ approval_data=validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256,root)
  require_vast()
- if not a.snapshot or not a.server_tree:p.error("snapshot and server-tree required")
+ if not a.snapshot or not a.server_tree or not all((a.expected_head,a.approval_evidence,a.approval_sha256)):p.error("snapshot, server-tree, approval evidence, SHA, and expected HEAD required")
+ a.approval_data=approval_data
  return inspect(a)
 if __name__=="__main__":raise SystemExit(main())

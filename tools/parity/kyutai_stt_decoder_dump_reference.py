@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import re
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,10 @@ AUDIO_CODES = [[(frame * 37 + channel * 11) % AUDIO_CARD for channel in range(N_
 OUTPUT_NAMES = ("input.json", "hidden.f32", "logits.f32", "manifest.json")
 MOSHI_ROLES = ("moshi/moshi/models/lm.py", "moshi/moshi/models/lm_utils.py", "moshi/moshi/models/loaders.py")
 DSM_ROLES = ("configs/config-stt-en-hf.toml", "scripts/stt_from_file_pytorch.py")
+APPROVAL_SCHEMA = "vokra-kyutai-stt-decoder-approval-v1"
+APPROVAL_SCOPE = "KYUTAI_STT_DECODER_PARITY"
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def expected_tensor_manifest() -> list[dict[str, Any]]:
@@ -146,6 +151,52 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def approval_file(raw_path: Path | str) -> Path:
+    raw = str(raw_path)
+    if not raw or not raw.startswith("/") or "//" in raw or "/./" in raw or "/../" in raw or raw.endswith(("/.", "/..")):
+        raise ValueError("approval path must be absolute and dot-free")
+    path = Path(raw)
+    current = Path("/")
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise ValueError("approval path contains a symlink ancestor")
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("approval evidence must be a regular file")
+    return path
+
+
+def validate_approval(path: Path | str, expected_head: str, expected_sha256: str, repo_root: Path | None = None) -> dict[str, Any]:
+    if not HEX40.fullmatch(expected_head) or not HEX64.fullmatch(expected_sha256):
+        raise ValueError("approval binding must use lowercase HEAD40 and SHA25664")
+    path = approval_file(path)
+    if repo_root is not None:
+        root = repo_root.resolve()
+        resolved = path.resolve()
+        if resolved == root or root in resolved.parents:
+            raise ValueError("approval evidence must be outside the checkout")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("approval evidence SHA-256 mismatch")
+    data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+    keys = {"schema", "status", "decision", "expected_head", "model_repository", "model_revision", "source_repository", "source_revision", "moshi_repository", "moshi_revision", "no_upload", "scope"}
+    if not isinstance(data, dict) or set(data) != keys:
+        raise ValueError("approval schema is not exact")
+    expected = {"schema": APPROVAL_SCHEMA, "status": "APPROVED", "decision": "APPROVED_FOR_NO_UPLOAD_PARITY", "expected_head": expected_head, "model_repository": HF_REPOSITORY, "model_revision": HF_REVISION, "source_repository": DSM_REPOSITORY, "source_revision": DSM_REVISION, "moshi_repository": MOSHI_REPOSITORY, "moshi_revision": MOSHI_REVISION, "no_upload": True, "scope": APPROVAL_SCOPE}
+    if data != expected:
+        raise ValueError("approval identity/scope mismatch")
+    return data
+
+
+def require_clean_head(expected_head: str) -> Path:
+    root = Path(__file__).resolve().parents[2]
+    head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, stderr=subprocess.STDOUT).strip()
+    dirty = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True, stderr=subprocess.STDOUT)
+    if dirty or head != expected_head:
+        raise ValueError("checkout must be clean and match --expected-head")
+    return root
+
+
 def git_identity(root: Path, repository: str, revision: str, roles: tuple[str, ...]) -> dict[str, Any]:
     def git(*args: str) -> str:
         return subprocess.check_output(["git", "-C", str(root), *args], text=True, stderr=subprocess.STDOUT).strip()
@@ -238,10 +289,48 @@ def self_test() -> None:
     assert tensor_manifest_digest(tensor_manifest) == MODEL_TENSOR_MANIFEST_SHA256
     assert tensor_manifest[0] == {"name": "text_emb.weight", "dtype": "BF16", "shape": [4001, 2048]}
     assert tensor_manifest[-1] == {"name": "text_linear.weight", "dtype": "BF16", "shape": [4000, 2048]}
+    for bad in ("", "/tmp/./approval.json", "/tmp/../approval.json", "relative.json"):
+        try:
+            approval_file(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsafe approval path accepted")
+    with tempfile.TemporaryDirectory(prefix=".kyutai-approval-", dir=Path.cwd()) as directory:
+        head = "a" * 40
+        payload = {"schema": APPROVAL_SCHEMA, "status": "APPROVED", "decision": "APPROVED_FOR_NO_UPLOAD_PARITY", "expected_head": head, "model_repository": HF_REPOSITORY, "model_revision": HF_REVISION, "source_repository": DSM_REPOSITORY, "source_revision": DSM_REVISION, "moshi_repository": MOSHI_REPOSITORY, "moshi_revision": MOSHI_REVISION, "no_upload": True, "scope": APPROVAL_SCOPE}
+        approval = Path(directory) / "approval.json"
+        approval.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        digest = sha256(approval)
+        validate_approval(approval, head, digest)
+        try: validate_approval(approval, head, digest, Path.cwd())
+        except ValueError: pass
+        else: raise AssertionError("checkout-contained approval accepted")
+        try: validate_approval(approval, head, "0" * 64)
+        except ValueError: pass
+        else: raise AssertionError("wrong approval SHA accepted")
+        for key, value in (("expected_head", "b" * 40), ("scope", "WRONG"), ("model_revision", "0" * 40)):
+            bad = dict(payload, **{key: value})
+            approval.write_text(json.dumps(bad, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            try: validate_approval(approval, head, sha256(approval))
+            except ValueError: pass
+            else: raise AssertionError("invalid approval identity accepted")
+        approval.write_text('{"schema":"x","schema":"y"}\n', encoding="utf-8")
+        try: validate_approval(approval, head, sha256(approval))
+        except ValueError: pass
+        else: raise AssertionError("duplicate approval key accepted")
+        approval.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        link = Path(directory) / "approval-link.json"
+        link.symlink_to(approval)
+        try: validate_approval(link, head, digest)
+        except ValueError: pass
+        else: raise AssertionError("symlink approval accepted")
     print("kyutai STT decoder reference self-test PASS")
 
 
 def real(args: argparse.Namespace) -> None:
+    checkout = require_clean_head(args.expected_head)
+    approval = validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256, checkout)
     if not args.model.is_absolute() or not args.model.is_dir() or args.model.is_symlink():
         raise ValueError("model snapshot must be an absolute directory")
     model_record = authenticate_model(args.model / MODEL_NAME, args.model / "config.json")
@@ -313,7 +402,7 @@ def real(args: argparse.Namespace) -> None:
         }
         for name, body in files.items()
     }
-    manifest = {"format": "vokra-kyutai-stt-decoder-reference-v1", "status": "REFERENCE_READY", "component": "decoder", "scope": "dep_q=0 text decoder only; no Mimi/tokenizer/streaming/transcription", "model": model_record, "sources": {"dsm": dsm_record, "moshi": moshi_record}, "config": {"n_q": N_Q, "dep_q": 0, "d_model": 2048, "text_card": TEXT_CARD, "audio_card": AUDIO_CARD, "tensor_count": 323}, "packet": {"text_tokens": TEXT_TOKENS, "mimi_codes": AUDIO_CODES}, "execution": {"implementation": "official Moshi LMModel.forward_text", "dtype": "F32", "device": "cpu", "python_version": f"{sys.version_info.major}.{sys.version_info.minor}", "torch_version": torch.__version__.split("+")[0], "num_threads": torch.get_num_threads(), "num_interop_threads": torch.get_num_interop_threads(), "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(), "publication": "NO_UPLOAD"}, "artifacts": artifacts}
+    manifest = {"format": "vokra-kyutai-stt-decoder-reference-v1", "status": "REFERENCE_READY", "component": "decoder", "scope": "dep_q=0 text decoder only; no Mimi/tokenizer/streaming/transcription", "expected_head": args.expected_head, "approval_sha256": args.approval_sha256, "approval_decision": approval["decision"], "approval_scope": approval["scope"], "model": model_record, "sources": {"dsm": dsm_record, "moshi": moshi_record}, "config": {"n_q": N_Q, "dep_q": 0, "d_model": 2048, "text_card": TEXT_CARD, "audio_card": AUDIO_CARD, "tensor_count": 323}, "packet": {"text_tokens": TEXT_TOKENS, "mimi_codes": AUDIO_CODES}, "execution": {"implementation": "official Moshi LMModel.forward_text", "dtype": "F32", "device": "cpu", "python_version": f"{sys.version_info.major}.{sys.version_info.minor}", "torch_version": torch.__version__.split("+")[0], "num_threads": torch.get_num_threads(), "num_interop_threads": torch.get_num_interop_threads(), "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(), "publication": "NO_UPLOAD"}, "artifacts": artifacts}
     write_output(args.out, files, manifest)
     print(f"reference written: {args.out}")
 
@@ -322,13 +411,27 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="mode", required=True)
     sub.add_parser("self-test")
+    approval_parser = sub.add_parser("validate-approval")
+    approval_parser.add_argument("--expected-head", required=True)
+    approval_parser.add_argument("--approval-evidence", required=True)
+    approval_parser.add_argument("--approval-sha256", required=True)
     real_parser = sub.add_parser("real")
     real_parser.add_argument("--model", type=Path, required=True)
     real_parser.add_argument("--dsm-source", type=Path, required=True)
     real_parser.add_argument("--moshi-source", type=Path, required=True)
     real_parser.add_argument("--out", type=Path, required=True)
+    real_parser.add_argument("--expected-head", required=True)
+    real_parser.add_argument("--approval-evidence", required=True)
+    real_parser.add_argument("--approval-sha256", required=True)
     args = parser.parse_args()
-    self_test() if args.mode == "self-test" else real(args)
+    if args.mode == "self-test":
+        self_test()
+    elif args.mode == "validate-approval":
+        checkout = require_clean_head(args.expected_head)
+        validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256, checkout)
+        print("Kyutai STT decoder approval: PASS")
+    else:
+        real(args)
 
 
 if __name__ == "__main__":

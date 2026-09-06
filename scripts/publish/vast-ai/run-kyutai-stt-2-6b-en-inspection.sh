@@ -24,7 +24,7 @@ UV_CACHE_DIR="${KYUTAI_STT_UV_CACHE_DIR:-/tmp/vokra-kyutai-stt-uv-cache}"
 
 log() { printf '[kyutai-stt-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
-usage() { echo 'usage: run-kyutai-stt-2-6b-en-inspection.sh [--work-dir DIR] | --self-test'; }
+usage() { echo 'usage: run-kyutai-stt-2-6b-en-inspection.sh --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 [--work-dir DIR] | --self-test'; }
 
 self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token
@@ -39,7 +39,7 @@ self_test() {
     'c8f5779f1471f34734aafe1999082ca33862bc5e' 'd25302da6650309c094d0cbf10cfecfb507c31408b820304bda0c3195482f990' \
     '5618985925' 'model_info' 'list_repo_tree' 'path_in_repo' 'git_blob_sha1' 'lfs_sha256' \
     'git_commit=' 'evidence_dir=' '--work-dir must be absolute' \
-    '128' '32' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' \
+    '--expected-head' '--approval-evidence' '--approval-sha256' 'validate-approval' 'approval_sha256' '128' '32' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' \
     'evidence_stage' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NO_UPLOAD'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"; fail=1
@@ -108,33 +108,45 @@ PY
       python -c 'import sys; compile(sys.stdin.read(), "snapshot_download_heredoc.py", "exec")'; then
     log 'self-test FAIL: snapshot_download heredoc is not valid Python'; fail=1
   fi
-  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 \
+  UV_NO_CACHE=1 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 \
     python "$INSPECTOR" --self-test >/dev/null || fail=1
   (( fail == 0 )) || return 1
   log 'self-test PASS'
 }
 
 work_dir="$WORK"
-self=0
+self=0; expected_head=""; approval_evidence=""; approval_sha256=""; seen_head=0; seen_approval=0; seen_sha=0; seen_work=0
 while (($#)); do
   case "$1" in
-    --self-test) self=1; shift ;;
-    --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2 ;;
+    --self-test) (( self == 0 )) || die 'duplicate --self-test'; self=1; shift ;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; (($# >= 2)) || die '--expected-head requires HEX40'; [[ "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase HEX40'; expected_head="$2"; seen_head=1; shift 2 ;;
+    --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; (($# >= 2)) || die '--approval-evidence requires FILE'; [[ "$2" == /* ]] || die '--approval-evidence must be absolute'; approval_evidence="$2"; seen_approval=1; shift 2 ;;
+    --approval-sha256) (( seen_sha == 0 )) || die 'duplicate --approval-sha256'; (($# >= 2)) || die '--approval-sha256 requires HEX64'; [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase HEX64'; approval_sha256="$2"; seen_sha=1; shift 2 ;;
+    --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; seen_work=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$work_dir" == "$WORK" ]] || die '--self-test accepts no other arguments'
+  [[ "$work_dir" == "$WORK" && "$seen_head$seen_approval$seen_sha$seen_work" == 0000 ]] || die '--self-test accepts no other arguments'
   self_test; exit $?
 fi
 
 [[ "$work_dir" == /* ]] || die '--work-dir must be absolute'
+[[ "$work_dir" != *'/./'* && "$work_dir" != *'/../'* && "$work_dir" != *'//' && "$work_dir" != */. && "$work_dir" != */.. ]] || die 'work directory contains dot or empty component'
+[[ "$seen_head$seen_approval$seen_sha" == 111 ]] || die '--expected-head, --approval-evidence, and --approval-sha256 are required'
+[[ "$approval_evidence" != *'/./'* && "$approval_evidence" != *'/../'* && "$approval_evidence" != *'//' && "$approval_evidence" != */. && "$approval_evidence" != */.. ]] || die 'approval path contains dot or empty component'
+[[ -f "$approval_evidence" && ! -L "$approval_evidence" ]] || die 'approval evidence must be a regular file'
+sha256sum "$approval_evidence" | awk '{print $1}' | grep -Fxq "$approval_sha256" || die 'approval evidence SHA-256 mismatch'
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 \
+  python "$INSPECTOR" --validate-approval --approval-evidence "$approval_evidence" \
+  --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
 [[ "$(uname -s)" == Linux ]] || die 'inspection requires Linux VAST'
 [[ "$(uname -m)" == x86_64 ]] || die 'inspection requires x86_64 VAST'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -f "$ROOT/Cargo.toml" && -d "$ROOT/.git" ]] || die 'not a Vokra checkout'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
+[[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD differs from --expected-head'
 [[ -f "$ROOT/tools/parity/pyproject.toml" && -f "$ROOT/tools/parity/uv.lock" ]] || die 'locked parity project missing'
 [[ -f "$INSPECTOR" ]] || die 'inspector missing'
 assert_no_symlink_path() {
@@ -162,7 +174,9 @@ tmpfs_kib="$(df -Pk "$(dirname "$work_dir")" | awk 'NR == 2 {print $4}')"
 (( tmpfs_kib >= MIN_TMPFS_KIB )) || die '32 GiB tmpfs guard failed'
 for tool in cargo git uv awk find df findmnt; do command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"; done
 
-mkdir -p "$work_dir/model" "$work_dir/source" "$work_dir/evidence"
+[[ ! -e "$work_dir" ]] || die 'work directory must be absent before atomic claim'
+mkdir "$work_dir"
+mkdir -m 700 "$work_dir/model" "$work_dir/source" "$work_dir/evidence"
 work_dir="$(cd "$work_dir" && pwd)"
 export CARGO_BUILD_JOBS=1
 export UV_CACHE_DIR
@@ -175,6 +189,8 @@ export UV_CACHE_DIR
   echo 'parity_status=NOT_RUN'
   echo 'publication=NO_UPLOAD'
   echo "git_commit=$git_commit"
+  echo "expected_head=$expected_head"
+  echo "approval_sha256=$approval_sha256"
   echo "evidence_dir=$work_dir/evidence"
   echo "hf_total_bytes=$TOTAL_BYTES"
   (
@@ -263,14 +279,16 @@ set +e
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 \
   python "$INSPECTOR" --snapshot "$work_dir/model" --server-tree "$work_dir/server_tree.json" \
   --source "$work_dir/source/delayed-streams-modeling" --moshi-source "$work_dir/source/moshi" \
-  --evidence "$work_dir/evidence" >> "$work_dir/evidence/validation.log" 2>&1
+  --evidence "$work_dir/evidence" --expected-head "$expected_head" \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" \
+  >> "$work_dir/evidence/validation.log" 2>&1
 inspect_rc=$?
 set -e
 [[ "$inspect_rc" == 2 ]] || die "inspector must exit 2, got $inspect_rc"
 [[ -s "$work_dir/evidence/manifest.json" ]] || die 'manifest missing'
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/evidence/manifest.json" "$TOKENIZER_NAME" "$TOKENIZER_BYTES" "$TOKENIZER_GIT_BLOB" "$TOKENIZER_LFS_SHA256" "$TOTAL_BYTES" <<'PY'
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/evidence/manifest.json" "$TOKENIZER_NAME" "$TOKENIZER_BYTES" "$TOKENIZER_GIT_BLOB" "$TOKENIZER_LFS_SHA256" "$TOTAL_BYTES" "$expected_head" "$approval_sha256" <<'PY'
 import json, sys
-manifest_path, tokenizer_name, tokenizer_bytes, tokenizer_blob, tokenizer_lfs, total_bytes = sys.argv[1:]
+manifest_path, tokenizer_name, tokenizer_bytes, tokenizer_blob, tokenizer_lfs, total_bytes, expected_head, approval_sha256 = sys.argv[1:]
 m = json.load(open(manifest_path, encoding="utf-8"))
 required = {
     "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY",
@@ -283,6 +301,10 @@ if m.get("inspection_status") != "AUTHENTICATED_EVIDENCE_COMPLETE":
     raise SystemExit("inspection evidence incomplete or errored")
 if m.get("inspection_status") == "INSPECTION_ERROR":
     raise SystemExit("inspection error was incorrectly accepted")
+if m.get("expected_head") != expected_head or m.get("approval_sha256") != approval_sha256:
+    raise SystemExit("inspection evidence approval binding mismatch")
+if m.get("approval_decision") != "APPROVED_FOR_NO_UPLOAD_INSPECTION" or m.get("approval_scope") != "KYUTAI_STT_2_6B_EN_INSPECTION":
+    raise SystemExit("inspection approval decision/scope mismatch")
 model = m.get("model")
 if not isinstance(model, dict) or model.get("total_bytes") != int(total_bytes):
     raise SystemExit("authenticated model total-byte evidence mismatch")
