@@ -129,10 +129,10 @@ const KEY_BB_N_HEAD: &str = "vokra.kyutai_stt.arch.backbone.n_head";
 const KEY_BB_HIDDEN_SCALE: &str = "vokra.kyutai_stt.arch.backbone.hidden_scale";
 // Deliberately NOT read back: the converter stamps the resolved width as an
 // informational record of what it computed, but the runtime re-derives it from
-// `hidden_scale * d_model` (see `BackboneConfig::ffn_hidden`) so a hand-edited
-// or stale stamp can never silently disagree with the weight shapes. The
-// constant is kept because it documents the wire contract — deleting it would
-// lose the only in-tree record that the converter emits this key.
+// the Moshi `dim_feedforward` intermediate (see `BackboneConfig::ffn_hidden`)
+// so a hand-edited or stale stamp can never silently disagree with the weight
+// shapes. The constant is kept because it documents the wire contract —
+// deleting it would lose the only in-tree record that the converter emits.
 #[allow(dead_code)]
 const KEY_BB_FFN_HIDDEN: &str = "vokra.kyutai_stt.arch.backbone.ffn_hidden";
 const KEY_BB_CONTEXT: &str = "vokra.kyutai_stt.arch.backbone.context";
@@ -178,10 +178,9 @@ pub struct KyutaiSttBackboneConfig {
     pub d_model: usize,
     /// `num_heads` — MHA (query = key = value heads), 32.
     pub n_head: usize,
-    /// `hidden_scale` — the gating FFN inner-width multiplier (4.125).
-    /// The runtime derives `ffn_hidden` from this + `d_model`; the
-    /// converter mirrors the derivation so the GGUF carries the resolved
-    /// value directly.
+    /// `hidden_scale` — the Moshi `dim_feedforward` multiplier (4.125).
+    /// The runtime first computes `int(hidden_scale * d_model)` and then
+    /// mirrors `ActivationGating`'s branch-specific projection width.
     pub hidden_scale: f32,
     /// `context` — sliding attention window in frame positions (375).
     pub context: usize,
@@ -203,23 +202,33 @@ impl KyutaiSttBackboneConfig {
         self.n_head != 0 && self.d_model != 0 && self.d_model % self.n_head == 0
     }
 
-    /// Gating FFN hidden width — `round(hidden_scale * d_model)`.
+    /// Gating projection hidden width from pinned Moshi `gating.py`.
     ///
-    /// The upstream Kyutai `config.json` records the multiplier
-    /// (`hidden_scale`), not the resolved width. For STT-2.6B-EN this is
-    /// `round(4.125 * 2048) = 8448`. Real-weight binding cross-checks the
-    /// resolved value against the checkpoint's `linear_in` / `linear_out`
-    /// tensor shapes and fails loudly on a mismatch (FR-EX-08).
+    /// `lm.py` passes `int(hidden_scale * dim)` as `dim_feedforward`.
+    /// `ActivationGating` then uses `(21 * dim) // 8` when that value equals
+    /// `4 * dim`, otherwise `(2 * dim_feedforward) // 3`. Thus STT-2.6B-EN
+    /// resolves to `5632` (`dim_feedforward=8448`), while the tiny fixture
+    /// resolves to `42` (`dim_feedforward=64`). Checked arithmetic returns
+    /// zero for malformed/overflowing configurations; validation rejects it.
     #[must_use]
     pub fn ffn_hidden(&self) -> usize {
-        // `.round()` matches Python's default rounding for the STT-2.6B
-        // case; a checkpoint whose shapes disagree with the derivation
-        // surfaces at the `KyutaiSttAsr::new` shape gate.
         let scaled = self.hidden_scale * self.d_model as f32;
-        if scaled.is_finite() && scaled >= 0.0 {
-            scaled.round() as usize
+        let dim_feedforward = if scaled.is_finite() && scaled >= 0.0 {
+            scaled.trunc() as usize
         } else {
-            0
+            return 0;
+        };
+        let four_dim = self.d_model.checked_mul(4);
+        if four_dim == Some(dim_feedforward) {
+            self.d_model
+                .checked_mul(21)
+                .and_then(|value| value.checked_div(8))
+                .unwrap_or(0)
+        } else {
+            dim_feedforward
+                .checked_mul(2)
+                .and_then(|value| value.checked_div(3))
+                .unwrap_or(0)
         }
     }
 }
@@ -1435,7 +1444,7 @@ mod tests {
         assert_eq!(c.sample_rate, 24_000);
         // Derived values.
         assert_eq!(c.backbone.head_dim(), 64);
-        assert_eq!(c.backbone.ffn_hidden(), 8448);
+        assert_eq!(c.backbone.ffn_hidden(), 5632);
         assert_eq!(c.n_channels(), 33);
         assert_eq!(c.max_delay(), 0);
         // Everything above adds up to a well-formed config.
@@ -1445,7 +1454,9 @@ mod tests {
 
     #[test]
     fn tiny_config_is_well_formed() {
-        KyutaiSttConfig::tiny_for_tests()
+        let config = KyutaiSttConfig::tiny_for_tests();
+        assert_eq!(config.backbone.ffn_hidden(), 42);
+        config
             .validate_for_forward()
             .expect("tiny config is well-formed");
     }
