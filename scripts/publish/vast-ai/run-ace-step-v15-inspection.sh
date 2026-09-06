@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2317,SC2329
 # VAST-only ACE-Step 1.5 composite-bundle inspection wave.
 #
 # This worker authenticates the immutable HF bundle and official source, then
@@ -7,6 +8,8 @@
 # INSPECTION_ONLY.
 
 set -euo pipefail
+# The legacy acquisition body remains as a documented future path, but the
+# unresolved ACE-Step gate intentionally makes it unreachable today.
 
 UPSTREAM_REPOSITORY="ACE-Step/Ace-Step1.5"
 UPSTREAM_REVISION="19671f406d603126926c1b7e2adc169acbcade22"
@@ -20,14 +23,14 @@ MIN_FREE_DISK_KIB=$((60 * 1024 * 1024))
 usage() {
   cat <<'EOF'
 Usage:
-  run-ace-step-v15-inspection.sh [--work-dir <tmpfs-dir>]
+  run-ace-step-v15-inspection.sh --approval-evidence <file> --approval-sha256 <64-hex> --expected-head <40-hex> [--work-dir <tmpfs-dir>]
   run-ace-step-v15-inspection.sh --self-test
 
-The real path is VAST-only: Linux x86_64, clean checkout, 128 GiB RAM, and
-tmpfs storage are required.  It downloads the exact ACE-Step 1.5 composite
-bundle, inventories it with a safe inspection oracle, and remains
-INSPECTION_ONLY.  No conversion, GGUF, runtime, parity, upload, or publish is
-performed.
+The real path is currently unconditionally blocked: ACE-Step native composite,
+dependency-license, and training-provenance facts are unresolved.  The exact
+blocked approval is authenticated before host, work, cache, network, snapshot,
+source, or model operations. No conversion, GGUF, runtime, parity, upload, or
+publish is performed.
 EOF
 }
 
@@ -47,6 +50,8 @@ run_self_test() {
     "weights_only=True" "uv.lock" "INSPECTION_ONLY" "BLOCKED" \
     "NOT_IMPLEMENTED_FAIL_CLOSED" "UNSUPPORTED" "BLOCKED_BY_CPU" "NOT_RUN" "NO_UPLOAD" \
     "server-tree" "server/local tree mismatch" "UNAUTHENTICATED_BLOCKER" "UNREVIEWED_BLOCKER" \
+    "ace_step_v15_gate.py" "approval-evidence" "approval-sha256" "expected-head" \
+    "--enforce" "BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD" \
     "source-inventory.json" "component-inventory.json" "companion-inventory.json" "tensor-inventory.json" \
     ".cache/huggingface" "symlink" "RepoFile" "RepoFolder" "classify_entry" "walk_tree" "path_in_repo" "recursive=False" \
     "MIN_VAST_MEM_KIB" "MIN_FREE_DISK_KIB"; do
@@ -62,7 +67,8 @@ run_self_test() {
     'cargo fmt --all -- --check' 'cargo build --locked --release -p vokra-cli' \
     'uv run --frozen --project tools/parity --python 3.12' \
     'snapshot_download' 'local_dir' 'materialized snapshot' 'allow_patterns=["*"]' 'git clone --no-tags --filter=blob:none' \
-    'CARGO_BUILD_JOBS=1'; do
+    'CARGO_BUILD_JOBS=1' 'BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD' \
+    'UV_NO_CACHE=1' '--no-project' '--offline' 'ace_step_v15_gate.py'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-ace-step-v15-inspection: self-test FAIL: missing VAST gate: $required" >&2
       fail=1
@@ -73,7 +79,7 @@ run_self_test() {
     echo "run-ace-step-v15-inspection: self-test FAIL: publication command found" >&2
     fail=1
   fi
-  if grep -En '(^|[[:space:]])(python|python3|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
+  if grep -En '(^|[;&|])[[:space:]]*(python|python3|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     echo "run-ace-step-v15-inspection: self-test FAIL: raw Python/pip invocation found" >&2
     fail=1
   fi
@@ -81,19 +87,49 @@ run_self_test() {
     echo "run-ace-step-v15-inspection: self-test FAIL: conversion/local Cargo command found" >&2
     fail=1
   fi
+  cases=$((cases + 1))
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$repo_root/tools/parity/ace_step_v15_gate.py" --self-test >/dev/null; then
+    echo "run-ace-step-v15-inspection: self-test FAIL: stdlib blocked gate" >&2
+    fail=1
+  fi
   if grep -En 'weights_only=False|pickle\.load' "$repo_root/$INSPECTOR" >/dev/null; then
     echo "run-ace-step-v15-inspection: self-test FAIL: unsafe loader found" >&2
     fail=1
   fi
   cases=$((cases + 1))
+  gate_line="$(grep -n -- "^  \"\$repo_root/tools/parity/ace_step_v15_gate.py\" --enforce" "$script_path" | head -n1 | cut -d: -f1)"
+  host_line="$(grep -n -- 'uname -s' "$script_path" | tail -n1 | cut -d: -f1)"
+  work_line="$(grep -n -- "mkdir -p \"\$work_dir\"" "$script_path" | tail -n1 | cut -d: -f1)"
+  snapshot_line="$(grep -n -- 'snapshot_download' "$script_path" | tail -n1 | cut -d: -f1)"
+  inspector_gate_line="$(grep -n -- 'enforce_blocked_approval' "$repo_root/$INSPECTOR" | tail -n1 | cut -d: -f1)"
+  inspector_input_line="$(grep -n -- 'snapshot, --source, --output, and --server-tree are required' "$repo_root/$INSPECTOR" | head -n1 | cut -d: -f1)"
+  if [[ -z "$gate_line" || -z "$host_line" || -z "$work_line" || -z "$snapshot_line" || -z "$inspector_gate_line" || -z "$inspector_input_line" ]] \
+    || (( gate_line >= host_line || gate_line >= work_line || gate_line >= snapshot_line )) \
+    || (( inspector_gate_line >= inspector_input_line )); then
+    echo "run-ace-step-v15-inspection: self-test FAIL: blocked gate is not first" >&2
+    fail=1
+  fi
+  cases=$((cases + 1))
   local tree_source
   tree_source="$(mktemp "${TMPDIR:-/tmp}/ace-step-hf-tree-self-test.XXXXXX.py")"
+  local shim_dir
+  shim_dir="$(mktemp -d "${TMPDIR:-/tmp}/ace-step-hf-tree-shim.XXXXXX")"
+  printf '%s\n' \
+    'class _Entry:' \
+    '    def __init__(self, path, size=None, oid=None): self.path, self.size, self.oid, self.type = path, size, oid, "file"' \
+    'class RepoFile(_Entry): pass' \
+    'class RepoFolder(_Entry): pass' \
+    'class HfApi: pass' > "$shim_dir/huggingface_hub.py"
   awk '/^import hashlib$/{capture=1} capture && /^PY$/{exit} capture{print}' "$script_path" > "$tree_source"
-  if ! ACE_STEP_HF_TREE_SELF_TEST=1 "${UV_CMD[@]}" "$tree_source" dummy dummy dummy; then
+  if ! ACE_STEP_HF_TREE_SELF_TEST=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$shim_dir" UV_NO_CACHE=1 \
+    uv run --no-cache --no-project --offline --python 3.12 python "$tree_source" dummy dummy dummy; then
     echo "run-ace-step-v15-inspection: self-test FAIL: Hub tree class/path contract" >&2
     fail=1
   fi
   rm -f -- "$tree_source"
+  rm -f -- "$shim_dir/huggingface_hub.py"
+  rmdir -- "$shim_dir"
   cases=$((cases + 1))
   if bash "$script_path" --self-test --work-dir /tmp/ace-step-v15-self-test >/dev/null 2>&1; then
     echo "run-ace-step-v15-inspection: self-test FAIL: extra argument accepted" >&2
@@ -115,6 +151,16 @@ run_self_test() {
       fail=1
     fi
   fi
+  if bash "$script_path" --self-test --approval-evidence /private/tmp/ace-step-v15-self-test-approval >/dev/null 2>&1; then
+    echo "run-ace-step-v15-inspection: self-test FAIL: mixed gate arguments accepted" >&2
+    fail=1
+  else
+    status=$?
+    if [[ "$status" != 2 ]]; then
+      echo "run-ace-step-v15-inspection: self-test FAIL: mixed blocker exited $status, expected 2" >&2
+      fail=1
+    fi
+  fi
   if (( fail == 0 )); then
     echo "run-ace-step-v15-inspection.sh self-test: OK ($cases cases)"
     return 0
@@ -124,29 +170,56 @@ run_self_test() {
 
 work_dir="/dev/shm/vokra-ace-step-v15-inspection"
 self_test=0
+approval_evidence=""
+approval_sha256=""
+expected_head=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --self-test) self_test=1; shift ;;
     --work-dir)
       [[ $# -ge 2 ]] || die "--work-dir requires a path"
       work_dir="$2"; shift 2 ;;
+    --approval-evidence)
+      [[ $# -ge 2 && -z "$approval_evidence" ]] || die "--approval-evidence requires one unique path"
+      approval_evidence="$2"; shift 2 ;;
+    --approval-sha256)
+      [[ $# -ge 2 && -z "$approval_sha256" ]] || die "--approval-sha256 requires one unique value"
+      approval_sha256="$2"; shift 2 ;;
+    --expected-head)
+      [[ $# -ge 2 && -z "$expected_head" ]] || die "--expected-head requires one unique value"
+      expected_head="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if [[ $self_test -eq 1 ]]; then
-  [[ "$work_dir" == "/dev/shm/vokra-ace-step-v15-inspection" ]] \
+  [[ "$work_dir" == "/dev/shm/vokra-ace-step-v15-inspection" && -z "$approval_evidence" && -z "$approval_sha256" && -z "$expected_head" ]] \
     || die "--self-test accepts no other arguments"
   run_self_test
   exit $?
 fi
 
+[[ -n "$approval_evidence" && -n "$approval_sha256" && -n "$expected_head" ]] \
+  || die "--approval-evidence, --approval-sha256, and --expected-head are required"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "$repo_root"
+[[ -f Cargo.toml && -d crates/vokra-convert ]] || die "not a Vokra checkout"
+set +e
+gate_output="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+  "$repo_root/tools/parity/ace_step_v15_gate.py" --enforce \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" \
+  --expected-head "$expected_head" --root "$repo_root" 2>&1)"
+gate_status=$?
+set -e
+if [[ "$gate_status" != 2 || "$gate_output" != *"BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD"* ]]; then
+  die "blocked approval evidence is malformed, stale, or not caller-bound"
+fi
+die "$gate_output"
+
 [[ "$(uname -s)" == "Linux" ]] || die "actual inspection is Linux/VAST-only"
 [[ "$(uname -m)" == "x86_64" ]] || die "actual inspection requires Linux x86_64"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
   || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-cd "$repo_root"
 [[ -f Cargo.toml && -d crates/vokra-convert ]] || die "not a Vokra checkout"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
   || die "worktree is not clean; transfer a committed git-bundle checkpoint"
@@ -336,7 +409,8 @@ run_logged git -C "$source_dir" checkout --detach "$SOURCE_REVISION"
   || die "official source remote mismatch"
 
 set +e
-"${UV_CMD[@]}" "$INSPECTOR" --snapshot "$snapshot_path" --source "$source_dir" --output "$evidence_dir" --server-tree "$server_tree_path" 2>&1 | tee -a "$log_path"
+"${UV_CMD[@]}" "$INSPECTOR" --snapshot "$snapshot_path" --source "$source_dir" --output "$evidence_dir" --server-tree "$server_tree_path" \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" 2>&1 | tee -a "$log_path"
 inspector_status="${PIPESTATUS[0]}"
 set -e
 [[ "$inspector_status" == "2" ]] || die "inspector must remain fail-closed with exit 2"

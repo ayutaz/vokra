@@ -22,9 +22,11 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-import torch
-from safetensors import safe_open
-from safetensors.torch import save_file
+torch = None
+safe_open = None
+save_file = None
+
+import ace_step_v15_gate
 
 UPSTREAM_REPOSITORY = "ACE-Step/Ace-Step1.5"
 UPSTREAM_REVISION = "19671f406d603126926c1b7e2adc169acbcade22"
@@ -94,6 +96,21 @@ CONFIG_CONTRACTS: dict[str, dict[str, Any]] = {
 }
 DEPENDENCIES = ("transformers", "diffusers")
 TEXT_COMPONENTS = {"Qwen3-Embedding-0.6B", "acestep-5Hz-lm-1.7B"}
+
+
+def _require_optional_dependencies() -> None:
+    global torch, safe_open, save_file
+    if torch is not None and safe_open is not None and save_file is not None:
+        return
+    try:
+        import torch as torch_module
+        from safetensors import safe_open as safe_open_module
+        from safetensors.torch import save_file as save_file_module
+    except ImportError as error:
+        raise RuntimeError("ACE-Step inspection dependencies are unavailable; gate must run before project import") from error
+    torch = torch_module
+    safe_open = safe_open_module
+    save_file = save_file_module
 
 # These are source-object identities, not claims made by a downloaded packet.
 # They were resolved with `git rev-parse HEAD:<path>` from the pinned official
@@ -730,6 +747,7 @@ def validate_snapshot_tree(snapshot: Path) -> list[dict[str, Any]]:
 
 
 def inspect(snapshot: Path, source: Path, output: Path, tree_packet: Path) -> None:
+    _require_optional_dependencies()
     snapshot = snapshot.resolve()
     source = source.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -818,6 +836,7 @@ def write_blocked(output: Path, error: Exception, tree_packet: Path | None = Non
 
 
 def self_test() -> None:
+    _require_optional_dependencies()
     source = Path(__file__).read_text(encoding="utf-8")
     assert hashlib.sha256(b"abc").hexdigest() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     assert git_blob_sha1(b"abc") != git_blob_sha1(b"abd")
@@ -1250,13 +1269,31 @@ def main() -> int:
     parser.add_argument("--source", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--server-tree", type=Path)
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.snapshot, args.source, args.output, args.server_tree)):
+        if any(value is not None for value in (args.snapshot, args.source, args.output, args.server_tree, args.approval_evidence, args.approval_sha256, args.expected_head)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
+    if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head)):
+        parser.error("--approval-evidence, --approval-sha256, and --expected-head are required")
+    try:
+        ace_step_v15_gate.enforce_blocked_approval(
+            args.approval_evidence,
+            args.approval_sha256,
+            args.expected_head,
+            Path(__file__).resolve().parents[2],
+        )
+    except ace_step_v15_gate.GateBlocked as error:
+        print(f"ACE-Step 1.5 inspection BLOCKED: {error}", file=sys.stderr)
+        return 2
+    except ace_step_v15_gate.GateError as error:
+        print(f"ACE-Step 1.5 gate rejected: {error}", file=sys.stderr)
+        return 2
     if any(value is None for value in (args.snapshot, args.source, args.output, args.server_tree)):
         parser.error("--snapshot, --source, --output, and --server-tree are required")
     try:
