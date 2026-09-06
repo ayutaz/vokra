@@ -113,7 +113,11 @@ def validate_lock(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
             fail(f"malformed source for {name}")
         if "registry" in source and source["registry"] not in {PYPI_INDEX, TORCH_INDEX}:
             fail(f"unapproved registry for {name}")
-        if any(token in json.dumps(row, sort_keys=True).lower() for token in FORBIDDEN):
+        # The non-package project row is intentionally named
+        # ``cosyvoice2-llm-reference``.  Its identity is authenticated by the
+        # exact virtual source and project validation below; forbidden-closure
+        # scanning applies only to registry rows and their artifacts.
+        if "registry" in source and any(token in json.dumps(row, sort_keys=True).lower() for token in FORBIDDEN):
             fail(f"forbidden closure marker in {name}")
         for key in ("sdist", "wheels"):
             artifacts = row.get(key, [])
@@ -197,6 +201,38 @@ def self_test() -> None:
     validate_project(read_toml(here / "pyproject.toml"))
     manifest = validate_license_manifest(here / "license_gate_manifest.json")
     assert manifest["status"] == "PENDING_REVIEW"
+    valid_lock = {
+        "version": 1,
+        "revision": 3,
+        "requires-python": PYTHON_REQUIREMENT,
+        "package": [
+            {"name": PROJECT_NAME, "version": "0.1.0", "source": {"virtual": "."}},
+            *[
+                {
+                    "name": name,
+                    "version": version,
+                    "source": {"registry": TORCH_INDEX if name == "torch" else PYPI_INDEX},
+                }
+                for name, version in DIRECT_PINS.items()
+            ],
+        ],
+    }
+    validate_lock(valid_lock)
+    forbidden_lock = copy.deepcopy(valid_lock)
+    forbidden_lock["package"].append(
+        {
+            "name": "forbidden-package",
+            "version": "1.0",
+            "source": {"registry": PYPI_INDEX},
+            "wheels": [{"url": "https://files.pythonhosted.org/packages/librosa.whl", "hash": "sha256:" + "0" * 64, "size": 1, "upload-time": "2026-01-01T00:00:00Z"}],
+        }
+    )
+    try:
+        validate_lock(forbidden_lock)
+    except GateError as error:
+        assert "forbidden" in str(error)
+    else:
+        raise AssertionError("forbidden registry closure marker accepted")
     try:
         gate(here / "pyproject.toml", here / "uv.lock", here / "license_gate_manifest.json")
     except GateError as error:
