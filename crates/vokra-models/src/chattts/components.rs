@@ -135,16 +135,18 @@ pub struct ChatTtsComponentContract {
 }
 
 impl ChatTtsComponentContract {
-    /// Validates the cross-component dimensions without inventing weights.
+    /// Validates every represented axis against the fixed source contract.
+    ///
+    /// This does not authenticate tensor bytes or make the composite
+    /// executable; it only rejects a caller-supplied substitution of the
+    /// source-authenticated component axes before a future binder exists.
     pub fn validate(&self) -> Result<()> {
-        if self.dvae.input_dim != self.dvae.output_dim
+        if *self != Self::default()
+            || self.dvae.input_dim != self.dvae.output_dim
             || self.dvae.mel_bins != self.vocos.mel_bins
-            || self.gfsq.levels != [5; 4]
-            || self.gfsq.groups != 2
-            || self.gfsq.residuals != 2
         {
             return Err(VokraError::ModelLoad(
-                "chattts: authenticated DVAE/GFSQ/Vocos axis contract mismatch".to_owned(),
+                "chattts: authenticated DVAE/GFSQ/Decoder/Vocos axis contract mismatch".to_owned(),
             ));
         }
         Ok(())
@@ -192,6 +194,25 @@ mod tests {
         assert_eq!(contract.gfsq.levels, [5; 4]);
         let mut altered = contract;
         altered.vocos.mel_bins = 80;
+        assert!(altered.validate().is_err());
+    }
+
+    #[test]
+    fn source_component_contract_rejects_substitution_axes() {
+        let mut altered = ChatTtsComponentContract::default();
+        altered.dvae.hidden_dim = 128;
+        assert!(altered.validate().is_err());
+
+        let mut altered = ChatTtsComponentContract::default();
+        altered.decoder.layers = 11;
+        assert!(altered.validate().is_err());
+
+        let mut altered = ChatTtsComponentContract::default();
+        altered.gfsq.dimension = 512;
+        assert!(altered.validate().is_err());
+
+        let mut altered = ChatTtsComponentContract::default();
+        altered.vocos.sample_rate_hz = 16_000;
         assert!(altered.validate().is_err());
     }
 }
