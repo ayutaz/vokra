@@ -111,6 +111,22 @@ def validate_root(root: Path) -> None:
         raise RuntimeError("--root overlaps the repository checkout")
 
 
+def claim_root(root: Path) -> None:
+    """Atomically claim the validated staging leaf before any network work."""
+    parent = root.parent
+    if not parent.exists() and not parent.is_symlink():
+        parent.mkdir(parents=True, exist_ok=True)
+    reject_symlink_ancestors(root)
+    if not parent.is_dir() or parent.is_symlink():
+        raise RuntimeError("staging root parent is not a real directory")
+    try:
+        root.mkdir()
+    except FileExistsError as error:
+        raise RuntimeError("staging root was concurrently claimed or already exists") from error
+    if root.is_symlink() or not root.is_dir():
+        raise RuntimeError("staging root claim did not produce a real directory")
+
+
 def validate_staged_paths(root: Path, inputs: list[Path], outputs: list[Path]) -> None:
     """Bind optional paths to the newly staged root before reading/writing."""
     root_real = root.resolve()
@@ -364,10 +380,11 @@ def safetensors_manifest(path: Path, output: Path, revision: str) -> None:
     digest = manifest_sha256(rows)
     if len(rows) != 246 or digest != MANIFEST_SHA256:
         raise RuntimeError(f"upstream safetensors manifest mismatch: {digest}")
-    output.write_text(json.dumps({"revision": revision,
-                                  "manifest_sha256": digest,
-                                  "tensors": rows}, sort_keys=True) + "\n",
-                      encoding="utf-8")
+    payload = json.dumps({"revision": revision,
+                          "manifest_sha256": digest,
+                          "tensors": rows}, sort_keys=True) + "\n"
+    with output.open("x", encoding="utf-8") as handle:
+        handle.write(payload)
 
 
 def gguf_manifest(path: Path, output: Path, revision: str) -> None:
@@ -383,10 +400,11 @@ def gguf_manifest(path: Path, output: Path, revision: str) -> None:
     digest = manifest_sha256(rows)
     if len(rows) != 246 or digest != MANIFEST_SHA256:
         raise RuntimeError(f"public GGUF manifest mismatch: {digest}")
-    output.write_text(json.dumps({"revision": revision,
-                                  "manifest_sha256": digest,
-                                  "tensors": rows}, sort_keys=True) + "\n",
-                      encoding="utf-8")
+    payload = json.dumps({"revision": revision,
+                          "manifest_sha256": digest,
+                          "tensors": rows}, sort_keys=True) + "\n"
+    with output.open("x", encoding="utf-8") as handle:
+        handle.write(payload)
 
 
 def main() -> int:
@@ -397,17 +415,18 @@ def main() -> int:
     parser.add_argument("--manifest-output", type=Path)
     parser.add_argument("--public-gguf", type=Path)
     parser.add_argument("--public-manifest-output", type=Path)
+    parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     for option in ("--root", "--approval-evidence", "--upstream-safetensors",
                    "--manifest-output", "--public-gguf", "--public-manifest-output",
-                   "--self-test"):
+                   "--preflight-only", "--self-test"):
         if sys.argv[1:].count(option) > 1:
             parser.error(f"duplicate {option}")
     args = parser.parse_args()
     if args.self_test:
         if any(value is not None for value in (args.root, args.approval_evidence,
                                                 args.upstream_safetensors, args.manifest_output,
-                                                args.public_gguf, args.public_manifest_output)):
+                                                args.public_gguf, args.public_manifest_output)) or args.preflight_only:
             parser.error("--self-test accepts no other arguments")
         assert len(PUBLIC_REVISION) == len(UPSTREAM_REVISION) == 40
         assert len(MANIFEST_SHA256) == 64
@@ -472,6 +491,14 @@ def main() -> int:
                 raise AssertionError("symlinked downloaded files must fail closed")
             safe_root = snapshot / "nested" / "stage"
             validate_root(safe_root)
+            claim_root(safe_root)
+            assert safe_root.is_dir() and not safe_root.is_symlink()
+            try:
+                claim_root(safe_root)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("competing staging root claim must fail closed")
             (snapshot / "occupied").mkdir()
             try:
                 validate_root(snapshot / "occupied")
@@ -517,6 +544,17 @@ def main() -> int:
                 raise AssertionError("symlinked staged inputs must fail closed")
         print("zonos_vast_stage.py self-test: OK")
         return 0
+    if args.preflight_only:
+        if args.approval_evidence is None or any(value is not None for value in (
+                args.root, args.upstream_safetensors, args.manifest_output,
+                args.public_gguf, args.public_manifest_output)):
+            parser.error("--preflight-only accepts only --approval-evidence")
+        try:
+            preflight_gate(args.approval_evidence)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"zonos VAST preflight BLOCKED: {error}", file=sys.stderr)
+            return 2
+        return 0
     if args.root is None or args.approval_evidence is None:
         parser.error("--root and --approval-evidence are required for staging")
     try:
@@ -526,6 +564,7 @@ def main() -> int:
         # blocked even if an operator submits an approval-shaped document.
         preflight_gate(args.approval_evidence)
         validate_root(args.root)
+        claim_root(args.root)
     except (OSError, RuntimeError, ValueError) as error:
         print(f"zonos VAST preflight BLOCKED: {error}", file=sys.stderr)
         return 2
@@ -540,6 +579,8 @@ def main() -> int:
     except (OSError, RuntimeError, ValueError) as error:
         print(f"zonos VAST optional-path BLOCKED: {error}", file=sys.stderr)
         return 2
+    for output in optional_outputs:
+        output.parent.mkdir(parents=True, exist_ok=True)
     stage_snapshot("public", PUBLIC_REPOSITORY, PUBLIC_REVISION, args.root)
     stage_snapshot("upstream", UPSTREAM_REPOSITORY, UPSTREAM_REVISION, args.root)
     try:

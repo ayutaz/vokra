@@ -80,6 +80,11 @@ def require_absent_output(path: Path, label: str) -> None:
         raise RuntimeError(f"{label} parent is not a real directory")
 
 
+def write_bytes_no_clobber(path: Path, value: bytes) -> None:
+    with path.open("xb") as handle:
+        handle.write(value)
+
+
 def fixed_source(source: Path) -> None:
     if not source.is_dir() or source.is_symlink():
         raise RuntimeError("Zonos source root must be a real directory")
@@ -280,9 +285,10 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
             pcm_output.parent.mkdir(parents=True, exist_ok=True)
             pcm_values = pcm.numpy().astype("<f4", copy=False)
             if pcm_output.suffix == ".f32le":
-                pcm_output.write_bytes(pcm_values.tobytes(order="C"))
+                write_bytes_no_clobber(pcm_output, pcm_values.tobytes(order="C"))
             else:
-                np.save(pcm_output, pcm_values)
+                with pcm_output.open("xb") as handle:
+                    np.save(handle, pcm_values)
             codes_cpu = codes.detach().to("cpu")
         if codes_cpu.numel() == 0 or not bool(torch.isfinite(codes_cpu.float()).all()):
             raise RuntimeError("official generation returned empty/non-finite codes")
@@ -292,9 +298,10 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
             if (np_codes < 0).any() or (np_codes > MASKED).any():
                 raise RuntimeError("official generation returned an out-of-range code")
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(np_codes.astype("<u4", copy=False).tobytes(order="C"))
+            write_bytes_no_clobber(output, np_codes.astype("<u4", copy=False).tobytes(order="C"))
         else:
-            np.save(output, np_codes)
+            with output.open("xb") as handle:
+                np.save(handle, np_codes)
         record = {
             "format": "vokra-zonos-reference-v1",
             "reference_status": "MEASURED_NOT_GATED",
@@ -315,7 +322,8 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
             "runtime_status": "REFERENCE_ONLY_NO_NATIVE_VERDICT",
             "publication": "NO_UPLOAD",
         }
-        record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        with record_path.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
     finally:
         sys.path.remove(str(source))
 
@@ -376,6 +384,13 @@ def self_test() -> None:
         output_root = Path(directory) / "outputs"
         output_root.mkdir()
         require_absent_output(output_root / "codes.u32le", "self-test output")
+        write_bytes_no_clobber(output_root / "claimed.u32le", b"x")
+        try:
+            write_bytes_no_clobber(output_root / "claimed.u32le", b"y")
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("concurrent output claim must fail closed")
         (output_root / "existing.u32le").write_bytes(b"x")
         try:
             require_absent_output(output_root / "existing.u32le", "self-test output")

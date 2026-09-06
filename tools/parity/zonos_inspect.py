@@ -466,7 +466,8 @@ def inspect(snapshot: Path | None, packet: Path | None, manifest: Path | None, u
         evidence["parity_status"] = "NOT_RUN"
     evidence["blockers"] = list(dict.fromkeys(blockers))
     output.mkdir(parents=True, exist_ok=True)
-    (output / "manifest.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with (output / "manifest.json").open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     return 0 if not evidence_error else 2
 
 
@@ -486,6 +487,15 @@ def self_test() -> None:
         assert inspect(None, None, None, None, None, None, None, empty_out) == 2
         empty_record = json.loads((empty_out / "manifest.json").read_text(encoding="utf-8"))
         assert empty_record["inspection_status"] == "INSPECTION_ERROR"
+        occupied_out = root / "occupied-evidence"
+        occupied_out.mkdir()
+        (occupied_out / "manifest.json").write_text("sentinel\n", encoding="utf-8")
+        try:
+            inspect(None, None, None, None, None, None, None, occupied_out)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing inspection manifests must not be clobbered")
         snapshot = root / "snapshot"
         snapshot.mkdir()
         artifact = snapshot / PUBLIC_GGUF

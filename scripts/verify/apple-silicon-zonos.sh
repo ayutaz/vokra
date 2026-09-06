@@ -16,14 +16,32 @@ lower_sha() { printf '%s' "$1" | tr 'A-F' 'a-f'; }
 require_sha() { [[ "$1" =~ ^[0-9a-fA-F]{64}$ ]] || die 'SHA-256 must be exactly 64 hexadecimal digits'; }
 require_size() { [[ "$1" =~ ^[0-9]+$ && "$1" != 0 ]] || die 'size must be a positive decimal integer'; }
 
+require_clean_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head must be exactly 40 lowercase hexadecimal characters'
+  [[ -d "$ROOT/.git" ]] || die 'checkout is missing .git'
+  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
+  actual="$(git -C "$ROOT" rev-parse HEAD)"
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual differs from expected $expected"
+}
+
+claim_evidence_dir() {
+  local evidence="$1"
+  [[ ! -e "$evidence" && ! -L "$evidence" ]] || die 'Apple evidence directory must be absent'
+  mkdir "$evidence" || die 'Apple evidence directory was concurrently claimed or already exists'
+}
+
 usage() {
   cat <<'EOF'
-usage: apple-silicon-zonos.sh --approval-evidence FILE --manifest FILE \
+usage: apple-silicon-zonos.sh --expected-head HEX40 --approval-evidence FILE \
+  --approval-evidence-sha256 SHA --transfer-manifest FILE --transfer-manifest-sha256 SHA \
+  --manifest FILE \
   --manifest-sha256 SHA --gguf FILE --gguf-sha256 SHA --gguf-size BYTES \
   --dac-gguf FILE --dac-gguf-sha256 SHA --dac-gguf-size BYTES \
   --conditioning-packet FILE --conditioning-packet-sha256 SHA --conditioning-packet-size BYTES \
   --reference-codes FILE --reference-codes-sha256 SHA --reference-codes-size BYTES \
   --reference-pcm FILE --reference-pcm-sha256 SHA --reference-pcm-size BYTES \
+  --native-cpu-log FILE --native-cpu-log-sha256 SHA \
   --evidence-dir ABSENT_DIR
        apple-silicon-zonos.sh --self-test
 EOF
@@ -76,6 +94,34 @@ try:
 except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError) as error:
     raise SystemExit("manifest BLOCKED: " + str(error))
 PY
+}
+
+validate_transfer_manifest() {
+  local path="$1" expected_sha="$2" expected_head="$3" approval_sha="$4" manifest_sha="$5" gguf_sha="$6" dac_sha="$7" packet_sha="$8" codes_sha="$9" pcm_sha="${10}" native_sha="${11}"
+  require_sha "$expected_sha" || return 2
+  require_file 'Zonos transfer manifest' "$path" || return 2
+  [[ "$(sha256_file "$path")" == "$(lower_sha "$expected_sha")" ]] || { die 'transfer manifest SHA-256 mismatch'; return 2; }
+  awk '
+    BEGIN { allowed["schema"]; allowed["expected_head"]; allowed["approval_evidence_sha256"]; allowed["manifest_sha256"]; allowed["gguf_sha256"]; allowed["dac_gguf_sha256"]; allowed["conditioning_packet_sha256"]; allowed["reference_codes_sha256"]; allowed["reference_pcm_sha256"]; allowed["native_cpu_log_sha256"]; allowed["cpu_result"]; allowed["cpu_sentinel"]; allowed["status"]; allowed["metal_status"]; allowed["publication"] }
+    index($0, "=") == 0 { bad=1; next }
+    { key=substr($0, 1, index($0, "=") - 1); if (!(key in allowed)) bad=1; count[key]++ }
+    END { if (bad) exit 2; for (key in allowed) if (count[key] != 1) exit 3 }
+  ' "$path" || { die 'transfer manifest schema is not exact'; return 2; }
+  grep -Fxq 'schema=zonos-apple-transfer-v1' "$path" || { die 'transfer manifest schema mismatch'; return 2; }
+  grep -Fxq "expected_head=$expected_head" "$path" || { die 'transfer manifest expected HEAD mismatch'; return 2; }
+  grep -Fxq "approval_evidence_sha256=$approval_sha" "$path" || { die 'transfer manifest approval binding mismatch'; return 2; }
+  grep -Fxq "manifest_sha256=$manifest_sha" "$path" || { die 'transfer manifest public manifest mismatch'; return 2; }
+  grep -Fxq "gguf_sha256=$gguf_sha" "$path" || { die 'transfer manifest GGUF mismatch'; return 2; }
+  grep -Fxq "dac_gguf_sha256=$dac_sha" "$path" || { die 'transfer manifest DAC mismatch'; return 2; }
+  grep -Fxq "conditioning_packet_sha256=$packet_sha" "$path" || { die 'transfer manifest conditioning packet mismatch'; return 2; }
+  grep -Fxq "reference_codes_sha256=$codes_sha" "$path" || { die 'transfer manifest reference codes mismatch'; return 2; }
+  grep -Fxq "reference_pcm_sha256=$pcm_sha" "$path" || { die 'transfer manifest reference PCM mismatch'; return 2; }
+  grep -Fxq "native_cpu_log_sha256=$native_sha" "$path" || { die 'transfer manifest CPU log mismatch'; return 2; }
+  grep -Fxq 'cpu_result=ONE_PASS' "$path" || { die 'transfer manifest CPU result mismatch'; return 2; }
+  grep -Fxq 'cpu_sentinel=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED' "$path" || { die 'transfer manifest CPU sentinel mismatch'; return 2; }
+  grep -Fxq 'status=MEASURED_NOT_GATED' "$path" || { die 'transfer manifest status mismatch'; return 2; }
+  grep -Fxq 'metal_status=NOT_RUN' "$path" || { die 'transfer manifest Metal status mismatch'; return 2; }
+  grep -Fxq 'publication=NO_UPLOAD' "$path" || { die 'transfer manifest publication mismatch'; return 2; }
 }
 
 validate_approval() {
@@ -157,27 +203,41 @@ self_test() (
   require_cargo_singleton "$temporary/log"; require_sentinel "$temporary/log" ZONOS_CPU_REFERENCE 'ZONOS_CPU_REFERENCE codes=EXACT.*verdict=MEASURED_NOT_GATED' 'CPU sentinel'; require_sentinel "$temporary/log" ZONOS_METAL_REFERENCE 'ZONOS_METAL_REFERENCE codes=EXACT.*verdict=MEASURED_NOT_GATED' 'Metal sentinel'
   printf '%s\n' 'ZONOS_METAL_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED extra' >> "$temporary/log"
   if require_sentinel "$temporary/log" ZONOS_METAL_REFERENCE 'ZONOS_METAL_REFERENCE codes=EXACT.*verdict=MEASURED_NOT_GATED' 'Metal sentinel' >/dev/null 2>&1; then fail=1; fi
+  local expected_head approval_sha transfer transfer_sha digest native native_sha
+  expected_head='0123456789012345678901234567890123456789'; digest="$sha"; approval_sha="$digest"; transfer="$temporary/transfer.txt"; native="$temporary/native.log"
+  printf '%s\n' "test $TEST_NAME ... ok" 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' 'ZONOS_CPU_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED' > "$native"
+  native_sha="$(sha256_file "$native")"
+  printf 'schema=zonos-apple-transfer-v1\nexpected_head=%s\napproval_evidence_sha256=%s\nmanifest_sha256=%s\ngguf_sha256=%s\ndac_gguf_sha256=%s\nconditioning_packet_sha256=%s\nreference_codes_sha256=%s\nreference_pcm_sha256=%s\nnative_cpu_log_sha256=%s\ncpu_result=ONE_PASS\ncpu_sentinel=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED\nstatus=MEASURED_NOT_GATED\nmetal_status=NOT_RUN\npublication=NO_UPLOAD\n' \
+    "$expected_head" "$approval_sha" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$native_sha" > "$transfer"
+  validate_transfer_manifest "$transfer" "$(sha256_file "$transfer")" "$expected_head" "$approval_sha" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$native_sha"
+  printf 'extra=value\n' >> "$transfer"
+  if validate_transfer_manifest "$transfer" "$(sha256_file "$transfer")" "$expected_head" "$approval_sha" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$native_sha" >/dev/null 2>&1; then fail=1; fi
+  local claimed existing
+  claimed="$temporary/claimed-evidence"; claim_evidence_dir "$claimed"
+  if claim_evidence_dir "$claimed" >/dev/null 2>&1; then fail=1; fi
+  existing="$temporary/existing-evidence"; mkdir "$existing"
+  if claim_evidence_dir "$existing" >/dev/null 2>&1; then fail=1; fi
   validate_absent_evidence "$temporary/nested/evidence" "$temporary/value" "$temporary/manifest.json"; mkdir -p "$temporary/real"; ln -s "$temporary/real" "$temporary/link"
   if validate_absent_evidence "$temporary/link/new/evidence" "$temporary/value" >/dev/null 2>&1; then fail=1; fi
   if "$path" --self-test --manifest x >/dev/null 2>&1 || "$path" --unknown >/dev/null 2>&1; then fail=1; fi
   [[ ! -e "$temporary/evidence" ]] || fail=1
-  for token in 'VOKRA_ZONOS_BACKEND' 'ZONOS_CPU_REFERENCE' 'ZONOS_METAL_REFERENCE' 'verdict=MEASURED_NOT_GATED' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' 'reject_symlink_ancestors' 'Apple evidence directory must be absent' 'source/model license identity is not authenticated'; do grep -Fq -- "$token" "$path" || fail=1; done
+  for token in 'VOKRA_ZONOS_BACKEND' 'ZONOS_CPU_REFERENCE' 'ZONOS_METAL_REFERENCE' 'verdict=MEASURED_NOT_GATED' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' '--offline' '--test-threads=1' '--expected-head' '--approval-evidence-sha256' '--transfer-manifest-sha256' '--native-cpu-log-sha256' 'claim_evidence_dir' 'reject_symlink_ancestors' 'Apple evidence directory must be absent' 'source/model license identity is not authenticated'; do grep -Fq -- "$token" "$path" || fail=1; done
   grep -Eq '(^|[;&|][[:space:]]*)(curl|wget|snapshot_download|git[[:space:]]+push|upload\.sh|publish-one\.sh)([[:space:]]|$)' "$path" && fail=1 || true
   (( fail == 0 )) || return 1; log 'self-test PASS'
 )
 
 main() {
-  local self=0 approval='' manifest='' manifest_sha='' gguf='' gguf_sha='' gguf_size='' dac='' dac_sha='' dac_size='' packet='' packet_sha='' packet_size='' codes='' codes_sha='' codes_size='' pcm='' pcm_sha='' pcm_size='' evidence='' key value_name seen_options='' self_seen=0 option_count=0
+  local self=0 expected_head='' approval='' approval_sha='' transfer='' transfer_sha='' manifest='' manifest_sha='' gguf='' gguf_sha='' gguf_size='' dac='' dac_sha='' dac_size='' packet='' packet_sha='' packet_size='' codes='' codes_sha='' codes_size='' pcm='' pcm_sha='' pcm_size='' native='' native_sha='' evidence='' key value_name seen_options='' self_seen=0 option_count=0
   while (( $# )); do
     key="$1"
     if [[ "$key" == --self-test ]]; then (( self_seen == 0 )) || die 'duplicate --self-test'; self_seen=1; self=1; shift; continue; fi
     case "$key" in
-      --approval-evidence) value_name=approval;; --manifest) value_name=manifest;; --manifest-sha256) value_name=manifest_sha;;
+      --expected-head) value_name=expected_head;; --approval-evidence) value_name=approval;; --approval-evidence-sha256) value_name=approval_sha;; --transfer-manifest) value_name=transfer;; --transfer-manifest-sha256) value_name=transfer_sha;; --manifest) value_name=manifest;; --manifest-sha256) value_name=manifest_sha;;
       --gguf) value_name=gguf;; --gguf-sha256) value_name=gguf_sha;; --gguf-size) value_name=gguf_size;;
       --dac-gguf) value_name=dac;; --dac-gguf-sha256) value_name=dac_sha;; --dac-gguf-size) value_name=dac_size;;
       --conditioning-packet) value_name=packet;; --conditioning-packet-sha256) value_name=packet_sha;; --conditioning-packet-size) value_name=packet_size;;
       --reference-codes) value_name=codes;; --reference-codes-sha256) value_name=codes_sha;; --reference-codes-size) value_name=codes_size;;
-      --reference-pcm) value_name=pcm;; --reference-pcm-sha256) value_name=pcm_sha;; --reference-pcm-size) value_name=pcm_size;; --evidence-dir) value_name=evidence;;
+      --reference-pcm) value_name=pcm;; --reference-pcm-sha256) value_name=pcm_sha;; --reference-pcm-size) value_name=pcm_size;; --native-cpu-log) value_name=native;; --native-cpu-log-sha256) value_name=native_sha;; --evidence-dir) value_name=evidence;;
       -h|--help) [[ $# == 1 && $self == 0 ]] || die '--help cannot be combined'; usage; return 0;; *) die "unknown argument: $key";;
     esac
     [[ " $seen_options " != *" $value_name "* ]] || die "duplicate $key"; seen_options="$seen_options $value_name"; (( option_count += 1 ))
@@ -185,21 +245,24 @@ main() {
     printf -v "$value_name" '%s' "$2"; shift 2
   done
   if (( self )); then [[ -z "$seen_options" ]] || die '--self-test accepts no other arguments'; self_test; return; fi
-  (( option_count == 19 )) || die 'all explicit artifact, manifest, approval, and evidence arguments are required'
+  (( option_count == 25 )) || die 'all explicit artifact, manifest, approval, transfer, native-log, and evidence arguments are required'
   : "$SOURCE_REVISION" "$UPSTREAM_REVISION" "$PUBLIC_REVISION"
+  require_clean_expected_head "$expected_head"
+  require_sha "$approval_sha"; require_file 'approval evidence' "$approval"; [[ "$(sha256_file "$approval")" == "$(lower_sha "$approval_sha")" ]] || die 'approval evidence SHA-256 mismatch'
   validate_approval "$approval"
   require_sha "$manifest_sha"; require_file 'VAST manifest' "$manifest"; [[ "$(sha256_file "$manifest")" == "$(lower_sha "$manifest_sha")" ]] || die 'manifest SHA-256 mismatch'; validate_json_manifest "$manifest"
-  require_input 'Zonos GGUF' "$gguf" "$gguf_sha" "$gguf_size"; require_input 'Zonos DAC GGUF' "$dac" "$dac_sha" "$dac_size"; require_input 'conditioning packet' "$packet" "$packet_sha" "$packet_size"; require_input 'reference codes' "$codes" "$codes_sha" "$codes_size"; require_input 'reference PCM' "$pcm" "$pcm_sha" "$pcm_size"
-  validate_absent_evidence "$evidence" "$approval" "$manifest" "$gguf" "$dac" "$packet" "$codes" "$pcm"
+  require_sha "$transfer_sha"; validate_transfer_manifest "$transfer" "$transfer_sha" "$expected_head" "$approval_sha" "$manifest_sha" "$gguf_sha" "$dac_sha" "$packet_sha" "$codes_sha" "$pcm_sha" "$native_sha"
+  require_input 'Zonos GGUF' "$gguf" "$gguf_sha" "$gguf_size"; require_input 'Zonos DAC GGUF' "$dac" "$dac_sha" "$dac_size"; require_input 'conditioning packet' "$packet" "$packet_sha" "$packet_size"; require_input 'reference codes' "$codes" "$codes_sha" "$codes_size"; require_input 'reference PCM' "$pcm" "$pcm_sha" "$pcm_size"; require_file 'VAST native CPU log' "$native"; require_sha "$native_sha"; [[ "$(sha256_file "$native")" == "$(lower_sha "$native_sha")" ]] || die 'native CPU log SHA-256 mismatch'; require_cargo_singleton "$native"; require_sentinel "$native" ZONOS_CPU_REFERENCE 'ZONOS_CPU_REFERENCE codes=EXACT.*verdict=MEASURED_NOT_GATED' 'VAST CPU sentinel'
+  validate_absent_evidence "$evidence" "$approval" "$manifest" "$transfer" "$native" "$gguf" "$dac" "$packet" "$codes" "$pcm"
   [[ "${VOKRA_REMOTE_APPLE_SILICON:-0}" == 1 && "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || die 'real remote Darwin arm64 is required'
   command -v cargo >/dev/null 2>&1 || die 'cargo is required'; command -v xcrun >/dev/null 2>&1 || die 'xcrun is required'; xcrun --find metal >/dev/null 2>&1 || die 'Metal toolchain unavailable'
-  [[ -d "$ROOT/.git" && -f "$ROOT/Cargo.toml" && -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'clean Vokra checkout required'
-  mkdir -p "$evidence"; export VOKRA_ZONOS_GGUF="$gguf" VOKRA_ZONOS_DAC_GGUF="$dac" VOKRA_ZONOS_CONDITIONING_PACKET="$packet" VOKRA_ZONOS_PACKET_SHA256="$packet_sha" VOKRA_ZONOS_REFERENCE_CODES="$codes" VOKRA_ZONOS_REFERENCE_PCM="$pcm"
+  claim_evidence_dir "$evidence"; export VOKRA_ZONOS_GGUF="$gguf" VOKRA_ZONOS_DAC_GGUF="$dac" VOKRA_ZONOS_CONDITIONING_PACKET="$packet" VOKRA_ZONOS_PACKET_SHA256="$packet_sha" VOKRA_ZONOS_REFERENCE_CODES="$codes" VOKRA_ZONOS_REFERENCE_PCM="$pcm"
   for backend in cpu metal; do
     backend_upper="$(printf '%s' "$backend" | tr '[:lower:]' '[:upper:]')"
-    log "running Zonos $backend exact test"; VOKRA_ZONOS_BACKEND="$backend" CARGO_BUILD_JOBS=1 cargo test --locked -p vokra-models --features metal --test parity_zonos_real "$TEST_NAME" -- --ignored --exact --nocapture > "$evidence/$backend.log" 2>&1 || die "$backend Zonos test failed"
+    log "running Zonos $backend exact test"; VOKRA_ZONOS_BACKEND="$backend" CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo test --offline --locked -p vokra-models --features metal --test parity_zonos_real "$TEST_NAME" -- --ignored --exact --nocapture --test-threads=1 > "$evidence/$backend.log" 2>&1 || die "$backend Zonos test failed"
     require_cargo_singleton "$evidence/$backend.log"; require_sentinel "$evidence/$backend.log" "ZONOS_${backend_upper}_REFERENCE" "ZONOS_${backend_upper}_REFERENCE codes=EXACT.*verdict=MEASURED_NOT_GATED" "$backend sentinel"
   done
+  require_clean_expected_head "$expected_head"
   printf '%s\n' '{"publication":"NO_UPLOAD","cpu_status":"MEASURED_NOT_GATED","metal_status":"MEASURED_NOT_GATED","codes_status":"EXACT","pcm_status":"MEASURED_NOT_GATED"}' > "$evidence/summary.json"; return 2
 }
 
