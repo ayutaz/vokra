@@ -504,6 +504,23 @@ impl ZonosConfig {
                 self.num_codebooks,
             )));
         }
+        if self
+            .delay_pattern
+            .iter()
+            .enumerate()
+            .any(|(codebook, &delay)| delay != codebook + 1)
+        {
+            return Err(VokraError::InvalidArgument(
+                "zonos config: delay_pattern must be the authenticated [1, 2, ..., num_codebooks] staircase"
+                    .to_owned(),
+            ));
+        }
+        if self.sample_rate != ZONOS_SAMPLE_RATE {
+            return Err(VokraError::InvalidArgument(format!(
+                "zonos config: sample_rate={} does not match the authenticated DAC 44.1-kHz contract",
+                self.sample_rate
+            )));
+        }
         // Special ids: eos must fit within `head_vocab` (it is emitted);
         // masked_token_id must fit within `codebook_vocab` but not within
         // `head_vocab` (upstream masks it out of the head).
@@ -527,6 +544,7 @@ impl ZonosConfig {
     /// positions are filled with the masked token; callers may feed the
     /// result directly to a causal transformer state.
     pub fn apply_delay_pattern(&self, codes: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
+        self.validate_for_forward()?;
         if codes.len() != self.num_codebooks || codes.iter().any(|row| row.is_empty()) {
             return Err(VokraError::InvalidArgument(
                 "zonos delay pattern requires one non-empty row per codebook".to_owned(),
@@ -541,15 +559,18 @@ impl ZonosConfig {
         for row in codes {
             if row
                 .iter()
-                .any(|&token| token as usize >= self.codebook_vocab)
+                .any(|&token| token as usize >= self.codebook_vocab || token >= self.eos_token_id)
             {
                 return Err(VokraError::InvalidArgument(
-                    "zonos delay pattern contains an out-of-range code".to_owned(),
+                    "zonos delay pattern contains a non-emitted or out-of-range code".to_owned(),
                 ));
             }
         }
         let max_delay = self.delay_pattern.iter().copied().max().unwrap_or(0);
-        let mut delayed = vec![vec![self.masked_token_id; frames + max_delay]; self.num_codebooks];
+        let delayed_frames = frames.checked_add(max_delay).ok_or_else(|| {
+            VokraError::InvalidArgument("zonos delay pattern length overflow".to_owned())
+        })?;
+        let mut delayed = vec![vec![self.masked_token_id; delayed_frames]; self.num_codebooks];
         for codebook in 0..self.num_codebooks {
             let delay = self.delay_pattern[codebook];
             for (frame, &token) in codes[codebook].iter().enumerate() {
@@ -567,6 +588,7 @@ impl ZonosConfig {
         delayed: &[Vec<u32>],
         original_frames: usize,
     ) -> Result<Vec<Vec<u32>>> {
+        self.validate_for_forward()?;
         if delayed.len() != self.num_codebooks || original_frames == 0 {
             return Err(VokraError::InvalidArgument(
                 "zonos revert delay pattern shape is invalid".to_owned(),
@@ -601,6 +623,7 @@ impl ZonosConfig {
     /// non-primary codebook is masked, matching the upstream delayed
     /// generation contract rather than silently terminating a partial frame.
     pub fn greedy_step(&self, logits: &[Vec<f32>]) -> Result<Vec<u32>> {
+        self.validate_for_forward()?;
         if logits.len() != self.num_codebooks
             || logits.iter().any(|row| row.len() != self.head_vocab)
         {
@@ -908,9 +931,9 @@ impl ZonosConditioningPacket {
         let language_id = i32::from_le_bytes(take(&mut cursor, 4)?.try_into().unwrap());
         let codebook_count = u32_at(&mut cursor)? as usize;
         let prompt_frames = u32_at(&mut cursor)? as usize;
-        if codebook_count == 0 || codebook_count > 32 || prompt_frames > Self::MAX_PHONEMES {
+        if codebook_count != ZONOS_NUM_CODEBOOKS || prompt_frames > Self::MAX_PHONEMES {
             return Err(VokraError::InvalidArgument(
-                "zonos conditioning prompt-code shape is invalid".to_owned(),
+                "zonos conditioning prompt-code shape must use exactly nine codebooks".to_owned(),
             ));
         }
         let conditional_count = u32_at(&mut cursor)? as usize;
@@ -922,7 +945,7 @@ impl ZonosConditioningPacket {
             || conditional_count % d_model != 0
         {
             return Err(VokraError::InvalidArgument(
-                "zonos conditioning prefix shapes are invalid".to_owned(),
+                "zonos projected-prefix compatibility shape is invalid".to_owned(),
             ));
         }
         let digest_offset = cursor;
@@ -1038,6 +1061,51 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
         out.push((u01 * 2.0 - 1.0) * a);
     }
     out
+}
+
+fn weights_are_finite(weights: &ZonosWeights) -> bool {
+    let finite = |values: &[f32]| values.iter().all(|value| value.is_finite());
+    weights
+        .codebook_embeddings
+        .iter()
+        .all(|table| finite(table))
+        && weights.blocks.iter().all(|block| {
+            finite(&block.norm_1_w)
+                && finite(&block.norm_1_b)
+                && finite(&block.qkv_proj)
+                && finite(&block.o_proj)
+                && finite(&block.norm_2_w)
+                && finite(&block.norm_2_b)
+                && finite(&block.mlp_fc1)
+                && finite(&block.mlp_fc2)
+        })
+        && weights.logit_heads.iter().all(|head| finite(head))
+        && finite(&weights.norm_f_w)
+        && finite(&weights.norm_f_b)
+        && weights.prefix_conditioner.as_ref().is_none_or(|prefix| {
+            [
+                &prefix.phoneme_embedder,
+                &prefix.speaker_project,
+                &prefix.speaker_uncond,
+                &prefix.emotion_weight,
+                &prefix.emotion_uncond,
+                &prefix.fmax_weight,
+                &prefix.fmax_uncond,
+                &prefix.pitch_std_weight,
+                &prefix.pitch_std_uncond,
+                &prefix.speaking_rate_weight,
+                &prefix.speaking_rate_uncond,
+                &prefix.language_embedder,
+                &prefix.language_uncond,
+                &prefix.speaker_bias,
+                &prefix.project,
+                &prefix.project_bias,
+                &prefix.norm_weight,
+                &prefix.norm_bias,
+            ]
+            .into_iter()
+            .all(|values| values.iter().all(|value| value.is_finite()))
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,6 +1319,11 @@ impl ZonosTts {
                 "zonos weights: backbone.norm_f must have d_model gamma and beta".to_owned(),
             ));
         }
+        if !weights_are_finite(&weights) {
+            return Err(VokraError::InvalidArgument(
+                "zonos weights contain non-finite values".to_owned(),
+            ));
+        }
         Ok(Self {
             cfg,
             weights,
@@ -1270,18 +1343,18 @@ impl ZonosTts {
     /// DAC bind [`Self::synthesize`] cannot honestly return audio
     /// (FR-EX-08).
     ///
-    /// Cross-checks that the DAC codec has at least as many codebooks as
-    /// Zonos emits channels — a mismatch would misroute channel indices
-    /// at decode time — and that its sample rate matches
+    /// Cross-checks that the DAC codec has exactly the nine codebooks emitted
+    /// by Zonos — a mismatch would misroute channel indices at decode time —
+    /// and that its sample rate matches
     /// [`ZonosConfig::sample_rate`].
     ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] on a codebook / sample-rate mismatch.
     pub fn with_dac(mut self, dac: Dac) -> Result<Self> {
-        if dac.n_codebooks() < self.cfg.num_codebooks {
+        if dac.n_codebooks() != self.cfg.num_codebooks {
             return Err(VokraError::InvalidArgument(format!(
-                "zonos with_dac: dac has {} codebooks but Zonos emits {} channels",
+                "zonos with_dac: dac has {} codebooks but Zonos requires exactly {} channels",
                 dac.n_codebooks(),
                 self.cfg.num_codebooks,
             )));
@@ -1310,9 +1383,9 @@ impl ZonosTts {
 
     #[cfg(test)]
     fn with_dac_fixture(mut self, dac: DacCodecGguf) -> Result<Self> {
-        if dac.attrs.n_codebooks < self.cfg.num_codebooks {
+        if dac.attrs.n_codebooks != self.cfg.num_codebooks {
             return Err(VokraError::InvalidArgument(format!(
-                "zonos with_dac fixture: dac has {} codebooks but Zonos emits {} channels",
+                "zonos with_dac fixture: dac has {} codebooks but Zonos requires exactly {} channels",
                 dac.attrs.n_codebooks, self.cfg.num_codebooks,
             )));
         }
@@ -1538,6 +1611,7 @@ impl ZonosTts {
     /// [`crate::dac::Dac`].  The codebook-major API is converted to the DAC's
     /// frame-major wire format without selecting a backend implicitly.
     pub fn decode_codes(&self, codes: &[Vec<u32>]) -> Result<Vec<f32>> {
+        let frame_major = flatten_codebooks(&self.cfg, codes)?;
         let Some(dac) = self.dac.as_ref() else {
             return Err(VokraError::NotImplemented(
                 "zonos decode_codes: a complete 44.1-kHz crate::dac::Dac is required",
@@ -1547,29 +1621,6 @@ impl ZonosTts {
             return Err(VokraError::InvalidArgument(
                 "zonos transformer and DAC backends must match".to_owned(),
             ));
-        }
-        if codes.len() != self.cfg.num_codebooks || codes.iter().any(Vec::is_empty) {
-            return Err(VokraError::InvalidArgument(
-                "zonos decode_codes requires one non-empty row per codebook".to_owned(),
-            ));
-        }
-        let frames = codes[0].len();
-        if codes.iter().any(|row| row.len() != frames) {
-            return Err(VokraError::InvalidArgument(
-                "zonos decode_codes rows must have equal length".to_owned(),
-            ));
-        }
-        let mut frame_major = Vec::with_capacity(frames * self.cfg.num_codebooks);
-        for frame in 0..frames {
-            for row in codes {
-                let token = row[frame];
-                if token as usize >= 1024 {
-                    return Err(VokraError::InvalidArgument(
-                        "zonos decode_codes contains an out-of-range emitted code".to_owned(),
-                    ));
-                }
-                frame_major.push(token);
-            }
         }
         dac.decode_codes(&frame_major)
     }
@@ -1838,6 +1889,37 @@ fn apply_stopping_frame(
     Ok(written)
 }
 
+fn flatten_codebooks(config: &ZonosConfig, codes: &[Vec<u32>]) -> Result<Vec<u32>> {
+    config.validate_for_forward()?;
+    if codes.len() != config.num_codebooks || codes.iter().any(Vec::is_empty) {
+        return Err(VokraError::InvalidArgument(
+            "zonos decode_codes requires one non-empty row per codebook".to_owned(),
+        ));
+    }
+    let frames = codes[0].len();
+    if codes.iter().any(|row| row.len() != frames) {
+        return Err(VokraError::InvalidArgument(
+            "zonos decode_codes rows must have equal length".to_owned(),
+        ));
+    }
+    let count = frames.checked_mul(config.num_codebooks).ok_or_else(|| {
+        VokraError::InvalidArgument("zonos decode_codes length overflow".to_owned())
+    })?;
+    let mut frame_major = Vec::with_capacity(count);
+    for frame in 0..frames {
+        for row in codes {
+            let token = row[frame];
+            if token as usize >= config.codebook_vocab || token >= config.eos_token_id {
+                return Err(VokraError::InvalidArgument(
+                    "zonos decode_codes contains an out-of-range emitted code".to_owned(),
+                ));
+            }
+            frame_major.push(token);
+        }
+    }
+    Ok(frame_major)
+}
+
 /// Builds the source delayed matrix from the complete prompt-plus-unknown
 /// matrix in one pass.  Applying delay only to the prompt would lose the
 /// trailing fixed masks and makes masked-scatter generation observably wrong.
@@ -1864,10 +1946,10 @@ fn initialize_generation_delay(
     for row in prompt_codes {
         if row
             .iter()
-            .any(|&token| token as usize >= config.codebook_vocab)
+            .any(|&token| token as usize >= config.codebook_vocab || token >= config.eos_token_id)
         {
             return Err(VokraError::InvalidArgument(
-                "zonos prompt code is outside the codebook vocabulary".to_owned(),
+                "zonos prompt code is outside the emitted codebook vocabulary".to_owned(),
             ));
         }
     }
@@ -2759,6 +2841,25 @@ mod tests {
     }
 
     #[test]
+    fn config_delay_pattern_and_sample_rate_are_authenticated() {
+        let mut c = ZonosConfig::tiny_for_tests();
+        c.delay_pattern[1] = 1;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(message))
+                if message.contains("delay_pattern")
+        ));
+
+        let mut c = ZonosConfig::tiny_for_tests();
+        c.sample_rate = 24_000;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(message))
+                if message.contains("sample_rate")
+        ));
+    }
+
+    #[test]
     fn config_special_ids_are_range_checked() {
         // eos_token_id must fit within head_vocab.
         let mut c = ZonosConfig::tiny_for_tests();
@@ -3011,6 +3112,18 @@ mod tests {
     }
 
     #[test]
+    fn zonos_tts_new_rejects_nonfinite_weight_values() {
+        let c = ZonosConfig::tiny_for_tests();
+        let mut w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        w.codebook_embeddings[0][0] = f32::NAN;
+        assert!(matches!(
+            ZonosTts::new(c, w),
+            Err(VokraError::InvalidArgument(message))
+                if message.contains("non-finite")
+        ));
+    }
+
+    #[test]
     fn zonos_tts_new_rejects_conditioner_slot_mismatch() {
         let c = ZonosConfig::tiny_for_tests();
         let mut w = ZonosWeights::synthesized(&c, 7).expect("weights");
@@ -3242,6 +3355,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn with_dac_rejects_extra_codebooks() {
+        let c = ZonosConfig::tiny_for_tests();
+        let w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        let tts = ZonosTts::new(c.clone(), w).expect("zonos tts");
+        let dac = stub_dac(c.num_codebooks + 1, c.sample_rate);
+        assert!(matches!(
+            tts.with_dac_fixture(dac),
+            Err(VokraError::InvalidArgument(message))
+                if message.contains("exactly") && message.contains("codebooks")
+        ));
+    }
+
     /// Pins line 824 of [`ZonosTts::with_dac`]:
     /// `dac.sample_rate != cfg.sample_rate` — the 44.1 kHz DAC binding
     /// guard. Zonos-v0.1 is explicitly bound to descript/dac_44khz
@@ -3333,7 +3459,7 @@ mod tests {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes.extend_from_slice(&(-1i32).to_le_bytes());
-        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&9u32.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&16u32.to_le_bytes());
         bytes.extend_from_slice(&16u32.to_le_bytes());
@@ -3359,6 +3485,20 @@ mod tests {
         assert!(ZonosConditioningPacket::parse(&bytes, [8u8; 32], 16).is_err());
         bytes[digest_offset + 100] ^= 1;
         assert!(ZonosConditioningPacket::parse(&bytes, digest, 16).is_err());
+
+        let mut wrong_codebook_count = bytes.clone();
+        wrong_codebook_count[digest_offset - 16..digest_offset - 12]
+            .copy_from_slice(&3u32.to_le_bytes());
+        let digest = packet_digest(&wrong_codebook_count, digest_offset);
+        wrong_codebook_count[digest_offset..digest_offset + 32].copy_from_slice(&digest);
+        assert!(ZonosConditioningPacket::parse(&wrong_codebook_count, digest, 16).is_err());
+
+        let mut wrong_prefix_count = bytes;
+        wrong_prefix_count[digest_offset - 8..digest_offset - 4]
+            .copy_from_slice(&8u32.to_le_bytes());
+        let digest = packet_digest(&wrong_prefix_count, digest_offset);
+        wrong_prefix_count[digest_offset..digest_offset + 32].copy_from_slice(&digest);
+        assert!(ZonosConditioningPacket::parse(&wrong_prefix_count, digest, 16).is_err());
     }
 
     #[test]
@@ -3413,6 +3553,16 @@ mod tests {
         let step = config.greedy_step(&logits).unwrap();
         assert_eq!(step[0], config.eos_token_id);
         assert_ne!(step[1], config.eos_token_id);
+    }
+
+    #[test]
+    fn flatten_codes_rejects_ragged_special_and_overflowed_contracts() {
+        let config = ZonosConfig::tiny_for_tests();
+        assert!(flatten_codebooks(&config, &[vec![1], vec![2], vec![3, 4]]).is_err());
+        assert!(
+            flatten_codebooks(&config, &[vec![config.eos_token_id], vec![2], vec![3],]).is_err()
+        );
+        assert!(flatten_codebooks(&config, &[vec![1], vec![2]]).is_err());
     }
 
     #[test]

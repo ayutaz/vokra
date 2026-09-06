@@ -1,10 +1,11 @@
 //! Strict partial checkpoint binding for Zyphra Zonos-v0.1-transformer.
 //!
 //! The public Vokra artifact is an authenticated 246-tensor main-model
-//! checkpoint. It provides the real speaker projection, but does not yet
-//! provide the complete delayed-AR conditioning and DAC product path.
+//! checkpoint. This module binds every transformer and seven-conditioner role
+//! into the typed native store; the separately distributed DAC remains a
+//! required, independently authenticated resource for PCM.
 
-use vokra_core::gguf::GgufFile;
+use vokra_core::gguf::{GgmlType, GgufFile};
 use vokra_core::{LicenseClass, Result, VokraError};
 
 use super::{
@@ -60,6 +61,7 @@ impl ZonosCheckpoint {
     /// Validates the exact 246-tensor public manifest and speaker projection.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
+        require_float_tensor_dtypes(file)?;
         require_tensor_shape(file, LABEL, WEIGHT, &[OUTPUT_DIM, INPUT_DIM])?;
         require_tensor_shape(file, LABEL, BIAS, &[OUTPUT_DIM])?;
         Ok(Self { checkpoint })
@@ -300,7 +302,9 @@ impl ZonosCheckpoint {
         self.checkpoint.tensor_count()
     }
 
-    /// The main model is bound, but end-to-end PCM remains explicitly partial.
+    /// The main model is bound, but this legacy raw-phoneme API remains
+    /// explicitly partial: production synthesis requires the authenticated
+    /// conditioning packet and separately bound DAC.
     pub fn synthesize(&self, phoneme_ids: &[i64]) -> Result<Vec<f32>> {
         if phoneme_ids.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -308,7 +312,7 @@ impl ZonosCheckpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "zonos synthesize: PARTIAL_RUNTIME — the authenticated 246-tensor main model exposes the speaker projection, but prefix conditioning, delayed nine-codebook autoregression, and complete crate::dac::Dac PCM decode are not yet bound",
+            "zonos synthesize: PARTIAL_RUNTIME — typed seven-conditioner prefix binding and delayed nine-codebook generation are available through the authenticated conditioning-packet API, but this legacy raw-phoneme entry point cannot supply that packet or the complete crate::dac::Dac PCM resource",
         ))
     }
 }
@@ -349,4 +353,57 @@ fn load_gemm_weight(
         }
     }
     Ok(transposed)
+}
+
+/// The authenticated Zonos conversion contract preserves dense floating
+/// tensors as F32/F16/BF16.  Quantized and integer payloads may decode through
+/// the generic GGUF reader, but they are not interchangeable with the
+/// source-authenticated linear/embedding roles below and must fail closed.
+fn require_float_tensor_dtypes(file: &GgufFile) -> Result<()> {
+    if let Some(tensor) = file
+        .tensors()
+        .iter()
+        .find(|tensor| !matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16))
+    {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: tensor `{}` has unsupported dtype {:?}; expected F32, F16, or BF16",
+            tensor.name, tensor.dtype
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vokra_core::gguf::GgufBuilder;
+
+    #[test]
+    fn dtype_gate_rejects_integer_tensor_payloads() {
+        let mut builder = GgufBuilder::new();
+        builder
+            .add_tensor("unexpected", GgmlType::I32, vec![1], vec![0; 4])
+            .expect("synthetic tensor");
+        let file = GgufFile::parse(builder.to_bytes().expect("synthetic GGUF")).expect("parse");
+        assert!(matches!(
+            require_float_tensor_dtypes(&file),
+            Err(VokraError::ModelLoad(message)) if message.contains("unsupported dtype")
+        ));
+    }
+
+    #[test]
+    fn dtype_gate_accepts_dense_float_contract() {
+        let mut builder = GgufBuilder::new();
+        builder
+            .add_tensor("f32", GgmlType::F32, vec![1], vec![0; 4])
+            .expect("synthetic f32 tensor");
+        builder
+            .add_tensor("f16", GgmlType::F16, vec![1], vec![0; 2])
+            .expect("synthetic f16 tensor");
+        builder
+            .add_tensor("bf16", GgmlType::BF16, vec![1], vec![0; 2])
+            .expect("synthetic bf16 tensor");
+        let file = GgufFile::parse(builder.to_bytes().expect("synthetic GGUF")).expect("parse");
+        require_float_tensor_dtypes(&file).expect("float tensor contract");
+    }
 }
