@@ -298,6 +298,31 @@ fn integer(root: &JsonValue, path: &[&str]) -> u64 {
         .as_u64()
         .unwrap_or_else(|| panic!("manifest {} is not an integer", path.join(".")))
 }
+fn reject_duplicate_keys(value: &JsonValue) {
+    if let JsonValue::Object(entries) = value {
+        let mut keys = std::collections::BTreeSet::new();
+        for (key, child) in entries {
+            assert!(keys.insert(key), "duplicate JSON key: {key}");
+            reject_duplicate_keys(child);
+        }
+    } else if let JsonValue::Array(items) = value {
+        for item in items {
+            reject_duplicate_keys(item);
+        }
+    }
+}
+fn exact_keys(value: &JsonValue, expected: &[&str], label: &str) {
+    let entries = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{label} must be an object"));
+    assert_eq!(entries.len(), expected.len(), "{label} schema drift");
+    for key in expected {
+        assert!(
+            entries.iter().any(|(actual, _)| actual == key),
+            "{label} missing key {key}"
+        );
+    }
+}
 fn hash(value: &str, label: &str) {
     assert_eq!(value.len(), 64, "{label} must be SHA-256 hex");
     assert!(
@@ -321,6 +346,21 @@ fn f32_artifact(
     );
     let raw = fs::read(path).expect("read reference artifact");
     assert_eq!(raw.len(), expected_bytes, "{label} byte count");
+    if label == "input" {
+        exact_keys(
+            record,
+            &[
+                "file", "dtype", "shape", "bytes", "sha256", "seed", "formula",
+            ],
+            "reference input record",
+        );
+    } else {
+        exact_keys(
+            record,
+            &["file", "dtype", "shape", "bytes", "sha256"],
+            "reference output record",
+        );
+    }
     assert_eq!(
         text(record, &[label, "file"]),
         path.file_name().unwrap().to_string_lossy()
@@ -425,6 +465,27 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
     let manifest_path = reference.join("manifest.json");
     let manifest = json::parse(&fs::read(&manifest_path).expect("read reference manifest"))
         .expect("parse reference manifest");
+    reject_duplicate_keys(&manifest);
+    exact_keys(
+        &manifest,
+        &[
+            "format",
+            "status",
+            "publication",
+            "source",
+            "model",
+            "config",
+            "license_manifest_sha256",
+            "approval_scope_sha256",
+            "project_sha256",
+            "uv_lock_sha256",
+            "checkpoint_tensor_manifest_sha256",
+            "input",
+            "outputs",
+            "execution",
+        ],
+        "reference manifest",
+    );
     assert_eq!(
         text(&manifest, &["format"]),
         "vokra-cosyvoice2-hift-reference-v1"
@@ -455,6 +516,24 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
     assert_eq!(license_sha, text(&manifest, &["license_manifest_sha256"]));
     let license_json = json::parse(&fs::read(&license).expect("read license manifest"))
         .expect("parse license manifest");
+    reject_duplicate_keys(&license_json);
+    exact_keys(
+        &license_json,
+        &[
+            "gate_version",
+            "status",
+            "owner_signoff",
+            "publication",
+            "source",
+            "model",
+            "config",
+            "python_closure",
+            "evidence",
+            "decision",
+            "approval",
+        ],
+        "license manifest",
+    );
     assert_eq!(text(&license_json, &["status"]), "APPROVED");
     assert_eq!(text(&license_json, &["owner_signoff"]), "OWNER_SIGNED_OFF");
     assert_eq!(text(&license_json, &["publication"]), "NO_UPLOAD");
@@ -508,7 +587,7 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
     fs::create_dir(&evidence).expect("claim absent evidence directory");
     let out = evidence.join("evidence.json");
     let payload = format!(
-        "{{\n  \"format\": \"vokra-cosyvoice2-hift-apple-evidence-v1\",\n  \"status\": \"PASS\",\n  \"publication\": \"NO_UPLOAD\",\n  \"backend\": \"metal\",\n  \"device_evidence\": \"{}\",\n  \"gguf_sha256\": \"{}\",\n  \"reference_manifest_sha256\": \"{}\",\n  \"license_manifest_sha256\": \"{}\",\n  \"atol\": {},\n  \"f0_cpu_reference_max_abs\": {},\n  \"pcm_cpu_reference_max_abs\": {},\n  \"pcm_metal_reference_max_abs\": {},\n  \"pcm_metal_cpu_max_abs\": {}\n}}\n",
+        "{{\n  \"format\": \"vokra-cosyvoice2-hift-apple-evidence-v1\",\n  \"status\": \"PASS\",\n  \"publication\": \"NO_UPLOAD\",\n  \"backend\": \"CPU+Metal\",\n  \"device_evidence\": \"{}\",\n  \"gguf_sha256\": \"{}\",\n  \"reference_manifest_sha256\": \"{}\",\n  \"license_manifest_sha256\": \"{}\",\n  \"atol\": {},\n  \"f0_cpu_reference_max_abs\": {},\n  \"pcm_cpu_reference_max_abs\": {},\n  \"pcm_metal_reference_max_abs\": {},\n  \"pcm_metal_cpu_max_abs\": {},\n  \"scope\": {{\"component\":\"standalone_cosyvoice2_hift\",\"f0\":\"CPU/reference only; Metal F0 not separately exposed\",\"pcm\":\"CPU/reference, Metal/reference, Metal/CPU\",\"full_cosvoice2_e2e\":\"NOT_CLAIMED\"}}\n}}\n",
         device_evidence,
         gguf_sha,
         reference_sha,
@@ -540,6 +619,12 @@ mod hash_vectors {
         );
         assert_eq!(
             super::sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let mut streaming = super::StreamSha256::new();
+        streaming.update(b"abc");
+        assert_eq!(
+            streaming.finish(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
