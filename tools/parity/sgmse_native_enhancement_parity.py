@@ -842,9 +842,10 @@ def _run_official_reference(
         sampling = reviewed_sampling_config(hyperparams_evidence | {"raw": HYPERPARAMS_RAW})
         enhancer = build_official_enhancer(speechbrain_source, model, torch, sampling)
         source_pcm = _read_wav_pcm(input_wav)
-        if len(source_pcm) < CROP_SAMPLE_COUNT:
+        crop_end = CROP_SAMPLE_START + CROP_SAMPLE_COUNT
+        if len(source_pcm) < crop_end:
             raise ValueError("fixed input fixture is too short for the reviewed crop")
-        pcm = source_pcm[CROP_SAMPLE_START:CROP_SAMPLE_COUNT]
+        pcm = source_pcm[CROP_SAMPLE_START:crop_end]
         input_artifact = write_f32(temporary / INPUT_NAME, pcm)
         torch.set_num_threads(1)
         torch.set_num_interop_threads(1)
@@ -1141,7 +1142,8 @@ def self_test() -> int:
         packet.mkdir()
         self_test_wav = Path(__file__).resolve().parents[2] / "tests" / "parity" / "utmos" / "ref-clip.wav"
         self_test_pcm = _read_wav_pcm(self_test_wav)
-        self_test_crop = self_test_pcm[CROP_SAMPLE_START : CROP_SAMPLE_COUNT]
+        self_test_crop_end = CROP_SAMPLE_START + CROP_SAMPLE_COUNT
+        self_test_crop = self_test_pcm[CROP_SAMPLE_START:self_test_crop_end]
         write_f32(packet / INPUT_NAME, self_test_crop)
         write_f32(packet / REFERENCE_NAME, [0.5] * CROP_SAMPLE_COUNT)
         noise_raw = bytearray()
