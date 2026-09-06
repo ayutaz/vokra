@@ -19,3 +19,8 @@ explicit = true
 [tool.uv]
 package = false
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Torch declares an unbounded setuptools runtime requirement. Keep the
+# resolver above the fixed versions for GHSA-5rjg-fvgr-3xxf and
+# GHSA-h35f-9h28-mq5c without making setuptools a runtime dependency of the
+# reference oracle.
+constraint-dependencies = ["setuptools>=83.0.0"]
