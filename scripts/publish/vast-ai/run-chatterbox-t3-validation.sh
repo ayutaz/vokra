@@ -61,7 +61,7 @@ try:
         raise ValueError("approval is not the blocked inspection disposition")
     if value["expected_head"] != sys.argv[2] or value["source_url"] != "https://github.com/resemble-ai/chatterbox.git" or value["source_revision"] != "5de7a54aa4e5e2baadb0182dde554908b48b85c2" or value["variants"] != ["base", "nano", "turbo"] or value["scope_sha256"] != sys.argv[3]:
         raise ValueError("approval identity or scope mismatch")
-    raise RuntimeError("BLOCKED_APPROVAL/INSPECTION_ONLY")
+    print("CHATTERBOX_APPROVAL_VALID_BUT_BLOCKED: BLOCKED/INSPECTION_ONLY/NO_UPLOAD")
 except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError, RuntimeError) as error:
     raise SystemExit(str(error))
 PY
@@ -137,7 +137,13 @@ for token in '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 't3_
   scope_sha="$(printf '%s' "$scope" | sha256sum | awk '{print $1}')"
   printf '{"schema":"chatterbox-vast-approval-v1","decision":"BLOCKED","status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","no_upload":true,"expected_head":"%s","source_url":"https://github.com/resemble-ai/chatterbox.git","source_revision":"5de7a54aa4e5e2baadb0182dde554908b48b85c2","variants":["base","nano","turbo"],"scope_sha256":"%s"}\n' "$(printf '0%.0s' {1..40})" "$scope_sha" >"$approval"
   approval_sha="$(sha256_file "$approval")"; require_approval_binding "$approval" "$approval_sha" || fail=1
-  if require_blocked_approval "$approval" "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then fail=1; fi
+  if ! require_blocked_approval "$approval" "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then fail=1; fi
+  cp "$approval" "$tmp/wrong-head.json"; sed -i.bak 's/"expected_head":"[0-9a-f][0-9a-f]*/"expected_head":"1111111111111111111111111111111111111111/' "$tmp/wrong-head.json"
+  if require_blocked_approval "$tmp/wrong-head.json" "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then fail=1; fi
+  cp "$approval" "$tmp/wrong-scope.json"; sed -i.bak 's/"scope_sha256":"[0-9a-f][0-9a-f]*/"scope_sha256":"0000000000000000000000000000000000000000000000000000000000000000/' "$tmp/wrong-scope.json"
+  if require_blocked_approval "$tmp/wrong-scope.json" "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then fail=1; fi
+  printf '%s\n' '{"schema":"x","schema":"y"}' >"$tmp/duplicate.json"
+  if require_blocked_approval "$tmp/duplicate.json" "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then fail=1; fi
   rm -rf "$tmp"
   (( fail == 0 )) || return 1
   echo 'run-chatterbox-t3-validation.sh self-test: OK'
@@ -149,11 +155,8 @@ command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required for caller bi
 require_clean_expected_head "$expected_head"
 require_approval_binding "$approval_evidence" "$approval_sha256"
 if ! license_audit_preflight; then die 'dependency license audit is unresolved; no Chatterbox model acquisition or reference execution is permitted'; fi
-if require_blocked_approval "$approval_evidence" "$expected_head"; then
-  die 'blocked approval unexpectedly authorized execution'
-else
-  die 'BLOCKED_APPROVAL/INSPECTION_ONLY: Chatterbox acquisition remains disabled'
-fi
+require_blocked_approval "$approval_evidence" "$expected_head" || die 'approval schema/identity/disposition validation failed'
+die 'BLOCKED_APPROVAL/INSPECTION_ONLY: Chatterbox acquisition remains disabled'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'Linux x86_64 VAST required'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 required'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'clean checkout required'
