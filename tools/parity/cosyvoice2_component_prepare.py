@@ -629,7 +629,7 @@ def main() -> int:
             raise PreparationError("raw checkpoint identity mismatch")
         config_record = inspection.authenticate_config(args.config)
         qwen_record = inspection.authenticate_qwen_config(args.qwen_config) if args.qwen_config is not None else None
-        source_record = inspection.authenticate_source(args.source, args.component)
+        source_record = inspection.authenticate_source(args.source, args.component, root)
         provenance: dict[str, Any] = {
             "model_config": config_record,
             "official_source": source_record,

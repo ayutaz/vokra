@@ -10,6 +10,7 @@ fresh ``uv run`` subprocess.  Tensor storage members are never opened.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -27,6 +28,9 @@ MODEL_REPOSITORY = "FunAudioLLM/CosyVoice2-0.5B"
 MODEL_REVISION = "eec1ae6c79877dbd9379285cf8789c9e0879293d"
 SOURCE_REPOSITORY = "https://github.com/FunAudioLLM/CosyVoice.git"
 SOURCE_REVISION = "8555549e882236e6541748b1042d95693caa82ba"
+SOURCE_CLOSURE_PATH = "tools/parity/cosyvoice2_flow_source_closure.json"
+SOURCE_CLOSURE_SHA256 = "7c6d5da3fa037a2d89d6f9db298d3570cccdbeb6a7dad238cbb36732539a6090"
+SOURCE_CLOSURE_NODE_COUNT = 15
 LICENSE_PATH = "LICENSE"
 LICENSE_SHA256 = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 LICENSE_GIT_BLOB_SHA1 = "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
@@ -123,6 +127,24 @@ MAX_SUBPROCESS_OUTPUT = 1 << 20
 
 class InspectionError(ValueError):
     """The artifact or authenticated source is not safe to inspect."""
+
+
+def _strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise InspectionError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _strict_json_loads(raw: str) -> Any:
+    try:
+        return json.loads(raw, object_pairs_hook=_strict_object_pairs)
+    except InspectionError:
+        raise
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise InspectionError(f"invalid JSON: {error}") from error
 
 
 def sha256_file(path: Path) -> str:
@@ -353,7 +375,166 @@ def validate_component_config_requirements(component: str, qwen_config: Path | N
         raise InspectionError("flow inspection must not receive a Qwen config sidecar")
 
 
-def authenticate_source(source: Path, component: str) -> dict[str, Any]:
+def _safe_source_relative_path(path: str) -> None:
+    candidate = PurePosixPath(path)
+    if (
+        not path
+        or path.startswith("/")
+        or "\\" in path
+        or "\x00" in path
+        or ".." in candidate.parts
+        or any(not part for part in candidate.parts)
+    ):
+        raise InspectionError(f"unsafe source closure path: {path!r}")
+
+
+def _require_source_regular(source: Path, relative: str, label: str) -> Path:
+    _safe_source_relative_path(relative)
+    path = source / relative
+    current = source
+    for part in PurePosixPath(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            raise InspectionError(f"{label} has a symlinked ancestor: {current}")
+    require_regular(path, label)
+    return path
+
+
+def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
+    """Authenticate the fixed repo-local Flow implementation import closure."""
+    manifest = root / SOURCE_CLOSURE_PATH
+    _require_source_regular(root, SOURCE_CLOSURE_PATH, "Flow source closure manifest")
+    if sha256_file(manifest) != SOURCE_CLOSURE_SHA256:
+        raise InspectionError("Flow source closure manifest SHA-256 mismatch")
+    try:
+        payload = _strict_json_loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, InspectionError) as error:
+        raise InspectionError(f"Flow source closure manifest is invalid: {error}") from error
+    if not isinstance(payload, dict) or payload.get("format") != "vokra-cosyvoice2-flow-source-closure-v1":
+        raise InspectionError("Flow source closure format mismatch")
+    if payload.get("repository") != SOURCE_REPOSITORY or payload.get("revision") != SOURCE_REVISION:
+        raise InspectionError("Flow source closure source identity mismatch")
+    if payload.get("status") != "REPO_LOCAL_SOURCE_CLOSURE_COMPLETE_EXTERNAL_MATCHA_PENDING":
+        raise InspectionError("Flow source closure status is not the external-Matcha-pending status")
+    roots = payload.get("roots")
+    expected_roots = [
+        "cosyvoice/cli/cosyvoice.py",
+        "cosyvoice/flow/flow.py",
+        "cosyvoice/flow/flow_matching.py",
+        "cosyvoice/flow/decoder.py",
+        "cosyvoice/transformer/upsample_encoder.py",
+    ]
+    if roots != expected_roots:
+        raise InspectionError("Flow source closure roots are not exact")
+    license_record = payload.get("license")
+    if license_record != {
+        "path": LICENSE_PATH,
+        "bytes": 11_357,
+        "sha256": LICENSE_SHA256,
+        "git_blob_sha1": LICENSE_GIT_BLOB_SHA1,
+        "declared": "Apache-2.0",
+    }:
+        raise InspectionError("Flow source closure LICENSE identity mismatch")
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list) or len(nodes) != SOURCE_CLOSURE_NODE_COUNT:
+        raise InspectionError("Flow source closure node count is not exact")
+    node_paths: set[str] = set()
+    node_records: dict[str, Any] = {}
+    for node in nodes:
+        if not isinstance(node, dict) or set(node) != {"path", "bytes", "sha256", "git_blob_sha1", "role"}:
+            raise InspectionError("Flow source closure node schema is not exact")
+        path = node["path"]
+        if not isinstance(path, str) or path in node_paths:
+            raise InspectionError("Flow source closure contains duplicate paths")
+        node_paths.add(path)
+        if type(node["bytes"]) is not int or node["bytes"] <= 0:
+            raise InspectionError(f"Flow source closure bytes are invalid: {path!r}")
+        if not isinstance(node["sha256"], str) or len(node["sha256"]) != 64 or not all(c in "0123456789abcdef" for c in node["sha256"]):
+            raise InspectionError(f"Flow source closure SHA-256 is invalid: {path!r}")
+        if not isinstance(node["git_blob_sha1"], str) or len(node["git_blob_sha1"]) != 40 or not all(c in "0123456789abcdef" for c in node["git_blob_sha1"]):
+            raise InspectionError(f"Flow source closure Git blob SHA-1 is invalid: {path!r}")
+        if not isinstance(node["role"], str) or not node["role"]:
+            raise InspectionError(f"Flow source closure role is invalid: {path!r}")
+        node_records[path] = node
+    for node in nodes:
+        path = node["path"]
+        actual = _require_source_regular(source, path, f"Flow source closure node {path}")
+        if actual.stat().st_size != node["bytes"] or sha256_file(actual) != node["sha256"] or git_blob_sha1(actual) != node["git_blob_sha1"]:
+            raise InspectionError(f"Flow source closure node identity mismatch: {path}")
+    excluded_paths = set()
+    edges = payload.get("edges")
+    if not isinstance(edges, list) or not edges:
+        raise InspectionError("Flow source closure edges are missing")
+    edge_keys: set[tuple[str, str]] = set()
+    for edge in edges:
+        if not isinstance(edge, dict) or set(edge) != {"from", "to", "reason"}:
+            raise InspectionError("Flow source closure edge schema is not exact")
+        source_path, target_path, reason = edge["from"], edge["to"], edge["reason"]
+        if source_path not in node_paths or target_path not in node_paths or not isinstance(reason, str) or not reason:
+            raise InspectionError("Flow source closure edge references an unknown or empty node")
+        if (source_path, target_path) in edge_keys:
+            raise InspectionError("Flow source closure contains duplicate edges")
+        edge_keys.add((source_path, target_path))
+    external = payload.get("external_dependencies")
+    if not isinstance(external, list) or not external or any(not isinstance(row, dict) or set(row) != {"import", "reason"} for row in external):
+        raise InspectionError("Flow source closure external dependency records are invalid")
+    external_names = {row["import"] for row in external}
+    excluded = payload.get("excluded_repo_imports")
+    if not isinstance(excluded, list) or any(not isinstance(row, dict) or set(row) != {"path", "reason"} for row in excluded):
+        raise InspectionError("Flow source closure exclusions are invalid")
+    for row in excluded:
+        path = row["path"]
+        _safe_source_relative_path(path)
+        if path in node_paths or path in excluded_paths or not isinstance(row["reason"], str) or not row["reason"]:
+            raise InspectionError("Flow source closure exclusions overlap or have empty reasons")
+        excluded_paths.add(path)
+    actual_import_edges: set[tuple[str, str]] = set()
+    actual_matcha_imports: set[str] = set()
+    for node in nodes:
+        source_path = node["path"]
+        try:
+            tree = ast.parse((source / source_path).read_text(encoding="utf-8"), filename=source_path)
+        except (OSError, UnicodeError, SyntaxError) as error:
+            raise InspectionError(f"Flow source closure AST parse failed for {source_path}: {error}") from error
+        for statement in ast.walk(tree):
+            if isinstance(statement, ast.Import):
+                imported_modules = [alias.name for alias in statement.names]
+            elif isinstance(statement, ast.ImportFrom):
+                imported_modules = [] if statement.module is None else [statement.module]
+            else:
+                continue
+            for module in imported_modules:
+                if not module.startswith("cosyvoice."):
+                    if module.startswith("matcha."):
+                        actual_matcha_imports.add(module)
+                    continue
+                target = module.replace(".", "/") + ".py"
+                if target not in node_paths and target not in excluded_paths:
+                    raise InspectionError(f"unresolved repo-local import in Flow closure: {source_path} -> {target}")
+                if target in node_paths:
+                    actual_import_edges.add((source_path, target))
+    declared_edges = set()
+    for edge in edges:
+        declared_edges.add((edge["from"], edge["to"]))
+    if declared_edges != actual_import_edges:
+        raise InspectionError("Flow source closure edges do not exactly match parsed repo-local imports")
+    if any(not any(module == name or module.startswith(name + ".") for name in external_names) for module in actual_matcha_imports):
+        raise InspectionError("Flow source closure omits a Matcha import dependency")
+    bindings = payload.get("config_bindings")
+    if not isinstance(bindings, list) or any(not isinstance(row, dict) or set(row) != {"config_path", "implementation", "reason"} for row in bindings):
+        raise InspectionError("Flow source closure config bindings are invalid")
+    for row in bindings:
+        implementation = row["implementation"]
+        target = implementation.rsplit(".", 1)[0].replace(".", "/") + ".py" if isinstance(implementation, str) and "." in implementation else ""
+        if target not in node_paths or not isinstance(row["config_path"], str) or not row["config_path"] or not isinstance(implementation, str) or not implementation or not isinstance(row["reason"], str) or not row["reason"]:
+            raise InspectionError("Flow source closure config binding is unresolved")
+    contract = payload.get("execution_contract")
+    if contract != {"model_download": "NOT_RUN", "model_execution": "NOT_RUN", "cpu": "NOT_RUN", "metal": "NOT_RUN", "publication": "NO_UPLOAD"}:
+        raise InspectionError("Flow source closure execution contract mismatch")
+    return {"path": SOURCE_CLOSURE_PATH, "sha256": SOURCE_CLOSURE_SHA256, "node_count": len(nodes), "nodes": node_records, "edge_count": len(edges), "status": payload["status"]}
+
+
+def authenticate_source(source: Path, component: str, root: Path) -> dict[str, Any]:
     if not source.is_absolute() or source.is_symlink() or not source.is_dir():
         raise InspectionError("source checkout must be an absolute regular directory")
 
@@ -375,8 +556,7 @@ def authenticate_source(source: Path, component: str) -> dict[str, Any]:
     role_records: dict[str, Any] = {}
     for role in COMPONENTS[component]["roles"]:
         expected_sha, expected_blob, marker = SOURCE_ROLES[role]
-        path = source / role
-        require_regular(path, f"source role {role}")
+        path = _require_source_regular(source, role, f"source role {role}")
         actual_sha = sha256_file(path)
         actual_blob = git_blob_sha1(path)
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -388,8 +568,7 @@ def authenticate_source(source: Path, component: str) -> dict[str, Any]:
             "bytes": path.stat().st_size,
             "marker": marker,
         }
-    license_path = source / LICENSE_PATH
-    require_regular(license_path, "CosyVoice Apache LICENSE")
+    license_path = _require_source_regular(source, LICENSE_PATH, "CosyVoice Apache LICENSE")
     license_sha = sha256_file(license_path)
     license_blob = git_blob_sha1(license_path)
     if license_sha != LICENSE_SHA256 or license_blob != LICENSE_GIT_BLOB_SHA1:
@@ -403,6 +582,7 @@ def authenticate_source(source: Path, component: str) -> dict[str, Any]:
         "origin": origin,
         "clean": True,
         "roles": role_records,
+        "flow_source_closure": authenticate_source_closure(source, root) if component == "flow" else None,
         "license": {"path": LICENSE_PATH, "bytes": license_path.stat().st_size, "sha256": license_sha, "git_blob_sha1": license_blob, "declared": "Apache-2.0"},
     }
 
@@ -452,7 +632,7 @@ def inspect(
         raise InspectionError(f"{expected['path']} SHA-256 does not match pinned artifact")
     config_record = authenticate_config(config)
     qwen_config_record = authenticate_qwen_config(qwen_config) if qwen_config is not None else None
-    source_record = authenticate_source(source, component)
+    source_record = authenticate_source(source, component, root)
     checkpoint_manifest = inspect_checkpoint(checkpoint, root, component)
     payload = {
         "format": FORMAT,
@@ -515,6 +695,12 @@ def synthetic_pickle() -> bytes:
 
 
 def self_test() -> None:
+    try:
+        _strict_json_loads('{"duplicate": 1, "duplicate": 2}')
+    except InspectionError:
+        pass
+    else:
+        raise AssertionError("duplicate JSON key accepted")
     with tempfile.TemporaryDirectory(prefix="cosyvoice2-component-self-test-") as temp:
         root = Path(__file__).resolve().parents[2]
         work = Path(temp)

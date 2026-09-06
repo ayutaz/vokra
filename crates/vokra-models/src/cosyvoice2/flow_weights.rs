@@ -4,7 +4,8 @@
 //! It does not enable a public flow runtime, synthesize payloads, or make
 //! CPU/Metal/parity/publication claims. Tensor names and shapes below are
 //! generated from the authenticated component evidence, not inferred from a
-//! model implementation.
+//! model implementation. The repo-local source closure remains explicitly
+//! external-Matcha-pending, so this binder stays fail-closed/staged.
 //!
 //! Flow tensor roots are accepted as a narrow staged contract. A future
 //! composite converter must reserve or prefix these roots so unrelated
@@ -45,6 +46,8 @@ pub(crate) const FLOW_DATA_PICKLE_SHA256: &str =
     "d8977bfb852a57439b8e6ca0a656b69bf171c6f86e434bce2210d2c05f0a2448";
 pub(crate) const FLOW_STORAGE_MANIFEST_SHA256: &str =
     "e2ec1a5009a0bf4f63eaebe82d4a1bc037f1cb26e82360f7d40c4c9700fc68ee";
+pub(crate) const FLOW_SOURCE_CLOSURE_MANIFEST_SHA256: &str =
+    "7c6d5da3fa037a2d89d6f9db298d3570cccdbeb6a7dad238cbb36732539a6090";
 
 const FLOW_ARCH: &str = "cosyvoice2";
 const FLOW_NAME: &str = "cosyvoice2-0.5b-flow";
@@ -79,6 +82,8 @@ const KEY_SOURCE_LICENSE_DECLARED: &str = "vokra.cosyvoice2_flow.source_license_
 const KEY_MANIFEST_SHA256: &str = "vokra.cosyvoice2_flow.tensor_manifest_sha256";
 const KEY_DATA_PICKLE_SHA256: &str = "vokra.cosyvoice2_flow.data_pickle_sha256";
 const KEY_STORAGE_MANIFEST_SHA256: &str = "vokra.cosyvoice2_flow.storage_manifest_sha256";
+const KEY_SOURCE_CLOSURE_MANIFEST_SHA256: &str =
+    "vokra.cosyvoice2_flow.source_closure_manifest_sha256";
 const KEY_PREPARED_BYTES: &str = "vokra.cosyvoice2_flow.prepared_input.bytes";
 const KEY_PREPARED_SHA256: &str = "vokra.cosyvoice2_flow.prepared_input.sha256";
 const KEY_PREPARED_STATUS: &str = "vokra.cosyvoice2_flow.prepared_input.authentication_status";
@@ -107,6 +112,56 @@ const SOURCE_ROLES: &[(&str, &str, &str)] = &[
         "cosyvoice/transformer/upsample_encoder.py",
         "a8003c212ce64697ce43001f776902ee60696a3b7e373935479029dccaf7d569",
         "6ffda6acad25cc0cfcf1bc07b9211c326ca8d49f",
+    ),
+    (
+        "cosyvoice/transformer/activation.py",
+        "a4a96caea9f7b05111286de5ea760bdfdf9c4e53448f53420857dc04a50440c2",
+        "8cea54816385d3b6585ccc2417bc71630d578177",
+    ),
+    (
+        "cosyvoice/transformer/attention.py",
+        "41d269b2d5e3a3952c0a538f46480aff8570767eb88e80452f367436cef628b1",
+        "8c0c0983a833a6a91cae306a8198ebb2ca82696f",
+    ),
+    (
+        "cosyvoice/transformer/convolution.py",
+        "eb5f41f324a97225c73b9c430af8bb231bd77386ef18450bb0fd329f469ab4e1",
+        "4d5d96149154776000991a681a666fbe55e562fe",
+    ),
+    (
+        "cosyvoice/transformer/embedding.py",
+        "b50c30be5c66c39c95e0db1015814c545fcd062a936c0ea7ad4c01508b2595dc",
+        "ba20d71bec11baa7081bed522399cf3a2046ef56",
+    ),
+    (
+        "cosyvoice/transformer/encoder_layer.py",
+        "1920582be2c9b7cf7835e7b539118ec1eb9da8f2c711c6257f8598b3792951b9",
+        "efbb12dd365770bebe8bca75276fe63be260a08f",
+    ),
+    (
+        "cosyvoice/transformer/positionwise_feed_forward.py",
+        "6e8038e3bcc8ca086ddca508fb9b9d40bf3ab98bebabcf5c94935d032329d0f8",
+        "b7a2cf6e7315e3a5ed2794423daff0a59cc5b208",
+    ),
+    (
+        "cosyvoice/transformer/subsampling.py",
+        "31fc0347a851abc1205dfd4cf68099c0c416589c3e99a07b250e8630cece19d0",
+        "e17c2e324e3afb24e1b619effe29cef07c9c5b3a",
+    ),
+    (
+        "cosyvoice/utils/class_utils.py",
+        "75d6977f7574304f8464cdb50c889564ca557a99a112419918b2981f0e8dcfc2",
+        "c49de00c873340e6c45dd05299b684d81f19c5a4",
+    ),
+    (
+        "cosyvoice/utils/common.py",
+        "6161a8d90d7beb0766f6d2de67ccce35a754af43930c28af37c4d19b65eef897",
+        "6f5a3dd8b7ae99601783c3a4ed91b3b64270fab3",
+    ),
+    (
+        "cosyvoice/utils/mask.py",
+        "852c6e4b14201a238ab076396db599c157b2ee5a5a2aacf0f277ddce8c648976",
+        "5d3dfd6ca6cd84e95f237a9aef4467cb7d2d4c33",
     ),
 ];
 
@@ -5897,6 +5952,10 @@ fn validate_metadata(file: &GgufFile) -> Result<()> {
         (KEY_MANIFEST_SHA256, FLOW_MANIFEST_SHA256),
         (KEY_DATA_PICKLE_SHA256, FLOW_DATA_PICKLE_SHA256),
         (KEY_STORAGE_MANIFEST_SHA256, FLOW_STORAGE_MANIFEST_SHA256),
+        (
+            KEY_SOURCE_CLOSURE_MANIFEST_SHA256,
+            FLOW_SOURCE_CLOSURE_MANIFEST_SHA256,
+        ),
     ] {
         require_string(file, key, expected)?;
     }
@@ -6065,6 +6124,10 @@ mod tests {
             (KEY_MANIFEST_SHA256, FLOW_MANIFEST_SHA256),
             (KEY_DATA_PICKLE_SHA256, FLOW_DATA_PICKLE_SHA256),
             (KEY_STORAGE_MANIFEST_SHA256, FLOW_STORAGE_MANIFEST_SHA256),
+            (
+                KEY_SOURCE_CLOSURE_MANIFEST_SHA256,
+                FLOW_SOURCE_CLOSURE_MANIFEST_SHA256,
+            ),
         ] {
             builder.add_string(key, value);
         }

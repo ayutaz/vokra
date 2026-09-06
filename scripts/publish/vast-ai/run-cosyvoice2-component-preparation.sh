@@ -8,6 +8,7 @@ MODEL_REPOSITORY='FunAudioLLM/CosyVoice2-0.5B'
 MODEL_REVISION='eec1ae6c79877dbd9379285cf8789c9e0879293d'
 SOURCE_URL='https://github.com/FunAudioLLM/CosyVoice.git'
 SOURCE_REVISION='8555549e882236e6541748b1042d95693caa82ba'
+SOURCE_CLOSURE_SHA256='7c6d5da3fa037a2d89d6f9db298d3570cccdbeb6a7dad238cbb36732539a6090'
 LICENSE_SHA256='c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
 CONFIG_PATH='cosyvoice2.yaml'; CONFIG_BYTES=7330
 CONFIG_SHA256='0af2c0d010c477187c39f3e8fd5f1ae2e4e6f90ad03ba37c10ed6c6a87b05959'
@@ -27,7 +28,7 @@ die() { log "ERROR: $*"; exit 2; }
 self_test() {
   local fail=0 token
   for token in "$MODEL_REPOSITORY" "$MODEL_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" \
-    "$LICENSE_SHA256" "$CONFIG_PATH" "$CONFIG_BYTES" "$CONFIG_SHA256" "$CONFIG_GIT_BLOB_SHA1" \
+    "$LICENSE_SHA256" "$SOURCE_CLOSURE_SHA256" "$CONFIG_PATH" "$CONFIG_BYTES" "$CONFIG_SHA256" "$CONFIG_GIT_BLOB_SHA1" \
     "$QWEN_CONFIG_PATH" "$QWEN_CONFIG_BYTES" "$QWEN_CONFIG_SHA256" "$QWEN_CONFIG_GIT_BLOB_SHA1" \
     "$LLM_BYTES" "$LLM_SHA256" "$FLOW_BYTES" "$FLOW_SHA256" 'MIN_MEM_GIB=8' 'MIN_TMPFS_GIB=8' \
     'Linux x86_64 VAST' '--prepare' 'PREPARED_SAFETENSORS_READY' 'PREPARED_INPUT_DIGEST_RECORDED_NOT_PINNED' \
@@ -103,6 +104,10 @@ from pathlib import Path
 m=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 if m.get("format") != "vokra-cosyvoice2-component-prepared-safetensors-v1" or m.get("status") != "PREPARED_SAFETENSORS_READY": raise SystemExit("prepared manifest mismatch")
 if m.get("execution") != {"model_execution":"NOT_RUN","publication":"NO_UPLOAD","torch_import":"NOT_RUN"}: raise SystemExit("execution contract mismatch")
+if m.get("component") == "flow":
+    closure = m.get("official_source", {}).get("flow_source_closure", {})
+    expected = {"path":"tools/parity/cosyvoice2_flow_source_closure.json","sha256":"7c6d5da3fa037a2d89d6f9db298d3570cccdbeb6a7dad238cbb36732539a6090","node_count":15,"edge_count":15,"status":"REPO_LOCAL_SOURCE_CLOSURE_COMPLETE_EXTERNAL_MATCHA_PENDING"}
+    if any(closure.get(key) != value for key, value in expected.items()): raise SystemExit("Flow source closure authentication contract missing")
 o=m.get("output",{})
 if o.get("bytes",0)<=0 or len(o.get("sha256",""))!=64: raise SystemExit("output digest missing")
 print(f"component={m.get('component')} output_bytes={o.get('bytes')} output_sha256={o.get('sha256')}")

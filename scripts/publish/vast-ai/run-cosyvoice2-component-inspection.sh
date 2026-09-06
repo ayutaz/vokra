@@ -10,6 +10,7 @@ MODEL_REPOSITORY='FunAudioLLM/CosyVoice2-0.5B'
 MODEL_REVISION='eec1ae6c79877dbd9379285cf8789c9e0879293d'
 SOURCE_URL='https://github.com/FunAudioLLM/CosyVoice.git'
 SOURCE_REVISION='8555549e882236e6541748b1042d95693caa82ba'
+SOURCE_CLOSURE_SHA256='7c6d5da3fa037a2d89d6f9db298d3570cccdbeb6a7dad238cbb36732539a6090'
 LICENSE_SHA256='c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
 CONFIG_PATH='cosyvoice2.yaml'
 CONFIG_BYTES=7330
@@ -39,7 +40,7 @@ self_test() {
   local fail=0 token
   for token in \
     "$MODEL_REPOSITORY" "$MODEL_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" \
-    "$LICENSE_SHA256" "$CONFIG_PATH" "$CONFIG_BYTES" "$CONFIG_SHA256" "$CONFIG_GIT_BLOB_SHA1" \
+    "$LICENSE_SHA256" "$SOURCE_CLOSURE_SHA256" "$CONFIG_PATH" "$CONFIG_BYTES" "$CONFIG_SHA256" "$CONFIG_GIT_BLOB_SHA1" \
     "$QWEN_CONFIG_PATH" "$QWEN_CONFIG_BYTES" "$QWEN_CONFIG_SHA256" "$QWEN_CONFIG_GIT_BLOB_SHA1" \
     "$LLM_BYTES" "$LLM_SHA256" "$FLOW_BYTES" "$FLOW_SHA256" \
     'MIN_MEM_GIB=8' 'MIN_TMPFS_GIB=4' 'Linux x86_64 VAST' \
@@ -176,6 +177,10 @@ config = manifest.get("model_config", {})
 if config.get("verification") != "ACQUIRED_AND_HASH_VERIFIED":
     raise SystemExit("config acquisition contract missing")
 qwen = manifest.get("qwen_config")
+if manifest["component"] == "flow":
+    closure = manifest.get("official_source", {}).get("flow_source_closure")
+    if not isinstance(closure, dict) or any(closure.get(key) != value for key, value in {"path": "tools/parity/cosyvoice2_flow_source_closure.json", "sha256": "7c6d5da3fa037a2d89d6f9db298d3570cccdbeb6a7dad238cbb36732539a6090", "node_count": 15, "edge_count": 15, "status": "REPO_LOCAL_SOURCE_CLOSURE_COMPLETE_EXTERNAL_MATCHA_PENDING"}.items()):
+        raise SystemExit("Flow source closure authentication contract missing")
 if manifest["component"] == "llm":
     if qwen != {
         "path": "CosyVoice-BlankEN/config.json",
