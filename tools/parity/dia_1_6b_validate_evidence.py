@@ -136,11 +136,15 @@ def require_sampling_cardinality(sampling: dict, logits: list, probability: list
         raise ValueError("decoder logits/probability/selected call alignment mismatch")
 
 
-def validate(root: Path) -> None:
+def validate(root: Path, expected_head: str | None = None, approval_sha256: str | None = None) -> None:
     import numpy as np
     if not root.is_dir() or not (root / "manifest.json").is_file():
         raise ValueError("evidence directory/manifest is missing")
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"), object_pairs_hook=unique_pairs)
+    if expected_head is not None and manifest.get("expected_head") != expected_head:
+        raise ValueError("evidence expected HEAD does not match caller")
+    if approval_sha256 is not None and manifest.get("approval_sha256") != approval_sha256:
+        raise ValueError("evidence approval SHA does not match caller")
     if manifest.get("format") != "vokra-dia-1-6b-official-reference-v1" or manifest.get("status") != "REFERENCE_COMPLETE":
         raise ValueError("manifest is not a completed official-reference packet")
     if manifest.get("native_status") != "BLOCKED_UNTIL_VAST_AND_APPLE_EVIDENCE" or manifest.get("publication") != "NO_UPLOAD":
@@ -238,6 +242,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("evidence", nargs="?", type=Path)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
         assert unique_pairs([("x", 1)]) == {"x": 1}
@@ -289,7 +295,7 @@ def main() -> int:
         return 0
     if args.evidence is None:
         parser.error("evidence directory is required")
-    validate(args.evidence)
+    validate(args.evidence, args.expected_head, args.approval_sha256)
     print("Dia reference evidence validation: OK")
     return 0
 

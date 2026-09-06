@@ -17,9 +17,12 @@ MIN_SHM_KIB=$((40 * 1024 * 1024))
 die(){ echo "dia-vast: ERROR: $*" >&2; exit 2; }
 self_test(){
  local fail=0 token
-  for token in "$HF_REPOSITORY" "$HF_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PYPROJECT_SHA256"   'list_repo_tree' 'recursive_file_only' 'git_blob_sha1' 'lfs_sha256'   'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'PARTIAL_RUNTIME_FAIL_CLOSED'   'CPU_UNSUPPORTED_FULL_TTS' 'BLOCKED_BY_CPU' 'NO_UPLOAD' 'weights_only=True'   'lfs_pointer_sha1' 'PTH↔safetensors mapping evidence unavailable' '40 * 1024 * 1024' 'cargo metadata --locked --no-deps --format-version 1' 'uv.lock' 'dependency_license_audit' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'AUDITED_ALLOW' 'sha256sum' '--no-project' 'dedicated locked-reference project' 'exit 2'; do
+ for token in "$HF_REPOSITORY" "$HF_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PYPROJECT_SHA256"   'list_repo_tree' 'recursive_file_only' 'git_blob_sha1' 'lfs_sha256'   'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'PARTIAL_RUNTIME_FAIL_CLOSED'   'CPU_UNSUPPORTED_FULL_TTS' 'BLOCKED_BY_CPU' 'NO_UPLOAD' 'weights_only=True'   'lfs_pointer_sha1' 'PTH↔safetensors mapping evidence unavailable' '40 * 1024 * 1024' 'cargo metadata --locked --no-deps --format-version 1' 'uv.lock' 'dependency_license_audit' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'AUDITED_ALLOW' 'sha256sum' '--no-project' 'dedicated locked-reference project' '--validate-approval' 'exit 2'; do
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing contract $token" >&2; fail=1; }
  done
+ grep -Fq -- '--expected-head' "$0"; grep -Fq -- '--approval-sha256' "$0"; grep -Fq -- '--validate-approval' "$INSPECTOR"
+ if "$0" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1; then echo 'duplicate expected-head accepted' >&2; fail=1; fi
+ if "$0" --expected-head 0000000000000000000000000000000000000000 --approval-evidence a --approval-evidence b >/dev/null 2>&1; then echo 'duplicate approval accepted' >&2; fail=1; fi
  for token in 'torch.load' 'snapshot_download' 'model.safetensors' 'dia-v0_1.pth' 'public-gguf'; do
   grep -Fq -- "$token" "$INSPECTOR" || { echo "missing dia contract $token" >&2; fail=1; }
  done
@@ -35,14 +38,26 @@ self_test(){
  echo 'run-dia-1-6b-inspection.sh self-test: OK'
 }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
-[[ $# == 0 ]] || die 'arguments are fixed; revisions cannot be overridden'
+usage(){ echo 'usage: run-dia-1-6b-inspection.sh --expected-head <40-hex> --approval-evidence <file> --approval-sha256 <64-hex>' >&2; }
+expected_head=''; approval_evidence=''; approval_sha256=''; seen_head=0; seen_approval=0; seen_approval_sha=0
+while (($#)); do case "$1" in
+ --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen_head=1; shift 2 ;;
+ --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a path'; approval_evidence="$2"; seen_approval=1; shift 2 ;;
+ --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; approval_sha256="$2"; seen_approval_sha=1; shift 2 ;;
+ *) usage; die "unexpected argument: $1" ;;
+ esac; done
+(( seen_head == 1 && seen_approval == 1 && seen_approval_sha == 1 )) || { usage; die 'expected HEAD and external approval are required'; }
+[[ -f "$REFERENCE_PROJECT/uv.lock" ]] || die 'dedicated Dia reference uv.lock is absent; refuse before host/cache/download'
+[[ "$(sha256sum "$REFERENCE_PROJECT/uv.lock" | awk '{print $1}')" == "$REFERENCE_LOCK_SHA256" ]] || die 'dedicated Dia uv.lock identity mismatch'
+[[ "$(sha256sum "$REFERENCE_PROJECT/pyproject.toml" | awk '{print $1}')" == "$REFERENCE_PYPROJECT_SHA256" ]] || die 'dedicated Dia pyproject identity mismatch'
+grep -Fq 'dependency_license_audit = "AUDITED_ALLOW"' "$REFERENCE_PROJECT/pyproject.toml" || die 'dependency license/provenance audit is not affirmatively allowed; refuse before host/cache/download'
+[[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die 'approval evidence must be a non-empty regular file'
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
+[[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
+UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$INSPECTOR" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST requires Linux x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
-[[ -f "$REFERENCE_PROJECT/uv.lock" ]] || die 'dedicated Dia reference uv.lock is absent; refuse before any download'
-[[ "$(sha256sum "$REFERENCE_PROJECT/uv.lock" | awk '{print $1}')" == "$REFERENCE_LOCK_SHA256" ]] || die 'dedicated Dia uv.lock identity mismatch'
-[[ "$(sha256sum "$REFERENCE_PROJECT/pyproject.toml" | awk '{print $1}')" == "$REFERENCE_PYPROJECT_SHA256" ]] || die 'dedicated Dia pyproject identity mismatch'
-grep -Fq 'dependency_license_audit = "AUDITED_ALLOW"' "$REFERENCE_PROJECT/pyproject.toml" || die 'dependency license/provenance audit is not affirmatively allowed; refuse before download'
 mem_kib="$(awk '$1=="MemTotal:"{print $2;exit}' /proc/meminfo)"
 [[ "$mem_kib" =~ ^[0-9]+$ && $mem_kib -ge $MIN_MEM_KIB ]] || die '128 GiB memory guard failed'
 command -v findmnt >/dev/null || die 'findmnt is required'
@@ -51,8 +66,13 @@ free_kib="$(df -Pk /dev/shm | awk 'NR==2{print $4}')"
 [[ "$free_kib" =~ ^[0-9]+$ && $free_kib -ge $MIN_SHM_KIB ]] || die 'tmpfs space guard failed'
 for command in cargo git uv awk find df; do command -v "$command" >/dev/null || die "missing tool: $command"; done
 WORK="/dev/shm/vokra-dia-1-6b-inspection"
-[[ ! -e "$WORK" ]] || [[ -z "$(find "$WORK" -mindepth 1 -print -quit 2>/dev/null)" ]] || die 'inspection directory must be absent or empty'
-mkdir -p "$WORK/model" "$WORK/public" "$WORK/source" "$WORK/evidence"
+[[ ! -e "$WORK" && ! -L "$WORK" ]] || die 'inspection directory must be absent/non-symlink (no-clobber)'
+root_real="$(cd -P "$ROOT" && pwd)"; project_real="$(cd -P "$REFERENCE_PROJECT" && pwd)"; work_real="$(cd -P "$(dirname "$WORK")" && pwd)/$(basename "$WORK")"; approval_real="$(cd -P "$(dirname "$approval_evidence")" && pwd)/$(basename "$approval_evidence")"
+paths_overlap(){ local left="$1" right="$2"; [[ "$left" == "$right" || "$left/" == "$right/"* || "$right/" == "$left/"* ]]; }
+paths_overlap "$work_real" "$root_real" && die 'inspection directory overlaps checkout'
+paths_overlap "$work_real" "$project_real" && die 'inspection directory overlaps reference project'
+paths_overlap "$work_real" "$approval_real" && die 'inspection directory overlaps approval evidence'
+mkdir "$WORK"; mkdir "$WORK/model" "$WORK/public" "$WORK/source" "$WORK/evidence"
 export CARGO_BUILD_JOBS=1
 export UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/tmp/vokra-dia-uv-cache}"
 cd "$ROOT"
@@ -96,12 +116,14 @@ git -C "$WORK/source/repo" checkout --detach "$SOURCE_REVISION" >>"$WORK/evidenc
 [[ "$(git -C "$WORK/source/repo" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die 'source revision mismatch'
 [[ "$(git -C "$WORK/source/repo" remote get-url origin)" == "$SOURCE_URL" ]] || die 'source origin mismatch'
 set +e
-uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$INSPECTOR" --snapshot "$WORK/model" --source "$WORK/source/repo" --server-tree "$WORK/tree.json" --public-gguf "$WORK/public/dia-1.6b.gguf" --output "$WORK/evidence" >>"$WORK/evidence/validation.log" 2>&1
+uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$INSPECTOR" --snapshot "$WORK/model" --source "$WORK/source/repo" --server-tree "$WORK/tree.json" --public-gguf "$WORK/public/dia-1.6b.gguf" --output "$WORK/evidence" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >>"$WORK/evidence/validation.log" 2>&1
 status=$?
 set -e
 [[ "$status" == 2 ]] || die "inspector returned $status, expected 2"
 grep -Fq '"status": "BLOCKED"' "$WORK/evidence/manifest.json" || die 'blocked manifest missing'
 grep -Fq '"publication": "NO_UPLOAD"' "$WORK/evidence/manifest.json" || die 'NO_UPLOAD marker missing'
 grep -Fq 'AUTHENTICATED_EVIDENCE_COMPLETE' "$WORK/evidence/manifest.json" || die 'inspection evidence did not complete'
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty during inspection'
+[[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD changed during inspection'
 echo "Dia inspection is blocked for runtime work; evidence preserved at $WORK/evidence" >&2
 exit 2

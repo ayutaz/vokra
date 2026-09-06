@@ -17,6 +17,7 @@ SOURCE_REVISION="2811af1c5f476b1f49f4744fabf56cf352be21e5"
 PUBLIC_REPOSITORY="vokra/dia-1.6b"
 PUBLIC_REVISION="dd1df2a129fed7d15c365caeabaae227ccfe8537"
 FORMAT="vokra-dia-1-6b-inspection-v1"
+APPROVAL_SCHEMA="vokra-dia-1-6b-inspection-approval-v1"
 TOTAL_BYTES=12900029096
 MANIFEST_SHA256="55fce2a39cafba838bd800f6a6aefe63a8e3b1dd86f2727f9a20d87fe6d252f7"
 EXPECTED_FILES={
@@ -41,6 +42,19 @@ def no_dupes(pairs):
   if k in out: raise ValueError(f"duplicate JSON key: {k}")
   out[k]=v
  return out
+def validate_approval(path,expected_head,expected_sha256):
+ if not re.fullmatch(r"[0-9a-f]{40}",expected_head) or not re.fullmatch(r"[0-9a-f]{64}",expected_sha256): raise RuntimeError("approval HEAD/SHA format is invalid")
+ if path.is_symlink() or not path.is_file() or path.stat().st_size<=0: raise RuntimeError("approval evidence must be a non-empty regular file")
+ if sha256(path)!=expected_sha256: raise RuntimeError("approval evidence SHA-256 mismatch")
+ approval=json.loads(path.read_text(encoding="utf-8"),object_pairs_hook=no_dupes)
+ required={"schema","status","owner","expected_head","upstream_repository","upstream_revision","public_repository","public_revision","source_repository","source_revision","license","scope","publication","dac_status"}
+ if not isinstance(approval,dict) or set(approval)!=required: raise RuntimeError("approval evidence schema is not exact")
+ expected={"schema":APPROVAL_SCHEMA,"status":"APPROVED","expected_head":expected_head,"upstream_repository":HF_REPOSITORY,"upstream_revision":HF_REVISION,"public_repository":PUBLIC_REPOSITORY,"public_revision":PUBLIC_REVISION,"source_repository":SOURCE_REPOSITORY,"source_revision":SOURCE_REVISION,"license":"Apache-2.0","scope":"INSPECTION_ONLY","publication":"NO_UPLOAD","dac_status":"DAC_PROOF_REQUIRED"}
+ for key,value in expected.items():
+  if approval.get(key)!=value: raise RuntimeError(f"approval evidence identity drift: {key}")
+ owner=approval["owner"].strip().lower() if isinstance(approval["owner"],str) else ""
+ if not owner or owner in {"todo","pending","owner","example","tbd","unknown"} or re.search(r"(?:^|[\s_-])(todo|pending|example|tbd|unknown)(?:$|[\s_-])",owner): raise RuntimeError("approval owner is placeholder/empty")
+ return approval
 def sha256(path):
  h=hashlib.sha256()
  with path.open("rb") as f:
@@ -225,7 +239,7 @@ def source_inventory(source,blockers):
  except Exception as error: blockers.append(f"source inventory failed: {error}"); out["error"]=str(error)
  return out
 
-def inspect(snapshot,source,tree,output,public=None):
+def inspect(snapshot,source,tree,output,public=None,expected_head=None,approval_sha256=None):
  blockers=[]; packet=server_tree(snapshot,tree,blockers); local=local_files(snapshot)
  for name,(size,git,lfs) in EXPECTED_FILES.items():
   path=snapshot/name
@@ -283,7 +297,7 @@ def inspect(snapshot,source,tree,output,public=None):
   else: blockers.append("historical GGUF path is not a regular file")
  else: blockers.append("historical GGUF not supplied; VAST must inspect public composite-partial artifact")
  blockers.extend(["native Dia encoder/decoder delayed-AR math is staged but unauthenticated and uncompared","full PCM requires crate::dac::Dac plus accepted same-execution Dia AR evidence","DAC/tokenizer/generation parity is not run","CPU_UNSUPPORTED_FULL_TTS","Metal_BLOCKED_BY_CPU"])
- payload={"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE" if not any(x.startswith(("HF server","server/local","fixed HF","HF total","safe header","PTH safe","PTH↔safetensors","Dia source","source role","config","README license","preprocessor config","historical GGUF")) for x in blockers) else "INSPECTION_ERROR","runtime_status":"PARTIAL_RUNTIME_FAIL_CLOSED","cpu_status":"UNSUPPORTED_FULL_TTS","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"revision":HF_REVISION,"expected_files":EXPECTED_FILES,"server_tree":packet,"files":[identity(p,snapshot) for p in local],"config":config_packet,"preprocessor_config":preprocessor_evidence,"readme_license":readme_evidence,"safetensors":st,"pth":pth,"checkpoint_mapping":mapping},"public_partial_artifact":public_evidence,"official_source":src,"blockers":sorted(set(blockers))}
+ payload={"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","expected_head":expected_head,"approval_sha256":approval_sha256,"inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE" if not any(x.startswith(("HF server","server/local","fixed HF","HF total","safe header","PTH safe","PTH↔safetensors","Dia source","source role","config","README license","preprocessor config","historical GGUF")) for x in blockers) else "INSPECTION_ERROR","runtime_status":"PARTIAL_RUNTIME_FAIL_CLOSED","cpu_status":"UNSUPPORTED_FULL_TTS","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"revision":HF_REVISION,"expected_files":EXPECTED_FILES,"server_tree":packet,"files":[identity(p,snapshot) for p in local],"config":config_packet,"preprocessor_config":preprocessor_evidence,"readme_license":readme_evidence,"safetensors":st,"pth":pth,"checkpoint_mapping":mapping},"public_partial_artifact":public_evidence,"official_source":src,"blockers":sorted(set(blockers))}
  output.mkdir(parents=True,exist_ok=True); (output/"manifest.json").write_text(json.dumps(payload,sort_keys=True,indent=2)+"\n",encoding="utf-8"); return 2
 
 def self_test():
@@ -307,16 +321,36 @@ def self_test():
   else: raise AssertionError("invalid LFS size accepted")
   lfs_tree.write_text(json.dumps({"repository":HF_REPOSITORY,"revision":HF_REVISION,"resolved_revision":HF_REVISION,"walk":"recursive_file_only","files":[{"type":"file","path":"x","size":4,"git_blob_sha1":git_blob(small),"lfs_sha256":None},{"type":"file","path":"lfs","size":7,"git_blob_sha1":lfs_pointer,"lfs_sha256":lfs_sha,"lfs_size":7}]})); lfs_file.write_bytes(b"changed"); b=[]; assert server_tree(snap,lfs_tree,b)["status"]=="MISMATCH" and b
   assert lfs_pointer_sha1("0"*64,1) != git_blob(small)
+  approval=root/"approval.json"; approval.write_text(json.dumps({"schema":APPROVAL_SCHEMA,"status":"APPROVED","owner":"test-owner","expected_head":"0"*40,"upstream_repository":HF_REPOSITORY,"upstream_revision":HF_REVISION,"public_repository":PUBLIC_REPOSITORY,"public_revision":PUBLIC_REVISION,"source_repository":SOURCE_REPOSITORY,"source_revision":SOURCE_REVISION,"license":"Apache-2.0","scope":"INSPECTION_ONLY","publication":"NO_UPLOAD","dac_status":"DAC_PROOF_REQUIRED"})); assert validate_approval(approval,"0"*40,sha256(approval))["owner"]=="test-owner"
+  bad=json.loads(approval.read_text()); bad["owner"]="TODO"; approval.write_text(json.dumps(bad))
+  try: validate_approval(approval,"0"*40,sha256(approval))
+  except RuntimeError: pass
+  else: raise AssertionError("placeholder approval owner accepted")
+  bad["owner"]="example owner"; approval.write_text(json.dumps(bad))
+  try: validate_approval(approval,"0"*40,sha256(approval))
+  except RuntimeError: pass
+  else: raise AssertionError("placeholder owner phrase accepted")
  print("dia_1_6b_inspect self-test: OK")
 
 def main():
- ap=argparse.ArgumentParser(); ap.add_argument("--self-test",action="store_true"); ap.add_argument("--snapshot",type=Path); ap.add_argument("--source",type=Path); ap.add_argument("--server-tree",type=Path); ap.add_argument("--public-gguf",type=Path); ap.add_argument("--output",type=Path); a=ap.parse_args()
+ ap=argparse.ArgumentParser(); ap.add_argument("--self-test",action="store_true"); ap.add_argument("--validate-approval",action="store_true"); ap.add_argument("--snapshot",type=Path); ap.add_argument("--source",type=Path); ap.add_argument("--server-tree",type=Path); ap.add_argument("--public-gguf",type=Path); ap.add_argument("--output",type=Path); ap.add_argument("--approval-evidence",type=Path); ap.add_argument("--approval-sha256"); ap.add_argument("--expected-head"); a=ap.parse_args()
  if a.self_test:
-  if any(x is not None for x in (a.snapshot,a.source,a.server_tree,a.public_gguf,a.output)): ap.error("--self-test accepts no other arguments")
+  if a.validate_approval or any(x is not None for x in (a.snapshot,a.source,a.server_tree,a.public_gguf,a.output,a.approval_evidence,a.approval_sha256,a.expected_head)): ap.error("--self-test accepts no other arguments")
   self_test(); return 0
- if any(x is None for x in (a.snapshot,a.source,a.server_tree,a.output)): ap.error("normal run requires snapshot, source, server-tree, output")
+ if a.validate_approval:
+  if any(x is not None for x in (a.snapshot,a.source,a.server_tree,a.public_gguf,a.output)) or any(x is None for x in (a.approval_evidence,a.approval_sha256,a.expected_head)):
+   ap.error("--validate-approval requires only approval evidence, approval SHA, and expected HEAD")
+  try:
+   validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256)
+  except Exception as error:
+   ap.error(str(error))
+  print("Dia approval evidence validation: OK")
+  return 0
+ if any(x is None for x in (a.snapshot,a.source,a.server_tree,a.output,a.approval_evidence,a.approval_sha256,a.expected_head)): ap.error("normal run requires snapshot, source, server-tree, output, approval evidence, approval SHA, expected HEAD")
  if a.output.exists() and any(a.output.iterdir()): ap.error("output directory must be absent or empty; stale evidence is rejected")
- try: return inspect(a.snapshot,a.source,a.server_tree,a.output,a.public_gguf)
+ try:
+  validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256)
+  return inspect(a.snapshot,a.source,a.server_tree,a.output,a.public_gguf,a.expected_head,a.approval_sha256)
  except Exception as error:
   a.output.mkdir(parents=True,exist_ok=True); (a.output/"manifest.json").write_text(json.dumps({"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"INSPECTION_ERROR","runtime_status":"PARTIAL_RUNTIME_FAIL_CLOSED","cpu_status":"UNSUPPORTED_FULL_TTS","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","upstream":{"repository":HF_REPOSITORY,"revision":HF_REVISION},"error":str(error),"blockers":[str(error)]},indent=2)+"\n"); return 2
 if __name__=="__main__": raise SystemExit(main())

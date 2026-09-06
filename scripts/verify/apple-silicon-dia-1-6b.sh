@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+INSPECTOR="$ROOT/tools/parity/dia_1_6b_inspect.py"
 die(){ echo "dia-apple: ERROR: $*" >&2; exit 2; }
 self_test(){
   local file="$ROOT/tools/parity/dia_1_6b_dump_reference.py"
-  for token in 'REFERENCE_COMPLETE' 'BLOCKED_UNTIL_VAST_AND_APPLE_EVIDENCE' 'NOT_RUN_OFFICIAL_ONLY' 'text_ids' 'selected_ids' 'delayed_codes' 'reverted_codes' 'dac_latent' 'pcm' 'NO_UPLOAD' 'DAC evidence is missing exact checkpoint'; do
+  for token in 'REFERENCE_COMPLETE' 'BLOCKED_UNTIL_VAST_AND_APPLE_EVIDENCE' 'NOT_RUN_OFFICIAL_ONLY' 'text_ids' 'selected_ids' 'delayed_codes' 'reverted_codes' 'dac_latent' 'pcm' 'NO_UPLOAD' 'DAC evidence is missing exact checkpoint' '--expected-head' '--approval-sha256'; do
     grep -Fq -- "$token" "$file" || die "missing reference contract: $token"
   done
   grep -Fq 'stale/orphan evidence file' "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" || die 'independent validator missing'
@@ -19,10 +20,24 @@ self_test(){
   echo 'apple-silicon-dia-1-6b.sh self-test: OK'
 }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
-[[ $# == 1 ]] || die 'usage: apple-silicon-dia-1-6b.sh EVIDENCE_DIR'
+usage(){ echo 'usage: apple-silicon-dia-1-6b.sh --expected-head HEAD --approval-evidence FILE --approval-sha256 SHA --evidence-dir DIR' >&2; }
+expected_head=''; approval_evidence=''; approval_sha256=''; evidence=''; seen_head=0; seen_approval=0; seen_sha=0; seen_evidence=0
+while (($#)); do case "$1" in
+ --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen_head=1; shift 2 ;;
+ --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a path'; approval_evidence="$2"; seen_approval=1; shift 2 ;;
+ --approval-sha256) (( seen_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; approval_sha256="$2"; seen_sha=1; shift 2 ;;
+ --evidence-dir) (( seen_evidence == 0 )) || die 'duplicate --evidence-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--evidence-dir requires a path'; evidence="$2"; seen_evidence=1; shift 2 ;;
+ *) usage; die "unexpected argument: $1" ;;
+ esac; done
+(( seen_head == 1 && seen_approval == 1 && seen_sha == 1 && seen_evidence == 1 )) || { usage; die 'all approval, HEAD, and evidence arguments are required'; }
+[[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die 'approval evidence is missing or symlinked'
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
+[[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
+UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-${TMPDIR:-/private/tmp}/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$INSPECTOR" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
 [[ "$(uname -s)" == Darwin ]] || die 'Apple Silicon verification requires macOS'
 [[ "$(uname -m)" == arm64 ]] || die 'Apple Silicon verification requires arm64'
-evidence="$1"
 [[ -s "$evidence/manifest.json" ]] || die 'same-execution evidence manifest is missing'
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-${TMPDIR:-/private/tmp}/vokra-dia-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" || die 'same-execution evidence schema/hash validation failed'
+UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-${TMPDIR:-/private/tmp}/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" || die 'same-execution evidence schema/hash validation failed'
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout became dirty during evidence validation'
+[[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'Apple checkout HEAD changed during evidence validation'
 die 'Dia CPU/Metal route remains closed until independent VAST parity and this Apple worker evidence are reviewed'

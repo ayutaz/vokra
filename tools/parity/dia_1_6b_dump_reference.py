@@ -336,7 +336,7 @@ def authenticate_dac(evidence: Path, checkpoint: Path, source_path: Path) -> dic
     return packet
 
 
-def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpoint: Path, dac_source: Path, output: Path, text: str, seed: int) -> None:
+def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpoint: Path, dac_source: Path, output: Path, text: str, seed: int, expected_head: str, approval_sha256: str) -> None:
     if not source.is_dir() or not model.is_dir() or not public.is_dir() or not output.is_dir():
         raise RuntimeError("source, model, public, and output directories are required")
     project_evidence = reference_project_identity()
@@ -483,6 +483,8 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
             raise RuntimeError(f"same-execution artifact set incomplete: {sorted(set(artifacts) ^ REQUIRED_ARTIFACTS)}")
         manifest = {
             "format": FORMAT,
+            "expected_head": expected_head,
+            "approval_sha256": approval_sha256,
             "status": "REFERENCE_COMPLETE",
             "reference_project": project_evidence,
             "source": source_evidence,
@@ -541,18 +543,20 @@ def main() -> int:
     parser.add_argument("--dac-source", type=Path)
     parser.add_argument("--text", default=DEFAULT_TEXT)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
-    if None in (args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output):
+    if None in (args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.expected_head, args.approval_sha256):
         parser.error("--source, --model, --public, --dac-evidence, --dac-checkpoint, --dac-source, and --output are required")
     if args.output.exists() and any(args.output.iterdir()):
         parser.error("output directory must be absent or empty; stale evidence is rejected")
     try:
         if args.text != DEFAULT_TEXT:
             parser.error(f"--text must be the fixed two-speaker evidence input: {DEFAULT_TEXT!r}")
-        run(args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.text, args.seed)
+        run(args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.text, args.seed, args.expected_head, args.approval_sha256)
     except Exception as error:
         (args.output / "INSPECTION_ERROR").write_text(str(error) + "\n", encoding="utf-8")
         raise
