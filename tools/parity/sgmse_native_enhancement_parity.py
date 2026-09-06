@@ -221,6 +221,7 @@ def reviewed_sampling_config(hyperparams_evidence: dict[str, Any]) -> dict[str, 
         key, separator, value = line.strip().partition(":")
         if not separator or key not in SAMPLING_KEYS or key in values:
             raise ValueError("reviewed hyperparams sampling entries are malformed")
+        value = value.strip()
         if key in {"N", "corrector_steps"}:
             values[key] = int(value)
         elif key == "snr":
@@ -1083,6 +1084,9 @@ def self_test() -> int:
     }
     sampling = reviewed_sampling_config(sampling_evidence)
     validate_wrapper_sampling(sampling)
+    assert sampling["sampler_type"] == "pc"
+    assert sampling["predictor"] == "reverse_diffusion"
+    assert sampling["corrector"] == "ald"
 
     class FakeHParams(dict[str, Any]):
         def __getattr__(self, name: str) -> Any:
@@ -1097,6 +1101,7 @@ def self_test() -> int:
     for tampered_sampling in (
         {key: value for key, value in sampling.items() if key != "snr"},
         {**sampling, "N": sampling["N"] + 1},
+        {**sampling, "predictor": " reverse_diffusion"},
     ):
         try:
             validate_wrapper_sampling(tampered_sampling)
