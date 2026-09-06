@@ -14332,8 +14332,8 @@ pub fn convert_zonos_file(input: &Path, output: &Path) -> Result<ConvertSummary,
 /// This is the named entry point that mirrors `convert_dia_file` /
 /// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
 /// is functionally identical to
-/// `convert_file(ModelKind::KyutaiStt, input, output)` — Kyutai STT has
-/// neither a side-car config nor a tokenizer is embedded: every hparam is fixed by the
+/// `convert_file(ModelKind::KyutaiStt, input, output)` — Kyutai STT embeds
+/// neither a side-car config nor a tokenizer: every hparam is fixed by the
 /// authenticated decoder-component contract in `models::kyutai_stt`; the
 /// SentencePiece tokenizer + Mimi codec ride separate GGUFs — but the
 /// named entry keeps the `convert_*_file` naming symmetry with the other
