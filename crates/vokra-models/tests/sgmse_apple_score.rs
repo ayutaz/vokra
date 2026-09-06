@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use vokra_core::backend::BackendKind;
 use vokra_core::json::{self, JsonValue};
 use vokra_models::compute::Compute;
-use vokra_models::sgmse::{SGMSE_HOT_OPS, SgmseModel};
+use vokra_models::sgmse::{SGMSE_HOT_OPS, SgmseModel, SgmseNoise};
 
 #[cfg(not(all(feature = "metal", target_os = "macos")))]
 use vokra_core::VokraError;
@@ -35,6 +35,15 @@ const REFERENCE_ENV: &str = "VOKRA_SGMSE_REFERENCE_DIR";
 const EVIDENCE_ENV: &str = "VOKRA_SGMSE_APPLE_EVIDENCE_DIR";
 const REFERENCE_MANIFEST_SHA_ENV: &str = "VOKRA_SGMSE_REFERENCE_MANIFEST_SHA256";
 const REMOTE_ENV: &str = "VOKRA_REMOTE_APPLE_SILICON";
+const ENHANCEMENT_REFERENCE_ENV: &str = "VOKRA_SGMSE_ENHANCEMENT_REFERENCE_DIR";
+const ENHANCEMENT_REFERENCE_MANIFEST_SHA_ENV: &str =
+    "VOKRA_SGMSE_ENHANCEMENT_REFERENCE_MANIFEST_SHA256";
+const ENHANCEMENT_EVIDENCE_ENV: &str = "VOKRA_SGMSE_ENHANCEMENT_EVIDENCE_DIR";
+const ENHANCEMENT_SAMPLES: usize = 4096;
+const ENHANCEMENT_NOISE_CALLS: usize = 61;
+const ENHANCEMENT_BYTES: usize = ENHANCEMENT_SAMPLES * 4;
+const ENHANCEMENT_CROP_SHA256: &str =
+    "2835819987e0858b231dc51ac4aeefe659e24648502cef07a2540f130c47b6ff";
 const ARTIFACTS: &[(&str, &str)] = &[
     (
         "input_condition_imag",
@@ -706,6 +715,306 @@ fn sgmse_apple_cpu_metal_score_matches_reference() {
     verify_evidence(&evidence);
     eprintln!(
         "SGMSE_APPLE_SCORE_PARITY backend=cpu+metal reference=verified atol=0.01 verdict=PASS evidence={}",
+        evidence.display()
+    );
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct EnhancementNoise {
+    bytes: Vec<u8>,
+    calls: Vec<EnhancementNoiseCall>,
+    cursor: usize,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct EnhancementNoiseCall {
+    index: usize,
+    kind: usize,
+    step: i64,
+    corrector: bool,
+    count: usize,
+    offset: usize,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl EnhancementNoise {
+    fn load(reference: &Path) -> Self {
+        let bytes = fs::read(reference.join("noise.f32")).expect("read enhancement noise");
+        let text = fs::read_to_string(reference.join("noise_calls.txt"))
+            .expect("read enhancement noise index");
+        let calls = text
+            .lines()
+            .map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                assert_eq!(fields.len(), 6, "enhancement noise index columns");
+                EnhancementNoiseCall {
+                    index: fields[0].parse().expect("noise index"),
+                    kind: fields[1].parse().expect("noise kind"),
+                    step: fields[2].parse().expect("noise step"),
+                    corrector: fields[3].parse::<u8>().expect("noise corrector") != 0,
+                    count: fields[4].parse().expect("noise count"),
+                    offset: fields[5].parse().expect("noise offset"),
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), ENHANCEMENT_NOISE_CALLS);
+        Self {
+            bytes,
+            calls,
+            cursor: 0,
+        }
+    }
+
+    fn fill_next(&mut self, step: i64, corrector: bool, out: &mut [f32]) {
+        let call = self
+            .calls
+            .get(self.cursor)
+            .expect("enhancement noise exhausted");
+        assert_eq!(call.index, self.cursor, "enhancement noise order");
+        assert_eq!(call.kind, if self.cursor == 0 { 0 } else { 1 });
+        assert_eq!(call.step, step, "enhancement noise step");
+        assert_eq!(call.corrector, corrector, "enhancement noise corrector");
+        assert_eq!(call.count, out.len(), "enhancement noise shape");
+        let end = call
+            .offset
+            .checked_add(call.count * 4)
+            .expect("enhancement noise offset overflow");
+        assert!(end <= self.bytes.len(), "enhancement noise bounds");
+        for (value, chunk) in out
+            .iter_mut()
+            .zip(self.bytes[call.offset..end].chunks_exact(4))
+        {
+            *value = f32::from_le_bytes(chunk.try_into().expect("enhancement noise f32"));
+            assert!(value.is_finite(), "enhancement noise non-finite");
+        }
+        self.cursor += 1;
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl SgmseNoise for EnhancementNoise {
+    fn fill_prior(&mut self, out: &mut [f32]) -> vokra_core::Result<()> {
+        self.fill_next(-1, false, out);
+        Ok(())
+    }
+
+    fn fill(&mut self, step: usize, corrector: bool, out: &mut [f32]) -> vokra_core::Result<()> {
+        self.fill_next(step as i64, corrector, out);
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn read_enhancement_pcm(path: &Path, expected_sha: &str) -> Vec<f32> {
+    assert!(path.is_file() && !path.is_symlink());
+    assert_eq!(
+        sha256_file(path),
+        expected_sha,
+        "enhancement reference digest"
+    );
+    let bytes = fs::read(path).expect("read enhancement PCM");
+    assert_eq!(bytes.len(), ENHANCEMENT_BYTES);
+    let values = bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("enhancement f32")))
+        .collect::<Vec<_>>();
+    assert!(values.iter().all(|value| value.is_finite()));
+    assert_eq!(values.len(), ENHANCEMENT_SAMPLES);
+    values
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn verify_enhancement_reference(reference: &Path) -> (String, String) {
+    let manifest_path = reference.join("manifest.json");
+    let manifest_sha = sha256_file(&manifest_path);
+    assert_eq!(
+        manifest_sha,
+        std::env::var(ENHANCEMENT_REFERENCE_MANIFEST_SHA_ENV)
+            .expect("enhancement reference manifest SHA required")
+    );
+    let root = json::parse(&fs::read(&manifest_path).expect("read enhancement manifest"))
+        .expect("enhancement manifest JSON");
+    no_duplicate_json(&root);
+    assert_eq!(
+        string_field(&root, "format"),
+        "vokra-sgmse-native-enhancement-reference-v1"
+    );
+    assert_eq!(
+        string_field(&root, "status"),
+        "REFERENCE_COMPLETE_NO_UPLOAD"
+    );
+    assert_eq!(string_field(&root, "publication"), "NO_UPLOAD");
+    assert_eq!(
+        string_field(&root, "model_repository"),
+        "speechbrain/sgmse-voicebank"
+    );
+    assert_eq!(
+        string_field(&root, "model_revision"),
+        "8f4ff7b65284c49492a43349b8106e094ac0d365"
+    );
+    let source = field(&root, "source");
+    assert_eq!(
+        string_field(source, "repository"),
+        "https://github.com/sp-uhh/sgmse.git"
+    );
+    assert_eq!(
+        string_field(source, "revision"),
+        "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
+    );
+    assert_eq!(string_field(source, "license_spdx"), "mit");
+    let speechbrain = field(&root, "speechbrain_source");
+    assert_eq!(
+        string_field(speechbrain, "repository"),
+        "https://github.com/speechbrain/speechbrain.git"
+    );
+    assert_eq!(
+        string_field(speechbrain, "revision"),
+        "2b3f4f44351fd08a627c4ab307de5c420351bc19"
+    );
+    assert_eq!(string_field(speechbrain, "license_spdx"), "apache-2.0");
+    let ema_route = field(&root, "ema_route");
+    assert_eq!(
+        string_field(ema_route, "status"),
+        "SOURCE_ROUTE_VERIFIED_STRICT_LOAD"
+    );
+    assert_eq!(
+        string_field(ema_route, "parameter_load"),
+        "strict_state_dict"
+    );
+    assert_eq!(string_field(ema_route, "loadable"), "score_model_ema");
+    assert!(!bool_field(ema_route, "unsafe_pickle_fallback"));
+    let model = field(&root, "model");
+    assert_eq!(
+        string_field(model, "class"),
+        "speechbrain.integrations.models.sgmse_plus.ScoreModel"
+    );
+    assert_eq!(
+        string_field(model, "load"),
+        "torch.load(weights_only=True)+load_state_dict(strict=True)"
+    );
+    assert_eq!(u64_field(model, "tensor_count"), 647);
+    assert_eq!(u64_field(model, "parameter_count"), 65_590_822);
+    let identity = field(&root, "identity");
+    assert_eq!(
+        string_field(identity, "official_call"),
+        "SGMSEEnhancement.enhance_batch -> ScoreModel.enhance"
+    );
+    assert_eq!(
+        string_field(identity, "reference_tool"),
+        "sgmse_native_enhancement_parity.py"
+    );
+    let runtime = field(&root, "runtime");
+    assert_eq!(string_field(runtime, "platform_system"), "Linux");
+    assert_eq!(string_field(runtime, "platform_machine"), "x86_64");
+    let input = field(&root, "input");
+    assert_eq!(string_field(input, "wav_filename"), "ref-clip.wav");
+    assert_eq!(u64_field(input, "wav_size"), 64_044);
+    assert_eq!(
+        string_field(input, "wav_sha256"),
+        "241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
+    );
+    assert_eq!(u64_field(input, "sample_rate"), 16_000);
+    assert_eq!(u64_field(input, "channels"), 1);
+    assert_eq!(u64_field(input, "sample_width"), 2);
+    let crop = field(input, "crop");
+    assert_eq!(u64_field(crop, "sample_start"), 0);
+    assert_eq!(u64_field(crop, "sample_count"), ENHANCEMENT_SAMPLES as u64);
+    assert_eq!(u64_field(crop, "pcm_bytes"), ENHANCEMENT_BYTES as u64);
+    assert_eq!(string_field(crop, "pcm_filename"), "input_pcm.f32");
+    assert_eq!(string_field(crop, "pcm_sha256"), ENHANCEMENT_CROP_SHA256);
+    assert_eq!(
+        u64_field(field(crop, "stft"), "frames_before_reflection_pad"),
+        33
+    );
+    assert_eq!(
+        u64_field(field(crop, "reflection_pad"), "target_frames"),
+        64
+    );
+    assert!(bool_field(
+        field(crop, "reflection_pad"),
+        "padding_less_than_source"
+    ));
+    assert_eq!(
+        u64_field(field(&root, "noise_payload"), "call_count"),
+        ENHANCEMENT_NOISE_CALLS as u64
+    );
+    assert_eq!(
+        string_field(field(&root, "noise_payload"), "filename"),
+        "noise.f32"
+    );
+    assert_eq!(
+        string_field(field(&root, "noise_payload"), "dtype"),
+        "float32"
+    );
+    assert!(bool_field(field(&root, "noise_payload"), "complete"));
+    assert_eq!(
+        field(&root, "noise_calls").as_array().unwrap().len(),
+        ENHANCEMENT_NOISE_CALLS
+    );
+    let artifacts = field(&root, "artifacts");
+    let enhanced = field(artifacts, "enhanced_pcm.f32");
+    assert_eq!(u64_field(enhanced, "count"), ENHANCEMENT_SAMPLES as u64);
+    assert_eq!(u64_field(enhanced, "bytes"), ENHANCEMENT_BYTES as u64);
+    let enhanced_sha = string_field(enhanced, "sha256");
+    assert_eq!(enhanced_sha.len(), 64);
+    (manifest_sha, enhanced_sha)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+#[ignore = "real Apple Silicon SGMSE enhancement parity is reserved for disposable Scaleway"]
+fn sgmse_apple_cpu_metal_enhancement_matches_reference() {
+    assert_eq!(std::env::consts::OS, "macos");
+    assert_eq!(std::env::consts::ARCH, "aarch64");
+    assert_eq!(std::env::var(REMOTE_ENV).as_deref(), Ok("1"));
+    let gguf = env_path(GGUF_ENV);
+    let reference = env_path(ENHANCEMENT_REFERENCE_ENV);
+    let evidence = env_path(ENHANCEMENT_EVIDENCE_ENV);
+    let expected_gguf = std::env::var(GGUF_SHA_ENV).expect("GGUF SHA required");
+    let (manifest_sha, enhanced_sha) = verify_enhancement_reference(&reference);
+    assert_eq!(sha256_file(&gguf), expected_gguf);
+    assert!(!evidence.exists() && !evidence.is_symlink());
+    let parent = evidence.parent().expect("enhancement evidence parent");
+    assert!(parent.is_dir() && !parent.is_symlink());
+    reject_symlink_ancestry(parent, "enhancement evidence parent");
+    assert!(!overlap(&gguf, &reference));
+    assert!(!overlap(&gguf, &evidence));
+    assert!(!overlap(&reference, &evidence));
+    let reference_output = read_enhancement_pcm(&reference.join("enhanced_pcm.f32"), &enhanced_sha);
+    let pcm = read_enhancement_pcm(&reference.join("input_pcm.f32"), ENHANCEMENT_CROP_SHA256);
+    let file = vokra_mmap::open_gguf(&gguf).expect("open authenticated enhancement GGUF");
+    let mut cpu_model = SgmseModel::from_gguf(&file).expect("bind authenticated enhancement GGUF");
+    let mut cpu_noise = EnhancementNoise::load(&reference);
+    let cpu = cpu_model
+        .enhance(&Compute::cpu(), &pcm, &mut cpu_noise)
+        .expect("CPU enhancement");
+    assert_eq!(cpu.len(), ENHANCEMENT_SAMPLES);
+    assert_eq!(cpu_noise.cursor, ENHANCEMENT_NOISE_CALLS);
+    let metal = Compute::for_backend(BackendKind::Metal, SGMSE_HOT_OPS)
+        .unwrap_or_else(|error| panic!("Scaleway Metal unavailable: {error}"));
+    assert_eq!(metal.backend_name(), "metal");
+    let mut metal_model = SgmseModel::from_gguf(&file).expect("bind Metal enhancement GGUF");
+    let mut metal_noise = EnhancementNoise::load(&reference);
+    let metal_output = metal_model
+        .enhance(&metal, &pcm, &mut metal_noise)
+        .expect("Metal enhancement");
+    assert_eq!(metal_output.len(), ENHANCEMENT_SAMPLES);
+    assert_eq!(metal_noise.cursor, ENHANCEMENT_NOISE_CALLS);
+    assert_parity("cpu_enhancement", &cpu, &reference_output);
+    assert_parity("metal_enhancement", &metal_output, &reference_output);
+    assert_parity("metal_vs_cpu_enhancement", &metal_output, &cpu);
+    fs::create_dir(&evidence).expect("create absent enhancement evidence");
+    write_evidence(&evidence.join("cpu_enhanced_pcm.f32"), &cpu);
+    write_evidence(&evidence.join("metal_enhanced_pcm.f32"), &metal_output);
+    fs::write(
+        evidence.join("backend.txt"),
+        format!(
+            "backend=cpu,metal\nmetal_device=present\natol=0.01\ninput_samples=4096\nsampler_calls=61\nreference_manifest_sha256={manifest_sha}\nverdict=PASS\n"
+        ),
+    )
+    .expect("write enhancement backend evidence");
+    eprintln!(
+        "SGMSE_APPLE_ENHANCEMENT_PARITY backend=cpu+metal input_samples=4096 sampler_calls=61 atol=0.01 verdict=PASS evidence={}",
         evidence.display()
     );
 }

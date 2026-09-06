@@ -7,7 +7,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 PARITY_TOOL="$PARITY_PROJECT/sgmse_native_score_parity.py"
+ENHANCEMENT_TOOL="$PARITY_PROJECT/sgmse_native_enhancement_parity.py"
 TEST_NAME="sgmse_apple_cpu_metal_score_matches_reference"
+ENHANCEMENT_TEST_NAME="sgmse_apple_cpu_metal_enhancement_matches_reference"
 MIN_MEMORY_BYTES=16000000000
 MIN_FREE_DISK_KIB=5000000
 
@@ -15,12 +17,15 @@ log() { printf '[sgmse-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 usage() { cat >&2 <<'EOF'
 usage: apple-silicon-sgmse.sh --gguf ABS --gguf-sha256 HEX64 \
-  --reference ABS_DIR --evidence-dir ABSENT_DIR
+  --reference SCORE_ABS_DIR --enhancement-reference ENHANCEMENT_ABS_DIR \
+  --evidence-dir SCORE_ABSENT_DIR --enhancement-evidence-dir ENHANCEMENT_ABSENT_DIR
        apple-silicon-sgmse.sh --self-test
 
-Runs exactly one ignored vokra-models SGMSE CPU/Metal score parity test on a
-disposable Scaleway Darwin/arm64 worker. The GGUF/reference packet must already
-be staged. No download, conversion, upload, or publication is performed.
+Runs the ignored vokra-models SGMSE CPU/Metal score and full enhancement parity
+tests on a disposable Scaleway Darwin/arm64 worker. The GGUF and both VAST
+reference packets must already be staged. Enhancement uses the authenticated
+4096-sample crop and its full prior + 60 sampler calls. No download,
+conversion, upload, or publication is performed.
 EOF
 }
 
@@ -44,9 +49,10 @@ run_self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token
   for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'xcrun -f metal' \
     'sgmse_native_score_parity.py' '--verify-reference-only' 'SGMSE_REFERENCE_VERIFIED' \
+    'sgmse_native_enhancement_parity.py' '4096-sample crop' '60 sampler calls' \
     'CARGO_BUILD_JOBS=1' 'SGMSE_APPLE_SCORE_PARITY' \
-    'backend=cpu,metal' 'metal_device=present' 'atol=0.01' \
-    'cargo test --locked --features metal -p vokra-models --test sgmse_apple_score' \
+    'SGMSE_APPLE_ENHANCEMENT_PARITY' 'backend=cpu,metal' 'metal_device=present' 'atol=0.01' \
+    'cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score' \
     '-- --ignored --exact --show-output' 'shasum -a 256' 'no download' 'no upload'; do
     grep -Fq -- "$token" "$script" || { log "self-test missing contract token: $token"; fail=1; }
   done
@@ -62,35 +68,46 @@ run_self_test() {
     --native-dir /tmp/not-accepted >/dev/null 2>&1; then
     log 'self-test accepted verify-only with a native path'; fail=1
   fi
+  if ! UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python \
+    "$ENHANCEMENT_TOOL" --self-test >/dev/null 2>&1; then
+    log 'self-test enhancement verifier failed'; fail=1
+  fi
   (( fail == 0 )) || return 1
   log 'self-test PASS'
 }
 
-GGUF='' GGUF_SHA='' REFERENCE='' EVIDENCE='' SELF_TEST=0
+GGUF='' GGUF_SHA='' REFERENCE='' ENHANCEMENT_REFERENCE='' EVIDENCE='' ENHANCEMENT_EVIDENCE='' SELF_TEST=0
 while (($#)); do case "$1" in
   --self-test) ((SELF_TEST==0)) || die 'duplicate --self-test'; SELF_TEST=1; shift;;
   --gguf) (($#>=2)) || die '--gguf requires a path'; GGUF="$2"; shift 2;;
   --gguf-sha256) (($#>=2)) || die '--gguf-sha256 requires a digest'; GGUF_SHA="$2"; shift 2;;
   --reference) (($#>=2)) || die '--reference requires a path'; REFERENCE="$2"; shift 2;;
+  --enhancement-reference) (($#>=2)) || die '--enhancement-reference requires a path'; ENHANCEMENT_REFERENCE="$2"; shift 2;;
   --evidence-dir) (($#>=2)) || die '--evidence-dir requires a path'; EVIDENCE="$2"; shift 2;;
+  --enhancement-evidence-dir) (($#>=2)) || die '--enhancement-evidence-dir requires a path'; ENHANCEMENT_EVIDENCE="$2"; shift 2;;
   -h|--help) usage; exit 0;; *) die "unknown argument: $1";; esac; done
-if ((SELF_TEST)); then [[ -z "$GGUF$GGUF_SHA$REFERENCE$EVIDENCE" ]] || die '--self-test accepts no other arguments'; run_self_test; exit $?; fi
-[[ -n "$GGUF" && -n "$GGUF_SHA" && -n "$REFERENCE" && -n "$EVIDENCE" ]] || { usage; exit 1; }
+if ((SELF_TEST)); then [[ -z "$GGUF$GGUF_SHA$REFERENCE$ENHANCEMENT_REFERENCE$EVIDENCE$ENHANCEMENT_EVIDENCE" ]] || die '--self-test accepts no other arguments'; run_self_test; exit $?; fi
+[[ -n "$GGUF" && -n "$GGUF_SHA" && -n "$REFERENCE" && -n "$ENHANCEMENT_REFERENCE" && -n "$EVIDENCE" && -n "$ENHANCEMENT_EVIDENCE" ]] || { usage; exit 1; }
 require_host
 [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || die 'not a Vokra checkout'
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
-for command in cargo git shasum awk df sysctl xcrun uv find grep tee mktemp; do command -v "$command" >/dev/null 2>&1 || die "missing tool: $command"; done
+for command in cargo git shasum awk df sysctl xcrun uv find grep tee mktemp basename sort tr wc; do command -v "$command" >/dev/null 2>&1 || die "missing tool: $command"; done
 [[ "$GGUF_SHA" =~ ^[0-9a-f]{64}$ ]] || die '--gguf-sha256 must be lowercase hex64'
-require_abs "$GGUF" GGUF; require_abs "$REFERENCE" reference; require_abs "$EVIDENCE" evidence
-reject_symlink_ancestry "$GGUF" GGUF; reject_symlink_ancestry "$REFERENCE" reference; assert_parent="$(dirname "$EVIDENCE")"; reject_symlink_ancestry "$assert_parent" evidence-parent
-[[ -f "$GGUF" && ! -L "$GGUF" ]] || die 'GGUF missing or symlinked'; [[ -d "$REFERENCE" && ! -L "$REFERENCE" ]] || die 'reference missing or symlinked'; [[ ! -e "$EVIDENCE" && ! -L "$EVIDENCE" ]] || die 'evidence directory must be absent'; [[ -d "$assert_parent" ]] || die 'evidence parent missing'
-disjoint "$GGUF" "$REFERENCE"; disjoint "$GGUF" "$EVIDENCE"; disjoint "$REFERENCE" "$EVIDENCE"
+require_abs "$GGUF" GGUF; require_abs "$REFERENCE" reference; require_abs "$ENHANCEMENT_REFERENCE" enhancement-reference; require_abs "$EVIDENCE" evidence; require_abs "$ENHANCEMENT_EVIDENCE" enhancement-evidence
+reject_symlink_ancestry "$GGUF" GGUF; reject_symlink_ancestry "$REFERENCE" reference; reject_symlink_ancestry "$ENHANCEMENT_REFERENCE" enhancement-reference; assert_parent="$(dirname "$EVIDENCE")"; enhancement_assert_parent="$(dirname "$ENHANCEMENT_EVIDENCE")"; reject_symlink_ancestry "$assert_parent" evidence-parent; reject_symlink_ancestry "$enhancement_assert_parent" enhancement-evidence-parent
+[[ -f "$GGUF" && ! -L "$GGUF" ]] || die 'GGUF missing or symlinked'; [[ -d "$REFERENCE" && ! -L "$REFERENCE" ]] || die 'reference missing or symlinked'; [[ -d "$ENHANCEMENT_REFERENCE" && ! -L "$ENHANCEMENT_REFERENCE" ]] || die 'enhancement reference missing or symlinked'; [[ ! -e "$EVIDENCE" && ! -L "$EVIDENCE" ]] || die 'evidence directory must be absent'; [[ ! -e "$ENHANCEMENT_EVIDENCE" && ! -L "$ENHANCEMENT_EVIDENCE" ]] || die 'enhancement evidence directory must be absent'; [[ -d "$assert_parent" ]] || die 'evidence parent missing'; [[ -d "$enhancement_assert_parent" ]] || die 'enhancement evidence parent missing'
+disjoint "$GGUF" "$REFERENCE"; disjoint "$GGUF" "$ENHANCEMENT_REFERENCE"; disjoint "$GGUF" "$EVIDENCE"; disjoint "$GGUF" "$ENHANCEMENT_EVIDENCE"; disjoint "$REFERENCE" "$EVIDENCE"; disjoint "$REFERENCE" "$ENHANCEMENT_REFERENCE"; disjoint "$REFERENCE" "$ENHANCEMENT_EVIDENCE"; disjoint "$ENHANCEMENT_REFERENCE" "$EVIDENCE"; disjoint "$ENHANCEMENT_REFERENCE" "$ENHANCEMENT_EVIDENCE"; disjoint "$EVIDENCE" "$ENHANCEMENT_EVIDENCE"
 [[ "$(sha256_file "$GGUF")" == "$GGUF_SHA" ]] || die 'GGUF SHA-256 mismatch'
+for reference_file in manifest.json input_pcm.f32 enhanced_pcm.f32 noise.f32 noise_calls.txt run.log; do
+  [[ -f "$ENHANCEMENT_REFERENCE/$reference_file" && ! -L "$ENHANCEMENT_REFERENCE/$reference_file" ]] || die "enhancement reference file is missing or symlinked: $reference_file"
+done
+[[ "$(find "$ENHANCEMENT_REFERENCE" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ')" == 'enhanced_pcm.f32 input_pcm.f32 manifest.json noise.f32 noise_calls.txt run.log ' ]] || die 'enhancement reference file set is not exact'
 manifest_sha="$(sha256_file "$REFERENCE/manifest.json")"
+enhancement_manifest_sha="$(sha256_file "$ENHANCEMENT_REFERENCE/manifest.json")"
 UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python "$PARITY_TOOL" --verify-reference-only --reference-dir "$REFERENCE" >/dev/null
 log_file="$(mktemp "${TMPDIR:-/tmp}/sgmse-apple.XXXXXX")"; trap 'rm -f -- "$log_file"' EXIT
-export VOKRA_SGMSE_GGUF="$GGUF" VOKRA_SGMSE_GGUF_SHA256="$GGUF_SHA" VOKRA_SGMSE_REFERENCE_DIR="$REFERENCE" VOKRA_SGMSE_REFERENCE_MANIFEST_SHA256="$manifest_sha" VOKRA_SGMSE_APPLE_EVIDENCE_DIR="$EVIDENCE" VOKRA_REMOTE_APPLE_SILICON=1
-CARGO_BUILD_JOBS=1 cargo test --locked --features metal -p vokra-models --test sgmse_apple_score "$TEST_NAME" -- --ignored --exact --show-output 2>&1 | tee "$log_file"
+export VOKRA_SGMSE_GGUF="$GGUF" VOKRA_SGMSE_GGUF_SHA256="$GGUF_SHA" VOKRA_SGMSE_REFERENCE_DIR="$REFERENCE" VOKRA_SGMSE_REFERENCE_MANIFEST_SHA256="$manifest_sha" VOKRA_SGMSE_APPLE_EVIDENCE_DIR="$EVIDENCE" VOKRA_SGMSE_ENHANCEMENT_REFERENCE_DIR="$ENHANCEMENT_REFERENCE" VOKRA_SGMSE_ENHANCEMENT_REFERENCE_MANIFEST_SHA256="$enhancement_manifest_sha" VOKRA_SGMSE_ENHANCEMENT_EVIDENCE_DIR="$ENHANCEMENT_EVIDENCE" VOKRA_REMOTE_APPLE_SILICON=1
+CARGO_BUILD_JOBS=1 cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score "$TEST_NAME" -- --ignored --exact --show-output 2>&1 | tee "$log_file"
 [[ "$(grep -Ec "^test $TEST_NAME \.\.\. ok$" "$log_file" || true)" == 1 ]] || die 'Apple SGMSE named test did not pass exactly once'
 [[ "$(grep -Ec '^test [^ ]+ \.\.\.' "$log_file" || true)" == 1 ]] || die 'Apple SGMSE Cargo emitted more than one test line'
 [[ "$(grep -Ec '^test result:' "$log_file" || true)" == 1 ]] || die 'Apple SGMSE Cargo emitted more than one result line'
@@ -101,4 +118,15 @@ grep -Fq 'SGMSE_APPLE_SCORE_PARITY backend=cpu+metal' "$log_file" || die 'Apple 
 for evidence_file in cpu_score_real.f32 cpu_score_imag.f32 metal_score_real.f32 metal_score_imag.f32; do [[ "$(wc -c < "$EVIDENCE/$evidence_file" | tr -d '[:space:]')" == 65536 && ! -L "$EVIDENCE/$evidence_file" ]] || die "invalid evidence score file: $evidence_file"; done
 [[ -f "$EVIDENCE/backend.txt" && ! -L "$EVIDENCE/backend.txt" ]] || die 'backend evidence is missing or symlinked'
 grep -Fq "reference_manifest_sha256=$manifest_sha" "$EVIDENCE/backend.txt" || die 'manifest identity missing from evidence'
-log 'SGMSE Apple CPU/Metal parity PASS'
+enhancement_log_file="$(mktemp "${TMPDIR:-/tmp}/sgmse-apple-enhancement.XXXXXX")"
+trap 'rm -f -- "$log_file" "$enhancement_log_file"' EXIT
+CARGO_BUILD_JOBS=1 cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score "$ENHANCEMENT_TEST_NAME" -- --ignored --exact --show-output 2>&1 | tee "$enhancement_log_file"
+[[ "$(grep -Ec "^test $ENHANCEMENT_TEST_NAME \.\.\. ok$" "$enhancement_log_file" || true)" == 1 ]] || die 'Apple SGMSE enhancement test did not pass exactly once'
+[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out' "$enhancement_log_file" || true)" == 1 ]] || die 'Apple SGMSE enhancement result was not exactly one pass'
+grep -Fq 'SGMSE_APPLE_ENHANCEMENT_PARITY backend=cpu,metal' "$enhancement_log_file" || die 'Apple SGMSE enhancement sentinel missing'
+[[ -d "$ENHANCEMENT_EVIDENCE" ]] || die 'enhancement evidence directory was not created'
+[[ "$(find "$ENHANCEMENT_EVIDENCE" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ')" == 'backend.txt cpu_enhanced_pcm.f32 metal_enhanced_pcm.f32 ' ]] || die 'enhancement evidence file set is not exact'
+for evidence_file in cpu_enhanced_pcm.f32 metal_enhanced_pcm.f32; do [[ "$(wc -c < "$ENHANCEMENT_EVIDENCE/$evidence_file" | tr -d '[:space:]')" == 16384 && ! -L "$ENHANCEMENT_EVIDENCE/$evidence_file" ]] || die "invalid enhancement evidence file: $evidence_file"; done
+[[ -f "$ENHANCEMENT_EVIDENCE/backend.txt" && ! -L "$ENHANCEMENT_EVIDENCE/backend.txt" ]] || die 'enhancement backend evidence is missing or symlinked'
+grep -Fq "reference_manifest_sha256=$enhancement_manifest_sha" "$ENHANCEMENT_EVIDENCE/backend.txt" || die 'enhancement manifest identity missing from evidence'
+log 'SGMSE Apple CPU/Metal score and full enhancement parity PASS'
