@@ -17,6 +17,7 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 import struct
 import subprocess
@@ -31,6 +32,7 @@ from sgmse_dump_reference import (
     CHECKPOINT_SHA256,
     CHECKPOINT_SIZE,
     CHECKPOINT_LICENSE_SPDX,
+    HYPERPARAMS_RAW,
     MODEL_REPOSITORY,
     MODEL_REVISION,
     SOURCE_LICENSE_SHA256,
@@ -89,6 +91,9 @@ EXPECTED_NATIVE_FILES = {"enhanced_pcm.f32"}
 ENHANCEMENT_SOURCE_FILE = "speechbrain/inference/enhancement.py"
 ENHANCEMENT_SOURCE_MARKERS = ("class SGMSEEnhancement", "enhance_batch")
 OFFICIAL_CALL_IDENTITY = "SGMSEEnhancement.enhance_batch -> ScoreModel.enhance"
+SAMPLING_KEYS = (
+    "sampler_type", "predictor", "corrector", "N", "corrector_steps", "snr"
+)
 
 
 def validate_official_enhance_signature(signature: inspect.Signature) -> None:
@@ -131,8 +136,47 @@ def verify_official_enhancement_source(
     )
 
 
+def reviewed_sampling_config(hyperparams_evidence: dict[str, Any]) -> dict[str, Any]:
+    """Parse the exact reviewed YAML sampling block, without a YAML import."""
+    raw = hyperparams_evidence.get("raw")
+    if hyperparams_evidence.get("sha256") != hashlib.sha256(HYPERPARAMS_RAW.encode()).hexdigest() or not isinstance(raw, str):
+        raise ValueError("wrapper sampling requires the reviewed hyperparams evidence")
+    canonical_match = re.search(r"^sampling:\n(?P<body>(?:  [^\n]+\n)+)\nmodules:", HYPERPARAMS_RAW, re.MULTILINE)
+    observed_match = re.search(r"^sampling:\n(?P<body>(?:  [^\n]+\n)+)\nmodules:", raw, re.MULTILINE)
+    if canonical_match is None or observed_match is None or observed_match.group("body") != canonical_match.group("body"):
+        raise ValueError("reviewed hyperparams sampling block drifted")
+    values: dict[str, Any] = {}
+    for line in observed_match.group("body").splitlines():
+        key, separator, value = line.strip().partition(":")
+        if not separator or key not in SAMPLING_KEYS or key in values:
+            raise ValueError("reviewed hyperparams sampling entries are malformed")
+        if key in {"N", "corrector_steps"}:
+            values[key] = int(value)
+        elif key == "snr":
+            values[key] = float(value)
+        else:
+            values[key] = value
+    if tuple(values) != SAMPLING_KEYS:
+        raise ValueError("reviewed hyperparams sampling keys drifted")
+    return values
+
+
+def validate_wrapper_sampling(sampling: dict[str, Any]) -> None:
+    expected = reviewed_sampling_config(
+        {
+            "sha256": hashlib.sha256(HYPERPARAMS_RAW.encode()).hexdigest(),
+            "raw": HYPERPARAMS_RAW,
+        }
+    )
+    if sampling != expected:
+        raise ValueError("wrapper sampling does not match the reviewed hyperparams")
+
+
 def build_official_enhancer(
-    speechbrain_source: Path, score_model: Any, torch: Any
+    speechbrain_source: Path,
+    score_model: Any,
+    torch: Any,
+    sampling: dict[str, Any],
 ) -> Any:
     """Construct SpeechBrain's pinned waveform-to-spectrogram wrapper."""
     sys.path.insert(0, str(speechbrain_source))
@@ -149,6 +193,7 @@ def build_official_enhancer(
             except KeyError as error:
                 raise AttributeError(name) from error
 
+    validate_wrapper_sampling(sampling)
     hparams = ReviewedHParams({
         "sample_rate": SAMPLE_RATE,
         "n_fft": 510,
@@ -157,6 +202,7 @@ def build_official_enhancer(
         "transform_type": "exponent",
         "spec_factor": 0.15,
         "spec_abs_exponent": 0.5,
+        "sampling": ReviewedHParams(sampling),
     })
     device = torch.device("cuda")
     score_model = score_model.to(device)
@@ -579,7 +625,7 @@ def _run_official_reference(
         raise ValueError("inspection manifest is missing or symlinked")
     inspection = json.loads(inspection_manifest.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_json)
     require_manifest_identity(inspection)
-    verify_hyperparams_file(hyperparams, inspection)
+    hyperparams_evidence = verify_hyperparams_file(hyperparams, inspection)
     if checkpoint.name != CHECKPOINT_NAME or checkpoint.stat().st_size != CHECKPOINT_SIZE or sha256(checkpoint) != CHECKPOINT_SHA256:
         raise ValueError("checkpoint differs from the fixed identity")
     source_tree = require_clean_revision(source, SOURCE_REVISION, "SGMSE source")
@@ -599,7 +645,8 @@ def _run_official_reference(
             raise ValueError("loaded checkpoint count differs from fixed evidence")
         if not torch.cuda.is_available():
             raise ValueError("official SGMSEEnhancement reference requires CUDA")
-        enhancer = build_official_enhancer(speechbrain_source, model, torch)
+        sampling = reviewed_sampling_config(hyperparams_evidence | {"raw": HYPERPARAMS_RAW})
+        enhancer = build_official_enhancer(speechbrain_source, model, torch, sampling)
         pcm = _read_wav_pcm(input_wav)
         input_artifact = write_f32(temporary / INPUT_NAME, pcm)
         torch.set_num_threads(1)
@@ -754,6 +801,39 @@ def self_test() -> int:
         validate_official_enhance_signature(inspect.signature(
             lambda self, y, sampler_type, predictor, corrector, N, corrector_steps, snr, denoise=False, timeit=False, **kwargs: None
         ))
+    except ValueError:
+        pass
+    else:
+        return 1
+    sampling_evidence = {
+        "sha256": hashlib.sha256(HYPERPARAMS_RAW.encode()).hexdigest(),
+        "raw": HYPERPARAMS_RAW,
+    }
+    sampling = reviewed_sampling_config(sampling_evidence)
+    validate_wrapper_sampling(sampling)
+
+    class FakeHParams(dict[str, Any]):
+        def __getattr__(self, name: str) -> Any:
+            return self[name]
+
+    class FakeEnhancementConstructor:
+        def __init__(self, hparams: FakeHParams):
+            self.sampling = hparams.sampling
+
+    fake_constructor = FakeEnhancementConstructor(FakeHParams({"sampling": sampling}))
+    assert fake_constructor.sampling == sampling
+    for tampered_sampling in (
+        {key: value for key, value in sampling.items() if key != "snr"},
+        {**sampling, "N": sampling["N"] + 1},
+    ):
+        try:
+            validate_wrapper_sampling(tampered_sampling)
+        except ValueError:
+            pass
+        else:
+            return 1
+    try:
+        reviewed_sampling_config({"sha256": sampling_evidence["sha256"], "raw": HYPERPARAMS_RAW.replace("sampling:\n", "")})
     except ValueError:
         pass
     else:
