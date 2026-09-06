@@ -188,10 +188,17 @@ def validate_license_manifest(path: Path) -> dict[str, Any]:
         fail("license manifest schema drifted")
     if data.get("publication") != "NO_UPLOAD":
         fail("publication must remain NO_UPLOAD")
-    if data.get("status") not in {"PENDING_REVIEW", "APPROVED"} or data.get("owner_signoff") not in {"OWNER_SIGNOFF_REQUIRED", "OWNER_SIGNED_OFF"}:
+    if (data.get("status"), data.get("owner_signoff")) not in {
+        ("PENDING_REVIEW", "OWNER_SIGNOFF_REQUIRED"),
+        ("APPROVED", "OWNER_SIGNED_OFF"),
+    }:
         fail("license approval state is unknown")
-    if not isinstance(data.get("blockers"), list) or not data["blockers"]:
-        fail("license blockers must be explicit")
+    if not isinstance(data.get("blockers"), list):
+        fail("license blockers must be an explicit list")
+    if data["status"] == "PENDING_REVIEW" and not data["blockers"]:
+        fail("pending license gate must retain explicit blockers")
+    if data["status"] == "APPROVED" and data["blockers"]:
+        fail("approved license gate must have no blockers")
     rows = data.get("package_review")
     if not isinstance(rows, list):
         fail("package review is malformed")
@@ -204,9 +211,11 @@ def validate_license_manifest(path: Path) -> dict[str, Any]:
     approval = data.get("approval")
     if not isinstance(approval, dict) or set(approval) != {"signer", "scope_sha256"}:
         fail("approval schema drifted")
-    if data["status"] == "APPROVED" or data["owner_signoff"] == "OWNER_SIGNED_OFF":
-        if data["status"] != "APPROVED" or data["owner_signoff"] != "OWNER_SIGNED_OFF" or not isinstance(approval["signer"], str) or not approval["signer"].strip() or not re.fullmatch(r"[0-9a-f]{64}", str(approval["scope_sha256"])):
+    if data["status"] == "APPROVED":
+        if not isinstance(approval["signer"], str) or not approval["signer"].strip() or not re.fullmatch(r"[0-9a-f]{64}", str(approval["scope_sha256"])):
             fail("approved license gate lacks complete signoff")
+    elif approval["signer"] is not None:
+        fail("pending license gate signer must be null")
     return data
 
 
@@ -226,6 +235,10 @@ def package_review_rows(manifest: dict[str, Any]) -> list[dict[str, str]]:
 def approval_scope(project: Path, lock: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         "format": "vokra-cosyvoice2-llm-approval-scope-v1",
+        "status": manifest["status"],
+        "owner_signoff": manifest["owner_signoff"],
+        "blockers": manifest["blockers"],
+        "approval": {"signer": manifest["approval"]["signer"]},
         "project": {"name": PROJECT_NAME, **file_identity(project)},
         "uv_lock": file_identity(lock),
         "package_review": package_review_rows(manifest),
@@ -282,6 +295,42 @@ def self_test() -> None:
     validate_project(read_toml(here / "pyproject.toml"))
     manifest = validate_license_manifest(here / "license_gate_manifest.json")
     assert manifest["status"] == "PENDING_REVIEW"
+    for status, owner_signoff in (("APPROVED", "OWNER_SIGNOFF_REQUIRED"), ("PENDING_REVIEW", "OWNER_SIGNED_OFF")):
+        mixed = copy.deepcopy(manifest)
+        mixed["status"] = status
+        mixed["owner_signoff"] = owner_signoff
+        mixed_path = here / ".cosyvoice2-llm-preflight-mixed-self-test.json"
+        try:
+            mixed_path.write_text(json.dumps(mixed), encoding="utf-8")
+            validate_license_manifest(mixed_path)
+        except GateError:
+            pass
+        finally:
+            mixed_path.unlink(missing_ok=True)
+        if mixed_path.exists():
+            raise AssertionError("mixed approval state self-test artifact remains")
+    approved_with_blockers = copy.deepcopy(manifest)
+    approved_with_blockers["status"] = "APPROVED"
+    approved_with_blockers["owner_signoff"] = "OWNER_SIGNED_OFF"
+    approved_with_blockers["approval"] = {"signer": "self-test-owner", "scope_sha256": "0" * 64}
+    approved_with_blockers_path = here / ".cosyvoice2-llm-preflight-approved-blocker-self-test.json"
+    try:
+        approved_with_blockers_path.write_text(json.dumps(approved_with_blockers), encoding="utf-8")
+        validate_license_manifest(approved_with_blockers_path)
+    except GateError:
+        pass
+    finally:
+        approved_with_blockers_path.unlink(missing_ok=True)
+    pending_without_blockers = copy.deepcopy(manifest)
+    pending_without_blockers["blockers"] = []
+    pending_without_blockers_path = here / ".cosyvoice2-llm-preflight-pending-no-blocker-self-test.json"
+    try:
+        pending_without_blockers_path.write_text(json.dumps(pending_without_blockers), encoding="utf-8")
+        validate_license_manifest(pending_without_blockers_path)
+    except GateError:
+        pass
+    finally:
+        pending_without_blockers_path.unlink(missing_ok=True)
     valid_lock = {
         "version": 1,
         "revision": 3,
@@ -426,6 +475,7 @@ def self_test() -> None:
         approved_manifest["native_payload_review"] = "APPROVED"
         approved_manifest["weight_review"] = "APPROVED"
         approved_manifest["source_review"] = "APPROVED"
+        approved_manifest["blockers"] = []
         for row in approved_manifest["package_review"]:
             row["status"] = "APPROVED"
         approved_manifest["approval"] = {"signer": "self-test-owner", "scope_sha256": None}
@@ -463,6 +513,26 @@ def self_test() -> None:
             assert "exact lock closure" in str(error)
         else:
             raise AssertionError("approved package version drift accepted")
+        signer_drift = copy.deepcopy(approved_manifest)
+        signer_drift["approval"]["signer"] = "different-owner"
+        signer_path = temp_root / "signer-drift.json"
+        signer_path.write_text(json.dumps(signer_drift), encoding="utf-8")
+        try:
+            gate(here / "pyproject.toml", lock_path, signer_path)
+        except GateError as error:
+            assert "scope digest" in str(error)
+        else:
+            raise AssertionError("approval signer scope drift accepted")
+        blocker_drift = copy.deepcopy(approved_manifest)
+        blocker_drift["blockers"] = ["unexpected blocker"]
+        blocker_path = temp_root / "blocker-drift.json"
+        blocker_path.write_text(json.dumps(blocker_drift), encoding="utf-8")
+        try:
+            gate(here / "pyproject.toml", lock_path, blocker_path)
+        except GateError as error:
+            assert "no blockers" in str(error)
+        else:
+            raise AssertionError("approved blocker drift accepted")
     try:
         gate(here / "pyproject.toml", here / "uv.lock", here / "license_gate_manifest.json")
     except GateError as error:
