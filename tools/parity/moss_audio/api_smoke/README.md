@@ -3,9 +3,9 @@
 This directory is a VAST-only, model-free compatibility probe for the pinned
 OpenMOSS source revision and the 4B/8B metadata snapshots. The project lock is
 Python 3.12-only and pins the repository security-floor route
-`transformers==5.10.4`; it is deliberately separate from the active MOSS
-conversion/reference project, which remains blocked on its historical
-`transformers==5.5.0` contract.
+`transformers==5.10.4` and the complete official-reference dependency closure;
+it is deliberately separate from the active MOSS project, which remains
+blocked on its historical `transformers==5.5.0` contract.
 
 The probe downloads no checkpoint shards. It authenticates the source checkout,
 the complete metadata-only snapshot, and the locked package artifacts, then

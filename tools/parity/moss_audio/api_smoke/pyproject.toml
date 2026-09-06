@@ -4,8 +4,15 @@ version = "0.1.0"
 description = "Model-free official MOSS-Audio Transformers API smoke"
 requires-python = "==3.12.*"
 dependencies = [
+    "accelerate==1.12.0",
+    "einops==0.8.1",
     "numpy==2.3.5",
-    "torch==2.11.0",
+    "safetensors==0.7.0",
+    "scipy==1.16.3",
+    "soundfile==0.13.1",
+    "tiktoken==0.12.0",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
     "transformers==5.10.4",
 ]
 
@@ -22,3 +29,4 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }

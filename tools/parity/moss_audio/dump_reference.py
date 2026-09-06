@@ -44,7 +44,10 @@ REFERENCE_AUDIO_SHA256 = (
 SAMPLE_RATE = 16_000
 SCHEMA = "vokra-moss-audio-reference-v1"
 DEFAULT_PROMPT = "Describe this audio."
-TRANSFORMERS_VERSION = "5.5.0"
+# Keep the historical 5.5.0 expectation for direct/legacy callers.  The
+# production VAST worker sets the separately authenticated patched route
+# explicitly after its API-smoke bridge has passed.
+TRANSFORMERS_VERSION = os.environ.get("VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION", "5.5.0")
 
 
 @dataclass(frozen=True)

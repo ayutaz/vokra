@@ -33,7 +33,12 @@ repository's patched 5.10.x floor. Because compatibility with a patched
 release has not been proven without loading the real model, production
 preflight fails closed with `BLOCKED_UNVERIFIED_API_SMOKE`; an owner-approved
 model-free source inspection/API smoke must re-authenticate the patched lock
-before any VAST model acquisition is scheduled.
+before any VAST model acquisition is scheduled. The VAST worker now requires
+the smoke evidence path and its SHA-256, and validates that evidence against
+the exact requested variants, source/metadata identities, approval scope,
+Transformers 5.10.4, and `checkpoint_load=NOT_PERFORMED`; a missing or stale
+packet remains blocked before dependency sync or model acquisition. This bridge
+does not change the active 5.5.0 lock or declare the main route compatible.
 
 No numerical fixture is committed before an actual run. The Rust consumer in
 `crates/vokra-models/tests/moss_audio_real.rs` is environment-gated and uses
@@ -46,9 +51,13 @@ Run only through the VAST worker after provisioning:
 
 ```sh
 scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 4b \
-  --approval-evidence /path/to/approval.json --expected-head <40-hex>
+  --approval-evidence /path/to/approval.json \
+  --api-smoke-evidence /path/to/api-smoke-evidence.json \
+  --api-smoke-sha256 <64-hex> --expected-head <40-hex>
 scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 8b \
-  --approval-evidence /path/to/approval.json --expected-head <40-hex>
+  --approval-evidence /path/to/approval.json \
+  --api-smoke-evidence /path/to/api-smoke-evidence.json \
+  --api-smoke-sha256 <64-hex> --expected-head <40-hex>
 ```
 
 The worker uses the committed two-second mono 16 kHz clip at

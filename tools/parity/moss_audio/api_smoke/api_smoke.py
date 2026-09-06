@@ -66,8 +66,13 @@ VARIANTS = {
         },
     },
 }
-PROJECT_SHA256 = "3d2b8e7cbde0092b77fcaeda9b8bcf4188d56d26eb86e6ae128895202889a40d"
-LOCK_SHA256 = "677aace6f46776b729cd230309d2bec486f554f00c235d2c5f690774781fa274"
+PROJECT_SHA256 = "dbe9843be3eab4f88f7708747e49dc515a255e8df0ba239eeb2ca7baae9fdfb9"
+LOCK_SHA256 = "937a6b7d8673b83b0b32457567118ad6c34e8dc2158f9bce354697dd88c98ed6"
+REQUIRED_DEPENDENCIES = {
+    "accelerate==1.12.0", "einops==0.8.1", "numpy==2.3.5", "safetensors==0.7.0",
+    "scipy==1.16.3", "soundfile==0.13.1", "tiktoken==0.12.0", "torch==2.9.1",
+    "torchaudio==2.9.1", "transformers==5.10.4",
+}
 FORMAT = "vokra-moss-audio-transformers-api-smoke-v1"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -166,8 +171,8 @@ def verify_project(project: Path) -> tuple[list[dict[str, Any]], str, str]:
         raise ValueError("API smoke project or lock bytes drifted")
     project_data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     dependencies = project_data.get("project", {}).get("dependencies", [])
-    if "transformers==5.10.4" not in dependencies:
-        raise ValueError("patched Transformers 5.10.4 dependency is missing")
+    if set(dependencies) != REQUIRED_DEPENDENCIES:
+        raise ValueError("patched reference dependency closure is not exact")
     lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
     rows = package_rows(lock)
     return rows, project_hash, lock_hash
@@ -334,6 +339,8 @@ def run(args: argparse.Namespace) -> int:
                 "publication": "NO_UPLOAD",
                 "expected_head": args.expected_head,
                 "approval_signer": signer,
+                "approval_scope_sha256": digest(scope),
+                "approval_scope": scope,
                 "source": source_record,
                 "variants": variant_records,
                 "project": {
@@ -360,6 +367,7 @@ def run(args: argparse.Namespace) -> int:
         "expected_head": args.expected_head,
         "approval_signer": signer,
         "approval_scope_sha256": digest(scope),
+        "approval_scope": scope,
         "source": source_record,
         "variants": variant_records,
         "project": {

@@ -8,6 +8,7 @@ DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/moss_audio"
+REFERENCE_PROJECT="$PARITY_PROJECT/api_smoke"
 REFERENCE_DUMPER="$PARITY_PROJECT/dump_reference.py"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
@@ -31,7 +32,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-moss-audio-validation.sh --variant <4b|8b|all> --approval-evidence <file> --expected-head <40-hex> [--work-dir <absent-dir>]
+usage: run-moss-audio-validation.sh --variant <4b|8b|all> --approval-evidence <file> --api-smoke-evidence <file> --api-smoke-sha256 <64-hex> --expected-head <40-hex> [--work-dir <absent-dir>]
        run-moss-audio-validation.sh --self-test
 
 VAST-only, non-publishing gate for the two pinned MOSS-Audio Instruct
@@ -187,6 +188,8 @@ require_tooling() {
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "MOSS-Audio parity uv.lock is missing"
+  [[ -f "$REFERENCE_PROJECT/pyproject.toml" && -f "$REFERENCE_PROJECT/uv.lock" && -f "$REFERENCE_PROJECT/api_smoke.py" ]] \
+    || die "patched MOSS-Audio API/reference project is missing"
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
   [[ -f "$REFERENCE_AUDIO" ]] || die "reference audio is missing"
   for preparer in "$(variant_preparer 4b)" "$(variant_preparer 8b)"; do
@@ -212,7 +215,7 @@ require_expected_head() {
 }
 
 pre_sync_gate() {
-  local approval="$1"
+  local approval="$1" api_smoke_evidence="$2" api_smoke_sha256="$3" expected_head="$4" selection="$5"
   command -v uv >/dev/null 2>&1 || die "uv is required before the MOSS-Audio gate"
   [[ -f "$PARITY_PROJECT/uv.lock" && -f "$PARITY_PROJECT/pyproject.toml" && \
     -f "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" ]] \
@@ -220,7 +223,9 @@ pre_sync_gate() {
   step "Validate exact MOSS-Audio closure before host/tooling/scratch/network work"
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
       --project "$PARITY_PROJECT" --manifest "$PREFLIGHT_MANIFEST" \
-      --evidence "$approval"
+      --evidence "$approval" --api-smoke-evidence "$api_smoke_evidence" \
+      --api-smoke-sha256 "$api_smoke_sha256" --expected-head "$expected_head" \
+      --selected-variants "$selection" --api-smoke-project "$REFERENCE_PROJECT"
 }
 
 require_disjoint_work_dir() {
@@ -323,7 +328,8 @@ download_snapshot() {
   local repo="$1" revision="$2" output="$3"
   mkdir -p "$output"
   (
-    UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
+    VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4 \
+    UV_NO_CACHE=1 uv run --no-cache --project "$REFERENCE_PROJECT" --frozen --python 3.12 python -c \
       'import os,sys
 from huggingface_hub import snapshot_download
 snapshot_download(
@@ -361,7 +367,8 @@ run_variant() {
       --verify-snapshot --snapshot "$snapshot" --variant "$variant"
 
   step "Merge the pinned $variant sharded checkpoint"
-  UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --python 3.12 python \
+  VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4 \
+  UV_NO_CACHE=1 uv run --no-cache --project "$REFERENCE_PROJECT" --frozen --python 3.12 python \
     "$preparer" --input-dir "$snapshot" --output "$merged" --strict \
     2>&1 | tee "$evidence_dir/prepare-$variant.log"
   [[ -s "$merged" ]] || die "checkpoint merger emitted no file: $merged"
@@ -380,7 +387,8 @@ run_variant() {
 
   step "Generate independent official FP32 CPU reference for $variant"
   VOKRA_REFERENCE_TORCH_THREADS="$reference_threads" \
-    UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --python 3.12 python \
+    VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4 \
+    UV_NO_CACHE=1 uv run --no-cache --project "$REFERENCE_PROJECT" --frozen --python 3.12 python \
       "$REFERENCE_DUMPER" \
       --variant "$variant" \
       --model-dir "$snapshot" \
@@ -481,7 +489,9 @@ run_self_test() {
   if variant_repo bad >/dev/null 2>&1; then
     failed=1
   fi
-  for required in pre_sync_gate PREFLIGHT_MANIFEST "--gguf-4b-sha256" \
+  for required in pre_sync_gate PREFLIGHT_MANIFEST "--api-smoke-evidence" "--api-smoke-sha256" \
+    "REFERENCE_PROJECT" "--api-smoke-project" "VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4" \
+    "--gguf-4b-sha256" \
     "--reference-4b-sha256" "--gguf-8b-sha256" "--reference-8b-sha256" \
     "--expected-head" \
     "<APPLE_GGUF_4B_PATH>" "<APPLE_REFERENCE_4B_DIR>" "<APPLE_GGUF_8B_PATH>" \
@@ -489,6 +499,11 @@ run_self_test() {
     "--no-cache"; do
     grep -F -- "$required" "$script_path" >/dev/null || failed=1
   done
+  # shellcheck disable=SC2016 # Match the literal variable reference in the script.
+  if grep -Eq 'uv (run|sync).*--project "\$PARITY_PROJECT"' "$script_path"; then
+    log "self-test found a normal-path command still using the historical 5.5.0 project"
+    failed=1
+  fi
   local log="$temporary/cargo.log"
   printf '%s\n%s\n' \
     'test moss_audio_4b_cpu_matches_official_reference ... ok' \
@@ -593,6 +608,8 @@ EOF
     "--self-test --self-test" \
     "--variant 4b --variant 8b" \
     "--expected-head 0000000000000000000000000000000000000000 --expected-head 0000000000000000000000000000000000000000" \
+    "--api-smoke-evidence x --api-smoke-evidence y" \
+    "--api-smoke-sha256 $hash_4b --api-smoke-sha256 $hash_4b" \
     "--approval-evidence" \
     "--approval-evidence --work-dir x" \
     "--unknown x"; do
@@ -608,8 +625,8 @@ EOF
 }
 
 main() {
-  local selection='' work_dir='' approval_evidence='' expected_head='' self_test=0
-  local seen_variant=0 seen_work_dir=0 seen_approval=0 seen_expected_head=0 seen_self_test=0
+  local selection='' work_dir='' approval_evidence='' api_smoke_evidence='' api_smoke_sha256='' expected_head='' self_test=0
+  local seen_variant=0 seen_work_dir=0 seen_approval=0 seen_api_smoke=0 seen_api_sha=0 seen_expected_head=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --variant)
@@ -631,6 +648,20 @@ main() {
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--approval-evidence requires a nonempty value"; }
         seen_approval=1
         approval_evidence="$2"
+        shift 2
+        ;;
+      --api-smoke-evidence)
+        (( seen_api_smoke == 0 )) || die "duplicate --api-smoke-evidence"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--api-smoke-evidence requires a nonempty value"; }
+        seen_api_smoke=1
+        api_smoke_evidence="$2"
+        shift 2
+        ;;
+      --api-smoke-sha256)
+        (( seen_api_sha == 0 )) || die "duplicate --api-smoke-sha256"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--api-smoke-sha256 requires a nonempty value"; }
+        seen_api_sha=1
+        api_smoke_sha256="$2"
         shift 2
         ;;
       --expected-head)
@@ -657,11 +688,13 @@ main() {
     esac
   done
   if (( self_test == 1 )); then
-    [[ -z "$selection$work_dir$approval_evidence$expected_head" ]] || die "--self-test accepts no other arguments"
+    [[ -z "$selection$work_dir$approval_evidence$api_smoke_evidence$api_smoke_sha256$expected_head" ]] || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
   [[ -n "$approval_evidence" ]] || { usage; die "--approval-evidence is required"; }
+  [[ -n "$api_smoke_evidence" ]] || { usage; die "--api-smoke-evidence is required"; }
+  [[ -n "$api_smoke_sha256" ]] || { usage; die "--api-smoke-sha256 is required"; }
   [[ -n "$expected_head" ]] || { usage; die "--expected-head is required"; }
   [[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die "approval evidence must be a nonempty regular file"
   case "$selection" in
@@ -670,7 +703,9 @@ main() {
   esac
 
   require_expected_head "$expected_head"
-  pre_sync_gate "$approval_evidence"
+  local selected_variants="$selection"
+  [[ "$selected_variants" == all ]] && selected_variants='4b,8b'
+  pre_sync_gate "$approval_evidence" "$api_smoke_evidence" "$api_smoke_sha256" "$expected_head" "$selected_variants"
   require_vast_host
   require_tooling
   if [[ -z "$work_dir" ]]; then
@@ -684,7 +719,8 @@ main() {
   record_environment "$evidence_dir/environment.txt"
 
   step "Install the locked official reference environment"
-  UV_NO_CACHE=1 uv sync --no-cache --project "$PARITY_PROJECT" --frozen --python 3.12 \
+  VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4 \
+  UV_NO_CACHE=1 uv sync --no-cache --project "$REFERENCE_PROJECT" --frozen --python 3.12 \
     2>&1 | tee "$evidence_dir/uv-sync.log"
 
   step "Checkout the immutable official OpenMOSS source"
