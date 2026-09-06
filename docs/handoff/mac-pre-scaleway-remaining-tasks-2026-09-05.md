@@ -909,6 +909,48 @@ These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
 separate approval gates.
 
+### 2026-09-06 exact-head source-validation closure
+
+Disposable VAST instance `50061598` validated exact clean HEAD
+`77f37c8b8806e577ac695a9633b26d7a73d26483` on Linux x86_64 with an Intel
+Xeon E7-8890 v4, Rust/Cargo 1.98.1, uv 0.12.5, cargo-deny 0.20.2 and
+cargo-audit 0.22.2. The branch reached this head through reviewed compile,
+test and Clippy repairs from `2c4c3beb` through `5bce448b`, followed by two
+source-contract fixes: `f379da5f` made the Voice Gender Apple worker's
+directory-mode self-test portable without relaxing its Darwin arm64 execution
+gate, and `77f37c8b` removed the stale Kyutai STT `NO_STAMP` exception after
+the converter began emitting the required metadata.
+
+At that exact head the following model-free/source gates passed:
+
+- `cargo test --locked --workspace`, including all executed unit,
+  integration and doctest suites;
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`;
+- `cargo deny --locked check licenses advisories bans`, `cargo audit` and
+  `scripts/check-zero-deps.sh`;
+- all 52 Apple worker syntax and `--self-test` contracts; converter/binder and
+  bound-arch coverage; op/crate/parity-sidecar/runbook citation checks;
+  workflow advisory/find hygiene; M5 residual ABI/blocker checks; zoo manifest
+  completeness; and EnCodec exclusion.
+
+The recovered evidence logs total 709,622 bytes. Their SHA-256 values are
+`65fe7ec4d99ad6133c398db2a52a90c794ec469066fefa6484bf284071c5b894`
+(workspace tests),
+`7b74f3a58111e7c8faee2d9d047a98634eeace2bd0fd1a298528b0da76233922`
+(Clippy),
+`3cf80bdc410003f3945b935691d26b6bf07dcdf648ce80b242447c564ff1991d`
+(cargo-deny),
+`49263fa54da8102c6f01ec005cd5be7e851eb6ad40bae65831a9dd28cf31514f`
+(cargo-audit),
+`2427e36fecf960b1eaf88be6bb50b9bad42626db3c75eb839edac76a33af7332`
+(zero-deps) and
+`c8b7169653359dee761c85f8745aad6b9aa7af9532b591da6e14cf56261d496d`
+(static contracts). No model was acquired, executed or published. Instance
+`50061598` was destroyed with its storage after evidence recovery; its
+individual query returned `instances: null` and the independent-volume
+inventory returned `[]`. Other `ralomi-*` instances in the account were
+outside this Vokra run and were not changed.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
