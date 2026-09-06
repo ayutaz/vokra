@@ -8,11 +8,13 @@ SOURCE_REVISION="77b7b12fff71f577105b517645750717a1598caa"
 TRANSFORMERS_URL="https://github.com/huggingface/transformers.git"
 TRANSFORMERS_REVISION="753d61104116eefc8ffc977327b441ee0c8d599f"
 INSPECTOR="$ROOT/tools/parity/granite_speech_4_1_2b_inspect.py"
+GATE="$ROOT/tools/parity/granite_speech_4_1_2b_gate.py"
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_DISK_KIB=$((16 * 1024 * 1024))
 die() { echo "granite-speech-vast: ERROR: $*" >&2; exit 2; }
 self_test() {
   local path="${BASH_SOURCE[0]}" token fail=0
+  if "$path" --self-test --self-test >/dev/null 2>&1 || "$path" --self-test --expected-head bad >/dev/null 2>&1; then echo 'duplicate or mixed --self-test arguments accepted' >&2; fail=1; fi
   for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" \
     "$TRANSFORMERS_URL" "$TRANSFORMERS_REVISION" \
     'list_repo_tree' 'model_info' 'get_hf_file_metadata' 'hf_hub_url' 'authenticated HEAD metadata' 'commit_hash' 'etag' 'requested_revision' 'resolved_revision' 'recursive=True' 'expand=True' 'RepoFile' 'RepoFolder' 'isinstance(item, RepoFolder)' 'unknown HF tree entry type' 'recursive_file_only' 'lfs_payload_size' 'git_blob_sha1' 'lfs_pointer_git_blob_sha1' 'lfs_sha256' 'model.sig' 'predicate.resources' 'hash_type' 'allow_symlinks' 'verificationMaterial' 'SIGSTORE_CRYPTOGRAPHIC_VERIFICATION_NOT_PERFORMED' \
@@ -20,13 +22,13 @@ self_test() {
     'HEADER_ONLY' '64 * 1024 * 1024' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'AUTHENTICATED' 'INSPECTION_ERROR' 'UNVERIFIED' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'UNSUPPORTED' \
     'BLOCKED_BY_CPU' 'NOT_RUN' 'NO_UPLOAD' 'UNREVIEWED_BLOCKER' 'UNAUTHENTICATED_BLOCKER' \
     'CARGO_BUILD_JOBS=1' 'cargo metadata --locked --no-deps --format-version 1' 'exit 2' \
-    '--transformers-source' 'arguments are not accepted; revisions are fixed'; do
+    '--transformers-source' 'BLOCKED_UNRESOLVED_GRANITE_SPEECH_COMPOSITE' 'arguments are not accepted; revisions are fixed'; do
     if ! grep -Fq -- "$token" "$path" && ! grep -Fq -- "$token" "$INSPECTOR"; then echo "missing contract $token" >&2; fail=1; fi
   done
   if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$path" | grep -v 'grep -En' >/dev/null; then fail=1; fi
   if grep -Eq '^(HF|SOURCE|TRANSFORMERS)_REVISION=.*\$\{' "$path"; then echo 'revision override found' >&2; fail=1; fi
   if grep -En 'weights_only=False|pickle\.load|torch\.load' "$INSPECTOR" >/dev/null; then echo 'unsafe loader found' >&2; fail=1; fi
-  UV_CACHE_DIR="${GRANITE_UV_CACHE_DIR:-/tmp/vokra-granite-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test || fail=1
   local python_source
   python_source="$(mktemp "${TMPDIR:-/tmp}/granite-hf-tree-self-test.XXXXXX.py")"
   awk '/<<'"'"'PY'"'"'/{capture=1; next} capture && /^PY$/{exit} capture' \
@@ -59,8 +61,21 @@ PY
   (( fail == 0 )) || return 1
   echo 'run-granite-speech-4-1-2b-inspection.sh self-test: OK'
 }
-if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
-[[ $# == 0 ]] || die 'arguments are not accepted; revisions are fixed'
+expected_head=""; approval_evidence=""; approval_sha256=""; self=0; self_seen=0; expected_seen=0; approval_seen=0; sha_seen=0
+while (($#)); do case "$1" in
+  --self-test) ((self_seen+=1)); self=1; shift;;
+  --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; ((expected_seen+=1)); expected_head="$2"; shift 2;;
+  --approval-evidence) (($# >= 2)) || die '--approval-evidence requires FILE'; ((approval_seen+=1)); approval_evidence="$2"; shift 2;;
+  --approval-sha256) (($# >= 2)) || die '--approval-sha256 requires HEX64'; ((sha_seen+=1)); approval_sha256="$2"; shift 2;;
+  -h|--help) echo 'usage: run-granite-speech-4-1-2b-inspection.sh --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 | --self-test'; exit 0;;
+  *) die "unknown argument: $1";;
+esac; done
+if ((self)); then [[ "$self_seen" == 1 && "$expected_seen" == 0 && "$approval_seen" == 0 && "$sha_seen" == 0 ]] || die '--self-test cannot be combined with normal or duplicate arguments'; self_test; exit $?; fi
+[[ "$expected_seen" == 1 && "$approval_seen" == 1 && "$sha_seen" == 1 ]] || die 'normal run requires exactly one expected-head, approval-evidence and approval-sha256'
+gate_log=""; gate_rc=0
+gate_log="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$ROOT" 2>&1)" || gate_rc=$?
+[[ "$gate_rc" == 2 && "$gate_log" == *BLOCKED_UNRESOLVED_GRANITE_SPEECH_COMPOSITE* ]] || die "approval/HEAD gate failed: $gate_log"
+die 'BLOCKED_UNRESOLVED_GRANITE_SPEECH_COMPOSITE: current BLOCKED approval cannot authorize acquisition or inspection'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST requires Linux x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'

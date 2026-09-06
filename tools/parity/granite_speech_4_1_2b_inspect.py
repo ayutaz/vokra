@@ -6,6 +6,8 @@ import argparse, base64, hashlib, json, os, re, struct, subprocess, sys, tempfil
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from granite_speech_4_1_2b_gate import require_blocked_gate, self_test as gate_self_test
+
 HF_REPOSITORY = "ibm-granite/granite-speech-4.1-2b"
 HF_REVISION = "de575db64086f84fdc79da4932d1076e965bc546"
 SOURCE_REPOSITORY = "https://github.com/ibm-granite/granite-speech.git"
@@ -606,9 +608,12 @@ def inspect(snapshot: Path, source: Path, transformers_source: Path, output: Pat
     collection_status = "AUTHENTICATED" if tree_packet.get("status") == "MATCHED" and source_ok and transformers_ok and artifact_ok and not source_related_blocker and not collection_blockers else "UNVERIFIED"
     blockers += ["native Granite Speech composition/runtime is not implemented","model/weight Apache-2.0 declaration requires primary-source review","IBM wrapper source Apache-2.0 declaration requires primary-source review","dependency licenses are unreviewed","dataset/training provenance is unauthenticated"]
     payload={"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":inspection_status(collection_status),"collection_status":collection_status,"runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"requested_revision":HF_REVISION,"server_tree":tree_packet,"files":[identity(p,snapshot) for p in local],"expected_artifacts":{"main_shards":SHARDS,"auxiliary_out_llm":AUXILIARY,"index_bytes":EXPECTED_INDEX_BYTES,"index_total_size":4_626_414_392,"main_tensor_count":EXPECTED_MAIN_TENSORS,"main_shard_tensor_counts":list(EXPECTED_MAIN_COUNTS)},"main_shards":packets,"auxiliary_out_llm":auxiliary,"json":jsons,"config_evidence":config_packets,"model_sig":sig},"official_source":source_inventory,"license_evidence":{"model_card":"apache-2.0 declaration requires primary-source review","model_license_files":model_license_files,"source":"apache-2.0 declaration requires primary-source review","dependencies":"UNREVIEWED_BLOCKER","datasets":"UNAUTHENTICATED_BLOCKER"},"sigstore_crypto":{"status":"SIGSTORE_CRYPTOGRAPHIC_VERIFICATION_NOT_PERFORMED","dsse_pae":"NOT_VERIFIED","signature":"NOT_VERIFIED","fulcio_certificate_chain":"NOT_VERIFIED","fulcio_identity_validity":"NOT_VERIFIED","rekor_set":"NOT_VERIFIED","rekor_inclusion_proof":"NOT_VERIFIED","signed_resource_hash_set":"STRUCTURALLY_CHECKED_ONLY"},"blockers":sorted(set(blockers))}
-    output.mkdir(parents=True,exist_ok=True); (output/"manifest.json").write_text(json.dumps(payload,sort_keys=True,indent=2)+"\n",encoding="utf-8"); return 2
+    output.mkdir(parents=False,exist_ok=False)
+    with (output/"manifest.json").open("x", encoding="utf-8") as stream: stream.write(json.dumps(payload,sort_keys=True,indent=2)+"\n")
+    return 2
 
 def self_test() -> None:
+    gate_self_test(Path(__file__), ["--snapshot", "/missing-snapshot", "--source", "/missing-source", "--transformers-source", "/missing-transformers", "--server-tree", "/missing-tree", "--output", "/missing-output"], "if any(v is None for v in (args." + "snapshot")
     assert len(HF_REVISION)==len(SOURCE_REVISION)==len(TRANSFORMERS_REVISION)==40
     assert inspection_status("AUTHENTICATED") == "AUTHENTICATED_EVIDENCE_COMPLETE"
     assert inspection_status("UNVERIFIED") == "INSPECTION_ERROR"
@@ -682,12 +687,19 @@ def self_test() -> None:
     print("granite_speech_4_1_2b_inspect self-test: OK")
 
 def main() -> int:
-    parser=argparse.ArgumentParser(); parser.add_argument("--self-test",action="store_true"); parser.add_argument("--snapshot",type=Path); parser.add_argument("--source",type=Path); parser.add_argument("--transformers-source",type=Path); parser.add_argument("--server-tree",type=Path); parser.add_argument("--output",type=Path); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument("--self-test",action="store_true"); parser.add_argument("--snapshot",type=Path); parser.add_argument("--source",type=Path); parser.add_argument("--transformers-source",type=Path); parser.add_argument("--server-tree",type=Path); parser.add_argument("--output",type=Path); parser.add_argument("--expected-head"); parser.add_argument("--approval-evidence"); parser.add_argument("--approval-sha256"); args=parser.parse_args()
     if args.self_test:
-        if any(v is not None for v in (args.snapshot,args.source,args.transformers_source,args.server_tree,args.output)): parser.error("--self-test accepts no other arguments")
+        if any(v is not None for v in (args.snapshot,args.source,args.transformers_source,args.server_tree,args.output,args.expected_head,args.approval_evidence,args.approval_sha256)): parser.error("--self-test cannot be combined with normal arguments")
         self_test(); return 0
+    try: require_blocked_gate(args.expected_head,args.approval_evidence,args.approval_sha256,Path(__file__).resolve().parents[2])
+    except Exception as error: print(f"Granite inspection BLOCKED: {error}", file=sys.stderr); return 2
     if any(v is None for v in (args.snapshot,args.source,args.transformers_source,args.server_tree,args.output)): parser.error("normal runs require snapshot/source/transformers-source/server-tree/output")
+    if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir(): parser.error("--output must be absent with an existing parent")
     try: return inspect(args.snapshot,args.source,args.transformers_source,args.output,args.server_tree)
     except Exception as error:
-        args.output.mkdir(parents=True,exist_ok=True); (args.output/"manifest.json").write_text(json.dumps({"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"INSPECTION_ERROR","collection_status":"UNVERIFIED","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","upstream":{"repository":HF_REPOSITORY,"requested_revision":HF_REVISION,"resolved_revision":None},"server_tree_packet":{"path":str(args.server_tree),"sha256":sha256(args.server_tree) if args.server_tree.is_file() else None},"error":str(error),"blockers":[str(error)]},indent=2)+"\n"); return 2
+        if not args.output.exists() and not args.output.is_symlink():
+            args.output.mkdir(parents=False,exist_ok=False)
+            with (args.output/"manifest.json").open("x", encoding="utf-8") as stream: stream.write(json.dumps({"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"INSPECTION_ERROR","collection_status":"UNVERIFIED","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","upstream":{"repository":HF_REPOSITORY,"requested_revision":HF_REVISION,"resolved_revision":None},"server_tree_packet":{"path":str(args.server_tree),"sha256":sha256(args.server_tree) if args.server_tree.is_file() else None},"error":str(error),"blockers":[str(error)]},indent=2)+"\n")
+        else: print("Granite inspection output concurrently claimed; refusing overwrite", file=sys.stderr)
+        return 2
 if __name__=="__main__": raise SystemExit(main())
