@@ -18,6 +18,13 @@ from typing import Any
 import tomllib
 
 GATE_VERSION = 1
+# The current official-source route was recorded against 5.5.0, which is below
+# the repository's patched Transformers floor.  Compatibility with a patched
+# release has not been proven without loading the real model, so the gate must
+# stop before any snapshot download until an owner-approved API smoke updates
+# this route and its lock evidence.
+UNVERIFIED_TRANSFORMERS_PIN = "transformers==5.5.0"
+PATCHED_TRANSFORMERS_MINIMUM = (5, 10, 0)
 LOCK_SHA256 = "f26e7504e980c5a62fdcb1bd2ed1d9726da09c839cb9f251412b4d4145fbd59f"
 PYPROJECT_SHA256 = "d321bfae5af886eb9ef0fc2fd3696c425c77c5c247353957e05317ab1efb43d0"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -133,6 +140,19 @@ def validate_project_schema(project: dict[str, Any]) -> None:
     uv = tool["uv"]
     if uv["package"] is not False or uv["index"] != [{"name": "pytorch-cpu", "url": "https://download.pytorch.org/whl/cpu", "explicit": True}] or uv["sources"] != {"torch": {"index": "pytorch-cpu"}, "torchaudio": {"index": "pytorch-cpu"}}:
         raise ValueError("pyproject.toml uv contract drifted")
+
+
+def unverified_reference_route(project: dict[str, Any]) -> str | None:
+    dependencies = project["project"]["dependencies"]
+    if UNVERIFIED_TRANSFORMERS_PIN in dependencies:
+        return (
+            "BLOCKED_UNVERIFIED_API_SMOKE: official MOSS-Audio source route is "
+            "pinned to Transformers 5.5.0 below the patched minimum "
+            f"{PATCHED_TRANSFORMERS_MINIMUM[0]}.{PATCHED_TRANSFORMERS_MINIMUM[1]}.0; "
+            "run an owner-approved model-free API smoke against a patched pin "
+            "and re-authenticate the lock before model acquisition"
+        )
+    return None
 
 
 def sha256(value: bytes) -> str:
@@ -431,9 +451,13 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         return block(f"gate input is unreadable: {exc}")
     try:
-        validate_project_schema(tomllib.loads(project_bytes.decode("utf-8")))
+        project = tomllib.loads(project_bytes.decode("utf-8"))
+        validate_project_schema(project)
     except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError) as exc:
         return block(f"pyproject.toml schema is invalid: {exc}")
+    route_blocker = unverified_reference_route(project)
+    if route_blocker and not _self_test:
+        return block(route_blocker)
     if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS or manifest.get("gate_version") != GATE_VERSION:
         return block("unsupported or malformed gate manifest")
     if sha256(lock_bytes) != LOCK_SHA256 or manifest.get("lock_sha256") != LOCK_SHA256:
@@ -533,9 +557,15 @@ def self_test() -> int:
     project = Path(__file__).resolve().parent
     manifest_path = project / "license_gate_manifest.json"
     ok, reason = validate(project, manifest_path)
-    if ok or ("unresolved" not in reason and "artifact" not in reason):
+    if ok or ("unresolved" not in reason and "artifact" not in reason and "BLOCKED_UNVERIFIED_API_SMOKE" not in reason):
         print(f"moss_audio preflight gate: expected pending review, got {reason}", file=sys.stderr)
         return 1
+    if "BLOCKED_UNVERIFIED_API_SMOKE" in reason:
+        if unverified_reference_route(tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))) is None:
+            print("moss_audio preflight gate: unsafe reference route self-test failed", file=sys.stderr)
+            return 1
+        print("moss_audio preflight gate: self-test PASS (unverified Transformers route blocker)")
+        return 0
     if "artifact" in reason:
         valid = {"url": "https://files.pythonhosted.org/packages/demo.whl", "hash": "sha256:" + "0" * 64, "size": 1, "upload-time": "2024-01-01T00:00:00Z"}
         cases = {"missing-size": lambda value: value.pop("size"), "missing-upload-time": lambda value: value.pop("upload-time"), "extra-key": lambda value: value.update(extra="x"), "bool-size": lambda value: value.update(size=True), "wrong-host": lambda value: value.update(url="https://example.invalid/demo.whl")}

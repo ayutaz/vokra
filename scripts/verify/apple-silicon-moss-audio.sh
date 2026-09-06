@@ -35,7 +35,7 @@ usage: apple-silicon-moss-audio.sh \
   --gguf-4b <path> --gguf-4b-sha256 <hash> --reference-4b <dir> \
   --reference-4b-sha256 <hash> --gguf-8b <path> --gguf-8b-sha256 <hash> \
   --reference-8b <dir> --reference-8b-sha256 <hash> \
-  --approval-evidence <file> --evidence-dir <absent-dir>
+  --approval-evidence <file> --expected-head <40-hex> --evidence-dir <absent-dir>
        apple-silicon-moss-audio.sh --self-test
 
 Runs projected-audio and exact-token CPU/Metal parity for both pinned
@@ -44,16 +44,40 @@ requires VOKRA_REMOTE_APPLE_SILICON=1, Darwin arm64, a clean checkout, at
 least 64 GB physical memory, and all four real inputs before Cargo starts.
 
 This script does not download, upload, convert, publish, or delete a model.
-Transfer VAST-produced inputs directly to a disposable Apple host. The
-evidence directory must be absent/nonexistent before validation and is created
-only after approval and input checks succeed. Pull only the evidence directory
-after the run, then remove the staged data or destroy
-the remote worker.
+Transfer VAST-produced GGUF/reference packets and approval evidence directly
+to a disposable Apple host. The evidence directory must be absent/nonexistent
+before validation and is created only after approval, exact-head, and input
+checks succeed. Pull only the small evidence/log directory after the run, then
+remove the staged data or destroy the remote worker.
 EOF
 }
 
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
+}
+
+reference_packet_sha256() {
+  local directory="$1" listing file relative digest invalid=0
+  directory="${directory%/}"
+  [[ -d "$directory" && ! -L "$directory" ]] || die "reference packet is missing or symlinked: $directory"
+  listing="$(mktemp "${TMPDIR:-/tmp}/moss-audio-packet.XXXXXX")"
+  while IFS= read -r -d '' file; do
+    if [[ -f "$file" && ! -L "$file" ]]; then
+      relative="${file#"$directory"/}"
+      printf '%s  %s\n' "$(sha256_file "$file")" "$relative" >> "$listing"
+    else
+      invalid=1
+    fi
+  done < <(find -P "$directory" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  if (( invalid != 0 )); then
+    rm -f "$listing"
+    die "reference packet contains a directory or symlink"
+    return 2
+  fi
+  digest="$(shasum -a 256 "$listing" | awk '{print $1}')"
+  rm -f "$listing"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "reference packet digest is malformed"
+  printf '%s\n' "$digest"
 }
 
 license_preflight() {
@@ -156,7 +180,7 @@ require_reference() {
     fi
   done
   expected_files="$(printf '%s\n' "${REFERENCE_FILES[@]}" | sort)"
-  actual_files="$(find "$directory" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort)"
+  actual_files="$(find -P "$directory" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort)"
   [[ "$actual_files" == "$expected_files" ]] || { die "$label contains unexpected or missing files"; return 2; }
   case "$variant" in
     4b)
@@ -215,12 +239,14 @@ require_one_named_test_passed() {
 }
 
 require_exact_parity_sentinels() {
-  local log_path="$1" count_4b count_8b family_4b family_8b
-  family_4b="$(grep -Ec '^MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU ' "$log_path" || true)"
-  family_8b="$(grep -Ec '^MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU ' "$log_path" || true)"
-  count_4b="$(grep -Ec '^MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS$' "$log_path" || true)"
-  count_8b="$(grep -Ec '^MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS$' "$log_path" || true)"
-  [[ "$family_4b" == 1 && "$family_8b" == 1 && "$count_4b" == 1 && "$count_8b" == 1 ]] || { die "expected exactly one complete 4B and 8B Metal sentinel families"; return 2; }
+  local log_path="$1" model leg family_count pass_count
+  for model in moss-audio-4b-instruct moss-audio-8b-instruct; do
+    for leg in CPU_vs_official Metal_vs_official Metal_vs_CPU; do
+      family_count="$(grep -Ec "^MOSS_AUDIO_PARITY ${model} ${leg} " "$log_path" || true)"
+      pass_count="$(grep -Ec "^MOSS_AUDIO_PARITY ${model} ${leg} token_ids=exact text=exact PASS$" "$log_path" || true)"
+      [[ "$family_count" == 1 && "$pass_count" == 1 ]] || { die "expected exactly one complete ${model} ${leg} sentinel family"; return 2; }
+    done
+  done
 }
 
 require_remote_apple_host() {
@@ -251,6 +277,16 @@ require_tooling() {
     die "remote Apple checkout must be clean so evidence names one exact commit"
   fi
   xcrun -f metal >/dev/null 2>&1 || die "Xcode Metal compiler is unavailable"
+}
+
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be exactly 40 lowercase hex"
+  [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD 2>/dev/null)" || die "could not read checkout HEAD"
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual does not match --expected-head $expected"
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die "remote Apple checkout must be clean before evidence creation"
 }
 
 record_environment() {
@@ -323,6 +359,17 @@ run_self_test() (
     done
   } > "$reference/manifest.txt"
   require_reference "self-test 4B reference" "$reference" 4b
+  local packet_digest
+  packet_digest="$(reference_packet_sha256 "$reference")"
+  [[ "$packet_digest" =~ ^[0-9a-f]{64}$ ]] || die "reference packet digest self-test failed"
+  printf 'extra' > "$reference/extra.bin"
+  [[ "$(reference_packet_sha256 "$reference")" != "$packet_digest" ]] || die "reference packet extra-file digest self-test failed"
+  rm -f "$reference/extra.bin"
+  mv "$reference/pcm.f32le" "$reference/pcm.f32le.missing"
+  if require_reference "self-test missing reference" "$reference" 4b >/dev/null 2>&1; then
+    die "reference packet missing-file self-test failed"
+  fi
+  mv "$reference/pcm.f32le.missing" "$reference/pcm.f32le"
   local reference_link="$temporary/reference-link"
   ln -s "$reference" "$reference_link"
   if require_reference "self-test symlinked reference" "$reference_link" 4b >/dev/null 2>&1; then
@@ -393,50 +440,55 @@ run_self_test() (
     die "duplicate named Cargo test self-test failed"
   fi
   local sentinel_log="$temporary/sentinels.log"
-  printf '%s\n%s\n' \
+  printf '%s\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_official token_ids=exact text=exact PASS' \
     'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_official token_ids=exact text=exact PASS' \
     'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' > "$sentinel_log"
   require_exact_parity_sentinels "$sentinel_log"
-  printf '%s\n%s\n%s\n' \
-    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
-    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
-    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' > "$sentinel_log"
+  printf '%s\n%s\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_official token_ids=exact text=exact PASS' > "$sentinel_log"
   if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then
     die "duplicate sentinel self-test failed"
   fi
-  printf 'prefix%s\n%s\n' \
-    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
-    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' > "$sentinel_log"
+  printf 'prefix%s\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' > "$sentinel_log"
   if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then
     die "prefix sentinel self-test failed"
   fi
-  printf '%s suffix\n%s\n' \
-    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
-    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' > "$sentinel_log"
+  printf '%s suffix\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' > "$sentinel_log"
   if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then
     die "suffix sentinel self-test failed"
   fi
-  printf '%s\n%s\n%s\n' \
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_official token_ids=exact text=exact PASS' \
     'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
-    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact FAIL' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_official token_ids=exact text=exact FAIL' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
     'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' > "$sentinel_log"
   if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then
     die "FAIL sentinel self-test failed"
   fi
   # shellcheck disable=SC2086 # Each case intentionally models argv tokenization.
-  for bad_args in "--self-test --approval-evidence x" "--self-test --self-test" "--approval-evidence" "--evidence-dir" "--unknown x"; do
+  for bad_args in "--self-test --approval-evidence x" "--self-test --self-test" "--expected-head 0000000000000000000000000000000000000000 --expected-head 0000000000000000000000000000000000000000" "--approval-evidence" "--evidence-dir" "--unknown x"; do
     if bash "$0" $bad_args >/dev/null 2>&1; then die "accepted malformed parser case: $bad_args"; fi
   done
   log "self-test PASS"
 )
 
 main() {
-  local gguf_4b='' reference_4b='' gguf_8b='' reference_8b=''
+  local gguf_4b='' reference_4b='' gguf_8b='' reference_8b='' expected_head=''
   local gguf_4b_sha='' reference_4b_sha='' gguf_8b_sha='' reference_8b_sha=''
   local approval_evidence='' evidence_dir='' self_test=0
   local seen_gguf_4b=0 seen_reference_4b=0 seen_gguf_4b_sha=0 seen_reference_4b_sha=0
   local seen_gguf_8b=0 seen_reference_8b=0 seen_gguf_8b_sha=0 seen_reference_8b_sha=0
-  local seen_approval=0 seen_evidence=0 seen_self_test=0
+  local seen_approval=0 seen_expected_head=0 seen_evidence=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --gguf-4b)
@@ -482,6 +534,9 @@ main() {
       --approval-evidence)
         (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty value'; seen_approval=1
         approval_evidence="$2"; shift 2 ;;
+      --expected-head)
+        (( seen_expected_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--expected-head requires a nonempty value'; seen_expected_head=1
+        expected_head="$2"; shift 2 ;;
       --evidence-dir)
         (( seen_evidence == 0 )) || die 'duplicate --evidence-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--evidence-dir requires a nonempty value'; seen_evidence=1
         evidence_dir="$2"
@@ -504,19 +559,20 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ -z "$gguf_4b$reference_4b$gguf_8b$reference_8b$gguf_4b_sha$reference_4b_sha$gguf_8b_sha$reference_8b_sha$approval_evidence$evidence_dir" ]] \
+    [[ -z "$gguf_4b$reference_4b$gguf_8b$reference_8b$gguf_4b_sha$reference_4b_sha$gguf_8b_sha$reference_8b_sha$approval_evidence$expected_head$evidence_dir" ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
   [[ -n "$gguf_4b" && -n "$reference_4b" && -n "$gguf_8b" && \
     -n "$reference_8b" && -n "$gguf_4b_sha" && -n "$reference_4b_sha" && \
-    -n "$gguf_8b_sha" && -n "$reference_8b_sha" && -n "$approval_evidence" && -n "$evidence_dir" ]] \
+    -n "$gguf_8b_sha" && -n "$reference_8b_sha" && -n "$approval_evidence" && -n "$expected_head" && -n "$evidence_dir" ]] \
     || { usage; die "all model/reference arguments, --approval-evidence, and --evidence-dir are required"; }
   for expected in "$gguf_4b_sha" "$reference_4b_sha" "$gguf_8b_sha" "$reference_8b_sha"; do
     [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "all four expected SHA-256 values must be lowercase 64-hex"
   done
 
+  require_expected_head "$expected_head"
   license_preflight "$approval_evidence"
   require_remote_apple_host
   require_tooling
@@ -524,10 +580,10 @@ main() {
   require_file "MOSS-Audio 8B GGUF" "$gguf_8b"
   require_expected_sha256 "MOSS-Audio 4B GGUF" "$gguf_4b" "$gguf_4b_sha"
   require_expected_sha256 "MOSS-Audio 8B GGUF" "$gguf_8b" "$gguf_8b_sha"
-  require_expected_sha256 "MOSS-Audio 4B reference manifest" "$reference_4b/manifest.txt" "$reference_4b_sha"
-  require_expected_sha256 "MOSS-Audio 8B reference manifest" "$reference_8b/manifest.txt" "$reference_8b_sha"
   require_reference "MOSS-Audio 4B reference" "$reference_4b" 4b
   require_reference "MOSS-Audio 8B reference" "$reference_8b" 8b
+  [[ "$(reference_packet_sha256 "$reference_4b")" == "$reference_4b_sha" ]] || die "MOSS-Audio 4B reference packet digest mismatch"
+  [[ "$(reference_packet_sha256 "$reference_8b")" == "$reference_8b_sha" ]] || die "MOSS-Audio 8B reference packet digest mismatch"
   require_disjoint_evidence "$evidence_dir" "$VOKRA_ROOT" "$gguf_4b" "$reference_4b" "$gguf_8b" "$reference_8b" "$approval_evidence"
   record_environment "$evidence_dir/environment.txt"
 
@@ -536,6 +592,10 @@ main() {
     echo "gguf_8b_sha256=$(sha256_file "$gguf_8b")"
     echo "reference_4b_manifest_sha256=$(sha256_file "$reference_4b/manifest.txt")"
     echo "reference_8b_manifest_sha256=$(sha256_file "$reference_8b/manifest.txt")"
+    echo "reference_4b_packet_sha256=$(reference_packet_sha256 "$reference_4b")"
+    echo "reference_8b_packet_sha256=$(reference_packet_sha256 "$reference_8b")"
+    echo "approval_sha256=$(sha256_file "$approval_evidence")"
+    echo "expected_head=$expected_head"
   } > "$evidence_dir/input-hashes.txt"
 
   log "running both real-weight CPU/Metal parity cases on remote Apple Silicon"
@@ -546,9 +606,9 @@ main() {
     VOKRA_MOSS_AUDIO_8B_REFERENCE_DIR="$reference_8b" \
     CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" \
     RUST_TEST_THREADS=1 \
-  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+  CARGO_NET_OFFLINE=true cargo test --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
       -p vokra-models --features metal --test moss_audio_real \
-      moss_audio_real_metal_matches_cpu_exact_greedy -- --exact --nocapture \
+      moss_audio_real_metal_matches_cpu_exact_greedy -- --ignored --exact --nocapture --test-threads=1 \
       2>&1 | tee "$evidence_dir/parity.log"
   require_one_named_test_passed "$evidence_dir/parity.log" moss_audio_real_metal_matches_cpu_exact_greedy
   require_exact_parity_sentinels "$evidence_dir/parity.log"
@@ -557,14 +617,19 @@ main() {
   {
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
+    echo "cpu_vs_official=PASS"
+    echo "metal_vs_official=PASS"
+    echo "metal_vs_cpu=PASS"
     echo "moss_audio_4b_cpu_vs_metal=PASS"
     echo "moss_audio_8b_cpu_vs_metal=PASS"
     echo "audio_projection_atol=0.01"
     echo "greedy_ids=exact"
     echo "text=exact"
     echo "upload=NOT_PERFORMED"
+    echo "transfer=GGUF_AND_REFERENCE_PACKET_RECEIVED_DIRECTLY_FROM_VAST;SMALL_LOGS_ONLY_FOR_LOCAL_RECOVERY"
   } > "$evidence_dir/summary.txt"
-  log "PASS: pull only $evidence_dir, then remove staged data or destroy the remote worker"
+  log "PASS: transfer GGUF/reference packets directly VAST->Apple; recover only small logs from $evidence_dir, then remove staged data or destroy the remote worker"
 }
 
 main "$@"

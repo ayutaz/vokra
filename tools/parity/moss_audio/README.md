@@ -28,6 +28,12 @@ scratch paths, synchronization, or downloads. The checked-in manifest is
 intentionally pending review and therefore exits 2; no model or source
 acquisition is reachable until dependency, source-license, model-license, and
 exact checkpoint-file evidence is authenticated by a later owner review.
+The current official-source route is pinned to Transformers 5.5.0, below the
+repository's patched 5.10.x floor. Because compatibility with a patched
+release has not been proven without loading the real model, production
+preflight fails closed with `BLOCKED_UNVERIFIED_API_SMOKE`; an owner-approved
+model-free source inspection/API smoke must re-authenticate the patched lock
+before any VAST model acquisition is scheduled.
 
 No numerical fixture is committed before an actual run. The Rust consumer in
 `crates/vokra-models/tests/moss_audio_real.rs` is environment-gated and uses
@@ -39,15 +45,18 @@ keeps the same `atol=0.01`, and also requires exact greedy ids.
 Run only through the VAST worker after provisioning:
 
 ```sh
-scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 4b
-scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 8b
+scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 4b \
+  --approval-evidence /path/to/approval.json --expected-head <40-hex>
+scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 8b \
+  --approval-evidence /path/to/approval.json --expected-head <40-hex>
 ```
 
 The worker uses the committed two-second mono 16 kHz clip at
 `tests/parity/utmos/ref-clip.wav`, performs no upload, and leaves only the
-small reference/evidence directory to pull. Do not pull the source snapshot,
-merged safetensors, or GGUF to the maintainer Mac. Destroy the VAST instance
-after evidence is recovered.
+small logs/summaries to recover locally. Transfer the large GGUF and complete
+reference packets directly from VAST to the disposable Apple host; do not pull
+the source snapshot, merged safetensors, GGUF, or reference packet to the
+maintainer Mac. Destroy the VAST instance after the small logs are recovered.
 
 After both CPU runs pass, transfer the GGUF/reference pairs directly from
 VAST to a disposable Apple Silicon host with at least 64 GB RAM:
@@ -58,11 +67,13 @@ scripts/verify/apple-silicon-moss-audio.sh \
   --gguf-4b /remote/stage/moss-audio-4b-instruct.gguf \
   --gguf-4b-sha256 <VAST_GGUF_4B_SHA256> \
   --reference-4b /remote/stage/reference-4b \
-  --reference-4b-sha256 <VAST_REFERENCE_4B_MANIFEST_SHA256> \
+  --reference-4b-sha256 <VAST_REFERENCE_4B_PACKET_SHA256> \
   --gguf-8b /remote/stage/moss-audio-8b-instruct.gguf \
   --gguf-8b-sha256 <VAST_GGUF_8B_SHA256> \
   --reference-8b /remote/stage/reference-8b \
-  --reference-8b-sha256 <VAST_REFERENCE_8B_MANIFEST_SHA256> \
+  --reference-8b-sha256 <VAST_REFERENCE_8B_PACKET_SHA256> \
+  --approval-evidence /remote/stage/approval.json \
+  --expected-head <VAST_EXPECTED_HEAD> \
   --evidence-dir /remote/evidence/moss-audio-metal
 ```
 
