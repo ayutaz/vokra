@@ -69,6 +69,13 @@ APPLE_STATUS = "APPLE_NOT_RUN"
 PUBLICATION_STATUS = "NO_UPLOAD"
 INPUT_WAV_SHA256 = "241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
 INPUT_WAV_SIZE = 64044
+CROP_SAMPLE_START = 0
+CROP_SAMPLE_COUNT = 4096
+CROP_PCM_BYTES = CROP_SAMPLE_COUNT * 4
+CROP_STFT_FRAMES = 33
+CROP_PADDED_FRAMES = 64
+CROP_REFLECTION_PAD = CROP_PADDED_FRAMES - CROP_STFT_FRAMES
+CROP_PCM_SHA256 = "2835819987e0858b231dc51ac4aeefe659e24648502cef07a2540f130c47b6ff"
 SAMPLE_RATE = 16_000
 CHANNELS = 1
 SAMPLE_WIDTH = 2
@@ -383,6 +390,14 @@ def write_f32(path: Path, values: list[float]) -> dict[str, Any]:
     }
 
 
+def f32_digest(values: list[float]) -> str:
+    digest = hashlib.sha256()
+    for start in range(0, len(values), 8192):
+        chunk = values[start : start + 8192]
+        digest.update(struct.pack(f"<{len(chunk)}f", *chunk))
+    return digest.hexdigest()
+
+
 def require_exact_files(directory: Path, expected: set[str], label: str) -> None:
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError(f"{label} directory is missing or symlinked")
@@ -412,6 +427,72 @@ def _read_wav_pcm(path: Path) -> list[float]:
     if not values or any(not math.isfinite(value) for value in values):
         raise ValueError("input PCM is empty or non-finite")
     return values
+
+
+def _verify_cropped_input(
+    packet: Path,
+    input_data: dict[str, Any],
+    artifacts: dict[str, Any],
+    vokra_root: Path | None,
+    *,
+    allow_missing_source_for_self_test: bool,
+) -> None:
+    crop = input_data.get("crop")
+    expected_crop = {
+        "sample_start": CROP_SAMPLE_START,
+        "sample_count": CROP_SAMPLE_COUNT,
+        "pcm_filename": INPUT_NAME,
+        "pcm_dtype": "float32",
+        "pcm_bytes": CROP_PCM_BYTES,
+        "stft": {
+            "n_fft": 510,
+            "hop_length": 128,
+            "center": True,
+            "frames_before_reflection_pad": CROP_STFT_FRAMES,
+        },
+        "reflection_pad": {
+            "mode": "reflect",
+            "target_frames": CROP_PADDED_FRAMES,
+            "added_frames": CROP_REFLECTION_PAD,
+            "padding_less_than_source": True,
+        },
+    }
+    if (
+        not isinstance(crop, dict)
+        or set(crop) != set(expected_crop) | {"pcm_sha256"}
+        or any(crop.get(key) != value for key, value in expected_crop.items())
+        or not isinstance(crop.get("pcm_sha256"), str)
+        or len(crop["pcm_sha256"]) != 64
+        or crop["pcm_sha256"] != CROP_PCM_SHA256
+    ):
+        raise ValueError("reference cropped-input contract drifted")
+    artifact = artifacts.get(INPUT_NAME)
+    if (
+        not isinstance(artifact, dict)
+        or artifact.get("path") != INPUT_NAME
+        or artifact.get("dtype") != "float32"
+        or artifact.get("shape") != [CROP_SAMPLE_COUNT]
+        or artifact.get("count") != CROP_SAMPLE_COUNT
+        or artifact.get("bytes") != CROP_PCM_BYTES
+        or artifact.get("sha256") != crop["pcm_sha256"]
+        or packet.joinpath(INPUT_NAME).stat().st_size != CROP_PCM_BYTES
+    ):
+        raise ValueError("reference cropped PCM artifact is not exactly 4096 samples")
+    if vokra_root is None:
+        if not allow_missing_source_for_self_test:
+            raise ValueError("reference source fixture is required to authenticate the crop")
+        return
+    source_wav = vokra_root / "tests" / "parity" / "utmos" / "ref-clip.wav"
+    if not source_wav.exists():
+        if allow_missing_source_for_self_test:
+            return
+        raise ValueError("fixed source WAV is missing for crop authentication")
+    full_pcm = _read_wav_pcm(source_wav)
+    if len(full_pcm) < CROP_SAMPLE_COUNT:
+        raise ValueError("fixed source WAV is too short for the reviewed crop")
+    crop_end = CROP_SAMPLE_START + CROP_SAMPLE_COUNT
+    if f32_digest(full_pcm[CROP_SAMPLE_START:crop_end]) != crop["pcm_sha256"]:
+        raise ValueError("cropped PCM digest does not match the fixed source WAV")
 
 
 def _validate_noise_calls(packet: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -580,7 +661,8 @@ def verify_reference(
         or model.get("parameter_count") != 65_590_822
     ):
         raise ValueError("reference strict model-load evidence is missing or mismatched")
-    if manifest["input"] != {
+    input_data = manifest["input"]
+    if input_data != {
         "wav_filename": "ref-clip.wav",
         "wav_size": INPUT_WAV_SIZE,
         "wav_sha256": INPUT_WAV_SHA256,
@@ -588,6 +670,7 @@ def verify_reference(
         "channels": CHANNELS,
         "sample_width": SAMPLE_WIDTH,
         "pcm_filename": INPUT_NAME,
+        "crop": input_data.get("crop") if isinstance(input_data, dict) else None,
     }:
         raise ValueError("reference input identity mismatch")
     if manifest["tolerance"] != {
@@ -651,6 +734,13 @@ def verify_reference(
                 raise ValueError(f"reference float artifact shape mismatch: {filename}")
         elif item["dtype"] != "ascii" or item["shape"] != [len((packet / filename).read_text(encoding="ascii").splitlines())]:
             raise ValueError("reference noise index shape mismatch")
+    _verify_cropped_input(
+        packet,
+        input_data,
+        artifacts,
+        vokra_root,
+        allow_missing_source_for_self_test=allow_missing_source_for_self_test,
+    )
     input_values = read_f32(packet / INPUT_NAME, "reference input PCM")
     output_values = read_f32(packet / REFERENCE_NAME, "reference enhanced PCM")
     if len(input_values) != len(output_values) or len(input_values) == 0:
@@ -751,7 +841,10 @@ def _run_official_reference(
             raise ValueError("official SGMSEEnhancement reference requires CUDA")
         sampling = reviewed_sampling_config(hyperparams_evidence | {"raw": HYPERPARAMS_RAW})
         enhancer = build_official_enhancer(speechbrain_source, model, torch, sampling)
-        pcm = _read_wav_pcm(input_wav)
+        source_pcm = _read_wav_pcm(input_wav)
+        if len(source_pcm) < CROP_SAMPLE_COUNT:
+            raise ValueError("fixed input fixture is too short for the reviewed crop")
+        pcm = source_pcm[CROP_SAMPLE_START:CROP_SAMPLE_COUNT]
         input_artifact = write_f32(temporary / INPUT_NAME, pcm)
         torch.set_num_threads(1)
         torch.set_num_interop_threads(1)
@@ -867,7 +960,35 @@ def _run_official_reference(
             "licenses": {"algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256}, "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256}, "checkpoint": CHECKPOINT_LICENSE_SPDX},
             "ema_route": ema_route,
             "model": model_evidence,
-            "input": {"wav_filename": input_wav.name, "wav_size": input_wav.stat().st_size, "wav_sha256": sha256(input_wav), "sample_rate": SAMPLE_RATE, "channels": CHANNELS, "sample_width": SAMPLE_WIDTH, "pcm_filename": INPUT_NAME},
+            "input": {
+                "wav_filename": input_wav.name,
+                "wav_size": input_wav.stat().st_size,
+                "wav_sha256": sha256(input_wav),
+                "sample_rate": SAMPLE_RATE,
+                "channels": CHANNELS,
+                "sample_width": SAMPLE_WIDTH,
+                "pcm_filename": INPUT_NAME,
+                "crop": {
+                    "sample_start": CROP_SAMPLE_START,
+                    "sample_count": CROP_SAMPLE_COUNT,
+                    "pcm_filename": INPUT_NAME,
+                    "pcm_dtype": "float32",
+                    "pcm_bytes": CROP_PCM_BYTES,
+                    "pcm_sha256": input_artifact["sha256"],
+                    "stft": {
+                        "n_fft": 510,
+                        "hop_length": 128,
+                        "center": True,
+                        "frames_before_reflection_pad": CROP_STFT_FRAMES,
+                    },
+                    "reflection_pad": {
+                        "mode": "reflect",
+                        "target_frames": CROP_PADDED_FRAMES,
+                        "added_frames": CROP_REFLECTION_PAD,
+                        "padding_less_than_source": True,
+                    },
+                },
+            },
             "runtime": {"platform_system": platform.system(), "platform_machine": platform.machine(), "platform_node": platform.node(), "cpu_model": cpu_model(), "nproc": os.cpu_count(), "torch_version": torch.__version__, "numpy_version": np.__version__},
             "artifacts": artifacts,
             "noise_calls": noise_rows,
@@ -1018,8 +1139,11 @@ def self_test() -> int:
         root = Path(directory)
         packet = root / "packet"
         packet.mkdir()
-        (packet / INPUT_NAME).write_bytes(struct.pack("<f", 0.25))
-        (packet / REFERENCE_NAME).write_bytes(struct.pack("<f", 0.5))
+        self_test_wav = Path(__file__).resolve().parents[2] / "tests" / "parity" / "utmos" / "ref-clip.wav"
+        self_test_pcm = _read_wav_pcm(self_test_wav)
+        self_test_crop = self_test_pcm[CROP_SAMPLE_START : CROP_SAMPLE_COUNT]
+        write_f32(packet / INPUT_NAME, self_test_crop)
+        write_f32(packet / REFERENCE_NAME, [0.5] * CROP_SAMPLE_COUNT)
         noise_raw = bytearray()
         noise_calls = []
         call_lines = []
@@ -1044,8 +1168,8 @@ def self_test() -> int:
             encoding="utf-8",
         )
         artifacts = {
-            INPUT_NAME: {"path": INPUT_NAME, "dtype": "float32", "shape": [1], "count": 1, "bytes": 4, "sha256": sha256(packet / INPUT_NAME)},
-            REFERENCE_NAME: {"path": REFERENCE_NAME, "dtype": "float32", "shape": [1], "count": 1, "bytes": 4, "sha256": sha256(packet / REFERENCE_NAME)},
+            INPUT_NAME: {"path": INPUT_NAME, "dtype": "float32", "shape": [CROP_SAMPLE_COUNT], "count": CROP_SAMPLE_COUNT, "bytes": CROP_PCM_BYTES, "sha256": sha256(packet / INPUT_NAME)},
+            REFERENCE_NAME: {"path": REFERENCE_NAME, "dtype": "float32", "shape": [CROP_SAMPLE_COUNT], "count": CROP_SAMPLE_COUNT, "bytes": CROP_PCM_BYTES, "sha256": sha256(packet / REFERENCE_NAME)},
             NOISE_NAME: {"path": NOISE_NAME, "dtype": "float32", "shape": [NOISE_CALL_COUNT], "count": NOISE_CALL_COUNT, "bytes": NOISE_CALL_COUNT * 4, "sha256": sha256(packet / NOISE_NAME)},
             NOISE_CALLS_NAME: {"path": NOISE_CALLS_NAME, "dtype": "ascii", "shape": [NOISE_CALL_COUNT], "count": NOISE_CALL_COUNT, "bytes": (packet / NOISE_CALLS_NAME).stat().st_size, "sha256": sha256(packet / NOISE_CALLS_NAME)},
         }
@@ -1058,7 +1182,7 @@ def self_test() -> int:
             "licenses": {"algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256}, "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256}, "checkpoint": CHECKPOINT_LICENSE_SPDX},
             "ema_route": {"status": EMA_ROUTE_STATUS, "loadable": "score_model_ema", "checkpoint_filename": CHECKPOINT_NAME, "parameter_load": "strict_state_dict", "unsafe_pickle_fallback": False, "source_files": {"score_model": {"path": "speechbrain/integrations/models/sgmse_plus.py", "sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935", "size": 21777}, "parameter_transfer": {"path": "speechbrain/utils/parameter_transfer.py", "sha256": "0" * 64, "size": 1}}},
             "model": {"load": "torch.load(weights_only=True)+load_state_dict(strict=True)", "tensor_count": 647, "parameter_count": 65_590_822},
-            "input": {"wav_filename": "ref-clip.wav", "wav_size": INPUT_WAV_SIZE, "wav_sha256": INPUT_WAV_SHA256, "sample_rate": SAMPLE_RATE, "channels": CHANNELS, "sample_width": SAMPLE_WIDTH, "pcm_filename": INPUT_NAME},
+            "input": {"wav_filename": "ref-clip.wav", "wav_size": INPUT_WAV_SIZE, "wav_sha256": INPUT_WAV_SHA256, "sample_rate": SAMPLE_RATE, "channels": CHANNELS, "sample_width": SAMPLE_WIDTH, "pcm_filename": INPUT_NAME, "crop": {"sample_start": CROP_SAMPLE_START, "sample_count": CROP_SAMPLE_COUNT, "pcm_filename": INPUT_NAME, "pcm_dtype": "float32", "pcm_bytes": CROP_PCM_BYTES, "pcm_sha256": sha256(packet / INPUT_NAME), "stft": {"n_fft": 510, "hop_length": 128, "center": True, "frames_before_reflection_pad": CROP_STFT_FRAMES}, "reflection_pad": {"mode": "reflect", "target_frames": CROP_PADDED_FRAMES, "added_frames": CROP_REFLECTION_PAD, "padding_less_than_source": True}}},
             "runtime": {"platform_system": "Linux", "platform_machine": "x86_64", "platform_node": "self-test", "cpu_model": "self-test", "nproc": 1, "torch_version": "self-test", "numpy_version": "self-test"},
             "artifacts": artifacts, "noise_calls": noise_calls,
             "noise_payload": {"filename": NOISE_NAME, "call_count": NOISE_CALL_COUNT, "dtype": "float32", "complete": True},
@@ -1090,6 +1214,21 @@ def self_test() -> int:
             shutil.copytree(packet, candidate)
             candidate_manifest = json.loads((candidate / MANIFEST_NAME).read_text())
             del candidate_manifest[field]
+            (candidate / MANIFEST_NAME).write_text(json.dumps(candidate_manifest), encoding="utf-8")
+            try:
+                verify_for_self_test(candidate)
+            except ValueError:
+                pass
+            else:
+                return 1
+        for mutation in ("crop-count", "crop-hash"):
+            candidate = root / f"candidate-{mutation}"
+            shutil.copytree(packet, candidate)
+            candidate_manifest = json.loads((candidate / MANIFEST_NAME).read_text())
+            if mutation == "crop-count":
+                candidate_manifest["input"]["crop"]["sample_count"] = 4095
+            else:
+                candidate_manifest["input"]["crop"]["pcm_sha256"] = "0" * 64
             (candidate / MANIFEST_NAME).write_text(json.dumps(candidate_manifest), encoding="utf-8")
             try:
                 verify_for_self_test(candidate)

@@ -65,7 +65,7 @@ run_self_test() {
     'VOKRA_SGMSE_GGUF_SHA256' 'score_real.f32' 'score_imag.f32' \
     'create exactly' 'newly-created' 'realpath -m' 'findmnt' \
     'uv run --frozen --no-sync --project' \
-    'cargo test --locked --test sgmse_native_score -p vokra-models' \
+    'cargo test --locked --release --test sgmse_native_score -p vokra-models' \
     '-- --ignored --exact --show-output'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
@@ -188,7 +188,7 @@ VOKRA_SGMSE_GGUF_SHA256="$GGUF_SHA256" \
 VOKRA_SGMSE_REFERENCE_DIR="$REFERENCE_DIR" \
 VOKRA_SGMSE_NATIVE_OUTPUT_DIR="$NATIVE_OUTPUT_DIR" \
 VOKRA_PUBLISH_ON_VAST=1 \
-  cargo test --locked --test sgmse_native_score -p vokra-models \
+  cargo test --locked --release --test sgmse_native_score -p vokra-models \
     -- --ignored --exact --show-output 2>&1 | tee "$native_log"
 [[ "$(grep -Fxc 'test sgmse_native_score_matches_independent_reference ... ok' "$native_log" || true)" == 1 ]] \
   || die 'SGMSE native score test did not pass exactly once'

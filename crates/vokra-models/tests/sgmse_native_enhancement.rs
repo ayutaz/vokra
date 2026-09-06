@@ -17,6 +17,7 @@ const REFERENCE_ENV: &str = "VOKRA_SGMSE_REFERENCE_DIR";
 const NATIVE_ENV: &str = "VOKRA_SGMSE_NATIVE_OUTPUT_DIR";
 const VAST_ENV: &str = "VOKRA_PUBLISH_ON_VAST";
 const EXPECTED_NOISE_CALLS: usize = 61;
+const EXPECTED_INPUT_SAMPLES: usize = 4096;
 
 fn required_env(name: &str) -> PathBuf {
     std::env::var_os(name)
@@ -198,13 +199,22 @@ fn sgmse_native_enhancement_matches_official_reference() {
     reject_symlink_ancestry(native_parent, "native output parent");
 
     let pcm = read_f32(&reference.join("input_pcm.f32"), "reference input PCM");
+    assert_eq!(
+        pcm.len(),
+        EXPECTED_INPUT_SAMPLES,
+        "reference enhancement input must be the reviewed 4096-sample crop"
+    );
     let mut noise = CapturedNoise::load(&reference);
     let file = vokra_mmap::open_gguf(&gguf).expect("open authenticated SGMSE GGUF");
     let mut model = SgmseModel::from_gguf(&file).expect("bind authenticated SGMSE GGUF");
     let enhanced = model
         .enhance(&Compute::cpu(), &pcm, &mut noise)
         .expect("run native SGMSE CPU enhancement");
-    assert_eq!(enhanced.len(), pcm.len(), "native enhancement length");
+    assert_eq!(
+        enhanced.len(),
+        EXPECTED_INPUT_SAMPLES,
+        "native enhancement output must contain 4096 samples"
+    );
     assert_eq!(
         noise.cursor, EXPECTED_NOISE_CALLS,
         "native did not consume all captured noise"

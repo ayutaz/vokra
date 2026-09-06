@@ -35,7 +35,10 @@ usage: run-sgmse-native-enhancement-parity.sh \
 
 The --generate-reference path consumes the authenticated source/checkpoint/
 hyperparameters/inspection inputs from the VoiceBank reference inspection and
-tests/parity/utmos/ref-clip.wav, then calls the official upstream
+the authenticated tests/parity/utmos/ref-clip.wav fixture. It derives the
+first 4096 samples (centered n_fft=510/hop=128: 33 frames, reflection-padded
+to 64 frames) and binds that crop provenance and hash in the packet before
+calling the official upstream
 ScoreModel.enhance path with captured prior/corrector/predictor noise. The
 native path consumes that exact packet. Neither path downloads a model,
 converts GGUF, or publishes.
@@ -50,10 +53,11 @@ self_test() {
     'ScoreModel.enhance' 'speechbrain/inference/enhancement.py' 'CUDA' \
     'REFERENCE_COMPLETE_NO_UPLOAD' 'CPU_ENHANCEMENT_PARITY_PASS' \
     'prior/corrector/predictor' 'noise_calls.txt' 'NO_UPLOAD' \
-    'cargo test --locked --test sgmse_native_enhancement -p vokra-models' \
+    'cargo test --locked --release --test sgmse_native_enhancement -p vokra-models' \
     '-- --ignored --exact --show-output' 'findmnt' 'tmpfs' \
     'reference packet' '--generate-reference' 'score_model_ema.ckpt' \
     'hyperparams.yaml' 'sgmse_voicebank_manifest.json' 'ref-clip.wav' \
+    'first 4096 samples' '33 frames' 'reflection-padded' '64 frames' \
     'official upstream' 'git status --porcelain --untracked-files=all' \
     'output must be absent (no-clobber)' 'native output parent must be tmpfs'; do
     grep -Fq -- "$token" "$0" || { log "self-test FAIL: missing token: $token"; fail=1; }
@@ -191,7 +195,7 @@ VOKRA_SGMSE_GGUF_SHA256="$GGUF_SHA256" \
 VOKRA_SGMSE_REFERENCE_DIR="$REFERENCE_DIR" \
 VOKRA_SGMSE_NATIVE_OUTPUT_DIR="$NATIVE_OUTPUT_DIR" \
 VOKRA_PUBLISH_ON_VAST=1 \
-  cargo test --locked --test sgmse_native_enhancement -p vokra-models \
+  cargo test --locked --release --test sgmse_native_enhancement -p vokra-models \
     -- --ignored --exact --show-output 2>&1 | tee "$native_log"
 [[ "$(grep -Fxc 'test sgmse_native_enhancement_matches_official_reference ... ok' "$native_log" || true)" == 1 ]] || die 'native enhancement test did not pass exactly once'
 [[ -f "$NATIVE_OUTPUT_DIR/enhanced_pcm.f32" ]] || die 'native enhancement output is missing'

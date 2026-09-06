@@ -391,6 +391,7 @@ self_test() {
     'sgmse_native_score_matches_independent_reference' \
     'sgmse_native_enhancement_matches_official_reference' \
     'SGMSE_NATIVE_SCORE_PARITY_PASS' 'CPU_ENHANCEMENT_PARITY_PASS' \
+    '4096' 'frames_before_reflection_pad' 'padding_less_than_source' \
     'cargo clippy --locked --workspace --all-targets -- -D warnings' \
     'cargo deny check licenses advisories bans' 'cargo audit' \
     'SGMSE_VALIDATION_COMPLETE_NO_UPLOAD' 'NO_UPLOAD' \
@@ -809,6 +810,18 @@ if score_data.get("status") != "REFERENCE_COMPLETE_NO_UPLOAD" or score_data.get(
     raise SystemExit("score reference is not complete/no-upload")
 if enhancement_data.get("status") != "REFERENCE_COMPLETE_NO_UPLOAD" or enhancement_data.get("publication") != "NO_UPLOAD":
     raise SystemExit("enhancement reference is not complete/no-upload")
+crop = enhancement_data.get("input", {}).get("crop")
+if (
+    not isinstance(crop, dict)
+    or crop.get("sample_start") != 0
+    or crop.get("sample_count") != 4096
+    or crop.get("pcm_filename") != "input_pcm.f32"
+    or crop.get("pcm_bytes") != 16384
+    or crop.get("stft", {}).get("frames_before_reflection_pad") != 33
+    or crop.get("reflection_pad", {}).get("target_frames") != 64
+    or crop.get("reflection_pad", {}).get("padding_less_than_source") is not True
+):
+    raise SystemExit("enhancement reference crop provenance is not the reviewed 4096-sample contract")
 if not pathlib.Path(input_wav).is_file():
     raise SystemExit("input fixture disappeared")
 payloads = {
@@ -819,6 +832,7 @@ payloads = {
     "gguf": evidence(gguf),
     "score_reference_manifest": evidence(score_manifest),
     "enhancement_reference_manifest": evidence(enhancement_manifest),
+    "enhancement_input_crop": crop,
     "resolution_ledger": evidence(ledger),
 }
 for name, directory in (("score_native", score_native), ("enhancement_native", enhancement_native)):
