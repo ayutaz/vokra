@@ -1,28 +1,28 @@
-//! CosyVoice2 text encoder + LLM backbone — stub (M3-09-T07 / T08).
+//! CosyVoice2 text encoder + LLM backbone (M3-09-T07 / T08).
 //!
-//! The real text encoder + LLM backbone (embedding lookup → transformer
-//! blocks → hidden states consumed by the Flow Matching CFM) is implemented
-//! against the upstream safetensors manifest in the follow-on session
-//! (T07 embedding / positional / stem; T08 transformer blocks + GEMM hot
-//! path). This scaffold intentionally lands the **type + trait surface**
-//! only, so a caller who wires an engine against this module receives an
-//! explicit [`VokraError::NotImplemented`] on any forward attempt rather
-//! than a silent zero-fill fallback (FR-EX-08).
+//! [`CosyVoice2TextEncoder`] is the crate-private weighted path: it owns an
+//! authenticated [`super::llm_component::BoundCosyVoice2Llm`] and delegates
+//! token embedding plus all Qwen2 blocks to the existing [`super::llm::LlmBackbone`].
+//! It returns final-RMSNorm hidden rows (`[tokens, hidden]`) for the future
+//! Flow Matching component. The public composite TTS loader remains
+//! `INSPECTION_ONLY`; this component must not be mistaken for full TTS support.
 //!
-//! # Numeric parity strategy (follow-on)
+//! [`TextEncoderStub`] remains as a compatibility fixture surface and
+//! deliberately returns [`VokraError::NotImplemented`]. Keeping that type
+//! separate makes the incomplete composite boundary explicit rather than
+//! silently routing production callers through a partial LLM.
 //!
-//! The follow-on sessions will:
+//! # Numeric parity boundary
 //!
-//! 1. Read the upstream CosyVoice2 safetensors on a build machine (T02
-//!    upstream inspection, still open — this scaffold does not invent
-//!    tensor names) and record each `tensor_name → shape/dtype` in
-//!    `docs/adr/M3-09-cosyvoice2.md` §T02.
-//! 2. Bind those tensors verbatim through
-//!    [`vokra_core::gguf::GgufFile::get_tensor`] in a new
-//!    `weights::TensorStore` (mirrors `piper_plus::weights::TensorStore`).
-//! 3. Route the GEMM hot path through [`crate::compute::Compute::gemm_f32`]
-//!    so the Metal / CUDA seams (T19/T20) offload without a second
-//!    kernel path.
+//! The weighted path is structurally wired, but independent reference parity
+//! remains a separate gate. It must:
+//!
+//! 1. Compare the weighted GGUF path with an independent official Qwen2
+//!    reference on the approved VAST workflow.
+//! 2. Keep the exact tensor manifest and provenance checks in the strict
+//!    component binder; no metadata-only or synthesized fixture is accepted.
+//! 3. Exercise any future Metal/CUDA route through the same
+//!    [`crate::compute::Compute`] seam, with no silent CPU fallback.
 
 use std::collections::HashMap;
 
@@ -30,6 +30,103 @@ use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 use vokra_core::{Result, VokraError};
 
 use super::config::CosyVoice2Config;
+use super::llm::LlmBackboneStep;
+use super::llm_component::BoundCosyVoice2Llm;
+
+/// Strict, weighted CosyVoice2 text hidden-state encoder.
+///
+/// This is intentionally `pub(crate)`: the authenticated LLM component is a
+/// usable internal building block, but flow matching, speech-token handling,
+/// HiFT, and independent end-to-end parity are not yet composed into the
+/// public TTS runtime. Construction is possible only through the strict GGUF
+/// binder, which validates the complete component metadata and tensor schema.
+#[derive(Debug)]
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
+pub(crate) struct CosyVoice2TextEncoder {
+    llm: BoundCosyVoice2Llm,
+}
+
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
+impl CosyVoice2TextEncoder {
+    /// Binds the exact authenticated LLM component from GGUF.
+    ///
+    /// No metadata-only or synthesized backbone is accepted by
+    /// [`BoundCosyVoice2Llm::from_gguf`].
+    pub(crate) fn from_gguf(file: &GgufFile) -> Result<Self> {
+        Ok(Self {
+            llm: BoundCosyVoice2Llm::from_gguf(file)?,
+        })
+    }
+
+    /// Runs token lookup followed by the complete Qwen2 block stack and
+    /// final RMSNorm, returning row-major `[token_count, hidden_dim]` rows.
+    ///
+    /// A fresh decode state is used for each call so the result is a pure
+    /// prefix encoding and cannot accidentally reuse KV cache from another
+    /// request. The underlying backbone performs the actual Compute dispatch;
+    /// this wrapper does not add a CPU fallback or a second numerical path.
+    pub(crate) fn encode(&self, token_ids: &[u32]) -> Result<Vec<f32>> {
+        let config = self.llm.backbone().config();
+        validate_token_request(token_ids, config.vocab_size, config.n_ctx)?;
+        let embeddings = self.llm.backbone().embed_text_tokens(token_ids)?;
+        let mut state = LlmBackboneStep::new();
+        let hidden =
+            self.llm
+                .backbone()
+                .step_embeddings(&mut state, &embeddings, token_ids.len())?;
+        validate_hidden_output(&hidden, token_ids.len(), config.hidden_dim)?;
+        Ok(hidden)
+    }
+
+    /// The hidden width of the authenticated Qwen2 component.
+    #[must_use]
+    pub(crate) fn hidden_dim(&self) -> usize {
+        self.llm.backbone().config().hidden_dim
+    }
+}
+
+fn validate_token_request(token_ids: &[u32], vocab_size: usize, n_ctx: usize) -> Result<()> {
+    if token_ids.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "cosyvoice2 text encoder: token_ids must be non-empty".to_owned(),
+        ));
+    }
+    if n_ctx != 0 && token_ids.len() > n_ctx {
+        return Err(VokraError::InvalidArgument(format!(
+            "cosyvoice2 text encoder: token count {} exceeds n_ctx {n_ctx}",
+            token_ids.len()
+        )));
+    }
+    if let Some((index, token_id)) = token_ids
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, token_id)| (*token_id as usize) >= vocab_size)
+    {
+        return Err(VokraError::InvalidArgument(format!(
+            "cosyvoice2 text encoder: token_ids[{index}]={token_id} exceeds vocab_size {vocab_size}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_hidden_output(hidden: &[f32], rows: usize, hidden_dim: usize) -> Result<()> {
+    let expected = rows.checked_mul(hidden_dim).ok_or_else(|| {
+        VokraError::InvalidArgument("cosyvoice2 text encoder: hidden shape overflow".to_owned())
+    })?;
+    if hidden.len() != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "cosyvoice2 text encoder: hidden output length {} != rows * hidden_dim {expected}",
+            hidden.len()
+        )));
+    }
+    if hidden.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(
+            "cosyvoice2 text encoder: hidden output contains non-finite values".to_owned(),
+        ));
+    }
+    Ok(())
+}
 
 /// Text encoder + LLM backbone — scaffold handle.
 ///
@@ -622,6 +719,21 @@ mod tests {
             .encode(&[])
             .expect_err("scaffold must not produce features");
         assert!(matches!(err, VokraError::NotImplemented(_)));
+    }
+
+    #[test]
+    fn weighted_request_rejects_empty_out_of_range_and_context_overflow() {
+        assert!(validate_token_request(&[], 32, 4).is_err());
+        assert!(validate_token_request(&[32], 32, 4).is_err());
+        assert!(validate_token_request(&[1, 2, 3, 4, 5], 32, 4).is_err());
+        validate_token_request(&[0, 31], 32, 4).expect("valid token request");
+    }
+
+    #[test]
+    fn weighted_hidden_output_is_exact_finite_row_major() {
+        validate_hidden_output(&[0.0; 6], 2, 3).expect("exact hidden shape");
+        assert!(validate_hidden_output(&[0.0; 5], 2, 3).is_err());
+        assert!(validate_hidden_output(&[0.0, 1.0, f32::NAN], 1, 3).is_err());
     }
 }
 

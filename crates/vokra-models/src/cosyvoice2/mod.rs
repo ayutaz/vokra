@@ -310,7 +310,7 @@ impl CosyVoice2Tts {
     }
 
     /// Tokenizes `text` to Qwen2 byte-level BPE ids (M3-09-T06) — the front
-    /// end of the (still-stubbed) `synthesize` chain.
+    /// end of the still composite-gated `synthesize` chain.
     ///
     /// # Errors
     ///
@@ -439,21 +439,22 @@ impl TtsEngine for CosyVoice2Tts {
     /// Text → PCM adapter (T14/T15 chunk-aware streaming pipeline lands the
     /// concrete numeric path).
     ///
-    /// Until the LLM backbone (T07/T08), Flow Matching CFM (T10/T11), and
-    /// HiFTNet vocoder chain ([`HiFTChain`], SoTA plan Phase 1-3 seam) are
-    /// wired end-to-end, this returns [`VokraError::NotImplemented`] with a
-    /// clear next-step message — never a silent zero-fill fallback
+    /// Until the authenticated LLM hidden-state component, Flow Matching CFM
+    /// (T10/T11), and HiFTNet vocoder chain ([`HiFTChain`], SoTA plan Phase
+    /// 1-3 seam) are wired end-to-end, this returns
+    /// [`VokraError::NotImplemented`] with a clear next-step message — never a
+    /// silent zero-fill fallback
     /// (FR-EX-08).
     ///
     /// # Chain wiring (M3-09 partial land + SoTA plan Phase 1-3)
     ///
-    /// The module tree is chained today — a follow-on session composes
-    /// text → [`TextEncoderStub::encode`] → [`llm::LlmBackbone::forward`]
-    /// → [`ChunkAwareCfm::run_chunks`] → [`HiFTChain::forward`] by filling
-    /// in each stage's numeric path. The top-level `synthesize` short-
-    /// circuits with NotImplemented because the tokenizer (T06), LLM weight
-    /// binding (T07), and forward pass (T08) are all deferred, and the
-    /// terminal vocoder ([`HiFTChain`]) must be injected by a caller
+    /// The module tree is chained today — the crate-private
+    /// [`text_encoder::CosyVoice2TextEncoder`] composes token embedding and
+    /// the authenticated Qwen2 hidden-state path, while Flow Matching CFM and
+    /// the terminal vocoder ([`HiFTChain`]) still require the complete
+    /// composite binder. The top-level `synthesize` therefore short-circuits
+    /// with NotImplemented until the complete authenticated graph is wired;
+    /// the terminal vocoder must be injected by a caller
     /// holding HiFTNet weights (via [`CosyVoice2Tts::with_hift_chain`]).
     /// The `synthesize_with_pipeline` entry point below exposes the
     /// injected-closure oracle path for internal-oracle tests today;
