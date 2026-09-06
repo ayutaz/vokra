@@ -360,7 +360,7 @@ fn validate_conversion_path(
     if path
         .as_os_str()
         .to_string_lossy()
-        .split(|character| character == '/' || character == '\\')
+        .split(['/', '\\'])
         .any(|component| component == "." || component == "..")
     {
         return Err(contract_error(format!(

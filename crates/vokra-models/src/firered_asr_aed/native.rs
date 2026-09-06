@@ -928,7 +928,7 @@ fn parse_authenticated_cmvn_text(raw: &[u8]) -> Result<Vec<f32>> {
     let text = std::str::from_utf8(raw)
         .map_err(|_| VokraError::ModelLoad("FireRed CMVN sidecar is not valid UTF-8".to_owned()))?;
     let lines: Vec<&str> = text.split('\n').collect();
-    if lines.len() != 4 || lines[0] != "[" || lines[3] != "" || !lines[2].ends_with(']') {
+    if lines.len() != 4 || lines[0] != "[" || !lines[3].is_empty() || !lines[2].ends_with(']') {
         return Err(VokraError::ModelLoad(
             "FireRed CMVN sidecar must have exactly three bracketed lines".to_owned(),
         ));
