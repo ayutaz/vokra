@@ -166,7 +166,7 @@ def reject_unsafe_path(path: Path, label: str) -> None:
         if component in {".", ".."}:
             raise SystemExit(f"{LOG_PREFIX} {label} contains a dot path component: {path}")
         current /= component
-        if current.is_symlink() and current != Path("/var"):
+        if current.is_symlink():
             raise SystemExit(f"{LOG_PREFIX} {label} has symlinked ancestry: {path}")
 
 
@@ -287,7 +287,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.self_test:
-        with tempfile.TemporaryDirectory(prefix="vokra-nsnet2-prep-selftest-") as root:
+        with tempfile.TemporaryDirectory(prefix="vokra-nsnet2-prep-selftest-", dir=Path.cwd()) as root:
             root_path = Path(root)
             output = root_path / "nested" / "prepared.safetensors"
             publish_no_replace(output, OrderedDict())

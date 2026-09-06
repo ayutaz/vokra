@@ -67,7 +67,7 @@ def reject_unsafe_path(path: Path, label: str) -> None:
         if component in {".", ".."}:
             raise SystemExit(f"{label} contains a dot path component: {path}")
         current /= component
-        if current.is_symlink() and current != Path("/var"):
+        if current.is_symlink():
             raise SystemExit(f"{label} has symlinked ancestry: {path}")
 
 
@@ -181,7 +181,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     if args.self_test:
-        with tempfile.TemporaryDirectory(prefix="vokra-nsnet2-dump-selftest-") as root:
+        with tempfile.TemporaryDirectory(prefix="vokra-nsnet2-dump-selftest-", dir=Path.cwd()) as root:
             output = Path(root) / "nested" / "reference.wav"
             publish_no_replace(output, lambda path: path.write_bytes(b"fixture"), "output WAV")
             if output.read_bytes() != b"fixture":

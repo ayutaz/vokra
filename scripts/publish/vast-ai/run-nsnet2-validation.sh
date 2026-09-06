@@ -440,7 +440,7 @@ main() {
   export "$WAV_ENV=$REFERENCE_INPUT"
   export "$REFERENCE_WAV_ENV=$reference_wav"
   step "Run real-weight CPU parity harness"
-  CARGO_NET_OFFLINE=true cargo test --locked --offline -p vokra-models \
+  CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo test --locked --offline -p vokra-models \
     --test parity_nsnet2 "$PARITY_TEST" \
     -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$parity_log"
   require_cargo_result "$parity_log" "$PARITY_TEST"
@@ -461,9 +461,6 @@ main() {
   CARGO_NET_OFFLINE=true cargo deny --locked --offline check licenses advisories bans
   CARGO_NET_OFFLINE=true cargo audit --no-fetch
 
-  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'could not re-read checkout HEAD before evidence'
-  [[ "$actual_head" == "$expected_head" ]] || die 'checkout HEAD changed before evidence publication'
-  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty before evidence publication'
   step "Build portable authenticated Apple transfer packet"
   packet_dir="$evidence_dir/apple-packet"
   packet_manifest="$packet_dir/manifest.json"
@@ -508,6 +505,10 @@ PY
     printf ' %q %q' --packet-manifest-sha256 "$packet_sha"
     printf ' %q %q\n' --evidence-dir '<NSNET2_EVIDENCE_DIR>'
   } > "$transfer_args_file"
+
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'could not re-read checkout HEAD before summary'
+  [[ "$actual_head" == "$expected_head" ]] || die 'checkout HEAD changed before summary publication'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty before summary publication'
 
   {
     echo "git_commit=$actual_head"
