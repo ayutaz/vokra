@@ -10,34 +10,60 @@ use std::collections::VecDeque;
 
 use vokra_core::{Result, VokraError};
 
+/// Authenticated Hugging Face repository identity.
 pub const HF_REPOSITORY: &str = "kyutai/hibiki-2b-pytorch-bf16";
+/// Authenticated Hugging Face revision.
 pub const HF_REVISION: &str = "bd71144c96f26040612f6414716f5f48ee4fce69";
+/// Authenticated Hibiki source repository.
 pub const HIBIKI_SOURCE: &str = "https://github.com/kyutai-labs/hibiki.git";
+/// Authenticated Hibiki source revision.
 pub const HIBIKI_REVISION: &str = "f1cf9293e35c1dceffbe60dd325bdd702bc8305e";
+/// Authenticated Moshi source repository used by the source contract.
 pub const MOSHI_SOURCE: &str = "https://github.com/kyutai-labs/moshi.git";
+/// Authenticated Moshi source revision.
 pub const MOSHI_REVISION: &str = "e6a55d2722a65870ef52a6c9f6ecfc0e90f38362";
 
+/// Main Hibiki safetensors filename in the authenticated artifact set.
 pub const MAIN_FILE: &str = "hibiki-pytorch-ccef4858@200.safetensors";
+/// Main Hibiki safetensors byte length.
 pub const MAIN_BYTES: u64 = 5_574_762_720;
+/// Main Hibiki safetensors SHA-256 digest.
 pub const MAIN_SHA256: &str = "0847a768f01f3e78c42ddb779e7aa9c610b7bab71306a71d62d98a7d9cff3bdb";
+/// Mimi safetensors filename in the authenticated artifact set.
 pub const MIMI_FILE: &str = "mimi-pytorch-e351c8d8@125.safetensors";
+/// Mimi safetensors byte length.
 pub const MIMI_BYTES: u64 = 384_644_900;
+/// Mimi safetensors SHA-256 digest.
 pub const MIMI_SHA256: &str = "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50";
+/// SentencePiece tokenizer filename in the authenticated artifact set.
 pub const SPM_FILE: &str = "tokenizer_spm_48k_multi6_2.model";
+/// SentencePiece tokenizer byte length.
 pub const SPM_BYTES: u64 = 857_314;
+/// SentencePiece tokenizer SHA-256 digest.
 pub const SPM_SHA256: &str = "c22110fb855aa049e17346ea2e88355bdd664f06cbfd09948380ab5e85b39697";
 
+/// Git blob identity for the main Hibiki artifact.
 pub const MAIN_GIT_BLOB_SHA1: &str = "a1f6cf83e90f4cfa83a294d468e5820c2a12ebc6";
+/// Git blob identity for the Mimi artifact.
 pub const MIMI_GIT_BLOB_SHA1: &str = "c8d5e4cd18a5c1ce05bb89d81144a46cf1b9076c";
+/// Git blob identity for the SentencePiece tokenizer.
 pub const SPM_GIT_BLOB_SHA1: &str = "e3d3dac8d55cf70915d8a4b1915becbdb89b828a";
+/// Git blob identity for the authenticated Hibiki audio I/O source file.
 pub const HIBIKI_AUDIO_IO_GIT_BLOB_SHA1: &str = "5625eafbb7b68e4c99f693ae812bac8f7212f070";
+/// Git blob identity for the authenticated Hibiki generation source file.
 pub const HIBIKI_GEN_GIT_BLOB_SHA1: &str = "42df14d865f8de183a99d592bf97c6b31f6c13de";
+/// Git blob identity for the authenticated Hibiki main source file.
 pub const HIBIKI_MAIN_GIT_BLOB_SHA1: &str = "c34f6716ffaaa34590cc97825b716780832b48bb";
 
+/// Number of audio codebooks in the fixed Hibiki contract.
 pub const N_Q: usize = 32;
+/// Number of streamed token channels, including the text channel.
 pub const STREAM_CHANNELS: usize = N_Q + 1;
+/// Audio codebook cardinality.
 pub const CARD: u32 = 2048;
+/// Text token cardinality.
 pub const TEXT_CARD: u32 = 48_000;
+/// Text padding token identifier.
 pub const TEXT_PADDING_ID: u32 = 3;
 
 const AUTHENTICATED_DELAYS: [u32; STREAM_CHANNELS] = [
@@ -47,53 +73,98 @@ const AUTHENTICATED_DELAYS: [u32; STREAM_CHANNELS] = [
 const DEPFORMER_WEIGHT_SCHEDULE: [u32; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8];
 
 #[derive(Debug, Clone, PartialEq)]
+/// Authenticated scalar configuration for the Hibiki 2B source contract.
 pub struct Hibiki2bConfig {
+    /// Model type label.
     pub model_type: String,
+    /// Audio codebook cardinality.
     pub card: u32,
+    /// Number of audio codebooks.
     pub n_q: usize,
+    /// Number of depformer codebooks.
     pub dep_q: usize,
+    /// Per-channel stream delays.
     pub delays: Vec<u32>,
+    /// Main model feature dimension.
     pub dim: usize,
+    /// Text token cardinality.
     pub text_card: u32,
+    /// Text padding token identifier.
     pub text_padding_id: u32,
+    /// Number of main model attention heads.
     pub num_heads: usize,
+    /// Number of main model layers.
     pub num_layers: usize,
+    /// Main model hidden-width scale.
     pub hidden_scale: f32,
+    /// Whether the main model is causal.
     pub causal: bool,
+    /// Whether layer scale is absent.
     pub layer_scale_is_none: bool,
+    /// Main model context length.
     pub context: usize,
+    /// Positional embedding period.
     pub max_period: f32,
+    /// Main model gating mode.
     pub gating: String,
+    /// Main model normalization mode.
     pub norm: String,
+    /// Main model positional embedding mode.
     pub positional_embedding: String,
+    /// Depformer feature dimension.
     pub depformer_dim: usize,
+    /// Number of depformer attention heads.
     pub depformer_num_heads: usize,
+    /// Number of depformer layers.
     pub depformer_num_layers: usize,
+    /// Depformer feed-forward dimension.
     pub depformer_dim_feedforward: usize,
+    /// Whether depformer projections are multi-linear.
     pub depformer_multi_linear: bool,
+    /// Depformer positional embedding mode.
     pub depformer_pos_emb: String,
+    /// Whether depformer weights vary per step.
     pub depformer_weights_per_step: bool,
+    /// Depformer low-rank embedding dimension.
     pub depformer_low_rank_embeddings: usize,
+    /// Number of description bins.
     pub description_bins: usize,
+    /// Description feature dimension.
     pub description_dim: usize,
+    /// Description tokenizer mode.
     pub description_tokenizer: String,
+    /// Authenticated description values.
     pub description_values: Vec<String>,
+    /// Whether cross-attention positional embeddings are enabled in the fuser.
     pub fuser_cross_attention_pos_emb: bool,
+    /// Cross-attention positional embedding scale.
     pub fuser_cross_attention_pos_emb_scale: u32,
+    /// Fuser sum inputs.
     pub fuser_sum: Vec<String>,
+    /// Fuser prepend inputs.
     pub fuser_prepend: Vec<String>,
+    /// Fuser cross inputs.
     pub fuser_cross: Vec<String>,
+    /// Cross-attention inputs.
     pub cross_attention: Vec<String>,
+    /// Authenticated model identifier signature.
     pub model_id_sig: String,
+    /// Authenticated model identifier epoch.
     pub model_id_epoch: u32,
+    /// Depformer weight schedule.
     pub depformer_weight_schedule: Vec<u32>,
+    /// Audio sampling temperature.
     pub temperature: f32,
+    /// Text sampling temperature.
     pub text_temperature: f32,
+    /// Audio sampling top-k value.
     pub top_k: u32,
+    /// Text sampling top-k value.
     pub text_top_k: u32,
 }
 
 impl Hibiki2bConfig {
+    /// Returns the fixed configuration authenticated by the inspector.
     #[must_use]
     pub fn authenticated() -> Self {
         Self {
@@ -202,6 +273,7 @@ impl Hibiki2bConfig {
         }
     }
 
+    /// Returns the maximum configured stream delay.
     #[must_use]
     pub fn max_delay(&self) -> u32 {
         self.delays.iter().copied().max().unwrap_or(0)
@@ -216,6 +288,7 @@ pub struct Hibiki2bDelayedStreamAligner {
 }
 
 impl Hibiki2bDelayedStreamAligner {
+    /// Creates an aligner after validating the authenticated configuration.
     pub fn new(config: Hibiki2bConfig) -> Result<Self> {
         config.validate()?;
         Ok(Self {
@@ -224,6 +297,7 @@ impl Hibiki2bDelayedStreamAligner {
         })
     }
 
+    /// Queues one token step and returns an aligned step when available.
     pub fn push(&mut self, step: [u32; STREAM_CHANNELS]) -> Result<Option<[u32; STREAM_CHANNELS]>> {
         for (channel, &token) in step.iter().enumerate() {
             let limit = if channel == 0 {
@@ -251,6 +325,7 @@ impl Hibiki2bDelayedStreamAligner {
         Ok(Some(output))
     }
 
+    /// Returns the number of queued, not-yet-emitted steps.
     #[must_use]
     pub fn pending_steps(&self) -> usize {
         self.pending.len()
