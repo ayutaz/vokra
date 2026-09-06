@@ -34,10 +34,30 @@ require_clean_expected_head() {
   [[ "$actual" == "$expected" ]] || { log "checkout HEAD $actual differs from expected $expected"; return 2; }
 }
 
+require_regular_approval_path() {
+  local input="$1" path="$1" rest component current base
+  [[ -n "$path" && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 2
+  if [[ "$path" != /* ]]; then
+    base="$(pwd -P)" || return 2
+    path="$base/$path"
+  fi
+  [[ "$path" != */../* && "$path" != */.. && "$path" != *'/./'* && "$path" != *'/.' ]] || return 2
+  rest="${path#/}"
+  current="/"
+  while [[ -n "$rest" ]]; do
+    if [[ "$rest" == */* ]]; then component="${rest%%/*}"; rest="${rest#*/}"; else component="$rest"; rest=""; fi
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 2
+    current="$current$component"
+    [[ ! -L "$current" ]] || return 2
+    current="$current/"
+  done
+  [[ -f "$input" && ! -L "$input" ]] || return 2
+}
+
 require_approval_binding() {
   local approval="$1" expected_sha="$2"
   [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || { log 'approval SHA must be exactly 64 lowercase hexadecimal characters'; return 2; }
-  [[ -f "$approval" && ! -L "$approval" ]] || { log 'approval evidence must be a regular non-symlink file'; return 2; }
+  require_regular_approval_path "$approval" || { log 'approval evidence must be a regular file with safe non-symlink ancestry'; return 2; }
   [[ "$(sha256_file "$approval")" == "$expected_sha" ]] || { log 'approval evidence SHA-256 differs from caller binding'; return 2; }
 }
 
@@ -49,13 +69,11 @@ claim_absent_directory() {
 }
 
 require_preflight() {
-  local project="${1:-$DEDICATED_PROJECT}" approval="${2:-}"
-  local gate="$project/license_gate.py" manifest="$project/license_gate_manifest.json"
-  [[ -d "$project" && ! -L "$project" ]] || { log 'dedicated CLAP reference project is missing; identity/license gate is unresolved'; return 2; }
-  [[ -f "$project/pyproject.toml" && ! -L "$project/pyproject.toml" ]] || { log 'dedicated CLAP pyproject.toml is missing'; return 2; }
-  [[ -f "$project/uv.lock" && ! -L "$project/uv.lock" ]] || { log 'dedicated CLAP uv.lock is missing; refuse before acquisition'; return 2; }
-  [[ -f "$gate" && ! -L "$gate" && -f "$manifest" && ! -L "$manifest" ]] || { log 'CLAP license gate/manifest is missing; refuse before acquisition'; return 2; }
-  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || { log 'approval evidence must be a nonempty regular file'; return 2; }
+  # No authenticated CLAP reference project, lock, license gate, or native
+  # binder exists in this source tree. Approval is only a caller-bound hash
+  # for this blocked disposition; it can never authorize acquisition.
+  log 'BLOCKED_MISSING_AUTHENTICATED_REFERENCE_LOCK_LICENSE_GATE/NO_UPLOAD'
+  return 2
 }
 
 validate_absent_work() {
@@ -159,6 +177,13 @@ self_test() {
   printf '[project]\nname = "synthetic-clap"\nversion = "0.0.0"\n' >"$fake_project/pyproject.toml"
   if require_preflight "$fake_project" "$tmp/approval.json" >/dev/null 2>&1; then
     log 'self-test FAIL: missing dedicated lock/gate was accepted'
+    fail=1
+  fi
+  : >"$fake_project/uv.lock"
+  : >"$fake_project/license_gate.py"
+  : >"$fake_project/license_gate_manifest.json"
+  if require_preflight "$fake_project" "$tmp/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: placeholder dedicated lock/gate overrode blocked disposition'
     fail=1
   fi
   approval="$tmp/approval.json"
@@ -319,6 +344,7 @@ PY
 else
   echo 'supplied_gguf=NOT_SUPPLIED' | tee -a "$work_dir/validation.log"
 fi
+require_clean_expected_head "$expected_head" || die 'checkout HEAD/clean state changed before final inspection summary'
 {
   echo 'runtime_status=INSPECTION_ONLY'
   echo 'parity_status=INSPECTION_ONLY'

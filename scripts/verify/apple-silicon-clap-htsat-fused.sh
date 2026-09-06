@@ -29,10 +29,30 @@ require_clean_expected_head() {
   [[ "$actual" == "$expected" ]] || { log "checkout HEAD $actual differs from expected $expected"; return 2; }
 }
 
+require_regular_approval_path() {
+  local input="$1" path="$1" rest component current base
+  [[ -n "$path" && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 2
+  if [[ "$path" != /* ]]; then
+    base="$(pwd -P)" || return 2
+    path="$base/$path"
+  fi
+  [[ "$path" != */../* && "$path" != */.. && "$path" != *'/./'* && "$path" != *'/.' ]] || return 2
+  rest="${path#/}"
+  current="/"
+  while [[ -n "$rest" ]]; do
+    if [[ "$rest" == */* ]]; then component="${rest%%/*}"; rest="${rest#*/}"; else component="$rest"; rest=""; fi
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 2
+    current="$current$component"
+    [[ ! -L "$current" ]] || return 2
+    current="$current/"
+  done
+  [[ -f "$input" && ! -L "$input" ]] || return 2
+}
+
 require_approval_binding() {
   local approval="$1" expected_sha="$2"
   [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || { log 'approval SHA must be exactly 64 lowercase hexadecimal characters'; return 2; }
-  [[ -f "$approval" && ! -L "$approval" ]] || { log 'approval evidence must be a regular non-symlink file'; return 2; }
+  require_regular_approval_path "$approval" || { log 'approval evidence must be a regular file with safe non-symlink ancestry'; return 2; }
   [[ "$(sha256_file "$approval")" == "$expected_sha" ]] || { log 'approval evidence SHA-256 differs from caller binding'; return 2; }
 }
 
@@ -44,13 +64,11 @@ claim_absent_directory() {
 }
 
 require_preflight() {
-  local project="${1:-$DEDICATED_PROJECT}" approval="${2:-}"
-  local gate="$project/license_gate.py" manifest="$project/license_gate_manifest.json"
-  [[ -d "$project" && ! -L "$project" ]] || { log 'dedicated CLAP reference project is missing; identity/license gate is unresolved'; return 2; }
-  [[ -f "$project/pyproject.toml" && ! -L "$project/pyproject.toml" ]] || { log 'dedicated CLAP pyproject.toml is missing'; return 2; }
-  [[ -f "$project/uv.lock" && ! -L "$project/uv.lock" ]] || { log 'dedicated CLAP uv.lock is missing; refuse before evidence'; return 2; }
-  [[ -f "$gate" && ! -L "$gate" && -f "$manifest" && ! -L "$manifest" ]] || { log 'CLAP license gate/manifest is missing; refuse before evidence'; return 2; }
-  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || { log 'approval evidence must be a nonempty regular file'; return 2; }
+  # No authenticated CLAP reference project, lock, license gate, or native
+  # binder exists in this source tree. Approval is only a caller-bound hash
+  # for this blocked disposition; it can never authorize acquisition.
+  log 'BLOCKED_MISSING_AUTHENTICATED_REFERENCE_LOCK_LICENSE_GATE/NO_UPLOAD'
+  return 2
 }
 
 validate_absent_evidence() {
@@ -163,6 +181,20 @@ self_test() {
     log 'self-test FAIL: wrong approval SHA accepted'; fail=1
   fi
   require_approval_binding "$approval" "$approval_sha" || { log 'self-test FAIL: correct approval SHA rejected'; fail=1; }
+  mkdir "$tmp/approval-real"
+  ln -s "$tmp/approval-real" "$tmp/approval-link"
+  printf '{}\n' >"$tmp/approval-real/evidence.json"
+  if require_approval_binding "$tmp/approval-link/evidence.json" "$approval_sha" >/dev/null 2>&1; then
+    log 'self-test FAIL: symlink-ancestor approval path accepted'; fail=1
+  fi
+  mkdir "$tmp/project"
+  : >"$tmp/project/pyproject.toml"
+  : >"$tmp/project/uv.lock"
+  : >"$tmp/project/license_gate.py"
+  : >"$tmp/project/license_gate_manifest.json"
+  if require_preflight "$tmp/project" "$approval" >/dev/null 2>&1; then
+    log 'self-test FAIL: placeholder dedicated lock/gate overrode blocked disposition'; fail=1
+  fi
   set +e
   VOKRA_REMOTE_APPLE_SILICON=1 "$path" --approval-evidence "$approval" --approval-sha256 "$approval_sha" \
     --expected-head "$(printf '0%.0s' {1..40})" --evidence-dir "$evidence" >/dev/null 2>&1
@@ -219,6 +251,7 @@ xcrun -f metal >/dev/null 2>&1 || die 'Xcode Metal compiler is unavailable'
 [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
 [[ -f "$PARITY_SOURCE" ]] || die 'CLAP parity gate source is missing'
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
+require_clean_expected_head "$expected_head" || die 'checkout HEAD/clean state changed before final inspection evidence'
 validate_absent_evidence "$evidence_dir" "$approval_evidence" || die 'evidence directory must be absent, disjoint, and free of symlink ancestors'
 claim_absent_directory "$evidence_dir" || die 'evidence directory could not be atomically claimed as absent'
 
