@@ -657,6 +657,43 @@ families without acquiring or executing their weights locally:
   use or Cargo. Mutable NeMo weight-build provenance, the native diarization
   forward and independent CPU parity remain unresolved; the source-only
   runner self-test passes but no CPU or Metal result is claimed.
+- Dia 1.6B commits `d2bf8d47` and `892be078` bind the fixed model/source
+  identities, exact clean HEAD and external inspection disposition before any
+  cache, network or work-directory activity. Approval validation is
+  no-cache/offline, paths reject dot or symlink ancestry and the adapter log is
+  no-clobber. The route remains blocked on the unreviewed dependency closure,
+  exact DAC contract and complete native composition; no model or parity ran.
+- Zonos commits `e6ed795f` and `da97156b` make the current unauthenticated
+  license identity an unconditional pre-acquisition blocker and require exact
+  singleton native CPU evidence for any future Apple handoff. The native log
+  verifier no longer mistakes Cargo's aggregate `test result` line for a
+  second test. License authentication, DAC/PCM composition and real VAST/Apple
+  execution remain open.
+- CLAP commits `891b6740` and `84badaca` bind exact source/model identities and
+  reject placeholder approval, but unconditionally stop as
+  `BLOCKED_MISSING_AUTHENTICATED_REFERENCE_LOCK_LICENSE_GATE/NO_UPLOAD` before
+  host, cache, network or work activity. The dedicated reference project,
+  dependency/license closure, released preprocessing/fused binder and real
+  parity do not yet exist.
+- VibeVoice 1.5B commits `a6c831a1` and `0945a03e` harden exact-head approval,
+  atomic VAST-to-Apple packet closure, singleton native test selection and
+  external sidecar binding. The current inspection disposition remains
+  unconditionally `BLOCKED_PROVENANCE/NO_UPLOAD`; it cannot authorize model
+  acquisition or reference execution. Dependency approval, native composite
+  and real VAST/Apple execution remain open.
+- ChatTTS commit `a1e6835f` binds exact project/lock, clean HEAD and a strict
+  external inspection-only approval schema, uses no-cache/offline dependency
+  validation and writes manifests atomically without clobbering. Even if the
+  dependency audit later changes, the current scope unconditionally blocks
+  acquisition, official reference execution and Apple transfer. The audit is
+  still `BLOCKED_UNRESOLVED`; the native composite and CPU/Metal parity remain
+  unavailable.
+- Chatterbox family commit `52abc35c` applies one exact blocked scope to Base,
+  Nano and Turbo, including pinned source revision, clean HEAD, approval SHA,
+  no-cache/offline audit and atomic work claims. The inspection-only
+  disposition cannot authorize later acquisition. Dependency/license review,
+  complete generation/conditioning/watermark/PCM runtime and a real transfer
+  packet remain absent, so no Apple worker or numerical verdict is claimed.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
