@@ -63,6 +63,16 @@ def canonical_digest(value: Any) -> str:
     return sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
 
 
+def file_identity(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        fail(f"missing or symlinked scope file: {path}")
+    try:
+        content = path.read_bytes()
+    except OSError as error:
+        fail(f"scope file unreadable: {path}: {error}")
+    return {"bytes": len(content), "sha256": sha256_bytes(content)}
+
+
 def read_toml(path: Path) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file():
         fail(f"missing or symlinked TOML: {path}")
@@ -188,6 +198,9 @@ def validate_license_manifest(path: Path) -> dict[str, Any]:
     for row in rows:
         if not isinstance(row, dict) or set(row) != {"name", "version", "status"} or row["status"] not in {"PENDING_PRIMARY_SOURCE_REVIEW", "APPROVED"}:
             fail("package license review row is malformed")
+    for field in ("native_payload_review", "weight_review", "source_review"):
+        if data[field] not in {"PENDING_PRIMARY_SOURCE_REVIEW", "APPROVED"}:
+            fail(f"{field} status is unknown")
     approval = data.get("approval")
     if not isinstance(approval, dict) or set(approval) != {"signer", "scope_sha256"}:
         fail("approval schema drifted")
@@ -197,23 +210,61 @@ def validate_license_manifest(path: Path) -> dict[str, Any]:
     return data
 
 
+def package_review_rows(manifest: dict[str, Any]) -> list[dict[str, str]]:
+    reviewed: list[dict[str, str]] = []
+    names: set[str] = set()
+    for row in manifest["package_review"]:
+        if not isinstance(row["name"], str) or not isinstance(row["version"], str):
+            fail("package/native license evidence has a malformed package identity")
+        if row["name"] in names:
+            fail("package/native license evidence contains a duplicate package review")
+        names.add(row["name"])
+        reviewed.append({"name": row["name"], "version": row["version"], "status": row["status"]})
+    return sorted(reviewed, key=lambda row: (row["name"], row["version"], row["status"]))
+
+
+def approval_scope(project: Path, lock: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "format": "vokra-cosyvoice2-llm-approval-scope-v1",
+        "project": {"name": PROJECT_NAME, **file_identity(project)},
+        "uv_lock": file_identity(lock),
+        "package_review": package_review_rows(manifest),
+        "review_status": {
+            "native_payload": manifest["native_payload_review"],
+            "weight": manifest["weight_review"],
+            "source": manifest["source_review"],
+        },
+        "publication": "NO_UPLOAD",
+        "identities": {
+            "model": {"repository": MODEL_REPOSITORY, "revision": MODEL_REVISION, "path": MODEL_PATH, "bytes": MODEL_BYTES, "sha256": MODEL_SHA256},
+            "qwen_config": {"path": QWEN_CONFIG_PATH, "bytes": QWEN_CONFIG_BYTES, "sha256": QWEN_CONFIG_SHA256, "git_blob_sha1": QWEN_CONFIG_BLOB_SHA1},
+            "source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "roles": SOURCE_ROLES},
+            "license": {"path": "LICENSE", "spdx": "Apache-2.0", "bytes": LICENSE_BYTES, "sha256": LICENSE_SHA256, "git_blob_sha1": LICENSE_BLOB_SHA1},
+            "tensor_manifest": {"count": TENSOR_COUNT, "sha256": TENSOR_MANIFEST_SHA256},
+        },
+    }
+
+
 def gate(project: Path, lock: Path, license_manifest: Path) -> dict[str, Any]:
     project_doc = read_toml(project)
     validate_project(project_doc)
     rows = validate_lock(read_toml(lock))
     manifest = validate_license_manifest(license_manifest)
     registry_pairs = {(name, row["version"]) for name, row in rows.items() if "registry" in row["source"]}
-    reviewed_pairs: list[tuple[str, str]] = []
-    reviewed_names: set[str] = set()
-    for row in manifest["package_review"]:
-        if not isinstance(row["name"], str) or not isinstance(row["version"], str):
-            fail("package/native license evidence has a malformed package identity")
-        if row["name"] in reviewed_names:
-            fail("package/native license evidence contains a duplicate package review")
-        reviewed_names.add(row["name"])
-        reviewed_pairs.append((row["name"], row["version"]))
+    reviewed = package_review_rows(manifest)
+    reviewed_pairs = [(row["name"], row["version"]) for row in reviewed]
     if set(reviewed_pairs) != registry_pairs or len(reviewed_pairs) != len(registry_pairs):
         fail("package/native license evidence does not cover the exact lock closure")
+    scope = approval_scope(project, lock, manifest)
+    expected_scope_sha256 = canonical_digest(scope)
+    actual_scope_sha256 = manifest["approval"]["scope_sha256"]
+    if actual_scope_sha256 is not None:
+        if not isinstance(actual_scope_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", actual_scope_sha256):
+            fail("approval scope digest is malformed")
+        if actual_scope_sha256 != expected_scope_sha256:
+            fail("approval scope digest does not match authenticated inputs")
+    elif manifest["status"] == "APPROVED" or manifest["owner_signoff"] == "OWNER_SIGNED_OFF":
+        fail("approved license gate lacks approval scope digest")
     if manifest["status"] == "APPROVED" and (
         any(row["status"] != "APPROVED" for row in manifest["package_review"])
         or manifest["native_payload_review"] != "APPROVED"
@@ -369,6 +420,49 @@ def self_test() -> None:
             assert "duplicate package review" in str(error)
         else:
             raise AssertionError("duplicate package review accepted")
+        approved_manifest = copy.deepcopy(covered_manifest)
+        approved_manifest["status"] = "APPROVED"
+        approved_manifest["owner_signoff"] = "OWNER_SIGNED_OFF"
+        approved_manifest["native_payload_review"] = "APPROVED"
+        approved_manifest["weight_review"] = "APPROVED"
+        approved_manifest["source_review"] = "APPROVED"
+        for row in approved_manifest["package_review"]:
+            row["status"] = "APPROVED"
+        approved_manifest["approval"] = {"signer": "self-test-owner", "scope_sha256": None}
+        approved_manifest["approval"]["scope_sha256"] = canonical_digest(approval_scope(here / "pyproject.toml", lock_path, approved_manifest))
+        approved_path = temp_root / "approved.json"
+        approved_path.write_text(json.dumps(approved_manifest), encoding="utf-8")
+        assert gate(here / "pyproject.toml", lock_path, approved_path)["status"] == "PASS"
+        lock_bytes = lock_path.read_bytes()
+        lock_path.write_bytes(lock_bytes + b"\n")
+        try:
+            gate(here / "pyproject.toml", lock_path, approved_path)
+        except GateError as error:
+            assert "scope digest" in str(error)
+        else:
+            raise AssertionError("lock scope drift accepted")
+        lock_path.write_bytes(lock_bytes)
+        for field in ("native_payload_review", "weight_review", "source_review"):
+            drifted = copy.deepcopy(approved_manifest)
+            drifted[field] = "PENDING_PRIMARY_SOURCE_REVIEW"
+            drifted_path = temp_root / f"{field}-drift.json"
+            drifted_path.write_text(json.dumps(drifted), encoding="utf-8")
+            try:
+                gate(here / "pyproject.toml", lock_path, drifted_path)
+            except GateError as error:
+                assert "scope digest" in str(error)
+            else:
+                raise AssertionError(f"{field} scope drift accepted")
+        wrong_version_approved = copy.deepcopy(approved_manifest)
+        wrong_version_approved["package_review"][0]["version"] = "wrong-version"
+        wrong_version_path = temp_root / "approved-wrong-version.json"
+        wrong_version_path.write_text(json.dumps(wrong_version_approved), encoding="utf-8")
+        try:
+            gate(here / "pyproject.toml", lock_path, wrong_version_path)
+        except GateError as error:
+            assert "exact lock closure" in str(error)
+        else:
+            raise AssertionError("approved package version drift accepted")
     try:
         gate(here / "pyproject.toml", here / "uv.lock", here / "license_gate_manifest.json")
     except GateError as error:
@@ -392,6 +486,7 @@ def self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--show-approval-scope", action="store_true")
     parser.add_argument("--project", type=Path, default=Path(__file__).with_name("pyproject.toml"))
     parser.add_argument("--lock", type=Path, default=Path(__file__).with_name("uv.lock"))
     parser.add_argument("--license-manifest", type=Path, default=Path(__file__).with_name("license_gate_manifest.json"))
@@ -399,6 +494,14 @@ def main() -> int:
     try:
         if args.self_test:
             self_test()
+        elif args.show_approval_scope:
+            project = args.project
+            lock = args.lock
+            manifest = validate_license_manifest(args.license_manifest)
+            validate_project(read_toml(project))
+            validate_lock(read_toml(lock))
+            scope = approval_scope(project, lock, manifest)
+            print(json.dumps({"scope": scope, "scope_sha256": canonical_digest(scope)}, sort_keys=True))
         else:
             print(json.dumps(gate(args.project, args.lock, args.license_manifest), sort_keys=True))
     except (GateError, OSError, UnicodeError) as error:
