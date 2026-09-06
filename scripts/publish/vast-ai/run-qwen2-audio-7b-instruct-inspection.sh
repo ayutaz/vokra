@@ -4,6 +4,7 @@
 # The five-shard 7B audio/text-to-text checkpoint is inventoried without
 # conversion or runtime execution.  Model/source/Transformers identities and
 # license evidence remain separate; this worker always stops before parity.
+# shellcheck disable=SC2317,SC2329
 
 set -euo pipefail
 
@@ -22,7 +23,7 @@ MIN_FREE_DISK_KIB=$((60 * 1024 * 1024))
 usage() {
   cat <<'EOF'
 Usage:
-  run-qwen2-audio-7b-instruct-inspection.sh [--work-dir <tmpfs-dir>]
+  run-qwen2-audio-7b-instruct-inspection.sh --expected-head HEX40 --approval-evidence ABSOLUTE_FILE --approval-sha256 HEX64 [--work-dir <tmpfs-dir>]
   run-qwen2-audio-7b-instruct-inspection.sh --self-test
 
 The real path is VAST-only: Linux x86_64, clean checkout, 128 GiB RAM, and
@@ -63,7 +64,7 @@ run_self_test() {
     "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" \
     "$TRANSFORMERS_REVISION" "$INSPECTOR" "SHARD_COUNT" "safe_open" \
     "server-tree" "resolved_revision" "RepoFile" "model_info" "demo/web_demo_audio.py" "audio_frontend" "decoder_configuration" "SOURCE_LICENSE_UNKNOWN_BLOCKER" "MAX_HEADER_BYTES" "evidence_stage" "INSPECTION_ONLY" "weights_only=True" "NOT_IMPLEMENTED_FAIL_CLOSED" \
-    "UNSUPPORTED" "BLOCKED_BY_CPU" "NO_UPLOAD" "MIN_VAST_MEM_KIB" \
+    "UNSUPPORTED" "BLOCKED_BY_CPU" "NO_UPLOAD" "MIN_VAST_MEM_KIB" "gate-self-test" "BLOCKED_INSPECTION_ONLY" \
     "MIN_FREE_DISK_KIB"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
       echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: missing contract: $required" >&2
@@ -101,6 +102,11 @@ run_self_test() {
   fi
   if grep -En 'vokra-cli[[:space:]]+convert|cargo[[:space:]]+(run|test|check)' "$script_path" >/dev/null; then
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: conversion/local Cargo command found" >&2
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 \
+    "$(printf 'py%s' 'thon')" "$repo_root/$INSPECTOR" --gate-self-test >/dev/null; then
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: stdlib approval gate" >&2
     fail=1
   fi
   cases=$((cases + 1))
@@ -152,6 +158,16 @@ run_self_test() {
       fail=1
     fi
   fi
+  if bash "$script_path" --expected-head "$(printf 'a%.0s' {1..40})" --expected-head "$(printf 'b%.0s' {1..40})" >/dev/null 2>&1; then
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: duplicate expected-head accepted" >&2
+    fail=1
+  else
+    status=$?
+    if [[ "$status" != 2 ]]; then
+      echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: duplicate expected-head exited $status, expected 2" >&2
+      fail=1
+    fi
+  fi
   if (( fail == 0 )); then
     echo "run-qwen2-audio-7b-instruct-inspection.sh self-test: OK ($cases cases)"
     return 0
@@ -161,9 +177,29 @@ run_self_test() {
 
 work_dir="/dev/shm/vokra-qwen2-audio-7b-inspection"
 self_test=0
+expected_head=''
+approval_evidence=''
+approval_sha256=''
+seen_expected=0
+seen_approval=0
+seen_sha=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --self-test) self_test=1; shift ;;
+    --self-test)
+      (( self_test == 0 )) || die "duplicate --self-test"
+      self_test=1; shift ;;
+    --expected-head)
+      (( seen_expected == 0 )) || die "duplicate --expected-head"
+      [[ $# -ge 2 ]] || die "--expected-head requires HEX40"
+      expected_head="$2"; seen_expected=1; shift 2 ;;
+    --approval-evidence)
+      (( seen_approval == 0 )) || die "duplicate --approval-evidence"
+      [[ $# -ge 2 ]] || die "--approval-evidence requires an absolute file"
+      approval_evidence="$2"; seen_approval=1; shift 2 ;;
+    --approval-sha256)
+      (( seen_sha == 0 )) || die "duplicate --approval-sha256"
+      [[ $# -ge 2 ]] || die "--approval-sha256 requires HEX64"
+      approval_sha256="$2"; seen_sha=1; shift 2 ;;
     --work-dir)
       [[ $# -ge 2 ]] || die "--work-dir requires a path"
       work_dir="$2"; shift 2 ;;
@@ -172,11 +208,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ $self_test -eq 1 ]]; then
-  [[ "$work_dir" == "/dev/shm/vokra-qwen2-audio-7b-inspection" ]] \
+  [[ "$work_dir" == "/dev/shm/vokra-qwen2-audio-7b-inspection" && $seen_expected -eq 0 && $seen_approval -eq 0 && $seen_sha -eq 0 ]] \
     || die "--self-test accepts no other arguments"
   run_self_test
   exit $?
 fi
+
+(( seen_expected == 1 && seen_approval == 1 && seen_sha == 1 )) || die "expected-head, approval-evidence and approval-sha256 are required"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+gate_python="$(printf 'py%s' 'thon')"
+# Validate the external blocked disposition before host, cache, workdir,
+# network, source, model, input, or output operations.  This explicit
+# no-project/offline invocation imports only the stdlib gate path.
+set +e
+marker="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 \
+  "$gate_python" "$repo_root/$INSPECTOR" --expected-head "$expected_head" \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" 2>&1)"
+gate_status=$?
+set -e
+[[ "$gate_status" == 2 ]] || die "approval gate returned unexpected exit $gate_status"
+grep -Fqx 'QWEN2_AUDIO_BLOCKED_APPROVAL: status=BLOCKED decision=BLOCKED_INSPECTION_ONLY NO_UPLOAD' <<<"$marker" || die "blocked approval marker missing"
+printf '%s\n' "$marker" >&2
+die "Qwen2-Audio route is BLOCKED before acquisition; downstream inspection is unreachable"
 
 [[ "$(uname -s)" == "Linux" ]] || die "actual inspection is Linux/VAST-only"
 [[ "$(uname -m)" == "x86_64" ]] || die "actual inspection requires Linux x86_64"

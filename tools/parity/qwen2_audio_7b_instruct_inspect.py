@@ -18,8 +18,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from safetensors import safe_open
-
 UPSTREAM_REPOSITORY = "Qwen/Qwen2-Audio-7B-Instruct"
 UPSTREAM_REVISION = "0a095220c30b7b31434169c3086508ef3ea5bf0a"
 SOURCE_REPOSITORY = "https://github.com/QwenLM/Qwen2-Audio.git"
@@ -30,6 +28,8 @@ TRANSFORMERS_REPOSITORY_PATH = "huggingface/transformers"
 TRANSFORMERS_TAG = "v4.45.0"
 TRANSFORMERS_REVISION = "2ef31dec1676249d26044a8aa8abe33dbecf0d10"
 FORMAT = "vokra-qwen2-audio-7b-instruct-inspection-v2"
+APPROVAL_SCHEMA = "vokra-qwen2-audio-7b-instruct-blocked-approval-v1"
+APPROVAL_SCOPE = "QWEN2_AUDIO_7B_INSTRUCT_INSPECTION"
 MAX_HEADER_BYTES = 64 * 1024 * 1024
 SHARD_COUNT = 5
 SHARD_NAMES = {f"model-{number:05d}-of-{SHARD_COUNT:05d}.safetensors" for number in range(1, SHARD_COUNT + 1)}
@@ -54,6 +54,83 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def external_path(raw: str, label: str, repo_root: Path, require_file: bool = False) -> Path:
+    if not isinstance(raw, str) or not raw.startswith("/") or "//" in raw or "/./" in raw or "/../" in raw or raw.endswith(("/.", "/..")):
+        raise RuntimeError(f"{label} must be an absolute dot-free path")
+    path = Path(raw)
+    if not path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts[1:]):
+        raise RuntimeError(f"{label} must be an absolute dot-free path")
+    current = Path("/")
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise RuntimeError(f"{label} contains a symlink ancestor")
+    root = repo_root.resolve()
+    resolved = path.resolve(strict=False)
+    if resolved == root or root in resolved.parents:
+        raise RuntimeError(f"{label} must be outside the checkout")
+    if path.is_symlink():
+        raise RuntimeError(f"{label} must not be a symlink")
+    if require_file and (not path.is_file() or path.is_symlink()):
+        raise RuntimeError(f"{label} must be a regular file")
+    return path
+
+
+def validate_approval(path: str, expected_head: str, expected_sha256: str, repo_root: Path) -> dict[str, Any]:
+    if len(expected_head) != 40 or any(character not in "0123456789abcdef" for character in expected_head) or len(expected_sha256) != 64 or any(character not in "0123456789abcdef" for character in expected_sha256):
+        raise RuntimeError("approval binding must use lowercase HEAD40 and SHA25664")
+    approval = external_path(path, "approval evidence", repo_root, require_file=True)
+    raw = approval.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise RuntimeError("approval evidence SHA-256 mismatch")
+    try:
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError, RuntimeError) as error:
+        raise RuntimeError(f"approval evidence is not strict UTF-8 JSON: {error}") from error
+    keys = {
+        "schema", "status", "decision", "expected_head", "upstream_repository", "upstream_revision",
+        "source_repository", "source_revision", "transformers_repository", "transformers_tag", "transformers_revision",
+        "model_license", "source_license_status", "dependency_license_status", "dataset_status",
+        "native_runtime_status", "audio_language_parity_status", "no_upload", "scope",
+    }
+    if not isinstance(data, dict) or set(data) != keys:
+        raise RuntimeError("approval schema is not exact")
+    if data.get("no_upload") is not True:
+        raise RuntimeError("approval no_upload must be a JSON boolean true")
+    expected = {
+        "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "BLOCKED_INSPECTION_ONLY",
+        "expected_head": expected_head, "upstream_repository": UPSTREAM_REPOSITORY, "upstream_revision": UPSTREAM_REVISION,
+        "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
+        "transformers_repository": TRANSFORMERS_REPOSITORY, "transformers_tag": TRANSFORMERS_TAG, "transformers_revision": TRANSFORMERS_REVISION,
+        "model_license": "APACHE-2.0", "source_license_status": "SOURCE_LICENSE_UNKNOWN_BLOCKER",
+        "dependency_license_status": "REQUIRES_PRIMARY_REVIEW", "dataset_status": "BLOCKED_UNAUTHENTICATED",
+        "native_runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "audio_language_parity_status": "NOT_RUN",
+        "no_upload": True, "scope": APPROVAL_SCOPE,
+    }
+    if data != expected:
+        raise RuntimeError("approval identity/scope/disposition mismatch")
+    return data
+
+
+def require_clean_head(expected_head: str) -> Path:
+    root = Path(__file__).resolve().parents[2]
+    if len(expected_head) != 40 or any(character not in "0123456789abcdef" for character in expected_head):
+        raise RuntimeError("expected_head must be lowercase HEX40")
+    actual = git(root, "rev-parse", "HEAD")
+    dirty = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True, stderr=subprocess.STDOUT)
+    if dirty or actual != expected_head:
+        raise RuntimeError("checkout must be clean and match --expected-head")
+    return root
+
+
+def blocked_preflight(expected_head: str, approval_evidence: str, approval_sha256: str) -> dict[str, Any]:
+    root = require_clean_head(expected_head)
+    approval = validate_approval(approval_evidence, expected_head, approval_sha256, root)
+    if approval["status"] != "BLOCKED" or approval["decision"] != "BLOCKED_INSPECTION_ONLY":
+        raise RuntimeError("only the exact blocked inspection disposition is accepted")
+    return approval
 
 
 def git_blob_sha1(path: Path) -> str:
@@ -220,6 +297,8 @@ def dtype_bytes(dtype: str) -> int:
 
 
 def inspect_safetensors(path: Path, snapshot: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    from safetensors import safe_open
+
     with path.open("rb") as stream:
         prefix = stream.read(8)
         if len(prefix) != 8:
@@ -369,6 +448,14 @@ def source_inventory(source: Path, transformers: Path) -> dict[str, Any]:
     return {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "origin": source_remote, "role_files": source_role_records, "license": source_license, "files": files_payload(source, tracked), "transformers": {"repository": TRANSFORMERS_REPOSITORY, "tag": TRANSFORMERS_TAG, "revision": TRANSFORMERS_REVISION, "origin": transformers_remote, "role_files": transformer_files, "license": transformers_license}}
 
 
+def write_exclusive(path: Path, payload: str) -> None:
+    fd = path.open("x", encoding="utf-8")
+    try:
+        fd.write(payload)
+    finally:
+        fd.close()
+
+
 def snapshot_inventory(snapshot: Path, server_tree: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     payload = load_json(server_tree)
     if not isinstance(payload, dict):
@@ -422,27 +509,27 @@ def snapshot_inventory(snapshot: Path, server_tree: Path) -> tuple[dict[str, Any
 
 
 def inspect(snapshot: Path, source: Path, transformers: Path, server_tree: Path, output: Path) -> int:
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=False)
     server_identity, files = snapshot_inventory(snapshot.resolve(), server_tree.resolve())
     hf_license = find_license(snapshot.resolve(), require_apache=True)
     parsed = parse_model_json(snapshot.resolve())
     shards, tensors = inventory_weights(snapshot.resolve())
     sources = source_inventory(source.resolve(), transformers.resolve())
-    (output / "snapshot-inventory.json").write_text(json.dumps({"server_tree": server_identity, "files": files}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "tensor-inventory.json").write_text(json.dumps({"shard_count": len(shards), "shards": shards, "tensor_count": len(tensors), "tensors": tensors}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "parsed-json.json").write_text(json.dumps(parsed, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "source-inventory.json").write_text(json.dumps(sources, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    write_exclusive(output / "snapshot-inventory.json", json.dumps({"server_tree": server_identity, "files": files}, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "tensor-inventory.json", json.dumps({"shard_count": len(shards), "shards": shards, "tensor_count": len(tensors), "tensors": tensors}, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "parsed-json.json", json.dumps(parsed, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "source-inventory.json", json.dumps(sources, sort_keys=True, indent=2) + "\n")
     packets = {name: {"bytes": (output / name).stat().st_size, "sha256": sha256(output / name)} for name in ("snapshot-inventory.json", "tensor-inventory.json", "parsed-json.json", "source-inventory.json")}
     blockers = ["dataset/training provenance is unauthenticated; no runtime or publication claim"]
     if sources["license"]["status"] == "SOURCE_LICENSE_UNKNOWN_BLOCKER":
         blockers.insert(0, "SOURCE_LICENSE_UNKNOWN_BLOCKER: official Qwen2-Audio project has no recognized license file")
     manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "task": "audio/text-to-text; not TTS", "upstream": {"repository": UPSTREAM_REPOSITORY, "revision": UPSTREAM_REVISION, "license": hf_license, "server_tree": server_identity, "files": files}, "shards": shards, "tensor_count": len(tensors), "parsed_json": parsed, "official_source": sources, "license_evidence": {"model": hf_license, "official_source": sources["license"], "transformers": sources["transformers"]["license"]}, "dataset_provenance": {"status": "BLOCKED_UNAUTHENTICATED", "reason": "dataset/training provenance was not authenticated by this inspection wave"}, "blockers": blockers, "packets": packets}
-    (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    write_exclusive(output / "manifest.json", json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     return 2
 
 
 def write_blocked(output: Path, error: Exception) -> None:
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=False)
     payload = {
         "format": FORMAT,
         "status": "BLOCKED",
@@ -459,8 +546,77 @@ def write_blocked(output: Path, error: Exception) -> None:
         "transformers": {"repository": TRANSFORMERS_REPOSITORY, "tag": TRANSFORMERS_TAG, "revision": TRANSFORMERS_REVISION},
         "blockers": [str(error)],
     }
-    (output / "manifest.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "blocker.txt").write_text(f"{type(error).__name__}: {error}\n", encoding="utf-8")
+    write_exclusive(output / "manifest.json", json.dumps(payload, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "blocker.txt", f"{type(error).__name__}: {error}\n")
+
+
+def gate_self_test() -> None:
+    head = "a" * 40
+    payload = {
+        "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "BLOCKED_INSPECTION_ONLY",
+        "expected_head": head, "upstream_repository": UPSTREAM_REPOSITORY, "upstream_revision": UPSTREAM_REVISION,
+        "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
+        "transformers_repository": TRANSFORMERS_REPOSITORY, "transformers_tag": TRANSFORMERS_TAG, "transformers_revision": TRANSFORMERS_REVISION,
+        "model_license": "APACHE-2.0", "source_license_status": "SOURCE_LICENSE_UNKNOWN_BLOCKER",
+        "dependency_license_status": "REQUIRES_PRIMARY_REVIEW", "dataset_status": "BLOCKED_UNAUTHENTICATED",
+        "native_runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "audio_language_parity_status": "NOT_RUN",
+        "no_upload": True, "scope": APPROVAL_SCOPE,
+    }
+    with tempfile.TemporaryDirectory(prefix="vokra-qwen2-audio-gate-") as directory:
+        root = Path(directory)
+        approval = root / "approval.json"
+        approval.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        path = str(approval.resolve())
+        digest = sha256(approval)
+        validate_approval(path, head, digest, Path.cwd().parent)
+        for invalid in (1, 0, "true"):
+            approval.write_text(json.dumps({**payload, "no_upload": invalid}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            try:
+                validate_approval(path, head, sha256(approval), Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("non-boolean no_upload accepted")
+        for bad_bytes in (b"{\xff", b"not-json", b'{"schema":1,"schema":2}'):
+            approval.write_bytes(bad_bytes)
+            try:
+                validate_approval(path, head, sha256(approval), Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("malformed/duplicate approval accepted")
+        approval.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        for bad in ("/tmp/../approval.json", "/tmp/./approval.json", "relative.json"):
+            try:
+                validate_approval(bad, head, digest, Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unsafe approval path accepted")
+        link = root / "approval-link.json"
+        link.symlink_to(approval)
+        try:
+            validate_approval(str(link), head, digest, Path.cwd().parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlink approval accepted")
+        with tempfile.TemporaryDirectory(prefix=".qwen2-audio-gate-", dir=Path.cwd()) as checkout_directory:
+            checkout_approval = Path(checkout_directory) / "approval.json"
+            checkout_approval.write_bytes(approval.read_bytes())
+            try:
+                validate_approval(str(checkout_approval), head, sha256(checkout_approval), Path.cwd())
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("checkout-contained approval accepted")
+        clean_head = globals()["require_clean_head"]
+        globals()["require_clean_head"] = lambda _expected: Path.cwd()  # noqa: E731 - isolated gate test injection
+        try:
+            assert blocked_preflight(head, path, sha256(approval))["status"] == "BLOCKED"
+        finally:
+            globals()["require_clean_head"] = clean_head
+    print("qwen2_audio_7b_instruct gate self-test: PASS")
 
 
 def self_test() -> None:
@@ -492,6 +648,97 @@ def self_test() -> None:
             raise AssertionError("foreign/unsafe GitHub remote was accepted")
     with tempfile.TemporaryDirectory(prefix="vokra-qwen2-audio-inspect-") as directory:
         root = Path(directory)
+        head = "a" * 40
+        approval_data = {
+            "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "BLOCKED_INSPECTION_ONLY",
+            "expected_head": head, "upstream_repository": UPSTREAM_REPOSITORY, "upstream_revision": UPSTREAM_REVISION,
+            "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
+            "transformers_repository": TRANSFORMERS_REPOSITORY, "transformers_tag": TRANSFORMERS_TAG, "transformers_revision": TRANSFORMERS_REVISION,
+            "model_license": "APACHE-2.0", "source_license_status": "SOURCE_LICENSE_UNKNOWN_BLOCKER",
+            "dependency_license_status": "REQUIRES_PRIMARY_REVIEW", "dataset_status": "BLOCKED_UNAUTHENTICATED",
+            "native_runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "audio_language_parity_status": "NOT_RUN",
+            "no_upload": True, "scope": APPROVAL_SCOPE,
+        }
+        approval = root / "approval.json"
+        approval.write_text(json.dumps(approval_data, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        approval_path = str(approval.resolve())
+        approval_digest = sha256(approval)
+        validate_approval(approval_path, head, approval_digest, Path.cwd().parent)
+        try:
+            validate_approval(approval_path, head, "0" * 64, Path.cwd().parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong approval SHA accepted")
+        for invalid in (1, 0, "true"):
+            approval.write_text(json.dumps(dict(approval_data, no_upload=invalid), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            try:
+                validate_approval(approval_path, head, sha256(approval), Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("non-boolean no_upload accepted")
+        for key, value in (("expected_head", "b" * 40), ("scope", "WRONG"), ("source_revision", "0" * 40)):
+            approval.write_text(json.dumps(dict(approval_data, **{key: value}), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            try:
+                validate_approval(approval_path, head, sha256(approval), Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("invalid approval identity accepted")
+        approval.write_bytes(b"{\xff")
+        try:
+            validate_approval(approval_path, head, sha256(approval), Path.cwd().parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("malformed UTF-8 approval accepted")
+        approval.write_bytes(b"not-json")
+        try:
+            validate_approval(approval_path, head, sha256(approval), Path.cwd().parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("malformed JSON approval accepted")
+        approval.write_text(json.dumps(approval_data, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        link = root / "approval-link.json"
+        link.symlink_to(approval)
+        try:
+            validate_approval(str(link), head, approval_digest, Path.cwd().parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlink approval accepted")
+        duplicate = root / "duplicate-approval.json"
+        duplicate.write_bytes(b'{"schema":1,"schema":2}')
+        try:
+            validate_approval(str(duplicate), head, sha256(duplicate), Path.cwd().parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("duplicate approval key accepted")
+        for bad in ("/tmp/../approval.json", "/tmp/./approval.json", "relative.json"):
+            try:
+                validate_approval(bad, head, approval_digest, Path.cwd().parent)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unsafe approval path accepted")
+        with tempfile.TemporaryDirectory(prefix=".qwen2-audio-approval-", dir=Path.cwd()) as checkout_directory:
+            checkout_approval = Path(checkout_directory) / "approval.json"
+            checkout_approval.write_bytes(approval.read_bytes())
+            try:
+                validate_approval(str(checkout_approval), head, sha256(checkout_approval), Path.cwd())
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("checkout-contained approval accepted")
+        clean_head = globals()["require_clean_head"]
+        globals()["require_clean_head"] = lambda _expected: Path.cwd()  # noqa: E731 - isolated self-test gate injection
+        try:
+            assert blocked_preflight(head, approval_path, sha256(approval))["status"] == "BLOCKED"
+        finally:
+            globals()["require_clean_head"] = clean_head
         def write_shard(path: Path, name: str, payload: bytes = b"\0\0\0\0") -> None:
             header = json.dumps({name: {"dtype": "F32", "shape": [1], "data_offsets": [0, len(payload)]}}, separators=(",", ":")).encode()
             path.write_bytes(len(header).to_bytes(8, "little") + header + payload)
@@ -707,6 +954,12 @@ def self_test() -> None:
         write_blocked(blocked, RuntimeError("fixture blocker"))
         blocked_manifest = strict_json_loads((blocked / "manifest.json").read_text(), "blocked fixture")
         assert blocked_manifest["status"] == "BLOCKED" and blocked_manifest["evidence_stage"] == "INSPECTION_ONLY"
+        try:
+            write_blocked(blocked, RuntimeError("must not clobber"))
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing blocked evidence was clobbered")
     print("qwen2_audio_7b_instruct_inspect.py self-test: OK (identity/header/json/source fail-closed contracts)")
 
 
@@ -718,12 +971,30 @@ def main() -> int:
     parser.add_argument("--server-tree", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--gate-self-test", action="store_true")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
+    if args.gate_self_test:
+        if args.self_test or any(value is not None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
+            parser.error("--gate-self-test accepts no other arguments")
+        gate_self_test()
+        return 0
     if args.self_test:
-        if any(value is not None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output)):
+        if any(value is not None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
+    if any(value is None for value in (args.expected_head, args.approval_evidence, args.approval_sha256)):
+        parser.error("--expected-head, --approval-evidence, and --approval-sha256 are required")
+    try:
+        blocked_preflight(args.expected_head, args.approval_evidence, args.approval_sha256)
+    except Exception as error:
+        print(f"QWEN2_AUDIO_BLOCKED_APPROVAL_INVALID: {type(error).__name__}: {error}", file=sys.stderr)
+        return 2
+    print("QWEN2_AUDIO_BLOCKED_APPROVAL: status=BLOCKED decision=BLOCKED_INSPECTION_ONLY NO_UPLOAD", file=sys.stderr)
+    return 2
     if any(value is None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output)):
         parser.error("--snapshot, --source, --transformers, --server-tree, and --output are required")
     try:
