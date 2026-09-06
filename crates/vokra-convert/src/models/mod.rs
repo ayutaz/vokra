@@ -194,10 +194,9 @@ pub mod knn_vc;
 pub(crate) mod kokoro;
 // SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN (CC-BY 4.0 weight,
 // AttributionRequired) safetensors → GGUF with the `vokra.kyutai_stt.*`
-// chunk group. Every F32 / F16 tensor passes through verbatim; every
-// hparam is transcribed from the upstream config.json. The upstream
-// release is BF16 and the streaming-BF16 pass-through path is a follow-up
-// (T29-equivalent — the Moshi pattern).
+// chunk group. The converter accepts exactly the official 323-tensor BF16
+// decoder-component manifest and preserves payloads verbatim; Mimi,
+// tokenizer, streaming state, and complete ASR remain separate gates.
 pub(crate) mod kyutai_stt;
 // Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up
 // (streaming S2S runtime binder — LIB.RS RULE parallel: append near

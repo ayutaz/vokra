@@ -1,31 +1,500 @@
-//! Fail-closed inspection boundary for the Kyutai STT-2.6B-EN composite.
+//! Strict Kyutai STT-2.6B-EN decoder-component conversion.
 //!
-//! The model, Mimi codec, and tokenizer form one unauthenticated runtime
-//! boundary until a real tensor binder and independent parity evidence land.
-//! Arbitrary safetensors must never become a runtime-looking GGUF.
+//! This converter accepts only the source-authenticated decoder checkpoint
+//! manifest from `kyutai/stt-2.6b-en`: 323 dense BF16 tensors, with the exact
+//! names and shapes used by the dep_q=0 decoder seam.  Mimi, the tokenizer,
+//! streaming state, and whole-file identity remain separate runtime gates;
+//! this output is intentionally not a complete ASR model.
 
-use vokra_core::gguf::GgufBuilder;
+use vokra_core::LicenseClass;
+use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 
 use crate::ConvertError;
+use crate::safetensors::SafetensorsFile;
 
-/// Compatibility report retained by the generic converter dispatch API.
+pub(crate) const ARCH: &str = "kyutai-stt";
+pub(crate) const NAME: &str = "kyutai-stt-2.6b-en";
+
+const SAMPLE_RATE: u32 = 24_000;
+const BB_N_LAYER: u32 = 48;
+const BB_D_MODEL: u32 = 2048;
+const BB_N_HEAD: u32 = 32;
+const BB_HIDDEN_SCALE: f32 = 4.125;
+const BB_FFN_HIDDEN: u32 = 5632;
+const BB_CONTEXT: u32 = 375;
+const BB_ROPE_MAX_PERIOD: f32 = 100_000.0;
+const BB_CAUSAL: u32 = 1;
+const BB_RMS_NORM_EPS: f32 = 1e-8;
+const DEP_N_LAYER: u32 = 6;
+const DEP_D_MODEL: u32 = 1024;
+const DEP_N_HEAD: u32 = 16;
+const DEP_MULTI_LINEAR: u32 = 1;
+const DEP_WEIGHTS_PER_STEP: u32 = 1;
+const N_Q: u32 = 32;
+const DEP_Q: u32 = 0;
+const AUDIO_CARD: u32 = 2048;
+const TEXT_CARD: u32 = 4000;
+const TEXT_PAD_ID: u32 = 3;
+const AUDIO_DELAY_SECS: f32 = 2.5;
+const AUDIO_SILENCE_PREFIX_SECS: f32 = 1.0;
+const N_DELAYS: u32 = 33;
+
+const PROVENANCE_LICENSE: &str = "cc-by-4.0";
+const PROVENANCE_MODEL_ID: &str = "kyutai/stt-2.6b-en";
+const PROVENANCE_SOURCE: &str = "https://huggingface.co/kyutai/stt-2.6b-en";
+const ATTRIBUTION: &str = "This application uses the Kyutai STT-2.6B-EN model (decoder-only English streaming ASR over Mimi audio tokens). Model weights are licensed under CC-BY 4.0 (attribution required; commercial use permitted). Copyright (c) Kyutai. Source: https://github.com/kyutai-labs/delayed-streams-modeling / https://huggingface.co/kyutai/stt-2.6b-en";
+
+const KEY_SAMPLE_RATE: &str = "vokra.kyutai_stt.sample_rate";
+const KEY_BB_N_LAYER: &str = "vokra.kyutai_stt.arch.backbone.n_layer";
+const KEY_BB_D_MODEL: &str = "vokra.kyutai_stt.arch.backbone.d_model";
+const KEY_BB_N_HEAD: &str = "vokra.kyutai_stt.arch.backbone.n_head";
+const KEY_BB_HIDDEN_SCALE: &str = "vokra.kyutai_stt.arch.backbone.hidden_scale";
+const KEY_BB_FFN_HIDDEN: &str = "vokra.kyutai_stt.arch.backbone.ffn_hidden";
+const KEY_BB_CONTEXT: &str = "vokra.kyutai_stt.arch.backbone.context";
+const KEY_BB_ROPE_MAX_PERIOD: &str = "vokra.kyutai_stt.arch.backbone.rope_max_period";
+const KEY_BB_CAUSAL: &str = "vokra.kyutai_stt.arch.backbone.causal";
+const KEY_BB_RMS_NORM_EPS: &str = "vokra.kyutai_stt.arch.backbone.rms_norm_eps";
+const KEY_DEP_N_LAYER: &str = "vokra.kyutai_stt.arch.depformer.n_layer";
+const KEY_DEP_D_MODEL: &str = "vokra.kyutai_stt.arch.depformer.d_model";
+const KEY_DEP_N_HEAD: &str = "vokra.kyutai_stt.arch.depformer.n_head";
+const KEY_DEP_MULTI_LINEAR: &str = "vokra.kyutai_stt.arch.depformer.multi_linear";
+const KEY_DEP_WEIGHTS_PER_STEP: &str = "vokra.kyutai_stt.arch.depformer.weights_per_step";
+const KEY_N_Q: &str = "vokra.kyutai_stt.audio.n_q";
+const KEY_DEP_Q: &str = "vokra.kyutai_stt.audio.dep_q";
+const KEY_AUDIO_CARD: &str = "vokra.kyutai_stt.audio.card";
+const KEY_TEXT_CARD: &str = "vokra.kyutai_stt.text.card";
+const KEY_TEXT_PAD_ID: &str = "vokra.kyutai_stt.text.pad_id";
+const KEY_AUDIO_DELAY_SECS: &str = "vokra.kyutai_stt.stream.audio_delay_seconds";
+const KEY_AUDIO_SILENCE_PREFIX_SECS: &str = "vokra.kyutai_stt.stream.audio_silence_prefix_seconds";
+const KEY_N_DELAYS: &str = "vokra.kyutai_stt.n_delays";
+const PREFIX_DELAY: &str = "vokra.kyutai_stt.delay.";
+
+/// Conversion accounting retained by the generic converter dispatch API.
 #[derive(Debug, Default)]
 pub(crate) struct KyutaiSttReport {
-    /// Number of float tensors written by a successful conversion.
+    /// Number of exact-manifest tensors written verbatim as BF16.
     pub(crate) written: usize,
-    /// Number of non-float tensors skipped by a successful conversion.
+    /// Always zero for this strict converter; non-BF16 input is rejected.
     pub(crate) skipped_non_float: usize,
-    /// Number of BF16 tensors passed through by a successful conversion.
-    #[allow(dead_code)] // Reserved for the future authenticated conversion.
+    /// Number of BF16 tensors written verbatim.
     pub(crate) bf16_passthrough: usize,
-    /// Conversion diagnostics retained for dispatch compatibility.
+    /// Operator-facing diagnostics.
     pub(crate) notes: Vec<String>,
 }
 
-/// Refuse conversion until the fixed six-file release and native binder are
-/// independently authenticated.
-pub(crate) fn convert(_bytes: Vec<u8>) -> Result<(GgufBuilder, KyutaiSttReport), ConvertError> {
-    Err(ConvertError::Usage(
-        "Kyutai STT-2.6B-EN conversion is INSPECTION_ONLY: authenticated model/Mimi/tokenizer binder and parity are not implemented; no GGUF was produced".to_owned(),
-    ))
+type TensorSpec = (String, Vec<u64>);
+
+fn checked_mul(label: &str, lhs: usize, rhs: usize) -> Result<usize, ConvertError> {
+    lhs.checked_mul(rhs)
+        .ok_or_else(|| ConvertError::Parse(format!("{label} overflows: {lhs} * {rhs}")))
+}
+
+fn checked_add(label: &str, lhs: usize, rhs: usize) -> Result<usize, ConvertError> {
+    lhs.checked_add(rhs)
+        .ok_or_else(|| ConvertError::Parse(format!("{label} overflows: {lhs} + {rhs}")))
+}
+
+fn axis(value: usize, label: &str) -> Result<u64, ConvertError> {
+    u64::try_from(value)
+        .map_err(|_| ConvertError::Parse(format!("{label} does not fit in u64: {value}")))
+}
+
+fn matrix(rows: usize, cols: usize, label: &str) -> Result<Vec<u64>, ConvertError> {
+    let _ = checked_mul(label, rows, cols)?;
+    Ok(vec![axis(rows, label)?, axis(cols, label)?])
+}
+
+fn expected_specs() -> Result<Vec<TensorSpec>, ConvertError> {
+    let d_model = usize::try_from(BB_D_MODEL)
+        .map_err(|_| ConvertError::Parse("d_model does not fit usize".into()))?;
+    let n_layers = usize::try_from(BB_N_LAYER)
+        .map_err(|_| ConvertError::Parse("n_layer does not fit usize".into()))?;
+    let audio_rows = usize::try_from(AUDIO_CARD)
+        .map_err(|_| ConvertError::Parse("audio card does not fit usize".into()))?;
+    let text_rows = usize::try_from(TEXT_CARD)
+        .map_err(|_| ConvertError::Parse("text card does not fit usize".into()))?;
+    let audio_rows = checked_add("audio embedding rows", audio_rows, 1)?;
+    let text_rows = checked_add("text embedding rows", text_rows, 1)?;
+    let qkv_rows = checked_mul("QKV rows", 3, d_model)?;
+    let ffn_hidden = usize::try_from(BB_FFN_HIDDEN)
+        .map_err(|_| ConvertError::Parse("FFN hidden does not fit usize".into()))?;
+    let ffn_rows = checked_mul("gating input rows", 2, ffn_hidden)?;
+    let per_layer = 6usize;
+    let layer_tensors = checked_mul("layer tensor count", per_layer, n_layers)?;
+    let n_q =
+        usize::try_from(N_Q).map_err(|_| ConvertError::Parse("n_q does not fit usize".into()))?;
+    let count = checked_add("manifest tensor count", 1, n_q)?;
+    let count = checked_add("manifest tensor count", count, layer_tensors)?;
+    let count = checked_add("manifest tensor count", count, 2)?;
+    let text_output_rows = text_rows
+        .checked_sub(1)
+        .ok_or_else(|| ConvertError::Parse("text output vocabulary rows underflow".into()))?;
+    let mut specs = Vec::with_capacity(count);
+    specs.push((
+        "text_emb.weight".to_owned(),
+        matrix(text_rows, d_model, "text embedding shape")?,
+    ));
+    for i in 0..N_Q {
+        specs.push((
+            format!("emb.{i}.weight"),
+            matrix(audio_rows, d_model, "audio embedding shape")?,
+        ));
+    }
+    for layer in 0..n_layers {
+        let prefix = format!("transformer.layers.{layer}");
+        specs.push((
+            format!("{prefix}.self_attn.in_proj_weight"),
+            matrix(qkv_rows, d_model, "attention input projection shape")?,
+        ));
+        specs.push((
+            format!("{prefix}.self_attn.out_proj.weight"),
+            matrix(d_model, d_model, "attention output projection shape")?,
+        ));
+        specs.push((
+            format!("{prefix}.gating.linear_in.weight"),
+            matrix(ffn_rows, d_model, "gating input projection shape")?,
+        ));
+        specs.push((
+            format!("{prefix}.gating.linear_out.weight"),
+            matrix(d_model, ffn_hidden, "gating output projection shape")?,
+        ));
+        specs.push((
+            format!("{prefix}.norm1.alpha"),
+            vec![axis(d_model, "norm shape")?],
+        ));
+        specs.push((
+            format!("{prefix}.norm2.alpha"),
+            vec![axis(d_model, "norm shape")?],
+        ));
+    }
+    specs.push((
+        "out_norm.alpha".to_owned(),
+        vec![axis(d_model, "output norm shape")?],
+    ));
+    specs.push((
+        "text_linear.weight".to_owned(),
+        matrix(text_output_rows, d_model, "text output projection shape")?,
+    ));
+    Ok(specs)
+}
+
+fn validate_names(actual: &[String], expected: &[TensorSpec]) -> Result<(), ConvertError> {
+    let mut actual_names = actual.to_vec();
+    actual_names.sort_unstable();
+    let mut expected_names: Vec<&str> = expected.iter().map(|(name, _)| name.as_str()).collect();
+    expected_names.sort_unstable();
+    if actual_names.len() != expected_names.len() {
+        return Err(ConvertError::Parse(format!(
+            "Kyutai decoder tensor manifest has {} entries; expected {}",
+            actual_names.len(),
+            expected_names.len()
+        )));
+    }
+    for (actual, expected) in actual_names.iter().zip(expected_names.iter()) {
+        if actual.as_str() != *expected {
+            return Err(ConvertError::Parse(format!(
+                "Kyutai decoder tensor manifest mismatch: got `{actual}`, expected `{expected}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn checked_element_count(shape: &[u64], name: &str) -> Result<usize, ConvertError> {
+    shape.iter().try_fold(1usize, |count, axis| {
+        let axis = usize::try_from(*axis)
+            .map_err(|_| ConvertError::Parse(format!("tensor `{name}` axis does not fit usize")))?;
+        checked_mul("tensor element count", count, axis)
+    })
+}
+
+fn validate_payload(
+    name: &str,
+    dtype: GgmlType,
+    shape: &[u64],
+    bytes: &[u8],
+    expected_shape: &[u64],
+) -> Result<(), ConvertError> {
+    if dtype != GgmlType::BF16 {
+        return Err(ConvertError::Parse(format!(
+            "Kyutai decoder tensor `{name}` has dtype {dtype:?}; only BF16 is accepted"
+        )));
+    }
+    if shape != expected_shape {
+        return Err(ConvertError::Parse(format!(
+            "Kyutai decoder tensor `{name}` has shape {shape:?}; expected {expected_shape:?}"
+        )));
+    }
+    let elements = checked_element_count(shape, name)?;
+    let expected_bytes = checked_mul("BF16 payload size", elements, 2)?;
+    if bytes.len() != expected_bytes {
+        return Err(ConvertError::Parse(format!(
+            "Kyutai decoder tensor `{name}` has {} payload bytes; expected {expected_bytes}",
+            bytes.len()
+        )));
+    }
+    for pair in bytes.chunks_exact(2) {
+        let bits = u16::from_le_bytes([pair[0], pair[1]]);
+        let value = f32::from_bits(u32::from(bits) << 16);
+        if !value.is_finite() {
+            return Err(ConvertError::Parse(format!(
+                "Kyutai decoder tensor `{name}` contains a non-finite BF16 value"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn write_hparams(builder: &mut GgufBuilder) {
+    builder.add_u32(KEY_SAMPLE_RATE, SAMPLE_RATE);
+    builder.add_u32(KEY_BB_N_LAYER, BB_N_LAYER);
+    builder.add_u32(KEY_BB_D_MODEL, BB_D_MODEL);
+    builder.add_u32(KEY_BB_N_HEAD, BB_N_HEAD);
+    builder.add_f32(KEY_BB_HIDDEN_SCALE, BB_HIDDEN_SCALE);
+    builder.add_u32(KEY_BB_FFN_HIDDEN, BB_FFN_HIDDEN);
+    builder.add_u32(KEY_BB_CONTEXT, BB_CONTEXT);
+    builder.add_f32(KEY_BB_ROPE_MAX_PERIOD, BB_ROPE_MAX_PERIOD);
+    builder.add_u32(KEY_BB_CAUSAL, BB_CAUSAL);
+    builder.add_f32(KEY_BB_RMS_NORM_EPS, BB_RMS_NORM_EPS);
+    builder.add_u32(KEY_DEP_N_LAYER, DEP_N_LAYER);
+    builder.add_u32(KEY_DEP_D_MODEL, DEP_D_MODEL);
+    builder.add_u32(KEY_DEP_N_HEAD, DEP_N_HEAD);
+    builder.add_u32(KEY_DEP_MULTI_LINEAR, DEP_MULTI_LINEAR);
+    builder.add_u32(KEY_DEP_WEIGHTS_PER_STEP, DEP_WEIGHTS_PER_STEP);
+    builder.add_u32(KEY_N_Q, N_Q);
+    builder.add_u32(KEY_DEP_Q, DEP_Q);
+    builder.add_u32(KEY_AUDIO_CARD, AUDIO_CARD);
+    builder.add_u32(KEY_TEXT_CARD, TEXT_CARD);
+    builder.add_u32(KEY_TEXT_PAD_ID, TEXT_PAD_ID);
+    builder.add_f32(KEY_AUDIO_DELAY_SECS, AUDIO_DELAY_SECS);
+    builder.add_f32(KEY_AUDIO_SILENCE_PREFIX_SECS, AUDIO_SILENCE_PREFIX_SECS);
+    builder.add_u32(KEY_N_DELAYS, N_DELAYS);
+    for index in 0..N_DELAYS {
+        builder.add_u32(&format!("{PREFIX_DELAY}{index}"), 0);
+    }
+}
+
+fn component_builder() -> GgufBuilder {
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    write_hparams(&mut builder);
+    vokra_core::stamp_provenance(
+        &mut builder,
+        LicenseClass::AttributionRequired,
+        PROVENANCE_LICENSE,
+        Some(PROVENANCE_MODEL_ID),
+        Some(PROVENANCE_SOURCE),
+    );
+    vokra_core::stamp_attribution(&mut builder, ATTRIBUTION);
+    builder
+}
+
+/// Convert the authenticated decoder component, preserving every BF16 payload
+/// verbatim. No scalar or tensor defaults are synthesized.
+pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KyutaiSttReport), ConvertError> {
+    let safetensors = SafetensorsFile::parse(bytes)?;
+    let expected = expected_specs()?;
+    let actual_names: Vec<String> = safetensors
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.clone())
+        .collect();
+    validate_names(&actual_names, &expected)?;
+
+    let mut builder = component_builder();
+
+    let mut report = KyutaiSttReport::default();
+    for tensor in safetensors.tensors() {
+        let expected_shape = expected
+            .iter()
+            .find(|(name, _)| name == &tensor.name)
+            .map(|(_, shape)| shape.as_slice())
+            .ok_or_else(|| {
+                ConvertError::Parse(format!(
+                    "unexpected Kyutai decoder tensor `{}`",
+                    tensor.name
+                ))
+            })?;
+        let payload = safetensors.tensor_bytes(tensor);
+        validate_payload(
+            &tensor.name,
+            tensor.dtype,
+            &tensor.shape,
+            payload,
+            expected_shape,
+        )?;
+        builder.add_tensor(
+            &tensor.name,
+            GgmlType::BF16,
+            tensor.shape.clone(),
+            payload.to_vec(),
+        )?;
+        report.written += 1;
+        report.bf16_passthrough += 1;
+    }
+    report.notes.push(
+        "decoder-component-only: 323 BF16 tensors preserved verbatim; Mimi, tokenizer, streaming state, and public ASR remain fail-closed".to_owned(),
+    );
+    Ok((builder, report))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+
+    #[test]
+    fn official_decoder_manifest_is_exactly_323_tensors() {
+        let specs = expected_specs().expect("manifest");
+        assert_eq!(specs.len(), 323);
+        assert_eq!(specs[0], ("text_emb.weight".to_owned(), vec![4001, 2048]));
+        assert_eq!(
+            specs[33],
+            (
+                "transformer.layers.0.self_attn.in_proj_weight".to_owned(),
+                vec![6144, 2048]
+            )
+        );
+        assert_eq!(
+            specs[35],
+            (
+                "transformer.layers.0.gating.linear_in.weight".to_owned(),
+                vec![11264, 2048]
+            )
+        );
+        assert_eq!(
+            specs[36],
+            (
+                "transformer.layers.0.gating.linear_out.weight".to_owned(),
+                vec![2048, 5632]
+            )
+        );
+        assert_eq!(
+            specs[322],
+            ("text_linear.weight".to_owned(), vec![4000, 2048])
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_missing_extra_and_duplicate_names() {
+        let expected = expected_specs().expect("manifest");
+        let mut names: Vec<String> = expected.iter().map(|(name, _)| name.clone()).collect();
+        names.pop();
+        assert!(validate_names(&names, &expected).is_err());
+        names.push("unexpected.weight".to_owned());
+        assert!(validate_names(&names, &expected).is_err());
+        names[0] = names[1].clone();
+        assert!(validate_names(&names, &expected).is_err());
+    }
+
+    #[test]
+    fn payload_gate_rejects_wrong_dtype_shape_size_and_nonfinite_bf16() {
+        let shape = vec![2, 2];
+        let finite = [0u8; 8];
+        assert!(validate_payload("x", GgmlType::F32, &shape, &finite, &shape).is_err());
+        assert!(validate_payload("x", GgmlType::BF16, &[4, 1], &finite, &shape).is_err());
+        assert!(validate_payload("x", GgmlType::BF16, &shape, &[0u8; 2], &shape).is_err());
+        let nan = 0x7fc0u16.to_le_bytes();
+        let nonfinite = [nan[0], nan[1], 0, 0, 0, 0, 0, 0];
+        assert!(validate_payload("x", GgmlType::BF16, &shape, &nonfinite, &shape).is_err());
+    }
+
+    #[test]
+    fn provenance_and_fixed_config_are_canonical() {
+        assert_eq!(ARCH, "kyutai-stt");
+        assert_eq!(NAME, "kyutai-stt-2.6b-en");
+        assert_eq!(PROVENANCE_LICENSE, "cc-by-4.0");
+        assert_eq!(
+            LicenseClass::AttributionRequired.as_str(),
+            "attribution-required"
+        );
+        assert_eq!(PROVENANCE_MODEL_ID, "kyutai/stt-2.6b-en");
+        assert_eq!(
+            PROVENANCE_SOURCE,
+            "https://huggingface.co/kyutai/stt-2.6b-en"
+        );
+        assert_eq!(BB_FFN_HIDDEN, 5632);
+        assert_eq!(DEP_Q, 0);
+        assert_eq!(N_DELAYS, 33);
+    }
+
+    #[test]
+    fn emitted_metadata_is_strict_and_component_scoped() {
+        let builder = component_builder();
+        let file = GgufFile::parse(builder.to_bytes().expect("metadata-only GGUF"))
+            .expect("parse metadata-only GGUF");
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str()),
+            Some(ARCH)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str()),
+            Some(NAME)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|value| value.as_str()),
+            Some(PROVENANCE_LICENSE)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|value| value.as_str()),
+            Some("attribution-required")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|value| value.as_str()),
+            Some(PROVENANCE_MODEL_ID)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_SOURCE)
+                .and_then(|value| value.as_str()),
+            Some(PROVENANCE_SOURCE)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_ATTRIBUTION)
+                .and_then(|value| value.as_str()),
+            Some(ATTRIBUTION)
+        );
+        for (key, value) in [
+            (KEY_SAMPLE_RATE, SAMPLE_RATE),
+            (KEY_BB_N_LAYER, BB_N_LAYER),
+            (KEY_BB_D_MODEL, BB_D_MODEL),
+            (KEY_BB_N_HEAD, BB_N_HEAD),
+            (KEY_BB_FFN_HIDDEN, BB_FFN_HIDDEN),
+            (KEY_BB_CONTEXT, BB_CONTEXT),
+            (KEY_BB_CAUSAL, BB_CAUSAL),
+            (KEY_DEP_N_LAYER, DEP_N_LAYER),
+            (KEY_DEP_D_MODEL, DEP_D_MODEL),
+            (KEY_DEP_N_HEAD, DEP_N_HEAD),
+            (KEY_DEP_MULTI_LINEAR, DEP_MULTI_LINEAR),
+            (KEY_DEP_WEIGHTS_PER_STEP, DEP_WEIGHTS_PER_STEP),
+            (KEY_N_Q, N_Q),
+            (KEY_DEP_Q, DEP_Q),
+            (KEY_AUDIO_CARD, AUDIO_CARD),
+            (KEY_TEXT_CARD, TEXT_CARD),
+            (KEY_TEXT_PAD_ID, TEXT_PAD_ID),
+            (KEY_N_DELAYS, N_DELAYS),
+        ] {
+            assert_eq!(file.get(key), Some(&GgufMetadataValue::U32(value)), "{key}");
+        }
+        for (key, value) in [
+            (KEY_BB_HIDDEN_SCALE, BB_HIDDEN_SCALE),
+            (KEY_BB_ROPE_MAX_PERIOD, BB_ROPE_MAX_PERIOD),
+            (KEY_BB_RMS_NORM_EPS, BB_RMS_NORM_EPS),
+            (KEY_AUDIO_DELAY_SECS, AUDIO_DELAY_SECS),
+            (KEY_AUDIO_SILENCE_PREFIX_SECS, AUDIO_SILENCE_PREFIX_SECS),
+        ] {
+            assert_eq!(file.get(key), Some(&GgufMetadataValue::F32(value)), "{key}");
+        }
+        for index in 0..N_DELAYS {
+            assert_eq!(
+                file.get(&format!("{PREFIX_DELAY}{index}")),
+                Some(&GgufMetadataValue::U32(0))
+            );
+        }
+    }
 }

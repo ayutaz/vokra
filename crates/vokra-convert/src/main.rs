@@ -75,8 +75,9 @@ OPTIONS:
                        tensor manifest and folds positional-conv weight norm),
                        zonos (Zyphra Zonos-v0.1-transformer safetensors —
                        SoTA plan Phase 1-5), kyutai-stt (Kyutai
-                       STT-2.6B-EN decoder-only English streaming ASR
-                       over Mimi tokens — SoTA plan Phase 2; weight
+                       STT-2.6B-EN decoder component over precomputed Mimi
+                       tokens (not a complete PCM/transcription ASR artifact)
+                       — SoTA plan Phase 2; weight
                        license = CC-BY 4.0 attribution required), or
                        parakeet-tdt (NVIDIA Parakeet-TDT-0.6B-v3 English
                        ASR — FastConformer encoder + TDT decoder — SoTA

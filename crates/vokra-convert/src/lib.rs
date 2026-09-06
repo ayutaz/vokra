@@ -200,10 +200,10 @@ pub enum ModelKind {
     /// (`AttributionRequired` — the converter stamps the FR-MD-09
     /// attribution text). Every hparam is transcribed verbatim from
     /// `huggingface.co/kyutai/stt-2.6b-en/raw/main/config.json`. The
-    /// upstream release is BF16 (~5.2 GB) and the streaming-BF16
-    /// pass-through path is a follow-up (T29-equivalent — the Moshi
-    /// pattern); this M2-13-preserving path handles F32 / F16 checkpoints
-    /// today and skips BF16 with the loud "no float tensors" note.
+    /// upstream release is BF16 (~5.2 GB); this converter accepts only its
+    /// exact 323-tensor decoder-component manifest and preserves BF16 bytes
+    /// verbatim. Mimi, tokenizer, streaming state, and complete PCM/text ASR
+    /// remain separate fail-closed runtime and parity gates.
     KyutaiStt,
     /// NVIDIA **Parakeet-TDT-0.6B-v3** safetensors checkpoint (SoTA
     /// plan Phase 2, 2026-07-24). English ASR: a FastConformer encoder
@@ -7376,15 +7376,13 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::KyutaiStt => {
-            // SoTA plan Phase 2: pass every F32/F16 tensor through verbatim
-            // and stamp the `vokra.kyutai_stt.*` chunk group (backbone +
-            // depformer + audio + text + streaming + delays) from the
-            // primary-source constants transcribed in `models::kyutai_stt`.
-            // Provenance = CC-BY 4.0 (AttributionRequired) + FR-MD-09
-            // attribution text.
+            // Strict decoder-component conversion: accept exactly the pinned
+            // 323 BF16 tensors, preserve their bytes, and stamp the complete
+            // `vokra.kyutai_stt.*` contract. Mimi, tokenizer, streaming state,
+            // and public PCM/transcription ASR remain separate gates.
             let (builder, report) = models::kyutai_stt::convert(bytes)?;
             let mut notes = vec![format!(
-                "kyutai-stt: {} float weights written verbatim, {} non-float skipped",
+                "kyutai-stt decoder component: {} BF16 weights written verbatim, {} non-BF16 skipped",
                 report.written, report.skipped_non_float,
             )];
             notes.extend(
@@ -14335,19 +14333,20 @@ pub fn convert_zonos_file(input: &Path, output: &Path) -> Result<ConvertSummary,
 /// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
 /// is functionally identical to
 /// `convert_file(ModelKind::KyutaiStt, input, output)` — Kyutai STT has
-/// no side-car config or tokenizer to embed at this scaffold stage (every
-/// hparam is transcribed as constants in `models::kyutai_stt`; the
-/// SentencePiece tokenizer + Mimi codec ride separate GGUFs) — but the
+/// no side-car config or tokenizer is embedded: every hparam is fixed by the
+/// authenticated decoder-component contract in `models::kyutai_stt`; the
+/// SentencePiece tokenizer + Mimi codec ride separate GGUFs — but the
 /// named entry keeps the `convert_*_file` naming symmetry with the other
 /// ASR / TTS models.
 ///
 /// The upstream Kyutai STT release ships raw safetensors (all BF16, ~5.2
-/// GB); BF16 currently reaches the `skipped_non_float` counter and the
-/// converter surfaces the "no float tensors" loud note — the
-/// streaming-BF16 pass-through path is a follow-up wave (T29-equivalent,
-/// the Moshi pattern). Provenance is stamped **CC-BY 4.0**
-/// (`AttributionRequired`) and the FR-MD-09 attribution surface
-/// activates so a downstream must show the Kyutai attribution.
+/// GB). This path accepts only the exact 323-tensor BF16 decoder component
+/// manifest and preserves each payload verbatim. It does not embed Mimi or
+/// the tokenizer and does not claim complete PCM/transcription ASR: runtime
+/// binding, streaming state, and independent parity remain separate gates.
+/// Provenance is stamped **CC-BY 4.0** (`AttributionRequired`) and the
+/// FR-MD-09 attribution surface activates so a downstream must show the
+/// Kyutai attribution.
 pub fn convert_kyutai_stt_file(
     input: &Path,
     output: &Path,
