@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from voxcpm_0_5b_gate import require_blocked_gate, self_test as gate_self_test
+
 HF_REPOSITORY = "openbmb/VoxCPM-0.5B"
 HF_REVISION = "e95e62437bb940c8aeb9f26dc3169d436d2bb455"
 SOURCE_REPOSITORY = "https://github.com/OpenBMB/VoxCPM.git"
@@ -142,6 +144,10 @@ def prepare(main: Path, audiovae: Path, output: Path) -> None:
 
 
 def self_test() -> None:
+    gate_self_test(
+        Path(__file__), "require_blocked_gate(args.expected_head", "if not all((args.main",
+        ["--main", "/missing-main", "--audiovae", "/missing-audiovae", "--output", "/missing-output"],
+    )
     rows = [{"name": "a", "shape": [2], "dtype": "torch.float32", "elements": 2}]
     assert canonical_manifest(rows) == canonical_manifest(rows)
     assert HF_REVISION == "e95e62437bb940c8aeb9f26dc3169d436d2bb455"
@@ -156,10 +162,18 @@ def main() -> int:
     parser.add_argument("--main", type=Path)
     parser.add_argument("--audiovae", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, Path(__file__).resolve().parents[2])
+    except Exception as error:  # the current composite is deliberately blocked before any input handling
+        print(f"voxcpm_0_5b_prepare_checkpoint: BLOCKED: {error}", file=sys.stderr)
+        return 2
     if not all((args.main, args.audiovae, args.output)):
         parser.error("--main, --audiovae and --output are required")
     if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():

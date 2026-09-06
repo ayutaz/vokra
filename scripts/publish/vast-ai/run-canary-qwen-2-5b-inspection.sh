@@ -11,9 +11,11 @@ SOURCE_REVISION="ddcb2d6935045a556329f1afa653b8d918c36479"
 TOKENIZER_REPOSITORY="Qwen/Qwen3-1.7B"
 TOKENIZER_REVISION="70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 INSPECTOR="tools/parity/canary_qwen_2_5b_inspect.py"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TOKENIZER_COMPLETE_FILES=".gitattributes LICENSE README.md config.json generation_config.json merges.txt model-00001-of-00002.safetensors model-00002-of-00002.safetensors model.safetensors.index.json tokenizer.json tokenizer_config.json vocab.json"
 TOKENIZER_SELECTED_FILES="LICENSE README.md config.json generation_config.json merges.txt tokenizer.json tokenizer_config.json vocab.json"
 UV_CMD=(uv run --frozen --project tools/parity --python 3.12 python)
+UV_GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python)
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_TMPFS_KIB=$((32 * 1024 * 1024))
 
@@ -55,14 +57,14 @@ require_absent_work_dir() {
 
 self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0 required status tmp
-  root="$(cd "$(dirname "$self")/../../.." && pwd)"
+  root="$ROOT"
   [[ -f "$root/$INSPECTOR" ]] || die "inspector missing"
   for required in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_TAG" "$SOURCE_REVISION" "$TOKENIZER_REPOSITORY" "$TOKENIZER_REVISION" "$TOKENIZER_COMPLETE_FILES" "$TOKENIZER_SELECTED_FILES" "$INSPECTOR" "MODEL_FILES" "MODEL_REQUIRED_FILES" "MAX_HEADER_BYTES" "INSPECTION_ONLY" "BLOCKED" "NO_UPLOAD" "local_dir" ".cache" "git_blob_sha1" "lfs_sha256" "inspection_status" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR"; do
     if ! grep -Fq -- "$required" "$self" && ! grep -Fq -- "$required" "$root/$INSPECTOR"; then
       echo "self-test FAIL: missing $required" >&2; fail=1
     fi
   done
-  for required in 'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' 'findmnt' 'git status --porcelain --untracked-files=all' 'snapshot_download' 'model_info' 'CARGO_BUILD_JOBS' 'cargo fmt --all -- --check' 'cargo metadata --locked --no-deps --format-version 1'; do
+  for required in 'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' 'findmnt' 'git status --porcelain --untracked-files=all' 'snapshot_download' 'model_info' 'CARGO_BUILD_JOBS' 'cargo fmt --all -- --check' 'cargo metadata --locked --no-deps --format-version 1' '--validate-approval' 'BLOCKED_UNREVIEWED' 'NO_UPLOAD' 'expected-head' 'approval-sha256'; do
     if ! grep -Fq -- "$required" "$self"; then echo "self-test FAIL: missing VAST gate $required" >&2; fail=1; fi
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|hf_hub_upload|upload_file|vokra-cli[[:space:]]+convert|cargo[[:space:]]+(run|test|check|build))([[:space:]]|$)' "$self" >/dev/null; then
@@ -73,6 +75,8 @@ self_test() {
   local selector_bad="${selector_prefix}rows]"
   if grep -Fq "$selector_bad" "$self" || ! grep -Fq "${selector_prefix}selected]" "$self"; then echo "self-test FAIL: download selector is not selected-row bound" >&2; fail=1; fi
   if [[ "$(normalize_origin 'https://github.com/NVIDIA/NeMo.git/')" != "https://github.com/NVIDIA/NeMo" || "$(normalize_origin "$SOURCE_REPOSITORY")" != "https://github.com/NVIDIA/NeMo" ]]; then echo "self-test FAIL: origin normalization contract" >&2; fail=1; fi
+  if ! grep -Fq 'UV_GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python)' "$self"; then echo "self-test FAIL: stdlib offline gate missing" >&2; fail=1; fi
+  UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" "$root/$INSPECTOR" --self-test >/dev/null || fail=1
   if bash "$self" --self-test --work-dir /tmp/canary-qwen-self-test >/dev/null 2>&1; then
     echo "self-test FAIL: extra argument accepted" >&2; fail=1
   else
@@ -89,24 +93,37 @@ self_test() {
   (( fail == 0 )) && echo "run-canary-qwen-2-5b-inspection.sh self-test: OK" || return 1
 }
 
-work_dir="/dev/shm/vokra-canary-qwen-2-5b-inspection"; self=0; seen_self=0; seen_work=0
+work_dir="/dev/shm/vokra-canary-qwen-2-5b-inspection"; self=0; seen_self=0; seen_work=0; expected_head=''; approval_evidence=''; approval_sha256=''; seen_head=0; seen_approval=0; seen_sha=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --self-test) (( seen_self == 0 )) || die "duplicate --self-test"; seen_self=1; self=1; shift;;
     --work-dir) (( seen_work == 0 )) || die "duplicate --work-dir"; (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || die "--work-dir requires a nonempty path"; seen_work=1; work_dir="$2"; shift 2;;
+    --expected-head) (( seen_head == 0 )) || die "duplicate --expected-head"; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head requires lowercase 40-hex"; expected_head="$2"; seen_head=1; shift 2;;
+    --approval-evidence) (( seen_approval == 0 )) || die "duplicate --approval-evidence"; [[ $# -ge 2 && "$2" == /* && "$2" != -* ]] || die "--approval-evidence requires an absolute path"; approval_evidence="$2"; seen_approval=1; shift 2;;
+    --approval-sha256) (( seen_sha == 0 )) || die "duplicate --approval-sha256"; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die "--approval-sha256 requires lowercase 64-hex"; approval_sha256="$2"; seen_sha=1; shift 2;;
     -h|--help) echo "usage: $0 [--work-dir TMPFS] | --self-test"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
 if (( self == 1 )); then
-  [[ "$seen_work" == 0 ]] || die "--self-test accepts no other arguments"
+  [[ "$seen_work" == 0 && "$seen_head" == 0 && "$seen_approval" == 0 && "$seen_sha" == 0 ]] || die "--self-test accepts no other arguments"
   self_test; exit $?
 fi
 
-[[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Linux x86_64 VAST required"
-[[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$root"
+(( seen_head == 1 && seen_approval == 1 && seen_sha == 1 )) || die 'expected HEAD and external approval are required'
+root="$ROOT"; cd "$root"
+[[ "$root" == /* && "$root" != */ && "$root" != *'/./'* && "$root" != *'/../'* && "$(cd -P "$root" && pwd)" == "$root" ]] || die "checkout path is not canonical"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "worktree is not clean"
+[[ "$(git rev-parse HEAD)" == "$expected_head" ]] || die "checkout HEAD does not match --expected-head"
+[[ "$approval_evidence" != */ && "$approval_evidence" != *'/./'* && "$approval_evidence" != *'/../'* && -f "$approval_evidence" && ! -L "$approval_evidence" ]] || die "approval path is not canonical"
+UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" "$root/$INSPECTOR" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die "external approval evidence is invalid"
+set +e
+gate_output="$(UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" "$root/$INSPECTOR" --dependency-gate 2>&1)"
+gate_status=$?
+set -e
+printf '%s\n' "$gate_output" >&2
+[[ "$gate_status" == 2 ]] || die "dependency gate returned unexpected status: $gate_status"
+die "Canary-Qwen dependency/license/dataset/native closure is blocked; no source/model acquisition or import is authorized"
 require_absent_work_dir "$work_dir" "$root"
 parent="$(dirname "$work_dir")"
 [[ -d "$parent" && "$(findmnt -T "$parent" -no FSTYPE 2>/dev/null || true)" == tmpfs ]] || die "work parent must be tmpfs"

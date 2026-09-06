@@ -21,6 +21,8 @@ import wave
 from pathlib import Path
 from typing import Any
 
+from voxcpm_0_5b_gate import require_blocked_gate, self_test as gate_self_test
+
 SOURCE_REPOSITORY = "https://github.com/OpenBMB/VoxCPM.git"
 SOURCE_REVISION = "38a76704ee67935ccbafbe5b6725e83dbb1e9305"
 HF_REPOSITORY = "openbmb/VoxCPM-0.5B"
@@ -309,6 +311,10 @@ def run_official(source: Path, snapshot: Path, packet: dict[str, Any], output: P
 
 
 def self_test() -> None:
+    gate_self_test(
+        Path(__file__), "require_blocked_gate(args.expected_head", "if not all((args.source",
+        ["--source", "/missing-source", "--snapshot", "/missing-snapshot", "--packet", "/missing-packet", "--output", "/missing-output"],
+    )
     assert strict_pairs([("x", 1)]) == {"x": 1}
     try:
         strict_pairs([("x", 1), ("x", 2)])
@@ -357,10 +363,18 @@ def main() -> int:
     parser.add_argument("--snapshot", type=Path)
     parser.add_argument("--packet", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, Path(__file__).resolve().parents[2])
+    except Exception as error:  # the current composite is deliberately blocked before any input handling
+        print(f"voxcpm_0_5b_reference: BLOCKED: {error}", file=sys.stderr)
+        return 2
     if not all((args.source, args.snapshot, args.packet, args.output)):
         parser.error("--source, --snapshot, --packet and --output are required")
     if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():

@@ -1,15 +1,19 @@
 #!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Fail-closed VAST evidence inspector for NVIDIA Canary-Qwen-2.5B."""
 from __future__ import annotations
-import argparse, copy, datetime, hashlib, json, math, subprocess, sys, tempfile
+import argparse, copy, datetime, hashlib, json, math, os, subprocess, sys, tempfile
 from pathlib import Path
 from typing import Any
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:  # stdlib-only gate/self-test path
+    yaml = None
 
 HF_REPOSITORY="nvidia/canary-qwen-2.5b"; HF_REVISION="b1469e1bba1cfe140205529c79c434ca47180960"
 SOURCE_REPOSITORY="https://github.com/NVIDIA/NeMo.git"; SOURCE_TAG="v2.5.0"; SOURCE_REVISION="ddcb2d6935045a556329f1afa653b8d918c36479"
 TOKENIZER_REPOSITORY="Qwen/Qwen3-1.7B"; TOKENIZER_REVISION="70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 FORMAT="vokra-canary-qwen-2.5b-inspection-v1"; MAX_HEADER_BYTES=64*1024*1024
+APPROVAL_SCHEMA="vokra-canary-qwen-2.5b-approval-v1"
 CANONICAL_INPUT_LENGTH_MARKER="**Input length.** The maximum audio duration in training was 40s, and the maximum token sequence length was 1024 tokens (including prompt, audio, and response)."
 OPEN_ASR_LEADERBOARD_VALUES={"mean_wer":5.63,"rtfx":418.28,"ami_wer":10.19,"earnings22_wer":10.45,"gigaspeech_wer":9.43,"librispeech_clean_wer":1.61,"librispeech_other_wer":3.1,"spgispeech_wer":1.9,"tedlium_wer":2.71,"voxpopuli_wer":5.66}
 CANARY_I64_TENSOR_NAMES=frozenset(f"perception.encoder.layers.{index}.conv.batch_norm.num_batches_tracked" for index in range(32))
@@ -47,17 +51,21 @@ def pairs(items:list[tuple[str,Any]])->dict[str,Any]:
         out[k]=v
     return out
 def load(path:Path)->Any: return json.loads(path.read_text(encoding="utf-8"),object_pairs_hook=pairs)
-class StrictLoader(yaml.SafeLoader):
-    pass
-def yaml_pairs(loader:StrictLoader,node:yaml.nodes.MappingNode)->dict[str,Any]:
-    out={}
-    for key_node,value_node in node.value:
-        key=loader.construct_object(key_node)
-        if key in out: raise RuntimeError(f"duplicate YAML key: {key}")
-        out[key]=loader.construct_object(value_node)
-    return out
-StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,yaml_pairs)
+if yaml is not None:
+    class StrictLoader(yaml.SafeLoader):
+        pass
+    def yaml_pairs(loader:StrictLoader,node:yaml.nodes.MappingNode)->dict[str,Any]:
+        out={}
+        for key_node,value_node in node.value:
+            key=loader.construct_object(key_node)
+            if key in out: raise RuntimeError(f"duplicate YAML key: {key}")
+            out[key]=loader.construct_object(value_node)
+        return out
+    StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,yaml_pairs)
+else:
+    StrictLoader = None
 def load_yaml(path:Path)->Any:
+    if yaml is None: raise RuntimeError("PyYAML is unavailable; semantic inspection is blocked")
     try: return yaml.load(path.read_text(encoding="utf-8"),Loader=StrictLoader)
     except (OSError,UnicodeError,yaml.YAMLError,RuntimeError) as e: raise RuntimeError(f"strict YAML failure at {path}: {e}") from e
 def validate_open_asr_leaderboard(value:Any)->list[dict[str,Any]]:
@@ -99,6 +107,42 @@ def require_canonical_input_length(text:str)->None:
 def safe_path(value:str,label:str)->None:
     p=Path(value)
     if not value or "\0" in value or "\\" in value or p.is_absolute() or ".." in p.parts: raise RuntimeError(f"unsafe {label}: {value!r}")
+def canonical_file(path:Path|str,label:str)->Path:
+    raw=os.fspath(path); p=Path(raw)
+    if not p.is_absolute() or raw.endswith("/") or "/./" in raw or "/../" in raw or any(part in {".",".."} for part in p.parts): raise RuntimeError(f"{label} must be absolute and dot-free")
+    cursor=Path(p.anchor)
+    for part in p.parts[1:]:
+        cursor/=part
+        if cursor.is_symlink(): raise RuntimeError(f"{label} has symlink ancestry")
+    if p.is_symlink() or not p.is_file() or p.stat().st_size<=0: raise RuntimeError(f"{label} must be a non-empty regular file")
+    return p
+def canonical_output(path:Path)->Path:
+    raw=os.fspath(path)
+    if not path.is_absolute() or raw.endswith("/") or "/./" in raw or "/../" in raw or any(part in {".",".."} for part in path.parts): raise RuntimeError("output path must be absolute and dot-free")
+    cursor=Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor/=part
+        if cursor.is_symlink(): raise RuntimeError("output path has symlink ancestry")
+    if path.exists() and (not path.is_dir() or path.is_symlink()): raise RuntimeError("output path must be a non-symlink directory")
+    return path
+def validate_approval(path:Path|str,head:str,digest:str)->dict[str,Any]:
+    if not isinstance(head,str) or len(head)!=40 or any(c not in "0123456789abcdef" for c in head) or not isinstance(digest,str) or len(digest)!=64 or any(c not in "0123456789abcdef" for c in digest): raise RuntimeError("approval HEAD/SHA format is invalid")
+    p=canonical_file(path,"approval")
+    if sha256(p)!=digest: raise RuntimeError("approval SHA-256 mismatch")
+    raw=p.read_text(encoding="utf-8")
+    try: data=json.loads(raw,object_pairs_hook=pairs)
+    except Exception as e: raise RuntimeError("approval JSON is invalid") from e
+    required={"schema","status","decision","owner","expected_head","model_repository","model_revision","source_repository","source_tag","source_revision","tokenizer_repository","tokenizer_revision","scope","publication","dependency_audit_status","dataset_status","native_status"}
+    if not isinstance(data,dict) or set(data)!=required: raise RuntimeError("approval schema is not exact")
+    expected={"schema":APPROVAL_SCHEMA,"status":"BLOCKED","decision":"INSPECTION_ONLY","expected_head":head,"model_repository":HF_REPOSITORY,"model_revision":HF_REVISION,"source_repository":SOURCE_REPOSITORY,"source_tag":SOURCE_TAG,"source_revision":SOURCE_REVISION,"tokenizer_repository":TOKENIZER_REPOSITORY,"tokenizer_revision":TOKENIZER_REVISION,"scope":"INSPECTION_ONLY","publication":"NO_UPLOAD","dependency_audit_status":"BLOCKED_UNREVIEWED","dataset_status":"BLOCKED_PROVENANCE","native_status":"BLOCKED_NATIVE_BINDING"}
+    for key,value in expected.items():
+        if data.get(key)!=value: raise RuntimeError(f"approval identity drift: {key}")
+    owner=data.get("owner").strip().lower() if isinstance(data.get("owner"),str) else ""
+    if not owner or owner in {"todo","pending","example","unknown","owner"}: raise RuntimeError("approval owner is empty or placeholder")
+    return data
+def dependency_gate()->int:
+    print(json.dumps({"status":"BLOCKED","decision":"INSPECTION_ONLY","reason":"dependency/license/dataset/native closure is not approved; no source/model acquisition or import is authorized","publication":"NO_UPLOAD","native_status":"BLOCKED_NATIVE_BINDING"},sort_keys=True),file=sys.stderr)
+    return 2
 def git(root:Path,*args:str)->str: return subprocess.check_output(["git","-C",str(root),*args],text=True,stderr=subprocess.STDOUT).strip()
 
 def tree(root:Path,packet:Path,repo:str,rev:str,expected:set[str]|None=None)->tuple[dict[str,str],list[dict[str,Any]]]:
@@ -233,7 +277,15 @@ def source_inventory(source:Path)->dict[str,Any]:
     if declared=="UNKNOWN": raise RuntimeError("NeMo LICENSE declaration is not authenticated")
     return {"repository":SOURCE_REPOSITORY,"tag":SOURCE_TAG,"revision":SOURCE_REVISION,"origin":origin,"license":{"path":"LICENSE","sha256":sha256(license_file),"declared":declared},"role_files":[{"path":p,"sha256":sha256(source/p)} for p in SOURCE_ROLE_FILES],"tracked_files":len(tracked)}
 def blocked(out:Path,error:Exception,status="INSPECTION_ERROR",**extra:Any)->None:
-    out.mkdir(parents=True,exist_ok=True); payload={"format":FORMAT,"status":"BLOCKED","inspection_status":status,"evidence_stage":"INSPECTION_ONLY","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","upstream":{"repository":HF_REPOSITORY,"revision":HF_REVISION,"license":"CC-BY-4.0"},"official_source":{"repository":SOURCE_REPOSITORY,"revision":SOURCE_REVISION},"error_type":type(error).__name__,"reason":str(error),"blockers":[str(error)],**extra}; (out/"manifest.json").write_text(json.dumps(payload,sort_keys=True,indent=2)+"\n",encoding="utf-8")
+    canonical_output(out); out.mkdir(parents=True,exist_ok=True); target=out/"manifest.json"
+    if target.exists() or target.is_symlink(): raise RuntimeError("inspection manifest already exists; no-clobber refusal")
+    payload={"format":FORMAT,"status":"BLOCKED","inspection_status":status,"evidence_stage":"INSPECTION_ONLY","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","upstream":{"repository":HF_REPOSITORY,"revision":HF_REVISION,"license":"CC-BY-4.0"},"official_source":{"repository":SOURCE_REPOSITORY,"revision":SOURCE_REVISION},"error_type":type(error).__name__,"reason":str(error),"blockers":[str(error)],**extra}; tmp=out/f".manifest-{os.getpid()}.tmp"; fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o644)
+    try:
+        with os.fdopen(fd,"wb") as f: f.write((json.dumps(payload,sort_keys=True,indent=2)+"\n").encode()); f.flush(); os.fsync(f.fileno())
+        os.link(tmp,target)
+    finally:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
 def inspect(snapshot:Path,tokenizer:Path,source:Path,model_tree:Path,tok_tree:Path,tok_selected_tree:Path,out:Path)->int:
     identity,files=tree(snapshot,model_tree,HF_REPOSITORY,HF_REVISION);
     if {r["path"] for r in files}!=MODEL_REQUIRED_FILES: raise RuntimeError(f"Canary-Qwen server snapshot must contain the authenticated six-file release set: {sorted(MODEL_REQUIRED_FILES)}")
@@ -272,7 +324,8 @@ def self_test()->None:
     try: json.loads('{"x":1,"x":2}',object_pairs_hook=pairs)
     except RuntimeError: pass
     else: raise AssertionError("duplicate JSON accepted")
-    assert read_front_matter("---\nlicense: cc-by-4.0\nlanguage: [en]\nlibrary_name: nemo\ndatasets:\n  - librispeech\ntags:\n  - automatic-speech-recognition\nmodel-index:\n  - results:\n      - task:\n          type: automatic-speech-recognition\n---\nbody")["license"]=="cc-by-4.0"
+    if yaml is not None:
+        assert read_front_matter("---\nlicense: cc-by-4.0\nlanguage: [en]\nlibrary_name: nemo\ndatasets:\n  - librispeech\ntags:\n  - automatic-speech-recognition\nmodel-index:\n  - results:\n      - task:\n          type: automatic-speech-recognition\n---\nbody")["license"]=="cc-by-4.0"
     require_canonical_input_length(CANONICAL_INPUT_LENGTH_MARKER)
     for legacy_readme in (
         "1024",
@@ -297,9 +350,10 @@ def self_test()->None:
         try: validate_open_asr_leaderboard(invalid)
         except RuntimeError: pass
         else: raise AssertionError("invalid leaderboard evidence was accepted")
-    try: yaml.load("x: 1\nx: 2\n",Loader=StrictLoader)
-    except RuntimeError: pass
-    else: raise AssertionError("duplicate YAML accepted")
+    if yaml is not None:
+        try: yaml.load("x: 1\nx: 2\n",Loader=StrictLoader)
+        except RuntimeError: pass
+        else: raise AssertionError("duplicate YAML accepted")
     try: safe_path("../bad","fixture")
     except RuntimeError: pass
     else: raise AssertionError("traversal accepted")
@@ -324,7 +378,8 @@ def self_test()->None:
     try: safe_path("tensor\\name", "tensor")
     except RuntimeError: pass
     else: raise AssertionError("unsafe tensor path accepted")
-    with tempfile.TemporaryDirectory() as d:
+    temp_dir = "/private/tmp" if Path("/private/tmp").is_dir() else None
+    with tempfile.TemporaryDirectory(dir=temp_dir) as d:
         path=Path(d)/"bad.safetensors"; path.write_bytes((MAX_HEADER_BYTES+1).to_bytes(8,"little"))
         try: inspect_st(path)
         except RuntimeError: pass
@@ -372,14 +427,39 @@ def self_test()->None:
         try: inspect_st(path)
         except RuntimeError: pass
         else: raise AssertionError("duplicate tensor header key accepted")
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(dir=temp_dir) as d:
         out=Path(d)/"error"; blocked(out,RuntimeError("fixture")); m=load(out/"manifest.json"); assert m["inspection_status"]=="INSPECTION_ERROR" and "AUTHENTICATED_EVIDENCE_COMPLETE" not in m
         complete=Path(d)/"complete"; blocked(complete,RuntimeError("remaining review blocker"),"AUTHENTICATED_EVIDENCE_COMPLETE",config=c); m=load(complete/"manifest.json"); assert m["inspection_status"]=="AUTHENTICATED_EVIDENCE_COMPLETE" and m["config"]["values"]["perception.encoder.n_layers"]==32
+    with tempfile.TemporaryDirectory(dir=temp_dir) as d:
+        root=Path(d); head="a"*40
+        approval={"schema":APPROVAL_SCHEMA,"status":"BLOCKED","decision":"INSPECTION_ONLY","owner":"sol-manager","expected_head":head,"model_repository":HF_REPOSITORY,"model_revision":HF_REVISION,"source_repository":SOURCE_REPOSITORY,"source_tag":SOURCE_TAG,"source_revision":SOURCE_REVISION,"tokenizer_repository":TOKENIZER_REPOSITORY,"tokenizer_revision":TOKENIZER_REVISION,"scope":"INSPECTION_ONLY","publication":"NO_UPLOAD","dependency_audit_status":"BLOCKED_UNREVIEWED","dataset_status":"BLOCKED_PROVENANCE","native_status":"BLOCKED_NATIVE_BINDING"}
+        valid=root/"approval.json"; valid.write_text(json.dumps(approval,sort_keys=True),encoding="utf-8"); digest=sha256(valid); assert validate_approval(valid,head,digest)["decision"]=="INSPECTION_ONLY"
+        def reject(path:Path|str,h=head,s=digest):
+            try: validate_approval(path,h,s)
+            except RuntimeError: return
+            raise AssertionError("invalid approval accepted")
+        reject(root/"missing.json"); reject(str(root)+"/./approval.json"); reject(str(root)+"/../"+root.name+"/approval.json"); reject(valid,"b"*40); reject(valid,head,"0"*64)
+        duplicate=root/"duplicate.json"; duplicate.write_text('{"schema":1,"schema":2}',encoding="utf-8"); reject(duplicate,head,sha256(duplicate))
+        bad_scope=root/"scope.json"; bad_scope.write_text(json.dumps({**approval,"scope":"EXECUTION"}),encoding="utf-8"); reject(bad_scope,head,sha256(bad_scope))
+        link=root/"approval-link.json"; link.symlink_to(valid); reject(link)
     print("canary_qwen_2_5b_inspect.py self-test: OK")
 def main()->int:
-    p=argparse.ArgumentParser(); p.add_argument("--snapshot",type=Path); p.add_argument("--tokenizer",type=Path); p.add_argument("--source",type=Path); p.add_argument("--server-tree",type=Path); p.add_argument("--tokenizer-complete-tree",type=Path); p.add_argument("--tokenizer-server-tree",type=Path); p.add_argument("--output",type=Path); p.add_argument("--self-test",action="store_true"); a=p.parse_args()
-    if a.self_test: self_test(); return 0
-    if any(v is None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output)): p.error("all inspection paths required")
-    try: return inspect(a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output)
+    p=argparse.ArgumentParser(); p.add_argument("--snapshot",type=Path); p.add_argument("--tokenizer",type=Path); p.add_argument("--source",type=Path); p.add_argument("--server-tree",type=Path); p.add_argument("--tokenizer-complete-tree",type=Path); p.add_argument("--tokenizer-server-tree",type=Path); p.add_argument("--output",type=Path); p.add_argument("--expected-head"); p.add_argument("--approval-evidence",type=Path); p.add_argument("--approval-sha256"); p.add_argument("--validate-approval",action="store_true"); p.add_argument("--dependency-gate",action="store_true"); p.add_argument("--self-test",action="store_true"); a=p.parse_args()
+    if a.self_test:
+        if any(v is not None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output,a.expected_head,a.approval_evidence,a.approval_sha256)) or a.validate_approval or a.dependency_gate: p.error("--self-test accepts no other arguments")
+        self_test(); return 0
+    if a.dependency_gate:
+        if any(v is not None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output,a.expected_head,a.approval_evidence,a.approval_sha256)) or a.validate_approval: p.error("--dependency-gate accepts no inspection arguments")
+        return dependency_gate()
+    if a.validate_approval:
+        if any(v is not None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output)) or not all((a.expected_head,a.approval_evidence,a.approval_sha256)): p.error("--validate-approval requires only approval evidence, SHA, and expected HEAD")
+        try: validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256)
+        except RuntimeError as e: p.error(str(e))
+        print("Canary-Qwen approval evidence validation: OK"); return 0
+    if any(v is None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output,a.expected_head,a.approval_evidence,a.approval_sha256)): p.error("all inspection paths and approval binding are required")
+    try:
+        validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256)
+        if dependency_gate()!=0: return 2
+        return inspect(a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output)
     except Exception as e: blocked(a.output,e); print(f"Canary-Qwen inspection BLOCKED: {e}",file=sys.stderr); return 2
 if __name__=="__main__": raise SystemExit(main())
