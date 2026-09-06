@@ -392,6 +392,10 @@ def self_test() -> int:
         else:
             raise AssertionError("duplicate inspection JSON accepted")
         assert dependency_gate() == 2
+    allowed, reason = execution_preflight(
+        {"status": "BLOCKED", "decision": "INSPECTION_ONLY"}, lambda: 0
+    )
+    assert not allowed and reason == "INSPECTION_ONLY approval cannot authorize execution"
     assert len(TOKENIZER_REVISION) == 40 and all(c in "0123456789abcdef" for c in TOKENIZER_REVISION)
     source = Path(__file__).read_text(encoding="utf-8")
     assert "AutoTokenizer" in source and "sample_euler_rf_cfg" in source
@@ -403,6 +407,20 @@ def self_test() -> int:
     return 0
 
 
+def disposition_is_blocked(approval: dict[str, Any]) -> bool:
+    """Return true when the current approval can never authorize execution."""
+    return approval.get("status") == "BLOCKED" and approval.get("decision") == "INSPECTION_ONLY"
+
+
+def execution_preflight(approval: dict[str, Any], gate: Any) -> tuple[bool, str]:
+    """Keep the dependency gate and blocked approval disposition independent."""
+    if gate() != 0:
+        return False, "dependency/native closure is unresolved"
+    if disposition_is_blocked(approval):
+        return False, "INSPECTION_ONLY approval cannot authorize execution"
+    return True, ""
+
+
 def run(args: argparse.Namespace) -> int:
     # Gate before resolving or creating the output path, even when called
     # directly rather than through a worker.
@@ -410,10 +428,10 @@ def run(args: argparse.Namespace) -> int:
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if head != args.expected_head:
         raise RuntimeError("checkout HEAD does not match --expected-head")
-    if dependency_gate() != 0:
+    allowed, reason = execution_preflight(approval, dependency_gate)
+    if not allowed:
+        print(f"Irodori official reference blocked: {reason}", file=sys.stderr)
         return 2
-    if approval["status"] == "BLOCKED" and approval["decision"] == "INSPECTION_ONLY":
-        raise RuntimeError("inspection-only approval cannot authorize official reference execution")
     validate_absolute_path(args.output / "manifest.json", "reference output", allow_missing_leaf=True)
     output = args.output
     if output.exists():
