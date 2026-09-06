@@ -71,6 +71,15 @@ REVIEWED_INPUT_SHA256 = {
 }
 REVIEWED_SCORE_VARIANTS = (
     {
+        "cpu_model": "1",
+        "torch_version": "2.13.0+cu130",
+        "numpy_version": "2.3.5",
+        "scores": {
+            "score_imag": "616928ecba2045245562f48b7c62ab769094a08833a6ab4870bf0bd75025ea20",
+            "score_real": "a147ef7a8ad29d52fc55e164732c13b719c27b5c6895cfd45ebef0ca3e7658e4",
+        },
+    },
+    {
         "cpu_model": "49",
         "torch_version": "2.13.0+cu130",
         "numpy_version": "2.3.5",
@@ -342,8 +351,9 @@ def self_test() -> None:
     assert REFERENCE_BYTES == 65_536
     assert FP32_ATOL == 0.01
     assert (set(REVIEWED_INPUT_SHA256) | set(SCORE_NAMES)) == REFERENCE_ARTIFACT_NAMES
-    assert len(REVIEWED_SCORE_VARIANTS) == 3
-    assert {variant["cpu_model"] for variant in REVIEWED_SCORE_VARIANTS} == {"49", "63", "97"}
+    assert len(REVIEWED_SCORE_VARIANTS) == 4
+    assert {variant["cpu_model"] for variant in REVIEWED_SCORE_VARIANTS} == {"1", "49", "63", "97"}
+    assert REVIEWED_SCORE_VARIANTS[0]["scores"] == REVIEWED_SCORE_VARIANTS[1]["scores"]
     assert all(
         len(digest) == 64
         and digest.isascii()
@@ -389,7 +399,7 @@ def self_test() -> None:
         "input_generator": INPUT_GENERATOR,
         "determinism": EXPECTED_DETERMINISM,
     }
-    assert reviewed_artifact_sha256(alternate_runtime)["score_real"] == REVIEWED_SCORE_VARIANTS[0]["scores"]["score_real"]
+    assert reviewed_artifact_sha256(alternate_runtime)["score_real"] == REVIEWED_SCORE_VARIANTS[1]["scores"]["score_real"]
     for variant, mutate in (
         ("missing node", lambda runtime: runtime.pop("platform_node")),
         ("extra key", lambda runtime: runtime.update(extra=True)),
@@ -424,7 +434,7 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("unknown reviewed score provenance was accepted")
-    assert REVIEWED_SCORE_VARIANTS[0]["scores"] != REVIEWED_SCORE_VARIANTS[1]["scores"]
+    assert REVIEWED_SCORE_VARIANTS[1]["scores"] != REVIEWED_SCORE_VARIANTS[2]["scores"]
     try:
         json.loads('{"x": 1, "x": 2}', object_pairs_hook=reject_duplicate_json)
     except ValueError:
