@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """VAST-only official SGMSE enhancement packet and native comparator.
 
-The reference path calls the pinned upstream ``ScoreModel.enhance`` directly.
+The reference path calls the pinned SpeechBrain ``SGMSEEnhancement.enhance_batch``
+waveform wrapper, which reaches the upstream ``ScoreModel.enhance`` sampler.
 It captures every prior/corrector/predictor noise tensor consumed by that
-official sampler and never reimplements the sampler in Python.  The comparator
+official sampler and never reimplements the sampler in Python. The comparator
 only consumes a verified packet and compares the raw native PCM output.
 """
 
@@ -48,6 +49,7 @@ from sgmse_dump_reference import (
     require_disjoint_inputs,
     require_manifest_identity,
     require_vokra_checkout,
+    require_source_file,
     sha256,
     verify_algorithm_source,
     verify_ema_route,
@@ -84,6 +86,9 @@ EXPECTED_PACKET_FILES = {
     NOISE_CALLS_NAME,
 }
 EXPECTED_NATIVE_FILES = {"enhanced_pcm.f32"}
+ENHANCEMENT_SOURCE_FILE = "speechbrain/inference/enhancement.py"
+ENHANCEMENT_SOURCE_MARKERS = ("class SGMSEEnhancement", "enhance_batch")
+OFFICIAL_CALL_IDENTITY = "SGMSEEnhancement.enhance_batch -> ScoreModel.enhance"
 
 
 def validate_official_enhance_signature(signature: inspect.Signature) -> None:
@@ -99,6 +104,115 @@ def validate_official_enhance_signature(signature: inspect.Signature) -> None:
         item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values()
     ):
         raise ValueError(f"official ScoreModel.enhance must expose timeit/**kwargs: {signature}")
+
+
+def verify_official_enhancement_source(
+    speechbrain_source: Path, inspection: dict[str, Any]
+) -> dict[str, Any]:
+    """Require the reviewed SpeechBrain waveform wrapper before importing it."""
+    source_evidence = inspection.get("speechbrain_source", {})
+    executable_files = source_evidence.get("executable_files")
+    row = executable_files.get(ENHANCEMENT_SOURCE_FILE) if isinstance(executable_files, dict) else None
+    if not isinstance(row, dict) or set(row) != {"sha256", "size", "required_markers"}:
+        raise ValueError("inspection lacks the reviewed SpeechBrain enhancement wrapper")
+    if (
+        not isinstance(row["sha256"], str)
+        or len(row["sha256"]) != 64
+        or not isinstance(row["size"], int)
+        or row["size"] <= 0
+        or row["required_markers"] != {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS}
+    ):
+        raise ValueError("SpeechBrain enhancement source evidence is malformed")
+    return require_source_file(
+        speechbrain_source,
+        ENHANCEMENT_SOURCE_FILE,
+        row["sha256"],
+        ENHANCEMENT_SOURCE_MARKERS,
+    )
+
+
+def build_official_enhancer(
+    speechbrain_source: Path, score_model: Any, torch: Any
+) -> Any:
+    """Construct SpeechBrain's pinned waveform-to-spectrogram wrapper."""
+    sys.path.insert(0, str(speechbrain_source))
+    from speechbrain.inference.enhancement import SGMSEEnhancement
+
+    signature = inspect.signature(SGMSEEnhancement)
+    required = {"modules", "hparams", "run_opts"}
+    if not required.issubset(signature.parameters):
+        raise ValueError(f"pinned SGMSEEnhancement constructor drifted: {signature}")
+    class ReviewedHParams(dict[str, Any]):
+        def __getattr__(self, name: str) -> Any:
+            try:
+                return self[name]
+            except KeyError as error:
+                raise AttributeError(name) from error
+
+    hparams = ReviewedHParams({
+        "sample_rate": SAMPLE_RATE,
+        "n_fft": 510,
+        "hop_length": 128,
+        "window_type": "hann",
+        "transform_type": "exponent",
+        "spec_factor": 0.15,
+        "spec_abs_exponent": 0.5,
+    })
+    device = torch.device("cuda")
+    score_model = score_model.to(device)
+    enhancer = SGMSEEnhancement(
+        modules={"score_model": score_model},
+        hparams=hparams,
+        run_opts={"device": "cuda"},
+    )
+    if hasattr(enhancer, "to"):
+        enhancer = enhancer.to(device)
+    model_devices = {str(parameter.device) for parameter in score_model.parameters()}
+    if model_devices != {str(device)}:
+        raise ValueError(f"ScoreModel was not placed on CUDA: {sorted(model_devices)}")
+    if str(getattr(enhancer, "device", device)) != str(device):
+        raise ValueError("SGMSEEnhancement did not select the CUDA device")
+    return enhancer
+
+
+def call_official_enhancer(
+    enhancer: Any, score_model: Any, waveform: Any, torch: Any
+) -> tuple[Any, list[dict[str, Any]]]:
+    """Call only the official waveform wrapper and tap its score call."""
+    original_score_enhance = score_model.enhance
+    score_calls: list[dict[str, Any]] = []
+
+    def capture_score_call(*args: Any, **kwargs: Any) -> Any:
+        if not args:
+            raise ValueError("official ScoreModel.enhance received no spectrogram")
+        spectrogram = args[0]
+        if not isinstance(spectrogram, torch.Tensor) or spectrogram.ndim != 4 or not torch.is_complex(spectrogram):
+            raise ValueError("official ScoreModel.enhance did not receive [B,1,F,T] complex spectrogram")
+        if spectrogram.shape[0] != 1 or spectrogram.shape[1] != 1:
+            raise ValueError("official ScoreModel.enhance spectrogram batch/channel drifted")
+        score_calls.append({"shape": [int(axis) for axis in spectrogram.shape], "dtype": str(spectrogram.dtype)})
+        return original_score_enhance(*args, **kwargs)
+
+    score_model.enhance = capture_score_call
+    try:
+        enhanced = enhancer.enhance_batch(waveform)
+    finally:
+        score_model.enhance = original_score_enhance
+    if len(score_calls) != 1:
+        raise ValueError(f"official wrapper invoked ScoreModel.enhance {len(score_calls)} times")
+    return enhanced, score_calls
+
+
+def validate_official_waveform_output(
+    enhanced: Any, sample_count: int, torch: Any
+) -> Any:
+    """Validate the tensor returned by SpeechBrain's official wrapper."""
+    if not isinstance(enhanced, torch.Tensor):
+        raise ValueError("official SGMSEEnhancement.enhance_batch returned a non-tensor")
+    enhanced_tensor = enhanced.detach().cpu().reshape(-1)
+    if enhanced_tensor.numel() != sample_count or not bool(torch.isfinite(enhanced_tensor).all()):
+        raise ValueError("official enhancement returned invalid PCM")
+    return enhanced_tensor
 
 
 def reject_duplicate_json(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -297,12 +411,25 @@ def verify_reference(packet: Path, vokra_root: Path | None = None) -> dict[str, 
         or source.get("license_spdx") != SOURCE_LICENSE_SPDX
         or source.get("license_sha256") != SOURCE_LICENSE_SHA256
         or not isinstance(speechbrain, dict)
-        or set(speechbrain) != {"path", "revision", "clean", "repository", "license_spdx", "license_sha256"}
+        or set(speechbrain) != {"path", "revision", "clean", "repository", "license_spdx", "license_sha256", "files"}
         or speechbrain.get("revision") != SPEECHBRAIN_REVISION
         or speechbrain.get("license_spdx") != SPEECHBRAIN_LICENSE_SPDX
         or speechbrain.get("license_sha256") != SPEECHBRAIN_LICENSE_SHA256
     ):
         raise ValueError("reference source/license identity mismatch")
+    speechbrain_files = speechbrain["files"]
+    if (
+        not isinstance(speechbrain_files, list)
+        or len(speechbrain_files) != 1
+        or not isinstance(speechbrain_files[0], dict)
+        or speechbrain_files[0].get("path") != ENHANCEMENT_SOURCE_FILE
+        or speechbrain_files[0].get("markers") != {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS}
+        or not isinstance(speechbrain_files[0].get("sha256"), str)
+        or len(speechbrain_files[0]["sha256"]) != 64
+        or not isinstance(speechbrain_files[0].get("size"), int)
+        or speechbrain_files[0]["size"] <= 0
+    ):
+        raise ValueError("reference SpeechBrain enhancement source evidence mismatch")
     if manifest["licenses"] != {
         "algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256},
         "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256},
@@ -385,7 +512,7 @@ def verify_reference(packet: Path, vokra_root: Path | None = None) -> dict[str, 
     identity = manifest["identity"]
     if identity != {
         "reference_tool": "sgmse_native_enhancement_parity.py",
-        "official_call": "ScoreModel.enhance",
+        "official_call": OFFICIAL_CALL_IDENTITY,
         "noise_capture": "torch.randn_like+torch.randn during one official enhance call",
         "self_test": "sgmse_native_enhancement_parity.py --self-test",
     }:
@@ -465,10 +592,14 @@ def _run_official_reference(
         import torch
 
         verify_ema_route(hyperparams, speechbrain_source, inspection["safe_load"], inspection)
+        enhancement_source = verify_official_enhancement_source(speechbrain_source, inspection)
         algorithm_files = verify_algorithm_source(source, inspection)
         model, model_evidence = load_score_model(source, speechbrain_source, checkpoint, SCORE_MODEL_CONFIG)
         if model_evidence["tensor_count"] != 647 or model_evidence["parameter_count"] != 65_590_822:
             raise ValueError("loaded checkpoint count differs from fixed evidence")
+        if not torch.cuda.is_available():
+            raise ValueError("official SGMSEEnhancement reference requires CUDA")
+        enhancer = build_official_enhancer(speechbrain_source, model, torch)
         pcm = _read_wav_pcm(input_wav)
         input_artifact = write_f32(temporary / INPUT_NAME, pcm)
         torch.set_num_threads(1)
@@ -496,30 +627,16 @@ def _run_official_reference(
         try:
             signature = inspect.signature(model.enhance)
             validate_official_enhance_signature(signature)
+            waveform = torch.from_numpy(np.asarray(pcm, dtype=np.float32)).unsqueeze(0)
             with torch.no_grad():
-                enhanced = model.enhance(
-                    torch.from_numpy(np.asarray(pcm, dtype=np.float32)).unsqueeze(0),
-                    sampler_type="pc",
-                    predictor="reverse_diffusion",
-                    corrector="ald",
-                    N=30,
-                    corrector_steps=1,
-                    snr=0.5,
-                    timeit=False,
-                    denoise=True,
-                )
+                enhanced, score_calls = call_official_enhancer(enhancer, model, waveform, torch)
         finally:
             torch.randn_like = original_randn_like
             torch.randn = original_randn
         if len(calls) != NOISE_CALL_COUNT:
             raise ValueError(f"official enhance consumed {len(calls)} noise tensors, expected {NOISE_CALL_COUNT}")
-        # The pinned upstream API returns a squeezed CPU NumPy array, not a
-        # torch tensor. Keep this conversion at the official boundary: the
-        # reference is still produced by ScoreModel.enhance itself.
-        enhanced_values_array = np.asarray(enhanced, dtype=np.float32).reshape(-1)
-        if enhanced_values_array.size != len(pcm) or not bool(np.isfinite(enhanced_values_array).all()):
-            raise ValueError("official enhancement returned invalid PCM")
-        enhanced_values = enhanced_values_array.tolist()
+        enhanced_tensor = validate_official_waveform_output(enhanced, len(pcm), torch)
+        enhanced_values = enhanced_tensor.numpy().astype(np.float32).tolist()
         reference_artifact = write_f32(temporary / REFERENCE_NAME, enhanced_values)
         noise_path = temporary / NOISE_NAME
         noise_rows: list[dict[str, Any]] = []
@@ -582,7 +699,7 @@ def _run_official_reference(
         run_log.write_text(
             "reference=vokra-sgmse-native-enhancement-reference-v1\n"
             "status=REFERENCE_COMPLETE_NO_UPLOAD\n"
-            "official_call=ScoreModel.enhance\n"
+            "official_call=SGMSEEnhancement.enhance_batch -> ScoreModel.enhance\n"
             "noise_capture=prior+corrector+predictor\n"
             "publication=NO_UPLOAD\n",
             encoding="utf-8",
@@ -595,7 +712,7 @@ def _run_official_reference(
             "model_revision": MODEL_REVISION,
             "checkpoint": {"filename": checkpoint.name, "size": checkpoint.stat().st_size, "sha256": sha256(checkpoint), "license_spdx": CHECKPOINT_LICENSE_SPDX},
             "source": {**source_tree, "repository": "https://github.com/sp-uhh/sgmse.git", "revision": SOURCE_REVISION, "license_spdx": SOURCE_LICENSE_SPDX, "license_sha256": SOURCE_LICENSE_SHA256, "files": algorithm_files},
-            "speechbrain_source": {**speechbrain_tree, "repository": "https://github.com/speechbrain/speechbrain.git", "revision": SPEECHBRAIN_REVISION, "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256},
+            "speechbrain_source": {**speechbrain_tree, "repository": "https://github.com/speechbrain/speechbrain.git", "revision": SPEECHBRAIN_REVISION, "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256, "files": [enhancement_source]},
             "licenses": {"algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256}, "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256}, "checkpoint": CHECKPOINT_LICENSE_SPDX},
             "input": {"wav_filename": input_wav.name, "wav_size": input_wav.stat().st_size, "wav_sha256": sha256(input_wav), "sample_rate": SAMPLE_RATE, "channels": CHANNELS, "sample_width": SAMPLE_WIDTH, "pcm_filename": INPUT_NAME},
             "runtime": {"platform_system": platform.system(), "platform_machine": platform.machine(), "platform_node": platform.node(), "cpu_model": cpu_model(), "nproc": os.cpu_count(), "torch_version": torch.__version__, "numpy_version": np.__version__},
@@ -603,7 +720,7 @@ def _run_official_reference(
             "noise_calls": noise_rows,
             "noise_payload": {"filename": NOISE_NAME, "call_count": len(noise_rows), "dtype": "float32", "complete": True},
             "tolerance": {"metric": "waveform_max_abs_and_rmse", "max_abs": FP32_ATOL, "rmse": FP32_ATOL, "basis": "repository FP32_ATOL=0.01; preregistered before real run"},
-            "identity": {"reference_tool": "sgmse_native_enhancement_parity.py", "official_call": "ScoreModel.enhance", "noise_capture": "torch.randn_like+torch.randn during one official enhance call", "self_test": "sgmse_native_enhancement_parity.py --self-test"},
+            "identity": {"reference_tool": "sgmse_native_enhancement_parity.py", "official_call": OFFICIAL_CALL_IDENTITY, "noise_capture": "torch.randn_like+torch.randn during one official enhance call", "self_test": "sgmse_native_enhancement_parity.py --self-test"},
             "vokra": {**vokra_tree, "tool_sha256": sha256(vokra_root / "tools/parity/sgmse_native_enhancement_parity.py"), "uv_lock_sha256": sha256(vokra_root / "tools/parity/uv.lock")},
             "run_log": {"path": RUN_LOG_NAME, "size": run_log.stat().st_size, "sha256": sha256(run_log)},
         }
@@ -643,6 +760,74 @@ def self_test() -> int:
         return 1
     assert serialize_noise_planes([1.0, 2.0], [3.0, 4.0]) == [1.0, 2.0, 3.0, 4.0]
     assert serialize_noise_planes([1.0, 2.0], None) == [1.0, 2.0]
+
+    class FakeTensor:
+        def __init__(self, shape: tuple[int, ...], complex_value: bool = False):
+            self.shape = shape
+            self.ndim = len(shape)
+            self.dtype = "torch.complex64" if complex_value else "torch.float32"
+            self._count = math.prod(shape)
+            self.complex_value = complex_value
+
+        def detach(self) -> "FakeTensor":
+            return self
+
+        def cpu(self) -> "FakeTensor":
+            return self
+
+        def reshape(self, *_shape: int) -> "FakeTensor":
+            return FakeTensor((self._count,), self.complex_value)
+
+        def numel(self) -> int:
+            return self._count
+
+    class FakeTorch:
+        Tensor = FakeTensor
+
+        class _Finite:
+            def all(self) -> bool:
+                return True
+
+        @staticmethod
+        def is_complex(value: FakeTensor) -> bool:
+            return value.complex_value
+
+        @staticmethod
+        def isfinite(_value: FakeTensor) -> "FakeTorch._Finite":
+            return FakeTorch._Finite()
+
+    class FakeScoreModel:
+        def enhance(self, value: FakeTensor) -> FakeTensor:
+            if value.ndim != 4 or not value.complex_value:
+                raise AssertionError("raw waveform reached ScoreModel.enhance")
+            return value
+
+    fake_score_model = FakeScoreModel()
+
+    class FakeEnhancer:
+        def enhance_batch(self, waveform: FakeTensor) -> FakeTensor:
+            if waveform.shape != (1, 5):
+                raise AssertionError("wrapper did not receive waveform input")
+            fake_score_model.enhance(FakeTensor((1, 1, 2, 3), complex_value=True))
+            return FakeTensor((1, 5))
+
+    fake_output, fake_calls = call_official_enhancer(
+        FakeEnhancer(), fake_score_model, FakeTensor((1, 5)), FakeTorch
+    )
+    assert fake_calls == [{"shape": [1, 1, 2, 3], "dtype": "torch.complex64"}]
+    assert validate_official_waveform_output(fake_output, 5, FakeTorch).numel() == 5
+
+    class BadEnhancer:
+        def enhance_batch(self, waveform: FakeTensor) -> FakeTensor:
+            return fake_score_model.enhance(waveform)
+
+    try:
+        call_official_enhancer(BadEnhancer(), fake_score_model, FakeTensor((1, 5)), FakeTorch)
+    except ValueError:
+        pass
+    else:
+        return 1
+
     with tempfile.TemporaryDirectory(prefix="sgmse-enhancement-self-test-") as directory:
         root = Path(directory)
         packet = root / "packet"
@@ -683,14 +868,14 @@ def self_test() -> int:
             "model_repository": MODEL_REPOSITORY, "model_revision": MODEL_REVISION,
             "checkpoint": {"filename": CHECKPOINT_NAME, "size": CHECKPOINT_SIZE, "sha256": CHECKPOINT_SHA256, "license_spdx": CHECKPOINT_LICENSE_SPDX},
             "source": {"path": "/source", "revision": SOURCE_REVISION, "clean": True, "repository": "https://github.com/sp-uhh/sgmse.git", "license_spdx": SOURCE_LICENSE_SPDX, "license_sha256": SOURCE_LICENSE_SHA256, "files": []},
-            "speechbrain_source": {"path": "/speechbrain", "revision": SPEECHBRAIN_REVISION, "clean": True, "repository": "https://github.com/speechbrain/speechbrain.git", "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256},
+            "speechbrain_source": {"path": "/speechbrain", "revision": SPEECHBRAIN_REVISION, "clean": True, "repository": "https://github.com/speechbrain/speechbrain.git", "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256, "files": [{"path": ENHANCEMENT_SOURCE_FILE, "sha256": "0" * 64, "size": 1, "markers": {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS}}]},
             "licenses": {"algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256}, "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256}, "checkpoint": CHECKPOINT_LICENSE_SPDX},
             "input": {"wav_filename": "ref-clip.wav", "wav_size": INPUT_WAV_SIZE, "wav_sha256": INPUT_WAV_SHA256, "sample_rate": SAMPLE_RATE, "channels": CHANNELS, "sample_width": SAMPLE_WIDTH, "pcm_filename": INPUT_NAME},
             "runtime": {"platform_system": "Linux", "platform_machine": "x86_64", "platform_node": "self-test", "cpu_model": "self-test", "nproc": 1, "torch_version": "self-test", "numpy_version": "self-test"},
             "artifacts": artifacts, "noise_calls": noise_calls,
             "noise_payload": {"filename": NOISE_NAME, "call_count": NOISE_CALL_COUNT, "dtype": "float32", "complete": True},
             "tolerance": {"metric": "waveform_max_abs_and_rmse", "max_abs": FP32_ATOL, "rmse": FP32_ATOL, "basis": "repository FP32_ATOL=0.01; preregistered before real run"},
-            "identity": {"reference_tool": "sgmse_native_enhancement_parity.py", "official_call": "ScoreModel.enhance", "noise_capture": "torch.randn_like+torch.randn during one official enhance call", "self_test": "sgmse_native_enhancement_parity.py --self-test"},
+            "identity": {"reference_tool": "sgmse_native_enhancement_parity.py", "official_call": OFFICIAL_CALL_IDENTITY, "noise_capture": "torch.randn_like+torch.randn during one official enhance call", "self_test": "sgmse_native_enhancement_parity.py --self-test"},
             "vokra": {"path": "/source", "commit": "self-test", "clean": True, "tool_sha256": "0" * 64, "uv_lock_sha256": "0" * 64},
             "run_log": {"path": RUN_LOG_NAME, "size": (packet / RUN_LOG_NAME).stat().st_size, "sha256": sha256(packet / RUN_LOG_NAME)},
         }

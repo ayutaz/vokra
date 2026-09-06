@@ -46,7 +46,8 @@ self_test() {
   local fail=0 token
   for token in \
     'VOKRA_PUBLISH_ON_VAST=1' 'VAST/Linux-only' 'x86_64' \
-    'sgmse_native_enhancement_parity.py' 'ScoreModel.enhance' \
+    'sgmse_native_enhancement_parity.py' 'SGMSEEnhancement.enhance_batch' \
+    'ScoreModel.enhance' 'speechbrain/inference/enhancement.py' 'CUDA' \
     'REFERENCE_COMPLETE_NO_UPLOAD' 'CPU_ENHANCEMENT_PARITY_PASS' \
     'prior/corrector/predictor' 'noise_calls.txt' 'NO_UPLOAD' \
     'cargo test --locked --test sgmse_native_enhancement -p vokra-models' \
