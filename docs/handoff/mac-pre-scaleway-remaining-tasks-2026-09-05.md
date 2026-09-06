@@ -989,6 +989,32 @@ checkout and no upload occurred. Its separate checkout, target, evidence copy
 and obsolete bundles (about 20 GiB total) were removed immediately after the
 small archive was recovered; the still-active SGMSE work was preserved.
 
+That preserved SGMSE run subsequently completed at exact clean commit
+`855833c65ffd4fb9827047041411160a2a4f72c2`. The authenticated source route
+resolved the inspection-only distribution, EMA-selection and exact-mapping
+blockers: the resolution ledger records a reviewed 647-row tensor contract and
+complete official score and waveform references. Native Linux CPU score parity
+passed at `atol=0.01`, with real/imaginary maximum absolute errors
+`0.0001068115234375` and `0.0000896453857421875`. The complete 4,096-sample,
+60-step predictor/corrector enhancement passed against the independent
+reference with maximum absolute error `0.0003332793712615967` and RMSE
+`0.00006269547446627377`, also at `atol=0.01`. Workspace and package tests,
+all-target Clippy with warnings denied, `cargo deny`, `cargo audit`, metadata
+and all static gates passed. No model ran locally and no upload occurred.
+
+The recovered SGMSE evidence archive is
+`/private/tmp/vokra-sgmse-small-evidence-855833c6.tar.gz`, with SHA-256
+`01c8ab1eb3f864ad3cc8011ab6f9038eade545aeaf26920cc951a794b8f718bd`.
+Its summary and resolution-ledger SHA-256 values are
+`9fe03b94a85cd4cf0e5485bd88dd8b41160b2523168c2e8b9d3ebb8089066dcd`
+and
+`005a57deb226d1ad883684e1be35c823f476e58a065ab4a5e268c102fa971732`.
+Disposable instance `50068583` was destroyed after evidence recovery and the
+independent-volume inventory returned `[]`. This closes SGMSE's Linux/VAST
+reference and CPU-parity leg; only the final Apple CPU/Metal worker remains for
+this row. It does not by itself decrement the public audit or close unrelated
+model rows.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
@@ -1105,7 +1131,7 @@ and a final Apple worker.
 | `vokra/kyutai-tts-1.6b-en-fr` | Pinned artifact/source identities, the exact scalar config/depformer schedule and a pure delay aligner are landed at `589f4337`. Authenticate the 418 tensor roles/shapes before adding a GGUF binder; then separate voice/model/source licenses and implement the actual second-stream demux, conditioners, native forward and Mimi composition. |
 | `vokra/qwen2-5-omni-7b` | Complete native multimodal streaming, dependency/license and independent parity contracts. |
 | `vokra/qwen2-audio-7b-instruct` | Resolve the missing exact source-repository license, then implement the native audio-language path. |
-| `vokra/sgmse-voicebank` | Exact NCSN++ role mapping, strict binder, score graph, sampler and Apple score/full-enhancement worker are source-complete. Rerun the exact runtime-bound score comparator, then generate/verify the full 4,096-sample official enhancement packet and run Linux CPU parity on VAST. Only the resulting packet proceeds to final Scaleway CPU/Metal execution. |
+| `vokra/sgmse-voicebank` | Linux/VAST validation is complete at exact clean commit `855833c6`: the authenticated 647-tensor conversion, official score and 4,096-sample enhancement references, native CPU parity and repository gates all passed with no upload. Preserve the evidence archive identified above and run the existing final Apple worker on Scaleway for CPU/reference, Metal/reference and Metal/CPU verdicts with no CPU fallback. |
 | `vokra/step-audio2-mini` | Complete multi-component native S2S and all source/weight/dependency licenses. |
 | `vokra/vibevoice-asr` | Authenticate the release and implement the complete native ASR path, dependencies and parity. |
 | `vokra/vibevoice-realtime-0.5b` | Replace arbitrary BF16 pass-through staging with a strict complete realtime runtime and parity. |
