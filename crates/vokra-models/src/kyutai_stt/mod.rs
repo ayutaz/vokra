@@ -73,13 +73,13 @@
 //!   follow-up gates.
 //!
 //! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29
-//! / Moshi T29: this scaffold sets the seam so the follow-up lands drop-in.
+//! / Moshi T29: this component binder sets the seam so a future parity run
+//! can consume authenticated decoder weights without claiming full ASR.
 
 #[cfg(test)]
 use vokra_core::check_weight_license;
-#[cfg(test)]
 use vokra_core::gguf::chunks;
-use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{BackendKind, CompliancePolicy, Result, VokraError};
 
@@ -675,8 +675,9 @@ pub struct KyutaiSttBlockWeights {
 ///
 /// [`Self::synthesized`] builds a deterministic fixture (SplitMix64 +
 /// Xavier) against `config` so shape / dtype / size can be exercised
-/// without the real HF checkpoint. Real-checkpoint binding is a follow-up
-/// (T29-equivalent — tensor-name manifest fetch from the upstream release).
+/// without the real HF checkpoint. Decoder-component binding is available via
+/// [`Self::from_component_gguf`]; full composite ASR binding remains a
+/// follow-up (Mimi/tokenizer/streaming gates are still closed).
 ///
 /// Depformer weights are **absent** from the scaffold: with `dep_q=0` the
 /// depformer per-step count is zero and no audio-prediction weights ride
@@ -754,6 +755,228 @@ impl KyutaiSttWeights {
             is_synthesized: true,
         })
     }
+
+    /// Binds only the authenticated **decoder-component** tensors from the
+    /// official STT-2.6B-EN GGUF release. This does not bind Mimi, the
+    /// tokenizer, or streaming state, and therefore is not a public ASR
+    /// loader. The exact-release gate requires the stamped `kyutai-stt`
+    /// architecture and the complete 323-tensor BF16 manifest before any
+    /// payload is decoded.
+    ///
+    /// The upstream torch linear tensors are `[out, in]`; this store keeps
+    /// Compute-seam weights as `[in, out]`, so the four learned projections
+    /// are transposed during binding. No synthesized defaults are used.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] if the release identity, exact tensor set,
+    /// dtype, shape, or finite-value contract is not satisfied.
+    pub fn from_component_gguf(file: &GgufFile) -> Result<Self> {
+        let config = KyutaiSttConfig::from_gguf(file).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "kyutai-stt component binder: config is not authenticated: {error}"
+            ))
+        })?;
+        let arch = match file.get(chunks::KEY_MODEL_ARCH) {
+            Some(GgufMetadataValue::String(value)) => value.as_str(),
+            _ => {
+                return Err(VokraError::ModelLoad(
+                    "kyutai-stt component binder: missing authenticated model arch".to_owned(),
+                ));
+            }
+        };
+        if arch != EXPECTED_ARCH || config != KyutaiSttConfig::stt_2_6b_en() {
+            return Err(VokraError::ModelLoad(
+                "kyutai-stt component binder: only the authenticated stt-2.6b-en release is accepted".to_owned(),
+            ));
+        }
+        bind_component_gguf(file, &config)
+    }
+}
+
+fn component_tensor_names(config: &KyutaiSttConfig) -> Result<Vec<String>> {
+    let block_tensor_count = checked_product(
+        "component block tensor count",
+        &[config.backbone.n_layer, 6],
+    )?;
+    let tensor_count = checked_add(
+        "component tensor count",
+        checked_add("component base tensor count", config.n_q, 3)?,
+        block_tensor_count,
+    )?;
+    let mut names = Vec::with_capacity(tensor_count);
+    names.push("text_emb.weight".to_owned());
+    for channel in 0..config.n_q {
+        names.push(format!("emb.{channel}.weight"));
+    }
+    for layer in 0..config.backbone.n_layer {
+        let prefix = format!("transformer.layers.{layer}");
+        names.push(format!("{prefix}.self_attn.in_proj_weight"));
+        names.push(format!("{prefix}.self_attn.out_proj.weight"));
+        names.push(format!("{prefix}.gating.linear_in.weight"));
+        names.push(format!("{prefix}.gating.linear_out.weight"));
+        names.push(format!("{prefix}.norm1.alpha"));
+        names.push(format!("{prefix}.norm2.alpha"));
+    }
+    names.push("out_norm.alpha".to_owned());
+    names.push("text_linear.weight".to_owned());
+    Ok(names)
+}
+
+fn validate_component_tensor_set(file: &GgufFile, config: &KyutaiSttConfig) -> Result<()> {
+    let mut expected = component_tensor_names(config)?;
+    let mut actual: Vec<String> = file
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.clone())
+        .collect();
+    expected.sort_unstable();
+    actual.sort_unstable();
+    if actual != expected {
+        let missing: Vec<&str> = expected
+            .iter()
+            .filter(|name| actual.binary_search(*name).is_err())
+            .map(String::as_str)
+            .collect();
+        let extra: Vec<&str> = actual
+            .iter()
+            .filter(|name| expected.binary_search(*name).is_err())
+            .map(String::as_str)
+            .collect();
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: exact tensor manifest mismatch (expected {}, found {}); missing={missing:?}, extra={extra:?}",
+            expected.len(),
+            actual.len(),
+        )));
+    }
+    Ok(())
+}
+
+fn component_tensor(file: &GgufFile, name: &str, expected: &[usize]) -> Result<Vec<f32>> {
+    let info = file.tensor_info(name).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: required tensor `{name}` is missing"
+        ))
+    })?;
+    if info.dtype != GgmlType::BF16 {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` dtype {:?}, expected BF16",
+            info.dtype
+        )));
+    }
+    let actual: Vec<usize> = info
+        .dimensions
+        .iter()
+        .map(|&dimension| usize::try_from(dimension))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| {
+            VokraError::ModelLoad(format!(
+                "kyutai-stt component binder: tensor `{name}` dimension overflows usize"
+            ))
+        })?;
+    if actual != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` shape {actual:?}, expected {expected:?}"
+        )));
+    }
+    let values = file.tensor_f32(name).map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` BF16 decode failed: {error}"
+        ))
+    })?;
+    if let Some(index) = values.iter().position(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` contains non-finite value at {index}"
+        )));
+    }
+    Ok(values)
+}
+
+fn transpose_component(values: Vec<f32>, rows: usize, cols: usize, name: &str) -> Result<Vec<f32>> {
+    let expected = checked_product("component transpose", &[rows, cols])?;
+    if values.len() != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` has {} values, expected {expected}",
+            values.len()
+        )));
+    }
+    let mut transposed = vec![0.0f32; expected];
+    for row in 0..rows {
+        for column in 0..cols {
+            transposed[column * rows + row] = values[row * cols + column];
+        }
+    }
+    Ok(transposed)
+}
+
+fn bind_component_gguf(file: &GgufFile, config: &KyutaiSttConfig) -> Result<KyutaiSttWeights> {
+    let shapes = checked_weight_shapes(config).map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: invalid config: {error}"
+        ))
+    })?;
+    validate_component_tensor_set(file, config)?;
+    let text_embedding = component_tensor(file, "text_emb.weight", &[shapes.text_rows, shapes.d])?;
+    let mut audio_embeddings = Vec::with_capacity(config.n_q);
+    for channel in 0..config.n_q {
+        audio_embeddings.push(component_tensor(
+            file,
+            &format!("emb.{channel}.weight"),
+            &[shapes.audio_rows, shapes.d],
+        )?);
+    }
+    let mut blocks = Vec::with_capacity(config.backbone.n_layer);
+    for layer in 0..config.backbone.n_layer {
+        let prefix = format!("transformer.layers.{layer}");
+        let in_proj = component_tensor(
+            file,
+            &format!("{prefix}.self_attn.in_proj_weight"),
+            &[shapes.three_d, shapes.d],
+        )?;
+        let out_proj = component_tensor(
+            file,
+            &format!("{prefix}.self_attn.out_proj.weight"),
+            &[shapes.d, shapes.d],
+        )?;
+        let linear_in = component_tensor(
+            file,
+            &format!("{prefix}.gating.linear_in.weight"),
+            &[shapes.two_ffn, shapes.d],
+        )?;
+        let linear_out = component_tensor(
+            file,
+            &format!("{prefix}.gating.linear_out.weight"),
+            &[shapes.d, shapes.ffn],
+        )?;
+        blocks.push(KyutaiSttBlockWeights {
+            attn_norm: component_tensor(file, &format!("{prefix}.norm1.alpha"), &[shapes.d])?,
+            qkv_proj: transpose_component(in_proj, shapes.three_d, shapes.d, "in_proj_weight")?,
+            out_proj: transpose_component(out_proj, shapes.d, shapes.d, "out_proj.weight")?,
+            ffn_norm: component_tensor(file, &format!("{prefix}.norm2.alpha"), &[shapes.d])?,
+            linear_in: transpose_component(
+                linear_in,
+                shapes.two_ffn,
+                shapes.d,
+                "linear_in.weight",
+            )?,
+            linear_out: transpose_component(linear_out, shapes.d, shapes.ffn, "linear_out.weight")?,
+        });
+    }
+    let final_norm = component_tensor(file, "out_norm.alpha", &[shapes.d])?;
+    let text_head = transpose_component(
+        component_tensor(file, "text_linear.weight", &[config.text_card, shapes.d])?,
+        config.text_card,
+        shapes.d,
+        "text_linear.weight",
+    )?;
+    Ok(KyutaiSttWeights {
+        text_embedding,
+        audio_embeddings,
+        blocks,
+        final_norm,
+        text_head,
+        is_synthesized: false,
+    })
 }
 
 /// Xavier-uniform draw of `count` `f32`s in `[-a, +a]` where
@@ -1330,8 +1553,9 @@ impl KyutaiSttAsr {
                  (CC-BY 4.0, kyutai/stt-2.6b-en) before invoking transcribe. \
                  The shape flow (config validation, weight-store construction, \
                  code-frame shape check) is exercised through KyutaiSttAsr::new; \
-                 the real-checkpoint tensor-name manifest lands in a follow-up \
-                 wave (T29-equivalent — the Moshi / CSM pattern). \
+                 the decoder-component tensor manifest is bound only by \
+                 KyutaiSttWeights::from_component_gguf; the full composite \
+                 binder remains a follow-up wave. \
                  Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
                  https://github.com/kyutai-labs/delayed-streams-modeling",
             ));
@@ -1367,7 +1591,7 @@ impl KyutaiSttAsr {
     pub fn from_gguf_with_policy(bytes: &[u8], policy: &CompliancePolicy) -> Result<Self> {
         let _ = (bytes, policy);
         Err(VokraError::ModelLoad(
-            "kyutai-stt public GGUF loading is blocked: real authenticated model/Mimi/tokenizer tensor binding and native parity are not implemented; synthesized fixtures are test-only and never a public load fallback".to_owned(),
+            "kyutai-stt public GGUF loading is blocked: full authenticated composite Mimi/tokenizer/streaming binding and native parity are not implemented; decoder-component binding is intentionally separate; synthesized fixtures are test-only and never a public load fallback".to_owned(),
         ))
     }
 
@@ -1385,7 +1609,7 @@ impl KyutaiSttAsr {
         // Probe existence without materializing the multi-gigabyte composite.
         std::fs::metadata(path.as_ref()).map_err(VokraError::Io)?;
         Err(VokraError::ModelLoad(
-            "kyutai-stt public GGUF loading is blocked: real authenticated model/Mimi/tokenizer tensor binding and native parity are not implemented; synthesized fixtures are test-only and never a public load fallback".to_owned(),
+            "kyutai-stt public GGUF loading is blocked: full authenticated composite Mimi/tokenizer/streaming binding and native parity are not implemented; decoder-component binding is intentionally separate; synthesized fixtures are test-only and never a public load fallback".to_owned(),
         ))
     }
 }
@@ -1631,6 +1855,61 @@ mod tests {
         assert!(matches!(
             KyutaiSttWeights::synthesized(&c, 7),
             Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn component_manifest_is_exact_and_bf16_shape_is_strict() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        let names = component_tensor_names(&config).expect("manifest names");
+        assert_eq!(
+            names.len(),
+            1 + config.n_q + config.backbone.n_layer * 6 + 2
+        );
+
+        let mut missing = names.clone();
+        missing.pop();
+        let missing_file = manifest_fixture(&missing, GgmlType::F32);
+        assert!(matches!(
+            validate_component_tensor_set(&missing_file, &config),
+            Err(VokraError::ModelLoad(message)) if message.contains("missing")
+        ));
+
+        let mut extra = names;
+        extra.push("unexpected.weight".to_owned());
+        let extra_file = manifest_fixture(&extra, GgmlType::F32);
+        assert!(matches!(
+            validate_component_tensor_set(&extra_file, &config),
+            Err(VokraError::ModelLoad(message)) if message.contains("extra")
+        ));
+
+        let shape_file = one_tensor_fixture("sample", GgmlType::BF16, &[2, 2]);
+        assert!(matches!(
+            component_tensor(&shape_file, "sample", &[2, 3]),
+            Err(VokraError::ModelLoad(message)) if message.contains("shape")
+        ));
+        let dtype_file = one_tensor_fixture("sample", GgmlType::F32, &[2, 2]);
+        assert!(matches!(
+            component_tensor(&dtype_file, "sample", &[2, 2]),
+            Err(VokraError::ModelLoad(message)) if message.contains("dtype")
+        ));
+    }
+
+    #[test]
+    fn component_binder_transposes_torch_linear_layout() {
+        let transposed = transpose_component(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3, "fixture")
+            .expect("transpose");
+        assert_eq!(transposed, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn component_public_binder_keeps_exact_release_gate() {
+        let file = GgufFile::parse(build_tiny_gguf(Some(EXPECTED_ARCH))).expect("fixture");
+        let error = KyutaiSttWeights::from_component_gguf(&file)
+            .expect_err("tiny metadata fixture must not pass the exact release gate");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains("exactly") || message.contains("authenticated")
         ));
     }
 
@@ -1957,6 +2236,42 @@ mod tests {
     /// `stt_2_6b_en` and stays fast.
     fn build_tiny_gguf(arch: Option<&str>) -> Vec<u8> {
         build_gguf_for_config(arch, &KyutaiSttConfig::tiny_for_tests())
+    }
+
+    fn manifest_fixture(names: &[String], dtype: GgmlType) -> GgufFile {
+        let mut builder = GgufBuilder::new();
+        for name in names {
+            builder
+                .add_tensor(name, dtype, vec![1], tensor_bytes(dtype, 1))
+                .expect("manifest fixture tensor");
+        }
+        GgufFile::parse(builder.to_bytes().expect("manifest fixture bytes")).expect("parse")
+    }
+
+    fn one_tensor_fixture(name: &str, dtype: GgmlType, dimensions: &[usize]) -> GgufFile {
+        let elements = dimensions
+            .iter()
+            .copied()
+            .try_fold(1usize, usize::checked_mul)
+            .expect("fixture dimensions");
+        let mut builder = GgufBuilder::new();
+        builder
+            .add_tensor(
+                name,
+                dtype,
+                dimensions.iter().map(|&value| value as u64).collect(),
+                tensor_bytes(dtype, elements),
+            )
+            .expect("single tensor fixture");
+        GgufFile::parse(builder.to_bytes().expect("single tensor bytes")).expect("parse")
+    }
+
+    fn tensor_bytes(dtype: GgmlType, elements: usize) -> Vec<u8> {
+        match dtype {
+            GgmlType::F32 => vec![0; elements * std::mem::size_of::<f32>()],
+            GgmlType::BF16 => vec![0; elements * std::mem::size_of::<u16>()],
+            other => panic!("unsupported fixture dtype {other:?}"),
+        }
     }
 
     fn build_gguf_for_config(arch: Option<&str>, cfg: &KyutaiSttConfig) -> Vec<u8> {
