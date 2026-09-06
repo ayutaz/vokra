@@ -625,6 +625,23 @@ families without acquiring or executing their weights locally:
   or zero-test run. Model-free runner, preflight, packet and prepare/dumper
   self-tests pass locally; real VAST conversion/CPU/reference and final Apple
   CPU/Metal measurements remain open.
+- Yue XCodec Mini commits `c71a9562` and `4ba32a1e` bind the exact public GGUF,
+  independent reference manifest, external approval and singleton VAST CPU
+  log into one portable transfer manifest. Both workers require one clean
+  expected HEAD, locked/offline/serial Cargo and atomic no-clobber work or
+  evidence directory claims. The Apple worker authenticates all VAST evidence
+  before execution. The route remains honestly `DECODE_ONLY`,
+  `ENCODE_NOT_IMPLEMENTED` and `MEASURED_NOT_GATED`; real VAST and Apple decode
+  measurements, reviewed bounds and the missing complete PCM encoder remain
+  open.
+- Conv-TasNet commits `b3e52651` and `bb491ad7` keep the current gate
+  `BLOCKED_LICENSE/NO_UPLOAD` before cache, download, conversion, model or
+  Cargo work. External owner approval can no longer override the unresolved
+  upstream CC-BY-SA 3.0/4.0 contradiction, WHAM research-only restriction or
+  Asteroid dependency closure. The runners also bind an external approval
+  hash and clean expected HEAD for a future resolved contract. Source-only
+  self-tests pass; real replacement and parity are prohibited until those
+  factual license rows are resolved under a new reviewed gate contract.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
