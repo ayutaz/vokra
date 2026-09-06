@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --script
+#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Dump the official SparkAudio BiCodec decode reference (VAST-only).
 
 This tool imports the pinned Spark-TTS source implementation and calls its
@@ -12,15 +12,16 @@ selection remains a separate review decision.
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import importlib
 import json
+import os
 import subprocess
 import sys
+import tempfile
+import shutil
 from pathlib import Path
-
-import numpy as np
-import torch
 
 
 UPSTREAM_HF_REVISION = "642071559bfc6346c2359d19dcb6be3f9dd8a05d"
@@ -37,6 +38,31 @@ SEMANTIC_CODEBOOK_DIM = 8
 SEMANTIC_LATENT_DIM = 1_024
 GLOBAL_VOCAB = 4_096
 GLOBAL_TOKENS = 32
+_PRIVATE_OUTPUTS: set[Path] = set()
+
+
+def _cleanup_private_outputs() -> None:
+    for path in tuple(_PRIVATE_OUTPUTS):
+        shutil.rmtree(path, ignore_errors=True)
+
+
+atexit.register(_cleanup_private_outputs)
+
+
+def validate_raw_path(value: str, label: str) -> Path:
+    if not os.path.isabs(value):
+        raise RuntimeError(f"{label} must be absolute: {value}")
+    components = value.split(os.sep)
+    if any(component in {".", ".."} for component in components):
+        raise RuntimeError(f"{label} contains a lexical dot component: {value}")
+    cursor = Path(os.sep)
+    for component in components[1:]:
+        if not component:
+            continue
+        cursor /= component
+        if cursor.is_symlink():
+            raise RuntimeError(f"{label} has symlink ancestry: {cursor}")
+    return Path(value)
 
 
 def sha256_file(path: Path) -> str:
@@ -68,9 +94,11 @@ def source_git(source: Path, *args: str) -> str:
     ).strip()
 
 
-def write_f32(path: Path, tensor: torch.Tensor) -> dict[str, object]:
-    values = tensor.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy()
-    data = np.asarray(values, dtype="<f4").tobytes(order="C")
+def write_f32(path: Path, tensor: object, numpy: object) -> dict[str, object]:
+    # ``numpy`` and ``torch`` are passed explicitly so ``--self-test`` remains
+    # model-stack free and cannot accidentally import the checkpoint runtime.
+    values = tensor.detach().to(device="cpu").contiguous().numpy()
+    data = numpy.asarray(values, dtype="<f4").tobytes(order="C")
     path.write_bytes(data)
     return {
         "path": path.name,
@@ -83,16 +111,46 @@ def write_f32(path: Path, tensor: torch.Tensor) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-dir", type=Path, required=True)
-    parser.add_argument("--model-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--source-dir")
+    parser.add_argument("--model-dir")
+    parser.add_argument("--output")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
-    if args.source_dir.is_symlink() or args.model_dir.is_symlink() or args.output.is_symlink():
-        raise RuntimeError("source, model, and output paths must not be symlinks")
-    source = args.source_dir.resolve()
-    model_dir = args.model_dir.resolve()
-    output = args.output.resolve()
+    if args.self_test:
+        if sys.argv.count("--self-test") != 1 or any(
+            value is not None for value in (args.source_dir, args.model_dir, args.output)
+        ):
+            raise RuntimeError("--self-test accepts no model or output arguments")
+        probe = Path(tempfile.mkdtemp(prefix=".bicodec-path-selftest.", dir=Path.cwd()))
+        try:
+            validate_raw_path(str(probe / "output"), "self-test path")
+            for invalid in (f"{probe}/./dot", f"{probe}/../parent"):
+                try:
+                    validate_raw_path(invalid, "self-test path")
+                except RuntimeError:
+                    pass
+                else:
+                    raise RuntimeError("self-test accepted a lexical dot component")
+            real = probe / "real"
+            real.mkdir()
+            alias = probe / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            try:
+                validate_raw_path(f"{alias}/child", "self-test path")
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError("self-test accepted symlink ancestry")
+        finally:
+            shutil.rmtree(probe, ignore_errors=True)
+        print("bicodec_dump_reference.py self-test: PASS")
+        return 0
+    if any(value is None for value in (args.source_dir, args.model_dir, args.output)):
+        parser.error("--source-dir, --model-dir, and --output are required")
+    source = validate_raw_path(args.source_dir, "source directory").resolve()
+    model_dir = validate_raw_path(args.model_dir, "model directory").resolve()
+    final_output = validate_raw_path(args.output, "output directory").resolve()
     if not source.is_dir():
         raise RuntimeError(f"source directory is not a regular directory: {source}")
     if source_git(source, "rev-parse", "HEAD") != SOURCE_REVISION:
@@ -104,11 +162,16 @@ def main() -> int:
     config = model_dir / "config.yaml"
     require_identity(checkpoint, CHECKPOINT_BYTES, CHECKPOINT_SHA256, "BiCodec checkpoint")
     require_identity(config, CONFIG_BYTES, CONFIG_SHA256, "BiCodec config")
-    if output.exists() and any(output.iterdir()):
-        raise RuntimeError(f"refusing non-empty output directory: {output}")
-    output.mkdir(parents=True, exist_ok=True)
+    if final_output.exists() or final_output.is_symlink():
+        raise RuntimeError(f"refusing existing output directory: {final_output}")
+    final_output.parent.mkdir(parents=True, exist_ok=True)
+    output = Path(tempfile.mkdtemp(prefix=f".{final_output.name}.", dir=final_output.parent))
+    os.chmod(output, 0o700)
+    _PRIVATE_OUTPUTS.add(output)
 
     sys.path.insert(0, str(source))
+    import numpy as np
+    import torch
     module = importlib.import_module("sparktts.models.bicodec")
     model = module.BiCodec.load_from_checkpoint(model_dir)
     model.eval()
@@ -154,12 +217,14 @@ def main() -> int:
         raise RuntimeError(f"unexpected waveform shape: {tuple(waveform.shape)}")
     if not all(torch.isfinite(tensor).all().item() for tensor in (semantic_latent, d_vector, prenet_output, waveform)):
         raise RuntimeError("official reference produced a non-finite tensor")
+    if any(tensor.numel() == 0 or not torch.any(tensor != 0).item() for tensor in (semantic_latent, d_vector, prenet_output, waveform)):
+        raise RuntimeError("official reference produced an empty or all-zero tensor")
 
     records = {
-        "semantic_latent": write_f32(output / "semantic_latent.f32", semantic_latent),
-        "d_vector": write_f32(output / "d_vector.f32", d_vector),
-        "prenet_output": write_f32(output / "prenet_output.f32", prenet_output),
-        "waveform": write_f32(output / "waveform.f32", waveform),
+        "semantic_latent": write_f32(output / "semantic_latent.f32", semantic_latent, np),
+        "d_vector": write_f32(output / "d_vector.f32", d_vector, np),
+        "prenet_output": write_f32(output / "prenet_output.f32", prenet_output, np),
+        "waveform": write_f32(output / "waveform.f32", waveform, np),
     }
     manifest = {
         "schema": "vokra-bicodec-official-reference-v1",
@@ -192,7 +257,19 @@ def main() -> int:
     (output / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(output / "manifest.json")
+    if final_output.exists() or final_output.is_symlink():
+        raise RuntimeError(f"output appeared during generation: {final_output}")
+    os.replace(output, final_output)
+    _PRIVATE_OUTPUTS.discard(output)
+    try:
+        descriptor = os.open(final_output.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        pass
+    print(final_output / "manifest.json")
     return 0
 
 

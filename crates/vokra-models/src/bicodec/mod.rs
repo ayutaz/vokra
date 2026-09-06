@@ -1394,14 +1394,10 @@ mod tests {
     #[ignore = "VAST-only: requires authenticated GGUF and official reference outputs"]
     fn official_reference_measured_parity() {
         let backend = parity_backend_from_env();
-        let Ok(gguf_path) = std::env::var("VOKRA_BICODEC_PARITY_GGUF") else {
-            eprintln!("BiCodec measured parity skipped: VOKRA_BICODEC_PARITY_GGUF is unset");
-            return;
-        };
-        let Ok(reference_dir) = std::env::var("VOKRA_BICODEC_PARITY_REFERENCE") else {
-            eprintln!("BiCodec measured parity skipped: VOKRA_BICODEC_PARITY_REFERENCE is unset");
-            return;
-        };
+        let gguf_path = std::env::var("VOKRA_BICODEC_PARITY_GGUF")
+            .expect("VOKRA_BICODEC_PARITY_GGUF is required for measured BiCodec parity");
+        let reference_dir = std::env::var("VOKRA_BICODEC_PARITY_REFERENCE")
+            .expect("VOKRA_BICODEC_PARITY_REFERENCE is required for measured BiCodec parity");
         let manifest_path = std::path::Path::new(&reference_dir).join("manifest.json");
         let manifest = std::fs::read_to_string(&manifest_path)
             .unwrap_or_else(|error| panic!("read BiCodec reference manifest: {error}"));
@@ -1452,28 +1448,8 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        let compute = Compute::for_backend(backend, BICODEC_DECODE_HOT_OPS)
-            .expect("selected BiCodec hot-op preflight");
-        let semantic = model
-            .semantic_decode(&semantic_values, &compute)
-            .expect("semantic decode");
-        let speaker = model
-            .speaker_decode(&global_values, &compute)
-            .expect("global FSQ decode");
-        let prenet = model
-            .prenet
-            .forward(&semantic, &speaker, &compute)
-            .expect("prenet decode");
-        let mut conditioned = prenet.clone();
-        for channel in 0..MODEL_DIM {
-            for position in 0..semantic_values.len() {
-                conditioned[channel * semantic_values.len() + position] += speaker[channel];
-            }
-        }
-        let waveform = model
-            .wave
-            .forward(&conditioned, semantic_values.len(), &compute)
-            .expect("wave decode");
+        let stages = decode_reference_packet(&model, backend, &semantic_values, &global_values);
+        let (semantic, speaker, prenet, waveform) = (&stages.0, &stages.1, &stages.2, &stages.3);
         compare_reference_stage(
             &manifest,
             &reference_dir,
@@ -1500,9 +1476,64 @@ mod tests {
             &reference_dir,
             "waveform",
             &[1, 1, semantic_values.len() * FRAME_HOP],
-            &waveform,
+            waveform,
         );
+        if backend == BackendKind::Metal {
+            let cpu_model = Bicodec::from_gguf_with_backend(&gguf, BackendKind::Cpu)
+                .expect("CPU reference binding for Metal cross-check");
+            let cpu = decode_reference_packet(
+                &cpu_model,
+                BackendKind::Cpu,
+                &semantic_values,
+                &global_values,
+            );
+            for (role, metal, cpu_values) in [
+                ("semantic_latent", semantic, &cpu.0),
+                ("d_vector", speaker, &cpu.1),
+                ("prenet_output", prenet, &cpu.2),
+                ("waveform", waveform, &cpu.3),
+            ] {
+                assert!(
+                    parity_passes(role, metal, cpu_values),
+                    "BiCodec Metal/CPU {role} exceeds the fixed measured bound"
+                );
+            }
+            println!(
+                "BICODEC_METAL_CPU stages=semantic_latent,d_vector,prenet_output,waveform verdict=PASS"
+            );
+        }
         println!("{}", parity_backend_pass_sentinel(backend));
+    }
+
+    fn decode_reference_packet(
+        model: &Bicodec,
+        backend: BackendKind,
+        semantic_values: &[u32],
+        global_values: &[u32],
+    ) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+        let compute = Compute::for_backend(backend, BICODEC_DECODE_HOT_OPS)
+            .expect("selected BiCodec hot-op preflight");
+        let semantic = model
+            .semantic_decode(semantic_values, &compute)
+            .expect("semantic decode");
+        let speaker = model
+            .speaker_decode(global_values, &compute)
+            .expect("global FSQ decode");
+        let prenet = model
+            .prenet
+            .forward(&semantic, &speaker, &compute)
+            .expect("prenet decode");
+        let mut conditioned = prenet.clone();
+        for channel in 0..MODEL_DIM {
+            for position in 0..semantic_values.len() {
+                conditioned[channel * semantic_values.len() + position] += speaker[channel];
+            }
+        }
+        let waveform = model
+            .wave
+            .forward(&conditioned, semantic_values.len(), &compute)
+            .expect("wave decode");
+        (semantic, speaker, prenet, waveform)
     }
 
     fn parity_backend_from_env() -> BackendKind {
@@ -1580,6 +1611,10 @@ mod tests {
         assert!(
             reference.iter().all(|value| value.is_finite()),
             "BiCodec {role} reference is non-finite"
+        );
+        assert!(
+            reference.iter().any(|value| *value != 0.0),
+            "BiCodec {role} reference is vacuously all-zero"
         );
         let (max_abs, rmse) = parity_metrics(actual, &reference);
         let bounds = parity_bounds(role);

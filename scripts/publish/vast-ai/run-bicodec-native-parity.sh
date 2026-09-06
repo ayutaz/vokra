@@ -12,6 +12,53 @@ die() {
   exit 1
 }
 
+require_approval() {
+  local approval="$1" expected_head="$2"
+  [[ "$approval" == /* && -f "$approval" && ! -L "$approval" ]] || die 'approval evidence must be an absolute regular non-symlink file'
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$approval" "$expected_head" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+
+def reject(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate key: {key}")
+        result[key] = value
+    return result
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=reject)
+    expected_keys = {"schema", "model", "upstream_repo", "upstream_revision", "upstream_hf_revision", "license_spdx", "checkpoint_sha256", "config_sha256", "git_commit", "no_upload", "decision", "signer", "scope_sha256"}
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise ValueError("approval schema is not exact")
+    expected = {
+        "schema": "vokra-bicodec-approval-v1",
+        "model": "SparkAudio/Spark-TTS-0.5B",
+        "upstream_repo": "https://github.com/SparkAudio/Spark-TTS",
+        "upstream_revision": "2f1ea9082400547242641f5271b6f941c9f439d1",
+        "upstream_hf_revision": "642071559bfc6346c2359d19dcb6be3f9dd8a05d",
+        "license_spdx": "cc-by-nc-sa-4.0",
+        "checkpoint_sha256": "e9940cd48d4446e4340ced82d234bf5618350dd9f5db900ebe47a4fdb03867ec",
+        "config_sha256": "744f4093ae2381a2eb44ea8c4a5268a8d1e581498e9bf0808c034d1b076429be",
+        "git_commit": sys.argv[2], "no_upload": True, "decision": "RESEARCH_ONLY",
+    }
+    for key, expected_value in expected.items():
+        if value[key] != expected_value:
+            raise ValueError(f"approval identity drift: {key}")
+    if type(value["no_upload"]) is not bool or not isinstance(value["signer"], str) or not value["signer"].strip():
+        raise ValueError("approval signer/no_upload is invalid")
+    if not isinstance(value["git_commit"], str) or len(value["git_commit"]) != 40 or any(c not in "0123456789abcdef" for c in value["git_commit"]):
+        raise ValueError("approval git_commit is not lowercase 40-hex")
+    scope = {key: value[key] for key in expected_keys if key not in {"scope_sha256", "signer"}}
+    digest = hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if value["scope_sha256"] != digest:
+        raise ValueError("approval scope digest mismatch")
+except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+    raise SystemExit(f"approval gate BLOCKED: {error}")
+PY
+}
+
 require_cpu_parity_pass() {
   local log_path="$1" stage count
   [[ "$(grep -Fxc 'test bicodec::tests::official_reference_measured_parity ... ok' "$log_path" || true)" == 1 ]] \
@@ -62,7 +109,10 @@ run_self_test() (
   sed '/BICODEC_MEASURED_PARITY_BACKEND/d' "$temporary/valid.log" > "$temporary/missing-sentinel.log"
   if (require_cpu_parity_pass "$temporary/missing-sentinel.log") >/dev/null 2>&1; then die 'missing backend sentinel accepted'; fi
   grep -Fq -- 'VOKRA_BICODEC_PARITY_BACKEND=cpu' "$0" || die 'CPU selector missing from production command'
-  grep -Fq -- 'cargo test --locked --lib -p vokra-models' "$0" || die 'production command lacks --lib'
+  grep -Fq -- '--expected-head' "$0" || die 'exact checkout HEAD gate is missing'
+  grep -Fq -- '--approval-evidence' "$0" || die 'owner approval gate is missing'
+  if bash "$0" --self-test --self-test >/dev/null 2>&1; then die 'duplicate --self-test accepted'; fi
+  grep -Fq -- 'cargo test --locked --offline --lib -p vokra-models' "$0" || die 'production command lacks locked offline --lib'
   grep -Fq -- '-- --ignored --exact --show-output' "$0" || die 'production command lacks harness --exact/show-output'
   echo 'run-bicodec-native-parity.sh self-test: OK'
 )
@@ -71,7 +121,7 @@ usage() {
   cat <<'EOF'
 Usage:
   run-bicodec-native-parity.sh --source-dir <checkout> --model-dir <BiCodec> \
-    --output <empty-tmpfs-dir>
+    --output <empty-tmpfs-dir> --approval-evidence <json> --expected-head <40-lowercase-hex>
   run-bicodec-native-parity.sh --self-test
 
 Requires Linux x86_64, VAST, and the repository Python environment. Inputs are
@@ -84,42 +134,48 @@ EOF
 source_dir=""
 model_dir=""
 output=""
+approval=""
+expected_head=""
 seen_self_test=0
 self_test=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --self-test) (( seen_self_test == 0 )) || die 'duplicate --self-test'; seen_self_test=1; self_test=1; shift ;;
-    --source-dir) [[ $# -ge 2 ]] || die "--source-dir requires a path"; source_dir="$2"; shift 2 ;;
-    --model-dir) [[ $# -ge 2 ]] || die "--model-dir requires a path"; model_dir="$2"; shift 2 ;;
-    --output) [[ $# -ge 2 ]] || die "--output requires a path"; output="$2"; shift 2 ;;
+    --source-dir) [[ $# -ge 2 && -z "$source_dir" ]] || die "--source-dir requires one path"; source_dir="$2"; shift 2 ;;
+    --model-dir) [[ $# -ge 2 && -z "$model_dir" ]] || die "--model-dir requires one path"; model_dir="$2"; shift 2 ;;
+    --output) [[ $# -ge 2 && -z "$output" ]] || die "--output requires one path"; output="$2"; shift 2 ;;
+    --approval-evidence) [[ $# -ge 2 && -z "$approval" ]] || die "--approval-evidence requires one path"; approval="$2"; shift 2 ;;
+    --expected-head) [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ && -z "$expected_head" ]] || die "--expected-head requires one lowercase 40-hex commit"; expected_head="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self_test )); then
-  [[ -z "$source_dir$model_dir$output" ]] || die '--self-test accepts no other arguments'
+  [[ -z "$source_dir$model_dir$output$approval$expected_head" ]] || die '--self-test accepts no other arguments'
   run_self_test
   exit 0
 fi
-[[ -n "$source_dir" && -n "$model_dir" && -n "$output" ]] || { usage >&2; exit 1; }
+[[ -n "$source_dir" && -n "$model_dir" && -n "$output" && -n "$approval" && -n "$expected_head" ]] || { usage >&2; exit 1; }
+for path in "$source_dir" "$model_dir" "$output"; do [[ "$path" == /* ]] || die 'source, model, and output paths must be absolute'; done
 [[ "$(uname -s)" == "Linux" ]] || die "official reference runs on Linux/VAST only"
 [[ "$(uname -m)" == "x86_64" ]] || die "official reference requires x86_64"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
 [[ -f Cargo.toml && -d tools/parity ]] || die "run from a Vokra checkout"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "worktree is not clean"
+actual_head="$(git rev-parse HEAD)"
+[[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
+require_approval "$approval" "$expected_head"
 command -v uv >/dev/null 2>&1 || die "uv is required"
 command -v findmnt >/dev/null 2>&1 || die "findmnt is required"
 command -v cargo >/dev/null 2>&1 || die "cargo is required"
 [[ "$(findmnt -T "$(dirname "$output")" -no FSTYPE 2>/dev/null || true)" == "tmpfs" ]] \
   || die "output parent must be tmpfs/RAM disk"
-
-mkdir -p "$output"
-[[ -z "$(find "$output" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "output must be empty"
+[[ ! -e "$output" && ! -L "$output" ]] || die "output must be absent (no-clobber)"
 uv run --frozen --project tools/parity --python 3.12 python \
   tools/parity/bicodec_dump_reference.py \
   --source-dir "$source_dir" --model-dir "$model_dir" --output "$output"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
-cargo build --locked --release -p vokra-cli
+cargo build --locked --offline --release -p vokra-cli
 gguf_path="$output/bicodec.gguf"
 target/release/vokra-cli convert \
   --model bicodec \
@@ -127,10 +183,28 @@ target/release/vokra-cli convert \
   --output "$gguf_path" \
   --license cc-by-nc-sa-4.0
 [[ -s "$gguf_path" ]] || die "authenticated BiCodec conversion produced no GGUF"
+for artifact in manifest.json semantic_latent.f32 d_vector.f32 prenet_output.f32 waveform.f32; do
+  [[ -f "$output/$artifact" && ! -L "$output/$artifact" && -s "$output/$artifact" ]] || die "reference artifact missing or symlinked: $artifact"
+done
+[[ "$(find "$output" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]] || die 'reference/conversion output contains an unexpected entry'
+gguf_sha256="$(sha256sum "$gguf_path" | awk '{print $1}')"
+reference_manifest_sha256="$(sha256sum "$output/manifest.json" | awk '{print $1}')"
+{
+  echo "expected_head=$expected_head"
+  echo "gguf_sha256=$gguf_sha256"
+  echo "reference_manifest_sha256=$reference_manifest_sha256"
+  for artifact in semantic_latent.f32 d_vector.f32 prenet_output.f32 waveform.f32; do
+    echo "${artifact}_sha256=$(sha256sum "$output/$artifact" | awk '{print $1}')"
+  done
+  echo 'publication=NO_UPLOAD'
+} > "$output/input-hashes.txt"
+printf '%s\n' "apple-silicon-bicodec.sh --gguf %q --gguf-sha256 %s --reference %q --reference-sha256 %s --approval-evidence %q --expected-head %s" \
+  '<BICODEC_GGUF>' "$gguf_sha256" '<BICODEC_REFERENCE_DIR>' "$reference_manifest_sha256" '<BICODEC_APPROVAL_JSON>' "$expected_head" > "$output/apple-transfer-args.txt"
 VOKRA_BICODEC_PARITY_GGUF="$gguf_path" \
 VOKRA_BICODEC_PARITY_REFERENCE="$output" \
 VOKRA_BICODEC_PARITY_BACKEND=cpu \
-  cargo test --locked --lib -p vokra-models \
+  cargo test --locked --offline --lib -p vokra-models \
     bicodec::tests::official_reference_measured_parity -- --ignored --exact --show-output 2>&1 | tee "$output/parity-cpu.log"
 require_cpu_parity_pass "$output/parity-cpu.log"
+printf '%s\n' "verdict=MEASURED_ONLY" "expected_head=$expected_head" "gguf_sha256=$gguf_sha256" "reference_manifest_sha256=$reference_manifest_sha256" 'publication=NO_UPLOAD' > "$output/summary.txt"
 echo "BiCodec official reference evidence: $output"

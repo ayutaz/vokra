@@ -28,7 +28,8 @@ usage() {
   cat <<'EOF' >&2
 usage: apple-silicon-bicodec.sh --gguf <file> --gguf-sha256 <64-hex> \
        --reference <directory> --reference-sha256 <64-hex> \
-       --approval-evidence <file> --evidence-dir <absent-dir>
+       --approval-evidence <file> --evidence-dir <absent-dir> \
+       --expected-head <40-lowercase-hex>
        apple-silicon-bicodec.sh --self-test
 
 Runs authenticated BiCodec official-reference parity once on CPU and once on
@@ -79,7 +80,7 @@ require_disjoint_evidence() {
     protected_real="$(canonical_existing "$protected")" || { die "protected input cannot be canonicalized: $protected"; return 2; }
     paths_overlap "$evidence_real" "$protected_real" && { die "evidence overlaps protected input: $protected"; return 2; }
   done
-  mkdir -p "$evidence"
+  mkdir -m 700 "$evidence" || { die "evidence directory appeared during reservation: $evidence"; return 2; }
 }
 
 require_reference_files() {
@@ -269,13 +270,17 @@ require_test_pass() {
   done
   [[ "$(grep -Fxc "BICODEC_MEASURED_PARITY_BACKEND backend=$backend verdict=PASS" "$log_path" || true)" == 1 ]] \
     || { die "$backend log lacks one backend-specific PASS sentinel"; return 2; }
+  if [[ "$backend" == metal ]]; then
+    [[ "$(grep -Fxc 'BICODEC_METAL_CPU stages=semantic_latent,d_vector,prenet_output,waveform verdict=PASS' "$log_path" || true)" == 1 ]] \
+      || { die 'Metal log lacks one direct Metal/CPU parity sentinel'; return 2; }
+  fi
   ! grep -Eq '^BICODEC_MEASURED_PARITY .* verdict=FAIL$' "$log_path" || die "$backend log contains failed parity marker"
 }
 
 run_parity() {
   local backend="$1" gguf="$2" reference="$3" log_path="$4"
   env VOKRA_BICODEC_PARITY_GGUF="$gguf" VOKRA_BICODEC_PARITY_REFERENCE="$reference" VOKRA_BICODEC_PARITY_BACKEND="$backend" CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release --lib -p vokra-models --features metal "$TEST_SELECTOR" -- --ignored --exact --show-output --test-threads=1 2>&1 | tee "$log_path"
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release --lib -p vokra-models --features metal "$TEST_SELECTOR" -- --ignored --exact --show-output --test-threads=1 2>&1 | tee "$log_path"
 }
 
 run_self_test() (
@@ -303,15 +308,19 @@ run_self_test() (
   if require_test_pass "$temporary/duplicate.log" cpu >/dev/null 2>&1; then die 'duplicate marker accepted'; fi
   sed 's/0 filtered out/2975 filtered out/' "$temporary/valid.log" > "$temporary/filtered.log"
   require_test_pass "$temporary/filtered.log" cpu
+  cp "$temporary/valid.log" "$temporary/metal.log"
+  sed 's/backend=cpu/backend=metal/' "$temporary/valid.log" > "$temporary/metal.log"
+  printf '%s\n' 'BICODEC_METAL_CPU stages=semantic_latent,d_vector,prenet_output,waveform verdict=PASS' >> "$temporary/metal.log"
+  require_test_pass "$temporary/metal.log" metal
   if bash "$0" --help >"$temporary/help.txt" 2>&1; then :; else die 'help invocation failed'; fi
   grep -Fq 'usage: apple-silicon-bicodec.sh' "$temporary/help.txt" || die 'help output is incomplete'
-  for token in 'run_parity cpu' 'run_parity metal' 'VOKRA_BICODEC_PARITY_BACKEND' 'backend=metal verdict=PASS'; do
+  for token in 'run_parity cpu' 'run_parity metal' 'VOKRA_BICODEC_PARITY_BACKEND' 'backend=metal verdict=PASS' 'BICODEC_METAL_CPU stages=semantic_latent,d_vector,prenet_output,waveform verdict=PASS' '--expected-head' '--locked --offline'; do
     grep -Fq -- "$token" "$0" || die "self-test missing backend contract: $token"
   done
   grep -Fq "require_file 'GGUF'" "$0" || die 'self-test missing regular-file helper call'
   local legacy_helper='require_regular_'
   if grep -Fq "${legacy_helper}file" "$0"; then die 'self-test found undefined legacy helper'; fi
-  for bad_args in '--self-test --self-test' '--self-test --gguf x' '--gguf x --gguf y' '--unknown x'; do
+  for bad_args in '--self-test --self-test' '--self-test --gguf x' '--gguf x --gguf y' '--expected-head 0000000000000000000000000000000000000000 --expected-head 0000000000000000000000000000000000000000' '--unknown x'; do
     # shellcheck disable=SC2086
     if bash "$0" $bad_args >/dev/null 2>&1; then die "accepted malformed parser case: $bad_args"; fi
   done
@@ -321,8 +330,8 @@ run_self_test() (
 )
 
 main() {
-  local gguf='' gguf_digest='' reference='' reference_digest='' approval='' evidence='' self_test=0 pair label value
-  local seen_gguf=0 seen_gguf_digest=0 seen_reference=0 seen_reference_digest=0 seen_approval=0 seen_evidence=0 seen_self_test=0
+  local gguf='' gguf_digest='' reference='' reference_digest='' approval='' evidence='' expected_head='' self_test=0 pair label value actual_head
+  local seen_gguf=0 seen_gguf_digest=0 seen_reference=0 seen_reference_digest=0 seen_approval=0 seen_evidence=0 seen_expected_head=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --self-test) (( seen_self_test == 0 )) || die 'duplicate --self-test'; seen_self_test=1; self_test=1; shift ;;
@@ -332,15 +341,18 @@ main() {
       --reference-sha256) (( seen_reference_digest == 0 )) || die 'duplicate --reference-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--reference-sha256 requires a nonempty value'; seen_reference_digest=1; reference_digest="$2"; shift 2 ;;
       --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty value'; seen_approval=1; approval="$2"; shift 2 ;;
       --evidence-dir) (( seen_evidence == 0 )) || die 'duplicate --evidence-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--evidence-dir requires a nonempty value'; seen_evidence=1; evidence="$2"; shift 2 ;;
+      --expected-head) (( seen_expected_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; seen_expected_head=1; expected_head="$2"; shift 2 ;;
       -h|--help) usage; return 0 ;;
       *) usage; die "unknown argument: $1" ;;
     esac
   done
-  if (( self_test )); then [[ -z "$gguf$gguf_digest$reference$reference_digest$approval$evidence" ]] || die '--self-test accepts no other arguments'; run_self_test; return; fi
-  [[ -n "$gguf$gguf_digest$reference$reference_digest$approval$evidence" ]] || { usage; die 'all inputs are required'; }
+  if (( self_test )); then [[ -z "$gguf$gguf_digest$reference$reference_digest$approval$evidence$expected_head" ]] || die '--self-test accepts no other arguments'; run_self_test; return; fi
+  [[ -n "$gguf$gguf_digest$reference$reference_digest$approval$evidence$expected_head" ]] || { usage; die 'all inputs are required'; }
   for pair in "GGUF path|$gguf" "reference directory|$reference" "approval evidence|$approval" "evidence directory|$evidence"; do label="${pair%%|*}"; value="${pair#*|}"; require_absolute "$label" "$value"; done
   [[ "$gguf_digest" =~ ^[0-9a-f]{64}$ && "$reference_digest" =~ ^[0-9a-f]{64}$ ]] || die 'input hashes must be lowercase 64-hex'
   require_tooling; require_remote_host; require_backend_contract
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
   require_file 'GGUF' "$gguf"; [[ "$(sha256_file "$gguf")" == "$gguf_digest" ]] || die 'GGUF SHA-256 mismatch'
   require_reference_manifest "$reference"; [[ "$(sha256_file "$reference/manifest.json")" == "$reference_digest" ]] || die 'reference manifest SHA-256 mismatch'
   require_approval "$approval"; require_disjoint_evidence "$evidence" "$VOKRA_ROOT" "$gguf" "$reference" "$approval"
@@ -348,7 +360,7 @@ main() {
   printf '%s\n' "gguf_sha256=$gguf_digest" "reference_manifest_sha256=$reference_digest" "checkpoint_sha256=$CHECKPOINT_SHA256" "config_sha256=$CONFIG_SHA256" "upstream_hf_revision=$UPSTREAM_HF_REVISION" "source_repository=$SOURCE_REPOSITORY" "source_revision=$SOURCE_REVISION" > "$evidence/input-hashes.txt"
   log 'running authenticated BiCodec CPU parity'; run_parity cpu "$gguf" "$reference" "$evidence/parity-cpu.log"; require_test_pass "$evidence/parity-cpu.log" cpu
   log 'running authenticated BiCodec Metal parity'; run_parity metal "$gguf" "$reference" "$evidence/parity-metal.log"; require_test_pass "$evidence/parity-metal.log" metal
-  printf '%s\n' 'verdict=PASS' "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)" "gguf_sha256=$gguf_digest" "reference_manifest_sha256=$reference_digest" 'cpu_vs_official=PASS' 'metal_vs_official=PASS' 'publication=NO_UPLOAD' 'fallback=FORBIDDEN' > "$evidence/summary.txt"
+  printf '%s\n' 'verdict=PASS' "git_commit=$actual_head" "expected_head=$expected_head" "gguf_sha256=$gguf_digest" "reference_manifest_sha256=$reference_digest" 'cpu_vs_official=PASS' 'metal_vs_official=PASS' 'metal_vs_cpu=PASS' 'publication=NO_UPLOAD' 'fallback=FORBIDDEN' > "$evidence/summary.txt"
   log "PASS: evidence written to $evidence; remove staged inputs or destroy worker"
 }
 main "$@"
