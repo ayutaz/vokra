@@ -181,7 +181,8 @@ UV_CACHE_DIR="$(printenv UV_CACHE_DIR || printf /tmp/vokra-sgmse-uv-cache)" \
 actual_gguf_sha256="$(sha256sum "$GGUF" | awk '{print $1}')"
 [[ "$actual_gguf_sha256" == "$GGUF_SHA256" ]] || die "GGUF SHA-256 mismatch: got $actual_gguf_sha256"
 
-export CARGO_BUILD_JOBS="$(printenv CARGO_BUILD_JOBS || printf 1)"
+cargo_build_jobs="$(printenv CARGO_BUILD_JOBS || printf 1)"
+export CARGO_BUILD_JOBS="$cargo_build_jobs"
 tmpdir="$(printenv TMPDIR || printf /tmp)"
 native_log="$(mktemp "$tmpdir/vokra-sgmse-native-enhancement.XXXXXX")"
 trap 'rm -f -- "$native_log"' EXIT
