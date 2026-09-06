@@ -541,8 +541,9 @@ PY
     echo "apple_transfer_args=$transfer_args_file"
   } > "$summary_file"
   echo "run-nsnet2-validation: PASS"
-  echo "Pull before destroy: $evidence_dir and $run_log"
-  echo "Do not pull the generated model artifacts to the maintainer Mac."
+  echo "Transfer $packet_dir directly to the Apple/Scaleway verifier; packet paths are not valid VAST-local handoff paths."
+  echo "Recover only small evidence files (run.log, summary.txt, backend logs, manifest, and transfer args); exclude $packet_dir/nsnet2.gguf."
+  echo "Do not copy the generated GGUF packet to the maintainer Mac."
 }
 
 main "$@"
