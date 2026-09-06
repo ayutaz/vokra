@@ -9,6 +9,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 FIXTURE_DIR="$VOKRA_ROOT/tests/parity/bf16_gemm"
 TEST_NAME="apple_silicon_neon_bf16_gemm_matches_pytorch_reference"
 MANIFEST_SHA256="b9e7b687ef6352b30f258b0b1c02695e724e32443665e74981cac66b025b1ba3"
+FIXTURE_EXPECTED='README.md full_k32_m8_n64_a.f32 full_k32_m8_n64_b.f32 full_k32_m8_n64_output.f32 manifest.json manifest.sha256 tails_m3_n35_k65_a.f32 tails_m3_n35_k65_b.f32 tails_m3_n35_k65_output.f32 tails_m9_n33_k31_a.f32 tails_m9_n33_k31_b.f32 tails_m9_n33_k31_output.f32'
 
 log() { printf '[bf16-gemm-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -47,7 +48,8 @@ canonical_existing() {
   rest="${path#/}"
   while [[ -n "$rest" ]]; do
     if [[ "$rest" == */* ]]; then part="${rest%%/*}"; rest="${rest#*/}"; else part="$rest"; rest=''; fi
-    [[ -n "$part" && "$part" != . && "$part" != .. ]] || continue
+    [[ -n "$part" ]] || continue
+    [[ "$part" != . && "$part" != .. ]] || return 1
     current="${current%/}/$part"
     [[ ! -L "$current" ]] || return 1
   done
@@ -64,7 +66,8 @@ canonical_absent() {
   rest="${path#/}"; current=/
   while [[ -n "$rest" ]]; do
     if [[ "$rest" == */* ]]; then part="${rest%%/*}"; rest="${rest#*/}"; else part="$rest"; rest=''; fi
-    [[ -n "$part" && "$part" != . && "$part" != .. ]] || continue
+    [[ -n "$part" ]] || continue
+    [[ "$part" != . && "$part" != .. ]] || return 1
     current="${current%/}/$part"
     [[ ! -L "$current" ]] || return 1
   done
@@ -84,7 +87,7 @@ require_evidence_path() {
   root_real="$(canonical_existing "$VOKRA_ROOT")" || die 'checkout path is not canonical'
   parent_real="$(canonical_existing "$(dirname "$evidence")")" || die 'evidence parent is unavailable'
   local evidence_real
-  evidence_real="$(canonical_absent "$evidence")"
+  evidence_real="$(canonical_absent "$evidence")" || { die 'evidence path contains dot components or symlink ancestry'; return 2; }
   [[ "$evidence_real" != "$root_real" && "$evidence_real" != "$root_real"/* ]] || die 'evidence overlaps checkout'
   [[ "$parent_real" != "$root_real"/* ]] || die 'evidence parent is inside checkout'
 }
@@ -94,12 +97,16 @@ require_clean_checkout() {
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain)" ]] || die 'checkout is dirty'
 }
 
+require_fixture_entry_set() {
+  local directory="$1" expected="$2" actual
+  [[ -d "$directory" && ! -L "$directory" ]] || { die 'fixture directory missing or symlinked'; return 2; }
+  actual="$(find -P "$directory" -mindepth 1 -maxdepth 1 -print | awk -F/ '{print $NF}' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  [[ "$actual" == "$expected" ]] || { die 'fixture directory entry set drifted'; return 2; }
+}
+
 require_fixture_contract() {
   [[ -d "$FIXTURE_DIR" && ! -L "$FIXTURE_DIR" ]] || die 'BF16 fixture directory missing or symlinked'
-  local expected actual
-  expected='README.md manifest.json manifest.sha256 full_k32_m8_n64_a.f32 full_k32_m8_n64_b.f32 full_k32_m8_n64_output.f32 tails_m3_n35_k65_a.f32 tails_m3_n35_k65_b.f32 tails_m3_n35_k65_output.f32 tails_m9_n33_k31_a.f32 tails_m9_n33_k31_b.f32 tails_m9_n33_k31_output.f32'
-  actual="$(find -P "$FIXTURE_DIR" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-  [[ "$actual" == "$expected" ]] || die 'fixture file set drifted'
+  require_fixture_entry_set "$FIXTURE_DIR" "$FIXTURE_EXPECTED"
   [[ "$(shasum -a 256 "$FIXTURE_DIR/manifest.json" | awk '{print $1}')" == "$MANIFEST_SHA256" ]] || die 'fixture manifest SHA-256 drifted'
   [[ "$(tr -d '\r\n' < "$FIXTURE_DIR/manifest.sha256")" == "$MANIFEST_SHA256  manifest.json" ]] || die 'manifest pin drifted'
   local name sha bytes
@@ -114,6 +121,8 @@ require_fixture_contract() {
     tails_m9_n33_k31_b.f32:864c37ad7a242e7ada61750cfe53d12f889e30892568251ef1f8578e38b8b35b:4092 \
     tails_m9_n33_k31_output.f32:f01cb1caff693b508f414fceb0d46be69b2ca14096c4a22e378945b2dcdc040f:1188; do
     IFS=: read -r name sha bytes <<<"$name"
+    canonical_existing "$FIXTURE_DIR/$name" >/dev/null || die "fixture entry has symlink ancestry: $name"
+    [[ -f "$FIXTURE_DIR/$name" && ! -L "$FIXTURE_DIR/$name" ]] || die "fixture entry is not a regular file: $name"
     [[ "$(wc -c < "$FIXTURE_DIR/$name" | tr -d '[:space:]')" == "$bytes" ]] || die "fixture byte count drifted: $name"
     [[ "$(sha256_file "$FIXTURE_DIR/$name")" == "$sha" ]] || die "fixture SHA-256 drifted: $name"
   done
@@ -170,6 +179,12 @@ self_test() {
   if VOKRA_TEST_FORCE_NO_BF16=1 require_bf16_support >/dev/null 2>&1; then log 'self-test accepted missing BF16 support'; fail=1; fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/bf16-apple-self-test.XXXXXX")"
   trap 'rm -rf "$tmp"' RETURN
+  mkdir "$tmp/extra-dir"
+  if require_fixture_entry_set "$tmp" "$FIXTURE_EXPECTED" >/dev/null 2>&1; then log 'self-test accepted extra directory'; fail=1; fi
+  rmdir "$tmp/extra-dir"
+  ln -s "$tmp/missing-target" "$tmp/extra-link"
+  if require_fixture_entry_set "$tmp" "$FIXTURE_EXPECTED" >/dev/null 2>&1; then log 'self-test accepted extra symlink'; fail=1; fi
+  if require_evidence_path "$tmp/../dotdot-evidence" >/dev/null 2>&1; then log 'self-test accepted dotdot evidence path'; fail=1; fi
   good="$tmp/good.log"
   printf '%s\n' \
     "test $TEST_NAME ... ok" \
