@@ -238,6 +238,24 @@ fn from_gguf_with_zh_bert_rejects_foreign_main_arch() {
     }
 }
 
+fn add_canonical_jp_extra_identity(b: &mut GgufBuilder) {
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, SBV2_MODEL_NAME);
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID,
+        SBV2_MODEL_NAME,
+    );
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_SOURCE,
+        SBV2_UPSTREAM_HF,
+    );
+    b.add_string(vokra_core::gguf::chunks::KEY_PROVENANCE_LICENSE, "agpl-3.0");
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        vokra_core::LicenseClass::Copyleft.as_str(),
+    );
+}
+
 /// Builds a `main` GGUF with every required `vokra.sbv2.*` **scalar dim** key
 /// present but no tensors or decoder-array metadata. Used by WP-13 unit
 /// tests that assert loud-fail on a specific missing scalar hparam key
@@ -252,10 +270,10 @@ fn from_gguf_with_zh_bert_rejects_foreign_main_arch() {
 /// metadata read stage.
 fn scalar_dims_only_main() -> GgufBuilder {
     let mut b = GgufBuilder::new();
-    // The loader gates `vokra.model.arch` before any metadata read
-    // (FR-EX-08), so every `main` fixture that expects to reach a
-    // *metadata* assertion must carry the stamp.
-    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    // Every fixture that expects to reach a downstream metadata assertion
+    // must carry the complete authenticated JP-Extra identity. The loader
+    // verifies model name/provenance immediately after the arch gate.
+    add_canonical_jp_extra_identity(&mut b);
     b.add_u32("vokra.sbv2.d_model", 8);
     b.add_u32("vokra.sbv2.d_bert", 8);
     b.add_u32("vokra.sbv2.d_speaker", 8);
@@ -723,9 +741,10 @@ fn sbv2_model_from_gguf_dispatches_both_bert_tokenizers() {
 fn from_gguf_rejects_anomalous_sdp_flows_even_index_tensor() {
     use vokra_core::gguf::GgmlType;
     let mut b = GgufBuilder::new();
-    // Arch stamp — the loader gates it ahead of the format-anomaly walk
-    // (FR-EX-08), so this fixture must carry it to reach the walk at all.
-    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    // The loader verifies the complete JP-Extra identity before the
+    // format-anomaly walk, so this downstream-negative fixture must carry
+    // the canonical identity as well.
+    add_canonical_jp_extra_identity(&mut b);
     // A 4-byte F32 tensor is enough to trip the check — the loader's
     // format-anomaly walk runs on tensor NAMES, not shapes.
     b.add_tensor(
