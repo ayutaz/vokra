@@ -28,17 +28,16 @@ scratch paths, synchronization, or downloads. The checked-in manifest is
 intentionally pending review and therefore exits 2; no model or source
 acquisition is reachable until dependency, source-license, model-license, and
 exact checkpoint-file evidence is authenticated by a later owner review.
-The current official-source route is pinned to Transformers 5.5.0, below the
-repository's patched 5.10.x floor. Because compatibility with a patched
-release has not been proven without loading the real model, production
-preflight fails closed with `BLOCKED_UNVERIFIED_API_SMOKE`; an owner-approved
-model-free source inspection/API smoke must re-authenticate the patched lock
-before any VAST model acquisition is scheduled. The VAST worker now requires
-the smoke evidence path and its SHA-256, and validates that evidence against
-the exact requested variants, source/metadata identities, approval scope,
-Transformers 5.10.4, and `checkpoint_load=NOT_PERFORMED`; a missing or stale
-packet remains blocked before dependency sync or model acquisition. This bridge
-does not change the active 5.5.0 lock or declare the main route compatible.
+The historical main project lock remains pinned to Transformers 5.5.0 and is
+retained for its existing license and closure gates. The VAST worker now
+requires an owner-approved model-free API-smoke evidence path and SHA-256
+before any acquisition; it validates the exact requested variants,
+source/metadata identities, approval scope, Transformers 5.10.4, and
+`checkpoint_load=NOT_PERFORMED`. After that bridge passes, actual official
+reference execution uses the separate authenticated patched 5.10.4 project,
+not the historical environment. Model compatibility and numerical parity
+remain unexecuted until the real VAST run, and all historical license,
+checkpoint, and closure gates still apply.
 
 No numerical fixture is committed before an actual run. The Rust consumer in
 `crates/vokra-models/tests/moss_audio_real.rs` is environment-gated and uses

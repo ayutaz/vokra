@@ -19,11 +19,10 @@ from typing import Any
 import tomllib
 
 GATE_VERSION = 1
-# The current official-source route was recorded against 5.5.0, which is below
-# the repository's patched Transformers floor.  Compatibility with a patched
-# release has not been proven without loading the real model, so the gate must
-# stop before any snapshot download until an owner-approved API smoke updates
-# this route and its lock evidence.
+# The historical main project remains recorded against 5.5.0, below the
+# repository's patched Transformers floor. Its lock and existing license/
+# closure gates are retained; actual official reference execution uses the
+# separate patched project only after the owner-approved API smoke bridge.
 UNVERIFIED_TRANSFORMERS_PIN = "transformers==5.5.0"
 PATCHED_TRANSFORMERS_MINIMUM = (5, 10, 0)
 LOCK_SHA256 = "f26e7504e980c5a62fdcb1bd2ed1d9726da09c839cb9f251412b4d4145fbd59f"
@@ -128,9 +127,9 @@ COMMON_ASSETS = {
     "generation_config.json": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
 }
 
-# This bridge consumes only the separately approved, model-free API smoke.  It
-# does not alter the active 5.5.0 reference project or mark it compatible; the
-# unresolved license/checkpoint gates below still apply after this check.
+# The historical 5.5.0 project and its existing license/closure gates remain
+# intact. The separate patched project is used for official reference work
+# only after this bridge; model compatibility/parity remains a VAST gate.
 API_SMOKE_FORMAT = "vokra-moss-audio-transformers-api-smoke-v1"
 API_SMOKE_SOURCE_REPO = "https://github.com/OpenMOSS/MOSS-Audio.git"
 API_SMOKE_PROJECT_SHA256 = "dbe9843be3eab4f88f7708747e49dc515a255e8df0ba239eeb2ca7baae9fdfb9"
@@ -177,8 +176,8 @@ def unverified_reference_route(project: dict[str, Any]) -> str | None:
             "BLOCKED_UNVERIFIED_API_SMOKE: official MOSS-Audio source route is "
             "pinned to Transformers 5.5.0 below the patched minimum "
             f"{PATCHED_TRANSFORMERS_MINIMUM[0]}.{PATCHED_TRANSFORMERS_MINIMUM[1]}.0; "
-            "run an owner-approved model-free API smoke against a patched pin "
-            "and re-authenticate the lock before model acquisition"
+            "run an owner-approved model-free API smoke against the separate "
+            "patched project; model compatibility/parity still requires VAST"
         )
     return None
 
