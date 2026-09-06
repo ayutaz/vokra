@@ -694,6 +694,38 @@ families without acquiring or executing their weights locally:
   disposition cannot authorize later acquisition. Dependency/license review,
   complete generation/conditioning/watermark/PCM runtime and a real transfer
   packet remain absent, so no Apple worker or numerical verdict is claimed.
+- Irodori TTS commits `34dbc969` and `ab11420b` bind the exact model/source
+  identities, clean HEAD and external blocked approval before source, cache,
+  checkpoint or output access. The authenticated Python 3.12 reference route
+  still reaches `librosa -> soxr/soundfile -> libsndfile/cffi`; the current
+  disposition remains terminal even if a hypothetical dependency probe later
+  returns green. No model, reference or Apple packet was executed.
+- OWSM v4 Medium 1B commits `9c0aad0c`, `b019d5ff` and `faed3b62` make its
+  blocked approval and dependency/dataset/writer/native facts exact, separate
+  approval and work paths, and retain strict YAML self-tests in the frozen
+  parity environment. The writer plus ESPnet frontend, E-Branchformer,
+  decoder/search and token contracts remain incomplete; no model or parity
+  ran.
+- VoxCPM 0.5B commits `1bdc09e9`, `123469e0`, `b019d5ff`, `dfd3f1d0`,
+  `5f6443f9` and `d4a99a26` put the VAST, Apple and all three direct Python
+  routes behind one exact blocked scope. The gate authenticates a clean HEAD,
+  approval SHA, fixed model/source/public identities and `NO_UPLOAD`, then
+  stops before snapshot, checkpoint, packet or output reads. AudioVAE,
+  tokenizer and the complete native composite remain unresolved.
+- Canary-Qwen 2.5B commits `dfd3f1d0`, `a29be1ee` and `964ca2ac` require an
+  exact blocked approval, clean HEAD and fixed model/source/tokenizer
+  identities before any acquisition. Strict YAML coverage remains in the
+  frozen project while a separate stdlib/offline gate self-test covers the
+  pre-input path. Even a future green dependency probe cannot make the current
+  inspection-only approval executable. SALM, tokenizer, dataset/dependency
+  closure and the native binder remain open.
+- FireRedASR AED-L commits `f5ec8335` and `bb8f1494` make both the VAST runner
+  and direct inspector/preparer/reference helpers terminally fail closed. A
+  single-read approval byte contract binds SHA-256, clean exact HEAD and the
+  unresolved dependency, training-license, binary-CMVN, tokenizer, empty
+  config and native status; malformed UTF-8/JSON and path or git identity
+  failures exit before input/model access. Complete AED inference and real
+  VAST/Apple parity remain open.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their

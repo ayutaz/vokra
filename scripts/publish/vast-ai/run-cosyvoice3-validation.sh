@@ -7,6 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 REFERENCE="$ROOT/tools/parity/cosyvoice3_dump_reference.py"
 PROJECT="$ROOT/tools/parity/cosyvoice3_reference"
+GATE="$ROOT/tools/parity/cosyvoice3_gate.py"
 SOURCE_REVISION="0d990d60740bf174904a5185cce910b847bd3684"
 MODEL_REVISION="29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
 MATCHA_REVISION="dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
@@ -61,6 +62,9 @@ validate_work_path() {
 
 self_test(){
   local fail=0 token tmp fake_project effects fake_bin fake_uname rc
+  if "$0" --self-test --self-test >/dev/null 2>&1 || "$0" --self-test --expected-head bad >/dev/null 2>&1; then
+    echo 'self-test accepted duplicate or mixed --self-test arguments' >&2; fail=1
+  fi
   for token in "$SOURCE_REVISION" "$MODEL_REVISION" "$MATCHA_REVISION" 'AUTHENTICATED_REFERENCE_EVIDENCE' 'REFERENCE_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'CausalMaskedDiffWithDiT' 'CausalHiFTGenerator' 'flow_rand_noise_full' 'official_output_pcm' 'prompt_sha256' 'cosyvoice3_validate_reference.py'; do
     grep -Fq -- "$token" "$REFERENCE" "$0" || { echo "missing contract: $token" >&2; fail=1; }
   done
@@ -111,7 +115,21 @@ EOF
   echo 'run-cosyvoice3-validation.sh self-test: OK'
 }
 
-if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
+expected_head=""; approval_evidence=""; approval_sha256=""; self=0; self_seen=0; expected_seen=0; approval_seen=0; sha_seen=0
+while (($#)); do case "$1" in
+  --self-test) ((self_seen+=1)); self=1; shift;;
+  --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; ((expected_seen+=1)); expected_head="$2"; shift 2;;
+  --approval-evidence) (($# >= 2)) || die '--approval-evidence requires FILE'; ((approval_seen+=1)); approval_evidence="$2"; shift 2;;
+  --approval-sha256) (($# >= 2)) || die '--approval-sha256 requires HEX64'; ((sha_seen+=1)); approval_sha256="$2"; shift 2;;
+  -h|--help) echo 'usage: run-cosyvoice3-validation.sh --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 | --self-test'; exit 0;;
+  *) die "unknown argument: $1";;
+esac; done
+if ((self)); then [[ "$self_seen" == 1 && "$expected_seen" == 0 && "$approval_seen" == 0 && "$sha_seen" == 0 ]] || die '--self-test cannot be combined with normal or duplicate arguments'; self_test; exit $?; fi
+[[ "$expected_seen" == 1 && "$approval_seen" == 1 && "$sha_seen" == 1 ]] || die 'normal run requires exactly one expected-head, approval-evidence and approval-sha256'
+gate_log=""; gate_rc=0
+gate_log="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$ROOT" 2>&1)" || gate_rc=$?
+[[ "$gate_rc" == 2 && "$gate_log" == *BLOCKED_UNRESOLVED_COSYVOICE3_COMPOSITE* ]] || die "approval/HEAD gate failed: $gate_log"
+die 'BLOCKED_UNRESOLVED_COSYVOICE3_COMPOSITE: current BLOCKED approval cannot authorize acquisition or reference execution'
 [[ $# == 0 ]] || die 'usage: run-cosyvoice3-validation.sh [--self-test]'
 require_reference_project "$PROJECT" || die 'dedicated CosyVoice3 pyproject.toml/uv.lock is absent; refuse before host probing or downloads'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST requires Linux x86_64'

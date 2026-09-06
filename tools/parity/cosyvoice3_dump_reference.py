@@ -20,6 +20,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from cosyvoice3_gate import require_blocked_gate, self_test as gate_self_test
+
 SOURCE_REVISION = "0d990d60740bf174904a5185cce910b847bd3684"
 MODEL_REVISION = "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
 SOURCE_ORIGIN = "https://github.com/FunAudioLLM/CosyVoice"
@@ -284,7 +286,7 @@ def load_input(path: Path, source: Path) -> dict[str, Any]:
 class Evidence:
     def __init__(self, output: Path) -> None:
         self.output = output
-        self.output.mkdir(parents=True, exist_ok=True)
+        self.output.mkdir(parents=False, exist_ok=False)
         self.artifacts: dict[str, list[dict[str, Any]]] = {}
         self.observations: dict[str, Any] = {}
 
@@ -307,7 +309,8 @@ class Evidence:
         raw = value.detach().cpu().contiguous().float().numpy().tobytes(order="C")
         index = len(self.artifacts.get(role, []))
         file = self.output / f"{role}.{index}.f32.bin"
-        file.write_bytes(raw)
+        with file.open("xb") as stream:
+            stream.write(raw)
         shape = list(value.shape)
         if not shape or any(isinstance(axis, bool) or not isinstance(axis, int) or axis <= 0 for axis in shape):
             raise RuntimeError(f"official tap {role} has invalid shape")
@@ -650,8 +653,11 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--source", type=Path); parser.add_argument("--matcha-source", type=Path); parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--input", type=Path); parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-head"); parser.add_argument("--approval-evidence"); parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
+        if any(x is not None for x in (args.source, args.matcha_source, args.model_dir, args.input, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)): parser.error("--self-test cannot be combined with normal arguments")
+        gate_self_test(Path(__file__), ["--source", "/missing-source", "--matcha-source", "/missing-matcha", "--model-dir", "/missing-model", "--input", "/missing-input", "--output", "/missing-output"], "if any(x is None for x in (args." + "source")
         assert len(SOURCE_REVISION) == 40 and len(MODEL_REVISION) == 40
         assert SOURCE_TRANSFORMERS_REQUIREMENT == "transformers==4.51.3"
         assert SOURCE_HUGGINGFACE_HUB_REQUIREMENT == "huggingface-hub==0.24.7"
@@ -677,8 +683,15 @@ def main() -> int:
         assert not (0 >= 10 * 0.1)
         print("cosyvoice3_dump_reference self-test: OK")
         return 0
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, Path(__file__).resolve().parents[2])
+    except Exception as exc:
+        print(f"cosyvoice3_dump_reference: BLOCKED: {exc}", file=sys.stderr)
+        return 2
     if any(x is None for x in (args.source, args.matcha_source, args.model_dir, args.input, args.output)):
         parser.error("normal run requires --source --matcha-source --model-dir --input --output")
+    if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
+        parser.error("--output must be absent with an existing parent")
     assert args.source and args.matcha_source and args.model_dir and args.input and args.output
     try:
         if args.output.exists():
@@ -694,14 +707,16 @@ def main() -> int:
         evidence.validate()
         input_identity = {"target_text": packet["target_text"], "prompt_text": packet["prompt_text"], "prompt_wav": "asset/zero_shot_prompt.wav", "prompt_sha256": packet["prompt_sha256"], "seed": packet["seed"], "source_role": {"git_blob_sha1": source_identity["files"]["asset/zero_shot_prompt.wav"]["git_blob_sha1"], "sha256": source_identity["files"]["asset/zero_shot_prompt.wav"]["sha256"]}}
         manifest = {"format": FORMAT, "status": "AUTHENTICATED_REFERENCE_EVIDENCE", "reference_status": "AUTHENTICATED_REFERENCE_EVIDENCE", "comparison_status": "NOT_RUN_OFFICIAL_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "native_status": "BLOCKED", "cpu_status": "UNSUPPORTED_FULL_TTS_PENDING", "metal_status": "BLOCKED_BY_CPU", "publication": "NO_UPLOAD", "sample_rate": 24_000, "llm_input_size": 896, "llm_output_size": 896, "speech_token_size": 6561, "head_size": 6761, "flow_noise_shape": [1, 80, 15000], "flow_steps": 10, "flow_cfg_rate": 0.7, "project": project_identity, "input": input_identity, "matcha": matcha_identity, "source": source_identity, "model": model_identity, "artifacts": evidence.artifacts, "observations": evidence.observations}
-        (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+        with (args.output / "manifest.json").open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
         return 0
     except Exception as exc:
         if args.output.exists() and (args.output.is_symlink() or not args.output.is_dir() or any(args.output.iterdir())):
             print(f"cosyvoice3 reference blocked without touching stale output: {exc}", file=sys.stderr)
             return 2
-        args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / "manifest.json").write_text(json.dumps({"format": FORMAT, "status": "REFERENCE_ERROR", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "publication": "NO_UPLOAD", "error": str(exc)}, indent=2) + "\n", encoding="utf-8")
+        args.output.mkdir(parents=False, exist_ok=False)
+        with (args.output / "manifest.json").open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps({"format": FORMAT, "status": "REFERENCE_ERROR", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "publication": "NO_UPLOAD", "error": str(exc)}, indent=2) + "\n")
         print(f"cosyvoice3 reference blocked: {exc}", file=sys.stderr)
         return 2
 

@@ -14,11 +14,14 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
+
+from cosyvoice3_gate import require_blocked_gate, self_test as gate_self_test
 
 REPOSITORY = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
 REVISION = "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
@@ -514,12 +517,14 @@ def inspect(snapshot: Path, source: Path, matcha: Path, tree: Path, out: Path) -
     complete = not blockers
     blockers.extend(["native composite TTS math is staged but not authenticated/compared", "CPU numerical parity is not run", "Metal parity is blocked by CPU", "speech-tokenizer/CampPlus/flow native inspection remains a blocker", "dataset and dependency licenses require separate audit"])
     payload = base_manifest(blockers, "AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", model={"repository": REPOSITORY, "revision": REVISION, "hf_used_storage_bytes": HF_USED_STORAGE_BYTES, "fixed_tree_sum_bytes": TREE_TOTAL_BYTES, "server_tree": remote, "qwen": qwen, "yaml": yaml, "safetensors": model, "checkpoints": checkpoints, "onnx": onnx}, official_source=source, licenses={"weights": "apache-2.0", "source": "apache-2.0", "matcha": "MIT", "dependency": "REVIEW_REQUIRED"}, historical_public_artifact=HISTORICAL)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "manifest.json").write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    out.mkdir(parents=False, exist_ok=False)
+    with (out / "manifest.json").open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
     return 2
 
 
 def self_test() -> None:
+    gate_self_test(Path(__file__), ["--snapshot", "/missing-snapshot", "--source", "/missing-source", "--matcha-source", "/missing-matcha", "--server-tree", "/missing-tree", "--output", "/missing-output"], "if any(x is None for x in (args." + "snapshot")
     assert len(TREE) == 20 and sum(v[0] for v in TREE.values()) == TREE_TOTAL_BYTES
     assert HF_USED_STORAGE_BYTES != TREE_TOTAL_BYTES
     assert HISTORICAL["tensor_count"] == 293
@@ -554,16 +559,26 @@ def self_test() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--self-test", action="store_true"); parser.add_argument("--snapshot", type=Path); parser.add_argument("--source", type=Path); parser.add_argument("--matcha-source", type=Path); parser.add_argument("--server-tree", type=Path); parser.add_argument("--output", type=Path); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--self-test", action="store_true"); parser.add_argument("--snapshot", type=Path); parser.add_argument("--source", type=Path); parser.add_argument("--matcha-source", type=Path); parser.add_argument("--server-tree", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--expected-head"); parser.add_argument("--approval-evidence"); parser.add_argument("--approval-sha256"); args = parser.parse_args()
     if args.self_test:
-        if any(x is not None for x in (args.snapshot, args.source, args.matcha_source, args.server_tree, args.output)): parser.error("--self-test accepts no paths")
+        if any(x is not None for x in (args.snapshot, args.source, args.matcha_source, args.server_tree, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)): parser.error("--self-test cannot be combined with normal arguments")
         self_test(); return 0
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, Path(__file__).resolve().parents[2])
+    except Exception as exc:
+        print(f"cosyvoice3_inspect: BLOCKED: {exc}", file=sys.stderr)
+        return 2
     if any(x is None for x in (args.snapshot, args.source, args.matcha_source, args.server_tree, args.output)): parser.error("normal run requires snapshot/source/matcha-source/server-tree/output")
+    if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir(): parser.error("--output must be absent with an existing parent")
     try:
         return inspect(args.snapshot, args.source, args.matcha_source, args.server_tree, args.output)
     except Exception as exc:
-        args.output.mkdir(parents=True, exist_ok=True)
-        args.output.joinpath("manifest.json").write_text(json.dumps(base_manifest([f"inspection exception: {exc}"], "INSPECTION_ERROR"), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if not args.output.exists() and not args.output.is_symlink():
+            args.output.mkdir(parents=False, exist_ok=False)
+            with args.output.joinpath("manifest.json").open("x", encoding="utf-8") as stream:
+                stream.write(json.dumps(base_manifest([f"inspection exception: {exc}"], "INSPECTION_ERROR"), indent=2, sort_keys=True) + "\n")
+        else:
+            print("cosyvoice3_inspect: output was concurrently claimed; refusing overwrite", file=sys.stderr)
         return 2
 
 

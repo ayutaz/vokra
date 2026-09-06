@@ -13,9 +13,12 @@ MATCHA_URL='https://github.com/shivammehta25/Matcha-TTS.git'; MATCHA_REV='dd9105
 MIN_MEM_KIB=$((128*1024*1024)); MIN_TMPFS_KIB=$((32*1024*1024))
 log(){ printf '[cosyvoice3-vast] %s\n' "$*" >&2; }
 die(){ log "ERROR: $*"; exit 2; }
-usage(){ echo 'usage: run-cosyvoice3-inspection.sh [--work-dir DIR] | --self-test'; }
+usage(){ echo 'usage: run-cosyvoice3-inspection.sh --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 [--work-dir DIR] | --self-test'; }
 self_test(){
   local fail=0 token
+  if "$0" --self-test --self-test >/dev/null 2>&1 || "$0" --self-test --expected-head bad >/dev/null 2>&1; then
+    log 'self-test accepted duplicate or mixed --self-test arguments'; fail=1
+  fi
   for token in "$HF_REPO" "$HF_REV" "$SOURCE_REV" "$MATCHA_REV" 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'weights_only=True' 'CARGO_BUILD_JOBS=1'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test missing $token"; fail=1; }
   done
@@ -36,51 +39,38 @@ PY
     log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
     fail=1
   fi
-  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
-from huggingface_hub import RepoFile, RepoFolder
-
-def classify_entry(entry):
-    if isinstance(entry, RepoFolder):
-        if getattr(entry, "type", None) not in {None, "directory"}:
-            raise RuntimeError("unknown RepoFolder type")
-        return "directory"
-    if isinstance(entry, RepoFile):
-        if getattr(entry, "type", None) not in {None, "file"}:
-            raise RuntimeError("unknown RepoFile type")
-        return "file"
-    raise RuntimeError(f"unknown HF tree entry: {entry!r}")
-
-file_entry = RepoFile(path="README.md", size=1, oid="a" * 40)
-file_entry.type = None
-assert classify_entry(file_entry) == "file"
-folder_entry = RepoFolder(path="nested", oid="b" * 40)
-folder_entry.type = None
-assert classify_entry(folder_entry) == "directory"
-try:
-    classify_entry(object())
-except RuntimeError:
-    pass
-else:
-    raise AssertionError("unknown HF tree entry was accepted")
-print("CosyVoice3 RepoFile/RepoFolder self-test: PASS")
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$INSPECTOR" <<'PY'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+for token in ("strict_json_pairs", "server_tree", "NOT_IMPLEMENTED_FAIL_CLOSED"):
+    if token not in source:
+        raise SystemExit(f"missing source contract token: {token}")
 PY
   then
-    log 'self-test FAIL: RepoFile/RepoFolder class-identity regression'
+    log 'self-test FAIL: source tree-entry contract regression'
     fail=1
   fi
-  [[ -f "$PROJECT/pyproject.toml" && -f "$PROJECT/uv.lock" ]] || { log 'dedicated CosyVoice3 uv.lock absent; self-test deliberately blocked'; return 2; }
   grep -Eq '^[[:space:]]*(git[[:space:]]+push|hf_hub_upload|upload_file|convert)' "$0" && { log 'self-test publication/conversion command'; fail=1; } || true
-  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$PROJECT" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
   ((fail == 0)) || return 1
   log 'self-test PASS'
 }
-work="$WORK"; self=0
+work="$WORK"; self=0; self_seen=0; expected_head=""; approval_evidence=""; approval_sha256=""; expected_seen=0; approval_seen=0; sha_seen=0
 while (($#)); do case "$1" in
-  --self-test) self=1; shift;;
+  --self-test) ((self_seen+=1)); self=1; shift;;
   --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work="$2"; shift 2;;
+  --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; ((expected_seen+=1)); expected_head="$2"; shift 2;;
+  --approval-evidence) (($# >= 2)) || die '--approval-evidence requires FILE'; ((approval_seen+=1)); approval_evidence="$2"; shift 2;;
+  --approval-sha256) (($# >= 2)) || die '--approval-sha256 requires HEX64'; ((sha_seen+=1)); approval_sha256="$2"; shift 2;;
   -h|--help) usage; exit 0;; *) die "unknown argument: $1";;
 esac; done
-if ((self)); then [[ "$work" == "$WORK" ]] || die '--self-test accepts no work-dir'; self_test; exit $?; fi
+if ((self)); then [[ "$self_seen" == 1 && "$work" == "$WORK" && "$expected_seen" == 0 && "$approval_seen" == 0 && "$sha_seen" == 0 ]] || die '--self-test cannot be combined with normal or duplicate arguments'; self_test; exit $?; fi
+[[ "$expected_seen" == 1 && "$approval_seen" == 1 && "$sha_seen" == 1 ]] || die 'normal run requires exactly one expected-head, approval-evidence and approval-sha256'
+gate_log=""; gate_rc=0
+gate_log="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/cosyvoice3_gate.py" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$ROOT" 2>&1)" || gate_rc=$?
+[[ "$gate_rc" == 2 && "$gate_log" == *BLOCKED_UNRESOLVED_COSYVOICE3_COMPOSITE* ]] || die "approval/HEAD gate failed: $gate_log"
+die 'BLOCKED_UNRESOLVED_COSYVOICE3_COMPOSITE: current BLOCKED approval cannot authorize acquisition or inspection'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'Linux x86_64 VAST required'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 required'
 [[ -d "$ROOT/.git" && -f "$ROOT/Cargo.toml" ]] || die 'Vokra checkout required'

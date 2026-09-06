@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import argparse
 import json
 import math
 import re
@@ -12,6 +13,8 @@ import tomllib
 from importlib.metadata import PackageNotFoundError, version as installed_version
 from pathlib import Path
 from typing import Any
+
+from cosyvoice3_gate import require_blocked_gate, self_test as gate_self_test
 
 EXPECTED_FORMAT = "vokra-cosyvoice3-official-reference-v1"
 TARGET_TEXT = "八百标兵奔北坡，北坡炮兵并排跑，炮兵怕把标兵碰，标兵怕碰炮兵炮。"
@@ -457,7 +460,16 @@ def validate(manifest_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("manifest", nargs="?")
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
+    args = parser.parse_args()
+    if args.self_test:
+        if any(x is not None for x in (args.manifest, args.expected_head, args.approval_evidence, args.approval_sha256)): parser.error("--self-test cannot be combined with normal arguments")
+        gate_self_test(Path(__file__), ["/missing-manifest"], "if args.manifest is " + "None")
         try:
             pairs([("x", 1), ("x", 2)])
             raise AssertionError("duplicate key accepted")
@@ -522,10 +534,15 @@ if __name__ == "__main__":
                 raise AssertionError(f"accepted invalid {role} CFG rows")
         print("cosyvoice3_validate_reference self-test: OK")
         raise SystemExit(0)
-    if len(sys.argv) != 2:
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, Path(__file__).resolve().parents[2])
+    except Exception as exc:
+        print(f"cosyvoice3_validate_reference: BLOCKED: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    if args.manifest is None:
         raise SystemExit("usage: cosyvoice3_validate_reference.py MANIFEST")
     try:
-        validate(Path(sys.argv[1]))
+        validate(Path(args.manifest))
     except Exception as exc:
         print(f"cosyvoice3 reference validation blocked: {exc}", file=sys.stderr)
         raise SystemExit(2)
