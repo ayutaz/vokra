@@ -16,9 +16,15 @@ use vokra_core::json::{self, JsonValue};
 use vokra_models::cosyvoice2::HiFTChain;
 
 const ATOL: f32 = 0.01;
+const SOURCE_REPOSITORY: &str = "https://github.com/FunAudioLLM/CosyVoice.git";
 const MODEL_REVISION: &str = "eec1ae6c79877dbd9379285cf8789c9e0879293d";
+const MODEL_REPOSITORY: &str = "FunAudioLLM/CosyVoice2-0.5B";
+const MODEL_PATH: &str = "hift.pt";
+const MODEL_BYTES: u64 = 83_390_254;
 const MODEL_SHA256: &str = "3386cc880324d4e98e05987b99107f49e40ed925b8ecc87c1f4939432d429879";
 const SOURCE_REVISION: &str = "8555549e882236e6541748b1042d95693caa82ba";
+const CONFIG_PATH: &str = "cosyvoice2.yaml";
+const CONFIG_BYTES: u64 = 7_330;
 const CONFIG_SHA256: &str = "0af2c0d010c477187c39f3e8fd5f1ae2e4e6f90ad03ba37c10ed6c6a87b05959";
 const CONFIG_BLOB_SHA1: &str = "bc19267bbfd373c9a760b7667a74349ddd487db1";
 const TENSOR_MANIFEST_SHA256: &str =
@@ -29,22 +35,47 @@ const REFERENCE_ENV: &str = "VOKRA_COSYVOICE2_HIFT_REFERENCE_DIR";
 const REFERENCE_SHA_ENV: &str = "VOKRA_COSYVOICE2_HIFT_REFERENCE_MANIFEST_SHA256";
 const LICENSE_ENV: &str = "VOKRA_COSYVOICE2_HIFT_LICENSE_MANIFEST";
 const EVIDENCE_ENV: &str = "VOKRA_COSYVOICE2_HIFT_APPLE_EVIDENCE_DIR";
+const SOURCE_ROLES: &[(&str, &str)] = &[
+    (
+        "cosyvoice/hifigan/generator.py",
+        "326a1a70ae7707662939c20493b3a8e4b0906216",
+    ),
+    (
+        "cosyvoice/hifigan/f0_predictor.py",
+        "5797c31aada757ac7ef65a70ff8ee21867a25df8",
+    ),
+    (
+        "cosyvoice/transformer/activation.py",
+        "8cea54816385d3b6585ccc2417bc71630d578177",
+    ),
+    (
+        "cosyvoice/utils/common.py",
+        "6f5a3dd8b7ae99601783c3a4ed91b3b64270fab3",
+    ),
+];
+
+fn has_lexical_dot_component(raw: &str) -> bool {
+    raw.split('/')
+        .any(|component| matches!(component, "." | ".."))
+}
 
 fn env_path(name: &str) -> PathBuf {
-    let path =
-        PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name} is required")));
+    let raw = std::env::var_os(name).unwrap_or_else(|| panic!("{name} is required"));
+    let raw = raw
+        .to_str()
+        .unwrap_or_else(|| panic!("{name} must be UTF-8"));
     assert!(
-        !path.as_os_str().is_empty() && path.is_absolute(),
+        !raw.is_empty() && raw.starts_with('/'),
         "{name} must be absolute"
     );
     assert!(
-        path.components().all(|component| {
-            !matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        }),
-        "{name} must not contain dot path components"
+        !has_lexical_dot_component(raw),
+        "{name} must not contain lexical dot path components"
+    );
+    let path = PathBuf::from(raw);
+    assert!(
+        path.is_absolute(),
+        "{name} must remain absolute after lexical validation"
     );
     let mut current = path.as_path();
     loop {
@@ -91,6 +122,11 @@ fn canonical_for_scope(path: &Path) -> PathBuf {
         let parent = path
             .parent()
             .unwrap_or_else(|| panic!("{} has no parent", path.display()));
+        assert!(
+            parent.is_dir() && !parent.is_symlink(),
+            "scope parent must be an existing non-symlink directory: {}",
+            parent.display()
+        );
         parent
             .canonicalize()
             .unwrap_or_else(|e| panic!("canonicalize {}: {e}", parent.display()))
@@ -323,6 +359,9 @@ fn exact_keys(value: &JsonValue, expected: &[&str], label: &str) {
         );
     }
 }
+fn artifact_record<'a>(record: &'a JsonValue, label: &str) -> &'a JsonValue {
+    field(record, &[label])
+}
 fn hash(value: &str, label: &str) {
     assert_eq!(value.len(), 64, "{label} must be SHA-256 hex");
     assert!(
@@ -346,9 +385,10 @@ fn f32_artifact(
     );
     let raw = fs::read(path).expect("read reference artifact");
     assert_eq!(raw.len(), expected_bytes, "{label} byte count");
+    let artifact_record = artifact_record(record, label);
     if label == "input" {
         exact_keys(
-            record,
+            artifact_record,
             &[
                 "file", "dtype", "shape", "bytes", "sha256", "seed", "formula",
             ],
@@ -356,18 +396,18 @@ fn f32_artifact(
         );
     } else {
         exact_keys(
-            record,
+            artifact_record,
             &["file", "dtype", "shape", "bytes", "sha256"],
             "reference output record",
         );
     }
     assert_eq!(
-        text(record, &[label, "file"]),
+        text(artifact_record, &["file"]),
         path.file_name().unwrap().to_string_lossy()
     );
-    assert_eq!(text(record, &[label, "dtype"]), "F32");
-    assert_eq!(integer(record, &[label, "bytes"]), expected_bytes as u64);
-    let shape = field(record, &[label, "shape"])
+    assert_eq!(text(artifact_record, &["dtype"]), "F32");
+    assert_eq!(integer(artifact_record, &["bytes"]), expected_bytes as u64);
+    let shape = field(artifact_record, &["shape"])
         .as_array()
         .expect("artifact shape");
     assert_eq!(
@@ -377,7 +417,7 @@ fn f32_artifact(
             .collect::<Vec<_>>(),
         expected
     );
-    let digest = text(record, &[label, "sha256"]);
+    let digest = text(artifact_record, &["sha256"]);
     hash(&digest, label);
     assert_eq!(sha256(&raw), digest, "{label} SHA-256");
     let values = raw
@@ -428,6 +468,14 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
     assert!(
         !evidence.exists() && !evidence.is_symlink(),
         "evidence directory must be absent"
+    );
+    let evidence_parent = evidence
+        .parent()
+        .unwrap_or_else(|| panic!("{} has no parent", evidence.display()));
+    assert!(
+        evidence_parent.is_dir() && !evidence_parent.is_symlink(),
+        "evidence parent must be an existing non-symlink directory: {}",
+        evidence_parent.display()
     );
     require_disjoint(&[
         (&gguf, "GGUF"),
@@ -485,6 +533,87 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
             "execution",
         ],
         "reference manifest",
+    );
+    exact_keys(
+        field(&manifest, &["source"]),
+        &["repository", "revision", "clean", "roles"],
+        "reference source",
+    );
+    exact_keys(
+        field(&manifest, &["model"]),
+        &["repository", "revision", "path", "bytes", "sha256"],
+        "reference model",
+    );
+    exact_keys(
+        field(&manifest, &["config"]),
+        &["path", "bytes", "sha256", "git_blob_sha1"],
+        "reference config",
+    );
+    exact_keys(
+        field(&manifest, &["outputs"]),
+        &["f0", "pcm"],
+        "reference outputs",
+    );
+    exact_keys(
+        field(&manifest, &["execution"]),
+        &[
+            "device",
+            "torch_deterministic_algorithms",
+            "threads",
+            "entropy_override",
+            "python",
+            "torch",
+            "numpy",
+            "scipy",
+            "uv_lock_sha256",
+        ],
+        "reference execution",
+    );
+    assert_eq!(
+        text(&manifest, &["source", "repository"]),
+        SOURCE_REPOSITORY
+    );
+    assert_eq!(text(&manifest, &["source", "revision"]), SOURCE_REVISION);
+    assert!(matches!(
+        field(&manifest, &["source", "clean"]),
+        JsonValue::Bool(true)
+    ));
+    let source_roles = field(&manifest, &["source", "roles"])
+        .as_object()
+        .expect("reference source roles");
+    assert_eq!(source_roles.len(), SOURCE_ROLES.len());
+    for (role, blob) in SOURCE_ROLES {
+        let role_record = field(&manifest, &["source", "roles", role]);
+        exact_keys(
+            role_record,
+            &["git_blob_sha1", "sha256"],
+            "reference source role",
+        );
+        assert_eq!(text(role_record, &["git_blob_sha1"]), *blob);
+        hash(&text(role_record, &["sha256"]), role);
+    }
+    assert_eq!(text(&manifest, &["model", "repository"]), MODEL_REPOSITORY);
+    assert_eq!(text(&manifest, &["model", "path"]), MODEL_PATH);
+    assert_eq!(integer(&manifest, &["model", "bytes"]), MODEL_BYTES);
+    assert_eq!(text(&manifest, &["config", "path"]), CONFIG_PATH);
+    assert_eq!(integer(&manifest, &["config", "bytes"]), CONFIG_BYTES);
+    assert_eq!(text(&manifest, &["execution", "device"]), "cpu");
+    assert!(matches!(
+        field(&manifest, &["execution", "torch_deterministic_algorithms"]),
+        JsonValue::Bool(true)
+    ));
+    assert_eq!(integer(&manifest, &["execution", "threads"]), 1);
+    assert_eq!(
+        text(&manifest, &["execution", "entropy_override"]),
+        "torch.rand and torch.randn_like -> zeros only during official forward"
+    );
+    assert!(text(&manifest, &["execution", "python"]).starts_with("3.12."));
+    assert_eq!(text(&manifest, &["execution", "torch"]), "2.7.1+cpu");
+    assert_eq!(text(&manifest, &["execution", "numpy"]), "2.3.5");
+    assert_eq!(text(&manifest, &["execution", "scipy"]), "1.16.3");
+    assert_eq!(
+        text(&manifest, &["execution", "uv_lock_sha256"]),
+        text(&manifest, &["uv_lock_sha256"])
     );
     assert_eq!(
         text(&manifest, &["format"]),
@@ -587,7 +716,7 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
     fs::create_dir(&evidence).expect("claim absent evidence directory");
     let out = evidence.join("evidence.json");
     let payload = format!(
-        "{{\n  \"format\": \"vokra-cosyvoice2-hift-apple-evidence-v1\",\n  \"status\": \"PASS\",\n  \"publication\": \"NO_UPLOAD\",\n  \"backend\": \"CPU+Metal\",\n  \"device_evidence\": \"{}\",\n  \"gguf_sha256\": \"{}\",\n  \"reference_manifest_sha256\": \"{}\",\n  \"license_manifest_sha256\": \"{}\",\n  \"atol\": {},\n  \"f0_cpu_reference_max_abs\": {},\n  \"pcm_cpu_reference_max_abs\": {},\n  \"pcm_metal_reference_max_abs\": {},\n  \"pcm_metal_cpu_max_abs\": {},\n  \"scope\": {{\"component\":\"standalone_cosyvoice2_hift\",\"f0\":\"CPU/reference only; Metal F0 not separately exposed\",\"pcm\":\"CPU/reference, Metal/reference, Metal/CPU\",\"full_cosvoice2_e2e\":\"NOT_CLAIMED\"}}\n}}\n",
+        "{{\n  \"format\": \"vokra-cosyvoice2-hift-apple-evidence-v1\",\n  \"status\": \"PASS\",\n  \"publication\": \"NO_UPLOAD\",\n  \"backend\": \"CPU+Metal\",\n  \"device_evidence\": \"{}\",\n  \"gguf_sha256\": \"{}\",\n  \"reference_manifest_sha256\": \"{}\",\n  \"license_manifest_sha256\": \"{}\",\n  \"atol\": {},\n  \"f0_cpu_reference_max_abs\": {},\n  \"pcm_cpu_reference_max_abs\": {},\n  \"pcm_metal_reference_max_abs\": {},\n  \"pcm_metal_cpu_max_abs\": {},\n  \"scope\": {{\"component\":\"standalone_cosyvoice2_hift\",\"f0\":\"CPU/reference only; Metal F0 not separately exposed\",\"pcm\":\"CPU/reference, Metal/reference, Metal/CPU\",\"full_cosyvoice2_e2e\":\"NOT_CLAIMED\"}}\n}}\n",
         device_evidence,
         gguf_sha,
         reference_sha,
@@ -611,6 +740,26 @@ fn cosyvoice2_hift_apple_cpu_metal_parity() {
 
 #[cfg(test)]
 mod hash_vectors {
+    #[test]
+    fn artifact_schema_is_read_from_named_child_record() {
+        let manifest = super::json::parse(
+            r#"{"outputs":{"f0":{"file":"f0.f32","dtype":"F32","shape":[1,8],"bytes":32,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"pcm":{"file":"pcm.f32","dtype":"F32","shape":[1,3840],"bytes":15360,"sha256":"1111111111111111111111111111111111111111111111111111111111111111"}}}"#,
+        )
+        .unwrap();
+        let outputs = super::field(&manifest, &["outputs"]);
+        let f0 = super::artifact_record(outputs, "f0");
+        super::exact_keys(f0, &["file", "dtype", "shape", "bytes", "sha256"], "f0");
+        assert_eq!(super::text(f0, &["file"]), "f0.f32");
+        assert!(outputs.get("file").is_none());
+    }
+
+    #[test]
+    fn lexical_path_components_are_detected_before_path_normalization() {
+        assert!(!super::has_lexical_dot_component("/tmp/reference"));
+        assert!(super::has_lexical_dot_component("/tmp/./reference"));
+        assert!(super::has_lexical_dot_component("/tmp/../reference"));
+    }
+
     #[test]
     fn sha256_known_vectors() {
         assert_eq!(
