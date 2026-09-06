@@ -43,6 +43,8 @@ pub const SPEAKER_CODE_DIM: usize = 6;
 pub const SPEAKER_LEVELS: usize = 4;
 
 const LABEL: &str = "bicodec";
+const PROVENANCE_SOURCE: &str =
+    "SparkAudio/Spark-TTS-0.5B (cc-by-nc-sa-4.0; research-only, share-alike)";
 const MANIFEST_SHA256: [u8; 32] = [
     0xf9, 0x1e, 0xc1, 0x99, 0x5d, 0xdc, 0xb7, 0x51, 0x15, 0x13, 0x0c, 0x61, 0x4d, 0xd7, 0x97, 0xf7,
     0xd1, 0x2c, 0x3e, 0x97, 0xa1, 0x50, 0x5e, 0xcb, 0x7a, 0x61, 0xc9, 0x5d, 0x76, 0x2e, 0xc8, 0x6c,
@@ -153,6 +155,7 @@ impl Bicodec {
             chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
             LicenseClass::NonCommercialShareAlike.as_str(),
         )?;
+        require_string(file, chunks::KEY_PROVENANCE_SOURCE, PROVENANCE_SOURCE)?;
         require_u32(file, "vokra.bicodec.sample_rate", SAMPLE_RATE)?;
         require_u32(file, "vokra.bicodec.frame_hop", FRAME_HOP as u32)?;
         require_u32(file, "vokra.bicodec.semantic_vocab", SEMANTIC_VOCAB)?;

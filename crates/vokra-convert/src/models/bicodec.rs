@@ -43,6 +43,7 @@
 //! strict native-decode GGUF, without publishing weights.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use vokra_core::LicenseClass;
@@ -166,6 +167,7 @@ pub fn convert_bicodec_file(
     license: Option<&str>,
 ) -> Result<BicodecReport, ConvertError> {
     let license_spdx = require_license(license)?;
+    reject_existing_output(output)?;
     if input.is_symlink() || !input.is_file() {
         return Err(ConvertError::Parse(
             "BiCodec input must be a regular non-symlink file".to_owned(),
@@ -197,6 +199,7 @@ fn convert_bicodec_bytes_authenticated(
     license_spdx: &str,
     authenticated: bool,
 ) -> Result<BicodecReport, ConvertError> {
+    reject_existing_output(output)?;
     let st = SafetensorsFile::parse(bytes.to_vec())?;
     if st.tensors().is_empty() {
         return Err(ConvertError::Parse(
@@ -278,9 +281,24 @@ fn convert_bicodec_bytes_authenticated(
     }
 
     let out_bytes = b.to_bytes()?;
-    std::fs::write(output, &out_bytes)?;
+    let mut output_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    output_file.write_all(&out_bytes)?;
+    output_file.sync_all()?;
 
     Ok(report)
+}
+
+fn reject_existing_output(output: &Path) -> Result<(), ConvertError> {
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "BiCodec output path already exists or is a symlink: {}",
+            output.display()
+        )));
+    }
+    Ok(())
 }
 
 fn require_license(license: Option<&str>) -> Result<&'static str, ConvertError> {
@@ -527,6 +545,12 @@ mod tests {
             "default class must retain both the NC and share-alike obligations"
         );
         assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_SOURCE)
+                .and_then(|v| v.as_str()),
+            Some(PROVENANCE_SOURCE_NOTE),
+            "source provenance must retain the audited CC-BY-NC-SA identity"
+        );
+        assert_eq!(
             file.get(KEY_INSPECTION_STATUS).and_then(|v| v.as_str()),
             Some("UNAUTHENTICATED_TEST_FIXTURE")
         );
@@ -665,6 +689,21 @@ mod tests {
         let error = convert_bicodec_file(&input, &output, None)
             .expect_err("public conversion must require authenticated config");
         assert!(error.to_string().contains("config.yaml sidecar"));
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn conversion_rejects_existing_output_without_clobbering() {
+        let input = temp_path("existing-output-in", "safetensors");
+        let output = temp_path("existing-output-out", "gguf");
+        let bytes = safetensors_one_bf16(&[1], &[0, 0]);
+        std::fs::write(&input, &bytes).expect("write input");
+        std::fs::write(&output, b"sentinel").expect("write output sentinel");
+        let error = convert_bicodec_file(&input, &output, None)
+            .expect_err("existing output must be rejected before checkpoint work");
+        assert!(error.to_string().contains("output path already exists"));
+        assert_eq!(std::fs::read(&output).expect("read sentinel"), b"sentinel");
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
     }
