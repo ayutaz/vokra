@@ -400,7 +400,7 @@ run_self_test() {
     'cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace --all-targets' \
     'cargo deny --locked --offline check' 'cargo audit --no-fetch' \
     'check-zero-deps.sh' 'check-forbidden-symbols.sh' \
-    'transfer="$work_dir/apple-transfer"' 'GGUF, reference, args, and summary'; do
+    'transfer="$work_dir/apple-transfer"' 'GGUF, reference, args, and summary' 'direct VAST-to-Apple'; do
     cases=$((cases + 1))
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: required offline gate/transfer token is missing: $required"
@@ -791,7 +791,7 @@ print(f"prepared Nano tensors={data[\"kept_count\"]} sha256={data[\"sha256\"]}")
       | sort -z | xargs -0 sha256sum > logs/SHA256SUMS
   )
   trap - EXIT
-  log "MEASURED_NOT_GATED: pull $transfer (GGUF, reference, args, and summary), then destroy the VAST instance"
+  log "MEASURED_NOT_GATED: transfer $transfer directly VAST-to-Apple (GGUF, reference, args, and summary); recover only small logs locally, then destroy the VAST instance"
 }
 
 main "$@"

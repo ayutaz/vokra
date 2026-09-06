@@ -278,8 +278,8 @@ pub enum MossAudioTokenizerVariant {
     /// distillation reference. This is a distinct 48 kHz
     /// stereo/interleaved topology, not a width-reduced Full checkpoint.
     /// Ships as 1 sharded safetensors +
-    /// `model.safetensors.index.json` weight-map (~88 MB — trivial to
-    /// convert locally on the M1 iMac dev machine).
+    /// `model.safetensors.index.json` weight-map (~88 MB; conversion remains
+    /// restricted to the approved remote validation workflow).
     /// `vokra.moss_audio_tokenizer.variant = "nano"`.
     Nano,
     /// `OpenMOSS-Team/MOSS-Audio-Tokenizer-v2`: 48 kHz stereo,
@@ -630,6 +630,7 @@ fn nano_f32_payload_is_finite(name: &str, bytes: &[u8]) -> Result<bool, ConvertE
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use vokra_core::gguf::{GgmlType, GgufFile};
 
@@ -926,6 +927,7 @@ mod tests {
         std::fs::remove_file(&output_path).ok();
     }
 
+    #[cfg(unix)]
     #[test]
     fn nano_payload_and_paths_fail_closed_without_model_fixture() {
         assert!(nano_f32_payload_is_finite("finite", &1.0f32.to_le_bytes()).unwrap());

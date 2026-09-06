@@ -503,7 +503,7 @@ main() {
   env VOKRA_MOSS_AUDIO_TOKENIZER_NANO_GGUF="$gguf" \
     VOKRA_MOSS_AUDIO_TOKENIZER_NANO_REFERENCE="$reference" \
     RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release \
       -p vokra-models --features metal --test parity_moss_audio_tokenizer_nano_real \
       "$TEST_NAME" -- --ignored --exact --nocapture --test-threads=1 \
       2>&1 | tee "$evidence_dir/parity.log"
