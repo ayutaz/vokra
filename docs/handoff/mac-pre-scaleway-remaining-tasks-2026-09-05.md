@@ -571,6 +571,26 @@ families without acquiring or executing their weights locally:
   stop as `BLOCKED_PENDING_AUTHENTICATED_MANIFEST` before acquiring or running
   a model. The native backbone-plus-adapter binder and parity route remain
   open.
+- HT-Demucs Multi commit `d03266ec` binds both variants to the exact ordered
+  five-member ensemble, full member SHA-256 values, pinned source revision,
+  clean Vokra HEAD and external approval record. Its VAST inspection packet
+  includes the complete restricted-load tensor/config manifest and an external
+  manifest sidecar hash; paths are absent, non-symlinked and disjoint, and all
+  publication remains `NO_UPLOAD`. The former report-only worker no longer
+  labels an upstream reference dump as CPU parity: it records
+  `REFERENCE_ONLY_CPU_PARITY_NOT_RUN`. The unresolved Python-3.12 torchaudio
+  lock and package/license review, MUSDB18 provenance, weight redistribution
+  decision, native binder and real CPU parity keep the row explicitly blocked.
+- AudioGen Medium commit `b4179c71` makes its inspection approval external and
+  SHA-bound to the exact clean HEAD, four-file Hugging Face release identity,
+  fixed AudioCraft source and CC-BY-NC-4.0 research-only/no-upload scope. It
+  rejects duplicate JSON, symlink/dot paths, manifest clobbering and incomplete
+  reference packets, and removes Torch/model imports from local self-tests.
+  The dedicated reference project still has no authenticated dependency lock,
+  so both inspection and validation stop before download or environment sync;
+  Apple reports no CPU/Metal verdict. The T5 conditioner identity, complete
+  16-kHz EnCodec companion contract, native composite, independent CPU parity
+  and transfer packet remain open.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
