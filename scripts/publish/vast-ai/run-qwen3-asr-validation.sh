@@ -361,7 +361,7 @@ sys.path.insert(0, str(Path(sys.argv[1]).parent))
 import preflight_gate
 import wheel_audit
 assert wheel_audit.WHEEL_URL == preflight_gate.WHEEL_URL == sys.argv[3]
-assert str(wheel_audit.WHEEL_BYTES) == sys.argv[4]
+assert str(wheel_audit.WHEEL_BYTES) == str(preflight_gate.WHEEL_BYTES) == sys.argv[4]
 assert wheel_audit.WHEEL_SHA256 == preflight_gate.WHEEL_SHA256 == sys.argv[5]
 PY
   then

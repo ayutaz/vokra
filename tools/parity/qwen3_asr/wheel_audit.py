@@ -171,7 +171,9 @@ def _write_report_no_replace(path: Path, report: dict[str, Any]) -> None:
         raise ValueError("wheel audit output must be absent and non-symlink")
     if path.parent.is_symlink() or not path.parent.is_dir():
         raise ValueError("wheel audit output parent must be an existing directory")
-    temporary = Path(tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)[1])
+    temporary_fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    os.close(temporary_fd)
+    temporary = Path(temporary_name)
     try:
         payload = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
         with temporary.open("wb") as stream:
@@ -220,7 +222,28 @@ def self_test() -> int:
         raise AssertionError("unknown wheel member set accepted")
     with tempfile.TemporaryDirectory(prefix="qwen3-asr-wheel-output-test-") as directory:
         output = Path(directory) / "audit.json"
-        _write_report_no_replace(output, {"schema": "self-test"})
+        created_fds: list[int] = []
+        original_mkstemp = tempfile.mkstemp
+
+        def tracked_mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
+            fd, name = original_mkstemp(*args, **kwargs)
+            created_fds.append(fd)
+            return fd, name
+
+        tempfile.mkstemp = tracked_mkstemp  # type: ignore[assignment]
+        try:
+            _write_report_no_replace(output, {"schema": "self-test"})
+        finally:
+            tempfile.mkstemp = original_mkstemp  # type: ignore[assignment]
+        if not created_fds:
+            raise AssertionError("temporary report file was not created")
+        for fd in created_fds:
+            try:
+                os.fstat(fd)
+            except OSError:
+                pass
+            else:
+                raise AssertionError("temporary report descriptor was leaked")
         original = output.read_bytes()
         try:
             _write_report_no_replace(output, {"schema": "tampered"})
