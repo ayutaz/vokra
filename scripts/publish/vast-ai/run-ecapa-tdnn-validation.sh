@@ -15,6 +15,7 @@ PROJECT_FILE="$PARITY_PROJECT/pyproject.toml"
 LOCK_FILE="$PARITY_PROJECT/uv.lock"
 PREPARER="$PARITY_PROJECT/ecapa_tdnn_prepare_checkpoint.py"
 PARITY_DUMPER="$PARITY_PROJECT/ecapa_tdnn_dump_reference.py"
+REFERENCE_VERIFIER="$PARITY_PROJECT/ecapa_tdnn_verify_reference.py"
 JFK_WAV="$VOKRA_ROOT/tests/fixtures/audio/jfk-30s.wav"
 
 # Every identity value below is recorded in repository handoff/parity
@@ -51,11 +52,38 @@ FIXTURE_EMBEDDING="$FIXTURE_DIR/embedding.f32.bin"
 FIXTURE_PCM_SHA256="48aedc3a10b14b49ebe8da2efd1dd91cbe7dbbaf58278732e7fdb04f6d6cc1e9"
 FIXTURE_FEATURES_SHA256="6ea88148da19e1179e9c8bc27fa9b76c742d5b82376e9c4f153bf1da3cd6a191"
 FIXTURE_EMBEDDING_SHA256="f6b297f3c9e8746d0a2ceaded702b1ce5e741fd3957ce1879b07608f7bd082e4"
+FIXTURE_MANIFEST_JSON_SHA256="0cb074241201c3f14fff33c98bda9d1434e6c3ef1792db7310283a0113cf0b94"
 FIXTURE_WAV_BYTES=104390
 FIXTURE_WAV_SHA256="bf2dde5cb516939ff619d62fc07d4f4bec5b5d521aee3d07ae51828c9d93be0b"
 
 MIN_VAST_MEM_KIB=67108864
 MIN_FREE_DISK_KIB=150000000
+
+build_reference_packet() {
+  local directory="$1" name path manifest_sha packet_sha
+  local names=(pcm.f32.bin features.f32.bin embedding.f32.bin manifest.json)
+  for name in "${names[@]}"; do
+    path="$directory/$name"
+    [[ -f "$path" && ! -L "$path" && -s "$path" ]] || die "reference packet member missing or symlinked: $name"
+  done
+  while IFS= read -r -d '' path; do
+    name="${path##*/}"
+    case " ${names[*]} " in *" $name "*) ;; *) die "reference packet has unexpected entry: $name" ;; esac
+  done < <(find -P "$directory" -mindepth 1 -maxdepth 1 -print0)
+  : > "$directory/reference-manifest.sha256"
+  for name in "${names[@]}"; do
+    printf '%s  %s\n' "$(sha256_file "$directory/$name")" "$name" >> "$directory/reference-manifest.sha256"
+  done
+  packet_sha="$({ for name in "${names[@]}"; do cat "$directory/$name"; done; } | sha256sum | awk '{print $1}')"
+  printf '%s\n' "$packet_sha" > "$directory/reference-packet.sha256"
+  manifest_sha="$(sha256_file "$directory/reference-manifest.sha256")"
+  UV_NO_CACHE=1 uv run --project "$PARITY_PROJECT" --frozen --offline --python 3.12 python "$REFERENCE_VERIFIER" \
+    --directory "$directory" --revision "$UPSTREAM_REVISION" \
+    --checkpoint-sha256 "$UPSTREAM_CHECKPOINT_SHA256" --wav-sha256 "$FIXTURE_WAV_SHA256" \
+    --manifest-sha256 "$manifest_sha" --packet-sha256 "$packet_sha" \
+    --pcm-sha256 "$FIXTURE_PCM_SHA256" --features-sha256 "$FIXTURE_FEATURES_SHA256" \
+    --embedding-sha256 "$FIXTURE_EMBEDDING_SHA256" --manifest-json-sha256 "0cb074241201c3f14fff33c98bda9d1434e6c3ef1792db7310283a0113cf0b94"
+}
 
 license_preflight() {
   local approval="$1" project_sha lock_sha
@@ -82,7 +110,7 @@ try:
 except (OSError,TypeError,ValueError,json.JSONDecodeError) as exc: raise SystemExit('approval gate BLOCKED: '+str(exc))
 PY
   then :; else die 'approval evidence is invalid or offline Python is unavailable'; fi
-  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python scripts/publish/signoff_match.py --check-repo speechbrain-spkrec-ecapa-voxceleb --audit docs/license-audit.md
+  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$VOKRA_ROOT/scripts/publish/signoff_match.py" --check-repo speechbrain-spkrec-ecapa-voxceleb --audit "$VOKRA_ROOT/docs/license-audit.md"
   then :; else die 'repository signoff is unresolved'; fi
 }
 
@@ -112,7 +140,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-ecapa-tdnn-validation.sh --approval-evidence <owner-approval.json> [--work-dir <absent-dir>]
+usage: run-ecapa-tdnn-validation.sh --approval-evidence <owner-approval.json> --expected-head <40-hex> [--work-dir <absent-dir>]
        run-ecapa-tdnn-validation.sh --self-test
 
 VAST-only, no-publish ECAPA-TDNN validation worker. It downloads the exact
@@ -198,7 +226,7 @@ require_tooling() {
     || die "VOKRA_ROOT is not the repository checkout: $VOKRA_ROOT"
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] \
     || die "tools/parity locked Python project is missing"
-  for path in "$PREPARER" "$PARITY_DUMPER" "$JFK_WAV" \
+  for path in "$PREPARER" "$PARITY_DUMPER" "$REFERENCE_VERIFIER" "$JFK_WAV" \
     "$FIXTURE_PCM" "$FIXTURE_FEATURES" "$FIXTURE_EMBEDDING"; do
     [[ -f "$path" ]] || die "required ECAPA validation input is missing: $path"
   done
@@ -314,13 +342,17 @@ run_self_test() {
     "$UPSTREAM_CHECKPOINT_SHA256" "$MODEL_KIND" "$LICENSE_SPDX" \
     "$CORRUPT_REPO" "$CORRUPT_REVISION" "$CORRUPT_FILE" "$CORRUPT_BYTES" \
     "$CORRUPT_SHA256" "$PARITY_TEST" "$GGUF_ENV" "$JFK_SHA256" \
-    "$FIXTURE_PCM_SHA256" "$FIXTURE_FEATURES_SHA256" "$FIXTURE_EMBEDDING_SHA256" \
+    "$FIXTURE_PCM_SHA256" "$FIXTURE_FEATURES_SHA256" "$FIXTURE_EMBEDDING_SHA256" "$FIXTURE_MANIFEST_JSON_SHA256" \
     "$FIXTURE_WAV_SHA256" "$FIXTURE_WAV_BYTES" \
     "tools/parity/ecapa_tdnn_prepare_checkpoint.py" \
     "tools/parity/ecapa_tdnn_dump_reference.py" \
     'uv run --project "\$PARITY_PROJECT" --frozen --python 3.12 python' \
     'target/release/vokra-cli convert' '  --model "\$MODEL_KIND"' \
-    '  --license "\$LICENSE_SPDX"'; do
+    '  --license "\$LICENSE_SPDX"' '--expected-head' 'CPU_PASS_METAL_NOT_RUN' \
+    'reference-manifest.sha256' 'reference-packet.sha256' 'ecapa_tdnn_verify_reference.py' \
+    'apple-silicon-ecapa-tdnn.sh' '--approval-evidence' '--approval-sha256' '--reference-pcm-sha256' \
+    '--reference-features-sha256' '--reference-embedding-sha256' '--reference-manifest-json-sha256' \
+    '<APPLE_ECAPA_GGUF>' '<APPLE_ECAPA_REFERENCE>' '<APPLE_APPROVAL_EVIDENCE>' '<APPLE_ECAPA_EVIDENCE_DIR>'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
@@ -335,8 +367,8 @@ run_self_test() {
     'weights_only=True' 'torch.load(args.input, map_location="cpu", weights_only=True)' \
     'cmp -s "\$generated" "\$fixture"' 'verify_committed_oracle' \
     'cargo fmt --all -- --check' \
-    'cargo test --locked --workspace' \
-    'cargo clippy --locked --workspace --all-targets -- -D warnings'; do
+    'cargo test --offline --locked --workspace' \
+    'cargo clippy --offline --locked --workspace --all-targets -- -D warnings'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: fail-closed contract lost token: $required"
       fail=1
@@ -357,6 +389,10 @@ run_self_test() {
     log "self-test FAIL: publication option found"
     fail=1
   fi
+  if grep -E 'apple_transfer_args=.*(--ecapa-gguf "\$gguf_path"|--reference "\$oracle_dir"|--approval-evidence "\$approval_evidence"|--evidence-dir "\$work_dir)' "$script_path" >/dev/null; then
+    log "self-test FAIL: Apple transfer command embeds VAST-local paths"
+    fail=1
+  fi
 
   cases=$((cases + 1))
   if "$script_path" --self-test --work-dir "$tmp/other" >/dev/null 2>&1; then
@@ -373,6 +409,14 @@ run_self_test() {
   fi
   if "$script_path" --work-dir -bad >/dev/null 2>&1 || "$script_path" --work-dir a --work-dir b >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1; then
     log "self-test FAIL: malformed or duplicate options accepted"
+    fail=1
+  fi
+  if "$script_path" --approval-evidence "$tmp/a" --expected-head 0 >/dev/null 2>&1; then
+    log "self-test FAIL: malformed expected HEAD accepted"
+    fail=1
+  fi
+  if "$script_path" --approval-evidence "$tmp/a" --expected-head "$(printf 'a%.0s' {1..40})" --expected-head "$(printf 'b%.0s' {1..40})" >/dev/null 2>&1; then
+    log "self-test FAIL: duplicate expected HEAD accepted"
     fail=1
   fi
   printf '{}\n' > "$tmp/approval.json"
@@ -392,11 +436,11 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir
+  local self_test=0 requested_work_dir="" approval_evidence="" expected_head="" run_stamp work_dir
   local input_dir evidence_dir oracle_dir logs_dir
   local checkpoint corrupt_gguf prepared_path gguf_path cli_embedding
   local reference_wav run_log env_log parity_log oracle_log cli_log workspace_log clippy_log summary_file
-  local seen_self=0 seen_work=0 seen_approval=0
+  local seen_self=0 seen_work=0 seen_approval=0 seen_expected_head=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -420,6 +464,13 @@ main() {
         approval_evidence="$2"
         shift 2
         ;;
+      --expected-head)
+        (( seen_expected_head == 0 )) || { die 'duplicate --expected-head'; return 2; }
+        [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head requires 40 lowercase hex characters'; return 2; }
+        seen_expected_head=1
+        expected_head="$2"
+        shift 2
+        ;;
       -h|--help)
         usage
         return 0
@@ -433,13 +484,15 @@ main() {
   done
 
   if [[ $self_test -eq 1 ]]; then
-    [[ -z "$requested_work_dir$approval_evidence" ]] || { die "--self-test accepts no other arguments"; return 2; }
+    [[ -z "$requested_work_dir$approval_evidence$expected_head" ]] || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test
     return $?
   fi
 
-  [[ $seen_approval -eq 1 ]] || { die '--approval-evidence is required'; return 2; }
+  [[ $seen_approval -eq 1 && $seen_expected_head -eq 1 ]] || { die '--approval-evidence and --expected-head are required'; return 2; }
   license_preflight "$approval_evidence"
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
+  [[ "$(git -C "$VOKRA_ROOT" rev-parse HEAD)" == "$expected_head" ]] || { die 'VAST checkout HEAD differs from --expected-head'; return 2; }
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${requested_work_dir:-$VOKRA_SCRATCH/ecapa-tdnn-validation/$run_stamp}"
   require_absent_work_dir "$work_dir" "$approval_evidence"
@@ -489,7 +542,7 @@ main() {
   verify_file "$corrupt_gguf" "$CORRUPT_SHA256" "$CORRUPT_BYTES"
 
   step "Generate independent official SpeechBrain reference"
-  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PARITY_DUMPER" \
+  uv run --project "$PARITY_PROJECT" --frozen --offline --python 3.12 python "$PARITY_DUMPER" \
     --output-dir "$oracle_dir" --wav "$reference_wav" --source "$UPSTREAM_REPO" \
     --revision "$UPSTREAM_REVISION" --savedir "$input_dir/oracle-cache" \
     2>&1 | tee "$oracle_log"
@@ -500,6 +553,7 @@ main() {
   grep -Fq '"speechbrain": "1.0.3"' "$oracle_dir/manifest.json" \
     || die "oracle did not use SpeechBrain 1.0.3"
   verify_committed_oracle "$oracle_dir"
+  build_reference_packet "$oracle_dir"
 
   step "Prepare the safe 200-tensor checkpoint"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PREPARER" \
@@ -507,7 +561,7 @@ main() {
   [[ -s "$prepared_path" ]] || die "checkpoint preparation emitted no safetensors"
 
   step "Build converter and create strict corrected-provenance GGUF"
-  cargo build --locked --release -p vokra-cli 2>&1 | tee "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo build --offline --locked --release -p vokra-cli 2>&1 | tee "$workspace_log"
   target/release/vokra-cli convert --model "$MODEL_KIND" \
     --input "$prepared_path" --output "$gguf_path" --license "$LICENSE_SPDX" \
     2>&1 | tee -a "$workspace_log"
@@ -515,11 +569,17 @@ main() {
 
   export "$GGUF_ENV=$gguf_path"
   step "Run real ECAPA-TDNN CPU parity"
-  cargo test --locked -p vokra-models --test parity_ecapa_tdnn_real "$PARITY_TEST" \
-    -- --nocapture 2>&1 | tee "$parity_log"
+  CARGO_NET_OFFLINE=true cargo test --offline --locked -p vokra-models --test parity_ecapa_tdnn_real "$PARITY_TEST" \
+    -- --exact --ignored --nocapture 2>&1 | tee "$parity_log"
   require_cargo_result "$parity_log" "$PARITY_TEST"
-  grep -Fq 'ECAPA-TDNN CPU embedding' "$parity_log" \
-    || die "real ECAPA parity did not emit the CPU embedding sentinel"
+  if ! grep -Fq 'ECAPA-TDNN CPU embedding' "$parity_log"; then
+    die "real ECAPA parity did not emit the CPU embedding sentinel"
+    return 2
+  fi
+  if [[ "$(grep -Fxc 'ECAPA-TDNN CPU_VS_UPSTREAM PASS' "$parity_log" || true)" != 1 ]]; then
+    die "real ECAPA parity did not emit exactly one CPU-vs-upstream sentinel"
+    return 2
+  fi
 
   step "Run CLI speaker embedding e2e"
   target/release/vokra-cli run --model "$gguf_path" --input "$JFK_WAV" \
@@ -534,14 +594,15 @@ main() {
   bash "$VOKRA_ROOT/scripts/check-zero-deps.sh" 2>&1 | tee -a "$workspace_log"
   bash "$VOKRA_ROOT/scripts/check-bound-arch-coverage.sh" 2>&1 | tee -a "$workspace_log"
   cargo fmt --all -- --check 2>&1 | tee -a "$workspace_log"
-  cargo test --locked --workspace 2>&1 | tee -a "$workspace_log"
-  cargo clippy --locked --workspace --all-targets -- -D warnings 2>&1 | tee "$clippy_log"
-  cargo deny check licenses advisories bans 2>&1 | tee -a "$workspace_log"
-  cargo audit 2>&1 | tee -a "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo test --offline --locked --workspace 2>&1 | tee -a "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo clippy --offline --locked --workspace --all-targets -- -D warnings 2>&1 | tee "$clippy_log"
+  cargo deny --locked --offline check licenses advisories bans 2>&1 | tee -a "$workspace_log"
+  cargo audit --no-fetch 2>&1 | tee -a "$workspace_log"
 
   {
     echo "execution_status=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
     echo "upstream_repo=$UPSTREAM_REPO"
     echo "upstream_revision=$UPSTREAM_REVISION"
     echo "upstream_checkpoint_sha256=$(sha256_file "$checkpoint")"
@@ -549,14 +610,40 @@ main() {
     echo "prepared_safetensors_sha256=$(sha256_file "$prepared_path")"
     echo "corrected_gguf_sha256=$(sha256_file "$gguf_path")"
     echo "oracle_manifest_sha256=$(sha256_file "$oracle_dir/manifest.json")"
+    echo "reference_manifest_sha256=$(sha256_file "$oracle_dir/reference-manifest.sha256")"
+    echo "reference_packet_sha256=$(cat "$oracle_dir/reference-packet.sha256")"
+    echo "reference_pcm_sha256=$FIXTURE_PCM_SHA256"
+    echo "reference_features_sha256=$FIXTURE_FEATURES_SHA256"
+    echo "reference_embedding_sha256=$FIXTURE_EMBEDDING_SHA256"
+    echo "reference_manifest_json_sha256=$FIXTURE_MANIFEST_JSON_SHA256"
+    echo "approval_sha256=$(sha256_file "$approval_evidence")"
     echo "cli_embedding_sha256=$(sha256_file "$cli_embedding")"
     echo "real_parity=$PARITY_TEST:PASS"
+    echo "cpu_vs_upstream=PASS"
+    echo "metal_vs_upstream=NOT_RUN"
+    echo "metal_vs_cpu=NOT_RUN"
+    echo "metal_upstream_bound=UNREGISTERED_MEASUREMENT_ONLY_ON_APPLE"
     echo "cli_speaker_e2e=PASS"
     echo "workspace_gates=PASS"
+    echo "verdict=CPU_PASS_METAL_NOT_RUN"
+    echo "apple_transfer_args=scripts/verify/apple-silicon-ecapa-tdnn.sh --ecapa-gguf '<APPLE_ECAPA_GGUF>' --ecapa-gguf-sha256 $(sha256_file "$gguf_path") --reference '<APPLE_ECAPA_REFERENCE>' --reference-manifest-sha256 $(sha256_file "$oracle_dir/reference-manifest.sha256") --reference-packet-sha256 $(cat "$oracle_dir/reference-packet.sha256") --reference-pcm-sha256 $FIXTURE_PCM_SHA256 --reference-features-sha256 $FIXTURE_FEATURES_SHA256 --reference-embedding-sha256 $FIXTURE_EMBEDDING_SHA256 --reference-manifest-json-sha256 $FIXTURE_MANIFEST_JSON_SHA256 --expected-head $expected_head --approval-evidence '<APPLE_APPROVAL_EVIDENCE>' --approval-sha256 $(sha256_file "$approval_evidence") --evidence-dir '<APPLE_ECAPA_EVIDENCE_DIR>'"
     echo "publication=NOT_RUN"
   } | tee "$summary_file"
+  {
+    printf '%q ' scripts/verify/apple-silicon-ecapa-tdnn.sh \
+      --ecapa-gguf '<APPLE_ECAPA_GGUF>' --ecapa-gguf-sha256 "$(sha256_file "$gguf_path")" \
+      --reference '<APPLE_ECAPA_REFERENCE>' \
+      --reference-manifest-sha256 "$(sha256_file "$oracle_dir/reference-manifest.sha256")" \
+      --reference-packet-sha256 "$(cat "$oracle_dir/reference-packet.sha256")" \
+      --reference-pcm-sha256 "$FIXTURE_PCM_SHA256" \
+      --reference-features-sha256 "$FIXTURE_FEATURES_SHA256" \
+      --reference-embedding-sha256 "$FIXTURE_EMBEDDING_SHA256" \
+      --reference-manifest-json-sha256 "$FIXTURE_MANIFEST_JSON_SHA256" \
+      --expected-head "$expected_head" --approval-evidence '<APPLE_APPROVAL_EVIDENCE>' --approval-sha256 "$(sha256_file "$approval_evidence")" --evidence-dir '<APPLE_ECAPA_EVIDENCE_DIR>'
+    printf '\n'
+  } > "$evidence_dir/apple-transfer-args.txt"
   trap - EXIT
-  log "PASS: pull $evidence_dir and logs before destroying the VAST instance"
+  log "PASS: transfer the staged GGUF/reference packet/approval using apple-transfer-args.txt; pull only small evidence/logs before destroying the VAST instance"
 }
 
 main "$@"

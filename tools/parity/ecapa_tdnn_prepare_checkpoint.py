@@ -27,6 +27,11 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
+    if args.input.is_symlink() or not args.input.is_file():
+        parser.error("--input must be a regular non-symlink checkpoint")
+    if args.output.exists() or args.output.is_symlink():
+        parser.error("--output must be absent and non-symlink")
+
     state = torch.load(args.input, map_location="cpu", weights_only=True)
     if not isinstance(state, dict):
         raise SystemExit(f"expected state-dict checkpoint, got {type(state).__name__}")

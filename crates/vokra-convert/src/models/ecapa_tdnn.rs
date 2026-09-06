@@ -157,9 +157,27 @@ pub fn convert_ecapa_tdnn_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<EcapaTdnnReport, ConvertError> {
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "ecapa_tdnn: input must be a regular non-symlink file: {}",
+                input.display()
+            ),
+        )));
+    }
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "ecapa_tdnn: output must be absent and non-symlink: {}",
+                output.display()
+            ),
+        )));
+    }
     // Load the whole checkpoint into memory: the ECAPA-TDNN release is
-    // ~83 MiB (192-d embedding backbone) — comfortably below the
-    // smaller than the streaming-mandated Moshi 14 GiB tier, so the
+    // This checkpoint is a modest 200-tensor embedding backbone, comfortably
+    // below the streaming-mandated Moshi 14 GiB tier, so the
     // simple `std::fs::read` posture the sibling non-streaming
     // converters (qwen3_tts / vibevoice / voxcpm2) use applies.
     let bytes = std::fs::read(input)?;
