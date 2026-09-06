@@ -57,6 +57,9 @@ try:
 except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
     raise SystemExit(f"approval gate BLOCKED: {error}")
 PY
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 \
+    python scripts/publish/signoff_match.py --check-repo bicodec --audit docs/license-audit.md \
+    >/dev/null || die 'repository BiCodec owner signoff is not approved'
 }
 
 require_cpu_parity_pass() {
@@ -111,6 +114,7 @@ run_self_test() (
   grep -Fq -- 'VOKRA_BICODEC_PARITY_BACKEND=cpu' "$0" || die 'CPU selector missing from production command'
   grep -Fq -- '--expected-head' "$0" || die 'exact checkout HEAD gate is missing'
   grep -Fq -- '--approval-evidence' "$0" || die 'owner approval gate is missing'
+  grep -Fq -- 'signoff_match.py --check-repo bicodec' "$0" || die 'repository owner signoff gate is missing'
   if bash "$0" --self-test --self-test >/dev/null 2>&1; then die 'duplicate --self-test accepted'; fi
   grep -Fq -- 'cargo test --locked --offline --lib -p vokra-models' "$0" || die 'production command lacks locked offline --lib'
   grep -Fq -- '-- --ignored --exact --show-output' "$0" || die 'production command lacks harness --exact/show-output'
