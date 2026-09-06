@@ -100,6 +100,8 @@ def walk_tensors(value: Any, label: str, *, component: str, prefix: str = "") ->
 def prepare(main: Path, audiovae: Path, output: Path) -> None:
     if not main.is_file() or not audiovae.is_file():
         raise RuntimeError("both pytorch_model.bin and audiovae.pth are required")
+    if output.exists() or output.is_symlink() or not output.parent.is_dir():
+        raise RuntimeError("preparation output must be an absent path with an existing parent")
     main_value = load_state(main, "pytorch_model.bin")
     main_container = "state_dict" if isinstance(main_value, dict) and "state_dict" in main_value else "root"
     if main_container == "state_dict":
@@ -134,8 +136,8 @@ def prepare(main: Path, audiovae: Path, output: Path) -> None:
         "audiovae": {"container_path": vae_container, "tensor_count": len(vae_rows), "manifest_sha256": canonical_manifest(vae_rows), "tensors": vae_rows},
         "composite": {"tensor_count": len(combined), "manifest_sha256": canonical_manifest(combined), "namespace": "audio_vae.", "rows_use_original_and_staged_names": True},
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    with output.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
 
 
 def self_test() -> None:
@@ -159,10 +161,11 @@ def main() -> int:
         return 0
     if not all((args.main, args.audiovae, args.output)):
         parser.error("--main, --audiovae and --output are required")
+    if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
+        parser.error("--output must be an absent path with an existing parent")
     try:
         prepare(args.main, args.audiovae, args.output)
     except Exception as error:  # noqa: BLE001 - preserve blocker evidence
-        args.output.parent.mkdir(parents=True, exist_ok=True)
         failure = {
             "status": "BLOCKED",
             "evidence_stage": "INSPECTION_ONLY",
@@ -176,7 +179,8 @@ def main() -> int:
             "revision": HF_REVISION,
             "error": f"{type(error).__name__}: {error}",
         }
-        args.output.write_text(json.dumps(failure, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        with args.output.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(failure, sort_keys=True, indent=2) + "\n")
         print(f"voxcpm_0_5b_prepare_checkpoint: BLOCKED: {error}")
         return 2
     return 0

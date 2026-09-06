@@ -362,15 +362,18 @@ def main() -> int:
         return 0
     if not all((args.source, args.snapshot, args.packet, args.output)):
         parser.error("--source, --snapshot, --packet and --output are required")
+    if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
+        parser.error("--output must be an absent directory with an existing parent")
     try:
         packet = load_packet(args.packet)
-        args.output.mkdir(parents=True, exist_ok=True)
+        args.output.mkdir(parents=False, exist_ok=False)
         result = run_official(args.source, args.snapshot, packet, args.output)
         manifest = {"status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "reference_status": "REFERENCE_EVIDENCE_COMPLETE", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "MEASURED_NOT_GATED", "publication": "NO_UPLOAD", "repository": HF_REPOSITORY, "revision": HF_REVISION, "packet_sha256": hashlib.sha256(args.packet.read_bytes()).hexdigest(), **result}
         (args.output / "packet.json").write_bytes(args.packet.read_bytes())
         (args.output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     except Exception as error:  # noqa: BLE001
-        args.output.mkdir(parents=True, exist_ok=True)
+        if not args.output.exists():
+            args.output.mkdir(parents=False, exist_ok=False)
         failure = {"status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "reference_status": "REFERENCE_ERROR", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "repository": HF_REPOSITORY, "revision": HF_REVISION, "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION, "error": f"{type(error).__name__}: {error}"}
         (args.output / "manifest.json").write_text(json.dumps(failure, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         print(f"voxcpm_0_5b_reference: BLOCKED: {error}", file=sys.stderr)

@@ -75,7 +75,8 @@ def load_json(path: Path) -> Any:
 
 def safe_path(value: str) -> None:
     path = Path(value)
-    if not value or "\0" in value or "\\" in value or path.is_absolute() or ".." in path.parts:
+    raw_parts = value.split("/")
+    if not value or "\0" in value or "\\" in value or path.is_absolute() or any(part in {".", ".."} for part in raw_parts):
         raise RuntimeError(f"unsafe path: {value!r}")
 
 
@@ -316,7 +317,9 @@ def inspect(snapshot: Path, packet: Path, evidence: Path, source: Path | None = 
     result["source"] = inspect_source(source)
     result["audio_vae_contract"] = {"source_role": AUDIOVAE_SOURCE, **AUDIOVAE_CONTRACT}
     result["historical_public_gguf"] = inspect_public_gguf(public)
-    evidence.mkdir(parents=True, exist_ok=True)
+    if evidence.exists() or evidence.is_symlink():
+        raise RuntimeError("evidence output must be absent and non-symlink")
+    evidence.mkdir(parents=False, exist_ok=False)
     (evidence / "manifest.json").write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
@@ -325,7 +328,7 @@ def self_test() -> None:
     try: strict_pairs([("x", 1), ("x", 2)])
     except RuntimeError: pass
     else: raise AssertionError("duplicate JSON keys must fail")
-    for bad in ("../x", "/x", "a\\b", ""):
+    for bad in ("../x", "/x", "a\\b", "", "./x", "a/./b"):
         try: safe_path(bad)
         except RuntimeError: pass
         else: raise AssertionError("unsafe path accepted")
@@ -360,10 +363,12 @@ def main() -> int:
         self_test(); return 0
     if not all((args.snapshot, args.server_tree, args.output)):
         parser.error("--snapshot, --server-tree and --output are required")
+    if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
+        parser.error("--output must be an absent path with an existing parent")
     try:
         inspect(args.snapshot, args.server_tree, args.output, args.source, args.public_gguf)
     except Exception as error:  # evidence failures are blockers, never PASS
-        args.output.mkdir(parents=True, exist_ok=True)
+        args.output.mkdir(parents=False, exist_ok=False)
         blocked = {"status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "hf_repository": HF_REPOSITORY, "hf_revision": HF_REVISION, "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION, "error": f"{type(error).__name__}: {error}"}
         (args.output / "manifest.json").write_text(json.dumps(blocked, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         print(f"voxcpm_0_5b_inspect: BLOCKED: {error}", file=sys.stderr)
