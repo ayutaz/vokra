@@ -11,13 +11,14 @@ NANO_PROJECT="$VOKRA_ROOT/tools/parity/moss_audio_tokenizer_nano"
 LICENSE_GATE="$NANO_PROJECT/license_gate.py"
 LICENSE_MANIFEST="$NANO_PROJECT/license_gate_manifest.json"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+export CARGO_NET_OFFLINE=true
 
 OFFICIAL_REPO="OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 OFFICIAL_REVISION="6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 MIN_MEMORY_BYTES=32000000000
 MIN_FREE_DISK_KIB=20000000
 TEST_SOURCE="$VOKRA_ROOT/crates/vokra-models/tests/parity_moss_audio_tokenizer_nano_real.rs"
-TEST_NAME="official_nano_decode_matches_cpu_and_optional_metal"
+TEST_NAME="official_nano_decode_measurement"
 TEST_SELECTOR="parity_moss_audio_tokenizer_nano_real::$TEST_NAME"
 # No authenticated Nano custom-code source identity or compatible Transformers
 # route is currently recorded.  These code-bound sentinels intentionally make
@@ -42,7 +43,7 @@ usage: apple-silicon-moss-audio-tokenizer-nano.sh \
   --gguf <vast-corrected-nano.gguf> \
   --reference <vast-independent-nano-reference.csv> \
   --gguf-sha256 <lowercase-sha256> --reference-sha256 <lowercase-sha256> \
-  --approval-evidence <external-evidence.json> \
+  --approval-evidence <external-evidence.json> --expected-head <40-hex-commit> \
   --evidence-dir <absent-dir>
        apple-silicon-moss-audio-tokenizer-nano.sh --self-test
 
@@ -145,17 +146,19 @@ license_preflight() {
 }
 
 require_test_evidence() {
-  local path="$1" named result result_lines test_lines cpu cpu_lines metal metal_lines
-  named="$(grep -Ec '^test parity_moss_audio_tokenizer_nano_real::official_nano_decode_matches_cpu_and_optional_metal \.\.\. ok$' "$path" || true)"
+  local path="$1" named result result_lines test_lines cpu cpu_lines metal_reference metal_reference_lines metal_cpu metal_cpu_lines
+  named="$(grep -Ec '^test parity_moss_audio_tokenizer_nano_real::official_nano_decode_measurement \.\.\. ok$' "$path" || true)"
   result="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$path" || true)"
   result_lines="$(grep -Ec '^test result:' "$path" || true)"
   test_lines="$(awk '/^test / && $0 !~ /^test result:/ {count++} END {print count + 0}' "$path")"
   cpu="$(grep -Ec '^MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=[0-9.eE+-]+ rms=[0-9.eE+-]+ index=[0-9]+ actual=[0-9.eE+-]+ reference=[0-9.eE+-]+$' "$path" || true)"
-  metal="$(grep -Ec '^MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=[0-9.eE+-]+ rms=[0-9.eE+-]+ index=[0-9]+ metal=[0-9.eE+-]+ cpu=[0-9.eE+-]+$' "$path" || true)"
+  metal_reference="$(grep -Ec '^MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_reference numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=[0-9.eE+-]+ rms=[0-9.eE+-]+ index=[0-9]+ actual=[0-9.eE+-]+ reference=[0-9.eE+-]+$' "$path" || true)"
+  metal_cpu="$(grep -Ec '^MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=[0-9.eE+-]+ rms=[0-9.eE+-]+ index=[0-9]+ metal=[0-9.eE+-]+ cpu=[0-9.eE+-]+$' "$path" || true)"
   cpu_lines="$(grep -Ec '^MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu ' "$path" || true)"
-  metal_lines="$(grep -Ec '^MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal ' "$path" || true)"
-  if [[ "$named" != 1 || "$result" != 1 || "$result_lines" != 1 || "$test_lines" != 1 || "$cpu" != 1 || "$cpu_lines" != 1 || "$metal" != 1 || "$metal_lines" != 1 ]]; then
-    die 'Nano evidence requires exactly one named pass/result and CPU/Metal sentinels'; return 2
+  metal_reference_lines="$(grep -Ec '^MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_reference ' "$path" || true)"
+  metal_cpu_lines="$(grep -Ec '^MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_cpu ' "$path" || true)"
+  if [[ "$named" != 1 || "$result" != 1 || "$result_lines" != 1 || "$test_lines" != 1 || "$cpu" != 1 || "$cpu_lines" != 1 || "$metal_reference" != 1 || "$metal_reference_lines" != 1 || "$metal_cpu" != 1 || "$metal_cpu_lines" != 1 ]]; then
+    die 'Nano evidence requires exactly one named pass/result and CPU/reference, Metal/reference, Metal/CPU sentinels'; return 2
   fi
 }
 
@@ -233,6 +236,15 @@ require_tooling() {
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
     || die 'remote Apple checkout must be clean so evidence names one exact commit'
   xcrun -f metal >/dev/null 2>&1 || die "Xcode Metal compiler is unavailable"
+}
+
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be a lowercase 40-hex commit'; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" ]] || { die 'expected-head check requires a git checkout'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'Apple checkout must be clean before approval/model work'; return 2; }
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || { die 'cannot resolve Apple checkout HEAD'; return 2; }
+  [[ "$actual" == "$expected" ]] || { die "Apple checkout HEAD $actual differs from --expected-head $expected"; return 2; }
 }
 
 record_environment() {
@@ -330,9 +342,10 @@ run_self_test() (
     '--gguf-sha256' '--reference-sha256' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
     'VOKRA_MOSS_AUDIO_TOKENIZER_NANO_GGUF' \
     'VOKRA_MOSS_AUDIO_TOKENIZER_NANO_REFERENCE' \
-    'VOKRA_MOSS_AUDIO_TOKENIZER_NANO_METAL_MEASUREMENT=1' \
     'MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET' \
-    'MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET' \
+    'MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_reference numeric_bounds=UNSET' \
+    'MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_cpu numeric_bounds=UNSET' \
+    '--expected-head' \
     'verdict=MEASURED_NOT_GATED' 'numeric_bounds=UNSET' 'upload=NOT_PERFORMED'; do
     grep -Fq -- "$required" "$script_path" \
       || die "self-test contract token is missing: $required"
@@ -402,12 +415,12 @@ run_self_test() (
   if "$script_path" --gguf --reference x --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --evidence-dir x >/dev/null 2>&1; then
     die 'bare option value was accepted'
   fi
-  for option in gguf reference gguf-sha256 reference-sha256 approval-evidence evidence-dir; do
+  for option in gguf reference gguf-sha256 reference-sha256 approval-evidence expected-head evidence-dir; do
     if "$script_path" --self-test "--$option" -x >/dev/null 2>&1; then
       die "negative --$option value was accepted"
     fi
   done
-  printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 metal=1.0e-9 cpu=1.0e-9\n' "$TEST_SELECTOR" > "$temporary/test.log"
+  printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_reference numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 metal=1.0e-9 cpu=1.0e-9\n' "$TEST_SELECTOR" > "$temporary/test.log"
   require_test_evidence "$temporary/test.log"
   cp "$temporary/test.log" "$temporary/duplicate-result.log"
   printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n' >> "$temporary/duplicate-result.log"
@@ -438,8 +451,8 @@ run_self_test() (
 )
 
 main() {
-  local gguf='' reference='' gguf_sha='' reference_sha='' approval='' evidence_dir='' self_test=0
-  local seen_gguf=0 seen_reference=0 seen_gguf_sha=0 seen_reference_sha=0 seen_approval=0 seen_evidence=0 seen_self_test=0
+  local gguf='' reference='' gguf_sha='' reference_sha='' approval='' evidence_dir='' expected_head='' self_test=0
+  local seen_gguf=0 seen_reference=0 seen_gguf_sha=0 seen_reference_sha=0 seen_approval=0 seen_evidence=0 seen_head=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --gguf) (( ! seen_gguf++ )) || die 'duplicate --gguf'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; gguf="$2"; shift 2 ;;
@@ -448,21 +461,23 @@ main() {
       --reference-sha256) (( ! seen_reference_sha++ )) || die 'duplicate --reference-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; reference_sha="$2"; shift 2 ;;
       --approval-evidence) (( ! seen_approval++ )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; approval="$2"; shift 2 ;;
       --evidence-dir) (( ! seen_evidence++ )) || die 'duplicate --evidence-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; evidence_dir="$2"; shift 2 ;;
+      --expected-head) (( ! seen_head++ )) || die 'duplicate --expected-head'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; expected_head="$2"; shift 2 ;;
       --self-test) (( ! seen_self_test++ )) || die 'duplicate --self-test'; self_test=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) usage; die "unknown argument: $1" ;;
     esac
   done
   if (( self_test == 1 )); then
-    [[ -z "$gguf$reference$gguf_sha$reference_sha$approval$evidence_dir" ]] || die '--self-test accepts no other arguments'
+    [[ -z "$gguf$reference$gguf_sha$reference_sha$approval$evidence_dir$expected_head" ]] || die '--self-test accepts no other arguments'
     run_self_test
     return
   fi
-  [[ -n "$gguf" && -n "$reference" && -n "$gguf_sha" && -n "$reference_sha" && -n "$approval" && -n "$evidence_dir" ]] \
-    || { usage; die '--gguf, --reference, both SHA-256 values, --approval-evidence, and --evidence-dir are required'; }
+  [[ -n "$gguf" && -n "$reference" && -n "$gguf_sha" && -n "$reference_sha" && -n "$approval" && -n "$evidence_dir" && -n "$expected_head" ]] \
+    || { usage; die '--gguf, --reference, both SHA-256 values, --approval-evidence, --expected-head, and --evidence-dir are required'; }
   [[ "$gguf_sha" =~ ^[0-9a-f]{64}$ && "$reference_sha" =~ ^[0-9a-f]{64}$ ]] \
     || { die 'expected hashes must be lowercase 64-hex SHA-256 values'; return 2; }
 
+  require_expected_head "$expected_head"
   license_preflight "$approval"
   require_remote_apple_host
   require_tooling
@@ -487,7 +502,6 @@ main() {
   log 'running exact ignored real-weight CPU/reference/Metal measurement'
   env VOKRA_MOSS_AUDIO_TOKENIZER_NANO_GGUF="$gguf" \
     VOKRA_MOSS_AUDIO_TOKENIZER_NANO_REFERENCE="$reference" \
-    VOKRA_MOSS_AUDIO_TOKENIZER_NANO_METAL_MEASUREMENT=1 \
     RUST_TEST_THREADS=1 \
     cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
       -p vokra-models --features metal --test parity_moss_audio_tokenizer_nano_real \
@@ -500,10 +514,12 @@ main() {
     echo 'parity_status=MEASURED_NOT_GATED'
     echo 'numeric_bounds=UNSET'
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
     echo "gguf_sha256=$gguf_sha"
     echo "reference_sha256=$reference_sha"
     echo "test=$TEST_SELECTOR"
-    echo 'cpu_reference=MEASURED_NOT_GATED'
+    echo 'cpu_vs_upstream=MEASURED_NOT_GATED'
+    echo 'metal_vs_upstream=MEASURED_NOT_GATED'
     echo 'metal_vs_cpu=MEASURED_NOT_GATED'
     echo 'upload=NOT_PERFORMED'
     echo 'apple_conversion=NOT_PERFORMED'

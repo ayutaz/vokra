@@ -16,6 +16,7 @@ PREPARER="$PARITY_PROJECT/moss_audio_tokenizer_prepare_checkpoint.py"
 REFERENCE_DUMPER="$PARITY_PROJECT/moss_audio_tokenizer_dump_reference.py"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+export CARGO_NET_OFFLINE=true
 
 UPSTREAM_REPO="OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 UPSTREAM_REVISION="6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
@@ -47,7 +48,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-moss-audio-tokenizer-nano-validation.sh --approval-evidence <file> [--work-dir <absent-dir>]
+usage: run-moss-audio-tokenizer-nano-validation.sh --approval-evidence <file> --expected-head <40-hex-commit> [--work-dir <absent-dir>]
        run-moss-audio-tokenizer-nano-validation.sh --self-test
 
 VAST-only corrected replacement validation for the immutable official Nano
@@ -177,9 +178,18 @@ require_tooling() {
   fi
 }
 
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be a lowercase 40-hex commit'; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" ]] || { die 'expected-head check requires a git checkout'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'checkout must be clean before approval/model work'; return 2; }
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || { die 'cannot resolve checkout HEAD'; return 2; }
+  [[ "$actual" == "$expected" ]] || { die "checkout HEAD $actual differs from --expected-head $expected"; return 2; }
+}
+
 require_cpu_test_evidence() {
   local path="$1" named result result_lines test_lines cpu cpu_lines
-  named="$(grep -Ec '^test parity_moss_audio_tokenizer_nano_real::official_nano_decode_matches_cpu_and_optional_metal \.\.\. ok$' "$path" || true)"
+  named="$(grep -Ec '^test parity_moss_audio_tokenizer_nano_real::official_nano_decode_measurement \.\.\. ok$' "$path" || true)"
   result="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$path" || true)"
   result_lines="$(grep -Ec '^test result:' "$path" || true)"
   test_lines="$(awk '/^test / && $0 !~ /^test result:/ {count++} END {print count + 0}' "$path")"
@@ -311,14 +321,14 @@ record_environment() {
 }
 
 write_apple_args() {
-  local output="$1" gguf_sha="$2" reference_sha="$3"
+  local output="$1" gguf_sha="$2" reference_sha="$3" expected_head="$4"
   {
     printf '#!/usr/bin/env bash\nset -eu\n'
-    printf '%s ' 'scripts/verify/apple-silicon-moss-audio-tokenizer-nano.sh'
-    printf '%s ' --gguf "'<APPLE_MOSS_AUDIO_TOKENIZER_NANO_GGUF_PATH>'" --reference "'<APPLE_MOSS_AUDIO_TOKENIZER_NANO_REFERENCE_PATH>'"
-    printf '%q ' --gguf-sha256 "$gguf_sha" --reference-sha256 "$reference_sha"
-    printf '%s ' --approval-evidence "'<APPLE_MOSS_AUDIO_TOKENIZER_NANO_APPROVAL_EVIDENCE>'"
-    printf '%s\n' --evidence-dir "'<APPLE_MOSS_AUDIO_TOKENIZER_NANO_EVIDENCE_DIR>'"
+    printf '%q ' 'scripts/verify/apple-silicon-moss-audio-tokenizer-nano.sh'
+    printf '%q ' --gguf '<APPLE_MOSS_AUDIO_TOKENIZER_NANO_GGUF_PATH>' --reference '<APPLE_MOSS_AUDIO_TOKENIZER_NANO_REFERENCE_PATH>'
+    printf '%q ' --gguf-sha256 "$gguf_sha" --reference-sha256 "$reference_sha" --expected-head "$expected_head"
+    printf '%q ' --approval-evidence '<APPLE_MOSS_AUDIO_TOKENIZER_NANO_APPROVAL_EVIDENCE>'
+    printf '%q\n' --evidence-dir '<APPLE_MOSS_AUDIO_TOKENIZER_NANO_EVIDENCE_DIR>'
   } > "$output"
   chmod +x "$output"
 }
@@ -362,7 +372,7 @@ run_self_test() {
     "--model moss-audio-tokenizer-nano" "--frozen --python 3.12" \
     "license_preflight" "--no-project --offline" "license_gate.py" "moss_audio_tokenizer_nano" \
     "parity_moss_audio_tokenizer_nano_real" \
-    "official_nano_decode_matches_cpu_and_optional_metal" \
+    "official_nano_decode_measurement" "--expected-head" "CPU_MEASURED_NOT_GATED_METAL_NOT_RUN" \
     "numeric_bounds=UNSET" "MEASURED_NOT_GATED" "object_pairs_hook=reject"; do
     cases=$((cases + 1))
     if ! grep -Fq -- "$required" "$script_path"; then
@@ -429,12 +439,15 @@ run_self_test() {
   done
   write_apple_args "$tmp/apple-args.sh" \
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
-    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+    '0123456789012345678901234567890123456789'
   bash -n "$tmp/apple-args.sh"
-  grep -Fq "scripts/verify/apple-silicon-moss-audio-tokenizer-nano.sh --gguf '<APPLE_MOSS_AUDIO_TOKENIZER_NANO_GGUF_PATH>' --reference '<APPLE_MOSS_AUDIO_TOKENIZER_NANO_REFERENCE_PATH>'" "$tmp/apple-args.sh" \
+  grep -Fq 'apple-silicon-moss-audio-tokenizer-nano.sh' "$tmp/apple-args.sh" \
     || { log 'self-test FAIL: Apple args are not portable placeholders'; fail=1; }
-  grep -Fq -- "--approval-evidence '<APPLE_MOSS_AUDIO_TOKENIZER_NANO_APPROVAL_EVIDENCE>'" "$tmp/apple-args.sh" \
+  grep -Fq -- '--approval-evidence' "$tmp/apple-args.sh" \
     || { log 'self-test FAIL: Apple approval placeholder is missing'; fail=1; }
+  grep -Fq -- '--expected-head 0123456789012345678901234567890123456789' "$tmp/apple-args.sh" \
+    || { log 'self-test FAIL: Apple expected-head is missing'; fail=1; }
   if grep -Eq '(/stage/|/reference/|VOKRA_ROOT=|moss-tokenizer-nano-validation/)' "$tmp/apple-args.sh"; then
     log 'self-test FAIL: Apple args embed VAST paths'; fail=1
   fi
@@ -446,6 +459,10 @@ run_self_test() {
   cases=$((cases + 1))
   if grep -En '(publish-one\.sh|upload\.sh|--push([[:space:]]|$)|huggingface-cli[[:space:]])' "$script_path" >/dev/null; then
     log "self-test FAIL: publication/upload operation found"
+    fail=1
+  fi
+  if ! grep -Fq 'apple-transfer-args.sh' "$script_path" || ! grep -Fq -- '--expected-head' "$script_path"; then
+    log 'self-test FAIL: executable Apple transfer args are incomplete'
     fail=1
   fi
   printf approval > "$tmp/approval-target"
@@ -498,7 +515,7 @@ run_self_test() {
   expect_exit_2_no_path 'approval-overlapping work path' "$tmp/approval.json/child" \
     validate_work_dir "$tmp/approval.json/child" "$tmp/approval.json" || fail=1
   cases=$((cases + 1))
-  printf 'test parity_moss_audio_tokenizer_nano_real::official_nano_decode_matches_cpu_and_optional_metal ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/cpu.log"
+  printf 'test parity_moss_audio_tokenizer_nano_real::official_nano_decode_measurement ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/cpu.log"
   require_cpu_test_evidence "$tmp/cpu.log" || { log 'self-test FAIL: valid CPU evidence rejected'; fail=1; }
   cases=$((cases + 1))
   cp "$tmp/cpu.log" "$tmp/duplicate-result.log"
@@ -508,7 +525,7 @@ run_self_test() {
   awk 'NR == 2 { print "test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out"; next } { print }' "$tmp/cpu.log" > "$tmp/malformed-result.log"
   if require_cpu_test_evidence "$tmp/malformed-result.log"; then log 'self-test FAIL: malformed result accepted'; fail=1; fi
   cases=$((cases + 1))
-  printf 'test parity_moss_audio_tokenizer_nano_real::official_nano_decode_matches_cpu_and_optional_metal ... ok\ntest extra_case ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/extra-test.log"
+  printf 'test parity_moss_audio_tokenizer_nano_real::official_nano_decode_measurement ... ok\ntest extra_case ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/extra-test.log"
   if require_cpu_test_evidence "$tmp/extra-test.log"; then log 'self-test FAIL: extra test accepted'; fail=1; fi
   cases=$((cases + 1))
   sed 's/\.\.\. ok$/.\.\.\. FAILED/' "$tmp/cpu.log" > "$tmp/failed-test.log"
@@ -541,7 +558,8 @@ EOF
   set +e
   HOME="$fake_home" PATH="$fake_home/.local/bin:$PATH" MOSS_NANO_SELF_TEST_UV_LOG="$fake_log" \
     VOKRA_ROOT="$fake_root" VOKRA_SCRATCH="$tmp/scratch" "$script_path" \
-      --approval-evidence "$tmp/approval.json" --work-dir "$tmp/blocked-work" >"$tmp/worker.log" 2>&1
+      --approval-evidence "$tmp/approval.json" --expected-head 0123456789012345678901234567890123456789 \
+      --work-dir "$tmp/blocked-work" >"$tmp/worker.log" 2>&1
   rc=$?
   set -e
   if [[ $rc -ne 2 || ! -s "$fake_log" || -e "$tmp/scratch" ]]; then
@@ -565,8 +583,8 @@ on_exit() {
 }
 
 main() {
-  local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir snapshot stage logs reference
-  local seen_work_dir=0 seen_self_test=0 seen_approval=0
+  local self_test=0 requested_work_dir="" approval_evidence="" expected_head="" run_stamp work_dir snapshot stage logs reference
+  local seen_work_dir=0 seen_self_test=0 seen_approval=0 seen_head=0
   local merged gguf reference_csv reference_sha256 gguf_sha256 run_log env_log summary_file prep_manifest cpu_log
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -574,6 +592,10 @@ main() {
         (( ! seen_approval++ )) || { die "duplicate --approval-evidence"; return 2; }
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--approval-evidence requires a file"; return 2; }
         approval_evidence="$2"; shift 2 ;;
+      --expected-head)
+        (( ! seen_head++ )) || { die "duplicate --expected-head"; return 2; }
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--expected-head requires a commit"; return 2; }
+        expected_head="$2"; shift 2 ;;
       --work-dir)
         (( ! seen_work_dir++ )) || { die "duplicate --work-dir"; return 2; }
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--work-dir requires a directory"; return 2; }
@@ -588,7 +610,7 @@ main() {
     esac
   done
   if [[ $self_test -eq 1 ]]; then
-    [[ -z "$approval_evidence$requested_work_dir" ]] || { die "--self-test accepts no other arguments"; return 2; }
+    [[ -z "$approval_evidence$expected_head$requested_work_dir" ]] || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test
     return $?
   fi
@@ -596,9 +618,10 @@ main() {
   # The dependency/license gate is the first substantive production action.
   # It runs before host probing, scratch/cache creation, sync, download,
   # conversion, Cargo, or CUDA work.
-  [[ -n "$approval_evidence" ]] || { die "--approval-evidence is required"; usage; return 2; }
+  [[ -n "$approval_evidence" && -n "$expected_head" ]] || { die "--approval-evidence and --expected-head are required"; usage; return 2; }
   [[ -f "$approval_evidence" && ! -L "$approval_evidence" ]] || { die "--approval-evidence must be a regular non-symlink file"; return 2; }
   license_preflight "$approval_evidence"
+  require_expected_head "$expected_head"
   require_tooling
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${requested_work_dir:-$VOKRA_SCRATCH/moss-tokenizer-nano-validation/$run_stamp}"
@@ -675,21 +698,23 @@ print(f"prepared Nano tensors={data[\"kept_count\"]} sha256={data[\"sha256\"]}")
   step "Run named nonzero native CPU validation"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
     -p vokra-models --test parity_moss_audio_tokenizer_nano_real \
-    official_nano_decode_matches_cpu_and_optional_metal \
+    official_nano_decode_measurement \
     -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$cpu_log"
   require_cpu_test_evidence "$cpu_log"
 
   step "Write evidence summary and checksums"
   reference_sha256="$(sha256_file "$reference_csv")"
   gguf_sha256="$(sha256_file "$gguf")"
-  write_apple_args "$logs/apple-silicon-moss-audio-tokenizer-nano-args.sh" \
-    "$gguf_sha256" "$reference_sha256"
+  write_apple_args "$logs/apple-transfer-args.sh" \
+    "$gguf_sha256" "$reference_sha256" "$expected_head"
   {
-    echo "execution_status=PASS"
+    echo "execution_status=MEASURED_NOT_GATED"
+    echo "verdict=CPU_MEASURED_NOT_GATED_METAL_NOT_RUN"
     echo "scope=CORRECTED_NANO_ARTIFACT_AND_INDEPENDENT_REFERENCE"
     echo "numeric_verdict=MEASURED_NOT_GATED"
     echo "numeric_bounds=UNSET"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
     echo "upstream_repo=$UPSTREAM_REPO"
     echo "upstream_revision=$UPSTREAM_REVISION"
     echo "corrected_model_name=$CORRECTED_MODEL_NAME"
@@ -699,6 +724,9 @@ print(f"prepared Nano tensors={data[\"kept_count\"]} sha256={data[\"sha256\"]}")
     echo "gguf_sha256=$gguf_sha256"
     echo "reference_sha256=$reference_sha256"
     grep -F "MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu" "$cpu_log"
+    echo 'cpu_vs_upstream=MEASURED_NOT_GATED'
+    echo 'metal_vs_upstream=NOT_RUN'
+    echo 'metal_vs_cpu=NOT_RUN'
   } | tee "$summary_file"
   (
     cd "$work_dir"
@@ -706,7 +734,7 @@ print(f"prepared Nano tensors={data[\"kept_count\"]} sha256={data[\"sha256\"]}")
       | sort -z | xargs -0 sha256sum > logs/SHA256SUMS
   )
   trap - EXIT
-  log "PASS: pull $logs and $reference, then destroy the VAST instance"
+  log "MEASURED_NOT_GATED: pull $logs and $reference, then destroy the VAST instance"
 }
 
 main "$@"

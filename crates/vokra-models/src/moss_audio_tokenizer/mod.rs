@@ -3,10 +3,9 @@
 //! Full, Nano, and v2 share an upstream Python class but not a tensor topology.
 //! This module authenticates the complete public GGUF tensor manifest before
 //! selecting the exact contract. In particular, the first public Nano GGUF was
-//! accidentally stamped with Full metadata; it is accepted only behind the
-//! exact 374-tensor Nano manifest and is surfaced through
-//! [`MossAudioTokenizer::requires_metadata_repair`]. A same-metadata artifact
-//! with any other manifest fails closed.
+//! accidentally stamped with Full metadata; that historical artifact is
+//! rejected rather than silently repaired or routed as Nano. A Nano artifact
+//! must carry the canonical Nano metadata and exact 374-tensor manifest.
 //!
 //! Nano, Full, and the v2 token-to-PCM paths are implemented natively with one selected
 //! [`Compute`] backend for every learned reduction. Full is mapping-backed and
@@ -44,6 +43,8 @@ pub const V2_NAME: &str = "moss-audio-tokenizer-v2";
 pub const FULL_UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer";
 /// Nano upstream repository pinned by the provenance contract.
 pub const NANO_UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano";
+/// Immutable Nano source revision.
+pub const NANO_UPSTREAM_REVISION: &str = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68";
 /// v2 upstream repository pinned by the provenance contract.
 pub const V2_UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2";
 /// Immutable v2 source revision.
@@ -93,9 +94,9 @@ const NANO_SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
     label: "moss_audio_tokenizer/nano",
     arch: ARCH,
     model_name: NANO_NAME,
-    // Narrow compatibility for the already-public, mis-stamped Nano GGUF.
-    // The complete Nano manifest is authenticated before this alias is used.
-    model_name_alias: Some(FULL_NAME),
+    // The historical public Nano artifact was mis-stamped with Full metadata.
+    // Never accept that identity as a compatibility alias.
+    model_name_alias: None,
     tensor_count: NANO_TENSOR_COUNT,
     manifest_sha256: [
         0xe5, 0xfd, 0xb1, 0xf1, 0x93, 0x8f, 0xdb, 0x52, 0x37, 0xd3, 0xae, 0x8b, 0x47, 0x06, 0xf2,
@@ -224,27 +225,21 @@ impl MossAudioTokenizer {
             NANO_TENSOR_COUNT => {
                 let checkpoint = StrictCheckpoint::bind(file, NANO_SPEC)?;
                 validate_common_metadata(file)?;
-                let legacy = checkpoint.model_name() == FULL_NAME;
-                if legacy {
-                    validate_release_metadata(
-                        file,
-                        FULL_NAME,
-                        "full",
-                        FULL_UPSTREAM_HF,
-                        full_source_description(),
-                        "moss_audio_tokenizer/nano legacy metadata",
-                    )?;
-                } else {
-                    validate_release_metadata(
-                        file,
-                        NANO_NAME,
-                        "nano",
-                        NANO_UPSTREAM_HF,
-                        nano_source_description(),
-                        "moss_audio_tokenizer/nano",
-                    )?;
-                }
-                (checkpoint, MossAudioTokenizerVariant::Nano, legacy)
+                validate_release_metadata(
+                    file,
+                    NANO_NAME,
+                    "nano",
+                    NANO_UPSTREAM_HF,
+                    nano_source_description(),
+                    "moss_audio_tokenizer/nano",
+                )?;
+                require_string(
+                    file,
+                    KEY_UPSTREAM_REVISION,
+                    NANO_UPSTREAM_REVISION,
+                    "moss_audio_tokenizer/nano",
+                )?;
+                (checkpoint, MossAudioTokenizerVariant::Nano, false)
             }
             V2_TENSOR_COUNT => {
                 let checkpoint = StrictCheckpoint::bind(file, V2_SPEC)?;
@@ -353,9 +348,10 @@ impl MossAudioTokenizer {
         self.weight_license
     }
 
-    /// Whether this is the exact public Nano manifest carrying the historical
-    /// Full metadata stamp. Such an artifact is safe to route as Nano but must
-    /// be replaced before the model-zoo audit can call it canonical.
+    /// Whether metadata repair was required during binding.
+    ///
+    /// Nano legacy metadata is rejected; this remains for API compatibility
+    /// with callers that surface the state for other model variants.
     pub const fn requires_metadata_repair(&self) -> bool {
         self.requires_metadata_repair
     }
@@ -557,6 +553,7 @@ mod tests {
         assert_eq!(MossAudioTokenizerVariant::V2.max_quantizers(), 32);
         assert_eq!(V2_SPEC.tensor_count, 2_094);
         assert_eq!(V2_SPEC.manifest_sha256[0], 0xa8);
+        assert!(NANO_SPEC.model_name_alias.is_none());
     }
 
     #[test]

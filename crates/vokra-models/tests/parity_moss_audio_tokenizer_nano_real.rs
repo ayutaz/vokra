@@ -3,7 +3,9 @@
 //! The CSV input is produced by the independent upstream custom-code oracle
 //! (`tools/parity/moss_audio_tokenizer_dump_reference.py --variant nano`).
 //! There is no reviewed Nano numeric bound yet, so this test deliberately
-//! records measurements and never emits a numeric PASS.
+//! records measurements and never emits a numeric PASS. On Apple Silicon the
+//! same test additionally emits direct Metal/reference and Metal/CPU metrics;
+//! Linux/VAST intentionally reports only CPU/reference.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -156,7 +158,7 @@ fn numeric_error(actual: &[f32], expected: &[f32]) -> (usize, f32, f64) {
 
 #[test]
 #[ignore = "requires the corrected Nano GGUF and independent official reference"]
-fn official_nano_decode_matches_cpu_and_optional_metal() {
+fn official_nano_decode_measurement() {
     let gguf_path = PathBuf::from(
         std::env::var_os("VOKRA_MOSS_AUDIO_TOKENIZER_NANO_GGUF")
             .expect("set VOKRA_MOSS_AUDIO_TOKENIZER_NANO_GGUF for ignored real validation"),
@@ -187,7 +189,7 @@ fn official_nano_decode_matches_cpu_and_optional_metal() {
     );
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    if std::env::var_os("VOKRA_MOSS_AUDIO_TOKENIZER_NANO_METAL_MEASUREMENT").is_some() {
+    {
         let metal = MossAudioTokenizer::open_mapped_with_backend(&gguf_path, BackendKind::Metal)
             .expect("strict mapping-backed MOSS Nano Metal bind");
         assert_eq!(metal.variant(), MossAudioTokenizerVariant::Nano);
@@ -197,8 +199,14 @@ fn official_nano_decode_matches_cpu_and_optional_metal() {
             .expect("MOSS Nano Metal decode");
         assert_eq!(metal_audio.pcm.len(), cpu_audio.pcm.len());
         let (index, max_abs, rms) = numeric_error(&metal_audio.pcm, &cpu_audio.pcm);
+        let (official_index, official_max_abs, official_rms) =
+            numeric_error(&metal_audio.pcm, &reference.interleaved_audio);
         eprintln!(
-            "MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs={max_abs:.9e} rms={rms:.9e} index={index} metal={:.9e} cpu={:.9e}",
+            "MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_reference numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs={official_max_abs:.9e} rms={official_rms:.9e} index={official_index} actual={:.9e} reference={:.9e}",
+            metal_audio.pcm[official_index], reference.interleaved_audio[official_index]
+        );
+        eprintln!(
+            "MOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs={max_abs:.9e} rms={rms:.9e} index={index} metal={:.9e} cpu={:.9e}",
             metal_audio.pcm[index], cpu_audio.pcm[index]
         );
     }
