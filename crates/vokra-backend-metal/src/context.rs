@@ -10032,6 +10032,7 @@ impl MetalContext {
     /// Each harmonic thread mirrors the upstream linear downsample,
     /// cumulative phase, and linear upsample ordering in one kernel, so no
     /// intermediate tensor is read back to the host.
+    #[allow(clippy::too_many_arguments)] // resident SineGen2 operand set
     pub fn sinegen2_deterministic_channel_major_dev(
         &self,
         out: &mut MetalDeviceTensor<'_>,
