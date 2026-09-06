@@ -319,6 +319,44 @@ and Git blob `bc19267bbfd373c9a760b7667a74349ddd487db1`. The topology constants 
 therefore source-bound rather than shape-inferred. Owner closure and
 independent real-weight CPU parity remain open.
 
+The next CosyVoice2 component wave advanced the local implementation through
+`b3c6afb6`. Commits `475b7ddb` through `d59820f9` add authenticated LLM/Flow
+preparation, strict component conversion/binding, an independent official
+Qwen2 eager reference, and exact LLM parity evidence. Commits `70a9cd52`
+through `b3c6afb6` then close the dedicated reference-lock and approval-gate
+integrity gaps found during model-free VAST review: the local virtual project
+row is authenticated separately from registry dependencies, license reviews
+bind exact name/version pairs, the PyTorch CPU index's size-less wheel row is
+accepted only in its exact official form, and the approval scope binds the
+project, lock, package/native/source/weight decisions, signer and fixed model
+identities. The committed dedicated `uv.lock` is 27,906 bytes with SHA-256
+`09cf625d693277601d7034039b346697a041a6219a2a7d13c5133e39a54c6ee6`.
+
+Disposable VAST instance `50010765` installed that exact 34-package Linux
+x86_64 CPython 3.12 closure without acquiring or executing a model. The final
+model-free closure packet is 125,867 bytes with SHA-256
+`8bfe4a52f3dc9b40b65474281a3c0d32a5bf1f6f189de6a747c38e3515148c57`;
+its validation log SHA-256 is
+`3c5064156d0a5f95ec516dceebd609421ca6fa987035ca403d0a1ac7002a4477`.
+It records 63 license-file entries and 41 native payloads. The separate ELF
+`NEEDED` packet has SHA-256
+`7999545c471ad1e10c522071b60baaa5a301447d88c661dcdad1a766c2f4c3c5`
+and contains only package-internal libraries plus glibc/libstdc++/GCC
+runtime/OpenMP/zlib dependencies; no CUDA, Triton, ONNX or ONNX Runtime
+payload is present. The one wheel-level license omission,
+`tokenizers==0.22.2`, was resolved against its exact official upstream tag and
+PyPI Apache Software License classifier rather than inferred from a sibling
+release.
+
+The technical closure is therefore review-complete for a VAST-only,
+reference-only `NO_UPLOAD` run, but the execution-enabling `APPROVED` manifest
+commit is deliberately still `PENDING_EXPLICIT_OWNER_AUTHORIZATION`. The
+current safety review requires a direct owner statement authorizing both that
+manifest commit and the subsequent official-model download/reference/parity
+execution on VAST. No local model operation is permitted. Instance `50010765`
+was destroyed with all of its storage while waiting for that statement; the
+post-destroy instance and volume inventories both returned `[]`.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
