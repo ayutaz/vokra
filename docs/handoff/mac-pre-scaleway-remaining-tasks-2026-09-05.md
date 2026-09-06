@@ -726,6 +726,49 @@ families without acquiring or executing their weights locally:
   config and native status; malformed UTF-8/JSON and path or git identity
   failures exit before input/model access. Complete AED inference and real
   VAST/Apple parity remain open.
+- Fun-CosyVoice3 commits `6f85e03a` and `c5b86511` put the runner and direct
+  helper routes behind one exact external blocked disposition. The schema
+  rejects duplicate or malformed JSON, non-boolean `NO_UPLOAD`, stale HEADs
+  and checkout-local approval evidence before any input or model access. The
+  unresolved `soxr` closure and complete codec/flow/vocoder composition still
+  prohibit reference, parity and Apple work.
+- ACE-Step 1.5 commits `e3eaaa73` and `51503367` make its current inspection
+  approval terminal before host checks, input access or heavy imports. The
+  exact source/model scope, clean HEAD, single approval byte stream and strict
+  boolean `no_upload` are bound, while native DiT/LM/VAE composition,
+  dependency/license/dataset closure and all real parity remain open.
+- Baichuan-Audio commit `8c7e4397` and Granite Speech commit `e62cd4b7`, with
+  shared path hardening in `6e6702b1`, reject checkout-local approval evidence
+  and stop their unresolved composite routes before inputs. They preserve the
+  existing authenticated inspection bodies, but do not authorize model
+  acquisition, native execution, parity or publication.
+- Kyutai STT commits `76385ab5` and `4f643818` bind the Linux measurement
+  packet and Apple handoff to exact clean HEAD and strict boolean approval
+  evidence. The current transfer remains explicitly
+  `MEASUREMENT_ONLY_NOT_APPLE_READY`; the dedicated `dep_q=0` decoder seam and
+  reviewed fixed parity bound must exist before it can become `APPLE_READY`.
+- Kimi-Audio commit `9707eef3`, Kyutai TTS commit `677a36de` and Hibiki commit
+  `9614c504` preserve their fixed inspection identities but add terminal
+  single-read approval gates before acquisition or helper inputs. Their large
+  or multi-component native graphs, component/source/dependency/license and
+  dataset contracts, independent references and real parity remain open.
+- Qwen2.5-Omni commits `1fcfe85c` and `176d703f` bind the five-shard,
+  22,366,403,936-byte model identity and recorded Apache-2.0 model status
+  separately from unresolved component/source-role/dependency facts. The
+  runner, inspector and checkpoint preparer all stop before model inputs or
+  heavy imports. Native Thinker/Talker/audio-VAE streaming and parity remain
+  unimplemented.
+- Qwen2-Audio commits `ab205686` and `d77d280b` preserve the fixed five-shard
+  model, official source and Transformers inspection body, but require an
+  exact external blocked approval and clean HEAD before host, work-directory,
+  input or download operations. The missing exact source license and complete
+  native audio-language path still block VAST/Apple parity.
+- Step-Audio2 Mini commit `c7892008` gives the runner and direct inspector one
+  strict external approval scope, exact clean HEAD and terminal no-upload
+  marker before host, work-directory, input, output, download or heavy-import
+  activity. Existing authenticated inspection code is retained but remains
+  unreachable until a new reviewed contract resolves the native S2S,
+  component/license/dependency/dataset and tokenizer/vocoder boundaries.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
