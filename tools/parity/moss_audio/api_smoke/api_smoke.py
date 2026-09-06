@@ -1,0 +1,440 @@
+#!/usr/bin/env -S uv run --script
+"""Model-free official MOSS-Audio Transformers API smoke.
+
+This probe authenticates only the pinned source files and non-weight model
+metadata.  It imports the official configuration and processor classes and
+constructs a configuration/processor without loading a checkpoint.  It never
+downloads a model and never imports Vokra.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib
+import inspect
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+SOURCE_REPO = "https://github.com/OpenMOSS/MOSS-Audio.git"
+SOURCE_REVISION = "5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883"
+SOURCE_FILES = {
+    "src/configuration_moss_audio.py": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
+    "src/modeling_moss_audio.py": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c",
+    "src/processing_moss_audio.py": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6",
+}
+VARIANTS = {
+    "4b": {
+        "repo": "OpenMOSS-Team/MOSS-Audio-4B-Instruct",
+        "revision": "6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d",
+        "model_name": "moss-audio-4b-instruct",
+        "config_sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
+        "hidden_size": 2560,
+        "intermediate_size": 9728,
+        "metadata": {
+            "tokenizer_config.json": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0",
+            "processor_config.json": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
+            "vocab.json": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+            "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            "chat_template.jinja": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+            "generation_config.json": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+        },
+    },
+    "8b": {
+        "repo": "OpenMOSS-Team/MOSS-Audio-8B-Instruct",
+        "revision": "6521a39181b47a18f2d9f4b3acfb5bca7b76b57f",
+        "model_name": "moss-audio-8b-instruct",
+        "config_sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
+        "hidden_size": 4096,
+        "intermediate_size": 12288,
+        "metadata": {
+            "tokenizer_config.json": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41",
+            "processor_config.json": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
+            "vocab.json": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+            "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            "chat_template.jinja": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+            "generation_config.json": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+        },
+    },
+}
+PROJECT_SHA256 = "3d2b8e7cbde0092b77fcaeda9b8bcf4188d56d26eb86e6ae128895202889a40d"
+LOCK_SHA256 = "677aace6f46776b729cd230309d2bec486f554f00c235d2c5f690774781fa274"
+FORMAT = "vokra-moss-audio-transformers-api-smoke-v1"
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+UNRESOLVED = {"", "none", "null", "unresolved", "pending", "todo", "owner_review_required"}
+
+
+def canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
+def digest(value: Any) -> str:
+    return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def strict_json(path: Path) -> Any:
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
+
+
+def require_regular(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+        raise ValueError(f"{label} is missing, symlinked, or empty: {path}")
+
+
+def require_clean_head(root: Path, expected: str) -> None:
+    if not HEX40.fullmatch(expected):
+        raise ValueError("expected HEAD must be lowercase 40-hex")
+    actual = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    if actual != expected:
+        raise ValueError(f"Vokra HEAD drifted: {actual} != {expected}")
+    status = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout
+    if status:
+        raise ValueError("Vokra checkout is dirty")
+
+
+def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
+    if set(lock) != {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}:
+        raise ValueError("uv.lock top-level schema drifted")
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for package in lock["package"]:
+        if not isinstance(package, dict) or not isinstance(package.get("name"), str) or not isinstance(package.get("version"), str):
+            raise ValueError("uv.lock package identity is malformed")
+        source = package.get("source")
+        if not isinstance(source, dict) or set(source) != {"registry"} or source["registry"] not in {"https://pypi.org/simple", "https://download.pytorch.org/whl/cpu"}:
+            if source == {"virtual": "."}:
+                continue
+            raise ValueError(f"uv.lock package source is not approved: {package['name']}")
+        identity = (package["name"], package["version"], source["registry"])
+        if identity in seen:
+            raise ValueError("uv.lock contains duplicate package identity")
+        seen.add(identity)
+        for artifact_name in ("sdist", "wheels"):
+            artifacts = package.get(artifact_name, [] if artifact_name == "wheels" else None)
+            candidates = [] if artifacts is None else (artifacts if isinstance(artifacts, list) else [artifacts])
+            for artifact in candidates:
+                # The PyTorch CPU index currently emits no size field in uv's
+                # lock record.  Accept that one authenticated uv schema only;
+                # PyPI records must retain the complete size-bearing schema.
+                expected_keys = {"url", "hash", "upload-time"}
+                if source["registry"] == "https://pypi.org/simple":
+                    expected_keys.add("size")
+                if not isinstance(artifact, dict) or set(artifact) != expected_keys:
+                    raise ValueError(f"{package['name']} {artifact_name} artifact schema is not exact")
+                expected_host = "download-r2.pytorch.org" if source["registry"] == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
+                parsed = urlsplit(artifact["url"]) if isinstance(artifact["url"], str) else None
+                size_valid = source["registry"] != "https://pypi.org/simple" or (isinstance(artifact["size"], int) and artifact["size"] > 0)
+                if parsed is None or parsed.scheme != "https" or parsed.netloc != expected_host or not parsed.path or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact["hash"])) or not size_valid or not isinstance(artifact["upload-time"], str):
+                    raise ValueError(f"{package['name']} {artifact_name} artifact identity is malformed")
+        rows.append({"name": package["name"], "version": package["version"], "source": source})
+    return sorted(rows, key=lambda row: (row["name"], row["version"], row["source"]["registry"]))
+
+
+def verify_project(project: Path) -> tuple[list[dict[str, Any]], str, str]:
+    pyproject = project / "pyproject.toml"
+    lock_path = project / "uv.lock"
+    require_regular(pyproject, "API smoke pyproject")
+    require_regular(lock_path, "API smoke uv.lock")
+    project_hash, lock_hash = sha256_file(pyproject), sha256_file(lock_path)
+    if project_hash != PROJECT_SHA256 or lock_hash != LOCK_SHA256:
+        raise ValueError("API smoke project or lock bytes drifted")
+    project_data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    dependencies = project_data.get("project", {}).get("dependencies", [])
+    if "transformers==5.10.4" not in dependencies:
+        raise ValueError("patched Transformers 5.10.4 dependency is missing")
+    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    rows = package_rows(lock)
+    return rows, project_hash, lock_hash
+
+
+def verify_approval(path: Path, expected_head: str, variants: list[str], rows: list[dict[str, Any]], project_hash: str, lock_hash: str) -> tuple[str, dict[str, Any]]:
+    require_regular(path, "API smoke approval")
+    approval = strict_json(path)
+    if not isinstance(approval, dict) or set(approval) != {"schema", "decision", "signer", "scope", "scope_sha256"}:
+        raise ValueError("API smoke approval schema is not exact")
+    if approval["schema"] != "vokra-moss-audio-api-approval-v1" or approval["decision"] != "APPROVED" or not isinstance(approval["signer"], str) or approval["signer"].strip().casefold() in UNRESOLVED:
+        raise ValueError("API smoke approval is not an explicit owner approval")
+    reviews = approval["scope"].get("package_reviews") if isinstance(approval["scope"], dict) else None
+    expected_review_keys = {"name", "version", "source", "status", "license", "native_review", "bundled_review"}
+    if not isinstance(reviews, list) or len(reviews) != len(rows):
+        raise ValueError("API smoke package review closure is incomplete")
+    review_by_id: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for review in reviews:
+        if not isinstance(review, dict) or set(review) != expected_review_keys or review.get("status") != "REVIEWED":
+            raise ValueError("API smoke package review is unresolved or malformed")
+        if any(not isinstance(review.get(key), str) or review[key].strip().casefold() in UNRESOLVED for key in ("license", "native_review", "bundled_review")):
+            raise ValueError("API smoke package license/native review is unresolved")
+        source = review.get("source")
+        if not isinstance(source, dict) or set(source) != {"registry"}:
+            raise ValueError("API smoke package review source is malformed")
+        key = (review["name"], review["version"], source["registry"])
+        if key in review_by_id:
+            raise ValueError("API smoke package review is duplicated")
+        review_by_id[key] = review
+    if set(review_by_id) != {(r["name"], r["version"], r["source"]["registry"]) for r in rows}:
+        raise ValueError("API smoke package review identities do not match uv.lock")
+    license_reviews = approval["scope"].get("license_reviews") if isinstance(approval["scope"], dict) else None
+    if not isinstance(license_reviews, dict) or set(license_reviews) != {"source", "4b", "8b"}:
+        raise ValueError("API smoke source/model license review closure is incomplete")
+    for label, review in license_reviews.items():
+        if not isinstance(review, dict) or set(review) != {"status", "spdx", "evidence_sha256"} or review.get("status") != "REVIEWED" or not isinstance(review.get("spdx"), str) or review["spdx"].strip().casefold() in UNRESOLVED or not HEX64.fullmatch(str(review.get("evidence_sha256"))):
+            raise ValueError(f"API smoke license review is unresolved: {label}")
+    scope = {
+        "expected_head": expected_head,
+        "variants": variants,
+        "source_repo": SOURCE_REPO,
+        "source_revision": SOURCE_REVISION,
+        "project_sha256": project_hash,
+        "lock_sha256": lock_hash,
+        "package_rows_sha256": digest(rows),
+        "package_reviews": reviews,
+        "license_reviews": license_reviews,
+    }
+    if approval["scope"] != scope or approval["scope_sha256"] != digest(scope):
+        raise ValueError("API smoke approval is not bound to exact head/project/package scope")
+    return approval["signer"], scope
+
+
+def verify_source(source: Path) -> dict[str, Any]:
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("official source root is not a real directory")
+    actual_revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    if actual_revision != SOURCE_REVISION:
+        raise ValueError(f"official source revision drifted: {actual_revision}")
+    if subprocess.run(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout:
+        raise ValueError("official source checkout is dirty")
+    files: dict[str, Any] = {}
+    for relative, expected in SOURCE_FILES.items():
+        path = source / relative
+        require_regular(path, f"official source {relative}")
+        actual = sha256_file(path)
+        if actual != expected:
+            raise ValueError(f"official source hash drifted for {relative}: {actual}")
+        files[relative] = {"sha256": actual, "bytes": path.stat().st_size}
+    return {"repo": SOURCE_REPO, "revision": SOURCE_REVISION, "files": files}
+
+
+def verify_snapshot(snapshot: Path, variant: str) -> dict[str, Any]:
+    identity = VARIANTS[variant]
+    expected = {"config.json": identity["config_sha256"], **identity["metadata"]}
+    if snapshot.is_symlink() or not snapshot.is_dir():
+        raise ValueError("model metadata snapshot root is not a real directory")
+    entries = list(snapshot.iterdir())
+    cache = snapshot / ".cache"
+    if cache in entries and (cache.is_symlink() or not cache.is_dir()):
+        raise ValueError("metadata snapshot transport cache is invalid")
+    actual = sorted(path.name for path in entries if path.name != ".cache")
+    if actual != sorted(expected):
+        raise ValueError(f"metadata snapshot closure drifted: {actual}")
+    files: dict[str, Any] = {}
+    for name, expected_hash in expected.items():
+        path = snapshot / name
+        require_regular(path, f"model metadata {name}")
+        actual_hash = sha256_file(path)
+        if actual_hash != expected_hash:
+            raise ValueError(f"model metadata hash drifted for {name}: {actual_hash}")
+        files[name] = {"sha256": actual_hash, "bytes": path.stat().st_size}
+    config = strict_json(snapshot / "config.json")
+    if not isinstance(config, dict) or config.get("model_type") != "moss_audio" or config.get("architectures") != ["MossAudioModel"]:
+        raise ValueError("MOSS-Audio config model identity is not exact")
+    if config.get("hidden_size") != identity["hidden_size"] or config.get("intermediate_size") != identity["intermediate_size"]:
+        raise ValueError(f"{variant} config topology metadata drifted")
+    return {"repo": identity["repo"], "revision": identity["revision"], "files": files, "model_type": config["model_type"]}
+
+
+def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
+    sys.path.insert(0, str(source))
+    try:
+        import transformers
+        configuration = importlib.import_module("src.configuration_moss_audio")
+        modeling = importlib.import_module("src.modeling_moss_audio")
+        processing = importlib.import_module("src.processing_moss_audio")
+        config_class = getattr(configuration, "MossAudioConfig")
+        model_class = getattr(modeling, "MossAudioModel")
+        processor_class = getattr(processing, "MossAudioProcessor")
+        if not all(inspect.isclass(cls) for cls in (config_class, model_class, processor_class)):
+            raise TypeError("official MOSS-Audio symbols are not classes")
+        config = config_class.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=True)
+        config_signature = str(inspect.signature(config_class.__init__))
+        model_signature = str(inspect.signature(model_class.__init__))
+        processor_signature = str(inspect.signature(processor_class.__init__))
+        from_pretrained_signature = str(inspect.signature(processor_class.from_pretrained))
+        processor = processor_class.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=True)
+        if processor is None or config.model_type != "moss_audio":
+            raise RuntimeError("official processor/config construction returned an invalid object")
+        return {
+            "transformers": transformers.__version__,
+            "config_class": f"{config_class.__module__}.{config_class.__name__}",
+            "model_class": f"{model_class.__module__}.{model_class.__name__}",
+            "processor_class": f"{processor_class.__module__}.{processor_class.__name__}",
+            "config_signature": config_signature,
+            "model_signature": model_signature,
+            "processor_signature": processor_signature,
+            "processor_from_pretrained_signature": from_pretrained_signature,
+            "config_construction": "PASS",
+            "processor_construction": "PASS",
+            "checkpoint_load": "NOT_PERFORMED",
+        }
+    finally:
+        if sys.path and sys.path[0] == str(source):
+            sys.path.pop(0)
+
+
+def run(args: argparse.Namespace) -> int:
+    root = Path(args.vokra_root)
+    project = Path(args.project)
+    source = Path(args.source_dir)
+    approval = Path(args.approval_evidence)
+    output = Path(args.output)
+    variants = args.variant if args.variant != "all" else "4b,8b"
+    selected = variants.split(",")
+    if selected != [v for v in selected if v in VARIANTS] or len(set(selected)) != len(selected):
+        raise ValueError("variant selection is invalid")
+    require_clean_head(root, args.expected_head)
+    rows, project_hash, lock_hash = verify_project(project)
+    signer, scope = verify_approval(approval, args.expected_head, selected, rows, project_hash, lock_hash)
+    source_record = verify_source(source)
+    variant_records: dict[str, Any] = {}
+    for variant in selected:
+        variant_records[variant] = verify_snapshot(Path(args.snapshot_root) / variant, variant)
+    api_records: dict[str, Any] = {}
+    for variant in selected:
+        try:
+            api_records[variant] = api_probe(source, Path(args.snapshot_root) / variant)
+        except Exception as exc:  # noqa: BLE001 - failure evidence is part of the contract
+            evidence = {
+                "format": FORMAT,
+                "status": "BLOCKED_INCOMPATIBLE_API",
+                "publication": "NO_UPLOAD",
+                "expected_head": args.expected_head,
+                "approval_signer": signer,
+                "source": source_record,
+                "variants": variant_records,
+                "project": {
+                    "sha256": project_hash,
+                    "lock_sha256": lock_hash,
+                    "package_rows_sha256": digest(rows),
+                    "packages": rows,
+                },
+                "api": {"variant": variant, "error_type": type(exc).__name__, "error": str(exc)},
+                "checkpoint_load": "NOT_PERFORMED",
+                "environment": {"python": platform.python_version(), "platform": platform.platform()},
+            }
+            output.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
+                handle.write("\n")
+            print(f"BLOCKED_INCOMPATIBLE_API: {exc}", file=sys.stderr)
+            return 2
+    evidence = {
+        "format": FORMAT,
+        "status": "PASS",
+        "publication": "NO_UPLOAD",
+        "expected_head": args.expected_head,
+        "approval_signer": signer,
+        "approval_scope_sha256": digest(scope),
+        "source": source_record,
+        "variants": variant_records,
+        "project": {
+            "sha256": project_hash,
+            "lock_sha256": lock_hash,
+            "package_rows_sha256": digest(rows),
+            "packages": rows,
+        },
+        "api": api_records,
+        "checkpoint_load": "NOT_PERFORMED",
+        "environment": {"python": platform.python_version(), "platform": platform.platform()},
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+    print("MOSS_AUDIO_API_SMOKE PASS (no checkpoint load, no upload)")
+    return 0
+
+
+def closure_only(args: argparse.Namespace) -> int:
+    root = Path(args.vokra_root)
+    project = Path(args.project)
+    approval = Path(args.approval_evidence)
+    require_clean_head(root, args.expected_head)
+    rows, project_hash, lock_hash = verify_project(project)
+    selected = args.variant.split(",") if args.variant != "all" else ["4b", "8b"]
+    signer, scope = verify_approval(approval, args.expected_head, selected, rows, project_hash, lock_hash)
+    print(f"MOSS_AUDIO_API_SMOKE CLOSURE_PASS signer={signer} scope_sha256={digest(scope)}")
+    return 0
+
+
+def self_test() -> int:
+    try:
+        with tempfile.TemporaryDirectory(prefix="moss-audio-api-smoke-") as temporary:
+            strict_json_path = Path(temporary) / "duplicate.json"
+            strict_json_path.write_text('{"a":1,"a":2}', encoding="utf-8")
+            try:
+                strict_json(strict_json_path)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("duplicate JSON key accepted")
+        assert HEX40.fullmatch(SOURCE_REVISION)
+        assert all(HEX64.fullmatch(value) for value in SOURCE_FILES.values())
+        assert VARIANTS["4b"]["hidden_size"] != VARIANTS["8b"]["hidden_size"]
+        print("moss_audio API smoke self-test PASS (stdlib-only, no model, no network)")
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"moss_audio API smoke self-test FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--vokra-root")
+    parser.add_argument("--project")
+    parser.add_argument("--source-dir")
+    parser.add_argument("--snapshot-root")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--variant", choices=["4b", "8b", "all"])
+    parser.add_argument("--output")
+    parser.add_argument("--closure-only", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        raise SystemExit(self_test())
+    if args.closure_only:
+        required = (args.vokra_root, args.project, args.approval_evidence, args.expected_head, args.variant)
+        if any(value is None for value in required):
+            parser.error("closure-only requires Vokra root, project, approval, expected head, and variant")
+        raise SystemExit(closure_only(args))
+    required = (args.vokra_root, args.project, args.source_dir, args.snapshot_root, args.approval_evidence, args.expected_head, args.variant, args.output)
+    if any(value is None for value in required):
+        parser.error("all smoke inputs are required")
+    raise SystemExit(run(args))
