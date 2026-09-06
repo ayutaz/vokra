@@ -29,7 +29,7 @@ MODEL_REVISION = "eec1ae6c79877dbd9379285cf8789c9e0879293d"
 SOURCE_REPOSITORY = "https://github.com/FunAudioLLM/CosyVoice.git"
 SOURCE_REVISION = "8555549e882236e6541748b1042d95693caa82ba"
 SOURCE_CLOSURE_PATH = "tools/parity/cosyvoice2_flow_source_closure.json"
-SOURCE_CLOSURE_SHA256 = "cc391a4a63e95b9cdf6373b5b41ac94239a89d6594a235bc142a17c542532673"
+SOURCE_CLOSURE_SHA256 = "2dc2b370be920426a4786a112f66cd9d8589fbd856319130f70263a07bf555ce"
 SOURCE_CLOSURE_NODE_COUNT = 15
 MATCHA_PATH = "third_party/Matcha-TTS"
 MATCHA_REPOSITORY = "https://github.com/shivammehta25/Matcha-TTS.git"
@@ -445,8 +445,9 @@ def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
         raise InspectionError("Flow source closure format mismatch")
     if payload.get("repository") != SOURCE_REPOSITORY or payload.get("revision") != SOURCE_REVISION:
         raise InspectionError("Flow source closure source identity mismatch")
-    if payload.get("status") != "SOURCE_CLOSURE_COMPLETE":
-        raise InspectionError("Flow source closure status is not complete")
+    expected_status = "COSYVOICE_MATCHA_REPO_SOURCE_CLOSURE_COMPLETE_EXTERNAL_RUNTIME_DEPENDENCIES_PENDING"
+    if payload.get("status") != expected_status:
+        raise InspectionError("Flow source closure status does not preserve the external-runtime blocker")
     roots = payload.get("roots")
     expected_roots = [
         "cosyvoice/cli/cosyvoice.py",
@@ -667,6 +668,11 @@ def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
         raise InspectionError("Matcha closure edges do not exactly match parsed imports")
     if actual_matcha_external != matcha_external_names:
         raise InspectionError("Matcha external dependency set mismatch")
+    blockers = payload.get("blockers")
+    if blockers != [
+        "Reachable Matcha code delegates execution to external diffusers, conformer, lightning, einops, and torch packages whose implementations are not in this repo-local closure; no complete full-forward claim is made."
+    ]:
+        raise InspectionError("Flow source closure external-runtime blocker is missing")
     contract = payload.get("execution_contract")
     if contract != {"model_download": "NOT_RUN", "model_execution": "NOT_RUN", "cpu": "NOT_RUN", "metal": "NOT_RUN", "publication": "NO_UPLOAD"}:
         raise InspectionError("Flow source closure execution contract mismatch")

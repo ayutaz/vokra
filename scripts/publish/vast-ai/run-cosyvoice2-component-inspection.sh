@@ -12,7 +12,7 @@ SOURCE_URL='https://github.com/FunAudioLLM/CosyVoice.git'
 SOURCE_REVISION='8555549e882236e6541748b1042d95693caa82ba'
 MATCHA_URL='https://github.com/shivammehta25/Matcha-TTS.git'
 MATCHA_REVISION='dd9105b34bf2be2230f4aa1e4769fb586a3c824e'
-SOURCE_CLOSURE_SHA256='cc391a4a63e95b9cdf6373b5b41ac94239a89d6594a235bc142a17c542532673'
+SOURCE_CLOSURE_SHA256='2dc2b370be920426a4786a112f66cd9d8589fbd856319130f70263a07bf555ce'
 LICENSE_SHA256='c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
 CONFIG_PATH='cosyvoice2.yaml'
 CONFIG_BYTES=7330
@@ -47,7 +47,7 @@ self_test() {
     "$LLM_BYTES" "$LLM_SHA256" "$FLOW_BYTES" "$FLOW_SHA256" \
     'MIN_MEM_GIB=8' 'MIN_TMPFS_GIB=4' 'Linux x86_64 VAST' \
     '--component' '--config' '--qwen-config' 'llm|flow' 'Qwen' 'ACQUIRED_AND_HASH_VERIFIED' 'INSPECTION_ONLY' 'NOT_RUN' 'NO_UPLOAD' \
-    'DATA_PKL_ONLY' 'torch_pickle_manifest.py' 'TENSOR_STORAGE_MEMBERS_NOT_OPENED' '--recurse-submodules' \
+    'DATA_PKL_ONLY' 'torch_pickle_manifest.py' 'TENSOR_STORAGE_MEMBERS_NOT_OPENED' '--recurse-submodules' 'SUBMODULE_SYNC_AFTER_CHECKOUT' \
     '--retry 4' '--retry-delay 5' '--retry-max-time 120' '--retry-all-errors'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test missing contract: $token"; fail=1; }
   done
@@ -136,8 +136,11 @@ if [[ "$component" == llm ]]; then
   [[ "$(git hash-object "$qwen_config")" == "$QWEN_CONFIG_GIT_BLOB_SHA1" ]] || die 'downloaded Qwen config.json Git blob mismatch'
 fi
 
-git clone --recurse-submodules --no-tags --filter=blob:none "$SOURCE_URL" "$source" >>"$log_file" 2>&1
+# SUBMODULE_SYNC_AFTER_CHECKOUT: exact superproject checkout must precede submodule resolution.
+git clone --no-tags --filter=blob:none "$SOURCE_URL" "$source" >>"$log_file" 2>&1
 git -C "$source" checkout --detach "$SOURCE_REVISION" >>"$log_file" 2>&1
+git -C "$source" submodule sync --recursive >>"$log_file" 2>&1
+git -C "$source" submodule update --init --recursive --force >>"$log_file" 2>&1
 [[ "$(git -C "$source" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die 'CosyVoice source revision mismatch'
 [[ -z "$(git -C "$source" status --porcelain --untracked-files=all)" ]] || die 'source checkout is dirty'
 [[ "$(sha256sum "$source/LICENSE" | awk '{print $1}')" == "$LICENSE_SHA256" ]] || die 'Apache LICENSE SHA-256 mismatch'
@@ -181,7 +184,7 @@ if config.get("verification") != "ACQUIRED_AND_HASH_VERIFIED":
 qwen = manifest.get("qwen_config")
 if manifest["component"] == "flow":
     closure = manifest.get("official_source", {}).get("flow_source_closure")
-    if not isinstance(closure, dict) or any(closure.get(key) != value for key, value in {"path": "tools/parity/cosyvoice2_flow_source_closure.json", "sha256": "cc391a4a63e95b9cdf6373b5b41ac94239a89d6594a235bc142a17c542532673", "node_count": 15, "edge_count": 15, "matcha_node_count": 4, "matcha_edge_count": 3, "status": "SOURCE_CLOSURE_COMPLETE"}.items()):
+    if not isinstance(closure, dict) or any(closure.get(key) != value for key, value in {"path": "tools/parity/cosyvoice2_flow_source_closure.json", "sha256": "2dc2b370be920426a4786a112f66cd9d8589fbd856319130f70263a07bf555ce", "node_count": 15, "edge_count": 15, "matcha_node_count": 4, "matcha_edge_count": 3, "status": "COSYVOICE_MATCHA_REPO_SOURCE_CLOSURE_COMPLETE_EXTERNAL_RUNTIME_DEPENDENCIES_PENDING"}.items()):
         raise SystemExit("Flow source closure authentication contract missing")
 if manifest["component"] == "llm":
     if qwen != {

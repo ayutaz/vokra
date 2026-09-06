@@ -10,7 +10,7 @@ SOURCE_URL='https://github.com/FunAudioLLM/CosyVoice.git'
 SOURCE_REVISION='8555549e882236e6541748b1042d95693caa82ba'
 MATCHA_URL='https://github.com/shivammehta25/Matcha-TTS.git'
 MATCHA_REVISION='dd9105b34bf2be2230f4aa1e4769fb586a3c824e'
-SOURCE_CLOSURE_SHA256='cc391a4a63e95b9cdf6373b5b41ac94239a89d6594a235bc142a17c542532673'
+SOURCE_CLOSURE_SHA256='2dc2b370be920426a4786a112f66cd9d8589fbd856319130f70263a07bf555ce'
 LICENSE_SHA256='c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
 CONFIG_PATH='cosyvoice2.yaml'; CONFIG_BYTES=7330
 CONFIG_SHA256='0af2c0d010c477187c39f3e8fd5f1ae2e4e6f90ad03ba37c10ed6c6a87b05959'
@@ -31,7 +31,7 @@ self_test() {
   local fail=0 token
   for token in "$MODEL_REPOSITORY" "$MODEL_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" "$MATCHA_URL" "$MATCHA_REVISION" \
     "$LICENSE_SHA256" "$SOURCE_CLOSURE_SHA256" "$CONFIG_PATH" "$CONFIG_BYTES" "$CONFIG_SHA256" "$CONFIG_GIT_BLOB_SHA1" \
-    "$QWEN_CONFIG_PATH" "$QWEN_CONFIG_BYTES" "$QWEN_CONFIG_SHA256" "$QWEN_CONFIG_GIT_BLOB_SHA1" '--recurse-submodules' \
+    "$QWEN_CONFIG_PATH" "$QWEN_CONFIG_BYTES" "$QWEN_CONFIG_SHA256" "$QWEN_CONFIG_GIT_BLOB_SHA1" '--recurse-submodules' 'SUBMODULE_SYNC_AFTER_CHECKOUT' \
     "$LLM_BYTES" "$LLM_SHA256" "$FLOW_BYTES" "$FLOW_SHA256" 'MIN_MEM_GIB=8' 'MIN_TMPFS_GIB=8' \
     'Linux x86_64 VAST' '--prepare' 'PREPARED_SAFETENSORS_READY' 'PREPARED_INPUT_DIGEST_RECORDED_NOT_PINNED' \
     'DATA_PKL_AND_AUTHENTICATED_F32_STORAGE_ONLY' 'NOT_RUN' 'NO_UPLOAD' 'atomic' 'no-replace' 'safetensors'; do
@@ -92,8 +92,11 @@ if [[ "$component" == llm ]]; then
   [[ "$(stat -c '%s' "$qwen_config")" == "$QWEN_CONFIG_BYTES" ]] || die 'Qwen byte count mismatch'
   [[ "$(sha256sum "$qwen_config" | awk '{print $1}')" == "$QWEN_CONFIG_SHA256" && "$(git hash-object "$qwen_config")" == "$QWEN_CONFIG_GIT_BLOB_SHA1" ]] || die 'Qwen identity mismatch'
 fi
-git clone --recurse-submodules --no-tags --filter=blob:none "$SOURCE_URL" "$source" >>"$log_file" 2>&1
+# SUBMODULE_SYNC_AFTER_CHECKOUT: exact superproject checkout must precede submodule resolution.
+git clone --no-tags --filter=blob:none "$SOURCE_URL" "$source" >>"$log_file" 2>&1
 git -C "$source" checkout --detach "$SOURCE_REVISION" >>"$log_file" 2>&1
+git -C "$source" submodule sync --recursive >>"$log_file" 2>&1
+git -C "$source" submodule update --init --recursive --force >>"$log_file" 2>&1
 [[ "$(git -C "$source" rev-parse HEAD)" == "$SOURCE_REVISION" && -z "$(git -C "$source" status --porcelain --untracked-files=all)" ]] || die 'source identity/clean checkout mismatch'
 [[ "$(sha256sum "$source/LICENSE" | awk '{print $1}')" == "$LICENSE_SHA256" ]] || die 'Apache LICENSE SHA-256 mismatch'
 output="$WORK/prepared/$MODEL_PATH.safetensors"; report="$evidence/manifest.json"
@@ -108,7 +111,7 @@ if m.get("format") != "vokra-cosyvoice2-component-prepared-safetensors-v1" or m.
 if m.get("execution") != {"model_execution":"NOT_RUN","publication":"NO_UPLOAD","torch_import":"NOT_RUN"}: raise SystemExit("execution contract mismatch")
 if m.get("component") == "flow":
     closure = m.get("official_source", {}).get("flow_source_closure", {})
-    expected = {"path":"tools/parity/cosyvoice2_flow_source_closure.json","sha256":"cc391a4a63e95b9cdf6373b5b41ac94239a89d6594a235bc142a17c542532673","node_count":15,"edge_count":15,"matcha_node_count":4,"matcha_edge_count":3,"status":"SOURCE_CLOSURE_COMPLETE"}
+    expected = {"path":"tools/parity/cosyvoice2_flow_source_closure.json","sha256":"2dc2b370be920426a4786a112f66cd9d8589fbd856319130f70263a07bf555ce","node_count":15,"edge_count":15,"matcha_node_count":4,"matcha_edge_count":3,"status":"COSYVOICE_MATCHA_REPO_SOURCE_CLOSURE_COMPLETE_EXTERNAL_RUNTIME_DEPENDENCIES_PENDING"}
     if any(closure.get(key) != value for key, value in expected.items()): raise SystemExit("Flow source closure authentication contract missing")
 o=m.get("output",{})
 if o.get("bytes",0)<=0 or len(o.get("sha256",""))!=64: raise SystemExit("output digest missing")
