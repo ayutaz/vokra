@@ -173,6 +173,9 @@ def authenticate_model(model: Path, config: Path) -> dict[str, Any]:
         MIMI_NAME: (MIMI_BYTES, MIMI_SHA256),
         TOKENIZER_NAME: (TOKENIZER_BYTES, TOKENIZER_SHA256),
     }
+    actual_names = sorted(path.name for path in root.iterdir())
+    if actual_names != sorted(expected_files):
+        raise ValueError(f"model snapshot must contain exactly {sorted(expected_files)!r}")
     for name, (size, expected_sha) in expected_files.items():
         path = root / name
         if not path.is_file() or path.is_symlink() or path.stat().st_size != size or sha256(path) != expected_sha:

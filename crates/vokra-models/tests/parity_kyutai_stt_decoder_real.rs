@@ -794,6 +794,12 @@ fn run(backend: BackendKind, apple: bool) {
             "KYUTAI_STT_DECODER_MEASUREMENT backend={backend:?} max_abs={max:.9e} argmax={argmax}/{FRAMES} verdict=MEASUREMENT_ONLY"
         ),
     }
+    if atol.is_some() {
+        assert_eq!(
+            argmax, FRAMES,
+            "every decoder frame must have exact argmax parity"
+        );
+    }
 }
 
 #[test]
@@ -816,6 +822,9 @@ fn parity_kyutai_stt_decoder_real_apple_cpu_metal() {
     let (cpu_max, cpu_argmax) = compare(&cpu, &case.reference_logits, FIXED_ATOL);
     let (metal_max, metal_argmax) = compare(&metal, &case.reference_logits, FIXED_ATOL);
     let (_, cross_argmax) = compare(&metal, &cpu, FIXED_ATOL);
+    assert_eq!(cpu_argmax, FRAMES, "CPU/reference argmax mismatch");
+    assert_eq!(metal_argmax, FRAMES, "Metal/reference argmax mismatch");
+    assert_eq!(cross_argmax, FRAMES, "Metal/CPU argmax mismatch");
     eprintln!(
         "KYUTAI_STT_DECODER_APPLE cpu_max_abs={cpu_max:.9e} metal_max_abs={metal_max:.9e} cpu_argmax={cpu_argmax}/{FRAMES} metal_argmax={metal_argmax}/{FRAMES} metal_cpu_argmax={cross_argmax}/{FRAMES} verdict=PASS"
     );

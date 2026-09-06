@@ -15,13 +15,13 @@ WORK="/workspace/vokra-kyutai-stt-decoder-parity"
 
 log() { printf '[kyutai-stt-decoder-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
-usage() { printf '%s\n' "usage: run-kyutai-stt-decoder-parity.sh [--work-dir DIR] | --self-test"; }
+usage() { printf '%s\n' "usage: run-kyutai-stt-decoder-parity.sh --expected-head HEX40 [--work-dir DIR] | --self-test"; }
 
 self_test() {
   local self="${BASH_SOURCE[0]}" token fail=0
   for token in "$MODEL_REPO" "$MODEL_REVISION" "$MODEL_SHA256" "$DSM_REVISION" "$MOSHI_REVISION" \
     'NO_UPLOAD' 'uv run' 'official Moshi' 'dep_q=0' '323' 'CARGO_BUILD_JOBS=1' \
-    'MEASUREMENT_ONLY' 'vokra-convert' 'model.safetensors'; do
+    'MEASUREMENT_ONLY' 'vokra-convert' 'model.safetensors' '--expected-head' 'test result' '0 failed'; do
     grep -Fq -- "$token" "$self" || { log "self-test missing contract token: $token"; fail=1; }
   done
   grep -Eq '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[[:space:]]' "$self" && fail=1 || true
@@ -31,6 +31,7 @@ self_test() {
 }
 
 work_dir="$WORK"
+expected_head=""
 if [[ "${1:-}" == --self-test ]]; then
   [[ $# == 1 ]] || die '--self-test accepts no other arguments'
   self_test
@@ -38,17 +39,21 @@ if [[ "${1:-}" == --self-test ]]; then
 fi
 while (($#)); do
   case "$1" in
+    --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; expected_head="$2"; shift 2;;
     --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2;;
     -h|--help) usage; exit 0;;
     *) usage; die "unknown argument: $1";;
   esac
 done
+[[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head must be lowercase HEX40'
 
 [[ "$(uname -s)" == Linux ]] || die 'decoder parity requires Linux VAST'
 [[ "$(uname -m)" == x86_64 ]] || die 'decoder parity requires x86_64 VAST'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -f "$ROOT/Cargo.toml" && -d "$ROOT/.git" ]] || die 'not a Vokra checkout'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
+actual_head="$(git -C "$ROOT" rev-parse HEAD)"
+[[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
 [[ -f "$DUMPER" ]] || die 'decoder reference dumper is missing'
 mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
 [[ "$mem_kib" =~ ^[0-9]+$ && "$mem_kib" -ge $((64 * 1024 * 1024)) ]] || die '64 GiB memory guard failed'
@@ -83,7 +88,8 @@ PY
   echo "model_sha256=$MODEL_SHA256"
   echo "dsm_revision=$DSM_REVISION"
   echo "moshi_revision=$MOSHI_REVISION"
-  echo 'publication=NO_UPLOAD'
+  echo "expected_head=$expected_head"
+  echo "actual_head=$actual_head"
   echo 'publication=NO_UPLOAD'
   echo 'phase=VAST_MEASUREMENT_ONLY; no PASS claim or fixed tolerance'
   git clone --no-checkout "https://github.com/kyutai-labs/delayed-streams-modeling.git" "$work_dir/dsm"
@@ -93,6 +99,28 @@ PY
   for file in model.safetensors config.json mimi-pytorch-e351c8d8@125.safetensors tokenizer_en_audio_4000.model; do
     download_hf_file "$file" "$work_dir/model/$file"
   done
+  UV_NO_CACHE=1 uv run --no-project --offline --python 3.12 python - "$work_dir/model" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+cache = root / ".cache"
+if cache.exists() or cache.is_symlink():
+    if cache.is_symlink():
+        raise SystemExit("model .cache symlink is not accepted")
+    shutil.rmtree(cache)
+expected = {
+    "model.safetensors",
+    "config.json",
+    "mimi-pytorch-e351c8d8@125.safetensors",
+    "tokenizer_en_audio_4000.model",
+}
+if {item.name for item in root.iterdir()} != expected:
+    raise SystemExit("model snapshot does not contain exactly the four authenticated files")
+if any(item.is_symlink() or not item.is_file() for item in root.iterdir()):
+    raise SystemExit("model snapshot contains a non-regular or symlink entry")
+PY
   cargo build --release -p vokra-convert
   "$ROOT/target/release/vokra-convert" --model kyutai-stt --input "$work_dir/model/model.safetensors" --output "$work_dir/decoder.gguf"
   UV_NO_CACHE=1 uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$DUMPER" real \
@@ -118,7 +146,11 @@ PY
   echo 'verdict=MEASUREMENT_ONLY'
 } > "$validation_log" 2>&1 || die 'VAST decoder measurement failed; evidence log preserved'
 set +o noclobber
-grep -Fq 'KYUTAI_STT_DECODER_MEASUREMENT' "$validation_log" || die 'measurement sentinel missing'
+[[ "$(grep -Ec '^test parity_kyutai_stt_decoder_real_cpu \.\.\. ok$' "$validation_log")" == 1 ]] || die 'CPU measurement test singleton missing'
+[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed;' "$validation_log")" == 1 ]] || die 'Cargo result is not exactly 1 passed / 0 failed'
+[[ "$(grep -Ec '^KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu .* verdict=MEASUREMENT_ONLY$' "$validation_log")" == 1 ]] || die 'measurement sentinel missing or duplicated'
+[[ "$(grep -Ec 'verdict=MEASUREMENT_ONLY' "$validation_log")" == 1 ]] || die 'measurement verdict is not an exact singleton'
 ! grep -Fq 'verdict=PASS' "$validation_log" || die 'measurement unexpectedly claimed PASS'
-log "MEASUREMENT_ONLY complete; inspect $validation_log and review a fixed bound before enabling parity"
+log_sha="$(sha256sum "$validation_log" | awk '{print $1}')"
+log "MEASUREMENT_ONLY complete; log_sha256=$log_sha; review a fixed bound before enabling parity"
 exit 0

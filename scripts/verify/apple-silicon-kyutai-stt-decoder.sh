@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Source-level Apple verifier for the Kyutai STT dep_q=0 decoder component.
-# It never acquires model files and never publishes evidence or weights.
+# Apple verifier for the Kyutai STT dep_q=0 decoder component.
+# It consumes only pre-existing authenticated inputs and never publishes.
 set -euo pipefail
 
 ROOT="${VOKRA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -10,7 +10,7 @@ die() { printf '[kyutai-stt-apple] ERROR: %s\n' "$*" >&2; exit 2; }
 
 self_test() {
   local self="${BASH_SOURCE[0]}" fail=0 token
-  for token in "${TEST_NAME}" 'VOKRA_REMOTE_APPLE_SILICON=1' 'CARGO_NET_OFFLINE=true' 'NO_UPLOAD' 'FIXED_ATOL' 'CPU' 'Metal' 'MEASUREMENT_ONLY' 'manifest-sha256'; do
+  for token in "${TEST_NAME}" 'VOKRA_REMOTE_APPLE_SILICON=1' 'CARGO_NET_OFFLINE=true' 'NO_UPLOAD' 'FIXED_ATOL' 'CPU' 'Metal' 'verdict=PASS' '1 passed' 'manifest-sha256'; do
     grep -Fq -- "$token" "$self" || { printf '[kyutai-stt-apple] missing self-test token: %s\n' "$token" >&2; fail=1; }
   done
   grep -Eq '(^|[;&|[:space:]])(curl|wget|git[[:space:]]+(clone|fetch|push)|hf_hub_download|upload_file|--push)([[:space:]]|$)' "$self" && fail=1 || true
@@ -62,16 +62,28 @@ log="$evidence/run.log"
 [[ ! -e "$log" ]] || die 'log already exists'
 set -o noclobber
 {
-  echo 'status=BLOCKED'
+  echo 'status=RUNNING'
   echo 'scope=dep_q=0 decoder component only'
   echo "test=$TEST_NAME"
   echo "gguf_sha256=$gguf_sha"
   echo "reference_manifest_sha256=$reference_sha"
   echo 'backend_contract=CPU/reference, Metal/reference, Metal/CPU exact argmax'
   echo 'publication=NO_UPLOAD'
-  echo 'status_reason=FIXED_ATOL_PENDING_REVIEW'
-  echo 'execution=UNAVAILABLE; no model execution on this source-only verification pass'
+  echo 'cargo_contract=CARGO_NET_OFFLINE=true cargo test --features metal --exact'
 } > "$log"
 set +o noclobber
-printf '[kyutai-stt-apple] BLOCKED: fixed numerical bound is not committed; evidence preserved at %s\n' "$log" >&2
-exit 2
+set +e
+VOKRA_REMOTE_APPLE_SILICON=1 CARGO_NET_OFFLINE=true \
+  cargo test --locked --offline --features metal -p vokra-models \
+    --test parity_kyutai_stt_decoder_real -- --ignored --exact "$TEST_NAME" --nocapture \
+    >> "$log" 2>&1
+test_status=$?
+set -e
+(( test_status == 0 )) || die 'Apple parity test failed; evidence log preserved'
+[[ "$(grep -Ec "^test ${TEST_NAME} \.\.\. ok$" "$log")" == 1 ]] || die 'target test singleton/result missing'
+[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed;' "$log")" == 1 ]] || die 'Cargo result is not exactly 1 passed / 0 failed'
+[[ "$(grep -Ec '^KYUTAI_STT_DECODER_APPLE .* verdict=PASS$' "$log")" == 1 ]] || die 'Apple PASS sentinel missing or duplicated'
+[[ "$(grep -Ec 'verdict=PASS' "$log")" == 1 ]] || die 'verdict is not an exact singleton'
+[[ "$(grep -Ec '0 failed' "$log")" == 1 ]] || die 'failed count is not an exact singleton'
+log_sha="$(shasum -a 256 "$log" | awk '{print $1}')"
+printf '[kyutai-stt-apple] PASS: %s (log_sha256=%s)\n' "$log" "$log_sha" >&2
