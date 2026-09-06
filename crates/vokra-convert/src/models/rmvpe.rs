@@ -352,6 +352,22 @@ fn validate_conversion_path(
     require_regular: bool,
     require_absent: bool,
 ) -> Result<(), ConvertError> {
+    // `Path::components()` deliberately normalizes away `.` components, so
+    // inspect the lexical spelling first.  The ASCII dot segments are valid
+    // UTF-8 even when another path component is not, making lossy conversion
+    // sufficient for this narrow rejection check.  Recognize both separators
+    // so the gate remains fail-closed for paths received from another host.
+    if path
+        .as_os_str()
+        .to_string_lossy()
+        .split(|character| character == '/' || character == '\\')
+        .any(|component| component == "." || component == "..")
+    {
+        return Err(contract_error(format!(
+            "{label} path `{}` contains a dot component",
+            path.display()
+        )));
+    }
     let mut current = PathBuf::new();
     let components: Vec<Component<'_>> = path.components().collect();
     if components.is_empty() {
@@ -657,7 +673,12 @@ mod tests {
     /// in this module so a parallel `cargo test` cannot clobber files
     /// across them.
     fn scratch_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
+        // The production gate intentionally rejects every symlinked ancestor.
+        // macOS exposes the temporary directory through `/var`, which is a
+        // symlink to `/private/var`; resolve that test-only root before
+        // constructing paths so the tests exercise the intended checks.
+        let mut p = std::fs::canonicalize(std::env::temp_dir())
+            .expect("system temporary directory must be canonicalizable");
         p.push(format!(
             "vokra-rmvpe-{}-{}-{}.bin",
             tag,
