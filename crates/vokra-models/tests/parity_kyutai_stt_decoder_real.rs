@@ -705,7 +705,12 @@ struct AuthenticatedCase {
 
 fn authenticate_case(apple: bool) -> AuthenticatedCase {
     if apple {
-        assert!(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64"));
+        if !cfg!(target_os = "macos") {
+            panic!("Apple parity requires macOS");
+        }
+        if !cfg!(target_arch = "aarch64") {
+            panic!("Apple parity requires arm64");
+        }
         assert_eq!(
             std::env::var("VOKRA_REMOTE_APPLE_SILICON").as_deref(),
             Ok("1")
@@ -811,7 +816,12 @@ fn parity_kyutai_stt_decoder_real_cpu() {
 #[test]
 #[ignore = "requires Apple Silicon, VAST-authenticated 323-tensor decoder GGUF, official reference, and reviewed fixed bound"]
 fn parity_kyutai_stt_decoder_real_apple_cpu_metal() {
-    assert!(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64"));
+    if !cfg!(target_os = "macos") {
+        panic!("Apple parity requires macOS");
+    }
+    if !cfg!(target_arch = "aarch64") {
+        panic!("Apple parity requires arm64");
+    }
     assert!(
         FIXED_ATOL.is_some(),
         "Apple parity unavailable until fixed bound review"

@@ -1076,14 +1076,12 @@ fn compare_logits(
 #[test]
 #[ignore = "requires VAST CosyVoice2 LLM GGUF, official reference artifacts, and Apple Metal"]
 fn parity_cosyvoice2_llm_component_real_apple_cpu_metal() {
-    assert!(
-        cfg!(target_os = "macos"),
-        "Apple CPU/Metal parity must run on macOS"
-    );
-    assert!(
-        cfg!(target_arch = "aarch64"),
-        "Apple CPU/Metal parity must run on arm64"
-    );
+    if !cfg!(target_os = "macos") {
+        panic!("Apple CPU/Metal parity must run on macOS; this explicit test must not skip");
+    }
+    if !cfg!(target_arch = "aarch64") {
+        panic!("Apple CPU/Metal parity must run on arm64; this explicit test must not skip");
+    }
     assert_eq!(
         std::env::var("VOKRA_REMOTE_APPLE_SILICON").as_deref(),
         Ok("1"),
