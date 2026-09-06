@@ -122,6 +122,18 @@ def write_no_replace(path: Path, document: dict[str, Any]) -> dict[str, Any]:
     return {"path": str(path), "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}
 
 
+def license_file_status(license_files: list[dict[str, Any]]) -> str:
+    return "PRESENT" if license_files else "MISSING_IN_DISTRIBUTION"
+
+
+def audit_blockers(missing_license_distributions: list[str]) -> list[str]:
+    blockers = ["Primary-source license and native-payload review is unresolved; this evidence does not authorize execution or publication."]
+    if missing_license_distributions:
+        names = ", ".join(sorted(missing_license_distributions))
+        blockers.append(f"Installed distributions without discoverable license files require upstream review: {names}.")
+    return blockers
+
+
 def classify_lock_rows(locked: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     registry = {normalize_name(name): row for name, row in locked.items() if "registry" in row["source"]}
     virtual = [row for row in locked.values() if "virtual" in row["source"]]
@@ -173,8 +185,6 @@ def distribution_metadata(dist: metadata.Distribution, root: Path) -> dict[str, 
             license_files.append(record)
         if is_native:
             native_files.append(record)
-    if not license_files:
-        fail(f"installed distribution has no discoverable license file: {name}")
     return {
         "name": name,
         "version": version,
@@ -185,6 +195,7 @@ def distribution_metadata(dist: metadata.Distribution, root: Path) -> dict[str, 
             "license_files": sorted(license_names),
         },
         "license_files": sorted(license_files, key=lambda row: row["path"]),
+        "license_file_status": license_file_status(license_files),
         "native_payloads": sorted(native_files, key=lambda row: row["path"]),
     }
 
@@ -222,6 +233,9 @@ def audit(project: Path, lock: Path, license_manifest: Path, output: Path) -> di
         if dist.version != lock_row["version"] and not (normalized == "torch" and dist.version == "2.7.1+cpu" and lock_row["version"] == "2.7.1"):
             fail(f"installed {dist.metadata['Name']} version does not match lock")
         package_rows.append({"lock": {"name": lock_row["name"], "version": lock_row["version"]}, "installed": distribution_metadata(dist, Path(sys.prefix)), "license_status": "PENDING_PRIMARY_SOURCE_REVIEW"})
+    missing_license_distributions = [
+        row["installed"]["name"] for row in package_rows if row["installed"]["license_file_status"] == "MISSING_IN_DISTRIBUTION"
+    ]
     manifest = pinned.validate_license_manifest(license_manifest)
     document = {
         "format": FORMAT,
@@ -248,7 +262,11 @@ def audit(project: Path, lock: Path, license_manifest: Path, output: Path) -> di
         },
         "packages": package_rows,
         "execution": EXECUTION,
-        "blockers": ["Primary-source license and native-payload review is unresolved; this evidence does not authorize execution or publication."],
+        "license_evidence_summary": {
+            "missing_license_distribution_count": len(missing_license_distributions),
+            "missing_license_distributions": sorted(missing_license_distributions),
+        },
+        "blockers": audit_blockers(missing_license_distributions),
     }
     write_no_replace(output, document)
     return document
@@ -256,6 +274,22 @@ def audit(project: Path, lock: Path, license_manifest: Path, output: Path) -> di
 
 def self_test() -> None:
     assert STATUS == "OWNER_REVIEW_REQUIRED" and EXECUTION["publication"] == "NO_UPLOAD"
+    assert license_file_status([]) == "MISSING_IN_DISTRIBUTION"
+    assert license_file_status([{"path": "LICENSE", "bytes": 1, "sha256": "0" * 64}]) == "PRESENT"
+    missing_blockers = audit_blockers(["tokenizers"])
+    assert any("tokenizers" in blocker for blocker in missing_blockers)
+    assert audit_blockers([]) == ["Primary-source license and native-payload review is unresolved; this evidence does not authorize execution or publication."]
+    class EmptyHeaders(dict[str, str]):
+        def get_all(self, key: str, failobj: Any = None) -> list[str]:
+            return []
+
+    class EmptyLicenseDistribution:
+        metadata = EmptyHeaders(Name="tokenizers")
+        version = "0.22.2"
+        files: list[Any] = []
+
+    empty_license = distribution_metadata(EmptyLicenseDistribution(), Path(tempfile.gettempdir()).resolve())
+    assert empty_license["license_files"] == [] and empty_license["license_file_status"] == "MISSING_IN_DISTRIBUTION"
     assert normalize_name("Example_Package.Name") == "example-package-name"
     registry, virtual = classify_lock_rows(
         {
