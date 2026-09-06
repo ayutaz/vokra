@@ -40,7 +40,7 @@
 //!
 //! This test requires:
 //!
-//! - `tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf` — the
+//! - `tests/fixtures/sbv2/sbv2-v2-jp-extra-base.gguf` — the
 //!   post-Wave-2 fixture (regenerated with the convs2 rename arm; see
 //!   the sibling `parity_sbv2_real.rs`'s manifest for how the owner
 //!   builds it).
@@ -113,7 +113,7 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
 #[ignore = "requires tests/fixtures/sbv2/ real GGUF + reference_dump — same gate as parity_sbv2_real"]
 fn text_encoder_output_matches_python_reference_bit_exact() {
     let dir = fixtures_dir();
-    let main_path = dir.join("sbv2-v2-multilingual-base.gguf");
+    let main_path = dir.join("sbv2-v2-jp-extra-base.gguf");
     let text_hidden_ref_path = dir.join("reference_dump").join("text_hidden.bin");
     let phoneme_ids_path = dir.join("reference_dump").join("phoneme_ids.bin");
     let tones_path = dir.join("reference_dump").join("tones.bin");

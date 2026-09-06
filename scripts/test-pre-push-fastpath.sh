@@ -305,7 +305,7 @@ run_case "tools/parity Python + docs mixed" \
 # --- FAST-PATH cases for fixture hash sidecars ---
 run_case "SBV2 fixture hash sidecar only" \
     "fast" \
-    "tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256"
+    "tests/fixtures/sbv2/sbv2-v2-jp-extra-base.gguf.sha256"
 
 run_case "audio fixture hash sidecar only" \
     "fast" \
@@ -313,7 +313,7 @@ run_case "audio fixture hash sidecar only" \
 
 run_case "several fixture hash sidecars at once" \
     "fast" \
-    "$(printf 'tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256\ntests/fixtures/sbv2/deberta-v2-large-japanese-char-wwm.gguf.sha256\ntests/fixtures/sbv2/deberta-v3-large.gguf.sha256\n')"
+    "$(printf 'tests/fixtures/sbv2/sbv2-v2-jp-extra-base.gguf.sha256\ntests/fixtures/sbv2/deberta-v2-large-japanese-char-wwm.gguf.sha256\ntests/fixtures/sbv2/deberta-v3-large.gguf.sha256\n')"
 
 # --- FAST-PATH case for _typos.toml (CI advisory config only) ---
 run_case "_typos.toml only (CI advisory config)" \

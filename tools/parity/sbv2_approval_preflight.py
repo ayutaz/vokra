@@ -41,8 +41,8 @@ MANIFEST_KEYS = {
 }
 PACKET_ROOT_FILES = {
     "reference_dump.manifest.json",
-    "sbv2-v2-multilingual-base.gguf",
-    "sbv2-v2-multilingual-base.gguf.sha256",
+    "sbv2-v2-jp-extra-base.gguf",
+    "sbv2-v2-jp-extra-base.gguf.sha256",
     "deberta-v2-large-japanese-char-wwm.gguf",
     "deberta-v2-large-japanese-char-wwm.gguf.sha256",
     "deberta-v3-large.gguf",
@@ -109,7 +109,7 @@ def validate_packet(directory: Path) -> None:
         raise ValueError("reference manifest top-level schema is not exact")
     checkpoint = manifest.get("checkpoint")
     expected_checkpoint = {
-        "sbv2_main": "sbv2-v2-multilingual-base.gguf",
+        "sbv2_main": "sbv2-v2-jp-extra-base.gguf",
         "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf",
         "bert_en": "deberta-v3-large.gguf",
     }
@@ -231,7 +231,7 @@ def self_test() -> int:
         manifest = {
             "generator_version": "1.1",
             "generator": "tools/parity/sbv2_dump_reference.py",
-            "checkpoint": {"sbv2_main": "sbv2-v2-multilingual-base.gguf", "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf", "bert_en": "deberta-v3-large.gguf"},
+            "checkpoint": {"sbv2_main": "sbv2-v2-jp-extra-base.gguf", "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf", "bert_en": "deberta-v3-large.gguf"},
             "request": {"language": "JA"},
             "phonemize_fixture": {"phoneme_ids": {"path": "reference_dump/phoneme_ids.bin"}},
             "tensors": [{"name": "waveform", "path": "reference_dump/waveform.bin"}],

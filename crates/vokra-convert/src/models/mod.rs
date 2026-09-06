@@ -433,9 +433,10 @@ pub mod pyannote_speaker_diarization_3_1;
 // not compatible, and qwen3_tts_codec alone is only the code-layout seam.
 pub(crate) mod qwen3_tts;
 pub(crate) mod qwen3_tts_tokenizer_12hz;
-// SBV2 v2 plan Task 25 (2026-07-26): Style-Bert-VITS2 v2
-// (`litagin02/style_bert_vits2` family, AGPL-3.0 -> LicenseClass::Copyleft
-// default) safetensors -> GGUF, category `tts`. BF16 pass-through mirror of
+// SBV2 v2 plan Task 25 (2026-07-26): Style-Bert-VITS2 v2 JP-Extra
+// (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`, AGPL-3.0 ->
+// LicenseClass::Copyleft default) safetensors -> GGUF, category `tts`.
+// BF16 pass-through mirror of
 // `deberta_v2` / `funcodec` / `wespeaker`; the `vokra.sbv2.*` hparam chunk
 // (22 required + 1 optional keys) is written only when a JSON config
 // side-car is supplied -- never filled with invented placeholders (see

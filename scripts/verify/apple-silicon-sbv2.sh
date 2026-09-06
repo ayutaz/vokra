@@ -204,14 +204,14 @@ require_reference() {
   while IFS= read -r entry; do
     base="${entry##*/}"
     case "$base" in
-      reference_dump.manifest.json|reference_dump|sbv2-v2-multilingual-base.gguf|sbv2-v2-multilingual-base.gguf.sha256|deberta-v2-large-japanese-char-wwm.gguf|deberta-v2-large-japanese-char-wwm.gguf.sha256|deberta-v3-large.gguf|deberta-v3-large.gguf.sha256|chinese-roberta-wwm-ext-large.gguf|chinese-roberta-wwm-ext-large.gguf.sha256) ;;
+      reference_dump.manifest.json|reference_dump|sbv2-v2-jp-extra-base.gguf|sbv2-v2-jp-extra-base.gguf.sha256|deberta-v2-large-japanese-char-wwm.gguf|deberta-v2-large-japanese-char-wwm.gguf.sha256|deberta-v3-large.gguf|deberta-v3-large.gguf.sha256|chinese-roberta-wwm-ext-large.gguf|chinese-roberta-wwm-ext-large.gguf.sha256) ;;
       *) die "unexpected reference packet entry: $entry"; return 2 ;;
     esac
   done < <(find "$directory" -mindepth 1 -maxdepth 1 -print)
   [[ -z "$(find "$directory/reference_dump" -mindepth 1 -type d -print -quit)" ]] || die "reference_dump contains a directory"
   require_file "SBV2 manifest" "$directory/reference_dump.manifest.json"
-  require_file "SBV2 main GGUF" "$directory/sbv2-v2-multilingual-base.gguf"
-  verify_sidecar "$directory/sbv2-v2-multilingual-base.gguf" "$directory/sbv2-v2-multilingual-base.gguf.sha256"
+  require_file "SBV2 main GGUF" "$directory/sbv2-v2-jp-extra-base.gguf"
+  verify_sidecar "$directory/sbv2-v2-jp-extra-base.gguf" "$directory/sbv2-v2-jp-extra-base.gguf.sha256"
   verify_sidecar "$directory/deberta-v2-large-japanese-char-wwm.gguf" "$directory/deberta-v2-large-japanese-char-wwm.gguf.sha256"
   verify_sidecar "$directory/deberta-v3-large.gguf" "$directory/deberta-v3-large.gguf.sha256"
   verify_sidecar "$directory/chinese-roberta-wwm-ext-large.gguf" "$directory/chinese-roberta-wwm-ext-large.gguf.sha256"
@@ -438,7 +438,7 @@ main() {
   require_empty_directory "$evidence_dir"
   require_tooling
   require_remote_apple_host
-  [[ "$gguf" -ef "$reference_dir/sbv2-v2-multilingual-base.gguf" ]] \
+  [[ "$gguf" -ef "$reference_dir/sbv2-v2-jp-extra-base.gguf" ]] \
     || die "--gguf must be the manifest's staged SBV2 main path"
   mkdir -m 700 "$evidence_dir" || die "evidence directory appeared during validation"
   record_environment "$evidence_dir/environment.txt"

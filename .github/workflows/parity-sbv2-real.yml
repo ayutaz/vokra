@@ -23,7 +23,7 @@
 # recipe. The setup job checks the three current JA-path sidecars by default
 # and also requires the fourth ZH sidecar for an explicit ZH run — design doc
 # §10's own YAML sketch illustrates the gate against
-# only `sbv2-v2-multilingual-base.gguf.sha256`, but `SbV2Model::from_gguf`
+# only `sbv2-v2-jp-extra-base.gguf.sha256`, but `SbV2Model::from_gguf`
 # takes all three checkpoints (`main` + `bert_ja` + `bert_en`) to even
 # construct the default model, and the README's recipe updates every selected
 # sidecar together in one step ("4. Hash and commit") — so gating on the full set is
@@ -195,7 +195,7 @@ jobs:
           all_present=true
           reasons=()
           required=(
-            "$DIR/sbv2-v2-multilingual-base.gguf.sha256" \
+            "$DIR/sbv2-v2-jp-extra-base.gguf.sha256" \
             "$DIR/deberta-v2-large-japanese-char-wwm.gguf.sha256" \
             "$DIR/deberta-v3-large.gguf.sha256"
           )
@@ -566,7 +566,7 @@ jobs:
             --model sbv2 \
             --input "$sbv2_st" \
             --config "$RUNNER_TEMP/sbv2-checkpoint/vokra-sbv2-config.json" \
-            --output "$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf"
+            --output "$FIXTURE_DIR/sbv2-v2-jp-extra-base.gguf"
 
           bert_ja_st="$(find "$RUNNER_TEMP/deberta-v2-ja" -name '*.safetensors' | sort | head -n1)"
           test -n "$bert_ja_st"
@@ -643,8 +643,8 @@ jobs:
           }
 
           verify_sidecar \
-            "$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf" \
-            "$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf.sha256"
+            "$FIXTURE_DIR/sbv2-v2-jp-extra-base.gguf" \
+            "$FIXTURE_DIR/sbv2-v2-jp-extra-base.gguf.sha256"
           verify_sidecar \
             "$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf" \
             "$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf.sha256"

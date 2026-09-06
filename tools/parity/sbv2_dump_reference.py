@@ -38,7 +38,7 @@ source was read, copied, or recalled from memory to write this file.
   ``deberta_v3``'s own paper is arXiv:2111.09543.
 - SentencePiece paper (Kudo & Richardson 2018) — informational only (the
   BERT tokenizers below come from ``transformers`` directly).
-  ``litagin02/style_bert_vits2``'s upstream ``config.json`` / safetensors
+  ``litagin/Style-Bert-VITS2-2.0-base-JP-Extra``'s upstream ``config.json`` / safetensors
   tensor-name metadata (structural facts only — names, shapes, dtypes —
   never the AGPL Python code itself, matching
   ``tools/parity/sbv2_prepare_checkpoint.py``'s own posture).
@@ -160,7 +160,7 @@ input the reference forward pass consumes.
       "generator_version": "1.1",
       "generator": "tools/parity/sbv2_dump_reference.py",
       "checkpoint": {
-        "sbv2_main": "sbv2-v2-multilingual-base.gguf",
+        "sbv2_main": "sbv2-v2-jp-extra-base.gguf",
         "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf",
         "bert_en": "deberta-v3-large.gguf",
         "bert_zh": "chinese-roberta-wwm-ext-large.gguf"  # ZH run only
@@ -278,7 +278,7 @@ GENERATOR_VERSION = "1.1"
 # module doc) — bare filenames, siblings of the manifest inside
 # tests/fixtures/sbv2/. Overridable per-run via --sbv2-main-filename etc. in
 # case a real fixture set ends up named differently.
-DEFAULT_SBV2_MAIN_FILENAME = "sbv2-v2-multilingual-base.gguf"
+DEFAULT_SBV2_MAIN_FILENAME = "sbv2-v2-jp-extra-base.gguf"
 DEFAULT_BERT_JA_FILENAME = "deberta-v2-large-japanese-char-wwm.gguf"
 DEFAULT_BERT_EN_FILENAME = "deberta-v3-large.gguf"
 DEFAULT_BERT_ZH_FILENAME = "chinese-roberta-wwm-ext-large.gguf"

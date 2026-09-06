@@ -897,9 +897,9 @@ pub enum ModelKind {
     /// [`BertBaseEncoder::from_gguf`](https://docs.rs/vokra-bert)
     /// reads.
     BertBase,
-    /// Style-Bert-VITS2 v2 (SBV2) official checkpoint (SBV2 v2 plan Task 25,
-    /// 2026-07-26): a `litagin02/style_bert_vits2`-family safetensors
-    /// checkpoint for the multilingual (JA + EN) base model
+    /// Style-Bert-VITS2 v2 JP-Extra official checkpoint (SBV2 v2 plan Task 25,
+    /// 2026-07-26): the `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`
+    /// safetensors checkpoint
     /// (`docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`). F32 / F16 /
     /// BF16 tensors pass through verbatim under upstream safetensors names;
     /// the runtime's `SbV2Model::from_gguf`
@@ -4211,13 +4211,17 @@ impl ModelKind {
             | "chinese-roberta-wwm-ext-large"
             | "chinese_roberta_wwm_ext_large"
             | "hfl/chinese-roberta-wwm-ext-large" => Some(Self::BertBase),
-            // Style-Bert-VITS2 v2 (SBV2 v2 plan Task 25, 2026-07-26). Accept
-            // the canonical arch spelling, the design doc's SKU id, and the
-            // common project-name spellings (with/without hyphen, with/
-            // without an explicit "v2"). All spellings resolve to the same
-            // multilingual base converter path today.
+            // Style-Bert-VITS2 v2 JP-Extra (SBV2 v2 plan Task 25,
+            // 2026-07-26). Accept the canonical arch spelling, the JP-Extra
+            // SKU id, the retired multilingual SKU as a deprecated
+            // compatibility alias, and the common project-name spellings
+            // (with/without hyphen, with/without an explicit "v2"). All
+            // spellings resolve to the same JP-Extra converter path today.
             "sbv2"
             | "sbv2-v2"
+            | "sbv2-v2-jp-extra-base"
+            // Deprecated: retained for existing conversion scripts; new
+            // artifacts must use the JP-Extra identity.
             | "sbv2-v2-multilingual-base"
             | "style-bert-vits2"
             | "style_bert_vits2"
@@ -15634,12 +15638,14 @@ mod modelkind_alias_and_roundtrip_tests {
                 ModelKind::DebertaV3,
                 &["deberta-v3", "deberta_v3", "microsoft/deberta-v3-large"],
             ),
-            // SBV2 v2 plan Task 25 (2026-07-26) — Style-Bert-VITS2 v2.
+            // SBV2 v2 plan Task 25 (2026-07-26) — Style-Bert-VITS2 v2 JP-Extra.
             (
                 ModelKind::SbV2,
                 &[
                     "sbv2",
                     "sbv2-v2",
+                    "sbv2-v2-jp-extra-base",
+                    // Deprecated compatibility alias; see from_arg above.
                     "sbv2-v2-multilingual-base",
                     "style-bert-vits2",
                     "style_bert_vits2",

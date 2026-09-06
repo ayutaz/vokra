@@ -90,14 +90,14 @@ numbers. A human (Task 30 / a real checkpoint in hand) fills the rest in.
 ::
 
     uv run --project tools/parity python tools/parity/sbv2_prepare_checkpoint.py \\
-        --hf-repo litagin02/style_bert_vits2 \\
+        --hf-repo litagin/Style-Bert-VITS2-2.0-base-JP-Extra \\
         --output-dir /tmp/sbv2-checkpoint
 
     # then, once the printed report shows every required field RESOLVED:
     vokra-cli convert --model sbv2 \\
         --input /tmp/sbv2-checkpoint/<the>.safetensors \\
         --config /tmp/sbv2-checkpoint/vokra-sbv2-config.json \\
-        --output sbv2-v2-multilingual-base.gguf
+        --output sbv2-v2-jp-extra-base.gguf
 
 # Dependencies
 
@@ -126,7 +126,7 @@ LOG_PREFIX = "[sbv2-prep]"
 # verbatim — litagin02's SBV2 v2 releases span several checkpoint repos
 # under this account family; this is the default entry point, overridable
 # via --hf-repo.
-DEFAULT_HF_REPO = "litagin02/style_bert_vits2"
+DEFAULT_HF_REPO = "litagin/Style-Bert-VITS2-2.0-base-JP-Extra"
 
 # The 22 keys `SbV2Config::parse` (Task 25) requires, in the same grouped
 # order as that struct's own field list and doc comment (top-level dims 13 /

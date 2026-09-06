@@ -46,7 +46,7 @@
 //! {
 //!   "generator_version": "1.0",
 //!   "checkpoint": {
-//!     "sbv2_main": "sbv2-v2-multilingual-base.gguf",
+//!     "sbv2_main": "sbv2-v2-jp-extra-base.gguf",
 //!     "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf",
 //!     "bert_en": "deberta-v3-large.gguf",
 //!     "bert_zh": "chinese-roberta-wwm-ext-large.gguf"
@@ -101,7 +101,7 @@
 //!
 //! * `checkpoint.*` values are **bare filenames**, siblings of this
 //!   manifest directly inside `tests/fixtures/sbv2/` — matching Task 34's
-//!   own `Files:` list verbatim (`sbv2-v2-multilingual-base.gguf` /
+//!   own `Files:` list verbatim (`sbv2-v2-jp-extra-base.gguf` /
 //!   `deberta-v2-large-japanese-char-wwm.gguf` / `deberta-v3-large.gguf`),
 //!   which is also what their `*.gguf.sha256` sidecar placeholders name.
 //!   This test reads them from the manifest rather than hard-coding them,

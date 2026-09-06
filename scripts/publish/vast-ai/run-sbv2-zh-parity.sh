@@ -184,7 +184,7 @@ require_packet_closure() {
   while IFS= read -r entry; do
     base="${entry##*/}"
     case "$base" in
-      reference_dump.manifest.json|reference_dump|sbv2-v2-multilingual-base.gguf|sbv2-v2-multilingual-base.gguf.sha256|deberta-v2-large-japanese-char-wwm.gguf|deberta-v2-large-japanese-char-wwm.gguf.sha256|deberta-v3-large.gguf|deberta-v3-large.gguf.sha256|chinese-roberta-wwm-ext-large.gguf|chinese-roberta-wwm-ext-large.gguf.sha256) ;;
+      reference_dump.manifest.json|reference_dump|sbv2-v2-jp-extra-base.gguf|sbv2-v2-jp-extra-base.gguf.sha256|deberta-v2-large-japanese-char-wwm.gguf|deberta-v2-large-japanese-char-wwm.gguf.sha256|deberta-v3-large.gguf|deberta-v3-large.gguf.sha256|chinese-roberta-wwm-ext-large.gguf|chinese-roberta-wwm-ext-large.gguf.sha256) ;;
       *) die "unexpected fixture packet entry: $entry"; return 2 ;;
     esac
   done < <(find "$directory" -mindepth 1 -maxdepth 1 -print)
@@ -391,7 +391,7 @@ main() {
   # those four expected records into the disposable packet; no generated
   # output is ever written under the checkout.
   for target in \
-    sbv2-v2-multilingual-base.gguf.sha256 \
+    sbv2-v2-jp-extra-base.gguf.sha256 \
     deberta-v2-large-japanese-char-wwm.gguf.sha256 \
     deberta-v3-large.gguf.sha256 \
     chinese-roberta-wwm-ext-large.gguf.sha256; do
@@ -410,7 +410,7 @@ main() {
   bert_ja_dir="$checkpoints_dir/bert-ja"
   bert_en_dir="$checkpoints_dir/bert-en"
   bert_zh_dir="$checkpoints_dir/bert-zh"
-  sbv2_gguf="$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf"
+  sbv2_gguf="$FIXTURE_DIR/sbv2-v2-jp-extra-base.gguf"
   bert_ja_gguf="$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf"
   bert_en_gguf="$FIXTURE_DIR/deberta-v3-large.gguf"
   bert_zh_gguf="$FIXTURE_DIR/chinese-roberta-wwm-ext-large.gguf"
@@ -483,7 +483,7 @@ main() {
     --tokenizer "$bert_zh_dir/vocab.txt" --output "$bert_zh_gguf"
 
   step "Verify all four committed sidecar hashes"
-  verify_sidecar "$sbv2_gguf" "$FIXTURE_TEMPLATE_DIR/sbv2-v2-multilingual-base.gguf.sha256"
+  verify_sidecar "$sbv2_gguf" "$FIXTURE_TEMPLATE_DIR/sbv2-v2-jp-extra-base.gguf.sha256"
   verify_sidecar "$bert_ja_gguf" "$FIXTURE_TEMPLATE_DIR/deberta-v2-large-japanese-char-wwm.gguf.sha256"
   verify_sidecar "$bert_en_gguf" "$FIXTURE_TEMPLATE_DIR/deberta-v3-large.gguf.sha256"
   verify_sidecar "$bert_zh_gguf" "$FIXTURE_TEMPLATE_DIR/chinese-roberta-wwm-ext-large.gguf.sha256"
@@ -553,7 +553,7 @@ main() {
   {
     printf '%q ' scripts/verify/apple-silicon-sbv2.sh \
       --expected-head "$expected_head" \
-      --gguf '<APPLE_PACKET>/sbv2-v2-multilingual-base.gguf' \
+      --gguf '<APPLE_PACKET>/sbv2-v2-jp-extra-base.gguf' \
       --gguf-sha256 "$gguf_sha" \
       --reference-dir '<APPLE_PACKET>' \
       --reference-manifest-sha256 "$reference_manifest_sha" \

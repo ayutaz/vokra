@@ -5,7 +5,7 @@
 //! well-formed-but-empty `main` GGUF fails loudly (FR-EX-08) instead of
 //! panicking. The third is real-fixture gated (`#[ignore]`) — it exercises
 //! the loader against the repo-root
-//! `tests/fixtures/sbv2/{sbv2-v2-multilingual-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
+//! `tests/fixtures/sbv2/{sbv2-v2-jp-extra-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
 //! trio (matching `reference_dump.manifest.json`'s `checkpoint` block and
 //! the committed `.sha256` sidecars), which land with Task 25 (converter)
 //! and Task 28 (real fixture); until then this test only proves the call
@@ -622,7 +622,7 @@ fn from_gguf_positive_n_flow_layers_missing_flow_mean_only_fails_loudly() {
 }
 
 /// Real-fixture gated: requires the repo-root
-/// `tests/fixtures/sbv2/{sbv2-v2-multilingual-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
+/// `tests/fixtures/sbv2/{sbv2-v2-jp-extra-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
 /// trio (matching `reference_dump.manifest.json`'s `checkpoint` block and
 /// the committed `.sha256` sidecars), produced by Task 25's converter from
 /// real Style-Bert-VITS2 v2 safetensors checkpoints and landed by Task 28.
@@ -638,7 +638,7 @@ fn from_gguf_loads_real_sbv2_weights() {
     // the resolution is invocation-cwd-independent, matching every other
     // parity/loader test in this workspace.
     let dir = fixtures_dir();
-    let main_path = dir.join("sbv2-v2-multilingual-base.gguf");
+    let main_path = dir.join("sbv2-v2-jp-extra-base.gguf");
     let bert_ja_path = dir.join("deberta-v2-large-japanese-char-wwm.gguf");
     let bert_en_path = dir.join("deberta-v3-large.gguf");
 
@@ -670,7 +670,7 @@ fn from_gguf_loads_real_sbv2_weights() {
 #[ignore = "Task 28 real fixture"]
 fn sbv2_model_from_gguf_dispatches_both_bert_tokenizers() {
     let dir = fixtures_dir();
-    let main_path = dir.join("sbv2-v2-multilingual-base.gguf");
+    let main_path = dir.join("sbv2-v2-jp-extra-base.gguf");
     let bert_ja_path = dir.join("deberta-v2-large-japanese-char-wwm.gguf");
     let bert_en_path = dir.join("deberta-v3-large.gguf");
 
