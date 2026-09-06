@@ -247,6 +247,12 @@ fn validate_checkpoint(checkpoint: &SafetensorsFile) -> Result<(), ConvertError>
             expected.len()
         )));
     }
+    if checkpoint.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "ReazonSpeech-NeMo-v2 checkpoint has {} tensor descriptors; expected exactly {TENSOR_COUNT} (duplicate or missing names are forbidden)",
+            checkpoint.tensors().len()
+        )));
+    }
 
     let actual_names = checkpoint
         .tensors()

@@ -111,6 +111,8 @@ def load_json(path: Path) -> Any:
 def regular_file(path: Path) -> bool:
     """Require a regular file and reject symlinked ancestors as well."""
     try:
+        if ".." in path.parts:
+            return False
         absolute = Path(os.path.abspath(path))
         # macOS exposes the normal temporary directory through the system
         # symlinks /var (and, on some hosts, /tmp).  Those fixed OS aliases do
@@ -326,6 +328,14 @@ def self_test() -> int:
         symlink.symlink_to(approval_path)
         if validate(temp_manifest, symlink, temp_project, temp_lock, allow_self_test=True)[0]:
             print("reazonspeech-nemo-v2 preflight gate: symlink approval accepted")
+            return 1
+        nested = temp / "nested"
+        nested.mkdir()
+        nested_approval = nested / "approval.json"
+        shutil.copy2(approval_path, nested_approval)
+        dotdot_approval = nested / ".." / "nested" / "approval.json"
+        if validate(temp_manifest, dotdot_approval, temp_project, temp_lock, allow_self_test=True)[0]:
+            print("reazonspeech-nemo-v2 preflight gate: dot-dot approval path accepted")
             return 1
         for placeholder in ("TODO", "OWNER_SIGNOFF_REQUIRED", "pending_review"):
             placeholder_approval = dict(approval)

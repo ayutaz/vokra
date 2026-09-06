@@ -18,7 +18,7 @@
 //! CPU and Metal share the imperative [`Compute`] seam. Unsupported backends
 //! fail through `Compute::for_backend`; there is no silent CPU fallback.
 
-use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{AsrEngine, BackendKind, LicenseClass, Result, Transcription, VokraError};
 use vokra_ops::conformer::ConformerCompute;
 
@@ -87,7 +87,12 @@ const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
 };
 
 const KEY_SOURCE_REVISION: &str = "vokra.reazonspeech_nemo_v2.source_revision";
+const KEY_SOURCE_NEMO_SHA256: &str = "vokra.reazonspeech_nemo_v2.source_nemo_sha256";
+const KEY_SOURCE_TAR_MANIFEST_SHA256: &str =
+    "vokra.reazonspeech_nemo_v2.source_tar_manifest_sha256";
 const KEY_MODEL_CONFIG_SHA256: &str = "vokra.reazonspeech_nemo_v2.model_config_sha256";
+const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.reazonspeech_nemo_v2.tensor_manifest_sha256";
+const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const KEY_SAMPLE_RATE: &str = "vokra.reazonspeech_nemo_v2.sample_rate";
 const KEY_ENC_N_LAYER: &str = "vokra.reazonspeech_nemo_v2.encoder.n_layer";
 const KEY_ENC_D_MODEL: &str = "vokra.reazonspeech_nemo_v2.encoder.d_model";
@@ -109,6 +114,14 @@ const KEY_JOINT_BLANK_ID: &str = "vokra.reazonspeech_nemo_v2.joint.blank_token_i
 const KEY_JOINT_MAX_SYMBOLS: &str = "vokra.reazonspeech_nemo_v2.joint.max_symbols_per_step";
 const KEY_TOKENIZER_VOCAB_SHA256: &str = "vokra.reazonspeech_nemo_v2.tokenizer.vocab_sha256";
 
+const SOURCE_NEMO_SHA256: &str = "d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae";
+const SOURCE_TAR_MANIFEST_SHA256: &str =
+    "7f5268f676ab1496ef6202bd3a031a0fce5a434c6f2bd568efa2e7f14d7c4cb1";
+const TENSOR_MANIFEST_SHA256: &str =
+    "0663932975fb2157d11fa8ce9d7183c69c00a3d3f3f0e916aff1cab0550401ab";
+const UPSTREAM_HF: &str = "reazon-research/reazonspeech-nemo-v2";
+const UPSTREAM_SOURCE: &str = "https://huggingface.co/reazon-research/reazonspeech-nemo-v2";
+
 const DECODING_STRATEGY: &str = "alsd";
 const DECODING_BEAM_SIZE: u32 = 4;
 const DECODING_ALSD_MAX_TARGET_LEN: f32 = 1.0;
@@ -120,7 +133,11 @@ const DECODING_PRESERVE_ALIGNMENTS: bool = false;
 
 const RUNTIME_KEYS: &[&str] = &[
     KEY_SOURCE_REVISION,
+    KEY_SOURCE_NEMO_SHA256,
+    KEY_SOURCE_TAR_MANIFEST_SHA256,
     KEY_MODEL_CONFIG_SHA256,
+    KEY_TENSOR_MANIFEST_SHA256,
+    KEY_UPSTREAM_HF,
     KEY_SAMPLE_RATE,
     KEY_ENC_N_LAYER,
     KEY_ENC_D_MODEL,
@@ -148,6 +165,10 @@ const RUNTIME_KEYS: &[&str] = &[
     KEY_DECODING_SOFTMAX_TEMPERATURE,
     KEY_DECODING_RETURN_BEST,
     KEY_DECODING_PRESERVE_ALIGNMENTS,
+    chunks::KEY_PROVENANCE_LICENSE,
+    chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+    chunks::KEY_PROVENANCE_MODEL_ID,
+    chunks::KEY_PROVENANCE_SOURCE,
 ];
 
 /// Every learned hot operation used by the native encoder and RNN-T decoder.
@@ -316,6 +337,7 @@ impl ReazonSpeechNemoV2 {
         let config = ReazonSpeechConfig::official();
         config.validate()?;
         validate_runtime_metadata(file, &config)?;
+        validate_tensor_dtypes(file)?;
         let tokenizer = load_tokenizer(file, &config)?;
         let weights = Box::new(load_weights(file, &config)?);
         Ok(Self {
@@ -465,6 +487,18 @@ impl AsrEngine for ReazonSpeechNemoV2 {
 }
 
 fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Result<()> {
+    for &&key in RUNTIME_KEYS {
+        let occurrences = file
+            .metadata()
+            .iter()
+            .filter(|(name, _)| name == key)
+            .count();
+        if occurrences != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: authenticated metadata `{key}` occurs {occurrences} times; expected exactly once"
+            )));
+        }
+    }
     let present = RUNTIME_KEYS
         .iter()
         .filter(|&&key| file.get(key).is_some())
@@ -481,7 +515,23 @@ fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Re
         )));
     }
     required_string(file, KEY_SOURCE_REVISION, SOURCE_REVISION)?;
+    required_string(file, KEY_SOURCE_NEMO_SHA256, SOURCE_NEMO_SHA256)?;
+    required_string(
+        file,
+        KEY_SOURCE_TAR_MANIFEST_SHA256,
+        SOURCE_TAR_MANIFEST_SHA256,
+    )?;
     required_string(file, KEY_MODEL_CONFIG_SHA256, MODEL_CONFIG_SHA256)?;
+    required_string(file, KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256)?;
+    required_string(file, KEY_UPSTREAM_HF, UPSTREAM_HF)?;
+    required_string(file, chunks::KEY_PROVENANCE_LICENSE, "apache-2.0")?;
+    required_string(
+        file,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::Permissive.as_str(),
+    )?;
+    required_string(file, chunks::KEY_PROVENANCE_MODEL_ID, MODEL_NAME)?;
+    required_string(file, chunks::KEY_PROVENANCE_SOURCE, UPSTREAM_SOURCE)?;
     required_string(file, KEY_DECODING_STRATEGY, config.decoding_strategy)?;
     required_string(file, KEY_DECODING_BEAM_MODE, config.decoding_search_type)?;
     required_f32(
@@ -598,6 +648,18 @@ fn required_bool(file: &GgufFile, key: &str, expected: bool) -> Result<()> {
         return Err(VokraError::ModelLoad(format!(
             "{LABEL}: `{key}`={actual}, expected {expected}"
         )));
+    }
+    Ok(())
+}
+
+fn validate_tensor_dtypes(file: &GgufFile) -> Result<()> {
+    for tensor in file.tensors() {
+        if tensor.dtype != vokra_core::gguf::GgmlType::F32 {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: tensor `{}` has dtype {:?}; the authenticated NeMo v2 release is F32",
+                tensor.name, tensor.dtype
+            )));
+        }
     }
     Ok(())
 }
@@ -1259,6 +1321,7 @@ mod tests {
     #[test]
     fn public_manifest_identity_is_pinned() {
         assert_eq!(TENSOR_COUNT, 965);
+        assert_eq!(TENSOR_MANIFEST_SHA256, hex(&MANIFEST_SHA256));
         assert_eq!(
             hex(&MANIFEST_SHA256),
             "0663932975fb2157d11fa8ce9d7183c69c00a3d3f3f0e916aff1cab0550401ab"

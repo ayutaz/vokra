@@ -30,7 +30,9 @@ usage() {
   cat <<'EOF' >&2
 usage: apple-silicon-reazonspeech-nemo-v2.sh \
   --gguf <vast-generated-reazonspeech-nemo-v2.gguf> \
-  --reference <vast-official-reference-dir> --approval-evidence <owner-approval.json> \
+  --gguf-sha256 <vast-gguf-sha256> \
+  --reference <vast-official-reference-dir> --reference-sha256 <reference-json-sha256> \
+  --expected-head <exact-40-hex-git-commit> --approval-evidence <owner-approval.json> \
   --evidence-dir <absent-dir>
        apple-silicon-reazonspeech-nemo-v2.sh --self-test
 
@@ -41,8 +43,10 @@ memory, free disk, and the Xcode Metal compiler.  The GGUF and all reference
 files must already have been produced by the VAST worker.
 
 This script performs no download, conversion, upload, publication, or model
-mutation.  Pull only the evidence directory after the run, then remove staged
-inputs or destroy the disposable Apple worker.
+mutation.  The VAST-generated GGUF and reference.json SHA-256 digests are
+required arguments, and expected-head binds the clean checkout to the
+preceding VAST run. Pull only the evidence directory after the run, then
+remove staged inputs or destroy the disposable Apple worker.
 EOF
 }
 
@@ -69,7 +73,9 @@ canonical_absent_path() {
   [[ "$path" == /* ]] || path="$PWD/$path"; rest="${path#/}"; scan=''
   while [[ -n "$rest" ]]; do
     component="${rest%%/*}"; rest="${rest#*/}"; [[ "$component" == "$rest" ]] && rest=''
-    [[ -n "$component" && "$component" != . && "$component" != .. ]] || continue
+    [[ -n "$component" ]] || continue
+    [[ "$component" != . ]] || return 1
+    [[ "$component" != .. ]] || return 1
     scan="$scan/$component"; [[ ! -L "$scan" || "$scan" == "/var" ]] || return 1
   done
   while [[ ! -d "$path" || -L "$path" ]]; do
@@ -115,13 +121,55 @@ require_cpu_sentinel() {
   [[ "$(grep -Ec '^ReazonSpeech-NeMo-v2 CPU encoder: .+$' "$file" || true)" == 1 ]] || die 'official CPU reference sentinel is missing, malformed, or duplicated'
 }
 
+require_cpu_metric() {
+  local file="$1" count line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  local nonnegative='[+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  count="$(grep -Ec '^ReazonSpeech-NeMo-v2 CPU encoder: .+$' "$file" || true)"
+  [[ "$count" == 1 ]] || die 'CPU metric must occur exactly once'
+  line="$(grep -E '^ReazonSpeech-NeMo-v2 CPU encoder: .+$' "$file")"
+  [[ "$line" =~ ^ReazonSpeech-NeMo-v2\ CPU\ encoder:\ frames=[1-9][0-9]*,\ max_abs=$nonnegative\ at\ [0-9]+\ \(actual=$number,\ official=$number\),\ mean_abs=$nonnegative$ ]] \
+    || die 'CPU metric is malformed or non-finite'
+}
+
+require_metal_metric() {
+  local file="$1" count line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  local nonnegative='[+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  count="$(grep -Ec '^ReazonSpeech-NeMo-v2 Metal encoder: .+$' "$file" || true)"
+  [[ "$count" == 1 ]] || die 'Metal metric must occur exactly once'
+  line="$(grep -E '^ReazonSpeech-NeMo-v2 Metal encoder: .+$' "$file")"
+  [[ "$line" =~ ^ReazonSpeech-NeMo-v2\ Metal\ encoder:\ frames=[1-9][0-9]*,\ max_abs=$nonnegative\ at\ [0-9]+\ \(metal=$number,\ reference=$number\)$ ]] \
+    || die 'Metal metric is malformed or non-finite'
+}
+
+require_metal_cpu_metric() {
+  local file="$1" count line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  local nonnegative='[+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  count="$(grep -Ec '^ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: .+$' "$file" || true)"
+  [[ "$count" == 1 ]] || die 'Metal-vs-CPU metric must occur exactly once'
+  line="$(grep -E '^ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: .+$' "$file")"
+  [[ "$line" =~ ^ReazonSpeech-NeMo-v2\ Metal-vs-CPU\ encoder:\ frames=[1-9][0-9]*,\ max_abs=$nonnegative\ at\ [0-9]+\ \(metal=$number,\ cpu=$number\)$ ]] \
+    || die 'Metal-vs-CPU metric is malformed or non-finite'
+}
+
 require_reference() {
-  local directory="$1" name
-  [[ -d "$directory" ]] || die "reference is not a directory: $directory"
+  local directory="$1" expected_sha256="$2" name path count=0
+  [[ -d "$directory" && ! -L "$directory" ]] \
+    || die "reference is not a regular non-symlink directory: $directory"
+  while IFS= read -r -d '' path; do
+    name="${path##*/}"
+    case "$name" in
+      pcm.f32|encoder.f32|tokens.u32|text.txt|encoder.frames.txt|reference.json) ;;
+      *) die "reference contains an unexpected top-level entry: $name"; return 2 ;;
+    esac
+    count=$((count + 1))
+  done < <(find -P "$directory" -mindepth 1 -maxdepth 1 -print0)
+  [[ "$count" == 6 ]] || die "reference must contain exactly six top-level entries"
   for name in pcm.f32 encoder.f32 tokens.u32 text.txt encoder.frames.txt \
     reference.json; do
     require_file "ReazonSpeech reference $name" "$directory/$name"
   done
+  [[ "$(sha256_file "$directory/reference.json")" == "$expected_sha256" ]] \
+    || die "reference.json SHA-256 does not match the VAST-supplied expected digest"
   require_reference_metadata "$directory/reference.json"
 }
 
@@ -373,7 +421,22 @@ run_self_test() (
   [[ "$(sha256_file "$temporary/value")" == \
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ]] \
     || die "SHA-256 helper self-test failed"
+  printf '%s\n' 'ReazonSpeech-NeMo-v2 CPU encoder: frames=12, max_abs=1.000000000e-03 at 3 (actual=-1.000000000e-03, official=-2.000000000e-03), mean_abs=2.000000000e-04' > "$temporary/cpu.log"
+  require_cpu_metric "$temporary/cpu.log"
+  printf '%s\n' 'ReazonSpeech-NeMo-v2 CPU encoder: frames=12, max_abs=NaN at 3 (actual=0.0e+00, official=0.0e+00), mean_abs=0.0e+00' > "$temporary/cpu-malformed.log"
+  if require_cpu_metric "$temporary/cpu-malformed.log" >/dev/null 2>&1; then log 'self-test FAIL: malformed CPU metric accepted'; fail=1; fi
+  printf '%s\n' 'ReazonSpeech-NeMo-v2 CPU encoder: frames=12, max_abs=NaN at 3 (actual=0.0e+00, official=0.0e+00), mean_abs=0.0e+00' >> "$temporary/cpu.log"
+  if require_cpu_metric "$temporary/cpu.log" >/dev/null 2>&1; then log 'self-test FAIL: duplicate/nonfinite CPU metric accepted'; fail=1; fi
+  printf '%s\n' 'ReazonSpeech-NeMo-v2 Metal encoder: frames=12, max_abs=1.000000000e-03 at 3 (metal=-1.000000000e-03, reference=-2.000000000e-03)' > "$temporary/metal.log"
+  printf '%s\n' 'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: frames=12, max_abs=2.000000000e-04 at 3 (metal=-1.000000000e-03, cpu=-8.000000000e-04)' >> "$temporary/metal.log"
+  require_metal_metric "$temporary/metal.log"
+  require_metal_cpu_metric "$temporary/metal.log"
+  printf '%s\n' 'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: frames=12, max_abs=inf at 3 (metal=0.0e+00, cpu=0.0e+00)' > "$temporary/metal-malformed.log"
+  if require_metal_cpu_metric "$temporary/metal-malformed.log" >/dev/null 2>&1; then log 'self-test FAIL: malformed Metal metric accepted'; fail=1; fi
+  printf '%s\n' 'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: frames=12, max_abs=inf at 3 (metal=0.0e+00, cpu=0.0e+00)' >> "$temporary/metal.log"
+  if require_metal_cpu_metric "$temporary/metal.log" >/dev/null 2>&1; then log 'self-test FAIL: duplicate/nonfinite Metal metric accepted'; fail=1; fi
   require_absent_evidence_dir "$temporary/evidence" "$temporary/value"
+  if require_absent_evidence_dir "$temporary/evidence/../dotdot-evidence" "$temporary/value" >/dev/null 2>&1; then log 'self-test FAIL: dot-dot evidence path accepted'; fail=1; fi
   mkdir "$temporary/empty-evidence"
   if require_absent_evidence_dir "$temporary/empty-evidence" "$temporary/value" >/dev/null 2>&1; then log 'self-test FAIL: existing empty evidence accepted'; fail=1; fi
   ln -s "$temporary/missing-evidence" "$temporary/dangling-evidence"
@@ -393,8 +456,9 @@ run_self_test() (
     'nemo-toolkit[asr]==3.0.0' \
     'uv run --no-cache --no-project --offline --python 3.12' \
     'object_pairs_hook=reject_duplicates' 'reference.json schema is not exact' \
-    'pcm_sha256' 'text_file_sha256' \
-    'xcrun -f metal' "$GGUF_ENV" "$REFERENCE_DIR_ENV" \
+    'pcm_sha256' 'text_file_sha256' 'ReazonSpeech-NeMo-v2 Metal encoder:' \
+    'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder:' \
+    'xcrun -f metal' '--gguf-sha256' '--reference-sha256' '--expected-head' "$GGUF_ENV" "$REFERENCE_DIR_ENV" \
     "$PARITY_TARGET" "$CPU_TEST" "$METAL_TEST" \
     '--features metal' '-- --exact --nocapture' \
     'test released_cpu_encoder_and_alsd_tokens_text_match_official_nemo ... ok' \
@@ -429,6 +493,20 @@ run_self_test() (
   if require_reference_metadata "$temporary/typed/reference.json" >/dev/null 2>&1; then
     log 'self-test FAIL: wrong typed/extra JSON field accepted'; fail=1
   fi
+  mkdir "$temporary/reference"
+  for required in pcm.f32 encoder.f32 tokens.u32 text.txt encoder.frames.txt reference.json; do
+    printf x > "$temporary/reference/$required"
+  done
+  mkdir "$temporary/reference/unexpected-dir"
+  if require_reference "$temporary/reference" "$(printf '%064d' 0)" >/dev/null 2>&1; then
+    log 'self-test FAIL: extra reference directory accepted'; fail=1
+  fi
+  rmdir "$temporary/reference/unexpected-dir"
+  rm "$temporary/reference/reference.json"
+  ln -s "$temporary/value" "$temporary/reference/reference.json"
+  if require_reference "$temporary/reference" "$(printf '%064d' 0)" >/dev/null 2>&1; then
+    log 'self-test FAIL: expected reference symlink accepted'; fail=1
+  fi
   if grep -En -- '^[[:space:]]*(curl|wget|python3?|pip|git[[:space:]]+(clone|fetch|pull))([[:space:]]|$)' \
     "$script_path" >/dev/null; then
     log "self-test FAIL: download, direct Python, or publication command found"
@@ -446,7 +524,7 @@ run_self_test() (
     log "self-test FAIL: unknown argument accepted"
     fail=1
   fi
-  if "$script_path" --gguf -bad >/dev/null 2>&1 || "$script_path" --gguf a --gguf b >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1; then
+  if "$script_path" --gguf -bad >/dev/null 2>&1 || "$script_path" --gguf a --gguf b >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --gguf-sha256 >/dev/null 2>&1 || "$script_path" --reference-sha256 >/dev/null 2>&1 || "$script_path" --expected-head >/dev/null 2>&1 || "$script_path" --gguf-sha256 "$(printf '%064d' 0)" --gguf-sha256 "$(printf '%064d' 0)" >/dev/null 2>&1 || "$script_path" --expected-head "$(printf 'a%.0s' {1..40})" --expected-head "$(printf 'a%.0s' {1..40})" >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1 || "$script_path" --self-test --gguf-sha256 "$(printf '%064d' 0)" >/dev/null 2>&1 || "$script_path" --self-test --expected-head "$(printf 'a%.0s' {1..40})" >/dev/null 2>&1; then
     log "self-test FAIL: malformed or duplicate options accepted"
     fail=1
   fi
@@ -455,8 +533,8 @@ run_self_test() (
 )
 
 main() {
-  local gguf='' reference='' evidence_dir='' approval='' self_test=0
-  local seen_gguf=0 seen_reference=0 seen_evidence=0 seen_approval=0 seen_self_test=0
+  local gguf='' reference='' evidence_dir='' approval='' expected_head='' expected_gguf_sha256='' expected_reference_sha256='' self_test=0
+  local seen_gguf=0 seen_reference=0 seen_evidence=0 seen_approval=0 seen_head=0 seen_gguf_sha256=0 seen_reference_sha256=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --gguf)
@@ -471,6 +549,15 @@ main() {
       --approval-evidence)
         (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty path'; seen_approval=1
         approval="$2"; shift 2 ;;
+      --gguf-sha256)
+        (( seen_gguf_sha256 == 0 )) || die 'duplicate --gguf-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--gguf-sha256 requires a lowercase 64-hex digest'; seen_gguf_sha256=1
+        expected_gguf_sha256="$2"; shift 2 ;;
+      --reference-sha256)
+        (( seen_reference_sha256 == 0 )) || die 'duplicate --reference-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--reference-sha256 requires a lowercase 64-hex digest'; seen_reference_sha256=1
+        expected_reference_sha256="$2"; shift 2 ;;
+      --expected-head)
+        (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires a lowercase 40-hex commit'; seen_head=1
+        expected_head="$2"; shift 2 ;;
       --self-test)
         (( seen_self_test == 0 )) || die 'duplicate --self-test'; seen_self_test=1; self_test=1; shift ;;
       -h|--help)
@@ -481,25 +568,32 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ -z "$gguf$reference$evidence_dir$approval" && $# -eq 0 ]] \
+    [[ -z "$gguf$reference$evidence_dir$approval$expected_head$expected_gguf_sha256$expected_reference_sha256" && $# -eq 0 ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
-  [[ -n "$gguf" && -n "$reference" && -n "$evidence_dir" && -n "$approval" ]] \
-    || { usage; die "--gguf, --reference, --approval-evidence and --evidence-dir are required"; }
+  [[ -n "$gguf" && -n "$reference" && -n "$evidence_dir" && -n "$approval" && -n "$expected_head" && -n "$expected_gguf_sha256" && -n "$expected_reference_sha256" ]] \
+    || { usage; die "--gguf, --reference, --gguf-sha256, --reference-sha256, --expected-head, --approval-evidence and --evidence-dir are required"; }
 
   license_preflight "$approval"
   require_absent_evidence_dir "$evidence_dir" "$gguf" "$reference" "$approval"
   require_remote_apple_host
   require_tooling
+  [[ "$(git -C "$VOKRA_ROOT" rev-parse HEAD)" == "$expected_head" ]] \
+    || die "checkout HEAD does not match the VAST-supplied expected commit"
   require_file "VAST-generated ReazonSpeech NeMo v2 GGUF" "$gguf"
-  require_reference "$reference"
+  [[ "$(sha256_file "$gguf")" == "$expected_gguf_sha256" ]] \
+    || die "GGUF SHA-256 does not match the VAST-supplied expected digest"
+  require_reference "$reference" "$expected_reference_sha256"
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
   {
     echo "gguf=$gguf"
+    echo "gguf_sha256_expected=$expected_gguf_sha256"
     echo "gguf_sha256=$(sha256_file "$gguf")"
+    echo "reference_json_sha256_expected=$expected_reference_sha256"
+    echo "reference_json_sha256=$(sha256_file "$reference/reference.json")"
     hash_reference_directory "$reference" "$evidence_dir/reference-hashes.txt"
   } > "$evidence_dir/input-hashes.txt"
 
@@ -512,8 +606,11 @@ main() {
       2>&1 | tee "$evidence_dir/cpu-parity.log"
   require_cargo_result "$evidence_dir/cpu-parity.log" "$CPU_TEST"
   require_cpu_sentinel "$evidence_dir/cpu-parity.log"
+  require_cpu_metric "$evidence_dir/cpu-parity.log"
   printf 'REAZONSPEECH_NEMO_V2_CPU_VS_OFFICIAL PASS test=%s\n' "$CPU_TEST" \
     | tee -a "$evidence_dir/cpu-parity.log" >/dev/null
+  [[ "$(grep -Fc 'REAZONSPEECH_NEMO_V2_CPU_VS_OFFICIAL PASS' "$evidence_dir/cpu-parity.log")" == 1 ]] \
+    || die 'CPU PASS marker is missing or duplicated'
 
   log "running exact real-weight Metal vs CPU parity"
   env "$GGUF_ENV=$gguf" "$REFERENCE_DIR_ENV=$reference" \
@@ -523,15 +620,17 @@ main() {
       -- --exact --nocapture --test-threads=1 \
       2>&1 | tee "$evidence_dir/metal-parity.log"
   require_cargo_result "$evidence_dir/metal-parity.log" "$METAL_TEST"
+  require_metal_metric "$evidence_dir/metal-parity.log"
+  require_metal_cpu_metric "$evidence_dir/metal-parity.log"
   printf 'REAZONSPEECH_NEMO_V2_METAL_VS_CPU PASS test=%s\n' "$METAL_TEST" \
     | tee -a "$evidence_dir/metal-parity.log" >/dev/null
-  grep -F 'REAZONSPEECH_NEMO_V2_METAL_VS_CPU PASS' \
-    "$evidence_dir/metal-parity.log" >/dev/null \
-    || die "Metal-vs-CPU PASS marker is absent"
+  [[ "$(grep -Fc 'REAZONSPEECH_NEMO_V2_METAL_VS_CPU PASS' "$evidence_dir/metal-parity.log")" == 1 ]] \
+    || die 'Metal-vs-CPU PASS marker is missing or duplicated'
 
   {
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
     echo "gguf_sha256=$(sha256_file "$gguf")"
     echo "cpu_vs_official=PASS"
     echo "metal_vs_cpu=PASS"

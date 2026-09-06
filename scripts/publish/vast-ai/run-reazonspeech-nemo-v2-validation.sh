@@ -56,7 +56,9 @@ canonical_absent_path() {
   while [[ -n "$rest" ]]; do
     component="${rest%%/*}"; rest="${rest#*/}"
     [[ "$component" == "$rest" ]] && rest=''
-    [[ -n "$component" && "$component" != . && "$component" != .. ]] || continue
+    [[ -n "$component" ]] || continue
+    [[ "$component" != . ]] || return 1
+    [[ "$component" != .. ]] || return 1
     scan="$scan/$component"
     [[ ! -L "$scan" || "$scan" == "/var" ]] || return 1
   done
@@ -176,6 +178,7 @@ run_self_test() {
   fi
   printf '{}\n' > "$tmp/approval.json"
   require_absent_work_dir "$tmp/new/nested/work" "$tmp/approval.json" || { echo 'self-test FAIL: nested absent work path rejected' >&2; fail=1; }
+  if require_absent_work_dir "$tmp/new/../dotdot-work" "$tmp/approval.json" >/dev/null 2>&1; then echo 'self-test FAIL: dot-dot work path accepted' >&2; fail=1; fi
   mkdir "$tmp/empty-work"
   if require_absent_work_dir "$tmp/empty-work" "$tmp/approval.json" >/dev/null 2>&1; then echo 'self-test FAIL: existing empty work accepted' >&2; fail=1; fi
   ln -s "$tmp/missing" "$tmp/dangling-work"

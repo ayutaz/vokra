@@ -13,5 +13,5 @@
   "vast_route": "VAST-only conversion and official-NeMo reference; no upload",
   "apple_route": "Darwin arm64 CPU and Metal parity; staged inputs only",
   "operator_approval": "PENDING_EXTERNAL",
-  "approval_scope_sha256": "66eff2c404a4b3b5a9f2f31426deaa2529cf150297f7c4bce78687e31ced5928"
+  "approval_scope_sha256": "d3fab5d32c99a44cac2584e2763a546f4d509ce71a070cd3a10ea33a0a367da7"
 }
