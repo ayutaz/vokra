@@ -143,6 +143,11 @@ def validate_approval(path:Path|str,head:str,digest:str)->dict[str,Any]:
 def dependency_gate()->int:
     print(json.dumps({"status":"BLOCKED","decision":"INSPECTION_ONLY","reason":"dependency/license/dataset/native closure is not approved; no source/model acquisition or import is authorized","publication":"NO_UPLOAD","native_status":"BLOCKED_NATIVE_BINDING"},sort_keys=True),file=sys.stderr)
     return 2
+def gate_and_stop(gate:Any)->int:
+    """The blocked approval is terminal even if a future gate returns green."""
+    status=gate()
+    if status==0: print("Canary-Qwen INSPECTION_ONLY approval remains terminal; inspection is not authorized",file=sys.stderr)
+    return 2
 def git(root:Path,*args:str)->str: return subprocess.check_output(["git","-C",str(root),*args],text=True,stderr=subprocess.STDOUT).strip()
 
 def tree(root:Path,packet:Path,repo:str,rev:str,expected:set[str]|None=None)->tuple[dict[str,str],list[dict[str,Any]]]:
@@ -453,6 +458,7 @@ def stdlib_self_test()->None:
     except RuntimeError: pass
     else: raise AssertionError("duplicate JSON accepted")
     assert dependency_gate()==2
+    assert gate_and_stop(lambda:0)==2
     print("canary_qwen_2_5b_inspect.py stdlib gate self-test: OK")
 def main()->int:
     p=argparse.ArgumentParser(); p.add_argument("--snapshot",type=Path); p.add_argument("--tokenizer",type=Path); p.add_argument("--source",type=Path); p.add_argument("--server-tree",type=Path); p.add_argument("--tokenizer-complete-tree",type=Path); p.add_argument("--tokenizer-server-tree",type=Path); p.add_argument("--output",type=Path); p.add_argument("--expected-head"); p.add_argument("--approval-evidence",type=Path); p.add_argument("--approval-sha256"); p.add_argument("--validate-approval",action="store_true"); p.add_argument("--dependency-gate",action="store_true"); p.add_argument("--self-test",action="store_true"); p.add_argument("--stdlib-self-test",action="store_true"); a=p.parse_args()
@@ -473,7 +479,6 @@ def main()->int:
     if any(v is None for v in (a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output,a.expected_head,a.approval_evidence,a.approval_sha256)): p.error("all inspection paths and approval binding are required")
     try:
         validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256)
-        if dependency_gate()!=0: return 2
-        return inspect(a.snapshot,a.tokenizer,a.source,a.server_tree,a.tokenizer_complete_tree,a.tokenizer_server_tree,a.output)
+        return gate_and_stop(dependency_gate)
     except Exception as e: blocked(a.output,e); print(f"Canary-Qwen inspection BLOCKED: {e}",file=sys.stderr); return 2
 if __name__=="__main__": raise SystemExit(main())
