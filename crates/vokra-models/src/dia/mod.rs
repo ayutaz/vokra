@@ -832,17 +832,19 @@ impl DiaTts {
     /// Without a DAC bind
     /// [`Self::synthesize`] cannot honestly return audio (FR-EX-08).
     ///
-    /// Cross-checks that the DAC codec has at least as many codebooks as
-    /// Dia emits channels — a mismatch would misroute channel indices at
-    /// decode time.
+    /// Cross-checks that the DAC codec has exactly as many codebooks as Dia
+    /// emits channels — a mismatch would misroute channel indices at decode
+    /// time. Dia's authenticated 44.1-kHz DAC variant is a nine-codebook
+    /// codec; accepting a larger codec would silently leave its extra
+    /// codebooks outside the Dia contract.
     ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] on a codebook / sample-rate mismatch.
     pub fn with_dac(mut self, dac: DacCodecGguf) -> Result<Self> {
-        if dac.attrs.n_codebooks < self.cfg.channels {
+        if dac.attrs.n_codebooks != self.cfg.channels {
             return Err(VokraError::InvalidArgument(format!(
-                "dia with_dac: dac has {} codebooks but Dia emits {} channels",
+                "dia with_dac: dac has {} codebooks but Dia requires exactly {} channels",
                 dac.attrs.n_codebooks, self.cfg.channels,
             )));
         }
@@ -1508,6 +1510,23 @@ mod tests {
             Err(VokraError::InvalidArgument(msg)) => assert!(
                 msg.contains("codebooks") && msg.contains("channels"),
                 "message must name codebook / channel mismatch: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// A codec with extra codebooks is not an authenticated Dia composition:
+    /// silently ignoring them would make the bound artifact non-exact.
+    #[test]
+    fn with_dac_rejects_extra_codebooks() {
+        let c = DiaConfig::tiny_for_tests();
+        let w = DiaWeights::synthesized(&c, 7).expect("weights");
+        let tts = DiaTts::new(c.clone(), w).expect("dia tts");
+        let dac = stub_dac(c.channels + 1, c.sample_rate);
+        match tts.with_dac(dac) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("exactly") && msg.contains("codebooks"),
+                "message must name exact codebook contract: {msg}"
             ),
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
