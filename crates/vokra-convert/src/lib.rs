@@ -933,7 +933,9 @@ pub enum ModelKind {
     /// arch tag from every sibling (`ModelKind::Rmvpe` → `rmvpe`) —
     /// silently sharing would misroute the runtime dispatch (an ASR /
     /// TTS backbone would try to interpret the 360-class pitch head).
-    /// Convert with [`convert_rmvpe_file`]; no side-car config today
+    /// Convert with [`convert_rmvpe_file`]; only the fail-closed `unknown`
+    /// license marker is accepted until the exact upstream source receives
+    /// an authenticated owner/legal grant. No side-car config today
     /// (every hparam is a fixed compile-time constant transcribed from
     /// the upstream release).
     Rmvpe,

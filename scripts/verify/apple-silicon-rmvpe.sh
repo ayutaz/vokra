@@ -29,7 +29,8 @@ usage() {
 usage: apple-silicon-rmvpe.sh --gguf <vast-rmvpe.gguf> \
          --reference-dir <vast-rmvpe-fixtures> --expected-gguf-sha256 <64-hex> \
          --expected-reference-sha256 <64-hex> --checkpoint-sha256 <64-hex> \
-         --approval-evidence <file> --evidence-dir <absent-dir>
+         --approval-evidence <file> --expected-head <40-hex> \
+         --evidence-dir <absent-dir>
        apple-silicon-rmvpe.sh --self-test
 
 Runs the exact checked-in RMVPE real-weight CPU/upstream and
@@ -74,7 +75,7 @@ except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
     raise SystemExit("approval gate BLOCKED: " + str(exc))
 PY
   then :; else die 'approval evidence is invalid or offline Python is unavailable'; fi
-  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$VOKRA_ROOT/tools/parity/rmvpe_inspect.py" --dependency-gate; then :; else die 'RMVPE source/license/checkpoint gate is unresolved'; fi
+  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$VOKRA_ROOT/tools/parity/rmvpe_inspect.py" --dependency-gate; then :; else die 'BLOCKED_LICENSE: RMVPE source/license/checkpoint gate is unresolved'; fi
 }
 
 canonical_absent_path() {
@@ -167,6 +168,17 @@ require_tooling() {
   xcrun -f metal >/dev/null 2>&1 || die "Xcode Metal compiler is unavailable"
 }
 
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-fA-F]{40}$ ]] \
+    || die '--expected-head must be exactly 40 hexadecimal characters'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die 'Apple checkout must be clean before evidence or model work'
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] \
+    || die "checkout HEAD $actual_head does not match required $expected_head"
+}
+
 record_environment() {
   local output="$1"
   {
@@ -226,7 +238,8 @@ run_self_test() (
     'full RMVPE parity: .*\\([1-9][0-9]*/[1-9][0-9]*\\)' \
     'path-B: [1-9][0-9]* / [1-9][0-9]* voiced frames' \
     'RMVPE_METAL_VS_CPU PASS' 'test result: ok. [1-9] passed' \
-    '--expected-gguf-sha256' '--expected-reference-sha256' '--checkpoint-sha256' \
+    '--expected-gguf-sha256' '--expected-reference-sha256' '--checkpoint-sha256' '--expected-head' \
+    'require_clean_expected_head' \
     'checkpoint_sha256' 'RMVPE GGUF hash does not match' 'reference manifest hash' \
     'git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all' \
     'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml"'; do
@@ -256,7 +269,7 @@ run_self_test() (
     log "self-test FAIL: unknown argument accepted"
     fail=1
   fi
-  for bad in '--gguf' '--gguf -bad' '--gguf a --gguf b' '--reference-dir' '--reference-dir -bad' '--reference-dir a --reference-dir b' '--checkpoint-sha256' '--checkpoint-sha256 -bad' '--checkpoint-sha256 a --checkpoint-sha256 b' '--expected-gguf-sha256' '--expected-gguf-sha256 -bad' '--expected-gguf-sha256 a --expected-gguf-sha256 b' '--expected-reference-sha256' '--expected-reference-sha256 -bad' '--expected-reference-sha256 a --expected-reference-sha256 b' '--approval-evidence' '--approval-evidence -bad' '--approval-evidence a --approval-evidence b' '--evidence-dir' '--evidence-dir -bad' '--evidence-dir a --evidence-dir b'; do
+  for bad in '--gguf' '--gguf -bad' '--gguf a --gguf b' '--reference-dir' '--reference-dir -bad' '--reference-dir a --reference-dir b' '--checkpoint-sha256' '--checkpoint-sha256 -bad' '--checkpoint-sha256 a --checkpoint-sha256 b' '--expected-gguf-sha256' '--expected-gguf-sha256 -bad' '--expected-gguf-sha256 a --expected-gguf-sha256 b' '--expected-reference-sha256' '--expected-reference-sha256 -bad' '--expected-reference-sha256 a --expected-reference-sha256 b' '--expected-head' '--expected-head -bad' '--expected-head a --expected-head b' '--approval-evidence' '--approval-evidence -bad' '--approval-evidence a --approval-evidence b' '--evidence-dir' '--evidence-dir -bad' '--evidence-dir a --evidence-dir b'; do
     if eval "\"$script_path\" $bad" >/dev/null 2>&1; then
       log "self-test FAIL: malformed or duplicate option accepted: $bad"
       fail=1
@@ -267,8 +280,8 @@ run_self_test() (
 )
 
 main() {
-  local gguf='' reference_dir='' evidence_dir='' approval_evidence='' checkpoint_sha256='' expected_gguf_sha256='' expected_reference_sha256='' self_test=0
-  local seen_gguf=0 seen_reference=0 seen_evidence=0 seen_approval=0 seen_checkpoint=0 seen_expected_gguf=0 seen_expected_reference=0 seen_self=0
+  local gguf='' reference_dir='' evidence_dir='' approval_evidence='' checkpoint_sha256='' expected_gguf_sha256='' expected_reference_sha256='' expected_head='' self_test=0
+  local seen_gguf=0 seen_reference=0 seen_evidence=0 seen_approval=0 seen_checkpoint=0 seen_expected_gguf=0 seen_expected_reference=0 seen_expected_head=0 seen_self=0
   local gguf_sha
   while (( $# > 0 )); do
     case "$1" in
@@ -287,6 +300,8 @@ main() {
         (( seen_expected_gguf == 0 )) || { usage; return 2; }; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }; seen_expected_gguf=1; expected_gguf_sha256="$2"; shift 2 ;;
       --expected-reference-sha256)
         (( seen_expected_reference == 0 )) || { usage; return 2; }; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || { usage; return 2; }; seen_expected_reference=1; expected_reference_sha256="$2"; shift 2 ;;
+      --expected-head)
+        (( seen_expected_head == 0 )) || { usage; return 2; }; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; seen_expected_head=1; expected_head="$2"; shift 2 ;;
       --evidence-dir)
         (( seen_evidence == 0 )) || { usage; return 2; }; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; seen_evidence=1
         evidence_dir="$2"; shift 2 ;;
@@ -301,14 +316,15 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ -z "$gguf$reference_dir$evidence_dir$approval_evidence$checkpoint_sha256$expected_gguf_sha256$expected_reference_sha256" ]] \
+    [[ -z "$gguf$reference_dir$evidence_dir$approval_evidence$checkpoint_sha256$expected_gguf_sha256$expected_reference_sha256$expected_head" ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
-  [[ -n "$gguf" && -n "$reference_dir" && -n "$evidence_dir" && -n "$approval_evidence" && -n "$checkpoint_sha256" && -n "$expected_gguf_sha256" && -n "$expected_reference_sha256" ]] \
+  [[ -n "$gguf" && -n "$reference_dir" && -n "$evidence_dir" && -n "$approval_evidence" && -n "$checkpoint_sha256" && -n "$expected_gguf_sha256" && -n "$expected_reference_sha256" && -n "$expected_head" ]] \
     || { usage; die "all input, hash, checkpoint, approval, and evidence options are required"; }
 
+  require_clean_expected_head "$expected_head"
   license_preflight "$approval_evidence" "$checkpoint_sha256"
   require_file "VAST-produced RMVPE GGUF" "$gguf"
   [[ "$(sha256_file "$gguf")" == "$expected_gguf_sha256" ]] || die 'RMVPE GGUF hash does not match the VAST-supplied expected hash'
@@ -328,7 +344,7 @@ main() {
   } > "$evidence_dir/input-hashes.txt"
 
   log "running exact RMVPE CPU/upstream and Metal-vs-CPU parity"
-  env \
+  env CARGO_NET_OFFLINE=true \
     "$GGUF_ENV=$gguf" \
     "$PCM_ENV=$reference_dir/pcm.f32" \
     "$HIDDEN_ENV=$reference_dir/hidden.f32" \
@@ -336,7 +352,7 @@ main() {
     "$ARGMAX_ENV=$reference_dir/argmax.u32" \
     "$F0_ENV=$reference_dir/f0.f32" \
     RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release \
       -p vokra-models --features metal --test parity_rmvpe \
       -- --nocapture 2>&1 | tee "$evidence_dir/parity.log"
 
@@ -358,6 +374,7 @@ main() {
   {
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
     echo "upstream_repo=$UPSTREAM_REPO"
     echo "upstream_revision=$UPSTREAM_REVISION"
     echo "gguf_sha256=$gguf_sha"

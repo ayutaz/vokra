@@ -54,7 +54,8 @@ die() { log "ERROR: $*"; return 2; }
 usage() {
   cat <<'EOF' >&2
 usage: run-rmvpe-validation.sh --checkpoint-sha256 <64-hex> \
-         --approval-evidence <file> [--work-dir <absent-dir>]
+         --approval-evidence <file> --expected-head <40-hex> \
+         [--work-dir <absent-dir>]
        run-rmvpe-validation.sh --self-test
 
 VAST-only, non-publishing RMVPE validation worker.  It authenticates the
@@ -214,6 +215,17 @@ require_tooling() {
     || die "VAST checkout must be clean so evidence names one exact commit"
 }
 
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-fA-F]{40}$ ]] \
+    || die '--expected-head must be exactly 40 hexadecimal characters'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die 'VAST checkout must be clean before model work'
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] \
+    || die "checkout HEAD $actual_head does not match required $expected_head"
+}
+
 verify_locked_projects() {
   step "Verify exact locked Python projects offline"
   uv lock --check --offline --project "$PARITY_PROJECT" \
@@ -238,7 +250,7 @@ run_dependency_gate() {
     return 0
   else
     local rc=$?
-    log "RMVPE dependency/license gate blocked execution (exit $rc)"
+    log "BLOCKED_LICENSE: RMVPE dependency/license gate blocked execution (exit $rc)"
     return "$rc"
   fi
 }
@@ -251,6 +263,7 @@ record_environment() {
   {
     echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
     echo "git_branch=$(git -C "$VOKRA_ROOT" branch --show-current)"
     echo "upstream_repo=$UPSTREAM_REPO"
     echo "upstream_url=$UPSTREAM_URL"
@@ -380,6 +393,7 @@ run_self_test() (
     "$MODEL_KIND" "$LICENSE_SPDX" "fetch_rmvpe_pt.sh" "dump_reference.py" \
     "tools/audit/gguf_manifest.py" "_weights_only_torch_load" 'weights_only=False' \
     'verify_unknown_provenance' 'unzip' 'CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"' \
+    '--expected-head' 'require_clean_expected_head' \
     'torch.load(source, map_location="cpu", weights_only=True)' \
     'there is no unrestricted pickle fallback' \
     'rmvpe_inspect.py' 'run_dependency_gate' 'verify_locked_projects' 'prepare_checkpoint_safely' '--dependency-gate' \
@@ -401,9 +415,9 @@ run_self_test() (
     'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' 'MIN_VAST_MEM_KIB=67108864' \
     'MIN_FREE_DISK_KIB=150000000' 'MemTotal=' 'df -Pk' \
     'git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all' \
-    'cargo fmt --all -- --check' 'cargo test --locked --workspace' \
-    'cargo clippy --locked --workspace --all-targets -- -D warnings' \
-    'cargo deny check licenses advisories bans' 'cargo audit' \
+    'cargo fmt --all -- --check' 'cargo test --offline --locked --workspace' \
+    'cargo clippy --offline --locked --workspace --all-targets -- -D warnings' \
+    'cargo deny --locked --offline check' 'cargo audit --no-fetch' \
     'full RMVPE parity:' 'jointly voiced' 'path-B:'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: fail-closed gate lost token: $required"
@@ -432,7 +446,7 @@ run_self_test() (
     log "self-test FAIL: short checkpoint digest accepted"
     fail=1
   fi
-  for bad in '--checkpoint-sha256' '--checkpoint-sha256 -bad' '--checkpoint-sha256 0123 --checkpoint-sha256 4567' '--approval-evidence' '--approval-evidence -bad' '--approval-evidence a --approval-evidence b'; do
+  for bad in '--checkpoint-sha256' '--checkpoint-sha256 -bad' '--checkpoint-sha256 0123 --checkpoint-sha256 4567' '--approval-evidence' '--approval-evidence -bad' '--approval-evidence a --approval-evidence b' '--expected-head' '--expected-head -bad' '--expected-head 0123 --expected-head 4567'; do
     if eval "\"$script_path\" $bad" >/dev/null 2>&1; then
       log "self-test FAIL: malformed or duplicate option accepted: $bad"
       fail=1
@@ -443,9 +457,9 @@ run_self_test() (
 )
 
 main() {
-  local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir
+  local self_test=0 requested_work_dir="" approval_evidence="" expected_head="" run_stamp work_dir
   local checkpoint_sha256="" checkpoint_sha256_seen=0
-  local approval_seen=0 work_seen=0 self_seen=0
+  local approval_seen=0 work_seen=0 expected_head_seen=0 self_seen=0
   local input_dir public_dir upstream_dir fixture_dir evidence_dir
   local checkpoint public_gguf prepared_path gguf_path cli_log
   local gguf_metadata
@@ -472,6 +486,11 @@ main() {
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die '--approval-evidence requires a nonempty path'; return 2; }
         approval_seen=1; approval_evidence="$2"; shift 2
         ;;
+      --expected-head)
+        (( expected_head_seen == 0 )) || { die 'duplicate --expected-head'; return 2; }
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die '--expected-head requires a 40-hex commit'; return 2; }
+        expected_head_seen=1; expected_head="$2"; shift 2
+        ;;
       --self-test)
         (( self_seen == 0 )) || { die 'duplicate --self-test'; return 2; }
         self_seen=1
@@ -491,7 +510,7 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ -z "$requested_work_dir$checkpoint_sha256$approval_evidence" ]] \
+    [[ -z "$requested_work_dir$checkpoint_sha256$approval_evidence$expected_head" ]] \
       || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test
     return $?
@@ -502,7 +521,9 @@ main() {
     || { die "--checkpoint-sha256 must be exactly 64 hexadecimal characters"; return 2; }
   CHECKPOINT_SHA256="$(printf '%s' "$checkpoint_sha256" | tr '[:upper:]' '[:lower:]')"
   (( approval_seen == 1 )) || { die '--approval-evidence is required'; return 2; }
+  (( expected_head_seen == 1 )) || { die '--expected-head is required; evidence must name one exact clean commit'; return 2; }
 
+  require_clean_expected_head "$expected_head"
   license_preflight "$approval_evidence" "$CHECKPOINT_SHA256" || return $?
   run_dependency_gate || return $?
   require_vast_host
@@ -578,7 +599,7 @@ main() {
     || die "fixture metadata does not prove the 360-class head"
 
   step "Convert strict provenance-corrected RMVPE GGUF"
-  cargo build --locked --release -p vokra-cli 2>&1 | tee "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo build --offline --locked --release -p vokra-cli 2>&1 | tee "$workspace_log"
   target/release/vokra-cli convert --model "$MODEL_KIND" \
     --input "$prepared_path" --output "$gguf_path" --license "$LICENSE_SPDX" \
     2>&1 | tee -a "$workspace_log"
@@ -594,7 +615,7 @@ main() {
   export VOKRA_RMVPE_REAL_ARGMAX="$fixture_dir/argmax.u32"
   export VOKRA_RMVPE_REAL_F0="$fixture_dir/f0.f32"
   step "Run all real RMVPE CPU parity paths"
-  cargo test --locked -p vokra-models --test parity_rmvpe -- --nocapture \
+  CARGO_NET_OFFLINE=true cargo test --offline --locked -p vokra-models --test parity_rmvpe -- --nocapture \
     2>&1 | tee "$parity_log"
   for test_name in parity_rmvpe_gguf_smoke parity_rmvpe_full_upstream_f0 \
     parity_rmvpe_from_hidden_argmax_match_rate; do
@@ -617,10 +638,10 @@ main() {
   bash "$VOKRA_ROOT/scripts/check-zero-deps.sh" 2>&1 | tee -a "$workspace_log"
   bash "$VOKRA_ROOT/scripts/check-bound-arch-coverage.sh" 2>&1 | tee -a "$workspace_log"
   cargo fmt --all -- --check 2>&1 | tee -a "$workspace_log"
-  cargo test --locked --workspace 2>&1 | tee -a "$workspace_log"
-  cargo clippy --locked --workspace --all-targets -- -D warnings 2>&1 | tee "$clippy_log"
-  cargo deny check licenses advisories bans 2>&1 | tee -a "$workspace_log"
-  cargo audit 2>&1 | tee -a "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo test --offline --locked --workspace 2>&1 | tee -a "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo clippy --offline --locked --workspace --all-targets -- -D warnings 2>&1 | tee "$clippy_log"
+  cargo deny --locked --offline check 2>&1 | tee -a "$workspace_log"
+  cargo audit --no-fetch 2>&1 | tee -a "$workspace_log"
 
   {
     echo "execution_status=PASS"

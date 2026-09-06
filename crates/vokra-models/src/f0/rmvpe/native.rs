@@ -395,6 +395,14 @@ pub(super) fn validate_contract(gguf: &GgufFile) -> Result<ContractFlavor, Vokra
     let source_revision = gguf
         .get(GGUF_KEY_UPSTREAM_REVISION)
         .and_then(|value| value.as_str());
+    if license != Some("unknown") || weight_license != Some("unknown") {
+        return Err(model_load(format!(
+            "RMVPE provenance is mis-stamped as license={license:?}, \
+             weight_license={weight_license:?}; the fixed `yxlllc/RMVPE` source \
+             has no authenticated LICENSE, so only provenance-corrected `unknown` \
+             terms are accepted (audited public revision {PUBLIC_HF_REVISION})"
+        )));
+    }
     match flavor {
         ContractFlavor::Canonical => {
             if source_revision != Some(UPSTREAM_REVISION) {
@@ -409,14 +417,6 @@ pub(super) fn validate_contract(gguf: &GgufFile) -> Result<ContractFlavor, Vokra
                 return Err(model_load(format!(
                     "historical artifact source revision {source_revision:?} conflicts with \
                      fixed {UPSTREAM_REVISION}"
-                )));
-            }
-            if license != Some("unknown") || weight_license != Some("unknown") {
-                return Err(model_load(format!(
-                    "the historical public artifact is mis-stamped as license={license:?}, \
-                     weight_license={weight_license:?}, but `yxlllc/RMVPE` has no LICENSE; \
-                     use a provenance-corrected `unknown` artifact under an explicit policy \
-                     (audited public revision {PUBLIC_HF_REVISION})"
                 )));
             }
         }

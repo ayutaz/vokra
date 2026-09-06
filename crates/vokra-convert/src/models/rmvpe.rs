@@ -37,9 +37,9 @@
 //! `Dream-High/RMVPE` is Apache-2.0, but it is not a GitHub fork relationship.
 //! The exact `yxlllc/RMVPE` repository and checkpoint carry no license grant
 //! (GitHub API rechecked 2026-08-26). Code and weight therefore default to
-//! [`LicenseClass::Unknown`] and stay fail-closed. A caller may pass an SPDX
-//! override only after independently establishing terms for the exact source
-//! and checkpoint.
+//! [`LicenseClass::Unknown`] and stay fail-closed. This converter rejects
+//! every permissive or caller-supplied override until an owner/legal decision
+//! binds terms for this exact source and checkpoint.
 //!
 //! # BF16 posture
 //!
@@ -67,7 +67,8 @@
 //! side-car tool, not part of the runtime).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
@@ -102,8 +103,8 @@ pub const UPSTREAM_REVISION: &str = "0aabafba18289ca938a73af0b0297686abf4922d";
 
 /// Fail-closed weight license marker. `Dream-High/RMVPE` code is
 /// Apache-2.0, but the checkpoint-publishing `yxlllc/RMVPE` repository
-/// has no license declaration. Override via [`convert_rmvpe_file`] only
-/// after verifying terms for the exact checkpoint.
+/// has no license declaration. Until an owner/legal decision binds this exact
+/// source and checkpoint, only this value may be emitted.
 pub const DEFAULT_LICENSE: &str = "unknown";
 
 /// Ad-hoc metadata key for the model category. Kept as a converter-side
@@ -341,6 +342,69 @@ fn contract_error(message: impl Into<String>) -> ConvertError {
     ConvertError::Parse(format!("rmvpe: {} (FR-EX-08)", message.into()))
 }
 
+/// Validate conversion paths without following a symlinked ancestor. The
+/// converter writes a large artifact and must not be redirected outside the
+/// operator's intended tree; lexical `.` / `..` components are rejected so
+/// the check cannot be bypassed by path normalization.
+fn validate_conversion_path(
+    path: &Path,
+    label: &str,
+    require_regular: bool,
+    require_absent: bool,
+) -> Result<(), ConvertError> {
+    let mut current = PathBuf::new();
+    let components: Vec<Component<'_>> = path.components().collect();
+    if components.is_empty() {
+        return Err(contract_error(format!("{label} path is empty")));
+    }
+    for (index, component) in components.iter().enumerate() {
+        match component {
+            Component::CurDir | Component::ParentDir => {
+                return Err(contract_error(format!(
+                    "{label} path `{}` contains a dot component",
+                    path.display()
+                )));
+            }
+            Component::Normal(_) | Component::Root | Component::Prefix(_) => {
+                current.push(component.as_os_str());
+            }
+        }
+        let is_final = index + 1 == components.len();
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(contract_error(format!(
+                        "{label} path `{}` has a symlinked component `{}`",
+                        path.display(),
+                        current.display()
+                    )));
+                }
+                if is_final {
+                    if require_absent {
+                        return Err(contract_error(format!(
+                            "{label} `{}` already exists; conversion is no-clobber",
+                            path.display()
+                        )));
+                    }
+                    if require_regular && !metadata.file_type().is_file() {
+                        return Err(contract_error(format!(
+                            "{label} `{}` must be a regular file",
+                            path.display()
+                        )));
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !is_final {
+                    break;
+                }
+            }
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+    }
+    Ok(())
+}
+
 fn validate_tensor_contract(st: &SafetensorsFile) -> Result<BTreeSet<String>, ConvertError> {
     let contract = tensor_contract();
     let actual: BTreeMap<&str, _> = st
@@ -477,13 +541,23 @@ pub struct RmvpeReport {
 /// and RMVPE hparams so the runtime binder can bring the graph up
 /// without a side-car config lookup.
 ///
-/// `license` overrides the fail-closed `DEFAULT_LICENSE` (`"unknown"`)
-/// after the caller has verified terms for the exact checkpoint.
+/// `license` is accepted only when it is the fail-closed `"unknown"` marker.
+/// A permissive override would falsely certify the unlicensed exact source and
+/// is rejected before the input is opened.
 pub fn convert_rmvpe_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<RmvpeReport, ConvertError> {
+    if let Some(license) = license {
+        if license != DEFAULT_LICENSE {
+            return Err(contract_error(format!(
+                "license override `{license}` is refused: the fixed yxlllc/RMVPE source has no authenticated license; only `unknown` is permitted"
+            )));
+        }
+    }
+    validate_conversion_path(input, "input", true, false)?;
+    validate_conversion_path(output, "output", false, true)?;
     // Whole-file read: an RMVPE checkpoint is below the repository's 2 GB
     // remote-work threshold — no need for the
     // streaming path the Moshi / Voxtral GB-scale converters run.
@@ -559,7 +633,17 @@ pub fn convert_rmvpe_file(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Parse(e.to_string()))?;
-    std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
+    let mut output_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .map_err(ConvertError::Io)?;
+    if let Err(error) = output_file.write_all(&out_bytes) {
+        drop(output_file);
+        let _ = std::fs::remove_file(output);
+        return Err(ConvertError::Io(error));
+    }
+    output_file.sync_all().map_err(ConvertError::Io)?;
     Ok(report)
 }
 
@@ -649,6 +733,70 @@ mod tests {
         assert!(!output.exists());
 
         std::fs::remove_file(&input).ok();
+    }
+
+    #[test]
+    fn unlicensed_source_rejects_permissive_license_override() {
+        let error = convert_rmvpe_file(
+            Path::new("/definitely/missing/rmvpe.safetensors"),
+            Path::new("/definitely/missing/rmvpe.gguf"),
+            Some("MIT"),
+        )
+        .expect_err("the exact unlicensed source must not be stamped MIT");
+        assert!(
+            error.to_string().contains("only `unknown` is permitted"),
+            "license rejection must explain the fail-closed policy: {error}"
+        );
+    }
+
+    #[test]
+    fn conversion_path_gate_rejects_dot_components_and_existing_outputs() {
+        let root = scratch_path("path-gate");
+        std::fs::create_dir_all(&root).expect("create path-gate directory");
+        let input = root.join("input.safetensors");
+        std::fs::write(&input, b"not a checkpoint").expect("write input");
+        let existing = root.join("existing.gguf");
+        std::fs::write(&existing, b"keep").expect("write existing output");
+        assert!(validate_conversion_path(&input, "input", true, false).is_ok());
+        assert!(validate_conversion_path(&existing, "output", false, true).is_err());
+        assert!(
+            validate_conversion_path(&root.join("./input.safetensors"), "input", true, false)
+                .is_err()
+        );
+        assert!(
+            validate_conversion_path(
+                &root.join("nested/../input.safetensors"),
+                "input",
+                true,
+                false
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conversion_path_gate_rejects_symlinked_input_and_output_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let root = scratch_path("symlink-gate");
+        let target = root.join("target");
+        let link = root.join("link");
+        std::fs::create_dir_all(&target).expect("create target");
+        std::fs::write(target.join("input.safetensors"), b"input").expect("write input");
+        symlink(&target, &link).expect("create ancestor symlink");
+        assert!(
+            validate_conversion_path(&link.join("input.safetensors"), "input", true, false)
+                .is_err()
+        );
+        assert!(
+            validate_conversion_path(&link.join("output.gguf"), "output", false, true).is_err()
+        );
+        let final_link = root.join("final-input");
+        symlink(target.join("input.safetensors"), &final_link).expect("create final symlink");
+        assert!(validate_conversion_path(&final_link, "input", true, false).is_err());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The generated converter manifest is independently count-pinned so a
