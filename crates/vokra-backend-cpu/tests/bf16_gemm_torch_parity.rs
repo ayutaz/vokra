@@ -143,14 +143,12 @@ fn avx512_bf16_gemm_matches_pytorch_reference() {
 #[test]
 #[ignore = "run on Darwin arm64 with hardware BF16 support; no local model/Torch execution"]
 fn apple_silicon_neon_bf16_gemm_matches_pytorch_reference() {
-    assert!(
-        cfg!(target_os = "macos"),
-        "Apple BF16 parity requires macOS; this explicit test must not skip"
-    );
-    assert!(
-        cfg!(target_arch = "aarch64"),
-        "Apple BF16 parity requires arm64; this explicit test must not skip"
-    );
+    if !cfg!(target_os = "macos") {
+        panic!("Apple BF16 parity requires macOS; this explicit test must not skip");
+    }
+    if !cfg!(target_arch = "aarch64") {
+        panic!("Apple BF16 parity requires arm64; this explicit test must not skip");
+    }
 
     let features = CpuFeatures::detect();
     assert!(
