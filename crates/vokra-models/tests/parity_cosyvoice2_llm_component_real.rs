@@ -391,12 +391,12 @@ fn authenticate_external_license_manifest(path: &Path) {
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     );
+    let manifest_bytes = fs::read(path).expect("external owner-signed license manifest bytes");
     assert_eq!(
-        sha256_file(path),
+        sha256_hex(&manifest_bytes),
         expected_sha,
         "external license manifest digest"
     );
-    let manifest_bytes = fs::read(path).expect("external owner-signed license manifest bytes");
     reject_duplicate_json_keys(&manifest_bytes, "external owner-signed license manifest");
     let manifest = vokra_core::json::parse(&manifest_bytes)
         .expect("external owner-signed license manifest JSON");
