@@ -374,6 +374,7 @@ fn validate_conversion_path(
         return Err(contract_error(format!("{label} path is empty")));
     }
     for (index, component) in components.iter().enumerate() {
+        let is_final = index + 1 == components.len();
         match component {
             Component::CurDir | Component::ParentDir => {
                 return Err(contract_error(format!(
@@ -381,11 +382,24 @@ fn validate_conversion_path(
                     path.display()
                 )));
             }
-            Component::Normal(_) | Component::RootDir | Component::Prefix(_) => {
+            Component::Prefix(_) => {
+                // On Windows a drive prefix such as `C:` is not itself a
+                // filesystem path; querying it with symlink_metadata can
+                // return `ERROR_INVALID_FUNCTION`. Defer the first probe
+                // until RootDir/Normal has been appended.
+                if is_final {
+                    return Err(contract_error(format!(
+                        "{label} path `{}` ends at an incomplete Windows prefix",
+                        path.display()
+                    )));
+                }
+                current.push(component.as_os_str());
+                continue;
+            }
+            Component::Normal(_) | Component::RootDir => {
                 current.push(component.as_os_str());
             }
         }
-        let is_final = index + 1 == components.len();
         match std::fs::symlink_metadata(&current) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() {

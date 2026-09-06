@@ -2251,7 +2251,12 @@ mod tests {
     }
 
     fn temp_path(label: &str, ext: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
+        // The production gate rejects symlinked ancestors. macOS exposes the
+        // temporary directory through `/var`, which is a symlink to
+        // `/private/var`; use the canonical test root so the fixture paths
+        // exercise the intended gate on every host.
+        let mut p = std::fs::canonicalize(std::env::temp_dir())
+            .expect("system temporary directory must be canonicalizable");
         p.push(format!("vokra-sbv2-{label}-{}.{ext}", std::process::id()));
         p
     }
@@ -2275,7 +2280,9 @@ mod tests {
             matches!(dot, ConvertError::Parse(message) if message.contains("dot path component"))
         );
 
-        let existing = reject_sbv2_path(Path::new("/tmp"), "output", false)
+        let existing = std::fs::canonicalize(std::env::temp_dir())
+            .expect("system temporary directory must be canonicalizable");
+        let existing = reject_sbv2_path(&existing, "output", false)
             .expect_err("an existing output path must never be clobbered");
         assert!(
             matches!(existing, ConvertError::Parse(message) if message.contains("must be absent"))
