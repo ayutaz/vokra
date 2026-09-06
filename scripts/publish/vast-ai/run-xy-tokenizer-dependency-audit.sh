@@ -14,7 +14,8 @@ die() { echo "xy-tokenizer-dependency-audit: ERROR: $*" >&2; exit 2; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: run-xy-tokenizer-dependency-audit.sh --evidence-output ABSENT_DIR
+usage: run-xy-tokenizer-dependency-audit.sh --evidence-output ABSENT_DIR \
+       --expected-head 40-HEX
        run-xy-tokenizer-dependency-audit.sh --self-test
 
 The worker is Linux/x86_64 VAST-only and requires VOKRA_PUBLISH_ON_VAST=1.
@@ -53,19 +54,32 @@ self_test() {
     || die "all local uv launches must be offline"
   grep -Fq -- 'VOKRA_PUBLISH_ON_VAST=1' "${BASH_SOURCE[0]}" \
     || die "VAST gate contract is missing"
+  grep -Fq -- '--expected-head' "${BASH_SOURCE[0]}" \
+    || die "exact-head gate contract is missing"
   echo "run-xy-tokenizer-dependency-audit.sh self-test: OK (model-free/fake archive only)"
 }
 
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-fA-F]{40}$ ]] || die "--expected-head must be exactly 40 hexadecimal characters"
+  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die "VAST checkout must be clean"
+  actual_head="$(git -C "$ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match expected $expected_head"
+}
+
 evidence_output=""
+expected_head=""
+expected_head_seen=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --evidence-output) [[ $# -ge 2 ]] || die "--evidence-output requires a path"; evidence_output="$2"; shift 2 ;;
+    --expected-head) (( expected_head_seen == 0 )) || die "duplicate --expected-head"; [[ $# -ge 2 ]] || die "--expected-head requires a value"; expected_head="$2"; expected_head_seen=1; shift 2 ;;
     --self-test) [[ $# == 1 ]] || die "--self-test accepts no arguments"; self_test; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$evidence_output" ]] || { usage; exit 2; }
+[[ -n "$evidence_output" && -n "$expected_head" ]] || { usage; exit 2; }
 [[ "$evidence_output" = /* ]] || die "evidence output must be absolute"
 [[ ! -L "$PROJECT" && -d "$PROJECT" ]] || die "dependency project is missing or symlinked"
 [[ ! -L "$evidence_output" && ! -e "$evidence_output" ]] \
@@ -83,8 +97,7 @@ done
 [[ -f "$PROJECT/license_evidence.json" && ! -L "$PROJECT/license_evidence.json" ]] \
   || die "license_evidence.json is absent or symlinked"
 [[ -d "$ROOT/.git" ]] || die "not a Vokra checkout"
-[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] \
-  || die "VAST checkout must be clean"
+require_clean_expected_head "$expected_head"
 command -v realpath >/dev/null 2>&1 || die "realpath is required"
 project_real="$(realpath -e "$PROJECT")"
 root_real="$(realpath -e "$ROOT")" || die "repository root cannot be canonicalized"

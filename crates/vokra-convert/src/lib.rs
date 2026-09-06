@@ -1016,7 +1016,7 @@ pub enum ModelKind {
     /// BF16 tensor passes through verbatim. Provenance = **MIT**
     /// (Permissive).
     Funcodec,
-    /// fnlp **XY_Tokenizer_TTSD_V0** safetensors checkpoint (SoTA
+    /// OpenMOSS **XY_Tokenizer_TTSD_V0** safetensors checkpoint (SoTA
     /// plan Phase 5 codec, 2026-07-25). Category = `codec`. 1 kbps
     /// RVQ-8 @ 12.5 Hz — the codec half of MOSS-TTSD. BF16 pass-
     /// through skeleton — every F32 / F16 / BF16 tensor passes
@@ -4260,8 +4260,7 @@ impl ModelKind {
             "xy-tokenizer"
             | "xy_tokenizer"
             | "xy-tokenizer-ttsd-v0"
-            | "xy_tokenizer_ttsd_v0"
-            | "fnlp/xy_tokenizer_ttsd_v0" => Some(Self::XyTokenizer),
+            | "xy_tokenizer_ttsd_v0" => Some(Self::XyTokenizer),
             "bicodec"
             | "bi-codec"
             | "bi_codec"
@@ -13298,7 +13297,7 @@ pub use models::voxtral::VoxtralConfig;
 /// integration-test call sites can name the enum without depending on
 /// `vokra-core::gguf::silero` directly.
 pub use vokra_core::gguf::silero::SileroVariant;
-// SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
+// SoTA plan Phase 5 codec (2026-07-25): OpenMOSS XY_Tokenizer_TTSD_V0
 // (apache-2.0) — self-contained file-based entry point with an SPDX
 // override argument (mirror of the `denoise` re-export pattern; the
 // `models::xy_tokenizer` module is private otherwise).

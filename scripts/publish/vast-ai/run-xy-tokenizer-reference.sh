@@ -15,7 +15,7 @@ die() { echo "xy-tokenizer-reference: ERROR: $*" >&2; exit 2; }
 usage() {
   cat >&2 <<'EOF'
 usage: run-xy-tokenizer-reference.sh --source-dir DIR --checkpoint FILE \
-  --config FILE --output EMPTY_TMPFS_DIR
+  --config FILE --output EMPTY_TMPFS_DIR --expected-head 40-HEX
        run-xy-tokenizer-reference.sh --self-test
 
 The real route is Linux/x86_64 VAST only and requires VOKRA_PUBLISH_ON_VAST=1.
@@ -38,8 +38,9 @@ self_test() {
     'CHECKPOINT_SHA256' 'CONFIG_SHA256' 'DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER' \
     'inference_tokenize' 'inference_detokenize' 'feature_extractor' 'semantic_encoder' \
     'acoustic_encoder' 'quantizer' 'acoustic_decoder' 'vocos' 'input_waveform.f32' \
-    'dependency_audit.json' 'uv.lock' '--dependency-audit' 'NO_UPLOAD' 'must be empty'; do
-    grep -Fq -- "$token" "$REFERENCE" || die "reference contract lost token: $token"
+    'dependency_audit.json' 'uv.lock' '--dependency-audit' '--expected-head' 'require_clean_expected_head' 'NO_UPLOAD' 'must be empty'; do
+    grep -Fq -- "$token" "$REFERENCE" || grep -Fq -- "$token" "${BASH_SOURCE[0]}" \
+      || die "reference contract lost token: $token"
   done
   grep -Fq -- 'after every model-free gate' "${BASH_SOURCE[0]}" \
     || die "worker output-creation gate comment is missing"
@@ -51,23 +52,34 @@ self_test() {
   echo "run-xy-tokenizer-reference.sh self-test: OK (model-free contract checks)"
 }
 
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-fA-F]{40}$ ]] || die "--expected-head must be exactly 40 hexadecimal characters"
+  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die "VAST checkout must be clean"
+  actual_head="$(git -C "$ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match expected $expected_head"
+}
+
 source_dir=""
 checkpoint=""
 config=""
 output=""
+expected_head=""
+expected_head_seen=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --source-dir) [[ $# -ge 2 ]] || die "--source-dir requires a path"; source_dir="$2"; shift 2 ;;
     --checkpoint) [[ $# -ge 2 ]] || die "--checkpoint requires a path"; checkpoint="$2"; shift 2 ;;
     --config) [[ $# -ge 2 ]] || die "--config requires a path"; config="$2"; shift 2 ;;
     --output) [[ $# -ge 2 ]] || die "--output requires a path"; output="$2"; shift 2 ;;
+    --expected-head) (( expected_head_seen == 0 )) || die "duplicate --expected-head"; [[ $# -ge 2 ]] || die "--expected-head requires a value"; expected_head="$2"; expected_head_seen=1; shift 2 ;;
     --self-test) [[ $# == 1 ]] || die "--self-test accepts no arguments"; self_test; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
-[[ -n "$source_dir" && -n "$checkpoint" && -n "$config" && -n "$output" ]] \
+[[ -n "$source_dir" && -n "$checkpoint" && -n "$config" && -n "$output" && -n "$expected_head" ]] \
   || { usage; exit 2; }
 for path in "$source_dir" "$checkpoint" "$config" "$output"; do
   [[ "$path" = /* ]] || die "all source/model/output paths must be absolute"
@@ -86,6 +98,7 @@ done
 [[ "$(uname -m)" == "x86_64" ]] || die "official model execution requires x86_64"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
 [[ -d "$ROOT/.git" ]] || die "not a Vokra checkout"
+require_clean_expected_head "$expected_head"
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] \
   || die "VAST checkout must be clean"
 command -v findmnt >/dev/null 2>&1 || die "findmnt is required"
@@ -126,4 +139,4 @@ uv run --frozen --project "$DEPENDENCY_PROJECT" --python 3.12 python "$REFERENCE
   --source-dir "$source_dir" --checkpoint "$checkpoint" --config "$config" --output "$output" \
   --dependency-project "$DEPENDENCY_PROJECT"
 [[ -s "$output/manifest.json" ]] || die "reference manifest was not produced"
-echo "XY official reference evidence: $output (NO_UPLOAD)"
+echo "XY official reference evidence: $output (NO_UPLOAD; expected_head=$expected_head)"

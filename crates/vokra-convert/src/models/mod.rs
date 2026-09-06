@@ -609,7 +609,7 @@ pub(crate) mod whisper;
 // license default is NonCommercial (fail-closed) so a commercial-mode
 // caller cannot silently bring up NC weights.
 pub(crate) mod xcodec2;
-// SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
+// SoTA plan Phase 5 codec (2026-07-25): OpenMOSS XY_Tokenizer_TTSD_V0
 // (apache-2.0) safetensors → GGUF. 1 kbps RVQ-8 @ 12.5 Hz — the codec
 // half of MOSS-TTSD. F32 / F16 / BF16 pass-through following the
 // qwen3_tts / vibevoice / voxcpm2 landed contract.

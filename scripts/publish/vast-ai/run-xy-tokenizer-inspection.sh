@@ -25,7 +25,7 @@ MIN_FREE_DISK_KIB=$((30 * 1024 * 1024))
 usage() {
   cat <<'EOF'
 Usage:
-  run-xy-tokenizer-inspection.sh [--work-dir <tmpfs-dir>]
+  run-xy-tokenizer-inspection.sh --expected-head <40-hex> [--work-dir <tmpfs-dir>]
   run-xy-tokenizer-inspection.sh --self-test
 
 The real path is VAST-only: Linux x86_64, clean checkout, 128 GiB RAM, and
@@ -38,6 +38,17 @@ EOF
 die() {
   echo "run-xy-tokenizer-inspection: $*" >&2
   exit 1
+}
+
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-fA-F]{40}$ ]] \
+    || die "--expected-head must be exactly 40 hexadecimal characters"
+  [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
+    || die "worktree is not clean; expected one committed source head"
+  actual_head="$(git rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] \
+    || die "checkout HEAD $actual_head does not match expected $expected_head"
 }
 
 run_self_test() {
@@ -67,8 +78,8 @@ run_self_test() {
   cases=$((cases + 1))
   for required in \
     'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' \
-    'git status --porcelain --untracked-files=all' 'findmnt' \
-    'cargo fmt --all -- --check' 'cargo build --locked --release -p vokra-cli' \
+    'git status --porcelain --untracked-files=all' 'findmnt' '--expected-head' 'require_clean_expected_head' \
+    'cargo fmt --all -- --check' 'cargo build --offline --locked --release -p vokra-cli' \
     'uv run --frozen --project tools/parity --python 3.12' \
     'vokra-cli" convert --model xy-tokenizer' 'apache-2.0' 'exit 2'; do
     if ! grep -Fq -- "$required" "$script_path"; then
@@ -118,6 +129,8 @@ run_self_test() {
 }
 
 work_dir="/dev/shm/vokra-xy-tokenizer-inspection"
+expected_head=""
+expected_head_seen=0
 self_test=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -125,13 +138,18 @@ while [[ $# -gt 0 ]]; do
     --work-dir)
       [[ $# -ge 2 ]] || die "--work-dir requires a path"
       work_dir="$2"; shift 2 ;;
+    --expected-head)
+      (( expected_head_seen == 0 )) || die "duplicate --expected-head"
+      [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "--expected-head requires a 40-hex commit"
+      expected_head="$2"; expected_head_seen=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if [[ $self_test -eq 1 ]]; then
-  [[ "$work_dir" == "/dev/shm/vokra-xy-tokenizer-inspection" ]] \
-    || die "--self-test accepts no other arguments"
+  if [[ "$work_dir" != "/dev/shm/vokra-xy-tokenizer-inspection" ]] || (( expected_head_seen != 0 )); then
+    die "--self-test accepts no other arguments"
+  fi
   run_self_test
   exit $?
 fi
@@ -142,6 +160,8 @@ fi
   || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$repo_root"
+(( expected_head_seen == 1 )) || die "--expected-head is required"
+require_clean_expected_head "$expected_head"
 [[ -f Cargo.toml && -d crates/vokra-convert ]] || die "not a Vokra checkout"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
   || die "worktree is not clean; transfer a committed git-bundle checkpoint"
@@ -187,7 +207,7 @@ export RUST_BACKTRACE=1
 run_logged cargo fmt --all -- --check
 run_logged bash scripts/check-forbidden-symbols.sh
 run_logged bash scripts/check-zero-deps.sh
-run_logged cargo build --locked --release -p vokra-cli
+run_logged cargo build --offline --locked --release -p vokra-cli
 
 run_logged "${UV_CMD[@]}" - "$UPSTREAM_REPOSITORY" "$UPSTREAM_REVISION" "$cache_dir" "$snapshot_path_file" "$server_packet" <<'PY'
 import os
@@ -370,6 +390,8 @@ grep -Fq "INSPECTION_ONLY" "$evidence_dir/converter-refusal.log" \
 
 {
   echo "verdict=INSPECTION_ONLY"
+  echo "git_commit=$(git rev-parse HEAD)"
+  echo "expected_head=$expected_head"
   echo "runtime_parity=NOT_RUN"
   echo "numerical_parity=NOT_RUN"
   echo "upstream_revision=$UPSTREAM_REVISION"
