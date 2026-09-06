@@ -114,12 +114,37 @@ inventing implementation:
   dedicated reference lock/license closure, exact HTSAT preprocessing and
   state-dict role/shape manifest are absent.
 
+The next source-repair wave adds five further model-free commits:
+
+- Qwen3-TTS conversion now rejects symlinked/non-regular sidecars and uses a
+  create-new, no-clobber output boundary at `dd60e76e`; all four 12-Hz
+  variant/topology/speaker/sidecar/companion contracts were already present.
+- MOSS Audio Tokenizer conversion now rejects the canonical 374-tensor Nano
+  manifest when a caller attempts to stamp it as Full or v2 at `24be04a8`;
+  runtime identities and strict manifests remain disjoint.
+- VoxLingua107 conversion now rejects duplicate prepared JSON/tensor keys,
+  non-regular inputs and pre-existing/symlink outputs at `d04dde6b`. Its exact
+  ECAPA/XVector/classifier axes and ordered 107-label contract already exist.
+- BiCodec now requires the audited CC-BY-NC-SA-4.0 research-only/share-alike
+  provenance source at runtime and writes no-clobber conversions at
+  `40da236f`; permissive relabeling cannot make the artifact executable.
+- Canary 1B Flash/v2 conversion now checks descriptor counts before set
+  comparison at `66811766`, rejecting duplicate/partial input as well as the
+  known encoder-only Flash and timestamp-auxiliary v2 artifacts.
+
+Three further audits found no honest source edit to make: AudioGen still lacks
+exact T5/16-kHz-EnCodec companion identities; MOSS TTS Local already strictly
+requires its 48-kHz stereo tokenizer-v2 companion; and ReazonSpeech NeMo v2
+already has its exact 965-tensor, 3,000-piece vocabulary and runtime-axis
+contracts. Their remaining work is factual input closure and VAST/Apple
+execution, not another speculative local shim.
+
 These commits passed repository formatting, locked metadata and diff-hygiene
 checks without model acquisition or execution. `vokra-models` compile/test is
-reserved for VAST under the maintainer-Mac memory policy, so none of the six
+reserved for VAST under the maintainer-Mac memory policy, so none of the eleven
 is a numerical verdict and the 63-row unresolved classification is unchanged.
 
-The implementation head advanced through `a98eb45b` in this wave. The PR
+The implementation head advanced through `66811766` in this wave. The PR
 remote at the start of the wave was `d241305f`; all checks at that remote
 commit were green and GitHub reported the PR mergeable. The local
 implementation/test commits are deliberately kept unpushed until their VAST
@@ -895,26 +920,26 @@ authorization.
 
 | Repository | Remaining pre-Scaleway work |
 |---|---|
-| `vokra/audiogen-medium` | Replace the LM-only artifact with the authenticated T5 conditioner and official 16-kHz EnCodec companion contract. |
-| `vokra/bicodec` | Replace the permissive provenance with the audited CC-BY-NC-SA-4.0 research-only identity and bind the strict runtime. |
-| `vokra/canary-1b-flash` | Convert the full released encoder, four-layer AED decoder and tokenizer instead of the encoder-only live GGUF. |
-| `vokra/canary-1b-v2` | Replace the duplicated timestamp auxiliary checkpoint with the correct main checkpoint, decoder and tokenizer. |
+| `vokra/audiogen-medium` | Authenticate exact T5 conditioner and official 16-kHz EnCodec companion repository/revision/config/weight topology, then replace the intentionally non-executable LM-only artifact with a complete composite. |
+| `vokra/bicodec` | The converter/runtime now enforce the audited CC-BY-NC-SA-4.0 research-only/share-alike identity at `40da236f`. Regenerate and verify the public artifact on VAST, retain the non-commercial publication gate, then run Apple evidence. |
+| `vokra/canary-1b-flash` | The source converter already binds the full encoder, four-layer AED decoder and tokenizer and rejects encoder-only/duplicate/partial checkpoints at `66811766`. Regenerate the public GGUF and run exact-head VAST/Apple parity. |
+| `vokra/canary-1b-v2` | The source converter already binds the correct main checkpoint, eight-layer decoder and tokenizer and rejects timestamp-auxiliary/duplicate/partial checkpoints at `66811766`. Regenerate the public GGUF and run exact-head VAST/Apple parity. |
 | `vokra/conv-tasnet-libri1mix` | Keep the corrected 345-tensor topology, but resolve the conflicting CC-BY-SA/WHAM declarations before any replacement. |
 | `vokra/htdemucs-multi` | Authenticate the five-member ensemble configuration, ordering, weights, dependency/license closure and native runtime; the digest inspection alone is not parity. |
-| `vokra/lang-id-voxlingua107` | Add the XVector classifier, label vocabulary and exact topology; the live embedding-only artifact is incomplete. |
+| `vokra/lang-id-voxlingua107` | The source converter/runtime already bind ECAPA plus the 12-tensor XVector classifier, ordered 107-label vocabulary and exact axes; conversion input/output and duplicate-key gates are hardened at `d04dde6b`. Regenerate the incomplete public artifact and run VAST/Apple parity. |
 | `vokra/mms-1b-all-base` | Define a dedicated CC-BY-NC backbone-plus-language-adapter contract and vocabulary; the 8.9-MB adapter is not the 1B model. |
 | `vokra/moss-audio-4b-instruct` | Authenticate its distinct topology and add a strict binder; the broad `moss_tts` tag is insufficient. |
 | `vokra/moss-audio-8b-instruct` | Authenticate its distinct topology and add a strict binder; the broad `moss_tts` tag is insufficient. |
-| `vokra/moss-audio-tokenizer-nano` | Replace the artifact mis-stamped as the Full variant with correct Nano name, variant and provenance. |
-| `vokra/moss-tts-local-transformer-v1.5` | Complete the distinct 48-kHz stereo tokenizer-v2 companion boundary. |
+| `vokra/moss-audio-tokenizer-nano` | The source converter/runtime distinguish the canonical Nano identity and 374-tensor manifest and reject Full/v2 restamping at `24be04a8`. Resolve the remaining upstream source-file SHA gate, then regenerate and verify the mis-stamped public artifact. |
+| `vokra/moss-tts-local-transformer-v1.5` | The source runtime already requires the exact 48-kHz stereo, 32-codebook tokenizer-v2 companion and rejects Full/Nano. Run real GGUF CPU/reference parity on VAST, then Apple evidence. |
 | `vokra/nsnet2` | Resolve live MIT provenance against the audited upstream CC-BY-4.0 identity before replacement. |
 | `vokra/qwen3-asr-0.6b` | The converter/runtime source already binds the three execution metadata keys and all five authenticated tokenizer/chat/generation sidecars. Regenerate the public GGUF on VAST and rerun independent CPU plus Apple evidence. |
 | `vokra/qwen3-asr-1.7b` | The converter/runtime source already binds the three execution metadata keys and all five authenticated tokenizer/chat/generation sidecars. Regenerate the public GGUF on VAST and rerun independent CPU plus Apple evidence. |
-| `vokra/qwen3-tts-12hz-0.6b-base` | Regenerate with variant topology, speaker-encoder contract, embedded BPE sidecars and the explicit 12-Hz speech-tokenizer companion. |
-| `vokra/qwen3-tts-12hz-0.6b-customvoice` | Correct the Base mis-stamp, add variant metadata/BPE sidecars and authenticate the 12-Hz companion. |
-| `vokra/qwen3-tts-12hz-1.7b-base` | Correct the 0.6B mis-stamp/topology, add BPE sidecars and authenticate the 12-Hz companion. |
-| `vokra/qwen3-tts-12hz-1.7b-customvoice` | Correct the 0.6B mis-stamp/topology, add BPE sidecars and authenticate the 12-Hz companion. |
-| `vokra/reazonspeech-nemo-v2` | Regenerate with the embedded 3,000-piece vocabulary and runtime-axis metadata; repeat exact-head VAST evidence. |
+| `vokra/qwen3-tts-12hz-0.6b-base` | The four-variant source contract already includes exact topology, speaker encoder, BPE sidecars and 12-Hz companion; sidecar/no-clobber gates are hardened at `dd60e76e`. Regenerate and verify the public GGUF on VAST. |
+| `vokra/qwen3-tts-12hz-0.6b-customvoice` | The source contract already rejects Base/CustomVoice drift and binds sidecars/12-Hz companion; sidecar/no-clobber gates are hardened at `dd60e76e`. Regenerate the mis-stamped public GGUF and verify it on VAST. |
+| `vokra/qwen3-tts-12hz-1.7b-base` | The source contract already rejects 0.6B/1.7B drift and binds sidecars/12-Hz companion; sidecar/no-clobber gates are hardened at `dd60e76e`. Regenerate the public GGUF and verify it on VAST. |
+| `vokra/qwen3-tts-12hz-1.7b-customvoice` | The source contract already rejects model-size/variant drift and binds sidecars/12-Hz companion; sidecar/no-clobber gates are hardened at `dd60e76e`. Regenerate the public GGUF and verify it on VAST. |
+| `vokra/reazonspeech-nemo-v2` | The source converter/runtime already bind the exact 965-tensor checkpoint, embedded 3,000-piece vocabulary and runtime axes. Regenerate the stale public artifact and repeat exact-head VAST plus Apple evidence. |
 | `vokra/rmvpe` | Resolve the absence of an upstream license for the exact source repository; the live MIT stamp cannot be accepted by inference. |
 | `vokra/sbv2-v2-jp-extra-base` | Replace raw legacy tensor names with the strict converter/runtime metadata and close the production Japanese G2P boundary. |
 | `vokra/speechbrain-spkrec-ecapa-voxceleb` | Replace or repair the artifact whose tensor data extends outside the declared file bounds, then rerun strict parity. |
