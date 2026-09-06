@@ -1,9 +1,10 @@
-#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+#!/usr/bin/env -S uv run --no-cache --no-project --offline --python 3.12 python
 """Fail-closed evidence collector for kyutai/hibiki-2b-pytorch-bf16."""
 from __future__ import annotations
-import argparse, hashlib, json, re, struct, subprocess, tempfile
+import argparse, hashlib, json, re, struct, subprocess, sys, tempfile
 from pathlib import Path
 from typing import Any
+from hibiki_2b_gate import BLOCKED_MARKER, require_blocked_gate
 
 HF_REPOSITORY="kyutai/hibiki-2b-pytorch-bf16"; HF_REVISION="bd71144c96f26040612f6414716f5f48ee4fce69"
 HIBIKI_REPOSITORY="https://github.com/kyutai-labs/hibiki.git"; HIBIKI_REVISION="f1cf9293e35c1dceffbe60dd325bdd702bc8305e"
@@ -219,8 +220,16 @@ def inspect(snapshot:Path,hibiki:Path,moshi:Path,tree:Path,out:Path)->int:
  collection_complete=not blockers
  blockers += ["native FR↔EN streaming translation runtime is not implemented","upstream numerical parity is not run","dependency provenance is unreviewed","dataset provenance is unauthenticated"]
  payload={"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE" if collection_complete else "INSPECTION_ERROR","collection_status":"AUTHENTICATED" if collection_complete else "UNVERIFIED","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"requested_revision":HF_REVISION,"resolved_revision":HF_REVISION if collection_complete else None,"server_tree":tree_packet,"files":[identity(p,snapshot) for p in local],"main":main_packet,"mimi":mimi_packet,"sentencepiece":spm,"config":config,"expected_artifacts":ARTIFACTS},"official_source":source,"license_evidence":{"weights":"cc-by-4.0 requires review","hibiki_source":"MIT/Apache-2.0 requires review","moshi_source":"MIT/Apache-2.0 requires review","dependencies":"UNREVIEWED_BLOCKER","datasets":"UNAUTHENTICATED_BLOCKER"},"blockers":sorted(set(blockers))}
- out.mkdir(parents=True,exist_ok=True); (out/"manifest.json").write_text(json.dumps(payload,sort_keys=True,indent=2,default=list)+"\n"); return 2
+ out.mkdir(parents=False,exist_ok=False); manifest=out/"manifest.json"
+ with manifest.open("x",encoding="utf-8") as stream: stream.write(json.dumps(payload,sort_keys=True,indent=2,default=list)+"\n")
+ return 2
 def self_test()->None:
+ source_text=Path(__file__).read_text(encoding="utf-8")
+ assert source_text.index("require_blocked_gate(args.expected_head") < source_text.index("normal run requires snapshot") < source_text.index("return inspect(args.snapshot")
+ blocked=subprocess.run([sys.executable,str(Path(__file__)),"--expected-head","bad","--approval-evidence","/missing/approval","--approval-sha256","0"*64,"--snapshot","/missing/snapshot","--hibiki-source","/missing/hibiki","--moshi-source","/missing/moshi","--server-tree","/missing/tree","--output","/missing/output"],capture_output=True,text=True,check=False)
+ assert blocked.returncode==1 and "lowercase 40-hex" in blocked.stderr
+ root_bypass=subprocess.run([sys.executable,str(Path(__file__)),"--self-test","--root","/tmp"],capture_output=True,text=True,check=False)
+ assert root_bypass.returncode==2 and "unrecognized arguments: --root" in root_bypass.stderr
  assert MAIN=="hibiki-pytorch-ccef4858@200.safetensors" and MIMI=="mimi-pytorch-e351c8d8@125.safetensors" and SPM=="tokenizer_spm_48k_multi6_2.model"
  assert ARTIFACTS[SPM][1]=="c22110fb855aa049e17346ea2e88355bdd664f06cbfd09948380ab5e85b39697"
  assert not any(old in TREE_FILES for old in {"hibiki-pytorch-bf16.safetensors","tokenizer-e351c8d8-checkpoint125.safetensors","tokenizer_spm_32k_3.model"})
@@ -262,13 +271,25 @@ def self_test()->None:
   config_file=root/"config.json"; config_file.write_text(json.dumps(config_obj)); bad=[]; assert config_packet(config_file,root,bad)["contract_status"]=="EXACT_FACTS_MATCHED" and not bad
   config_file.write_text(json.dumps({"misnested":config_obj})); bad=[]; assert config_packet(config_file,root,bad)["contract_status"]=="BLOCKED_FACTS" and bad
  print("hibiki_2b_inspect self-test: OK")
+def write_failure(out:Path,error:Exception)->None:
+ out.mkdir(parents=False,exist_ok=False)
+ with (out/"manifest.json").open("x",encoding="utf-8") as stream:
+  stream.write(json.dumps({"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"INSPECTION_ERROR","collection_status":"UNVERIFIED","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"requested_revision":HF_REVISION,"resolved_revision":None},"error":str(error),"blockers":[str(error)]},indent=2)+"\n")
 def main()->int:
- parser=argparse.ArgumentParser(); parser.add_argument("--self-test",action="store_true"); parser.add_argument("--snapshot",type=Path); parser.add_argument("--hibiki-source",type=Path); parser.add_argument("--moshi-source",type=Path); parser.add_argument("--server-tree",type=Path); parser.add_argument("--output",type=Path); args=parser.parse_args()
+ parser=argparse.ArgumentParser(); parser.add_argument("--self-test",action="store_true"); parser.add_argument("--snapshot",type=Path); parser.add_argument("--hibiki-source",type=Path); parser.add_argument("--moshi-source",type=Path); parser.add_argument("--server-tree",type=Path); parser.add_argument("--output",type=Path); parser.add_argument("--expected-head"); parser.add_argument("--approval-evidence"); parser.add_argument("--approval-sha256"); args=parser.parse_args(); checkout_root=Path(__file__).resolve().parents[2]
  if args.self_test:
-  if any(x is not None for x in (args.snapshot,args.hibiki_source,args.moshi_source,args.server_tree,args.output)): parser.error("--self-test accepts no other arguments")
+  if any(x is not None for x in (args.snapshot,args.hibiki_source,args.moshi_source,args.server_tree,args.output,args.expected_head,args.approval_evidence,args.approval_sha256)): parser.error("--self-test accepts no other arguments")
   self_test(); return 0
+ if any(x is None for x in (args.expected_head,args.approval_evidence,args.approval_sha256)): parser.error("normal run requires --expected-head, --approval-evidence, and --approval-sha256")
+ try: require_blocked_gate(args.expected_head,args.approval_evidence,args.approval_sha256,checkout_root)
+ except RuntimeError as error:
+  if BLOCKED_MARKER in str(error): print(str(error),file=sys.stderr); return 2
+  print(f"gate rejected: {error}",file=sys.stderr); return 1
  if any(x is None for x in (args.snapshot,args.hibiki_source,args.moshi_source,args.server_tree,args.output)): parser.error("normal run requires snapshot, both sources, server-tree, and output")
+ if args.output.exists() or args.output.is_symlink(): parser.error("output must be absent and non-symlink")
  try: return inspect(args.snapshot,args.hibiki_source,args.moshi_source,args.server_tree,args.output)
  except Exception as error:
-  args.output.mkdir(parents=True,exist_ok=True); (args.output/"manifest.json").write_text(json.dumps({"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"INSPECTION_ERROR","collection_status":"UNVERIFIED","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"requested_revision":HF_REVISION,"resolved_revision":None},"error":str(error),"blockers":[str(error)]},indent=2)+"\n"); return 2
+  try: write_failure(args.output,error)
+  except FileExistsError: print("output raced or was created; refusing to clobber",file=sys.stderr); return 2
+  return 2
 if __name__=="__main__": raise SystemExit(main())

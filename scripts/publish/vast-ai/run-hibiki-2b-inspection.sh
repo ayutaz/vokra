@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2317
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HF_REPOSITORY="kyutai/hibiki-2b-pytorch-bf16"; HF_REVISION="bd71144c96f26040612f6414716f5f48ee4fce69"
 HIBIKI_URL="https://github.com/kyutai-labs/hibiki.git"; HIBIKI_REVISION="f1cf9293e35c1dceffbe60dd325bdd702bc8305e"
 MOSHI_URL="https://github.com/kyutai-labs/moshi.git"; MOSHI_REVISION="e6a55d2722a65870ef52a6c9f6ecfc0e90f38362"
 INSPECTOR="$ROOT/tools/parity/hibiki_2b_inspect.py"; MIN_MEM_KIB=$((128*1024*1024)); MIN_DISK_KIB=$((16*1024*1024))
+GATE="$ROOT/tools/parity/hibiki_2b_gate.py"
 die(){ echo "hibiki-vast: ERROR: $*" >&2; exit 2; }
 validate_manifest(){
  local manifest_path="$1"
- UV_CACHE_DIR="${HIBIKI_UV_CACHE_DIR:-/tmp/vokra-hibiki-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$manifest_path" <<'PY'
+ UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$manifest_path" <<'PY'
 import json,sys
 from pathlib import Path
 def no_dupes(pairs):
@@ -28,11 +30,16 @@ PY
 }
 self_test(){
  local path="${BASH_SOURCE[0]}" token fail=0 fixture_dir
- for token in "$HF_REPOSITORY" "$HF_REVISION" "$HIBIKI_URL" "$HIBIKI_REVISION" "$MOSHI_URL" "$MOSHI_REVISION" 'requested_revision' 'recursive_file_only' 'lfs_pointer_git_blob_sha1' 'lfs_payload_sha256' 'SentencePiece' 'INSPECTION_ONLY' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NO_UPLOAD' 'exit 2' 'CARGO_BUILD_JOBS=1'; do
+ for token in "$HF_REPOSITORY" "$HF_REVISION" "$HIBIKI_URL" "$HIBIKI_REVISION" "$MOSHI_URL" "$MOSHI_REVISION" 'requested_revision' 'recursive_file_only' 'lfs_pointer_git_blob_sha1' 'lfs_payload_sha256' 'SentencePiece' 'INSPECTION_ONLY' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NO_UPLOAD' 'BLOCKED_UNRESOLVED_HIBIKI_2B_COMPOSITE' '--expected-head' '--approval-evidence' '--approval-sha256' 'CARGO_BUILD_JOBS=1'; do
   if ! grep -Fq -- "$token" "$path" && ! grep -Fq -- "$token" "$INSPECTOR"; then echo "missing contract $token" >&2; fail=1; fi
  done
  if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$path" | grep -v 'grep -En' >/dev/null; then fail=1; fi
- UV_CACHE_DIR="${HIBIKI_UV_CACHE_DIR:-/tmp/vokra-hibiki-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1
+ gate_line="$(grep -nF 'python "$GATE" --verify' "$path" | tail -n1 | cut -d: -f1)"; uname_line="$(grep -nF 'VAST requires Linux x86_64' "$path" | tail -n1 | cut -d: -f1)"; work_line="$(grep -n '^work=/dev/shm' "$path" | tail -n1 | cut -d: -f1)"; snapshot_line="$(grep -nF 'snapshot_download(repo_id' "$path" | tail -n1 | cut -d: -f1)"
+ [[ "$gate_line" =~ ^[0-9]+$ && "$uname_line" =~ ^[0-9]+$ && "$work_line" =~ ^[0-9]+$ && "$snapshot_line" =~ ^[0-9]+$ && $gate_line -lt $uname_line && $gate_line -lt $work_line && $gate_line -lt $snapshot_line ]] || fail=1
+ UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --self-test || fail=1
+ UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test || fail=1
+ if "$path" --self-test --self-test >/dev/null 2>&1; then fail=1; fi
+ if "$path" --self-test --expected-head bad >/dev/null 2>&1; then fail=1; fi
  fixture_dir="$(mktemp -d)"
  printf '%s\n' '{"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE","collection_status":"AUTHENTICATED","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":"kyutai/hibiki-2b-pytorch-bf16","requested_revision":"bd71144c96f26040612f6414716f5f48ee4fce69","resolved_revision":"bd71144c96f26040612f6414716f5f48ee4fce69"}}' >"$fixture_dir/valid.json"
  printf '%s\n' '{"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"INSPECTION_ERROR","collection_status":"UNVERIFIED","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":"kyutai/hibiki-2b-pytorch-bf16","requested_revision":"bd71144c96f26040612f6414716f5f48ee4fce69","resolved_revision":null}}' >"$fixture_dir/error.json"
@@ -41,7 +48,23 @@ self_test(){
  ((fail==0)) || return 1; echo 'run-hibiki-2b-inspection.sh self-test: OK'
 }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
-[[ $# == 0 ]] || die 'arguments are not accepted; revisions are fixed'
+expected_head=''; approval_evidence=''; approval_sha256=''; seen_expected=0; seen_approval=0; seen_sha=0
+while (($#)); do
+ case "$1" in
+  --expected-head) ((seen_expected+=1)); shift; (($#)) || die '--expected-head requires a value'; expected_head="$1" ;;
+  --approval-evidence) ((seen_approval+=1)); shift; (($#)) || die '--approval-evidence requires a value'; approval_evidence="$1" ;;
+  --approval-sha256) ((seen_sha+=1)); shift; (($#)) || die '--approval-sha256 requires a value'; approval_sha256="$1" ;;
+  --self-test) die '--self-test cannot be combined with normal arguments';;
+  -h|--help) sed -n '1,18p' "$0"; exit 0 ;;
+  *) die "unknown argument: $1" ;;
+ esac
+ shift
+done
+[[ $seen_expected == 1 && $seen_approval == 1 && $seen_sha == 1 ]] || die 'exactly one --expected-head, --approval-evidence, and --approval-sha256 is required'
+gate_log=""; gate_rc=0
+if gate_log="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$ROOT" 2>&1)"; then gate_rc=0; else gate_rc=$?; fi
+[[ $gate_rc == 2 && "$gate_log" == *BLOCKED_UNRESOLVED_HIBIKI_2B_COMPOSITE* ]] || die "Hibiki approval gate did not reach the expected terminal blocker: $gate_log"
+die 'BLOCKED_UNRESOLVED_HIBIKI_2B_COMPOSITE: current blocked approval cannot authorize host checks, acquisition, or inspection'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST requires Linux x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
@@ -83,7 +106,7 @@ PY
 git clone --filter=blob:none "$HIBIKI_URL" "$work/hibiki/repo" >>"$work/evidence/validation.log" 2>&1; git -C "$work/hibiki/repo" checkout --detach "$HIBIKI_REVISION" >>"$work/evidence/validation.log" 2>&1; [[ "$(git -C "$work/hibiki/repo" rev-parse HEAD)" == "$HIBIKI_REVISION" ]] || die 'Hibiki source revision mismatch'; [[ "$(git -C "$work/hibiki/repo" remote get-url origin)" == "$HIBIKI_URL" ]] || die 'Hibiki source origin mismatch'
 git clone --filter=blob:none "$MOSHI_URL" "$work/moshi/repo" >>"$work/evidence/validation.log" 2>&1; git -C "$work/moshi/repo" checkout --detach "$MOSHI_REVISION" >>"$work/evidence/validation.log" 2>&1; [[ "$(git -C "$work/moshi/repo" rev-parse HEAD)" == "$MOSHI_REVISION" ]] || die 'Moshi source revision mismatch'; [[ "$(git -C "$work/moshi/repo" remote get-url origin)" == "$MOSHI_URL" ]] || die 'Moshi source origin mismatch'
 set +e
-uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --snapshot "$work/model" --hibiki-source "$work/hibiki/repo" --moshi-source "$work/moshi/repo" --server-tree "$work/tree.json" --output "$work/evidence" >>"$work/evidence/validation.log" 2>&1
+uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --snapshot "$work/model" --hibiki-source "$work/hibiki/repo" --moshi-source "$work/moshi/repo" --server-tree "$work/tree.json" --output "$work/evidence" --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" >>"$work/evidence/validation.log" 2>&1
 rc=$?; set -e; [[ "$rc" == 2 ]] || die 'inspector must exit 2'
 validate_manifest "$work/evidence/manifest.json" || die 'inspection manifest is not authenticated complete evidence'
 exit 2
