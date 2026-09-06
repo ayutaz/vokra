@@ -752,7 +752,7 @@ mod hash_vectors {
     #[test]
     fn artifact_schema_is_read_from_named_child_record() {
         let manifest = super::json::parse(
-            r#"{"outputs":{"f0":{"file":"f0.f32","dtype":"F32","shape":[1,8],"bytes":32,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"pcm":{"file":"pcm.f32","dtype":"F32","shape":[1,3840],"bytes":15360,"sha256":"1111111111111111111111111111111111111111111111111111111111111111"}}}"#,
+            r#"{"outputs":{"f0":{"file":"f0.f32","dtype":"F32","shape":[1,8],"bytes":32,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"pcm":{"file":"pcm.f32","dtype":"F32","shape":[1,3840],"bytes":15360,"sha256":"1111111111111111111111111111111111111111111111111111111111111111"}}}"#.as_bytes(),
         )
         .unwrap();
         let outputs = super::field(&manifest, &["outputs"]);
