@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import types
@@ -22,6 +23,8 @@ from irodori_inspect import (
     DACVAE_REVISION,
     SOURCE_LOCK_SHA256,
     SOURCE_PYPROJECT_SHA256,
+    validate_approval,
+    validate_absolute_path,
     dependency_gate,
     inspect_dependency_lock,
 )
@@ -328,7 +331,8 @@ def checkout_revision(path: Path) -> None:
         raise RuntimeError(f"official source origin mismatch: {origin}")
 
 
-def write_manifest(output: Path, status: str, **extra: Any) -> None:
+def write_manifest(output: Path, status: str, *, expected_head: str | None = None, approval_sha256: str | None = None, **extra: Any) -> None:
+    validate_absolute_path(output / "manifest.json", "reference manifest", allow_missing_leaf=True)
     output.mkdir(parents=True, exist_ok=True)
     manifest = {
         "format": FORMAT,
@@ -351,11 +355,31 @@ def write_manifest(output: Path, status: str, **extra: Any) -> None:
         "artifacts": [],
         **extra,
     }
-    (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    if expected_head is not None:
+        manifest["expected_head"] = expected_head
+    if approval_sha256 is not None:
+        manifest["approval_sha256"] = approval_sha256
+    target = output / "manifest.json"
+    if target.exists() or target.is_symlink():
+        raise RuntimeError("reference manifest already exists; no-clobber refusal")
+    temporary = output / f".manifest-{os.getpid()}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write((json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, target)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def self_test() -> int:
-    with __import__("tempfile").TemporaryDirectory() as directory:
+    temp_dir = "/private/tmp" if Path("/private/tmp").is_dir() else None
+    with __import__("tempfile").TemporaryDirectory(dir=temp_dir) as directory:
         output = Path(directory)
         write_manifest(output, "REFERENCE_BLOCKED", blockers=["test"])
         data = strict_json((output / "manifest.json").read_text(encoding="utf-8"))
@@ -382,9 +406,16 @@ def self_test() -> int:
 def run(args: argparse.Namespace) -> int:
     # Gate before resolving or creating the output path, even when called
     # directly rather than through a worker.
+    approval = validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if head != args.expected_head:
+        raise RuntimeError("checkout HEAD does not match --expected-head")
     if dependency_gate() != 0:
         return 2
-    output = args.output.resolve()
+    if approval["status"] == "BLOCKED" and approval["decision"] == "INSPECTION_ONLY":
+        raise RuntimeError("inspection-only approval cannot authorize official reference execution")
+    validate_absolute_path(args.output / "manifest.json", "reference output", allow_missing_leaf=True)
+    output = args.output
     if output.exists():
         if not output.is_dir() or any(output.iterdir()):
             print(f"Irodori official reference blocked: output must be absent or empty: {output}", file=sys.stderr)
@@ -399,6 +430,8 @@ def run(args: argparse.Namespace) -> int:
             "authenticated source lock resolves DACVAE -> descript-audiotools -> librosa -> soxr/soundfile",
             "stdlib dependency gate blocked before source import and model execution",
         ],
+        expected_head=args.expected_head,
+        approval_sha256=args.approval_sha256,
     )
     return 2
     link: Path | None = None
@@ -531,6 +564,8 @@ def run(args: argparse.Namespace) -> int:
         write_manifest(
             output,
             "REFERENCE_BLOCKED",
+            expected_head=args.expected_head,
+            approval_sha256=args.approval_sha256,
             error=f"{type(error).__name__}: {error}",
             artifacts=captures.get("artifacts", []),
             rng_records=captures.get("rng_records", []),
@@ -560,11 +595,26 @@ def main() -> int:
     parser.add_argument("--duration-scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-steps", type=int, default=2)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence", type=Path)
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--validate-approval", action="store_true")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.upstream, args.checkpoint, args.codec, args.tokenizer, args.inspection_manifest, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)) or args.validate_approval:
+            parser.error("--self-test accepts no other arguments")
         return self_test()
-    if not all((args.upstream, args.checkpoint, args.codec, args.tokenizer, args.inspection_manifest, args.output)):
-        parser.error("reference requires --upstream --checkpoint --codec --tokenizer --inspection-manifest --output")
+    if args.validate_approval:
+        if any(value is not None for value in (args.upstream, args.checkpoint, args.codec, args.tokenizer, args.inspection_manifest, args.output)) or not all((args.expected_head, args.approval_evidence, args.approval_sha256)):
+            parser.error("--validate-approval requires only approval evidence, SHA, and expected HEAD")
+        try:
+            validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print("Irodori approval evidence validation: OK")
+        return 0
+    if not all((args.upstream, args.checkpoint, args.codec, args.tokenizer, args.inspection_manifest, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
+        parser.error("reference requires source/input/output and approval binding")
     return run(args)
 
 

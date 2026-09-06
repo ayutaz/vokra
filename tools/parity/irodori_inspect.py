@@ -92,6 +92,7 @@ LFS_PAYLOADS = {
 MAX_HEADER = 64 * 1024 * 1024
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+APPROVAL_SCHEMA = "vokra-irodori-approval-v1"
 DTYPE_WIDTH = {
     "BOOL": 1,
     "U8": 1,
@@ -173,6 +174,71 @@ def safe_relative(path: str) -> None:
     parts = path.split("/")
     if any(part in ("", ".", "..") for part in parts):
         raise ValueError(f"unsafe path: {path!r}")
+
+
+def validate_absolute_path(path: Path | str, label: str, *, allow_missing_leaf: bool = False) -> Path:
+    """Reject relative, dot-component, and symlink-ancestor paths."""
+    raw = os.fspath(path)
+    path = Path(raw)
+    if not path.is_absolute() or raw.endswith("/") or "/./" in raw or "/../" in raw or any(part in {".", ".."} for part in path.parts):
+        raise ValueError(f"{label}: absolute path without dot components required")
+    cursor = Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ValueError(f"{label}: symlink ancestry is forbidden")
+    if path.is_symlink() or (not allow_missing_leaf and not path.exists()):
+        raise ValueError(f"{label}: path is missing or symlinked")
+    if not allow_missing_leaf and not path.is_file():
+        raise ValueError(f"{label}: regular file required")
+    if allow_missing_leaf and path.exists():
+        raise ValueError(f"{label}: no-clobber path already exists")
+    return path
+
+
+def validate_approval(path: Path | str, expected_head: str, expected_sha256: str) -> dict[str, Any]:
+    if not HEX40.fullmatch(expected_head) or not HEX64.fullmatch(expected_sha256):
+        raise ValueError("approval HEAD/SHA format is invalid")
+    path = validate_absolute_path(path, "approval")
+    if path.stat().st_size <= 0 or sha256_file(path) != expected_sha256:
+        raise ValueError("approval SHA-256 mismatch or empty evidence")
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError(f"duplicate approval JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        approval = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
+    except Exception as exc:
+        raise ValueError("approval JSON is invalid") from exc
+    required = {
+        "schema", "status", "decision", "owner", "expected_head", "model_repository", "model_revision",
+        "source_repository", "source_revision", "codec_repository", "codec_revision",
+        "tokenizer_repository", "tokenizer_revision", "scope", "publication",
+        "dependency_audit_status", "native_status",
+    }
+    if not isinstance(approval, dict) or set(approval) != required:
+        raise ValueError("approval schema is not exact")
+    expected = {
+        "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "INSPECTION_ONLY", "expected_head": expected_head,
+        "model_repository": MODEL_REPOSITORY, "model_revision": MODEL_REVISION,
+        "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
+        "codec_repository": CODEC_REPOSITORY, "codec_revision": CODEC_REVISION,
+        "tokenizer_repository": TOKENIZER_REPOSITORY, "tokenizer_revision": TOKENIZER_REVISION,
+        "scope": "INSPECTION_ONLY", "publication": "NO_UPLOAD",
+        "dependency_audit_status": "BLOCKED_UNRESOLVED", "native_status": "BLOCKED_NATIVE_BINDING",
+    }
+    for key, value in expected.items():
+        if approval.get(key) != value:
+            raise ValueError(f"approval identity drift: {key}")
+    owner = approval["owner"].strip().lower() if isinstance(approval["owner"], str) else ""
+    if not owner or owner in {"todo", "pending", "owner", "example", "unknown", "tbd"} or re.search(r"(?:^|[\s_-])(todo|pending|example|unknown|tbd)(?:$|[\s_-])", owner):
+        raise ValueError("approval owner is empty or placeholder")
+    return approval
 
 
 def sha256_file(path: Path) -> str:
@@ -815,8 +881,8 @@ def inspect_source(path: Path) -> dict[str, Any]:
             }}
 
 
-def blocked_manifest(error: str | None = None) -> dict[str, Any]:
-    return {
+def blocked_manifest(error: str | None = None, *, expected_head: str | None = None, approval_sha256: str | None = None) -> dict[str, Any]:
+    manifest = {
         "model_identity": {"repository": MODEL_REPOSITORY, "revision": MODEL_REVISION, "file": MODEL_FILE, "bytes": MODEL_BYTES, "sha256": MODEL_SHA256},
         "source_identity": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION},
         "codec_identity": {"repository": CODEC_REPOSITORY, "revision": CODEC_REVISION},
@@ -847,6 +913,32 @@ def blocked_manifest(error: str | None = None) -> dict[str, Any]:
             "Japanese tokenizer/G2P, dataset provenance, and legal review pending",
         ],
     }
+    if expected_head is not None:
+        manifest["expected_head"] = expected_head
+    if approval_sha256 is not None:
+        manifest["approval_sha256"] = approval_sha256
+    return manifest
+
+
+def write_manifest_atomic(path: Path, manifest: dict[str, Any]) -> None:
+    validate_absolute_path(path, "inspection manifest", allow_missing_leaf=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        raise ValueError("inspection manifest already exists; no-clobber refusal")
+    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    payload = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def self_test() -> None:
@@ -856,7 +948,8 @@ def self_test() -> None:
         encoded = json.dumps(header, separators=(",", ":")).encode()
         return struct.pack("<Q", len(encoded)) + encoded + body
 
-    with tempfile.TemporaryDirectory() as temp:
+    temp_dir = "/private/tmp" if Path("/private/tmp").is_dir() else None
+    with tempfile.TemporaryDirectory(dir=temp_dir) as temp:
         root = Path(temp)
         good = root / "good.safetensors"
         good.write_bytes(stensor({"x": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}, b"\0" * 4))
@@ -888,6 +981,48 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("unsafe path accepted")
+        for unsafe in ("a//b", "./x", "a/../b"):
+            try:
+                safe_relative(unsafe)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"unsafe path accepted: {unsafe}")
+        expected_head = "a" * 40
+        approval = {
+            "schema": APPROVAL_SCHEMA, "status": "BLOCKED", "decision": "INSPECTION_ONLY",
+            "owner": "sol-manager", "expected_head": expected_head,
+            "model_repository": MODEL_REPOSITORY, "model_revision": MODEL_REVISION,
+            "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
+            "codec_repository": CODEC_REPOSITORY, "codec_revision": CODEC_REVISION,
+            "tokenizer_repository": TOKENIZER_REPOSITORY, "tokenizer_revision": TOKENIZER_REVISION,
+            "scope": "INSPECTION_ONLY", "publication": "NO_UPLOAD",
+            "dependency_audit_status": "BLOCKED_UNRESOLVED", "native_status": "BLOCKED_NATIVE_BINDING",
+        }
+        approval_path = root / "approval.json"
+        approval_path.write_text(json.dumps(approval, sort_keys=True), encoding="utf-8")
+        approval_sha = sha256_file(approval_path)
+        assert validate_approval(approval_path, expected_head, approval_sha)["decision"] == "INSPECTION_ONLY"
+        def reject_approval(path: Path | str, head: str = expected_head, digest: str = approval_sha) -> None:
+            try:
+                validate_approval(path, head, digest)
+            except ValueError:
+                return
+            raise AssertionError("invalid approval accepted")
+        reject_approval(root / "missing.json")
+        reject_approval(str(root) + "/./approval.json")
+        reject_approval(str(root) + "/../" + root.name + "/approval.json")
+        reject_approval(approval_path, "b" * 40)
+        reject_approval(approval_path, expected_head, "0" * 64)
+        bad_json = root / "bad.json"
+        bad_json.write_text('{"schema":1,"schema":2}', encoding="utf-8")
+        reject_approval(bad_json, expected_head, sha256_file(bad_json))
+        bad_scope = root / "bad-scope.json"
+        bad_scope.write_text(json.dumps({**approval, "scope": "EXECUTION"}), encoding="utf-8")
+        reject_approval(bad_scope, expected_head, sha256_file(bad_scope))
+        symlink = root / "approval-link.json"
+        symlink.symlink_to(approval_path)
+        reject_approval(symlink)
         try:
             rows({"files": [{"path": "x"}, {"path": "x"}]}, "fixture")
         except ValueError:
@@ -983,14 +1118,26 @@ source = { registry = "https://pypi.org/simple" }
             pass
         else:
             raise AssertionError("mutable tokenizer revision accepted")
+        try:
+            validate_approval(Path("approval.json"), "bad", "0" * 64)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("malformed approval binding accepted")
     print("irodori inspector self-test: ok")
 
 
 def inspect(args: argparse.Namespace) -> int:
     manifest_path = Path(args.manifest)
     try:
+        validate_absolute_path(manifest_path, "inspection manifest", allow_missing_leaf=True)
+        approval = validate_approval(Path(args.approval_evidence), args.expected_head, args.approval_sha256)
+        if dependency_gate() != 0:
+            raise ValueError("Irodori dependency/native closure is unresolved")
+        if approval["status"] == "BLOCKED" and approval["decision"] == "INSPECTION_ONLY":
+            raise ValueError("inspection-only approval cannot authorize source/model inspection")
         model_packet = strict_json(Path(args.model_tree).read_bytes())
-        evidence = blocked_manifest()
+        evidence = blocked_manifest(expected_head=args.expected_head, approval_sha256=args.approval_sha256)
         evidence["model"] = verify_tree(model_packet, Path(args.model_dir), MODEL_REPOSITORY, MODEL_REVISION, EXPECTED_MODEL_PATHS, "model")
         evidence["model_readme"] = inspect_readme(Path(args.model_dir) / "README.md")
         evidence["model_safetensors"] = inspect_safetensors(Path(args.model_dir) / MODEL_FILE)
@@ -1017,9 +1164,8 @@ def inspect(args: argparse.Namespace) -> int:
         evidence["inspection_status"] = "AUTHENTICATED_EVIDENCE_COMPLETE"
         evidence["error"] = None
     except Exception as exc:  # preserve an auditable failure manifest
-        evidence = blocked_manifest(f"{type(exc).__name__}: {exc}")
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        evidence = blocked_manifest(f"{type(exc).__name__}: {exc}", expected_head=args.expected_head, approval_sha256=args.approval_sha256)
+    write_manifest_atomic(manifest_path, evidence)
     if evidence["inspection_status"] != "AUTHENTICATED_EVIDENCE_COMPLETE":
         return 2
     return 2  # evidence completion never authorizes runtime/publication
@@ -1038,17 +1184,35 @@ def main() -> int:
     parser.add_argument("--source-dir")
     parser.add_argument("--public-contract")
     parser.add_argument("--public-gguf")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--validate-approval", action="store_true")
     parser.add_argument("--manifest", default="irodori-inspection.json")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.model_dir, args.model_tree, args.codec_dir, args.codec_tree, args.tokenizer_dir, args.tokenizer_tree, args.source_dir, args.public_contract, args.public_gguf, args.expected_head, args.approval_evidence, args.approval_sha256)) or args.manifest != "irodori-inspection.json" or args.dependency_gate or args.validate_approval:
+            parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
     if args.dependency_gate:
+        if any(value is not None for value in (args.model_dir, args.model_tree, args.codec_dir, args.codec_tree, args.tokenizer_dir, args.tokenizer_tree, args.source_dir, args.public_contract, args.public_gguf, args.expected_head, args.approval_evidence, args.approval_sha256)) or args.manifest != "irodori-inspection.json" or args.validate_approval:
+            parser.error("--dependency-gate accepts no inspection arguments")
         return dependency_gate()
+    if args.validate_approval:
+        if any(value is not None for value in (args.model_dir, args.model_tree, args.codec_dir, args.codec_tree, args.tokenizer_dir, args.tokenizer_tree, args.source_dir, args.public_contract, args.public_gguf)) or args.manifest != "irodori-inspection.json" or not all((args.expected_head, args.approval_evidence, args.approval_sha256)):
+            parser.error("--validate-approval requires only approval evidence, SHA, and expected HEAD")
+        try:
+            validate_approval(Path(args.approval_evidence), args.expected_head, args.approval_sha256)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print("Irodori approval evidence validation: OK")
+        return 0
     required = (args.model_dir, args.model_tree, args.public_contract, args.public_gguf,
-                args.tokenizer_dir, args.tokenizer_tree)
+                args.tokenizer_dir, args.tokenizer_tree, args.expected_head,
+                args.approval_evidence, args.approval_sha256)
     if any(value is None for value in required):
-        parser.error("inspection requires --model-dir --model-tree --public-contract")
+        parser.error("inspection requires model/tree/tokenizer/public inputs and approval binding")
     return inspect(args)
 
 
