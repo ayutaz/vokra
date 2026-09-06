@@ -23,9 +23,13 @@ self_test(){
   grep -Fq 'duplicate --approval-evidence' "$0" || die 'duplicate approval rejection missing'
   grep -Fq 'duplicate --approval-sha256' "$0" || die 'duplicate approval SHA rejection missing'
   grep -Fq -- '--validate-approval' "$0" || die 'approval validation mode missing'
+  grep -Fq 'canonical_existing_path' "$0" || die 'canonical input path gate missing'
+  grep -Fq 'canonical_absent_path' "$0" || die 'canonical evidence path gate missing'
+  grep -Fq 'adapter log claim failed' "$0" || die 'adapter log no-clobber gate missing'
+  grep -Fq 'checkout HEAD changed during validation' "$0" || die 'post-run HEAD gate missing'
   if grep -Eq 'librosa|soxr|gradio|triton|nvidia-|descript-audio-codec' "$PROJECT/uv.lock"; then die 'forbidden/UI/GPL/CUDA reference dependency in lock'; fi
-  UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --self-test
-  UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" --self-test
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --self-test
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" --self-test
   echo 'run-dia-1-6b-validation.sh self-test: OK'
 }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
@@ -44,13 +48,51 @@ source_dir="${positional[0]}"; model_dir="${positional[1]}"; public_dir="${posit
 [[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die 'approval evidence is missing or symlinked'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
 [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$ROOT/tools/parity/dia_1_6b_inspect.py" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
-[[ -d "$source_dir" && ! -L "$source_dir" && -d "$model_dir" && ! -L "$model_dir" && -d "$public_dir" && ! -L "$public_dir" && -d "$dac_source" && ! -L "$dac_source" ]] || die 'source/model/public/DAC source directory is missing or symlinked'
-[[ ! -e "$evidence" && ! -L "$evidence" ]] || die 'evidence directory must be absent/non-symlink'
-root_real="$(cd -P "$ROOT" && pwd)"; evidence_real="$(cd -P "$(dirname "$evidence")" && pwd)/$(basename "$evidence")"; approval_real="$(cd -P "$(dirname "$approval_evidence")" && pwd)/$(basename "$approval_evidence")"
+canonical_existing_path() {
+  local path="$1" rest component current=/ parent base
+  [[ "$path" == /* && "$path" != */ && -e "$path" && ! -L "$path" ]] || return 1
+  rest="${path#/}"
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"; [[ "$rest" == "$component" ]] && rest='' || rest="${rest#*/}"
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+    current="${current%/}/$component"; [[ ! -L "$current" ]] || return 1
+  done
+  if [[ -d "$path" ]]; then (cd -P "$path" && pwd); else parent="$(dirname "$path")"; base="$(basename "$path")"; parent="$(cd -P "$parent" && pwd)" || return 1; printf '%s/%s\n' "$parent" "$base"; fi
+}
+canonical_absent_path() {
+  local path="$1" target="$1" rest component current=/ suffix='' parent
+  [[ "$path" == /* && "$path" != */ && ! -e "$path" && ! -L "$path" ]] || return 1
+  rest="${path#/}"
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"; [[ "$rest" == "$component" ]] && rest='' || rest="${rest#*/}"
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+    current="${current%/}/$component"; [[ ! -L "$current" ]] || return 1
+  done
+  while [[ ! -e "$target" && ! -L "$target" ]]; do
+    suffix="/$(basename "$target")$suffix"; parent="$(dirname "$target")"; [[ "$parent" != "$target" ]] || return 1; target="$parent"
+  done
+  [[ -d "$target" && ! -L "$target" ]] || return 1
+  printf '%s%s\n' "$(cd -P "$target" && pwd)" "$suffix"
+}
+root_real="$(canonical_existing_path "$ROOT")" || die 'checkout path is not canonical/non-symlink'
+approval_real="$(canonical_existing_path "$approval_evidence")" || die 'approval path has invalid absolute/canonical/symlink ancestry'
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_inspect.py" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
+for input in "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_evidence" "$dac_checkpoint"; do
+  canonical_existing_path "$input" >/dev/null || die "input path has invalid absolute/canonical/symlink ancestry: $input"
+done
+[[ -d "$source_dir" && -d "$model_dir" && -d "$public_dir" && -d "$dac_source" ]] || die 'source/model/public/DAC source directory is missing or not a directory'
+evidence_real="$(canonical_absent_path "$evidence")" || die 'evidence path must be an absent absolute path without dot/symlink ancestry'
+adapter_log="${evidence}.adapter.log"
+canonical_absent_path "$adapter_log" >/dev/null || die 'adapter log must be absent and canonical'
 paths_overlap(){ local left="$1" right="$2"; [[ "$left" == "$right" || "$left/" == "$right/"* || "$right/" == "$left/"* ]]; }
-paths_overlap "$evidence_real" "$root_real" && die 'evidence overlaps checkout'
-paths_overlap "$evidence_real" "$approval_real" && die 'evidence overlaps approval'
+for protected in "$root_real" "$approval_real"; do paths_overlap "$evidence_real" "$protected" && die 'evidence overlaps checkout or approval'; done
+for input in "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_evidence" "$dac_checkpoint"; do
+  input_real="$(canonical_existing_path "$input")" || die "input path cannot be canonicalized: $input"
+  paths_overlap "$evidence_real" "$input_real" && die 'evidence overlaps an input path'
+done
 mkdir "$evidence"
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" >>"${evidence}.adapter.log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
+( set -C; : > "$adapter_log" ) || die 'adapter log claim failed (existing path or race)'
+UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" >>"$adapter_log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
 UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256"
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty during validation'
+[[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD changed during validation'

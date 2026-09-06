@@ -21,6 +21,7 @@ self_test(){
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing contract $token" >&2; fail=1; }
  done
  grep -Fq -- '--expected-head' "$0"; grep -Fq -- '--approval-sha256' "$0"; grep -Fq -- '--validate-approval' "$INSPECTOR"
+ grep -Fq 'canonical_existing_path' "$0"; grep -Fq 'canonical_absent_path' "$0"; grep -Fq 'inspection WORK path has invalid' "$0"
  if "$0" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1; then echo 'duplicate expected-head accepted' >&2; fail=1; fi
  if "$0" --expected-head 0000000000000000000000000000000000000000 --approval-evidence a --approval-evidence b >/dev/null 2>&1; then echo 'duplicate approval accepted' >&2; fail=1; fi
  for token in 'torch.load' 'snapshot_download' 'model.safetensors' 'dia-v0_1.pth' 'public-gguf'; do
@@ -33,7 +34,7 @@ self_test(){
  [[ "$(sha256sum "$REFERENCE_PROJECT/pyproject.toml" | awk '{print $1}')" == "$REFERENCE_PYPROJECT_SHA256" ]] || { echo 'Dia pyproject identity mismatch' >&2; fail=1; }
  grep -Fq 'dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"' "$REFERENCE_PROJECT/pyproject.toml" || { echo 'dependency audit gate missing' >&2; fail=1; }
  if grep -Eq 'librosa|soxr|gradio|triton|nvidia-|descript-audio-codec' "$REFERENCE_PROJECT/uv.lock"; then echo 'forbidden/UI/GPL/CUDA reference dependency in lock' >&2; fail=1; fi
- UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$INSPECTOR" --self-test || fail=1
+ UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test || fail=1
  (( fail == 0 )) || return 1
  echo 'run-dia-1-6b-inspection.sh self-test: OK'
 }
@@ -51,10 +52,36 @@ while (($#)); do case "$1" in
 [[ "$(sha256sum "$REFERENCE_PROJECT/uv.lock" | awk '{print $1}')" == "$REFERENCE_LOCK_SHA256" ]] || die 'dedicated Dia uv.lock identity mismatch'
 [[ "$(sha256sum "$REFERENCE_PROJECT/pyproject.toml" | awk '{print $1}')" == "$REFERENCE_PYPROJECT_SHA256" ]] || die 'dedicated Dia pyproject identity mismatch'
 grep -Fq 'dependency_license_audit = "AUDITED_ALLOW"' "$REFERENCE_PROJECT/pyproject.toml" || die 'dependency license/provenance audit is not affirmatively allowed; refuse before host/cache/download'
-[[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die 'approval evidence must be a non-empty regular file'
+canonical_existing_path() {
+ local path="$1" rest component current=/ parent base
+ [[ "$path" == /* && "$path" != */ && -e "$path" && ! -L "$path" ]] || return 1
+ rest="${path#/}"
+ while [[ -n "$rest" ]]; do
+  component="${rest%%/*}"; [[ "$rest" == "$component" ]] && rest='' || rest="${rest#*/}"
+  [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+  current="${current%/}/$component"; [[ ! -L "$current" ]] || return 1
+ done
+ if [[ -d "$path" ]]; then (cd -P "$path" && pwd); else parent="$(dirname "$path")"; base="$(basename "$path")"; parent="$(cd -P "$parent" && pwd)" || return 1; printf '%s/%s\n' "$parent" "$base"; fi
+}
+canonical_absent_path() {
+ local path="$1" target="$1" rest component current=/ suffix='' parent
+ [[ "$path" == /* && "$path" != */ && ! -e "$path" && ! -L "$path" ]] || return 1
+ rest="${path#/}"
+ while [[ -n "$rest" ]]; do
+  component="${rest%%/*}"; [[ "$rest" == "$component" ]] && rest='' || rest="${rest#*/}"
+  [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+  current="${current%/}/$component"; [[ ! -L "$current" ]] || return 1
+ done
+ while [[ ! -e "$target" && ! -L "$target" ]]; do
+  suffix="/$(basename "$target")$suffix"; parent="$(dirname "$target")"; [[ "$parent" != "$target" ]] || return 1; target="$parent"
+ done
+ [[ -d "$target" && ! -L "$target" ]] || return 1
+ printf '%s%s\n' "$(cd -P "$target" && pwd)" "$suffix"
+}
+approval_real="$(canonical_existing_path "$approval_evidence")" || die 'approval path has invalid absolute/canonical/symlink ancestry'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
 [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$INSPECTOR" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST requires Linux x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
@@ -66,8 +93,9 @@ free_kib="$(df -Pk /dev/shm | awk 'NR==2{print $4}')"
 [[ "$free_kib" =~ ^[0-9]+$ && $free_kib -ge $MIN_SHM_KIB ]] || die 'tmpfs space guard failed'
 for command in cargo git uv awk find df; do command -v "$command" >/dev/null || die "missing tool: $command"; done
 WORK="/dev/shm/vokra-dia-1-6b-inspection"
-[[ ! -e "$WORK" && ! -L "$WORK" ]] || die 'inspection directory must be absent/non-symlink (no-clobber)'
-root_real="$(cd -P "$ROOT" && pwd)"; project_real="$(cd -P "$REFERENCE_PROJECT" && pwd)"; work_real="$(cd -P "$(dirname "$WORK")" && pwd)/$(basename "$WORK")"; approval_real="$(cd -P "$(dirname "$approval_evidence")" && pwd)/$(basename "$approval_evidence")"
+root_real="$(canonical_existing_path "$ROOT")" || die 'checkout path is not canonical/non-symlink'
+project_real="$(canonical_existing_path "$REFERENCE_PROJECT")" || die 'reference project path is not canonical/non-symlink'
+work_real="$(canonical_absent_path "$WORK")" || die 'inspection WORK path has invalid absolute/canonical/symlink ancestry or already exists'
 paths_overlap(){ local left="$1" right="$2"; [[ "$left" == "$right" || "$left/" == "$right/"* || "$right/" == "$left/"* ]]; }
 paths_overlap "$work_real" "$root_real" && die 'inspection directory overlaps checkout'
 paths_overlap "$work_real" "$project_real" && die 'inspection directory overlaps reference project'

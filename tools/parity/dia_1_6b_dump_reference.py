@@ -336,7 +336,15 @@ def authenticate_dac(evidence: Path, checkpoint: Path, source_path: Path) -> dic
     return packet
 
 
+def validate_binding(expected_head: str, approval_sha256: str) -> None:
+    if not isinstance(expected_head, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise ValueError("expected_head must be lowercase 40-hex")
+    if not isinstance(approval_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", approval_sha256):
+        raise ValueError("approval_sha256 must be lowercase 64-hex")
+
+
 def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpoint: Path, dac_source: Path, output: Path, text: str, seed: int, expected_head: str, approval_sha256: str) -> None:
+    validate_binding(expected_head, approval_sha256)
     if not source.is_dir() or not model.is_dir() or not public.is_dir() or not output.is_dir():
         raise RuntimeError("source, model, public, and output directories are required")
     project_evidence = reference_project_identity()
@@ -506,6 +514,16 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
 
 
 def self_test() -> None:
+    try:
+        validate_binding("not-a-head", "0" * 64)
+        raise AssertionError("invalid expected_head accepted")
+    except ValueError:
+        pass
+    try:
+        validate_binding("0" * 40, "not-a-sha")
+        raise AssertionError("invalid approval_sha256 accepted")
+    except ValueError:
+        pass
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40 and len(PUBLIC_REVISION) == 40
     assert len(REFERENCE_PROJECT_LOCK_SHA256) == 64 and len(REFERENCE_PROJECT_PYPROJECT_SHA256) == 64
     assert DEPENDENCY_LICENSE_AUDIT_STATUS == "BLOCKED_UNREVIEWED_TRANSITIVE"
@@ -547,10 +565,16 @@ def main() -> int:
     parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.source, args.model, args.public, args.output, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.expected_head, args.approval_sha256)) or args.text != DEFAULT_TEXT or args.seed != 0:
+            parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
     if None in (args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.expected_head, args.approval_sha256):
         parser.error("--source, --model, --public, --dac-evidence, --dac-checkpoint, --dac-source, and --output are required")
+    try:
+        validate_binding(args.expected_head, args.approval_sha256)
+    except ValueError as error:
+        parser.error(str(error))
     if args.output.exists() and any(args.output.iterdir()):
         parser.error("output directory must be absent or empty; stale evidence is rejected")
     try:

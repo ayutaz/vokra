@@ -44,6 +44,11 @@ def no_dupes(pairs):
  return out
 def validate_approval(path,expected_head,expected_sha256):
  if not re.fullmatch(r"[0-9a-f]{40}",expected_head) or not re.fullmatch(r"[0-9a-f]{64}",expected_sha256): raise RuntimeError("approval HEAD/SHA format is invalid")
+ if not path.is_absolute() or any(part in {".",".."} for part in path.parts): raise RuntimeError("approval path must be absolute and free of dot components")
+ cursor=Path(path.anchor)
+ for part in path.parts[1:]:
+  cursor/=part
+  if cursor.is_symlink(): raise RuntimeError("approval path has symlink ancestry")
  if path.is_symlink() or not path.is_file() or path.stat().st_size<=0: raise RuntimeError("approval evidence must be a non-empty regular file")
  if sha256(path)!=expected_sha256: raise RuntimeError("approval evidence SHA-256 mismatch")
  approval=json.loads(path.read_text(encoding="utf-8"),object_pairs_hook=no_dupes)
@@ -303,7 +308,12 @@ def inspect(snapshot,source,tree,output,public=None,expected_head=None,approval_
 def self_test():
  assert len(HF_REVISION)==len(SOURCE_REVISION)==len(PUBLIC_REVISION)==40
  assert len(EXPECTED_TENSORS)==343 and MANIFEST_SHA256==canonical_manifest_hash(EXPECTED_TENSORS)
- with tempfile.TemporaryDirectory(prefix="dia-inspect-") as d:
+ for unsafe in (Path("approval.json"), Path("/private/tmp/../tmp/approval.json")):
+  try: validate_approval(unsafe,"0"*40,"0"*64)
+  except RuntimeError: pass
+  else: raise AssertionError("unsafe approval path accepted")
+ temp_root="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp"
+ with tempfile.TemporaryDirectory(prefix="dia-inspect-",dir=temp_root) as d:
   root=Path(d); h=json.dumps({"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}).encode(); good=root/"x.safetensors"; good.write_bytes(struct.pack("<Q",len(h))+h+b"\0"*4); b=[]; assert safe_header(good,root,b,expected=False)["status"]=="HEADER_ONLY" and not b
   dup=root/"dup.safetensors"; raw=b'{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}'; dup.write_bytes(struct.pack("<Q",len(raw))+raw+b"\0"*4); b=[]; safe_header(dup,root,b,expected=False); assert any("blocked" in x for x in b)
   huge=root/"huge"; huge.write_bytes(struct.pack("<Q",65*1024*1024)+b"{}"); b=[]; safe_header(huge,root,b,expected=False); assert b

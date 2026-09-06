@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -67,6 +68,18 @@ def unique_pairs(pairs):
             raise ValueError(f"duplicate manifest key: {key}")
         result[key] = value
     return result
+
+
+def require_canonical_existing_path(path: Path) -> None:
+    if not path.is_absolute() or any(part in {".", ".."} for part in path.parts):
+        raise ValueError("evidence path must be absolute and free of dot components")
+    cursor = Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ValueError("evidence path has symlink ancestry")
+    if not path.is_dir() or path.is_symlink():
+        raise ValueError("evidence path must be a regular directory")
 
 
 def require_text_markers(values):
@@ -138,8 +151,9 @@ def require_sampling_cardinality(sampling: dict, logits: list, probability: list
 
 def validate(root: Path, expected_head: str | None = None, approval_sha256: str | None = None) -> None:
     import numpy as np
-    if not root.is_dir() or not (root / "manifest.json").is_file():
-        raise ValueError("evidence directory/manifest is missing")
+    require_canonical_existing_path(root)
+    if not (root / "manifest.json").is_file() or (root / "manifest.json").is_symlink():
+        raise ValueError("evidence directory/manifest is missing or symlinked")
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"), object_pairs_hook=unique_pairs)
     if expected_head is not None and manifest.get("expected_head") != expected_head:
         raise ValueError("evidence expected HEAD does not match caller")
@@ -246,6 +260,17 @@ def main() -> int:
     parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
+        if args.evidence is not None or args.expected_head is not None or args.approval_sha256 is not None:
+            parser.error("--self-test accepts no other arguments")
+        assert re.fullmatch(r"[0-9a-f]{40}", "0" * 40)
+        assert not re.fullmatch(r"[0-9a-f]{40}", "X" * 40)
+        assert re.fullmatch(r"[0-9a-f]{64}", "0" * 64)
+        assert not re.fullmatch(r"[0-9a-f]{64}", "X" * 64)
+        try:
+            require_canonical_existing_path(Path("."))
+            raise AssertionError("relative evidence path accepted")
+        except ValueError:
+            pass
         assert unique_pairs([("x", 1)]) == {"x": 1}
         try:
             unique_pairs([("x", 1), ("x", 2)])
@@ -295,6 +320,12 @@ def main() -> int:
         return 0
     if args.evidence is None:
         parser.error("evidence directory is required")
+    if args.expected_head is None or args.approval_sha256 is None:
+        parser.error("expected HEAD and approval SHA are required")
+    if not re.fullmatch(r"[0-9a-f]{40}", args.expected_head):
+        parser.error("expected_head must be lowercase 40-hex")
+    if not re.fullmatch(r"[0-9a-f]{64}", args.approval_sha256):
+        parser.error("approval_sha256 must be lowercase 64-hex")
     validate(args.evidence, args.expected_head, args.approval_sha256)
     print("Dia reference evidence validation: OK")
     return 0
