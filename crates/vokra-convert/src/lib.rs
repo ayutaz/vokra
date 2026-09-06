@@ -1240,8 +1240,8 @@ pub enum ModelKind {
     /// `[[feedback-large-models-on-vast-ai]]` (>2 GB CC-workflow
     /// threshold).
     FireredAsrLlmL,
-    /// NVIDIA **Sortformer diar 4spk v1** (CC-BY-4.0, ~1 GB) — e2e
-    /// speaker diarization with arrival-order sort loss. Convert with
+    /// NVIDIA **Sortformer diar 4spk v1** (CC-BY-NC-4.0, research-only,
+    /// ~1 GB) — e2e speaker diarization with arrival-order sort loss. Convert with
     /// `convert_sortformer_diar_4spk_v1_file`.
     SortformerDiar4spkV1,
     /// FunAudioLLM **SenseVoiceSmall** (FunASR MODEL_LICENSE, ~470 MB)
