@@ -971,12 +971,34 @@ fn sgmse_apple_cpu_metal_enhancement_matches_reference() {
     let reference = env_path(ENHANCEMENT_REFERENCE_ENV);
     let evidence = env_path(ENHANCEMENT_EVIDENCE_ENV);
     let expected_gguf = std::env::var(GGUF_SHA_ENV).expect("GGUF SHA required");
+    require_abs(&gguf, GGUF_ENV);
+    require_abs(&reference, ENHANCEMENT_REFERENCE_ENV);
+    require_abs(&evidence, ENHANCEMENT_EVIDENCE_ENV);
+    assert!(
+        expected_gguf.len() == 64
+            && expected_gguf
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+        "GGUF SHA must be lowercase hex64"
+    );
+    reject_symlink_ancestry(&gguf, GGUF_ENV);
+    reject_symlink_ancestry(&reference, ENHANCEMENT_REFERENCE_ENV);
+    let evidence_parent = evidence
+        .parent()
+        .unwrap_or_else(|| panic!("{ENHANCEMENT_EVIDENCE_ENV} has no parent"));
+    reject_symlink_ancestry(evidence_parent, "enhancement evidence parent");
+    assert!(
+        gguf.is_file() && !gguf.is_symlink(),
+        "GGUF missing or symlinked"
+    );
+    assert!(
+        reference.is_dir() && !reference.is_symlink(),
+        "enhancement reference missing or symlinked"
+    );
     let (manifest_sha, enhanced_sha) = verify_enhancement_reference(&reference);
     assert_eq!(sha256_file(&gguf), expected_gguf);
     assert!(!evidence.exists() && !evidence.is_symlink());
-    let parent = evidence.parent().expect("enhancement evidence parent");
-    assert!(parent.is_dir() && !parent.is_symlink());
-    reject_symlink_ancestry(parent, "enhancement evidence parent");
+    assert!(evidence_parent.is_dir() && !evidence_parent.is_symlink());
     assert!(!overlap(&gguf, &reference));
     assert!(!overlap(&gguf, &evidence));
     assert!(!overlap(&reference, &evidence));

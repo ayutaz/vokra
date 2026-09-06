@@ -56,6 +56,14 @@ run_self_test() {
     '-- --ignored --exact --show-output' 'shasum -a 256' 'no download' 'no upload'; do
     grep -Fq -- "$token" "$script" || { log "self-test missing contract token: $token"; fail=1; }
   done
+  local score_verify_line enhancement_verify_line score_cargo_line
+  local score_verify_pattern="\"\$PARITY_TOOL\" --verify-reference-only --reference-dir \"\$REFERENCE\""
+  local enhancement_verify_pattern="\"\$ENHANCEMENT_TOOL\" --verify-reference --reference-dir \"\$ENHANCEMENT_REFERENCE\" --vokra-root \"\$VOKRA_ROOT\""
+  local score_cargo_pattern="cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score \"\$TEST_NAME\""
+  score_verify_line="$(grep -nF -- "$score_verify_pattern" "$script" | head -n1 | cut -d: -f1 || true)"
+  enhancement_verify_line="$(grep -nF -- "$enhancement_verify_pattern" "$script" | head -n1 | cut -d: -f1 || true)"
+  score_cargo_line="$(grep -nF -- "$score_cargo_pattern" "$script" | head -n1 | cut -d: -f1 || true)"
+  [[ "$score_verify_line" =~ ^[0-9]+$ && "$enhancement_verify_line" =~ ^[0-9]+$ && "$score_cargo_line" =~ ^[0-9]+$ && "$score_verify_line" -lt "$enhancement_verify_line" && "$enhancement_verify_line" -lt "$score_cargo_line" ]] || { log 'self-test stage order is not score-verify, enhancement-verify, cargo'; fail=1; }
   grep -En 'git[[:space:]]+push|publish-one\.sh|huggingface-cli[[:space:]]+upload|--push|curl[[:space:]]|wget[[:space:]]' "$script" | grep -v 'grep -En' >/dev/null && { log 'self-test publication/network command found'; fail=1; } || true
   if VOKRA_REMOTE_APPLE_SILICON=1 "$script" --self-test --gguf /tmp/rejected >/dev/null 2>&1; then log 'self-test accepted extra argument'; fail=1; fi
   if "$script" --unknown >/dev/null 2>&1; then log 'self-test accepted unknown argument'; fail=1; fi
@@ -105,6 +113,7 @@ done
 manifest_sha="$(sha256_file "$REFERENCE/manifest.json")"
 enhancement_manifest_sha="$(sha256_file "$ENHANCEMENT_REFERENCE/manifest.json")"
 UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python "$PARITY_TOOL" --verify-reference-only --reference-dir "$REFERENCE" >/dev/null
+UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python "$ENHANCEMENT_TOOL" --verify-reference --reference-dir "$ENHANCEMENT_REFERENCE" --vokra-root "$VOKRA_ROOT" >/dev/null
 log_file="$(mktemp "${TMPDIR:-/tmp}/sgmse-apple.XXXXXX")"; trap 'rm -f -- "$log_file"' EXIT
 export VOKRA_SGMSE_GGUF="$GGUF" VOKRA_SGMSE_GGUF_SHA256="$GGUF_SHA" VOKRA_SGMSE_REFERENCE_DIR="$REFERENCE" VOKRA_SGMSE_REFERENCE_MANIFEST_SHA256="$manifest_sha" VOKRA_SGMSE_APPLE_EVIDENCE_DIR="$EVIDENCE" VOKRA_SGMSE_ENHANCEMENT_REFERENCE_DIR="$ENHANCEMENT_REFERENCE" VOKRA_SGMSE_ENHANCEMENT_REFERENCE_MANIFEST_SHA256="$enhancement_manifest_sha" VOKRA_SGMSE_ENHANCEMENT_EVIDENCE_DIR="$ENHANCEMENT_EVIDENCE" VOKRA_REMOTE_APPLE_SILICON=1
 CARGO_BUILD_JOBS=1 cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score "$TEST_NAME" -- --ignored --exact --show-output 2>&1 | tee "$log_file"
