@@ -243,6 +243,14 @@ def validate_wrapper_sampling(sampling: dict[str, Any]) -> None:
         raise ValueError("wrapper sampling does not match the reviewed hyperparams")
 
 
+def normalize_cuda_device(torch: Any, value: Any) -> Any:
+    """Canonicalize an unindexed CUDA device to the explicitly selected GPU 0."""
+    device = torch.device(value)
+    if device.type == "cuda" and device.index is None:
+        return torch.device("cuda", 0)
+    return device
+
+
 def build_official_enhancer(
     speechbrain_source: Path,
     score_model: Any,
@@ -275,19 +283,24 @@ def build_official_enhancer(
         "spec_abs_exponent": 0.5,
         "sampling": ReviewedHParams(sampling),
     })
-    device = torch.device("cuda")
+    device = torch.device("cuda", 0)
     score_model = score_model.to(device)
     enhancer = SGMSEEnhancement(
         modules={"score_model": score_model},
         hparams=hparams,
-        run_opts={"device": "cuda"},
+        run_opts={"device": str(device)},
     )
     if hasattr(enhancer, "to"):
         enhancer = enhancer.to(device)
-    model_devices = {str(parameter.device) for parameter in score_model.parameters()}
-    if model_devices != {str(device)}:
-        raise ValueError(f"ScoreModel was not placed on CUDA: {sorted(model_devices)}")
-    if str(getattr(enhancer, "device", device)) != str(device):
+    model_devices = {
+        normalize_cuda_device(torch, parameter.device)
+        for parameter in score_model.parameters()
+    }
+    if model_devices != {device}:
+        observed = sorted(str(model_device) for model_device in model_devices)
+        raise ValueError(f"ScoreModel was not placed on CUDA: {observed}")
+    enhancer_device = normalize_cuda_device(torch, getattr(enhancer, "device", device))
+    if enhancer_device != device:
         raise ValueError("SGMSEEnhancement did not select the CUDA device")
     return enhancer
 
@@ -1033,6 +1046,37 @@ def self_test() -> int:
         pass
     else:
         return 1
+    class FakeDevice:
+        def __init__(self, device_type: str, index: int | None):
+            self.type = device_type
+            self.index = index
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, FakeDevice) and (self.type, self.index) == (other.type, other.index)
+
+        def __hash__(self) -> int:
+            return hash((self.type, self.index))
+
+        def __str__(self) -> str:
+            return self.type if self.index is None else f"{self.type}:{self.index}"
+
+    class FakeDeviceTorch:
+        @staticmethod
+        def device(value: Any, index: int | None = None) -> FakeDevice:
+            if isinstance(value, FakeDevice):
+                if index is not None:
+                    raise AssertionError("device index cannot accompany a device object")
+                return value
+            if index is not None:
+                return FakeDevice(str(value), index)
+            device_type, separator, raw_index = str(value).partition(":")
+            return FakeDevice(device_type, int(raw_index) if separator else None)
+
+    fake_device_torch = FakeDeviceTorch()
+    assert normalize_cuda_device(fake_device_torch, "cuda") == FakeDevice("cuda", 0)
+    assert normalize_cuda_device(fake_device_torch, "cuda:0") == FakeDevice("cuda", 0)
+    assert normalize_cuda_device(fake_device_torch, "cuda:1") != FakeDevice("cuda", 0)
+    assert normalize_cuda_device(fake_device_torch, "cpu") == FakeDevice("cpu", None)
     sampling_evidence = {
         "sha256": hashlib.sha256(HYPERPARAMS_RAW.encode()).hexdigest(),
         "raw": HYPERPARAMS_RAW,
