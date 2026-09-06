@@ -357,6 +357,19 @@ execution on VAST. No local model operation is permitted. Instance `50010765`
 was destroyed with all of its storage while waiting for that statement; the
 post-destroy instance and volume inventories both returned `[]`.
 
+Commit `ac45012b` closes the remaining source-level text hidden-state stub
+without crossing that authorization boundary. A crate-private
+`CosyVoice2TextEncoder` can now be constructed only through the strict
+authenticated LLM-component binder and runs token embedding, all Qwen2 blocks
+and final RMSNorm to produce finite `[tokens, hidden]` rows. Empty input,
+out-of-range tokens, context overflow and malformed output fail closed. The
+legacy `TextEncoderStub` remains an explicitly non-runnable compatibility
+surface, and the public composite loader remains `INSPECTION_ONLY`; this does
+not claim Flow, HiFT or end-to-end TTS completion. The manager independently
+confirmed formatting, diff hygiene and workspace metadata parsing. No Cargo
+test/check, model download or model execution was performed on the maintainer
+Mac.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
