@@ -8,6 +8,7 @@ import json
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -38,6 +39,8 @@ MAX_CHECKPOINT_DEPTH = 64
 MAX_CHECKPOINT_CONTAINER_ITEMS = 500_000
 MAX_CHECKPOINT_STRING = 1_000_000
 TRANSPORT_CACHE = ".cache/huggingface"
+APPROVAL_SCHEMA = "vokra-audiogen-medium-inspection-approval-v1"
+APPROVAL_PLACEHOLDERS = {"", "owner", "owner@example.invalid", "placeholder", "tbd", "unknown"}
 ROLE_MARKERS = {
     "builders": ("AudioGen", "get_audiogen"),
     "audiogen_model": ("class AudioGen", "CompressionModel"),
@@ -102,6 +105,66 @@ def digest(path: Path, algorithm: str = "sha256") -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             value.update(block)
     return value.hexdigest()
+
+
+def canonical_json(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def approval_scope(expected_head: str) -> dict[str, Any]:
+    return {
+        "expected_head": expected_head,
+        "upstream_repository": HF_REPOSITORY,
+        "upstream_revision": HF_REVISION,
+        "source_repository": SOURCE_REPOSITORY,
+        "source_revision": SOURCE_REVISION,
+        "artifact_identity_sha256": hashlib.sha256(canonical_json(HF_FILE_IDENTITIES)).hexdigest(),
+        "license": "CC-BY-NC-4.0",
+        "license_scope": "RESEARCH_ONLY",
+        "publication": "NO_UPLOAD",
+    }
+
+
+def validate_approval(path: Path, expected_head: str, expected_sha256: str, *, raw_path: str | None = None) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise RuntimeError("expected HEAD must be exactly 40 lowercase hexadecimal characters")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise RuntimeError("approval SHA-256 must be exactly 64 lowercase hexadecimal characters")
+    raw_parts = (str(path) if raw_path is None else raw_path).replace("\\", "/").split("/")
+    if any(part in {".", ".."} for part in raw_parts):
+        raise RuntimeError("approval evidence path may not contain dot components")
+    ancestor = path.parent
+    while ancestor != ancestor.parent:
+        # macOS exposes /var (and sometimes /tmp) as platform-owned symlinks;
+        # reject every user-controlled symlink ancestor while allowing only
+        # those fixed system mount aliases.
+        if ancestor.is_symlink() and not (ancestor.parent == Path("/") and ancestor.name in {"var", "tmp"}):
+            raise RuntimeError("approval evidence has a symlink ancestor")
+        ancestor = ancestor.parent
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError("approval evidence must be a regular non-symlink file")
+    if path.stat().st_size <= 0 or path.stat().st_size > 1_000_000:
+        raise RuntimeError("approval evidence size is outside the bounded range")
+    actual_sha256 = digest(path)
+    if actual_sha256 != expected_sha256:
+        raise RuntimeError("approval evidence SHA-256 mismatch")
+    approval = load_json(path)
+    required = {"schema", "decision", "signer", "scope", "scope_sha256"}
+    if not isinstance(approval, dict) or set(approval) != required:
+        raise RuntimeError("approval evidence schema is not exact")
+    if approval["schema"] != APPROVAL_SCHEMA or approval["decision"] != "APPROVED":
+        raise RuntimeError("approval evidence is not an approved AudioGen inspection")
+    signer = approval["signer"]
+    if not isinstance(signer, str) or not signer.strip() or signer.strip().casefold() in APPROVAL_PLACEHOLDERS:
+        raise RuntimeError("approval signer is missing or a placeholder")
+    scope = approval["scope"]
+    expected_scope = approval_scope(expected_head)
+    if not isinstance(scope, dict) or scope != expected_scope:
+        raise RuntimeError("approval scope does not bind exact AudioGen identities/policy")
+    scope_sha256 = approval["scope_sha256"]
+    if not isinstance(scope_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", scope_sha256) or scope_sha256 != hashlib.sha256(canonical_json(scope)).hexdigest():
+        raise RuntimeError("approval scope SHA-256 mismatch")
+    return {"schema": APPROVAL_SCHEMA, "signer": signer, "scope_sha256": scope_sha256, "evidence_sha256": actual_sha256}
 
 
 def git_blob_sha1(path: Path) -> str:
@@ -338,6 +401,13 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True, stderr=subprocess.STDOUT).strip()
 
 
+def validate_clean_head(root: Path, expected_head: str) -> None:
+    if git(root, "rev-parse", "HEAD") != expected_head:
+        raise RuntimeError("Vokra checkout HEAD does not match the approved expected HEAD")
+    if git(root, "status", "--porcelain", "--untracked-files=all"):
+        raise RuntimeError("Vokra checkout is dirty")
+
+
 def license_evidence(root: Path) -> dict[str, Any]:
     path = root / "LICENSE"
     if not path.is_file() or path.is_symlink():
@@ -416,9 +486,15 @@ def source_inventory(source: Path) -> dict[str, Any]:
 
 
 def write_manifest(output: Path, **fields: Any) -> None:
+    if output.is_symlink() or output.exists() and not output.is_dir():
+        raise RuntimeError("inspection output is not a regular directory")
     output.mkdir(parents=True, exist_ok=True)
+    manifest_path = output / "manifest.json"
+    if manifest_path.exists() or manifest_path.is_symlink():
+        raise RuntimeError("inspection manifest already exists; refusing to clobber evidence")
     payload = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "LM_ONLY_PCM_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", **fields}
-    (output / "manifest.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    with manifest_path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
 
 
 def main() -> int:
@@ -428,13 +504,38 @@ def main() -> int:
     parser.add_argument("--source", type=Path)
     parser.add_argument("--server-tree", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--validate-approval", action="store_true")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--vokra-root", type=Path)
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
+    if args.validate_approval:
+        if args.approval_evidence is None or args.approval_sha256 is None or args.expected_head is None:
+            parser.error("--validate-approval requires --approval-evidence, --approval-sha256, and --expected-head")
+        try:
+            approval = validate_approval(Path(args.approval_evidence), args.expected_head, args.approval_sha256, raw_path=args.approval_evidence)
+            print(json.dumps({"status": "APPROVED", **approval}, sort_keys=True))
+            return 0
+        except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+            print(f"approval BLOCKED: {error}", file=sys.stderr)
+            return 2
+    if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head)):
+        parser.error("normal runs require --approval-evidence, --approval-sha256, and --expected-head")
+    try:
+        approval = validate_approval(Path(args.approval_evidence), args.expected_head, args.approval_sha256, raw_path=args.approval_evidence)
+        if args.vokra_root is not None:
+            validate_clean_head(args.vokra_root, args.expected_head)
+    except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+        if args.output:
+            write_manifest(args.output, inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, blockers=[str(error)], expected_head=args.expected_head, approval_evidence=approval if "approval" in locals() else {"status": "UNVERIFIED"})
+        return 2
     if not (PROJECT / "uv.lock").is_file():
         if args.output:
-            write_manifest(args.output, inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, blockers=["dedicated uv.lock absent; fail before model/source acquisition"])
+            write_manifest(args.output, inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, blockers=["dedicated uv.lock absent; fail before model/source acquisition"], expected_head=args.expected_head, approval_evidence=approval)
         return 2
     if any(value is None for value in (args.snapshot, args.source, args.server_tree, args.output)):
         parser.error("normal run requires snapshot, source, server-tree, and output")
@@ -453,10 +554,12 @@ def main() -> int:
         config_blockers = [f"{name} checkpoint config semantics are not fully authenticated" for name, archive in archives.items() if archive["config_evidence"]["status"] != "AUTHENTICATED"]
         blockers = ["release/source timing gap: HF weights uploaded 2023-07-27 before AudioCraft v1.0.0 execution source", "AudioCraft role identity is bound to v1.0.0 but weight-build provenance is not independently authenticated", "external text conditioner name/size is not fully recovered from authenticated checkpoint", "native AudioGen codec/LM composition is not implemented", "CPU/Metal parity is not run", "training-data provenance is unauthenticated", "source LICENSE_weights is CC-BY-NC-4.0; historical v0.0.2 LICENSE_weights was CC-BY-NC-ND-4.0 (provenance ambiguity)"] + config_blockers + collection_blockers
         complete = not collection_blockers
-        write_manifest(args.output, inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", collection_status="AUTHENTICATED" if complete else "UNVERIFIED", upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "walk": "recursive_file_only", "server_tree": server, "files": files, "model_card": {"path": "README.md", "license": card["license"], "sha256": digest(readme), "git_blob_sha1": git_blob_sha1(readme)}}, archives=archives, compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "path": "compression_state_dict.bin"}, external_text_conditioner={"status": "UNRESOLVED_BLOCKER", "selection": None}, official_source=source, license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_MODEL_CARD"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"}, blockers=sorted(set(blockers)))
+        if args.vokra_root is not None:
+            validate_clean_head(args.vokra_root, args.expected_head)
+        write_manifest(args.output, inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", collection_status="AUTHENTICATED" if complete else "UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "walk": "recursive_file_only", "server_tree": server, "files": files, "model_card": {"path": "README.md", "license": card["license"], "sha256": digest(readme), "git_blob_sha1": git_blob_sha1(readme)}}, archives=archives, compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "path": "compression_state_dict.bin"}, external_text_conditioner={"status": "UNRESOLVED_BLOCKER", "selection": None}, official_source=source, license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_MODEL_CARD"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"}, blockers=sorted(set(blockers)))
         return 2
     except Exception as error:
-        write_manifest(args.output or Path("."), inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, error_type=type(error).__name__, blockers=[str(error)])
+        write_manifest(args.output or Path("."), inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, error_type=type(error).__name__, blockers=[str(error)])
         return 2
 
 
@@ -468,13 +571,15 @@ def self_test() -> None:
     assert SOURCE_WEIGHTS_LICENSE_BLOB == "108b5f002fc31efe11d881de2cd05329ebe8cc37"
     assert HISTORICAL_WEIGHTS_LICENSE_BLOB == "dc1adf98654156baeb94d2e055c224a847e5820d"
     assert "T5-large" not in ROLE_MARKERS
-    import torch
-    walked = walk_checkpoint({"best_state": {"layer": {"weight": torch.ones(2, 2)}}, "cfg": {"sample_rate": 16_000, "frame_rate": 50, "num_codebooks": 4, "text_encoder_name": "t5-small"}}, torch)
-    assert walked["tensors"][0]["path"] == "best_state.layer.weight" and checkpoint_config(walked["scalars"])["sample_rate_hz"] == 16_000
+    class DummyTorch:
+        Tensor = type("Tensor", (), {})
+
+    walked = walk_checkpoint({"cfg": {"sample_rate": 16_000, "frame_rate": 50, "num_codebooks": 4, "text_encoder_name": "t5-small"}}, DummyTorch)
+    assert not walked["tensors"] and checkpoint_config(walked["scalars"])["sample_rate_hz"] == 16_000
     cycle: list[Any] = []
     cycle.append(cycle)
     try:
-        walk_checkpoint(cycle, torch)
+        walk_checkpoint(cycle, DummyTorch)
     except RuntimeError:
         pass
     else:
@@ -514,6 +619,55 @@ def self_test() -> None:
                 raise AssertionError("extra HF file accepted")
         finally:
             HF_FILE_IDENTITIES = original_identities
+        approval_path = root / "approval.json"
+        expected_head = "a" * 40
+        scope = approval_scope(expected_head)
+        approval_path.write_text(json.dumps({"schema": APPROVAL_SCHEMA, "decision": "APPROVED", "signer": "owner@example.test", "scope": scope, "scope_sha256": hashlib.sha256(canonical_json(scope)).hexdigest()}, sort_keys=True) + "\n", encoding="utf-8")
+        approval = validate_approval(approval_path, expected_head, digest(approval_path))
+        assert approval["schema"] == APPROVAL_SCHEMA
+        approval_path.write_text(approval_path.read_text(encoding="utf-8").replace("owner@example.test", "placeholder"), encoding="utf-8")
+        try:
+            validate_approval(approval_path, expected_head, digest(approval_path))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("placeholder approval signer was accepted")
+        approval_path.write_text(json.dumps({"schema": APPROVAL_SCHEMA, "decision": "APPROVED", "signer": "owner@example.test", "scope": scope, "scope_sha256": hashlib.sha256(canonical_json(scope)).hexdigest()}, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            validate_approval(approval_path, expected_head, digest(approval_path), raw_path=f"{root}/./approval.json")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("dot-component approval path was accepted")
+        target = root / "approval-target"
+        target.mkdir()
+        target_approval = target / "approval.json"
+        target_approval.write_bytes(approval_path.read_bytes())
+        linked = root / "approval-linked"
+        linked.symlink_to(target, target_is_directory=True)
+        linked_path = linked / "approval.json"
+        try:
+            validate_approval(linked_path, expected_head, digest(target_approval), raw_path=str(linked_path))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlink-ancestor approval path was accepted")
+        (root / "duplicate.json").write_text('{"x":1,"x":2}\n', encoding="utf-8")
+        try:
+            load_json(root / "duplicate.json")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("duplicate approval JSON key was accepted")
+        existing = root / "existing"
+        existing.mkdir()
+        (existing / "manifest.json").write_text("sentinel\n", encoding="utf-8")
+        try:
+            write_manifest(existing, test=True)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("existing inspection manifest was clobbered")
     print("audiogen_medium_inspect --self-test: OK")
 
 

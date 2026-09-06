@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,11 +26,27 @@ def strict_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def validate_packet(packet: dict[str, object]) -> None:
+    if not isinstance(packet, dict) or set(packet) != {"schema", "execution", "status", "artifacts"}:
+        raise ValueError("reference packet root schema is not exact")
     if packet.get("schema") != "vokra.audiogen_medium.reference.v2":
         raise ValueError("wrong reference schema")
     artifacts = packet.get("artifacts")
     if not isinstance(artifacts, list) or len(artifacts) != len(REQUIRED_ARTIFACTS) or any(not isinstance(item, dict) or set(item) != {"role", "path", "shape", "dtype", "sha256", "finite"} for item in artifacts) or {item["role"] for item in artifacts} != REQUIRED_ARTIFACTS:
         raise ValueError("reference artifact roles are incomplete")
+    seen_paths: set[str] = set()
+    for item in artifacts:
+        role, path, shape, dtype, sha256, finite = (item["role"], item["path"], item["shape"], item["dtype"], item["sha256"], item["finite"])
+        if not isinstance(role, str) or role not in REQUIRED_ARTIFACTS or not isinstance(path, str) or not path or path.startswith("/") or "\\" in path or ".." in Path(path).parts or path in seen_paths:
+            raise ValueError("reference artifact path/role is unsafe or duplicated")
+        seen_paths.add(path)
+        if not isinstance(shape, list) or not shape or any(not isinstance(dim, int) or isinstance(dim, bool) or dim <= 0 for dim in shape):
+            raise ValueError(f"invalid reference shape: {role}")
+        if not isinstance(dtype, str) or not dtype or not re.fullmatch(r"[A-Za-z0-9_]+", dtype):
+            raise ValueError(f"invalid reference dtype: {role}")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise ValueError(f"invalid reference SHA-256: {role}")
+        if finite not in {"TRUE", "NOT_CHECKED"}:
+            raise ValueError(f"invalid finite marker: {role}")
     if packet.get("execution") != "official_audiocraft_only" or packet.get("status") != "BLOCKED":
         raise ValueError("reference execution/status contract is incomplete")
 
