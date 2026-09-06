@@ -251,6 +251,8 @@ require_tooling() {
     command -v "$tool" >/dev/null 2>&1 || die "required VAST tool missing: $tool"
   done
   cargo clippy --version >/dev/null 2>&1 || die "clippy component is missing"
+  cargo deny --version >/dev/null 2>&1 || die "cargo-deny is missing"
+  cargo audit --version >/dev/null 2>&1 || die "cargo-audit is missing"
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || die "not a Vokra checkout"
   [[ -f "$LANG_ID_PROJECT/pyproject.toml" && -f "$LANG_ID_PROJECT/uv.lock" ]] || die "dedicated Lang-ID uv project is missing"
   for path in "$VOKRA_ROOT/$PREPARER" "$VOKRA_ROOT/$REFERENCE_DUMPER" \
@@ -450,6 +452,9 @@ run_self_test() {
   for required in 'uv run --frozen --project "$LANG_ID_PROJECT" --python 3.12 python' \
     'cargo build --offline --locked --release -p vokra-cli' \
     'cargo test --offline --locked --release -p vokra-models' \
+    'cargo test --offline --locked --workspace -- --test-threads=1' \
+    'cargo clippy --offline --locked --workspace --all-targets -- -D warnings' \
+    'cargo deny --locked --offline check' 'cargo audit --no-fetch' 'cargo deny --version' 'cargo audit --version' \
     'test measure_cpu_against_independent_speechbrain' \
     'LANG_ID_MEASUREMENT_ONLY backend=cpu' 'test result: ok. 1 passed' \
     'lang-id[' 'lang-id: 107 scores in official label order' '--backend cpu' \
@@ -677,7 +682,7 @@ main() {
   cp "$reference_dir/labels.json" "$evidence_dir/reference.labels.json"
   sha256sum "$reference_dir"/* | tee "$evidence_dir/reference-sha256.txt"
 
-  run_logged "Build strict Vokra CLI" "$evidence_dir/build.log" env CARGO_NET_OFFLINE=true cargo build --offline --locked --release -p vokra-cli
+  run_logged "Build strict Vokra CLI" "$evidence_dir/build.log" env CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo build --offline --locked --release -p vokra-cli
   run_logged "Convert strict Lang-ID GGUF" "$convert_log" target/release/vokra-cli convert \
     --model "$MODEL_KIND" --input "$prepared_path" --output "$gguf_path"
   grep -Eq "^converted $MODEL_KIND: $tensor_count tensors," "$convert_log" || die "converter count assertion failed"
@@ -689,7 +694,7 @@ main() {
 
   export "$GGUF_ENV=$gguf_path" "$REFERENCE_DIR_ENV=$reference_dir"
   run_logged "Run real-weight CPU parity measurement" "$parity_log" \
-    CARGO_NET_OFFLINE=true cargo test --offline --locked --release -p vokra-models --test parity_speechbrain_lang_id_real \
+    CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo test --offline --locked --release -p vokra-models --test parity_speechbrain_lang_id_real \
     "$PARITY_TEST" -- --ignored --nocapture --test-threads=1
   require_cpu_test_evidence "$parity_log"
 
@@ -698,6 +703,15 @@ main() {
   grep -Fq "lang-id[" "$cli_log" || die "CLI emitted no ranked classification"
   grep -Fq "lang-id: 107 scores in official label order" "$cli_log" || die "CLI did not emit 107 scores"
   [[ -s "$score_path" ]] || die "CLI emitted no score vector"
+
+  run_logged "Run exact locked offline workspace tests" "$evidence_dir/workspace-test.log" \
+    env CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo test --offline --locked --workspace -- --test-threads=1
+  run_logged "Run exact locked offline workspace Clippy" "$evidence_dir/clippy.log" \
+    env CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo clippy --offline --locked --workspace --all-targets -- -D warnings
+  run_logged "Run locked offline cargo-deny" "$evidence_dir/cargo-deny.log" \
+    env CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo deny --locked --offline check
+  run_logged "Run no-fetch cargo-audit" "$evidence_dir/cargo-audit.log" \
+    env CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo audit --no-fetch
 
   step "Run focused repository gates"
   set +e
