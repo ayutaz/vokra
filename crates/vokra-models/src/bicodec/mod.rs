@@ -1458,21 +1458,21 @@ mod tests {
             &reference_dir,
             "semantic_latent",
             &[1, MODEL_DIM, semantic_values.len()],
-            &semantic,
+            semantic,
         );
         compare_reference_stage(
             &manifest,
             &reference_dir,
             "d_vector",
             &[1, MODEL_DIM],
-            &speaker,
+            speaker,
         );
         compare_reference_stage(
             &manifest,
             &reference_dir,
             "prenet_output",
             &[1, MODEL_DIM, semantic_values.len()],
-            &prenet,
+            prenet,
         );
         compare_reference_stage(
             &manifest,
