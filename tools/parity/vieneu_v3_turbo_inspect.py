@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
+from vieneu_v3_turbo_gate import BLOCKED_MARKER, require_blocked_gate
 
 
 MODEL_REPOSITORY = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
@@ -1033,30 +1034,27 @@ def inspect(
         authentication_failures.append("VieNeu source checkout identity is not authenticated")
     if authentication_failures:
         raise RuntimeError("; ".join(authentication_failures))
-    evidence_dir.mkdir(parents=True, exist_ok=True)
+    if not evidence_dir.exists():
+        evidence_dir.mkdir(parents=False, exist_ok=False)
+    elif not evidence_dir.is_dir() or evidence_dir.is_symlink():
+        raise RuntimeError(f"evidence directory is not a regular directory: {evidence_dir}")
     manifest_path = evidence_dir / "vieneu_v3_turbo_manifest.json"
-    manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with manifest_path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     print(f"VieNeu inspection evidence is authenticated but blocked; evidence at {manifest_path}")
     return 2
 
 
 def write_error_manifest(evidence_dir: Path, error: Exception) -> None:
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    for name in (
-        "model_tree.json",
-        "moss_tree.json",
-        "tensor-inventory.json",
-        "config.json",
-        "source-inventory.json",
-        "server-packet.json",
-        "vieneu_v3_turbo_manifest.json",
-    ):
-        stale = evidence_dir / name
-        if stale.is_file() or stale.is_symlink():
-            stale.unlink()
+    if not evidence_dir.exists():
+        evidence_dir.mkdir(parents=False, exist_ok=False)
+    elif not evidence_dir.is_dir() or evidence_dir.is_symlink():
+        raise RuntimeError(f"evidence directory is not a regular directory: {evidence_dir}")
     manifest_path = evidence_dir / "vieneu_v3_turbo_manifest.json"
-    manifest_path.write_text(
-        json.dumps(
+    if manifest_path.exists() or manifest_path.is_symlink():
+        raise FileExistsError(f"refusing to clobber existing evidence manifest: {manifest_path}")
+    with manifest_path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(
             {
                 "format": FORMAT,
                 "status": "BLOCKED",
@@ -1074,13 +1072,16 @@ def write_error_manifest(evidence_dir: Path, error: Exception) -> None:
             },
             indent=2,
             sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+        ) + "\n")
 
 
 def self_test() -> None:
+    source_text = Path(__file__).read_text(encoding="utf-8")
+    assert source_text.index("require_blocked_gate(args.expected_head") < source_text.index("normal runs require model/source") < source_text.index("return inspect(args.model_dir")
+    blocked = subprocess.run([sys.executable, str(Path(__file__)), "--expected-head", "bad", "--approval-evidence", "/missing/approval", "--approval-sha256", "0" * 64, "--model-dir", "/missing/model", "--source-dir", "/missing/source", "--moss-dir", "/missing/moss", "--evidence-dir", "/missing/evidence", "--model-tree", "/missing/model-tree", "--moss-tree", "/missing/moss-tree"], capture_output=True, text=True, check=False)
+    assert blocked.returncode == 1 and "lowercase 40-hex" in blocked.stderr
+    root_bypass = subprocess.run([sys.executable, str(Path(__file__)), "--self-test", "--root", "/tmp"], capture_output=True, text=True, check=False)
+    assert root_bypass.returncode == 2 and "unrecognized arguments: --root" in root_bypass.stderr
     root = Path(os.getcwd()).resolve()
     assert safe_relative(root / "tools", root) == "tools"
     try:
@@ -1273,6 +1274,16 @@ def self_test() -> None:
         raise AssertionError("fixed source role mode drift was accepted")
     assert '"inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE"' in Path(__file__).read_text(encoding="utf-8")
     assert '"inspection_status": "INSPECTION_ERROR"' in Path(__file__).read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="vieneu-occupied-") as occupied_root:
+        occupied = Path(occupied_root) / "occupied-evidence"
+        occupied.mkdir()
+        (occupied / "vieneu_v3_turbo_manifest.json").write_text("existing\n", encoding="utf-8")
+        try:
+            write_error_manifest(occupied, RuntimeError("must not overwrite"))
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing evidence manifest was silently overwritten")
     print("vieneu_v3_turbo_inspect self-test: OK")
 
 
@@ -1285,16 +1296,33 @@ def main() -> int:
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--model-tree", type=Path)
     parser.add_argument("--moss-tree", type=Path)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
+    checkout_root = Path(__file__).resolve().parents[2]
     if args.self_test:
-        if any(value is not None for value in (args.model_dir, args.source_dir, args.moss_dir, args.evidence_dir, args.model_tree, args.moss_tree)):
+        if any(value is not None for value in (args.model_dir, args.source_dir, args.moss_dir, args.evidence_dir, args.model_tree, args.moss_tree, args.expected_head, args.approval_evidence, args.approval_sha256)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
+    if any(value is None for value in (args.expected_head, args.approval_evidence, args.approval_sha256)):
+        parser.error("normal runs require --expected-head, --approval-evidence, and --approval-sha256")
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, checkout_root)
+    except RuntimeError as error:
+        if BLOCKED_MARKER in str(error):
+            print(str(error), file=sys.stderr)
+            return 2
+        print(f"gate rejected: {error}", file=sys.stderr)
+        return 1
     if any(value is None for value in (args.model_dir, args.source_dir, args.moss_dir, args.evidence_dir, args.model_tree, args.moss_tree)):
         parser.error("normal runs require model/source/MOSS dirs, evidence dir, and server tree evidence")
     try:
         return inspect(args.model_dir, args.source_dir, args.moss_dir, args.evidence_dir, args.model_tree, args.moss_tree)
+    except FileExistsError as error:
+        print(f"VieNeu inspection refused to clobber evidence: {error}", file=sys.stderr)
+        return 2
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         write_error_manifest(args.evidence_dir, error)
         print(f"VieNeu inspection error: {error}", file=sys.stderr)

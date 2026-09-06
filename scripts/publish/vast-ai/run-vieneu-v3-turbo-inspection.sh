@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2317
 # VAST/Linux-only evidence collection for the pinned VieNeu-TTS-v3-Turbo
 # bundle.  This worker never converts, uploads, publishes, or executes ONNX.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+VOKRA_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 INSPECTOR="$PARITY_PROJECT/vieneu_v3_turbo_inspect.py"
+GATE="$PARITY_PROJECT/vieneu_v3_turbo_gate.py"
 MODEL_REPOSITORY="pnnbao-ump/VieNeu-TTS-v3-Turbo"
 MODEL_REVISION="2da0efab622a1722125991736524f080b751ef5b"
 SOURCE_URL="https://github.com/pnnbao97/VieNeu-TTS.git"
@@ -19,13 +21,16 @@ MOSS_REVISION="6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 MIN_VAST_MEM_KIB=$((32 * 1024 * 1024))
 MIN_FREE_DISK_KIB=$((8 * 1024 * 1024))
 VIENEU_UV_CACHE_DIR="${VIENEU_UV_CACHE_DIR:-/tmp/vokra-vieneu-uv-cache}"
+UV_GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python "$GATE")
 
 log() { printf '[vieneu-v3-turbo-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
 
 usage() {
   cat <<'EOF'
-usage: run-vieneu-v3-turbo-inspection.sh [--work-dir <empty-dir>]
+usage: run-vieneu-v3-turbo-inspection.sh --expected-head HEX40
+       --approval-evidence ABSOLUTE --approval-sha256 HEX64
+       [--work-dir <empty-dir>]
        run-vieneu-v3-turbo-inspection.sh --self-test
 
 Downloads only immutable model/source snapshots and writes an INSPECTION_ONLY
@@ -35,7 +40,7 @@ EOF
 }
 
 self_test() {
-  local path="${BASH_SOURCE[0]}" fail=0 token
+  local path="${BASH_SOURCE[0]}" fail=0 token gate_line uname_line work_line snapshot_line
   for token in \
     'Linux' 'x86_64' 'VOKRA_PUBLISH_ON_VAST=1' '/proc/meminfo' 'df -Pk' \
     'CARGO_BUILD_JOBS=1' 'cargo fmt --all -- --check' \
@@ -56,6 +61,7 @@ self_test() {
     'SOURCE_ROLE_BLOBS' 'AUTHENTICATED_APACHE_2' 'license_status' \
     'optional_source_roles' 'UNVERIFIED_TOPOLOGY' \
     'src/vieneu/_v3_turbo_engine/inference_v3_turbo.py' 'tracked_files' \
+    'BLOCKED_UNRESOLVED_VIENEU_V3_TURBO_COMPOSITE' '--expected-head' '--approval-evidence' '--approval-sha256' \
     'git status --porcelain'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
@@ -66,12 +72,23 @@ self_test() {
     log 'self-test FAIL: publication command found'
     fail=1
   fi
+  gate_line="$(grep -nF -- '--verify --expected-head' "$path" | tail -n1 | cut -d: -f1)"; uname_line="$(grep -nF 'VieNeu model work is VAST/Linux-only' "$path" | tail -n1 | cut -d: -f1)"; work_line="$(grep -nF 'mkdir -p "$work_dir/model"' "$path" | tail -n1 | cut -d: -f1)"; snapshot_line="$(grep -nF 'snapshot_download(repo_id' "$path" | tail -n1 | cut -d: -f1)"
+  [[ "$gate_line" =~ ^[0-9]+$ && "$uname_line" =~ ^[0-9]+$ && "$work_line" =~ ^[0-9]+$ && "$snapshot_line" =~ ^[0-9]+$ && $gate_line -lt $uname_line && $gate_line -lt $work_line && $gate_line -lt $snapshot_line ]] || { log 'self-test FAIL: terminal gate ordering'; fail=1; }
+  UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" --self-test || fail=1
   if "$path" --self-test --work-dir /tmp/not-accepted >/dev/null 2>&1; then
     log 'self-test FAIL: extra argument accepted'
     fail=1
   fi
   if "$path" --unknown-flag >/dev/null 2>&1; then
     log 'self-test FAIL: unknown argument accepted'
+    fail=1
+  fi
+  if "$path" --self-test --self-test >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate self-test accepted'
+    fail=1
+  fi
+  if "$path" --self-test --expected-head bad >/dev/null 2>&1; then
+    log 'self-test FAIL: mixed approval argument accepted'
     fail=1
   fi
   if ! UV_CACHE_DIR="$VIENEU_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" \
@@ -84,20 +101,29 @@ self_test() {
 }
 
 work_dir="/workspace/vokra-vieneu-v3-turbo-inspection"
-self=0
+self=0; seen_self=0; seen_work=0; seen_head=0; seen_approval=0; seen_sha=0
+expected_head=''; approval_evidence=''; approval_sha256=''
 while (($#)); do
   case "$1" in
-    --self-test) self=1; shift ;;
-    --work-dir) (($# >= 2)) || die '--work-dir requires a path'; work_dir="$2"; shift 2 ;;
+    --self-test) ((seen_self+=1)); self=1; shift ;;
+    --work-dir) ((seen_work+=1)); (($# >= 2)) || die '--work-dir requires a path'; work_dir="$2"; shift 2 ;;
+    --expected-head) ((seen_head+=1)); (($# >= 2)) || die '--expected-head requires a value'; expected_head="$2"; shift 2 ;;
+    --approval-evidence) ((seen_approval+=1)); (($# >= 2)) || die '--approval-evidence requires a path'; approval_evidence="$2"; shift 2 ;;
+    --approval-sha256) ((seen_sha+=1)); (($# >= 2)) || die '--approval-sha256 requires a value'; approval_sha256="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$work_dir" == "/workspace/vokra-vieneu-v3-turbo-inspection" ]] || die '--self-test accepts no other arguments'
+  [[ $seen_self == 1 && $seen_work == 0 && $seen_head == 0 && $seen_approval == 0 && $seen_sha == 0 ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
+[[ $seen_work -le 1 && $seen_head == 1 && $seen_approval == 1 && $seen_sha == 1 ]] || die 'normal runs require one --expected-head, --approval-evidence, and --approval-sha256'
+gate_log=''; gate_rc=0
+if gate_log="$(UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$VOKRA_ROOT" 2>&1)"; then gate_rc=0; else gate_rc=$?; fi
+[[ $gate_rc == 2 && "$gate_log" == *BLOCKED_UNRESOLVED_VIENEU_V3_TURBO_COMPOSITE* ]] || die "VieNeu approval gate did not reach the expected terminal blocker: $gate_log"
+die 'BLOCKED_UNRESOLVED_VIENEU_V3_TURBO_COMPOSITE: current blocked approval cannot authorize host checks, acquisition, or inspection'
 
 [[ "$(uname -s)" == Linux ]] || die 'VieNeu model work is VAST/Linux-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
@@ -237,6 +263,7 @@ UV_CACHE_DIR="$VIENEU_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" 
   "$INSPECTOR" --model-dir "$work_dir/model" --source-dir "$work_dir/source/repo" \
   --moss-dir "$work_dir/moss" --evidence-dir "$work_dir/evidence" \
   --model-tree "$work_dir/model_tree.json" --moss-tree "$work_dir/moss_tree.json" \
+  --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" \
   >> "$work_dir/evidence/validation.log" 2>&1
 inspect_rc=$?
 set -e
