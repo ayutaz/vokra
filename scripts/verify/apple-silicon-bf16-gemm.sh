@@ -15,7 +15,7 @@ log() { printf '[bf16-gemm-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 usage() {
   cat >&2 <<'EOF'
-usage: apple-silicon-bf16-gemm.sh --evidence-dir ABSENT_DIR
+usage: apple-silicon-bf16-gemm.sh --expected-head HEX40 --evidence-dir ABSENT_DIR
        apple-silicon-bf16-gemm.sh --self-test
 
 Runs the exact ignored NeonBf16/BFMMLA parity test against the committed
@@ -93,8 +93,11 @@ require_evidence_path() {
 }
 
 require_clean_checkout() {
+  local expected_head="$1" actual_head
   [[ -d "$VOKRA_ROOT/.git" ]] || die 'checkout is not a git worktree'
-  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain)" ]] || die 'checkout is dirty'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout is dirty'
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'cannot read checkout HEAD'
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
 }
 
 require_fixture_entry_set() {
@@ -175,14 +178,24 @@ parse_test_log() {
 self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token tmp good
   for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'hw.optional.arm.FEAT_BF16' \
+    '--expected-head' 'rev-parse HEAD' 'checkout HEAD' \
     'NeonBf16' 'BFMMLA' 'CARGO_BUILD_JOBS=1' 'CARGO_NET_OFFLINE=true' \
-    'cargo test --locked --release -p vokra-backend-cpu --test bf16_gemm_torch_parity' \
-    '-- --ignored --exact --show-output' 'APPLE_BF16_GEMM_PASS' 'max_abs_error=' \
+    "cargo test --manifest-path \"\$VOKRA_ROOT/Cargo.toml\" --locked --offline --release -p vokra-backend-cpu --test bf16_gemm_torch_parity" \
+    '-- --ignored --exact --show-output --test-threads=1' 'APPLE_BF16_GEMM_PASS' 'max_abs_error=' \
+    'status --porcelain --untracked-files=all' \
     'b9e7b687ef6352b30f258b0b1c02695e724e32443665e74981cac66b025b1ba3' 'no model' 'no upload'; do
     grep -Fq -- "$token" "$script" || { log "self-test missing contract token: $token"; fail=1; }
   done
+  local parity_source="$VOKRA_ROOT/crates/vokra-backend-cpu/tests/bf16_gemm_torch_parity.rs"
+  grep -Fq 'kernels::gemm_bf16_on' "$parity_source" || { log 'self-test missing forced BF16 kernel call'; fail=1; }
+  grep -Fq 'IsaPath::NeonBf16' "$parity_source" || { log 'self-test missing explicit NeonBf16 path'; fail=1; }
+  if grep -Eq 'best_bf16_isa[[:space:]]*\(' "$parity_source"; then log 'self-test found dispatch fallback in Apple test'; fail=1; fi
   grep -En '(^|[[:space:]])(curl|wget|git[[:space:]]+push|huggingface-cli|publish-one\.sh)([[:space:]]|$)' "$script" >/dev/null && { log 'self-test found network/publication command'; fail=1; } || true
   if "$script" --unknown >/dev/null 2>&1; then log 'self-test accepted unknown option'; fail=1; fi
+  if "$script" --expected-head bad >/dev/null 2>&1 || \
+    "$script" --expected-head "$(printf '0%.0s' {1..40})" --expected-head "$(printf '1%.0s' {1..40})" >/dev/null 2>&1; then
+    log 'self-test accepted malformed or duplicate --expected-head'; fail=1
+  fi
   if VOKRA_TEST_FORCE_NO_BF16=1 require_bf16_support >/dev/null 2>&1; then log 'self-test accepted missing BF16 support'; fail=1; fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/bf16-apple-self-test.XXXXXX")"
   trap 'rm -rf "$tmp"' RETURN
@@ -214,29 +227,61 @@ self_test() {
   log 'self-test PASS'
 }
 
-EVIDENCE=''; SELF_TEST=0
+EVIDENCE=''; EXPECTED_HEAD=''; SELF_TEST=0
 while (($#)); do
   case "$1" in
     --self-test) ((SELF_TEST == 0)) || die 'duplicate --self-test'; SELF_TEST=1; shift;;
+    --expected-head) [[ -z "$EXPECTED_HEAD" ]] || die 'duplicate --expected-head'; (($# >= 2)) || die '--expected-head requires a commit'; [[ "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; EXPECTED_HEAD="$2"; shift 2;;
     --evidence-dir) (($# >= 2)) || die '--evidence-dir requires a path'; [[ -z "$EVIDENCE" ]] || die 'duplicate --evidence-dir'; EVIDENCE="$2"; shift 2;;
     -h|--help) usage; exit 0;;
     *) usage; die "unknown option: $1";;
   esac
 done
-if ((SELF_TEST)); then [[ -z "$EVIDENCE" ]] || die '--self-test cannot accept --evidence-dir'; self_test; exit $?; fi
+if ((SELF_TEST)); then [[ -z "$EVIDENCE$EXPECTED_HEAD" ]] || die '--self-test cannot accept run arguments'; self_test; exit $?; fi
+[[ -n "$EXPECTED_HEAD" ]] || { usage; die '--expected-head is required'; }
 [[ -n "$EVIDENCE" ]] || { usage; die '--evidence-dir is required'; }
 require_host
+cd "$VOKRA_ROOT"
+require_clean_checkout "$EXPECTED_HEAD"
 require_evidence_path "$EVIDENCE"
-require_clean_checkout
 require_fixture_contract
 
 log_file="$(mktemp "${TMPDIR:-/tmp}/bf16-apple-run.XXXXXX")"
 trap 'rm -f -- "$log_file"' EXIT
-CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo test --locked --release -p vokra-backend-cpu --test bf16_gemm_torch_parity "$TEST_NAME" -- --ignored --exact --show-output 2>&1 | tee "$log_file"
+CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-backend-cpu --test bf16_gemm_torch_parity "$TEST_NAME" -- --ignored --exact --show-output --test-threads=1 2>&1 | tee "$log_file"
 parse_test_log "$log_file"
+actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'cannot reread checkout HEAD before evidence'
+[[ "$actual_head" == "$EXPECTED_HEAD" ]] || die 'checkout HEAD changed before evidence publication'
+[[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty before evidence publication'
 mkdir "$EVIDENCE"
 cp -p "$log_file" "$EVIDENCE/run.log"
-printf 'fixture_manifest_sha256=%s\nbackend=neon-bf16\n' "$MANIFEST_SHA256" > "$EVIDENCE/backend.txt"
-grep '^APPLE_BF16_GEMM backend=' "$log_file" >> "$EVIDENCE/backend.txt"
-grep '^APPLE_BF16_GEMM_PASS$' "$log_file" >> "$EVIDENCE/backend.txt"
+{
+  printf 'fixture_manifest_sha256=%s\nbackend=neon-bf16\nexpected_head=%s\ngit_commit=%s\nno_upload=NO_UPLOAD\n' "$MANIFEST_SHA256" "$EXPECTED_HEAD" "$actual_head"
+  grep '^APPLE_BF16_GEMM backend=' "$log_file"
+  grep '^APPLE_BF16_GEMM_PASS$' "$log_file"
+} > "$EVIDENCE/backend.txt"
+{
+  echo "uname=$(uname -a)"
+  echo "machine=$(sysctl -n hw.machine)"
+  echo "physical_cpu=$(sysctl -n hw.physicalcpu)"
+  echo "logical_cpu=$(sysctl -n hw.logicalcpu)"
+  echo "memory_bytes=$(sysctl -n hw.memsize)"
+  echo "bf16=$(sysctl -n hw.optional.arm.FEAT_BF16)"
+  echo "expected_head=$EXPECTED_HEAD"
+  echo "git_commit=$actual_head"
+} > "$EVIDENCE/environment.txt"
+actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'cannot reread checkout HEAD before summary'
+[[ "$actual_head" == "$EXPECTED_HEAD" ]] || die 'checkout HEAD changed before summary publication'
+[[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty before summary publication'
+{
+  echo 'status=PASS'
+  echo 'verdict=PASS'
+  echo "expected_head=$EXPECTED_HEAD"
+  echo "git_commit=$actual_head"
+  echo "fixture_manifest_sha256=$MANIFEST_SHA256"
+  echo 'backend=neon-bf16'
+  echo 'no_upload=NO_UPLOAD'
+  grep '^APPLE_BF16_GEMM backend=' "$log_file"
+  grep '^APPLE_BF16_GEMM_PASS$' "$log_file"
+} > "$EVIDENCE/summary.txt"
 log 'Apple arm64 NeonBf16/BFMMLA parity PASS'
