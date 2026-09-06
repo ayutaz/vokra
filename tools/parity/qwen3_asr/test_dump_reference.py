@@ -72,6 +72,41 @@ class DumperContractTests(unittest.TestCase):
                 MODULE.main(args)
         self.assertIn("VOKRA_PUBLISH_ON_VAST", str(error.exception))
 
+    def test_input_and_output_paths_reject_symlink_ancestors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            real = root / "real"
+            real.mkdir()
+            link = root / "link"
+            link.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(SystemExit):
+                MODULE.require_no_symlink_ancestors(link / "model", "model")
+            with self.assertRaises(SystemExit):
+                MODULE.require_empty_output(link / "reference")
+
+    def test_source_inventory_requires_exact_index_shards_and_unique_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary)
+            (model_dir / "model-00001-of-00001.safetensors").write_bytes(b"shard")
+            (model_dir / "model.safetensors.index.json").write_text(
+                '{"metadata": {"total_size": 5}, "weight_map": '
+                '{"tensor": "model-00001-of-00001.safetensors"}}',
+                encoding="utf-8",
+            )
+            inventory = MODULE.source_inventory(model_dir)
+            self.assertIn("model-00001-of-00001.safetensors", inventory)
+            (model_dir / "extra.safetensors").write_bytes(b"extra")
+            with self.assertRaises(SystemExit):
+                MODULE.source_inventory(model_dir)
+            (model_dir / "extra.safetensors").unlink()
+            (model_dir / "model.safetensors.index.json").write_text(
+                '{"metadata": {}, "metadata": {}, "weight_map": '
+                '{"tensor": "model-00001-of-00001.safetensors"}}',
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit):
+                MODULE.source_inventory(model_dir)
+
 
 if __name__ == "__main__":
     unittest.main()

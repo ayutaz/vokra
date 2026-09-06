@@ -112,10 +112,36 @@ require_reference_manifest_digest() {
 manifest_value() {
   local manifest="$1" key="$2" count value
   count="$(awk -F= -v key="$key" '$1 == key {count++; value=substr($0, index($0, "=") + 1)} END {print count+0}' "$manifest")"
-  [[ "$count" == 1 ]] || die "manifest key is missing or duplicated: $key"
+  [[ "$count" == 1 ]] || { die "manifest key is missing or duplicated: $key"; return 2; }
   value="$(awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1)}' "$manifest")"
-  [[ -n "$value" ]] || die "manifest key is empty: $key"
+  [[ -n "$value" ]] || { die "manifest key is empty: $key"; return 2; }
   printf '%s\n' "$value"
+}
+
+validate_manifest_schema() {
+  local manifest="$1" line key
+  local expected_keys=(
+    schema variant model_name upstream_repo upstream_revision qwen_asr_version
+    transformers_version torch_version sample_rate pcm_samples audio_frames
+    hidden_size prompt_tokens generated_tokens max_new_tokens tensor_count
+    source_config_sha256 source_audio_sha256 config_model_type official_wheel
+    sha256_pcm_f32le sha256_prompt_ids_u32le sha256_audio_embeddings_f32le
+    sha256_generated_ids_u32le sha256_context_txt sha256_forced_language_txt
+    sha256_raw_text_txt sha256_result_language_txt sha256_result_text_txt
+    sha256_environment_json sha256_source_files_json
+  )
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" == *=* ]] || { die "manifest contains a malformed line: $line"; return 2; }
+    key="${line%%=*}"
+    case " ${expected_keys[*]} " in
+      *" $key "*) ;;
+      *) die "manifest contains unexpected key: $key"; return 2 ;;
+    esac
+  done < "$manifest"
+  for key in "${expected_keys[@]}"; do
+    manifest_value "$manifest" "$key" >/dev/null || return 2
+  done
 }
 
 verify_manifest_artifact() {
@@ -133,6 +159,19 @@ require_reference() {
   [[ -d "$directory" && ! -L "$directory" ]] || die "$label is not a directory or is symlinked: $directory"
   manifest="$directory/manifest.txt"
   require_file "$label manifest" "$manifest"
+  local expected_files=(manifest.txt pcm.f32le prompt_ids.u32le audio_embeddings.f32le generated_ids.u32le \
+    context.txt forced_language.txt raw_text.txt result_language.txt result_text.txt \
+    environment.json source_files.json)
+  local entry artifact
+  while IFS= read -r -d '' entry; do
+    artifact="${entry##*/}"
+    case " ${expected_files[*]} " in
+      *" $artifact "*) ;;
+      *) die "$label contains unexpected reference entry: $artifact"; return 2 ;;
+    esac
+    [[ -f "$entry" && ! -L "$entry" ]] || { die "$label reference entry is not regular: $artifact"; return 2; }
+  done < <(find -P "$directory" -mindepth 1 -maxdepth 1 -print0)
+  validate_manifest_schema "$manifest"
   for artifact in pcm.f32le prompt_ids.u32le audio_embeddings.f32le generated_ids.u32le \
     context.txt forced_language.txt raw_text.txt result_language.txt result_text.txt \
     environment.json source_files.json; do
@@ -213,6 +252,9 @@ record_environment() {
 run_self_test() (
   # shellcheck disable=SC2016
   grep -Fq 'require_absent_evidence_dir "$evidence_dir" "$gguf_06" "$gguf_17" "$reference_06" "$reference_17" "$approval"' "$0" || return 1
+  if bash "$0" --self-test --self-test >/dev/null 2>&1; then
+    die "duplicate --self-test option was accepted"
+  fi
   local temporary
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-qwen3-asr-apple.XXXXXX")"
   trap 'rm -rf "$temporary"' EXIT
@@ -242,6 +284,14 @@ run_self_test() (
   printf 'sha256_value=0000000000000000000000000000000000000000000000000000000000000000\n' > "$temporary/manifest"
   if verify_manifest_artifact "$temporary/manifest" "$temporary/value" >/dev/null 2>&1; then
     die "artifact tamper self-test failed"
+  fi
+  printf 'schema=x\nunexpected=y\n' > "$temporary/schema-manifest"
+  if validate_manifest_schema "$temporary/schema-manifest" >/dev/null 2>&1; then
+    die "manifest extra-key self-test failed"
+  fi
+  printf 'schema=x\nschema=y\n' > "$temporary/duplicate-manifest"
+  if validate_manifest_schema "$temporary/duplicate-manifest" >/dev/null 2>&1; then
+    die "manifest duplicate-key self-test failed"
   fi
   if require_reference_manifest_digest 'missing digest' "$temporary/missing" "$(printf '%064d' 0)" >/dev/null 2>&1; then
     die "missing reference manifest was accepted"
@@ -333,6 +383,8 @@ main() {
         shift 2
         ;;
       --self-test)
+        [[ "$seen" != *"|$1|"* ]] || { usage; return 2; }
+        seen+="|$1|"
         self_test=1
         shift
         ;;

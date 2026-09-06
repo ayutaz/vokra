@@ -128,17 +128,37 @@ def cpu_flags() -> str:
 
 
 def require_empty_output(path: Path) -> None:
+    require_no_symlink_ancestors(path, "--output")
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        die(f"--output must be a regular directory path, not a symlink/file: {path}")
     path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        die(f"--output directory is symlinked: {path}")
     entries = list(path.iterdir())
     if entries:
         die(f"--output must be empty, found {entries[0]}")
 
 
+def require_no_symlink_ancestors(path: Path, label: str) -> None:
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    while True:
+        if candidate.is_symlink():
+            die(f"{label} path has a symlink ancestor: {candidate}")
+        parent = candidate.parent
+        if parent == candidate:
+            return
+        candidate = parent
+
+
 def require_model_identity(model_dir: Path, variant: Variant) -> dict[str, Any]:
+    if model_dir.is_symlink() or not model_dir.is_dir():
+        die(f"model directory must be a regular non-symlink directory: {model_dir}")
     config_path = model_dir / "config.json"
-    if not config_path.is_file():
+    if config_path.is_symlink() or not config_path.is_file():
         die(f"missing local config: {config_path}")
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config = strict_json_load(config_path, "config.json")
+    if not isinstance(config, dict):
+        die("config.json top-level value must be an object")
     if config.get("model_type") != "qwen3_asr":
         die(f"config model_type={config.get('model_type')!r}, expected 'qwen3_asr'")
     architectures = config.get("architectures")
@@ -153,7 +173,7 @@ def require_model_identity(model_dir: Path, variant: Variant) -> dict[str, Any]:
 
     for name, (expected_bytes, expected_hash) in EXPECTED_ASSETS.items():
         path = model_dir / name
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             die(f"missing pinned sidecar: {path}")
         actual_bytes = path.stat().st_size
         actual_hash = sha256_file(path)
@@ -165,20 +185,85 @@ def require_model_identity(model_dir: Path, variant: Variant) -> dict[str, Any]:
     return config
 
 
+def strict_json_load(path: Path, label: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{label} contains duplicate key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        die(f"{label} is not valid authenticated JSON: {error}")
+
+
 def source_inventory(model_dir: Path) -> dict[str, dict[str, object]]:
-    names = {
+    expected_names = {
+        ".gitattributes",
+        "LICENSE",
+        "README.md",
         "config.json",
         "model.safetensors.index.json",
+        "preprocessor_config.json",
         *EXPECTED_ASSETS.keys(),
     }
-    names.update(path.name for path in model_dir.glob("*.safetensors"))
+    index_path = model_dir / "model.safetensors.index.json"
+    single_checkpoint = model_dir / "model.safetensors"
+    if index_path.exists():
+        if index_path.is_symlink() or not index_path.is_file():
+            die(f"model shard index is symlinked or not a regular file: {index_path}")
+        index = strict_json_load(index_path, "model.safetensors.index.json")
+        if not isinstance(index, dict) or set(index) != {"metadata", "weight_map"}:
+            die("model.safetensors.index.json must contain exactly metadata and weight_map")
+        if not isinstance(index["metadata"], dict):
+            die("model.safetensors.index.json metadata must be an object")
+        weight_map = index.get("weight_map")
+        if not isinstance(weight_map, dict) or not weight_map:
+            die("model.safetensors.index.json weight_map is missing or empty")
+        expected_shards: set[str] = set()
+        for tensor, shard in weight_map.items():
+            if not isinstance(tensor, str) or not tensor or not isinstance(shard, str) or not shard:
+                die("model.safetensors.index.json weight_map has a non-string/empty entry")
+            shard_path = Path(shard)
+            if shard_path.name != shard or shard_path.is_absolute() or shard_path.suffix != ".safetensors":
+                die(f"model.safetensors.index.json uses unsafe shard path: {shard!r}")
+            expected_shards.add(shard)
+        actual_shards = {
+            path.name
+            for path in model_dir.iterdir()
+            if path.name.endswith(".safetensors")
+        }
+        if actual_shards != expected_shards:
+            die(
+                "model safetensors set differs from authenticated index: "
+                f"missing={sorted(expected_shards - actual_shards)} "
+                f"extra={sorted(actual_shards - expected_shards)}"
+            )
+    elif single_checkpoint.exists():
+        if single_checkpoint.is_symlink() or not single_checkpoint.is_file():
+            die(f"model checkpoint is symlinked or not a regular file: {single_checkpoint}")
+        expected_shards = {single_checkpoint.name}
+    else:
+        die("model snapshot lacks model.safetensors.index.json or model.safetensors")
+
     inventory: dict[str, dict[str, object]] = {}
-    for name in sorted(names):
-        path = model_dir / name
-        if path.is_file():
-            inventory[name] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
-    if not any(name.endswith(".safetensors") for name in inventory):
-        die(f"no local safetensors files found in {model_dir}")
+    for path in sorted(model_dir.iterdir(), key=lambda candidate: candidate.name):
+        if path.name == ".cache":
+            if path.is_symlink() or not path.is_dir():
+                die(f"model transport cache is symlinked or not a directory: {path}")
+            continue
+        if path.is_symlink():
+            die(f"model snapshot entry is symlinked: {path}")
+        if path.name not in expected_names and path.name not in expected_shards:
+            die(f"model snapshot contains unexpected entry: {path.name}")
+        if not path.is_file():
+            die(f"model snapshot entry is not a regular file: {path}")
+        inventory[path.name] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
+    if set(name for name in inventory if name.endswith(".safetensors")) != expected_shards:
+        die("model snapshot safetensors inventory does not match authenticated shard set")
     return inventory
 
 
@@ -316,6 +401,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     require_vast_x86_64()
     variant = VARIANTS[args.variant]
+    for label, path in (
+        ("--model-dir", args.model_dir),
+        ("--audio", args.audio),
+        ("--wheel", args.wheel),
+        ("--output", args.output),
+    ):
+        require_no_symlink_ancestors(path, label)
     model_dir = args.model_dir.resolve()
     audio_path = args.audio.resolve()
     wheel_path = args.wheel.resolve()

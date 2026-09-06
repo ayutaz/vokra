@@ -348,6 +348,9 @@ run_variant() {
 
 run_self_test() {
   local failed=0 gate_line host_line tooling_line sync_line audit_line wheel_line build_line pre_gate_block probe_root probe_output fake_worker
+  if bash "$0" --self-test --self-test >/dev/null 2>&1; then
+    failed=1
+  fi
   [[ "$(variant_repo 0.6b)" == "Qwen/Qwen3-ASR-0.6B" ]] || failed=1
   [[ "$(variant_revision 0.6b)" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$(variant_model_kind 1.7b)" == "qwen3-asr-1.7b" ]] || failed=1
@@ -483,6 +486,7 @@ main() {
         shift 2
         ;;
       --self-test)
+        [[ "$self_test" == 0 ]] || { usage; return 2; }
         self_test=1
         shift
         ;;

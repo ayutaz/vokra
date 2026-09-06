@@ -392,6 +392,12 @@ pub fn convert_qwen3_asr_file_with_variant(
     }
 
     let axes = variant.axes();
+    if output.exists() || output.is_symlink() {
+        return Err(parse_error(format!(
+            "output path already exists or is symlinked: {}",
+            output.display()
+        )));
+    }
     let mut checkpoint = CheckpointReader::open(input)?;
     checkpoint.validate(variant)?;
     let tokenizer = TokenizerAssets::load(input, &axes)?;
@@ -501,6 +507,14 @@ fn read_exact_sidecar(
     axes: &VariantAxes,
 ) -> Result<Vec<u8>, ConvertError> {
     let path = directory.join(spec.name);
+    if path.is_symlink() || !path.is_file() {
+        return Err(parse_error(format!(
+            "{}@{} sidecar {} is missing, symlinked, or not a regular file",
+            axes.upstream_hf,
+            axes.source_revision,
+            path.display()
+        )));
+    }
     let bytes = std::fs::read(&path).map_err(|error| {
         ConvertError::Io(std::io::Error::new(
             error.kind(),
@@ -572,6 +586,12 @@ struct ResolvedSources {
 }
 
 fn resolve_sources(input: &Path) -> Result<ResolvedSources, ConvertError> {
+    if input.is_symlink() || !input.is_file() {
+        return Err(parse_error(format!(
+            "checkpoint input {} is missing, symlinked, or not a regular file",
+            input.display()
+        )));
+    }
     let is_index = input
         .file_name()
         .and_then(|name| name.to_str())
@@ -643,9 +663,9 @@ fn resolve_sources(input: &Path) -> Result<ResolvedSources, ConvertError> {
         .into_iter()
         .map(|name| {
             let path = directory.join(&name);
-            if !path.is_file() {
+            if path.is_symlink() || !path.is_file() {
                 return Err(parse_error(format!(
-                    "shard index {} references missing file {}",
+                    "shard index {} references missing, symlinked, or non-regular file {}",
                     input.display(),
                     path.display()
                 )));
@@ -1219,7 +1239,41 @@ mod tests {
                 .to_string()
                 .contains("SHA-256")
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            std::fs::remove_file(&path).expect("remove regular sidecar");
+            symlink("missing-target", &path).expect("create sidecar symlink");
+            assert!(
+                read_exact_sidecar(&directory, spec, &axes)
+                    .expect_err("symlink sidecar")
+                    .to_string()
+                    .contains("symlinked")
+            );
+        }
         std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn checkpoint_input_rejects_symlink_paths() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let directory = scratch_directory("input-symlink");
+            let target = directory.join("target.safetensors");
+            let link = directory.join("model.safetensors");
+            std::fs::write(&target, []).expect("create target");
+            symlink(&target, &link).expect("create checkpoint symlink");
+            assert!(
+                resolve_sources(&link)
+                    .expect_err("symlink checkpoint input")
+                    .to_string()
+                    .contains("symlinked")
+            );
+            std::fs::remove_dir_all(directory).ok();
+        }
     }
 
     #[test]
