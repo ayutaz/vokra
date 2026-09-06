@@ -35,10 +35,10 @@
 //!   (**24 kHz / 12.5 Hz** — the Mimi sample-rate / frame-rate live in
 //!   `vokra.mimi.*`, ADR M4-06 §D3; the STT chunk group deliberately does
 //!   *not* duplicate them).
-//! - **Tokenizer side-car**: authenticated config says
-//!   `tokenizer_name="tokenizer_en_audio_4000.model"`, while the fixed HF
-//!   tree provides `tokenizer_spm_4k_en.model`; this mismatch is an explicit
-//!   operational blocker and the tokenizer is not currently runtime-bound.
+//! - **Tokenizer side-car**: the authenticated inspector contract requires
+//!   `tokenizer_en_audio_4000.model` (59,339 bytes with pinned blob/LFS
+//!   identities). The legacy `tokenizer_spm_4k_en.model` name is explicitly
+//!   rejected; tokenizer binding remains a separate runtime gate.
 //! - **Weight license**: **CC-BY 4.0** (`AttributionRequired`) in the
 //!   upstream card. Publication and runtime binding remain blocked pending
 //!   authenticated composite evidence and owner review.
@@ -67,10 +67,10 @@
 //!   frames → summed embeddings → causal/sliding-window transformer → final
 //!   RMSNorm → text logits through `Compute` (CPU/Metal). Its synthesized
 //!   fixture output is self-consistency only, not upstream parity or ASR.
-//!   [`KyutaiSttAsr::transcribe`] returns [`VokraError::NotImplemented`]
-//!   until real weights are bound (the real forward — audio-token embedding
-//!   streaming delay/sampling → SentencePiece detokenize is a follow-up wave
-//!   gated on the real-checkpoint tensor manifest).
+//!   [`KyutaiSttAsr::transcribe`] returns [`VokraError::NotImplemented`]: the
+//!   component logits seam exists, but a real authenticated tensor binder,
+//!   streaming state/delay, sampling, and SentencePiece detokenization remain
+//!   follow-up gates.
 //!
 //! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29
 //! / Moshi T29: this scaffold sets the seam so the follow-up lands drop-in.
@@ -85,7 +85,6 @@ use vokra_core::{BackendKind, CompliancePolicy, Result, VokraError};
 
 use crate::compute::{Compute, HotOp};
 use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
-use crate::voxtral::text_decoder::silu_inplace;
 
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
@@ -109,7 +108,7 @@ pub const KYUTAI_STT_FROM_GGUF_DEFAULT_SEED: u64 = 0x0C57_0C57_0C57_0C57;
 /// dispatcher validates this complete set before any forward work starts, so
 /// a backend missing one primitive fails explicitly instead of falling back
 /// to CPU for that operation.
-const KYUTAI_STT_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Softmax, HotOp::RmsNorm];
+const KYUTAI_STT_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Softmax, HotOp::RmsNorm, HotOp::Silu];
 
 // ---------------------------------------------------------------------------
 // `vokra.kyutai_stt.*` metadata keys
@@ -370,7 +369,7 @@ impl KyutaiSttConfig {
     /// n_q_audio`).
     #[must_use]
     pub fn n_channels(&self) -> usize {
-        self.n_q + 1
+        self.n_q.saturating_add(1)
     }
 
     /// The largest per-channel delay (STT is all-zero — kept for parity
@@ -438,12 +437,15 @@ impl KyutaiSttConfig {
                 self.audio_card, self.text_card,
             )));
         }
-        if self.delays.len() != self.n_channels() {
+        let n_channels = self.n_q.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt channel count overflows usize".to_owned())
+        })?;
+        if self.delays.len() != n_channels {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt config: {} delays for {} channels (text + n_q — \
                  `_lm_kwargs[\"delays\"]` is per-channel)",
                 self.delays.len(),
-                self.n_channels(),
+                n_channels,
             )));
         }
         if (self.text_pad_id as usize) >= self.text_card {
@@ -544,6 +546,92 @@ fn read_f32_or(file: &GgufFile, key: &str, default: f32) -> Result<f32> {
     }
 }
 
+fn checked_product(label: &str, factors: &[usize]) -> Result<usize> {
+    factors.iter().try_fold(1usize, |product, &factor| {
+        product.checked_mul(factor).ok_or_else(|| {
+            VokraError::InvalidArgument(format!("kyutai-stt {label} shape overflows usize"))
+        })
+    })
+}
+
+fn checked_add(label: &str, lhs: usize, rhs: usize) -> Result<usize> {
+    lhs.checked_add(rhs).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("kyutai-stt {label} shape overflows usize"))
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KyutaiWeightShapes {
+    d: usize,
+    ffn: usize,
+    text_rows: usize,
+    audio_rows: usize,
+    three_d: usize,
+    two_ffn: usize,
+    text_embedding: usize,
+    audio_embedding: usize,
+    qkv_proj: usize,
+    out_proj: usize,
+    linear_in: usize,
+    linear_out: usize,
+    text_head: usize,
+}
+
+fn checked_weight_shapes(config: &KyutaiSttConfig) -> Result<KyutaiWeightShapes> {
+    config.validate_for_forward()?;
+    let d = config.backbone.d_model;
+    let ffn = config.backbone.ffn_hidden();
+    let text_rows = config.text_card.checked_add(1).ok_or_else(|| {
+        VokraError::InvalidArgument("kyutai-stt text rows shape overflows usize".to_owned())
+    })?;
+    let audio_rows = config.audio_card.checked_add(1).ok_or_else(|| {
+        VokraError::InvalidArgument("kyutai-stt audio rows shape overflows usize".to_owned())
+    })?;
+    let three_d = checked_product("3*d_model", &[3, d])?;
+    let two_ffn = checked_product("2*ffn_hidden", &[2, ffn])?;
+    let qkv_proj = checked_product("qkv projection", &[d, three_d])?;
+    let out_proj = checked_product("output projection", &[d, d])?;
+    let linear_in = checked_product("gating linear-in", &[d, two_ffn])?;
+    let linear_out = checked_product("gating linear-out", &[ffn, d])?;
+    let text_embedding = checked_product("text embedding", &[text_rows, d])?;
+    let audio_embedding = checked_product("audio embedding", &[audio_rows, d])?;
+    let text_head = checked_product("text head", &[d, config.text_card])?;
+    // xavier's fan-in + fan-out must be checked before it is used in a
+    // denominator, even though the subsequent vector length checks are also
+    // guarded.
+    let _ = checked_add("qkv fan", d, three_d)?;
+    let _ = checked_add("FFN fan", d, two_ffn)?;
+    let _ = checked_add("text embedding fan", text_rows, d)?;
+    let _ = checked_add("audio embedding fan", audio_rows, d)?;
+    let _ = checked_add("output projection fan", d, d)?;
+    let _ = checked_add("gating output fan", ffn, d)?;
+    let _ = checked_add("text head fan", d, config.text_card)?;
+    Ok(KyutaiWeightShapes {
+        d,
+        ffn,
+        text_rows,
+        audio_rows,
+        three_d,
+        two_ffn,
+        text_embedding,
+        audio_embedding,
+        qkv_proj,
+        out_proj,
+        linear_in,
+        linear_out,
+        text_head,
+    })
+}
+
+fn ensure_finite_weights(name: &str, values: &[f32]) -> Result<()> {
+    if let Some(index) = values.iter().position(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(format!(
+            "kyutai-stt weights: `{name}` contains non-finite value at {index}"
+        )));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Weights
 // ---------------------------------------------------------------------------
@@ -618,33 +706,35 @@ impl KyutaiSttWeights {
     /// [`VokraError::InvalidArgument`] if `config.validate_for_forward`
     /// fails.
     pub fn synthesized(config: &KyutaiSttConfig, seed: u64) -> Result<Self> {
-        config.validate_for_forward()?;
+        let shapes = checked_weight_shapes(config)?;
         let mut rng = SplitMix64::new(seed);
-        let bb = &config.backbone;
-        let d = bb.d_model;
-        let ffn = bb.ffn_hidden();
-        let text_rows = config.text_card + 1;
-        let audio_rows = config.audio_card + 1;
+        let d = shapes.d;
+        let ffn = shapes.ffn;
 
-        let text_embedding = xavier(&mut rng, text_rows * d, text_rows, d);
+        let text_embedding = xavier(&mut rng, shapes.text_embedding, shapes.text_rows, d);
         let mut audio_embeddings = Vec::with_capacity(config.n_q);
         for _ in 0..config.n_q {
-            audio_embeddings.push(xavier(&mut rng, audio_rows * d, audio_rows, d));
+            audio_embeddings.push(xavier(
+                &mut rng,
+                shapes.audio_embedding,
+                shapes.audio_rows,
+                d,
+            ));
         }
 
-        let mut blocks = Vec::with_capacity(bb.n_layer);
-        for _ in 0..bb.n_layer {
+        let mut blocks = Vec::with_capacity(config.backbone.n_layer);
+        for _ in 0..config.backbone.n_layer {
             blocks.push(KyutaiSttBlockWeights {
                 attn_norm: vec![1.0; d],
-                qkv_proj: xavier(&mut rng, d * 3 * d, d, 3 * d),
-                out_proj: xavier(&mut rng, d * d, d, d),
+                qkv_proj: xavier(&mut rng, shapes.qkv_proj, d, shapes.three_d),
+                out_proj: xavier(&mut rng, shapes.out_proj, d, d),
                 ffn_norm: vec![1.0; d],
-                linear_in: xavier(&mut rng, d * 2 * ffn, d, 2 * ffn),
-                linear_out: xavier(&mut rng, ffn * d, ffn, d),
+                linear_in: xavier(&mut rng, shapes.linear_in, d, shapes.two_ffn),
+                linear_out: xavier(&mut rng, shapes.linear_out, ffn, d),
             });
         }
         let final_norm = vec![1.0; d];
-        let text_head = xavier(&mut rng, d * config.text_card, d, config.text_card);
+        let text_head = xavier(&mut rng, shapes.text_head, d, config.text_card);
 
         Ok(Self {
             text_embedding,
@@ -687,7 +777,10 @@ fn apply_rope_heads(
             "kyutai-stt RoPE shape is inconsistent with d_model".to_owned(),
         ));
     }
-    let mut head = vec![0.0f32; frames * head_dim];
+    let head_len = frames.checked_mul(head_dim).ok_or_else(|| {
+        VokraError::InvalidArgument("kyutai-stt RoPE head shape overflows usize".to_owned())
+    })?;
+    let mut head = vec![0.0f32; head_len];
     for index in 0..n_head {
         for frame in 0..frames {
             head[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(
@@ -795,18 +888,14 @@ impl KyutaiSttAsr {
     /// - [`VokraError::InvalidArgument`] naming the first shape
     ///   mismatch.
     pub fn new(cfg: KyutaiSttConfig, weights: KyutaiSttWeights) -> Result<Self> {
-        cfg.validate_for_forward()?;
-        let bb = &cfg.backbone;
-        let d = bb.d_model;
-        let ffn = bb.ffn_hidden();
-        let text_rows = cfg.text_card + 1;
-        let audio_rows = cfg.audio_card + 1;
+        let shapes = checked_weight_shapes(&cfg)?;
+        let d = shapes.d;
 
-        if weights.text_embedding.len() != text_rows * d {
+        if weights.text_embedding.len() != shapes.text_embedding {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt weights: text_embedding.len()={} != (text_card+1)*d_model={}",
                 weights.text_embedding.len(),
-                text_rows * d,
+                shapes.text_embedding,
             )));
         }
         if weights.audio_embeddings.len() != cfg.n_q {
@@ -817,7 +906,7 @@ impl KyutaiSttAsr {
             )));
         }
         for (i, tbl) in weights.audio_embeddings.iter().enumerate() {
-            let expected = audio_rows * d;
+            let expected = shapes.audio_embedding;
             if tbl.len() != expected {
                 return Err(VokraError::InvalidArgument(format!(
                     "kyutai-stt weights: audio_embeddings[{i}].len()={} != {expected}",
@@ -825,21 +914,21 @@ impl KyutaiSttAsr {
                 )));
             }
         }
-        if weights.blocks.len() != bb.n_layer {
+        if weights.blocks.len() != cfg.backbone.n_layer {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt weights: blocks.len()={} != backbone.n_layer={}",
                 weights.blocks.len(),
-                bb.n_layer,
+                cfg.backbone.n_layer,
             )));
         }
         for (i, blk) in weights.blocks.iter().enumerate() {
             for (name, len, expected) in [
                 ("attn_norm", blk.attn_norm.len(), d),
-                ("qkv_proj", blk.qkv_proj.len(), d * 3 * d),
-                ("out_proj", blk.out_proj.len(), d * d),
+                ("qkv_proj", blk.qkv_proj.len(), shapes.qkv_proj),
+                ("out_proj", blk.out_proj.len(), shapes.out_proj),
                 ("ffn_norm", blk.ffn_norm.len(), d),
-                ("linear_in", blk.linear_in.len(), d * 2 * ffn),
-                ("linear_out", blk.linear_out.len(), ffn * d),
+                ("linear_in", blk.linear_in.len(), shapes.linear_in),
+                ("linear_out", blk.linear_out.len(), shapes.linear_out),
             ] {
                 if len != expected {
                     return Err(VokraError::InvalidArgument(format!(
@@ -855,13 +944,27 @@ impl KyutaiSttAsr {
                 d,
             )));
         }
-        if weights.text_head.len() != d * cfg.text_card {
+        if weights.text_head.len() != shapes.text_head {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt weights: text_head.len()={} != d_model * text_card = {}",
                 weights.text_head.len(),
-                d * cfg.text_card,
+                shapes.text_head,
             )));
         }
+        ensure_finite_weights("text_embedding", &weights.text_embedding)?;
+        for (index, table) in weights.audio_embeddings.iter().enumerate() {
+            ensure_finite_weights(&format!("audio_embeddings[{index}]"), table)?;
+        }
+        for (index, block) in weights.blocks.iter().enumerate() {
+            ensure_finite_weights(&format!("blocks[{index}].attn_norm"), &block.attn_norm)?;
+            ensure_finite_weights(&format!("blocks[{index}].qkv_proj"), &block.qkv_proj)?;
+            ensure_finite_weights(&format!("blocks[{index}].out_proj"), &block.out_proj)?;
+            ensure_finite_weights(&format!("blocks[{index}].ffn_norm"), &block.ffn_norm)?;
+            ensure_finite_weights(&format!("blocks[{index}].linear_in"), &block.linear_in)?;
+            ensure_finite_weights(&format!("blocks[{index}].linear_out"), &block.linear_out)?;
+        }
+        ensure_finite_weights("final_norm", &weights.final_norm)?;
+        ensure_finite_weights("text_head", &weights.text_head)?;
         Ok(Self { cfg, weights })
     }
 
@@ -899,9 +1002,10 @@ impl KyutaiSttAsr {
     ///
     /// # Errors
     ///
-    /// [`VokraError::InvalidArgument`] for an invalid token matrix, a
-    /// sequence longer than the configured sliding context, or a nonzero
-    /// `dep_q`; backend and Compute-seam errors are returned verbatim.
+    /// [`VokraError::InvalidArgument`] for an invalid token matrix or a
+    /// nonzero `dep_q`; backend and Compute-seam errors are returned
+    /// verbatim. Inputs may be longer than `context`; that value is the
+    /// causal attention window, not a component-input limit.
     pub fn forward_text_logits(
         &self,
         backend: BackendKind,
@@ -920,12 +1024,6 @@ impl KyutaiSttAsr {
                 "kyutai-stt decoder: text_tokens is empty".to_owned(),
             ));
         }
-        if frames > self.cfg.backbone.context {
-            return Err(VokraError::InvalidArgument(format!(
-                "kyutai-stt decoder: frames={} exceeds sliding context={}",
-                frames, self.cfg.backbone.context
-            )));
-        }
         let expected_codes = frames.checked_mul(self.cfg.n_q).ok_or_else(|| {
             VokraError::InvalidArgument("kyutai-stt decoder code shape overflows usize".to_owned())
         })?;
@@ -935,7 +1033,9 @@ impl KyutaiSttAsr {
                 mimi_codes.len()
             )));
         }
-        let text_rows = self.cfg.text_card + 1;
+        let text_rows = self.cfg.text_card.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt text rows shape overflows usize".to_owned())
+        })?;
         for (frame, &token) in text_tokens.iter().enumerate() {
             if token as usize >= text_rows {
                 return Err(VokraError::InvalidArgument(format!(
@@ -943,7 +1043,9 @@ impl KyutaiSttAsr {
                 )));
             }
         }
-        let audio_rows = self.cfg.audio_card + 1;
+        let audio_rows = self.cfg.audio_card.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt audio rows shape overflows usize".to_owned())
+        })?;
         for (index, &code) in mimi_codes.iter().enumerate() {
             if code as usize >= audio_rows {
                 return Err(VokraError::InvalidArgument(format!(
@@ -957,8 +1059,15 @@ impl KyutaiSttAsr {
         let heads = self.cfg.backbone.n_head;
         let head_dim = self.cfg.backbone.head_dim();
         let ffn = self.cfg.backbone.ffn_hidden();
+        let frame_d = checked_product("frames*d_model", &[frames, d])?;
+        let frame_qkv = checked_product("frames*3*d_model", &[frames, 3, d])?;
+        let frame_scores = checked_product("frames*frames", &[frames, frames])?;
+        let frame_ffn = checked_product("frames*ffn_hidden", &[frames, ffn])?;
+        let frame_ffn_in = checked_product("frames*2*ffn_hidden", &[frames, 2, ffn])?;
+        let head_matrix = checked_product("frames*head_dim", &[frames, head_dim])?;
+        let head_transposed = checked_product("head_dim*frames", &[head_dim, frames])?;
         let inv_freqs = llama3_inv_freqs(head_dim, self.cfg.backbone.rope_max_period, None)?;
-        let mut hidden = vec![0.0f32; frames * d];
+        let mut hidden = vec![0.0f32; frame_d];
         for frame in 0..frames {
             let dst = &mut hidden[frame * d..(frame + 1) * d];
             let text_row = &self.weights.text_embedding
@@ -976,19 +1085,24 @@ impl KyutaiSttAsr {
             }
         }
 
-        let mut norm = vec![0.0f32; frames * d];
-        let mut qkv = vec![0.0f32; frames * 3 * d];
-        let mut q = vec![0.0f32; frames * d];
-        let mut k = vec![0.0f32; frames * d];
-        let mut v = vec![0.0f32; frames * d];
-        let mut attn_input = vec![0.0f32; frames * d];
-        let mut attn_output = vec![0.0f32; frames * d];
-        let mut scores = vec![0.0f32; frames * frames];
-        let mut probs = vec![0.0f32; frames * frames];
-        let mut ffn_in = vec![0.0f32; frames * 2 * ffn];
-        let mut ffn_gate = vec![0.0f32; frames * ffn];
-        let mut ffn_up = vec![0.0f32; frames * ffn];
-        let mut ffn_output = vec![0.0f32; frames * d];
+        let mut norm = vec![0.0f32; frame_d];
+        let mut qkv = vec![0.0f32; frame_qkv];
+        let mut q = vec![0.0f32; frame_d];
+        let mut k = vec![0.0f32; frame_d];
+        let mut v = vec![0.0f32; frame_d];
+        let mut attn_input = vec![0.0f32; frame_d];
+        let mut attn_output = vec![0.0f32; frame_d];
+        let mut scores = vec![0.0f32; frame_scores];
+        let mut probs = vec![0.0f32; frame_scores];
+        let mut ffn_in = vec![0.0f32; frame_ffn_in];
+        let mut ffn_gate = vec![0.0f32; frame_ffn];
+        let mut ffn_up = vec![0.0f32; frame_ffn];
+        let mut ffn_activated = vec![0.0f32; frame_ffn];
+        let mut ffn_output = vec![0.0f32; frame_d];
+        let mut head_q = vec![0.0f32; head_matrix];
+        let mut head_k_transposed = vec![0.0f32; head_transposed];
+        let mut head_v = vec![0.0f32; head_matrix];
+        let mut head_weighted = vec![0.0f32; head_matrix];
         for block in &self.weights.blocks {
             compute.rms_norm_f32(
                 &hidden,
@@ -998,7 +1112,20 @@ impl KyutaiSttAsr {
                 &block.attn_norm,
                 self.cfg.rms_norm_eps,
             )?;
-            compute.gemm_f32(frames, 3 * d, d, &norm, &block.qkv_proj, None, &mut qkv)?;
+            compute.gemm_f32(
+                frames,
+                checked_product("qkv width", &[3, d])?,
+                d,
+                &norm,
+                &block.qkv_proj,
+                None,
+                &mut qkv,
+            )?;
+            // This is the pinned Moshi `Transformer` layout: fused QKV is
+            // split into contiguous Q/K/V widths, standard adjacent-pair
+            // RoPE is applied to Q and K, and `ActivationGating` computes
+            // SiLU(gate) * up below. This is a source-aligned structural
+            // seam, not an independent upstream parity claim.
             for frame in 0..frames {
                 q[frame * d..(frame + 1) * d]
                     .copy_from_slice(&qkv[frame * 3 * d..frame * 3 * d + d]);
@@ -1012,36 +1139,54 @@ impl KyutaiSttAsr {
             attn_input.fill(0.0);
             let scale = 1.0f32 / (head_dim as f32).sqrt();
             for head in 0..heads {
+                for frame in 0..frames {
+                    let source = &q[frame * d + head * head_dim..frame * d + (head + 1) * head_dim];
+                    head_q[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(source);
+                    let source = &v[frame * d + head * head_dim..frame * d + (head + 1) * head_dim];
+                    head_v[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(source);
+                    for column in 0..head_dim {
+                        head_k_transposed[column * frames + frame] =
+                            k[frame * d + head * head_dim + column];
+                    }
+                }
+                // QK^T is a learned projection product and must remain on
+                // the selected backend. The transposes above are scalar
+                // layout glue only; there is no CPU fallback here.
+                compute.gemm_f32(
+                    frames,
+                    frames,
+                    head_dim,
+                    &head_q,
+                    &head_k_transposed,
+                    None,
+                    &mut scores,
+                )?;
                 for query in 0..frames {
                     for key in 0..frames {
                         let visible = key <= query && query - key < self.cfg.backbone.context;
                         scores[query * frames + key] = if visible {
-                            let q_row =
-                                &q[query * d + head * head_dim..query * d + (head + 1) * head_dim];
-                            let k_row =
-                                &k[key * d + head * head_dim..key * d + (head + 1) * head_dim];
-                            q_row
-                                .iter()
-                                .zip(k_row)
-                                .map(|(&lhs, &rhs)| lhs * rhs)
-                                .sum::<f32>()
-                                * scale
+                            scores[query * frames + key] * scale
                         } else {
                             f32::NEG_INFINITY
                         };
                     }
                 }
                 compute.softmax_f32(&scores, &mut probs, frames, frames)?;
-                for query in 0..frames {
-                    let out = &mut attn_input
-                        [query * d + head * head_dim..query * d + (head + 1) * head_dim];
-                    for key in 0..frames {
-                        let weight = probs[query * frames + key];
-                        let value = &v[key * d + head * head_dim..key * d + (head + 1) * head_dim];
-                        for (dst, &src) in out.iter_mut().zip(value) {
-                            *dst += weight * src;
-                        }
-                    }
+                // The probability×V product is likewise dispatched as a
+                // learned matmul. Copying the per-head result back into the
+                // fused residual layout is scalar layout glue.
+                compute.gemm_f32(
+                    frames,
+                    head_dim,
+                    frames,
+                    &probs,
+                    &head_v,
+                    None,
+                    &mut head_weighted,
+                )?;
+                for frame in 0..frames {
+                    attn_input[frame * d + head * head_dim..frame * d + (head + 1) * head_dim]
+                        .copy_from_slice(&head_weighted[frame * head_dim..(frame + 1) * head_dim]);
                 }
             }
             compute.gemm_f32(
@@ -1067,7 +1212,7 @@ impl KyutaiSttAsr {
             )?;
             compute.gemm_f32(
                 frames,
-                2 * ffn,
+                checked_product("gating width", &[2, ffn])?,
                 d,
                 &norm,
                 &block.linear_in,
@@ -1080,15 +1225,15 @@ impl KyutaiSttAsr {
                 ffn_up[frame * ffn..(frame + 1) * ffn]
                     .copy_from_slice(&ffn_in[frame * 2 * ffn + ffn..(frame + 1) * 2 * ffn]);
             }
-            silu_inplace(&mut ffn_gate);
-            for (gate, &up) in ffn_gate.iter_mut().zip(&ffn_up) {
+            compute.silu_f32(&ffn_gate, &mut ffn_activated)?;
+            for (gate, &up) in ffn_activated.iter_mut().zip(&ffn_up) {
                 *gate *= up;
             }
             compute.gemm_f32(
                 frames,
                 d,
                 ffn,
-                &ffn_gate,
+                &ffn_activated,
                 &block.linear_out,
                 None,
                 &mut ffn_output,
@@ -1106,7 +1251,8 @@ impl KyutaiSttAsr {
             &self.weights.final_norm,
             self.cfg.rms_norm_eps,
         )?;
-        let mut logits = vec![0.0f32; frames * self.cfg.text_card];
+        let logits_len = checked_product("frames*text_card", &[frames, self.cfg.text_card])?;
+        let mut logits = vec![0.0f32; logits_len];
         compute.gemm_f32(
             frames,
             self.cfg.text_card,
@@ -1132,16 +1278,18 @@ impl KyutaiSttAsr {
     /// sequence), so this returns [`VokraError::NotImplemented`] naming
     /// the blocker. Callers verify the shape flow through
     /// [`KyutaiSttAsr::new`] + [`KyutaiSttWeights::synthesized`] today;
-    /// a follow-up wave binds the real HF checkpoint tensor names and
-    /// wires the forward.
+    /// the component logits seam exists, but a real authenticated tensor
+    /// binder, streaming state/delay, sampling, and SentencePiece
+    /// detokenization remain follow-up gates.
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] if `mimi_codes.len()` is not a
     ///   multiple of `n_q`, is empty, or contains an id outside
     ///   `[0, audio_card)`.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
+    /// - [`VokraError::NotImplemented`] otherwise (the component seam exists,
+    ///   but real binding, streaming state/delay, sampling, and
+    ///   SentencePiece detokenization remain — FR-EX-08).
     pub fn transcribe(&self, mimi_codes: &[u32]) -> Result<Vec<u32>> {
         if mimi_codes.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -1180,12 +1328,12 @@ impl KyutaiSttAsr {
             ));
         }
         Err(VokraError::NotImplemented(
-            "kyutai-stt transcribe: real weights are bound but the \
-             audio-embedding sum + prenorm MHA + gating FFN + text-head \
-             sampling + SentencePiece detokenize forward path has not landed \
-             yet. Follow-up wave: transcribe the upstream tensor manifest and \
-             wire the sliding-window causal attention (context=375) forward \
-             through the `Compute` seam (Moshi T29 pattern). \
+            "kyutai-stt transcribe: the component logits seam exists, but \
+             the real authenticated tensor binder, streaming state/delay, \
+             sampling, and SentencePiece detokenization remain blocked. \
+             Follow-up wave: bind the authenticated upstream tensor manifest \
+             and expose the already-seamed sliding-window causal component \
+             through a real streaming decoder. \
              Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
              https://github.com/kyutai-labs/delayed-streams-modeling",
         ))
@@ -1562,6 +1710,18 @@ mod tests {
     }
 
     #[test]
+    fn asr_new_rejects_non_finite_supplied_weight() {
+        let c = KyutaiSttConfig::tiny_for_tests();
+        let mut w = KyutaiSttWeights::synthesized(&c, 7).expect("weights");
+        w.blocks[0].linear_out[0] = f32::NAN;
+        let error = KyutaiSttAsr::new(c, w).expect_err("NaN must not enter execution");
+        assert!(matches!(
+            error,
+            VokraError::InvalidArgument(message) if message.contains("non-finite")
+        ));
+    }
+
+    #[test]
     fn transcribe_rejects_empty_codes() {
         let c = KyutaiSttConfig::tiny_for_tests();
         let w = KyutaiSttWeights::synthesized(&c, 7).expect("weights");
@@ -1651,7 +1811,7 @@ mod tests {
     }
 
     #[test]
-    fn dep_q0_decoder_rejects_context_and_input_shape_drift() {
+    fn dep_q0_decoder_accepts_longer_sequences_and_rejects_input_shape_drift() {
         let config = KyutaiSttConfig::tiny_for_tests();
         let asr = KyutaiSttAsr::new(
             config.clone(),
@@ -1665,10 +1825,34 @@ mod tests {
         ));
         let too_many = vec![0u32; (config.backbone.context + 1) * config.n_q];
         let too_many_text = vec![0u32; config.backbone.context + 1];
-        assert!(matches!(
-            asr.forward_text_logits(BackendKind::Cpu, &too_many_text, &too_many),
-            Err(VokraError::InvalidArgument(_))
-        ));
+        let logits = asr
+            .forward_text_logits(BackendKind::Cpu, &too_many_text, &too_many)
+            .expect("context is an attention window, not an input limit");
+        assert_eq!(logits.frames(), config.backbone.context + 1);
+    }
+
+    #[test]
+    fn dep_q0_decoder_window_excludes_preceding_frame_in_one_layer_fixture() {
+        let mut config = KyutaiSttConfig::tiny_for_tests();
+        config.backbone.n_layer = 1;
+        config.backbone.context = 2;
+        let weights = KyutaiSttWeights::synthesized(&config, 7).expect("weights");
+        let asr = KyutaiSttAsr::new(config.clone(), weights).expect("asr");
+        let first_text = [0, 1, 2];
+        let second_text = [3, 1, 2];
+        let codes = vec![0u32; first_text.len() * config.n_q];
+        let first = asr
+            .forward_text_logits(BackendKind::Cpu, &first_text, &codes)
+            .expect("first sequence");
+        let second = asr
+            .forward_text_logits(BackendKind::Cpu, &second_text, &codes)
+            .expect("second sequence");
+        let final_row = config.text_card * (first_text.len() - 1);
+        assert_eq!(
+            &first.as_slice()[final_row..],
+            &second.as_slice()[final_row..],
+            "the one-layer final row only sees the causal context window"
+        );
     }
 
     #[test]
