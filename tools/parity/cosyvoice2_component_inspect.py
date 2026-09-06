@@ -29,8 +29,12 @@ MODEL_REVISION = "eec1ae6c79877dbd9379285cf8789c9e0879293d"
 SOURCE_REPOSITORY = "https://github.com/FunAudioLLM/CosyVoice.git"
 SOURCE_REVISION = "8555549e882236e6541748b1042d95693caa82ba"
 SOURCE_CLOSURE_PATH = "tools/parity/cosyvoice2_flow_source_closure.json"
-SOURCE_CLOSURE_SHA256 = "7c6d5da3fa037a2d89d6f9db298d3570cccdbeb6a7dad238cbb36732539a6090"
+SOURCE_CLOSURE_SHA256 = "cc391a4a63e95b9cdf6373b5b41ac94239a89d6594a235bc142a17c542532673"
 SOURCE_CLOSURE_NODE_COUNT = 15
+MATCHA_PATH = "third_party/Matcha-TTS"
+MATCHA_REPOSITORY = "https://github.com/shivammehta25/Matcha-TTS.git"
+MATCHA_REVISION = "dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
+MATCHA_NODE_COUNT = 4
 LICENSE_PATH = "LICENSE"
 LICENSE_SHA256 = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 LICENSE_GIT_BLOB_SHA1 = "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
@@ -400,6 +404,33 @@ def _require_source_regular(source: Path, relative: str, label: str) -> Path:
     return path
 
 
+def _require_source_tree(source: Path, relative: str, label: str) -> Path:
+    _safe_source_relative_path(relative)
+    path = source / relative
+    current = source
+    for part in PurePosixPath(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            raise InspectionError(f"{label} has a symlinked ancestor: {current}")
+    if path.is_symlink() or not path.is_dir():
+        raise InspectionError(f"{label} must be an absolute regular non-symlink directory")
+    return path
+
+
+def _strict_dependency_names(records: Any, label: str) -> set[str]:
+    if not isinstance(records, list) or not records:
+        raise InspectionError(f"{label} dependency records are missing")
+    names: set[str] = set()
+    for row in records:
+        if not isinstance(row, dict) or set(row) != {"import", "reason"}:
+            raise InspectionError(f"{label} dependency schema is invalid")
+        name, reason = row["import"], row["reason"]
+        if not isinstance(name, str) or not name or name in names or not isinstance(reason, str) or not reason:
+            raise InspectionError(f"{label} dependency is empty or duplicated")
+        names.add(name)
+    return names
+
+
 def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
     """Authenticate the fixed repo-local Flow implementation import closure."""
     manifest = root / SOURCE_CLOSURE_PATH
@@ -414,8 +445,8 @@ def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
         raise InspectionError("Flow source closure format mismatch")
     if payload.get("repository") != SOURCE_REPOSITORY or payload.get("revision") != SOURCE_REVISION:
         raise InspectionError("Flow source closure source identity mismatch")
-    if payload.get("status") != "REPO_LOCAL_SOURCE_CLOSURE_COMPLETE_EXTERNAL_MATCHA_PENDING":
-        raise InspectionError("Flow source closure status is not the external-Matcha-pending status")
+    if payload.get("status") != "SOURCE_CLOSURE_COMPLETE":
+        raise InspectionError("Flow source closure status is not complete")
     roots = payload.get("roots")
     expected_roots = [
         "cosyvoice/cli/cosyvoice.py",
@@ -475,10 +506,7 @@ def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
         if (source_path, target_path) in edge_keys:
             raise InspectionError("Flow source closure contains duplicate edges")
         edge_keys.add((source_path, target_path))
-    external = payload.get("external_dependencies")
-    if not isinstance(external, list) or not external or any(not isinstance(row, dict) or set(row) != {"import", "reason"} for row in external):
-        raise InspectionError("Flow source closure external dependency records are invalid")
-    external_names = {row["import"] for row in external}
+    external_names = _strict_dependency_names(payload.get("external_dependencies"), "Flow source closure external")
     excluded = payload.get("excluded_repo_imports")
     if not isinstance(excluded, list) or any(not isinstance(row, dict) or set(row) != {"path", "reason"} for row in excluded):
         raise InspectionError("Flow source closure exclusions are invalid")
@@ -490,6 +518,7 @@ def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
         excluded_paths.add(path)
     actual_import_edges: set[tuple[str, str]] = set()
     actual_matcha_imports: set[str] = set()
+    actual_external_imports: set[str] = set()
     for node in nodes:
         source_path = node["path"]
         try:
@@ -507,6 +536,8 @@ def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
                 if not module.startswith("cosyvoice."):
                     if module.startswith("matcha."):
                         actual_matcha_imports.add(module)
+                    else:
+                        actual_external_imports.add(module)
                     continue
                 target = module.replace(".", "/") + ".py"
                 if target not in node_paths and target not in excluded_paths:
@@ -518,8 +549,8 @@ def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
         declared_edges.add((edge["from"], edge["to"]))
     if declared_edges != actual_import_edges:
         raise InspectionError("Flow source closure edges do not exactly match parsed repo-local imports")
-    if any(not any(module == name or module.startswith(name + ".") for name in external_names) for module in actual_matcha_imports):
-        raise InspectionError("Flow source closure omits a Matcha import dependency")
+    if external_names != actual_external_imports:
+        raise InspectionError("Flow source closure external dependency set mismatch")
     bindings = payload.get("config_bindings")
     if not isinstance(bindings, list) or any(not isinstance(row, dict) or set(row) != {"config_path", "implementation", "reason"} for row in bindings):
         raise InspectionError("Flow source closure config bindings are invalid")
@@ -528,10 +559,118 @@ def authenticate_source_closure(source: Path, root: Path) -> dict[str, Any]:
         target = implementation.rsplit(".", 1)[0].replace(".", "/") + ".py" if isinstance(implementation, str) and "." in implementation else ""
         if target not in node_paths or not isinstance(row["config_path"], str) or not row["config_path"] or not isinstance(implementation, str) or not implementation or not isinstance(row["reason"], str) or not row["reason"]:
             raise InspectionError("Flow source closure config binding is unresolved")
+    matcha = payload.get("matcha")
+    if not isinstance(matcha, dict) or set(matcha) != {"repository", "revision", "status", "license", "roots", "nodes", "edges", "external_dependencies"}:
+        raise InspectionError("Matcha closure schema is not exact")
+    if matcha["repository"] != MATCHA_REPOSITORY or matcha["revision"] != MATCHA_REVISION or matcha["status"] != "MATCHA_GITLINK_AUTHENTICATED":
+        raise InspectionError("Matcha gitlink identity/status mismatch")
+    matcha_license = matcha["license"]
+    expected_matcha_license = {
+        "path": "LICENSE",
+        "bytes": 1_069,
+        "sha256": "874d84104bdc7b301f369b2f2e66b31f07826a67495af909655f3699c857620d",
+        "git_blob_sha1": "858018e750da7be7b271bb7307e68d159ed67ef6",
+        "declared": "MIT",
+    }
+    if matcha_license != expected_matcha_license:
+        raise InspectionError("Matcha LICENSE identity mismatch")
+    if matcha["roots"] != [
+        "matcha/models/components/decoder.py",
+        "matcha/models/components/flow_matching.py",
+        "matcha/models/components/transformer.py",
+    ]:
+        raise InspectionError("Matcha closure roots are not exact")
+    matcha_root = _require_source_tree(source, MATCHA_PATH, "Matcha gitlink checkout")
+
+    try:
+        gitlink = subprocess.check_output(
+            ["git", "-C", str(source), "ls-tree", SOURCE_REVISION, MATCHA_PATH],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise InspectionError(f"CosyVoice Matcha gitlink lookup failed: {error}") from error
+    if gitlink != f"160000 commit {MATCHA_REVISION}\t{MATCHA_PATH}":
+        raise InspectionError("CosyVoice Matcha gitlink revision mismatch")
+
+    def matcha_git(*args: str) -> str:
+        try:
+            return subprocess.check_output(
+                ["git", "-C", str(matcha_root), *args],
+                text=True,
+                stderr=subprocess.STDOUT,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise InspectionError(f"Matcha git command failed: {args!r}: {error}") from error
+
+    if matcha_git("rev-parse", "HEAD") != MATCHA_REVISION or matcha_git("remote", "get-url", "origin") != MATCHA_REPOSITORY or matcha_git("status", "--porcelain", "--untracked-files=all"):
+        raise InspectionError("Matcha gitlink revision/origin/clean checkout mismatch")
+    matcha_license_path = _require_source_regular(matcha_root, "LICENSE", "Matcha LICENSE")
+    if matcha_license_path.stat().st_size != expected_matcha_license["bytes"] or sha256_file(matcha_license_path) != expected_matcha_license["sha256"] or git_blob_sha1(matcha_license_path) != expected_matcha_license["git_blob_sha1"]:
+        raise InspectionError("Matcha LICENSE file identity mismatch")
+    matcha_nodes = matcha["nodes"]
+    if not isinstance(matcha_nodes, list) or len(matcha_nodes) != MATCHA_NODE_COUNT:
+        raise InspectionError("Matcha closure node count is not exact")
+    matcha_node_paths: set[str] = set()
+    for node in matcha_nodes:
+        if not isinstance(node, dict) or set(node) != {"path", "bytes", "sha256", "git_blob_sha1", "role"}:
+            raise InspectionError("Matcha closure node schema is not exact")
+        path = node["path"]
+        if not isinstance(path, str) or path in matcha_node_paths or not path.startswith("matcha/"):
+            raise InspectionError("Matcha closure contains an invalid or duplicate path")
+        matcha_node_paths.add(path)
+        if type(node["bytes"]) is not int or node["bytes"] <= 0 or not isinstance(node["sha256"], str) or len(node["sha256"]) != 64 or not all(c in "0123456789abcdef" for c in node["sha256"]) or not isinstance(node["git_blob_sha1"], str) or len(node["git_blob_sha1"]) != 40 or not all(c in "0123456789abcdef" for c in node["git_blob_sha1"]) or not isinstance(node["role"], str) or not node["role"]:
+            raise InspectionError(f"Matcha closure node identity fields are invalid: {path!r}")
+    for node in matcha_nodes:
+        path = node["path"]
+        actual = _require_source_regular(matcha_root, path, f"Matcha closure node {path}")
+        if actual.stat().st_size != node["bytes"] or sha256_file(actual) != node["sha256"] or git_blob_sha1(actual) != node["git_blob_sha1"]:
+            raise InspectionError(f"Matcha closure node identity mismatch: {path}")
+    matcha_edges = matcha["edges"]
+    if not isinstance(matcha_edges, list) or not matcha_edges:
+        raise InspectionError("Matcha closure edges are missing")
+    matcha_edge_keys: set[tuple[str, str]] = set()
+    for edge in matcha_edges:
+        if not isinstance(edge, dict) or set(edge) != {"from", "to", "reason"}:
+            raise InspectionError("Matcha closure edge schema is not exact")
+        source_path, target_path, reason = edge["from"], edge["to"], edge["reason"]
+        if source_path not in matcha_node_paths or target_path not in matcha_node_paths or not isinstance(reason, str) or not reason or (source_path, target_path) in matcha_edge_keys:
+            raise InspectionError("Matcha closure edge references an unknown, empty, or duplicate node")
+        matcha_edge_keys.add((source_path, target_path))
+    matcha_external_names = _strict_dependency_names(matcha["external_dependencies"], "Matcha external")
+    actual_matcha_edges: set[tuple[str, str]] = set()
+    actual_matcha_external: set[str] = set()
+    for node in matcha_nodes:
+        source_path = node["path"]
+        try:
+            tree = ast.parse((matcha_root / source_path).read_text(encoding="utf-8"), filename=source_path)
+        except (OSError, UnicodeError, SyntaxError) as error:
+            raise InspectionError(f"Matcha closure AST parse failed for {source_path}: {error}") from error
+        for statement in ast.walk(tree):
+            if isinstance(statement, ast.Import):
+                imported_modules = [alias.name for alias in statement.names]
+            elif isinstance(statement, ast.ImportFrom):
+                imported_modules = [] if statement.module is None else [statement.module]
+            else:
+                continue
+            for module in imported_modules:
+                if module.startswith("matcha."):
+                    target = module.replace(".", "/") + ".py"
+                    if target not in matcha_node_paths:
+                        raise InspectionError(f"unresolved Matcha import: {source_path} -> {target}")
+                    actual_matcha_edges.add((source_path, target))
+                elif module.startswith("cosyvoice."):
+                    raise InspectionError(f"Matcha closure imports CosyVoice implementation: {source_path} -> {module}")
+                else:
+                    actual_matcha_external.add(module)
+    if actual_matcha_edges != matcha_edge_keys:
+        raise InspectionError("Matcha closure edges do not exactly match parsed imports")
+    if actual_matcha_external != matcha_external_names:
+        raise InspectionError("Matcha external dependency set mismatch")
     contract = payload.get("execution_contract")
     if contract != {"model_download": "NOT_RUN", "model_execution": "NOT_RUN", "cpu": "NOT_RUN", "metal": "NOT_RUN", "publication": "NO_UPLOAD"}:
         raise InspectionError("Flow source closure execution contract mismatch")
-    return {"path": SOURCE_CLOSURE_PATH, "sha256": SOURCE_CLOSURE_SHA256, "node_count": len(nodes), "nodes": node_records, "edge_count": len(edges), "status": payload["status"]}
+    return {"path": SOURCE_CLOSURE_PATH, "sha256": SOURCE_CLOSURE_SHA256, "node_count": len(nodes), "nodes": node_records, "edge_count": len(edges), "matcha_node_count": len(matcha_nodes), "matcha_edge_count": len(matcha_edges), "status": payload["status"]}
 
 
 def authenticate_source(source: Path, component: str, root: Path) -> dict[str, Any]:
@@ -701,6 +840,20 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("duplicate JSON key accepted")
+    valid_dependency = [{"import": "torch", "reason": "synthetic"}]
+    assert _strict_dependency_names(valid_dependency, "self-test") == {"torch"}
+    for tampered in (
+        [{"import": "torch", "reason": "synthetic"}, {"import": "torch", "reason": "duplicate"}],
+        [{"import": 1, "reason": "non-string"}],
+        [{"import": "", "reason": "empty"}],
+        [{"import": "torch", "reason": "synthetic", "extra": True}],
+    ):
+        try:
+            _strict_dependency_names(tampered, "self-test")
+        except InspectionError:
+            pass
+        else:
+            raise AssertionError("tampered external dependency declaration accepted")
     with tempfile.TemporaryDirectory(prefix="cosyvoice2-component-self-test-") as temp:
         root = Path(__file__).resolve().parents[2]
         work = Path(temp)
