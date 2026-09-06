@@ -175,7 +175,7 @@ def validate_approval(path: str, expected_head: str, expected_sha256: str, repo_
         "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
         "transformers_repository": TRANSFORMERS_REPOSITORY, "transformers_tag": TRANSFORMERS_TAG, "transformers_revision": TRANSFORMERS_REVISION,
         "tokenizer_repository": TOKENIZER_REPOSITORY, "tokenizer_revision": TOKENIZER_REVISION,
-        "model_license": "MIT", "source_license_status": "REQUIRES_PRIMARY_REVIEW",
+        "model_license": "MIT", "source_license_status": "MIT_AUTHENTICATED_OWNER_SIGNED",
         "dependency_license_status": "REQUIRES_PRIMARY_REVIEW", "tokenizer_license_status": "SEPARATE_REVIEW_REQUIRED",
         "dataset_status": "BLOCKED_UNAUTHENTICATED", "streaming_state_status": "BLOCKED_UNIMPLEMENTED",
         "diffusion_cfg_status": "BLOCKED_UNIMPLEMENTED", "acoustic_decoder_status": "BLOCKED_UNIMPLEMENTED",
@@ -620,8 +620,15 @@ def manifest_license_evidence(model_license: dict[str, Any], sources: dict[str, 
     return {"model": model_license, "source": source["license"], "transformers": transformers["license"], "base_tokenizer": "SEPARATE_REVIEW_REQUIRED"}
 
 
-def blocked(output: Path, error: Exception, inspection_status: str = "INSPECTION_ERROR", **extra: Any) -> None:
-    output.mkdir(parents=True, exist_ok=False)
+def blocked(output: Path, error: Exception, inspection_status: str = "INSPECTION_ERROR", *, allow_existing: bool = False, **extra: Any) -> None:
+    if output.exists():
+        if not allow_existing or not output.is_dir() or output.is_symlink():
+            raise FileExistsError(f"blocked evidence output already exists: {output}")
+        manifest = output / "manifest.json"
+        if manifest.exists() or manifest.is_symlink():
+            raise FileExistsError(f"blocked manifest already exists: {manifest}")
+    else:
+        output.mkdir(parents=True, exist_ok=False)
     payload = {"format": FORMAT, "status": "BLOCKED", "inspection_status": inspection_status, "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "task": "Realtime streaming TTS inspection only; no native runtime claim", "upstream": {"repository": HF_REPOSITORY, "revision": HF_REVISION}, "official_source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION}, "transformers": {"repository": TRANSFORMERS_REPOSITORY, "tag": TRANSFORMERS_TAG, "revision": TRANSFORMERS_REVISION}, "error_type": type(error).__name__, "reason": str(error), "blockers": [str(error)], **extra}
     with (output / "manifest.json").open("x", encoding="utf-8") as stream:
         stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
@@ -664,7 +671,7 @@ def inspect(snapshot: Path, companion: Path, source: Path, transformers: Path, m
         with (output / name).open("x", encoding="utf-8") as stream:
             stream.write(json.dumps(value, sort_keys=True, indent=2) + "\n")
     packets = {path.name: {"bytes": path.stat().st_size, "sha256": sha256(path)} for path in output.glob("*-inventory.json")}
-    blocked(output, RuntimeError("streaming state, diffusion/CFG, acoustic decoder, tokenizer behavior, policy, and dataset provenance remain unauthenticated"), inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE", model_license=model_license, policy=policy, config=config_evidence, preprocessor=preprocessor_evidence, tensors=tensor_evidence, companion_tokenizer={"repository": TOKENIZER_REPOSITORY, "revision": TOKENIZER_REVISION, "model_weights": "NOT_DOWNLOADED", "files": tokenizer_files}, official_source=sources, license_evidence=manifest_license_evidence(model_license, sources), dataset_provenance={"status": "BLOCKED_UNAUTHENTICATED"}, packets=packets)
+    blocked(output, RuntimeError("streaming state, diffusion/CFG, acoustic decoder, tokenizer behavior, policy, and dataset provenance remain unauthenticated"), inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE", allow_existing=True, model_license=model_license, policy=policy, config=config_evidence, preprocessor=preprocessor_evidence, tensors=tensor_evidence, companion_tokenizer={"repository": TOKENIZER_REPOSITORY, "revision": TOKENIZER_REVISION, "model_weights": "NOT_DOWNLOADED", "files": tokenizer_files}, official_source=sources, license_evidence=manifest_license_evidence(model_license, sources), dataset_provenance={"status": "BLOCKED_UNAUTHENTICATED"}, packets=packets)
     return 2
 
 
@@ -675,7 +682,7 @@ def gate_self_test() -> None:
         "model_repository": HF_REPOSITORY, "model_revision": HF_REVISION, "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
         "transformers_repository": TRANSFORMERS_REPOSITORY, "transformers_tag": TRANSFORMERS_TAG, "transformers_revision": TRANSFORMERS_REVISION,
         "tokenizer_repository": TOKENIZER_REPOSITORY, "tokenizer_revision": TOKENIZER_REVISION, "model_license": "MIT",
-        "source_license_status": "REQUIRES_PRIMARY_REVIEW", "dependency_license_status": "REQUIRES_PRIMARY_REVIEW",
+        "source_license_status": "MIT_AUTHENTICATED_OWNER_SIGNED", "dependency_license_status": "REQUIRES_PRIMARY_REVIEW",
         "tokenizer_license_status": "SEPARATE_REVIEW_REQUIRED", "dataset_status": "BLOCKED_UNAUTHENTICATED",
         "streaming_state_status": "BLOCKED_UNIMPLEMENTED", "diffusion_cfg_status": "BLOCKED_UNIMPLEMENTED",
         "acoustic_decoder_status": "BLOCKED_UNIMPLEMENTED", "tokenizer_policy_status": "BLOCKED_UNAUTHENTICATED",
@@ -975,6 +982,23 @@ def self_test() -> None:
                 raise AssertionError("missing/extra server path accepted")
         error_evidence = root / "error-evidence"; blocked(error_evidence, RuntimeError("fixture failure")); error_manifest = load_json(error_evidence / "manifest.json")
         assert error_manifest["inspection_status"] == "INSPECTION_ERROR" and "AUTHENTICATED_EVIDENCE_COMPLETE" not in error_manifest
+        existing_evidence = root / "existing-evidence"; existing_evidence.mkdir()
+        blocked(existing_evidence, RuntimeError("existing directory"), allow_existing=True)
+        existing_manifest = load_json(existing_evidence / "manifest.json")
+        assert existing_manifest["status"] == "BLOCKED"
+        try:
+            blocked(existing_evidence, RuntimeError("must not clobber"), allow_existing=True)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing blocked manifest was clobbered")
+        symlink_evidence = root / "symlink-evidence"; symlink_target = root / "symlink-target"; symlink_target.mkdir(); symlink_evidence.symlink_to(symlink_target, target_is_directory=True)
+        try:
+            blocked(symlink_evidence, RuntimeError("symlink"), allow_existing=True)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("symlink blocked evidence was accepted")
     print("vibevoice_realtime_0_5b_inspect.py self-test: OK")
 
 
