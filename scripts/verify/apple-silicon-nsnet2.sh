@@ -26,6 +26,8 @@ usage: apple-silicon-nsnet2.sh --gguf <corrected.gguf> \
   --gguf-sha256 <sha256> --input <input.wav> --input-sha256 <sha256> \
   --reference <reference.wav> --reference-sha256 <sha256> \
   --expected-head <exact-40-hex-git-commit> --approval-evidence <owner-approval.json> \
+  --approval-sha256 <sha256> \
+  --packet-manifest <manifest.json> --packet-manifest-sha256 <sha256> \
   --evidence-dir <absent-dir>
        apple-silicon-nsnet2.sh --self-test
 
@@ -84,11 +86,12 @@ require_metric_sentinel() {
 }
 
 license_preflight() {
-  local approval="$1" expected_head="$2" project="$VOKRA_ROOT/tools/parity/pyproject.toml" lock="$VOKRA_ROOT/tools/parity/uv.lock" project_sha lock_sha
+  local approval="$1" expected_head="$2" approval_sha="$3" project="$VOKRA_ROOT/tools/parity/pyproject.toml" lock="$VOKRA_ROOT/tools/parity/uv.lock" project_sha lock_sha
   [[ -f "$project" && ! -L "$project" && -f "$lock" && ! -L "$lock" ]] || die 'locked parity project is missing or symlinked'
   [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die 'approval evidence must be a nonempty regular non-symlink file'
   project_sha="$(shasum -a 256 "$project" | awk '{print $1}')"; lock_sha="$(shasum -a 256 "$lock" | awk '{print $1}')"
-  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$approval" "$project_sha" "$lock_sha" "$expected_head" <<'PY'
+  [[ "$(sha256_file "$approval")" == "$approval_sha" ]] || die 'approval evidence SHA-256 changed before preflight'
+  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$approval" "$project_sha" "$lock_sha" "$expected_head" "$approval_sha" <<'PY'
 import hashlib, json, pathlib, sys
 def hook(pairs):
     result = {}
@@ -97,7 +100,9 @@ def hook(pairs):
         result[key] = value
     return result
 try:
-    d=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'), object_pairs_hook=hook)
+    raw=pathlib.Path(sys.argv[1]).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != sys.argv[5]: raise ValueError('approval SHA-256 mismatch')
+    d=json.loads(raw.decode('utf-8'), object_pairs_hook=hook)
     keys={'schema','model','upstream_repo','upstream_revision','license_spdx','project_sha256','lock_sha256','expected_head','no_upload','decision','signer','scope_sha256'}
     if set(d)!=keys: raise ValueError('approval schema is not exact')
     if (d['schema'],d['model'],d['upstream_repo'],d['upstream_revision'],d['license_spdx']) != ('vokra-validation-approval-v1','nsnet2','microsoft/DNS-Challenge','8b87a33b2892f147b5c7ad39ea978453730db269','cc-by-4.0'): raise ValueError('approval identity mismatch')
@@ -110,6 +115,48 @@ PY
   then :; else die 'approval evidence is invalid or offline Python is unavailable'; fi
   if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$VOKRA_ROOT/scripts/publish/signoff_match.py" --check-repo nsnet2 --audit "$VOKRA_ROOT/docs/license-audit.md"
   then :; else die 'repository signoff is unresolved'; fi
+}
+
+validate_transfer_manifest() {
+  local manifest="$1" manifest_sha="$2" expected_head="$3" gguf_sha="$4" input_sha="$5" reference_sha="$6" approval_sha="$7"
+  require_file 'NSNet2 transfer manifest' "$manifest"
+  [[ "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || die 'packet manifest SHA-256 must be lowercase 64-hex'
+  [[ "$(sha256_file "$manifest")" == "$manifest_sha" ]] || die 'packet manifest SHA-256 mismatch'
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
+    "$manifest" "$manifest_sha" "$expected_head" "$gguf_sha" "$input_sha" "$reference_sha" "$approval_sha" <<'PY'
+import hashlib, json, pathlib, sys
+manifest_path = pathlib.Path(sys.argv[1])
+expected_manifest_sha, expected_head, expected_gguf, expected_input, expected_reference, expected_approval = sys.argv[2:]
+raw = manifest_path.read_bytes()
+if hashlib.sha256(raw).hexdigest() != expected_manifest_sha: raise SystemExit('manifest changed during validation')
+def hook(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out: raise ValueError('duplicate JSON key: ' + key)
+        out[key] = value
+    return out
+try:
+    data = json.loads(raw.decode('utf-8'), object_pairs_hook=hook)
+except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    raise SystemExit('invalid transfer manifest: ' + str(exc))
+if set(data) != {'schema','expected_head','git_commit','license_spdx','no_upload','status','artifacts'}: raise SystemExit('transfer manifest schema is not exact')
+if (data['schema'], data['expected_head'], data['git_commit'], data['license_spdx'], data['no_upload'], data['status']) != ('vokra-nsnet2-transfer-v1', expected_head, expected_head, 'cc-by-4.0', True, 'CPU_PASS_METAL_NOT_RUN'): raise SystemExit('transfer manifest identity mismatch')
+expected = {'gguf': ('nsnet2.gguf', expected_gguf), 'input_wav': ('input.wav', expected_input), 'reference_wav': ('reference.wav', expected_reference), 'approval': ('approval.json', expected_approval), 'cpu_parity': ('parity.log', None)}
+artifacts = data['artifacts']
+if not isinstance(artifacts, dict) or set(artifacts) != set(expected): raise SystemExit('transfer artifact set is not exact')
+for key, (name, digest) in expected.items():
+    row = artifacts[key]
+    required = {'filename','sha256'} if key != 'cpu_parity' else {'filename','sha256','marker'}
+    if set(row) != required or row['filename'] != name or not isinstance(row['sha256'], str) or len(row['sha256']) != 64 or any(ch not in '0123456789abcdef' for ch in row['sha256']): raise SystemExit('transfer artifact row mismatch')
+    if digest is not None and row['sha256'] != digest: raise SystemExit('transfer artifact digest mismatch')
+    path = manifest_path.parent / name
+    if not path.is_file() or path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != row['sha256']: raise SystemExit('transfer packet file mismatch: ' + name)
+    if key == 'cpu_parity' and row['marker'] != 'NSNet2_PARITY cpu_reference=PASS': raise SystemExit('CPU marker mismatch')
+if (manifest_path.parent / 'manifest.sha256').read_text(encoding='utf-8').strip() != f'{expected_manifest_sha}  manifest.json': raise SystemExit('manifest sidecar mismatch')
+names = {p.name for p in manifest_path.parent.iterdir()}
+if names != {'manifest.json','manifest.sha256','nsnet2.gguf','input.wav','reference.wav','approval.json','parity.log'}: raise SystemExit('transfer packet closure is not exact')
+if any(not p.is_file() or p.is_symlink() for p in manifest_path.parent.iterdir()): raise SystemExit('transfer packet contains non-regular entry')
+PY
 }
 
 require_remote_apple_host() {
@@ -130,7 +177,7 @@ require_remote_apple_host() {
 
 require_tooling() {
   local tool
-  for tool in cargo rustc git shasum awk find tee grep sysctl sw_vers \
+  for tool in cargo rustc git shasum awk find tee grep sysctl sw_vers uv \
     system_profiler xcrun; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
@@ -178,12 +225,13 @@ run_self_test() (
     'MIN_FREE_DISK_KIB=10000000' 'xcrun -f metal' \
     'VOKRA_NSNET2_REAL_GGUF' 'VOKRA_NSNET2_REAL_WAV' \
     'VOKRA_NSNET2_REFERENCE_WAV' 'parity_nsnet2_gguf_smoke' \
-    '--gguf-sha256' '--input-sha256' '--reference-sha256' '--expected-head' \
+    '--gguf-sha256' '--input-sha256' '--reference-sha256' '--expected-head' '--approval-sha256' '--packet-manifest' '--packet-manifest-sha256' \
     'expected_head' 'CARGO_NET_OFFLINE=true' \
     '--features metal --test parity_nsnet2' '-- --exact --nocapture' \
     'NSNet2 real CPU/Metal PCM max_abs=' 'NSNet2 real CPU/reference PCM max_abs=' \
     'NSNet2 real Metal/reference PCM max_abs=' 'NSNet2_PARITY cpu_reference=PASS' \
     'NSNet2_PARITY metal_vs_reference=PASS' 'NSNet2_PARITY metal_vs_cpu=PASS' \
+    '--ignored --exact --nocapture --test-threads=1' \
     'git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all' \
     'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml"'; do
     if ! grep -Fq -- "$required" "$script_path"; then
@@ -208,7 +256,12 @@ run_self_test() (
     log "self-test FAIL: unknown argument accepted"
     fail=1
   fi
-  if "$script_path" --gguf -bad >/dev/null 2>&1 || "$script_path" --gguf a --gguf b >/dev/null 2>&1 || "$script_path" --gguf-sha256 bad >/dev/null 2>&1 || "$script_path" --expected-head bad >/dev/null 2>&1 || "$script_path" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1; then
+  if "$script_path" --approval-sha256 bad >/dev/null 2>&1 || \
+    "$script_path" --approval-sha256 "$(printf '0%.0s' {1..64})" --approval-sha256 "$(printf '1%.0s' {1..64})" >/dev/null 2>&1; then
+    log "self-test FAIL: malformed or duplicate --approval-sha256 accepted"
+    fail=1
+  fi
+  if "$script_path" --gguf -bad >/dev/null 2>&1 || "$script_path" --gguf a --gguf b >/dev/null 2>&1 || "$script_path" --gguf-sha256 bad >/dev/null 2>&1 || "$script_path" --packet-manifest-sha256 bad >/dev/null 2>&1 || "$script_path" --packet-manifest a --packet-manifest b >/dev/null 2>&1 || "$script_path" --expected-head bad >/dev/null 2>&1 || "$script_path" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1; then
     log "self-test FAIL: malformed or duplicate options accepted"
     fail=1
   fi
@@ -218,13 +271,40 @@ run_self_test() (
   if require_absent_evidence_dir "$temporary/empty-evidence" "$temporary/value" >/dev/null 2>&1; then log 'self-test FAIL: existing empty evidence accepted'; fail=1; fi
   ln -s "$temporary/missing-evidence" "$temporary/dangling-evidence"
   if require_absent_evidence_dir "$temporary/dangling-evidence" "$temporary/value" >/dev/null 2>&1; then log 'self-test FAIL: dangling evidence symlink accepted'; fail=1; fi
+  local packet="$temporary/packet" head approval_digest gguf_digest input_digest reference_digest manifest_digest
+  mkdir "$packet"
+  printf 'gguf' > "$packet/nsnet2.gguf"
+  printf 'input' > "$packet/input.wav"
+  printf 'reference' > "$packet/reference.wav"
+  printf 'approval' > "$packet/approval.json"
+  printf 'NSNet2_PARITY cpu_reference=PASS\n' > "$packet/parity.log"
+  head='0000000000000000000000000000000000000000'
+  approval_digest="$(sha256_file "$packet/approval.json")"
+  gguf_digest="$(sha256_file "$packet/nsnet2.gguf")"
+  input_digest="$(sha256_file "$packet/input.wav")"
+  reference_digest="$(sha256_file "$packet/reference.wav")"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$packet" "$head" "$gguf_digest" "$input_digest" "$reference_digest" "$approval_digest" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+head, gguf, input_digest, reference, approval = sys.argv[2:]
+names = {'gguf': 'nsnet2.gguf', 'input_wav': 'input.wav', 'reference_wav': 'reference.wav', 'approval': 'approval.json', 'cpu_parity': 'parity.log'}
+rows = {key: {'filename': name, 'sha256': hashlib.sha256((root / name).read_bytes()).hexdigest()} for key, name in names.items()}
+rows['cpu_parity']['marker'] = 'NSNet2_PARITY cpu_reference=PASS'
+data = {'schema': 'vokra-nsnet2-transfer-v1', 'expected_head': head, 'git_commit': head, 'license_spdx': 'cc-by-4.0', 'no_upload': True, 'status': 'CPU_PASS_METAL_NOT_RUN', 'artifacts': rows}
+(root / 'manifest.json').write_text(json.dumps(data, sort_keys=True, separators=(',', ':')) + '\n', encoding='utf-8')
+(root / 'manifest.sha256').write_text(hashlib.sha256((root / 'manifest.json').read_bytes()).hexdigest() + '  manifest.json\n', encoding='ascii')
+PY
+  manifest_digest="$(sha256_file "$packet/manifest.json")"
+  validate_transfer_manifest "$packet/manifest.json" "$manifest_digest" "$head" "$gguf_digest" "$input_digest" "$reference_digest" "$approval_digest" || { log 'self-test FAIL: valid transfer packet rejected'; fail=1; }
+  touch "$packet/unexpected"
+  if validate_transfer_manifest "$packet/manifest.json" "$manifest_digest" "$head" "$gguf_digest" "$input_digest" "$reference_digest" "$approval_digest" >/dev/null 2>&1; then log 'self-test FAIL: extra transfer packet entry accepted'; fail=1; fi
   (( fail == 0 )) || return 1
   log "self-test PASS"
 )
 
 main() {
-  local gguf='' input='' reference='' approval='' evidence_dir='' expected_head='' expected_gguf_sha='' expected_input_sha='' expected_reference_sha='' self_test=0 gguf_sha actual_head
-  local seen_gguf=0 seen_input=0 seen_reference=0 seen_approval=0 seen_evidence=0 seen_head=0 seen_gguf_sha=0 seen_input_sha=0 seen_reference_sha=0 seen_self=0
+  local gguf='' input='' reference='' approval='' approval_sha='' packet_manifest='' packet_manifest_sha='' evidence_dir='' expected_head='' expected_gguf_sha='' expected_input_sha='' expected_reference_sha='' self_test=0 gguf_sha actual_head
+  local seen_gguf=0 seen_input=0 seen_reference=0 seen_approval=0 seen_approval_sha=0 seen_packet=0 seen_packet_sha=0 seen_evidence=0 seen_head=0 seen_gguf_sha=0 seen_input_sha=0 seen_reference_sha=0 seen_self=0
   while (( $# > 0 )); do
     case "$1" in
       --gguf)
@@ -254,6 +334,15 @@ main() {
       --approval-evidence)
         (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty path'; seen_approval=1
         approval="$2"; shift 2 ;;
+      --approval-sha256)
+        (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires a lowercase 64-hex digest'; seen_approval_sha=1
+        approval_sha="$2"; shift 2 ;;
+      --packet-manifest)
+        (( seen_packet == 0 )) || die 'duplicate --packet-manifest'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--packet-manifest requires a nonempty path'; seen_packet=1
+        packet_manifest="$2"; shift 2 ;;
+      --packet-manifest-sha256)
+        (( seen_packet_sha == 0 )) || die 'duplicate --packet-manifest-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--packet-manifest-sha256 requires a lowercase 64-hex digest'; seen_packet_sha=1
+        packet_manifest_sha="$2"; shift 2 ;;
       --self-test)
         (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self_test=1; shift ;;
       -h|--help)
@@ -264,28 +353,29 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ -z "$gguf$input$reference$approval$evidence_dir$expected_head$expected_gguf_sha$expected_input_sha$expected_reference_sha" ]] \
+    [[ -z "$gguf$input$reference$approval$approval_sha$packet_manifest$packet_manifest_sha$evidence_dir$expected_head$expected_gguf_sha$expected_input_sha$expected_reference_sha" ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
-  [[ -n "$gguf" && -n "$input" && -n "$reference" && -n "$approval" && -n "$evidence_dir" && -n "$expected_head" && -n "$expected_gguf_sha" && -n "$expected_input_sha" && -n "$expected_reference_sha" ]] \
+  [[ -n "$gguf" && -n "$input" && -n "$reference" && -n "$approval" && -n "$approval_sha" && -n "$packet_manifest" && -n "$packet_manifest_sha" && -n "$evidence_dir" && -n "$expected_head" && -n "$expected_gguf_sha" && -n "$expected_input_sha" && -n "$expected_reference_sha" ]] \
     || { usage; die "all artifact hashes, --expected-head, paths, --approval-evidence and --evidence-dir are required"; }
 
   cd "$VOKRA_ROOT"
   actual_head="$(git rev-parse HEAD)" || die 'could not read checkout HEAD'
   [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
   [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean before approval and model processing'
-  license_preflight "$approval" "$expected_head"
-  require_absent_evidence_dir "$evidence_dir" "$gguf" "$input" "$reference" "$approval"
+  require_absent_evidence_dir "$evidence_dir" "$gguf" "$input" "$reference" "$approval" "$packet_manifest"
   require_remote_apple_host
   require_tooling
   require_file "corrected NSNet2 GGUF" "$gguf"
   require_file "NSNet2 input WAV" "$input"
   require_file "independent NSNet2 reference WAV" "$reference"
+  validate_transfer_manifest "$packet_manifest" "$packet_manifest_sha" "$expected_head" "$expected_gguf_sha" "$expected_input_sha" "$expected_reference_sha" "$approval_sha"
+  license_preflight "$approval" "$expected_head" "$approval_sha"
   # The preflight requires an absent target; claim it atomically with mkdir so
   # a concurrent creator cannot turn this evidence path into a shared tree.
-  mkdir -p "$(dirname "$evidence_dir")"
+  [[ -d "$(dirname "$evidence_dir")" && ! -L "$(dirname "$evidence_dir")" ]] || die 'evidence parent must already exist'
   mkdir "$evidence_dir"
   gguf_sha="$(sha256_file "$gguf")"
   [[ "$gguf_sha" == "$expected_gguf_sha" ]] || die 'GGUF SHA-256 does not match expected digest'
@@ -302,6 +392,9 @@ main() {
     echo "input_wav_sha256=$(sha256_file "$input")"
     echo "reference_wav=$reference"
     echo "reference_wav_sha256=$(sha256_file "$reference")"
+    echo "approval_sha256=$approval_sha"
+    echo "packet_manifest=$packet_manifest"
+    echo "packet_manifest_sha256=$packet_manifest_sha"
   } > "$evidence_dir/input-hashes.txt"
 
   log "running exact NSNet2 CPU/reference/Metal parity"
@@ -310,9 +403,9 @@ main() {
     "$WAV_ENV=$input" \
     "$REFERENCE_WAV_ENV=$reference" \
     RUST_TEST_THREADS=1 CARGO_NET_OFFLINE=true \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release \
       -p vokra-models --features metal --test "$TEST_TARGET" "$TEST_NAME" \
-      -- --exact --nocapture 2>&1 | tee "$evidence_dir/parity.log"
+      -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence_dir/parity.log"
 
   require_cargo_result "$evidence_dir/parity.log"
   require_metric_sentinel "$evidence_dir/parity.log" 'CPU/Metal'
@@ -327,10 +420,14 @@ main() {
     [[ "$(grep -Ec "^${expected_marker}$" "$evidence_dir/parity.log" || true)" == 1 ]] \
       || die "Rust parity test must emit exactly one $expected_marker marker"
   done
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die 'checkout HEAD changed before PASS publication'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty before PASS publication'
   {
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "expected_head=$expected_head"
+    echo "approval_sha256=$approval_sha"
     echo "gguf_sha256=$gguf_sha"
     echo "input_sha256_expected=$expected_input_sha"
     echo "reference_sha256_expected=$expected_reference_sha"

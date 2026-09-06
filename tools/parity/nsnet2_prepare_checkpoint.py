@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
 """Bridge Microsoft NSNet2's ONNX release to a safetensors checkpoint
 (Coverage-audit 2026-08-03 Wave A, ticket
 ``docs/tickets/coverage-audit-2026-08-03/wave-a/nsnet2.md``).
@@ -157,9 +157,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def reject_unsafe_path(path: Path, label: str) -> None:
+    """Reject lexical dot components and symlinked ancestry before I/O."""
+
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        if component in {".", ".."}:
+            raise SystemExit(f"{LOG_PREFIX} {label} contains a dot path component: {path}")
+        current /= component
+        if current.is_symlink() and current != Path("/var"):
+            raise SystemExit(f"{LOG_PREFIX} {label} has symlinked ancestry: {path}")
+
+
 def require_pinned_onnx(path: Path) -> None:
     """Authenticate the exact official ONNX before importing/parsing it."""
 
+    reject_unsafe_path(path, "ONNX path")
     if path.name != PINNED_ONNX_FILENAME:
         raise SystemExit(
             f"{LOG_PREFIX} refusing unexpected ONNX filename {path.name!r}; "
@@ -192,6 +206,7 @@ def publish_no_replace(
     offline sidecar use.
     """
 
+    reject_unsafe_path(output, "output path")
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() or output.is_symlink():
         raise SystemExit(f"{LOG_PREFIX} refusing to overwrite existing output: {output}")

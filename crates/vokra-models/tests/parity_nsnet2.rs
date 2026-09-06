@@ -1,12 +1,10 @@
 //! NSNet2 numerical parity harness — env-gated (denoise family, 2026-08-05).
 //!
 //! Sibling of `parity_nkf_aec.rs` / `parity_rmvpe.rs` /
-//! `parity_openwakeword.rs`: every test that needs a real NSNet2 GGUF +
-//! a paired noisy WAV is gated on [`GGUF_ENV`] / [`WAV_ENV`] and skips
-//! cleanly when unset (never a fabricated pass — memory
-//! `[[project-real-weight-eval]]`). Once opted in, every failure is
-//! hard: a missing / malformed / wrong-shaped fixture is a loud panic
-//! (FR-EX-08).
+//! `parity_openwakeword.rs`: the real-weight NSNet2 test is ignored by
+//! default and explicitly targeted by the VAST/Apple workers. Once opted
+//! in, every required env and fixture failure is hard: missing / malformed /
+//! wrong-shaped input is a loud panic (FR-EX-08), never a successful skip.
 //!
 //! # Fixture recipe (VAST / Apple-runner side)
 //!
@@ -69,7 +67,8 @@ use vokra_eval::wav::read_wav;
 use vokra_models::nsnet2::{Nsnet2V1, SAMPLE_RATE_DEFAULT};
 
 /// Env var the owner sets to point the gated harness at a real
-/// NSNet2 GGUF. Absent = skip cleanly (never a fabricated pass).
+/// NSNet2 GGUF. It is mandatory for the explicitly targeted ignored test;
+/// absence is a hard failure (never a fabricated pass).
 const GGUF_ENV: &str = "VOKRA_NSNET2_REAL_GGUF";
 
 /// Env var pointing at a 16 kHz mono WAV — the noisy input used for
@@ -116,17 +115,16 @@ fn parity_nsnet2_harness_wired() {
 
 /// GATED: opens a real NSNet2 GGUF, binds it, runs the forward on a
 /// noisy WAV and pins structural properties (length, finite, bounded).
-/// Skips cleanly when [`GGUF_ENV`] / [`WAV_ENV`] are unset.
+/// This test is ignored by default because it requires authenticated real
+/// artifacts; targeted workers pass `--ignored --exact` and missing env is a
+/// hard failure rather than a green skip.
 #[test]
+#[ignore = "requires authenticated NSNet2 GGUF and WAV artifacts"]
 fn parity_nsnet2_gguf_smoke() {
-    let Ok(gguf_path) = env::var(GGUF_ENV) else {
-        eprintln!("{GGUF_ENV} unset — skipping NSNet2 GGUF smoke; set to a real GGUF path to run");
-        return;
-    };
-    let Ok(wav_path) = env::var(WAV_ENV) else {
-        eprintln!("{WAV_ENV} unset — skipping NSNet2 GGUF smoke; set to a 16 kHz mono WAV to run");
-        return;
-    };
+    let gguf_path = env::var(GGUF_ENV)
+        .unwrap_or_else(|_| panic!("{GGUF_ENV} is required for an opted-in NSNet2 parity run"));
+    let wav_path = env::var(WAV_ENV)
+        .unwrap_or_else(|_| panic!("{WAV_ENV} is required for an opted-in NSNet2 parity run"));
     let reference_path = env::var(REFERENCE_WAV_ENV).unwrap_or_else(|_| {
         panic!("{REFERENCE_WAV_ENV} is required for an opted-in NSNet2 parity run")
     });

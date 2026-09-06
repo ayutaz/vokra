@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
 """Dump an independent Microsoft NSNet2 ONNX reference waveform.
 
 This tool deliberately does not mirror the Rust model implementation. It runs
@@ -58,12 +58,27 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def reject_unsafe_path(path: Path, label: str) -> None:
+    """Reject lexical dot components and symlinked ancestry before I/O."""
+
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        if component in {".", ".."}:
+            raise SystemExit(f"{label} contains a dot path component: {path}")
+        current /= component
+        if current.is_symlink() and current != Path("/var"):
+            raise SystemExit(f"{label} has symlinked ancestry: {path}")
+
+
 def require_regular_input(path: Path, label: str) -> None:
+    reject_unsafe_path(path, label)
     if not path.is_file() or path.is_symlink():
         raise SystemExit(f"{label} must be a regular non-symlink file: {path}")
 
 
 def require_absent_output(path: Path, label: str) -> None:
+    reject_unsafe_path(path, label)
     if path.exists() or path.is_symlink():
         raise SystemExit(f"{label} must be absent and non-symlink: {path}")
 
@@ -71,6 +86,7 @@ def require_absent_output(path: Path, label: str) -> None:
 def publish_no_replace(path: Path, writer: Callable[[Path], None], label: str) -> None:
     """Publish a generated artifact without replacing a concurrent target."""
 
+    reject_unsafe_path(path, label)
     path.parent.mkdir(parents=True, exist_ok=True)
     require_absent_output(path, label)
     temporary_name: str | None = None
