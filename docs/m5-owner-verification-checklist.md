@@ -363,7 +363,11 @@ These are tracked on the CC side for future waves; listed here for owner visibil
 - [x] F0 / CREPE real 6-block CNN forward landed (`crates/vokra-models/src/f0/crepe.rs`); targeted F0 tests pass. Real external-checkpoint parity remains a separate §6.4 task.
 - [ ] Charsiu `align` real-checkpoint binding and reference parity. CTC segmentation/Viterbi and synthesized-weight forward are implemented; the remaining work is the upstream tensor manifest/GGUF bind, not a replacement of a placeholder Viterbi algorithm.
 - [ ] `vokra-kws-micro` upstream-model binding and real `hey_jarvis` fixture. The fixed reviewed stateful GGUF binder, exact tensor fingerprints, and 512-stage trace harness are landed; the authenticated VAST fixture run and numerical verdict remain.
-- [ ] BF16 native compute in runtime (currently upcast-to-f32 shim).
+- [ ] Model-level BF16 activation/runtime integration. Raw-BF16 CPU/Metal
+  storage and GEMM seams plus kernel-fixture parity are landed; Ultravox still
+  uses FP32 activations/accumulation and widens its projector, encoder, norm and
+  embedding paths. Close this only with an explicit precision design, a real
+  BF16 checkpoint, AVX512-BF16 model parity and Arm-BF16/Apple evidence.
 - [ ] Full HiFTNet GPU generator path. Metal primitives are landed, but the complete generator and non-Metal backends remain.
 - [ ] Full BigVGAN GPU path. Metal activation/upsampling primitives are landed, but the complete generator and non-Metal backends remain.
 - [x] SNAC Metal MSL kernel and CPU-parity coverage landed. CUDA/Vulkan/WebGPU equivalents remain future backend work.

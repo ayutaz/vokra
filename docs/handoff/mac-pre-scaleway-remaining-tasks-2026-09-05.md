@@ -809,9 +809,13 @@ separate approval gates.
 These tasks affect multiple model rows and must not be mistaken for Scaleway
 work:
 
-- **Native BF16 compute:** replace the remaining upcast-to-F32 shim; validate a
-  real BF16 checkpoint plus independent AVX512-BF16 and Arm-BF16 parity. The
-  raw-BF16 Metal foundation exists, but that does not close the full task.
+- **Native BF16 compute:** raw-BF16 CPU/Metal storage and GEMM seams plus the
+  independent kernel fixture are landed. Model-level integration remains open:
+  Ultravox currently keeps BF16 weights raw but uses FP32 activations and FP32
+  accumulation, while projector/encoder/norm/embedding paths still widen to
+  FP32. Define that precision contract, then validate a real BF16 checkpoint
+  with AVX512-BF16 model parity and Arm-BF16/Apple evidence. This is not a
+  single remaining shim replacement.
 - **HiFTNet full GPU generator:** the complete resident CPU/Metal graph, strict
   328-tensor converter/binder, exact pinned config and a nonzero synthetic
   one-final-readback parity harness now exist. The no-upload VAST runner binds
