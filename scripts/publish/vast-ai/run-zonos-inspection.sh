@@ -32,10 +32,11 @@ require_approval_binding() {
 }
 
 require_native_cpu_log() {
-  local log="$1"
-  [[ "$(grep -Ec '^test zonos_real_cpu_codes_and_pcm_boundary \.\.\. ok$' "$log" || true)" == 1 ]] || die 'native CPU named Cargo test is not singleton'
-  [[ "$(grep -Ec '^test result:' "$log" || true)" == 1 ]] || die 'native CPU Cargo result is not singleton'
-  [[ "$(grep -Ec '^test ' "$log" || true)" == 1 ]] || die 'native CPU Cargo emitted extra tests'
+  local log="$1" named result tests
+  named="$(grep -Ec '^test zonos_real_cpu_codes_and_pcm_boundary \.\.\. ok$' "$log" || true)"
+  result="$(grep -Ec '^test result:' "$log" || true)"
+  tests="$(grep -Ec '^test ' "$log" || true)"
+  (( named == 1 && result == 1 && tests - result == 1 )) || die 'native CPU Cargo test/result lines are not singleton'
   grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+(\.[0-9]+)?s)?$' "$log" || die 'native CPU Cargo result is not an exact singleton pass'
   [[ "$(grep -Ec '^ZONOS_CPU_REFERENCE codes=EXACT .*verdict=MEASURED_NOT_GATED$' "$log" || true)" == 1 ]] || die 'native CPU sentinel is not singleton'
 }
@@ -55,7 +56,7 @@ write_transfer_manifest() {
     printf 'reference_pcm_sha256=%s\n' "$(sha256_file "$pcm")"
     printf 'native_cpu_log_sha256=%s\n' "$(sha256_file "$native_log")"
     printf 'cpu_result=ONE_PASS\n'
-    printf 'cpu_sentinel=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED\n'
+    printf 'cpu_sentinel_summary=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED\n'
     printf 'status=MEASURED_NOT_GATED\n'
     printf 'metal_status=NOT_RUN\n'
     printf 'publication=NO_UPLOAD\n'
@@ -64,7 +65,7 @@ write_transfer_manifest() {
 }
 
 self_test() {
-  local failed=0 token
+  local failed=0 token temporary valid_log
   for token in \
     "$HF_REPOSITORY" "$HF_REVISION" "$UPSTREAM_HF_REPOSITORY" "$UPSTREAM_HF_REVISION" \
     "$SOURCE_REPOSITORY" "$SOURCE_REVISION" 'zonos_vast_stage.py' 'zonos_dump_reference.py' \
@@ -77,9 +78,38 @@ self_test() {
     'parity_zonos_real.rs' 'VOKRA_ZONOS_DAC_GGUF' 'cargo test --locked -p vokra-models' \
     'reference-codes.u32le' 'native-cpu.log' '--native-log' 'AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE' 'exit 2' \
     '--approval-evidence' '--approval-evidence-sha256' '--expected-head' 'preflight-only' 'write_transfer_manifest' \
-    'CARGO_BUILD_JOBS=1' '--offline --locked' 'require_native_cpu_log' 'metal_status=NOT_RUN' 'NO_UPLOAD'; do
+    'CARGO_BUILD_JOBS=1' '--offline --locked' 'require_native_cpu_log' 'cpu_sentinel_summary=' 'metal_status=NOT_RUN' 'NO_UPLOAD'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing Zonos contract: $token" >&2; failed=1; }
   done
+  temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-zonos-cpu-log.XXXXXX")"
+  valid_log="$temporary/valid.log"
+  printf '%s\n' \
+    'test zonos_real_cpu_codes_and_pcm_boundary ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' \
+    'ZONOS_CPU_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED' > "$valid_log"
+  (require_native_cpu_log "$valid_log") || { echo 'valid native CPU log was rejected' >&2; failed=1; }
+  printf '%s\n' 'test extra ... ok' >> "$valid_log"
+  if (require_native_cpu_log "$valid_log") >/dev/null 2>&1; then
+    echo 'extra native CPU test was accepted' >&2
+    failed=1
+  fi
+  printf '%s\n' \
+    'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' \
+    'ZONOS_CPU_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED' > "$valid_log"
+  if (require_native_cpu_log "$valid_log") >/dev/null 2>&1; then
+    echo 'zero-pass native CPU log was accepted' >&2
+    failed=1
+  fi
+  printf '%s\n' \
+    'test zonos_real_cpu_codes_and_pcm_boundary ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' \
+    'ZONOS_CPU_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED' \
+    'ZONOS_CPU_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED' > "$valid_log"
+  if (require_native_cpu_log "$valid_log") >/dev/null 2>&1; then
+    echo 'duplicate native CPU sentinel was accepted' >&2
+    failed=1
+  fi
+  rm -rf "$temporary"
   if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$INSPECTOR" "$0" | grep -v 'grep -En' >/dev/null; then
     echo 'upload/publish command found' >&2
     failed=1
@@ -156,7 +186,7 @@ VOKRA_ZONOS_REFERENCE_CODES="$WORK/evidence/reference-codes.u32le" \
 VOKRA_ZONOS_REFERENCE_PCM="$WORK/evidence/reference-pcm.f32le" \
 VOKRA_ZONOS_MAX_STEPS="${ZONOS_MAX_STEPS:-32}" \
 CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo test --offline --locked -p vokra-models --test parity_zonos_real \
-  --offline zonos_real_cpu_codes_and_pcm_boundary -- --ignored --exact --nocapture --test-threads=1 \
+  zonos_real_cpu_codes_and_pcm_boundary -- --ignored --exact --nocapture --test-threads=1 \
   >"$WORK/evidence/native-cpu.log" 2>&1
 native_status=$?
 set -e

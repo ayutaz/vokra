@@ -102,7 +102,7 @@ validate_transfer_manifest() {
   require_file 'Zonos transfer manifest' "$path" || return 2
   [[ "$(sha256_file "$path")" == "$(lower_sha "$expected_sha")" ]] || { die 'transfer manifest SHA-256 mismatch'; return 2; }
   awk '
-    BEGIN { allowed["schema"]; allowed["expected_head"]; allowed["approval_evidence_sha256"]; allowed["manifest_sha256"]; allowed["gguf_sha256"]; allowed["dac_gguf_sha256"]; allowed["conditioning_packet_sha256"]; allowed["reference_codes_sha256"]; allowed["reference_pcm_sha256"]; allowed["native_cpu_log_sha256"]; allowed["cpu_result"]; allowed["cpu_sentinel"]; allowed["status"]; allowed["metal_status"]; allowed["publication"] }
+    BEGIN { allowed["schema"]; allowed["expected_head"]; allowed["approval_evidence_sha256"]; allowed["manifest_sha256"]; allowed["gguf_sha256"]; allowed["dac_gguf_sha256"]; allowed["conditioning_packet_sha256"]; allowed["reference_codes_sha256"]; allowed["reference_pcm_sha256"]; allowed["native_cpu_log_sha256"]; allowed["cpu_result"]; allowed["cpu_sentinel_summary"]; allowed["status"]; allowed["metal_status"]; allowed["publication"] }
     index($0, "=") == 0 { bad=1; next }
     { key=substr($0, 1, index($0, "=") - 1); if (!(key in allowed)) bad=1; count[key]++ }
     END { if (bad) exit 2; for (key in allowed) if (count[key] != 1) exit 3 }
@@ -118,7 +118,7 @@ validate_transfer_manifest() {
   grep -Fxq "reference_pcm_sha256=$pcm_sha" "$path" || { die 'transfer manifest reference PCM mismatch'; return 2; }
   grep -Fxq "native_cpu_log_sha256=$native_sha" "$path" || { die 'transfer manifest CPU log mismatch'; return 2; }
   grep -Fxq 'cpu_result=ONE_PASS' "$path" || { die 'transfer manifest CPU result mismatch'; return 2; }
-  grep -Fxq 'cpu_sentinel=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED' "$path" || { die 'transfer manifest CPU sentinel mismatch'; return 2; }
+  grep -Fxq 'cpu_sentinel_summary=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED' "$path" || { die 'transfer manifest CPU sentinel summary mismatch'; return 2; }
   grep -Fxq 'status=MEASURED_NOT_GATED' "$path" || { die 'transfer manifest status mismatch'; return 2; }
   grep -Fxq 'metal_status=NOT_RUN' "$path" || { die 'transfer manifest Metal status mismatch'; return 2; }
   grep -Fxq 'publication=NO_UPLOAD' "$path" || { die 'transfer manifest publication mismatch'; return 2; }
@@ -207,7 +207,7 @@ self_test() (
   expected_head='0123456789012345678901234567890123456789'; digest="$sha"; approval_sha="$digest"; transfer="$temporary/transfer.txt"; native="$temporary/native.log"
   printf '%s\n' "test $TEST_NAME ... ok" 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' 'ZONOS_CPU_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED' > "$native"
   native_sha="$(sha256_file "$native")"
-  printf 'schema=zonos-apple-transfer-v1\nexpected_head=%s\napproval_evidence_sha256=%s\nmanifest_sha256=%s\ngguf_sha256=%s\ndac_gguf_sha256=%s\nconditioning_packet_sha256=%s\nreference_codes_sha256=%s\nreference_pcm_sha256=%s\nnative_cpu_log_sha256=%s\ncpu_result=ONE_PASS\ncpu_sentinel=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED\nstatus=MEASURED_NOT_GATED\nmetal_status=NOT_RUN\npublication=NO_UPLOAD\n' \
+  printf 'schema=zonos-apple-transfer-v1\nexpected_head=%s\napproval_evidence_sha256=%s\nmanifest_sha256=%s\ngguf_sha256=%s\ndac_gguf_sha256=%s\nconditioning_packet_sha256=%s\nreference_codes_sha256=%s\nreference_pcm_sha256=%s\nnative_cpu_log_sha256=%s\ncpu_result=ONE_PASS\ncpu_sentinel_summary=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED\nstatus=MEASURED_NOT_GATED\nmetal_status=NOT_RUN\npublication=NO_UPLOAD\n' \
     "$expected_head" "$approval_sha" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$native_sha" > "$transfer"
   validate_transfer_manifest "$transfer" "$(sha256_file "$transfer")" "$expected_head" "$approval_sha" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$native_sha"
   printf 'extra=value\n' >> "$transfer"
