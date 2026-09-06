@@ -463,6 +463,15 @@ pub fn convert_moss_audio_tokenizer_variant_file(
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
+    // The first public Nano artifact was historically stamped as Full.  A
+    // caller selecting the backward-compatible Full entry must not be able
+    // to reproduce that identity by feeding the canonical Nano tensor set
+    // through the permissive Full/v2 pass-through arm.  The manifest digest
+    // is deliberately checked before any provenance is emitted and is
+    // independent of payload values or dtype, so malformed/NaN variants of
+    // the same tensor topology are rejected as well.
+    reject_nano_confusion(variant, nano_manifest_matches(&st))?;
+
     if variant == MossAudioTokenizerVariant::Nano {
         if st.tensors().len() != 374 {
             return Err(ConvertError::Parse(format!(
@@ -593,6 +602,23 @@ fn validate_nano_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
             )));
         }
     }
+    if !nano_manifest_matches(st) {
+        return Err(ConvertError::Parse(
+            "MOSS Audio Tokenizer Nano tensor name/shape manifest is not the authenticated release contract".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Returns whether the complete tensor name/shape set is the authenticated
+/// Nano release contract.  Dtype and payload checks remain in
+/// [`validate_nano_manifest`]; this topology-only predicate is also used to
+/// prevent the permissive Full/v2 pass-through entries from re-stamping Nano
+/// as a different release.
+fn nano_manifest_matches(st: &SafetensorsFile) -> bool {
+    if st.tensors().len() != 374 {
+        return false;
+    }
     let mut tensors: Vec<_> = st.tensors().iter().collect();
     tensors.sort_unstable_by(|left, right| left.name.cmp(&right.name));
     let capacity = tensors
@@ -608,10 +634,18 @@ fn validate_nano_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
             canonical.extend_from_slice(&dimension.to_le_bytes());
         }
     }
-    if super::canary_1b_flash::sha256(&canonical) != NANO_MANIFEST_SHA256 {
-        return Err(ConvertError::Parse(
-            "MOSS Audio Tokenizer Nano tensor name/shape manifest is not the authenticated release contract".to_owned(),
-        ));
+    super::canary_1b_flash::sha256(&canonical) == NANO_MANIFEST_SHA256
+}
+
+fn reject_nano_confusion(
+    variant: MossAudioTokenizerVariant,
+    nano_manifest_matches: bool,
+) -> Result<(), ConvertError> {
+    if variant != MossAudioTokenizerVariant::Nano && nano_manifest_matches {
+        return Err(ConvertError::Parse(format!(
+            "MOSS Audio Tokenizer {:?} cannot stamp the canonical Nano tensor manifest",
+            variant
+        )));
     }
     Ok(())
 }
@@ -925,6 +959,14 @@ mod tests {
 
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn historical_nano_manifest_cannot_be_restamped_as_full_or_v2() {
+        assert!(reject_nano_confusion(MossAudioTokenizerVariant::Nano, true).is_ok());
+        assert!(reject_nano_confusion(MossAudioTokenizerVariant::Full, true).is_err());
+        assert!(reject_nano_confusion(MossAudioTokenizerVariant::V2, true).is_err());
+        assert!(reject_nano_confusion(MossAudioTokenizerVariant::Full, false).is_ok());
     }
 
     #[cfg(unix)]

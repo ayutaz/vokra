@@ -557,6 +557,20 @@ mod tests {
     }
 
     #[test]
+    fn historical_nano_full_identity_is_not_a_runtime_alias() {
+        // The historical public Nano artifact used Full provenance.  Keep
+        // both identity and complete-manifest contracts distinct so a future
+        // compatibility alias cannot make that artifact executable by
+        // accident; `StrictCheckpoint::bind` selects Nano only with the
+        // canonical name and digest.
+        assert_eq!(FULL_SPEC.model_name, FULL_NAME);
+        assert_eq!(NANO_SPEC.model_name, NANO_NAME);
+        assert_ne!(FULL_SPEC.model_name, NANO_SPEC.model_name);
+        assert_ne!(FULL_SPEC.manifest_sha256, NANO_SPEC.manifest_sha256);
+        assert!(NANO_SPEC.model_name_alias.is_none());
+    }
+
+    #[test]
     fn nano_learned_ops_are_cpu_and_metal_complete() {
         Compute::for_backend(BackendKind::Cpu, MOSS_AUDIO_TOKENIZER_NANO_HOT_OPS)
             .expect("CPU covers the MOSS Audio Tokenizer Nano learned graph");
