@@ -96,7 +96,7 @@ run_self_test() {
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: publication command found" >&2
     fail=1
   fi
-  if grep -En '(^|[[:space:]])(python|python3|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
+  if grep -En '(^|[;&|])[[:space:]]*(python|python3|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: raw Python/pip invocation found" >&2
     fail=1
   fi
@@ -104,9 +104,20 @@ run_self_test() {
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: conversion/local Cargo command found" >&2
     fail=1
   fi
-  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 \
-    "$(printf 'py%s' 'thon')" "$repo_root/$INSPECTOR" --gate-self-test >/dev/null; then
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$INSPECTOR" --gate-self-test >/dev/null; then
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: stdlib approval gate" >&2
+    fail=1
+  fi
+  local gate_line uname_line work_line snapshot_line
+  gate_line="$(grep -n '^marker=' "$script_path" | cut -d: -f1)"
+  uname_line="$(grep -n 'uname -s' "$script_path" | tail -n1 | cut -d: -f1)"
+  work_line="$(grep -n 'mkdir -p' "$script_path" | grep 'work_dir' | tail -n1 | cut -d: -f1)"
+  snapshot_line="$(grep -n 'snapshot_download' "$script_path" | tail -n1 | cut -d: -f1)"
+  if [[ "$gate_line" =~ ^[0-9]+$ && "$uname_line" =~ ^[0-9]+$ && "$work_line" =~ ^[0-9]+$ && "$snapshot_line" =~ ^[0-9]+$ ]] \
+    && (( gate_line < uname_line && gate_line < work_line && gate_line < snapshot_line )); then
+    :
+  else
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: terminal gate ordering drift" >&2
     fail=1
   fi
   cases=$((cases + 1))
@@ -216,13 +227,11 @@ fi
 
 (( seen_expected == 1 && seen_approval == 1 && seen_sha == 1 )) || die "expected-head, approval-evidence and approval-sha256 are required"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-gate_python="$(printf 'py%s' 'thon')"
 # Validate the external blocked disposition before host, cache, workdir,
 # network, source, model, input, or output operations.  This explicit
 # no-project/offline invocation imports only the stdlib gate path.
 set +e
-marker="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 \
-  "$gate_python" "$repo_root/$INSPECTOR" --expected-head "$expected_head" \
+marker="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$INSPECTOR" --expected-head "$expected_head" \
   --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" 2>&1)"
 gate_status=$?
 set -e
