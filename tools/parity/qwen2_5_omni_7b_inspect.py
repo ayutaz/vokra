@@ -18,7 +18,9 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from safetensors import safe_open
+import qwen2_5_omni_7b_gate
+
+safe_open = None
 
 HF_REPOSITORY = "Qwen/Qwen2.5-Omni-7B"
 HF_REVISION = "ae9e1690543ffd5c0221dc27f79834d0294cba00"
@@ -60,6 +62,17 @@ TRANSFORMERS_ROLE_FILES = (
     "src/transformers/models/whisper/modeling_whisper.py",
     "src/transformers/models/whisper/feature_extraction_whisper.py",
 )
+
+
+def _require_safetensors() -> None:
+    global safe_open
+    if safe_open is not None:
+        return
+    try:
+        from safetensors import safe_open as safe_open_module
+    except ImportError as error:
+        raise RuntimeError("Qwen2.5-Omni inspection dependencies are unavailable; blocked gate must run first") from error
+    safe_open = safe_open_module
 
 
 def sha256(path: Path) -> str:
@@ -382,6 +395,7 @@ def blocked(output: Path, error: Exception, **extra: Any) -> None:
 
 
 def inspect(snapshot: Path, source: Path, transformers: Path, server_tree: Path, output: Path) -> int:
+    _require_safetensors()
     identity, files = server_inventory(snapshot, server_tree)
     model_license = {"license": "UNKNOWN"}
     for path in (snapshot / "LICENSE", snapshot / "README.md"):
@@ -405,6 +419,7 @@ def inspect(snapshot: Path, source: Path, transformers: Path, server_tree: Path,
 
 
 def self_test() -> None:
+    _require_safetensors()
     source = Path(__file__).read_text(encoding="utf-8")
     assert "weights_only=True" in source and "safe_open" in source and ("onnx" + "runtime") not in source
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40 and len(TRANSFORMERS_REVISION) == 40
@@ -483,10 +498,17 @@ def self_test() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--snapshot", type=Path); parser.add_argument("--source", type=Path); parser.add_argument("--transformers", type=Path); parser.add_argument("--server-tree", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--snapshot", type=Path); parser.add_argument("--source", type=Path); parser.add_argument("--transformers", type=Path); parser.add_argument("--server-tree", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--approval-evidence"); parser.add_argument("--approval-sha256"); parser.add_argument("--expected-head"); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output)): parser.error("--self-test accepts no paths")
+        if any(value is not None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output, args.approval_evidence, args.approval_sha256, args.expected_head)): parser.error("--self-test accepts no paths or gate arguments")
         self_test(); return 0
+    if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head)): parser.error("--approval-evidence, --approval-sha256, and --expected-head are required")
+    try:
+        qwen2_5_omni_7b_gate.enforce_blocked_approval(args.approval_evidence, args.approval_sha256, args.expected_head, Path(__file__).resolve().parents[2])
+    except qwen2_5_omni_7b_gate.GateBlocked as error:
+        print(f"Qwen2.5-Omni inspection BLOCKED: {error}", file=sys.stderr); return 2
+    except qwen2_5_omni_7b_gate.GateError as error:
+        print(f"Qwen2.5-Omni gate rejected: {error}", file=sys.stderr); return 2
     if any(value is None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output)): parser.error("all inspection paths are required")
     try: return inspect(args.snapshot, args.source, args.transformers, args.server_tree, args.output)
     except Exception as error:

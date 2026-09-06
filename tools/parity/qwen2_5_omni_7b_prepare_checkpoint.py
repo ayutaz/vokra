@@ -87,6 +87,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import qwen2_5_omni_7b_gate
+
 LOG_PREFIX = "qwen2_5_omni_7b_prepare_checkpoint:"
 
 # INT dtypes come from training-artifact counters (BatchNorm
@@ -521,10 +523,31 @@ def main() -> int:
             "Does NOT touch any upstream weight file."
         ),
     )
+    ap.add_argument("--approval-evidence")
+    ap.add_argument("--approval-sha256")
+    ap.add_argument("--expected-head")
     args = ap.parse_args()
 
     if args.self_test:
+        if any(value is not None for value in (args.input_dir, args.output, args.approval_evidence, args.approval_sha256, args.expected_head)):
+            ap.error("--self-test accepts no normal or gate arguments")
         return _self_test()
+
+    if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head)):
+        ap.error("--approval-evidence, --approval-sha256, and --expected-head are required")
+    try:
+        qwen2_5_omni_7b_gate.enforce_blocked_approval(
+            args.approval_evidence,
+            args.approval_sha256,
+            args.expected_head,
+            Path(__file__).resolve().parents[2],
+        )
+    except qwen2_5_omni_7b_gate.GateBlocked as error:
+        print(f"{LOG_PREFIX} BLOCKED: {error}", file=sys.stderr)
+        return 2
+    except qwen2_5_omni_7b_gate.GateError as error:
+        print(f"{LOG_PREFIX} gate rejected: {error}", file=sys.stderr)
+        return 2
 
     if args.input_dir is None or args.output is None:
         print(
