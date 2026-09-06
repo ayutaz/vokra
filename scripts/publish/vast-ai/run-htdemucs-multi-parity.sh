@@ -35,7 +35,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF'
-usage: run-htdemucs-multi-parity.sh [--work-dir /dev/shm/absent-dir]
+usage: run-htdemucs-multi-parity.sh --expected-head <HEX40> --approval-evidence <file> [--work-dir /dev/shm/absent-dir]
        run-htdemucs-multi-parity.sh --self-test
 
 VAST/Linux-only, report-only official HT-Demucs parity worker. It requires the
@@ -53,7 +53,9 @@ self_test() {
     'PYTHONDONTWRITEBYTECODE' 'NO_UPLOAD' 'REPORT_ONLY' \
     'e976d93ecc3865e5757426930257e200846a520a' 'jfk-30s.wav' \
     '58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f' \
-    'publication' 'MUSDB18' 'provenance_status'; do
+    'publication' 'MUSDB18' 'provenance_status' '--expected-head' '--approval-evidence' \
+    'BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO' 'REFERENCE_ONLY_CPU_PARITY_NOT_RUN' 'NO_UPLOAD' \
+    'CARGO_NET_OFFLINE=true' 'checkout HEAD changed during parity run' 'validation.log'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
@@ -99,25 +101,32 @@ PY
 }
 
 work_dir="/dev/shm/vokra-htdemucs-multi-parity"
+expected_head=""
+approval_evidence=""
 self=0
+seen_head=0; seen_approval=0; seen_self=0; seen_work=0
 while (($#)); do
   case "$1" in
-    --self-test) self=1; shift ;;
-    --work-dir) (($# >= 2)) || die '--work-dir requires a path'; work_dir="$2"; shift 2 ;;
+    --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires exactly 40 lowercase hexadecimal characters'; seen_head=1; expected_head="$2"; shift 2 ;;
+    --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a path'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
+    --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; (($# >= 2)) || die '--work-dir requires a path'; seen_work=1; work_dir="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$work_dir" == "/dev/shm/vokra-htdemucs-multi-parity" ]] || die '--self-test accepts no other arguments'
+  [[ "$work_dir" == "/dev/shm/vokra-htdemucs-multi-parity" && -z "$expected_head$approval_evidence" ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
 
+[[ "$seen_head" == 1 && "$seen_approval" == 1 ]] || die '--expected-head and --approval-evidence are required'
 [[ "$(uname -s)" == Linux ]] || die 'HT-Demucs parity is VAST/Linux-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
+[[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
 [[ "$work_dir" == /dev/shm/* ]] || die 'work-dir must be under /dev/shm (tmpfs)'
 [[ ! -e "$work_dir" && ! -L "$work_dir" ]] || die 'work-dir must be absent and non-symlink'
@@ -128,15 +137,19 @@ free_kib="$(df -Pk /dev/shm | awk 'NR == 2 {print $4}')"
 [[ "$free_kib" =~ ^[0-9]+$ ]] || die 'VAST /dev/shm free-space guard failed'
 (( free_kib >= MIN_FREE_DISK_KIB )) || die 'VAST /dev/shm free-space guard failed'
 for tool in git uv curl sha256sum awk find df; do command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"; done
+export CARGO_NET_OFFLINE=true
+export CARGO_BUILD_JOBS=1
 
 # This gate must pass before any source, checkpoint, dependency, or model work.
-uv run --no-project --offline --python 3.12 python "$AUDIT" --dependency-gate >/dev/null || die 'dependency/license gate is blocked'
+uv run --no-project --offline --python 3.12 python "$AUDIT" --dependency-gate --expected-head "$expected_head" --approval-evidence "$approval_evidence" >/dev/null || die 'dependency/license/approval gate is blocked'
 
 mkdir "$work_dir"
 mkdir "$work_dir/source" "$work_dir/weights" "$work_dir/evidence" "$work_dir/raw"
 git clone --filter=blob:none --no-checkout "$UPSTREAM_URL" "$work_dir/source/repo"
 git -C "$work_dir/source/repo" checkout --detach "$UPSTREAM_REVISION"
-uv run --no-project --offline --python 3.12 python "$AUDIT" --source-dir "$work_dir/source/repo" >/dev/null
+uv run --no-project --offline --python 3.12 python "$AUDIT" \
+  --source-dir "$work_dir/source/repo" --expected-head "$expected_head" \
+  --approval-evidence "$approval_evidence" >/dev/null
 
 for member in "${MEMBERS[@]}"; do
   curl --fail --location --retry 3 --silent --show-error \
@@ -171,4 +184,16 @@ for variant in htdemucs_ft htdemucs_6s; do
     --variant "$variant" --output "$work_dir/evidence/$variant.json" \
     --raw-dir "$work_dir/raw/$variant"
 done
+actual_head="$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)"
+[[ "$actual_head" == "$expected_head" ]] || die 'checkout HEAD changed during parity run'
+{
+  echo "expected_head=$expected_head"
+  echo "git_commit=$actual_head"
+  echo 'runtime_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST'
+  echo 'cpu_status=NOT_RUN'
+  echo 'metal_status=NOT_RUN'
+  echo 'parity_status=NOT_RUN'
+  echo 'verdict=REFERENCE_ONLY_CPU_PARITY_NOT_RUN'
+  echo 'publication=NO_UPLOAD'
+} > "$work_dir/evidence/validation.log"
 log "report-only parity evidence written under $work_dir/evidence; no upload performed"

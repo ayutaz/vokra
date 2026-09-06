@@ -13,7 +13,8 @@ headroom for transient allocations.
 The fixed source is `facebookresearch/demucs` at revision
 `e976d93ecc3865e5757426930257e200846a520a`. The five official registry
 members and their complete SHA-256 values are copied from the authenticated
-inspection manifest. The manifest remains `INSPECTION_ONLY` and
+inspection manifest. The manifest remains `BLOCKED_PENDING_AUTHENTICATED_MANIFEST`
+with an `INSPECTION_ONLY` evidence stage and
 `NO_UPLOAD`; a digest match does not grant weight redistribution rights.
 
 The source-config contract is intentionally structural and exact: `htdemucs_ft`

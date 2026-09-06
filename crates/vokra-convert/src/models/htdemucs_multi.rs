@@ -183,7 +183,7 @@ pub fn convert_htdemucs_multi_file(
     _license: Option<&str>,
 ) -> Result<HtdemucsMultiReport, ConvertError> {
     Err(ConvertError::Usage(
-        "HT-Demucs multi conversion is INSPECTION_ONLY until VAST authenticates the official ensemble config, member ordering, and tensor manifests".to_owned(),
+        "HT-Demucs multi conversion is BLOCKED_PENDING_AUTHENTICATED_MANIFEST (INSPECTION_ONLY) until VAST authenticates the official ensemble config, member ordering, and tensor manifests".to_owned(),
     ))
 }
 #[cfg(test)]

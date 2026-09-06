@@ -10,6 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
+AUDIT="$VOKRA_ROOT/tools/parity/htdemucs_multi/audit.py"
 INSPECTOR="$VOKRA_ROOT/tools/parity/htdemucs_multi_inspect.py"
 UPSTREAM_URL="https://github.com/facebookresearch/demucs.git"
 UPSTREAM_REVISION="e976d93ecc3865e5757426930257e200846a520a"
@@ -28,9 +29,55 @@ MEMBERS=(
 log() { printf '[htdemucs-multi-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 
+reject_symlink_ancestors() {
+  local path="$1" rest component current
+  if [[ "$path" != /* || "$path" == */ ]]; then
+    die 'work-dir must be an absolute path without a trailing slash'
+    return 2
+  fi
+  rest="${path#/}"
+  current="/"
+  while [[ -n "$rest" ]]; do
+    if [[ "$rest" == */* ]]; then
+      component="${rest%%/*}"
+      rest="${rest#*/}"
+    else
+      component="$rest"
+      rest=""
+    fi
+    if [[ -z "$component" || "$component" == . || "$component" == .. ]]; then
+      die 'work-dir contains an empty or dot path component'
+      return 2
+    fi
+    current="$current$component"
+    if [[ -L "$current" ]]; then
+      die "work-dir has a symlinked ancestor: $path"
+      return 2
+    fi
+    current="$current/"
+  done
+}
+
+validate_work_dir() {
+  local candidate parent root_real approval_abs
+  reject_symlink_ancestors "$work_dir" || return 2
+  [[ ! -e "$work_dir" && ! -L "$work_dir" ]] || die 'work-dir must be absent and non-symlink'
+  parent="${work_dir%/*}"
+  [[ -n "$parent" && "$parent" != "$work_dir" ]] || die 'work-dir parent is invalid'
+  [[ -d "$parent" && ! -L "$parent" ]] || die 'work-dir parent must be an existing non-symlink directory'
+  candidate="$(cd -P "$parent" && pwd)/${work_dir##*/}" || die 'could not resolve work-dir parent'
+  root_real="$(cd -P "$VOKRA_ROOT" && pwd)" || die 'could not resolve Vokra checkout'
+  [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && \
+    "$root_real/" != "$candidate/"* ]] || die 'work-dir overlaps the Vokra checkout'
+  approval_abs="$approval_evidence"
+  [[ "$approval_abs" == /* ]] || approval_abs="$PWD/$approval_abs"
+  [[ "$approval_abs" != "$candidate" && "$approval_abs" != "$candidate/"* && \
+    "$candidate/" != "$approval_abs/"* ]] || die 'work-dir overlaps approval evidence'
+}
+
 usage() {
   cat <<'EOF'
-usage: run-htdemucs-multi-inspection.sh [--work-dir <empty-dir>]
+usage: run-htdemucs-multi-inspection.sh --expected-head <HEX40> --approval-evidence <file> [--work-dir <empty-dir>]
        run-htdemucs-multi-inspection.sh --self-test
 
 VAST/Linux-only inspection of the pinned official Demucs source and five
@@ -41,11 +88,15 @@ EOF
 }
 
 self_test() {
-  local path="${BASH_SOURCE[0]}" fail=0 token
+  local path="${BASH_SOURCE[0]}" fail=0 token temporary
+  temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-htdemucs-inspect.XXXXXX")"
+  temporary="$(cd -P "$temporary" && pwd)"
+  HTDEMUCS_SELF_TEST_TMP="$temporary"
+  trap 'rm -rf "$HTDEMUCS_SELF_TEST_TMP"' EXIT
   for token in \
     'VOKRA_PUBLISH_ON_VAST=1' 'Linux' 'x86_64' 'MIN_VAST_MEM_KIB' '/proc/meminfo' \
     'df -Pk' 'CARGO_BUILD_JOBS=1' 'cargo fmt --all -- --check' \
-    'cargo metadata --no-deps --format-version 1' 'facebookresearch/demucs.git' \
+    'cargo metadata --locked --no-deps --format-version 1' 'facebookresearch/demucs.git' \
     "$UPSTREAM_REVISION" "$WEIGHT_ROOT" 'f7e0c4bc-ba3fe64a.th' \
     'd12395a8-e57c48e6.th' '92cfc3b6-ef3bcb9c.th' '04573f0d-f3cf25b2.th' \
     '5c90dfd2-34c22ccb.th' 'weights_only=True' 'no pickle fallback' \
@@ -57,7 +108,12 @@ self_test() {
     'FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER' 'FULL_WEIGHT_DIGESTS_AUTHENTICATED' \
     'expected_sha256' 'response member id mismatch' \
     'inspection_status' 'COMPLETE' 'ERROR' 'variant_contracts' 'flattened 2,132-tensor' \
-    'safe_global_allowlist' 'BLOCKED_SOURCE_ALLOWLIST' 'verdict=BLOCKED' 'blocker_exit=2'; do
+    '--expected-head' '--approval-evidence' 'BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO' \
+    'safe_global_allowlist' 'BLOCKED_SOURCE_ALLOWLIST' 'verdict=BLOCKED' 'blocker_exit=2' \
+    'reject_symlink_ancestors' 'work-dir overlaps' 'work-dir must be absent' \
+    'CARGO_NET_OFFLINE=true' 'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' \
+    'transfer-packet' 'inspection_manifest' 'manifest.sha256' 'transfer_manifest_sha256' \
+    'checkout HEAD changed before inspection evidence completion'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
@@ -75,6 +131,24 @@ self_test() {
     log 'self-test FAIL: unknown argument accepted'
     fail=1
   fi
+  mkdir "$temporary/real"
+  work_dir="$temporary/new-work-dir"
+  approval_evidence="$temporary/approval.json"
+  if ! validate_work_dir; then
+    log 'self-test FAIL: absent non-symlink work-dir was rejected'
+    fail=1
+  fi
+  work_dir="$temporary/../dot-work-dir"
+  if validate_work_dir >/dev/null 2>&1; then
+    log 'self-test FAIL: dot-component work-dir was accepted'
+    fail=1
+  fi
+  ln -s "$temporary/real" "$temporary/work-link"
+  work_dir="$temporary/work-link/new-work-dir"
+  if validate_work_dir >/dev/null 2>&1; then
+    log 'self-test FAIL: symlink-ancestor work-dir was accepted'
+    fail=1
+  fi
   if ! UV_CACHE_DIR="$HTDEMUCS_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" \
     --python 3.12 python "$INSPECTOR" --self-test >/dev/null; then
     log 'self-test FAIL: inspector self-test failed'
@@ -85,51 +159,66 @@ self_test() {
 }
 
 work_dir="/workspace/vokra-htdemucs-multi-inspection"
+expected_head=""
+approval_evidence=""
 self=0
+seen_head=0; seen_approval=0; seen_self=0; seen_work=0
 while (($#)); do
   case "$1" in
-    --self-test) self=1; shift ;;
-    --work-dir) (($# >= 2)) || die '--work-dir requires a path'; work_dir="$2"; shift 2 ;;
+    --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires exactly 40 lowercase hexadecimal characters'; seen_head=1; expected_head="$2"; shift 2 ;;
+    --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a path'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
+    --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; (($# >= 2)) || die '--work-dir requires a path'; seen_work=1; work_dir="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$work_dir" == "/workspace/vokra-htdemucs-multi-inspection" ]] || die '--self-test accepts no other arguments'
+  [[ "$work_dir" == "/workspace/vokra-htdemucs-multi-inspection" && -z "$expected_head$approval_evidence" ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
 
+[[ "$seen_head" == 1 && "$seen_approval" == 1 ]] || die '--expected-head and --approval-evidence are required'
 [[ "$(uname -s)" == Linux ]] || die 'HT-Demucs checkpoint work is VAST/Linux-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
+[[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
+validate_work_dir
 [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] || die 'locked parity project is missing'
 [[ -f "$INSPECTOR" ]] || die 'HT-Demucs inspector is missing'
 mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
 [[ "$mem_kib" =~ ^[0-9]+$ ]] || die 'VAST memory value is invalid'
 (( mem_kib >= MIN_VAST_MEM_KIB )) || die 'VAST memory guard failed'
-mkdir -p "$(dirname "$work_dir")"
-[[ ! -e "$work_dir" || -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die 'work-dir must be empty'
 free_kib="$(df -Pk "$(dirname "$work_dir")" | awk 'NR == 2 {print $4}')"
 [[ "$free_kib" =~ ^[0-9]+$ ]] || die 'VAST disk value is invalid'
 (( free_kib >= MIN_FREE_DISK_KIB )) || die 'VAST disk guard failed'
 for tool in cargo git uv curl sha256sum awk find df; do command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"; done
 
-mkdir -p "$work_dir/source" "$work_dir/weights" "$work_dir/response" "$work_dir/evidence"
+# Approval/dependency/source identity must pass before work directories,
+# downloads, or upstream source acquisition are created.
+uv run --no-project --offline --python 3.12 python "$AUDIT" \
+  --dependency-gate --expected-head "$expected_head" --approval-evidence "$approval_evidence" \
+  >/dev/null || die 'dependency/license/approval gate is blocked'
+
+mkdir "$work_dir"
+mkdir "$work_dir/source" "$work_dir/weights" "$work_dir/response" "$work_dir/evidence"
 work_dir="$(cd "$work_dir" && pwd)"
 export CARGO_BUILD_JOBS=1
+export CARGO_NET_OFFLINE=true
 export UV_CACHE_DIR="$HTDEMUCS_UV_CACHE_DIR"
 {
+  echo "expected_head=$expected_head"
+  echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)"
   echo "upstream_url=$UPSTREAM_URL"
   echo "upstream_revision=$UPSTREAM_REVISION"
   echo "weight_root=$WEIGHT_ROOT"
-  echo 'runtime_status=INSPECTION_ONLY'
-  echo 'parity_status=INSPECTION_ONLY'
-  echo 'publication=NO_UPLOAD'
+  echo 'phase=INSPECTION'
+  echo 'publication_policy=NO_UPLOAD'
   cargo fmt --all -- --check
-  cargo metadata --no-deps --format-version 1
+  cargo metadata --locked --no-deps --format-version 1
 } > "$work_dir/evidence/validation.log" 2>&1
 
 git clone --filter=blob:none --no-checkout "$UPSTREAM_URL" "$work_dir/source/repo" >> "$work_dir/evidence/validation.log" 2>&1
@@ -146,6 +235,9 @@ for member in "${MEMBERS[@]}"; do
     "$WEIGHT_ROOT/$member" --output "$work_dir/weights/$member" \
     > "$work_dir/response/$member.meta"
 done
+
+[[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] \
+  || die 'checkout HEAD changed during inspection acquisition'
 
 UV_CACHE_DIR="$HTDEMUCS_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python - \
   "$work_dir/response" "$work_dir/weights" "$work_dir/evidence/response-packet.json" <<'PY'
@@ -217,11 +309,67 @@ inspect_rc=$?
 set -e
 [[ "$inspect_rc" == 2 ]] || die "inspector must exit 2 with BLOCKED evidence: $inspect_rc"
 [[ -s "$work_dir/evidence/htdemucs_multi_manifest.json" ]] || die 'inspection manifest is missing'
-UV_CACHE_DIR="$HTDEMUCS_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python - \
-  "$work_dir/evidence/htdemucs_multi_manifest.json" <<'PY'
+actual_head="$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)"
+[[ "$actual_head" == "$expected_head" ]] || die 'checkout HEAD changed before inspection publication'
+approval_sha="$(sha256sum "$approval_evidence" | awk '{print $1}')"
+gate_sha="$(sha256sum "$PROJECT/license_gate_manifest.json" | awk '{print $1}')"
+uv run --no-project --offline --python 3.12 python - \
+  "$work_dir/evidence/htdemucs_multi_manifest.json" "$work_dir/transfer-packet" \
+  "$expected_head" "$actual_head" "$approval_sha" "$gate_sha" <<'PY'
+import hashlib
 import json
 import sys
+from pathlib import Path
+manifest_path, transfer_dir = map(Path, sys.argv[1:3])
+expected_head, actual_head, approval_sha, gate_sha = sys.argv[3:]
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+if manifest.get("status") != "BLOCKED" or manifest.get("publication") != "NO_UPLOAD":
+    raise SystemExit("inspection manifest is not blocked/no-upload")
+manifest.update({
+    "expected_head": expected_head,
+    "git_commit": actual_head,
+    "approval_sha256": approval_sha,
+    "license_gate_sha256": gate_sha,
+})
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+inspection_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+members = manifest.get("members")
+if not isinstance(members, dict):
+    raise SystemExit("inspection manifest has no member digest rows")
+transfer = {
+    "schema": "vokra-htdemucs-multi-transfer-v1",
+    "status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST",
+    "publication": "NO_UPLOAD",
+    "expected_head": expected_head,
+    "git_commit": actual_head,
+    "approval_sha256": approval_sha,
+    "license_gate_sha256": gate_sha,
+    "inspection_manifest": {
+        "filename": "htdemucs_multi_manifest.json",
+        "sha256": inspection_digest,
+    },
+    "upstream_url": "https://github.com/facebookresearch/demucs",
+    "upstream_revision": "e976d93ecc3865e5757426930257e200846a520a",
+    "members": [
+        {"model_id": model_id, "filename": row.get("filename"), "sha256": row.get("sha256")}
+        for model_id, row in members.items()
+    ],
+}
+transfer_dir.mkdir(mode=0o700)
+inspection_copy = transfer_dir / "htdemucs_multi_manifest.json"
+inspection_copy.write_bytes(manifest_path.read_bytes())
+transfer_path = transfer_dir / "manifest.json"
+transfer_path.write_text(json.dumps(transfer, indent=2) + "\n", encoding="utf-8")
+digest = hashlib.sha256(transfer_path.read_bytes()).hexdigest()
+(transfer_dir / "manifest.sha256").write_text(f"{digest}  manifest.json\n", encoding="ascii")
+PY
+UV_CACHE_DIR="$HTDEMUCS_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python - \
+  "$work_dir/evidence/htdemucs_multi_manifest.json" "$expected_head" "$actual_head" "$approval_sha" "$gate_sha" <<'PY'
+import json
+import re
+import sys
 manifest = json.loads(open(sys.argv[1], encoding="utf-8").read())
+expected_head, actual_head, approval_sha, gate_sha = sys.argv[2:]
 required = {
     "status": "BLOCKED",
     "evidence_stage": "INSPECTION_ONLY",
@@ -235,6 +383,11 @@ required = {
 for key, expected in required.items():
     if manifest.get(key) != expected:
         raise SystemExit(f"manifest contract mismatch: {key}={manifest.get(key)!r}")
+if manifest.get("expected_head") != expected_head or manifest.get("git_commit") != actual_head:
+    raise SystemExit("manifest checkout identity mismatch")
+for key, expected in (("approval_sha256", approval_sha), ("license_gate_sha256", gate_sha)):
+    if manifest.get(key) != expected or not re.fullmatch(r"[0-9a-f]{64}", manifest.get(key, "")):
+        raise SystemExit(f"manifest digest binding mismatch: {key}")
 if manifest.get("inspection_status") == "ERROR" or manifest.get("collection_status") == "FAILED":
     raise SystemExit("inspection error was treated as complete")
 blockers = manifest.get("blockers", [])
@@ -276,7 +429,38 @@ expected_contracts = {
 if contracts != expected_contracts:
     raise SystemExit("variant member/matrix contract drifted")
 PY
+actual_head="$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)"
+[[ "$actual_head" == "$expected_head" ]] || die 'checkout HEAD changed before inspection evidence completion'
+transfer_sha="$(sha256sum "$work_dir/transfer-packet/manifest.json" | awk '{print $1}')"
+grep -Fqx "$transfer_sha  manifest.json" "$work_dir/transfer-packet/manifest.sha256" \
+  || die 'transfer manifest sidecar digest mismatch'
+uv run --no-project --offline --python 3.12 python - \
+  "$work_dir/transfer-packet" "$expected_head" "$actual_head" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+packet, expected_head, actual_head = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+paths = list(packet.iterdir())
+if any(not path.is_file() or path.is_symlink() for path in paths):
+    raise SystemExit("transfer packet contains a nonregular or symlink entry")
+if sorted(path.name for path in paths) != [
+    "htdemucs_multi_manifest.json", "manifest.json", "manifest.sha256"
+]:
+    raise SystemExit("transfer packet file set is not exact")
+manifest = json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+identity = manifest.get("inspection_manifest")
+if identity != {
+    "filename": "htdemucs_multi_manifest.json",
+    "sha256": hashlib.sha256((packet / "htdemucs_multi_manifest.json").read_bytes()).hexdigest(),
+}:
+    raise SystemExit("transfer packet inspection manifest binding drifted")
+if manifest.get("expected_head") != expected_head or manifest.get("git_commit") != actual_head:
+    raise SystemExit("transfer packet HEAD binding drifted")
+PY
 {
+  echo "expected_head=$expected_head"
+  echo "git_commit=$actual_head"
   echo 'runtime_status=NOT_IMPLEMENTED'
   echo 'cpu_status=UNSUPPORTED'
   echo 'metal_status=BLOCKED_BY_CPU'
@@ -284,6 +468,10 @@ PY
   echo 'weight_digest_status=FULL_WEIGHT_DIGESTS_AUTHENTICATED'
   echo 'verdict=BLOCKED'
   echo 'blocker_exit=2'
+  echo 'publication=NO_UPLOAD'
+  echo "approval_sha256=$approval_sha"
+  echo "license_gate_sha256=$gate_sha"
+  echo "transfer_manifest_sha256=$transfer_sha"
   echo 'native_blocker=see htdemucs_multi_manifest.json blockers and per-member safe-load status'
 } | tee -a "$work_dir/evidence/validation.log"
 log "inspection blocked by contract: evidence=$work_dir; no conversion or upload performed"

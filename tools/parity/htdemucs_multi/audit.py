@@ -37,6 +37,11 @@ TARGET_RESOLUTION_MARKERS = {
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version >= '3.12' and python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 }
+APPROVAL_KEYS = {
+    "schema", "expected_head", "upstream_url", "upstream_revision", "license_spdx",
+    "variants", "gate_sha256", "no_upload", "decision", "signer", "scope_sha256",
+}
+PLACEHOLDERS = {"", "todo", "unresolved", "pending", "pending_review", "owner_signoff_required"}
 UPSTREAM_REQUIREMENTS_FILE = "upstream_requirements_minimal.snapshot"
 ACTIVE_IMPORT_PACKAGES = {
     "dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml",
@@ -75,6 +80,41 @@ def json_sha256(value: Any) -> str:
     """Hash the canonical JSON bytes used by the primary audit rows."""
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_approval(path: Path, expected_head: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise ValueError("expected Vokra HEAD must be exactly 40 lowercase hexadecimal characters")
+    if any(component in {".", ".."} for component in path.parts):
+        raise ValueError("HT-Demucs approval evidence path contains a dot component")
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    cursor = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        cursor /= component
+        if cursor.is_symlink():
+            raise ValueError("HT-Demucs approval evidence has symlinked ancestry")
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("HT-Demucs approval evidence must be a regular non-symlink file")
+    approval = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+    if not isinstance(approval, dict) or set(approval) != APPROVAL_KEYS:
+        raise ValueError("HT-Demucs approval schema is not exact")
+    if (
+        approval["schema"] != "vokra-htdemucs-multi-approval-v1"
+        or approval["expected_head"] != expected_head
+        or approval["upstream_url"] != UPSTREAM_URL
+        or approval["upstream_revision"] != UPSTREAM_REVISION
+        or approval["license_spdx"] != "MIT"
+        or approval["variants"] != ["htdemucs_ft", "htdemucs_6s"]
+        or approval["gate_sha256"] != sha256(GATE)
+        or approval["no_upload"] is not True
+        or approval["decision"] != "APPROVED"
+        or not isinstance(approval["signer"], str)
+        or not approval["signer"].strip()
+        or approval["signer"].strip().casefold() in PLACEHOLDERS
+        or approval["scope_sha256"] != json_sha256({key: approval[key] for key in sorted(APPROVAL_KEYS - {"scope_sha256"})})
+    ):
+        raise ValueError("HT-Demucs approval does not bind exact HEAD, ensemble identities, and NO_UPLOAD scope")
+    return approval
 
 
 def marker_value(node: ast.AST) -> str:
@@ -568,6 +608,19 @@ def self_test() -> None:
     assert "scanner" in dependency["compatibility"]["reason"]
     assert marker_reaches("sys_platform == 'linux' and platform_machine == 'x86_64'")
     assert not marker_reaches("sys_platform == 'darwin'")
+    for bad in ("a" * 39, "A" * 40, "g" * 40):
+        try:
+            validate_approval(Path("/nonexistent"), bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid expected HEAD was accepted")
+    try:
+        validate_approval(Path("../approval.json"), "0" * 40)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("dot-component approval path was accepted")
     try:
         marker_reaches("nvidia == '1'")
     except ValueError:
@@ -645,16 +698,22 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--dependency-gate", action="store_true")
     parser.add_argument("--source-dir", type=Path)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence", type=Path)
     args = parser.parse_args()
     try:
         if args.self_test:
-            if args.dependency_gate or args.source_dir is not None:
+            if args.dependency_gate or args.source_dir is not None or args.expected_head is not None or args.approval_evidence is not None:
                 raise ValueError("--self-test accepts no other options")
             self_test()
             return 0
         gate = load_gate()
         verify_gate_contract(gate)
+        if args.expected_head is None or args.approval_evidence is None:
+            raise ValueError("normal runs require --expected-head and --approval-evidence")
+        approval = validate_approval(args.approval_evidence, args.expected_head)
         result: dict[str, Any] = {"status": "BLOCKED", "publication": "NO_UPLOAD"}
+        result["approval"] = {"expected_head": approval["expected_head"], "gate_sha256": approval["gate_sha256"]}
         if args.source_dir is not None:
             result["source"] = audit_source(args.source_dir, gate)
         if args.dependency_gate:

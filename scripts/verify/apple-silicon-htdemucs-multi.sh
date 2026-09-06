@@ -6,18 +6,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+AUDIT="$VOKRA_ROOT/tools/parity/htdemucs_multi/audit.py"
 
 log() { printf '[htdemucs-multi-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF'
-usage: apple-silicon-htdemucs-multi.sh --evidence-dir <absent-dir>
+usage: apple-silicon-htdemucs-multi.sh --expected-head <HEX40> --approval-evidence <file> --evidence-dir <absent-dir>
        apple-silicon-htdemucs-multi.sh --self-test
 
 Checks Darwin/arm64 Metal host readiness only. Until VAST authenticates the
 official ensemble member manifests and a native binder exists, the output is
-INSPECTION_ONLY; this script runs no model, parity test, conversion, or upload.
+BLOCKED_PENDING_AUTHENTICATED_MANIFEST; this script runs no model, parity test, conversion, or upload.
 EOF
 }
 
@@ -106,17 +107,19 @@ self_test() (
   [[ ! -e "$temporary/probe/evidence" && ! -L "$temporary/probe/evidence" ]] \
     || { log 'self-test FAIL: blocked probe created evidence'; fail=1; }
   for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' \
-    'xcrun -f metal' 'INSPECTION_ONLY' 'official ensemble member manifests' \
+    'xcrun -f metal' 'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' 'official ensemble member manifests' \
     'hardware_probe_is_not_htdemucs_parity_evidence=true' \
-    'runtime_status=INSPECTION_ONLY' 'parity_status=INSPECTION_ONLY' \
+    'runtime_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST' \
+    'parity_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST' \
     'git status --porcelain' 'reject_symlink_ancestors' \
-    'validate_evidence_path' 'evidence directory must be absent'; do
+    'validate_evidence_path' 'evidence directory must be absent' '--expected-head' '--approval-evidence'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
     fi
   done
-  if grep -En '(^|[[:space:]])(curl|wget|python3?|pip|.*convert|.*upload|.*publish|git[[:space:]]+push)([[:space:]]|$)' "$path" >/dev/null; then
+  if grep -En '^[[:space:]]*(curl|wget|python3?|pip|git[[:space:]]+push)([[:space:]]|$)' "$path" >/dev/null || \
+    grep -En '(^|[[:space:]])(--push|--upload|publish-one\.sh)([[:space:]]|$)' "$path" >/dev/null; then
     log 'self-test FAIL: acquisition or publication command found'
     fail=1
   fi
@@ -136,14 +139,21 @@ self_test() (
     log 'self-test FAIL: duplicate --self-test accepted'
     fail=1
   fi
+  for bad in '--expected-head' '--expected-head bad' '--expected-head a --expected-head b' '--approval-evidence' '--approval-evidence a --approval-evidence b'; do
+    if eval "\"$path\" $bad" >/dev/null 2>&1; then
+      log "self-test FAIL: malformed or duplicate option accepted: $bad"
+      fail=1
+    fi
+  done
   (( fail == 0 )) || return 1
   log 'self-test PASS'
 )
 
 evidence_dir=''
+expected_head=''
+approval_evidence=''
 self=0
-seen_evidence=0
-seen_self=0
+seen_evidence=0; seen_head=0; seen_approval=0; seen_self=0
 while (($#)); do
   case "$1" in
     --self-test)
@@ -151,6 +161,16 @@ while (($#)); do
       seen_self=1
       self=1
       shift
+      ;;
+    --expected-head)
+      (( seen_head == 0 )) || die 'duplicate --expected-head'
+      [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires exactly 40 lowercase hexadecimal characters'
+      seen_head=1; expected_head="$2"; shift 2
+      ;;
+    --approval-evidence)
+      (( seen_approval == 0 )) || die 'duplicate --approval-evidence'
+      [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty path'
+      seen_approval=1; approval_evidence="$2"; shift 2
       ;;
     --evidence-dir)
       (( seen_evidence == 0 )) || die 'duplicate --evidence-dir'
@@ -168,28 +188,36 @@ while (($#)); do
   esac
 done
 if (( self )); then
-  (( seen_evidence == 0 )) || die '--self-test accepts no other arguments'
+  (( seen_evidence == 0 && seen_head == 0 && seen_approval == 0 )) || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
 
 [[ -n "$evidence_dir" ]] || die '--evidence-dir is required'
+[[ "$seen_head" == 1 && "$seen_approval" == 1 ]] || die '--expected-head and --approval-evidence are required'
+[[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
+[[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
+[[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
 validate_evidence_path "$evidence_dir"
 [[ "${VOKRA_REMOTE_APPLE_SILICON:-0}" == 1 ]] || die 'VOKRA_REMOTE_APPLE_SILICON=1 is absent'
 [[ "$(uname -s)" == Darwin ]] || die 'host readiness requires Darwin'
 [[ "$(uname -m)" == arm64 ]] || die 'host readiness requires Apple arm64'
 command -v xcrun >/dev/null 2>&1 || die 'xcrun is unavailable'
 xcrun -f metal >/dev/null 2>&1 || die 'Xcode Metal tooling is unavailable'
-[[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
+command -v uv >/dev/null 2>&1 || die 'uv is unavailable for the required approval gate'
+uv run --no-project --offline --python 3.12 python "$AUDIT" \
+  --dependency-gate --expected-head "$expected_head" --approval-evidence "$approval_evidence" \
+  >/dev/null || die 'dependency/license/approval gate is blocked'
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
-mkdir -p "$evidence_dir"
+mkdir "$evidence_dir"
 
 {
+  echo "expected_head=$expected_head"
   echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
   echo "host=$(uname -a)"
   echo "metal_compiler=$(xcrun -f metal)"
-  echo 'runtime_status=INSPECTION_ONLY'
-  echo 'parity_status=INSPECTION_ONLY'
+  echo 'runtime_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST'
+  echo 'parity_status=BLOCKED_PENDING_AUTHENTICATED_MANIFEST'
   echo 'verdict=NO_CPU_OR_METAL_PASS'
   echo 'reason=official ensemble member manifests and native binder are not audited'
   echo 'hardware_probe_is_not_htdemucs_parity_evidence=true'
