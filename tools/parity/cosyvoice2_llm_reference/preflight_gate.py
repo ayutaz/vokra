@@ -193,9 +193,17 @@ def gate(project: Path, lock: Path, license_manifest: Path) -> dict[str, Any]:
     validate_project(project_doc)
     rows = validate_lock(read_toml(lock))
     manifest = validate_license_manifest(license_manifest)
-    registry_rows = {name for name, row in rows.items() if "registry" in row["source"]}
-    reviewed = {row["name"] for row in manifest["package_review"]}
-    if reviewed != registry_rows:
+    registry_pairs = {(name, row["version"]) for name, row in rows.items() if "registry" in row["source"]}
+    reviewed_pairs: list[tuple[str, str]] = []
+    reviewed_names: set[str] = set()
+    for row in manifest["package_review"]:
+        if not isinstance(row["name"], str) or not isinstance(row["version"], str):
+            fail("package/native license evidence has a malformed package identity")
+        if row["name"] in reviewed_names:
+            fail("package/native license evidence contains a duplicate package review")
+        reviewed_names.add(row["name"])
+        reviewed_pairs.append((row["name"], row["version"]))
+    if set(reviewed_pairs) != registry_pairs or len(reviewed_pairs) != len(registry_pairs):
         fail("package/native license evidence does not cover the exact lock closure")
     if manifest["status"] == "APPROVED" and (
         any(row["status"] != "APPROVED" for row in manifest["package_review"])
@@ -206,7 +214,7 @@ def gate(project: Path, lock: Path, license_manifest: Path) -> dict[str, Any]:
         fail("approved gate contains unresolved package/native/source review")
     if manifest["status"] != "APPROVED" or manifest["owner_signoff"] != "OWNER_SIGNED_OFF":
         fail("execution blocked until package/native license evidence and owner signoff")
-    return {"status": "PASS", "package_count": len(registry_rows), "publication": "NO_UPLOAD"}
+    return {"status": "PASS", "package_count": len(registry_pairs), "publication": "NO_UPLOAD"}
 
 
 def self_test() -> None:
@@ -223,7 +231,7 @@ def self_test() -> None:
             *[
                 {
                     "name": name,
-                    "version": version,
+                    "version": f"{version}+cpu" if name == "torch" else version,
                     "source": {"registry": TORCH_INDEX if name == "torch" else PYPI_INDEX},
                 }
                 for name, version in DIRECT_PINS.items()
@@ -273,12 +281,14 @@ def self_test() -> None:
         )
         for name, version in DIRECT_PINS.items():
             registry = TORCH_INDEX if name == "torch" else PYPI_INDEX
-            lock_lines.extend(["[[package]]", f"name = '{name}'", f"version = '{version}'", f"source = {{ registry = '{registry}' }}", ""])
+            lock_version = f"{version}+cpu" if name == "torch" else version
+            lock_lines.extend(["[[package]]", f"name = '{name}'", f"version = '{lock_version}'", f"source = {{ registry = '{registry}' }}", ""])
         lock_path.write_text("\n".join(lock_lines), encoding="utf-8")
         covered_manifest = copy.deepcopy(manifest)
+        covered_rows = validate_lock(valid_lock)
         covered_manifest["package_review"] = [
-            {"name": name, "version": version, "status": "PENDING_PRIMARY_SOURCE_REVIEW"}
-            for name, version in DIRECT_PINS.items()
+            {"name": name, "version": covered_rows[name]["version"], "status": "PENDING_PRIMARY_SOURCE_REVIEW"}
+            for name in DIRECT_PINS
         ]
         manifest_path = temp_root / "license.json"
         manifest_path.write_text(json.dumps(covered_manifest), encoding="utf-8")
@@ -288,6 +298,26 @@ def self_test() -> None:
             assert "execution blocked" in str(error)
         else:
             raise AssertionError("pending covered registry closure unexpectedly passed")
+        wrong_version = copy.deepcopy(covered_manifest)
+        wrong_version["package_review"][0]["version"] = "not-the-locked-version"
+        wrong_version_path = temp_root / "wrong-version.json"
+        wrong_version_path.write_text(json.dumps(wrong_version), encoding="utf-8")
+        try:
+            gate(here / "pyproject.toml", lock_path, wrong_version_path)
+        except GateError as error:
+            assert "exact lock closure" in str(error)
+        else:
+            raise AssertionError("wrong package review version accepted")
+        duplicate_review = copy.deepcopy(covered_manifest)
+        duplicate_review["package_review"].append(copy.deepcopy(duplicate_review["package_review"][0]))
+        duplicate_path = temp_root / "duplicate-review.json"
+        duplicate_path.write_text(json.dumps(duplicate_review), encoding="utf-8")
+        try:
+            gate(here / "pyproject.toml", lock_path, duplicate_path)
+        except GateError as error:
+            assert "duplicate package review" in str(error)
+        else:
+            raise AssertionError("duplicate package review accepted")
     try:
         gate(here / "pyproject.toml", here / "uv.lock", here / "license_gate_manifest.json")
     except GateError as error:
