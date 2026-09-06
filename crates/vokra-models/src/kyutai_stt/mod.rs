@@ -81,7 +81,7 @@ use vokra_core::check_weight_license;
 use vokra_core::gguf::chunks;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{BackendKind, CompliancePolicy, Result, VokraError};
+use vokra_core::{BackendKind, CompliancePolicy, LicenseClass, Result, VokraError};
 
 use crate::compute::{Compute, HotOp};
 use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
@@ -769,9 +769,12 @@ impl KyutaiSttWeights {
     ///
     /// # Errors
     ///
-    /// [`VokraError::ModelLoad`] if the release identity, exact tensor set,
-    /// dtype, shape, or finite-value contract is not satisfied.
+    /// [`VokraError::ModelLoad`] if the release metadata, exact tensor set,
+    /// dtype, shape, or finite-value contract is not satisfied. Whole-file
+    /// identity remains the authenticated runner's responsibility; this API
+    /// receives no expected digest.
     pub fn from_component_gguf(file: &GgufFile) -> Result<Self> {
+        require_component_metadata(file)?;
         let config = KyutaiSttConfig::from_gguf(file).map_err(|error| {
             VokraError::ModelLoad(format!(
                 "kyutai-stt component binder: config is not authenticated: {error}"
@@ -792,6 +795,160 @@ impl KyutaiSttWeights {
         }
         bind_component_gguf(file, &config)
     }
+}
+
+fn require_component_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::U32(value)) if *value == expected => Ok(()),
+        Some(GgufMetadataValue::U32(value)) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}`={value}, expected {expected}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}` has type {:?}, expected UINT32",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: required metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn require_component_f32(file: &GgufFile, key: &str, expected: f32) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::F32(value)) if *value == expected => Ok(()),
+        Some(GgufMetadataValue::F32(value)) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}`={value}, expected {expected}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}` has type {:?}, expected FLOAT32",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: required metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn require_component_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::String(value)) if value.as_str() == expected => Ok(()),
+        Some(GgufMetadataValue::String(value)) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}`={value:?}, expected {expected:?}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}` has type {:?}, expected STRING",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: required metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn component_metadata_contract_keys() -> Vec<String> {
+    let mut keys = vec![
+        KEY_SAMPLE_RATE,
+        KEY_BB_N_LAYER,
+        KEY_BB_D_MODEL,
+        KEY_BB_N_HEAD,
+        KEY_BB_HIDDEN_SCALE,
+        KEY_BB_FFN_HIDDEN,
+        KEY_BB_CONTEXT,
+        KEY_BB_ROPE_MAX_PERIOD,
+        KEY_BB_CAUSAL,
+        KEY_BB_RMS_NORM_EPS,
+        KEY_DEP_N_LAYER,
+        KEY_DEP_D_MODEL,
+        KEY_DEP_N_HEAD,
+        KEY_DEP_MULTI_LINEAR,
+        KEY_DEP_WEIGHTS_PER_STEP,
+        KEY_N_Q,
+        KEY_DEP_Q,
+        KEY_AUDIO_CARD,
+        KEY_TEXT_CARD,
+        KEY_TEXT_PAD_ID,
+        KEY_AUDIO_DELAY_SECS,
+        KEY_AUDIO_SILENCE_PREFIX_SECS,
+        KEY_N_DELAYS,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    for index in 0..33 {
+        keys.push(format!("{PREFIX_DELAY}{index}"));
+    }
+    keys
+}
+
+fn require_component_metadata(file: &GgufFile) -> Result<()> {
+    let contract_keys = component_metadata_contract_keys();
+    for (key, _) in file.metadata() {
+        if key.starts_with("vokra.kyutai_stt.")
+            && !contract_keys.iter().any(|expected| expected == key)
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt component binder: unexpected metadata `{key}`"
+            )));
+        }
+    }
+    for key in &contract_keys {
+        let occurrences = file
+            .metadata()
+            .iter()
+            .filter(|(name, _)| name == key)
+            .count();
+        if occurrences != 1 {
+            let state = if occurrences == 0 {
+                "missing"
+            } else {
+                "duplicated"
+            };
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt component binder: metadata `{key}` is {state}"
+            )));
+        }
+    }
+    require_component_u32(file, KEY_BB_N_LAYER, 48)?;
+    require_component_u32(file, KEY_BB_D_MODEL, 2048)?;
+    require_component_u32(file, KEY_BB_N_HEAD, 32)?;
+    require_component_f32(file, KEY_BB_HIDDEN_SCALE, 4.125)?;
+    require_component_u32(file, KEY_BB_FFN_HIDDEN, 5632)?;
+    require_component_u32(file, KEY_BB_CONTEXT, 375)?;
+    require_component_f32(file, KEY_BB_ROPE_MAX_PERIOD, 100_000.0)?;
+    require_component_u32(file, KEY_BB_CAUSAL, 1)?;
+    require_component_f32(file, KEY_BB_RMS_NORM_EPS, 1e-8)?;
+    require_component_u32(file, KEY_DEP_N_LAYER, 6)?;
+    require_component_u32(file, KEY_DEP_D_MODEL, 1024)?;
+    require_component_u32(file, KEY_DEP_N_HEAD, 16)?;
+    require_component_u32(file, KEY_DEP_MULTI_LINEAR, 1)?;
+    require_component_u32(file, KEY_DEP_WEIGHTS_PER_STEP, 1)?;
+    require_component_u32(file, KEY_N_Q, 32)?;
+    require_component_u32(file, KEY_DEP_Q, 0)?;
+    require_component_u32(file, KEY_AUDIO_CARD, 2048)?;
+    require_component_u32(file, KEY_TEXT_CARD, 4000)?;
+    require_component_u32(file, KEY_TEXT_PAD_ID, 3)?;
+    require_component_f32(file, KEY_AUDIO_DELAY_SECS, 2.5)?;
+    require_component_f32(file, KEY_AUDIO_SILENCE_PREFIX_SECS, 1.0)?;
+    require_component_u32(file, KEY_SAMPLE_RATE, 24_000)?;
+    require_component_u32(file, KEY_N_DELAYS, 33)?;
+    for index in 0..33 {
+        require_component_u32(file, &format!("{PREFIX_DELAY}{index}"), 0)?;
+    }
+    require_component_string(file, chunks::KEY_PROVENANCE_MODEL_ID, "kyutai/stt-2.6b-en")?;
+    // The live Kyutai artifact contract records the SPDX-like license spelling
+    // in lowercase; this is intentionally exact rather than normalized.
+    require_component_string(file, chunks::KEY_PROVENANCE_LICENSE, "cc-by-4.0")?;
+    require_component_string(
+        file,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::AttributionRequired.as_str(),
+    )?;
+    require_component_string(
+        file,
+        chunks::KEY_PROVENANCE_SOURCE,
+        "https://huggingface.co/kyutai/stt-2.6b-en",
+    )?;
+    Ok(())
 }
 
 fn component_tensor_names(config: &KyutaiSttConfig) -> Result<Vec<String>> {
@@ -1893,6 +2050,11 @@ mod tests {
             component_tensor(&dtype_file, "sample", &[2, 2]),
             Err(VokraError::ModelLoad(message)) if message.contains("dtype")
         ));
+        let nan_file = one_bf16_nan_fixture();
+        assert!(matches!(
+            component_tensor(&nan_file, "sample", &[1]),
+            Err(VokraError::ModelLoad(message)) if message.contains("non-finite")
+        ));
     }
 
     #[test]
@@ -1909,7 +2071,90 @@ mod tests {
             .expect_err("tiny metadata fixture must not pass the exact release gate");
         assert!(matches!(
             error,
-            VokraError::ModelLoad(message) if message.contains("exactly") || message.contains("authenticated")
+            VokraError::ModelLoad(message) if message.contains("metadata") || message.contains("authenticated")
+        ));
+    }
+
+    #[test]
+    fn component_metadata_contract_accepts_canonical_provenance_before_manifest_gate() {
+        let file = strict_component_metadata_fixture(false, 5632, 1, None, false, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&file)
+            .expect_err("metadata-only fixture must stop at the exact tensor manifest");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains("manifest")
+        ));
+    }
+
+    #[test]
+    fn component_binder_requires_non_defaulted_metadata_and_provenance() {
+        let missing_default =
+            strict_component_metadata_fixture(true, 5632, 1, None, false, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&missing_default)
+            .expect_err("missing RMS epsilon must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(KEY_BB_RMS_NORM_EPS)
+        ));
+
+        let stale_width =
+            strict_component_metadata_fixture(false, 8448, 1, None, false, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&stale_width)
+            .expect_err("stale ffn_hidden must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(KEY_BB_FFN_HIDDEN)
+        ));
+
+        let noncanonical_bool =
+            strict_component_metadata_fixture(false, 5632, 2, None, false, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&noncanonical_bool)
+            .expect_err("boolean value 2 must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(KEY_BB_CAUSAL)
+        ));
+
+        let wrong_license = strict_component_metadata_fixture(
+            false,
+            5632,
+            1,
+            Some("CC-BY-NC-4.0"),
+            false,
+            false,
+            false,
+        );
+        let error = KyutaiSttWeights::from_component_gguf(&wrong_license)
+            .expect_err("wrong provenance license must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(chunks::KEY_PROVENANCE_LICENSE)
+        ));
+
+        let missing_model_id =
+            strict_component_metadata_fixture(false, 5632, 1, None, true, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&missing_model_id)
+            .expect_err("missing model id must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(chunks::KEY_PROVENANCE_MODEL_ID)
+        ));
+
+        let missing_weight_license =
+            strict_component_metadata_fixture(false, 5632, 1, None, false, true, false);
+        let error = KyutaiSttWeights::from_component_gguf(&missing_weight_license)
+            .expect_err("missing weight license must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+        ));
+
+        let extra_key = strict_component_metadata_fixture(false, 5632, 1, None, false, false, true);
+        let error = KyutaiSttWeights::from_component_gguf(&extra_key)
+            .expect_err("unexpected Kyutai metadata must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains("unexpected metadata")
         ));
     }
 
@@ -2266,12 +2511,91 @@ mod tests {
         GgufFile::parse(builder.to_bytes().expect("single tensor bytes")).expect("parse")
     }
 
+    fn one_bf16_nan_fixture() -> GgufFile {
+        let mut builder = GgufBuilder::new();
+        builder
+            .add_tensor(
+                "sample",
+                GgmlType::BF16,
+                vec![1],
+                0x7fc0u16.to_le_bytes().to_vec(),
+            )
+            .expect("BF16 NaN fixture");
+        GgufFile::parse(builder.to_bytes().expect("BF16 NaN bytes")).expect("parse")
+    }
+
     fn tensor_bytes(dtype: GgmlType, elements: usize) -> Vec<u8> {
         match dtype {
             GgmlType::F32 => vec![0; elements * std::mem::size_of::<f32>()],
             GgmlType::BF16 => vec![0; elements * std::mem::size_of::<u16>()],
             other => panic!("unsupported fixture dtype {other:?}"),
         }
+    }
+
+    fn strict_component_metadata_fixture(
+        omit_rms_norm_eps: bool,
+        ffn_hidden: u32,
+        causal: u32,
+        license_override: Option<&str>,
+        omit_model_id: bool,
+        omit_weight_license: bool,
+        extra_prefixed_key: bool,
+    ) -> GgufFile {
+        let cfg = KyutaiSttConfig::stt_2_6b_en();
+        let mut builder = GgufBuilder::new();
+        builder.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        builder.add_u32(KEY_BB_N_LAYER, cfg.backbone.n_layer as u32);
+        builder.add_u32(KEY_BB_D_MODEL, cfg.backbone.d_model as u32);
+        builder.add_u32(KEY_BB_N_HEAD, cfg.backbone.n_head as u32);
+        builder.add_f32(KEY_BB_HIDDEN_SCALE, cfg.backbone.hidden_scale);
+        builder.add_u32(KEY_BB_FFN_HIDDEN, ffn_hidden);
+        builder.add_u32(KEY_BB_CONTEXT, cfg.backbone.context as u32);
+        builder.add_f32(KEY_BB_ROPE_MAX_PERIOD, cfg.backbone.rope_max_period);
+        builder.add_u32(KEY_BB_CAUSAL, causal);
+        if !omit_rms_norm_eps {
+            builder.add_f32(KEY_BB_RMS_NORM_EPS, cfg.rms_norm_eps);
+        }
+        builder.add_u32(KEY_DEP_N_LAYER, cfg.depformer.n_layer as u32);
+        builder.add_u32(KEY_DEP_D_MODEL, cfg.depformer.d_model as u32);
+        builder.add_u32(KEY_DEP_N_HEAD, cfg.depformer.n_head as u32);
+        builder.add_u32(KEY_DEP_MULTI_LINEAR, 1);
+        builder.add_u32(KEY_DEP_WEIGHTS_PER_STEP, 1);
+        builder.add_u32(KEY_N_Q, cfg.n_q as u32);
+        builder.add_u32(KEY_DEP_Q, 0);
+        builder.add_u32(KEY_AUDIO_CARD, cfg.audio_card as u32);
+        builder.add_u32(KEY_TEXT_CARD, cfg.text_card as u32);
+        builder.add_u32(KEY_TEXT_PAD_ID, cfg.text_pad_id);
+        builder.add_f32(KEY_AUDIO_DELAY_SECS, cfg.audio_delay_seconds);
+        builder.add_f32(
+            KEY_AUDIO_SILENCE_PREFIX_SECS,
+            cfg.audio_silence_prefix_seconds,
+        );
+        builder.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        builder.add_u32(KEY_N_DELAYS, 33);
+        for index in 0..33 {
+            builder.add_u32(&format!("{PREFIX_DELAY}{index}"), 0);
+        }
+        if extra_prefixed_key {
+            builder.add_u32("vokra.kyutai_stt.delay.33", 0);
+        }
+        if !omit_model_id {
+            builder.add_string(chunks::KEY_PROVENANCE_MODEL_ID, "kyutai/stt-2.6b-en");
+        }
+        builder.add_string(
+            chunks::KEY_PROVENANCE_LICENSE,
+            license_override.unwrap_or("cc-by-4.0"),
+        );
+        if !omit_weight_license {
+            builder.add_string(
+                chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+                LicenseClass::AttributionRequired.as_str(),
+            );
+        }
+        builder.add_string(
+            chunks::KEY_PROVENANCE_SOURCE,
+            "https://huggingface.co/kyutai/stt-2.6b-en",
+        );
+        GgufFile::parse(builder.to_bytes().expect("strict metadata fixture")).expect("parse")
     }
 
     fn build_gguf_for_config(arch: Option<&str>, cfg: &KyutaiSttConfig) -> Vec<u8> {
@@ -2322,7 +2646,7 @@ mod tests {
             chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
             LicenseClass::AttributionRequired.as_str(),
         );
-        b.add_string(chunks::KEY_PROVENANCE_LICENSE, "CC-BY-4.0");
+        b.add_string(chunks::KEY_PROVENANCE_LICENSE, "cc-by-4.0");
         b.add_string(chunks::KEY_PROVENANCE_MODEL_ID, "kyutai/stt-2.6b-en");
         b.to_bytes().expect("serialize kyutai-stt fixture GGUF")
     }
