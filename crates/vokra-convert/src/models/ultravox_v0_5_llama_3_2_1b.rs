@@ -73,6 +73,7 @@
 //! VAST under the repository's >=2 GB policy.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -214,7 +215,9 @@ pub fn convert_ultravox_v0_5_llama_3_2_1b_file(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    let mut output_file = open_output_no_clobber(output)?;
+    output_file.write_all(&out_bytes)?;
+    output_file.sync_all()?;
     Ok(report)
 }
 
@@ -255,7 +258,7 @@ pub fn convert_ultravox_llama_companion_file(
         })
         .collect::<Vec<_>>();
 
-    let output_file = std::fs::File::create(output)?;
+    let output_file = open_output_no_clobber(output)?;
     let mut writer = GgufStreamWriter::begin(
         std::io::BufWriter::new(output_file),
         &metadata,
@@ -279,6 +282,18 @@ pub fn convert_ultravox_llama_companion_file(
         written: declarations.len(),
         metadata_count,
     })
+}
+
+/// Claim a converter output atomically and refuse existing files or symlinks.
+///
+/// Both the public audio artifact and the separately licensed companion use
+/// this helper.  A preceding `exists()` check would leave a TOCTOU window and
+/// `File::create` would silently clobber a caller's artifact.
+fn open_output_no_clobber(output: &Path) -> Result<std::fs::File, ConvertError> {
+    Ok(std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?)
 }
 
 fn companion_metadata(source_revision: &str, config_bytes: &[u8]) -> GgufBuilder {
@@ -673,6 +688,50 @@ mod tests {
         );
         let _ = std::fs::remove_file(&inp);
         let _ = std::fs::remove_file(&outp);
+    }
+
+    #[test]
+    fn converter_output_claim_is_atomic_and_does_not_clobber_existing_file() {
+        let inp = tmp_path("no-clobber-in");
+        let outp = tmp_path("no-clobber-out");
+        let payload: Vec<u8> = [1.0_f32].iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(&inp, safetensors_one("audio", "F32", &[1], &payload)).unwrap();
+        std::fs::write(&outp, b"caller-owned").unwrap();
+
+        let error = convert_ultravox_v0_5_llama_3_2_1b_file(&inp, &outp, None)
+            .expect_err("existing output must be rejected atomically");
+        assert!(
+            matches!(error, ConvertError::Io(ref error) if error.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(&outp).unwrap(), b"caller-owned");
+
+        let _ = std::fs::remove_file(&inp);
+        let _ = std::fs::remove_file(&outp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn converter_output_claim_rejects_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let inp = tmp_path("symlink-in");
+        let target = tmp_path("symlink-target");
+        let outp = tmp_path("symlink-out");
+        let payload: Vec<u8> = [1.0_f32].iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(&inp, safetensors_one("audio", "F32", &[1], &payload)).unwrap();
+        std::fs::write(&target, b"target-owned").unwrap();
+        symlink(&target, &outp).unwrap();
+
+        let error = convert_ultravox_v0_5_llama_3_2_1b_file(&inp, &outp, None)
+            .expect_err("symlink output must be rejected atomically");
+        assert!(
+            matches!(error, ConvertError::Io(ref error) if error.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"target-owned");
+
+        let _ = std::fs::remove_file(&inp);
+        let _ = std::fs::remove_file(&outp);
+        let _ = std::fs::remove_file(&target);
     }
 
     #[test]
