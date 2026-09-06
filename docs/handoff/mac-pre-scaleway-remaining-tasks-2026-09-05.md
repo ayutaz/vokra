@@ -214,14 +214,24 @@ the corrected artifact remains unpublished pending Apple CPU/Metal evidence
 and separate repository-scoped upload authorization.
 
 The remaining factual dependency-license cases were checked against primary
-release sources and must stay fail-closed:
+release sources. Commit `776baf0e` closes only the exact source-mapping gap
+for `gradio-client==2.5.0`: the two locked PyPI artifact identities are bound
+through their Trusted Publishing attestations to upstream commit
+`43f5de68579919b0632ceb6107a99c629483ea2f`, and that commit's package,
+project, license and publishing-workflow blobs are hash-pinned. The fixed
+evidence file SHA-256 is
+`3e582bc2dc7651e3f7196786d3b222d1cf1d00c932f136e516cdb8c3696e3c12`;
+the resulting approval-scope SHA-256 is
+`0491b036e0e8feffbee30c730e2b5d8a19ca034664b58cfac64a5a81a30ab2d3`.
+The preflight and dependency-audit self-tests pass, while the production gate
+still exits blocked at the first pending model-license row. This evidence does
+not approve the package, dependencies, models or execution: every review row
+and operator decision remains pending and publication remains `NO_UPLOAD`.
+The other factual cases below must stay fail-closed:
 
-- `gradio-client==2.5.0` has official annotated tag
-  `gradio_client@2.5.0` at commit
-  `43f5de68579919b0632ceb6107a99c629483ea2f`, whose project metadata and root
-  license both say Apache-2.0. The tag was created after the PyPI artifacts,
-  so an exact artifact-to-tag binding still needs to be recorded before this
-  can replace the absent sdist license file.
+- `gradio-client==2.5.0` now has authenticated exact-release source mapping,
+  but its package review row remains `PENDING_REVIEW`; source mapping is a
+  factual input to owner review, not an approval.
 - `dynet38==2.2` has Apache-2.0 PyPI metadata but no sdist and the official
   `clab/dynet` repository has no exact 2.2 tag; its native wheel therefore has
   no authenticated exact-release source/license mapping.
