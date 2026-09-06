@@ -231,6 +231,10 @@ pub mod kotoba_whisper;
 // a follow-up wave (T29-equivalent). Weights: CC-BY 4.0
 // (AttributionRequired — FR-MD-09 attribution surface).
 pub mod kyutai_stt;
+// Kyutai TTS 1.6B EN/FR source-authenticated config and delay-alignment seam.
+// Tensor binding, demux, real-weight forward, and audio generation remain
+// explicit follow-up gates.
+pub mod kyutai_tts;
 // post-audit CC-gap 2026-08-13 Wave D: Meta AudioCraft MAGNeT runtime
 // binder (**SCAFFOLD** — CPU-only, loud-partial forward per RMVPE /
 // DNSMOS / openwakeword precedent). Consumes the two converter modules
