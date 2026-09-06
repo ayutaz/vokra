@@ -63,6 +63,70 @@ GPL/eSpeak decisions by `AGENTS.md`, `CONTRIBUTING.md`, and §11 of this audit;
 and the no-ONNX/zero-dependency runtime boundary by `AGENTS.md`. New decisions
 must use those sources and the applicable current skill.
 
+### CosyVoice2 LLM reference closure (2026-09-06, VAST-only / NO_UPLOAD)
+
+The isolated official-Transformers Qwen2 reference closure has completed its
+technical review and is approvable for VAST reference execution only. Execution
+remains blocked pending explicit owner authorization for the
+execution-enabling manifest commit. This does not authorize redistribution of the
+Python environment, wheels, native payloads, model weights, or generated
+outputs. The model/source/weight identities are Apache-2.0; the existing
+owner commercial sign-off is inherited, while this entry records only the
+technical closure review and keeps the publication boundary `NO_UPLOAD`.
+
+Evidence is bound to exact bytes: project `pyproject.toml` SHA-256
+`d4aa51828dd31149692936bebd11855398a2e6fa9e0c111e2dd1c3717889dc1e`;
+dedicated `uv.lock` 27,906 bytes, SHA-256
+`09cf625d693277601d7034039b346697a041a6219a2a7d13c5133e39a54c6ee6`;
+closure JSON SHA-256
+`8bfe4a52f3dc9b40b65474281a3c0d32a5bf1f6f189de6a747c38e3515148c57`; and
+native NEEDED packet SHA-256
+`7999545c471ad1e10c522071b60baaa5a301447d88c661dcdad1a766c2f4c3c5`.
+The packet contains 34 exact registry distributions, 63 license-file records,
+and 41 native payload records.
+
+Exact lock identities and license outcomes (all technically `APPROVED` for this
+isolated reference-only closure) are grouped below. A package with no standardized
+metadata field is explicitly marked `metadata blank`, not inferred:
+
+- MIT: `annotated-doc==0.0.5`, `anyio==4.15.1`, `filelock==3.32.5`,
+  `rich==15.0.0`, `typer==0.27.2`.
+- BSD-3-Clause: `click==8.5.0`, `fsspec==2026.7.0`, `httpcore==1.0.9`,
+  `idna==3.19`, `networkx==3.6.1`.
+- Apache-2.0: `hf-xet==1.6.0`, `huggingface-hub==1.30.0`;
+  `transformers==5.10.4` records `Apache 2.0 License`.
+- Other exact metadata: `certifi==2026.7.22` = MPL-2.0;
+  `h11==0.16.0` = MIT; `httpx==0.28.1` = BSD-3-Clause;
+  `mpmath==1.3.0` = BSD; `packaging==26.3` = Apache-2.0 OR BSD-2-Clause;
+  `pygments==2.21.0` = BSD-2-Clause; `pyyaml==6.0.3` = MIT;
+  `regex==2026.9.3` = Apache-2.0 AND CNRI-Python;
+  `setuptools==84.0.0` = MIT; `shellingham==1.5.4` = ISC License;
+  `sympy==1.14.0` = BSD; `tqdm==4.70.0` = MPL-2.0 AND MIT;
+  `typing-extensions==4.16.0` = PSF-2.0.
+- Metadata blank but license payload recorded: `jinja2==3.1.6`,
+  `markdown-it-py==4.2.0`, `mdurl==0.1.2`, and `safetensors==0.8.0`;
+  the latter also has a native payload. These are approved only under the
+  same no-redistribution boundary.
+- `markupsafe==3.0.3` = BSD-3-Clause plus native payload;
+  `numpy==2.3.5` records NumPy BSD terms with bundled OpenBLAS/LAPACK BSD
+  variants, GCC runtime `GPL-3.0-or-later WITH GCC-exception-3.1`, and
+  LGPL-2.1-or-later libquadmath (22 native payloads);
+  `torch==2.7.1+cpu` records BSD-3-Clause package metadata and a torch
+  third-party bundle (13 native payloads).
+- `tokenizers==0.22.2` has no wheel license payload and is explicitly
+  `MISSING_IN_DISTRIBUTION`; the upstream tag
+  `https://github.com/huggingface/tokenizers/tree/v0.22.2` LICENSE and the
+  PyPI Apache Software License classifier resolve that primary-source gap.
+
+Native review found package-internal ELF payloads and only
+glibc/libstdc++/GCC runtime/OpenMP/zlib system dependencies. No
+CUDA/Triton/ONNX/ONNX Runtime payload was found. The audit records each native
+path, byte count, and SHA-256; it never imports or executes a model. The
+prepared manifest records `APPROVED` with inherited owner sign-off plus the
+2026-09-06 technical closure review, but its execution-enabling commit remains
+`PENDING_EXPLICIT_OWNER_AUTHORIZATION`; until then the gate remains blocked.
+The intended boundary is reference-only and `NO_UPLOAD`.
+
 **初期更新履歴（2026-07-04〜07-21）**: M2-13: research flag enforcement 機構の実装を §3 末尾に追記 / M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新 / 2026-07-06: §2・§6 の backend binding crate（cudarc/metal-rs）を「実装は不採用＝手書き生 FFI」に、§2/§5 G2P を実装済 `integrations/vokra-piper-g2p` に、§6 CUDA を no-silent-fallback（explicit `BackendUnavailable`）に現物実装と整合 / 2026-07-15: §4 音声処理ライブラリ表の Vokra 採用時期ラベルを §3 + M4 実装状況と整合（denoise=v1.0-rc/M4-20、wfst=v1.0 GA/M5、C2PA embedding は deferred）、§3 Bark 行を post-v1.0 GA に更新、§3 Matcha-TTS 行の配布ラベルを「★ post-v1.0 GA」に更新（Bark と同 tier の齟齬解消、FACT SHEET MODELS 整合）、§2 wgpu 行を「実装は不採用」（M4-01 raw WebGPU extern-import shim、NFR-DS-02 zero-dep）に更新し stale label `v0.1-v1.5` を除去 / 2026-07-21: M5-07 = Bark / StyleTTS 2 / Matcha-TTS の license audit 材料整備 — §3 の StyleTTS 2 重複行を 1 行に統合、3 モデルに一次資料（2026-07-21 CC fetch）を反映、§CC-verified に Matcha 事実行 + registry note + Bark/StyleTTS 2 残リスク bullet の URL 補強、§3.1 に 3 行の空欄 sign-off template を追加、`docs/legal-compliance.md` §9 に Matcha 行（tier 未確定 = owner）+ Bark/StyleTTS 2 の URL 補強。採否 sign-off・§9 tier 確定・registry guard test は owner / 実装 WP / 2026-07-21: M5-05 = voice cloning 分離準備 — §3.1 sign-off template に **RVC v2 / GPT-SoVITS** の 2 行を空欄で追加（`vokra-voiceclone-experimental` 別リポ配布の到来点 = 上記 §CC-verified の RVC v2/GPT-SoVITS bullet。weight license 列は事実のみ「不明 / 学習権利疑い」、Approval/sign-off は owner 記入で CC は pre-fill しない = fail-closed）。採否 sign-off は owner（M5-05-T15））
 **目的**: Vokra が依存するすべての Rust crate、モデル weight、音声 codec、vocoder、辞書、G2P、audio 前処理ライブラリのライセンスを列挙し、Apache 2.0 core との互換性、Unity/Godot Asset Store 配布可否、商用ゲーム組込可否を明示する。
 
