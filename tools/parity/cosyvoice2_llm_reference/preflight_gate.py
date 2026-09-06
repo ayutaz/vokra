@@ -136,6 +136,18 @@ def validate_lock(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 if not isinstance(artifact.get("upload-time"), str) or not artifact["upload-time"].strip():
                     fail(f"artifact upload-time is missing for {name}")
         result[name] = row
+    virtual_rows = [row for row in result.values() if "virtual" in row["source"]]
+    if len(virtual_rows) != 1:
+        fail("uv.lock must contain exactly one virtual project row")
+    virtual = virtual_rows[0]
+    if (
+        virtual["name"] != PROJECT_NAME
+        or virtual["version"] != "0.1.0"
+        or virtual["source"] != {"virtual": "."}
+        or "sdist" in virtual
+        or "wheels" in virtual
+    ):
+        fail("uv.lock virtual project identity or artifact schema drifted")
     for name, version in DIRECT_PINS.items():
         row = result.get(name)
         if row is None or row.get("version") not in {version, f"{version}+cpu"}:
@@ -181,8 +193,9 @@ def gate(project: Path, lock: Path, license_manifest: Path) -> dict[str, Any]:
     validate_project(project_doc)
     rows = validate_lock(read_toml(lock))
     manifest = validate_license_manifest(license_manifest)
+    registry_rows = {name for name, row in rows.items() if "registry" in row["source"]}
     reviewed = {row["name"] for row in manifest["package_review"]}
-    if reviewed != set(rows):
+    if reviewed != registry_rows:
         fail("package/native license evidence does not cover the exact lock closure")
     if manifest["status"] == "APPROVED" and (
         any(row["status"] != "APPROVED" for row in manifest["package_review"])
@@ -193,7 +206,7 @@ def gate(project: Path, lock: Path, license_manifest: Path) -> dict[str, Any]:
         fail("approved gate contains unresolved package/native/source review")
     if manifest["status"] != "APPROVED" or manifest["owner_signoff"] != "OWNER_SIGNED_OFF":
         fail("execution blocked until package/native license evidence and owner signoff")
-    return {"status": "PASS", "package_count": len(rows), "publication": "NO_UPLOAD"}
+    return {"status": "PASS", "package_count": len(registry_rows), "publication": "NO_UPLOAD"}
 
 
 def self_test() -> None:
@@ -233,6 +246,48 @@ def self_test() -> None:
         assert "forbidden" in str(error)
     else:
         raise AssertionError("forbidden registry closure marker accepted")
+    for invalid_lock in (
+        {**valid_lock, "package": valid_lock["package"][1:]},
+        {**valid_lock, "package": [*valid_lock["package"], {"name": "other-project", "version": "0.1.0", "source": {"virtual": "."}}]},
+        {**valid_lock, "package": [{**row, "name": "wrong-project"} if row.get("source") == {"virtual": "."} else row for row in valid_lock["package"]]},
+        {**valid_lock, "package": [{**row, "source": {"registry": PYPI_INDEX}} if row.get("source") == {"virtual": "."} else row for row in valid_lock["package"]]},
+    ):
+        try:
+            validate_lock(invalid_lock)
+        except GateError:
+            pass
+        else:
+            raise AssertionError("invalid virtual project lock accepted")
+    with tempfile.TemporaryDirectory(prefix="cosyvoice2-llm-coverage-") as temp:
+        temp_root = Path(temp)
+        lock_path = temp_root / "uv.lock"
+        lock_lines = ["version = 1", "revision = 3", f"requires-python = '{PYTHON_REQUIREMENT}'", "", ""]
+        lock_lines.extend(
+            [
+                "[[package]]",
+                f"name = '{PROJECT_NAME}'",
+                "version = '0.1.0'",
+                "source = { virtual = '.' }",
+                "",
+            ]
+        )
+        for name, version in DIRECT_PINS.items():
+            registry = TORCH_INDEX if name == "torch" else PYPI_INDEX
+            lock_lines.extend(["[[package]]", f"name = '{name}'", f"version = '{version}'", f"source = {{ registry = '{registry}' }}", ""])
+        lock_path.write_text("\n".join(lock_lines), encoding="utf-8")
+        covered_manifest = copy.deepcopy(manifest)
+        covered_manifest["package_review"] = [
+            {"name": name, "version": version, "status": "PENDING_PRIMARY_SOURCE_REVIEW"}
+            for name, version in DIRECT_PINS.items()
+        ]
+        manifest_path = temp_root / "license.json"
+        manifest_path.write_text(json.dumps(covered_manifest), encoding="utf-8")
+        try:
+            gate(here / "pyproject.toml", lock_path, manifest_path)
+        except GateError as error:
+            assert "execution blocked" in str(error)
+        else:
+            raise AssertionError("pending covered registry closure unexpectedly passed")
     try:
         gate(here / "pyproject.toml", here / "uv.lock", here / "license_gate_manifest.json")
     except GateError as error:
