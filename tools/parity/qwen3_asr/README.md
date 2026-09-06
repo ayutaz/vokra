@@ -107,7 +107,8 @@ Run only through the VAST worker after provisioning:
 
 ```sh
 scripts/publish/vast-ai/run-qwen3-asr-validation.sh \
-  --variant all --approval-evidence /root/scratchpad/qwen3-asr-owner-approval.json
+  --variant all --approval-evidence /root/scratchpad/qwen3-asr-owner-approval.json \
+  --expected-head <exact-clean-vokra-head-from-bundle>
 ```
 
 The worker uses the committed two-second mono 16 kHz JFK-derived clip at
@@ -131,6 +132,7 @@ scripts/verify/apple-silicon-qwen3-asr.sh \
   --gguf-1.7b-sha256 <sha256-from-vast-evidence> \
   --reference-1.7b /remote/stage/reference-1.7b \
   --reference-1.7b-sha256 <manifest-sha256-from-vast-evidence> \
+  --expected-head <exact-clean-vokra-head-from-vast-evidence> \
   --approval-evidence /remote/stage/qwen3-asr-owner-approval.json \
   --evidence-dir /remote/evidence/qwen3-asr-metal
 ```

@@ -24,6 +24,7 @@ usage: apple-silicon-qwen3-asr.sh \
   --reference-0.6b-sha256 <64-hex> \
   --gguf-1.7b <path> --gguf-1.7b-sha256 <64-hex> --reference-1.7b <dir> \
   --reference-1.7b-sha256 <64-hex> \
+  --expected-head <40-hex> \
   --approval-evidence <external-approval.json> \
   --evidence-dir <empty-dir>
        apple-silicon-qwen3-asr.sh --self-test
@@ -32,6 +33,8 @@ Runs the exact-token and projected-audio CPU/Metal parity test for both pinned
 Qwen3-ASR releases. It refuses the 16-GB maintainer class of machine and also
 requires VOKRA_REMOTE_APPLE_SILICON=1, Darwin arm64, a clean checkout, at
 least 32 GB physical memory, and all four real inputs before Cargo starts.
+It accepts PASS only when all six per-variant CPU/reference, Metal/reference,
+and Metal/CPU sentinels are present exactly once.
 
 This script does not download, upload, convert, publish, or delete a model.
 Transfer the VAST-produced GGUFs directly to a disposable remote Apple host;
@@ -92,6 +95,15 @@ require_absent_evidence_dir() {
 require_file() {
   local label="$1" path="$2"
   [[ -f "$path" && ! -L "$path" && -s "$path" ]] || die "$label is missing, symlinked, or empty: $path"
+}
+
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be 40 lowercase hex characters"
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die "Apple checkout must be clean before parity execution"
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die "could not read checkout HEAD"
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual != expected $expected"
 }
 
 license_preflight() {
@@ -299,12 +311,25 @@ run_self_test() (
   printf '%s\n' \
     'test qwen3_asr_real_metal_matches_cpu_exact_greedy ... ok' \
     'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    'QWEN3_ASR_PARITY qwen3-asr-0.6b CPU_vs_official token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-0.6b Metal_vs_official token_ids=exact text=exact PASS' \
     'QWEN3_ASR_PARITY qwen3-asr-0.6b Metal_vs_CPU token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-1.7b CPU_vs_official token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-1.7b Metal_vs_official token_ids=exact text=exact PASS' \
     'QWEN3_ASR_PARITY qwen3-asr-1.7b Metal_vs_CPU token_ids=exact text=exact PASS' > "$temporary/parity.log"
   require_one_named_test_passed "$temporary/parity.log" qwen3_asr_real_metal_matches_cpu_exact_greedy \
     'QWEN3_ASR_PARITY qwen3-asr-0.6b Metal_vs_CPU token_ids=exact text=exact PASS'
   require_one_named_test_passed "$temporary/parity.log" qwen3_asr_real_metal_matches_cpu_exact_greedy \
     'QWEN3_ASR_PARITY qwen3-asr-1.7b Metal_vs_CPU token_ids=exact text=exact PASS'
+  for marker in \
+    'QWEN3_ASR_PARITY qwen3-asr-0.6b CPU_vs_official token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-0.6b Metal_vs_official token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-0.6b Metal_vs_CPU token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-1.7b CPU_vs_official token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-1.7b Metal_vs_official token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-1.7b Metal_vs_CPU token_ids=exact text=exact PASS'; do
+    [[ "$(grep -Fxc "$marker" "$temporary/parity.log" || true)" == 1 ]] || die "parity sentinel self-test failed: $marker"
+  done
   for malformed in duplicate prefix suffix FAIL; do
     cp "$temporary/parity.log" "$temporary/$malformed.log"
     case "$malformed" in
@@ -324,10 +349,10 @@ run_self_test() (
 main() {
   local gguf_06='' gguf_06_digest='' reference_06='' reference_06_digest=''
   local gguf_17='' gguf_17_digest='' reference_17='' reference_17_digest=''
-  local approval='' evidence_dir='' self_test=0 seen=''
+  local approval='' evidence_dir='' expected_head='' self_test=0 seen=''
   while (( $# > 0 )); do
     case "$1" in
-      --gguf-*|--reference-*|--evidence-dir|--approval-evidence)
+      --gguf-*|--reference-*|--evidence-dir|--approval-evidence|--expected-head)
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }
         [[ "$seen" != *"|$1|"* ]] || { usage; return 2; }
         seen+="|$1|" ;;
@@ -382,6 +407,10 @@ main() {
         approval="$2"
         shift 2
         ;;
+      --expected-head)
+        expected_head="$2"
+        shift 2
+        ;;
       --self-test)
         [[ "$seen" != *"|$1|"* ]] || { usage; return 2; }
         seen+="|$1|"
@@ -400,16 +429,17 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ -z "$gguf_06$gguf_06_digest$reference_06$reference_06_digest$gguf_17$gguf_17_digest$reference_17$reference_17_digest$approval$evidence_dir" ]] \
+    [[ -z "$gguf_06$gguf_06_digest$reference_06$reference_06_digest$gguf_17$gguf_17_digest$reference_17$reference_17_digest$approval$evidence_dir$expected_head" ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
   [[ -n "$gguf_06" && -n "$gguf_06_digest" && -n "$reference_06" && -n "$reference_06_digest" && \
-    -n "$gguf_17" && -n "$gguf_17_digest" && -n "$reference_17" && -n "$reference_17_digest" && -n "$approval" && -n "$evidence_dir" ]] \
+    -n "$gguf_17" && -n "$gguf_17_digest" && -n "$reference_17" && -n "$reference_17_digest" && -n "$approval" && -n "$evidence_dir" && -n "$expected_head" ]] \
     || { usage; die "all two-variant model/reference arguments and --evidence-dir are required"; }
   [[ "$gguf_06_digest" =~ ^[0-9a-f]{64}$ && "$gguf_17_digest" =~ ^[0-9a-f]{64}$ ]] \
     || die "GGUF SHA-256 arguments must be 64 lowercase hex characters"
+  require_expected_head "$expected_head"
 
   license_preflight "$approval"
   require_remote_apple_host
@@ -445,7 +475,7 @@ main() {
     VOKRA_QWEN3_ASR_1_7B_REFERENCE_DIR="$reference_17" \
     CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" \
     RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    CARGO_NET_OFFLINE=true cargo test --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
       -p vokra-models --features metal --test qwen3_asr_real \
       qwen3_asr_real_metal_matches_cpu_exact_greedy -- --exact --nocapture \
       2>&1 | tee "$evidence_dir/parity.log"
@@ -457,11 +487,30 @@ main() {
     qwen3_asr_real_metal_matches_cpu_exact_greedy "$marker_06"
   [[ "$(grep -Fxc "$marker_17" "$evidence_dir/parity.log" || true)" == 1 ]] \
     || die "1.7B Metal PASS marker must occur exactly once"
+  local marker total_markers=0
+  for marker in \
+    'QWEN3_ASR_PARITY qwen3-asr-0.6b CPU_vs_official token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-0.6b Metal_vs_official token_ids=exact text=exact PASS' \
+    "$marker_06" \
+    'QWEN3_ASR_PARITY qwen3-asr-1.7b CPU_vs_official token_ids=exact text=exact PASS' \
+    'QWEN3_ASR_PARITY qwen3-asr-1.7b Metal_vs_official token_ids=exact text=exact PASS' \
+    "$marker_17"; do
+    [[ "$(grep -Fxc "$marker" "$evidence_dir/parity.log" || true)" == 1 ]] \
+      || die "expected exactly one parity sentinel: $marker"
+    total_markers=$((total_markers + 1))
+  done
+  [[ "$(grep -Ec '^QWEN3_ASR_PARITY qwen3-asr-(0\.6b|1\.7b) (CPU_vs_official|Metal_vs_official|Metal_vs_CPU) token_ids=exact text=exact PASS$' "$evidence_dir/parity.log" || true)" == "$total_markers" ]] \
+    || die "unexpected Qwen3-ASR parity sentinel count"
 
   {
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
+    echo "qwen3_asr_0_6b_cpu_vs_official=PASS"
+    echo "qwen3_asr_0_6b_metal_vs_official=PASS"
     echo "qwen3_asr_0_6b_cpu_vs_metal=PASS"
+    echo "qwen3_asr_1_7b_cpu_vs_official=PASS"
+    echo "qwen3_asr_1_7b_metal_vs_official=PASS"
     echo "qwen3_asr_1_7b_cpu_vs_metal=PASS"
     echo "projected_audio_atol=0.01"
     echo "greedy_ids=exact"

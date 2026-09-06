@@ -67,7 +67,7 @@ require_absent_work_dir() {
 
 usage() {
   cat <<'EOF' >&2
-usage: run-qwen3-asr-validation.sh --variant <0.6b|1.7b|all> --approval-evidence <json> [--work-dir <absent-dir>]
+usage: run-qwen3-asr-validation.sh --variant <0.6b|1.7b|all> --approval-evidence <json> --expected-head <40-hex> [--work-dir <absent-dir>]
        run-qwen3-asr-validation.sh --self-test
 
 VAST-only, non-publishing gate for Qwen3-ASR. For each requested exact release
@@ -163,6 +163,15 @@ require_vast_host() {
   if (( free_kib < MIN_FREE_DISK_KIB )); then
     die "free disk=${free_kib} KiB is below the 50-GB run guard"
   fi
+}
+
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be 40 lowercase hex characters"
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die "VAST checkout must be clean before execution"
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die "could not read checkout HEAD"
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual != expected $expected"
 }
 
 require_tooling() {
@@ -382,7 +391,7 @@ PY
   fetch_anchor="    --fetch-model-licenses \\"
   audit_line="$(grep -nF -- "$audit_anchor" "$0" | tail -1 | cut -d: -f1)"
   wheel_line="$(grep -n '^  official_wheel=' "$0" | tail -1 | cut -d: -f1)"
-  build_line="$(grep -n '^  cargo build --manifest-path' "$0" | tail -1 | cut -d: -f1)"
+  build_line="$(grep -n '^  CARGO_NET_OFFLINE=true cargo build --offline' "$0" | tail -1 | cut -d: -f1)"
   [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$wheel_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || failed=1
   (( gate_line < host_line && host_line < tooling_line && tooling_line < wheel_line && wheel_line < sync_line && sync_line < audit_line && audit_line < build_line )) || failed=1
   grep -Fq -- "$audit_anchor" "$0" || failed=1
@@ -453,7 +462,7 @@ PY
     bash "$0" --variant 0.6b --approval-evidence "$probe_root/approval.json" --work-dir "$probe_root/work" >"$probe_output" 2>&1; then
     failed=1
   fi
-  grep -Fq 'preflight gate' "$probe_output" || failed=1
+  grep -Fq -- '--expected-head is required' "$probe_output" || failed=1
   grep -Eq 'uv sync|download_snapshot|cargo (build|test|check|clippy)' "$probe_output" && failed=1
   [[ ! -e "$probe_root/scratch" && ! -e "$probe_root/work" ]] || failed=1
   rm -rf "$probe_root"
@@ -465,7 +474,7 @@ PY
 }
 
 main() {
-  local selection='' work_dir='' approval='' self_test=0
+  local selection='' work_dir='' approval='' expected_head='' self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --variant)
@@ -485,6 +494,12 @@ main() {
         approval="$2"
         shift 2
         ;;
+      --expected-head)
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }
+        [[ -z "$expected_head" ]] || { usage; return 2; }
+        expected_head="$2"
+        shift 2
+        ;;
       --self-test)
         [[ "$self_test" == 0 ]] || { usage; return 2; }
         self_test=1
@@ -501,7 +516,7 @@ main() {
     esac
   done
   if (( self_test == 1 )); then
-    [[ -z "$selection" && -z "$work_dir" && -z "$approval" ]] || die "--self-test accepts no other arguments"
+    [[ -z "$selection" && -z "$work_dir" && -z "$approval" && -z "$expected_head" ]] || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
@@ -511,6 +526,8 @@ main() {
   esac
 
   [[ -n "$approval" ]] || { usage; die "--approval-evidence is required"; }
+  [[ -n "$expected_head" ]] || { usage; die "--expected-head is required"; }
+  require_expected_head "$expected_head"
   pre_sync_gate "$approval"
   require_vast_host
   require_tooling
@@ -539,7 +556,7 @@ main() {
     2>&1 | tee "$evidence_dir/dependency-audit.log"
 
   step "Build the current Vokra CLI on VAST"
-  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli \
+  CARGO_NET_OFFLINE=true cargo build --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli \
     2>&1 | tee "$evidence_dir/build-cli.log"
 
   if [[ "$selection" == "0.6b" || "$selection" == "all" ]]; then
@@ -553,6 +570,7 @@ main() {
     {
       printf '%s\n' "VOKRA_REMOTE_APPLE_SILICON=1 \\"
       echo "scripts/verify/apple-silicon-qwen3-asr.sh \\"
+      echo "  --expected-head $expected_head \\"
       echo "  --gguf-0.6b '<APPLE_QWEN3_ASR_0_6B_GGUF>' \\"
       echo "  --gguf-0.6b-sha256 $(sha256_file "$work_dir/qwen3-asr-0.6b.gguf") \\"
       echo "  --reference-0.6b '<APPLE_QWEN3_ASR_0_6B_REFERENCE>' \\"
@@ -574,14 +592,14 @@ main() {
   bash "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh"
   bash "$VOKRA_ROOT/scripts/check-bound-arch-coverage.sh"
   bash "$VOKRA_ROOT/scripts/check-arch-handshake.sh"
-  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace \
+  CARGO_NET_OFFLINE=true cargo test --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace \
     2>&1 | tee "$evidence_dir/workspace-test.log"
-  cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace \
+  CARGO_NET_OFFLINE=true cargo clippy --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace \
     --all-targets -- -D warnings 2>&1 | tee "$evidence_dir/workspace-clippy.log"
 
   step "Cross-check Apple Metal feature compilation"
   rustup target add aarch64-apple-darwin
-  cargo check --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked \
+  CARGO_NET_OFFLINE=true cargo check --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked \
     -p vokra-models --features metal --target aarch64-apple-darwin \
     2>&1 | tee "$evidence_dir/apple-metal-cross-check.log"
 
@@ -589,6 +607,7 @@ main() {
     echo "verdict=PASS"
     echo "selection=$selection"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
     echo "workspace_test=PASS"
     echo "workspace_clippy=PASS"
     echo "apple_metal_cross_compile=PASS"
