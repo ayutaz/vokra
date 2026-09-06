@@ -494,7 +494,7 @@ main() {
 
   log "running exact official CPU and Metal-vs-CPU parity"
   env \
-  VOKRA_VOICE_GENDER_GGUF="$gguf" \
+    VOKRA_VOICE_GENDER_GGUF="$gguf" \
     VOKRA_VOICE_GENDER_GGUF_SHA256="$gguf_sha" \
     VOKRA_VOICE_GENDER_REFERENCE_DIR="$reference_dir" \
     VOKRA_VOICE_GENDER_REFERENCE_MANIFEST_SHA256="$reference_sha" \

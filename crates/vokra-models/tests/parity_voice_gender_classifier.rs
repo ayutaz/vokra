@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
 use vokra_core::BackendKind;
 use vokra_models::voice_gender_classifier::{CLASS_COUNT, VoiceGenderClassifier};
 
