@@ -104,6 +104,14 @@ require_file() {
   [[ -f "$path" && ! -L "$path" && -s "$path" ]] || die "$label is missing, symlinked, or empty: $path"
 }
 
+directory_mode() {
+  case "$(uname -s)" in
+    Darwin) stat -f '%Lp' "$1" ;;
+    Linux) stat -c '%a' "$1" ;;
+    *) die "unsupported platform for directory mode check" ;;
+  esac
+}
+
 require_empty_directory() {
   local directory="$1" parent
   reject_path "$directory" evidence
@@ -112,7 +120,7 @@ require_empty_directory() {
   parent="$(dirname "$directory")"
   [[ -d "$parent" && ! -L "$parent" ]] || die "evidence parent must exist and be non-symlink: $parent"
   mkdir -m 700 "$directory"
-  [[ "$(stat -f '%Lp' "$directory")" == 700 ]] || die "evidence directory mode is not 700"
+  [[ "$(directory_mode "$directory")" == 700 ]] || die "evidence directory mode is not 700"
 }
 
 require_remote_apple_host() {
