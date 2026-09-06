@@ -17,9 +17,11 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: apple-silicon-sbv2.sh --gguf <vast-sbv2-main.gguf> \
+usage: apple-silicon-sbv2.sh --expected-head <40-lower-hex> \
+  --gguf <vast-sbv2-main.gguf> \
   --gguf-sha256 <sha256> --reference-dir <vast-sbv2-bundle> \
-  --reference-manifest-sha256 <sha256> --evidence-dir <absent-dir>
+  --reference-manifest-sha256 <sha256> --packet-sha256 <sha256> \
+  --approval-evidence <json> --approval-sha256 <sha256> --evidence-dir <absent-dir>
        apple-silicon-sbv2.sh --self-test
 
 The bundle contains the main GGUF, BERT sidecars, manifest and raw upstream
@@ -29,7 +31,61 @@ MEASURED_NOT_GATED until a real hardware campaign establishes bounds.
 EOF
 }
 
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { die "expected HEAD must be lowercase 40-hex"; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] \
+    || { die "$VOKRA_ROOT is not a Vokra checkout"; return 2; }
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || { die "could not read checkout HEAD"; return 2; }
+  [[ "$actual" == "$expected" ]] || { die "checkout HEAD mismatch: got $actual, expected $expected"; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || { die "remote Apple checkout must be clean"; return 2; }
+  log "verified clean expected HEAD: $actual"
+}
+
+require_license_approval() {
+  [[ -f "$VOKRA_ROOT/docs/license-audit.md" && ! -L "$VOKRA_ROOT/docs/license-audit.md" ]] \
+    || { die "license audit is missing or symlinked"; return 2; }
+  command -v uv >/dev/null 2>&1 || { die "uv is required for the license preflight"; return 2; }
+  uv run --no-project --offline --python 3.12 python \
+    "$VOKRA_ROOT/scripts/publish/signoff_match.py" \
+    --check-repo sbv2-v2-jp-extra-base --audit "$VOKRA_ROOT/docs/license-audit.md" \
+    >/dev/null \
+    || { die "SBV2 JP-Extra owner/license sign-off is not approved"; return 2; }
+  log "verified SBV2 JP-Extra owner/license sign-off"
+}
+
+require_external_approval() {
+  local approval="$1" expected_head="$2" expected_sha="$3" actual_sha
+  require_file "SBV2 owner approval" "$approval"
+  actual_sha="$(sha256_file "$approval")"
+  [[ "$actual_sha" == "$expected_sha" ]] || die "SBV2 owner approval SHA-256 mismatch"
+  uv run --no-project --offline --python 3.12 python \
+    "$VOKRA_ROOT/tools/parity/sbv2_approval_preflight.py" \
+    --approval "$approval" --expected-head "$expected_head" >/dev/null \
+    || { die "external SBV2 owner approval is invalid"; return 2; }
+}
+
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+
+packet_sha256() {
+  local directory="$1" temporary digest
+  temporary="$(mktemp "${TMPDIR:-/tmp}/vokra-sbv2-packet.XXXXXX")" || return 2
+  hash_directory "$directory" "$temporary"
+  digest="$(sha256_file "$temporary")"
+  rm -f "$temporary"
+  printf '%s\n' "$digest"
+}
+
+verify_sidecar() {
+  local artifact="$1" sidecar="$2" expected
+  require_file "SBV2 packet artifact" "$artifact"
+  require_file "SBV2 packet sidecar" "$sidecar"
+  expected="$(awk 'NF && $1 !~ /^#/ {print $1; exit}' "$sidecar")"
+  require_sha256 "$expected"
+  [[ "$(sha256_file "$artifact")" == "${expected,,}" ]] \
+    || die "SBV2 packet sidecar mismatch: $artifact"
+}
 
 require_sha256() {
   [[ "$1" =~ ^[0-9a-fA-F]{64}$ ]] || die "expected SHA-256 is malformed"
@@ -126,6 +182,8 @@ require_tooling() {
     || die "SBV2 Metal-vs-CPU measurement path is missing"
   grep -Fq 'SBV2_METAL_VS_CPU MEASURED_NOT_GATED' "$PARITY_SOURCE" \
     || die "SBV2 Metal result is not explicitly measurement-only"
+  grep -Fq 'SBV2_METAL_VS_REFERENCE MEASURED_NOT_GATED' "$PARITY_SOURCE" \
+    || die "SBV2 Metal/reference result is not explicitly measurement-only"
   grep -Fq 'BackendKind::Metal' "$PARITY_SOURCE" \
     || die "SBV2 parity source lacks explicit Metal selection"
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
@@ -134,11 +192,29 @@ require_tooling() {
 }
 
 require_reference() {
-  local directory="$1"
+  local directory="$1" entry base top_count
   [[ -d "$directory" && ! -L "$directory" ]] || die "reference directory is missing or symlinked: $directory"
   reject_symlink_ancestors "$directory"
+  uv run --no-project --offline --python 3.12 python \
+    "$VOKRA_ROOT/tools/parity/sbv2_approval_preflight.py" --packet "$directory" \
+    || { die "strict SBV2 reference packet validation failed"; return 2; }
+  [[ -z "$(find "$directory" -type l -print -quit)" ]] || die "reference packet contains a symlink"
+  top_count="$(find "$directory" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+  [[ "$top_count" == 10 ]] || die "reference packet top-level entry count is not exact: $top_count"
+  while IFS= read -r entry; do
+    base="${entry##*/}"
+    case "$base" in
+      reference_dump.manifest.json|reference_dump|sbv2-v2-multilingual-base.gguf|sbv2-v2-multilingual-base.gguf.sha256|deberta-v2-large-japanese-char-wwm.gguf|deberta-v2-large-japanese-char-wwm.gguf.sha256|deberta-v3-large.gguf|deberta-v3-large.gguf.sha256|chinese-roberta-wwm-ext-large.gguf|chinese-roberta-wwm-ext-large.gguf.sha256) ;;
+      *) die "unexpected reference packet entry: $entry"; return 2 ;;
+    esac
+  done < <(find "$directory" -mindepth 1 -maxdepth 1 -print)
+  [[ -z "$(find "$directory/reference_dump" -mindepth 1 -type d -print -quit)" ]] || die "reference_dump contains a directory"
   require_file "SBV2 manifest" "$directory/reference_dump.manifest.json"
   require_file "SBV2 main GGUF" "$directory/sbv2-v2-multilingual-base.gguf"
+  verify_sidecar "$directory/sbv2-v2-multilingual-base.gguf" "$directory/sbv2-v2-multilingual-base.gguf.sha256"
+  verify_sidecar "$directory/deberta-v2-large-japanese-char-wwm.gguf" "$directory/deberta-v2-large-japanese-char-wwm.gguf.sha256"
+  verify_sidecar "$directory/deberta-v3-large.gguf" "$directory/deberta-v3-large.gguf.sha256"
+  verify_sidecar "$directory/chinese-roberta-wwm-ext-large.gguf" "$directory/chinese-roberta-wwm-ext-large.gguf.sha256"
   grep -Fq '"sbv2_main"' "$directory/reference_dump.manifest.json" \
     || die "SBV2 manifest lacks checkpoint.sbv2_main"
   grep -Fq '"bert_ja"' "$directory/reference_dump.manifest.json" \
@@ -147,6 +223,8 @@ require_reference() {
     || die "SBV2 manifest lacks checkpoint.bert_en"
   grep -Fq '"request"' "$directory/reference_dump.manifest.json" \
     || die "SBV2 manifest lacks the exact request contract"
+  grep -Eq '"language"[[:space:]]*:[[:space:]]*"JA"' "$directory/reference_dump.manifest.json" \
+    || die "SBV2 Apple worker requires a Japanese reference packet"
   grep -Fq '"seed"' "$directory/reference_dump.manifest.json" \
     || die "SBV2 manifest lacks the exact deterministic seed"
   require_file "SBV2 reference phoneme ids" "$directory/reference_dump/phoneme_ids.bin"
@@ -169,6 +247,12 @@ require_sbv2_metal_sentinel() {
   local log_file="$1"
   [[ "$(grep -Ec '^SBV2_METAL_VS_CPU MEASURED_NOT_GATED waveform_max_abs=[0-9]+\.[0-9]{6}e[+-][0-9]{2} intermediate_max_abs=[0-9]+\.[0-9]{6}e[+-][0-9]{2}$' "$log_file" || true)" == 1 ]] \
     || { die "SBV2 Metal measurement sentinel is not one complete line"; return 2; }
+}
+
+require_sbv2_metal_reference_sentinel() {
+  local log_file="$1"
+  [[ "$(grep -Ec '^SBV2_METAL_VS_REFERENCE MEASURED_NOT_GATED waveform_max_abs=[0-9]+\.[0-9]{6}e[+-][0-9]{2}$' "$log_file" || true)" == 1 ]] \
+    || { die "SBV2 Metal/reference measurement sentinel is not one complete line"; return 2; }
 }
 
 require_sbv2_cpu_sentinel() {
@@ -218,6 +302,8 @@ run_self_test() (
   require_cargo_singleton "$synthetic_log" parity_sbv2_real_waveform_matches_reference_dump
   require_sbv2_cpu_sentinel "$synthetic_log"
   require_sbv2_metal_sentinel "$synthetic_log"
+  printf 'SBV2_METAL_VS_REFERENCE MEASURED_NOT_GATED waveform_max_abs=3.000000e-04\n' >>"$synthetic_log"
+  require_sbv2_metal_reference_sentinel "$synthetic_log"
   printf 'test extra_case ... ok\n' >>"$synthetic_log"
   if require_cargo_singleton "$synthetic_log" parity_sbv2_real_waveform_matches_reference_dump >/dev/null 2>&1; then
     log "self-test accepted an extra Cargo test line"
@@ -250,12 +336,16 @@ run_self_test() (
     || { log "self-test: blocked production probe created evidence"; fail=1; }
   # shellcheck disable=SC2016 # literal contract tokens
   for required in \
-    'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' \
+    'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' '--expected-head' \
     'MIN_MEMORY_BYTES=32000000000' 'hw.memsize' 'xcrun -f metal' \
     'parity_sbv2_real_waveform_matches_reference_dump' \
-    'VOKRA_SBV2_FIXTURE_DIR' 'VOKRA_SBV2_METAL_VS_CPU=1' \
+    'VOKRA_SBV2_FIXTURE_DIR' 'VOKRA_SBV2_G2P_MODE=fixture-replay' 'VOKRA_SBV2_METAL_VS_CPU=1' \
     'SBV2_METAL_VS_CPU MEASURED_NOT_GATED' \
-    'CARGO_BUILD_JOBS=1 cargo test' \
+    'SBV2_METAL_VS_REFERENCE MEASURED_NOT_GATED' \
+    'verdict=MEASUREMENT_ONLY' 'cpu_vs_upstream=PASS' 'metal_vs_upstream=MEASURED_NOT_GATED' 'metal_vs_cpu=MEASURED_NOT_GATED' \
+    'CARGO_NET_OFFLINE=true' '--offline --release' '--test-threads=1' \
+    'CARGO_BUILD_JOBS=1 cargo test' '--ignored --exact --test-threads=1 --nocapture' 'require_license_approval' \
+    'require_external_approval' 'sbv2_approval_preflight.py' '--packet' '--packet-sha256' 'packet_sha256' \
     'reject_checkout_descendant' \
     'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml"' \
     '--features metal' '--test parity_sbv2_real'; do
@@ -271,7 +361,7 @@ run_self_test() (
   [[ "$cpu_gate_line" =~ ^[0-9]+$ && "$metal_branch_line" =~ ^[0-9]+$ && \
     "$cpu_gate_line" -lt "$metal_branch_line" ]] \
     || { log "self-test could not prove CPU gates precede Metal execution"; fail=1; }
-  if grep -En '(^|[[:space:]])(curl|wget|python3?|pip|.*convert|git[[:space:]]+(clone|fetch|pull)|.*(upload|publish)|git[[:space:]]+push)([[:space:]]|$)' \
+  if grep -En '^[[:space:]]*(curl|wget|python3?|pip|.*convert|git[[:space:]]+(clone|fetch|pull)|.*(upload|publish)|git[[:space:]]+push)([[:space:]]|$)' \
     "$script_path" >/dev/null; then
     log "self-test found acquisition/conversion/publication command"
     fail=1
@@ -288,19 +378,36 @@ run_self_test() (
     log "self-test accepted duplicate --self-test"
     fail=1
   fi
+  if "$script_path" --expected-head 0000000000000000000000000000000000000000 \
+    --expected-head 0000000000000000000000000000000000000000 >/dev/null 2>&1; then
+    log "self-test accepted duplicate --expected-head"
+    fail=1
+  fi
+  if "$script_path" --packet-sha256 "$temporary/value" --packet-sha256 "$temporary/value" >/dev/null 2>&1; then
+    log "self-test accepted duplicate --packet-sha256"
+    fail=1
+  fi
+  if "$script_path" --approval-evidence "$temporary/value" --approval-evidence "$temporary/value" >/dev/null 2>&1; then
+    log "self-test accepted duplicate --approval-evidence"
+    fail=1
+  fi
   (( fail == 0 )) || return 1
   log "self-test PASS"
 )
 
 main() {
-  local gguf='' gguf_sha_expected='' reference_dir='' reference_manifest_sha_expected='' evidence_dir='' self_test=0 output gguf_sha reference_manifest_sha
-  local seen_gguf=0 seen_gguf_sha=0 seen_reference=0 seen_reference_sha=0 seen_evidence=0 seen_self=0
+  local expected_head='' gguf='' gguf_sha_expected='' reference_dir='' reference_manifest_sha_expected='' packet_sha_expected='' approval_evidence='' approval_sha_expected='' evidence_dir='' self_test=0 output gguf_sha reference_manifest_sha packet_sha
+  local seen_expected_head=0 seen_gguf=0 seen_gguf_sha=0 seen_reference=0 seen_reference_sha=0 seen_packet_sha=0 seen_approval=0 seen_approval_sha=0 seen_evidence=0 seen_self=0
   while (( $# > 0 )); do
     case "$1" in
+      --expected-head) (( seen_expected_head == 0 )) || die 'duplicate --expected-head'; (( $# >= 2 )) || die '--expected-head requires a value'; [[ "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head must be lowercase 40-hex'; seen_expected_head=1; expected_head="$2"; shift 2 ;;
       --gguf) (( seen_gguf == 0 )) || die 'duplicate --gguf'; (( $# >= 2 )) || die '--gguf requires a path'; [[ -n "$2" && "$2" != -* ]] || die '--gguf path is empty or starts with -'; seen_gguf=1; gguf="$2"; shift 2 ;;
       --gguf-sha256) (( seen_gguf_sha == 0 )) || die 'duplicate --gguf-sha256'; (( $# >= 2 )) || die '--gguf-sha256 requires a value'; require_sha256 "$2"; seen_gguf_sha=1; gguf_sha_expected="${2,,}"; shift 2 ;;
       --reference-dir) (( seen_reference == 0 )) || die 'duplicate --reference-dir'; (( $# >= 2 )) || die '--reference-dir requires a path'; [[ -n "$2" && "$2" != -* ]] || die '--reference-dir path is empty or starts with -'; seen_reference=1; reference_dir="$2"; shift 2 ;;
       --reference-manifest-sha256) (( seen_reference_sha == 0 )) || die 'duplicate --reference-manifest-sha256'; (( $# >= 2 )) || die '--reference-manifest-sha256 requires a value'; require_sha256 "$2"; seen_reference_sha=1; reference_manifest_sha_expected="${2,,}"; shift 2 ;;
+      --packet-sha256) (( seen_packet_sha == 0 )) || die 'duplicate --packet-sha256'; (( $# >= 2 )) || die '--packet-sha256 requires a value'; require_sha256 "$2"; seen_packet_sha=1; packet_sha_expected="${2,,}"; shift 2 ;;
+      --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; (( $# >= 2 )) || die '--approval-evidence requires a path'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
+      --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; (( $# >= 2 )) || die '--approval-sha256 requires a value'; require_sha256 "$2"; seen_approval_sha=1; approval_sha_expected="${2,,}"; shift 2 ;;
       --evidence-dir) (( seen_evidence == 0 )) || die 'duplicate --evidence-dir'; (( $# >= 2 )) || die '--evidence-dir requires a path'; [[ -n "$2" && "$2" != -* ]] || die '--evidence-dir path is empty or starts with -'; seen_evidence=1; evidence_dir="$2"; shift 2 ;;
       --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self_test=1; shift ;;
       -h|--help) [[ $self_test == 0 && $# == 1 ]] || die '--help cannot be combined with other arguments'; usage; return 0 ;;
@@ -308,25 +415,32 @@ main() {
     esac
   done
   if (( self_test == 1 )); then
-    [[ "$seen_gguf" == 0 && "$seen_gguf_sha" == 0 && "$seen_reference" == 0 && "$seen_reference_sha" == 0 && "$seen_evidence" == 0 ]] || die "--self-test accepts no other arguments"
+    [[ "$seen_expected_head$seen_gguf$seen_gguf_sha$seen_reference$seen_reference_sha$seen_packet_sha$seen_approval$seen_approval_sha$seen_evidence" == 000000000 ]] || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
-  [[ -n "$gguf" && -n "$gguf_sha_expected" && -n "$reference_dir" && -n "$reference_manifest_sha_expected" && -n "$evidence_dir" ]] \
-    || { usage; die "--gguf, --gguf-sha256, --reference-dir, --reference-manifest-sha256 and --evidence-dir are required"; }
+  [[ -n "$expected_head$gguf$gguf_sha_expected$reference_dir$reference_manifest_sha_expected$packet_sha_expected$approval_evidence$approval_sha_expected$evidence_dir" ]] \
+    || { usage; die "all SBV2 input, hash, approval, and evidence arguments are required"; }
+  # Verify checkout identity and legal approval before touching any staged
+  # input or reserving an evidence path.
+  require_expected_head "$expected_head"
+  require_license_approval
+  require_external_approval "$approval_evidence" "$expected_head" "$approval_sha_expected"
   require_file "VAST-produced SBV2 GGUF" "$gguf"
   gguf_sha="$(sha256_file "$gguf")"
   [[ "$gguf_sha" == "$gguf_sha_expected" ]] || die "SBV2 GGUF SHA-256 mismatch"
   require_reference "$reference_dir"
   reference_manifest_sha="$(sha256_file "$reference_dir/reference_dump.manifest.json")"
   [[ "$reference_manifest_sha" == "$reference_manifest_sha_expected" ]] || die "SBV2 reference manifest SHA-256 mismatch"
+  packet_sha="$(packet_sha256 "$reference_dir")"
+  [[ "$packet_sha" == "$packet_sha_expected" ]] || die "SBV2 reference packet SHA-256 mismatch"
   reject_checkout_descendant "$evidence_dir"
   require_empty_directory "$evidence_dir"
-  require_remote_apple_host
   require_tooling
+  require_remote_apple_host
   [[ "$gguf" -ef "$reference_dir/sbv2-v2-multilingual-base.gguf" ]] \
     || die "--gguf must be the manifest's staged SBV2 main path"
-  mkdir -p "$evidence_dir"
+  mkdir -m 700 "$evidence_dir" || die "evidence directory appeared during validation"
   record_environment "$evidence_dir/environment.txt"
   hash_directory "$reference_dir" "$evidence_dir/input-hashes.txt"
   {
@@ -336,16 +450,32 @@ main() {
   } >> "$evidence_dir/input-hashes.txt"
   output="$evidence_dir/parity.log"
   log "running SBV2 CPU/reference and Metal-vs-CPU measurement"
-  if ! VOKRA_SBV2_FIXTURE_DIR="$reference_dir" \
+  if ! VOKRA_SBV2_FIXTURE_DIR="$reference_dir" VOKRA_SBV2_G2P_MODE=fixture-replay \
     VOKRA_SBV2_METAL_VS_CPU=1 \
-    CARGO_BUILD_JOBS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release \
       -p vokra-models --features metal --test parity_sbv2_real \
-      parity_sbv2_real_waveform_matches_reference_dump -- --exact --nocapture 2>&1 | tee "$output"; then
+    parity_sbv2_real_waveform_matches_reference_dump -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$output"; then
     die "SBV2 CPU/Metal parity test failed; see $output"
   fi
   require_cargo_singleton "$output" parity_sbv2_real_waveform_matches_reference_dump
   require_sbv2_cpu_sentinel "$output"
   require_sbv2_metal_sentinel "$output"
+  require_sbv2_metal_reference_sentinel "$output"
+  [[ ! -e "$evidence_dir/summary.txt" ]] || die "summary already exists"
+  {
+    echo "verdict=MEASUREMENT_ONLY"
+    echo "expected_head=$expected_head"
+    echo "gguf_sha256=$gguf_sha"
+    echo "reference_manifest_sha256=$reference_manifest_sha"
+    echo "packet_sha256=$packet_sha"
+    echo "approval_sha256=$approval_sha_expected"
+    echo "g2p=FIXTURE_REPLAY_ONLY"
+    echo "production_japanese_g2p=UNRESOLVED"
+    echo "cpu_vs_upstream=PASS"
+    echo "metal_vs_upstream=MEASURED_NOT_GATED"
+    echo "metal_vs_cpu=MEASURED_NOT_GATED"
+    echo "publication=NO_UPLOAD"
+  } > "$evidence_dir/summary.txt"
   log "MEASURED_NOT_GATED: evidence is in $evidence_dir; no model publication performed"
 }
 

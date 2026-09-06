@@ -11,8 +11,7 @@
 //! # Gating (fabricated pass 禁止)
 //!
 //! The one `#[test]` below is `#[ignore]`d: `cargo test` skips it by
-//! default (this file's committed state — no fixture exists in this repo
-//! yet), and Task 28's own DoD is compile-only (`docs/superpowers/plans/
+//! default, and Task 28's own DoD is compile-only (`docs/superpowers/plans/
 //! 2026-07-26-sbv2-v2.md` Task 28 Step 1/Step 4: "ignored、compile 通過が本
 //! task の DoD" / "1 test ignored"). Fixtures land with **Task 34** (`tests/
 //! fixtures/sbv2/README.md` + `*.gguf.sha256` placeholders + this file's
@@ -26,15 +25,8 @@
 //! only "not run" gate, matching the sibling `sbv2_gguf_loader.rs`'s
 //! `from_gguf_loads_real_sbv2_weights` real-fixture test's own convention).
 //!
-//! **WP-06 update (Wave 0 Task 6, 2026-08-11)**: the fixtures named above
-//! have since landed for real (`tests/fixtures/sbv2/*.gguf` +
-//! `reference_dump.manifest.json` + `reference_dump/*.bin`, all committed),
-//! so the `#[ignore]` attribute this section describes has been REMOVED —
-//! the test now runs by default under plain `cargo test`, same as any
-//! other test in this file. The historical "gated behind --ignored" text
-//! above is preserved (append-never-delete, Kokoro `PROSODY_F0_ATOL`
-//! precedent) since it documents why the test was originally written
-//! ignored; it no longer describes the current state.
+//! Fixture files may exist in a checkout, but the real artifact leg remains
+//! explicitly ignored and requires an authenticated worker-provided directory.
 //! `require_fixture`'s loud-panic behavior on a genuinely missing fixture
 //! is unchanged — see [`StageResult`] below for how a NUMERIC parity miss
 //! (fixture present, diff exceeds atol) is now reported instead: every
@@ -263,27 +255,6 @@ const SBV2_MEL_SR: u32 = 44_100;
 const SBV2_MEL_N_FFT: usize = 2048;
 const SBV2_MEL_HOP: usize = 512;
 const SBV2_MEL_N_MELS: usize = 128;
-
-/// Repo-root-relative real-fixture directory for SBV2 parity
-/// (`tests/fixtures/sbv2/`, sibling of the existing `tests/fixtures/audio/`
-/// Whisper/Voxtral convention). `CARGO_MANIFEST_DIR` is
-/// `<repo>/crates/vokra-models` — `cargo test` sets a test binary's working
-/// directory to the crate root, not the invocation directory, so every
-/// repo-root fixture path in this workspace's parity tests is built this
-/// way (`parity_whisper.rs`, `parity_kokoro.rs`, `parity_voxtral.rs`,
-/// `parity_csm.rs`, `parity_moshi.rs`) rather than as a bare relative
-/// literal.
-fn fixtures_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os("VOKRA_SBV2_FIXTURE_DIR") {
-        return PathBuf::from(path);
-    }
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("tests")
-        .join("fixtures")
-        .join("sbv2")
-}
 
 /// Loud, actionable precondition check (FR-EX-08): after the main fixture
 /// has opened the real leg, any missing companion fixture panics — it never
@@ -1187,32 +1158,34 @@ fn utmos_gate(rust_wave: &[f32], reference_wave: &[f32], sbv2_sample_rate: u32) 
 /// `Vec<StageResult>` and asserted ONCE at the end, so a single run
 /// reports every stage's PASS/FAIL — see [`StageResult`]'s doc.
 #[test]
+#[ignore = "requires an authenticated SBV2 JP-Extra artifact and reference packet"]
 fn parity_sbv2_real_waveform_matches_reference_dump() {
-    let dir = fixtures_dir();
+    let dir = std::env::var_os("VOKRA_SBV2_FIXTURE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!("VOKRA_SBV2_FIXTURE_DIR is required for the authenticated real SBV2 parity leg")
+        });
+    assert!(
+        dir.is_absolute(),
+        "VOKRA_SBV2_FIXTURE_DIR must be absolute: {}",
+        dir.display()
+    );
+    assert_eq!(
+        std::env::var("VOKRA_SBV2_G2P_MODE").as_deref(),
+        Ok("fixture-replay"),
+        "SBV2 real parity is fixture-G2P replay only; production Japanese G2P is unresolved"
+    );
 
-    // Fixture-absent → clean skip (Whisper JFK / parity-kokoro pattern).
+    // Once opted in, every required artifact is a loud precondition failure;
+    // an absent packet is never converted into a passing test.
     // The 3 `.gguf` checkpoints (4 for ZH) and `reference_dump/*.bin` files
     // are gitignored — a CI runner that hasn't provisioned them via the
     // `parity-sbv2-real.yml` workflow (or a fresh dev clone without local
-    // fixtures) must SKIP loudly, not panic. `require_fixture`'s panic below
+    // fixtures) must fail loudly, not skip. `require_fixture`'s panic below
     // is reserved for the partial-fixture case (main GGUF present but
     // reference_dump/*.bin missing = corruption / mid-provisioning), where a
-    // loud error is genuinely needed. This early skip is explicit and named
-    // (FR-EX-08 — no fabricated pass, no silent skip).
+    // loud error is genuinely needed.
     let manifest_path = dir.join("reference_dump.manifest.json");
-    let main_gguf = dir.join("sbv2-v2-multilingual-base.gguf");
-    if !manifest_path.exists() || !main_gguf.exists() {
-        eprintln!(
-            "[parity_sbv2_real] SKIP: fixtures absent at {}. Populate via \
-             `parity-sbv2-real.yml` workflow or manual `tests/fixtures/sbv2/README.md` \
-             recipe (SBV2 v2 base + JA/EN BERT GGUFs, plus ZH BERT for a ZH run, \
-             and the Python reference dump). \
-             This is an FR-EX-08 explicit skip, not a fabricated pass.",
-            dir.display()
-        );
-        return;
-    }
-
     require_fixture(&manifest_path, "reference_dump.manifest.json (Task 34)");
     let manifest_bytes = std::fs::read(&manifest_path)
         .unwrap_or_else(|e| panic!("{}: {e}", manifest_path.display()));
@@ -1563,6 +1536,15 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
             waveform_delta.is_finite(),
             "SBV2 Metal waveform metric is non-finite"
         );
+        let metal_ref_overlap = metal_audio.samples.len().min(reference.len());
+        let metal_ref_delta = max_abs_diff(
+            &metal_audio.samples[..metal_ref_overlap],
+            &reference[..metal_ref_overlap],
+        );
+        assert!(
+            metal_ref_delta.is_finite(),
+            "SBV2 Metal/reference waveform metric is non-finite"
+        );
         let cpu_map = intermediates.to_dumper_map();
         let metal_map = metal_intermediates.to_dumper_map();
         assert_eq!(
@@ -1596,6 +1578,9 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
         }
         eprintln!(
             "SBV2_METAL_VS_CPU MEASURED_NOT_GATED waveform_max_abs={waveform_delta:.6e} intermediate_max_abs={intermediate_max:.6e}"
+        );
+        eprintln!(
+            "SBV2_METAL_VS_REFERENCE MEASURED_NOT_GATED waveform_max_abs={metal_ref_delta:.6e}"
         );
     }
 }

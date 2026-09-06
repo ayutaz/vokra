@@ -958,6 +958,11 @@ pub fn convert_sbv2_file(
     config_side_car: Option<&Path>,
     license: Option<&str>,
 ) -> Result<ConvertReport, ConvertError> {
+    reject_sbv2_path(input, "SBV2 safetensors input", true)?;
+    reject_sbv2_path(output, "SBV2 GGUF output", false)?;
+    if let Some(config_path) = config_side_car {
+        reject_sbv2_path(config_path, "SBV2 config side-car", true)?;
+    }
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -1261,9 +1266,79 @@ pub fn convert_sbv2_file(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    // Keep the preflight no-clobber check race-safe: create the final output
+    // with `create_new` and stream the already-built bytes into that exact
+    // inode.  A concurrent creator therefore fails instead of being
+    // overwritten by this conversion.
+    let mut output_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    std::io::Write::write_all(&mut output_file, &out_bytes)?;
+    output_file.sync_all()?;
 
     Ok(report)
+}
+
+/// Enforce the converter's no-follow/no-clobber boundary before any model
+/// bytes are read.  A generated GGUF must be a new regular file; accepting a
+/// pre-existing path would make a failed or mismatched conversion overwrite
+/// evidence outside the worker's authenticated packet.
+fn reject_sbv2_path(path: &Path, label: &str, must_exist: bool) -> Result<(), ConvertError> {
+    let raw = path.to_string_lossy();
+    if raw
+        .split(['/', '\\'])
+        .any(|part| part == "." || part == "..")
+    {
+        return Err(ConvertError::Parse(format!(
+            "{label} contains a dot path component: {}",
+            path.display()
+        )));
+    }
+    let absolute = (!path.is_absolute())
+        .then(|| {
+            std::env::current_dir()
+                .map_err(ConvertError::Io)
+                .map(|cwd| cwd.join(path))
+        })
+        .transpose()?;
+    let check_path = absolute.as_deref().unwrap_or(path);
+    let mut current = check_path;
+    loop {
+        match std::fs::symlink_metadata(current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(ConvertError::Parse(format!(
+                    "{label} or its ancestry is symlinked: {}",
+                    path.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !must_exist => {}
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    if must_exist {
+        let metadata = std::fs::metadata(path).map_err(ConvertError::Io)?;
+        if !metadata.is_file() {
+            return Err(ConvertError::Parse(format!(
+                "{label} is not a regular file: {}",
+                path.display()
+            )));
+        }
+    } else if path.exists() || path.is_symlink() {
+        return Err(ConvertError::Parse(format!(
+            "{label} must be absent before conversion: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Writes the 22 required + 1 optional `vokra.sbv2.*` keys from a parsed
@@ -2182,6 +2257,25 @@ mod tests {
             ("enc_p.emb.weight", "F32", &[6, 4], f32_bytes(&[0.01; 24])),
             ("dec.ups.0.weight", "BF16", &[4, 4], bf16_bytes(&[0.04; 16])),
         ]
+    }
+
+    #[test]
+    fn sbv2_path_gate_rejects_dot_components_and_clobber_targets() {
+        assert!(
+            reject_sbv2_path(Path::new("Cargo.toml"), "input", true).is_ok(),
+            "valid relative input paths must remain supported"
+        );
+        let dot = reject_sbv2_path(Path::new("/tmp/sbv2/../input.safetensors"), "input", true)
+            .expect_err("dot components must fail before filesystem access");
+        assert!(
+            matches!(dot, ConvertError::Parse(message) if message.contains("dot path component"))
+        );
+
+        let existing = reject_sbv2_path(Path::new("/tmp"), "output", false)
+            .expect_err("an existing output path must never be clobbered");
+        assert!(
+            matches!(existing, ConvertError::Parse(message) if message.contains("must be absent"))
+        );
     }
 
     /// Minimal but complete config JSON covering every required field plus
