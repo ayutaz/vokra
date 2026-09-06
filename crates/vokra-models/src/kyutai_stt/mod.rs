@@ -880,7 +880,25 @@ fn component_metadata_contract_keys() -> Vec<String> {
     keys
 }
 
+fn require_component_occurrence(metadata: &[(String, GgufMetadataValue)], key: &str) -> Result<()> {
+    let occurrences = metadata.iter().filter(|(name, _)| name == key).count();
+    if occurrences != 1 {
+        let state = if occurrences == 0 {
+            "missing"
+        } else {
+            "duplicated"
+        };
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}` is {state}"
+        )));
+    }
+    Ok(())
+}
+
 fn require_component_metadata(file: &GgufFile) -> Result<()> {
+    // Exact authenticated metadata: 23 Kyutai scalar keys + 33 indexed
+    // delays, plus `vokra.model.arch` and four provenance keys below = 61
+    // keys. Unrelated schema/general metadata remains allowed.
     let contract_keys = component_metadata_contract_keys();
     for (key, _) in file.metadata() {
         if key.starts_with("vokra.kyutai_stt.")
@@ -892,21 +910,16 @@ fn require_component_metadata(file: &GgufFile) -> Result<()> {
         }
     }
     for key in &contract_keys {
-        let occurrences = file
-            .metadata()
-            .iter()
-            .filter(|(name, _)| name == key)
-            .count();
-        if occurrences != 1 {
-            let state = if occurrences == 0 {
-                "missing"
-            } else {
-                "duplicated"
-            };
-            return Err(VokraError::ModelLoad(format!(
-                "kyutai-stt component binder: metadata `{key}` is {state}"
-            )));
-        }
+        require_component_occurrence(file.metadata(), key)?;
+    }
+    for key in [
+        chunks::KEY_MODEL_ARCH,
+        chunks::KEY_PROVENANCE_MODEL_ID,
+        chunks::KEY_PROVENANCE_LICENSE,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        chunks::KEY_PROVENANCE_SOURCE,
+    ] {
+        require_component_occurrence(file.metadata(), key)?;
     }
     require_component_u32(file, KEY_BB_N_LAYER, 48)?;
     require_component_u32(file, KEY_BB_D_MODEL, 2048)?;
@@ -2155,6 +2168,35 @@ mod tests {
         assert!(matches!(
             error,
             VokraError::ModelLoad(message) if message.contains("unexpected metadata")
+        ));
+
+        let duplicate_arch = vec![
+            (
+                chunks::KEY_MODEL_ARCH.to_owned(),
+                GgufMetadataValue::String(EXPECTED_ARCH.to_owned()),
+            ),
+            (
+                chunks::KEY_MODEL_ARCH.to_owned(),
+                GgufMetadataValue::String(EXPECTED_ARCH.to_owned()),
+            ),
+        ];
+        assert!(matches!(
+            require_component_occurrence(&duplicate_arch, chunks::KEY_MODEL_ARCH),
+            Err(VokraError::ModelLoad(message)) if message.contains("duplicated")
+        ));
+        let duplicate_provenance = vec![
+            (
+                chunks::KEY_PROVENANCE_SOURCE.to_owned(),
+                GgufMetadataValue::String("https://huggingface.co/kyutai/stt-2.6b-en".to_owned()),
+            ),
+            (
+                chunks::KEY_PROVENANCE_SOURCE.to_owned(),
+                GgufMetadataValue::String("https://huggingface.co/kyutai/stt-2.6b-en".to_owned()),
+            ),
+        ];
+        assert!(matches!(
+            require_component_occurrence(&duplicate_provenance, chunks::KEY_PROVENANCE_SOURCE),
+            Err(VokraError::ModelLoad(message)) if message.contains("duplicated")
         ));
     }
 
