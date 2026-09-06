@@ -71,21 +71,38 @@ def _safe_external_file(path: Path | str, root: Path) -> Path:
     return path
 
 
-def validate_blocked_approval(path: Path | str, expected_head: str, root: Path) -> None:
+def validate_blocked_approval(path: Path | str, expected_head: str, root: Path, approval_bytes: bytes | None = None) -> None:
     if not HEX40.fullmatch(expected_head):
         raise GateError("expected HEAD must be lowercase 40-hex")
     path = _safe_external_file(path, root)
-    actual_head = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], capture_output=True, text=True, check=True).stdout:
+    try:
+        actual_head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise GateError(f"git checkout identity check failed: {error}") from error
+    if status:
         raise GateError("checkout must be clean before FireRed helper execution")
     if actual_head != expected_head:
         raise GateError("expected HEAD does not match checkout")
-    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_pairs)
+    if approval_bytes is None:
+        try:
+            approval_bytes = path.read_bytes()
+        except OSError as error:
+            raise GateError(f"approval read failed: {error}") from error
+    try:
+        value = json.loads(approval_bytes.decode("utf-8"), object_pairs_hook=_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise GateError(f"approval JSON/UTF-8 is malformed: {error}") from error
     if not isinstance(value, dict):
         raise GateError("approval must be a JSON object")
     keys = {"schema", "decision", "status", "evidence_stage", "no_upload", "expected_head", *SCOPE, "scope_sha256"}
@@ -109,10 +126,14 @@ def enforce_blocked_approval(path: Path | str, approval_sha256: str, expected_he
     if not HEX64.fullmatch(approval_sha256):
         raise GateError("approval SHA-256 must be lowercase 64-hex")
     path = _safe_external_file(path, root)
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        approval_bytes = path.read_bytes()
+    except OSError as error:
+        raise GateError(f"approval read failed: {error}") from error
+    digest = hashlib.sha256(approval_bytes).hexdigest()
     if digest != approval_sha256:
         raise GateError("approval SHA-256 does not match caller binding")
-    validate_blocked_approval(path, expected_head, root)
+    validate_blocked_approval(path, expected_head, root, approval_bytes)
     raise GateBlocked("BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD: FireRed facts remain unresolved")
 
 
@@ -167,6 +188,17 @@ def self_test(root: Path) -> None:
             try: validate_blocked_approval(path, head, root)
             except GateError: pass
             else: raise AssertionError("duplicate approval accepted")
+            path.write_bytes(b"\xff\xfe\n")
+            try: validate_blocked_approval(path, head, root)
+            except GateError: pass
+            else: raise AssertionError("invalid UTF-8 approval accepted")
+            def failing_git(command: list[str], **kwargs: Any) -> Any:
+                raise OSError("synthetic git failure")
+            globals()["subprocess"].run = failing_git  # type: ignore[method-assign]
+            try: validate_blocked_approval(path, head, root)
+            except GateError: pass
+            else: raise AssertionError("git failure escaped as an exception")
+            globals()["subprocess"].run = fake_run  # type: ignore[method-assign]
             target = Path(directory) / "target"; target.mkdir(); target_file = target / "approval.json"; target_file.write_text("{}", encoding="utf-8")
             link = Path(directory) / "link"; link.symlink_to(target, target_is_directory=True)
             try: validate_blocked_approval(link / "approval.json", head, root)
