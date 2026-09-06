@@ -23,6 +23,31 @@ cleanup_self_test() {
   [[ -n "$CLAP_SELF_TEST_TMP" ]] && rm -rf -- "$CLAP_SELF_TEST_TMP"
 }
 
+sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+
+require_clean_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { log 'expected HEAD must be exactly 40 lowercase hexadecimal characters'; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" ]] || { log 'checkout is missing .git'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { log 'checkout must be clean'; return 2; }
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || return 2
+  [[ "$actual" == "$expected" ]] || { log "checkout HEAD $actual differs from expected $expected"; return 2; }
+}
+
+require_approval_binding() {
+  local approval="$1" expected_sha="$2"
+  [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || { log 'approval SHA must be exactly 64 lowercase hexadecimal characters'; return 2; }
+  [[ -f "$approval" && ! -L "$approval" ]] || { log 'approval evidence must be a regular non-symlink file'; return 2; }
+  [[ "$(sha256_file "$approval")" == "$expected_sha" ]] || { log 'approval evidence SHA-256 differs from caller binding'; return 2; }
+}
+
+claim_absent_directory() {
+  local path="$1"
+  [[ ! -e "$path" && ! -L "$path" ]] || return 2
+  mkdir "$path" || return 2
+  [[ -d "$path" && ! -L "$path" ]] || return 2
+}
+
 require_preflight() {
   local project="${1:-$DEDICATED_PROJECT}" approval="${2:-}"
   local gate="$project/license_gate.py" manifest="$project/license_gate_manifest.json"
@@ -75,7 +100,7 @@ validate_absent_work() {
 
 usage() {
   cat <<'EOF'
-usage: run-clap-htsat-fused-validation.sh --approval-evidence <file> [--work-dir <absent-dir>]
+usage: run-clap-htsat-fused-validation.sh --approval-evidence <file> --approval-sha256 <64-hex> --expected-head <40-hex> [--work-dir <absent-dir>]
        run-clap-htsat-fused-validation.sh --self-test
 
 The normal path is Linux/VAST-only. It resolves the exact Hugging Face
@@ -86,7 +111,7 @@ EOF
 }
 
 self_test() {
-  local path="${BASH_SOURCE[0]}" fail=0 token tmp fake_project approval work rc
+  local path="${BASH_SOURCE[0]}" fail=0 token tmp fake_project approval work rc approval_sha
   for token in \
     'VOKRA_PUBLISH_ON_VAST=1' 'uname -s' 'uname -m' 'MIN_VAST_MEM_KIB' \
     '/proc/meminfo' 'df -Pk' 'CARGO_BUILD_JOBS=1' 'cargo fmt --all -- --check' \
@@ -113,6 +138,18 @@ self_test() {
     log 'self-test FAIL: unknown argument accepted'
     fail=1
   fi
+  if "$path" --approval-evidence /tmp/a --approval-sha256 "$(printf '0%.0s' {1..64})" >/dev/null 2>&1; then
+    log 'self-test FAIL: missing --expected-head accepted'
+    fail=1
+  fi
+  if "$path" --approval-evidence /tmp/a --approval-sha256 "$(printf '0%.0s' {1..64})" --expected-head "$(printf '0%.0s' {1..40})" --expected-head "$(printf '1%.0s' {1..40})" >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate --expected-head accepted'
+    fail=1
+  fi
+  if "$path" --approval-evidence /tmp/a --approval-sha256 "$(printf '0%.0s' {1..64})" --approval-sha256 "$(printf '1%.0s' {1..64})" --expected-head "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate --approval-sha256 accepted'
+    fail=1
+  fi
   tmp="$(mktemp -d)"
   tmp="$(cd -P "$tmp" && pwd)"
   CLAP_SELF_TEST_TMP="$tmp"
@@ -125,15 +162,29 @@ self_test() {
     fail=1
   fi
   approval="$tmp/approval.json"
-  work="$tmp/work/nested"
+  work="$tmp/work"
   printf '{}\n' >"$approval"
+  approval_sha="$(sha256_file "$approval")"
   validate_absent_work "$work" || { log 'self-test FAIL: safe absent work path rejected'; fail=1; }
+  if validate_absent_work "$tmp/../escape" >/dev/null 2>&1; then
+    log 'self-test FAIL: dot-dot work path accepted'; fail=1
+  fi
+  mkdir "$tmp/real"
+  ln -s "$tmp/real" "$tmp/link"
+  if validate_absent_work "$tmp/link/work" >/dev/null 2>&1; then
+    log 'self-test FAIL: symlink-ancestor work path accepted'; fail=1
+  fi
+  if require_approval_binding "$approval" "$(printf '0%.0s' {1..64})" >/dev/null 2>&1; then
+    log 'self-test FAIL: wrong approval SHA accepted'; fail=1
+  fi
+  require_approval_binding "$approval" "$approval_sha" || { log 'self-test FAIL: correct approval SHA rejected'; fail=1; }
   if "$path" --self-test --self-test >/dev/null 2>&1; then
     log 'self-test FAIL: duplicate --self-test accepted'; fail=1
   fi
   set +e
   VOKRA_PUBLISH_ON_VAST=1 CLAP_UV_CACHE_DIR="$tmp/cache" \
-    "$path" --approval-evidence "$approval" --work-dir "$work" >/dev/null 2>&1
+    "$path" --approval-evidence "$approval" --approval-sha256 "$approval_sha" \
+    --expected-head "$(printf '0%.0s' {1..40})" --work-dir "$work" >/dev/null 2>&1
   rc=$?
   set -e
   if [[ "$rc" != 2 || -e "$work" || -e "$tmp/cache" ]]; then
@@ -151,26 +202,37 @@ self_test() {
 
 work_dir="/workspace/vokra-clap-htsat-fused-validation"
 approval_evidence=''
+approval_sha256=''
+expected_head=''
 self=0
 seen_self=0
 seen_work=0
 seen_approval=0
+seen_approval_sha=0
+seen_head=0
 while (($#)); do
   case "$1" in
     --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
     --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; (( $# >= 2 )) || die '--work-dir requires a path'; [[ -n "$2" && "$2" != -* ]] || die '--work-dir must be a nonempty path'; seen_work=1; work_dir="$2"; shift 2 ;;
     --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; (( $# >= 2 )) || die '--approval-evidence requires a file'; [[ -n "$2" && "$2" != -* ]] || die '--approval-evidence must be a nonempty file path'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
+    --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; (( $# >= 2 )) || die '--approval-sha256 requires a SHA'; [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; seen_approval_sha=1; approval_sha256="$2"; shift 2 ;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; (( $# >= 2 )) || die '--expected-head requires a commit'; [[ "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; seen_head=1; expected_head="$2"; shift 2 ;;
     -h|--help) [[ $self == 0 && $# == 1 ]] || die '--help cannot be combined with other arguments'; usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$seen_work" == 0 && "$seen_approval" == 0 ]] || die '--self-test accepts no other arguments'
+  [[ "$seen_work" == 0 && "$seen_approval" == 0 && "$seen_approval_sha" == 0 && "$seen_head" == 0 ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
 
 [[ -n "$approval_evidence" ]] || die '--approval-evidence is required'
+[[ "$seen_approval_sha" == 1 ]] || die '--approval-sha256 is required'
+[[ "$seen_head" == 1 ]] || die '--expected-head is required'
+command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required for caller binding'
+require_clean_expected_head "$expected_head" || die 'checkout is not the caller-bound clean expected HEAD'
+require_approval_binding "$approval_evidence" "$approval_sha256" || die 'approval evidence caller binding is invalid'
 require_preflight "$DEDICATED_PROJECT" "$approval_evidence" || die 'CLAP dedicated lock/license/approval gate is unresolved; refuse before host/work/network'
 
 [[ "$(uname -s)" == Linux ]] || die 'inspection is Linux/VAST-only'
@@ -189,7 +251,7 @@ free_kib="$(df -Pk "$(dirname "$work_dir")" | awk 'NR == 2 {print $4}')"
 (( free_kib >= MIN_FREE_DISK_KIB )) || die 'VAST disk guard failed'
 for tool in cargo git uv sha256sum awk find df; do command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"; done
 
-mkdir -p "$work_dir"
+claim_absent_directory "$work_dir" || die 'work-dir could not be atomically claimed as an absent directory'
 work_dir="$(cd "$work_dir" && pwd)"
 export CARGO_BUILD_JOBS=1
 printf 'repository=%s\nrevision=%s\n' "$UPSTREAM_REPO" "$UPSTREAM_REVISION" > "$work_dir/validation.log"
