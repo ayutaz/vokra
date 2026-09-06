@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Source-level Apple verifier for the Kyutai STT dep_q=0 decoder component.
+# It never acquires model files and never publishes evidence or weights.
+set -euo pipefail
+
+ROOT="${VOKRA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+TEST_NAME="parity_kyutai_stt_decoder_real_apple_cpu_metal"
+usage() { printf '%s\n' "usage: apple-silicon-kyutai-stt-decoder.sh --gguf ABS --gguf-sha256 HEX64 --reference ABS --reference-manifest-sha256 HEX64 --evidence ABS | --self-test"; }
+die() { printf '[kyutai-stt-apple] ERROR: %s\n' "$*" >&2; exit 2; }
+
+self_test() {
+  local self="${BASH_SOURCE[0]}" fail=0 token
+  for token in "${TEST_NAME}" 'VOKRA_REMOTE_APPLE_SILICON=1' 'CARGO_NET_OFFLINE=true' 'NO_UPLOAD' 'FIXED_ATOL' 'CPU' 'Metal' 'MEASUREMENT_ONLY' 'manifest-sha256'; do
+    grep -Fq -- "$token" "$self" || { printf '[kyutai-stt-apple] missing self-test token: %s\n' "$token" >&2; fail=1; }
+  done
+  grep -Eq '(^|[;&|[:space:]])(curl|wget|git[[:space:]]+(clone|fetch|push)|hf_hub_download|upload_file|--push)([[:space:]]|$)' "$self" && fail=1 || true
+  (( fail == 0 )) || return 1
+  printf '%s\n' 'kyutai STT Apple verifier self-test PASS'
+}
+
+[[ "${1:-}" == --self-test ]] && { [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit $?; }
+gguf=""; gguf_sha=""; reference=""; reference_sha=""; evidence=""
+while (($#)); do
+  case "$1" in
+    --gguf) (($# >= 2)) || die '--gguf requires ABS'; gguf="$2"; shift 2;;
+    --gguf-sha256) (($# >= 2)) || die '--gguf-sha256 requires HEX64'; gguf_sha="$2"; shift 2;;
+    --reference) (($# >= 2)) || die '--reference requires ABS'; reference="$2"; shift 2;;
+    --reference-manifest-sha256) (($# >= 2)) || die '--reference-manifest-sha256 requires HEX64'; reference_sha="$2"; shift 2;;
+    --evidence) (($# >= 2)) || die '--evidence requires ABS'; evidence="$2"; shift 2;;
+    -h|--help) usage; exit 0;;
+    *) usage; die "unknown argument: $1";;
+  esac
+done
+
+[[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || die 'requires Darwin arm64 Apple Silicon'
+[[ "${VOKRA_REMOTE_APPLE_SILICON:-}" == 1 ]] || die 'VOKRA_REMOTE_APPLE_SILICON=1 is required'
+[[ -f "$ROOT/Cargo.toml" && -d "$ROOT/.git" ]] || die 'not a Vokra checkout'
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
+[[ "$gguf" == /* && "$reference" == /* && "$evidence" == /* ]] || die 'all paths must be absolute'
+for path in "$gguf" "$reference" "$evidence"; do
+  [[ "$path" != *'/./'* && "$path" != *'/../'* && "$path" != */. && "$path" != */.. ]] || die 'dot path component rejected'
+  [[ ! -L "$path" ]] || die 'symlink input/evidence rejected'
+done
+[[ -f "$gguf" && ! -L "$gguf" ]] || die 'GGUF must be a regular file'
+[[ -d "$reference" && ! -L "$reference" ]] || die 'reference must be a regular directory'
+[[ -f "$reference/manifest.json" && ! -L "$reference/manifest.json" ]] || die 'reference manifest is missing'
+[[ ! -e "$evidence" ]] || die 'evidence must be absent (no-clobber)'
+[[ "$gguf_sha" =~ ^[0-9a-f]{64}$ && "$reference_sha" =~ ^[0-9a-f]{64}$ ]] || die 'digests must be lowercase HEX64'
+actual_gguf_sha="$(shasum -a 256 "$gguf" | awk '{print $1}')"
+actual_reference_sha="$(shasum -a 256 "$reference/manifest.json" | awk '{print $1}')"
+[[ "$actual_gguf_sha" == "$gguf_sha" ]] || die 'GGUF digest mismatch'
+[[ "$actual_reference_sha" == "$reference_sha" ]] || die 'reference manifest digest mismatch'
+gguf_real="$(cd "$(dirname "$gguf")" && pwd -P)/$(basename "$gguf")"
+reference_real="$(cd "$reference" && pwd -P)"
+evidence_parent="$(cd "$(dirname "$evidence")" && pwd -P)"
+evidence_real="$evidence_parent/$(basename "$evidence")"
+case "$gguf_real/" in "$reference_real/"*|"$evidence_real/"*|"$ROOT/"*) die 'GGUF overlaps another path';; esac
+case "$reference_real/" in "$gguf_real/"*|"$evidence_real/"*|"$ROOT/"*) die 'reference overlaps another path';; esac
+case "$ROOT/" in "$gguf_real/"*|"$reference_real/"*) die 'checkout overlaps an input';; esac
+mkdir -m 700 "$evidence"
+log="$evidence/run.log"
+[[ ! -e "$log" ]] || die 'log already exists'
+set -o noclobber
+{
+  echo 'status=BLOCKED'
+  echo 'scope=dep_q=0 decoder component only'
+  echo "test=$TEST_NAME"
+  echo "gguf_sha256=$gguf_sha"
+  echo "reference_manifest_sha256=$reference_sha"
+  echo 'backend_contract=CPU/reference, Metal/reference, Metal/CPU exact argmax'
+  echo 'publication=NO_UPLOAD'
+  echo 'status_reason=FIXED_ATOL_PENDING_REVIEW'
+  echo 'execution=UNAVAILABLE; no model execution on this source-only verification pass'
+} > "$log"
+set +o noclobber
+printf '[kyutai-stt-apple] BLOCKED: fixed numerical bound is not committed; evidence preserved at %s\n' "$log" >&2
+exit 2
