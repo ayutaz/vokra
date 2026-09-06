@@ -134,6 +134,8 @@ def validate_blocked_approval(
     }
     if set(value) != required:
         raise GateError("approval key set mismatch")
+    if value.get("no_upload") is not True:
+        raise GateError("approval no_upload must be the JSON boolean true")
     expected = {
         "schema": APPROVAL_SCHEMA,
         "status": "BLOCKED",
@@ -217,6 +219,9 @@ def self_test(root: Path) -> None:
                 {"status": "APPROVED"},
                 {"scope_sha256": "0" * 64},
                 {"disposition": "EXECUTE"},
+                {"no_upload": 1},
+                {"no_upload": 0},
+                {"no_upload": "true"},
             ):
                 value = _fixture(head)
                 value.update(mutation)
