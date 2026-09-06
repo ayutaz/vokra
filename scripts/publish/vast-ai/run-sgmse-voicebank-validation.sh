@@ -137,6 +137,10 @@ self_test() {
     log 'self-test FAIL: publication command found'
     fail=1
   fi
+  if grep -Eq '^[[:space:]]*if[[:space:]]+prepared_data\.get\("publication"\)' "$path"; then
+    log 'self-test FAIL: impossible prepared sidecar fields are being required'
+    fail=1
+  fi
   for runner in "$INSPECTION_RUNNER" "$PREPARE_RUNNER" "$SCORE_REFERENCE_RUNNER" "$SCORE_PARITY_RUNNER" "$ENHANCEMENT_RUNNER"; do
     bash "$runner" --self-test >/dev/null || { log "self-test FAIL: delegated runner: $runner"; fail=1; }
   done
@@ -337,8 +341,13 @@ for path in (inspection_manifest, prepared, prepared_manifest, gguf, score_manif
     if not path.is_file() or path.is_symlink():
         raise SystemExit(f"missing authenticated output: {path}")
 prepared_data = manifest(prepared_manifest)
-if prepared_data.get("publication") != "NO_UPLOAD":
-    raise SystemExit("prepared publication is not NO_UPLOAD")
+expected_sidecar_keys = {
+    "format", "repository", "model_revision", "source_repository", "source_revision",
+    "checkpoint_filename", "checkpoint_size", "checkpoint_sha256", "prepared_sha256",
+    "tensor_count", "typed_manifest_sha256", "tensor_rows",
+}
+if set(prepared_data) != expected_sidecar_keys:
+    raise SystemExit("prepared sidecar schema drifted")
 if prepared_data.get("prepared_sha256") != evidence(prepared)["sha256"]:
     raise SystemExit("prepared hash is not bound")
 score_data = manifest(score_manifest)
