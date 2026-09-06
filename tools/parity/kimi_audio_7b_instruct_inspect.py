@@ -25,6 +25,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
+import kimi_audio_7b_instruct_gate
+
 UPSTREAM_HF = "moonshotai/Kimi-Audio-7B-Instruct"
 HF_REVISION = "9a82a84c37ad9eb1307fb6ed8d7b397862ef9e6b"
 SOURCE_URL = "https://github.com/MoonshotAI/Kimi-Audio.git"
@@ -901,13 +903,31 @@ def main() -> int:
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--server-tree", type=Path)
     parser.add_argument("--revision")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.snapshot, args.source, args.evidence, args.server_tree, args.revision)):
+        if any(value is not None for value in (args.snapshot, args.source, args.evidence, args.server_tree, args.revision, args.approval_evidence, args.approval_sha256, args.expected_head)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
+    if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head)):
+        parser.error("--approval-evidence, --approval-sha256, and --expected-head are required")
+    try:
+        kimi_audio_7b_instruct_gate.enforce_blocked_approval(
+            args.approval_evidence,
+            args.approval_sha256,
+            args.expected_head,
+            Path(__file__).resolve().parents[2],
+        )
+    except kimi_audio_7b_instruct_gate.GateBlocked as error:
+        print(f"Kimi-Audio inspection BLOCKED: {error}", file=sys.stderr)
+        return 2
+    except kimi_audio_7b_instruct_gate.GateError as error:
+        print(f"Kimi-Audio gate rejected: {error}", file=sys.stderr)
+        return 2
     if any(value is None for value in (args.snapshot, args.source, args.evidence, args.server_tree, args.revision)):
         parser.error("--snapshot, --source, --evidence, --server-tree, and --revision are required")
     if not HEX40_RE.fullmatch(args.revision):

@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 INSPECTOR="$ROOT/tools/parity/kimi_audio_7b_instruct_inspect.py"
+GATE="$ROOT/tools/parity/kimi_audio_7b_instruct_gate.py"
 REPOSITORY="moonshotai/Kimi-Audio-7B-Instruct"
 HF_REVISION="9a82a84c37ad9eb1307fb6ed8d7b397862ef9e6b"
 SOURCE_URL="https://github.com/MoonshotAI/Kimi-Audio.git"
@@ -29,7 +30,7 @@ UV_CACHE_DIR="${KIMI_AUDIO_UV_CACHE_DIR:-/tmp/vokra-kimi-audio-uv-cache}"
 
 log() { printf '[kimi-audio-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
-usage() { echo "usage: run-kimi-audio-7b-instruct-inspection.sh [--work-dir DIR] | --self-test"; }
+usage() { echo "usage: run-kimi-audio-7b-instruct-inspection.sh --approval-evidence FILE --approval-sha256 HEX64 --expected-head HEX40 [--work-dir DIR] | --self-test"; }
 
 self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token
@@ -42,6 +43,8 @@ self_test() {
     '3087131376' 'd677ab655d1916439c5868c819a0e48cdac574defab83c69b0bbc2b7b31a9f06' \
     'model.safetensors.index.json' 'model-36-of-36.safetensors' 'audio_detokenizer/model.pt' \
     'vocoder/model.pt' 'whisper-large-v3/model.safetensors' 'weights_only=True' \
+    'kimi_audio_7b_instruct_gate.py' 'approval-evidence' 'approval-sha256' 'expected-head' '--enforce' \
+    'BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD' 'UV_NO_CACHE=1' '--no-project' '--offline' \
     'get_unsafe_globals_in_checkpoint' 'server_tree' 'item.lfs' 'lfs_sha256' 'blob_id' 'path_in_repo' 'resolved_origin' 'fixed_components' 'MATCHED' 'inspection_error' 'status": "BLOCKED"' \
     'evidence_stage' 'INSPECTION_ONLY' 'NO_UPLOAD' 'cargo fmt --all -- --check'; do
     if ! grep -Fq -- "$token" "$path"; then
@@ -49,7 +52,7 @@ self_test() {
       fail=1
     fi
   done
-  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -94,6 +97,7 @@ else:
     raise AssertionError("unknown HF tree entry was accepted")
 print("Kimi-Audio RepoFile/RepoFolder self-test: PASS")
 PY
+
   then
     log 'self-test FAIL: RepoFile/RepoFolder class-identity regression'
     fail=1
@@ -106,26 +110,71 @@ PY
     log 'self-test FAIL: fixed identity is operator-overridable'
     fail=1
   fi
-  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --self-test >/dev/null; then
+    log 'self-test FAIL: stdlib blocked gate'
+    fail=1
+  fi
+  gate_line="$(grep -n -- '^gate_output=.*' "$path" | head -n1 | cut -d: -f1)"
+  host_line="$(grep -n -- 'uname -s' "$path" | tail -n1 | cut -d: -f1)"
+  work_line="$(grep -n -- 'mkdir -p "\$work_dir/model"' "$path" | tail -n1 | cut -d: -f1)"
+  snapshot_line="$(grep -n -- 'snapshot_download' "$path" | tail -n1 | cut -d: -f1)"
+  inspector_gate_line="$(grep -n -- 'enforce_blocked_approval' "$INSPECTOR" | tail -n1 | cut -d: -f1)"
+  inspector_input_line="$(grep -n -- 'snapshot, --source, --evidence, --server-tree, and --revision are required' "$INSPECTOR" | head -n1 | cut -d: -f1)"
+  if [[ -z "$gate_line" || -z "$host_line" || -z "$work_line" || -z "$snapshot_line" || -z "$inspector_gate_line" || -z "$inspector_input_line" ]] \
+    || (( gate_line >= host_line || gate_line >= work_line || gate_line >= snapshot_line )) \
+    || (( inspector_gate_line >= inspector_input_line )); then
+    log 'self-test FAIL: blocked gate ordering regression'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test >/dev/null; then
+    log 'self-test FAIL: inspector self-test'
+    fail=1
+  fi
+  if bash "$path" --self-test --approval-evidence /private/tmp/kimi-audio-approval >/dev/null 2>&1; then
+    log 'self-test FAIL: mixed gate arguments accepted'
+    fail=1
+  else
+    status=$?
+    [[ "$status" == 2 ]] || { log "self-test FAIL: mixed gate arguments exited $status"; fail=1; }
+  fi
   (( fail == 0 )) || return 1
   log 'self-test PASS'
 }
 
 work_dir="$WORK"
 self=0
+approval_evidence=""
+approval_sha256=""
+expected_head=""
 while (($#)); do
   case "$1" in
     --self-test) self=1; shift ;;
     --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2 ;;
+    --approval-evidence) [[ $# -ge 2 && -z "$approval_evidence" ]] || die '--approval-evidence requires one unique FILE'; approval_evidence="$2"; shift 2 ;;
+    --approval-sha256) [[ $# -ge 2 && -z "$approval_sha256" ]] || die '--approval-sha256 requires one unique HEX64'; approval_sha256="$2"; shift 2 ;;
+    --expected-head) [[ $# -ge 2 && -z "$expected_head" ]] || die '--expected-head requires one unique HEX40'; expected_head="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$work_dir" == "$WORK" ]] || die '--self-test accepts no other arguments'
+  [[ "$work_dir" == "$WORK" && -z "$approval_evidence" && -z "$approval_sha256" && -z "$expected_head" ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
+
+[[ -n "$approval_evidence" && -n "$approval_sha256" && -n "$expected_head" ]] || die '--approval-evidence, --approval-sha256, and --expected-head are required'
+[[ -f "$ROOT/Cargo.toml" && -d "$ROOT/.git" && -f "$GATE" ]] || die 'not a Vokra checkout or Kimi gate is missing'
+set +e
+gate_output="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --enforce \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" \
+  --expected-head "$expected_head" --root "$ROOT" 2>&1)"
+gate_status=$?
+set -e
+if [[ "$gate_status" != 2 || "$gate_output" != *"BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD"* ]]; then
+  die 'blocked approval evidence is malformed, stale, or not caller-bound'
+fi
+die "$gate_output"
 
 [[ "$(uname -s)" == Linux ]] || die 'Kimi-Audio inspection requires Linux VAST'
 [[ "$(uname -m)" == x86_64 ]] || die 'Kimi-Audio inspection requires x86_64 VAST'
@@ -243,7 +292,8 @@ glm4_origin="$(git -C "$work_dir/source/repo/$SOURCE_SUBMODULE" remote get-url o
 set +e
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" \
   --snapshot "$work_dir/model" --source "$work_dir/source/repo" --evidence "$work_dir/evidence" \
-  --server-tree "$work_dir/server_tree.json" --revision "$HF_REVISION" >> "$work_dir/evidence/validation.log" 2>&1
+  --server-tree "$work_dir/server_tree.json" --revision "$HF_REVISION" \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >> "$work_dir/evidence/validation.log" 2>&1
 inspect_rc=$?
 set -e
 [[ "$inspect_rc" == 2 ]] || die "inspector must exit 2, got $inspect_rc"
