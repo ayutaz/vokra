@@ -12,31 +12,56 @@ use vokra_core::{Result, VokraError};
 
 /// Authenticated Hugging Face model identity.
 pub const HF_REPOSITORY: &str = "kyutai/tts-1.6b-en_fr";
+/// Authenticated immutable revision of [`HF_REPOSITORY`].
 pub const HF_REVISION: &str = "f65439609986c392cb12df63938abcc550c3fb15";
+/// Authenticated TTS weight filename.
 pub const TTS_FILE: &str = "dsm_tts_1e68beda@240.safetensors";
+/// Authenticated byte size of [`TTS_FILE`].
 pub const TTS_BYTES: u64 = 3_683_719_712;
+/// Authenticated SHA-256 digest of [`TTS_FILE`].
 pub const TTS_SHA256: &str = "726ddadd90a080c89cbc6b217745296ef32d8e25666d30f81a09e8ae5c9e0f0c";
+/// Authenticated Mimi checkpoint filename.
 pub const MIMI_FILE: &str = "tokenizer-e351c8d8-checkpoint125.safetensors";
+/// Authenticated byte size of [`MIMI_FILE`].
 pub const MIMI_BYTES: u64 = 384_644_900;
+/// Authenticated SHA-256 digest of [`MIMI_FILE`].
 pub const MIMI_SHA256: &str = "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50";
+/// Authenticated SentencePiece model filename.
 pub const SPM_FILE: &str = "tokenizer_spm_8k_en_fr_audio.model";
+/// Authenticated byte size of [`SPM_FILE`].
 pub const SPM_BYTES: u64 = 120_378;
+/// Authenticated SHA-256 digest of [`SPM_FILE`].
 pub const SPM_SHA256: &str = "cd87dd5d17169151782ac700280ec057e5d658a9afbe238a048ea5ff318cce69";
+/// Authenticated voice repository identity.
 pub const VOICE_REPOSITORY: &str = "kyutai/tts-voices";
+/// Authenticated immutable revision of [`VOICE_REPOSITORY`].
 pub const VOICE_REVISION: &str = "323332d33f997de8394f24a193e1a76df720e01a";
+/// Authenticated voice tensor filename.
 pub const VOICE_FILE: &str = "voice-donations/robert.wav.1e68beda@240.safetensors";
+/// Authenticated byte size of [`VOICE_FILE`].
 pub const VOICE_BYTES: u64 = 256_136;
+/// Authenticated SHA-256 digest of [`VOICE_FILE`].
 pub const VOICE_SHA256: &str = "bc79b0162c94862aadd6c5d351b5b4984274af0616e3a56b0df9973ff7c793c7";
+/// Authenticated Moshi source repository URL.
 pub const MOSHI_SOURCE: &str = "https://github.com/kyutai-labs/moshi.git";
+/// Authenticated immutable Moshi source revision.
 pub const MOSHI_REVISION: &str = "e6a55d2722a65870ef52a6c9f6ecfc0e90f38362";
+/// Authenticated delayed-streams-modeling source repository URL.
 pub const DSM_SOURCE: &str = "https://github.com/kyutai-labs/delayed-streams-modeling.git";
+/// Authenticated immutable delayed-streams-modeling source revision.
 pub const DSM_REVISION: &str = "4c4f65e147df056adf3346290d64c7b9649b18c9";
 
+/// Number of authenticated audio codebook channels.
 pub const N_Q: usize = 32;
+/// Total stream channels, including the text channel.
 pub const STREAM_CHANNELS: usize = N_Q + 1;
+/// Authenticated audio token-card size.
 pub const CARD: u32 = 2048;
+/// Authenticated text token-card size.
 pub const TEXT_CARD: u32 = 8000;
+/// Authenticated text padding token ID.
 pub const TEXT_PADDING_ID: u32 = 3;
+/// Authenticated lead of the delayed second stream, in token steps.
 pub const SECOND_STREAM_AHEAD: u32 = 2;
 
 const DEPFORMER_WEIGHT_SCHEDULE: [u32; N_Q] = [
@@ -54,39 +79,70 @@ const fn authenticated_delays() -> [u32; STREAM_CHANNELS] {
 /// Scalar config facts transcribed from the checked-in inspector.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KyutaiTtsConfig {
+    /// Authenticated model type string.
     pub model_type: String,
+    /// Audio token-card size.
     pub card: u32,
+    /// Number of audio codebook channels.
     pub n_q: usize,
+    /// Number of depformer codebook channels.
     pub dep_q: usize,
+    /// Main transformer dimension.
     pub dim: usize,
+    /// Text token-card size.
     pub text_card: u32,
+    /// Text padding token ID.
     pub text_padding_id: u32,
+    /// Number of main transformer attention heads.
     pub num_heads: usize,
+    /// Number of main transformer layers.
     pub num_layers: usize,
+    /// Main transformer hidden scale.
     pub hidden_scale: f32,
+    /// Main transformer context length.
     pub context: usize,
+    /// Main transformer rotary-embedding period limit.
     pub max_period: u32,
+    /// Whether the main transformer is causal.
     pub causal: bool,
+    /// Main transformer gating function name.
     pub gating: String,
+    /// Main transformer normalization name.
     pub norm: String,
+    /// Main transformer positional-embedding name.
     pub positional_embedding: String,
+    /// Depformer hidden dimension.
     pub depformer_dim: usize,
+    /// Number of depformer attention heads.
     pub depformer_num_heads: usize,
+    /// Number of depformer layers.
     pub depformer_num_layers: usize,
+    /// Depformer feed-forward dimension.
     pub depformer_dim_feedforward: usize,
+    /// Whether depformer projections are multi-linear.
     pub depformer_multi_linear: bool,
+    /// Depformer positional-embedding name.
     pub depformer_pos_emb: String,
+    /// Whether depformer weights vary by step.
     pub depformer_weights_per_step: bool,
+    /// Depformer low-rank embedding dimension.
     pub depformer_low_rank_embeddings: usize,
+    /// Authenticated second-stream demux flag from the inspector.
     pub demux_second_stream: bool,
+    /// Whether cross-attention is enabled.
     pub cross_attention: bool,
+    /// Authenticated audio delay in seconds.
     pub audio_delay: f32,
+    /// Authenticated second-stream lead in token steps.
     pub second_stream_ahead: u32,
+    /// Per-channel delay values used by the pure alignment seam.
     pub delays: Vec<u32>,
+    /// Depformer weight index for each step.
     pub depformer_weight_schedule: Vec<u32>,
 }
 
 impl KyutaiTtsConfig {
+    /// Returns the scalar configuration authenticated by the checked-in inspector.
     #[must_use]
     pub fn authenticated() -> Self {
         Self {
@@ -165,6 +221,7 @@ impl KyutaiTtsConfig {
         }
     }
 
+    /// Returns the largest configured channel delay.
     #[must_use]
     pub fn max_delay(&self) -> u32 {
         self.delays.iter().copied().max().unwrap_or(0)
@@ -183,6 +240,7 @@ pub struct KyutaiTtsDelayedStreamAligner {
 }
 
 impl KyutaiTtsDelayedStreamAligner {
+    /// Creates an aligner after validating the exact authenticated config.
     pub fn new(config: KyutaiTtsConfig) -> Result<Self> {
         config.validate()?;
         Ok(Self {
@@ -191,7 +249,10 @@ impl KyutaiTtsDelayedStreamAligner {
         })
     }
 
-    /// Pushes a text-plus-audio token step and emits an aligned step if ready.
+    /// Pushes one text-plus-audio token step and emits an aligned step if ready.
+    ///
+    /// Token values are checked against the text or audio card before they are
+    /// queued; this helper performs delay alignment only, not model decoding.
     pub fn push(&mut self, step: [u32; STREAM_CHANNELS]) -> Result<Option<[u32; STREAM_CHANNELS]>> {
         for (channel, &token) in step.iter().enumerate() {
             let limit = if channel == 0 {
@@ -219,6 +280,7 @@ impl KyutaiTtsDelayedStreamAligner {
         Ok(Some(output))
     }
 
+    /// Returns the number of queued input steps not yet emitted.
     #[must_use]
     pub fn pending_steps(&self) -> usize {
         self.pending.len()
