@@ -365,7 +365,7 @@ fn validate_conversion_path(
                     path.display()
                 )));
             }
-            Component::Normal(_) | Component::Root | Component::Prefix(_) => {
+            Component::Normal(_) | Component::RootDir | Component::Prefix(_) => {
                 current.push(component.as_os_str());
             }
         }
