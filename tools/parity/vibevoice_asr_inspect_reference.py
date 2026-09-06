@@ -22,9 +22,25 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import torch
-from safetensors import safe_open
-from safetensors.torch import save_file
+import vibevoice_asr_gate
+
+torch = None
+safe_open = None
+save_file = None
+
+
+def _require_optional_dependencies() -> None:
+    """Load tensor tooling only after the terminal approval gate has passed."""
+
+    global torch, safe_open, save_file
+    if torch is None:
+        import torch as torch_module
+        from safetensors import safe_open as safe_open_function
+        from safetensors.torch import save_file as save_file_function
+
+        torch = torch_module
+        safe_open = safe_open_function
+        save_file = save_file_function
 
 UPSTREAM_REPOSITORY = "microsoft/VibeVoice-ASR"
 UPSTREAM_REVISION = "d0c9efdb8d614685062c04425d91e01b6f37d944"
@@ -82,6 +98,16 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def write_exclusive(path: Path, text: str) -> None:
+    """Write one evidence record without replacing an existing record."""
+
+    try:
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(text)
+    except FileExistsError as error:
+        raise RuntimeError(f"evidence output already exists: {path.name}") from error
 
 
 def git_blob_sha1_bytes(data: bytes) -> str:
@@ -589,9 +615,10 @@ def weight_license(snapshot: Path, companions: list[dict[str, Any]]) -> dict[str
 
 
 def inspect(snapshot: Path, source: Path, transformers_source: Path, server_tree: Path, output: Path) -> int:
+    _require_optional_dependencies()
     snapshot = snapshot.resolve()
     source = source.resolve()
-    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+    if output.is_symlink() or (output.exists() and (not output.is_dir() or any(output.iterdir()))):
         raise RuntimeError("inspection output must be absent or empty")
     output.mkdir(parents=True, exist_ok=True)
     hf_identity = server_inventory(snapshot, server_tree)
@@ -606,12 +633,12 @@ def inspect(snapshot: Path, source: Path, transformers_source: Path, server_tree
     sources = source_inventory(source, transformers_source)
     if sources["source"]["status"] != "AUTHENTICATED" or sources["transformers"]["status"] != "AUTHENTICATED":
         raise RuntimeError("official source/Transformers authentication is incomplete")
-    (output / "tensor-inventory.json").write_text(json.dumps({"tensor_count": len(tensors), "tensors": sorted(tensors, key=lambda value: value["name"])}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "shard-inventory.json").write_text(json.dumps({"shard_count": SHARD_COUNT, "shards": shard_records, "index_sha256": sha256(index_path)}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "companion-inventory.json").write_text(json.dumps({"files": companions}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "source-inventory.json").write_text(json.dumps(sources["source"], sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "parsed-companions.json").write_text(json.dumps(parsed_companions, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "transformers-inventory.json").write_text(json.dumps(sources["transformers"], sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    write_exclusive(output / "tensor-inventory.json", json.dumps({"tensor_count": len(tensors), "tensors": sorted(tensors, key=lambda value: value["name"])}, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "shard-inventory.json", json.dumps({"shard_count": SHARD_COUNT, "shards": shard_records, "index_sha256": sha256(index_path)}, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "companion-inventory.json", json.dumps({"files": companions}, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "source-inventory.json", json.dumps(sources["source"], sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "parsed-companions.json", json.dumps(parsed_companions, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "transformers-inventory.json", json.dumps(sources["transformers"], sort_keys=True, indent=2) + "\n")
     packets = {name: {"bytes": (output / name).stat().st_size, "sha256": sha256(output / name)} for name in ("tensor-inventory.json", "shard-inventory.json", "companion-inventory.json", "source-inventory.json", "parsed-companions.json", "transformers-inventory.json")}
     manifest = {
         "format": FORMAT,
@@ -640,20 +667,21 @@ def inspect(snapshot: Path, source: Path, transformers_source: Path, server_tree
         "external_dependency": {"repository": "Qwen/Qwen2.5-7B", "revision": "UNSELECTED_BLOCKER", "selection_status": "BLOCKED", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"},
         "packets": packets,
     }
-    (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    write_exclusive(output / "manifest.json", json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     return 2
 
 
 def write_blocked(output: Path, error: Exception) -> None:
-    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+    if output.is_symlink() or (output.exists() and (not output.is_dir() or any(output.iterdir()))):
         raise RuntimeError("blocked evidence output must be absent or empty")
     output.mkdir(parents=True, exist_ok=True)
     manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "UNVERIFIED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "external_dependency": {"repository": "Qwen/Qwen2.5-7B", "revision": "UNSELECTED_BLOCKER", "selection_status": "BLOCKED", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"}, "error_type": type(error).__name__, "reason": str(error), "blockers": [str(error)]}
-    (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "blocker.txt").write_text(f"{type(error).__name__}: {error}\n", encoding="utf-8")
+    write_exclusive(output / "manifest.json", json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    write_exclusive(output / "blocker.txt", f"{type(error).__name__}: {error}\n")
 
 
 def self_test() -> None:
+    _require_optional_dependencies()
     source = Path(__file__).read_text(encoding="utf-8")
     assert hashlib.sha256(b"abc").hexdigest() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     assert FORMAT == "vokra-vibevoice-asr-inspection-v1"
@@ -893,8 +921,25 @@ def self_test() -> None:
         assert source_evidence["source"]["connector_topology"]["markers"] == {"acoustic": True, "semantic": True}
     with tempfile.TemporaryDirectory(prefix="vokra-vibevoice-asr-blocked-") as directory:
         output = Path(directory)
-        write_blocked(output, TypeError("fixture type failure"))
-        blocked = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+        exclusive_dir = output / "exclusive"
+        exclusive_dir.mkdir()
+        exclusive = exclusive_dir / "record.json"
+        write_exclusive(exclusive, "first\n")
+        try:
+            write_exclusive(exclusive, "second\n")
+        except RuntimeError as error:
+            assert "already exists" in str(error)
+        else:
+            raise AssertionError("evidence record was replaced")
+        blocked_output = output / "blocked"
+        write_blocked(blocked_output, TypeError("fixture type failure"))
+        try:
+            write_blocked(blocked_output, TypeError("must not replace evidence"))
+        except RuntimeError as error:
+            assert "absent or empty" in str(error)
+        else:
+            raise AssertionError("blocked evidence output was replaced")
+        blocked = json.loads((blocked_output / "manifest.json").read_text(encoding="utf-8"))
         assert blocked["status"] == "BLOCKED"
         assert blocked["error_type"] == "TypeError"
         assert "fixture type failure" in blocked["reason"]
@@ -908,13 +953,31 @@ def main() -> int:
     parser.add_argument("--transformers-source", type=Path)
     parser.add_argument("--server-tree", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.snapshot, args.source, args.transformers_source, args.server_tree, args.output)):
+        if any(value is not None for value in (args.snapshot, args.source, args.transformers_source, args.server_tree, args.output, args.approval_evidence, args.approval_sha256, args.expected_head)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
+    if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head)):
+        parser.error("--approval-evidence, --approval-sha256, and --expected-head are required")
+    try:
+        vibevoice_asr_gate.enforce_blocked_approval(
+            args.approval_evidence,
+            args.approval_sha256,
+            args.expected_head,
+            Path(__file__).resolve().parents[2],
+        )
+    except vibevoice_asr_gate.GateBlocked as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    except vibevoice_asr_gate.GateError as error:
+        print(f"VibeVoice-ASR inspection gate rejected: {error}", file=sys.stderr)
+        return 2
     if any(value is None for value in (args.snapshot, args.source, args.transformers_source, args.server_tree, args.output)):
         parser.error("--snapshot, --source, --transformers-source, --server-tree, and --output are required")
     try:

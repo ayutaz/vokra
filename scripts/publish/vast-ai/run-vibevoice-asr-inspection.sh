@@ -17,6 +17,7 @@ TRANSFORMERS_REPOSITORY="https://github.com/huggingface/transformers"
 TRANSFORMERS_TAG="v4.51.3"
 TRANSFORMERS_REVISION="5f4ecf2d9f867a1255131d2461d75793c0cf1db2"
 INSPECTOR="tools/parity/vibevoice_asr_inspect_reference.py"
+GATE="tools/parity/vibevoice_asr_gate.py"
 UV_CMD=(uv run --frozen --project tools/parity --python 3.12 python)
 MIN_VAST_MEM_KIB=$((128 * 1024 * 1024))
 MIN_FREE_DISK_KIB=$((60 * 1024 * 1024))
@@ -24,14 +25,16 @@ MIN_FREE_DISK_KIB=$((60 * 1024 * 1024))
 usage() {
   cat <<'EOF'
 Usage:
-  run-vibevoice-asr-inspection.sh [--work-dir <tmpfs-dir>]
+  run-vibevoice-asr-inspection.sh --approval-evidence <file> --approval-sha256 <hex64> --expected-head <hex40> [--work-dir <tmpfs-dir>]
   run-vibevoice-asr-inspection.sh --self-test
 
 The real path is VAST-only: Linux x86_64, clean checkout, 128 GiB RAM, and
 tmpfs storage are required. It snapshots the exact eight-shard
 microsoft/VibeVoice-ASR release and the pinned Microsoft source, then records
-streaming shard/index/tensor/companion/source evidence. Verdict is always
-INSPECTION_ONLY; no conversion, runtime, CPU, Metal, or parity result exists.
+streaming shard/index/tensor/companion/source evidence. The unresolved
+approval gate is terminal (exit 2), so no host/work/cache/network/model work
+is authorized. Verdict is always INSPECTION_ONLY; no conversion, runtime,
+CPU, Metal, or parity result exists.
 EOF
 }
 
@@ -47,7 +50,7 @@ run_self_test() {
   cases=$((cases + 1))
   for required in \
     "$UPSTREAM_REPOSITORY" "$UPSTREAM_REVISION" "$SOURCE_REPOSITORY" \
-    "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$INSPECTOR" "safe_open" "SHARD_COUNT" \
+    "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$INSPECTOR" "$GATE" "safe_open" "SHARD_COUNT" \
     "model.safetensors.index.json" "INSPECTION_ONLY" \
     "BLOCKED" "Exception" "--transformers-source" "resident_scope" "allow_patterns=[\"*\"]" "companion-inventory" "source-inventory" "transformers-inventory" "MIN_VAST_MEM_KIB" \
     "MIN_FREE_DISK_KIB" "tmpfs" "server-tree.json" "local_dir" "requested_revision" "resolved_revision" "recursive_file_only" "RepoFolder" "expand=True" "lfs_pointer_git_blob_sha1" "UNSELECTED_BLOCKER" "NOT_DOWNLOADED" "transport_cache" "snapshot_root_exact_transport_subtree" "NON_IDENTITY_TRANSPORT_METADATA" "connector_topology" "acoustic_connector" "semantic_connector" "symlinks" "120000" "gitlink"; do
@@ -62,6 +65,8 @@ run_self_test() {
     'git status --porcelain --untracked-files=all' 'findmnt' \
     'cargo fmt --all -- --check' 'cargo build --locked --release -p vokra-cli' \
     'uv run --frozen --project tools/parity --python 3.12' \
+    'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python' \
+    '--approval-evidence' '--approval-sha256' '--expected-head' 'BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD' \
     'snapshot_download' 'git clone --no-tags --filter=blob:none' 'exit 2'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-vibevoice-asr-inspection: self-test FAIL: missing VAST gate: $required" >&2
@@ -69,11 +74,25 @@ run_self_test() {
     fi
   done
   cases=$((cases + 1))
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$GATE" --self-test >/dev/null; then
+    echo "run-vibevoice-asr-inspection: self-test FAIL: gate self-test failed" >&2
+    fail=1
+  fi
+  gate_line="$(grep -n 'gate_output=' "$script_path" | head -n 1 | cut -d: -f1)"
+  host_line="$(grep -n 'uname -s' "$script_path" | tail -n 1 | cut -d: -f1)"
+  work_line="$(grep -Fn 'mkdir -p "$work_dir"' "$script_path" | tail -n 1 | cut -d: -f1)"
+  snapshot_line="$(grep -n 'snapshot_download' "$script_path" | tail -n 1 | cut -d: -f1)"
+  inspector_line="$(grep -nF '"$INSPECTOR"' "$script_path" | tail -n 1 | cut -d: -f1)"
+  if [[ -z "$gate_line" || -z "$host_line" || -z "$work_line" || -z "$snapshot_line" || -z "$inspector_line" ]] || (( gate_line >= host_line || gate_line >= work_line || gate_line >= snapshot_line || gate_line >= inspector_line )); then
+    echo "run-vibevoice-asr-inspection: self-test FAIL: terminal gate is not before host/work gates" >&2
+    fail=1
+  fi
+  cases=$((cases + 1))
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh)([[:space:]]|$)' "$script_path" >/dev/null; then
     echo "run-vibevoice-asr-inspection: self-test FAIL: publication command found" >&2
     fail=1
   fi
-  if grep -En '(^|[[:space:]])(python|python3|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
+  if grep -En '(^|[;&|])[[:space:]]*(python|python3|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     echo "run-vibevoice-asr-inspection: self-test FAIL: raw Python/pip invocation found" >&2
     fail=1
   fi
@@ -102,6 +121,23 @@ run_self_test() {
       fail=1
     fi
   fi
+  if bash "$script_path" --self-test --approval-evidence /tmp/approval.json >/dev/null 2>&1; then
+    echo "run-vibevoice-asr-inspection: self-test FAIL: mixed gate/self-test arguments accepted" >&2
+    fail=1
+  else
+    status=$?
+    if [[ "$status" != 2 ]]; then
+      echo "run-vibevoice-asr-inspection: self-test FAIL: mixed-argument blocker exited $status, expected 2" >&2
+      fail=1
+    fi
+  fi
+  duplicate_output="$(bash "$script_path" \
+    --approval-evidence /tmp/approval-a.json --approval-evidence /tmp/approval-b.json \
+    --approval-sha256 "$(printf '0%.0s' {1..64})" --expected-head "$(printf '0%.0s' {1..40})" 2>&1 || true)"
+  if [[ "$duplicate_output" != *"approval evidence, approval SHA-256, and expected HEAD are required"* ]]; then
+    echo "run-vibevoice-asr-inspection: self-test FAIL: duplicate approval option was not rejected at parser gate" >&2
+    fail=1
+  fi
   if (( fail == 0 )); then
     echo "run-vibevoice-asr-inspection.sh self-test: OK ($cases cases)"
     return 0
@@ -111,30 +147,63 @@ run_self_test() {
 
 work_dir="/dev/shm/vokra-vibevoice-asr-inspection"
 self_test=0
+approval_evidence=""
+approval_sha256=""
+expected_head=""
+work_dir_count=0
+approval_evidence_count=0
+approval_sha256_count=0
+expected_head_count=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --self-test) self_test=1; shift ;;
+    --self-test) self_test=$((self_test + 1)); shift ;;
     --work-dir)
       [[ $# -ge 2 ]] || die "--work-dir requires a path"
+      work_dir_count=$((work_dir_count + 1))
       work_dir="$2"; shift 2 ;;
+    --approval-evidence)
+      [[ $# -ge 2 ]] || die "--approval-evidence requires a path"
+      approval_evidence_count=$((approval_evidence_count + 1))
+      approval_evidence="$2"; shift 2 ;;
+    --approval-sha256)
+      [[ $# -ge 2 ]] || die "--approval-sha256 requires a digest"
+      approval_sha256_count=$((approval_sha256_count + 1))
+      approval_sha256="$2"; shift 2 ;;
+    --expected-head)
+      [[ $# -ge 2 ]] || die "--expected-head requires a commit"
+      expected_head_count=$((expected_head_count + 1))
+      expected_head="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if [[ $self_test -eq 1 ]]; then
-  [[ "$work_dir" == "/dev/shm/vokra-vibevoice-asr-inspection" ]] \
+  [[ "$self_test" == 1 && "$work_dir_count" == 0 && "$approval_evidence_count" == 0 && "$approval_sha256_count" == 0 && "$expected_head_count" == 0 && "$work_dir" == "/dev/shm/vokra-vibevoice-asr-inspection" && -z "$approval_evidence" && -z "$approval_sha256" && -z "$expected_head" ]] \
     || die "--self-test accepts no other arguments"
   run_self_test
   exit $?
 fi
 
+[[ "$self_test" == 0 && "$work_dir_count" -le 1 && "$approval_evidence_count" == 1 && "$approval_sha256_count" == 1 && "$expected_head_count" == 1 && -n "$approval_evidence" && -n "$approval_sha256" && -n "$expected_head" ]] \
+  || die "approval evidence, approval SHA-256, and expected HEAD are required"
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "$repo_root"
+[[ -f Cargo.toml && -d crates/vokra-convert ]] || die "not a Vokra checkout"
+set +e
+gate_output="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$GATE" --enforce \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" \
+  --expected-head "$expected_head" --root "$repo_root" 2>&1)"
+gate_status=$?
+set -e
+[[ "$gate_status" == 2 && "$gate_output" == *"BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD"* ]] \
+  || die "VibeVoice-ASR terminal gate failed closed: $gate_output"
+die "$gate_output"
+
 [[ "$(uname -s)" == "Linux" ]] || die "actual inspection is Linux/VAST-only"
 [[ "$(uname -m)" == "x86_64" ]] || die "actual inspection requires Linux x86_64"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
   || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-cd "$repo_root"
-[[ -f Cargo.toml && -d crates/vokra-convert ]] || die "not a Vokra checkout"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
   || die "worktree is not clean; transfer a committed git-bundle checkpoint"
 work_parent="$(dirname "$work_dir")"
@@ -272,6 +341,7 @@ set +e
 "${UV_CMD[@]}" "$INSPECTOR" \
   --snapshot "$snapshot_path" --source "$source_dir" \
   --transformers-source "$transformers_dir" --server-tree "$server_tree_path" --output "$evidence_dir" \
+  --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" \
   2>&1 | tee -a "$log_path"
 inspector_status="${PIPESTATUS[0]}"
 set -e
