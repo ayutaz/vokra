@@ -104,9 +104,18 @@ require_fixture_entry_set() {
   [[ "$actual" == "$expected" ]] || { die 'fixture directory entry set drifted'; return 2; }
 }
 
+require_fixture_entries_regular() {
+  local directory="$1" entry
+  for entry in $FIXTURE_EXPECTED; do
+    canonical_existing "$directory/$entry" >/dev/null || { die "fixture entry has symlink ancestry: $entry"; return 2; }
+    [[ -f "$directory/$entry" && ! -L "$directory/$entry" ]] || { die "fixture entry is not a regular file: $entry"; return 2; }
+  done
+}
+
 require_fixture_contract() {
   [[ -d "$FIXTURE_DIR" && ! -L "$FIXTURE_DIR" ]] || die 'BF16 fixture directory missing or symlinked'
   require_fixture_entry_set "$FIXTURE_DIR" "$FIXTURE_EXPECTED"
+  require_fixture_entries_regular "$FIXTURE_DIR"
   [[ "$(shasum -a 256 "$FIXTURE_DIR/manifest.json" | awk '{print $1}')" == "$MANIFEST_SHA256" ]] || die 'fixture manifest SHA-256 drifted'
   [[ "$(tr -d '\r\n' < "$FIXTURE_DIR/manifest.sha256")" == "$MANIFEST_SHA256  manifest.json" ]] || die 'manifest pin drifted'
   local name sha bytes
@@ -121,8 +130,6 @@ require_fixture_contract() {
     tails_m9_n33_k31_b.f32:864c37ad7a242e7ada61750cfe53d12f889e30892568251ef1f8578e38b8b35b:4092 \
     tails_m9_n33_k31_output.f32:f01cb1caff693b508f414fceb0d46be69b2ca14096c4a22e378945b2dcdc040f:1188; do
     IFS=: read -r name sha bytes <<<"$name"
-    canonical_existing "$FIXTURE_DIR/$name" >/dev/null || die "fixture entry has symlink ancestry: $name"
-    [[ -f "$FIXTURE_DIR/$name" && ! -L "$FIXTURE_DIR/$name" ]] || die "fixture entry is not a regular file: $name"
     [[ "$(wc -c < "$FIXTURE_DIR/$name" | tr -d '[:space:]')" == "$bytes" ]] || die "fixture byte count drifted: $name"
     [[ "$(sha256_file "$FIXTURE_DIR/$name")" == "$sha" ]] || die "fixture SHA-256 drifted: $name"
   done
@@ -184,6 +191,12 @@ self_test() {
   rmdir "$tmp/extra-dir"
   ln -s "$tmp/missing-target" "$tmp/extra-link"
   if require_fixture_entry_set "$tmp" "$FIXTURE_EXPECTED" >/dev/null 2>&1; then log 'self-test accepted extra symlink'; fail=1; fi
+  mkdir "$tmp/expected"
+  for entry in $FIXTURE_EXPECTED; do
+    [[ "$entry" == manifest.json ]] || : > "$tmp/expected/$entry"
+  done
+  ln -s README.md "$tmp/expected/manifest.json"
+  if require_fixture_entries_regular "$tmp/expected" >/dev/null 2>&1; then log 'self-test accepted expected manifest symlink'; fail=1; fi
   if require_evidence_path "$tmp/../dotdot-evidence" >/dev/null 2>&1; then log 'self-test accepted dotdot evidence path'; fail=1; fi
   good="$tmp/good.log"
   printf '%s\n' \
