@@ -364,7 +364,7 @@ self_test() {
     'destroy the disposable VAST instance'; do
     grep -Fq -- "$token" "$path" || { log "self-test FAIL: missing contract token: $token"; fail=1; }
   done
-  line="$(grep -nE '^run_inspection_stage ' "$path" | head -n 1 | cut -d: -f1)"
+  line="$(awk '/^run_inspection_stage / && $0 !~ /stage_runner/ {print NR; exit}' "$path")"
   [[ -n "$line" ]] || { log 'self-test FAIL: dedicated inspection stage missing'; fail=1; }
   previous="$line"
   for label in preparation build-converter strict-conversion score-reference score-parity enhancement-reference enhancement-parity metadata package workspace clippy deny audit static-fmt static-forbidden; do
