@@ -92,6 +92,8 @@ def validate_approval(raw: bytes, expected_head: str, supplied_sha: str) -> dict
     }
     if any(data[key] != value for key, value in expected.items()):
         raise RuntimeError("approval identity or unresolved gate mismatch")
+    if data["no_upload"] is not True:
+        raise RuntimeError("approval no_upload must be the JSON boolean true")
     if not isinstance(data["scope_sha256"], str) or data["scope_sha256"] != _expected_scope(data):
         raise RuntimeError("approval scope mismatch")
     return data
