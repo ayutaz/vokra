@@ -333,6 +333,14 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KyutaiSttReport), 
         report.written += 1;
         report.bf16_passthrough += 1;
     }
+    if report.written != expected.len() || report.bf16_passthrough != expected.len() {
+        return Err(ConvertError::Parse(format!(
+            "Kyutai decoder report invariant failed: wrote {} tensors / {} BF16 passthrough; expected {}",
+            report.written,
+            report.bf16_passthrough,
+            expected.len()
+        )));
+    }
     report.notes.push(
         "decoder-component-only: 323 BF16 tensors preserved verbatim; Mimi, tokenizer, streaming state, and public ASR remain fail-closed".to_owned(),
     );

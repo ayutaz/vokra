@@ -7382,8 +7382,8 @@ pub fn convert_file_licensed(
             // and public PCM/transcription ASR remain separate gates.
             let (builder, report) = models::kyutai_stt::convert(bytes)?;
             let mut notes = vec![format!(
-                "kyutai-stt decoder component: {} BF16 weights written verbatim, {} non-BF16 skipped",
-                report.written, report.skipped_non_float,
+                "kyutai-stt decoder component: {} BF16 weights written verbatim ({} BF16 passthrough), {} non-BF16 skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             notes.extend(
                 report
@@ -14333,7 +14333,7 @@ pub fn convert_zonos_file(input: &Path, output: &Path) -> Result<ConvertSummary,
 /// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
 /// is functionally identical to
 /// `convert_file(ModelKind::KyutaiStt, input, output)` — Kyutai STT has
-/// no side-car config or tokenizer is embedded: every hparam is fixed by the
+/// neither a side-car config nor a tokenizer is embedded: every hparam is fixed by the
 /// authenticated decoder-component contract in `models::kyutai_stt`; the
 /// SentencePiece tokenizer + Mimi codec ride separate GGUFs — but the
 /// named entry keeps the `convert_*_file` naming symmetry with the other
