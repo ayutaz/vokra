@@ -951,6 +951,44 @@ individual query returned `instances: null` and the independent-volume
 inventory returned `[]`. Other `ralomi-*` instances in the account were
 outside this Vokra run and were not changed.
 
+### 2026-09-07 source-contract continuation
+
+Commit `ef6bf10a` normalizes the active SBV2 JP-Extra fixture and worker
+contract on `sbv2-v2-jp-extra-base.gguf`. The converter retains the old
+`sbv2-v2-multilingual-base` spelling only as an explicit deprecated input
+alias; runtime rejection tests and historical records keep that spelling only
+where it documents or exercises the retired identity. The tracked hash
+sidecar was renamed without changing its digest. This closes the remaining
+filename/default repair in the public-artifact row, but does not close the
+production Japanese G2P, real-weight VAST parity, reviewed Metal bounds or
+Apple execution gates.
+
+Commit `85785a14` closes BigVGAN's arbitrary-safetensors conversion gap. The
+four released variant configurations and their complete topology-derived
+tensor name/shape contracts now have one first-party source of truth in
+`vokra-ops`; both the offline converter and runtime binder consume it.
+Conversion rejects missing,
+extra, duplicate, wrong-shaped or unsupported-dtype tensors and non-finite
+F32/F16/BF16 values before writing output. Float payloads remain byte-preserved
+and no dependency or CPU fallback was added.
+
+Disposable VAST instance `50068583` validated exact clean implementation HEAD
+`85785a14ceec0a9ead6428d1196acd21641853ec` in a separate model-free checkout
+while the independent SGMSE enhancement run continued in its original
+checkout. Workspace all-target tests, all-target Clippy with warnings denied,
+`cargo deny`, `cargo audit`, formatting, forbidden-symbol, zero-dependency,
+bound-arch, fixture-pin and dynamic-load gates all passed. The recovered
+132-KiB log archive has SHA-256
+`a12c34f66007aefa2a4f1faa3bb530f0146667ec880000e5683dd5a1540412fd`;
+the workspace and Clippy logs have SHA-256
+`be60e47e1a57953548e3055a058399228fc18c4eb6294caf3eaac753201e10be`
+and
+`6c9a4eef60a6d83df7d9dba7642157d4d68296c0e61ffee003721f52ab497a5e`
+respectively. No model was acquired or executed by this source-validation
+checkout and no upload occurred. Its separate checkout, target, evidence copy
+and obsolete bundles (about 20 GiB total) were removed immediately after the
+small archive was recovered; the still-active SGMSE work was preserved.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
@@ -974,12 +1012,12 @@ work:
   Apple CPU/Metal worker.
 - **BigVGAN full GPU path:** the Linux and Darwin dependency/native archive
   graphs and runtime variant binders are evidence-complete, but owner/legal
-  sign-off remains fail-closed. The converter still accepts an arbitrary
-  safetensors set before the runtime binder rejects it; share the authoritative
-  four-variant tensor manifests with the converter once those facts are
-  authenticated. After approval, VAST-compile the adapter and run a fixed real
-  artifact against an independent reference; leave Metal hardware parity for
-  the final Scaleway run.
+  sign-off remains fail-closed. The converter and runtime now share one
+  topology-derived four-variant tensor manifest and fail before output/load on
+  descriptor drift at `85785a14`. After approval, run the authenticated fixed
+  artifact against the independent reference on VAST to prove the shared
+  contract against real release bytes; leave Metal hardware parity for the
+  final Scaleway run.
 - **Coverage invariant:** after every wave, rerun the live audit and keep the
   CPU-complete/Metal-unsupported count at zero. Unsupported learned operations
   must return an explicit error; silent CPU fallback is forbidden.
@@ -1014,7 +1052,7 @@ authorization.
 | `vokra/qwen3-tts-12hz-1.7b-customvoice` | The source contract already rejects model-size/variant drift and binds sidecars/12-Hz companion; sidecar/no-clobber gates are hardened at `dd60e76e`. Regenerate the public GGUF and verify it on VAST. |
 | `vokra/reazonspeech-nemo-v2` | The source converter/runtime already bind the exact 965-tensor checkpoint, embedded 3,000-piece vocabulary and runtime axes. Regenerate the stale public artifact and repeat exact-head VAST plus Apple evidence. |
 | `vokra/rmvpe` | Resolve the absence of an upstream license for the exact source repository; the live MIT stamp cannot be accepted by inference. |
-| `vokra/sbv2-v2-jp-extra-base` | Exact JP-Extra model/repository/AGPL identity and retired-label rejection are landed at `0ee8359c`; strict tensor renames already exist. Update the remaining parity-helper legacy filenames/defaults, close production Japanese G2P, regenerate and verify the artifact. |
+| `vokra/sbv2-v2-jp-extra-base` | Exact JP-Extra model/repository/AGPL identity and retired-label rejection are landed at `0ee8359c`; strict tensor renames already exist and active parity/helper filenames are canonical at `ef6bf10a`. Close production Japanese G2P, then regenerate and verify the artifact on VAST before the Apple run. |
 | `vokra/speechbrain-spkrec-ecapa-voxceleb` | Replace or repair the artifact whose tensor data extends outside the declared file bounds, then rerun strict parity. |
 | `vokra/voice-gender-classifier` | Exact-head corrected conversion and official CPU parity are green at `df7f5574`; regenerate its authenticated Apple packet for the final CPU/Metal worker. Publish the replacement only after that passes and separate upload authorization is given. |
 | `vokra/wespeaker` | Resolve Apache-vs-CC-BY-4.0 provenance and attribution, then produce the strict artifact. |
