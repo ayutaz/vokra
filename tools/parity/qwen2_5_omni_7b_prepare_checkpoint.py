@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Merge Qwen/Qwen2.5-Omni-7B sharded safetensors → single .safetensors.
 
 Offline side-car (FR-LD-05: no Python / PyTorch ever enters the runtime).
@@ -6,8 +6,9 @@ Offline side-car (FR-LD-05: no Python / PyTorch ever enters the runtime).
 # Why this exists
 
 The upstream ``Qwen/Qwen2.5-Omni-7B`` release ships as **multiple sharded
-safetensors** files (``model-00001-of-000NN.safetensors`` …
-``model-000NN-of-000NN.safetensors``, ~15 shards ~15 GB total) plus a
+safetensors** files (``model-00001-of-00005.safetensors`` …
+``model-00005-of-00005.safetensors``, 5 shards totaling 22,366,403,936 bytes
+(~22.4 GB) plus a
 ``model.safetensors.index.json`` weight-map (Qwen omni-modal architecture:
 thinker + talker + audio encoder + vision encoder + LLM decoder all in
 one flat state_dict). Because the released bundle is >8 GB, the operator
@@ -48,12 +49,10 @@ order becomes the on-disk tensor order).
 
 # Redistribution
 
-Upstream weight license (``Qwen/Qwen2.5-Omni-7B``) is per the Qwen
-research license — see ``docs/license-audit.md`` §3.1 row "Qwen2.5-Omni-7B"
-(owner sign-off queue; publish path is the T4 Research-only tier
-precedented by X-Codec-2, requiring ``--allow-noncommercial`` explicit
-on ``publish-one.sh``). This offline sidecar does not itself publish
-anything.
+The recorded model-artifact status for ``Qwen/Qwen2.5-Omni-7B`` is
+Apache-2.0/commercial in ``docs/license-audit.md``. Component, source-role,
+and dependency review remains blocked by the inspection gate; this offline
+sidecar does not itself publish anything.
 
 # Usage
 
@@ -498,7 +497,7 @@ def main() -> int:
             "shard listed therein, or a single model.safetensors). Typically "
             "the output of `hf download Qwen/Qwen2.5-Omni-7B --local-dir <dir>` "
             "run on vast.ai (see [[feedback-large-models-on-vast-ai]] — the "
-            "~15 GB bundle exceeds the M1 iMac 16 GB RAM ceiling)."
+            "~22.4 GB bundle exceeds the M1 iMac 16 GB RAM ceiling)."
         ),
     )
     ap.add_argument(
