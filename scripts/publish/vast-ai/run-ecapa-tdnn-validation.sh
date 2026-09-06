@@ -623,6 +623,8 @@ main() {
     echo "metal_vs_upstream=NOT_RUN"
     echo "metal_vs_cpu=NOT_RUN"
     echo "metal_upstream_bound=UNREGISTERED_MEASUREMENT_ONLY_ON_APPLE"
+    echo "apple_transfer_large_inputs=GGUF+reference_packet+approval:VAST_TO_APPLE_DIRECT"
+    echo "local_recovery=SMALL_LOGS_AND_SUMMARIES_ONLY"
     echo "cli_speaker_e2e=PASS"
     echo "workspace_gates=PASS"
     echo "verdict=CPU_PASS_METAL_NOT_RUN"
@@ -643,7 +645,7 @@ main() {
     printf '\n'
   } > "$evidence_dir/apple-transfer-args.txt"
   trap - EXIT
-  log "PASS: transfer the staged GGUF/reference packet/approval using apple-transfer-args.txt; pull only small evidence/logs before destroying the VAST instance"
+  log "PASS: transfer the large GGUF/reference packet and approval directly VAST-to-Apple using apple-transfer-args.txt; recover only small logs/summaries locally before destroying the VAST instance"
 }
 
 main "$@"

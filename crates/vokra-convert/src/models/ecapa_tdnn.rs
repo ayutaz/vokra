@@ -42,6 +42,7 @@
 //! SpeechBrain ships PyTorch checkpoints (safetensors); this converter
 //! **never** touches ONNX (FR-LD-05).
 
+use std::io::Write;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -265,7 +266,12 @@ pub fn convert_ecapa_tdnn_file(
     // own via the writer's built-in schema stamper — no per-converter
     // duplication needed.
     let out_bytes = b.to_bytes()?;
-    std::fs::write(output, &out_bytes)?;
+    let mut output_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    output_file.write_all(&out_bytes)?;
+    output_file.sync_all()?;
     Ok(report)
 }
 
@@ -434,5 +440,48 @@ mod tests {
         let parsed = SafetensorsFile::parse(bytes).unwrap();
         let error = validate_manifest(&parsed).unwrap_err();
         assert!(error.to_string().contains("expected exactly 200"));
+    }
+
+    #[test]
+    fn existing_output_is_rejected_before_checkpoint_parse() {
+        let input = std::env::temp_dir().join(format!("vokra-ecapa-input-{}", std::process::id()));
+        let output =
+            std::env::temp_dir().join(format!("vokra-ecapa-output-{}", std::process::id()));
+        std::fs::write(&input, b"not-a-checkpoint").unwrap();
+        std::fs::write(&output, b"keep-me").unwrap();
+        let error = convert_ecapa_tdnn_file(&input, &output, None).unwrap_err();
+        assert!(error.to_string().contains("output must be absent"));
+        assert_eq!(std::fs::read(&output).unwrap(), b"keep-me");
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_input_and_output_are_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let input =
+            std::env::temp_dir().join(format!("vokra-ecapa-input-link-{}", std::process::id()));
+        let input_target =
+            std::env::temp_dir().join(format!("vokra-ecapa-input-target-{}", std::process::id()));
+        let output =
+            std::env::temp_dir().join(format!("vokra-ecapa-output-link-{}", std::process::id()));
+        let output_target =
+            std::env::temp_dir().join(format!("vokra-ecapa-output-target-{}", std::process::id()));
+        std::fs::write(&input_target, b"not-a-checkpoint").unwrap();
+        symlink(&input_target, &input).unwrap();
+        let input_error = convert_ecapa_tdnn_file(&input, &output_target, None).unwrap_err();
+        assert!(input_error.to_string().contains("input must be a regular"));
+        std::fs::remove_file(&input).unwrap();
+        std::fs::write(&input, b"not-a-checkpoint").unwrap();
+        std::fs::write(&output_target, b"keep-me").unwrap();
+        symlink(&output_target, &output).unwrap();
+        let output_error = convert_ecapa_tdnn_file(&input, &output, None).unwrap_err();
+        assert!(output_error.to_string().contains("output must be absent"));
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(input_target);
+        let _ = std::fs::remove_file(output);
+        let _ = std::fs::remove_file(output_target);
     }
 }
