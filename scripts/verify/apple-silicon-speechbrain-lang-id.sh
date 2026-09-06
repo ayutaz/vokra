@@ -33,11 +33,15 @@ die() { log "ERROR: $*"; return 2; }
 usage() {
   cat <<'EOF' >&2
 usage: apple-silicon-speechbrain-lang-id.sh \
+  --expected-head <lowercase-40-hex> \
   --gguf <vast-generated-lang-id-voxlingua107.gguf> \
   --reference <vast-independent-reference-dir> \
   --gguf-sha256 <lowercase-sha256> \
   --reference-manifest-sha256 <lowercase-sha256> \
   --approval-evidence <regular-json-file> \
+  --approval-evidence-sha256 <lowercase-sha256> \
+  --transfer-manifest <regular-transfer-manifest> \
+  --transfer-manifest-sha256 <lowercase-sha256> \
   --evidence-dir <empty-dir>
        apple-silicon-speechbrain-lang-id.sh --self-test
 
@@ -51,6 +55,34 @@ EOF
 }
 
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+
+require_transfer_manifest() {
+  local manifest="$1" manifest_sha="$2" expected_head="$3" gguf_sha="$4" reference_manifest_sha="$5" approval_sha="$6"
+  require_file "transfer manifest" "$manifest"
+  [[ "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || { die 'transfer manifest SHA-256 must be lowercase 64-hex'; return 2; }
+  [[ "$(sha256_file "$manifest")" == "$manifest_sha" ]] || { die 'transfer manifest SHA-256 differs from VAST evidence'; return 2; }
+  awk -F= '
+    BEGIN { allowed["schema"]; allowed["expected_head"]; allowed["gguf_sha256"]; allowed["reference_manifest_sha256"]; allowed["approval_evidence_sha256"]; allowed["publication"]; }
+    NF != 2 || !($1 in allowed) { exit 2 }
+    { count[$1]++ }
+    END { for (key in allowed) if (count[key] != 1) exit 3 }
+  ' "$manifest" || { die 'transfer manifest schema is not exact'; return 2; }
+  grep -Fxq 'schema=speechbrain-lang-id-apple-transfer-v1' "$manifest" || { die 'transfer manifest schema version differs'; return 2; }
+  grep -Fxq "expected_head=$expected_head" "$manifest" || { die 'transfer manifest expected HEAD differs'; return 2; }
+  grep -Fxq "gguf_sha256=$gguf_sha" "$manifest" || { die 'transfer manifest GGUF SHA-256 differs'; return 2; }
+  grep -Fxq "reference_manifest_sha256=$reference_manifest_sha" "$manifest" || { die 'transfer manifest reference SHA-256 differs'; return 2; }
+  grep -Fxq "approval_evidence_sha256=$approval_sha" "$manifest" || { die 'transfer manifest approval SHA-256 differs'; return 2; }
+  grep -Fxq 'publication=NO_UPLOAD' "$manifest" || { die 'transfer manifest publication policy differs'; return 2; }
+}
+
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hexadecimal characters'; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" ]] || { die 'Apple checkout is missing .git'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'Apple checkout must be clean'; return 2; }
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || { die "checkout HEAD $actual_head does not match expected $expected_head"; return 2; }
+}
 
 require_file() {
   local label="$1" path="$2"
@@ -82,19 +114,21 @@ canonical_candidate() {
 }
 
 require_disjoint_evidence() {
-  local evidence="$1" gguf="$2" reference="$3" root="$4" approval="$5" evidence_real gguf_real reference_real root_real approval_real
+  local evidence="$1" gguf="$2" reference="$3" root="$4" approval="$5" transfer_manifest="$6" evidence_real gguf_real reference_real root_real approval_real transfer_manifest_real
   evidence_real="$(canonical_candidate "$evidence")" || return 2
   gguf_real="$(canonical_candidate "$gguf")" || return 2
   reference_real="$(canonical_candidate "$reference")" || return 2
   root_real="$(canonical_candidate "$root")" || return 2
   approval_real="$(canonical_candidate "$approval")" || return 2
-  [[ "$evidence_real" != "$root_real" && "$evidence_real" != "$gguf_real" && "$evidence_real" != "$reference_real" && "$evidence_real" != "$approval_real" ]] || { die "evidence path aliases checkout or input"; return 2; }
+  transfer_manifest_real="$(canonical_candidate "$transfer_manifest")" || return 2
+  [[ "$evidence_real" != "$root_real" && "$evidence_real" != "$gguf_real" && "$evidence_real" != "$reference_real" && "$evidence_real" != "$approval_real" && "$evidence_real" != "$transfer_manifest_real" ]] || { die "evidence path aliases checkout or input"; return 2; }
   case "$evidence_real/" in
-    "$reference_real/"*|"$root_real/"*|"$approval_real/"*) die "evidence path overlaps an input, approval, or checkout"; return 2 ;;
+    "$reference_real/"*|"$root_real/"*|"$approval_real/"*|"$transfer_manifest_real/"*) die "evidence path overlaps an input, approval, or transfer manifest"; return 2 ;;
   esac
   case "$reference_real/" in "$evidence_real/"*) die "reference path overlaps evidence"; return 2 ;; esac
   case "$root_real/" in "$evidence_real/"*) die "checkout path overlaps evidence"; return 2 ;; esac
   case "$approval_real/" in "$evidence_real/"*) die "approval path overlaps evidence"; return 2 ;; esac
+  case "$transfer_manifest_real/" in "$evidence_real/"*) die "transfer manifest path overlaps evidence"; return 2 ;; esac
 }
 
 license_preflight() {
@@ -251,7 +285,7 @@ run_self_test() (
     "git status --porcelain --untracked-files=all" \
     "cargo test --manifest-path" "-p vokra-models --features metal" \
     "--test parity_speechbrain_lang_id_real" "test result: ok. 1 passed" \
-    "--gguf-sha256" "--reference-manifest-sha256" "--approval-evidence" "APPLE_LANG_ID_APPROVAL_EVIDENCE" "LANG_ID_MEASUREMENT_ONLY backend=metal" \
+    "--expected-head" "--gguf-sha256" "--reference-manifest-sha256" "--approval-evidence" "--approval-evidence-sha256" "--transfer-manifest" "--transfer-manifest-sha256" "APPLE_LANG_ID_APPROVAL_EVIDENCE" "speechbrain-lang-id-apple-transfer-v1" "publication=NO_UPLOAD" "LANG_ID_MEASUREMENT_ONLY backend=metal" "--offline --locked" "--test-threads=1" \
     "LANG_ID_MEASUREMENT_ONLY backend=metal" "MEASURED_NOT_GATED" "preflight_gate.py" "--manifest" \
     "$CHECKPOINT_EMBEDDING_SHA256" "$CHECKPOINT_CLASSIFIER_SHA256" "$CHECKPOINT_LABELS_SHA256"; do
     if ! grep -Fq -- "$required" "$script_path"; then
@@ -282,29 +316,45 @@ run_self_test() (
   if "$script_path" --approval-evidence "" >/dev/null 2>&1; then log 'self-test FAIL: empty approval value accepted'; fail=1; fi
   if "$script_path" --approval-evidence --gguf x >/dev/null 2>&1; then log 'self-test FAIL: option used as approval value accepted'; fail=1; fi
   if "$script_path" --approval-evidence one --approval-evidence two >/dev/null 2>&1; then log 'self-test FAIL: duplicate approval accepted'; fail=1; fi
+  if "$script_path" --gguf one --reference ref --gguf-sha256 "$(printf 'a%.0s' {1..64})" --reference-manifest-sha256 "$(printf 'b%.0s' {1..64})" --approval-evidence approval --evidence-dir evidence >/dev/null 2>&1; then log 'self-test FAIL: missing expected-head accepted'; fail=1; fi
+  if "$script_path" --expected-head >/dev/null 2>&1; then log 'self-test FAIL: missing expected-head value accepted'; fail=1; fi
+  if "$script_path" --expected-head "$(printf '%040d' 1)" --expected-head "$(printf '%040d' 2)" >/dev/null 2>&1; then log 'self-test FAIL: duplicate expected-head accepted'; fail=1; fi
+  if "$script_path" --approval-evidence-sha256 >/dev/null 2>&1; then log 'self-test FAIL: missing approval SHA value accepted'; fail=1; fi
+  if "$script_path" --transfer-manifest-sha256 >/dev/null 2>&1; then log 'self-test FAIL: missing transfer SHA value accepted'; fail=1; fi
+  if "$script_path" --approval-evidence-sha256 "$(printf '%064d' 1)" --approval-evidence-sha256 "$(printf '%064d' 2)" >/dev/null 2>&1; then log 'self-test FAIL: duplicate approval SHA accepted'; fail=1; fi
+  if "$script_path" --transfer-manifest-sha256 "$(printf '%064d' 1)" --transfer-manifest-sha256 "$(printf '%064d' 2)" >/dev/null 2>&1; then log 'self-test FAIL: duplicate transfer SHA accepted'; fail=1; fi
   temporary="$(cd -P "$(mktemp -d)" && pwd -P)"
   trap 'rm -rf "$temporary"' EXIT
   mkdir -p "$temporary/root/reference/nested" "$temporary/root/nested" "$temporary/parent"; : > "$temporary/root/gguf"
   printf approval > "$temporary/approval"
-  if require_disjoint_evidence "$temporary/root/reference/nested/evidence" "$temporary/root/gguf" "$temporary/root/reference" "$temporary/root" "$temporary/approval"; then log 'self-test FAIL: evidence under reference accepted'; fail=1; fi
-  if require_disjoint_evidence "$temporary/root/nested/evidence" "$temporary/root/gguf" "$temporary/root/reference" "$temporary/root" "$temporary/approval"; then log 'self-test FAIL: evidence under checkout accepted'; fail=1; fi
+  local test_head test_gguf_sha test_reference_sha test_approval_sha test_transfer
+  test_head="$(printf '%040d' 1)"; test_gguf_sha="$(printf '%064d' 0)"; test_reference_sha="$(printf '%064d' 0)"; test_approval_sha="$(printf '%064d' 1)"; test_transfer="$temporary/root/transfer-manifest"
+  printf 'schema=speechbrain-lang-id-apple-transfer-v1\nexpected_head=%s\ngguf_sha256=%s\nreference_manifest_sha256=%s\napproval_evidence_sha256=%s\npublication=NO_UPLOAD\n' "$test_head" "$test_gguf_sha" "$test_reference_sha" "$test_approval_sha" > "$test_transfer"
+  local test_transfer_sha
+  test_transfer_sha="$(sha256_file "$test_transfer")"
+  require_transfer_manifest "$test_transfer" "$test_transfer_sha" "$test_head" "$test_gguf_sha" "$test_reference_sha" "$test_approval_sha" || { log 'self-test FAIL: valid transfer manifest rejected'; fail=1; }
+  sed -i.bak 's/publication=NO_UPLOAD/publication=UPLOAD/' "$test_transfer"; rm -f "$test_transfer.bak"
+  if require_transfer_manifest "$test_transfer" "$(sha256_file "$test_transfer")" "$test_head" "$test_gguf_sha" "$test_reference_sha" "$test_approval_sha"; then log 'self-test FAIL: transfer publication policy accepted'; fail=1; fi
+  printf 'schema=speechbrain-lang-id-apple-transfer-v1\nexpected_head=%s\ngguf_sha256=%s\nreference_manifest_sha256=%s\napproval_evidence_sha256=%s\npublication=NO_UPLOAD\nextra=value\n' "$test_head" "$test_gguf_sha" "$test_reference_sha" "$test_approval_sha" > "$test_transfer"; if require_transfer_manifest "$test_transfer" "$(sha256_file "$test_transfer")" "$test_head" "$test_gguf_sha" "$test_reference_sha" "$test_approval_sha"; then log 'self-test FAIL: extra transfer key accepted'; fail=1; fi
+  if require_disjoint_evidence "$temporary/root/reference/nested/evidence" "$temporary/root/gguf" "$temporary/root/reference" "$temporary/root" "$temporary/approval" "$temporary/root/transfer-manifest"; then log 'self-test FAIL: evidence under reference accepted'; fail=1; fi
+  if require_disjoint_evidence "$temporary/root/nested/evidence" "$temporary/root/gguf" "$temporary/root/reference" "$temporary/root" "$temporary/approval" "$temporary/root/transfer-manifest"; then log 'self-test FAIL: evidence under checkout accepted'; fail=1; fi
   ln -s "$temporary/root/reference" "$temporary/reference-link"
-  if require_disjoint_evidence "$temporary/parent/evidence" "$temporary/root/gguf" "$temporary/reference-link" "$temporary/root" "$temporary/approval"; then log 'self-test FAIL: symlink reference accepted'; fail=1; fi
+  if require_disjoint_evidence "$temporary/parent/evidence" "$temporary/root/gguf" "$temporary/reference-link" "$temporary/root" "$temporary/approval" "$temporary/root/transfer-manifest"; then log 'self-test FAIL: symlink reference accepted'; fail=1; fi
   ln -s "$temporary/root/gguf" "$temporary/gguf-link"
-  if require_disjoint_evidence "$temporary/parent/evidence2" "$temporary/gguf-link" "$temporary/root/reference" "$temporary/root" "$temporary/approval"; then log 'self-test FAIL: symlink GGUF accepted'; fail=1; fi
+  if require_disjoint_evidence "$temporary/parent/evidence2" "$temporary/gguf-link" "$temporary/root/reference" "$temporary/root" "$temporary/approval" "$temporary/root/transfer-manifest"; then log 'self-test FAIL: symlink GGUF accepted'; fail=1; fi
   ln -s "$temporary/root/reference" "$temporary/evidence-link"
-  if require_disjoint_evidence "$temporary/evidence-link" "$temporary/root/gguf" "$temporary/root/reference" "$temporary/root" "$temporary/approval"; then log 'self-test FAIL: symlink evidence accepted'; fail=1; fi
+  if require_disjoint_evidence "$temporary/evidence-link" "$temporary/root/gguf" "$temporary/root/reference" "$temporary/root" "$temporary/approval" "$temporary/root/transfer-manifest"; then log 'self-test FAIL: symlink evidence accepted'; fail=1; fi
   mkdir -p "$temporary/root/real/existing"
   ln -s "$temporary/root/real" "$temporary/root/link"
-  if require_disjoint_evidence "$temporary/root/link/existing/new-evidence" "$temporary/root/gguf" "$temporary/root/reference" "$temporary/root" "$temporary/approval"; then log 'self-test FAIL: evidence under symlink ancestor accepted'; fail=1; fi
+  if require_disjoint_evidence "$temporary/root/link/existing/new-evidence" "$temporary/root/gguf" "$temporary/root/reference" "$temporary/root" "$temporary/approval" "$temporary/root/transfer-manifest"; then log 'self-test FAIL: evidence under symlink ancestor accepted'; fail=1; fi
   local fake_root fake_evidence
   fake_root="$(mktemp -d)"; fake_evidence="$fake_root/evidence"
   mkdir -p "$fake_root/tools/parity"
   cp -R "$VOKRA_ROOT/tools/parity/speechbrain_lang_id" "$fake_root/tools/parity/speechbrain_lang_id"
-  if VOKRA_ROOT="$fake_root" "$script_path" --approval-evidence "$fake_root/missing-approval" --gguf "$fake_root/gguf" --reference "$fake_root/reference" --gguf-sha256 "$(printf 'a%.0s' {1..64})" --reference-manifest-sha256 "$(printf 'b%.0s' {1..64})" --evidence-dir "$fake_evidence" >/dev/null 2>&1; then log 'self-test FAIL: invalid approval passed before host/input checks'; fail=1; fi
+  if VOKRA_ROOT="$fake_root" "$script_path" --expected-head "$(printf '%040d' 1)" --approval-evidence "$fake_root/missing-approval" --gguf "$fake_root/gguf" --reference "$fake_root/reference" --gguf-sha256 "$(printf 'a%.0s' {1..64})" --reference-manifest-sha256 "$(printf 'b%.0s' {1..64})" --evidence-dir "$fake_evidence" >/dev/null 2>&1; then log 'self-test FAIL: invalid approval passed before host/input checks'; fail=1; fi
   [[ ! -e "$fake_evidence" ]] || { log 'self-test FAIL: invalid approval created evidence'; fail=1; }
   printf '{"status":"PENDING_REVIEW","status":"APPROVED"}' > "$fake_root/duplicate-approval.json"
-  if VOKRA_ROOT="$fake_root" "$script_path" --approval-evidence "$fake_root/duplicate-approval.json" --gguf "$fake_root/gguf" --reference "$fake_root/reference" --gguf-sha256 "$(printf 'a%.0s' {1..64})" --reference-manifest-sha256 "$(printf 'b%.0s' {1..64})" --evidence-dir "$fake_evidence" >/dev/null 2>&1; then log 'self-test FAIL: duplicate approval JSON passed'; fail=1; fi
+  if VOKRA_ROOT="$fake_root" "$script_path" --expected-head "$(printf '%040d' 1)" --approval-evidence "$fake_root/duplicate-approval.json" --gguf "$fake_root/gguf" --reference "$fake_root/reference" --gguf-sha256 "$(printf 'a%.0s' {1..64})" --reference-manifest-sha256 "$(printf 'b%.0s' {1..64})" --evidence-dir "$fake_evidence" >/dev/null 2>&1; then log 'self-test FAIL: duplicate approval JSON passed'; fail=1; fi
   [[ ! -e "$fake_evidence" ]] || { log 'self-test FAIL: duplicate approval created evidence'; fail=1; }
   rm -rf "$fake_root"
   printf 'test measure_metal_against_cpu_and_independent_speechbrain ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nLANG_ID_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET verdict=MEASURED_NOT_GATED\n' > "$temporary/valid.log"
@@ -331,15 +381,19 @@ run_self_test() (
 )
 
 main() {
-  local gguf="" reference="" gguf_sha="" reference_manifest_sha="" approval="" evidence_dir="" self_test=0
-  local seen_gguf=0 seen_reference=0 seen_gguf_sha=0 seen_reference_manifest_sha=0 seen_approval=0 seen_evidence_dir=0 seen_self_test=0
+  local expected_head="" gguf="" reference="" gguf_sha="" reference_manifest_sha="" approval="" approval_sha="" transfer_manifest="" transfer_manifest_sha="" evidence_dir="" self_test=0
+  local seen_expected_head=0 seen_gguf=0 seen_reference=0 seen_gguf_sha=0 seen_reference_manifest_sha=0 seen_approval=0 seen_approval_sha=0 seen_transfer_manifest=0 seen_transfer_manifest_sha=0 seen_evidence_dir=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
+      --expected-head) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_expected_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; expected_head="$2"; seen_expected_head=1; shift 2 ;;
       --gguf) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_gguf == 0 )) || die 'duplicate --gguf'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; gguf="$2"; seen_gguf=1; shift 2 ;;
       --reference) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_reference == 0 )) || die 'duplicate --reference'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; reference="$2"; seen_reference=1; shift 2 ;;
       --gguf-sha256) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_gguf_sha == 0 )) || die 'duplicate --gguf-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; gguf_sha="$2"; seen_gguf_sha=1; shift 2 ;;
       --reference-manifest-sha256) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_reference_manifest_sha == 0 )) || die 'duplicate --reference-manifest-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; reference_manifest_sha="$2"; seen_reference_manifest_sha=1; shift 2 ;;
       --approval-evidence) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; approval="$2"; seen_approval=1; shift 2 ;;
+      --approval-evidence-sha256) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_approval_sha == 0 )) || die 'duplicate --approval-evidence-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; approval_sha="$2"; seen_approval_sha=1; shift 2 ;;
+      --transfer-manifest) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_transfer_manifest == 0 )) || die 'duplicate --transfer-manifest'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; transfer_manifest="$2"; seen_transfer_manifest=1; shift 2 ;;
+      --transfer-manifest-sha256) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_transfer_manifest_sha == 0 )) || die 'duplicate --transfer-manifest-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; transfer_manifest_sha="$2"; seen_transfer_manifest_sha=1; shift 2 ;;
       --evidence-dir) (( self_test == 0 )) || die '--self-test must be exclusive'; (( seen_evidence_dir == 0 )) || die 'duplicate --evidence-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }; evidence_dir="$2"; seen_evidence_dir=1; shift 2 ;;
       --self-test) (( seen_self_test == 0 )) || die 'duplicate --self-test'; self_test=1; seen_self_test=1; shift ;;
       -h|--help) usage; return 0 ;;
@@ -347,17 +401,21 @@ main() {
     esac
   done
   if (( self_test == 1 )); then
-    [[ -z "$gguf$reference$gguf_sha$reference_manifest_sha$approval$evidence_dir" ]] || die "--self-test accepts no other arguments"
+    [[ -z "$expected_head$gguf$reference$gguf_sha$reference_manifest_sha$approval$approval_sha$transfer_manifest$transfer_manifest_sha$evidence_dir" ]] || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
-  [[ -n "$gguf" && -n "$reference" && -n "$evidence_dir" && -n "$gguf_sha" && -n "$reference_manifest_sha" && -n "$approval" ]] \
-    || { usage; die "--gguf, --reference, both SHA-256 values, --approval-evidence and --evidence-dir are required"; }
-  [[ "$gguf_sha" =~ ^[0-9a-f]{64}$ && "$reference_manifest_sha" =~ ^[0-9a-f]{64}$ ]] \
+  [[ -n "$expected_head" && -n "$gguf" && -n "$reference" && -n "$evidence_dir" && -n "$gguf_sha" && -n "$reference_manifest_sha" && -n "$approval" && -n "$approval_sha" && -n "$transfer_manifest" && -n "$transfer_manifest_sha" ]] \
+    || { usage; die "all exact-head, input, approval, transfer-manifest, SHA-256 and evidence arguments are required"; }
+  [[ "$gguf_sha" =~ ^[0-9a-f]{64}$ && "$reference_manifest_sha" =~ ^[0-9a-f]{64}$ && "$approval_sha" =~ ^[0-9a-f]{64}$ && "$transfer_manifest_sha" =~ ^[0-9a-f]{64}$ ]] \
     || die 'expected hashes must be lowercase 64-hex SHA-256 values'
 
+  require_clean_expected_head "$expected_head"
+  require_file "approval evidence" "$approval"
+  [[ "$(sha256_file "$approval")" == "$approval_sha" ]] || die 'approval evidence SHA-256 differs from the external approval binding'
+  require_transfer_manifest "$transfer_manifest" "$transfer_manifest_sha" "$expected_head" "$gguf_sha" "$reference_manifest_sha" "$approval_sha"
   license_preflight "$approval"
-  require_disjoint_evidence "$evidence_dir" "$gguf" "$reference" "$VOKRA_ROOT" "$approval"
+  require_disjoint_evidence "$evidence_dir" "$gguf" "$reference" "$VOKRA_ROOT" "$approval" "$transfer_manifest"
   require_remote_apple_host
   require_tooling
   require_file "VAST-generated Lang-ID GGUF" "$gguf"
@@ -379,13 +437,15 @@ main() {
   if [[ -z "$jobs" ]]; then jobs=2; fi
   env "$GGUF_ENV=$gguf" "$REFERENCE_DIR_ENV=$reference" \
     CARGO_BUILD_JOBS="$jobs" RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release \
       -p vokra-models --features metal --test parity_speechbrain_lang_id_real \
-      "$PARITY_TEST" -- --exact --nocapture 2>&1 | tee "$evidence_dir/parity.log"
+      "$PARITY_TEST" -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence_dir/parity.log"
 
   require_test_evidence "$evidence_dir/parity.log"
+  require_clean_expected_head "$expected_head"
 
   {
+    echo "expected_head=$expected_head"
     echo "verdict=MEASURED_NOT_GATED"
     echo "parity_status=MEASURED_NOT_GATED"
     echo "numeric_bounds=UNSET"

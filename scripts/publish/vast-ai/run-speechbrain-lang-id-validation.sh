@@ -42,7 +42,9 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-speechbrain-lang-id-validation.sh --approval-evidence <regular-json-file> [--work-dir <absent-dir>]
+usage: run-speechbrain-lang-id-validation.sh --approval-evidence <regular-json-file>
+       --approval-evidence-sha256 <lowercase-sha256> --expected-head <lowercase-40-hex>
+       [--work-dir <absent-dir>]
        run-speechbrain-lang-id-validation.sh --self-test
 
 VAST/Linux-only non-publishing VoxLingua107 worker. It uses the official
@@ -56,6 +58,15 @@ EOF
 }
 
 sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hexadecimal characters'; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" ]] || { die 'VAST checkout is missing .git'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || { die "checkout HEAD $actual_head does not match expected $expected_head"; return 2; }
+}
 
 expected_snapshot_bytes() {
   case "$1" in
@@ -137,16 +148,32 @@ require_cpu_test_evidence() {
 }
 
 write_apple_args() {
-  local output="$1" gguf_sha="$2" reference_manifest_sha="$3"
+  local output="$1" expected_head="$2" gguf_sha="$3" reference_manifest_sha="$4" approval_sha="$5" transfer_manifest_sha="$6"
   {
     printf '#!/usr/bin/env bash\nset -eu\n'
     printf '%s ' 'scripts/verify/apple-silicon-speechbrain-lang-id.sh'
+    printf '%s ' --expected-head "$expected_head"
     printf '%s ' --gguf "'<VAST_LANG_ID_GGUF_PATH>'" --reference "'<VAST_LANG_ID_REFERENCE_DIR>'"
     printf '%s ' --gguf-sha256 "$gguf_sha" --reference-manifest-sha256 "$reference_manifest_sha"
-    printf '%s ' --approval-evidence "'<APPLE_LANG_ID_APPROVAL_EVIDENCE>'"
+    printf '%s ' --approval-evidence "'<APPLE_LANG_ID_APPROVAL_EVIDENCE>'" --approval-evidence-sha256 "$approval_sha"
+    printf '%s ' --transfer-manifest "'<VAST_LANG_ID_TRANSFER_MANIFEST>'" --transfer-manifest-sha256 "$transfer_manifest_sha"
     printf '%s\n' --evidence-dir "'<APPLE_LANG_ID_EMPTY_EVIDENCE_DIR>'"
   } > "$output"
   chmod +x "$output"
+}
+
+write_transfer_manifest() {
+  local output="$1" expected_head="$2" gguf_sha="$3" reference_manifest_sha="$4" approval_sha="$5"
+  [[ ! -e "$output" && ! -L "$output" && ! -e "${output}.sha256" && ! -L "${output}.sha256" ]] || { die "transfer manifest output must be absent: $output"; return 2; }
+  {
+    printf 'schema=speechbrain-lang-id-apple-transfer-v1\n'
+    printf 'expected_head=%s\n' "$expected_head"
+    printf 'gguf_sha256=%s\n' "$gguf_sha"
+    printf 'reference_manifest_sha256=%s\n' "$reference_manifest_sha"
+    printf 'approval_evidence_sha256=%s\n' "$approval_sha"
+    printf 'publication=NO_UPLOAD\n'
+  } > "$output"
+  sha256_file "$output" > "${output}.sha256"
 }
 
 license_preflight() {
@@ -415,18 +442,18 @@ run_self_test() {
     "EXPECTED_EMBEDDING_DIM=256" "EXPECTED_CLASS_COUNT=107" \
     "embedding_model.ckpt" "classifier.ckpt" "label_encoder.txt" "hyperparams.yaml" "config.json" \
     "snapshot_download" "code-bound upstream identity is unresolved" \
-    "--approval-evidence" "APPLE_LANG_ID_APPROVAL_EVIDENCE"; do
+    "--approval-evidence" "--approval-evidence-sha256" "write_transfer_manifest" "publication=NO_UPLOAD" "APPLE_LANG_ID_APPROVAL_EVIDENCE"; do
     if ! grep -Fq -- "$required" "$script_path"; then log "self-test FAIL: missing $required"; fail=1; fi
   done
   cases=$((cases + 1))
   # shellcheck disable=SC2016
   for required in 'uv run --frozen --project "$LANG_ID_PROJECT" --python 3.12 python' \
-    'cargo build --locked --release -p vokra-cli' \
-    'cargo test --locked --release -p vokra-models' \
+    'cargo build --offline --locked --release -p vokra-cli' \
+    'cargo test --offline --locked --release -p vokra-models' \
     'test measure_cpu_against_independent_speechbrain' \
     'LANG_ID_MEASUREMENT_ONLY backend=cpu' 'test result: ok. 1 passed' \
     'lang-id[' 'lang-id: 107 scores in official label order' '--backend cpu' \
-    'MIN_VAST_MEM_KIB=67108864' 'MIN_FREE_DISK_KIB=$((150 * 1024 * 1024))' \
+    'MIN_VAST_MEM_KIB=67108864' 'MIN_FREE_DISK_KIB=$((150 * 1024 * 1024))' '--expected-head' 'require_clean_expected_head' '--test-threads=1' \
     '/proc/meminfo' 'df -Pk' 'VOKRA_PUBLISH_ON_VAST=1' \
     'git status --porcelain --untracked-files=all' 'mindepth 1 -maxdepth 1'; do
     if ! grep -Fq -- "$required" "$script_path"; then log "self-test FAIL: missing gate/sentinel $required"; fail=1; fi
@@ -463,10 +490,21 @@ run_self_test() {
   sed -i.bak 's/filtered out$/filtered out; unexpected/' "$evidence_dir/malformed-result.log"
   rm -f "$evidence_dir/malformed-result.log.bak"
   if require_cpu_test_evidence "$evidence_dir/malformed-result.log"; then log 'self-test FAIL: malformed result accepted'; fail=1; fi
-  write_apple_args "$evidence_dir/apple-args.sh" "$(printf '%064d' 0)" "$(printf '%064d' 0)"
+  write_apple_args "$evidence_dir/apple-args.sh" "$(printf '%040d' 1)" "$(printf '%064d' 0)" "$(printf '%064d' 0)" "$(printf '%064d' 1)" "$(printf '%064d' 2)"
   bash -n "$evidence_dir/apple-args.sh"
   grep -Fq -- "--approval-evidence '<APPLE_LANG_ID_APPROVAL_EVIDENCE>'" "$evidence_dir/apple-args.sh" \
     || { log 'self-test FAIL: Apple approval placeholder missing'; fail=1; }
+  grep -Fq -- '--expected-head 0000000000000000000000000000000000000001' "$evidence_dir/apple-args.sh" \
+    || { log 'self-test FAIL: Apple exact-head binding missing'; fail=1; }
+  grep -Fq -- '--approval-evidence-sha256 0000000000000000000000000000000000000000000000000000000000000001' "$evidence_dir/apple-args.sh" \
+    || { log 'self-test FAIL: Apple approval SHA binding missing'; fail=1; }
+  grep -Fq -- '--transfer-manifest-sha256 0000000000000000000000000000000000000000000000000000000000000002' "$evidence_dir/apple-args.sh" \
+    || { log 'self-test FAIL: Apple transfer-manifest SHA binding missing'; fail=1; }
+  write_transfer_manifest "$evidence_dir/transfer-manifest" "$(printf '%040d' 1)" "$(printf '%064d' 0)" "$(printf '%064d' 0)" "$(printf '%064d' 1)"
+  grep -Fxq 'publication=NO_UPLOAD' "$evidence_dir/transfer-manifest" \
+    || { log 'self-test FAIL: transfer publication policy missing'; fail=1; }
+  [[ "$(cat "$evidence_dir/transfer-manifest.sha256")" == "$(sha256_file "$evidence_dir/transfer-manifest")" ]] \
+    || { log 'self-test FAIL: transfer manifest SHA sidecar mismatch'; fail=1; }
   if grep -Eq '/(scratchpad|speechbrain-lang-id-validation)/|VOKRA_ROOT=' "$evidence_dir/apple-args.sh"; then
     log 'self-test FAIL: Apple args embed a VAST path'; fail=1
   fi
@@ -484,6 +522,11 @@ run_self_test() {
   if "$script_path" --approval-evidence "" >/dev/null 2>&1; then log "self-test FAIL: empty approval value accepted"; fail=1; fi
   if "$script_path" --approval-evidence --work-dir x >/dev/null 2>&1; then log "self-test FAIL: option used as approval value accepted"; fail=1; fi
   if "$script_path" --approval-evidence one --approval-evidence two >/dev/null 2>&1; then log "self-test FAIL: duplicate approval accepted"; fail=1; fi
+  if "$script_path" --approval-evidence one --approval-evidence-sha256 one >/dev/null 2>&1; then log "self-test FAIL: malformed approval SHA accepted"; fail=1; fi
+  if "$script_path" --approval-evidence one --approval-evidence-sha256 "$(printf '%064d' 1)" --approval-evidence-sha256 "$(printf '%064d' 2)" >/dev/null 2>&1; then log "self-test FAIL: duplicate approval SHA accepted"; fail=1; fi
+  if "$script_path" --approval-evidence one >/dev/null 2>&1; then log "self-test FAIL: missing expected-head accepted"; fail=1; fi
+  if "$script_path" --expected-head >/dev/null 2>&1; then log "self-test FAIL: missing expected-head value accepted"; fail=1; fi
+  if "$script_path" --expected-head "$(printf '%040d' 1)" --expected-head "$(printf '%040d' 2)" >/dev/null 2>&1; then log "self-test FAIL: duplicate expected-head accepted"; fail=1; fi
   cases=$((cases + 1))
   fake_root="$(mktemp -d)"; fake_scratch="$fake_root/must-not-exist"
   mkdir -p "$fake_root/tools/parity"
@@ -492,10 +535,10 @@ run_self_test() {
   printf '{}' > "$approval"
   set +e
   VOKRA_ROOT="$fake_root" VOKRA_SCRATCH="$fake_scratch" "$script_path" \
-    --approval-evidence "$approval" >"$fake_root/worker.log" 2>&1
+    --approval-evidence "$approval" --approval-evidence-sha256 "$(sha256_file "$approval")" --expected-head "$(printf '%040d' 1)" >"$fake_root/worker.log" 2>&1
   rc=$?
   set -e
-  if [[ $rc -ne 2 || -e "$fake_scratch" ]] || ! grep -Fq 'SpeechBrain Lang-ID gate: BLOCKED:' "$fake_root/worker.log"; then
+  if [[ $rc -ne 2 || -e "$fake_scratch" ]] || ! grep -Eq 'SpeechBrain Lang-ID gate: BLOCKED:|checkout HEAD|checkout must be clean|missing \.git|not a git repository' "$fake_root/worker.log"; then
     log "self-test FAIL: license gate did not block before host/scratch"
     fail=1
   fi
@@ -508,11 +551,11 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir upstream_dir evidence_dir
-  local seen_work_dir=0 seen_self_test=0 seen_approval=0
+  local self_test=0 requested_work_dir="" approval_evidence="" approval_evidence_sha="" expected_head="" run_stamp work_dir upstream_dir evidence_dir
+  local seen_work_dir=0 seen_self_test=0 seen_approval=0 seen_approval_sha=0 seen_expected_head=0
   local prepared_path prepared_manifest gguf_path reference_dir score_path
   local run_log env_log prep_log prep_contract_log reference_log reference_contract_log convert_log parity_log cli_log gate_log summary_file
-  local tensor_count source_hashes tensor_count_file reference_manifest_sha
+  local tensor_count source_hashes tensor_count_file reference_manifest_sha approval_sha gguf_sha transfer_manifest transfer_manifest_sha
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
@@ -525,6 +568,16 @@ main() {
         (( seen_approval == 0 )) || { die "duplicate --approval-evidence"; return 2; }
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--approval-evidence requires a non-option file"; return 2; }
         approval_evidence="$2"; seen_approval=1; shift 2 ;;
+      --approval-evidence-sha256)
+        (( self_test == 0 )) || { die "--self-test must be exclusive"; return 2; }
+        (( seen_approval_sha == 0 )) || { die "duplicate --approval-evidence-sha256"; return 2; }
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--approval-evidence-sha256 requires a non-option value"; return 2; }
+        approval_evidence_sha="$2"; seen_approval_sha=1; shift 2 ;;
+      --expected-head)
+        (( self_test == 0 )) || { die "--self-test must be exclusive"; return 2; }
+        (( seen_expected_head == 0 )) || { die "duplicate --expected-head"; return 2; }
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--expected-head requires a lowercase 40-hex value"; return 2; }
+        expected_head="$2"; seen_expected_head=1; shift 2 ;;
       --self-test)
         (( seen_self_test == 0 )) || { die "duplicate --self-test"; return 2; }
         seen_self_test=1; self_test=1; shift ;;
@@ -533,11 +586,14 @@ main() {
     esac
   done
   if [[ $self_test -eq 1 ]]; then
-    [[ -z "$requested_work_dir$approval_evidence" ]] || { die "--self-test accepts no other arguments"; return 2; }
+    [[ -z "$requested_work_dir$approval_evidence$approval_evidence_sha" ]] || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test; return $?
   fi
-  [[ -n "$approval_evidence" ]] || { usage; die "--approval-evidence is required"; return 2; }
+  [[ -n "$approval_evidence" && "$seen_approval_sha" == 1 && "$seen_expected_head" == 1 ]] || { usage; die "--approval-evidence, --approval-evidence-sha256 and --expected-head are required"; return 2; }
+  [[ "$approval_evidence_sha" =~ ^[0-9a-f]{64}$ ]] || { die '--approval-evidence-sha256 must be exactly 64 lowercase hexadecimal characters'; return 2; }
+  require_clean_expected_head "$expected_head"
   [[ -f "$approval_evidence" && ! -L "$approval_evidence" ]] || { die "--approval-evidence must be a regular non-symlink file"; return 2; }
+  [[ "$(sha256_file "$approval_evidence")" == "$approval_evidence_sha" ]] || { die '--approval-evidence SHA-256 differs from the external approval binding'; return 2; }
   license_preflight "$approval_evidence"
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   if [[ -n "$requested_work_dir" ]]; then work_dir="$requested_work_dir"
@@ -564,6 +620,7 @@ main() {
   cli_log="$evidence_dir/cli.log"
   gate_log="$evidence_dir/gates.log"
   summary_file="$evidence_dir/summary.txt"
+  transfer_manifest="$evidence_dir/apple-transfer-manifest.txt"
   mkdir -p "$evidence_dir"
   exec > >(tee -a "$run_log") 2>&1
   # shellcheck disable=SC2154
@@ -620,20 +677,20 @@ main() {
   cp "$reference_dir/labels.json" "$evidence_dir/reference.labels.json"
   sha256sum "$reference_dir"/* | tee "$evidence_dir/reference-sha256.txt"
 
-  run_logged "Build strict Vokra CLI" "$evidence_dir/build.log" cargo build --locked --release -p vokra-cli
+  run_logged "Build strict Vokra CLI" "$evidence_dir/build.log" env CARGO_NET_OFFLINE=true cargo build --offline --locked --release -p vokra-cli
   run_logged "Convert strict Lang-ID GGUF" "$convert_log" target/release/vokra-cli convert \
     --model "$MODEL_KIND" --input "$prepared_path" --output "$gguf_path"
   grep -Eq "^converted $MODEL_KIND: $tensor_count tensors," "$convert_log" || die "converter count assertion failed"
   [[ -s "$gguf_path" ]] || die "converter emitted no GGUF"
   sha256sum "$gguf_path" | tee "$evidence_dir/gguf-sha256.txt"
   reference_manifest_sha="$(sha256_file "$reference_dir/manifest.json")"
-  write_apple_args "$evidence_dir/apple-silicon-speechbrain-lang-id-args.sh" \
-    "$(sha256_file "$gguf_path")" "$reference_manifest_sha"
+  gguf_sha="$(sha256_file "$gguf_path")"
+  approval_sha="$approval_evidence_sha"
 
   export "$GGUF_ENV=$gguf_path" "$REFERENCE_DIR_ENV=$reference_dir"
   run_logged "Run real-weight CPU parity measurement" "$parity_log" \
-    cargo test --locked --release -p vokra-models --test parity_speechbrain_lang_id_real \
-    "$PARITY_TEST" -- --ignored --nocapture
+    CARGO_NET_OFFLINE=true cargo test --offline --locked --release -p vokra-models --test parity_speechbrain_lang_id_real \
+    "$PARITY_TEST" -- --ignored --nocapture --test-threads=1
   require_cpu_test_evidence "$parity_log"
 
   run_logged "Run CLI classification smoke" "$cli_log" target/release/vokra-cli run \
@@ -656,16 +713,31 @@ main() {
   cat "$gate_log" | tee -a "$run_log"
   (( gate_status == 0 )) || die "focused repository gate failed"
 
+  require_clean_expected_head "$expected_head"
+  write_transfer_manifest "$transfer_manifest" "$expected_head" "$gguf_sha" "$reference_manifest_sha" "$approval_sha"
+  transfer_manifest_sha="$(sha256_file "$transfer_manifest")"
+  require_clean_expected_head "$expected_head"
+  write_apple_args "$evidence_dir/apple-silicon-speechbrain-lang-id-args.sh" \
+    "$expected_head" "$gguf_sha" "$reference_manifest_sha" "$approval_sha" "$transfer_manifest_sha"
+  require_clean_expected_head "$expected_head"
+
   {
-    echo "execution_status=PASS"
+    echo "execution_status=MEASURED_NOT_GATED"
+    echo "expected_head=$expected_head"
     echo "git_commit=$(git rev-parse HEAD)"
     echo "upstream_repo=$UPSTREAM_REPO"
     echo "upstream_revision=$UPSTREAM_REVISION"
     echo "prepared_tensor_count=$tensor_count"
     echo "source_checkpoint_sha256_evidence=$source_hashes"
     echo "prepared_sha256=$(sha256_file "$prepared_path")"
-    echo "gguf_sha256=$(sha256_file "$gguf_path")"
-    echo "reference_manifest_sha256=$(sha256_file "$reference_dir/manifest.json")"
+    echo "gguf_sha256=$gguf_sha"
+    echo "reference_manifest_sha256=$reference_manifest_sha"
+    echo "approval_evidence_sha256=$approval_sha"
+    echo "transfer_manifest=$transfer_manifest"
+    echo "transfer_manifest_sha256=$transfer_manifest_sha"
+    echo "apple_args=$evidence_dir/apple-silicon-speechbrain-lang-id-args.sh"
+    echo "reference_dir=$reference_dir"
+    echo "gguf_path=$gguf_path"
     echo "cpu_test=$PARITY_TEST"
     echo "cpu_test_sentinel=LANG_ID_MEASUREMENT_ONLY backend=cpu"
     echo "parity_status=MEASURED_NOT_GATED"
@@ -675,7 +747,7 @@ main() {
     echo "verdict=MEASUREMENT_ONLY"
   } > "$summary_file"
   echo "run-speechbrain-lang-id-validation: MEASUREMENT_ONLY"
-  echo "Pull evidence before destroy: $evidence_dir"
-  echo "Do not pull generated checkpoint or GGUF artifacts to the maintainer Mac."
+  echo "Direct VAST-to-Apple transfer packet: GGUF=$gguf_path reference=$reference_dir transfer_manifest=$transfer_manifest transfer_manifest_sha256=${transfer_manifest}.sha256 args=$evidence_dir/apple-silicon-speechbrain-lang-id-args.sh"
+  echo "Pull only this packet and small evidence before destroy; do not pull the prepared checkpoint or upstream snapshot."
 }
 main "$@"

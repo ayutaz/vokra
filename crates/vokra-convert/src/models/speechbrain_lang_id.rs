@@ -71,6 +71,20 @@ pub const UPSTREAM_HF_COMMONLANGUAGE: &str = "speechbrain/lang-id-commonlanguage
 
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
+fn authenticated_license(license: Option<&str>) -> Result<(String, LicenseClass), ConvertError> {
+    match license {
+        Some(s) if !s.is_empty() => {
+            if s != DEFAULT_LICENSE_SPDX {
+                return Err(ConvertError::Parse(format!(
+                    "lang_id_ecapa: only the authenticated `{DEFAULT_LICENSE_SPDX}` provenance is accepted, got `{s}`"
+                )));
+            }
+            Ok((s.to_owned(), LicenseClass::Permissive))
+        }
+        _ => Ok((DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive)),
+    }
+}
+
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const PREPARED_CONTRACT_KEY: &str = "vokra.lang_id.contract";
@@ -570,10 +584,7 @@ pub fn convert_speechbrain_lang_id_variant(
     b.add_string(chunks::KEY_MODEL_NAME, variant.name());
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
 
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
-    };
+    let (spdx, class) = authenticated_license(license)?;
     let source_note = match variant {
         Variant::VoxLingua107 => {
             "speechbrain/lang-id-voxlingua107-ecapa (ECAPA-TDNN + 107-class lang-id, apache-2.0)"
@@ -954,5 +965,12 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn license_override_must_match_authenticated_apache_contract() {
+        let error = authenticated_license(Some("mit")).unwrap_err();
+        assert!(error.to_string().contains("apache-2.0"));
+        assert_eq!(authenticated_license(None).unwrap().0, DEFAULT_LICENSE_SPDX);
     }
 }

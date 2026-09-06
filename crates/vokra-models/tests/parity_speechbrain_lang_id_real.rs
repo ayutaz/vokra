@@ -316,6 +316,32 @@ fn argmax(values: &[f32]) -> usize {
         .expect("argmax requires non-empty values")
 }
 
+fn require_real_path(path: &Path, label: &str, directory: bool) {
+    let metadata = std::fs::symlink_metadata(path).unwrap_or_else(|error| {
+        panic!(
+            "{label} is missing or unreadable at {}: {error}",
+            path.display()
+        )
+    });
+    assert!(
+        !metadata.file_type().is_symlink(),
+        "{label} must not be a symlink"
+    );
+    if directory {
+        assert!(
+            metadata.is_dir(),
+            "{label} must be a directory: {}",
+            path.display()
+        );
+    } else {
+        assert!(
+            metadata.is_file(),
+            "{label} must be a regular file: {}",
+            path.display()
+        );
+    }
+}
+
 fn load_case() -> (PathBuf, LangIdEcapa, Reference) {
     let gguf = std::env::var_os(GGUF_ENV)
         .map(PathBuf::from)
@@ -325,6 +351,8 @@ fn load_case() -> (PathBuf, LangIdEcapa, Reference) {
         .unwrap_or_else(|| {
             panic!("set {REFERENCE_DIR_ENV} when explicitly running this ignored test")
         });
+    require_real_path(&gguf, "GGUF input", false);
+    require_real_path(&reference_dir, "reference fixture directory", true);
     let model = LangIdEcapa::from_path(&gguf).expect("strict prepared-v2 Lang-ID GGUF bind");
     let variant = model.variant().expect("strict Lang-ID variant");
     let axes = Axes::for_variant(variant);
