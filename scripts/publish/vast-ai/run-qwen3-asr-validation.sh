@@ -352,7 +352,21 @@ run_self_test() {
   [[ "$(variant_revision 0.6b)" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$(variant_model_kind 1.7b)" == "qwen3-asr-1.7b" ]] || failed=1
   [[ "$(variant_test 1.7b)" == "qwen3_asr_1_7b_cpu_matches_official_reference" ]] || failed=1
-  grep -Fq -- 'e177166e01d8859d3ca0/qwen_asr-0.0.6-py3-none-any.whl' "$WHEEL_AUDIT" || failed=1
+  if ! UV_NO_CACHE=1 UV_CACHE_DIR="${QWEN3_ASR_UV_CACHE_DIR:-/private/tmp/vokra-qwen3-asr-uv-cache}" \
+    uv run --no-cache --no-project --offline --python 3.12 python - \
+      "$WHEEL_AUDIT" "$PREFLIGHT_GATE" "$OFFICIAL_WHEEL_URL" "$OFFICIAL_WHEEL_BYTES" "$OFFICIAL_WHEEL_SHA256" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+import preflight_gate
+import wheel_audit
+assert wheel_audit.WHEEL_URL == preflight_gate.WHEEL_URL == sys.argv[3]
+assert str(wheel_audit.WHEEL_BYTES) == sys.argv[4]
+assert wheel_audit.WHEEL_SHA256 == preflight_gate.WHEEL_SHA256 == sys.argv[5]
+PY
+  then
+    failed=1
+  fi
   if variant_repo bad >/dev/null 2>&1; then
     failed=1
   fi
@@ -367,7 +381,7 @@ run_self_test() {
   wheel_line="$(grep -n '^  official_wheel=' "$0" | tail -1 | cut -d: -f1)"
   build_line="$(grep -n '^  cargo build --manifest-path' "$0" | tail -1 | cut -d: -f1)"
   [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$wheel_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || failed=1
-  (( gate_line < host_line && gate_line < tooling_line && gate_line < sync_line && sync_line < audit_line && audit_line < build_line )) || failed=1
+  (( gate_line < host_line && host_line < tooling_line && tooling_line < wheel_line && wheel_line < sync_line && sync_line < audit_line && audit_line < build_line )) || failed=1
   grep -Fq -- "$audit_anchor" "$0" || failed=1
   grep -Fq -- "$fetch_anchor" "$0" || failed=1
   pre_gate_block="$(awk '/^main\(\)/,/^  pre_sync_gate / {print}' "$0")"

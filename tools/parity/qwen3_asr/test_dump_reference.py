@@ -5,6 +5,7 @@ import importlib.util
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -59,6 +60,17 @@ class DumperContractTests(unittest.TestCase):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
         }
         self.assertNotIn("asr", loaded)
+
+    def test_main_refuses_non_vast_before_touching_inputs(self) -> None:
+        args = [
+            "--variant", "0.6b", "--model-dir", "/missing/model",
+            "--wheel", "/missing/wheel.whl", "--audio", "/missing/audio.wav",
+            "--output", "/missing/output",
+        ]
+        with mock.patch.dict(MODULE.os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit) as error:
+                MODULE.main(args)
+        self.assertIn("VOKRA_PUBLISH_ON_VAST", str(error.exception))
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import stat
 import tempfile
 import zipfile
@@ -164,6 +165,29 @@ def extract_backend(path: Path, destination: Path) -> None:
         raise ValueError("backend extraction evidence mismatch")
 
 
+def _write_report_no_replace(path: Path, report: dict[str, Any]) -> None:
+    """Write small evidence atomically without overwriting an existing path."""
+    if path.exists() or path.is_symlink():
+        raise ValueError("wheel audit output must be absent and non-symlink")
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise ValueError("wheel audit output parent must be an existing directory")
+    temporary = Path(tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)[1])
+    try:
+        payload = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        with temporary.open("wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    except OSError as error:
+        raise ValueError(f"wheel audit output publication failed: {error}") from error
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def self_test() -> int:
     source = Path("/private/tmp/qwen_asr-0.0.6-py3-none-any.whl")
     if source.is_file():
@@ -194,6 +218,26 @@ def self_test() -> int:
     names = _validate_archive_members([zipfile.ZipInfo("qwen_asr/unknown.py")])
     if names <= EXPECTED_MEMBERS:
         raise AssertionError("unknown wheel member set accepted")
+    with tempfile.TemporaryDirectory(prefix="qwen3-asr-wheel-output-test-") as directory:
+        output = Path(directory) / "audit.json"
+        _write_report_no_replace(output, {"schema": "self-test"})
+        original = output.read_bytes()
+        try:
+            _write_report_no_replace(output, {"schema": "tampered"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("existing wheel audit output was overwritten")
+        if output.read_bytes() != original:
+            raise AssertionError("existing wheel audit output changed")
+        symlink = Path(directory) / "audit-link.json"
+        symlink.symlink_to(output)
+        try:
+            _write_report_no_replace(symlink, {"schema": "tampered"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("symlink wheel audit output was accepted")
     print("qwen3-asr wheel audit: self-test PASS")
     return 0
 
@@ -209,7 +253,10 @@ def main() -> int:
     if args.wheel is None or args.output is None:
         parser.error("--wheel and --output are required")
     report = audit_wheel(args.wheel)
-    args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        _write_report_no_replace(args.output, report)
+    except ValueError as error:
+        parser.error(str(error))
     return 0
 
 

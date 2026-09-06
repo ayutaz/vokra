@@ -84,6 +84,13 @@ def die(message: str) -> "None":
     raise SystemExit(f"qwen3_asr reference: {message}")
 
 
+def require_vast_x86_64() -> None:
+    if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
+        die("VOKRA_PUBLISH_ON_VAST=1 is required for model reference execution")
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        die("reference execution is restricted to Linux x86_64 VAST")
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -307,6 +314,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    require_vast_x86_64()
     variant = VARIANTS[args.variant]
     model_dir = args.model_dir.resolve()
     audio_path = args.audio.resolve()
