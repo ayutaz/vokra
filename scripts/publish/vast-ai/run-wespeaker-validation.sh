@@ -238,7 +238,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool required_file
-  for tool in uv cargo rustc rustup git awk grep find tee wc tr curl; do
+  for tool in uv cargo cargo-deny cargo-audit rustc rustup git awk grep find tee wc tr curl; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" && ! -L "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a real git checkout"
@@ -294,7 +294,8 @@ run_self_test() {
     "VOKRA_PUBLISH_ON_VAST" "uname -s" "uname -m" "x86_64" "MIN_VAST_MEM_KIB=67108864" "MemTotal:" \
     "MIN_FREE_DISK_KIB=150000000" "df -Pk" 'git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all' \
     "cargo test --locked --offline --workspace" "cargo clippy --locked --offline --workspace --all-targets -- -D warnings" \
-    "--expected-head" "duplicate --expected-head" "--ignored --exact --nocapture" "cargo build --manifest-path \"\$VOKRA_ROOT/Cargo.toml\" --locked --offline"; do
+    "--expected-head" "duplicate --expected-head" "--ignored --exact --nocapture" "cargo build --manifest-path \"\$VOKRA_ROOT/Cargo.toml\" --locked --offline" \
+    "cargo deny check --locked" "cargo audit --locked --no-fetch" "cargo_deny=PASS" "cargo_audit=PASS" "verdict=CPU_PASS_METAL_NOT_RUN"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
@@ -507,11 +508,17 @@ main() {
   bash "$VOKRA_ROOT/scripts/check-bound-arch-coverage.sh" 2>&1 | tee -a "$workspace_log"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace 2>&1 | tee -a "$workspace_log"
   cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace --all-targets -- -D warnings 2>&1 | tee -a "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo deny check --locked 2>&1 | tee -a "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo audit --locked --no-fetch 2>&1 | tee -a "$workspace_log"
   {
-    echo "execution_status=PASS"
+    echo "verdict=CPU_PASS_METAL_NOT_RUN"
+    echo "execution_status=CPU_PASS_METAL_NOT_RUN"
     echo "expected_head=$expected_head"
     echo "pyannote_182_cpu_parity=PASS"
     echo "official_combined_219_cpu_parity=PASS"
+    echo "cpu_vs_upstream=PASS"
+    echo "metal_vs_upstream=NOT_RUN"
+    echo "metal_vs_cpu=NOT_RUN"
     echo "official_combined_gguf=generated_corrected_provenance"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "upstream_hf=$UPSTREAM_HF"; echo "upstream_revision=$UPSTREAM_REVISION"
@@ -520,7 +527,7 @@ main() {
     echo "public_revision=$PUBLIC_REVISION"; echo "public_gguf_sha256=$PUBLIC_SHA256"
     echo "reference_manifest_sha256=$(sha256_file "$reference_dir/manifest.json")"
     echo "corrected_gguf_sha256=$(sha256_file "$corrected_gguf")"
-    echo "workspace_gates=PASS"; echo "upload=NOT_RUN"
+    echo "workspace_gates=PASS"; echo "cargo_deny=PASS"; echo "cargo_audit=PASS"; echo "upload=NOT_RUN"
   } | tee "$summary_file"
   trap - EXIT
   log "PASS: pull $logs_dir and $reference_dir; do not pull model artifacts; destroy the VAST instance"

@@ -35,7 +35,7 @@ require_output_closure() {
 write_apple_transfer_args() {
   local output="$1" gguf_sha="$2" reference_sha="$3" expected_head="$4"
   {
-    printf '%q ' apple-silicon-bicodec.sh \
+    printf '%q ' scripts/verify/apple-silicon-bicodec.sh \
       --gguf '<BICODEC_GGUF>' --gguf-sha256 "$gguf_sha" \
       --reference '<BICODEC_REFERENCE_DIR>' --reference-sha256 "$reference_sha" \
       --approval-evidence '<BICODEC_APPROVAL_JSON>' --evidence-dir '<BICODEC_EVIDENCE_DIR>' \
@@ -170,6 +170,7 @@ run_self_test() (
   for flag in --gguf --gguf-sha256 --reference --reference-sha256 --approval-evidence --evidence-dir --expected-head; do
     printf '%s\n' "${transfer_args[@]}" | grep -Fqx -- "$flag" || die "Apple transfer args omit $flag"
   done
+  [[ "${transfer_args[0]}" == scripts/verify/apple-silicon-bicodec.sh ]] || die 'Apple transfer args do not name the checkout script'
   echo 'run-bicodec-native-parity.sh self-test: OK'
 )
 

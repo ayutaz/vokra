@@ -166,6 +166,7 @@ run_self_test() {
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|huggingface-cli[[:space:]]+upload|hf[[:space:]]+upload|scp|rsync)([[:space:]]|$)' "$script_path" >/dev/null; then
     die "publication command found in no-upload Apple worker"
   fi
+  grep -Fq -- 'cpu_vs_upstream=PASS' "$script_path" || die "summary omits CPU/reference result"
   if "$script_path" --expected-head 0123456789abcdef0123456789abcdef01234567 \
     --expected-head 0123456789abcdef0123456789abcdef01234567 >/dev/null 2>&1; then
     die "duplicate expected HEAD accepted"
@@ -257,18 +258,20 @@ main() {
     esac
   done
   [[ -n "$gguf" && -n "$gguf_sha" && -n "$reference" && -n "$reference_sha" && -n "$approval" && -n "$evidence" && "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { usage; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" && ! -L "$VOKRA_ROOT/.git" ]] || die "checkout is not a real git worktree"
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
+  local actual_head
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD does not match --expected-head"
   license_preflight "$approval"
   require_host
   require_hash "WeSpeaker GGUF" "$gguf" "$gguf_sha"
   require_hash "reference manifest" "$reference/manifest.json" "$reference_sha"
   require_reference "$reference"
   require_absent_evidence_dir "$evidence" "$gguf" "$reference" "$approval"
-  [[ -d "$VOKRA_ROOT/.git" && -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
-  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
-  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD does not match --expected-head"
   local log_file="$evidence/parity.log"
   env VOKRA_WESPEAKER_OFFICIAL_GGUF="$gguf" RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-models --features metal --test parity_wespeaker_real "$TEST_NAME" -- --ignored --exact --nocapture 2>&1 | tee "$log_file"
   require_cargo_result "$log_file"; require_both_sentinels "$log_file"
-  printf 'verdict=PASS\ngit_commit=%s\nexpected_head=%s\ngguf_sha256=%s\nreference_manifest_sha256=%s\nmetal_vs_cpu=PASS\nmetal_vs_upstream=PASS\nupload=NOT_PERFORMED\n' "$actual_head" "$expected_head" "$gguf_sha" "$reference_sha" > "$evidence/summary.txt"
+  printf 'verdict=PASS\ngit_commit=%s\nexpected_head=%s\ngguf_sha256=%s\nreference_manifest_sha256=%s\ncpu_vs_upstream=PASS\nmetal_vs_cpu=PASS\nmetal_vs_upstream=PASS\nupload=NOT_PERFORMED\n' "$actual_head" "$expected_head" "$gguf_sha" "$reference_sha" > "$evidence/summary.txt"
 }
 main "$@"
