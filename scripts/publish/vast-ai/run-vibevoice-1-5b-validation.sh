@@ -35,19 +35,106 @@ REFERENCE_AUDIT_UV=(uv run --no-cache --no-project --offline --python 3.12 pytho
 
 log() { printf '[vibevoice-1.5b-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
+sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+
+canonical_existing_path() {
+  local path="$1" rest component current=/ parent base
+  [[ "$path" == /* && -e "$path" && ! -L "$path" ]] || return 1
+  rest="${path#/}"
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"; [[ "$rest" == "$component" ]] && rest="" || rest="${rest#*/}"
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+    current="${current%/}/$component"; [[ ! -L "$current" ]] || return 1
+  done
+  if [[ -d "$path" ]]; then (cd -P "$path" && pwd); else
+    parent="$(dirname "$path")"; base="$(basename "$path")"
+    parent="$(cd -P "$parent" && pwd)" || return 1; printf '%s/%s\n' "$parent" "$base"
+  fi
+}
+
+canonical_absent_path() {
+  local path="$1" target="$1" rest component current=/ suffix='' real
+  [[ "$path" == /* && ! -e "$path" && ! -L "$path" ]] || return 1
+  rest="${path#/}"
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"; [[ "$rest" == "$component" ]] && rest="" || rest="${rest#*/}"
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+    current="${current%/}/$component"; [[ ! -L "$current" ]] || return 1
+  done
+  while [[ ! -e "$target" && ! -L "$target" ]]; do
+    component="$(basename "$target")"; suffix="/$component$suffix"; target="$(dirname "$target")"
+  done
+  [[ -d "$target" && ! -L "$target" ]] || return 1
+  real="$(cd -P "$target" && pwd)" || return 1; printf '%s%s\n' "$real" "$suffix"
+}
+
+require_clean_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head must be lowercase 40-hex'
+  [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || die 'Vokra checkout is missing'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'clean checkout required'
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'cannot read checkout HEAD'
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual differs from --expected-head $expected"
+}
 
 require_absent_path() {
-  local target="$1" current="$1"
+  local target="$1"
+  [[ "$target" == /* ]] || die 'work directory must be absolute'
   [[ ! -e "$target" && ! -L "$target" ]] || die 'work directory must be absent and not a symlink'
-  while [[ "$current" != / && "$current" != . && -n "$current" ]]; do
-    [[ ! -L "$current" ]] || die "work path contains a symlink component: $current"
-    current="$(dirname "$current")"
-  done
+  canonical_absent_path "$target" >/dev/null || die 'work path contains dot or symlink ancestry'
+}
+
+validate_approval() {
+  local path="$1" expected_head="$2" supplied_sha="$3"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" "$expected_head" "$supplied_sha" "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" <<'PY'
+import hashlib, json, pathlib, sys
+path, expected_head, supplied_sha, hf_repo, hf_rev, qwen_repo, qwen_rev, source_repo, source_rev, transformers_repo, transformers_rev, public_repo, public_rev = sys.argv[1:]
+raw = pathlib.Path(path).read_bytes()
+if hashlib.sha256(raw).hexdigest() != supplied_sha:
+    raise SystemExit("approval bytes changed")
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError("duplicate approval key: " + key)
+        result[key] = value
+    return result
+data = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs)
+keys = {"schema", "status", "disposition", "expected_head", "hf_repository", "hf_revision", "qwen_repository", "qwen_revision", "source_repository", "source_revision", "transformers_repository", "transformers_revision", "public_repository", "public_revision", "no_upload", "scope_sha256"}
+if set(data) != keys:
+    raise ValueError("approval schema is not exact")
+expected = {
+    "schema": "vokra-vibevoice-1-5b-approval-v1", "status": "BLOCKED", "disposition": "INSPECTION_ONLY",
+    "expected_head": expected_head, "hf_repository": hf_repo, "hf_revision": hf_rev,
+    "qwen_repository": qwen_repo, "qwen_revision": qwen_rev, "source_repository": source_repo,
+    "source_revision": source_rev, "transformers_repository": transformers_repo,
+    "transformers_revision": transformers_rev, "public_repository": public_repo,
+    "public_revision": public_rev, "no_upload": True,
+}
+
+if any(data[key] != value for key, value in expected.items()):
+    raise ValueError("approval identity/status mismatch")
+scope = {key: data[key] for key in ("disposition", "expected_head", "hf_repository", "hf_revision", "no_upload", "public_repository", "public_revision", "qwen_repository", "qwen_revision", "source_repository", "source_revision", "status", "transformers_repository", "transformers_revision")}
+if data["scope_sha256"] != hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest():
+    raise ValueError("approval scope mismatch")
+PY
+}
+
+require_cargo_singleton() {
+  local log_file="$1" backend="$2" named result tests
+  named="$(grep -Ec '^test vibevoice_1_5b_real_cpu_matches_official_reference \.\.\. ok$' "$log_file" || true)"
+  result="$(grep -Ec '^test result:' "$log_file" || true)"
+  tests="$(grep -Ec '^test ' "$log_file" || true)"
+  (( named == 1 && result == 1 && tests - result == 1 )) || die "$backend Cargo output is not one exact named test/result"
+  grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+(\.[0-9]+)?s)?$' "$log_file" || die "$backend Cargo result is not an exact singleton pass"
+  [[ "$(grep -Fc "VIBEVOICE_${backend}_TOKENS_MEASURED exact=true" "$log_file" || true)" == 1 ]] || die "$backend token marker is not singleton"
+  [[ "$(grep -Fc "VIBEVOICE_${backend}_PCM_MEASURED" "$log_file" || true)" == 1 ]] || die "$backend PCM marker is not singleton"
+  [[ "$(grep -Fc "VIBEVOICE_${backend}_OFFICIAL_DIFFUSION_LATENTS_CAPTURED" "$log_file" || true)" == 1 ]] || die "$backend diffusion marker is not singleton"
 }
 
 self_test() {
   local fail=0 token
-  for token in "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_LICENSE_ROWS_SHA256" "package-resolution-and-dependency-markers-v2" "vibevoice_1_5b_inspect.py" "vibevoice_1_5b_dump_reference.py" "vibevoice_1_5b_reference" "uv.lock" "--license-audit" "--no-project" "BLOCKED_UNREVIEWED_TRANSITIVE" "BLOCKED_UNVERIFIED_API_SMOKE" "GHSA-xrqw-3rrv-vx5w" "reference_environment_identity" "local_dir" "RepoFile" "RepoFolder" "AUTHENTICATED_EVIDENCE_COMPLETE" "REFERENCE_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "official_pcm.f32le" "diffusion_initial_native.f32le" "NO_UPLOAD"; do
+  for token in "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_LICENSE_ROWS_SHA256" "package-resolution-and-dependency-markers-v2" "vibevoice_1_5b_inspect.py" "vibevoice_1_5b_dump_reference.py" "vibevoice_1_5b_reference" "uv.lock" "--license-audit" "--no-project" "BLOCKED_UNREVIEWED_TRANSITIVE" "BLOCKED_UNVERIFIED_API_SMOKE" "GHSA-xrqw-3rrv-vx5w" "reference_environment_identity" "local_dir" "RepoFile" "RepoFolder" "AUTHENTICATED_EVIDENCE_COMPLETE" "REFERENCE_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "official_pcm.f32le" "diffusion_initial_native.f32le" "NO_UPLOAD" "--expected-head" "--approval-evidence" "--approval-sha256" "--reference-packet" "--reference-packet-sha256" "vibevoice-apple-transfer-v1" "apple-packet" "--offline" "--test-threads=1" "vibevoice_1_5b_real_cpu_matches_official_reference"; do
     if ! grep -Fq -- "$token" "$0" && ! grep -Fq -- "$token" "$INSPECTOR" && ! grep -Fq -- "$token" "$REFERENCE"; then
       log "self-test missing contract token: $token"; fail=1
     fi
@@ -80,6 +167,25 @@ self_test() {
   done
   if grep -En '(^|[[:space:]])uv[[:space:]]+sync([[:space:]]|$)' "$0" >/dev/null; then
     log 'self-test found an implicit uv sync'; fail=1
+  fi
+  if "$0" --expected-head bad >/dev/null 2>&1 || \
+    "$0" --self-test --self-test >/dev/null 2>&1 || \
+    "$0" --expected-head "$(printf '0%.0s' {1..40})" --expected-head "$(printf '1%.0s' {1..40})" >/dev/null 2>&1 || \
+    "$0" --approval-sha256 bad >/dev/null 2>&1 || \
+    "$0" --work-dir /tmp/a --work-dir /tmp/b >/dev/null 2>&1; then
+    log 'self-test accepted malformed or duplicate CLI options'; fail=1
+  fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$0" <<'PY'
+import re, sys
+source = open(sys.argv[1], encoding="utf-8").read()
+blocks = re.findall(r"<<'PY'\n(.*?)\nPY", source, re.S)
+if not blocks:
+    raise SystemExit("no inline Python blocks found")
+for index, block in enumerate(blocks):
+    compile(block, f"<inline-python-{index}>", "exec")
+PY
+  then
+    log 'inline Python syntax validation failed'; fail=1
   fi
   (( fail == 0 )) && log 'self-test: OK' || return 1
 }
@@ -118,15 +224,51 @@ license_audit_preflight() {
   return 1
 }
 
+usage() {
+  echo "usage: run-vibevoice-1-5b-validation.sh --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 --reference-packet FILE --reference-packet-sha256 HEX64 [--work-dir ABSENT_DIR] | --self-test"
+}
+
 main() {
-  if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; return 0; fi
-  local requested="${VOKRA_VIBEVOICE_WORK_DIR:-/dev/shm/vokra-vibevoice-1-5b-validation}"
-  [[ $# == 0 ]] || { [[ "$1" == --work-dir && $# == 2 ]] || die 'usage: --work-dir DIR'; requested="$2"; }
+  local self=0 expected_head='' approval='' approval_sha='' reference_packet='' reference_packet_sha='' requested="/dev/shm/vokra-vibevoice-1-5b-validation"
+  local seen_head=0 seen_approval=0 seen_approval_sha=0 seen_packet=0 seen_packet_sha=0 seen_work=0
+  while (( $# )); do
+    case "$1" in
+      --self-test) (( self == 0 )) || die 'duplicate --self-test'; self=1; shift ;;
+      --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; seen_head=1; expected_head="$2"; shift 2 ;;
+      --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && "$2" == /* && "$2" != -* ]] || die '--approval-evidence requires an absolute path'; seen_approval=1; approval="$2"; shift 2 ;;
+      --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; seen_approval_sha=1; approval_sha="$2"; shift 2 ;;
+      --reference-packet) (( seen_packet == 0 )) || die 'duplicate --reference-packet'; [[ $# -ge 2 && "$2" == /* && "$2" != -* ]] || die '--reference-packet requires an absolute path'; seen_packet=1; reference_packet="$2"; shift 2 ;;
+      --reference-packet-sha256) (( seen_packet_sha == 0 )) || die 'duplicate --reference-packet-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--reference-packet-sha256 requires lowercase 64-hex'; seen_packet_sha=1; reference_packet_sha="$2"; shift 2 ;;
+      --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; [[ $# -ge 2 && "$2" == /* && "$2" != -* ]] || die '--work-dir requires an absolute path'; seen_work=1; requested="$2"; shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      *) die "unknown argument: $1" ;;
+    esac
+  done
+  if (( self )); then
+    [[ "$seen_head$seen_approval$seen_approval_sha$seen_packet$seen_packet_sha$seen_work" == 000000 ]] || die '--self-test accepts no other arguments'
+    self_test; return 0
+  fi
+  [[ "$seen_head$seen_approval$seen_approval_sha$seen_packet$seen_packet_sha" == 11111 ]] || { usage; die 'expected-head, approval, and reference packet arguments are required'; }
+  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die 'approval evidence is missing, empty, or symlinked'
+  [[ -f "$reference_packet" && ! -L "$reference_packet" && -s "$reference_packet" ]] || die 'reference packet is missing, empty, or symlinked'
+  canonical_existing_path "$approval" >/dev/null || die 'approval path has unsafe ancestry'
+  canonical_existing_path "$reference_packet" >/dev/null || die 'reference packet path has unsafe ancestry'
+  [[ "$(sha256_file "$approval")" == "$approval_sha" ]] || die 'approval evidence SHA-256 mismatch'
+  [[ "$(sha256_file "$reference_packet")" == "$reference_packet_sha" ]] || die 'reference packet SHA-256 mismatch'
+  validate_approval "$approval" "$expected_head" "$approval_sha"
+  require_clean_expected_head "$expected_head"
+  require_absent_path "$requested"
+  local work_real approval_real packet_real
+  work_real="$(canonical_absent_path "$requested")" || die 'work path cannot be canonicalized'
+  approval_real="$(canonical_existing_path "$approval")"; packet_real="$(canonical_existing_path "$reference_packet")"
+  [[ "$work_real" != "$approval_real" && "$work_real" != "$approval_real"/* && "$approval_real" != "$work_real"/* ]] || die 'work directory overlaps approval evidence'
+  [[ "$work_real" != "$packet_real" && "$work_real" != "$packet_real"/* && "$packet_real" != "$work_real"/* ]] || die 'work directory overlaps reference packet'
   if ! license_audit_preflight; then die 'dependency/license gate is unresolved; no VibeVoice model/source acquisition is permitted'; fi
   WORK_DIR="$requested"; WORK_PARENT="$(dirname "$WORK_DIR")"
   require_host; require_tools
   require_absent_path "$WORK_DIR"
-  mkdir -p "$WORK_DIR"; WORK_DIR="$(cd "$WORK_DIR" && pwd)"
+  mkdir "$WORK_DIR" || die 'work directory was concurrently claimed'
+  WORK_DIR="$(cd "$WORK_DIR" && pwd)"
   export CARGO_BUILD_JOBS=1
   local cache="$WORK_DIR/cache" snapshot="$WORK_DIR/model" qwen="$WORK_DIR/qwen" source="$WORK_DIR/source" transformers="$WORK_DIR/transformers" evidence="$WORK_DIR/evidence" packet="$WORK_DIR/packet.json"
   mkdir -p "$cache" "$snapshot" "$qwen" "$evidence"
@@ -137,8 +279,8 @@ main() {
     git -C "$VOKRA_ROOT" rev-parse HEAD
     printf 'CARGO_BUILD_JOBS=%s\n' "$CARGO_BUILD_JOBS"
   } > "$evidence/environment.txt"
-  [[ -n "${VOKRA_VIBEVOICE_REFERENCE_PACKET:-}" && -f "$VOKRA_VIBEVOICE_REFERENCE_PACKET" ]] || die 'VOKRA_VIBEVOICE_REFERENCE_PACKET must name caller-owned JSON packet'
-  cp -- "$VOKRA_VIBEVOICE_REFERENCE_PACKET" "$packet"
+  cp -- "$reference_packet" "$packet"
+  [[ "$(sha256_file "$packet")" == "$reference_packet_sha" ]] || die 'reference packet copy changed'
   "${UV[@]}" - "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$cache" "$snapshot" "$qwen" "$WORK_DIR/model-tree.json" "$WORK_DIR/qwen-tree.json" <<'PY'
 import hashlib, json, os, sys
 from pathlib import Path
@@ -324,13 +466,17 @@ manifest = json.loads(open(manifest_path, encoding="utf-8").read())
 manifest["public_artifact"] = json.loads(open(artifact_path, encoding="utf-8").read())
 open(manifest_path, "w", encoding="utf-8").write(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
 PY
-  local test_selector='parity_vibevoice_1_5b_real::vibevoice_1_5b_real_cpu_matches_official_reference'
-  VOKRA_VIBEVOICE_GGUF="$gguf" VOKRA_VIBEVOICE_REFERENCE_DIR="$evidence" VOKRA_VIBEVOICE_BACKEND=cpu CARGO_BUILD_JOBS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-models --test parity_vibevoice_1_5b_real "$test_selector" -- --ignored --exact --nocapture \
+  local native_reference="$WORK_DIR/native-reference" reference_file
+  [[ ! -e "$native_reference" && ! -L "$native_reference" ]] || die 'native reference path must be absent'
+  mkdir "$native_reference" || die 'native reference path was concurrently claimed'
+  for reference_file in manifest.json packet.json token_ids.u32le prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le; do
+    cp -- "$evidence/$reference_file" "$native_reference/$reference_file"
+  done
+  local test_selector='vibevoice_1_5b_real_cpu_matches_official_reference'
+  VOKRA_VIBEVOICE_GGUF="$gguf" VOKRA_VIBEVOICE_REFERENCE_DIR="$native_reference" VOKRA_VIBEVOICE_BACKEND=cpu CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release -p vokra-models --test parity_vibevoice_1_5b_real "$test_selector" -- --ignored --exact --nocapture --test-threads=1 \
     > "$WORK_DIR/native-cpu.log" 2>&1 || die 'native CPU real-weight validation failed'
-  grep -F 'VIBEVOICE_CPU_TOKENS_MEASURED exact=true' "$WORK_DIR/native-cpu.log" >/dev/null || die 'native CPU discrete marker missing'
-  grep -F 'VIBEVOICE_CPU_PCM_MEASURED' "$WORK_DIR/native-cpu.log" >/dev/null || die 'native CPU PCM marker missing'
-  grep -F 'VIBEVOICE_CPU_OFFICIAL_DIFFUSION_LATENTS_CAPTURED' "$WORK_DIR/native-cpu.log" >/dev/null || die 'official diffusion evidence missing'
+  require_cargo_singleton "$WORK_DIR/native-cpu.log" CPU
   cp -- "$WORK_DIR/native-cpu.log" "$evidence/native-cpu.log"
   "${UV[@]}" - "$evidence/manifest.json" <<'PY'
 import json, sys
@@ -342,6 +488,67 @@ data["native_test"] = {"tokens_exact": True, "pcm_status": "MEASURED_NOT_GATED"}
 open(path, "w", encoding="utf-8").write(json.dumps(data, sort_keys=True, indent=2) + "\n")
 PY
   sha256sum "$packet" "$evidence/manifest.json" "$evidence/generated_tokens.u32le" > "$evidence/reference-sha256.txt"
+  local apple_packet="$WORK_DIR/apple-packet"
+  [[ ! -e "$apple_packet" && ! -L "$apple_packet" ]] || die 'Apple packet path must be absent'
+  mkdir "$apple_packet" || die 'Apple packet was concurrently claimed'
+  local transfer_file
+  for transfer_file in manifest.json inspection-manifest.json token_ids.u32le prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le packet.json public-artifact.json artifact-sha256.txt reference-sha256.txt native-cpu.log vibevoice-1.5b.gguf; do
+    cp -- "$evidence/$transfer_file" "$apple_packet/$transfer_file"
+  done
+  "${UV[@]}" - "$apple_packet" "$expected_head" "$approval_sha" "$apple_packet/packet.json" "$apple_packet/vibevoice-1.5b.gguf" "$apple_packet/apple-transfer-manifest.json" <<'PY'
+import hashlib, json, pathlib, sys
+root, expected_head, approval_sha, packet, gguf, output = map(pathlib.Path, sys.argv[1:])
+expected_head, approval_sha = str(expected_head), str(approval_sha)
+names = [
+    "manifest.json", "inspection-manifest.json", "token_ids.u32le", "prompt_pcm.f32le",
+    "prompt_latent.f32le", "diffusion_initial.f32le", "diffusion_initial_native.f32le",
+    "speech_input_mask.u8", "speech_masks.u8", "speech_replacement_positions.u32le",
+    "generated_tokens.u32le", "guidance-scale.txt", "max-generated-tokens.txt",
+    "official_pcm.f32le", "official_diffusion_latents.f32le", "packet.json",
+    "public-artifact.json", "artifact-sha256.txt", "reference-sha256.txt", "native-cpu.log",
+    "vibevoice-1.5b.gguf",
+]
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            value.update(block)
+    return value.hexdigest()
+if set(pathlib.Path(root).iterdir()) - {pathlib.Path(root) / name for name in names}:
+    raise SystemExit("unexpected transfer artifact")
+files = []
+for name in names:
+    path = root / name
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"missing or symlinked transfer artifact: {name}")
+    files.append({"path": name, "bytes": path.stat().st_size, "sha256": digest(path)})
+files.sort(key=lambda row: row["path"])
+manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+if manifest.get("status") != "BLOCKED" or manifest.get("publication") != "NO_UPLOAD":
+    raise SystemExit("combined VibeVoice manifest is not fail-closed")
+payload = {
+    "schema": "vibevoice-apple-transfer-v1", "expected_head": expected_head,
+    "approval_evidence_sha256": approval_sha, "status": "MEASURED_NOT_GATED", "publication": "NO_UPLOAD",
+    "reference_manifest_sha256": next(row["sha256"] for row in files if row["path"] == "manifest.json"),
+    "input_packet_sha256": next(row["sha256"] for row in files if row["path"] == "packet.json"),
+    "gguf_sha256": next(row["sha256"] for row in files if row["path"] == "vibevoice-1.5b.gguf"),
+    "native_cpu_log_sha256": next(row["sha256"] for row in files if row["path"] == "native-cpu.log"),
+    "files": files,
+}
+output.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+PY
+  sha256sum "$apple_packet/apple-transfer-manifest.json" > "$apple_packet/apple-transfer-manifest.sha256"
+  {
+    printf '%q ' scripts/verify/apple-silicon-vibevoice-1-5b.sh \
+      --expected-head "$expected_head" \
+      --approval-evidence '<VIBEVOICE_APPROVAL_EVIDENCE>' \
+      --approval-evidence-sha256 "$approval_sha" \
+      --transfer-manifest '<VIBEVOICE_BUNDLE>/apple-transfer-manifest.json' \
+      --transfer-manifest-sha256 "$(sha256_file "$apple_packet/apple-transfer-manifest.json")" \
+      --bundle '<VIBEVOICE_BUNDLE>' --evidence-dir '<VIBEVOICE_EVIDENCE_DIR>'
+    printf '\n'
+  } > "$apple_packet/apple-transfer-args.txt"
+  require_clean_expected_head "$expected_head"
 }
 
 main "$@"

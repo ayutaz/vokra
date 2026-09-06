@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2317
 # VAST-only VibeVoice-1.5B evidence collection. No conversion, upload, or publish.
 set -euo pipefail
 
@@ -16,32 +17,90 @@ MIN_DISK_KIB=$((32 * 1024 * 1024))
 UV_CMD=(uv run --frozen --project tools/parity --python 3.12 python)
 
 die() { echo "run-vibevoice-1-5b-inspection: $*" >&2; exit 2; }
+sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+canonical_existing_path() {
+  local path="$1" rest component current=/ parent base
+  [[ "$path" == /* && -e "$path" && ! -L "$path" ]] || return 1
+  rest="${path#/}"
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"; [[ "$rest" == "$component" ]] && rest="" || rest="${rest#*/}"
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+    current="${current%/}/$component"; [[ ! -L "$current" ]] || return 1
+  done
+  if [[ -d "$path" ]]; then (cd -P "$path" && pwd); else
+    parent="$(dirname "$path")"; base="$(basename "$path")"
+    parent="$(cd -P "$parent" && pwd)" || return 1; printf '%s/%s\n' "$parent" "$base"
+  fi
+}
+
+validate_approval() {
+  local path="$1" expected_head="$2" supplied_sha="$3"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" "$expected_head" "$supplied_sha" "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_REVISION" <<'PY'
+import hashlib, json, pathlib, sys
+path, expected_head, supplied_sha, hf_repo, hf_rev, qwen_repo, qwen_rev, source_repo, source_rev, transformers_repo, transformers_rev = sys.argv[1:]
+raw = pathlib.Path(path).read_bytes()
+if hashlib.sha256(raw).hexdigest() != supplied_sha: raise SystemExit("approval bytes changed")
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result: raise ValueError("duplicate approval key: " + key)
+        result[key] = value
+    return result
+data = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs)
+keys = {"schema", "status", "disposition", "expected_head", "hf_repository", "hf_revision", "qwen_repository", "qwen_revision", "source_repository", "source_revision", "transformers_repository", "transformers_revision", "no_upload", "scope_sha256"}
+if set(data) != keys: raise ValueError("approval schema is not exact")
+expected = {"schema": "vokra-vibevoice-1-5b-approval-v1", "status": "BLOCKED", "disposition": "INSPECTION_ONLY", "expected_head": expected_head, "hf_repository": hf_repo, "hf_revision": hf_rev, "qwen_repository": qwen_repo, "qwen_revision": qwen_rev, "source_repository": source_repo, "source_revision": source_rev, "transformers_repository": transformers_repo, "transformers_revision": transformers_rev, "no_upload": True}
+if any(data[key] != value for key, value in expected.items()): raise ValueError("approval identity/status mismatch")
+scope = {key: data[key] for key in ("disposition", "expected_head", "hf_repository", "hf_revision", "no_upload", "qwen_repository", "qwen_revision", "source_repository", "source_revision", "status", "transformers_repository", "transformers_revision")}
+if data["scope_sha256"] != hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest(): raise ValueError("approval scope mismatch")
+PY
+}
 
 self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0 token
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
   [[ -f "$root/$INSPECTOR" ]] || die "inspector missing"
-  for token in "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REVISION" "$INSPECTOR" "snapshot_download" "list_repo_tree" "recursive=True" "expand=True" "RepoFile" "RepoFolder" "isinstance(item, RepoFolder)" "git_blob_sha1" "lfs_pointer_git_blob_sha1" "lfs_payload_sha256" "INSPECTION_ONLY" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "NO_UPLOAD"; do
+  for token in "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REVISION" "$INSPECTOR" "snapshot_download" "list_repo_tree" "recursive=True" "expand=True" "RepoFile" "RepoFolder" "isinstance(item, RepoFolder)" "git_blob_sha1" "lfs_pointer_git_blob_sha1" "lfs_payload_sha256" "INSPECTION_ONLY" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "NO_UPLOAD" "--expected-head" "--approval-evidence" "--approval-sha256" "BLOCKED_PROVENANCE/NO_UPLOAD"; do
     if ! grep -Fq -- "$token" "$self" && ! grep -Fq -- "$token" "$root/$INSPECTOR"; then echo "self-test FAIL: missing $token" >&2; fail=1; fi
   done
-  for token in 'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' 'findmnt' 'git status --porcelain --untracked-files=all' 'CARGO_BUILD_JOBS'; do
+  for token in 'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' 'findmnt' 'git status --porcelain --untracked-files=all' 'git rev-parse HEAD' 'canonical_existing_path' 'CARGO_BUILD_JOBS'; do
     grep -Fq -- "$token" "$self" || { echo "self-test FAIL: missing VAST gate $token" >&2; fail=1; }
   done
   if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|vokra-cli[[:space:]]+convert|cargo[[:space:]]+(run|test|check)' "$self" >/dev/null; then echo "self-test FAIL: mutation/conversion/Cargo found" >&2; fail=1; fi
-  if grep -En '(^|[[:space:]])(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: bare Python found" >&2; fail=1; fi
+  if grep -En '(^|[;&|][[:space:]])(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: bare Python found" >&2; fail=1; fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$self" <<'PY'
+import re, sys
+source = open(sys.argv[1], encoding="utf-8").read()
+for index, block in enumerate(re.findall(r"<<'PY'\n(.*?)\nPY", source, re.S)):
+    compile(block, f"<inline-python-{index}>", "exec")
+PY
+  then echo 'self-test FAIL: inline Python syntax' >&2; fail=1; fi
   if (( fail == 0 )); then echo "run-vibevoice-1-5b-inspection.sh self-test: OK"; else return 1; fi
 }
 
-work_dir="/dev/shm/vokra-vibevoice-1-5b-inspection"; self=0
+work_dir="/dev/shm/vokra-vibevoice-1-5b-inspection"; self=0; expected_head=''; approval=''; approval_sha=''; seen_head=0; seen_approval=0; seen_approval_sha=0; seen_work=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --self-test) self=1; shift;;
-    --work-dir) [[ $# -ge 2 ]] || die "--work-dir requires path"; work_dir="$2"; shift 2;;
-    -h|--help) echo "usage: $0 [--work-dir TMPFS] | --self-test"; exit 0;;
+    --self-test) (( self == 0 )) || die 'duplicate --self-test'; self=1; shift;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; seen_head=1; expected_head="$2"; shift 2;;
+    --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && "$2" == /* && "$2" != -* ]] || die '--approval-evidence requires absolute path'; seen_approval=1; approval="$2"; shift 2;;
+    --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; seen_approval_sha=1; approval_sha="$2"; shift 2;;
+    --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; [[ $# -ge 2 && "$2" == /* && "$2" != -* ]] || die '--work-dir requires absolute path'; seen_work=1; work_dir="$2"; shift 2;;
+    -h|--help) echo "usage: $0 --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 [--work-dir ABSENT_DIR] | --self-test"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
-if (( self == 1 )); then [[ "$work_dir" == "/dev/shm/vokra-vibevoice-1-5b-inspection" ]] || die "self-test accepts no custom work dir"; self_test; exit $?; fi
+if (( self == 1 )); then [[ "$work_dir" == "/dev/shm/vokra-vibevoice-1-5b-inspection" && "$seen_head$seen_approval$seen_approval_sha$seen_work" == 0000 ]] || die "self-test accepts no other arguments"; self_test; exit $?; fi
+[[ "$seen_head$seen_approval$seen_approval_sha" == 111 ]] || die 'expected-head, approval-evidence, and approval-sha256 are required'
+[[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die 'approval evidence is missing, empty, or symlinked'
+canonical_existing_path "$approval" >/dev/null || die 'approval path has unsafe ancestry'
+[[ "$(sha256_file "$approval")" == "$approval_sha" ]] || die 'approval evidence SHA-256 mismatch'
+validate_approval "$approval" "$expected_head" "$approval_sha"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$root"
+[[ -d "$root/.git" && -z "$(git status --porcelain --untracked-files=all)" ]] || die 'clean checkout required'
+[[ "$(git rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD differs from --expected-head'
+die 'BLOCKED_PROVENANCE/NO_UPLOAD: VibeVoice provenance/runtime/reference surface is not authenticated'
+# shellcheck disable=SC2317
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Linux x86_64 VAST required"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$root"
