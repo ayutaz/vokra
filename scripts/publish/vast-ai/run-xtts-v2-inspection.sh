@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # VAST/Linux-only XTTS-v2 checkpoint inspection.  This script never converts,
 # executes, uploads, or publishes the Coqui pickle assets.
+# shellcheck disable=SC2317
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+VOKRA_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+readonly VOKRA_ROOT
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 INSPECTOR="$PARITY_PROJECT/xtts_v2_inspect.py"
+GATE="$PARITY_PROJECT/xtts_v2_gate.py"
 MODEL_REPOSITORY="coqui/XTTS-v2"
 MODEL_REVISION="6c2b0d75eae4b7047358e3b6bd9325f857d43f77"
 SOURCE_URL="https://github.com/coqui-ai/TTS.git"
@@ -21,7 +24,7 @@ die() { log "ERROR: $*"; exit 2; }
 
 usage() {
   cat <<'EOF'
-usage: run-xtts-v2-inspection.sh [--work-dir <empty-dir>]
+usage: run-xtts-v2-inspection.sh --expected-head HEX40 --approval-evidence ABSOLUTE_FILE --approval-sha256 HEX64 [--work-dir <empty-dir>]
        run-xtts-v2-inspection.sh --self-test
 
 The model revision is fixed in this worker and cannot be overridden.
@@ -39,10 +42,11 @@ self_test() {
     'MODEL_REVISION="6c2b0d75eae4b7047358e3b6bd9325f857d43f77"' \
     'SOURCE_URL="https://github.com/coqui-ai/TTS.git"' \
     'SOURCE_REVISION="480a6cdf7dab508063c5d2e1b92fb7cd9f4f63c1"' \
-    'xtts_v2_inspect.py' 'get_unsafe_globals_in_checkpoint' 'weights_only=True' \
+    'xtts_v2_inspect.py' 'xtts_v2_gate.py' 'get_unsafe_globals_in_checkpoint' 'weights_only=True' \
     'torch.serialization' 'INSPECTION_ONLY' 'NO_UPLOAD' 'model_tree.json' \
     'server/local tree mismatch' 'blocker_exit=2' 'git status --porcelain' \
-    'remote get-url origin' 'resolved_origin' 'status=BLOCKED' 'evidence_stage=INSPECTION_ONLY'; do
+    'remote get-url origin' 'resolved_origin' 'status=BLOCKED' 'evidence_stage=INSPECTION_ONLY' \
+    '--expected-head' '--approval-evidence' '--approval-sha256' 'BLOCKED_APPROVAL'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
@@ -72,13 +76,27 @@ self_test() {
     log 'self-test FAIL: extra argument accepted'
     fail=1
   fi
+  if "$path" --self-test --self-test >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate --self-test accepted'
+    fail=1
+  fi
+  if "$path" --work-dir /tmp/xtts-one --work-dir /tmp/xtts-two >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate --work-dir accepted'
+    fail=1
+  fi
   if "$path" --unknown-flag >/dev/null 2>&1; then
     log 'self-test FAIL: unknown argument accepted'
     fail=1
   fi
-  if ! UV_CACHE_DIR="$XTTS_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 \
+  if ! UV_NO_CACHE=1 uv run --no-cache --frozen --project "$PARITY_PROJECT" --python 3.12 \
     python "$inspector" --self-test >/dev/null; then
     log 'self-test FAIL: inspector self-test failed'
+    fail=1
+  fi
+  local gate_self_test_output
+  gate_self_test_output="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --self-test 2>&1)"
+  if [[ "$gate_self_test_output" != 'xtts_v2_gate self-test: OK' ]]; then
+    log 'self-test FAIL: valid approval gate path failed'
     fail=1
   fi
   (( fail == 0 )) || return 1
@@ -87,19 +105,45 @@ self_test() {
 
 work_dir="/workspace/vokra-xtts-v2-inspection"
 self=0
+expected_head=''
+approval_evidence=''
+approval_sha256=''
+seen_expected=0
+seen_approval=0
+seen_sha=0
+seen_work=0
 while (($#)); do
   case "$1" in
-    --self-test) self=1; shift ;;
-    --work-dir) (($# >= 2)) || die '--work-dir requires a path'; work_dir="$2"; shift 2 ;;
+    --self-test) (( self == 0 )) || die 'duplicate --self-test'; self=1; shift ;;
+    --expected-head) (( seen_expected == 0 )) || die 'duplicate --expected-head'; (($# >= 2)) || die '--expected-head requires HEX40'; expected_head="$2"; seen_expected=1; shift 2 ;;
+    --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; (($# >= 2)) || die '--approval-evidence requires an absolute file'; approval_evidence="$2"; seen_approval=1; shift 2 ;;
+    --approval-sha256) (( seen_sha == 0 )) || die 'duplicate --approval-sha256'; (($# >= 2)) || die '--approval-sha256 requires HEX64'; approval_sha256="$2"; seen_sha=1; shift 2 ;;
+    --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; (($# >= 2)) || die '--work-dir requires a path'; work_dir="$2"; seen_work=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$work_dir" == "/workspace/vokra-xtts-v2-inspection" ]] || die '--self-test accepts no other arguments'
+  [[ "$work_dir" == "/workspace/vokra-xtts-v2-inspection" && $seen_expected -eq 0 && $seen_approval -eq 0 && $seen_sha -eq 0 && $seen_work -eq 0 ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
+
+(( seen_expected == 1 && seen_approval == 1 && seen_sha == 1 )) || die '--expected-head, --approval-evidence, and --approval-sha256 are required'
+
+# The blocked disposition is validated before host, cache, workdir, source,
+# model, or output operations.  A valid blocked approval intentionally ends
+# this worker with exit 2; no downstream acquisition path is reachable.
+set +e
+marker="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --verify \
+  --expected-head "$expected_head" --approval-evidence "$approval_evidence" \
+  --approval-sha256 "$approval_sha256" --root "$VOKRA_ROOT" 2>&1)"
+gate_status=$?
+set -e
+[[ "$gate_status" == 2 ]] || die "approval gate returned unexpected exit $gate_status"
+grep -Fqx 'XTTS_V2_BLOCKED_APPROVAL: status=BLOCKED decision=INSPECTION_ONLY NO_UPLOAD' <<<"$marker" || die 'blocked approval marker missing'
+printf '%s\n' "$marker" >&2
+die 'XTTS-v2 route is BLOCKED before acquisition; downstream inspection is unreachable'
 
 [[ "$(uname -s)" == Linux ]] || die 'XTTS checkpoint work is VAST/Linux-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'

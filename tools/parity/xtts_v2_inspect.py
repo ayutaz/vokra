@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Safe, inspection-only evidence collector for Coqui XTTS-v2.
 
 The XTTS release is a multi-file pickle checkpoint.  This tool inventories
@@ -22,6 +22,8 @@ import warnings
 import zipfile
 from pathlib import Path
 from typing import Any, Iterable
+
+from xtts_v2_gate import BLOCKED_MARKER, require_blocked_gate
 
 
 MODEL_REPOSITORY = "coqui/XTTS-v2"
@@ -471,6 +473,13 @@ def inspect(model_dir: Path, source_dir: Path, evidence_dir: Path, model_tree: P
 
 def self_test() -> None:
     root = Path.cwd().resolve()
+    gate_probe = subprocess.run(
+        [sys.executable, str(Path(__file__)), "--model-dir", "/missing/model", "--source-dir", "/missing/source", "--evidence-dir", "/missing/evidence", "--model-tree", "/missing/tree", "--revision", "bad", "--expected-head", "bad", "--approval-evidence", "/missing/approval.json", "--approval-sha256", "0" * 64],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert gate_probe.returncode == 2 and "approval evidence" in gate_probe.stderr, "direct inspector reached inputs before terminal gate"
     try:
         safe_relative(root.parent / "escape", root)
     except ValueError:
@@ -574,22 +583,29 @@ def self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
-    parser.add_argument("--model-dir", type=Path)
-    parser.add_argument("--source-dir", type=Path)
-    parser.add_argument("--evidence-dir", type=Path)
-    parser.add_argument("--model-tree", type=Path)
+    parser.add_argument("--model-dir")
+    parser.add_argument("--source-dir")
+    parser.add_argument("--evidence-dir")
+    parser.add_argument("--model-tree")
     parser.add_argument("--revision")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.model_dir, args.source_dir, args.evidence_dir, args.model_tree, args.revision)):
+        if any(value is not None for value in (args.model_dir, args.source_dir, args.evidence_dir, args.model_tree, args.revision, args.expected_head, args.approval_evidence, args.approval_sha256)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
-    if any(value is None for value in (args.model_dir, args.source_dir, args.evidence_dir, args.model_tree, args.revision)):
-        parser.error("normal runs require model/source/evidence dirs, model tree, and immutable revision")
-    if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
-        parser.error("--revision must be a complete 40-hex immutable HF revision")
-    return inspect(args.model_dir, args.source_dir, args.evidence_dir, args.model_tree, args.revision)
+    if any(value is None for value in (args.model_dir, args.source_dir, args.evidence_dir, args.model_tree, args.revision, args.expected_head, args.approval_evidence, args.approval_sha256)):
+        parser.error("normal runs require model/source/evidence dirs, model tree, immutable revision, expected head, approval evidence, and approval SHA-256")
+    root = Path(__file__).resolve().parents[2]
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, root)
+    except RuntimeError as error:
+        print(str(error) if BLOCKED_MARKER in str(error) else f"XTTS_V2_BLOCKED_APPROVAL_INVALID: {error}", file=sys.stderr)
+        return 2
+    return inspect(Path(args.model_dir), Path(args.source_dir), Path(args.evidence_dir), Path(args.model_tree), args.revision)
 
 
 if __name__ == "__main__":

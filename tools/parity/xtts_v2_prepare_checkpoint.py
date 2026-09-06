@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Merge Coqui XTTS-v2 `.pth` release bundle → single `.safetensors`.
 
 Offline side-car (FR-LD-05: no Python / PyTorch ever enters the runtime).
@@ -104,6 +104,8 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+from xtts_v2_gate import BLOCKED_MARKER, require_blocked_gate
 
 # Same dtype taxonomy as sepformer / demucs / nemo precedents.
 INT_DTYPES = {
@@ -256,6 +258,7 @@ def _run_pipeline(bundles: dict[str, Any], output: Path, strict: bool) -> int:
     Shared body used by both ``main`` and ``--self-test`` so the two
     paths cannot drift.
     """
+    _ensure_output_absent(output)
     from safetensors.torch import save_file
 
     merged: dict = {}
@@ -337,6 +340,18 @@ def _run_pipeline(bundles: dict[str, Any], output: Path, strict: bool) -> int:
     return 0
 
 
+def _ensure_output_absent(output: Path) -> None:
+    """Reject output and symlinked ancestors before any serializer can write."""
+    current = Path(output.anchor) if output.is_absolute() else Path.cwd()
+    for component in output.parts[1:] if output.is_absolute() else output.parts:
+        current /= component
+        if current.is_symlink():
+            raise RuntimeError(f"refusing symlink output path component: {current}")
+    manifest = output.with_suffix(output.suffix + ".manifest.json")
+    if output.exists() or output.is_symlink() or manifest.exists() or manifest.is_symlink():
+        raise FileExistsError(f"output or manifest already exists: {output}")
+
+
 def _self_test() -> int:
     """Argparse + torch/safetensors import smoke; synthetic three-bundle merge.
 
@@ -345,6 +360,12 @@ def _self_test() -> int:
     and confirms the merge + prefix + dedup + write path all succeed.
     """
     import tempfile
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    main_source = source[source.index("def main") :]
+    assert main_source.index("require_blocked_gate(args.expected_head") < main_source.index("if not input_dir.is_dir()")
+    pipeline_source = source[source.index("def _run_pipeline") :]
+    assert pipeline_source.index("_ensure_output_absent(output)") < pipeline_source.index("from safetensors.torch import save_file")
 
     import torch
     from safetensors.torch import safe_open
@@ -387,10 +408,27 @@ def _self_test() -> int:
     }
 
     with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "test.safetensors"
+        tmp_root = Path(tmp).resolve()
+        out = tmp_root / "test.safetensors"
         rc = _run_pipeline(bundles, out, strict=False)
         if rc != 0:
             print("self-test: FAIL (_run_pipeline nonzero)", file=sys.stderr)
+            return 1
+        try:
+            _run_pipeline(bundles, out, strict=False)
+        except FileExistsError:
+            pass
+        else:
+            print("self-test: FAIL (existing output was clobbered)", file=sys.stderr)
+            return 1
+        link = tmp_root / "link.safetensors"
+        link.symlink_to(out)
+        try:
+            _run_pipeline(bundles, link, strict=False)
+        except (FileExistsError, RuntimeError):
+            pass
+        else:
+            print("self-test: FAIL (symlink output was accepted)", file=sys.stderr)
             return 1
         # Confirm the safetensors file is readable and contains the
         # expected prefixed keys.
@@ -455,6 +493,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "success, nonzero on failure."
         ),
     )
+    p.add_argument("--expected-head", help="Caller-bound clean checkout HEAD (HEX40).")
+    p.add_argument("--approval-evidence", help="Absolute external blocked approval JSON path.")
+    p.add_argument("--approval-sha256", help="SHA-256 of the approval JSON bytes (HEX64).")
     return p
 
 
@@ -462,14 +503,24 @@ def main() -> int:
     args = _build_parser().parse_args()
 
     if args.self_test:
+        if any(value is not None for value in (args.input_dir, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
+            print("xtts_v2_prepare_checkpoint: --self-test accepts no other arguments.", file=sys.stderr)
+            return 2
         return _self_test()
 
-    if args.input_dir is None or args.output is None:
+    if any(value is None for value in (args.input_dir, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
         print(
-            "xtts_v2_prepare_checkpoint: --input-dir and --output are required "
-            "(use --self-test for smoke).",
+            "xtts_v2_prepare_checkpoint: --input-dir, --output, --expected-head, "
+            "--approval-evidence, and --approval-sha256 are required (use --self-test for smoke).",
             file=sys.stderr,
         )
+        return 2
+
+    root = Path(__file__).resolve().parents[2]
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, root)
+    except RuntimeError as error:
+        print(str(error) if BLOCKED_MARKER in str(error) else f"XTTS_V2_BLOCKED_APPROVAL_INVALID: {error}", file=sys.stderr)
         return 2
 
     input_dir: Path = args.input_dir
