@@ -117,7 +117,7 @@ self_test() {
     'run_logged static-zero-deps' 'run_logged static-bound-arch' \
     'run_logged static-fixture-pins' 'run_logged static-dynamic-load' '--vokra-commit' \
     'VOKRA_PUBLISH_ON_VAST=1' 'Linux' 'x86_64' 'PREPARED_SAFETENSORS_READY' \
-    'expected_keys' 'typed_manifest_sha256' 'cd "$VOKRA_ROOT"' '128 GiB' '32 GiB' \
+    'expected_keys' 'typed_manifest_sha256' "cd \"\$VOKRA_ROOT\"" '128 GiB' '32 GiB' \
     'STRICT_BIND_PASS' 'apache-2.0' \
     'sgmse_native_score_matches_independent_reference' \
     'sgmse_native_enhancement_matches_official_reference' \
