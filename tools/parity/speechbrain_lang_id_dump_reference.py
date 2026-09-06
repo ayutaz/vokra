@@ -37,6 +37,13 @@ def self_test() -> None:
     assert DEFAULT_SOURCE == "speechbrain/lang-id-voxlingua107-ecapa"
     assert PINNED_REVISIONS[DEFAULT_SOURCE] == "0253049ae131d6a4be1c4f0d8b0ff483a0f8c8e9"
     assert EXPECTED[DEFAULT_SOURCE] == (60, 256, 107)
+    assert resolve_revision(DEFAULT_SOURCE, None) == PINNED_REVISIONS[DEFAULT_SOURCE]
+    try:
+        resolve_revision(DEFAULT_SOURCE, "a" * 40)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("untrusted revision was accepted")
     print("speechbrain_lang_id_dump_reference: stdlib self-test PASS")
 
 
@@ -46,7 +53,13 @@ def resolve_revision(source: str, revision: str | None) -> str:
         character not in "0123456789abcdefABCDEF" for character in resolved
     ):
         raise SystemExit("--revision must be a full 40-hex commit")
-    return resolved.lower()
+    resolved = resolved.lower()
+    if resolved != PINNED_REVISIONS[source]:
+        raise SystemExit(
+            "--revision must equal the audited immutable revision "
+            f"{PINNED_REVISIONS[source]} for {source}"
+        )
+    return resolved
 
 
 def sha256(path: Path) -> str:
@@ -225,7 +238,12 @@ def main() -> int:
     checkpoint_hashes = {}
     for filename in ["embedding_model.ckpt", "classifier.ckpt", "label_encoder.txt"]:
         path = args.savedir / filename
-        checkpoint_hashes[filename] = sha256(path) if path.exists() else None
+        if path.is_symlink() or not path.is_file() or not path.stat().st_size:
+            raise SystemExit(
+                "speechbrain_lang_id_dump_reference: required upstream checkpoint "
+                f"is missing, symlinked, or empty: {path}"
+            )
+        checkpoint_hashes[filename] = sha256(path)
     manifest = {
         "format": "vokra-speechbrain-lang-id-reference-v1",
         "source": args.source,

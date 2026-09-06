@@ -23,6 +23,9 @@ MIN_MEMORY_BYTES=32000000000
 MIN_FREE_DISK_KIB=20000000
 FIXTURE_BYTES=352078
 FIXTURE_SHA256="58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+CHECKPOINT_EMBEDDING_SHA256="ab750d5c06d713477045fa798fab5d33e959dbc0dfe4de510a9a47844c79a19a"
+CHECKPOINT_CLASSIFIER_SHA256="a50d9024ff58d317031c9787d4c6c614d454a87a8ef32f9d36338cd3ff57adbc"
+CHECKPOINT_LABELS_SHA256="9f566d83c4f19168be4a0bf86c0c7dac7d3264a95105bcbf33a7c32b83ccc17f"
 
 log() { printf '[speechbrain-lang-id-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -118,10 +121,15 @@ require_reference() {
   command -v uv >/dev/null 2>&1 || die 'uv is required for strict reference JSON validation'
   local lock_path="$VOKRA_ROOT/tools/parity/speechbrain_lang_id/uv.lock"
   require_file "SpeechBrain Lang-ID lock" "$lock_path"
-  uv run --no-cache --no-project --offline --python 3.12 python - "$directory" "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$FIXTURE_BYTES" "$FIXTURE_SHA256" "$lock_path" <<'PY' || { die 'reference JSON validation failed'; return 2; }
+  uv run --no-cache --no-project --offline --python 3.12 python - "$directory" "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$FIXTURE_BYTES" "$FIXTURE_SHA256" "$lock_path" "$CHECKPOINT_EMBEDDING_SHA256" "$CHECKPOINT_CLASSIFIER_SHA256" "$CHECKPOINT_LABELS_SHA256" <<'PY' || { die 'reference JSON validation failed'; return 2; }
 import hashlib, json, os, sys, tomllib
 from pathlib import Path
 root, source, revision, fixture_bytes, fixture_sha256, lock_path = Path(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], Path(sys.argv[6])
+expected_checkpoint_hashes = {
+    "embedding_model.ckpt": sys.argv[7],
+    "classifier.ckpt": sys.argv[8],
+    "label_encoder.txt": sys.argv[9],
+}
 def reject_duplicates(pairs):
     result = {}
     for key, value in pairs:
@@ -152,7 +160,8 @@ for key in ("speechbrain", "torch", "torchaudio", "numpy"):
 labels = json.loads((root / "labels.json").read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
 if not isinstance(labels, list) or len(labels) != 107 or any(not isinstance(x, str) or not x for x in labels): raise SystemExit("reference labels are not exactly 107 nonempty strings")
 checkpoint_hashes = data.get("checkpoint_sha256")
-if not isinstance(checkpoint_hashes, dict) or set(checkpoint_hashes) != {"embedding_model.ckpt", "classifier.ckpt", "label_encoder.txt"} or any(not isinstance(x, str) or not __import__("re").fullmatch(r"[0-9a-f]{64}", x) for x in checkpoint_hashes.values()): raise SystemExit("reference checkpoint identity map is not exact")
+if checkpoint_hashes != expected_checkpoint_hashes: raise SystemExit("reference checkpoint identity map differs from the audited upstream payloads")
+if any(not isinstance(x, str) or not __import__("re").fullmatch(r"[0-9a-f]{64}", x) for x in checkpoint_hashes.values()): raise SystemExit("reference checkpoint identity map is not exact")
 hashes, sizes = data.get("artifact_sha256"), data.get("artifact_bytes")
 expected_files = ("pcm.f32.bin", "features.f32.bin", "embedding.f32.bin", "scores.f32.bin", "labels.json")
 if set(hashes or ()) != set(expected_files) or set(sizes or ()) != set(expected_files): raise SystemExit("reference artifact identity map is not exact")
@@ -243,7 +252,8 @@ run_self_test() (
     "cargo test --manifest-path" "-p vokra-models --features metal" \
     "--test parity_speechbrain_lang_id_real" "test result: ok. 1 passed" \
     "--gguf-sha256" "--reference-manifest-sha256" "--approval-evidence" "APPLE_LANG_ID_APPROVAL_EVIDENCE" "LANG_ID_MEASUREMENT_ONLY backend=metal" \
-    "LANG_ID_MEASUREMENT_ONLY backend=metal" "MEASURED_NOT_GATED" "preflight_gate.py" "--manifest"; do
+    "LANG_ID_MEASUREMENT_ONLY backend=metal" "MEASURED_NOT_GATED" "preflight_gate.py" "--manifest" \
+    "$CHECKPOINT_EMBEDDING_SHA256" "$CHECKPOINT_CLASSIFIER_SHA256" "$CHECKPOINT_LABELS_SHA256"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: missing contract token: $required"
       fail=1

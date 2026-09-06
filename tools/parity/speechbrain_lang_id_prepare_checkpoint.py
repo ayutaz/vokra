@@ -97,7 +97,13 @@ def resolve_revision(source: str, revision: str | None) -> str:
         character not in "0123456789abcdefABCDEF" for character in resolved
     ):
         raise SystemExit("--revision must be a full 40-hex commit")
-    return resolved.lower()
+    resolved = resolved.lower()
+    if resolved != PINNED_REVISIONS[source]:
+        raise SystemExit(
+            "--revision must equal the audited immutable revision "
+            f"{PINNED_REVISIONS[source]} for {source}"
+        )
+    return resolved
 
 
 def sha256_file(path: Path) -> str:
