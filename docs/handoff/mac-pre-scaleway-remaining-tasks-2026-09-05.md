@@ -408,6 +408,139 @@ the recovered inspection manifest was accepted byte-for-byte, but no model was
 downloaded or executed. The full run remains blocked on direct owner approval;
 the checked-in pending manifest is not approval.
 
+The next source-only wave closed three more execution-path gaps without local
+model acquisition or execution. Commits `5a1bcd93` and `9701d962` harden the
+Voice Gender Classifier Apple worker around the exact corrected GGUF identity,
+the complete seven-file reference packet and direct CPU/reference,
+Metal/reference and Metal/CPU comparisons. The worker still needs a freshly
+regenerated VAST packet and a real Apple run. Commits `1da9af87` through
+`b04b5d22` add the dedicated Kyutai STT `dep_q=0` decoder seam, strict
+323-tensor BF16 binder and converter, official Moshi reference dumper, exact
+HEAD VAST measurement runner and no-download Apple CPU/Metal worker. Its
+numerical bound intentionally remains unset: the first VAST run is
+`MEASUREMENT_ONLY`, after which a reviewed fixed bound must be committed and
+the VAST pass repeated before Scaleway. Commit `b7c56b52` additionally binds
+the SpeechBrain VoxLingua107 reference and Apple packet to the audited upstream
+revision and exact three checkpoint payload digests. These source advances do
+not yet decrement the 63-row public audit because no corrected artifact has
+been published and no new Apple-hardware verdict has been recorded.
+
+The same source-only wave also hardened three public-artifact replacement
+families without acquiring or executing their weights locally:
+
+- Qwen3-ASR commits `1747dc68` and `030db7ae` require a no-clobber exact
+  single-file checkpoint plus the complete authenticated sidecar set, bind the
+  reference packet to the exact checkout HEAD, and make both the 0.6B and 1.7B
+  workers prove CPU/official, Metal/official and Metal/CPU results rather than
+  accepting a skipped or empty test. The model-free runner and dumper
+  self-tests pass; actual conversion/reference generation remains VAST work
+  and the hardware verdict remains a final Apple task.
+- ReazonSpeech commits `3581c850` and `cefddfe3` make the 965-descriptor model,
+  3,000-piece tokenizer, frontend axes, source archive/config/tensor hashes and
+  provenance an exact runtime contract. The no-download Apple worker requires
+  direct CPU/official, Metal/official and Metal/CPU evidence at one exact HEAD.
+  Its source tests pass, while the real VAST packet and Apple execution remain
+  open.
+- Qwen3-TTS commits `d4c78060` and `bea7457a` harden all four 12-Hz variants
+  and the shared decoder around exact revisions, single-safetensors snapshots,
+  strict JSON, symlink-safe/no-clobber paths, atomic reference publication and
+  exact-head VAST/Apple runners. The reference path remains deliberately
+  blocked until an authenticated Transformers 5.10.4 API smoke replaces the
+  current `BLOCKED_UNVERIFIED_API_SMOKE` state; fixed real parity bounds and
+  the VAST/Apple executions therefore remain open.
+- Canary commits `a59cafa3` and `44689ab8` harden the Flash and v2 replacement
+  pipelines around a ten-entry authenticated reference packet (eight data
+  files, an exact manifest and a packet digest), exact checkout and input
+  identities, and separate CPU/official, Metal/official and Metal/CPU evidence.
+  The reference is decoded from the same token vector compared by the runtime,
+  rather than from a second forward pass. The local source-only runner and
+  dumper self-tests pass; VAST conversion/official-reference generation and
+  the final Apple runs remain open. VAST records the honest intermediate state
+  as `CPU_PASS_METAL_NOT_RUN`.
+- NSNet2 commit `eb470233` corrects the released-model provenance from the
+  historical MIT/permissive mis-stamp to the pinned DNS-Challenge
+  CC-BY-4.0/attribution-required identity. The strict binder now rejects the
+  old public object, requires the exact source revision and ONNX digest on a
+  canonical replacement, and refuses duplicate, mistyped or unexpected Vokra
+  metadata and non-finite weights. Its runners bind approval to an exact clean
+  checkout, require authenticated input/reference/GGUF hashes, and consume
+  Rust-emitted CPU/reference, Metal/reference and Metal/CPU results. Local
+  source-only checks pass; the real VAST conversion/reference/CPU run and final
+  Apple execution remain open.
+- BiCodec commits `ff5ba508`, `d7555882`, `65c08032` and `6d1705b6` close the
+  source-side handoff around the audited CC-BY-NC-SA-4.0 research-only
+  identity. The VAST worker requires an exact clean checkout and head-bound
+  owner approval, produces a separate exact official-reference packet, records
+  CPU/official evidence, and emits a complete no-upload Apple command. The
+  Apple worker requires CPU/official, Metal/official and Metal/CPU stage
+  measurements. Actual VAST and Apple execution remain open.
+- WeSpeaker commits `9bdce345`, `6d1705b6` and `d3ba3f21` make the real tests
+  explicit ignored gates, add strict converter input/output handling, bind the
+  VAST and Apple workers to one clean expected HEAD and authenticated packet,
+  and record the honest intermediate verdict `CPU_PASS_METAL_NOT_RUN`. The
+  VAST workspace, Clippy, deny and advisory commands are locked/offline where
+  supported. Owner approval, the real VAST conversion/reference/CPU run and
+  final Apple execution remain open.
+- SpeechBrain ECAPA-TDNN commits `7c7610f4` and `629b47a4` make the corrupt
+  public-artifact replacement path fail closed around the exact 200-tensor
+  checkpoint, fixed upstream and reference identities, external owner
+  approval, one clean expected HEAD and atomic no-clobber conversion. The VAST
+  worker requires the named CPU/reference result plus workspace, Clippy,
+  license and advisory gates, then emits a portable direct VAST-to-Apple
+  handoff. The Apple worker authenticates the complete fixed reference packet
+  and records CPU/upstream and Metal/CPU passes while leaving the previously
+  unmeasured Metal/upstream comparison explicitly `MEASUREMENT_ONLY`. No model
+  was acquired or executed locally; the real VAST replacement run, reviewed
+  Metal/upstream bound and final Apple rerun remain open.
+- MOSS Audio Tokenizer Nano commits `0587b5c6`, `82e1b3ee` and `c4d9d8a1`
+  reject the historical Full-misstamped public object, require the canonical
+  Nano identity and complete 374-tensor F32 name/shape manifest, reject
+  non-finite payloads, and use no-clobber conversion. The exact-head VAST and
+  Apple workers accept only singleton Rust measurement evidence and provide a
+  hash-bound direct transfer packet with CPU/upstream, Metal/upstream and
+  Metal/CPU measured independently. No numerical threshold was inferred from
+  an absent real run: all three comparisons remain `MEASURED_NOT_GATED`. The
+  official snapshot hashes, safe Transformers API route, decoder tap shapes,
+  dependency/license approval, first real measurement, reviewed bounds and
+  repeat VAST/Apple runs remain explicit fail-closed gates.
+- SBV2 JP-Extra commit `b2ca0449` makes the real artifact leg an explicit
+  ignored gate with no silent fixture skip, rejects converter symlink/dot-path
+  inputs and pre-existing outputs, and binds the four-checkpoint Japanese
+  packet to the authenticated upstream revisions. The VAST worker requires an
+  exact clean HEAD plus a separately hash-bound owner approval, validates the
+  complete manifest-derived packet closure and runs CPU/reference before
+  emitting a direct VAST-to-Apple command. The Apple worker revalidates the
+  same packet and records Metal/reference and Metal/CPU only as
+  `MEASURED_NOT_GATED`; production Japanese G2P remains explicitly
+  `UNRESOLVED`. No model was acquired or executed locally, and the real VAST
+  run, reviewed Metal bounds, production G2P closure and final Apple execution
+  remain open.
+- MOSS Audio 4B/8B commit `00932737` converts the real-weight checks into
+  explicit ignored gates, rejects incomplete or ambiguous reference manifests,
+  and authenticates the complete VAST-to-Apple reference packets rather than
+  a manifest file alone. VAST and Apple must share one exact clean HEAD and
+  emit distinct CPU/official, Metal/official and Metal/CPU sentinels. The
+  existing official-source environment is pinned to Transformers 5.5.0, below
+  the recorded patched 5.10.x floor, so the preflight now stops before model
+  acquisition with `BLOCKED_UNVERIFIED_API_SMOKE`. A patched model-free API
+  smoke, exact source/model license and checkpoint identities, distinct strict
+  topology/binders, VAST real-weight parity and final Apple execution remain
+  open.
+- RMVPE commit `7ab0d5ec` rejects the historical public object's inferred MIT
+  provenance and every permissive converter override. The fixed
+  `yxlllc/RMVPE` source has no authenticated license grant, so only explicit
+  `unknown/unknown` metadata can be written or bound; non-finite weights,
+  symlinked/dot-component paths and output clobbering are rejected. Both
+  workers require an exact clean HEAD and stop at `BLOCKED_LICENSE` before
+  model work while the source/checkpoint terms remain unresolved. The Apache
+  declaration from the unrelated `Dream-High/RMVPE` repository is not reused.
+  Real VAST/Apple parity and any replacement remain prohibited until an exact
+  upstream license decision and checkpoint/dependency identities exist.
+
+These commits improve readiness only. They do not decrement the 63-row public
+audit until corrected artifacts and final Apple evidence exist under their
+separate approval gates.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
