@@ -8181,10 +8181,10 @@ pub fn convert_file_licensed(
             });
         }
         ModelKind::Nsnet2 => {
-            // Coverage-audit 2026-08-03 Wave A: MIT Permissive baseline —
-            // validate the exact 14 F32 initializer manifest, rename and
-            // transpose it into the native schema, and stamp the
-            // `vokra.model.*` + `vokra.provenance.*` chunks. The
+            // Coverage-audit 2026-08-03 Wave A: strict CC-BY-4.0 released
+            // model-content baseline — validate the exact 14 F32 initializer
+            // manifest, rename and transpose it into the native schema, and
+            // stamp immutable source/provenance chunks. The
             // upstream ONNX → safetensors bridge lives in the offline
             // sidecar `tools/parity/nsnet2_prepare_checkpoint.py` so this
             // converter stays inside the zero-dep safetensors-only contract

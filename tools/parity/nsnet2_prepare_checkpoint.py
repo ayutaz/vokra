@@ -60,9 +60,10 @@ Then:
 
 # NOT REFERENCED
 
-- No AGPL / GPL / copyleft source is read or referenced. NSNet2's upstream
-  ``LICENSE`` is standard MIT (``Copyright (c) Microsoft Corporation``, fetched
-  2026-08-03 — CLAUDE.md「ハルシネーション厳禁」).
+- No AGPL / GPL / copyleft source is read or referenced. The pinned tree's
+  ``LICENSE-CODE`` covers source code under MIT, while its released model
+  content is audited as CC-BY-4.0; the converter stamps that content license
+  and ``AttributionRequired`` on the GGUF artifact.
 """
 
 from __future__ import annotations

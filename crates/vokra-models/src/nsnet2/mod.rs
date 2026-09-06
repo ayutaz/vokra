@@ -62,8 +62,9 @@
 //! canonical conversion or the exact historical public Hub contract. This
 //! module ships:
 //!
-//! - the exact canonical tensor / hparam contract and the immutable historical
-//!   public header contract [`Nsnet2V1::from_gguf`] binds against;
+//! - the exact canonical tensor / hparam / provenance contract; and
+//! - an immutable historical public header detector which is rejected because
+//!   its old MIT/permissive stamp conflicts with the audited CC-BY-4.0 content;
 //! - synthetic-weight structural tests pinning FR-EX-08 (loud errors on
 //!   every shape / rate / tensor-name mismatch);
 //! - identity-gain sanity: a synthetic mask that forces the sigmoid
@@ -76,7 +77,7 @@ use vokra_core::backend::BackendKind;
 use vokra_core::engines::{DenoiseEngine, DenoiseStreamHandle};
 use vokra_core::gguf::{GgmlType, GgufFile, chunks};
 use vokra_core::ir::graph::{IstftAttrs, IstftStreamingAttrs, StftAttrs, Window, WindowSymmetry};
-use vokra_core::{Result, VokraError};
+use vokra_core::{LicenseClass, Result, VokraError};
 use vokra_ops::{IstftStreamingState, Spectrogram, stft};
 
 use crate::compute::{Compute, HotOp};
@@ -101,6 +102,14 @@ pub const DEFAULT_NAME: &str = "nsnet2-20ms-baseline";
 /// `vokra.model.category` — enhancement (speech-enhancement /
 /// noise-suppression family; shared with DFN3 / RNNoise v0.2).
 pub const CATEGORY: &str = "enhancement";
+
+/// Immutable Microsoft DNS-Challenge source revision for the released ONNX.
+pub const UPSTREAM_REVISION: &str = "8b87a33b2892f147b5c7ad39ea978453730db269";
+/// SHA-256 of the exact released NSNet2 ONNX byte stream.
+pub const UPSTREAM_SHA256: &str =
+    "88429b6253600be840ab816f46f466811d20078142fb12bff8cafe2b27bd4ca9";
+/// Immutable source tree carrying the pinned ONNX artifact.
+pub const UPSTREAM_URL: &str = "github.com/microsoft/DNS-Challenge/tree/8b87a33b2892f147b5c7ad39ea978453730db269/NSNet2-baseline";
 
 /// PCM sample rate the upstream 20 ms baseline was trained at (Hz).
 /// Real-weight parity harnesses assert against this so a fixture at a
@@ -134,6 +143,10 @@ pub const KEY_HOP: &str = "vokra.nsnet2.hop";
 pub const KEY_WIN_LENGTH: &str = "vokra.nsnet2.win_length";
 /// GGUF metadata key: PCM sample rate (u32 Hz; upstream = 16 000).
 pub const KEY_SAMPLE_RATE: &str = "vokra.nsnet2.sample_rate";
+const KEY_SOURCE_REVISION: &str = "vokra.nsnet2.source_revision";
+const KEY_SOURCE_SHA256: &str = "vokra.nsnet2.source_sha256";
+const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
+const PROVENANCE_SOURCE: &str = "Microsoft DNS-Challenge NSNet2-baseline commit 8b87a33b2892f147b5c7ad39ea978453730db269 (code MIT; released model content CC-BY-4.0)";
 
 const HPARAM_KEYS: &[&str] = &[
     KEY_N_BINS,
@@ -144,6 +157,19 @@ const HPARAM_KEYS: &[&str] = &[
     KEY_HOP,
     KEY_WIN_LENGTH,
     KEY_SAMPLE_RATE,
+];
+
+const CANONICAL_METADATA_KEYS: &[&str] = &[
+    chunks::KEY_MODEL_ARCH,
+    chunks::KEY_MODEL_NAME,
+    KEY_MODEL_CATEGORY,
+    chunks::KEY_PROVENANCE_LICENSE,
+    chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+    chunks::KEY_PROVENANCE_MODEL_ID,
+    chunks::KEY_PROVENANCE_SOURCE,
+    KEY_PROVENANCE_UPSTREAM_URL,
+    KEY_SOURCE_REVISION,
+    KEY_SOURCE_SHA256,
 ];
 
 // ---- tensor-name convention ---------------------------------------------
@@ -528,14 +554,15 @@ impl Nsnet2V1 {
         }
 
         let layout = resolve_artifact_layout(gguf)?;
-        let cfg = match layout {
-            ArtifactLayout::Canonical => Nsnet2Config::from_gguf(gguf)?,
-            ArtifactLayout::LegacyPublic => Nsnet2Config::upstream_default(),
-        };
-        let weights = match layout {
-            ArtifactLayout::Canonical => load_canonical_weights(gguf, &cfg)?,
-            ArtifactLayout::LegacyPublic => load_legacy_public_weights(gguf)?,
-        };
+        if layout == ArtifactLayout::LegacyPublic {
+            return Err(VokraError::ModelLoad(
+                "nsnet2: historical public GGUF carries the audited MIT/permissive provenance mismatch; refusing runtime binding until a CC-BY-4.0 replacement is converted"
+                    .to_owned(),
+            ));
+        }
+        validate_canonical_metadata(gguf)?;
+        let cfg = Nsnet2Config::from_gguf(gguf)?;
+        let weights = load_canonical_weights(gguf, &cfg)?;
         Ok(Self {
             cfg,
             weights: Arc::new(weights),
@@ -679,7 +706,11 @@ impl Nsnet2Stream {
             return Ok(Vec::new());
         }
         let n_frames = (self.pending_pcm.len() - n_fft) / hop + 1;
-        let consume = (n_frames - 1) * hop + n_fft;
+        let consume = checked_product("nsnet2 analysis window", &[n_frames - 1, hop])?
+            .checked_add(n_fft)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("nsnet2 analysis window size overflow".to_owned())
+            })?;
         // We do NOT drain `consume` samples up front: `torch.stft` with
         // `center=True` needs `n_fft/2` reflect-padding on both ends,
         // which spans across the current-and-next window. For the
@@ -707,8 +738,10 @@ impl Nsnet2Stream {
         // Compute the per-frame gain and apply it to the complex STFT
         // in-place. We accumulate the gated (Y = G * X) result into new
         // vectors sized `frames * bins` (no allocation per frame).
-        let mut y_re = vec![0.0f32; spec.frames * spec.bins];
-        let mut y_im = vec![0.0f32; spec.frames * spec.bins];
+        let spectrogram_elements =
+            checked_product("nsnet2 spectrogram output", &[spec.frames, spec.bins])?;
+        let mut y_re = vec![0.0f32; spectrogram_elements];
+        let mut y_im = vec![0.0f32; spectrogram_elements];
         for f in 0..spec.frames {
             let base = f * spec.bins;
             let re_row = &spec.re[base..base + spec.bins];
@@ -820,7 +853,8 @@ impl Nsnet2Stream {
         // including* the overlap tail that the next window needs. For a
         // non-`center` analysis with `hop <= n_fft`, the next window
         // starts at absolute sample `n_frames * hop`.
-        let drop = (n_frames * hop).min(self.pending_pcm.len());
+        let drop = checked_product("nsnet2 pending PCM drain", &[n_frames, hop])?
+            .min(self.pending_pcm.len());
         self.pending_pcm.drain(..drop);
         Ok(pcm_out)
     }
@@ -840,7 +874,16 @@ impl Nsnet2Stream {
         let remaining_frames = self.pending_pcm.len().div_ceil(self.cfg.hop);
         let mut output = Vec::new();
         if remaining_frames > 0 {
-            let target_len = self.cfg.n_fft + (remaining_frames - 1) * self.cfg.hop;
+            let target_len = self
+                .cfg
+                .n_fft
+                .checked_add(checked_product(
+                    "nsnet2 final PCM length",
+                    &[remaining_frames - 1, self.cfg.hop],
+                )?)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument("nsnet2 final PCM length overflow".to_owned())
+                })?;
             self.pending_pcm.resize(target_len, 0.0);
             output.extend(self.push_pcm_internal(&[])?);
         }
@@ -943,6 +986,14 @@ fn synthesis_istft_attrs(cfg: &Nsnet2Config) -> IstftStreamingAttrs {
 // Loader helper
 // -------------------------------------------------------------------------
 
+fn checked_product(label: &str, values: &[usize]) -> Result<usize> {
+    values.iter().try_fold(1usize, |product, value| {
+        product.checked_mul(*value).ok_or_else(|| {
+            VokraError::ModelLoad(format!("nsnet2: {label} allocation size overflow"))
+        })
+    })
+}
+
 fn resolve_artifact_layout(gguf: &GgufFile) -> Result<ArtifactLayout> {
     let hparam_count = HPARAM_KEYS
         .iter()
@@ -997,8 +1048,8 @@ fn resolve_artifact_layout(gguf: &GgufFile) -> Result<ArtifactLayout> {
         return Err(VokraError::ModelLoad(format!(
             "nsnet2: incomplete historical public tensor schema ({legacy_count}/{} tensors); \
              only the complete header contract audited from Hub revision \
-             {LEGACY_PUBLIC_REVISION} (source SHA-256 {LEGACY_PUBLIC_SHA256}) may repair \
-             missing topology metadata",
+             {LEGACY_PUBLIC_REVISION} (source SHA-256 {LEGACY_PUBLIC_SHA256}) is \
+             recognized for an explicit provenance-mismatch error",
             LEGACY_PUBLIC_TENSORS.len(),
         )));
     }
@@ -1016,14 +1067,83 @@ fn resolve_artifact_layout(gguf: &GgufFile) -> Result<ArtifactLayout> {
     )))
 }
 
+fn validate_canonical_metadata(gguf: &GgufFile) -> Result<()> {
+    for &key in CANONICAL_METADATA_KEYS.iter().chain(HPARAM_KEYS) {
+        let occurrences = gguf
+            .metadata()
+            .iter()
+            .filter(|(name, _)| name == key)
+            .count();
+        if occurrences != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "nsnet2: canonical metadata `{key}` occurs {occurrences} times; expected exactly once"
+            )));
+        }
+    }
+    for (key, _) in gguf.metadata() {
+        if (key.starts_with("vokra.model.")
+            || key.starts_with("vokra.nsnet2.")
+            || key.starts_with("vokra.provenance."))
+            && !CANONICAL_METADATA_KEYS.contains(&key.as_str())
+            && !HPARAM_KEYS.contains(&key.as_str())
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "nsnet2: unexpected canonical metadata key `{key}`"
+            )));
+        }
+    }
+    for (key, expected) in [
+        (chunks::KEY_MODEL_ARCH, ARCH),
+        (chunks::KEY_MODEL_NAME, DEFAULT_NAME),
+        (KEY_MODEL_CATEGORY, CATEGORY),
+        (chunks::KEY_PROVENANCE_LICENSE, "cc-by-4.0"),
+        (
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::AttributionRequired.as_str(),
+        ),
+        (chunks::KEY_PROVENANCE_MODEL_ID, DEFAULT_NAME),
+        (chunks::KEY_PROVENANCE_SOURCE, PROVENANCE_SOURCE),
+        (KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL),
+        (KEY_SOURCE_REVISION, UPSTREAM_REVISION),
+        (KEY_SOURCE_SHA256, UPSTREAM_SHA256),
+    ] {
+        required_string_exact(gguf, key, expected)?;
+    }
+    for &key in HPARAM_KEYS {
+        match gguf.get(key) {
+            Some(GgufMetadataValue::U32(_)) => {}
+            Some(other) => {
+                return Err(VokraError::ModelLoad(format!(
+                    "nsnet2: `{key}` must be exact UINT32, found {other:?}"
+                )));
+            }
+            None => unreachable!("all canonical keys were checked above"),
+        }
+    }
+    Ok(())
+}
+
+fn required_string_exact(gguf: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    match gguf.get(key) {
+        Some(GgufMetadataValue::String(value)) if value == expected => Ok(()),
+        Some(GgufMetadataValue::String(value)) => Err(VokraError::ModelLoad(format!(
+            "nsnet2: `{key}`={value:?}, expected {expected:?}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "nsnet2: `{key}` must be exact STRING, found {other:?}"
+        ))),
+        None => unreachable!("all canonical keys were checked above"),
+    }
+}
+
 fn validate_legacy_public_contract(gguf: &GgufFile) -> Result<()> {
     // These provenance values are the exact observed identity of the old Hub
     // object, not an endorsement of its MIT/permissive classification. The
     // fixed Microsoft source revision separates MIT code from CC-BY-4.0
     // released content; the live-repository audit therefore remains partial
     // until an authorized gated replacement corrects the model provenance and
-    // attribution. Runtime topology repair must still pin the mis-stamped
-    // historical header exactly so unrelated files cannot enter this branch.
+    // attribution. The historical header is checked only to produce a precise
+    // mismatch diagnostic; it is never bound for inference.
     if gguf.metadata().len() != 10 {
         return Err(legacy_public_error(format!(
             "metadata count is {}, expected exactly 10",
@@ -1100,9 +1220,9 @@ fn validate_legacy_public_contract(gguf: &GgufFile) -> Result<()> {
 
 fn legacy_public_error(detail: String) -> VokraError {
     VokraError::ModelLoad(format!(
-        "nsnet2: historical public GGUF contract mismatch: {detail}. Only the \
+        "nsnet2: historical public GGUF contract mismatch: {detail}. The \
          header contract audited from vokra/nsnet2 revision {LEGACY_PUBLIC_REVISION} \
-         (source SHA-256 {LEGACY_PUBLIC_SHA256}) is eligible for metadata repair"
+         (source SHA-256 {LEGACY_PUBLIC_SHA256}) is retained only for diagnosis"
     ))
 }
 
@@ -1115,6 +1235,11 @@ fn load_canonical_weights(gguf: &GgufFile, cfg: &Nsnet2Config) -> Result<Nsnet2W
             return Err(VokraError::ModelLoad(format!(
                 "nsnet2: tensor `{name}` has {} elements, expected {expect}",
                 v.len()
+            )));
+        }
+        if v.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::ModelLoad(format!(
+                "nsnet2: tensor `{name}` contains a non-finite F32 value"
             )));
         }
         Ok(v)
@@ -1141,7 +1266,10 @@ fn load_canonical_weights(gguf: &GgufFile, cfg: &Nsnet2Config) -> Result<Nsnet2W
     let fc2 = cfg.fc2_dim;
 
     // Input Linear.
-    let fc_in_weight = load_f32(TENSOR_FC_IN_WEIGHT, h * n_bins)?;
+    let fc_in_weight = load_f32(
+        TENSOR_FC_IN_WEIGHT,
+        checked_product("fc_in.weight", &[h, n_bins])?,
+    )?;
     assert_dims(TENSOR_FC_IN_WEIGHT, &[h as u64, n_bins as u64])?;
     let fc_in_bias = load_f32(TENSOR_FC_IN_BIAS, h)?;
     assert_dims(TENSOR_FC_IN_BIAS, &[h as u64])?;
@@ -1149,19 +1277,26 @@ fn load_canonical_weights(gguf: &GgufFile, cfg: &Nsnet2Config) -> Result<Nsnet2W
     // ONNX ships `[Z; R; H]`; permute to `[R; Z; H]`. Keep Wb and Rb
     // separate because `linear_before_reset=1` gates the recurrent candidate
     // contribution, including Rb_h.
-    let gru_1_w_raw = load_f32(TENSOR_GRU_1_W, 3 * h * h)?;
-    assert_dims(TENSOR_GRU_1_W, &[(3 * h) as u64, h as u64])?;
-    let gru_1_r_raw = load_f32(TENSOR_GRU_1_R, 3 * h * h)?;
-    assert_dims(TENSOR_GRU_1_R, &[(3 * h) as u64, h as u64])?;
-    let gru_1_b_raw = load_f32(TENSOR_GRU_1_B, 6 * h)?;
-    assert_dims(TENSOR_GRU_1_B, &[(6 * h) as u64])?;
+    let three_h = h
+        .checked_mul(3)
+        .ok_or_else(|| VokraError::ModelLoad("nsnet2 GRU row count overflow".to_owned()))?;
+    let six_h = h
+        .checked_mul(6)
+        .ok_or_else(|| VokraError::ModelLoad("nsnet2 GRU bias count overflow".to_owned()))?;
+    let gru_matrix_elements = checked_product("GRU matrix", &[three_h, h])?;
+    let gru_1_w_raw = load_f32(TENSOR_GRU_1_W, gru_matrix_elements)?;
+    assert_dims(TENSOR_GRU_1_W, &[three_h as u64, h as u64])?;
+    let gru_1_r_raw = load_f32(TENSOR_GRU_1_R, gru_matrix_elements)?;
+    assert_dims(TENSOR_GRU_1_R, &[three_h as u64, h as u64])?;
+    let gru_1_b_raw = load_f32(TENSOR_GRU_1_B, six_h)?;
+    assert_dims(TENSOR_GRU_1_B, &[six_h as u64])?;
 
-    let gru_2_w_raw = load_f32(TENSOR_GRU_2_W, 3 * h * h)?;
-    assert_dims(TENSOR_GRU_2_W, &[(3 * h) as u64, h as u64])?;
-    let gru_2_r_raw = load_f32(TENSOR_GRU_2_R, 3 * h * h)?;
-    assert_dims(TENSOR_GRU_2_R, &[(3 * h) as u64, h as u64])?;
-    let gru_2_b_raw = load_f32(TENSOR_GRU_2_B, 6 * h)?;
-    assert_dims(TENSOR_GRU_2_B, &[(6 * h) as u64])?;
+    let gru_2_w_raw = load_f32(TENSOR_GRU_2_W, gru_matrix_elements)?;
+    assert_dims(TENSOR_GRU_2_W, &[three_h as u64, h as u64])?;
+    let gru_2_r_raw = load_f32(TENSOR_GRU_2_R, gru_matrix_elements)?;
+    assert_dims(TENSOR_GRU_2_R, &[three_h as u64, h as u64])?;
+    let gru_2_b_raw = load_f32(TENSOR_GRU_2_B, six_h)?;
+    assert_dims(TENSOR_GRU_2_B, &[six_h as u64])?;
 
     let (gru_1_w_ih, gru_1_w_hh, gru_1_bias_ih, gru_1_bias_hh) =
         permute_onnx_gru(&gru_1_w_raw, &gru_1_r_raw, &gru_1_b_raw, h, h);
@@ -1169,17 +1304,26 @@ fn load_canonical_weights(gguf: &GgufFile, cfg: &Nsnet2Config) -> Result<Nsnet2W
         permute_onnx_gru(&gru_2_w_raw, &gru_2_r_raw, &gru_2_b_raw, h, h);
 
     // Post-GRU Linears + mask head.
-    let fc_1_weight = load_f32(TENSOR_FC_1_WEIGHT, fc1 * h)?;
+    let fc_1_weight = load_f32(
+        TENSOR_FC_1_WEIGHT,
+        checked_product("fc_1.weight", &[fc1, h])?,
+    )?;
     assert_dims(TENSOR_FC_1_WEIGHT, &[fc1 as u64, h as u64])?;
     let fc_1_bias = load_f32(TENSOR_FC_1_BIAS, fc1)?;
     assert_dims(TENSOR_FC_1_BIAS, &[fc1 as u64])?;
 
-    let fc_2_weight = load_f32(TENSOR_FC_2_WEIGHT, fc2 * fc1)?;
+    let fc_2_weight = load_f32(
+        TENSOR_FC_2_WEIGHT,
+        checked_product("fc_2.weight", &[fc2, fc1])?,
+    )?;
     assert_dims(TENSOR_FC_2_WEIGHT, &[fc2 as u64, fc1 as u64])?;
     let fc_2_bias = load_f32(TENSOR_FC_2_BIAS, fc2)?;
     assert_dims(TENSOR_FC_2_BIAS, &[fc2 as u64])?;
 
-    let mask_weight = load_f32(TENSOR_MASK_WEIGHT, n_bins * fc2)?;
+    let mask_weight = load_f32(
+        TENSOR_MASK_WEIGHT,
+        checked_product("mask.weight", &[n_bins, fc2])?,
+    )?;
     assert_dims(TENSOR_MASK_WEIGHT, &[n_bins as u64, fc2 as u64])?;
     let mask_bias = load_f32(TENSOR_MASK_BIAS, n_bins)?;
     assert_dims(TENSOR_MASK_BIAS, &[n_bins as u64])?;
@@ -1221,6 +1365,11 @@ fn load_legacy_public_weights(gguf: &GgufFile) -> Result<Nsnet2Weights> {
             return Err(VokraError::ModelLoad(format!(
                 "nsnet2: historical public tensor `{name}` has {} elements, expected {expected}",
                 values.len(),
+            )));
+        }
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::ModelLoad(format!(
+                "nsnet2: historical public tensor `{name}` contains a non-finite F32 value"
             )));
         }
         Ok(values)

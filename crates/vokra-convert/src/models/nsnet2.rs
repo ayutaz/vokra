@@ -23,11 +23,11 @@
 //!
 //! # License
 //!
-//! Both code and weights ship **MIT** end-to-end
-//! (`github.com/microsoft/DNS-Challenge/blob/master/LICENSE`, fetched
-//! 2026-08-03 — CLAUDE.md「ハルシネーション厳禁」). MIT is a `Permissive`
-//! license class — same commercial verdict as apache-2.0 (no runtime-side
-//! attribution obligation).
+//! The pinned source tree distinguishes MIT source code from the released
+//! model content covered by CC-BY-4.0. The converter therefore stamps the
+//! ONNX-derived weights as `cc-by-4.0` / `AttributionRequired` and rejects a
+//! conflicting license override; the code's own MIT terms do not silently
+//! relicense the model artifact.
 //!
 //! # Dtype posture
 //!
@@ -91,6 +91,11 @@ pub const CATEGORY: &str = "enhancement";
 /// public DNS Challenge repository), so this uses `upstream_url` rather than
 /// `upstream_hf`; the model-card generator picks up either.
 pub const UPSTREAM_URL: &str = "github.com/microsoft/DNS-Challenge/tree/8b87a33b2892f147b5c7ad39ea978453730db269/NSNet2-baseline";
+/// Immutable Microsoft DNS-Challenge source revision for the released ONNX.
+pub const UPSTREAM_REVISION: &str = "8b87a33b2892f147b5c7ad39ea978453730db269";
+/// SHA-256 of the exact released NSNet2 ONNX byte stream.
+pub const UPSTREAM_SHA256: &str =
+    "88429b6253600be840ab816f46f466811d20078142fb12bff8cafe2b27bd4ca9";
 
 /// Canonical released-model license SPDX (`cc-by-4.0`). Microsoft's fixed
 /// DNS-Challenge revision puts source code under `LICENSE-CODE` (MIT), while
@@ -99,6 +104,7 @@ pub const UPSTREAM_URL: &str = "github.com/microsoft/DNS-Challenge/tree/8b87a33b
 /// weight artifact is classified attribution-required unless a checkpoint
 /// owner supplies stronger, checkpoint-specific terms.
 pub const DEFAULT_LICENSE: &str = "cc-by-4.0";
+const PROVENANCE_SOURCE: &str = "Microsoft DNS-Challenge NSNet2-baseline commit 8b87a33b2892f147b5c7ad39ea978453730db269 (code MIT; released model content CC-BY-4.0)";
 
 /// Ad-hoc metadata key for the model category. Kept as a converter-side
 /// constant (not a `chunks::KEY_*` alias) matching the sibling
@@ -112,6 +118,8 @@ const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 /// constant to avoid premature promotion until a second non-HF converter
 /// lands.
 const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
+const KEY_SOURCE_REVISION: &str = "vokra.nsnet2.source_revision";
+const KEY_SOURCE_SHA256: &str = "vokra.nsnet2.source_sha256";
 
 // ---- `vokra.nsnet2.*` hparam chunk group ---------------------------------
 //
@@ -302,10 +310,10 @@ pub struct Nsnet2Report {
 /// (FR-CP-03). `vokra.schema.*` is written unconditionally by the GGUF
 /// writer.
 ///
-/// `license` overrides `DEFAULT_LICENSE` (`"cc-by-4.0"`) — the same mechanism
-/// `lib.rs::convert_file_licensed` uses when the implementation is
-/// clean-room but the redistributed checkpoint carries a different SPDX
-/// grant.
+/// `license`, when supplied, must equal the exact canonical released
+/// model-content license (`"cc-by-4.0"`). This converter must not emit a
+/// misleading MIT/permissive provenance variant for the same immutable
+/// ONNX bytes.
 ///
 /// # Errors
 ///
@@ -332,19 +340,25 @@ pub fn convert_nsnet2_file(
     // root LICENSE and README Legal Notices assign documentation and other
     // released content to CC-BY-4.0. Treat the released ONNX weights as that
     // attribution-required content; do not broaden the code licence to them.
-    // The override remains available only for a checkpoint-specific grant.
-    let effective_license = license.unwrap_or(DEFAULT_LICENSE);
-    let effective_class = LicenseClass::from_license_str(effective_license);
+    if let Some(value) = license {
+        if value != DEFAULT_LICENSE {
+            return Err(ConvertError::Usage(format!(
+                "nsnet2 is pinned to the released model-content license {DEFAULT_LICENSE:?}; refusing provenance override {value:?}"
+            )));
+        }
+    }
+    let effective_license = DEFAULT_LICENSE;
+    let effective_class = LicenseClass::AttributionRequired;
     vokra_core::stamp_provenance(
         &mut b,
         effective_class,
         effective_license,
         Some(NAME),
-        Some(
-            "Microsoft DNS-Challenge NSNet2-baseline commit 8b87a33b2892f147b5c7ad39ea978453730db269 (code MIT; released model content CC-BY-4.0)",
-        ),
+        Some(PROVENANCE_SOURCE),
     );
     b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
+    b.add_string(KEY_SOURCE_REVISION, UPSTREAM_REVISION);
+    b.add_string(KEY_SOURCE_SHA256, UPSTREAM_SHA256);
 
     // NSNet2 has one canonical topology — the 20 ms baseline
     // (`nsnet2-20ms-baseline.onnx`) — and every hparam is fixed at that
@@ -693,10 +707,28 @@ mod tests {
             "CC-BY-4.0 weights normalise to LicenseClass::AttributionRequired"
         );
         assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|v| v.as_str()),
+            Some(NAME)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_SOURCE)
+                .and_then(|v| v.as_str()),
+            Some(PROVENANCE_SOURCE)
+        );
+        assert_eq!(
             file.get(KEY_PROVENANCE_UPSTREAM_URL)
                 .and_then(|v| v.as_str()),
             Some(UPSTREAM_URL),
             "upstream_url chunk pins the GitHub tree the release ships from"
+        );
+        assert_eq!(
+            file.get(KEY_SOURCE_REVISION).and_then(|v| v.as_str()),
+            Some(UPSTREAM_REVISION)
+        );
+        assert_eq!(
+            file.get(KEY_SOURCE_SHA256).and_then(|v| v.as_str()),
+            Some(UPSTREAM_SHA256)
         );
         // Every `vokra.nsnet2.*` hparam must be stamped verbatim so a
         // downstream `Nsnet2V1::from_gguf` binder validates the topology.
@@ -750,35 +782,18 @@ mod tests {
         std::fs::remove_file(&output).ok();
     }
 
-    /// Licence override pin: passing `Some("mit")` re-derives the
-    /// class through `LicenseClass::from_license_str` and stamps the new
-    /// SPDX + class on the artifact. Guards against a hard-coded
-    /// class instead of retaining the attribution-required default. This is
-    /// an API-mechanics test; callers still need a checkpoint-specific grant.
+    /// A license override that disagrees with the authenticated release is
+    /// rejected instead of producing a misleading provenance stamp.
     #[test]
-    fn license_override_re_derives_class() {
+    fn license_override_rejects_mismatched_identity() {
         let (input_bytes, _payload) = synthetic_f32_safetensors();
         let input = scratch_path("override-in");
         let output = scratch_path("override-out");
         std::fs::write(&input, &input_bytes).expect("write safetensors input");
 
-        let _report =
-            convert_nsnet2_file(&input, &output, Some("mit")).expect("convert with override");
-
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("mit"),
-            "override SPDX lands verbatim"
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "MIT override normalises to LicenseClass::Permissive"
-        );
+        let error = convert_nsnet2_file(&input, &output, Some("mit"))
+            .expect_err("mismatched release license must be rejected");
+        assert!(error.to_string().contains("provenance override"));
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
