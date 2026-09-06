@@ -21,6 +21,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from baichuan_audio_instruct_gate import require_blocked_gate, self_test as gate_self_test
+
 HF_REPOSITORY = "baichuan-inc/Baichuan-Audio-Instruct"
 HF_REVISION = "1c86512d863376f9ea0c32bb77451b9f428283c8"
 SOURCE_REPOSITORY = "https://github.com/baichuan-inc/Baichuan-Audio.git"
@@ -670,21 +672,24 @@ def inspect(snapshot: Path, source: Path, output: Path, tree: Path) -> int:
         blockers.append("source LICENSE declaration to HF Matcha bundle files is unauthenticated")
     blockers.extend(["native Baichuan composition/runtime is not implemented", "dependency licenses are unreviewed", "dataset/training provenance is unauthenticated", "HF custom/CosyVoice/Matcha/Whisper/Qwen/vocoder licenses require separate audit"])
     payload = {"format": FORMAT, "status": "BLOCKED", "inspection_status": "INSPECTION_ONLY", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "native_status": "BLOCKED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "model": {"repository": HF_REPOSITORY, "revision": HF_REVISION, "resolved_revision": tree_packet.get("resolved_revision"), "server_tree": tree_packet, "files": model_files, "index": json_evidence(indexes[0], snapshot, blockers) if indexes else None, "shards": tensor_packets, "json": json_packets, "json_semantics": json_semantics, "custom_role_files": custom_roles, "license_evidence": {"weight_card": weight_license, "files": license_files}}, "official_source": source, "license_evidence": {"weight_declaration": weight_license, "source": source_license, "custom_code": "UNREVIEWED_BLOCKER", "components": "UNREVIEWED_BLOCKER", "dependencies": "UNREVIEWED_BLOCKER", "datasets": "UNAUTHENTICATED_BLOCKER"}, "blockers": sorted(set(blockers))}
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "manifest.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    output.mkdir(parents=False, exist_ok=False)
+    with (output / "manifest.json").open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
     return 2
 
 
 def write_blocked(output: Path, error: Exception, tree: Path | None) -> None:
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=False, exist_ok=False)
     packet = None
     if tree is not None and tree.is_file():
         packet = {"path": str(tree), "bytes": tree.stat().st_size, "sha256": sha256(tree)}
     payload = {"format": FORMAT, "status": "BLOCKED", "inspection_status": "INSPECTION_ONLY", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "native_status": "BLOCKED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "model": {"repository": HF_REPOSITORY, "revision": HF_REVISION}, "server_tree_packet": packet, "error_type": type(error).__name__, "error": str(error), "blockers": [str(error), "native Baichuan composition/runtime is not implemented", "dependency licenses are unreviewed", "dataset/training provenance is unauthenticated"]}
-    (output / "manifest.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    with (output / "manifest.json").open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
 
 
 def self_test() -> None:
+    gate_self_test(Path(__file__), ["--snapshot", "/missing-snapshot", "--source", "/missing-source", "--server-tree", "/missing-tree", "--output", "/missing-output"], "if any(value is None for value in (args." + "snapshot")
     source = Path(__file__).read_text(encoding="utf-8")
     assert len(HF_REVISION) == len(SOURCE_REVISION) == 40
     assert "safetensors_header" in source
@@ -806,12 +811,20 @@ def main() -> int:
     parser.add_argument("--source", type=Path)
     parser.add_argument("--server-tree", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
-        if args.dependency_gate or any(value is not None for value in (args.snapshot, args.source, args.server_tree, args.output)):
-            parser.error("--self-test accepts no other arguments")
+        if args.dependency_gate or any(value is not None for value in (args.snapshot, args.source, args.server_tree, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
+            parser.error("--self-test cannot be combined with normal arguments")
         self_test()
         return 0
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, Path(__file__).resolve().parents[2])
+    except Exception as error:
+        print(f"Baichuan inspection BLOCKED: {error}", file=sys.stderr)
+        return 2
     if args.dependency_gate:
         if any(value is not None for value in (args.snapshot, args.source, args.server_tree, args.output)):
             parser.error("--dependency-gate accepts no inspection arguments")
@@ -824,6 +837,8 @@ def main() -> int:
         return 0
     if any(value is None for value in (args.snapshot, args.source, args.server_tree, args.output)):
         parser.error("normal runs require --snapshot --source --server-tree --output")
+    if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
+        parser.error("--output must be absent with an existing parent")
     try:
         return inspect(args.snapshot, args.source, args.output, args.server_tree)
     except Exception as error:  # noqa: BLE001 - preserve fixed identity/status blocker manifest

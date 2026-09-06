@@ -10,6 +10,7 @@ HF_REVISION="1c86512d863376f9ea0c32bb77451b9f428283c8"
 SOURCE_URL="https://github.com/baichuan-inc/Baichuan-Audio.git"
 SOURCE_REVISION="805d456433dbf3e0edb2bdd302f733a4bd38ea84"
 INSPECTOR="$ROOT/tools/parity/baichuan_audio_instruct_inspect.py"
+GATE="$ROOT/tools/parity/baichuan_audio_instruct_gate.py"
 REFERENCE_LOCK_SHA256="0e8ca64e2f81060732c317fd6d10e01df7c3a5eb122426ef5d695e9813df7625"
 REFERENCE_PACKAGE_ROWS_SHA256="a276c50b73fcbc7f0ac22667d6d56516bf7dea7e9e420456562f128b4fa36b2b"
 REFERENCE_RESOLUTION_MARKERS_SHA256="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
@@ -22,6 +23,9 @@ die() { log "ERROR: $*"; exit 2; }
 
 self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token
+  if "$script" --self-test --self-test >/dev/null 2>&1 || "$script" --self-test --expected-head bad >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate or mixed --self-test arguments accepted'; fail=1
+  fi
   for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" \
     'resolved_revision' 'git_blob_sha1' 'lfs_pointer_git_blob_sha1' 'lfs_sha256' 'payload_bytes' 'SOURCE_ROLE_PATHS' 'fixed Git blob table' \
     'snapshot_download' 'list_repo_tree' 'server-tree' 'weights_only' 'safetensors' \
@@ -29,7 +33,7 @@ self_test() {
     'INSPECTION_ONLY' 'materialized payload size' 'payload_sha256' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'UNSUPPORTED' 'BLOCKED_BY_CPU' 'NOT_RUN' 'NO_UPLOAD' \
     'UNAUTHENTICATED_BLOCKER' 'UNREVIEWED_BLOCKER' 'CARGO_BUILD_JOBS=1' 'cargo metadata --locked --no-deps --format-version 1' \
     'dependency-gate' "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_RESOLUTION_MARKERS_SHA256" 'dependency_license_audit' \
-    'BLOCKED_UNREVIEWED_TRANSITIVE' 'uv sync --project' '--no-sync' 'exit 2'; do
+    'BLOCKED_UNREVIEWED_TRANSITIVE' 'uv sync --project' '--no-sync' 'exit 2' 'BLOCKED_UNRESOLVED_BAICHUAN_AUDIO_COMPOSITE'; do
     if ! grep -Fq -- "$token" "$script" && ! grep -Fq -- "$token" "$INSPECTOR"; then
       log "self-test FAIL: missing contract $token"; fail=1
     fi
@@ -43,11 +47,11 @@ self_test() {
   if grep -Eq 'CARGO_BUILD_JOBS=.*\$\{' "$script"; then
     log 'self-test FAIL: Cargo jobs can be overridden'; fail=1
   fi
-  if ! UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --python 3.12 python "$INSPECTOR" --self-test >/dev/null; then
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test >/dev/null; then
     log 'self-test FAIL: inspector self-test failed'; fail=1
   fi
   local gate_line sync_line work_line download_line
-  gate_line="$(grep -n -- '--dependency-gate' "$script" | tail -1 | cut -d: -f1)"
+  gate_line="$(grep -n -- 'baichuan_audio_instruct_gate.py' "$script" | tail -1 | cut -d: -f1)"
   sync_line="$(grep -n '^uv sync --project' "$script" | tail -1 | cut -d: -f1)"
   work_line="$(grep -n '^mkdir -p "' "$script" | tail -1 | cut -d: -f1)"
   download_line="$(grep -n 'snapshot_download(repo_id' "$script" | tail -1 | cut -d: -f1)"
@@ -62,10 +66,21 @@ self_test() {
 }
 
 work_dir="/dev/shm/vokra-baichuan-audio-instruct-inspection"
-if [[ "${1:-}" == --self-test ]]; then
-  [[ $# == 1 ]] || die '--self-test accepts no other arguments'
-  self_test; exit $?
-fi
+expected_head=""; approval_evidence=""; approval_sha256=""; self=0; self_seen=0; expected_seen=0; approval_seen=0; sha_seen=0
+while (($#)); do case "$1" in
+  --self-test) ((self_seen+=1)); self=1; shift;;
+  --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; ((expected_seen+=1)); expected_head="$2"; shift 2;;
+  --approval-evidence) (($# >= 2)) || die '--approval-evidence requires FILE'; ((approval_seen+=1)); approval_evidence="$2"; shift 2;;
+  --approval-sha256) (($# >= 2)) || die '--approval-sha256 requires HEX64'; ((sha_seen+=1)); approval_sha256="$2"; shift 2;;
+  -h|--help) echo 'usage: run-baichuan-audio-instruct-inspection.sh --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 | --self-test'; exit 0;;
+  *) die "unknown argument: $1";;
+esac; done
+if ((self)); then [[ "$self_seen" == 1 && "$expected_seen" == 0 && "$approval_seen" == 0 && "$sha_seen" == 0 ]] || die '--self-test cannot be combined with normal or duplicate arguments'; self_test; exit $?; fi
+[[ "$expected_seen" == 1 && "$approval_seen" == 1 && "$sha_seen" == 1 ]] || die 'normal run requires exactly one expected-head, approval-evidence and approval-sha256'
+gate_log=""; gate_rc=0
+gate_log="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$ROOT" 2>&1)" || gate_rc=$?
+[[ "$gate_rc" == 2 && "$gate_log" == *BLOCKED_UNRESOLVED_BAICHUAN_AUDIO_COMPOSITE* ]] || die "approval/HEAD gate failed: $gate_log"
+die 'BLOCKED_UNRESOLVED_BAICHUAN_AUDIO_COMPOSITE: current BLOCKED approval cannot authorize dependency gate, acquisition, or inspection'
 [[ $# == 0 ]] || die 'arguments are not accepted; revisions are fixed in the worker'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST host must be Linux x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
