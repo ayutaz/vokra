@@ -61,9 +61,20 @@ def _safe_file(value: str) -> Path:
     return path
 
 
+def _require_external(path: Path, root: Path) -> None:
+    try:
+        resolved_path = path.resolve(strict=True)
+        resolved_root = root.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError(f"approval/checkout canonicalization failed: {error}") from error
+    if resolved_path == resolved_root or resolved_root in resolved_path.parents:
+        raise RuntimeError("approval evidence must be outside the checkout")
+
+
 def validate_approval(raw: bytes, head: str, supplied_sha: str) -> dict[str, Any]:
     if hashlib.sha256(raw).hexdigest() != supplied_sha: raise RuntimeError("approval bytes changed or SHA-256 is wrong")
-    data = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
+    try: data = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error: raise RuntimeError(f"approval JSON is malformed UTF-8/JSON: {error}") from error
     expected = _fixture(head)
     if not isinstance(data, dict) or set(data) != set(expected) or any(data[key] != value for key, value in expected.items()): raise RuntimeError("approval identity/schema mismatch")
     if data["no_upload"] is not True or data["scope_sha256"] != _scope(data): raise RuntimeError("approval scope or NO_UPLOAD binding mismatch")
@@ -73,9 +84,12 @@ def validate_approval(raw: bytes, head: str, supplied_sha: str) -> dict[str, Any
 def require_blocked_gate(head: str, approval: str, supplied_sha: str, root: Path) -> None:
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head): raise RuntimeError("--expected-head must be lowercase 40-hex")
     if not isinstance(supplied_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", supplied_sha): raise RuntimeError("--approval-sha256 must be lowercase 64-hex")
-    path = _safe_file(approval); validate_approval(path.read_bytes(), head, supplied_sha)
-    if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True): raise RuntimeError("checkout must be clean")
-    actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    path = _safe_file(approval); _require_external(path, root); validate_approval(path.read_bytes(), head, supplied_sha)
+    try:
+        status = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True)
+        actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    except (OSError, subprocess.SubprocessError) as error: raise RuntimeError(f"checkout identity verification failed: {error}") from error
+    if status: raise RuntimeError("checkout must be clean")
     if actual != head: raise RuntimeError(f"checkout HEAD {actual} differs from --expected-head {head}")
     raise RuntimeError(f"{BLOCKED_MARKER}: source roles, dependencies, dataset, and native runtime remain unresolved")
 
@@ -101,6 +115,13 @@ def self_test(source: Path, input_args: list[str], marker: str) -> None:
         except RuntimeError as error:
             if BLOCKED_MARKER not in str(error): raise AssertionError(f"valid approval did not reach blocker: {error}")
         else: raise AssertionError("valid blocked approval passed")
+        (repo / ".gitignore").write_text("ignored-approval.json\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", ".gitignore"], check=True, capture_output=True); subprocess.run(["git", "-C", str(repo), "commit", "-qm", "ignore"], check=True, capture_output=True)
+        ignored = repo / "ignored-approval.json"; ignored.write_bytes(raw)
+        try: require_blocked_gate(head, str(ignored), sha, repo)
+        except RuntimeError as error:
+            if "outside the checkout" not in str(error): raise AssertionError(f"checkout-local approval rejected for wrong reason: {error}")
+        else: raise AssertionError("ignored checkout-local approval accepted")
         for bad_sha in ("0" * 64,):
             try: validate_approval(raw, head, bad_sha)
             except RuntimeError: pass

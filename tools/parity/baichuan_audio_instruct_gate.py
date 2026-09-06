@@ -72,10 +72,23 @@ def _safe_file(value: str) -> Path:
     return path
 
 
+def _require_external(path: Path, root: Path) -> None:
+    try:
+        resolved_path = path.resolve(strict=True)
+        resolved_root = root.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError(f"approval/checkout canonicalization failed: {error}") from error
+    if resolved_path == resolved_root or resolved_root in resolved_path.parents:
+        raise RuntimeError("approval evidence must be outside the checkout")
+
+
 def validate_approval(raw: bytes, expected_head: str, supplied_sha: str) -> dict[str, Any]:
     if hashlib.sha256(raw).hexdigest() != supplied_sha:
         raise RuntimeError("approval bytes changed or SHA-256 is wrong")
-    data = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
+    try:
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
+        raise RuntimeError(f"approval JSON is malformed UTF-8/JSON: {error}") from error
     keys = {
         "schema", "status", "disposition", "expected_head", "model_repository", "model_revision",
         "source_repository", "source_revision", "source_role_status", "dependency_status", "component_status",
@@ -97,11 +110,18 @@ def require_blocked_gate(expected_head: str, approval: str, approval_sha256: str
     if not isinstance(approval_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", approval_sha256):
         raise RuntimeError("--approval-sha256 must be lowercase 64-hex")
     path = _safe_file(approval)
+    _require_external(path, root)
     validate_approval(path.read_bytes(), expected_head, approval_sha256)
-    status = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True)
+    try:
+        status = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"checkout status verification failed: {error}") from error
     if status:
         raise RuntimeError("checkout must be clean")
-    actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    try:
+        actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"checkout HEAD verification failed: {error}") from error
     if actual != expected_head:
         raise RuntimeError(f"checkout HEAD {actual} differs from --expected-head {expected_head}")
     raise RuntimeError(f"{BLOCKED_MARKER}: dependency/source roles/dataset/native composite remain unresolved")
@@ -136,6 +156,14 @@ def self_test(source: Path, input_args: list[str], input_marker: str) -> None:
         except RuntimeError as error:
             if BLOCKED_MARKER not in str(error): raise AssertionError(f"valid approval did not reach blocker: {error}")
         else: raise AssertionError("valid blocked approval passed")
+        (repo / ".gitignore").write_text("ignored-approval.json\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", ".gitignore"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "ignore"], check=True, capture_output=True)
+        ignored = repo / "ignored-approval.json"; ignored.write_bytes(raw)
+        try: require_blocked_gate(head, str(ignored), sha, repo)
+        except RuntimeError as error:
+            if "outside the checkout" not in str(error): raise AssertionError(f"checkout-local approval rejected for wrong reason: {error}")
+        else: raise AssertionError("ignored checkout-local approval accepted")
         try: validate_approval(raw, head, "0" * 64)
         except RuntimeError: pass
         else: raise AssertionError("wrong SHA accepted")
