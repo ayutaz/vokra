@@ -380,6 +380,10 @@ PY
   grep -Fq -- '--features metal' "$0" || die 'Metal feature is not enabled'; grep -Fq -- 'UV_NO_CACHE=1 uv run --no-cache' "$0" || die 'stdlib validation is not no-cache'; grep -Fq 'pre_sync_gates' "$0" || die 'dual approval gates are missing'
   grep -Fq -- '--expected-head' "$0" || die 'exact-head option is missing'; grep -Fq 'require_clean_expected_head' "$0" || die 'exact-head gate is missing'; grep -Fq -- '--offline --locked' "$0" || die 'Cargo must be locked and offline'
   grep -Fq -- '--test-threads=1' "$0" || die 'named Cargo test must be serial'
+  local final_head_line summary_line
+  final_head_line="$(grep -nF 'require_clean_expected_head' "$0" | tail -1 | cut -d: -f1)"
+  summary_line="$(grep -n "format=moss-tts-local-apple-evidence-v1" "$0" | tail -1 | cut -d: -f1)"
+  [[ "$final_head_line" =~ ^[0-9]+$ && "$summary_line" =~ ^[0-9]+$ && "$final_head_line" -lt "$summary_line" ]] || die 'final exact-head check must precede Apple summary emission'
   for status in 'cpu_vs_official=MEASURED_NOT_GATED' 'metal_vs_official=MEASURED_NOT_GATED' 'metal_vs_cpu=MEASURED_NOT_GATED' 'publication=NO_UPLOAD'; do grep -Fq "$status" "$0" || die "Apple summary status is missing: $status"; done
   grep -Fq -- '--transfer-manifest' "$0" || die 'transfer manifest option is missing'; grep -Fq 'verify_transfer_manifest' "$0" || die 'transfer manifest validator is missing'
   grep -Fq -- '--native-cpu-log' "$0" || die 'native CPU evidence option is missing'; grep -Fq "require_one_result \"\$native_cpu_log\" cpu" "$0" || die 'native CPU sentinel validation is missing'
@@ -447,6 +451,7 @@ main() {
     if [[ "$backend" == metal ]]; then env "${common_env[@]}" VOKRA_MOSS_TTS_LOCAL_RUN_METAL=1 CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release --features metal -p vokra-models --lib "$selector" -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/$backend.log"; else env "${common_env[@]}" CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release -p vokra-models --lib "$selector" -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/$backend.log"; fi
     require_one_result "$evidence/$backend.log" "$backend"
   done
+  require_clean_expected_head "$expected_head"
   {
     printf '%s\n' 'format=moss-tts-local-apple-evidence-v1'
     printf '%s\n' "expected_head=$expected_head"
