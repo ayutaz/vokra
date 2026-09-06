@@ -313,6 +313,7 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, evidence_path:
     license_rows = manifest.get("license_rows")
     if not isinstance(license_rows, list) or [row.get("id") for row in license_rows if isinstance(row, dict)] != ["upstream-license-contradiction", "wham-research-restriction", "asteroid-python-closure"] or any(not isinstance(row, dict) or set(row) != LICENSE_KEYS or row.get("status") != "UNRESOLVED" for row in license_rows) or canon(license_rows) != manifest.get("license_rows_sha256"):
         blocked("license review rows are not the exact unresolved contract")
+    require_resolved_license_rows(license_rows)
     if manifest.get("publication") != "NO_UPLOAD":
         blocked("publication must remain NO_UPLOAD")
     approval = manifest.get("approval")
@@ -336,6 +337,17 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, evidence_path:
 def blocked(message: str) -> None:
     print(f"conv-tasnet license gate: BLOCKED: {message}", file=sys.stderr)
     raise SystemExit(2)
+
+
+def require_resolved_license_rows(rows: list[dict[str, Any]]) -> None:
+    """Do not let owner approval override unresolved factual license rows."""
+
+    unresolved = [row.get("id", "<unknown>") for row in rows if row.get("status") != "RESOLVED"]
+    if unresolved:
+        blocked(
+            "BLOCKED_LICENSE/NO_UPLOAD: factual license rows remain unresolved: "
+            + ", ".join(unresolved)
+        )
 
 
 def self_test() -> int:
@@ -380,6 +392,18 @@ def self_test() -> int:
         evidence = root / "valid-approval.json"
         evidence.write_text(json.dumps(valid) + "\n", encoding="utf-8")
         validate_approval_evidence(evidence, approval_record, manifest, "b" * 64, "c" * 64)
+        signed_unresolved_rows = [
+            {"id": "upstream-license-contradiction", "status": "UNRESOLVED"},
+            {"id": "wham-research-restriction", "status": "UNRESOLVED"},
+        ]
+        try:
+            require_resolved_license_rows(signed_unresolved_rows)
+        except SystemExit as error:
+            if error.code != 2:
+                return 1
+        else:
+            print("conv-tasnet gate self-test accepted signed approval over unresolved rows", file=sys.stderr)
+            return 1
         invalid_cases = {
             "missing": root / "missing-approval.json",
             "duplicate": root / "duplicate-approval.json",

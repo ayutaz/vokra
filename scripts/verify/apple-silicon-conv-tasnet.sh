@@ -18,7 +18,8 @@ usage() {
   cat <<'EOF'
 usage: apple-silicon-conv-tasnet.sh --gguf <vast.gguf> --gguf-sha256 <64-hex> \
          --reference-dir <vast-fixtures> --reference-sha256 <64-hex> \
-         --approval-evidence <file> --evidence-dir <absent-dir>
+         --expected-head <40-hex> --approval-evidence <file> --approval-sha256 <64-hex> \
+         --evidence-dir <absent-dir>
        apple-silicon-conv-tasnet.sh --self-test
 
 Runs the existing CPU official bounds and explicit Metal execution against
@@ -171,9 +172,9 @@ require_test_evidence() {
 
 self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token temporary log_file
-  for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'xcrun -f metal' \
+  for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'xcrun -f metal' '--expected-head' '--approval-sha256' 'BLOCKED_LICENSE/NO_UPLOAD' \
     'MEASURED_NOT_GATED' '2026-08-24' 'parity_conv_tasnet_real.rs' \
-    'cargo test --locked -p vokra-models --features metal' \
+    'cargo test --locked --offline -p vokra-models --features metal' \
     'CONV_TASNET_METAL_CPU' 'verdict=MEASURED_NOT_GATED' \
     'cpu_official_gate=PASS_WITH_EXISTING_MEASURED_BOUNDS' \
     'metal_status=MEASURED_NOT_GATED' 'git status --porcelain'; do
@@ -197,6 +198,11 @@ self_test() {
   if "$path" --unknown-flag >/dev/null 2>&1; then
     log 'self-test FAIL: unknown argument accepted'
     fail=1
+  fi
+  if "$path" --expected-head bad >/dev/null 2>&1 || \
+    "$path" --expected-head "$(printf '0%.0s' {1..40})" --expected-head "$(printf '1%.0s' {1..40})" >/dev/null 2>&1 || \
+    "$path" --approval-sha256 bad >/dev/null 2>&1; then
+    log 'self-test FAIL: malformed or duplicate head/approval SHA accepted'; fail=1
   fi
   if "$path" --gguf a --gguf b >/dev/null 2>&1; then
     log 'self-test FAIL: duplicate GGUF option accepted'
@@ -284,10 +290,12 @@ gguf=''
 gguf_sha256=''
 reference_dir=''
 reference_sha256=''
+expected_head=''
 approval_evidence=''
+approval_sha256=''
 evidence_dir=''
 self=0
-seen_gguf=0; seen_gguf_sha=0; seen_reference=0; seen_reference_sha=0; seen_approval=0; seen_evidence=0
+seen_gguf=0; seen_gguf_sha=0; seen_reference=0; seen_reference_sha=0; seen_head=0; seen_approval=0; seen_approval_sha=0; seen_evidence=0
 while (($#)); do
   case "$1" in
     --self-test) (( self == 0 )) || die 'duplicate --self-test'; self=1; shift ;;
@@ -295,24 +303,31 @@ while (($#)); do
     --gguf-sha256) (( seen_gguf_sha == 0 )) || die 'duplicate --gguf-sha256'; (( $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die '--gguf-sha256 requires lowercase 64-hex'; seen_gguf_sha=1; gguf_sha256="$2"; shift 2 ;;
     --reference-dir) (( seen_reference == 0 )) || die 'duplicate --reference-dir'; (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || die '--reference-dir requires a nonempty path'; seen_reference=1; reference_dir="$2"; shift 2 ;;
     --reference-sha256) (( seen_reference_sha == 0 )) || die 'duplicate --reference-sha256'; (( $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die '--reference-sha256 requires lowercase 64-hex'; seen_reference_sha=1; reference_sha256="$2"; shift 2 ;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; (( $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; seen_head=1; expected_head="$2"; shift 2 ;;
     --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty path'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
+    --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; (( $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; seen_approval_sha=1; approval_sha256="$2"; shift 2 ;;
     --evidence-dir) (( seen_evidence == 0 )) || die 'duplicate --evidence-dir'; (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || die '--evidence-dir requires a nonempty path'; seen_evidence=1; evidence_dir="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$seen_gguf$seen_gguf_sha$seen_reference$seen_reference_sha$seen_approval$seen_evidence" == 000000 ]] || die '--self-test accepts no other arguments'
+  [[ "$seen_gguf$seen_gguf_sha$seen_reference$seen_reference_sha$seen_head$seen_approval$seen_approval_sha$seen_evidence" == 00000000 ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
 
-[[ "$seen_gguf$seen_gguf_sha$seen_reference$seen_reference_sha$seen_approval$seen_evidence" == 111111 ]] || die '--gguf, hashes, approval, reference, and evidence paths are required'
-UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 "$PREFLIGHT_GATE" \
-  --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
-  --manifest "$PREFLIGHT_MANIFEST" --evidence "$approval_evidence"
+[[ "$seen_gguf$seen_gguf_sha$seen_reference$seen_reference_sha$seen_head$seen_approval$seen_approval_sha$seen_evidence" == 11111111 ]] || die '--gguf, hashes, expected head, approval, and evidence paths are required'
 command -v shasum >/dev/null 2>&1 || die 'shasum is unavailable'
-approval_evidence_sha256="$(sha256_file "$approval_evidence")"
+[[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die 'approval evidence is missing, empty, or symlinked'
+[[ "$(sha256_file "$approval_evidence")" == "$approval_sha256" ]] || die 'approval evidence SHA-256 does not match caller-supplied digest'
+if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 "$PREFLIGHT_GATE" \
+  --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
+  --manifest "$PREFLIGHT_MANIFEST" --evidence "$approval_evidence"; then
+  log 'BLOCKED_LICENSE/NO_UPLOAD: upstream license conflict or owner approval is unresolved'
+  exit 2
+fi
+approval_evidence_sha256="$approval_sha256"
 [[ "${VOKRA_REMOTE_APPLE_SILICON:-0}" == 1 ]] || die 'VOKRA_REMOTE_APPLE_SILICON=1 is absent'
 [[ "$(uname -s)" == Darwin ]] || die 'real Metal verification requires Darwin'
 [[ "$(uname -m)" == arm64 ]] || die 'real Metal verification requires Apple arm64'
@@ -324,6 +339,8 @@ xcrun -f metal >/dev/null 2>&1 || die 'Xcode Metal compiler is unavailable'
 [[ ! -L "$reference_dir" ]] || die 'VAST reference directory is symlinked'
 [[ -f "$PARITY_SOURCE" ]] || die 'Conv-TasNet parity source is missing'
 [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
+actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'cannot read checkout HEAD'
+[[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
 require_absent_directory "$evidence_dir"
 require_disjoint_evidence "$evidence_dir" "$gguf" "$reference_dir" "$approval_evidence"
@@ -344,12 +361,16 @@ require_reference_contract "$reference_dir"
 export VOKRA_CONV_TASNET_GGUF="$gguf"
 export CARGO_BUILD_JOBS=1
 mkdir -p "$evidence_dir"
-cargo test --locked -p vokra-models --features metal --test parity_conv_tasnet_real -- --nocapture \
-  > "$evidence_dir/parity.log" 2>&1
+cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline -p vokra-models --features metal --test parity_conv_tasnet_real -- --nocapture --test-threads=1 \
+      > "$evidence_dir/parity.log" 2>&1
 require_test_evidence "$evidence_dir/parity.log"
 [[ "$(sha256_file "$approval_evidence")" == "$approval_evidence_sha256" ]] || die 'approval evidence changed during validation'
+actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'cannot reread checkout HEAD before summary'
+[[ "$actual_head" == "$expected_head" ]] || die 'checkout HEAD changed before summary publication'
+[[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty before summary publication'
 {
-  echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  echo "git_commit=$actual_head"
+  echo "expected_head=$expected_head"
   echo "approval_evidence_sha256=$approval_evidence_sha256"
   echo "gguf_sha256=$(sha256_file "$gguf")"
   echo 'runtime_status=MEASURED_NOT_GATED'

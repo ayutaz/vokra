@@ -24,7 +24,8 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF'
-usage: run-conv-tasnet-validation.sh --checkpoint-sha256 <64-hex> --approval-evidence <file> [--work-dir <absent-dir>]
+usage: run-conv-tasnet-validation.sh --checkpoint-sha256 <64-hex> --expected-head <40-hex> \
+       --approval-evidence <file> --approval-sha256 <64-hex> [--work-dir <absent-dir>]
        run-conv-tasnet-validation.sh --self-test
 
 VAST/Linux-only validation of the pinned Asteroid Conv-TasNet checkpoint.
@@ -44,13 +45,13 @@ self_test() {
   for token in \
     'VOKRA_PUBLISH_ON_VAST=1' 'Linux' 'x86_64' 'MIN_VAST_MEM_KIB' '/proc/meminfo' \
     'df -Pk' 'CARGO_BUILD_JOBS=1' 'cargo fmt --all -- --check' \
-    'cargo metadata --no-deps --format-version 1' 'hf_hub_download' \
+    'cargo metadata --locked --offline --no-deps --format-version 1' 'hf_hub_download' \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$CHECKPOINT_FILE" \
     'conv_tasnet_prepare_checkpoint.py' 'weights_only=True' \
     'conv_tasnet_dump_reference.py' 'weights_only=False' \
     'fixture hash' 'CompliancePolicy' 'with_research_license(true)' \
     'MEASURED_NOT_GATED' 'NO_UPLOAD' 'git status --porcelain' \
-    'conv_tasnet_dump_reference.py --self-test' 'license_gate.py' '--approval-evidence' 'UV_NO_CACHE=1' \
+    'conv_tasnet_dump_reference.py --self-test' 'license_gate.py' '--approval-evidence' '--approval-sha256' '--expected-head' 'BLOCKED_LICENSE/NO_UPLOAD' 'UV_NO_CACHE=1' \
     'VOKRA_REMOTE_APPLE_SILICON=1'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
@@ -75,6 +76,12 @@ self_test() {
   fi
   if "$path" --checkpoint-sha256 "$CHECKPOINT_SHA256" >/dev/null 2>&1; then
     log 'self-test FAIL: missing approval option accepted'
+    fail=1
+  fi
+  if "$path" --checkpoint-sha256 "$CHECKPOINT_SHA256" --expected-head bad >/dev/null 2>&1 || \
+    "$path" --checkpoint-sha256 "$CHECKPOINT_SHA256" --expected-head "$(printf '0%.0s' {1..40})" --expected-head "$(printf '1%.0s' {1..40})" >/dev/null 2>&1 || \
+    "$path" --checkpoint-sha256 "$CHECKPOINT_SHA256" --approval-sha256 bad >/dev/null 2>&1; then
+    log 'self-test FAIL: malformed or duplicate head/approval SHA accepted'
     fail=1
   fi
   temporary="$(cd -P "$(mktemp -d)" && pwd)"
@@ -263,36 +270,53 @@ require_validation_paths() {
 
 work_dir="/workspace/vokra-conv-tasnet-validation"
 checkpoint_sha256=""
+expected_head=""
 approval_evidence=""
+approval_sha256=""
 self=0
 seen_checkpoint=0
+seen_head=0
 seen_approval=0
+seen_approval_sha=0
 seen_work=0
 while (($#)); do
   case "$1" in
     --self-test) (( self == 0 )) || die 'duplicate --self-test'; self=1; shift ;;
     --checkpoint-sha256) (( seen_checkpoint == 0 )) || die 'duplicate --checkpoint-sha256'; (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || die '--checkpoint-sha256 requires a nonempty value'; seen_checkpoint=1; checkpoint_sha256="$2"; shift 2 ;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; (( $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; seen_head=1; expected_head="$2"; shift 2 ;;
     --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty value'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
+    --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; (( $# >= 2 )) && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; seen_approval_sha=1; approval_sha256="$2"; shift 2 ;;
     --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || die '--work-dir requires a nonempty path'; seen_work=1; work_dir="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$seen_checkpoint" == 0 && "$seen_approval" == 0 && "$seen_work" == 0 ]] || die '--self-test accepts no other arguments'
+  [[ "$seen_checkpoint" == 0 && "$seen_head" == 0 && "$seen_approval" == 0 && "$seen_approval_sha" == 0 && "$seen_work" == 0 ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
 
 [[ "$seen_approval" == 1 ]] || die '--approval-evidence is required'
+[[ "$seen_approval_sha" == 1 ]] || die '--approval-sha256 is required'
+[[ "$seen_head" == 1 ]] || die '--expected-head is required'
 [[ "$seen_checkpoint" == 1 && "$checkpoint_sha256" =~ ^[0-9a-f]{64}$ ]] || die '--checkpoint-sha256 must be exactly 64 lowercase hexadecimal characters'
 [[ "$checkpoint_sha256" == "$CHECKPOINT_SHA256" ]] || die 'checkpoint digest is not the fixed authenticated identity'
-UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 "$PREFLIGHT_GATE" \
-  --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
-  --manifest "$PREFLIGHT_MANIFEST" --evidence "$approval_evidence"
-require_validation_paths "$work_dir" "$approval_evidence"
 command -v sha256sum >/dev/null 2>&1 || die 'missing tool: sha256sum'
-approval_evidence_sha256="$(sha256_file "$approval_evidence")"
+[[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die 'approval evidence is missing, empty, or symlinked'
+[[ "$(sha256_file "$approval_evidence")" == "$approval_sha256" ]] || die 'approval evidence SHA-256 does not match caller-supplied digest'
+if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 "$PREFLIGHT_GATE" \
+  --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
+  --manifest "$PREFLIGHT_MANIFEST" --evidence "$approval_evidence"; then
+  log 'BLOCKED_LICENSE/NO_UPLOAD: upstream license conflict or owner approval is unresolved'
+  exit 2
+fi
+[[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
+actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'cannot read checkout HEAD'
+[[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
+[[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
+require_validation_paths "$work_dir" "$approval_evidence"
+approval_evidence_sha256="$approval_sha256"
 [[ "$(uname -s)" == Linux ]] || die 'Conv-TasNet checkpoint work is VAST/Linux-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
@@ -318,14 +342,14 @@ export UV_CACHE_DIR="$CONVTASNET_UV_CACHE_DIR"
 {
   printf 'upstream_repo=%s\nupstream_revision=%s\ncheckpoint=%s\ncheckpoint_sha256=%s\n' \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$CHECKPOINT_FILE" "${checkpoint_sha256,,}"
-  printf 'approval_evidence_sha256=%s\n' "$approval_evidence_sha256"
+  printf 'approval_evidence_sha256=%s\nexpected_head=%s\ngit_commit=%s\n' "$approval_evidence_sha256" "$expected_head" "$actual_head"
   echo 'runtime_status=MEASURED_NOT_GATED'
   echo 'parity_status=MEASURED_NOT_GATED'
   echo 'publication=NO_UPLOAD'
 } > "$work_dir/evidence/validation.log"
 
 cargo fmt --all -- --check >> "$work_dir/evidence/validation.log" 2>&1
-cargo metadata --no-deps --format-version 1 >> "$work_dir/evidence/validation.log" 2>&1
+cargo metadata --locked --offline --no-deps --format-version 1 >> "$work_dir/evidence/validation.log" 2>&1
 
 checkpoint="$work_dir/input/$CHECKPOINT_FILE"
 uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python - \
@@ -365,7 +389,7 @@ for name in "${!expected_hashes[@]}"; do
 done
 echo 'fixture hash: all committed Conv-TasNet fixtures match' | tee -a "$work_dir/evidence/validation.log"
 
-cargo build --locked --release -p vokra-cli >> "$work_dir/evidence/validation.log" 2>&1
+cargo build --locked --offline --release -p vokra-cli >> "$work_dir/evidence/validation.log" 2>&1
 target/release/vokra-cli convert --model conv-tasnet-libri1mix \
   --input "$work_dir/conv-tasnet.safetensors" --output "$work_dir/conv-tasnet.gguf" \
   --license unknown >> "$work_dir/evidence/validation.log" 2>&1
@@ -380,17 +404,22 @@ exec scripts/verify/apple-silicon-conv-tasnet.sh \\
   --gguf-sha256 '$gguf_sha256' \\
   --reference-dir '<APPLE_CONV_TASNET_REFERENCE_DIR>' \\
   --reference-sha256 '$reference_sha256' \\
+  --expected-head '$expected_head' \\
   --approval-evidence '<APPLE_APPROVAL_EVIDENCE>' \\
+  --approval-sha256 '$approval_sha256' \\
   --evidence-dir '<APPLE_CONV_TASNET_EVIDENCE_DIR>'
 EOF
 chmod +x "$work_dir/evidence/apple-verifier-command.sh"
 export VOKRA_CONV_TASNET_GGUF="$work_dir/conv-tasnet.gguf"
-cargo test --locked -p vokra-models --test parity_conv_tasnet_real -- --nocapture \
+cargo test --locked --offline -p vokra-models --test parity_conv_tasnet_real -- --nocapture --test-threads=1 \
   >> "$work_dir/evidence/validation.log" 2>&1
 require_test_evidence "$work_dir/evidence/validation.log"
-[[ "$(sha256_file "$approval_evidence")" == "$approval_evidence_sha256" ]] || die 'approval evidence changed during validation'
-{
-  printf 'approval_evidence_sha256=%s\n' "$approval_evidence_sha256"
+  [[ "$(sha256_file "$approval_evidence")" == "$approval_evidence_sha256" ]] || die 'approval evidence changed during validation'
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)" || die 'cannot reread checkout HEAD before summary'
+  [[ "$actual_head" == "$expected_head" ]] || die 'checkout HEAD changed before summary publication'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout became dirty before summary publication'
+  {
+  printf 'approval_evidence_sha256=%s\nexpected_head=%s\ngit_commit=%s\n' "$approval_evidence_sha256" "$expected_head" "$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
   echo 'runtime_status=MEASURED_NOT_GATED'
   echo 'parity_status=MEASURED_NOT_GATED'
   echo 'cpu_official_gate=PASS_WITH_EXISTING_MEASURED_BOUNDS'
