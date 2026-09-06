@@ -143,6 +143,7 @@
 //! converter surface is byte-exact provenance + tensor-name
 //! preservation only.
 
+use std::io::Write;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -457,8 +458,8 @@ pub fn convert_moss_audio_tokenizer_variant_file(
     // Full's merged safetensors is ~6.6 GB (F32), so repository policy
     // requires this converter to run on vast.ai (all model artifacts >=2 GB
     // are remote work). This non-streaming reader remains valid there. Nano
-    // is ~88 MB and is safe for a focused local conversion, although parity
-    // generation still follows the model-family verification runbook.
+    // is also processed only in the approved remote validation workflow;
+    // local model conversion is intentionally out of scope for this campaign.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -547,7 +548,15 @@ pub fn convert_moss_audio_tokenizer_variant_file(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    if variant == MossAudioTokenizerVariant::Nano {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)?
+            .write_all(&out_bytes)?;
+    } else {
+        std::fs::write(output, out_bytes)?;
+    }
     Ok(report)
 }
 
@@ -577,11 +586,7 @@ fn validate_nano_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
         ));
     }
     for tensor in st.tensors() {
-        if st
-            .tensor_bytes(tensor)
-            .chunks_exact(4)
-            .any(|chunk| !f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]).is_finite())
-        {
+        if !nano_f32_payload_is_finite(&tensor.name, st.tensor_bytes(tensor))? {
             return Err(ConvertError::Parse(format!(
                 "MOSS Audio Tokenizer Nano tensor `{}` contains a non-finite value",
                 tensor.name
@@ -611,9 +616,21 @@ fn validate_nano_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
     Ok(())
 }
 
+fn nano_f32_payload_is_finite(name: &str, bytes: &[u8]) -> Result<bool, ConvertError> {
+    if !bytes.len().is_multiple_of(4) {
+        return Err(ConvertError::Parse(format!(
+            "MOSS Audio Tokenizer Nano tensor `{name}` has a truncated F32 payload"
+        )));
+    }
+    Ok(!bytes
+        .chunks_exact(4)
+        .any(|chunk| !f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]).is_finite()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
     use vokra_core::gguf::{GgmlType, GgufFile};
 
     /// Builds a single-BF16-tensor safetensors buffer with a
@@ -907,6 +924,27 @@ mod tests {
 
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn nano_payload_and_paths_fail_closed_without_model_fixture() {
+        assert!(nano_f32_payload_is_finite("finite", &1.0f32.to_le_bytes()).unwrap());
+        assert!(!nano_f32_payload_is_finite("nan", &f32::NAN.to_le_bytes()).unwrap());
+        assert!(nano_f32_payload_is_finite("truncated", &[0; 3]).is_err());
+
+        let input = write_temp("nano-path-input", b"fixture");
+        let output = write_temp("nano-path-output", b"existing");
+        assert!(require_nano_paths(&input, &output).is_err());
+        std::fs::remove_file(&output).expect("remove output fixture");
+        symlink(&input, &output).expect("create output symlink fixture");
+        assert!(require_nano_paths(&input, &output).is_err());
+        std::fs::remove_file(&output).expect("remove output symlink fixture");
+        let link = write_temp("nano-path-link", b"fixture");
+        std::fs::remove_file(&link).expect("remove link fixture");
+        symlink(&input, &link).expect("create input symlink fixture");
+        assert!(require_nano_paths(&link, &output).is_err());
+        std::fs::remove_file(&link).ok();
+        std::fs::remove_file(&input).ok();
     }
 
     #[test]

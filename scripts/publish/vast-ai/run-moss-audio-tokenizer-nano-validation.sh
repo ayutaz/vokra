@@ -189,7 +189,7 @@ require_expected_head() {
 
 require_cpu_test_evidence() {
   local path="$1" named result result_lines test_lines cpu cpu_lines
-  named="$(grep -Ec '^test parity_moss_audio_tokenizer_nano_real::official_nano_decode_measurement \.\.\. ok$' "$path" || true)"
+  named="$(grep -Ec '^test official_nano_decode_measurement \.\.\. ok$' "$path" || true)"
   result="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$path" || true)"
   result_lines="$(grep -Ec '^test result:' "$path" || true)"
   test_lines="$(awk '/^test / && $0 !~ /^test result:/ {count++} END {print count + 0}' "$path")"
@@ -364,6 +364,8 @@ run_self_test() {
       return 1
     fi
   }
+  # These are literal source-contract probes, not shell expansions.
+  # shellcheck disable=SC2016
   for required in \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$CORRECTED_MODEL_NAME" \
     "$CORRECTED_VARIANT" "$LEGACY_PUBLIC_REPO" \
@@ -377,6 +379,31 @@ run_self_test() {
     cases=$((cases + 1))
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
+      fail=1
+    fi
+  done
+  local build_line parity_line gates_line packet_line
+  build_line="$(grep -n '^  cargo build --manifest-path' "$script_path" | tail -n 1 | cut -d: -f1)"
+  parity_line="$(grep -n '^    official_nano_decode_measurement' "$script_path" | tail -n 1 | cut -d: -f1)"
+  gates_line="$(grep -n '^  cargo test --manifest-path.*--workspace' "$script_path" | tail -n 1 | cut -d: -f1)"
+  packet_line="$(grep -n '^  transfer=' "$script_path" | tail -n 1 | cut -d: -f1)"
+  if [[ -z "$build_line$parity_line$gates_line$packet_line" ]] || (( build_line >= parity_line || parity_line >= gates_line || gates_line >= packet_line )); then
+    log 'self-test FAIL: VAST build/parity/offline-gates/transfer order is not fail-closed'
+    fail=1
+  fi
+  # These are literal source-contract probes, not shell expansions.
+  # shellcheck disable=SC2016
+  for required in \
+    'cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline' \
+    'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release' \
+    'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace' \
+    'cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace --all-targets' \
+    'cargo deny --locked --offline check' 'cargo audit --no-fetch' \
+    'check-zero-deps.sh' 'check-forbidden-symbols.sh' \
+    'transfer="$work_dir/apple-transfer"' 'GGUF, reference, args, and summary'; do
+    cases=$((cases + 1))
+    if ! grep -Fq -- "$required" "$script_path"; then
+      log "self-test FAIL: required offline gate/transfer token is missing: $required"
       fail=1
     fi
   done
@@ -515,7 +542,7 @@ run_self_test() {
   expect_exit_2_no_path 'approval-overlapping work path' "$tmp/approval.json/child" \
     validate_work_dir "$tmp/approval.json/child" "$tmp/approval.json" || fail=1
   cases=$((cases + 1))
-  printf 'test parity_moss_audio_tokenizer_nano_real::official_nano_decode_measurement ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/cpu.log"
+  printf 'test official_nano_decode_measurement ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/cpu.log"
   require_cpu_test_evidence "$tmp/cpu.log" || { log 'self-test FAIL: valid CPU evidence rejected'; fail=1; }
   cases=$((cases + 1))
   cp "$tmp/cpu.log" "$tmp/duplicate-result.log"
@@ -525,7 +552,7 @@ run_self_test() {
   awk 'NR == 2 { print "test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out"; next } { print }' "$tmp/cpu.log" > "$tmp/malformed-result.log"
   if require_cpu_test_evidence "$tmp/malformed-result.log"; then log 'self-test FAIL: malformed result accepted'; fail=1; fi
   cases=$((cases + 1))
-  printf 'test parity_moss_audio_tokenizer_nano_real::official_nano_decode_measurement ... ok\ntest extra_case ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/extra-test.log"
+  printf 'test official_nano_decode_measurement ... ok\ntest extra_case ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/extra-test.log"
   if require_cpu_test_evidence "$tmp/extra-test.log"; then log 'self-test FAIL: extra test accepted'; fail=1; fi
   cases=$((cases + 1))
   sed 's/\.\.\. ok$/.\.\.\. FAILED/' "$tmp/cpu.log" > "$tmp/failed-test.log"
@@ -585,7 +612,7 @@ on_exit() {
 main() {
   local self_test=0 requested_work_dir="" approval_evidence="" expected_head="" run_stamp work_dir snapshot stage logs reference
   local seen_work_dir=0 seen_self_test=0 seen_approval=0 seen_head=0
-  local merged gguf reference_csv reference_sha256 gguf_sha256 run_log env_log summary_file prep_manifest cpu_log
+  local merged gguf reference_csv reference_sha256 gguf_sha256 run_log env_log summary_file prep_manifest cpu_log transfer
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --approval-evidence)
@@ -679,7 +706,7 @@ print(f"prepared Nano tensors={data[\"kept_count\"]} sha256={data[\"sha256\"]}")
     || { die 'Nano preparation manifest JSON validation failed'; return 2; }
 
   step "Build vokra-cli on VAST"
-  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli
+  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-cli
 
   step "Convert only the corrected Nano replacement"
   "$VOKRA_ROOT/target/release/vokra-cli" convert \
@@ -696,11 +723,21 @@ print(f"prepared Nano tensors={data[\"kept_count\"]} sha256={data[\"sha256\"]}")
   require_reference "$reference_csv"
 
   step "Run named nonzero native CPU validation"
-  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release \
     -p vokra-models --test parity_moss_audio_tokenizer_nano_real \
     official_nano_decode_measurement \
     -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$cpu_log"
   require_cpu_test_evidence "$cpu_log"
+
+  step "Run authenticated offline workspace gates"
+  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace \
+    2>&1 | tee "$logs/workspace-test.log"
+  cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace --all-targets -- \
+    -D warnings 2>&1 | tee "$logs/workspace-clippy.log"
+  cargo deny --locked --offline check 2>&1 | tee "$logs/cargo-deny.log"
+  cargo audit --no-fetch 2>&1 | tee "$logs/cargo-audit.log"
+  "$VOKRA_ROOT/scripts/check-zero-deps.sh" 2>&1 | tee "$logs/check-zero-deps.log"
+  "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh" 2>&1 | tee "$logs/check-forbidden-symbols.log"
 
   step "Write evidence summary and checksums"
   reference_sha256="$(sha256_file "$reference_csv")"
@@ -728,13 +765,33 @@ print(f"prepared Nano tensors={data[\"kept_count\"]} sha256={data[\"sha256\"]}")
     echo 'metal_vs_upstream=NOT_RUN'
     echo 'metal_vs_cpu=NOT_RUN'
   } | tee "$summary_file"
+  transfer="$work_dir/apple-transfer"
+  mkdir "$transfer"
+  cp "$gguf" "$transfer/moss-audio-tokenizer-nano.gguf"
+  cp "$reference_csv" "$transfer/moss-audio-tokenizer-nano-reference.csv"
+  cp "$logs/apple-transfer-args.sh" "$transfer/apple-transfer-args.sh"
+  cp "$summary_file" "$transfer/measurement-summary.txt"
+  {
+    echo "git_commit=$expected_head"
+    echo "gguf=moss-audio-tokenizer-nano.gguf"
+    echo "gguf_sha256=$gguf_sha256"
+    echo "reference=moss-audio-tokenizer-nano-reference.csv"
+    echo "reference_sha256=$reference_sha256"
+    echo "args=apple-transfer-args.sh"
+    echo "evidence=measurement-summary.txt"
+  } > "$transfer/packet-manifest.txt"
+  (
+    cd "$transfer"
+    sha256sum moss-audio-tokenizer-nano.gguf moss-audio-tokenizer-nano-reference.csv \
+      apple-transfer-args.sh measurement-summary.txt packet-manifest.txt > SHA256SUMS
+  )
   (
     cd "$work_dir"
-    find upstream stage logs reference -type f ! -name SHA256SUMS -print0 \
+    find upstream stage logs reference apple-transfer -type f ! -name SHA256SUMS -print0 \
       | sort -z | xargs -0 sha256sum > logs/SHA256SUMS
   )
   trap - EXIT
-  log "MEASURED_NOT_GATED: pull $logs and $reference, then destroy the VAST instance"
+  log "MEASURED_NOT_GATED: pull $transfer (GGUF, reference, args, and summary), then destroy the VAST instance"
 }
 
 main "$@"

@@ -147,7 +147,7 @@ license_preflight() {
 
 require_test_evidence() {
   local path="$1" named result result_lines test_lines cpu cpu_lines metal_reference metal_reference_lines metal_cpu metal_cpu_lines
-  named="$(grep -Ec '^test parity_moss_audio_tokenizer_nano_real::official_nano_decode_measurement \.\.\. ok$' "$path" || true)"
+  named="$(grep -Ec '^test official_nano_decode_measurement \.\.\. ok$' "$path" || true)"
   result="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$path" || true)"
   result_lines="$(grep -Ec '^test result:' "$path" || true)"
   test_lines="$(awk '/^test / && $0 !~ /^test result:/ {count++} END {print count + 0}' "$path")"
@@ -420,7 +420,7 @@ run_self_test() (
       die "negative --$option value was accepted"
     fi
   done
-  printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_reference numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 metal=1.0e-9 cpu=1.0e-9\n' "$TEST_SELECTOR" > "$temporary/test.log"
+  printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_reference numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=metal_cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 metal=1.0e-9 cpu=1.0e-9\n' official_nano_decode_measurement > "$temporary/test.log"
   require_test_evidence "$temporary/test.log"
   cp "$temporary/test.log" "$temporary/duplicate-result.log"
   printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n' >> "$temporary/duplicate-result.log"
