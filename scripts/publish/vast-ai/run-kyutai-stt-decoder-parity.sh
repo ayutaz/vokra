@@ -17,6 +17,15 @@ log() { printf '[kyutai-stt-decoder-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
 usage() { printf '%s\n' "usage: run-kyutai-stt-decoder-parity.sh --expected-head HEX40 [--work-dir DIR] | --self-test"; }
 
+validate_measurement_log() {
+  local path="$1"
+  [[ "$(grep -Ec '^test parity_kyutai_stt_decoder_real_cpu \.\.\. ok$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed;' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu .* verdict=MEASUREMENT_ONLY$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec 'verdict=MEASUREMENT_ONLY' "$path")" == 1 ]] || return 1
+  ! grep -Fq 'verdict=PASS' "$path"
+}
+
 self_test() {
   local self="${BASH_SOURCE[0]}" token fail=0
   for token in "$MODEL_REPO" "$MODEL_REVISION" "$MODEL_SHA256" "$DSM_REVISION" "$MOSHI_REVISION" \
@@ -25,6 +34,12 @@ self_test() {
     grep -Fq -- "$token" "$self" || { log "self-test missing contract token: $token"; fail=1; }
   done
   grep -Eq '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[[:space:]]' "$self" && fail=1 || true
+  synthetic="$(mktemp)"
+  printf '%s\n' 'test parity_kyutai_stt_decoder_real_cpu ... ok' 'test result: ok. 1 passed; 0 failed;' 'KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu max_abs=0 verdict=MEASUREMENT_ONLY' > "$synthetic"
+  validate_measurement_log "$synthetic" || fail=1
+  printf '%s\n' 'KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu max_abs=0 verdict=MEASUREMENT_ONLY' >> "$synthetic"
+  validate_measurement_log "$synthetic" && fail=1 || true
+  rm -f "$synthetic"
   UV_NO_CACHE=1 uv run --no-project --offline --python 3.12 python "$DUMPER" self-test || fail=1
   (( fail == 0 )) || return 1
   log 'self-test PASS'
@@ -39,7 +54,7 @@ if [[ "${1:-}" == --self-test ]]; then
 fi
 while (($#)); do
   case "$1" in
-    --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; expected_head="$2"; shift 2;;
+    --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; [[ -z "$expected_head" ]] || die 'duplicate --expected-head'; expected_head="$2"; shift 2;;
     --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2;;
     -h|--help) usage; exit 0;;
     *) usage; die "unknown argument: $1";;
@@ -141,16 +156,10 @@ PY
   VOKRA_KYUTAI_STT_DECODER_REFERENCE_MANIFEST_SHA256="$reference_sha" \
   VOKRA_KYUTAI_STT_DECODER_MEASUREMENT_ONLY=1 \
     cargo test --test parity_kyutai_stt_decoder_real -p vokra-models --offline -- \
-      --ignored parity_kyutai_stt_decoder_real_cpu --nocapture
-  echo 'measurement_sentinel=KYUTAI_STT_DECODER_MEASUREMENT'
-  echo 'verdict=MEASUREMENT_ONLY'
+      --ignored --exact parity_kyutai_stt_decoder_real_cpu --nocapture
 } > "$validation_log" 2>&1 || die 'VAST decoder measurement failed; evidence log preserved'
 set +o noclobber
-[[ "$(grep -Ec '^test parity_kyutai_stt_decoder_real_cpu \.\.\. ok$' "$validation_log")" == 1 ]] || die 'CPU measurement test singleton missing'
-[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed;' "$validation_log")" == 1 ]] || die 'Cargo result is not exactly 1 passed / 0 failed'
-[[ "$(grep -Ec '^KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu .* verdict=MEASUREMENT_ONLY$' "$validation_log")" == 1 ]] || die 'measurement sentinel missing or duplicated'
-[[ "$(grep -Ec 'verdict=MEASUREMENT_ONLY' "$validation_log")" == 1 ]] || die 'measurement verdict is not an exact singleton'
-! grep -Fq 'verdict=PASS' "$validation_log" || die 'measurement unexpectedly claimed PASS'
+validate_measurement_log "$validation_log" || die 'measurement log singleton/result validation failed'
 log_sha="$(sha256sum "$validation_log" | awk '{print $1}')"
 log "MEASUREMENT_ONLY complete; log_sha256=$log_sha; review a fixed bound before enabling parity"
 exit 0
