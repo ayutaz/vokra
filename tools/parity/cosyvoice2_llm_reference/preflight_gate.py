@@ -195,6 +195,8 @@ def validate_license_manifest(path: Path) -> dict[str, Any]:
         fail("license approval state is unknown")
     if not isinstance(data.get("blockers"), list):
         fail("license blockers must be an explicit list")
+    if any(not isinstance(blocker, str) or not blocker.strip() for blocker in data["blockers"]):
+        fail("license blockers must be non-empty strings")
     if data["status"] == "PENDING_REVIEW" and not data["blockers"]:
         fail("pending license gate must retain explicit blockers")
     if data["status"] == "APPROVED" and data["blockers"]:
@@ -214,8 +216,8 @@ def validate_license_manifest(path: Path) -> dict[str, Any]:
     if data["status"] == "APPROVED":
         if not isinstance(approval["signer"], str) or not approval["signer"].strip() or not re.fullmatch(r"[0-9a-f]{64}", str(approval["scope_sha256"])):
             fail("approved license gate lacks complete signoff")
-    elif approval["signer"] is not None:
-        fail("pending license gate signer must be null")
+    elif approval["signer"] is not None or approval["scope_sha256"] is not None:
+        fail("pending license gate signer and scope digest must be null")
     return data
 
 
@@ -305,6 +307,8 @@ def self_test() -> None:
             validate_license_manifest(mixed_path)
         except GateError:
             pass
+        else:
+            raise AssertionError("mixed approval state was accepted")
         finally:
             mixed_path.unlink(missing_ok=True)
         if mixed_path.exists():
@@ -319,6 +323,8 @@ def self_test() -> None:
         validate_license_manifest(approved_with_blockers_path)
     except GateError:
         pass
+    else:
+        raise AssertionError("approved blocker state was accepted")
     finally:
         approved_with_blockers_path.unlink(missing_ok=True)
     pending_without_blockers = copy.deepcopy(manifest)
@@ -329,8 +335,35 @@ def self_test() -> None:
         validate_license_manifest(pending_without_blockers_path)
     except GateError:
         pass
+    else:
+        raise AssertionError("pending empty-blocker state was accepted")
     finally:
         pending_without_blockers_path.unlink(missing_ok=True)
+    for blockers in ([None], [{}], [""]):
+        malformed_blockers = copy.deepcopy(manifest)
+        malformed_blockers["blockers"] = blockers
+        malformed_path = here / ".cosyvoice2-llm-preflight-malformed-blocker-self-test.json"
+        try:
+            malformed_path.write_text(json.dumps(malformed_blockers), encoding="utf-8")
+            validate_license_manifest(malformed_path)
+        except GateError:
+            pass
+        else:
+            raise AssertionError("malformed blocker entry was accepted")
+        finally:
+            malformed_path.unlink(missing_ok=True)
+    pending_scope = copy.deepcopy(manifest)
+    pending_scope["approval"]["scope_sha256"] = "0" * 64
+    pending_scope_path = here / ".cosyvoice2-llm-preflight-pending-scope-self-test.json"
+    try:
+        pending_scope_path.write_text(json.dumps(pending_scope), encoding="utf-8")
+        validate_license_manifest(pending_scope_path)
+    except GateError:
+        pass
+    else:
+        raise AssertionError("pending scope digest was accepted")
+    finally:
+        pending_scope_path.unlink(missing_ok=True)
     valid_lock = {
         "version": 1,
         "revision": 3,
