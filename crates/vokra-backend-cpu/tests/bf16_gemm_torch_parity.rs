@@ -48,6 +48,51 @@ fn compare_case(case: &Fixture) {
     }
 }
 
+fn compare_neon_bf16_case(case: &Fixture) -> f32 {
+    let mut actual = vec![f32::NAN; case.m * case.n];
+    // This is deliberately the forced-path API.  Do not replace it with
+    // `best_bf16_isa` or the generic dispatch surface: the Apple verifier's
+    // purpose is to prove the BFMMLA implementation itself.
+    kernels::gemm_bf16_on(
+        IsaPath::NeonBf16,
+        case.m,
+        case.n,
+        case.k,
+        &case.a,
+        &case.b,
+        &mut actual,
+    )
+    .unwrap_or_else(|error| panic!("{}: Neon BF16 GEMM failed: {error}", case.name));
+    assert!(
+        actual.iter().all(|value| value.is_finite()),
+        "{}: non-finite output",
+        case.name
+    );
+    assert_eq!(
+        actual.len(),
+        case.output.len(),
+        "{}: output length",
+        case.name
+    );
+    actual
+        .iter()
+        .zip(&case.output)
+        .map(|(&got, &expected)| (got - expected).abs())
+        .enumerate()
+        .map(|(index, error)| {
+            let expected = case.output[index];
+            let tolerance = case.atol + case.rtol * expected.abs();
+            assert!(
+                error <= tolerance,
+                "{}: index {index}: Neon-BF16={:?}, PyTorch={expected:?}, |diff|={error} > tolerance {tolerance}",
+                case.name,
+                actual[index]
+            );
+            error
+        })
+        .fold(0.0f32, f32::max)
+}
+
 #[test]
 fn raw_bf16_bits_gemm_matches_existing_pytorch_fixture() {
     // The committed fixture contract stores the pre-rounding f32 inputs, not
@@ -93,4 +138,35 @@ fn avx512_bf16_gemm_matches_pytorch_reference() {
     for case in fixture::load_all() {
         compare_case(&case);
     }
+}
+
+#[test]
+#[ignore = "run on Darwin arm64 with hardware BF16 support; no local model/Torch execution"]
+fn apple_silicon_neon_bf16_gemm_matches_pytorch_reference() {
+    assert!(
+        cfg!(target_os = "macos"),
+        "Apple BF16 parity requires macOS; this explicit test must not skip"
+    );
+    assert!(
+        cfg!(target_arch = "aarch64"),
+        "Apple BF16 parity requires arm64; this explicit test must not skip"
+    );
+
+    let features = CpuFeatures::detect();
+    assert!(
+        features.supports(IsaPath::NeonBf16),
+        "Apple BF16 parity requires detected NeonBf16/BFMMLA support; refusing scalar or NEON fallback"
+    );
+
+    let cases = fixture::load_all();
+    assert_eq!(cases.len(), 3, "BF16 fixture case count must remain exact");
+    let max_abs_error = cases
+        .iter()
+        .map(compare_neon_bf16_case)
+        .fold(0.0f32, f32::max);
+    println!(
+        "APPLE_BF16_GEMM backend=neon-bf16 cases={} max_abs_error={max_abs_error:.9e} atol=1.000000000e-3 rtol=0.000000000e0",
+        cases.len()
+    );
+    println!("APPLE_BF16_GEMM_PASS");
 }
