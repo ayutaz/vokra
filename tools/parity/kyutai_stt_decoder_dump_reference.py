@@ -182,6 +182,8 @@ def validate_approval(path: Path | str, expected_head: str, expected_sha256: str
     keys = {"schema", "status", "decision", "expected_head", "model_repository", "model_revision", "source_repository", "source_revision", "moshi_repository", "moshi_revision", "no_upload", "scope"}
     if not isinstance(data, dict) or set(data) != keys:
         raise ValueError("approval schema is not exact")
+    if data.get("no_upload") is not True:
+        raise ValueError("approval no_upload must be a JSON boolean true")
     expected = {"schema": APPROVAL_SCHEMA, "status": "APPROVED", "decision": "APPROVED_FOR_NO_UPLOAD_PARITY", "expected_head": expected_head, "model_repository": HF_REPOSITORY, "model_revision": HF_REVISION, "source_repository": DSM_REPOSITORY, "source_revision": DSM_REVISION, "moshi_repository": MOSHI_REPOSITORY, "moshi_revision": MOSHI_REVISION, "no_upload": True, "scope": APPROVAL_SCOPE}
     if data != expected:
         raise ValueError("approval identity/scope mismatch")
@@ -303,6 +305,16 @@ def self_test() -> None:
         approval.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         digest = sha256(approval)
         validate_approval(approval, head, digest)
+        for invalid in (1, 0, "true"):
+            approval.write_text(json.dumps(dict(payload, no_upload=invalid), sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            try: validate_approval(approval, head, sha256(approval))
+            except ValueError: pass
+            else: raise AssertionError("non-boolean no_upload accepted")
+        approval.write_bytes(b"{\xff")
+        try: validate_approval(approval, head, sha256(approval))
+        except (UnicodeDecodeError, ValueError): pass
+        else: raise AssertionError("malformed UTF-8 approval accepted")
+        approval.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         try: validate_approval(approval, head, digest, Path.cwd())
         except ValueError: pass
         else: raise AssertionError("checkout-contained approval accepted")
