@@ -77,10 +77,12 @@
 //!    It retains typed descriptors only; it does not pretend that decoder
 //!    execution or tokenizer rendering is complete.
 //! 3. **No tokenizer blob binding.** The pinned-source
-//!    SentencePiece/TokenDict contract and 7832-entry dictionary are known,
-//!    but the converter stamps no [`KEY_TOKENIZER_MODEL`] blob. This binder
-//!    cannot render decoder ids as Mandarin text until a native mapping is
-//!    added. [`FireredAsrAed::has_tokenizer`] reports blob presence.
+//!    SentencePiece/TokenDict contract and 7832-entry dictionary are known.
+//!    [`FireRedDictionary`] can authenticate the exact external `dict.txt`
+//!    bytes and render content ids, but the converter stamps no
+//!    [`KEY_TOKENIZER_MODEL`] blob. Full model transcription therefore keeps
+//!    this blocker: [`FireredAsrAed::has_tokenizer`] reports blob presence,
+//!    while structural decoder-marker policy remains caller-bound.
 //! 4. **Full transcription graph gap.** [`native`] exposes CPU/Metal-dispatched
 //!    encoder and decoder feature primitives, including incremental greedy
 //!    token generation, and [`FireredAsrAed::transcribe_tokens_with_cmvn`]
@@ -225,9 +227,11 @@ mod native;
 
 pub use native::{
     AUTHENTICATED_CMVN_GIT_BLOB_SHA1, AUTHENTICATED_CMVN_SHA256, AUTHENTICATED_CMVN_TEXT_BYTES,
-    FIRERED_ASR_AED_HOT_OPS, FireRedCmvn, FireRedConformerBlock, FireRedConformerBlockWeights,
-    FireRedConformerConvolution, FireRedConformerEncoder, FireRedConformerFeedForward,
-    FireRedConv2dSubsampling, FireRedRelativeAttention, relative_positional_encoding,
+    AUTHENTICATED_DICT_GIT_BLOB_SHA1, AUTHENTICATED_DICT_ROWS, AUTHENTICATED_DICT_SHA256,
+    AUTHENTICATED_DICT_TEXT_BYTES, FIRERED_ASR_AED_HOT_OPS, FireRedCmvn, FireRedConformerBlock,
+    FireRedConformerBlockWeights, FireRedConformerConvolution, FireRedConformerEncoder,
+    FireRedConformerFeedForward, FireRedConv2dSubsampling, FireRedDictionary,
+    FireRedRelativeAttention, relative_positional_encoding,
 };
 
 // ---------------------------------------------------------------------------

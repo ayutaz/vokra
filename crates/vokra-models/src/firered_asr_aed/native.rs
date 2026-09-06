@@ -7,7 +7,7 @@
 //! backends return an error before execution.
 
 use crate::compute::{Compute, HotOp};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use vokra_core::gguf::{GgmlType, GgufFile};
 use vokra_core::{Result, VokraError};
 
@@ -632,6 +632,178 @@ pub const AUTHENTICATED_CMVN_SHA256: [u8; 32] = [
 /// Git blob SHA-1 recorded for the same inspected sidecar.  This is exposed
 /// for handoff tooling but is not mistaken for a SHA-256 digest.
 pub const AUTHENTICATED_CMVN_GIT_BLOB_SHA1: &str = "f425c7dec4fcb1a62ba57bb7c2de173fb4e47dce";
+
+/// Exact byte length of the inspected FireRed AED `dict.txt` sidecar.
+pub const AUTHENTICATED_DICT_TEXT_BYTES: usize = 71_448;
+/// SHA-256 of the inspected FireRed AED `dict.txt` sidecar bytes.
+pub const AUTHENTICATED_DICT_SHA256: [u8; 32] = [
+    0x69, 0x07, 0x21, 0x5a, 0xeb, 0x03, 0x4f, 0x69, 0x26, 0xb2, 0x6b, 0xf8, 0xab, 0xfd, 0x65, 0x0f,
+    0x75, 0x67, 0x81, 0x62, 0x24, 0x80, 0xa2, 0x34, 0x2e, 0xc1, 0xf2, 0x9b, 0x20, 0x72, 0xca, 0xfe,
+];
+/// Git blob SHA-1 recorded for the inspected dictionary sidecar. This is a
+/// handoff identity only; raw-byte authentication continues to use SHA-256.
+pub const AUTHENTICATED_DICT_GIT_BLOB_SHA1: &str = "afd1d79290c76a05e9eb653d76984434c18bb371";
+/// Number of rows in the inspected FireRed AED dictionary.
+pub const AUTHENTICATED_DICT_ROWS: usize = 7_832;
+
+/// The source-authenticated FireRed AED token dictionary.
+///
+/// `AedTokenizer` joins dictionary pieces in token order, maps the
+/// SentencePiece word-boundary marker `▁` to an ordinary space, and trims the
+/// result. This helper deliberately accepts only content-token ids: the five
+/// structural ids (`<blank>`, `<unk>`, `<pad>`, `<sos>`, and `<eos>`) are
+/// rejected instead of silently assigning a renderer-specific policy to
+/// them. Callers must therefore remove/handle structural decoder markers
+/// according to the authenticated upstream decoding policy before rendering.
+/// This type does not enable beam search or change the `AsrEngine` contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FireRedDictionary {
+    pieces: Vec<String>,
+}
+
+impl FireRedDictionary {
+    /// Authenticates and parses the exact inspected dictionary bytes.
+    pub fn from_authenticated_bytes(raw: &[u8]) -> Result<Self> {
+        if raw.len() != AUTHENTICATED_DICT_TEXT_BYTES {
+            return Err(VokraError::ModelLoad(format!(
+                "FireRed dictionary has {} bytes, expected {}",
+                raw.len(),
+                AUTHENTICATED_DICT_TEXT_BYTES
+            )));
+        }
+        if crate::strict_checkpoint::sha256_bytes(raw) != AUTHENTICATED_DICT_SHA256 {
+            return Err(VokraError::ModelLoad(
+                "FireRed dictionary SHA-256 mismatch".to_owned(),
+            ));
+        }
+        Ok(Self {
+            pieces: parse_authenticated_dictionary(raw)?,
+        })
+    }
+
+    /// Renders source dictionary pieces for content-token ids.
+    ///
+    /// Structural ids and ids outside the authenticated contiguous range are
+    /// errors. In particular, this method does not guess whether an EOS token
+    /// is a terminator or literal output; that policy remains with the
+    /// authenticated decoder caller.
+    pub fn decode_token_ids(&self, ids: &[u32]) -> Result<String> {
+        if ids.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "FireRed dictionary renderer requires at least one content token".to_owned(),
+            ));
+        }
+        let mut joined = String::new();
+        for &id in ids {
+            if id >= AUTHENTICATED_DICT_ROWS as u32 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "FireRed dictionary token id {id} is outside 0..{}",
+                    AUTHENTICATED_DICT_ROWS
+                )));
+            }
+            if id <= 4 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "FireRed dictionary token id {id} is a forbidden structural token"
+                )));
+            }
+            joined.push_str(&self.pieces[id as usize]);
+        }
+        let rendered = joined.replace('▁', " ").trim().to_owned();
+        if rendered.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "FireRed dictionary renderer produced empty text".to_owned(),
+            ));
+        }
+        Ok(rendered)
+    }
+
+    /// Returns the authenticated dictionary row count.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.pieces.len()
+    }
+
+    /// Returns whether the authenticated dictionary contains no rows.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.pieces.is_empty()
+    }
+}
+
+/// Parses dictionary structure after its raw-byte digest has been checked by
+/// [`FireRedDictionary::from_authenticated_bytes`]. Kept separate so the
+/// model-free tests exercise UTF-8, row, id, uniqueness, ordering, and anchor
+/// rejection independently from the digest gate; this helper cannot create an
+/// authenticated dictionary by itself.
+fn parse_authenticated_dictionary(raw: &[u8]) -> Result<Vec<String>> {
+    let text = std::str::from_utf8(raw)
+        .map_err(|_| VokraError::ModelLoad("FireRed dictionary is not valid UTF-8".to_owned()))?;
+    if text.contains('\r') {
+        return Err(VokraError::ModelLoad(
+            "FireRed dictionary must use LF rows without carriage returns".to_owned(),
+        ));
+    }
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    if lines.last() == Some(&"") {
+        lines.pop();
+    }
+    if lines.len() != AUTHENTICATED_DICT_ROWS {
+        return Err(VokraError::ModelLoad(format!(
+            "FireRed dictionary has {} rows, expected {}",
+            lines.len(),
+            AUTHENTICATED_DICT_ROWS
+        )));
+    }
+    let mut pieces = Vec::with_capacity(AUTHENTICATED_DICT_ROWS);
+    let mut unique = BTreeSet::new();
+    for (expected_id, line) in lines.iter().enumerate() {
+        let mut fields = line.split_whitespace();
+        let token = fields.next().ok_or_else(|| {
+            VokraError::ModelLoad("FireRed dictionary contains an empty row".to_owned())
+        })?;
+        let id = fields.next().ok_or_else(|| {
+            VokraError::ModelLoad("FireRed dictionary row must contain token and id".to_owned())
+        })?;
+        if fields.next().is_some()
+            || token.is_empty()
+            || !id.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(VokraError::ModelLoad(
+                "FireRed dictionary row has an invalid token/id schema".to_owned(),
+            ));
+        }
+        let actual_id = id.parse::<usize>().map_err(|_| {
+            VokraError::ModelLoad("FireRed dictionary id is not a valid usize".to_owned())
+        })?;
+        if actual_id != expected_id || !unique.insert(token) {
+            return Err(VokraError::ModelLoad(
+                "FireRed dictionary ids must be contiguous and tokens unique".to_owned(),
+            ));
+        }
+        pieces.push(token.to_owned());
+    }
+    let first = ["<blank>", "<unk>", "<pad>", "<sos>", "<eos>"];
+    if !pieces
+        .iter()
+        .take(first.len())
+        .map(String::as_str)
+        .eq(first.iter().copied())
+    {
+        return Err(VokraError::ModelLoad(
+            "FireRed dictionary special-token anchors are not authenticated".to_owned(),
+        ));
+    }
+    if !pieces[AUTHENTICATED_DICT_ROWS - 3..]
+        .iter()
+        .map(String::as_str)
+        .eq(["龟", "龠", "龢"].iter().copied())
+    {
+        return Err(VokraError::ModelLoad(
+            "FireRed dictionary terminal anchors are not authenticated".to_owned(),
+        ));
+    }
+    Ok(pieces)
+}
 
 impl FireRedCmvn {
     /// Builds CMVN from the upstream 2×(dim+1) row-major Kaldi stats matrix.
@@ -3571,6 +3743,124 @@ mod tests {
             parse_authenticated_cmvn_text(&synthetic_cmvn_text(80, 80, "1183022220", true, false))
                 .is_err()
         );
+    }
+
+    fn synthetic_dictionary_bytes(first_token: &str, token_five: &str) -> Vec<u8> {
+        let mut rows = Vec::with_capacity(AUTHENTICATED_DICT_ROWS);
+        for id in 0..AUTHENTICATED_DICT_ROWS {
+            let token = match id {
+                0 => first_token.to_owned(),
+                1 => "<unk>".to_owned(),
+                2 => "<pad>".to_owned(),
+                3 => "<sos>".to_owned(),
+                4 => "<eos>".to_owned(),
+                5 => token_five.to_owned(),
+                7829 => "龟".to_owned(),
+                7830 => "龠".to_owned(),
+                7831 => "龢".to_owned(),
+                _ => format!("tok{id}"),
+            };
+            rows.push(format!("{token} {id}"));
+        }
+        rows.join("\n").into_bytes()
+    }
+
+    #[test]
+    fn authenticated_dictionary_parser_checks_order_anchors_and_utf8() {
+        let valid = synthetic_dictionary_bytes("<blank>", "▁hello");
+        let pieces = parse_authenticated_dictionary(&valid).expect("synthetic dictionary parses");
+        assert_eq!(pieces.len(), AUTHENTICATED_DICT_ROWS);
+        assert_eq!(pieces[0], "<blank>");
+        assert_eq!(pieces[5], "▁hello");
+        assert!(
+            pieces[7829..]
+                .iter()
+                .map(String::as_str)
+                .eq(["龟", "龠", "龢"].iter().copied())
+        );
+
+        let mut wrong_rows = valid.clone();
+        wrong_rows.truncate(wrong_rows.iter().rposition(|&byte| byte == b'\n').unwrap());
+        assert!(parse_authenticated_dictionary(&wrong_rows).is_err());
+
+        let mut wrong_anchor = valid.clone();
+        wrong_anchor[0] = b'X';
+        assert!(parse_authenticated_dictionary(&wrong_anchor).is_err());
+
+        let mut wrong_terminal = valid.clone();
+        let terminal = "龢 7831".as_bytes();
+        let offset = wrong_terminal
+            .windows(terminal.len())
+            .position(|window| window == terminal)
+            .expect("synthetic terminal row");
+        wrong_terminal[offset..offset + terminal.len()].copy_from_slice("龤 7831".as_bytes());
+        assert!(parse_authenticated_dictionary(&wrong_terminal).is_err());
+
+        let mut wrong_id = valid.clone();
+        let marker = b"tok6 6";
+        let offset = wrong_id
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("synthetic id row");
+        wrong_id[offset + marker.len() - 1] = b'7';
+        assert!(parse_authenticated_dictionary(&wrong_id).is_err());
+
+        let mut wrong_schema = valid.clone();
+        let marker = b"tok6 6";
+        let offset = wrong_schema
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("synthetic schema row");
+        wrong_schema.splice(offset + 5..offset + 5, b" extra".iter().copied());
+        assert!(parse_authenticated_dictionary(&wrong_schema).is_err());
+
+        let mut duplicate_token = valid.clone();
+        let marker = b"tok6 6";
+        let offset = duplicate_token
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("synthetic duplicate row");
+        duplicate_token[offset..offset + 4].copy_from_slice(b"tok7");
+        assert!(parse_authenticated_dictionary(&duplicate_token).is_err());
+
+        let mut invalid_utf8 = valid;
+        invalid_utf8.push(0xff);
+        assert!(parse_authenticated_dictionary(&invalid_utf8).is_err());
+    }
+
+    #[test]
+    fn dictionary_renderer_applies_source_join_and_rejects_special_ids() {
+        let mut pieces =
+            parse_authenticated_dictionary(&synthetic_dictionary_bytes("<blank>", "▁hello"))
+                .expect("synthetic dictionary parses");
+        // The synthetic map remains unauthenticated; this only isolates the
+        // upstream join/marker transform from the raw digest gate.
+        pieces[6] = "▁world".to_owned();
+        let dictionary = FireRedDictionary { pieces };
+        assert_eq!(dictionary.decode_token_ids(&[5, 6]).unwrap(), "hello world");
+        assert!(dictionary.decode_token_ids(&[]).is_err());
+        for id in 0..=4 {
+            assert!(dictionary.decode_token_ids(&[id]).is_err());
+        }
+        assert!(
+            dictionary
+                .decode_token_ids(&[AUTHENTICATED_DICT_ROWS as u32])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn authenticated_dictionary_constructor_is_digest_and_length_bound() {
+        assert!(FireRedDictionary::from_authenticated_bytes(&[]).is_err());
+        let wrong_length = vec![b' '; AUTHENTICATED_DICT_TEXT_BYTES];
+        assert!(FireRedDictionary::from_authenticated_bytes(&wrong_length).is_err());
+        assert_eq!(AUTHENTICATED_DICT_TEXT_BYTES, 71_448);
+        assert_eq!(AUTHENTICATED_DICT_SHA256.len(), 32);
+        assert_eq!(
+            AUTHENTICATED_DICT_GIT_BLOB_SHA1,
+            "afd1d79290c76a05e9eb653d76984434c18bb371"
+        );
+        assert_eq!(AUTHENTICATED_DICT_ROWS, 7_832);
     }
 
     #[test]
