@@ -62,11 +62,15 @@
 //!   shape / dtype / size flow can be exercised without the real HF
 //!   checkpoint.
 //! - [`KyutaiSttAsr`] — engine handle carrying config + weights.
+//!   [`KyutaiSttAsr::forward_text_logits`] is the dedicated `dep_q=0` main
+//!   decoder component seam: explicit text-token + row-major Mimi-code
+//!   frames → summed embeddings → causal/sliding-window transformer → final
+//!   RMSNorm → text logits through `Compute` (CPU/Metal). Its synthesized
+//!   fixture output is self-consistency only, not upstream parity or ASR.
 //!   [`KyutaiSttAsr::transcribe`] returns [`VokraError::NotImplemented`]
 //!   until real weights are bound (the real forward — audio-token embedding
-//!   sum → per-layer prenorm MHA + gating FFN → sliding-window causal
-//!   attention → text logits → sampling → SentencePiece detokenize — is a
-//!   follow-up wave gated on the real-checkpoint tensor manifest).
+//!   streaming delay/sampling → SentencePiece detokenize is a follow-up wave
+//!   gated on the real-checkpoint tensor manifest).
 //!
 //! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29
 //! / Moshi T29: this scaffold sets the seam so the follow-up lands drop-in.
@@ -77,7 +81,11 @@ use vokra_core::check_weight_license;
 use vokra_core::gguf::chunks;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{CompliancePolicy, Result, VokraError};
+use vokra_core::{BackendKind, CompliancePolicy, Result, VokraError};
+
+use crate::compute::{Compute, HotOp};
+use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
+use crate::voxtral::text_decoder::silu_inplace;
 
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
@@ -96,6 +104,12 @@ pub const KYUTAI_STT_SAMPLE_RATE: u32 = 24_000;
 /// Deterministic seed retained for the explicit in-module fixture constructor.
 /// It is never used by the public GGUF/path loaders.
 pub const KYUTAI_STT_FROM_GGUF_DEFAULT_SEED: u64 = 0x0C57_0C57_0C57_0C57;
+
+/// Compute-seam operations used by the dep_q=0 main decoder.  The
+/// dispatcher validates this complete set before any forward work starts, so
+/// a backend missing one primitive fails explicitly instead of falling back
+/// to CPU for that operation.
+const KYUTAI_STT_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Softmax, HotOp::RmsNorm];
 
 // ---------------------------------------------------------------------------
 // `vokra.kyutai_stt.*` metadata keys
@@ -657,6 +671,101 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
     out
 }
 
+fn apply_rope_heads(
+    values: &mut [f32],
+    frames: usize,
+    d_model: usize,
+    n_head: usize,
+    head_dim: usize,
+    inv_freqs: &[f32],
+) -> Result<()> {
+    let expected = frames.checked_mul(d_model).ok_or_else(|| {
+        VokraError::InvalidArgument("kyutai-stt RoPE shape overflows usize".to_owned())
+    })?;
+    if values.len() != expected || n_head.checked_mul(head_dim) != Some(d_model) {
+        return Err(VokraError::InvalidArgument(
+            "kyutai-stt RoPE shape is inconsistent with d_model".to_owned(),
+        ));
+    }
+    let mut head = vec![0.0f32; frames * head_dim];
+    for index in 0..n_head {
+        for frame in 0..frames {
+            head[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(
+                &values
+                    [frame * d_model + index * head_dim..frame * d_model + (index + 1) * head_dim],
+            );
+        }
+        rope_apply_adjacent(&mut head, frames, head_dim, inv_freqs, 0)?;
+        for frame in 0..frames {
+            values[frame * d_model + index * head_dim..frame * d_model + (index + 1) * head_dim]
+                .copy_from_slice(&head[frame * head_dim..(frame + 1) * head_dim]);
+        }
+    }
+    Ok(())
+}
+
+/// Text-logit output from the dedicated dep_q=0 decoder seam.
+///
+/// `values` is row-major `[frames, vocab]`; retaining both dimensions beside
+/// the payload makes the shape part of the authenticated hand-off to the
+/// future parity/reference consumer.  This is a structural/self-consistency
+/// result, not an ASR transcript or an upstream numerical-parity claim.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KyutaiSttTextLogits {
+    frames: usize,
+    vocab: usize,
+    values: Vec<f32>,
+}
+
+impl KyutaiSttTextLogits {
+    fn new(frames: usize, vocab: usize, values: Vec<f32>) -> Result<Self> {
+        let expected = frames.checked_mul(vocab).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt logits shape overflows usize".to_owned())
+        })?;
+        if values.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt logits payload len {} != frames*vocab {}",
+                values.len(),
+                expected
+            )));
+        }
+        if !values.iter().all(|value| value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt logits contain non-finite values".to_owned(),
+            ));
+        }
+        Ok(Self {
+            frames,
+            vocab,
+            values,
+        })
+    }
+
+    /// Number of Mimi/text steps represented by the logits.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.frames
+    }
+
+    /// Text vocabulary width (`config.text_card`).
+    #[must_use]
+    pub fn vocab(&self) -> usize {
+        self.vocab
+    }
+
+    /// Row-major logits `[frames, vocab]`.
+    #[must_use]
+    pub fn as_slice(&self) -> &[f32] {
+        &self.values
+    }
+
+    /// Consumes the authenticated-shape wrapper and returns row-major values.
+    #[must_use]
+    pub fn into_values(self) -> Vec<f32> {
+        self.values
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
@@ -768,6 +877,246 @@ impl KyutaiSttAsr {
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
         self.weights.is_synthesized
+    }
+
+    /// Runs the authenticated-shape **main decoder component** for the
+    /// upstream `dep_q=0` STT variant.
+    ///
+    /// `text_tokens` is one explicit text-token id per frame and
+    /// `mimi_codes` is row-major `[frames, n_q]` Mimi codes.  The component
+    /// sums the text embedding with all 32 audio embeddings, applies the
+    /// causal/sliding-window Helium transformer, final RMSNorm, and text
+    /// linear head.  No depformer or audio logits are produced because this
+    /// seam requires `dep_q == 0`.
+    ///
+    /// This deliberately does not perform streaming delay, sampling,
+    /// tokenizer decoding, or real-checkpoint binding.  Synthesized weights
+    /// are accepted only for deterministic structural/self-consistency tests;
+    /// callers must not treat their logits as an ASR result.  Backend
+    /// selection is explicit and validated against the complete Compute hot
+    /// op set before the first embedding is read.  Unsupported backends or
+    /// operations return an error; no CPU fallback is attempted.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] for an invalid token matrix, a
+    /// sequence longer than the configured sliding context, or a nonzero
+    /// `dep_q`; backend and Compute-seam errors are returned verbatim.
+    pub fn forward_text_logits(
+        &self,
+        backend: BackendKind,
+        text_tokens: &[u32],
+        mimi_codes: &[u32],
+    ) -> Result<KyutaiSttTextLogits> {
+        if self.cfg.dep_q != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt dep_q=0 decoder requires dep_q=0, got {}",
+                self.cfg.dep_q
+            )));
+        }
+        let frames = text_tokens.len();
+        if frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt decoder: text_tokens is empty".to_owned(),
+            ));
+        }
+        if frames > self.cfg.backbone.context {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt decoder: frames={} exceeds sliding context={}",
+                frames, self.cfg.backbone.context
+            )));
+        }
+        let expected_codes = frames.checked_mul(self.cfg.n_q).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt decoder code shape overflows usize".to_owned())
+        })?;
+        if mimi_codes.len() != expected_codes {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt decoder: mimi_codes.len()={} != frames*n_q={expected_codes}",
+                mimi_codes.len()
+            )));
+        }
+        let text_rows = self.cfg.text_card + 1;
+        for (frame, &token) in text_tokens.iter().enumerate() {
+            if token as usize >= text_rows {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kyutai-stt decoder: text_tokens[{frame}]={token} >= text rows {text_rows}"
+                )));
+            }
+        }
+        let audio_rows = self.cfg.audio_card + 1;
+        for (index, &code) in mimi_codes.iter().enumerate() {
+            if code as usize >= audio_rows {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kyutai-stt decoder: mimi_codes[{index}]={code} >= audio rows {audio_rows}"
+                )));
+            }
+        }
+
+        let compute = Compute::for_backend(backend, KYUTAI_STT_HOT_OPS)?;
+        let d = self.cfg.backbone.d_model;
+        let heads = self.cfg.backbone.n_head;
+        let head_dim = self.cfg.backbone.head_dim();
+        let ffn = self.cfg.backbone.ffn_hidden();
+        let inv_freqs = llama3_inv_freqs(head_dim, self.cfg.backbone.rope_max_period, None)?;
+        let mut hidden = vec![0.0f32; frames * d];
+        for frame in 0..frames {
+            let dst = &mut hidden[frame * d..(frame + 1) * d];
+            let text_row = &self.weights.text_embedding
+                [text_tokens[frame] as usize * d..(text_tokens[frame] as usize + 1) * d];
+            for (out, &value) in dst.iter_mut().zip(text_row) {
+                *out += value;
+            }
+            for channel in 0..self.cfg.n_q {
+                let code = mimi_codes[frame * self.cfg.n_q + channel] as usize;
+                let table = &self.weights.audio_embeddings[channel];
+                let row = &table[code * d..(code + 1) * d];
+                for (out, &value) in dst.iter_mut().zip(row) {
+                    *out += value;
+                }
+            }
+        }
+
+        let mut norm = vec![0.0f32; frames * d];
+        let mut qkv = vec![0.0f32; frames * 3 * d];
+        let mut q = vec![0.0f32; frames * d];
+        let mut k = vec![0.0f32; frames * d];
+        let mut v = vec![0.0f32; frames * d];
+        let mut attn_input = vec![0.0f32; frames * d];
+        let mut attn_output = vec![0.0f32; frames * d];
+        let mut scores = vec![0.0f32; frames * frames];
+        let mut probs = vec![0.0f32; frames * frames];
+        let mut ffn_in = vec![0.0f32; frames * 2 * ffn];
+        let mut ffn_gate = vec![0.0f32; frames * ffn];
+        let mut ffn_up = vec![0.0f32; frames * ffn];
+        let mut ffn_output = vec![0.0f32; frames * d];
+        for block in &self.weights.blocks {
+            compute.rms_norm_f32(
+                &hidden,
+                &mut norm,
+                frames,
+                d,
+                &block.attn_norm,
+                self.cfg.rms_norm_eps,
+            )?;
+            compute.gemm_f32(frames, 3 * d, d, &norm, &block.qkv_proj, None, &mut qkv)?;
+            for frame in 0..frames {
+                q[frame * d..(frame + 1) * d]
+                    .copy_from_slice(&qkv[frame * 3 * d..frame * 3 * d + d]);
+                k[frame * d..(frame + 1) * d]
+                    .copy_from_slice(&qkv[frame * 3 * d + d..frame * 3 * d + 2 * d]);
+                v[frame * d..(frame + 1) * d]
+                    .copy_from_slice(&qkv[frame * 3 * d + 2 * d..(frame + 1) * 3 * d]);
+            }
+            apply_rope_heads(&mut q, frames, d, heads, head_dim, &inv_freqs)?;
+            apply_rope_heads(&mut k, frames, d, heads, head_dim, &inv_freqs)?;
+            attn_input.fill(0.0);
+            let scale = 1.0f32 / (head_dim as f32).sqrt();
+            for head in 0..heads {
+                for query in 0..frames {
+                    for key in 0..frames {
+                        let visible = key <= query && query - key < self.cfg.backbone.context;
+                        scores[query * frames + key] = if visible {
+                            let q_row =
+                                &q[query * d + head * head_dim..query * d + (head + 1) * head_dim];
+                            let k_row =
+                                &k[key * d + head * head_dim..key * d + (head + 1) * head_dim];
+                            q_row
+                                .iter()
+                                .zip(k_row)
+                                .map(|(&lhs, &rhs)| lhs * rhs)
+                                .sum::<f32>()
+                                * scale
+                        } else {
+                            f32::NEG_INFINITY
+                        };
+                    }
+                }
+                compute.softmax_f32(&scores, &mut probs, frames, frames)?;
+                for query in 0..frames {
+                    let out = &mut attn_input
+                        [query * d + head * head_dim..query * d + (head + 1) * head_dim];
+                    for key in 0..frames {
+                        let weight = probs[query * frames + key];
+                        let value = &v[key * d + head * head_dim..key * d + (head + 1) * head_dim];
+                        for (dst, &src) in out.iter_mut().zip(value) {
+                            *dst += weight * src;
+                        }
+                    }
+                }
+            }
+            compute.gemm_f32(
+                frames,
+                d,
+                d,
+                &attn_input,
+                &block.out_proj,
+                None,
+                &mut attn_output,
+            )?;
+            for (dst, &value) in hidden.iter_mut().zip(&attn_output) {
+                *dst += value;
+            }
+
+            compute.rms_norm_f32(
+                &hidden,
+                &mut norm,
+                frames,
+                d,
+                &block.ffn_norm,
+                self.cfg.rms_norm_eps,
+            )?;
+            compute.gemm_f32(
+                frames,
+                2 * ffn,
+                d,
+                &norm,
+                &block.linear_in,
+                None,
+                &mut ffn_in,
+            )?;
+            for frame in 0..frames {
+                ffn_gate[frame * ffn..(frame + 1) * ffn]
+                    .copy_from_slice(&ffn_in[frame * 2 * ffn..frame * 2 * ffn + ffn]);
+                ffn_up[frame * ffn..(frame + 1) * ffn]
+                    .copy_from_slice(&ffn_in[frame * 2 * ffn + ffn..(frame + 1) * 2 * ffn]);
+            }
+            silu_inplace(&mut ffn_gate);
+            for (gate, &up) in ffn_gate.iter_mut().zip(&ffn_up) {
+                *gate *= up;
+            }
+            compute.gemm_f32(
+                frames,
+                d,
+                ffn,
+                &ffn_gate,
+                &block.linear_out,
+                None,
+                &mut ffn_output,
+            )?;
+            for (dst, &value) in hidden.iter_mut().zip(&ffn_output) {
+                *dst += value;
+            }
+        }
+
+        compute.rms_norm_f32(
+            &hidden,
+            &mut norm,
+            frames,
+            d,
+            &self.weights.final_norm,
+            self.cfg.rms_norm_eps,
+        )?;
+        let mut logits = vec![0.0f32; frames * self.cfg.text_card];
+        compute.gemm_f32(
+            frames,
+            self.cfg.text_card,
+            d,
+            &norm,
+            &self.weights.text_head,
+            None,
+            &mut logits,
+        )?;
+        KyutaiSttTextLogits::new(frames, self.cfg.text_card, logits)
     }
 
     /// Transcribes a sequence of Mimi codes into text tokens.
@@ -1272,6 +1621,88 @@ mod tests {
             }
             other => panic!("expected NotImplemented, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dep_q0_decoder_returns_deterministic_authenticated_shape() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        let width = config.n_q;
+        let asr = KyutaiSttAsr::new(
+            config.clone(),
+            KyutaiSttWeights::synthesized(&config, 0xD3C0_DEC0).expect("weights"),
+        )
+        .expect("asr");
+        let text = [0, 1, 2];
+        let codes = vec![0u32; text.len() * width];
+        let first = asr
+            .forward_text_logits(BackendKind::Cpu, &text, &codes)
+            .expect("tiny dep_q=0 forward");
+        let second = asr
+            .forward_text_logits(BackendKind::Cpu, &text, &codes)
+            .expect("repeat tiny dep_q=0 forward");
+        assert_eq!(
+            first, second,
+            "self-consistency fixture must be deterministic"
+        );
+        assert_eq!(first.frames(), text.len());
+        assert_eq!(first.vocab(), config.text_card);
+        assert_eq!(first.as_slice().len(), text.len() * config.text_card);
+        assert!(first.as_slice().iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn dep_q0_decoder_rejects_context_and_input_shape_drift() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        let asr = KyutaiSttAsr::new(
+            config.clone(),
+            KyutaiSttWeights::synthesized(&config, 7).expect("weights"),
+        )
+        .expect("asr");
+        let valid_codes = vec![0u32; config.n_q];
+        assert!(matches!(
+            asr.forward_text_logits(BackendKind::Cpu, &[0], &valid_codes[..config.n_q - 1]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let too_many = vec![0u32; (config.backbone.context + 1) * config.n_q];
+        let too_many_text = vec![0u32; config.backbone.context + 1];
+        assert!(matches!(
+            asr.forward_text_logits(BackendKind::Cpu, &too_many_text, &too_many),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn dep_q0_decoder_rejects_nonzero_dep_q_without_downgrade() {
+        let mut config = KyutaiSttConfig::tiny_for_tests();
+        config.dep_q = 1;
+        let asr = KyutaiSttAsr::new(
+            config.clone(),
+            KyutaiSttWeights::synthesized(&config, 7).expect("weights"),
+        )
+        .expect("shape-compatible fixture");
+        let error = asr
+            .forward_text_logits(BackendKind::Cpu, &[0], &vec![0u32; config.n_q])
+            .expect_err("dep_q>0 must not enter the dep_q=0 seam");
+        assert!(
+            matches!(error, VokraError::InvalidArgument(message) if message.contains("dep_q=0"))
+        );
+    }
+
+    #[test]
+    fn dep_q0_decoder_does_not_fallback_on_uncovered_backend() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        let asr = KyutaiSttAsr::new(
+            config.clone(),
+            KyutaiSttWeights::synthesized(&config, 7).expect("weights"),
+        )
+        .expect("asr");
+        let error = asr
+            .forward_text_logits(BackendKind::Vulkan, &[0], &vec![0u32; config.n_q])
+            .expect_err("unavailable backend must fail before CPU fallback");
+        assert!(matches!(
+            error,
+            VokraError::BackendUnavailable(_) | VokraError::UnsupportedOp(_)
+        ));
     }
 
     #[test]
