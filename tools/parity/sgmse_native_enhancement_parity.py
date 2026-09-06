@@ -61,6 +61,7 @@ from sgmse_dump_reference import (
 
 PACKET_FORMAT = "vokra-sgmse-native-enhancement-reference-v1"
 PACKET_STATUS = "REFERENCE_COMPLETE_NO_UPLOAD"
+EMA_ROUTE_STATUS = "SOURCE_ROUTE_VERIFIED_STRICT_LOAD"
 COMPARISON_FORMAT = "vokra-sgmse-native-enhancement-comparison-v1"
 HARNESS_STATUS = "HARNESS_READY"
 CPU_STATUS_BEFORE_RUN = "CPU_ENHANCEMENT_PARITY_NOT_RUN"
@@ -427,7 +428,7 @@ def verify_reference(packet: Path, vokra_root: Path | None = None) -> dict[str, 
     )
     if not isinstance(manifest, dict) or set(manifest) != {
         "format", "status", "publication", "model_repository", "model_revision",
-        "checkpoint", "source", "speechbrain_source", "licenses", "input",
+        "checkpoint", "source", "speechbrain_source", "licenses", "ema_route", "model", "input",
         "runtime", "artifacts", "noise_calls", "noise_payload", "tolerance",
         "identity", "run_log", "vokra",
     }:
@@ -482,6 +483,37 @@ def verify_reference(packet: Path, vokra_root: Path | None = None) -> dict[str, 
         "checkpoint": CHECKPOINT_LICENSE_SPDX,
     }:
         raise ValueError("reference license record mismatch")
+    ema_route = manifest["ema_route"]
+    source_files = ema_route.get("source_files") if isinstance(ema_route, dict) else None
+    score_source = source_files.get("score_model") if isinstance(source_files, dict) else None
+    transfer_source = source_files.get("parameter_transfer") if isinstance(source_files, dict) else None
+    if (
+        not isinstance(ema_route, dict)
+        or ema_route.get("status") != EMA_ROUTE_STATUS
+        or ema_route.get("unsafe_pickle_fallback") is not False
+        or ema_route.get("parameter_load") != "strict_state_dict"
+        or ema_route.get("loadable") != "score_model_ema"
+        or ema_route.get("checkpoint_filename") != CHECKPOINT_NAME
+        or not isinstance(score_source, dict)
+        or score_source.get("path") != "speechbrain/integrations/models/sgmse_plus.py"
+        or score_source.get("sha256") != "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935"
+        or score_source.get("size") != 21777
+        or not isinstance(transfer_source, dict)
+        or transfer_source.get("path") != "speechbrain/utils/parameter_transfer.py"
+        or not isinstance(transfer_source.get("sha256"), str)
+        or len(transfer_source["sha256"]) != 64
+        or not isinstance(transfer_source.get("size"), int)
+        or transfer_source["size"] <= 0
+    ):
+        raise ValueError("reference EMA route evidence is missing or not strict")
+    model = manifest["model"]
+    if (
+        not isinstance(model, dict)
+        or model.get("load") != "torch.load(weights_only=True)+load_state_dict(strict=True)"
+        or model.get("tensor_count") != 647
+        or model.get("parameter_count") != 65_590_822
+    ):
+        raise ValueError("reference strict model-load evidence is missing or mismatched")
     if manifest["input"] != {
         "wav_filename": "ref-clip.wav",
         "wav_size": INPUT_WAV_SIZE,
@@ -637,7 +669,7 @@ def _run_official_reference(
         import numpy as np
         import torch
 
-        verify_ema_route(hyperparams, speechbrain_source, inspection["safe_load"], inspection)
+        ema_route = verify_ema_route(hyperparams, speechbrain_source, inspection["safe_load"], inspection)
         enhancement_source = verify_official_enhancement_source(speechbrain_source, inspection)
         algorithm_files = verify_algorithm_source(source, inspection)
         model, model_evidence = load_score_model(source, speechbrain_source, checkpoint, SCORE_MODEL_CONFIG)
@@ -761,6 +793,8 @@ def _run_official_reference(
             "source": {**source_tree, "repository": "https://github.com/sp-uhh/sgmse.git", "revision": SOURCE_REVISION, "license_spdx": SOURCE_LICENSE_SPDX, "license_sha256": SOURCE_LICENSE_SHA256, "files": algorithm_files},
             "speechbrain_source": {**speechbrain_tree, "repository": "https://github.com/speechbrain/speechbrain.git", "revision": SPEECHBRAIN_REVISION, "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256, "files": [enhancement_source]},
             "licenses": {"algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256}, "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256}, "checkpoint": CHECKPOINT_LICENSE_SPDX},
+            "ema_route": ema_route,
+            "model": model_evidence,
             "input": {"wav_filename": input_wav.name, "wav_size": input_wav.stat().st_size, "wav_sha256": sha256(input_wav), "sample_rate": SAMPLE_RATE, "channels": CHANNELS, "sample_width": SAMPLE_WIDTH, "pcm_filename": INPUT_NAME},
             "runtime": {"platform_system": platform.system(), "platform_machine": platform.machine(), "platform_node": platform.node(), "cpu_model": cpu_model(), "nproc": os.cpu_count(), "torch_version": torch.__version__, "numpy_version": np.__version__},
             "artifacts": artifacts,
@@ -950,6 +984,8 @@ def self_test() -> int:
             "source": {"path": "/source", "revision": SOURCE_REVISION, "clean": True, "repository": "https://github.com/sp-uhh/sgmse.git", "license_spdx": SOURCE_LICENSE_SPDX, "license_sha256": SOURCE_LICENSE_SHA256, "files": []},
             "speechbrain_source": {"path": "/speechbrain", "revision": SPEECHBRAIN_REVISION, "clean": True, "repository": "https://github.com/speechbrain/speechbrain.git", "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256, "files": [{"path": ENHANCEMENT_SOURCE_FILE, "sha256": "0" * 64, "size": 1, "markers": {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS}}]},
             "licenses": {"algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256}, "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256}, "checkpoint": CHECKPOINT_LICENSE_SPDX},
+            "ema_route": {"status": EMA_ROUTE_STATUS, "loadable": "score_model_ema", "checkpoint_filename": CHECKPOINT_NAME, "parameter_load": "strict_state_dict", "unsafe_pickle_fallback": False, "source_files": {"score_model": {"path": "speechbrain/integrations/models/sgmse_plus.py", "sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935", "size": 21777}, "parameter_transfer": {"path": "speechbrain/utils/parameter_transfer.py", "sha256": "0" * 64, "size": 1}}},
+            "model": {"load": "torch.load(weights_only=True)+load_state_dict(strict=True)", "tensor_count": 647, "parameter_count": 65_590_822},
             "input": {"wav_filename": "ref-clip.wav", "wav_size": INPUT_WAV_SIZE, "wav_sha256": INPUT_WAV_SHA256, "sample_rate": SAMPLE_RATE, "channels": CHANNELS, "sample_width": SAMPLE_WIDTH, "pcm_filename": INPUT_NAME},
             "runtime": {"platform_system": "Linux", "platform_machine": "x86_64", "platform_node": "self-test", "cpu_model": "self-test", "nproc": 1, "torch_version": "self-test", "numpy_version": "self-test"},
             "artifacts": artifacts, "noise_calls": noise_calls,
@@ -961,6 +997,18 @@ def self_test() -> int:
         }
         (packet / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
         assert verify_reference(packet)["status"] == PACKET_STATUS
+        for field in ("ema_route", "model"):
+            candidate = root / f"missing-{field}"
+            shutil.copytree(packet, candidate)
+            candidate_manifest = json.loads((candidate / MANIFEST_NAME).read_text())
+            del candidate_manifest[field]
+            (candidate / MANIFEST_NAME).write_text(json.dumps(candidate_manifest), encoding="utf-8")
+            try:
+                verify_reference(candidate)
+            except ValueError:
+                pass
+            else:
+                return 1
         for mutation in ("truncate", "nonfinite", "wrong-order", "wrong-count"):
             candidate = root / f"candidate-{mutation}"
             shutil.copytree(packet, candidate)
