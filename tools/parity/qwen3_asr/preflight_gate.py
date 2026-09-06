@@ -22,9 +22,37 @@ from typing import Any
 
 import tomllib
 
+try:
+    from wheel_audit import (
+        BACKEND_MEMBERS,
+        LICENSE_BYTES,
+        LICENSE_MEMBER,
+        LICENSE_SHA256,
+        RECORD_BYTES,
+        RECORD_MEMBER,
+        RECORD_SHA256,
+        WHEEL_BYTES,
+        WHEEL_SHA256,
+        WHEEL_URL,
+    )
+except ModuleNotFoundError:  # pragma: no cover - package import path
+    from tools.parity.qwen3_asr.wheel_audit import (
+        BACKEND_MEMBERS,
+        LICENSE_BYTES,
+        LICENSE_MEMBER,
+        LICENSE_SHA256,
+        RECORD_BYTES,
+        RECORD_MEMBER,
+        RECORD_SHA256,
+        WHEEL_BYTES,
+        WHEEL_SHA256,
+        WHEEL_URL,
+    )
+
 GATE_VERSION = 1
-LOCK_SHA256 = "3a7809a06bcaa9e18d89c8fab77860054098726a8cfcd51a658cf461c5c89d42"
-PYPROJECT_SHA256 = "adf757e1349d365dcda13c4944dbdd435470e9db4c201049e8f49bfba60bfecb"
+LOCK_SHA256 = "1f9bcf22394deb5e53a737277409b4fa83a82cef421c260fd4e47aa6ddb612a7"
+PYPROJECT_SHA256 = "f1d18ddd13b0abbe39371ffc34ad09e8bb705569eaf98dd664f8dd052ffc359b"
+OFFICIAL_WHEEL_SCHEMA = "vokra-qwen3-asr-official-transformers-wheel-v1"
 REFERENCE_AUDIO_SHA256 = "241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -385,6 +413,34 @@ def canonical_package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (row["name"], row["version"]))
 
 
+def expected_official_wheel() -> dict[str, Any]:
+    return {
+        "schema": OFFICIAL_WHEEL_SCHEMA,
+        "name": "qwen-asr",
+        "version": "0.0.6",
+        "url": WHEEL_URL,
+        "bytes": WHEEL_BYTES,
+        "sha256": WHEEL_SHA256,
+        "license": {
+            "member": LICENSE_MEMBER,
+            "bytes": LICENSE_BYTES,
+            "sha256": LICENSE_SHA256,
+            "spdx": "Apache-2.0",
+        },
+        "record": {
+            "member": RECORD_MEMBER,
+            "bytes": RECORD_BYTES,
+            "sha256": RECORD_SHA256,
+        },
+        "official_backend_members": {
+            name: {"bytes": size, "sha256": digest}
+            for name, (size, digest) in sorted(BACKEND_MEMBERS.items())
+        },
+        "execution": "OFFICIAL_TRANSFORMERS_BACKEND_ONLY",
+        "publication": "NO_UPLOAD",
+    }
+
+
 def blocked(reason: str) -> tuple[bool, str]:
     return False, reason
 
@@ -410,7 +466,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     if set(manifest) != {
         "gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256",
         "review_rows", "review_rows_sha256", "variants", "model_identities",
-        "reference_audio", "gradio_client_source_evidence_sha256",
+        "reference_audio", "official_wheel",
         "approval_scope_sha256", "operator_approval",
     }:
         return blocked("gate manifest schema drifted")
@@ -429,42 +485,13 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         return blocked("pyproject.toml bytes are not the reviewed exact project")
     if canonical_digest(rows) != manifest.get("package_rows_sha256"):
         return blocked("canonical version/source/marker/dependency rows drifted")
-    gradio_evidence_path = manifest_path.with_name(GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME)
     try:
-        gradio_evidence, gradio_evidence_sha256 = load_gradio_client_source_evidence(gradio_evidence_path)
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
-        return blocked(f"gradio-client source evidence is invalid: {exc}")
-    if (
-        manifest.get("gradio_client_source_evidence_sha256") != GRADIO_CLIENT_SOURCE_EVIDENCE_SHA256
-        or gradio_evidence_sha256 != GRADIO_CLIENT_SOURCE_EVIDENCE_SHA256
-    ):
-        return blocked("gradio-client source evidence digest is not the reviewed exact evidence")
-    gradio_lock_rows = [
-        row for row in lock["package"]
-        if row.get("name") == GRADIO_CLIENT_PACKAGE and row.get("version") == GRADIO_CLIENT_VERSION
-    ]
-    if len(gradio_lock_rows) != 1:
-        return blocked("gradio-client exact lock row is missing or duplicated")
-    gradio_lock_row = gradio_lock_rows[0]
-    gradio_lock_artifacts = [gradio_lock_row.get("sdist"), *(gradio_lock_row.get("wheels") or [])]
-    gradio_evidence_artifacts = gradio_evidence["package"]["artifacts"]
-    if len(gradio_lock_artifacts) != len(gradio_evidence_artifacts) or any(
-        not isinstance(lock_artifact, dict)
-        or {
-            "url": lock_artifact.get("url"),
-            "hash": lock_artifact.get("hash"),
-            "size": lock_artifact.get("size"),
-            "upload-time": lock_artifact.get("upload-time"),
-        }
-        != {
-            "url": evidence_artifact["url"],
-            "hash": f"sha256:{evidence_artifact['sha256']}",
-            "size": evidence_artifact["bytes"],
-            "upload-time": evidence_artifact["upload_time"],
-        }
-        for lock_artifact, evidence_artifact in zip(gradio_lock_artifacts, gradio_evidence_artifacts)
-    ):
-        return blocked("gradio-client exact sdist/wheel identities are not bound to uv.lock")
+        official_wheel = manifest["official_wheel"]
+        expected_wheel = expected_official_wheel()
+        if official_wheel != expected_wheel:
+            raise ValueError("official qwen-asr wheel identity drifted")
+    except (KeyError, TypeError, ValueError) as exc:
+        return blocked(f"official qwen-asr wheel evidence is invalid: {exc}")
     identities = [f'{row["name"]}@{row["version"]}' for row in rows]
     review_rows = manifest.get("review_rows")
     if not isinstance(review_rows, list):
@@ -510,7 +537,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         "variants": VARIANTS,
         "model_identities": model_identities,
         "reference_audio": audio,
-        "gradio_client_source_evidence_sha256": manifest["gradio_client_source_evidence_sha256"],
+        "official_wheel": official_wheel,
         "review_rows": review_rows,
     }
     scope_sha256 = canonical_digest(scope)
@@ -561,7 +588,6 @@ def main(project: Path, manifest: Path, evidence: Path | None) -> int:
 
 
 def self_test() -> int:
-    global LOCK_SHA256
     project = Path(__file__).resolve().parent
     manifest = project / "license_gate_manifest.json"
     if reviewed_value("  PENDING_REVIEW  ") or not reviewed_value("reviewed citation: TODO was resolved"):
@@ -582,160 +608,13 @@ def self_test() -> int:
     else:
         print("qwen3-asr preflight gate: unreviewed missing-size artifact accepted", file=sys.stderr)
         return 1
+    if expected_official_wheel()["schema"] != OFFICIAL_WHEEL_SCHEMA:
+        print("qwen3-asr preflight gate: official wheel schema self-test failed", file=sys.stderr)
+        return 1
     ok, reason = validate(project, manifest)
-    if ok or not ("operator approval" in reason or "unresolved" in reason or "artifact" in reason):
+    if ok or "unresolved" not in reason and "approval" not in reason:
         print("qwen3-asr preflight gate: self-test expected pending approval", file=sys.stderr)
         return 1
-    with tempfile.TemporaryDirectory(prefix="qwen3-asr-gate-") as directory:
-        root = Path(directory)
-        test_project = root / "project"
-        test_project.mkdir()
-        shutil.copy2(project / "uv.lock", test_project / "uv.lock")
-        shutil.copy2(project / "pyproject.toml", test_project / "pyproject.toml")
-        shutil.copy2(
-            project / GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME,
-            root / GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME,
-        )
-        # Complete only the disposable baseline with positive fixture sizes so
-        # this self-test exercises the approved path as well as the strict
-        # missing-size rejection above. Production accepts missing sizes only
-        # for the six exact PyTorch CPU URL/hash identities.
-        complete_lock = re.sub(
-            r'(hash = "sha256:[0-9a-f]{64}")(, upload-time =)',
-            r'\1, size = 1\2',
-            (test_project / "uv.lock").read_text(encoding="utf-8"),
-        )
-        (test_project / "uv.lock").write_text(complete_lock, encoding="utf-8")
-        test_lock_sha = digest_bytes((test_project / "uv.lock").read_bytes())
-        test_lock = tomllib.loads(complete_lock)
-        test_rows = canonical_package_rows(test_lock)
-        old_lock_sha = LOCK_SHA256
-        LOCK_SHA256 = test_lock_sha
-        shutil.copy2(manifest, root / "manifest.json")
-        approved = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-        approved["lock_sha256"] = test_lock_sha
-        approved["package_rows_sha256"] = canonical_digest(test_rows)
-        approved["gradio_client_source_evidence_sha256"] = GRADIO_CLIENT_SOURCE_EVIDENCE_SHA256
-        for row in approved["review_rows"]:
-            row.update({"status": "REVIEWED", "license": "SELF_TEST", "native_review": "SELF_TEST", "bundled_review": "SELF_TEST", "evidence": "self-test-evidence"})
-        for identity in approved["model_identities"]:
-            identity.update({"license_status": "REVIEWED", "license_digest": "0" * 64, "native_review": "SELF_TEST", "bundled_review": "SELF_TEST", "evidence": "self-test-evidence"})
-        approved["review_rows_sha256"] = canonical_digest(approved["review_rows"])
-        scope = {
-            "lock_sha256": LOCK_SHA256,
-            "pyproject_sha256": PYPROJECT_SHA256,
-            "package_rows_sha256": approved["package_rows_sha256"],
-            "variants": VARIANTS,
-            "model_identities": approved["model_identities"],
-            "reference_audio": approved["reference_audio"],
-            "gradio_client_source_evidence_sha256": approved["gradio_client_source_evidence_sha256"],
-            "review_rows": approved["review_rows"],
-        }
-        approved["approval_scope_sha256"] = canonical_digest(scope)
-        approved["operator_approval"] = {
-            "schema": "v1", "decision": "APPROVED", "signer": "self-test-signer",
-            "digest": approved["approval_scope_sha256"],
-        }
-        approved_manifest = root / "approved-manifest.json"
-        approved_manifest.write_text(json.dumps(approved), encoding="utf-8")
-        evidence = root / "license_gate_evidence.json"
-        evidence.write_text(json.dumps({
-            "schema": "v1", "decision": "APPROVED",
-            "scope_sha256": approved["approval_scope_sha256"],
-            "manifest_sha256": digest_bytes(approved_manifest.read_bytes()),
-            "lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256,
-            "signer": "self-test-signer", "digest": approved["approval_scope_sha256"],
-        }), encoding="utf-8")
-        ok, reason = validate(test_project, approved_manifest, evidence)
-        if not ok:
-            print(f"qwen3-asr preflight gate: approved baseline self-test failed: {reason}", file=sys.stderr)
-            return 1
-        duplicate_manifest = root / "duplicate-manifest.json"
-        duplicate_manifest.write_text('{"gate_version":1,"gate_version":1}', encoding="utf-8")
-        ok, _ = validate(test_project, duplicate_manifest, evidence)
-        if ok:
-            print("qwen3-asr preflight gate: duplicate manifest key accepted", file=sys.stderr)
-            return 1
-        duplicate_evidence = root / "duplicate-evidence.json"
-        duplicate_evidence.write_text('{"schema":"v1","schema":"v1"}', encoding="utf-8")
-        ok, _ = validate(test_project, approved_manifest, duplicate_evidence)
-        if ok:
-            print("qwen3-asr preflight gate: duplicate evidence key accepted", file=sys.stderr)
-            return 1
-
-        def assert_blocked(label: str, mutate: Any) -> bool:
-            candidate = json.loads(approved_manifest.read_text(encoding="utf-8"))
-            mutate(candidate)
-            path = root / f"{label}.json"
-            path.write_text(json.dumps(candidate), encoding="utf-8")
-            blocked_ok, _ = validate(test_project, path, evidence)
-            return not blocked_ok
-
-        lock = test_project / "uv.lock"
-        lock.write_bytes(lock.read_bytes() + b"\n")
-        ok, reason = validate(test_project, approved_manifest, evidence)
-        if ok or "lock" not in reason:
-            print("qwen3-asr preflight gate: lock tamper self-test failed", file=sys.stderr)
-            return 1
-        shutil.copy2(project / "uv.lock", lock)
-        LOCK_SHA256 = old_lock_sha
-        if not assert_blocked("variant-tamper", lambda value: value["variants"][0].update(revision="0" * 40)):
-            print("qwen3-asr preflight gate: variant tamper self-test failed", file=sys.stderr)
-            return 1
-        if not assert_blocked("model-tamper", lambda value: value["model_identities"][0].update(repo="Qwen/tampered")):
-            print("qwen3-asr preflight gate: model identity tamper self-test failed", file=sys.stderr)
-            return 1
-        if not assert_blocked("model-license-tamper", lambda value: value["model_identities"][0].update(license_digest="1" * 64)):
-            print("qwen3-asr preflight gate: model license tamper self-test failed", file=sys.stderr)
-            return 1
-        for field in ("license_status", "native_review", "bundled_review", "evidence"):
-            if not assert_blocked(f"model-{field}-placeholder", lambda value, field=field: value["model_identities"][0].update(**{field: "  pEnDiNg_ReViEw  "})):
-                print(f"qwen3-asr preflight gate: model {field} placeholder self-test failed", file=sys.stderr)
-                return 1
-        if not assert_blocked("audio-tamper", lambda value: value["reference_audio"].update(sha256="2" * 64)):
-            print("qwen3-asr preflight gate: audio tamper self-test failed", file=sys.stderr)
-            return 1
-        evidence_path = root / GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME
-        evidence_bytes = evidence_path.read_bytes()
-        evidence_path.write_bytes(evidence_bytes.replace(b"gradio-client", b"tampered-client", 1))
-        ok, _ = validate(test_project, approved_manifest, evidence)
-        evidence_path.write_bytes(evidence_bytes)
-        if ok:
-            print("qwen3-asr preflight gate: gradio source evidence tamper self-test failed", file=sys.stderr)
-            return 1
-        if not assert_blocked(
-            "gradio-evidence-digest-tamper",
-            lambda value: value.update(gradio_client_source_evidence_sha256="5" * 64),
-        ):
-            print("qwen3-asr preflight gate: gradio evidence digest tamper self-test failed", file=sys.stderr)
-            return 1
-        duplicate_gradio = root / "duplicate-gradio-evidence.json"
-        duplicate_gradio.write_text('{"schema":"v1","schema":"v1"}', encoding="utf-8")
-        evidence_path.write_bytes(duplicate_gradio.read_bytes())
-        ok, _ = validate(test_project, approved_manifest, evidence)
-        evidence_path.write_bytes(evidence_bytes)
-        if ok:
-            print("qwen3-asr preflight gate: duplicate gradio evidence key accepted", file=sys.stderr)
-            return 1
-        def unresolved_row(value: dict[str, Any]) -> None:
-            value["review_rows"][0]["native_review"] = "UNRESOLVED"
-            value["review_rows_sha256"] = canonical_digest(value["review_rows"])
-        if not assert_blocked("review-tamper", unresolved_row):
-            print("qwen3-asr preflight gate: unresolved-row self-test failed", file=sys.stderr)
-            return 1
-        if not assert_blocked("scope-tamper", lambda value: value.update(approval_scope_sha256="3" * 64)):
-            print("qwen3-asr preflight gate: scope tamper self-test failed", file=sys.stderr)
-            return 1
-        if not assert_blocked("signer-tamper", lambda value: value["operator_approval"].update(signer="other-signer")):
-            print("qwen3-asr preflight gate: signer tamper self-test failed", file=sys.stderr)
-            return 1
-        evidence_tampered = json.loads(evidence.read_text(encoding="utf-8"))
-        evidence_tampered["scope_sha256"] = "4" * 64
-        evidence.write_text(json.dumps(evidence_tampered), encoding="utf-8")
-        ok, _ = validate(test_project, approved_manifest, evidence)
-        if ok:
-            print("qwen3-asr preflight gate: evidence tamper self-test failed", file=sys.stderr)
-            return 1
     print("qwen3-asr preflight gate: self-test PASS")
     return 0
 

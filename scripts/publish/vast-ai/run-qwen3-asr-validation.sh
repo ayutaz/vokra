@@ -9,6 +9,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/qwen3_asr"
 REFERENCE_DUMPER="$PARITY_PROJECT/dump_reference.py"
+WHEEL_AUDIT="$PARITY_PROJECT/wheel_audit.py"
 DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
@@ -18,6 +19,9 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=50000000
 REFERENCE_AUDIO_SHA256="241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
+OFFICIAL_WHEEL_URL="https://files.pythonhosted.org/packages/01/12/d3027a7e4dc2eea0b12a4bf8414a7109f055004e177166e01d8859d3ca0/qwen_asr-0.0.6-py3-none-any.whl"
+OFFICIAL_WHEEL_BYTES=141603
+OFFICIAL_WHEEL_SHA256="b9c55a38413298f3a990a4475467399daec6e8f4172363053fc42e2166c2dfd3"
 
 log() { printf '[qwen3-asr-vast] %s\n' "$*" >&2; }
 step() { printf '\n[qwen3-asr-vast] ==== %s ====\n' "$*" >&2; }
@@ -67,9 +71,11 @@ usage: run-qwen3-asr-validation.sh --variant <0.6b|1.7b|all> --approval-evidence
        run-qwen3-asr-validation.sh --self-test
 
 VAST-only, non-publishing gate for Qwen3-ASR. For each requested exact release
-it downloads the immutable Hugging Face snapshot, streams the BF16 checkpoint
-to a self-contained GGUF, generates an independent FP32 CPU reference through
-official qwen-asr==0.0.6, and compares Vokra CPU projected audio, prompt ids,
+it authenticates the immutable official qwen-asr==0.0.6 wheel without importing
+its excluded wrapper closure, downloads the immutable Hugging Face snapshot,
+streams the BF16 checkpoint to a self-contained GGUF, generates an independent
+FP32 CPU reference through the official Transformers backend, and compares
+Vokra CPU projected audio, prompt ids,
 greedy ids, language, and text. It then runs workspace and Apple cross-build
 verification once.
 
@@ -161,7 +167,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup git awk find tee wc df readelf; do
+  for tool in uv cargo rustc rustup git awk find tee wc df readelf curl; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
@@ -172,6 +178,7 @@ require_tooling() {
   [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] \
     || die "Qwen3-ASR dependency audit is missing or symlinked"
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
+  [[ -f "$WHEEL_AUDIT" && ! -L "$WHEEL_AUDIT" ]] || die "official wheel audit is missing or symlinked"
   [[ -f "$REFERENCE_AUDIO" ]] || die "reference audio is missing"
   local audio_hash
   audio_hash="$(sha256_file "$REFERENCE_AUDIO")"
@@ -180,6 +187,24 @@ require_tooling() {
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
     die "VAST checkout must be clean so evidence names one exact commit"
   fi
+}
+
+download_official_wheel() {
+  local output="$1" evidence_dir="$2"
+  local wheel="$output/qwen_asr-0.0.6-py3-none-any.whl"
+  [[ ! -e "$wheel" && ! -L "$wheel" ]] || die "official wheel destination already exists"
+  step "Acquire and authenticate the exact official qwen-asr wheel"
+  curl --fail --location --retry 3 --retry-delay 2 --retry-all-errors \
+    --output "$wheel" "$OFFICIAL_WHEEL_URL"
+  [[ "$(wc -c < "$wheel" | tr -d ' ')" == "$OFFICIAL_WHEEL_BYTES" ]] \
+    || die "official wheel byte count drifted"
+  [[ "$(sha256_file "$wheel")" == "$OFFICIAL_WHEEL_SHA256" ]] \
+    || die "official wheel SHA-256 drifted"
+  UV_NO_CACHE=1 UV_CACHE_DIR="${QWEN3_ASR_UV_CACHE_DIR:-/private/tmp/vokra-qwen3-asr-uv-cache}" \
+    uv run --no-cache --no-project --offline --python 3.12 python "$WHEEL_AUDIT" \
+      --wheel "$wheel" --output "$evidence_dir/official-wheel-audit.json"
+  [[ -s "$evidence_dir/official-wheel-audit.json" ]] || die "wheel audit emitted no evidence"
+  printf '%s\n' "$wheel"
 }
 
 pre_sync_gate() {
@@ -258,7 +283,7 @@ checkpoint_input() {
 }
 
 run_variant() {
-  local variant="$1" work_dir="$2" evidence_dir="$3"
+  local variant="$1" work_dir="$2" evidence_dir="$3" wheel="$4"
   local repo revision model_kind snapshot input gguf reference_dir
   local test_name gguf_env reference_env reference_threads parity_log
   repo="$(variant_repo "$variant")"
@@ -292,6 +317,7 @@ run_variant() {
       "$REFERENCE_DUMPER" \
       --variant "$variant" \
       --model-dir "$snapshot" \
+      --wheel "$wheel" \
       --audio "$REFERENCE_AUDIO" \
       --output "$reference_dir" \
       --language English \
@@ -321,11 +347,12 @@ run_variant() {
 }
 
 run_self_test() {
-  local failed=0 gate_line host_line tooling_line sync_line audit_line build_line pre_gate_block probe_root probe_output fake_worker
+  local failed=0 gate_line host_line tooling_line sync_line audit_line wheel_line build_line pre_gate_block probe_root probe_output fake_worker
   [[ "$(variant_repo 0.6b)" == "Qwen/Qwen3-ASR-0.6B" ]] || failed=1
   [[ "$(variant_revision 0.6b)" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$(variant_model_kind 1.7b)" == "qwen3-asr-1.7b" ]] || failed=1
   [[ "$(variant_test 1.7b)" == "qwen3_asr_1_7b_cpu_matches_official_reference" ]] || failed=1
+  grep -Fq -- 'e177166e01d8859d3ca0/qwen_asr-0.0.6-py3-none-any.whl' "$WHEEL_AUDIT" || failed=1
   if variant_repo bad >/dev/null 2>&1; then
     failed=1
   fi
@@ -337,8 +364,9 @@ run_self_test() {
   audit_anchor="    \"\$DEPENDENCY_AUDIT\" \\"
   fetch_anchor="    --fetch-model-licenses \\"
   audit_line="$(grep -nF -- "$audit_anchor" "$0" | tail -1 | cut -d: -f1)"
+  wheel_line="$(grep -n '^  official_wheel=' "$0" | tail -1 | cut -d: -f1)"
   build_line="$(grep -n '^  cargo build --manifest-path' "$0" | tail -1 | cut -d: -f1)"
-  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || failed=1
+  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$wheel_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || failed=1
   (( gate_line < host_line && gate_line < tooling_line && gate_line < sync_line && sync_line < audit_line && audit_line < build_line )) || failed=1
   grep -Fq -- "$audit_anchor" "$0" || failed=1
   grep -Fq -- "$fetch_anchor" "$0" || failed=1
@@ -477,6 +505,9 @@ main() {
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
 
+  local official_wheel
+  official_wheel="$(download_official_wheel "$work_dir" "$evidence_dir")"
+
   step "Install the locked official reference environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
     2>&1 | tee "$evidence_dir/uv-sync.log"
@@ -494,10 +525,10 @@ main() {
     2>&1 | tee "$evidence_dir/build-cli.log"
 
   if [[ "$selection" == "0.6b" || "$selection" == "all" ]]; then
-    run_variant 0.6b "$work_dir" "$evidence_dir"
+    run_variant 0.6b "$work_dir" "$evidence_dir" "$official_wheel"
   fi
   if [[ "$selection" == "1.7b" || "$selection" == "all" ]]; then
-    run_variant 1.7b "$work_dir" "$evidence_dir"
+    run_variant 1.7b "$work_dir" "$evidence_dir" "$official_wheel"
   fi
 
   if [[ "$selection" == "all" ]]; then

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 import tempfile
@@ -41,12 +42,23 @@ class DumperContractTests(unittest.TestCase):
                     "9b",
                     "--model-dir",
                     "/tmp/model",
+                    "--wheel",
+                    "/tmp/qwen_asr.whl",
                     "--audio",
                     "/tmp/audio.wav",
                     "--output",
                     "/tmp/out",
                 ]
             )
+
+    def test_direct_backend_path_has_no_legacy_wrapper_name(self) -> None:
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        loaded = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        self.assertNotIn("asr", loaded)
 
 
 if __name__ == "__main__":

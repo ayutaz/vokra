@@ -972,12 +972,6 @@ def audit_environment(
         raise ValueError("uv.lock bytes do not match the reviewed preflight digest")
     if sha256_file(pyproject_path) != preflight_gate.PYPROJECT_SHA256:
         raise ValueError("pyproject.toml bytes do not match the reviewed preflight digest")
-    gradio_source_evidence, gradio_source_evidence_sha256 = (
-        preflight_gate.load_gradio_client_source_evidence(
-            project / preflight_gate.GRADIO_CLIENT_SOURCE_EVIDENCE_FILENAME
-        )
-    )
-
     all_rows = sorted(lock["package"], key=lambda row: (row["name"], row["version"], canonical_json(row["source"])))
     expected, inactive_reasons = _active_lock_graph(lock)
     active_keys = {_row_key(row) for row in expected}
@@ -995,16 +989,7 @@ def audit_environment(
     failures: list[str] = []
     dependency_acquisition_rows: list[dict[str, Any]] = []
     dependency_acquisition_not_needed: list[dict[str, Any]] = []
-    source_mapping_evidence: dict[str, Any] = {
-        "gradio-client@2.5.0": {
-            "status": "SOURCE_MAPPING_EVIDENCE_COMPLETE_PENDING_REVIEW",
-            "sha256": gradio_source_evidence_sha256,
-            "artifact_filenames": [
-                item["filename"] for item in gradio_source_evidence["package"]["artifacts"]
-            ],
-            "source_paths": [item["path"] for item in gradio_source_evidence["source_files"]],
-        }
-    }
+    source_mapping_evidence: dict[str, Any] = {}
 
     def acquisition_row(row: dict[str, Any]) -> dict[str, Any]:
         artifact = row.get("sdist") if isinstance(row.get("sdist"), dict) else {}
@@ -1131,10 +1116,6 @@ def audit_environment(
             "installed closure mismatch: "
             + canonical_json({"missing": missing, "unexpected": unexpected})
         )
-    failures.append(
-        "OWNER_REVIEW_REQUIRED: gradio-client==2.5.0 source mapping is evidence-complete; "
-        "the package review row remains PENDING_REVIEW"
-    )
     return {
         "schema": SCHEMA,
         "repository": _repository_identity(project),
@@ -1594,7 +1575,7 @@ def self_test() -> int:
             print("qwen3-asr dependency audit: missing gradio evidence accepted", file=sys.stderr)
             return 1
     lock = tomllib.loads((project / "uv.lock").read_text(encoding="utf-8"))
-    assert len(_active_lock_packages(lock)) == 91
+    assert len(_active_lock_packages(lock)) == 28
     expected_torch = {"2.13.0"} if sys.platform == "darwin" else {"2.13.0+cpu"}
     assert {row["version"] for row in _active_lock_packages(lock) if row["name"] == "torch"} == expected_torch
     linux_environment = {
@@ -1603,18 +1584,18 @@ def self_test() -> int:
         "sys_platform": "linux",
     }
     linux_active, linux_inactive = _active_lock_graph(lock, linux_environment)
-    assert len(linux_active) == 91
-    assert len(lock["package"]) == 95
-    assert len(linux_active) + len(linux_inactive) == 95
-    assert len(linux_inactive) == 4
+    assert len(linux_active) == 28
+    assert len(lock["package"]) == 31
+    assert len(linux_active) + len(linux_inactive) == 31
+    assert len(linux_inactive) == 3
     virtual_key = next(_row_key(row) for row in lock["package"] if row["source"] == {"virtual": "."})
     assert linux_inactive[virtual_key] == VIRTUAL_PROJECT_INACTIVE_REASON
     assert {row["version"] for row in linux_active if row["name"] == "torch"} == {"2.13.0+cpu"}
     assert linux_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "colorama")] == (
         "not reachable from the virtual project dependency graph for the current environment"
     )
-    assert linux_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "tzdata")] == (
-        "not reachable from the virtual project dependency graph for the current environment"
+    assert linux_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "torch" and row["version"] == "2.13.0")] == (
+        "package resolution-marker is false for the current environment"
     )
     assert "resolution-marker" in linux_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "torch" and row["version"] == "2.13.0")]
     darwin_environment = {
@@ -1623,7 +1604,7 @@ def self_test() -> int:
         "sys_platform": "darwin",
     }
     darwin_active, darwin_inactive = _active_lock_graph(lock, darwin_environment)
-    assert len(darwin_active) == 91
+    assert len(darwin_active) == 28
     assert {row["version"] for row in darwin_active if row["name"] == "torch"} == {"2.13.0"}
     assert "resolution-marker" in darwin_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "torch" and row["version"] == "2.13.0+cpu")]
     tampered_marker = copy.deepcopy(lock)
@@ -1846,7 +1827,20 @@ def self_test() -> int:
     assert all(item["status"] == "BLOCKED_FACTUAL_LICENSE_PATH" for item in records)
     assert len(failures) == 2
 
-    sdist_source_row = copy.deepcopy(next(row for row in lock["package"] if row["name"] == "cython"))
+    # Keep archive/security tests independent of the active closure: these
+    # synthetic rows exercise the bounded parser even though the old qwen-asr
+    # packages are intentionally absent from the new lock.
+    sdist_source_row = {
+        "name": "cython",
+        "version": "3.3.0",
+        "source": {"registry": "https://pypi.org/simple"},
+        "sdist": {
+            "url": "https://files.pythonhosted.org/packages/test/cython-3.3.0.tar.gz",
+            "hash": "sha256:" + "0" * 64,
+            "size": 1,
+            "upload-time": "2026-01-01T00:00:00Z",
+        },
+    }
 
     def synthetic_tar(
         member_names: list[str],
@@ -1915,7 +1909,11 @@ def self_test() -> int:
         else:
             print(f"qwen3-asr dependency audit: malformed sdist {artifact_mutation} accepted", file=sys.stderr)
             return 1
-    dynet_row = next(row for row in lock["package"] if row["name"] == "dynet38")
+    dynet_row = {
+        "name": "dynet38",
+        "version": "2.2",
+        "source": {"registry": "https://pypi.org/simple"},
+    }
     assert "sdist" not in dynet_row
     dynet_blocked = _blocked_sdist_record(
         dynet_row,

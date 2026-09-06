@@ -2,12 +2,15 @@
 
 This directory stages the VAST-only oracle for the exact released
 `Qwen/Qwen3-ASR-0.6B` and `Qwen/Qwen3-ASR-1.7B` revisions accepted by Vokra.
-It imports the official Apache-2.0 `qwen-asr==0.0.6` package; there is no
-second, locally reimplemented Qwen model in the dumper.
+It authenticates the official Apache-2.0 `qwen-asr==0.0.6` wheel, then loads
+only its unchanged Transformers backend. The package root and inference
+wrapper are never imported because they eagerly pull the excluded
+forced-aligner/librosa closure; the two prompt helpers and output parser are
+AST-lifted from hash-bound official source files, not reimplemented here.
 
 The official calls used as reference are:
 
-- `Qwen3ASRModel._build_text_prompt` and its official processor for prompt and
+- the official wrapper's `_build_text_prompt` body and its official processor for prompt and
   16 kHz log-mel preparation;
 - `model.thinker.get_audio_features` for the final projected audio rows;
 - `model.generate` for the greedy token sequence;
@@ -30,7 +33,7 @@ human review records an approval digest equal to the complete scope digest.
 The gate also rejects `UNRESOLVED` rows even if an approval-shaped value is
 later supplied.
 
-The factual source-mapping record
+The historical factual source-mapping record
 `gradio_client_2_5_0_source_evidence.json` binds both exact PyPI 2.5.0
 artifacts (sdist and wheel), their upload timestamps and Sigstore/Trusted
 Publishing provenance, and the four exact source blobs at the upstream commit
@@ -38,10 +41,9 @@ Publishing provenance, and the four exact source blobs at the upstream commit
 manifest and operator approval scope. This closes only the factual
 source-mapping gap for `gradio-client`; the package row remains
 `PENDING_REVIEW`, operator approval remains pending, and publication remains
-`NO_UPLOAD`. Any changed, duplicate-key, missing, or mismatched evidence is a
-preflight block. The dependency audit reports this row as
-`SOURCE_MAPPING_EVIDENCE_COMPLETE_PENDING_REVIEW` and still cannot make the
-overall audit or owner gate pass.
+`NO_UPLOAD`; it is not part of the active lock closure or approval scope.
+Any changed, duplicate-key, missing, or mismatched wheel evidence is a
+preflight block.
 
 The factual-audit route is a separately authorized, named VAST/Linux setup
 step. It performs only the exact frozen environment sync (no model download,
@@ -70,16 +72,16 @@ non-empty `upload-time`), then inspect bounded LICENSE/COPYING/NOTICE/COPYRIGHT
 members in memory; archive bytes are never extracted or executed. A missing
 locked sdist or an uninspectable archive remains a structured factual blocker;
 there is no README, alternate release, or wheel fallback. In the last recorded
-audit for this exact lock, the unresolved locked-sdist paths were
-`dynet38==2.2`, `gradio-client==2.5.0`, `qwen-omni-utils==0.0.9`,
-`soynlp==0.0.493`, and `tqdm==4.70.0`. The two fixed model revisions permit
-only their exact HF `LICENSE` paths. That audit also recorded HTTP 404 for
-both model LICENSE paths, so neither model identity may be promoted from that
-evidence. The signed 0.6B license row in `docs/license-audit.md` is not a
-replacement for the exact revision-bound file evidence, and the 1.7B row must
-have its own primary-source evidence; a family walk is not accepted. No
-weights, model imports, or Cargo are part of this audit, and `uv sync` is
-performed only by the separately authorized setup step above.
+audit for this exact lock is now limited to the locked Transformers closure;
+the removed `qwen-asr` UI/forced-aligner packages are not accepted as
+substitutes. The two fixed model revisions permit only their exact HF
+`LICENSE` paths. That audit also recorded HTTP 404 for both model LICENSE
+paths, so neither model identity may be promoted from that evidence. The
+signed 0.6B license row in `docs/license-audit.md` is not a replacement for
+the exact revision-bound file evidence, and the 1.7B row must have its own
+primary-source evidence; a family walk is not accepted. No weights, model
+imports, or Cargo are part of this audit, and `uv sync` is performed only by
+the separately authorized setup step above.
 The VAST host must provide `readelf`; the wrapper refuses to run without it.
 Any sdist or LICENSE redirect to a non-allowlisted path, archive traversal or
 link, size/hash mismatch, or non-license model response is rejected before
