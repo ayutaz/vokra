@@ -40,10 +40,13 @@
 
 use std::path::Path;
 
+#[cfg(test)]
 use vokra_core::LicenseClass;
+#[cfg(test)]
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 
 use crate::ConvertError;
+#[cfg(test)]
 use crate::safetensors::SafetensorsFile;
 
 /// `vokra.model.arch` for XY_Tokenizer GGUFs. Intentionally **distinct**
@@ -167,7 +170,10 @@ pub fn convert_xy_tokenizer_file(
     ))
 }
 
-#[allow(dead_code)] // Synthetic helper is reserved for the authenticated converter.
+#[cfg(test)]
+// Synthetic helper is deliberately test-only: topology is not authenticated,
+// so production code must not have a path that turns an arbitrary non-empty
+// tensor payload into a seemingly usable XY-Tokenizer GGUF.
 fn convert_xy_tokenizer_bytes(
     bytes: &[u8],
     output: &Path,
