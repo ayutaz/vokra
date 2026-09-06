@@ -177,7 +177,7 @@ fn exact_keys(value: &JsonValue, expected: &[&str], label: &str) {
     }
 }
 
-fn string(value: &JsonValue, key: &str) -> &str {
+fn string<'a>(value: &'a JsonValue, key: &str) -> &'a str {
     value
         .get(key)
         .and_then(JsonValue::as_str)
@@ -664,7 +664,7 @@ fn authenticate_reference(
 
 fn compare(actual: &[f32], expected: &[f32], atol: Option<f32>) -> (f32, usize) {
     assert_eq!(actual.len(), expected.len());
-    let mut max = 0.0;
+    let mut max: f32 = 0.0;
     let mut argmax = 0;
     for (a, e) in actual.iter().zip(expected) {
         let d = (*a - *e).abs();
