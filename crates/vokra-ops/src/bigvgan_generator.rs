@@ -1057,6 +1057,80 @@ impl AmpBlock1 {
 // BigVGanConfig / BigVGanWeights / BigVGanGenerator
 // ---------------------------------------------------------------------------
 
+/// One of the four released BigVGAN checkpoints supported by Vokra.
+///
+/// This discriminator and its shape facts live in `vokra-ops` so the offline
+/// converter and the runtime binder cannot silently grow independent variant
+/// or tensor-manifest tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BigVGanVariant {
+    /// `nvidia/bigvgan_v2_22khz_80band_256x`.
+    V2_22khz80Band256x,
+    /// `nvidia/bigvgan_v2_44khz_128band_512x`.
+    V2_44khz128Band512x,
+    /// `nvidia/bigvgan_v2_24khz_100band_256x`.
+    V2_24khz100Band256x,
+    /// `nvidia/bigvgan_base_24khz_100band`.
+    BaseV1_24khz100Band,
+}
+
+impl BigVGanVariant {
+    /// Wire tag written into `vokra.bigvgan.variant`.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::V2_22khz80Band256x => "v2_22khz_80band_256x",
+            Self::V2_44khz128Band512x => "v2_44khz_128band_512x",
+            Self::V2_24khz100Band256x => "v2_24khz_100band_256x",
+            Self::BaseV1_24khz100Band => "base_v1_24khz_100band",
+        }
+    }
+
+    /// Canonical Vokra model name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::V2_22khz80Band256x => "bigvgan-v2-22khz-80band-256x",
+            Self::V2_44khz128Band512x => "bigvgan-v2-44khz-128band-512x",
+            Self::V2_24khz100Band256x => "bigvgan-v2-24khz-100band-256x",
+            Self::BaseV1_24khz100Band => "bigvgan-base-24khz-100band",
+        }
+    }
+
+    /// Upstream Hugging Face repository.
+    #[must_use]
+    pub const fn upstream_hf(self) -> &'static str {
+        match self {
+            Self::V2_22khz80Band256x => "nvidia/bigvgan_v2_22khz_80band_256x",
+            Self::V2_44khz128Band512x => "nvidia/bigvgan_v2_44khz_128band_512x",
+            Self::V2_24khz100Band256x => "nvidia/bigvgan_v2_24khz_100band_256x",
+            Self::BaseV1_24khz100Band => "nvidia/bigvgan_base_24khz_100band",
+        }
+    }
+
+    /// Parses a wire tag, rejecting unknown future variants.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "v2_22khz_80band_256x" => Some(Self::V2_22khz80Band256x),
+            "v2_44khz_128band_512x" => Some(Self::V2_44khz128Band512x),
+            "v2_24khz_100band_256x" => Some(Self::V2_24khz100Band256x),
+            "base_v1_24khz_100band" => Some(Self::BaseV1_24khz100Band),
+            _ => None,
+        }
+    }
+
+    /// Output sample rate from the corresponding upstream config.
+    #[must_use]
+    pub const fn sample_rate(self) -> u32 {
+        match self {
+            Self::V2_22khz80Band256x => 22_050,
+            Self::V2_44khz128Band512x => 44_100,
+            Self::V2_24khz100Band256x | Self::BaseV1_24khz100Band => 24_000,
+        }
+    }
+}
+
 /// Hyperparameters for [`BigVGanGenerator`]. Defaults mirror the released
 /// `bigvgan_v2_24khz_100band_256x` checkpoint's `config.json` (upstream
 /// [Hugging Face](https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x));
@@ -1137,6 +1211,195 @@ impl BigVGanConfig {
     pub fn output_channels_at(&self, stage: usize) -> u32 {
         self.upsample_initial_channel >> (stage as u32 + 1)
     }
+}
+
+/// Resolves the released BigVGAN shape/config facts for a variant.
+///
+/// The axes are transcribed from the upstream `config.json` files:
+///
+/// - <https://huggingface.co/nvidia/bigvgan_v2_22khz_80band_256x/raw/main/config.json>
+/// - <https://huggingface.co/nvidia/bigvgan_v2_44khz_128band_512x/raw/main/config.json>
+/// - <https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x/raw/main/config.json>
+/// - <https://huggingface.co/nvidia/bigvgan_base_24khz_100band/raw/main/config.json>
+///
+/// The base-v1 config omits `use_bias_at_final` and `use_tanh_at_final`; the
+/// upstream Python constructor defaults both to `true`, which is preserved
+/// here rather than inferred from another variant.
+#[must_use]
+pub fn config_for_variant(variant: BigVGanVariant) -> BigVGanConfig {
+    match variant {
+        BigVGanVariant::V2_22khz80Band256x => BigVGanConfig {
+            in_channels: 80,
+            upsample_initial_channel: 1536,
+            upsample_rates: vec![4, 4, 2, 2, 2, 2],
+            upsample_kernel_sizes: vec![8, 8, 4, 4, 4, 4],
+            resblock_kernel_sizes: vec![3, 7, 11],
+            resblock_dilation_sizes: vec![vec![1, 3, 5]; 3],
+            activation: SnakeKind::SnakeBeta,
+            snake_logscale: true,
+            use_bias_at_final: false,
+            use_tanh_at_final: false,
+        },
+        BigVGanVariant::V2_44khz128Band512x => BigVGanConfig {
+            in_channels: 128,
+            upsample_initial_channel: 1536,
+            upsample_rates: vec![8, 4, 2, 2, 2, 2],
+            upsample_kernel_sizes: vec![16, 8, 4, 4, 4, 4],
+            resblock_kernel_sizes: vec![3, 7, 11],
+            resblock_dilation_sizes: vec![vec![1, 3, 5]; 3],
+            activation: SnakeKind::SnakeBeta,
+            snake_logscale: true,
+            use_bias_at_final: false,
+            use_tanh_at_final: false,
+        },
+        BigVGanVariant::V2_24khz100Band256x => BigVGanConfig {
+            in_channels: 100,
+            upsample_initial_channel: 1536,
+            upsample_rates: vec![4, 4, 2, 2, 2, 2],
+            upsample_kernel_sizes: vec![8, 8, 4, 4, 4, 4],
+            resblock_kernel_sizes: vec![3, 7, 11],
+            resblock_dilation_sizes: vec![vec![1, 3, 5]; 3],
+            activation: SnakeKind::SnakeBeta,
+            snake_logscale: true,
+            use_bias_at_final: false,
+            use_tanh_at_final: false,
+        },
+        BigVGanVariant::BaseV1_24khz100Band => BigVGanConfig {
+            in_channels: 100,
+            upsample_initial_channel: 512,
+            upsample_rates: vec![8, 8, 2, 2],
+            upsample_kernel_sizes: vec![16, 16, 4, 4],
+            resblock_kernel_sizes: vec![3, 7, 11],
+            resblock_dilation_sizes: vec![vec![1, 3, 5]; 3],
+            activation: SnakeKind::SnakeBeta,
+            snake_logscale: true,
+            use_bias_at_final: true,
+            use_tanh_at_final: true,
+        },
+    }
+}
+
+/// A descriptor in the complete upstream BigVGAN tensor contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BigVGanTensorSpec {
+    /// Upstream safetensors tensor name.
+    pub name: String,
+    /// Safetensors/GGUF dimension order.
+    pub shape: Vec<u64>,
+}
+
+impl BigVGanTensorSpec {
+    fn new(name: impl Into<String>, shape: impl Into<Vec<u64>>) -> Self {
+        Self {
+            name: name.into(),
+            shape: shape.into(),
+        }
+    }
+}
+
+/// Returns the complete expected tensor name/shape manifest for `variant`.
+///
+/// This is descriptor-only: it allocates names and dimensions but never
+/// allocates checkpoint-sized payloads. The offline converter validates its
+/// safetensors header against this manifest before constructing GGUF, and the
+/// runtime binder uses the same manifest before decoding tensors.
+#[must_use]
+pub fn tensor_manifest_for_variant(variant: BigVGanVariant) -> Vec<BigVGanTensorSpec> {
+    let cfg = config_for_variant(variant);
+    let mut manifest = Vec::new();
+    let initial = cfg.upsample_initial_channel as u64;
+    let input = cfg.in_channels as u64;
+    manifest.push(BigVGanTensorSpec::new(
+        "conv_pre.weight",
+        vec![initial, input, 7],
+    ));
+    manifest.push(BigVGanTensorSpec::new("conv_pre.bias", vec![initial]));
+
+    let n_ups = cfg.num_upsamples();
+    let n_kernels = cfg.num_kernels();
+    for stage in 0..n_ups {
+        let in_channels = initial >> stage;
+        let out_channels = cfg.output_channels_at(stage) as u64;
+        let kernel = cfg.upsample_kernel_sizes[stage] as u64;
+        manifest.push(BigVGanTensorSpec::new(
+            format!("ups.{stage}.0.weight"),
+            vec![in_channels, out_channels, kernel],
+        ));
+        manifest.push(BigVGanTensorSpec::new(
+            format!("ups.{stage}.0.bias"),
+            vec![out_channels],
+        ));
+    }
+
+    for stage in 0..n_ups {
+        let channels = cfg.output_channels_at(stage) as u64;
+        for branch in 0..n_kernels {
+            let block = stage * n_kernels + branch;
+            let kernel = cfg.resblock_kernel_sizes[branch] as u64;
+            for layer in 0..cfg.resblock_dilation_sizes[branch].len() {
+                for conv_group in ["convs1", "convs2"] {
+                    let prefix = format!("resblocks.{block}.{conv_group}.{layer}");
+                    manifest.push(BigVGanTensorSpec::new(
+                        format!("{prefix}.weight"),
+                        vec![channels, channels, kernel],
+                    ));
+                    manifest.push(BigVGanTensorSpec::new(
+                        format!("{prefix}.bias"),
+                        vec![channels],
+                    ));
+                }
+                for activation in [layer * 2, layer * 2 + 1] {
+                    let prefix = format!("resblocks.{block}.activations.{activation}");
+                    manifest.push(BigVGanTensorSpec::new(
+                        format!("{prefix}.act.alpha"),
+                        vec![channels],
+                    ));
+                    if matches!(cfg.activation, SnakeKind::SnakeBeta) {
+                        manifest.push(BigVGanTensorSpec::new(
+                            format!("{prefix}.act.beta"),
+                            vec![channels],
+                        ));
+                    }
+                    manifest.push(BigVGanTensorSpec::new(
+                        format!("{prefix}.upsample.filter"),
+                        vec![1, 1, 12],
+                    ));
+                    manifest.push(BigVGanTensorSpec::new(
+                        format!("{prefix}.downsample.lowpass.filter"),
+                        vec![1, 1, 12],
+                    ));
+                }
+            }
+        }
+    }
+
+    let last_channels = cfg.output_channels_at(n_ups - 1) as u64;
+    manifest.push(BigVGanTensorSpec::new(
+        "activation_post.act.alpha",
+        vec![last_channels],
+    ));
+    if matches!(cfg.activation, SnakeKind::SnakeBeta) {
+        manifest.push(BigVGanTensorSpec::new(
+            "activation_post.act.beta",
+            vec![last_channels],
+        ));
+    }
+    manifest.push(BigVGanTensorSpec::new(
+        "activation_post.upsample.filter",
+        vec![1, 1, 12],
+    ));
+    manifest.push(BigVGanTensorSpec::new(
+        "activation_post.downsample.lowpass.filter",
+        vec![1, 1, 12],
+    ));
+    manifest.push(BigVGanTensorSpec::new(
+        "conv_post.weight",
+        vec![1, last_channels, 7],
+    ));
+    if cfg.use_bias_at_final {
+        manifest.push(BigVGanTensorSpec::new("conv_post.bias", vec![1]));
+    }
+    manifest
 }
 
 /// Learned parameters for [`BigVGanGenerator`]. Layout notes:
