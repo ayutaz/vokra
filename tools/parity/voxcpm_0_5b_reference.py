@@ -368,6 +368,8 @@ def main() -> int:
     parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.source, args.snapshot, args.packet, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
+            parser.error("--self-test cannot be combined with normal arguments")
         self_test()
         return 0
     try:

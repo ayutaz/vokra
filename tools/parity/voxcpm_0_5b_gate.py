@@ -11,6 +11,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,35 @@ def _safe_existing_file(value: str) -> Path:
 def _expected_scope(data: dict[str, Any]) -> str:
     scope = {key: value for key, value in data.items() if key != "scope_sha256"}
     return hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _approval_fixture(expected_head: str) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "schema": "vokra-voxcpm-0.5b-approval-v1",
+        "status": "BLOCKED",
+        "disposition": "INSPECTION_ONLY",
+        "expected_head": expected_head,
+        "model_repository": MODEL_REPOSITORY,
+        "model_revision": MODEL_REVISION,
+        "source_repository": SOURCE_REPOSITORY,
+        "source_revision": SOURCE_REVISION,
+        "public_repository": PUBLIC_REPOSITORY,
+        "public_revision": PUBLIC_REVISION,
+        "audio_vae_source": AUDIOVAE_SOURCE,
+        "tokenizer_files": TOKENIZER_FILES,
+        "license_status": "DOCS_SIGNED_APACHE_2_0",
+        "dependency_status": "BLOCKED_UNREVIEWED",
+        "audio_vae_status": "UNRESOLVED",
+        "tokenizer_status": "UNRESOLVED",
+        "native_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+        "no_upload": True,
+    }
+    data["scope_sha256"] = _expected_scope(data)
+    return data
+
+
+def _approval_bytes(data: dict[str, Any]) -> bytes:
+    return (json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
 def validate_approval(raw: bytes, expected_head: str, supplied_sha: str) -> dict[str, Any]:
@@ -143,3 +173,84 @@ def self_test(source: Path, gate_marker: str, input_marker: str, input_args: lis
     )
     if result.returncode != 2 or "--expected-head must be lowercase 40-hex" not in result.stderr:
         raise AssertionError("normal CLI did not block before reading missing inputs")
+    mixed = subprocess.run(
+        [sys.executable, str(source), "--self-test", "--expected-head", "not-a-head"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if mixed.returncode != 2 or "cannot be combined" not in mixed.stderr:
+        raise AssertionError("--self-test and normal arguments must be mutually exclusive")
+
+    with tempfile.TemporaryDirectory(prefix="voxcpm-gate-self-test-") as temporary, tempfile.TemporaryDirectory(prefix="voxcpm-approval-self-test-") as approval_temporary:
+        # TemporaryDirectory may be returned through macOS's /var alias.  Use
+        # the physical path for the strict no-symlink-ancestry check.
+        root = Path(temporary).resolve()
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.name", "VoxCPM self-test"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.email", "voxcpm-self-test@example.invalid"], check=True)
+        (root / "seed").write_text("seed\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "seed"], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", "seed"], check=True, capture_output=True, text=True)
+        expected_head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        approval = Path(approval_temporary).resolve() / "approval.json"
+        raw = _approval_bytes(_approval_fixture(expected_head))
+        approval.write_bytes(raw)
+        approval_sha = hashlib.sha256(raw).hexdigest()
+
+        accepted = validate_approval(raw, expected_head, approval_sha)
+        if accepted["expected_head"] != expected_head:
+            raise AssertionError("valid approval was not accepted")
+        try:
+            require_blocked_gate(expected_head, str(approval), approval_sha, root)
+        except RuntimeError as error:
+            if "BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE" not in str(error):
+                raise AssertionError(f"valid approval did not reach the intentional blocker: {error}")
+        else:
+            raise AssertionError("valid blocked approval unexpectedly passed")
+
+        try:
+            validate_approval(raw, expected_head, "0" * 64)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong approval SHA was accepted")
+        try:
+            require_blocked_gate("0" * 40, str(approval), approval_sha, root)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong expected HEAD was accepted")
+        wrong_identity = _approval_fixture(expected_head)
+        wrong_identity["model_revision"] = "0" * 40
+        wrong_identity["scope_sha256"] = _expected_scope(wrong_identity)
+        try:
+            validate_approval(_approval_bytes(wrong_identity), expected_head, hashlib.sha256(_approval_bytes(wrong_identity)).hexdigest())
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong approval identity was accepted")
+        wrong_scope = _approval_fixture(expected_head)
+        wrong_scope["scope_sha256"] = "0" * 64
+        wrong_scope_raw = _approval_bytes(wrong_scope)
+        try:
+            validate_approval(wrong_scope_raw, expected_head, hashlib.sha256(wrong_scope_raw).hexdigest())
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong approval scope was accepted")
+        duplicate = b'{"schema":"one","schema":"two"}'
+        try:
+            validate_approval(duplicate, expected_head, hashlib.sha256(duplicate).hexdigest())
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("duplicate approval key was accepted")
+        symlink = Path(approval_temporary).resolve() / "approval-link.json"
+        symlink.symlink_to(approval)
+        try:
+            _safe_existing_file(str(symlink))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlink approval path was accepted")
