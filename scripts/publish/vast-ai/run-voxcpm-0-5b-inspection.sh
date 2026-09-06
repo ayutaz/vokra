@@ -116,10 +116,9 @@ self_test() {
     "$0" --work-dir /tmp/./voxcpm-self-test >/dev/null 2>&1; then
     echo 'self-test accepted malformed or duplicate options/path' >&2; failed=1
   fi
-  local uv_cache="${VOXCPM_UV_CACHE_DIR:-/tmp/vokra-voxcpm-uv-cache}"
-  UV_CACHE_DIR="$uv_cache" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || failed=1
-  UV_CACHE_DIR="$uv_cache" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" --self-test || failed=1
-  UV_CACHE_DIR="$uv_cache" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$REFERENCE" --self-test || failed=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test || failed=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREPARER" --self-test || failed=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$REFERENCE" --self-test || failed=1
   (( failed == 0 )) || return 1
   echo 'run-voxcpm-0-5b-inspection.sh self-test: OK'
 }
