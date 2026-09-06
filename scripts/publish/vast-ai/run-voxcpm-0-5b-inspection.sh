@@ -7,6 +7,7 @@ PREPARER="$ROOT/tools/parity/voxcpm_0_5b_prepare_checkpoint.py"
 REFERENCE="$ROOT/tools/parity/voxcpm_0_5b_reference.py"
 MODEL_REPOSITORY="openbmb/VoxCPM-0.5B"
 MODEL_REVISION="e95e62437bb940c8aeb9f26dc3169d436d2bb455"
+SOURCE_REPOSITORY="https://github.com/OpenBMB/VoxCPM.git"
 SOURCE_REVISION="38a76704ee67935ccbafbe5b6725e83dbb1e9305"
 PUBLIC_REPOSITORY="vokra/voxcpm-0.5b"
 PUBLIC_REVISION="ee0ca6d5b9fab27bbb626b5cb3f01236e582d004"
@@ -91,6 +92,30 @@ if data["scope_sha256"] != hashlib.sha256(json.dumps(scope, sort_keys=True, sepa
 PY
 }
 
+blocked_composite_gate() {
+  echo 'voxcpm-vast: ERROR: BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE: no cache, download, model, or Cargo work is permitted' >&2
+  return 2
+}
+
+write_approval_fixture() {
+  local path="$1" expected_head="$2"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" "$expected_head" "$MODEL_REPOSITORY" "$MODEL_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$AUDIOVAE_SOURCE" "$TOKENIZER_FILES" <<'PY'
+import hashlib, json, pathlib, sys
+path, head, model_repo, model_rev, source_repo, source_rev, public_repo, public_rev, audio_vae_source, tokenizer_files = sys.argv[1:]
+data = {
+    "schema": "vokra-voxcpm-0.5b-approval-v1", "status": "BLOCKED", "disposition": "INSPECTION_ONLY",
+    "expected_head": head, "model_repository": model_repo, "model_revision": model_rev,
+    "source_repository": source_repo, "source_revision": source_rev, "public_repository": public_repo,
+    "public_revision": public_rev, "audio_vae_source": audio_vae_source, "tokenizer_files": json.loads(tokenizer_files),
+    "license_status": "DOCS_SIGNED_APACHE_2_0", "dependency_status": "BLOCKED_UNREVIEWED",
+    "audio_vae_status": "UNRESOLVED", "tokenizer_status": "UNRESOLVED",
+    "native_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "no_upload": True,
+}
+data["scope_sha256"] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+pathlib.Path(path).write_text(json.dumps(data, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
 self_test() {
   local failed=0 token
   for token in "$MODEL_REPOSITORY" "$MODEL_REVISION" "$SOURCE_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$AUDIOVAE_SOURCE" \
@@ -109,6 +134,23 @@ self_test() {
   if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$0" | grep -v 'grep -En' >/dev/null; then
     echo 'upload/publish command found' >&2; failed=1
   fi
+  if ! (
+    fixture="$(mktemp "${TMPDIR:-/tmp}/voxcpm-approval.XXXXXX")"
+    cleanup_fixture() { rm -f -- "$fixture" "$fixture.blocked"; }
+    trap cleanup_fixture EXIT
+    fixture_head="$(printf '0%.0s' {1..40})"
+    write_approval_fixture "$fixture" "$fixture_head"
+    fixture_sha="$(sha256_file "$fixture")"
+    validate_approval "$fixture" "$fixture_head" "$fixture_sha"
+    if "$0" --expected-head "$fixture_head" --expected-head "$fixture_head" --approval-evidence "$fixture" --approval-sha256 "$fixture_sha" >/dev/null 2>&1 || \
+      "$0" --expected-head "$fixture_head" --approval-evidence "$fixture" --approval-evidence "$fixture" --approval-sha256 "$fixture_sha" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if blocked_composite_gate 2>"$fixture.blocked"; then exit 1; fi
+    grep -Fq 'BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE' "$fixture.blocked"
+  ); then
+    echo 'valid blocked approval or gate self-test failed' >&2; failed=1
+  fi
   if "$0" --self-test --self-test >/dev/null 2>&1 || \
     "$0" --expected-head bad >/dev/null 2>&1 || \
     "$0" --expected-head "$(printf '0%.0s' {1..40})" --expected-head "$(printf '1%.0s' {1..40})" >/dev/null 2>&1 || \
@@ -123,19 +165,20 @@ self_test() {
   echo 'run-voxcpm-0-5b-inspection.sh self-test: OK'
 }
 
-expected_head=''; approval=''; approval_sha=''; work='/dev/shm/vokra-voxcpm-0-5b'; seen=''
+expected_head=''; approval=''; approval_sha=''; work='/dev/shm/vokra-voxcpm-0-5b'
+seen_head=0; seen_approval=0; seen_approval_sha=0; seen_work=0
 while (( $# )); do
   case "$1" in
     --self-test) [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0;;
-    --expected-head) [[ "$seen" != *' expected_head '* ]] || die 'duplicate --expected-head'; [[ $# -ge 2 ]] || die '--expected-head requires a value'; expected_head="$2"; seen="$seen expected_head"; shift 2;;
-    --approval-evidence) [[ "$seen" != *' approval '* ]] || die 'duplicate --approval-evidence'; [[ $# -ge 2 && "$2" == /* ]] || die '--approval-evidence requires an absolute path'; approval="$2"; seen="$seen approval"; shift 2;;
-    --approval-sha256) [[ "$seen" != *' approval_sha '* ]] || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; approval_sha="$2"; seen="$seen approval_sha"; shift 2;;
-    --work-dir) [[ "$seen" != *' work '* ]] || die 'duplicate --work-dir'; [[ $# -ge 2 && "$2" == /* ]] || die '--work-dir requires an absolute path'; work="$2"; seen="$seen work"; shift 2;;
+    --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 ]] || die '--expected-head requires a value'; expected_head="$2"; seen_head=1; shift 2;;
+    --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && "$2" == /* ]] || die '--approval-evidence requires an absolute path'; approval="$2"; seen_approval=1; shift 2;;
+    --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; approval_sha="$2"; seen_approval_sha=1; shift 2;;
+    --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; [[ $# -ge 2 && "$2" == /* ]] || die '--work-dir requires an absolute path'; work="$2"; seen_work=1; shift 2;;
     -h|--help) echo 'usage: run-voxcpm-0-5b-inspection.sh --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 [--work-dir ABSENT_DIR]'; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
-[[ "$seen" == *' expected_head '* && "$seen" == *' approval '* && "$seen" == *' approval_sha '* ]] || die 'expected-head and external approval are required'
+[[ $seen_head == 1 && $seen_approval == 1 && $seen_approval_sha == 1 ]] || die 'expected-head and external approval are required'
 [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head must be lowercase 40-hex'
 [[ -f "$approval" && ! -L "$approval" ]] || die 'approval evidence is missing or symlinked'
 canonical_existing_path "$approval" >/dev/null || die 'approval evidence has unsafe ancestry'
@@ -149,7 +192,7 @@ root_real="$(canonical_existing_path "$ROOT")" || die 'checkout path cannot be c
 require_clean_expected_head "$expected_head"
 validate_approval "$approval" "$expected_head" "$approval_sha"
 # This external record is deliberately a blocker, not an execution permit.
-die 'BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE: no cache, download, model, or Cargo work is permitted'
+blocked_composite_gate
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST requires Linux x86_64'
 [[ -n "${HF_TOKEN:-}" ]] || die 'HF_TOKEN is required for the gated snapshot'

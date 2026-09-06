@@ -93,6 +93,30 @@ if data["scope_sha256"] != hashlib.sha256(json.dumps(scope, sort_keys=True, sepa
 PY
 }
 
+blocked_composite_gate() {
+  printf 'voxcpm-apple: ERROR: BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE: no model, reference, hardware, Cargo, or evidence work is permitted\n' >&2
+  return 2
+}
+
+write_approval_fixture() {
+  local path="$1" expected_head="$2"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" "$expected_head" "$MODEL_REPOSITORY" "$MODEL_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$AUDIOVAE_SOURCE" "$TOKENIZER_FILES" <<'PY'
+import hashlib, json, pathlib, sys
+path, head, model_repo, model_rev, source_repo, source_rev, public_repo, public_rev, audio_vae_source, tokenizer_files = sys.argv[1:]
+data = {
+    "schema": "vokra-voxcpm-0.5b-approval-v1", "status": "BLOCKED", "disposition": "INSPECTION_ONLY",
+    "expected_head": head, "model_repository": model_repo, "model_revision": model_rev,
+    "source_repository": source_repo, "source_revision": source_rev, "public_repository": public_repo,
+    "public_revision": public_rev, "audio_vae_source": audio_vae_source, "tokenizer_files": json.loads(tokenizer_files),
+    "license_status": "DOCS_SIGNED_APACHE_2_0", "dependency_status": "BLOCKED_UNREVIEWED",
+    "audio_vae_status": "UNRESOLVED", "tokenizer_status": "UNRESOLVED",
+    "native_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "no_upload": True,
+}
+data["scope_sha256"] = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+pathlib.Path(path).write_text(json.dumps(data, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
 self_test() {
   local failed=0 token gate
   for token in VOKRA_REMOTE_APPLE_SILICON=1 Darwin arm64 Metal INSPECTION_ONLY BLOCKED \
@@ -109,7 +133,24 @@ self_test() {
   if grep -En '(^|[[:space:]])(curl|wget|snapshot_download|hf_hub_download)([[:space:]]|$)' "$0" >/dev/null; then
     printf 'self-test found acquisition command\n' >&2; failed=1
   fi
-  gate="$(awk '/^  die '\''BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE/{print NR; exit}' "$0")"
+  if ! (
+    fixture="$(mktemp "${TMPDIR:-/tmp}/voxcpm-apple-approval.XXXXXX")"
+    cleanup_fixture() { rm -f -- "$fixture" "$fixture.blocked"; }
+    trap cleanup_fixture EXIT
+    fixture_head="$(printf '0%.0s' {1..40})"
+    write_approval_fixture "$fixture" "$fixture_head"
+    fixture_sha="$(sha256_file "$fixture")"
+    validate_approval "$fixture" "$fixture_head" "$fixture_sha"
+    if "$0" --expected-head "$fixture_head" --expected-head "$fixture_head" --approval-evidence "$fixture" --approval-sha256 "$fixture_sha" >/dev/null 2>&1 || \
+      "$0" --expected-head "$fixture_head" --approval-evidence "$fixture" --approval-evidence "$fixture" --approval-sha256 "$fixture_sha" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if blocked_composite_gate 2>"$fixture.blocked"; then exit 1; fi
+    grep -Fq 'BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE' "$fixture.blocked"
+  ); then
+    printf 'valid blocked approval or gate self-test failed\n' >&2; failed=1
+  fi
+  gate="$(awk '/^  printf .*BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE/{print NR; exit}' "$0")"
   [[ "$gate" =~ ^[0-9]+$ ]] || { printf 'self-test cannot locate blocker\n' >&2; failed=1; }
   main_line="$(awk '/^main\(\)/{print NR; exit}' "$0")"
   [[ "$main_line" =~ ^[0-9]+$ ]] || { printf 'self-test cannot locate main\n' >&2; failed=1; }
@@ -135,17 +176,18 @@ EOF
 }
 
 main() {
-  local expected_head='' approval='' approval_sha='' seen=''
+  local expected_head='' approval='' approval_sha=''
+  local seen_head=0 seen_approval=0 seen_approval_sha=0
   while (( $# )); do
     case "$1" in
       --self-test) [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; return 0;;
-      --expected-head) [[ "$seen" != *' expected_head '* ]] || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen="$seen expected_head"; shift 2;;
-      --approval-evidence) [[ "$seen" != *' approval '* ]] || die 'duplicate --approval-evidence'; [[ $# -ge 2 && "$2" == /* ]] || die '--approval-evidence requires absolute path'; approval="$2"; seen="$seen approval"; shift 2;;
-      --approval-sha256) [[ "$seen" != *' approval_sha '* ]] || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; approval_sha="$2"; seen="$seen approval_sha"; shift 2;;
+      --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen_head=1; shift 2;;
+      --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && "$2" == /* ]] || die '--approval-evidence requires absolute path'; approval="$2"; seen_approval=1; shift 2;;
+      --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; approval_sha="$2"; seen_approval_sha=1; shift 2;;
       -h|--help) usage; return 0;; *) die "unknown argument: $1";;
     esac
   done
-  [[ "$seen" == *' expected_head '* && "$seen" == *' approval '* && "$seen" == *' approval_sha '* ]] || { usage; die 'expected-head and approval arguments are required'; }
+  [[ $seen_head == 1 && $seen_approval == 1 && $seen_approval_sha == 1 ]] || { usage; die 'expected-head and approval arguments are required'; }
   [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die 'approval evidence is missing, empty, or symlinked'
   canonical_existing_path "$approval" >/dev/null || die 'approval path has unsafe ancestry'
   [[ "$(sha256_file "$approval")" == "$approval_sha" ]] || die 'approval evidence SHA-256 mismatch'
@@ -153,7 +195,7 @@ main() {
   validate_approval "$approval" "$expected_head" "$approval_sha"
   # Do not hash/read the large bundle or probe hardware before this factual
   # companion/native gate. INSPECTION_ONLY cannot authorize execution.
-  die 'BLOCKED_UNRESOLVED_AUDIOVAE_TOKENIZER_NATIVE: no model, reference, hardware, Cargo, or evidence work is permitted'
+  blocked_composite_gate
 }
 
 main "$@"

@@ -18,6 +18,7 @@ require_clean_expected_head(){
 }
 require_regular_approval_path(){
   local path="$1"
+  [[ "$path" != "$ROOT" && "$path" != "$ROOT"/* ]] || die 'approval evidence must be outside the checkout'
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" <<'PY'
 import os, pathlib, stat, sys
 p=pathlib.Path(sys.argv[1])
@@ -61,6 +62,7 @@ PY
 }
 require_absent_directory(){
   local path="$1"
+  [[ "$path" != "$ROOT" && "$path" != "$ROOT"/* && "$ROOT" != "$path"/* ]] || return 1
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" <<'PY'
 import os, pathlib, stat, sys
 p=pathlib.Path(sys.argv[1])

@@ -317,10 +317,10 @@ def inspect(snapshot: Path, packet: Path, evidence: Path, source: Path | None = 
     result["source"] = inspect_source(source)
     result["audio_vae_contract"] = {"source_role": AUDIOVAE_SOURCE, **AUDIOVAE_CONTRACT}
     result["historical_public_gguf"] = inspect_public_gguf(public)
-    if evidence.exists() or evidence.is_symlink():
-        raise RuntimeError("evidence output must be absent and non-symlink")
-    evidence.mkdir(parents=False, exist_ok=False)
-    (evidence / "manifest.json").write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    if not evidence.is_dir() or evidence.is_symlink():
+        raise RuntimeError("evidence output must be a claimed non-symlink directory")
+    with (evidence / "manifest.json").open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
 
 
 def self_test() -> None:
@@ -365,12 +365,13 @@ def main() -> int:
         parser.error("--snapshot, --server-tree and --output are required")
     if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
         parser.error("--output must be an absent path with an existing parent")
+    args.output.mkdir(parents=False, exist_ok=False)
     try:
         inspect(args.snapshot, args.server_tree, args.output, args.source, args.public_gguf)
     except Exception as error:  # evidence failures are blockers, never PASS
-        args.output.mkdir(parents=False, exist_ok=False)
         blocked = {"status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "hf_repository": HF_REPOSITORY, "hf_revision": HF_REVISION, "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION, "error": f"{type(error).__name__}: {error}"}
-        (args.output / "manifest.json").write_text(json.dumps(blocked, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        with (args.output / "manifest.json").open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(blocked, sort_keys=True, indent=2) + "\n")
         print(f"voxcpm_0_5b_inspect: BLOCKED: {error}", file=sys.stderr)
         return 2
     return 2

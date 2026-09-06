@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -179,8 +180,11 @@ def main() -> int:
             "revision": HF_REVISION,
             "error": f"{type(error).__name__}: {error}",
         }
-        with args.output.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps(failure, sort_keys=True, indent=2) + "\n")
+        if not args.output.exists() and not args.output.is_symlink():
+            with args.output.open("x", encoding="utf-8") as stream:
+                stream.write(json.dumps(failure, sort_keys=True, indent=2) + "\n")
+        else:
+            print("voxcpm_0_5b_prepare_checkpoint: output was concurrently claimed; refusing to overwrite", file=sys.stderr)
         print(f"voxcpm_0_5b_prepare_checkpoint: BLOCKED: {error}")
         return 2
     return 0

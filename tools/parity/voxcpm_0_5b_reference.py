@@ -168,7 +168,8 @@ def tensor_record(output: Path, name: str, value: Any) -> dict[str, Any]:
         raw = value.view(torch.uint16).numpy().tobytes()
     else:
         raw = value.numpy().tobytes()
-    (output / f"{name}.bin").write_bytes(raw)
+    with (output / f"{name}.bin").open("xb") as stream:
+        stream.write(raw)
     return {"name": name, "shape": [int(axis) for axis in value.shape], "dtype": str(value.dtype), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
@@ -365,17 +366,22 @@ def main() -> int:
     if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
         parser.error("--output must be an absent directory with an existing parent")
     try:
-        packet = load_packet(args.packet)
         args.output.mkdir(parents=False, exist_ok=False)
+        packet = load_packet(args.packet)
         result = run_official(args.source, args.snapshot, packet, args.output)
         manifest = {"status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "reference_status": "REFERENCE_EVIDENCE_COMPLETE", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "MEASURED_NOT_GATED", "publication": "NO_UPLOAD", "repository": HF_REPOSITORY, "revision": HF_REVISION, "packet_sha256": hashlib.sha256(args.packet.read_bytes()).hexdigest(), **result}
-        (args.output / "packet.json").write_bytes(args.packet.read_bytes())
-        (args.output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        with (args.output / "packet.json").open("xb") as stream:
+            stream.write(args.packet.read_bytes())
+        with (args.output / "manifest.json").open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     except Exception as error:  # noqa: BLE001
-        if not args.output.exists():
-            args.output.mkdir(parents=False, exist_ok=False)
         failure = {"status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "reference_status": "REFERENCE_ERROR", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "repository": HF_REPOSITORY, "revision": HF_REVISION, "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION, "error": f"{type(error).__name__}: {error}"}
-        (args.output / "manifest.json").write_text(json.dumps(failure, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        manifest_path = args.output / "manifest.json"
+        if not manifest_path.exists() and not manifest_path.is_symlink():
+            with manifest_path.open("x", encoding="utf-8") as stream:
+                stream.write(json.dumps(failure, sort_keys=True, indent=2) + "\n")
+        else:
+            print("voxcpm_0_5b_reference: manifest was concurrently claimed; refusing to overwrite", file=sys.stderr)
         print(f"voxcpm_0_5b_reference: BLOCKED: {error}", file=sys.stderr)
         return 2
     return 0
