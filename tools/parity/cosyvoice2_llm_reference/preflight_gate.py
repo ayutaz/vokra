@@ -295,8 +295,17 @@ def gate(project: Path, lock: Path, license_manifest: Path) -> dict[str, Any]:
 def self_test() -> None:
     here = Path(__file__).resolve().parent
     validate_project(read_toml(here / "pyproject.toml"))
-    manifest = validate_license_manifest(here / "license_gate_manifest.json")
-    assert manifest["status"] == "PENDING_REVIEW"
+    committed_manifest = validate_license_manifest(here / "license_gate_manifest.json")
+    assert committed_manifest["status"] == "APPROVED"
+    manifest = copy.deepcopy(committed_manifest)
+    manifest["status"] = "PENDING_REVIEW"
+    manifest["owner_signoff"] = "OWNER_SIGNOFF_REQUIRED"
+    manifest["blockers"] = ["self-test blocker"]
+    manifest["package_review"] = []
+    manifest["native_payload_review"] = "PENDING_PRIMARY_SOURCE_REVIEW"
+    manifest["weight_review"] = "PENDING_PRIMARY_SOURCE_REVIEW"
+    manifest["source_review"] = "PENDING_PRIMARY_SOURCE_REVIEW"
+    manifest["approval"] = {"signer": None, "scope_sha256": None}
     for status, owner_signoff in (("APPROVED", "OWNER_SIGNOFF_REQUIRED"), ("PENDING_REVIEW", "OWNER_SIGNED_OFF")):
         mixed = copy.deepcopy(manifest)
         mixed["status"] = status
@@ -566,12 +575,7 @@ def self_test() -> None:
             assert "no blockers" in str(error)
         else:
             raise AssertionError("approved blocker drift accepted")
-    try:
-        gate(here / "pyproject.toml", here / "uv.lock", here / "license_gate_manifest.json")
-    except GateError as error:
-        assert any(marker in str(error) for marker in ("blocked", "missing", "exact lock closure"))
-    else:
-        raise AssertionError("pending/missing-lock gate unexpectedly passed")
+    assert gate(here / "pyproject.toml", here / "uv.lock", here / "license_gate_manifest.json")["status"] == "PASS"
     with tempfile.TemporaryDirectory(prefix="cosyvoice2-llm-gate-") as temp:
         path = Path(temp) / "manifest.json"
         bad = copy.deepcopy(manifest)
