@@ -41,16 +41,20 @@ die() { log "ERROR: $*"; return 2; }
 usage() {
   cat <<'EOF' >&2
 usage: apple-silicon-yue-xcodec-mini.sh \
+  --expected-head <lowercase-40-hex> \
   --gguf <vast-public-yue-xcodec-mini.gguf> --gguf-sha256 <sha256> \
   --reference <vast-reference-dir> --reference-manifest-sha256 <sha256> \
   --approval-evidence <external-evidence.json> \
+  --approval-evidence-sha256 <lowercase-sha256> \
+  --transfer-manifest <regular-transfer-manifest> --transfer-manifest-sha256 <sha256> \
   --evidence-dir <empty-dir>
        apple-silicon-yue-xcodec-mini.sh --self-test
 
 Runs the exact ignored YuE xcodec-mini CPU and Metal real-weight tests using
 the same staged GGUF/reference. The production binder strictly authenticates
 the historical 2,145-tensor public artifact; corrected replacement binding is
-a separate production task. Numeric results remain MEASURED_NOT_GATED.
+a separate production task. This verifier is DECODE_ONLY; PCM encode remains
+ENCODE_NOT_IMPLEMENTED. Numeric results remain MEASURED_NOT_GATED.
 
 The disposable host must be Darwin/arm64 with VOKRA_REMOTE_APPLE_SILICON=1,
 at least 32 GB physical memory, 20 GB free disk, and Xcode's Metal compiler.
@@ -71,6 +75,40 @@ pre_sync_gate() {
 }
 
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hexadecimal characters'; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" ]] || { die 'Apple checkout is missing .git'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'Apple checkout must be clean'; return 2; }
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || { die "checkout HEAD $actual_head does not match expected $expected_head"; return 2; }
+}
+
+require_transfer_manifest() {
+  local manifest="$1" manifest_sha="$2" expected_head="$3" gguf_sha="$4" reference_sha="$5" approval_sha="$6" cpu_sha="$7"
+  require_file 'transfer manifest' "$manifest"
+  [[ "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || { die 'transfer manifest SHA-256 must be lowercase 64-hex'; return 2; }
+  [[ "$(sha256_file "$manifest")" == "$manifest_sha" ]] || { die 'transfer manifest SHA-256 differs from VAST evidence'; return 2; }
+  awk '
+    BEGIN { allowed["schema"]; allowed["expected_head"]; allowed["gguf_sha256"]; allowed["reference_manifest_sha256"]; allowed["approval_evidence_sha256"]; allowed["cpu_log_sha256"]; allowed["cpu_test"]; allowed["cpu_result"]; allowed["cpu_sentinel"]; allowed["decode_status"]; allowed["encode_status"]; allowed["publication"]; }
+    index($0, "=") == 0 { exit 2 }
+    { key=substr($0, 1, index($0, "=") - 1); if (!(key in allowed)) exit 2; count[key]++ }
+    END { for (key in allowed) if (count[key] != 1) exit 3 }
+  ' "$manifest" || { die 'transfer manifest schema is not exact'; return 2; }
+  grep -Fxq 'schema=yue-xcodec-mini-apple-transfer-v1' "$manifest" || { die 'transfer manifest schema differs'; return 2; }
+  grep -Fxq "expected_head=$expected_head" "$manifest" || { die 'transfer manifest expected HEAD differs'; return 2; }
+  grep -Fxq "gguf_sha256=$gguf_sha" "$manifest" || { die 'transfer manifest GGUF SHA differs'; return 2; }
+  grep -Fxq "reference_manifest_sha256=$reference_sha" "$manifest" || { die 'transfer manifest reference SHA differs'; return 2; }
+  grep -Fxq "approval_evidence_sha256=$approval_sha" "$manifest" || { die 'transfer manifest approval SHA differs'; return 2; }
+  grep -Fxq "cpu_log_sha256=$cpu_sha" "$manifest" || { die 'transfer manifest CPU log SHA differs'; return 2; }
+  grep -Fxq 'cpu_test=measure_real_cpu_against_official_xcodec_and_vocos' "$manifest" || { die 'transfer manifest CPU test differs'; return 2; }
+  grep -Fxq 'cpu_result=ONE_PASS' "$manifest" || { die 'transfer manifest CPU result differs'; return 2; }
+  grep -Fxq 'cpu_sentinel=YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED' "$manifest" || { die 'transfer manifest CPU sentinel differs'; return 2; }
+  grep -Fxq 'decode_status=DECODE_ONLY' "$manifest" || { die 'transfer manifest decode status differs'; return 2; }
+  grep -Fxq 'encode_status=ENCODE_NOT_IMPLEMENTED' "$manifest" || { die 'transfer manifest encode status differs'; return 2; }
+  grep -Fxq 'publication=NO_UPLOAD' "$manifest" || { die 'transfer manifest publication differs'; return 2; }
+}
 
 require_file() {
   local label="$1" path="$2"
@@ -210,21 +248,29 @@ require_marker() {
 }
 
 run_self_test() (
-  local temporary script_path required reference_root manifest hash name
+  local temporary script_path required reference_root manifest hash name test_head test_sha cpu_proof transfer_proof
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-yue-xcodec-apple.XXXXXX")"
   trap 'rm -rf "$temporary"' EXIT
   printf 'abc' > "$temporary/value"
   [[ "$(sha256_file "$temporary/value")" == 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' ]] || die 'SHA-256 helper self-test failed'
+  test_head="$(printf '%040d' 1)"; test_sha='ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+  cpu_proof="$temporary/cpu-proof.log"
+  printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\nYUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED\n' "$CPU_TEST" > "$cpu_proof"
+  transfer_proof="$temporary/transfer.manifest"
+  printf 'schema=yue-xcodec-mini-apple-transfer-v1\nexpected_head=%s\ngguf_sha256=%s\nreference_manifest_sha256=%s\napproval_evidence_sha256=%s\ncpu_log_sha256=%s\ncpu_test=%s\ncpu_result=ONE_PASS\ncpu_sentinel=YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED\ndecode_status=DECODE_ONLY\nencode_status=ENCODE_NOT_IMPLEMENTED\npublication=NO_UPLOAD\n' "$test_head" "$test_sha" "$test_sha" "$test_sha" "$test_sha" "$CPU_TEST" > "$transfer_proof"
+  require_transfer_manifest "$transfer_proof" "$(sha256_file "$transfer_proof")" "$test_head" "$test_sha" "$test_sha" "$test_sha" "$test_sha" || die 'valid transfer manifest rejected'
+  printf 'extra=value\n' >> "$transfer_proof"
+  if require_transfer_manifest "$transfer_proof" "$(sha256_file "$transfer_proof")" "$test_head" "$test_sha" "$test_sha" "$test_sha" "$test_sha"; then die 'extra transfer manifest key accepted'; fi
   script_path="${BASH_SOURCE[0]}"
   for required in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' \
     'MIN_MEMORY_BYTES=32000000000' 'MIN_FREE_DISK_KIB=20000000' 'xcrun -f metal' \
     'yue_xcodec_mini.rs' "$CPU_TEST" "$METAL_TEST" \
     '--features metal --lib' '-- --ignored --exact --nocapture' \
     'VOKRA_YUE_XCODEC_MINI_GGUF' 'VOKRA_YUE_XCODEC_MINI_REFERENCE_DIR' \
-    '--approval-evidence' 'pre_sync_gate' 'canonical_path' 'paths_overlap' \
+    '--expected-head' '--approval-evidence' '--approval-evidence-sha256' '--transfer-manifest' '--transfer-manifest-sha256' '--cpu-log' '--cpu-log-sha256' 'pre_sync_gate' 'canonical_path' 'paths_overlap' \
     'YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET' \
     'YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET' \
-    'verdict=MEASURED_NOT_GATED' 'numeric_bounds=UNSET' 'upload=NOT_PERFORMED'; do
+    'DECODE_ONLY' 'ENCODE_NOT_IMPLEMENTED' 'verdict=MEASURED_NOT_GATED' 'numeric_bounds=UNSET' 'upload=NOT_PERFORMED'; do
     grep -Fq -- "$required" "$script_path" || die "self-test contract token is missing: $required"
   done
   printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nYUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED\n' "$CPU_TEST" > "$temporary/cpu.log"
@@ -297,10 +343,10 @@ run_self_test() (
   if "$script_path" --self-test --gguf "$temporary/model.gguf" >/dev/null 2>&1; then
     die '--self-test accepted an extra argument'
   fi
-  for option in --gguf --gguf-sha256 --reference --reference-manifest-sha256 --approval-evidence --evidence-dir; do
+  for option in --expected-head --gguf --gguf-sha256 --reference --reference-manifest-sha256 --approval-evidence --approval-evidence-sha256 --transfer-manifest --transfer-manifest-sha256 --cpu-log --cpu-log-sha256 --evidence-dir; do
     if "$script_path" "$option" -bad >/dev/null 2>&1; then die "leading-dash value accepted for $option"; fi
   done
-  for option in --gguf --gguf-sha256 --reference --reference-manifest-sha256 --approval-evidence --evidence-dir; do
+  for option in --expected-head --gguf --gguf-sha256 --reference --reference-manifest-sha256 --approval-evidence --approval-evidence-sha256 --transfer-manifest --transfer-manifest-sha256 --cpu-log --cpu-log-sha256 --evidence-dir; do
     if "$script_path" "$option" one "$option" two >/dev/null 2>&1; then die "duplicate option accepted for $option"; fi
   done
   if "$script_path" --self-test --self-test >/dev/null 2>&1; then die 'duplicate --self-test accepted'; fi
@@ -337,14 +383,20 @@ paths_overlap() {
 }
 
 main() {
-  local gguf='' gguf_sha='' reference='' reference_sha='' approval='' evidence_dir='' self_test=0 seen=''
+  local gguf='' gguf_sha='' reference='' reference_sha='' approval='' approval_sha='' transfer_manifest='' transfer_sha='' cpu_log='' cpu_sha='' evidence_dir='' expected_head='' self_test=0 seen=''
   while (( $# > 0 )); do
     case "$1" in
+      --expected-head) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|expected_head|'* ]] || { usage; return 2; }; seen+="|expected_head|"; expected_head="$2"; shift 2 ;;
       --gguf) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|gguf|'* ]] || { usage; return 2; }; seen+="|gguf|"; gguf="$2"; shift 2 ;;
       --gguf-sha256) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|gguf_sha|'* ]] || { usage; return 2; }; seen+="|gguf_sha|"; gguf_sha="$2"; shift 2 ;;
       --reference) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|reference|'* ]] || { usage; return 2; }; seen+="|reference|"; reference="$2"; shift 2 ;;
       --reference-manifest-sha256) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|reference_sha|'* ]] || { usage; return 2; }; seen+="|reference_sha|"; reference_sha="$2"; shift 2 ;;
       --approval-evidence) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|approval|'* ]] || { usage; return 2; }; seen+="|approval|"; approval="$2"; shift 2 ;;
+      --approval-evidence-sha256) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|approval_sha|'* ]] || { usage; return 2; }; seen+="|approval_sha|"; approval_sha="$2"; shift 2 ;;
+      --transfer-manifest) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|transfer|'* ]] || { usage; return 2; }; seen+="|transfer|"; transfer_manifest="$2"; shift 2 ;;
+      --transfer-manifest-sha256) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|transfer_sha|'* ]] || { usage; return 2; }; seen+="|transfer_sha|"; transfer_sha="$2"; shift 2 ;;
+      --cpu-log) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|cpu_log|'* ]] || { usage; return 2; }; seen+="|cpu_log|"; cpu_log="$2"; shift 2 ;;
+      --cpu-log-sha256) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|cpu_sha|'* ]] || { usage; return 2; }; seen+="|cpu_sha|"; cpu_sha="$2"; shift 2 ;;
       --evidence-dir) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$seen" != *'|evidence|'* ]] || { usage; return 2; }; seen+="|evidence|"; evidence_dir="$2"; shift 2 ;;
       --self-test) [[ "$seen" != *'|self_test|'* ]] || { usage; return 2; }; seen+="|self_test|"; self_test=1; shift ;;
       -h|--help) usage; return 0 ;;
@@ -352,21 +404,32 @@ main() {
     esac
   done
   if (( self_test == 1 )); then
-    [[ -z "$gguf$gguf_sha$reference$reference_sha$approval$evidence_dir" ]] || die '--self-test accepts no other arguments'
+    [[ -z "$expected_head$gguf$gguf_sha$reference$reference_sha$approval$approval_sha$transfer_manifest$transfer_sha$cpu_log$cpu_sha$evidence_dir" ]] || die '--self-test accepts no other arguments'
     run_self_test
     return
   fi
-  [[ -n "$gguf" && -n "$gguf_sha" && -n "$reference" && -n "$reference_sha" && -n "$approval" && -n "$evidence_dir" ]] || { usage; die 'all explicit GGUF/reference hashes, approval evidence, and --evidence-dir are required'; }
+  [[ -n "$expected_head" && -n "$gguf" && -n "$gguf_sha" && -n "$reference" && -n "$reference_sha" && -n "$approval" && -n "$approval_sha" && -n "$transfer_manifest" && -n "$transfer_sha" && -n "$cpu_log" && -n "$cpu_sha" && -n "$evidence_dir" ]] || { usage; die 'all exact-head, GGUF/reference/approval/CPU/transfer hashes and paths are required'; }
 
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ && "$gguf_sha" =~ ^[0-9a-f]{64}$ && "$reference_sha" =~ ^[0-9a-f]{64}$ && "$approval_sha" =~ ^[0-9a-f]{64}$ && "$transfer_sha" =~ ^[0-9a-f]{64}$ && "$cpu_sha" =~ ^[0-9a-f]{64}$ ]] || die 'expected head and all SHA-256 values must be lowercase hexadecimal'
+  require_clean_expected_head "$expected_head"
+  require_file 'approval evidence' "$approval"
+  [[ "$(sha256_file "$approval")" == "$approval_sha" ]] || die 'approval evidence SHA-256 differs from external binding'
+  require_transfer_manifest "$transfer_manifest" "$transfer_sha" "$expected_head" "$gguf_sha" "$reference_sha" "$approval_sha" "$cpu_sha"
+  require_file 'VAST CPU evidence log' "$cpu_log"
+  [[ "$(sha256_file "$cpu_log")" == "$cpu_sha" ]] || die 'CPU evidence log SHA-256 differs from transfer binding'
+  require_one_cargo_result "$cpu_log" "$CPU_TEST"
+  require_marker "$cpu_log" cpu
   pre_sync_gate "$approval"
   [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || die 'evidence directory must be absent and non-symlinked before validation'
-  local root_real gguf_real reference_real approval_real evidence_real
+  local root_real gguf_real reference_real approval_real transfer_real cpu_real evidence_real
   root_real="$(canonical_path "$VOKRA_ROOT")" || return 2
   gguf_real="$(canonical_path "$gguf")" || return 2
   reference_real="$(canonical_path "$reference")" || return 2
   approval_real="$(canonical_path "$approval")" || return 2
+  transfer_real="$(canonical_path "$transfer_manifest")" || return 2
+  cpu_real="$(canonical_path "$cpu_log")" || return 2
   evidence_real="$(canonical_path "$evidence_dir")" || return 2
-  for existing in "$root_real" "$gguf_real" "$reference_real" "$approval_real"; do
+  for existing in "$root_real" "$gguf_real" "$reference_real" "$approval_real" "$transfer_real" "$cpu_real"; do
     paths_overlap "$evidence_real" "$existing" && die 'evidence path overlaps an input or checkout'
   done
 
@@ -400,7 +463,7 @@ main() {
 
   log 'running exact ignored CPU real-weight measurement'
   VOKRA_YUE_XCODEC_MINI_GGUF="$gguf" VOKRA_YUE_XCODEC_MINI_REFERENCE_DIR="$reference" \
-    RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    CARGO_NET_OFFLINE=true RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release \
       -p vokra-models --features metal --lib "$CPU_TEST" -- --ignored --exact --nocapture --test-threads=1 \
       2>&1 | tee "$evidence_dir/cpu.log"
   require_one_cargo_result "$evidence_dir/cpu.log" "$CPU_TEST"
@@ -408,20 +471,26 @@ main() {
 
   log 'running exact ignored Metal-vs-CPU real-weight measurement'
   VOKRA_YUE_XCODEC_MINI_GGUF="$gguf" VOKRA_YUE_XCODEC_MINI_REFERENCE_DIR="$reference" \
-    RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    CARGO_NET_OFFLINE=true RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release \
       -p vokra-models --features metal --lib "$METAL_TEST" -- --ignored --exact --nocapture --test-threads=1 \
       2>&1 | tee "$evidence_dir/metal.log"
   require_one_cargo_result "$evidence_dir/metal.log" "$METAL_TEST"
   require_marker "$evidence_dir/metal.log" metal
 
+  require_clean_expected_head "$expected_head"
+
   {
-    echo 'verdict=MEASURED_NOT_GATED'
+    echo 'verdict=DECODE_ONLY_MEASURED_NOT_GATED'
+    echo 'decode_status=DECODE_ONLY'
+    echo 'encode_status=ENCODE_NOT_IMPLEMENTED'
     echo 'numeric_bounds=UNSET'
     echo 'cpu_reference=MEASURED_NOT_GATED'
     echo 'metal_vs_cpu=MEASURED_NOT_GATED'
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "gguf_sha256=$(sha256_file "$gguf")"
     echo "reference_manifest_sha256=$(sha256_file "$reference/manifest.json")"
+    echo "cpu_log_sha256=$cpu_sha"
+    echo "transfer_manifest_sha256=$transfer_sha"
     echo 'runtime_artifact=exact_public_gguf'
     echo 'corrected_replacement_binding=SEPARATE_PRODUCTION_TASK'
     echo 'upload=NOT_PERFORMED'

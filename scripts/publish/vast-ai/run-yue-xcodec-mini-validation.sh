@@ -58,9 +58,20 @@ pre_sync_gate() {
   fi
 }
 
+require_clean_expected_head() {
+  local expected_head="$1" actual_head
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hexadecimal characters'; return 2; }
+  [[ -d "$VOKRA_ROOT/.git" ]] || { die 'VAST checkout is missing .git'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || { die "checkout HEAD $actual_head does not match expected $expected_head"; return 2; }
+}
+
 usage() {
   cat <<'EOF' >&2
-usage: run-yue-xcodec-mini-validation.sh --approval-evidence <external-evidence.json> [--work-dir <empty-dir>]
+usage: run-yue-xcodec-mini-validation.sh --approval-evidence <external-evidence.json> \
+       --approval-evidence-sha256 <lowercase-sha256> --expected-head <lowercase-40-hex> \
+       [--work-dir <empty-dir>]
        run-yue-xcodec-mini-validation.sh --self-test
 
 VAST-only validation of the immutable public YuE xcodec-mini GGUF against an
@@ -69,7 +80,8 @@ by revision, byte length, and SHA-256, then bound by the strict production
 2,145-tensor binder. Corrected conversion is intentionally not attempted:
 the historical production SPEC is pinned to this public manifest, so a
 replacement binding remains a separate production task. Numeric results are
-MEASURED_NOT_GATED; this worker never uploads or publishes.
+DECODE_ONLY / ENCODE_NOT_IMPLEMENTED / MEASURED_NOT_GATED; this worker never
+uploads or publishes.
 EOF
 }
 
@@ -117,17 +129,44 @@ require_cpu_measurement() {
 }
 
 write_apple_args() {
-  local output="$1" gguf_sha="$2" reference_sha="$3" approval_path="$4"
+  local output="$1" expected_head="$2" gguf_sha="$3" reference_sha="$4" approval_sha="$5" transfer_sha="$6" cpu_sha="$7"
   {
     printf '# Portable Apple YuE xcodec-mini validation command; no VAST paths.\n'
     printf 'scripts/verify/apple-silicon-yue-xcodec-mini.sh \\\n'
+    printf "  --expected-head '%s' \\\n" "$expected_head"
     printf "  --gguf '%s' \\\n" '<APPLE_YUE_XCODEC_MINI_GGUF_PATH>'
     printf "  --gguf-sha256 '%s' \\\n" "$gguf_sha"
     printf "  --reference '%s' \\\n" '<APPLE_YUE_XCODEC_MINI_REFERENCE_DIR>'
     printf "  --reference-manifest-sha256 '%s' \\\n" "$reference_sha"
-    printf "  --approval-evidence '%s' \\\n" "$approval_path"
+    printf "  --approval-evidence '<APPLE_YUE_XCODEC_APPROVAL_EVIDENCE>' \\\n"
+    printf "  --approval-evidence-sha256 '%s' \\\n" "$approval_sha"
+    printf "  --transfer-manifest '<APPLE_YUE_XCODEC_TRANSFER_MANIFEST>' \\\n"
+    printf "  --transfer-manifest-sha256 '%s' \\\n" "$transfer_sha"
+    printf "  --cpu-log '<APPLE_YUE_XCODEC_CPU_LOG>' \\\n"
+    printf "  --cpu-log-sha256 '%s' \\\n" "$cpu_sha"
     printf "  --evidence-dir '%s'\n" '<APPLE_EMPTY_EVIDENCE_DIR>'
   } > "$output"
+}
+
+write_transfer_manifest() {
+  local output="$1" expected_head="$2" gguf_sha="$3" reference_sha="$4" approval_sha="$5" cpu_sha="$6"
+  [[ ! -e "$output" && ! -L "$output" && ! -e "${output}.sha256" && ! -L "${output}.sha256" ]] \
+    || { die "transfer manifest output must be absent: $output"; return 2; }
+  if ! (set -C; {
+    printf 'schema=yue-xcodec-mini-apple-transfer-v1\n'
+    printf 'expected_head=%s\n' "$expected_head"
+    printf 'gguf_sha256=%s\n' "$gguf_sha"
+    printf 'reference_manifest_sha256=%s\n' "$reference_sha"
+    printf 'approval_evidence_sha256=%s\n' "$approval_sha"
+    printf 'cpu_log_sha256=%s\n' "$cpu_sha"
+    printf 'cpu_test=measure_real_cpu_against_official_xcodec_and_vocos\n'
+    printf 'cpu_result=ONE_PASS\n'
+    printf 'cpu_sentinel=YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED\n'
+    printf 'decode_status=DECODE_ONLY\n'
+    printf 'encode_status=ENCODE_NOT_IMPLEMENTED\n'
+    printf 'publication=NO_UPLOAD\n'
+  } > "$output"); then die "transfer manifest output was created concurrently: $output"; return 2; fi
+  if ! (set -C; sha256_file "$output" > "${output}.sha256"); then die "transfer manifest SHA sidecar was created concurrently: ${output}.sha256"; return 2; fi
 }
 
 canonical_candidate() {
@@ -270,8 +309,8 @@ run_self_test() {
     "yue_xcodec_mini::tests::measure_real_cpu_against_official_xcodec_and_vocos" \
     "--frozen --python 3.12" "--ignored --exact --nocapture" \
     "YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET" \
-    "MEASURED_NOT_GATED" "replacement binding remains a separate production task" \
-    "--approval-evidence" "reference_validator.py"; do
+    "MEASURED_NOT_GATED" "DECODE_ONLY" "ENCODE_NOT_IMPLEMENTED" "replacement binding remains a separate production task" \
+    "--approval-evidence" "--approval-evidence-sha256" "--expected-head" "write_transfer_manifest" "cpu_log_sha256" "cpu_result=ONE_PASS" "cpu_sentinel=YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu" "publication=NO_UPLOAD" "reference_validator.py"; do
     cases=$((cases + 1))
     grep -Fq -- "$required" "$script_path" || { log "self-test FAIL: missing token: $required"; fail=1; }
   done
@@ -285,7 +324,7 @@ run_self_test() {
   fi
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-yue-xcodec-vast.XXXXXX")"
   apple_args="$temporary/apple.args.sh"
-  write_apple_args "$apple_args" "$PUBLIC_SHA256" "$(printf '%064d' 0)" '<APPLE_YUE_XCODEC_APPROVAL_EVIDENCE>'
+  write_apple_args "$apple_args" "$(printf '%040d' 1)" "$PUBLIC_SHA256" "$(printf '%064d' 0)" "$(printf '%064d' 1)" "$(printf '%064d' 2)" "$(printf '%064d' 3)"
   bash -n "$apple_args" || { log 'self-test FAIL: generated Apple args are not shell syntax'; fail=1; }
   grep -Fq -- "--gguf '<APPLE_YUE_XCODEC_MINI_GGUF_PATH>'" "$apple_args" \
     || { log 'self-test FAIL: GGUF placeholder is not quoted'; fail=1; }
@@ -295,11 +334,23 @@ run_self_test() {
     log 'self-test FAIL: generated Apple args contain a VAST path'; fail=1
   fi
   grep -Fq -- "--approval-evidence '<APPLE_YUE_XCODEC_APPROVAL_EVIDENCE>'" "$apple_args" || { log 'self-test FAIL: approval placeholder is not portable/quoted'; fail=1; }
-  for option in --work-dir --approval-evidence; do
+  grep -Fq -- "--approval-evidence-sha256 '0000000000000000000000000000000000000000000000000000000000000001'" "$apple_args" || { log 'self-test FAIL: approval SHA binding missing'; fail=1; }
+  grep -Fq -- "--transfer-manifest-sha256 '0000000000000000000000000000000000000000000000000000000000000002'" "$apple_args" || { log 'self-test FAIL: transfer SHA binding missing'; fail=1; }
+  grep -Fq -- "--cpu-log-sha256 '0000000000000000000000000000000000000000000000000000000000000003'" "$apple_args" || { log 'self-test FAIL: CPU log SHA binding missing'; fail=1; }
+  local transfer_manifest="$temporary/transfer.manifest"
+  write_transfer_manifest "$transfer_manifest" "$(printf '%040d' 1)" "$PUBLIC_SHA256" "$(printf '%064d' 0)" "$(printf '%064d' 1)" "$(printf '%064d' 3)"
+  grep -Fxq 'cpu_result=ONE_PASS' "$transfer_manifest" || { log 'self-test FAIL: CPU transfer evidence missing'; fail=1; }
+  grep -Fxq 'encode_status=ENCODE_NOT_IMPLEMENTED' "$transfer_manifest" || { log 'self-test FAIL: encode boundary missing'; fail=1; }
+  [[ "$(cat "$transfer_manifest.sha256")" == "$(sha256_file "$transfer_manifest")" ]] || { log 'self-test FAIL: transfer sidecar mismatch'; fail=1; }
+  for option in --work-dir --approval-evidence --approval-evidence-sha256 --expected-head; do
     if "$script_path" "$option" -bad >/dev/null 2>&1; then log "self-test FAIL: leading-dash value accepted for $option"; fail=1; fi
   done
   if "$script_path" --work-dir one --work-dir two >/dev/null 2>&1; then log 'self-test FAIL: duplicate --work-dir accepted'; fail=1; fi
   if "$script_path" --approval-evidence one --approval-evidence two >/dev/null 2>&1; then log 'self-test FAIL: duplicate --approval-evidence accepted'; fail=1; fi
+  if "$script_path" --approval-evidence one --approval-evidence-sha256 one >/dev/null 2>&1; then log 'self-test FAIL: malformed approval SHA accepted'; fail=1; fi
+  if "$script_path" --approval-evidence one --approval-evidence-sha256 "$(printf '%064d' 1)" --approval-evidence-sha256 "$(printf '%064d' 2)" >/dev/null 2>&1; then log 'self-test FAIL: duplicate approval SHA accepted'; fail=1; fi
+  if "$script_path" --expected-head >/dev/null 2>&1; then log 'self-test FAIL: missing expected-head accepted'; fail=1; fi
+  if "$script_path" --expected-head "$(printf '%040d' 1)" --expected-head "$(printf '%040d' 2)" >/dev/null 2>&1; then log 'self-test FAIL: duplicate expected-head accepted'; fail=1; fi
   if "$script_path" --self-test --self-test >/dev/null 2>&1; then log 'self-test FAIL: duplicate --self-test accepted'; fail=1; fi
   printf 'test measure_real_cpu_against_official_xcodec_and_vocos ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\n' > "$temporary/cargo.log"
   require_one_cargo_result "$temporary/cargo.log" measure_real_cpu_against_official_xcodec_and_vocos || fail=1
@@ -335,7 +386,7 @@ run_self_test() {
   approval="$temporary/approval.json"
   printf '{}\n' > "$approval"
   VOKRA_SCRATCH="$temporary/scratch" VOKRA_PUBLISH_ON_VAST=1 "$script_path" \
-    --approval-evidence "$approval" --work-dir "$temporary/work" >"$temporary/production.log" 2>&1
+    --approval-evidence "$approval" --approval-evidence-sha256 "$(sha256_file "$approval")" --expected-head "$(printf '%040d' 1)" --work-dir "$temporary/work" >"$temporary/production.log" 2>&1
   local production_rc=$?
   set -e
   if [[ $production_rc -ne 2 || -e "$temporary/scratch" || -e "$temporary/work" || -e "$temporary/uv-cache-yue-xcodec-mini" ]]; then
@@ -358,23 +409,29 @@ on_exit() {
 }
 
 main() {
-  local self_test=0 requested_work_dir='' approval_evidence='' seen_self_test=0 run_stamp work_dir inputs logs reference
-  local public_dir upstream_dir gguf codec semantic decoder source_root env_log cpu_log summary_file run_log
+  local self_test=0 requested_work_dir='' approval_evidence='' approval_sha='' expected_head='' seen_self_test=0 seen_approval_sha=0 seen_expected_head=0 run_stamp work_dir inputs logs reference
+  local public_dir upstream_dir gguf codec semantic decoder source_root env_log cpu_log summary_file run_log transfer_manifest transfer_sha reference_sha gguf_sha cpu_sha
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$requested_work_dir" ]] || { die '--work-dir requires one directory'; return 2; }; requested_work_dir="$2"; shift 2 ;;
       --approval-evidence) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$approval_evidence" ]] || { die '--approval-evidence requires one file'; return 2; }; approval_evidence="$2"; shift 2 ;;
+      --approval-evidence-sha256) [[ $# -ge 2 && -n "$2" && "$2" != -* && $seen_approval_sha -eq 0 ]] || { die '--approval-evidence-sha256 requires one lowercase 64-hex value'; return 2; }; approval_sha="$2"; seen_approval_sha=1; shift 2 ;;
+      --expected-head) [[ $# -ge 2 && -n "$2" && "$2" != -* && $seen_expected_head -eq 0 ]] || { die '--expected-head requires one lowercase 40-hex value'; return 2; }; expected_head="$2"; seen_expected_head=1; shift 2 ;;
       --self-test) [[ $seen_self_test -eq 0 ]] || { die '--self-test may appear only once'; return 2; }; seen_self_test=1; self_test=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) die "unknown argument: $1"; usage; return 2 ;;
     esac
   done
   if [[ $self_test -eq 1 ]]; then
-    [[ -z "$approval_evidence$requested_work_dir" ]] || { die '--self-test accepts no other arguments'; return 2; }
+    [[ -z "$approval_evidence$approval_sha$expected_head$requested_work_dir" ]] || { die '--self-test accepts no other arguments'; return 2; }
     run_self_test
     return $?
   fi
-  [[ -n "$approval_evidence" ]] || { usage; die '--approval-evidence is required'; }
+  [[ -n "$approval_evidence" && "$seen_approval_sha" == 1 && "$seen_expected_head" == 1 ]] || { usage; die '--approval-evidence, --approval-evidence-sha256 and --expected-head are required'; return 2; }
+  [[ "$approval_sha" =~ ^[0-9a-f]{64}$ ]] || { die '--approval-evidence-sha256 must be exactly 64 lowercase hexadecimal'; return 2; }
+  require_clean_expected_head "$expected_head"
+  [[ -f "$approval_evidence" && ! -L "$approval_evidence" ]] || { die 'approval evidence must be a regular file'; return 2; }
+  [[ "$(sha256_file "$approval_evidence")" == "$approval_sha" ]] || { die 'approval evidence SHA-256 differs from external binding'; return 2; }
   pre_sync_gate "$approval_evidence"
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${requested_work_dir:-$VOKRA_SCRATCH/yue-xcodec-mini-validation/$run_stamp}"
@@ -398,6 +455,7 @@ main() {
   env_log="$logs/environment.txt"
   cpu_log="$logs/cpu.log"
   summary_file="$logs/summary.txt"
+  transfer_manifest="$logs/apple-transfer-manifest.txt"
   exec > >(tee -a "$run_log") 2>&1
   trap on_exit EXIT
 
@@ -433,22 +491,33 @@ main() {
     || die 'reference format v2 marker is missing'
   grep -Fq '"pickle_load_policy": "weights_only=True_required"' "$reference/manifest.json" \
     || die 'reference safe pickle policy marker is missing'
-  write_apple_args "$logs/apple-silicon-yue-xcodec-mini.args.sh" \
-    "$PUBLIC_SHA256" "$(sha256_file "$reference/manifest.json")" '<APPLE_YUE_XCODEC_APPROVAL_EVIDENCE>'
+  reference_sha="$(sha256_file "$reference/manifest.json")"
+  gguf_sha="$PUBLIC_SHA256"
 
   step 'Run named nonzero native CPU measurement against official output'
   VOKRA_YUE_XCODEC_MINI_GGUF="$gguf" \
   VOKRA_YUE_XCODEC_MINI_REFERENCE_DIR="$reference" \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --offline --locked --release \
       -p vokra-models --lib \
       yue_xcodec_mini::tests::measure_real_cpu_against_official_xcodec_and_vocos \
       -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$cpu_log"
   require_cpu_measurement "$cpu_log"
   require_one_cargo_result "$cpu_log" measure_real_cpu_against_official_xcodec_and_vocos
+  cpu_sha="$(sha256_file "$cpu_log")"
+
+  require_clean_expected_head "$expected_head"
+  write_transfer_manifest "$transfer_manifest" "$expected_head" "$gguf_sha" "$reference_sha" "$approval_sha" "$cpu_sha"
+  transfer_sha="$(sha256_file "$transfer_manifest")"
+  require_clean_expected_head "$expected_head"
+  write_apple_args "$logs/apple-silicon-yue-xcodec-mini.args.sh" \
+    "$expected_head" "$gguf_sha" "$reference_sha" "$approval_sha" "$transfer_sha" "$cpu_sha"
+  require_clean_expected_head "$expected_head"
 
   step 'Write evidence summary and checksums'
   {
-    echo 'execution_status=PASS'
+    echo 'execution_status=DECODE_ONLY_MEASURED_NOT_GATED'
+    echo 'decode_status=DECODE_ONLY'
+    echo 'encode_status=ENCODE_NOT_IMPLEMENTED'
     echo 'numeric_verdict=MEASURED_NOT_GATED'
     echo 'numeric_bounds=UNSET'
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
@@ -465,7 +534,13 @@ main() {
     echo 'runtime_artifact=exact_public_gguf'
     echo 'corrected_replacement_binding=SEPARATE_PRODUCTION_TASK'
     echo 'upload=NOT_PERFORMED'
-    echo "reference_manifest_sha256=$(sha256_file "$reference/manifest.json")"
+    echo "reference_manifest_sha256=$reference_sha"
+    echo "approval_evidence_sha256=$approval_sha"
+    echo "transfer_manifest=$transfer_manifest"
+    echo "transfer_manifest_sha256=$transfer_sha"
+    echo "cpu_log=$cpu_log"
+    echo "cpu_log_sha256=$cpu_sha"
+    echo "apple_args=$logs/apple-silicon-yue-xcodec-mini.args.sh"
     grep -F 'YUE_XCODEC_MINI_MEASUREMENT_ONLY backend=cpu' "$cpu_log"
   } | tee "$summary_file"
   (
@@ -474,7 +549,7 @@ main() {
       | sort -z | xargs -0 sha256sum > logs/SHA256SUMS
   )
   trap - EXIT
-  log 'MEASURED_NOT_GATED: pull evidence, remove staged inputs, then destroy the VAST instance'
+  log "DECODE_ONLY / ENCODE_NOT_IMPLEMENTED / MEASURED_NOT_GATED: transfer GGUF=$gguf reference=$reference cpu_log=$cpu_log transfer_manifest=$transfer_manifest args=$logs/apple-silicon-yue-xcodec-mini.args.sh, then remove staged inputs and destroy the VAST instance"
 }
 
 main "$@"
