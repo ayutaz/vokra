@@ -13,8 +13,8 @@ ENHANCEMENT_RUNNER="$SCRIPT_DIR/run-sgmse-native-enhancement-parity.sh"
 WORK_DIR=""
 VOKRA_COMMIT=""
 SELF_TEST=0
-MIN_VAST_MEM_KIB=$((8 * 1024 * 1024))
-MIN_FREE_DISK_KIB=$((4 * 1024 * 1024))
+MIN_VAST_MEM_KIB=$((128 * 1024 * 1024))
+MIN_FREE_DISK_KIB=$((32 * 1024 * 1024))
 
 log() { printf '[sgmse-validation-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
@@ -25,7 +25,7 @@ usage() {
 usage: run-sgmse-voicebank-validation.sh --vokra-commit <40-hex> [--work-dir <absent-dir>]
        run-sgmse-voicebank-validation.sh --self-test
 
-VAST/Linux x86_64 only. The exact clean Vokra commit is inspected, prepared,
+VAST/Linux x86_64 only, with at least 128 GiB RAM and 32 GiB free disk. The exact clean Vokra commit is inspected, prepared,
 converted with explicit Apache-2.0, tested against independent score and
 official waveform enhancement references, then sent through package,
 workspace, clippy, deny, audit, and static gates. Status is NO_UPLOAD.
@@ -50,6 +50,62 @@ run_logged() {
   tail -n 20 "$LOG_DIR/$label.log" >&2 || true
 }
 
+validate_prepared_sidecar() {
+  local artifact="$1" sidecar="$2"
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-sgmse-uv-cache}" uv run --no-project --offline --python 3.12 python - \
+    "$artifact" "$sidecar" <<'PY'
+import hashlib
+import json
+import pathlib
+import re
+import sys
+
+artifact, sidecar = map(pathlib.Path, sys.argv[1:])
+
+def reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+manifest = json.loads(sidecar.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
+expected_keys = {
+    "format", "repository", "model_revision", "source_repository", "source_revision",
+    "checkpoint_filename", "checkpoint_size", "checkpoint_sha256", "prepared_sha256",
+    "tensor_count", "typed_manifest_sha256", "tensor_rows",
+}
+if set(manifest) != expected_keys:
+    raise SystemExit("prepared sidecar schema mismatch")
+expected = {
+    "format": "vokra-sgmse-voicebank-prepared-v1",
+    "repository": "speechbrain/sgmse-voicebank",
+    "model_revision": "8f4ff7b65284c49492a43349b8106e094ac0d365",
+    "source_repository": "https://github.com/sp-uhh/sgmse.git",
+    "source_revision": "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e",
+    "checkpoint_filename": "score_model_ema.ckpt",
+    "checkpoint_size": 262593305,
+    "checkpoint_sha256": "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3",
+}
+for key, value in expected.items():
+    if manifest[key] != value:
+        raise SystemExit(f"prepared sidecar identity mismatch: {key}")
+if not isinstance(manifest["tensor_count"], int) or manifest["tensor_count"] <= 0:
+    raise SystemExit("prepared tensor count is invalid")
+if not isinstance(manifest["tensor_rows"], list) or len(manifest["tensor_rows"]) != manifest["tensor_count"]:
+    raise SystemExit("prepared tensor rows are invalid")
+for key in ("prepared_sha256", "typed_manifest_sha256"):
+    if not isinstance(manifest[key], str) or re.fullmatch(r"[0-9a-f]{64}", manifest[key]) is None:
+        raise SystemExit(f"prepared sidecar digest is malformed: {key}")
+if not artifact.is_file() or artifact.is_symlink():
+    raise SystemExit("prepared artifact is missing or symlinked")
+if manifest["prepared_sha256"] != hashlib.sha256(artifact.read_bytes()).hexdigest():
+    raise SystemExit("prepared artifact digest mismatch")
+print("PREPARED_SAFETENSORS_READY")
+PY
+}
+
 self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token previous=0 line label
   for token in \
@@ -61,6 +117,7 @@ self_test() {
     'run_logged static-zero-deps' 'run_logged static-bound-arch' \
     'run_logged static-fixture-pins' 'run_logged static-dynamic-load' '--vokra-commit' \
     'VOKRA_PUBLISH_ON_VAST=1' 'Linux' 'x86_64' 'PREPARED_SAFETENSORS_READY' \
+    'expected_keys' 'typed_manifest_sha256' 'cd "$VOKRA_ROOT"' '128 GiB' '32 GiB' \
     'STRICT_BIND_PASS' 'apache-2.0' \
     'sgmse_native_score_matches_independent_reference' \
     'sgmse_native_enhancement_matches_official_reference' \
@@ -91,6 +148,36 @@ self_test() {
     log 'self-test FAIL: unknown argument accepted'
     fail=1
   fi
+  local schema_tmp
+  schema_tmp="$(mktemp -d "${TMPDIR:-/tmp}/sgmse-validation-selftest.XXXXXX")"
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-sgmse-uv-cache}" uv run --no-project --offline --python 3.12 python - \
+    "$schema_tmp" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+artifact = root / "prepared.safetensors"
+artifact.write_bytes(b"synthetic-prepared-artifact")
+payload = {
+    "format": "vokra-sgmse-voicebank-prepared-v1",
+    "repository": "speechbrain/sgmse-voicebank",
+    "model_revision": "8f4ff7b65284c49492a43349b8106e094ac0d365",
+    "source_repository": "https://github.com/sp-uhh/sgmse.git",
+    "source_revision": "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e",
+    "checkpoint_filename": "score_model_ema.ckpt",
+    "checkpoint_size": 262593305,
+    "checkpoint_sha256": "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3",
+    "prepared_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+    "tensor_count": 1,
+    "typed_manifest_sha256": "0" * 64,
+    "tensor_rows": [{"name": "synthetic", "dtype": "torch.float32", "shape": [1]}],
+}
+(root / "prepared.manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+PY
+  validate_prepared_sidecar "$schema_tmp/prepared.safetensors" "$schema_tmp/prepared.manifest.json" >/dev/null || fail=1
+  rm -rf -- "$schema_tmp"
   (( fail == 0 )) || return 1
   log 'self-test PASS (model-free; no VAST mutation performed)'
 }
@@ -132,9 +219,9 @@ fi
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 
 mem_kib="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
-[[ "${mem_kib:-0}" -ge "$MIN_VAST_MEM_KIB" ]] || die 'VAST host has less than 8 GiB RAM'
+[[ "${mem_kib:-0}" -ge "$MIN_VAST_MEM_KIB" ]] || die 'VAST host has less than 128 GiB RAM'
 free_kib="$(df -Pk "$VOKRA_ROOT" | awk 'NR==2 {print $4}')"
-[[ "${free_kib:-0}" -ge "$MIN_FREE_DISK_KIB" ]] || die 'VAST checkout filesystem has less than 4 GiB free'
+[[ "${free_kib:-0}" -ge "$MIN_FREE_DISK_KIB" ]] || die 'VAST checkout filesystem has less than 32 GiB free'
 for command in git uv cargo sha256sum awk df findmnt grep sort tee; do
   command -v "$command" >/dev/null 2>&1 || die "missing tool: $command"
 done
@@ -143,6 +230,7 @@ for runner in "$INSPECTION_RUNNER" "$PREPARE_RUNNER" "$SCORE_REFERENCE_RUNNER" "
 done
 
 require_clean_commit
+cd "$VOKRA_ROOT"
 if [[ -z "$WORK_DIR" ]]; then
   WORK_DIR="/workspace/vokra-sgmse-validation-$VOKRA_COMMIT"
 fi
@@ -186,28 +274,7 @@ run_logged preparation bash "$PREPARE_RUNNER" \
   --input-dir "$INSPECTION_DIR/hf" --output-dir "$PREPARED_DIR"
 [[ -s "$PREPARED" && -s "$PREPARED_MANIFEST" ]] || die 'prepared artifact or sidecar is missing'
 
-UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-sgmse-uv-cache}" uv run --no-project --offline --python 3.12 python - \
-  "$PREPARED" "$PREPARED_MANIFEST" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-
-artifact, sidecar = map(pathlib.Path, sys.argv[1:])
-manifest = json.loads(sidecar.read_text(encoding="utf-8"))
-if manifest.get("format") != "vokra-sgmse-voicebank-prepared-v1":
-    raise SystemExit("prepared sidecar format mismatch")
-if manifest.get("status") not in (None, "PREPARED_SAFETENSORS_READY"):
-    raise SystemExit("prepared sidecar status mismatch")
-if manifest.get("publication") != "NO_UPLOAD":
-    raise SystemExit("prepared sidecar publication mismatch")
-digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-if manifest.get("prepared_sha256") != digest:
-    raise SystemExit("prepared artifact digest mismatch")
-if manifest.get("prepared_bytes") not in (None, artifact.stat().st_size):
-    raise SystemExit("prepared artifact byte count mismatch")
-print("PREPARED_SAFETENSORS_READY")
-PY
+validate_prepared_sidecar "$PREPARED" "$PREPARED_MANIFEST" >/dev/null
 
 mkdir "$CONVERSION_DIR"
 run_logged build-converter cargo build --locked --release -p vokra-convert
