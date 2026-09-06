@@ -231,6 +231,9 @@ pub mod kotoba_whisper;
 // a follow-up wave (T29-equivalent). Weights: CC-BY 4.0
 // (AttributionRequired — FR-MD-09 attribution surface).
 pub mod kyutai_stt;
+// Hibiki 2B authenticated artifact/config contract and pure delay-alignment
+// seam. Translation, demux, Mimi, and native forward remain follow-up gates.
+pub mod hibiki_2b;
 // Kyutai TTS 1.6B EN/FR source-authenticated config and delay-alignment seam.
 // Tensor binding, demux, real-weight forward, and audio generation remain
 // explicit follow-up gates.
