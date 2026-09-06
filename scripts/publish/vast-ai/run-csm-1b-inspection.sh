@@ -12,6 +12,7 @@ TRANSFORMERS_COMMIT="945727948c1143a10ac6f7d811aa58bb0d126b5b"
 PUBLIC_REPOSITORY="vokra/csm-1b"
 PUBLIC_REVISION="81613fc840fa995f4c8f1c48749fd731ed6424b8"
 INSPECTOR="tools/parity/csm_1b_inspect.py"
+GATE="tools/parity/csm_1b_gate.py"
 REFERENCE_PROJECT="tools/parity/csm_1b_reference"
 REFERENCE_LOCK_SHA256="62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
 UV_CMD=(uv run --no-sync --frozen --project "$REFERENCE_PROJECT" --python 3.12 python)
@@ -21,43 +22,63 @@ MIN_SHM_KIB=$((40 * 1024 * 1024))
 die() { echo "run-csm-1b-inspection: $*" >&2; exit 2; }
 
 self_test() {
-  local self="${BASH_SOURCE[0]}" root fail=0 status needle py gate_line sync_line download_line
+  local self="${BASH_SOURCE[0]}" root fail=0 status needle py gate_line sync_line download_line terminal_gate_line host_line work_line cache_line
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
   py=python
-  [[ -f "$root/$INSPECTOR" ]] || die "inspector missing"
+  [[ -f "$root/$INSPECTOR" && -f "$root/$GATE" ]] || die "inspector/gate missing"
   [[ -f "$root/$REFERENCE_PROJECT/pyproject.toml" ]] || die "dedicated reference project missing"
-  for needle in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_COMMIT" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$INSPECTOR" "CSM_PUBLIC_CONTRACT" "public/model.gguf" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "INSPECTION_ONLY" "NO_UPLOAD" "collection_status" "requested_revision" "snapshot_download" "list_repo_tree" "RepoFolder" "get_hf_file_metadata" "hf_hub_url" "ckpt.pt" "transformers.safetensors.index.json" "FULL_CSM_TRANSFORMERS_COMPOSITE_ROLES_PRESENT" "codec_model." "tokenizer.json" "caller-owned NumPy" "librosa/soxr" "pytorch-cpu" "uv.lock" "$REFERENCE_LOCK_SHA256" "BLOCKED_LICENSE_METADATA_REVIEW" "REVIEWED_LICENSE_AUDIT_COMPLETE" "source_transformers_requirement" "source_huggingface_hub_requirement" "isolated_transformers_pin" "isolated_huggingface_hub_pin" "GHSA-xrqw-3rrv-vx5w" "BLOCKED_UNVERIFIED_API_SMOKE" "--no-sync" "uv sync --project" "NOT_RUN_OFFICIAL_ONLY"; do
+  for needle in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_COMMIT" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$INSPECTOR" "$GATE" "CSM_PUBLIC_CONTRACT" "public/model.gguf" "AUTHENTICATED_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "INSPECTION_ONLY" "NO_UPLOAD" "collection_status" "requested_revision" "snapshot_download" "list_repo_tree" "RepoFolder" "get_hf_file_metadata" "hf_hub_url" "ckpt.pt" "transformers.safetensors.index.json" "FULL_CSM_TRANSFORMERS_COMPOSITE_ROLES_PRESENT" "codec_model." "tokenizer.json" "caller-owned NumPy" "librosa/soxr" "pytorch-cpu" "uv.lock" "$REFERENCE_LOCK_SHA256" "BLOCKED_LICENSE_METADATA_REVIEW" "REVIEWED_LICENSE_AUDIT_COMPLETE" "source_transformers_requirement" "source_huggingface_hub_requirement" "isolated_transformers_pin" "isolated_huggingface_hub_pin" "GHSA-xrqw-3rrv-vx5w" "BLOCKED_UNVERIFIED_API_SMOKE" "--no-sync" "uv sync --project" "NOT_RUN_OFFICIAL_ONLY" "--approval-evidence" "--approval-sha256" "--expected-head" "BLOCKED_UNRESOLVED_CSM_1B_COMPOSITE"; do
     if ! grep -Fq -- "$needle" "$self" && ! grep -Fq -- "$needle" "$root/$INSPECTOR"; then echo "self-test FAIL: missing $needle" >&2; fail=1; fi
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|vokra-cli[[:space:]]+convert|cargo[[:space:]]+(run|test|check))([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: mutation/conversion/Cargo test found" >&2; fail=1; fi
-  if grep -En '(^|[[:space:]])(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: raw Python/pip found" >&2; fail=1; fi
+  if grep -En '(^|[;&|][[:space:]]*)(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then echo "self-test FAIL: raw Python/pip found" >&2; fail=1; fi
   if ! grep -Fq 'torch.load(path, weights_only=True, map_location="cpu")' "$root/$INSPECTOR" || grep -En 'weights_only=False|pickle\.loads[[:space:]]*\(|pickle\.Unpickler' "$root/$INSPECTOR" >/dev/null; then echo "self-test FAIL: restricted checkpoint loader contract missing/unsafe" >&2; fail=1; fi
   if (( MIN_SHM_KIB != 40 * 1024 * 1024 )); then echo "self-test FAIL: tmpfs threshold unit drift" >&2; fail=1; fi
-  gate_line="$(grep -n 'csm_1b_dump_reference.py" --dependency-gate || die' "$self" | tail -1 | cut -d: -f1)"
+  gate_line="$(grep -nF 'csm_1b_dump_reference.py" --dependency-gate --expected-head' "$self" | tail -1 | cut -d: -f1)"
   sync_line="$(grep -n '^uv sync --project' "$self" | tail -1 | cut -d: -f1)"
   download_line="$(grep -n 'snapshot_download(repo_id' "$self" | tail -1 | cut -d: -f1)"
   if [[ -z "$gate_line" || -z "$sync_line" || -z "$download_line" || "$gate_line" -ge "$sync_line" || "$sync_line" -ge "$download_line" ]]; then
     echo "self-test FAIL: dependency sync must follow the affirmative gate and precede download" >&2; fail=1
   fi
+  terminal_gate_line="$(grep -nF 'gate_output="$("${GATE_CMD[@]}" --verify' "$self" | tail -1 | cut -d: -f1)"
+  host_line="$(grep -nF '[[ "$(uname -s)"' "$self" | tail -1 | cut -d: -f1)"
+  work_line="$(grep -nF 'parent="$(dirname "$work_dir")"' "$self" | tail -1 | cut -d: -f1)"
+  cache_line="$(grep -nF 'mkdir -p "$cache"' "$self" | tail -1 | cut -d: -f1)"
+  if [[ -z "$terminal_gate_line" || -z "$host_line" || -z "$work_line" || -z "$cache_line" || "$terminal_gate_line" -ge "$host_line" || "$terminal_gate_line" -ge "$work_line" || "$terminal_gate_line" -ge "$cache_line" || "$terminal_gate_line" -ge "$sync_line" || "$terminal_gate_line" -ge "$download_line" ]]; then
+    echo "self-test FAIL: terminal approval gate must precede host/work/cache/sync/download" >&2; fail=1
+  fi
+  if ! grep -nF 'GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python' "$self" >/dev/null; then echo "self-test FAIL: stdlib gate command missing" >&2; fail=1; fi
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-cache --no-project --offline --python 3.12 python "$root/$GATE" --self-test || fail=1
   UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-sync --frozen --project "$root/tools/parity" --python 3.12 "$py" "$root/$INSPECTOR" --self-test || fail=1
   if bash "$self" --self-test --work-dir /tmp/csm-self-test >/dev/null 2>&1; then echo "self-test FAIL: extra arguments accepted" >&2; fail=1; else status=$?; [[ "$status" == 2 ]] || { echo "self-test FAIL: expected exit 2, got $status" >&2; fail=1; }; fi
+  if bash "$self" --self-test --self-test >/dev/null 2>&1; then echo "self-test FAIL: duplicate --self-test accepted" >&2; fail=1; fi
+  if bash "$self" --expected-head "$(printf '%040d' 0)" --expected-head "$(printf '%040d' 0)" --approval-evidence /missing --approval-sha256 "$(printf '%064d' 0)" >/dev/null 2>&1; then echo "self-test FAIL: duplicate --expected-head accepted" >&2; fail=1; fi
   (( fail == 0 )) && echo "run-csm-1b-inspection.sh self-test: OK" || return 1
 }
 
-work_dir="/dev/shm/vokra-csm-1b-inspection"; self=0
+work_dir="/dev/shm/vokra-csm-1b-inspection"; self=0; expected_head=""; approval_evidence=""; approval_sha256=""; self_seen=0; work_seen=0; head_seen=0; approval_seen=0; sha_seen=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --self-test) self=1; shift;;
-    --work-dir) [[ $# -ge 2 ]] || die "--work-dir requires path"; work_dir="$2"; shift 2;;
-    -h|--help) echo "usage: $0 [--work-dir /dev/shm/path] | --self-test"; exit 0;;
+    --self-test) self_seen=$((self_seen + 1)); (( self_seen == 1 )) || die "duplicate --self-test"; self=1; shift;;
+    --work-dir) work_seen=$((work_seen + 1)); (( work_seen == 1 )) && [[ $# -ge 2 ]] || die "duplicate or missing --work-dir"; work_dir="$2"; shift 2;;
+    --expected-head) head_seen=$((head_seen + 1)); (( head_seen == 1 )) && [[ $# -ge 2 ]] || die "duplicate or missing --expected-head"; expected_head="$2"; shift 2;;
+    --approval-evidence) approval_seen=$((approval_seen + 1)); (( approval_seen == 1 )) && [[ $# -ge 2 ]] || die "duplicate or missing --approval-evidence"; approval_evidence="$2"; shift 2;;
+    --approval-sha256) sha_seen=$((sha_seen + 1)); (( sha_seen == 1 )) && [[ $# -ge 2 ]] || die "duplicate or missing --approval-sha256"; approval_sha256="$2"; shift 2;;
+    -h|--help) echo "usage: $0 --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 [--work-dir /dev/shm/path] | --self-test"; exit 0;;
     *) die "unknown argument: $1";;
   esac
 done
-if (( self == 1 )); then [[ "$work_dir" == "/dev/shm/vokra-csm-1b-inspection" ]] || die "--self-test accepts no other arguments"; self_test; exit 0; fi
+if (( self == 1 )); then [[ "$work_seen" == 0 && "$head_seen" == 0 && "$approval_seen" == 0 && "$sha_seen" == 0 ]] || die "--self-test accepts no other arguments"; self_test; exit 0; fi
+
+[[ "$head_seen" == 1 && "$approval_seen" == 1 && "$sha_seen" == 1 ]] || die "--expected-head, --approval-evidence, and --approval-sha256 are required"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$root"
+GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python "$root/$GATE")
+set +e; gate_output="$("${GATE_CMD[@]}" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$root" 2>&1)"; gate_status=$?; set -e
+[[ "$gate_status" == 2 && "$gate_output" == *BLOCKED_UNRESOLVED_CSM_1B_COMPOSITE* ]] || die "external approval/checkout gate rejected: $gate_output"
+die "$gate_output"
 
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Linux x86_64 VAST required"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$root"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "worktree is not clean"
 parent="$(dirname "$work_dir")"; [[ -d "$parent" && "$(findmnt -T "$parent" -no FSTYPE 2>/dev/null || true)" == tmpfs ]] || die "work parent must be tmpfs"
 [[ ! -e "$work_dir" || -d "$work_dir" ]] || die "work path is not a directory"; [[ ! -e "$work_dir" || -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "work path is not empty"
@@ -67,7 +88,7 @@ for command in git uv findmnt sha256sum; do command -v "$command" >/dev/null 2>&
 [[ -n "${CSM_PUBLIC_CONTRACT:-}" && -f "$CSM_PUBLIC_CONTRACT" ]] || die "CSM_PUBLIC_CONTRACT is required"
 [[ -f "$REFERENCE_PROJECT/pyproject.toml" && -f "$REFERENCE_PROJECT/uv.lock" ]] || die "dedicated CSM reference uv.lock is required before download"
 [[ "$(sha256sum "$REFERENCE_PROJECT/uv.lock" | awk '{print $1}')" == "$REFERENCE_LOCK_SHA256" ]] || die "dedicated CSM reference uv.lock identity mismatch"
-"${UV_CMD[@]}" "$root/tools/parity/csm_1b_dump_reference.py" --dependency-gate || die "CSM dependency/license gate is not explicitly approved"
+"${UV_CMD[@]}" "$root/tools/parity/csm_1b_dump_reference.py" --dependency-gate --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" || die "CSM dependency/license gate is not explicitly approved"
 uv sync --project "$REFERENCE_PROJECT" --frozen --python 3.12
 mkdir -p "$work_dir"; work_dir="$(cd "$work_dir" && pwd)"; cache="$work_dir/cache"; model="$work_dir/model"; tree="$work_dir/server-tree.json"; source="$work_dir/source"; transformers="$work_dir/transformers"; evidence="$work_dir/evidence"; public="$work_dir/public"; mkdir -p "$cache" "$model" "$evidence" "$public"
 
@@ -130,7 +151,7 @@ PY
 
 git clone --no-tags --filter=blob:none "$SOURCE_REPOSITORY" "$source" >/dev/null 2>&1; git -C "$source" checkout --detach "$SOURCE_REVISION" >/dev/null 2>&1; [[ "$(git -C "$source" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die "source revision mismatch"; [[ -z "$(git -C "$source" status --porcelain --untracked-files=all)" ]] || die "source checkout dirty"; [[ "$(git -C "$source" remote get-url origin | sed 's/\.git$//')" == "${SOURCE_REPOSITORY%.git}" ]] || die "source origin mismatch"
 git clone --no-tags --filter=blob:none "$TRANSFORMERS_REPOSITORY" "$transformers" >/dev/null 2>&1; git -C "$transformers" fetch --tags --quiet origin "$TRANSFORMERS_TAG"; git -C "$transformers" checkout --detach "$TRANSFORMERS_COMMIT" >/dev/null 2>&1; [[ "$(git -C "$transformers" describe --exact-match --tags HEAD)" == "$TRANSFORMERS_TAG" ]] || die "Transformers tag mismatch"; [[ "$(git -C "$transformers" rev-parse HEAD)" == "$TRANSFORMERS_COMMIT" ]] || die "Transformers commit mismatch"; [[ -z "$(git -C "$transformers" status --porcelain --untracked-files=all)" ]] || die "Transformers checkout dirty"
-set +e; "${UV_CMD[@]}" "$INSPECTOR" --snapshot "$model" --source "$source" --transformers "$transformers" --server-tree "$tree" --public-contract "$CSM_PUBLIC_CONTRACT" --public-gguf "$public/model.gguf" --output "$evidence"; status=$?; set -e
+set +e; "${UV_CMD[@]}" "$INSPECTOR" --snapshot "$model" --source "$source" --transformers "$transformers" --server-tree "$tree" --public-contract "$CSM_PUBLIC_CONTRACT" --public-gguf "$public/model.gguf" --output "$evidence" --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256"; status=$?; set -e
 [[ "$status" == 2 ]] || die "inspector did not return exit 2"; [[ -f "$evidence/manifest.json" ]] || die "manifest missing"
 "${UV_CMD[@]}" - "$evidence/manifest.json" <<'PY'
 import json, sys

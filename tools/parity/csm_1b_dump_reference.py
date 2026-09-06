@@ -22,6 +22,8 @@ import wave
 from pathlib import Path
 from typing import Any
 
+import csm_1b_gate
+
 HF_REPOSITORY = "sesame/csm-1b"
 HF_REVISION = "c92a71e1c419772e25be7dc14d952c2521a740ab"
 TOKENIZER_REPOSITORY = "sesame/csm-1b"
@@ -1101,7 +1103,8 @@ def run(args: argparse.Namespace) -> int:
         "pcm_sample_rate_hz": MIMI_SAMPLE_RATE,
         "pcm_semantics": "Transformers codec-decoded PCM before the source CSM watermark/resample stage; not final watermarked PCM",
     }
-    (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    with (output / "manifest.json").open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     return 0
 
 
@@ -1115,9 +1118,22 @@ def main() -> int:
     parser.add_argument("--max-new-tokens", type=int, default=1125)
     parser.add_argument("--dependency-gate", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
+        if args.dependency_gate or any(value is not None for value in (args.expected_head, args.approval_evidence, args.approval_sha256)):
+            parser.error("--self-test cannot be combined with execution or verification arguments")
         return self_test()
+    if any(value is None for value in (args.expected_head, args.approval_evidence, args.approval_sha256)):
+        parser.error("reference requires --expected-head --approval-evidence --approval-sha256")
+    root = Path(__file__).resolve().parents[2]
+    try:
+        csm_1b_gate.require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, root)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 2 if csm_1b_gate.BLOCKED_MARKER in str(error) else 1
     if args.dependency_gate:
         try:
             lock_path = Path(__file__).resolve().parent / "csm_1b_reference" / "uv.lock"
@@ -1136,7 +1152,8 @@ def main() -> int:
         # artifacts would otherwise look like fresh evidence to a worker.
         if args.output and (not args.output.exists() or (args.output.is_dir() and not any(args.output.iterdir()))):
             args.output.mkdir(parents=True, exist_ok=True)
-            (args.output / "manifest.json").write_text(json.dumps({
+            with (args.output / "manifest.json").open("x", encoding="utf-8") as handle:
+                handle.write(json.dumps({
                 "format": FORMAT,
                 "status": "BLOCKED",
                 "reference_status": "REFERENCE_ERROR",
@@ -1153,7 +1170,7 @@ def main() -> int:
                     "tokenizer_json_git_blob_sha1": TOKENIZER_JSON_GIT_BLOB_SHA1,
                     "status": "SNAPSHOT_AUTHENTICATED_BUT_NATIVE_ID_PARITY_UNACCEPTED",
                 },
-            }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                }, indent=2, sort_keys=True) + "\n")
         return 2
 
 

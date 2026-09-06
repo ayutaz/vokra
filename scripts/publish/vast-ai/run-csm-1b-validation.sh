@@ -8,11 +8,12 @@
 # historical CSM-core-only GGUF as a composite.
 set -euo pipefail
 
-ROOT="${VOKRA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PARITY="$ROOT/tools/parity"
 REFERENCE="$PARITY/csm_1b_dump_reference.py"
 REFERENCE_PROJECT="$PARITY/csm_1b_reference"
 REFERENCE_LOCK_SHA256="62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
+GATE="$ROOT/tools/parity/csm_1b_gate.py"
 UV=(uv run --no-sync --frozen --project "$REFERENCE_PROJECT" --python 3.12 python)
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_SCRATCH_KIB=$((40 * 1024 * 1024))
@@ -24,10 +25,10 @@ self_test() {
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
   py=python
   for token in sesame/csm-1b c92a71e1c419772e25be7dc14d952c2521a740ab \
-    945727948c1143a10ac6f7d811aa58bb0d126b5b csm_1b_inspect.py \
+    945727948c1143a10ac6f7d811aa58bb0d126b5b csm_1b_inspect.py csm_1b_gate.py \
     csm_1b_dump_reference.py REFERENCE_EVIDENCE_COMPLETE \
     COMPLETE_COMPOSITE_GGUF complete-artifact-manifest.json ACCEPTED_VAST_CPU_BASELINE BLOCKED_NATIVE_BINDING \
-    VOKRA_PUBLISH_ON_VAST findmnt CARGO_BUILD_JOBS=1 NO_UPLOAD NOT_RUN_OFFICIAL_ONLY \
+    VOKRA_PUBLISH_ON_VAST findmnt CARGO_BUILD_JOBS=1 NO_UPLOAD NOT_RUN_OFFICIAL_ONLY BLOCKED_UNRESOLVED_CSM_1B_COMPOSITE --approval-evidence --approval-sha256 --expected-head \
     apply_chat_template audio_kwargs caller-owned NumPy librosa/soxr wav-pcm16-le pytorch-cpu uv.lock "$REFERENCE_LOCK_SHA256" BLOCKED_LICENSE_METADATA_REVIEW REVIEWED_LICENSE_AUDIT_COMPLETE source_transformers_requirement source_huggingface_hub_requirement isolated_transformers_pin isolated_huggingface_hub_pin GHSA-xrqw-3rrv-vx5w BLOCKED_UNVERIFIED_API_SMOKE --no-sync "uv sync --project" 2051 collection_status decoded_frame_codes.u32le; do
     grep -Fq -- "$token" "$0" || { echo "self-test missing $token" >&2; fail=1; }
   done
@@ -37,21 +38,36 @@ self_test() {
   if grep -En '(^|[;&|][[:space:]]*)(python|python3|pip)([[:space:]]|$)' "$0" >/dev/null; then
     echo 'self-test found bare Python command' >&2; fail=1
   fi
-  gate_line="$(grep -n 'REFERENCE" --dependency-gate || die' "$0" | tail -1 | cut -d: -f1)"
+  gate_line="$(grep -nF 'GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python' "$0" | tail -1 | cut -d: -f1)"
   sync_line="$(grep -n '^uv sync --project' "$0" | tail -1 | cut -d: -f1)"
   reference_line="$(grep -n '^  --snapshot' "$0" | tail -1 | cut -d: -f1)"
   if [[ -z "$gate_line" || -z "$sync_line" || -z "$reference_line" || "$gate_line" -ge "$sync_line" || "$sync_line" -ge "$reference_line" ]]; then
     echo 'self-test sync must follow the affirmative gate and precede reference execution' >&2; fail=1
   fi
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --self-test || fail=1
   UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-sync --frozen --project "$root/tools/parity" --python 3.12 "$py" "$root/tools/parity/csm_1b_dump_reference.py" --self-test || fail=1
+  if bash "$0" --self-test --self-test >/dev/null 2>&1; then echo 'self-test duplicate --self-test accepted' >&2; fail=1; fi
+  if bash "$0" --expected-head "$(printf '%040d' 0)" --expected-head "$(printf '%040d' 0)" --approval-evidence /missing --approval-sha256 "$(printf '%064d' 0)" >/dev/null 2>&1; then echo 'self-test duplicate --expected-head accepted' >&2; fail=1; fi
   (( fail == 0 )) && echo 'run-csm-1b-validation.sh self-test: OK' || return 1
 }
 
-if [[ "${1:-}" == --self-test ]]; then
-  [[ $# == 1 ]] || die '--self-test accepts no arguments'
-  self_test
-  exit 0
-fi
+expected_head=""; approval_evidence=""; approval_sha256=""; self=0; self_seen=0; head_seen=0; approval_seen=0; sha_seen=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --self-test) self_seen=$((self_seen + 1)); (( self_seen == 1 )) || die 'duplicate --self-test'; self=1; shift;;
+    --expected-head) head_seen=$((head_seen + 1)); (( head_seen == 1 )) && [[ $# -ge 2 ]] || die 'duplicate or missing --expected-head'; expected_head="$2"; shift 2;;
+    --approval-evidence) approval_seen=$((approval_seen + 1)); (( approval_seen == 1 )) && [[ $# -ge 2 ]] || die 'duplicate or missing --approval-evidence'; approval_evidence="$2"; shift 2;;
+    --approval-sha256) sha_seen=$((sha_seen + 1)); (( sha_seen == 1 )) && [[ $# -ge 2 ]] || die 'duplicate or missing --approval-sha256'; approval_sha256="$2"; shift 2;;
+    -h|--help) echo "usage: $0 --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 | --self-test"; exit 0;;
+    *) die "unknown argument: $1";;
+  esac
+done
+if (( self == 1 )); then [[ "$head_seen" == 0 && "$approval_seen" == 0 && "$sha_seen" == 0 ]] || die '--self-test accepts no other arguments'; self_test; exit 0; fi
+[[ "$head_seen" == 1 && "$approval_seen" == 1 && "$sha_seen" == 1 ]] || die '--expected-head, --approval-evidence, and --approval-sha256 are required'
+GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python "$GATE")
+set +e; gate_output="$("${GATE_CMD[@]}" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$ROOT" 2>&1)"; gate_status=$?; set -e
+[[ "$gate_status" == 2 && "$gate_output" == *BLOCKED_UNRESOLVED_CSM_1B_COMPOSITE* ]] || die "external approval/checkout gate rejected: $gate_output"
+die "$gate_output"
 
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is required'
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'Linux x86_64 VAST is required'
@@ -67,7 +83,7 @@ scratch="$(df -Pk "$work_parent" | awk 'NR == 2 {print $4}')"
 for tool in git uv sha256sum findmnt; do command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"; done
 [[ -f "$REFERENCE_PROJECT/pyproject.toml" && -f "$REFERENCE_PROJECT/uv.lock" && -f "$ROOT/scripts/publish/vast-ai/run-csm-1b-inspection.sh" && -f "$REFERENCE" ]] || die 'dedicated locked CSM reference project is missing'
 [[ "$(sha256sum "$REFERENCE_PROJECT/uv.lock" | awk '{print $1}')" == "$REFERENCE_LOCK_SHA256" ]] || die 'dedicated CSM reference uv.lock identity mismatch'
-"${UV[@]}" "$REFERENCE" --dependency-gate || die 'CSM dependency/license gate is not explicitly approved'
+"${UV[@]}" "$REFERENCE" --dependency-gate --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" || die 'CSM dependency/license gate is not explicitly approved'
 uv sync --project "$REFERENCE_PROJECT" --frozen --python 3.12
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'clean checkout required'
 [[ -n "${CSM_INSPECTION_BUNDLE:-}" && -d "$CSM_INSPECTION_BUNDLE" ]] || die 'CSM_INSPECTION_BUNDLE is required'
@@ -105,7 +121,7 @@ PY
   --transformers "$CSM_INSPECTION_BUNDLE/transformers" \
   --packet "$CSM_REFERENCE_PACKET" \
   --inspection-manifest "$CSM_INSPECTION_BUNDLE/evidence/manifest.json" \
-  --output "$evidence/reference" >"$work_dir/reference.log" 2>&1 || die 'official reference failed'
+  --output "$evidence/reference" --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" >"$work_dir/reference.log" 2>&1 || die 'official reference failed'
 "${UV[@]}" - "$evidence/reference/manifest.json" "$CSM_REFERENCE_PACKET" "$REFERENCE_PROJECT/uv.lock" <<'PY'
 import hashlib, json, math, re, struct, sys, tomllib
 from pathlib import Path

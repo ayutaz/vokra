@@ -19,6 +19,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+import csm_1b_gate
+
 HF_REPOSITORY = "sesame/csm-1b"
 HF_REVISION = "c92a71e1c419772e25be7dc14d952c2521a740ab"
 SOURCE_REPOSITORY = "https://github.com/SesameAILabs/csm.git"
@@ -722,8 +724,13 @@ def manifest(output: Path, inspection_status: str, evidence: dict[str, Any] | No
         result["evidence"] = evidence
     if error:
         result["error"] = error
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "manifest.json").write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    if output.exists():
+        if not output.is_dir() or any(output.iterdir()):
+            raise FileExistsError("inspection output must be absent or an empty directory")
+    else:
+        output.mkdir(parents=True)
+    with (output / "manifest.json").open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
 
 
 def git(root: Path, *args: str) -> str:
@@ -775,6 +782,27 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
     import tempfile
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        occupied = root / "occupied"
+        occupied.mkdir()
+        (occupied / "manifest.json").write_text("prior\n", encoding="utf-8")
+        try:
+            manifest(occupied, "INSPECTION_ERROR", error="self-test")
+        except FileExistsError:
+            pass
+        else:
+            return False
+        sentinel_dir = root / "sentinel"
+        sentinel_dir.mkdir()
+        sentinel = sentinel_dir / "prior.txt"
+        sentinel.write_text("keep\n", encoding="utf-8")
+        try:
+            manifest(sentinel_dir, "INSPECTION_ERROR", error="self-test")
+        except FileExistsError:
+            pass
+        else:
+            return False
+        if sentinel.read_text(encoding="utf-8") != "keep\n" or len(list(sentinel_dir.iterdir())) != 1:
+            return False
         header = json.dumps({"x": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}).encode()
         good = root / "good.safetensors"
         good.write_bytes(len(header).to_bytes(8, "little") + header + b"\0" * 4)
@@ -820,11 +848,24 @@ def main() -> int:
     parser.add_argument("--public-gguf", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.expected_head, args.approval_evidence, args.approval_sha256)):
+            parser.error("--self-test cannot be combined with verification arguments")
         passed = self_test()
         print("csm_1b_inspect.py self-test: " + ("OK" if passed else "FAIL"))
         return 0 if passed else 1
+    if any(value is None for value in (args.expected_head, args.approval_evidence, args.approval_sha256)):
+        parser.error("inspection requires --expected-head --approval-evidence --approval-sha256")
+    root = Path(__file__).resolve().parents[2]
+    try:
+        csm_1b_gate.require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, root)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 2 if csm_1b_gate.BLOCKED_MARKER in str(error) else 1
     if not all((args.snapshot, args.source, args.transformers, args.server_tree, args.public_contract, args.public_gguf, args.output)):
         parser.error("inspection requires --snapshot --source --transformers --server-tree --public-contract --public-gguf --output")
     try:
