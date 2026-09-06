@@ -1138,7 +1138,7 @@ def self_test() -> int:
         duplicate_log_manifest["run_log"] = {"path": RUN_LOG_NAME, "size": (duplicate_log / RUN_LOG_NAME).stat().st_size, "sha256": sha256(duplicate_log / RUN_LOG_NAME)}
         (duplicate_log / MANIFEST_NAME).write_text(json.dumps(duplicate_log_manifest), encoding="utf-8")
         try:
-            verify_reference(duplicate_log)
+            verify_for_self_test(duplicate_log)
         except ValueError:
             pass
         else:
