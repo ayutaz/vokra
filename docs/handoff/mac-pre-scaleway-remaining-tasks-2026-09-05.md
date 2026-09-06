@@ -591,6 +591,40 @@ families without acquiring or executing their weights locally:
   Apple reports no CPU/Metal verdict. The T5 conditioner identity, complete
   16-kHz EnCodec companion contract, native composite, independent CPU parity
   and transfer packet remain open.
+- SpeechBrain Lang-ID commits `b8f99dfc` and `d2e07131` make the canonical
+  VoxLingua107 replacement require exact Apache-2.0/permissive provenance and
+  reject missing or altered provenance before forward execution. Its ignored
+  real test cannot turn absent or symlinked inputs into a skip. The VAST and
+  Apple workers bind an external approval digest, exact clean HEAD, complete
+  reference manifest, GGUF and `NO_UPLOAD` transfer manifest, and the VAST
+  worker includes the locked/offline workspace, Clippy, deny and advisory
+  gates. Actual VAST CPU/reference measurement, reviewed numerical bounds and
+  final Apple CPU/Metal/reference measurement remain open.
+- NSNet2 commits `341f0a88`, `ee62ef5f` and `2f5fd10b` replace the former
+  env-based green skip with an explicit ignored hard-fail gate and add an
+  externally hash-bound approval plus a portable exact packet containing the
+  corrected GGUF, input, independent reference and singleton VAST CPU evidence.
+  Both workers require one clean expected HEAD, locked/offline/serial Cargo and
+  `NO_UPLOAD`; Apple authenticates the packet closure before hardware execution.
+  The packet must transfer directly from VAST to Apple/Scaleway rather than
+  through the maintainer Mac. The real ONNX conversion/reference/CPU run and
+  final Apple Metal run are still pending.
+- Apple Arm BF16 commit `3d3fe227` binds the existing independent PyTorch
+  fixture packet to one clean exact HEAD and one explicit ignored BFMMLA test.
+  The worker rejects unsupported hardware instead of dispatching to scalar or
+  ordinary NEON, requires locked/offline/serial Cargo, rechecks the checkout
+  before evidence publication and records hardware identity plus `NO_UPLOAD`.
+  Only the actual Apple arm64 BF16 hardware execution remains for this fixture
+  leg; a real model checkpoint remains a separate cross-cutting requirement.
+- Canary 1B Flash/v2 commit `c1b7c638` makes both VAST-to-Apple routes require
+  caller-bound approval evidence and one clean exact HEAD. Each VAST worker
+  records separate singleton ASR and AST CPU logs, an exact CPU summary and a
+  portable manifest that binds the GGUF, independent reference packet,
+  approval and all CPU evidence hashes. The Apple workers authenticate that
+  closure before hardware execution and cannot report success from a skipped
+  or zero-test run. Model-free runner, preflight, packet and prepare/dumper
+  self-tests pass locally; real VAST conversion/CPU/reference and final Apple
+  CPU/Metal measurements remain open.
 
 These commits improve readiness only. They do not decrement the 63-row public
 audit until corrected artifacts and final Apple evidence exist under their
