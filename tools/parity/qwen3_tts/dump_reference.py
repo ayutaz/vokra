@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --frozen --project tools/parity/qwen3_tts --python 3.12 python
 """Dump an independent official Qwen3-TTS real-weight reference.
 
 The QwenLM/Qwen3-TTS package is imported from the immutable source revision in
@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,10 +150,14 @@ def require_snapshot(model_dir: Path, variant: Variant) -> dict[str, Any]:
     return config
 
 
-def require_empty(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    if any(path.iterdir()):
-        die(f"output directory must be empty: {path}")
+def prepare_output(path: Path) -> Path:
+    """Reserve an absent output and build it in a private sibling directory."""
+    if path.exists() or path.is_symlink():
+        die(f"output directory must be absent (no-clobber): {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{path.name}.", dir=path.parent))
+    os.chmod(temporary, 0o700)
+    return temporary
 
 
 def require_decoder_snapshot(model_dir: Path, decoder_dir: Path) -> tuple[str, str]:
@@ -229,7 +234,7 @@ def run_self_test() -> int:
     if DECODER_REPO != "Qwen/Qwen3-TTS-Tokenizer-12Hz" or len(DECODER_REVISION) != 40:
         die("decoder identity drifted")
     source = Path(__file__).read_text(encoding="utf-8")
-    if "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source:
+    if not source.startswith("#!/usr/bin/env -S uv run") or "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source:
         die("reference is not using the official local-only wrapper")
     if "pickle." + "loads" in source or "weights_only=" + "False" in source:
         die("unsafe pickle loading appeared in the reference dumper")
@@ -271,7 +276,7 @@ def main() -> int:
     source_dir = args.source_dir.resolve()
     require_source_tree(source_dir)
     sys.path.insert(0, str(source_dir))
-    require_empty(output)
+    output = prepare_output(output)
     config = require_snapshot(model_dir, variant)
     decoder_sha, nested_decoder_sha = require_decoder_snapshot(model_dir, decoder_dir)
     os.environ.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false"})
@@ -346,6 +351,17 @@ def main() -> int:
         if path.is_file():
             manifest[f"sha256_{path.name.replace('.', '_')}"] = sha256_file(path)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    expected_outputs = {"manifest.json", "prompt_ids.u32le", "codes.u32le", "pcm.f32le", "environment.json"}
+    if variant.kind == "base":
+        expected_outputs.add("speaker_embedding.f32le")
+    entries = {path.name for path in output.iterdir()}
+    if entries != expected_outputs or any(path.is_symlink() or not path.is_file() for path in output.iterdir()):
+        die(f"reference output contains unexpected or non-regular entries: {sorted(entries)}")
+    final_output = args.output.resolve()
+    if final_output.exists() or final_output.is_symlink():
+        die(f"output appeared during generation (no-clobber): {final_output}")
+    os.replace(output, final_output)
+    output = final_output
     print(f"QWEN3_TTS_OFFICIAL_REFERENCE variant={variant.slug} frames={codes.shape[0]} codebooks={CODEBOOKS} output={output}", flush=True)
     return 0
 

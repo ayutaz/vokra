@@ -58,7 +58,8 @@ usage: apple-silicon-qwen3-tts.sh \
   --gguf-1.7b-customvoice <path> --reference-1.7b-customvoice <dir> \
   --gguf-1.7b-customvoice-sha256 <hex> \
   --reference-1.7b-customvoice-sha256 <hex> \
-  --decoder-gguf <path> --decoder-gguf-sha256 <hex> --approval-evidence <json> --evidence-dir <empty-dir>
+  --decoder-gguf <path> --decoder-gguf-sha256 <hex> --approval-evidence <json> --evidence-dir <empty-dir> \
+  --expected-head <40-lowercase-hex>
        apple-silicon-qwen3-tts.sh --self-test
 
 Consumes only VAST-staged corrected main/decoder GGUFs and official reference
@@ -244,6 +245,11 @@ run_self_test() {
   if grep -Fq "$forbidden_marker" "$script_path"; then
     log 'self-test found a contradictory full PASS marker'; failed=1
   fi
+  local expected_head_probe
+  expected_head_probe="$(printf '%040d' 0)"
+  if "$script_path" --expected-head "$expected_head_probe" --expected-head "$expected_head_probe" >/dev/null 2>&1; then
+    log 'self-test accepted duplicate --expected-head'; failed=1
+  fi
   local sha_probe sha_expected
   sha_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-apple-sha-selftest.XXXXXX")"
   printf '%s\n' qwen3-tts-sha-self-test > "$sha_probe"
@@ -296,10 +302,10 @@ run_self_test() {
 }
 
 main() {
-  local base06='' custom06='' base17='' custom17='' ref_base06='' ref_custom06='' ref_base17='' ref_custom17='' decoder='' approval='' evidence='' base06_sha='' custom06_sha='' base17_sha='' custom17_sha='' decoder_sha='' ref_base06_sha='' ref_custom06_sha='' ref_base17_sha='' ref_custom17_sha='' self_test=0 seen=''
+  local base06='' custom06='' base17='' custom17='' ref_base06='' ref_custom06='' ref_base17='' ref_custom17='' decoder='' approval='' evidence='' base06_sha='' custom06_sha='' base17_sha='' custom17_sha='' decoder_sha='' ref_base06_sha='' ref_custom06_sha='' ref_base17_sha='' ref_custom17_sha='' expected_head='' self_test=0 seen=''
   while (( $# > 0 )); do
     case "$1" in
-      --gguf-*|--reference-*|--decoder-gguf|--decoder-gguf-sha256|--approval-evidence|--evidence-dir)
+      --gguf-*|--reference-*|--decoder-gguf|--decoder-gguf-sha256|--approval-evidence|--evidence-dir|--expected-head)
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; return 2; }
         [[ "$seen" != *"|$1|"* ]] || { usage; return 2; }
         seen+="|$1|" ;;
@@ -309,18 +315,19 @@ main() {
       --gguf-0.6b-customvoice) custom06="$2"; shift 2 ;; --gguf-0.6b-customvoice-sha256) custom06_sha="$2"; shift 2 ;; --reference-0.6b-customvoice) ref_custom06="$2"; shift 2 ;; --reference-0.6b-customvoice-sha256) ref_custom06_sha="$2"; shift 2 ;;
       --gguf-1.7b-base) base17="$2"; shift 2 ;; --gguf-1.7b-base-sha256) base17_sha="$2"; shift 2 ;; --reference-1.7b-base) ref_base17="$2"; shift 2 ;; --reference-1.7b-base-sha256) ref_base17_sha="$2"; shift 2 ;;
       --gguf-1.7b-customvoice) custom17="$2"; shift 2 ;; --gguf-1.7b-customvoice-sha256) custom17_sha="$2"; shift 2 ;; --reference-1.7b-customvoice) ref_custom17="$2"; shift 2 ;; --reference-1.7b-customvoice-sha256) ref_custom17_sha="$2"; shift 2 ;;
-      --decoder-gguf) decoder="$2"; shift 2 ;; --decoder-gguf-sha256) decoder_sha="$2"; shift 2 ;; --approval-evidence) approval="$2"; shift 2 ;; --evidence-dir) evidence="$2"; shift 2 ;;
+      --decoder-gguf) decoder="$2"; shift 2 ;; --decoder-gguf-sha256) decoder_sha="$2"; shift 2 ;; --approval-evidence) approval="$2"; shift 2 ;; --evidence-dir) evidence="$2"; shift 2 ;; --expected-head) expected_head="$2"; shift 2 ;;
       --self-test) self_test=1; shift ;; -h|--help) usage; return 0 ;; *) usage; die "unknown argument: $1" ;;
     esac
   done
-  if (( self_test == 1 )); then [[ -z "$base06$custom06$base17$custom17$ref_base06$ref_custom06$ref_base17$ref_custom17$decoder$approval$evidence$base06_sha$custom06_sha$base17_sha$custom17_sha$decoder_sha$ref_base06_sha$ref_custom06_sha$ref_base17_sha$ref_custom17_sha" ]] || die '--self-test accepts no other arguments'; run_self_test; return; fi
+  if (( self_test == 1 )); then [[ -z "$base06$custom06$base17$custom17$ref_base06$ref_custom06$ref_base17$ref_custom17$decoder$approval$evidence$base06_sha$custom06_sha$base17_sha$custom17_sha$decoder_sha$ref_base06_sha$ref_custom06_sha$ref_base17_sha$ref_custom17_sha$expected_head" ]] || die '--self-test accepts no other arguments'; run_self_test; return; fi
   [[ -n "$base06" && -n "$custom06" && -n "$base17" && -n "$custom17" && \
     -n "$ref_base06" && -n "$ref_custom06" && -n "$ref_base17" && -n "$ref_custom17" && \
     -n "$decoder" && -n "$approval" && -n "$evidence" && \
     -n "$base06_sha" && -n "$custom06_sha" && -n "$base17_sha" && -n "$custom17_sha" && \
     -n "$decoder_sha" && -n "$ref_base06_sha" && -n "$ref_custom06_sha" && \
-    -n "$ref_base17_sha" && -n "$ref_custom17_sha" ]] \
-    || { usage; die 'all four GGUF/reference pairs, nine artifact SHA-256 values, decoder, approval evidence and evidence dir are required'; }
+    -n "$ref_base17_sha" && -n "$ref_custom17_sha" && \
+    -n "$expected_head" && "$expected_head" =~ ^[0-9a-f]{40}$ ]] \
+    || { usage; die 'all four GGUF/reference pairs, nine artifact SHA-256 values, decoder, approval evidence, evidence dir, and expected HEAD are required'; }
   [[ -f "$approval" && -s "$approval" && ! -L "$approval" ]] || die 'approval evidence must be a non-empty regular non-symlink file'
   require_transformers_api_smoke
   [[ -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" && -f "$PARITY_PROJECT/pyproject.toml" && ! -L "$PARITY_PROJECT/pyproject.toml" && -f "$LICENSE_GATE" && ! -L "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && ! -L "$LICENSE_MANIFEST" ]] || die 'Qwen3-TTS gate inputs are missing or symlinked'
@@ -329,6 +336,9 @@ main() {
   for variant in 0.6b-base 0.6b-customvoice 1.7b-base 1.7b-customvoice; do gate_args+=(--variant-revision "$variant=$(variant_revision "$variant")"); done
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$LICENSE_GATE" "${gate_args[@]}" || return 2
   require_remote_host; require_tooling
+  local actual_head
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
   require_file '0.6B Base corrected main GGUF' "$base06"; require_file '0.6B CustomVoice corrected main GGUF' "$custom06"; require_file '1.7B Base corrected main GGUF' "$base17"; require_file '1.7B CustomVoice corrected main GGUF' "$custom17"; require_file 'official decoder GGUF' "$decoder"
   require_expected_sha256 '0.6B Base corrected main GGUF' "$base06_sha" "$base06"; require_expected_sha256 '0.6B CustomVoice corrected main GGUF' "$custom06_sha" "$custom06"; require_expected_sha256 '1.7B Base corrected main GGUF' "$base17_sha" "$base17"; require_expected_sha256 '1.7B CustomVoice corrected main GGUF' "$custom17_sha" "$custom17"; require_expected_sha256 'official decoder GGUF' "$decoder_sha" "$decoder"
   require_file '0.6B Base reference manifest' "$ref_base06/manifest.json"; require_file '0.6B CustomVoice reference manifest' "$ref_custom06/manifest.json"; require_file '1.7B Base reference manifest' "$ref_base17/manifest.json"; require_file '1.7B CustomVoice reference manifest' "$ref_custom17/manifest.json"
@@ -339,7 +349,7 @@ main() {
     "$ref_base06" "$ref_custom06" "$ref_base17" "$ref_custom17"
   mkdir -p "$evidence"
   {
-    echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"; echo "decoder_repo=$DECODER_REPO"; echo "decoder_revision=$DECODER_REVISION"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"
+    echo "git_commit=$actual_head"; echo "expected_head=$expected_head"; echo "decoder_repo=$DECODER_REPO"; echo "decoder_revision=$DECODER_REVISION"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"
     echo 'model_0_6b_base_repo=Qwen/Qwen3-TTS-12Hz-0.6B-Base'; echo 'model_0_6b_base_revision=5d83992436eae1d760afd27aff78a71d676296fc'; echo 'model_0_6b_base_config_bytes=4494'; echo 'model_0_6b_base_config_sha256=2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011'
     echo 'model_0_6b_customvoice_repo=Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice'; echo 'model_0_6b_customvoice_revision=85e237c12c027371202489a0ec509ded67b5e4b5'; echo 'model_0_6b_customvoice_config_bytes=4908'; echo 'model_0_6b_customvoice_config_sha256=81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455'
     echo 'model_1_7b_base_repo=Qwen/Qwen3-TTS-12Hz-1.7B-Base'; echo 'model_1_7b_base_revision=fd4b254389122332181a7c3db7f27e918eec64e3'; echo 'model_1_7b_base_config_bytes=4494'; echo 'model_1_7b_base_config_sha256=b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9'
@@ -355,7 +365,7 @@ main() {
     VOKRA_QWEN3_TTS_0_6B_CUSTOMVOICE_GGUF="$custom06" VOKRA_QWEN3_TTS_0_6B_CUSTOMVOICE_DECODER_GGUF="$decoder" VOKRA_QWEN3_TTS_0_6B_CUSTOMVOICE_REFERENCE_DIR="$ref_custom06" \
     VOKRA_QWEN3_TTS_1_7B_BASE_GGUF="$base17" VOKRA_QWEN3_TTS_1_7B_BASE_DECODER_GGUF="$decoder" VOKRA_QWEN3_TTS_1_7B_BASE_REFERENCE_DIR="$ref_base17" \
     VOKRA_QWEN3_TTS_1_7B_CUSTOMVOICE_GGUF="$custom17" VOKRA_QWEN3_TTS_1_7B_CUSTOMVOICE_DECODER_GGUF="$decoder" VOKRA_QWEN3_TTS_1_7B_CUSTOMVOICE_REFERENCE_DIR="$ref_custom17" \
-    RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-models --features metal --test qwen3_tts_real "$TEST_NAME" -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/parity.log"
+    VOKRA_REMOTE_APPLE_SILICON=1 CARGO_NET_OFFLINE=true RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-models --features metal --test qwen3_tts_real "$TEST_NAME" -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/parity.log"
   require_exact_test_result "$evidence/parity.log" "$TEST_NAME"
   for marker in 'variant=0.6b-base backend=cpu' 'variant=0.6b-base backend=metal' 'variant=0.6b-customvoice backend=cpu' 'variant=0.6b-customvoice backend=metal' 'variant=1.7b-base backend=cpu' 'variant=1.7b-base backend=metal' 'variant=1.7b-customvoice backend=cpu' 'variant=1.7b-customvoice backend=metal'; do require_exact_marker "$evidence/parity.log" "QWEN3_TTS_PARITY $marker prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"; done
   for variant in 0.6b-base 0.6b-customvoice 1.7b-base 1.7b-customvoice; do require_exact_marker "$evidence/parity.log" "QWEN3_TTS_METAL_CPU variant=$variant codes_exact=PASS pcm=MEASURED_NOT_GATED"; done

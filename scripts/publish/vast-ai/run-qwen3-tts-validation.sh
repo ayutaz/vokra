@@ -71,7 +71,7 @@ require_absent_work_dir() {
 
 usage() {
   cat <<'EOF' >&2
-usage: run-qwen3-tts-validation.sh --approval-evidence <json> [--variant <slug|all>] [--work-dir <absent-dir>]
+usage: run-qwen3-tts-validation.sh --approval-evidence <json> --expected-head <40-lowercase-hex> [--variant <slug|all>] [--work-dir <absent-dir>]
        run-qwen3-tts-validation.sh --self-test
 
 Converts the exact immutable Qwen3-TTS main release into corrected GGUFs and
@@ -250,6 +250,15 @@ download_source_tree() {
 
 require_single_file_snapshot() {
   local directory="$1" shards index
+  if [[ -L "$directory/.cache" ]]; then
+    die "snapshot contains a symlinked .cache directory: $directory/.cache"
+  elif [[ -d "$directory/.cache" ]]; then
+    # huggingface_hub writes local-dir bookkeeping here. It is not a model
+    # input, so remove this exact generated entry before closure checks.
+    rm -rf -- "$directory/.cache"
+  elif [[ -e "$directory/.cache" ]]; then
+    die "snapshot contains a non-directory .cache entry: $directory/.cache"
+  fi
   [[ -f "$directory/model.safetensors" ]] || die "single-file checkpoint missing: $directory/model.safetensors"
   shards=("$directory"/model-*.safetensors)
   if [[ -e "${shards[0]}" ]]; then
@@ -302,7 +311,7 @@ run_self_test() {
     '--gguf-0.6b-base-sha256' '--gguf-0.6b-customvoice-sha256' '--gguf-1.7b-base-sha256' \
     '--gguf-1.7b-customvoice-sha256' '--decoder-gguf-sha256' '--reference-0.6b-base-sha256' \
     '--reference-0.6b-customvoice-sha256' '--reference-1.7b-base-sha256' '--reference-1.7b-customvoice-sha256' \
-    '--decoder-gguf %q' '--reference-0.6b-base %q' '<APPLE_QWEN3_TTS_APPROVAL_EVIDENCE>' '<APPLE_QWEN3_TTS_EVIDENCE_DIR>'; do
+    '--decoder-gguf %q' '--reference-0.6b-base %q' '<APPLE_QWEN3_TTS_APPROVAL_EVIDENCE>' '<APPLE_QWEN3_TTS_EVIDENCE_DIR>' '--expected-head'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing token: $required"; failed=1; }
   done
   local apple_hash_flag apple_hash_echo_count
@@ -317,6 +326,7 @@ run_self_test() {
   local forbidden_marker='MEASURED_NOT_GATED'; forbidden_marker+=' PASS'
   if grep -Fq "$forbidden_marker" "$script_path"; then failed=1; fi
   if grep -En '(upload|publish|push|--push|huggingface-cli)' "$script_path" | grep -Ev 'never uploads|never.*publish|no upload|not.*push|NOT_PERFORMED|--push|scripts/publish/' >/dev/null; then failed=1; fi
+  grep -Fq -- '--expected-head' "$script_path" || { log 'self-test missing expected HEAD contract'; failed=1; }
   local download_block path_probe
   download_block="$(awk '/^download_snapshot\(\)/,/^\}/ {print}' "$script_path")"
   [[ "$download_block" != *"--with"* && "$download_block" != *"--no-project"* ]] || { log 'self-test download path uses an unreviewed uv environment'; failed=1; }
@@ -366,7 +376,7 @@ run_self_test() {
   gate_line="$(grep -n '^  preflight "\$approval"; require_tooling;' "$script_path" | cut -d: -f1)"
   sync_line="$(grep -n 'uv sync --project' "$script_path" | tail -n 1 | cut -d: -f1)"
   [[ "$gate_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$gate_line" -lt "$sync_line" ]] || { log 'self-test gate ordering is invalid'; failed=1; }
-  local sandbox trace worker_log real_uv fake_bin fake_uv fake_curl fake_cargo rc
+  local sandbox trace worker_log real_uv fake_bin fake_uv fake_curl fake_cargo rc expected_head
   sandbox="$(mktemp -d "${TMPDIR:-/tmp}/qwen3-tts-worker-selftest.XXXXXX")"
   trace="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-worker-trace.XXXXXX")"
   worker_log="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-worker-log.XXXXXX")"
@@ -394,11 +404,12 @@ run_self_test() {
   chmod +x "$fake_uv" "$fake_curl" "$fake_cargo"
   git -C "$sandbox" add .
   git -C "$sandbox" -c user.email=qwen3-tts-selftest@example.invalid -c user.name=qwen3-tts-selftest commit -qm self-test
+  expected_head="$(git -C "$sandbox" rev-parse HEAD)"
   printf '%s\n' dirty > "$sandbox/dirty-unrelated-file"
   set +e
   PATH="$fake_bin:$PATH" HOME="$sandbox/home" VOKRA_ROOT="$sandbox" VOKRA_SCRATCH="$sandbox/scratch" VOKRA_PUBLISH_ON_VAST=1 \
     QWEN3_TTS_SELFTEST_TRACE="$trace" QWEN3_TTS_SELFTEST_REAL_UV="$real_uv" \
-    bash "$sandbox/scripts/publish/vast-ai/run-qwen3-tts-validation.sh" --approval-evidence "$sandbox/approval.json" >"$worker_log" 2>&1
+    bash "$sandbox/scripts/publish/vast-ai/run-qwen3-tts-validation.sh" --approval-evidence "$sandbox/approval.json" --expected-head "$expected_head" >"$worker_log" 2>&1
   rc=$?
   set -e
   [[ "$rc" -eq 2 ]] || { log "self-test blocked worker returned $rc, expected 2"; failed=1; }
@@ -437,19 +448,20 @@ run_variant() {
 }
 
 main() {
-  local selection='all' work_dir='' approval='' self_test=0 variant_seen=0
+  local selection='all' work_dir='' approval='' expected_head='' self_test=0 variant_seen=0
   while (( $# > 0 )); do
     case "$1" in
       --variant) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$variant_seen" == 0 ]] || { usage; return 2; }; selection="$2"; variant_seen=1; shift 2 ;;
       --work-dir) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$work_dir" ]] || { usage; return 2; }; work_dir="$2"; shift 2 ;;
       --approval-evidence) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$approval" ]] || { usage; return 2; }; approval="$2"; shift 2 ;;
+      --expected-head) [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ && -z "$expected_head" ]] || { usage; return 2; }; expected_head="$2"; shift 2 ;;
       --self-test) self_test=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) usage; die "unknown argument: $1" ;;
     esac
   done
   if (( self_test == 1 )); then
-    [[ "$selection" == all && -z "$work_dir" && -z "$approval" ]] || die '--self-test accepts no other arguments'
+    [[ "$selection" == all && -z "$work_dir" && -z "$approval" && -z "$expected_head" ]] || die '--self-test accepts no other arguments'
     local saved_status="$TRANSFORMERS_COMPATIBILITY_STATUS"
     TRANSFORMERS_COMPATIBILITY_STATUS='BLOCKED_UNVERIFIED_API_SMOKE'; require_transformers_api_smoke && return 1 || :
     TRANSFORMERS_COMPATIBILITY_STATUS='AUTHENTICATED_API_SMOKE'; require_transformers_api_smoke || return 1
@@ -458,9 +470,12 @@ main() {
     run_self_test; return
   fi
   case "$selection" in all) ;; *) die 'this four-variant validation requires --variant all' ;; esac
-  [[ -n "$approval" ]] || { usage; die '--approval-evidence is required'; }
+  [[ -n "$approval" && -n "$expected_head" ]] || { usage; die '--approval-evidence and --expected-head are required'; }
   require_transformers_api_smoke
   preflight "$approval"; require_tooling; require_vast_host
+  local actual_head
+  actual_head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
   [[ -n "$work_dir" ]] || work_dir="$VOKRA_SCRATCH/qwen3-tts-validation-$(git -C "$VOKRA_ROOT" rev-parse --short=12 HEAD)"
   require_absent_work_dir "$work_dir" "$approval"
   mkdir -p "$work_dir"
@@ -469,9 +484,9 @@ main() {
   export HF_HOME="$work_dir/hf-home" HF_HUB_CACHE="$work_dir/hf-home/hub"
   exec > >(tee -a "$evidence/run.log") 2>&1
   step 'Install frozen official reference environment'
-  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
+  uv sync --project "$PARITY_PROJECT" --frozen --offline --python 3.12
   step 'Build Vokra CLI on VAST'
-  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli 2>&1 | tee "$evidence/build-cli.log"
+  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-cli 2>&1 | tee "$evidence/build-cli.log"
   step "Stage authenticated official source $OFFICIAL_SOURCE_REPO@$OFFICIAL_SOURCE_REVISION"
   source_tree="$work_dir/source-qwen3-tts"
   download_source_tree "$source_tree"
@@ -507,7 +522,7 @@ main() {
     env_args+=("$(variant_env_prefix "$variant")_DECODER_GGUF=$decoder_gguf")
     env_args+=("$(variant_env_prefix "$variant")_REFERENCE_DIR=$evidence/reference-$variant")
   done
-  env "${env_args[@]}" RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-models --test qwen3_tts_real qwen3_tts_real_cpu_matches_official_reference -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/parity-cpu.log"
+  env "${env_args[@]}" RUST_TEST_THREADS=1 CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-models --test qwen3_tts_real qwen3_tts_real_cpu_matches_official_reference -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/parity-cpu.log"
   require_exact_test_result "$evidence/parity-cpu.log" qwen3_tts_real_cpu_matches_official_reference
   for variant in 0.6b-base 0.6b-customvoice 1.7b-base 1.7b-customvoice; do
     require_exact_marker "$evidence/parity-cpu.log" "QWEN3_TTS_PARITY variant=$variant backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"
