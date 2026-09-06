@@ -635,8 +635,43 @@ def blocked(output: Path, error: Exception, inspection_status: str = "INSPECTION
 
 
 def inspect(snapshot: Path, companion: Path, source: Path, transformers: Path, model_tree: Path, companion_tree: Path, output: Path) -> int:
-    if output.exists() and (not output.is_dir() or any(output.iterdir())):
-        raise RuntimeError("inspection output must be absent or empty")
+    """Run one inspection and retain an error manifest only for our output dir."""
+
+    if output.exists():
+        raise RuntimeError("inspection output must be absent before an inspection attempt")
+    try:
+        output.mkdir(parents=True, exist_ok=False)
+    except OSError:
+        raise
+    try:
+        claimed_identity = os.lstat(output)
+    except OSError as error:
+        raise RuntimeError("inspection output claim could not be stat'ed") from error
+    if not stat.S_ISDIR(claimed_identity.st_mode):
+        raise RuntimeError("inspection output claim is not a directory")
+    try:
+        return _inspect_body(snapshot, companion, source, transformers, model_tree, companion_tree, output)
+    except Exception as error:
+        # The directory was claimed atomically above.  Re-check its device and
+        # inode before writing a blocked manifest, and never replace one.
+        manifest = output / "manifest.json"
+        try:
+            current_identity = os.lstat(output)
+        except OSError as stat_error:
+            raise RuntimeError("inspection output directory disappeared") from stat_error
+        if (
+            not stat.S_ISDIR(current_identity.st_mode)
+            or (current_identity.st_dev, current_identity.st_ino)
+            != (claimed_identity.st_dev, claimed_identity.st_ino)
+        ):
+            raise RuntimeError("inspection output directory identity changed") from error
+        if not manifest.exists() and not manifest.is_symlink():
+            blocked(output, error, allow_existing=True)
+            return 2
+        raise
+
+
+def _inspect_body(snapshot: Path, companion: Path, source: Path, transformers: Path, model_tree: Path, companion_tree: Path, output: Path) -> int:
     model_identity, model_files = server_inventory(snapshot, model_tree, set(MODEL_FILES))
     for name, (size, git_id, lfs_id) in MODEL_FILES.items():
         row = next(row for row in model_files if row["path"] == name)
@@ -665,7 +700,6 @@ def inspect(snapshot: Path, companion: Path, source: Path, transformers: Path, m
     companion_names = {row["path"] for row in tokenizer_files}
     validate_tokenizer_file_set(companion_names)
     companion_json = {row["path"]: {"sha256": sha256(companion / row["path"]), "json": load_json(companion / row["path"])} for row in tokenizer_files if row["path"].endswith(".json")}
-    output.mkdir(parents=True, exist_ok=False)
     evidence = {"snapshot-inventory.json": {"server_tree": model_identity, "files": model_files}, "tensor-inventory.json": {"header": tensor_evidence, "tensors": tensors}, "parsed-json.json": parsed, "companion-inventory.json": {"server_tree": tokenizer_identity, "files": tokenizer_files, "json": companion_json}, "source-inventory.json": sources}
     for name, value in evidence.items():
         with (output / name).open("x", encoding="utf-8") as stream:
@@ -980,6 +1014,50 @@ def self_test() -> None:
                 pass
             else:
                 raise AssertionError("missing/extra server path accepted")
+        partial_evidence = root / "partial-evidence"
+        original_body = globals()["_inspect_body"]
+        def fail_after_partial_write(*arguments: Any) -> int:
+            output = arguments[-1]
+            (output / "partial-inventory.json").write_text("partial\n", encoding="utf-8")
+            raise RuntimeError("synthetic inventory failure")
+        globals()["_inspect_body"] = fail_after_partial_write
+        try:
+            assert inspect(snapshot, snapshot, snapshot, snapshot, packet, packet, partial_evidence) == 2
+        finally:
+            globals()["_inspect_body"] = original_body
+        partial_manifest = load_json(partial_evidence / "manifest.json")
+        assert partial_manifest["inspection_status"] == "INSPECTION_ERROR"
+        assert (partial_evidence / "partial-inventory.json").is_file()
+        replacement_evidence = root / "replacement-evidence"
+        replacement_dir = root / "replacement-dir"
+        original_body = globals()["_inspect_body"]
+        def replace_after_claim(*arguments: Any) -> int:
+            output = arguments[-1]
+            output.rename(replacement_dir)
+            output.mkdir()
+            (output / "replacement-sentinel").write_text("keep\n", encoding="utf-8")
+            raise RuntimeError("synthetic replacement failure")
+        globals()["_inspect_body"] = replace_after_claim
+        try:
+            try:
+                inspect(snapshot, snapshot, snapshot, snapshot, packet, packet, replacement_evidence)
+            except RuntimeError as error:
+                assert "identity changed" in str(error)
+            else:
+                raise AssertionError("replaced output directory was accepted")
+        finally:
+            globals()["_inspect_body"] = original_body
+        assert (replacement_evidence / "replacement-sentinel").read_text(encoding="utf-8") == "keep\n"
+        assert not (replacement_evidence / "manifest.json").exists()
+        caller_owned = root / "caller-owned"
+        caller_owned.mkdir(); sentinel = caller_owned / "sentinel"; sentinel.write_text("keep\n", encoding="utf-8")
+        try:
+            inspect(snapshot, snapshot, snapshot, snapshot, packet, packet, caller_owned)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("caller-owned output was accepted")
+        assert sentinel.read_text(encoding="utf-8") == "keep\n" and not (caller_owned / "manifest.json").exists()
         error_evidence = root / "error-evidence"; blocked(error_evidence, RuntimeError("fixture failure")); error_manifest = load_json(error_evidence / "manifest.json")
         assert error_manifest["inspection_status"] == "INSPECTION_ERROR" and "AUTHENTICATED_EVIDENCE_COMPLETE" not in error_manifest
         existing_evidence = root / "existing-evidence"; existing_evidence.mkdir()
@@ -1020,7 +1098,7 @@ def main() -> int:
     try:
         return inspect(args.snapshot, args.companion, args.source, args.transformers, args.server_tree, args.companion_server_tree, args.output)
     except Exception as error:
-        blocked(args.output, error); print(f"VibeVoice Realtime inspection BLOCKED: {error}", file=sys.stderr); return 2
+        print(f"VibeVoice Realtime inspection BLOCKED: {error}", file=sys.stderr); return 2
 
 
 if __name__ == "__main__":
