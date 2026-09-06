@@ -295,7 +295,7 @@ run_self_test() {
     "MIN_FREE_DISK_KIB=150000000" "df -Pk" 'git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all' \
     "cargo test --locked --offline --workspace" "cargo clippy --locked --offline --workspace --all-targets -- -D warnings" \
     "--expected-head" "duplicate --expected-head" "--ignored --exact --nocapture" "cargo build --manifest-path \"\$VOKRA_ROOT/Cargo.toml\" --locked --offline" \
-    "cargo deny check --locked" "cargo audit --locked --no-fetch" "cargo_deny=PASS" "cargo_audit=PASS" "verdict=CPU_PASS_METAL_NOT_RUN"; do
+    "cargo deny --locked --offline check" "cargo audit --no-fetch" "cargo_deny=PASS" "cargo_audit=PASS" "verdict=CPU_PASS_METAL_NOT_RUN"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
@@ -508,8 +508,8 @@ main() {
   bash "$VOKRA_ROOT/scripts/check-bound-arch-coverage.sh" 2>&1 | tee -a "$workspace_log"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace 2>&1 | tee -a "$workspace_log"
   cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace --all-targets -- -D warnings 2>&1 | tee -a "$workspace_log"
-  CARGO_NET_OFFLINE=true cargo deny check --locked 2>&1 | tee -a "$workspace_log"
-  CARGO_NET_OFFLINE=true cargo audit --locked --no-fetch 2>&1 | tee -a "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo deny --locked --offline check 2>&1 | tee -a "$workspace_log"
+  CARGO_NET_OFFLINE=true cargo audit --no-fetch 2>&1 | tee -a "$workspace_log"
   {
     echo "verdict=CPU_PASS_METAL_NOT_RUN"
     echo "execution_status=CPU_PASS_METAL_NOT_RUN"
