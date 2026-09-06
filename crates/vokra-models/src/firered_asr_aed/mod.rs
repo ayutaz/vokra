@@ -63,17 +63,19 @@
 //! shape-compatible with Whisper**. The remaining execution contract has
 //! four concrete gaps, and none of them is a kernel:
 //!
-//! 1. **The native PCM frontend is not fully wired.** [`native`] now contains
-//!    source-faithful CMVN, positional encoding, Conv2d subsampling, and
-//!    feature-to-feature encoder helpers. Exact fbank/CMVN parity, PCM masks,
-//!    and the full transcription route remain fail-closed.
+//! 1. **The native PCM frontend seam is wired, but parity-gated.**
+//!    [`pcm_to_features`] uses the pinned 16 kHz/80-bin Kaldi contract and
+//!    requires caller-bound CMVN stats; [`native`] contains source-faithful
+//!    positional encoding, Conv2d subsampling, and feature-to-feature encoder
+//!    helpers. The complete model forward remains subject to independent VAST
+//!    parity and the exact upstream beam policy.
 //! 2. **The encoder and decoder semantic descriptors are authenticated.** The
 //!    independent upstream dumper authenticates all 940 names against
 //!    `named_parameters()` / `named_buffers()` and records their roles. This
 //!    module now verifies the exact 551 encoder names plus 389 decoder names,
 //!    source shapes, F32 types, role layouts, and compiled descriptor digests.
-//!    It retains typed descriptors only; it does not pretend that decoder or
-//!    frontend execution is complete.
+//!    It retains typed descriptors only; it does not pretend that decoder
+//!    execution or tokenizer rendering is complete.
 //! 3. **No tokenizer blob binding.** The pinned-source
 //!    SentencePiece/TokenDict contract and 7832-entry dictionary are known,
 //!    but the converter stamps no [`KEY_TOKENIZER_MODEL`] blob. This binder
@@ -81,9 +83,10 @@
 //!    added. [`FireredAsrAed::has_tokenizer`] reports blob presence.
 //! 4. **Full transcription graph gap.** [`native`] exposes CPU/Metal-dispatched
 //!    encoder and decoder feature primitives, including incremental greedy
-//!    token generation. They are VAST numerical-parity-pending; exact beam
-//!    policy, PCM frontend, tokenizer rendering, and the full transcription
-//!    route remain fail-closed.
+//!    token generation, and [`FireredAsrAed::transcribe_tokens_with_cmvn`]
+//!    composes them with the explicit frontend seam. They are VAST
+//!    numerical-parity-pending; exact beam policy and tokenizer rendering
+//!    remain fail-closed.
 //!
 //! The upstream config is additionally awkward to reach: the handoff for
 //! the sibling LLM release
@@ -94,10 +97,10 @@
 //! shares that posture is **not** verified anywhere in this repository,
 //! and this module does not assert that it does.
 //!
-//! So: the remaining blockers are exact native frontend parity,
-//! tokenizer/beam/transcription integration, and independent VAST parity.
-//! Feature-to-feature and feature-to-token primitives exist, but no complete
-//! PCM transcription claim is made yet.
+//! So: the remaining blockers are independent frontend/encoder/decoder parity,
+//! the exact upstream beam policy, and tokenizer rendering. The raw
+//! PCM-to-token seam is available only with an explicit authenticated CMVN
+//! object and does not make a text-transcription or PASS claim.
 //!
 //! # Loud-partial classification
 //!
@@ -216,10 +219,12 @@ use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::tasks::Transcription;
 use vokra_core::{BackendKind, LicenseClass, Result, VokraError};
+use vokra_ops::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank_with_window};
 
 mod native;
 
 pub use native::{
+    AUTHENTICATED_CMVN_GIT_BLOB_SHA1, AUTHENTICATED_CMVN_SHA256, AUTHENTICATED_CMVN_TEXT_BYTES,
     FIRERED_ASR_AED_HOT_OPS, FireRedCmvn, FireRedConformerBlock, FireRedConformerBlockWeights,
     FireRedConformerConvolution, FireRedConformerEncoder, FireRedConformerFeedForward,
     FireRedConv2dSubsampling, FireRedRelativeAttention, relative_positional_encoding,
@@ -451,6 +456,12 @@ pub const AUTHENTICATED_ENCODER_D_MODEL: u32 = 1_280;
 /// the pinned source/reference contract supplies exactly 80 fbank bands and
 /// the native encoder rejects any other feature width.
 pub const AUTHENTICATED_N_MELS: u32 = 80;
+/// Authenticated FireRed analysis-frame length in samples (25 ms at 16 kHz).
+pub const AUTHENTICATED_FRAME_LENGTH: usize = 400;
+/// Authenticated FireRed analysis-frame shift in samples (10 ms at 16 kHz).
+pub const AUTHENTICATED_FRAME_SHIFT: usize = 160;
+/// Authenticated FireRed sample rate in Hz.
+pub const AUTHENTICATED_FRONTEND_SAMPLE_RATE: u32 = 16_000;
 /// Authenticated encoder attention-head count.
 pub const AUTHENTICATED_ENCODER_N_HEAD: u32 = 20;
 /// Authenticated encoder feed-forward inner width.
@@ -2357,6 +2368,74 @@ impl FireredAsrAed {
         )
     }
 
+    /// Runs the authenticated PCM → Kaldi fbank/CMVN → encoder → greedy
+    /// decoder seam and returns raw decoder ids.
+    ///
+    /// This method intentionally accepts [`FireRedCmvn`] rather than reading
+    /// a guessed CMVN file from the GGUF.  The current converter does not
+    /// carry the inspected binary `cmvn.ark` payload, so accepting an
+    /// unbound/default transform would make a real forward look valid while
+    /// using the wrong acoustic normalization.  The caller must construct
+    /// `cmvn` with [`FireRedCmvn::from_authenticated_bytes`] from the exact
+    /// inspected raw sidecar.  Text rendering
+    /// remains a separate fail-closed tokenizer concern; these are checkpoint
+    /// vocabulary ids only.
+    pub fn transcribe_tokens_with_cmvn(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+        cmvn: &FireRedCmvn,
+        max_len: usize,
+    ) -> Result<Vec<u32>> {
+        let cfg = self.cfg.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: authenticated frontend/decoder metadata is absent; refusing to guess PCM token ids".to_owned(),
+            )
+        })?;
+        if cfg.sample_rate != sample_rate {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-asr-aed-l: PCM sample rate {sample_rate} Hz does not match authenticated metadata {} Hz",
+                cfg.sample_rate
+            )));
+        }
+        if max_len == 0 || max_len > AUTHENTICATED_DECODER_MAX_POSITIONS as usize {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-asr-aed-l: max_len must be in 1..={}, got {max_len}",
+                AUTHENTICATED_DECODER_MAX_POSITIONS
+            )));
+        }
+        if !cmvn.is_authenticated() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l requires CMVN from the exact authenticated cmvn.txt sidecar; use FireRedCmvn::from_authenticated_bytes".to_owned(),
+            ));
+        }
+        let (features, frames) = pcm_to_features(pcm, sample_rate, cmvn)?;
+        let memory = self.encode_features(&features, frames, &vec![true; frames])?;
+        if memory.is_empty() || memory.len() % AUTHENTICATED_ENCODER_D_MODEL as usize != 0 {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l encoder returned an invalid memory shape".to_owned(),
+            ));
+        }
+        let source_frames = memory.len() / AUTHENTICATED_ENCODER_D_MODEL as usize;
+        let ids = self.decode_features(
+            &memory,
+            source_frames,
+            &vec![true; source_frames],
+            cfg.sos_id as usize,
+            cfg.eos_id as usize,
+            max_len,
+        )?;
+        ids.into_iter()
+            .map(|id| {
+                u32::try_from(id).map_err(|_| {
+                    VokraError::ModelLoad(
+                        "firered-asr-aed-l decoder emitted an out-of-range token id".to_owned(),
+                    )
+                })
+            })
+            .collect()
+    }
+
     /// The `vokra.firered_asr_aed_l.*` hyper-parameter group, when
     /// stamped.
     ///
@@ -2599,6 +2678,93 @@ fn check_sample_rate(cfg: Option<&FireredAsrAedConfig>, sample_rate: u32) -> Res
     Ok(())
 }
 
+/// Computes the pinned FireRed 80-bin Kaldi fbank and applies the caller's
+/// authenticated checkpoint CMVN statistics.  This lower-level helper also
+/// accepts synthetic [`FireRedCmvn::from_stats`] transforms for model-free
+/// frontend tests; the PCM-to-token API rejects those and requires the raw
+/// sidecar constructor.
+///
+/// The upstream `ASRFeatExtractor` delegates framing and filter-bank
+/// construction to `kaldi-native-fbank` with 25 ms frames, 10 ms shifts,
+/// `dither=0.0`, 16 kHz audio and 80 bins.  The runtime uses the existing
+/// first-party Kaldi implementation in `vokra-ops`; it does not substitute a
+/// librosa/Whisper mel implementation.  CMVN is deliberately supplied by the
+/// caller because the historical GGUF contract does not embed the binary
+/// `cmvn.ark` payload.  A caller must therefore bind the exact inspected
+/// `cmvn.txt`/stats values before invoking this seam.  For a real token
+/// forward, use [`FireRedCmvn::from_authenticated_bytes`].
+///
+/// No resampling is performed.  Empty, too-short, non-finite or wrong-rate
+/// inputs fail closed, and the returned matrix is guaranteed finite and
+/// row-major `[frames, 80]`.
+pub fn pcm_to_features(
+    pcm: &[f32],
+    sample_rate: u32,
+    cmvn: &FireRedCmvn,
+) -> Result<(Vec<f32>, usize)> {
+    if pcm.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "firered-asr-aed-l frontend received empty PCM".to_owned(),
+        ));
+    }
+    if sample_rate != AUTHENTICATED_FRONTEND_SAMPLE_RATE {
+        return Err(VokraError::InvalidArgument(format!(
+            "firered-asr-aed-l frontend requires {} Hz, got {sample_rate} Hz; refusing to resample",
+            AUTHENTICATED_FRONTEND_SAMPLE_RATE
+        )));
+    }
+    if pcm.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "firered-asr-aed-l frontend received non-finite PCM".to_owned(),
+        ));
+    }
+    if cmvn.dim() != AUTHENTICATED_N_MELS as usize {
+        return Err(VokraError::InvalidArgument(format!(
+            "firered-asr-aed-l CMVN has {} bins, expected {}",
+            cmvn.dim(),
+            AUTHENTICATED_N_MELS
+        )));
+    }
+    let opts = KaldiFbankOpts {
+        sample_rate: AUTHENTICATED_FRONTEND_SAMPLE_RATE,
+        num_mel_bins: AUTHENTICATED_N_MELS as usize,
+        frame_length: AUTHENTICATED_FRAME_LENGTH,
+        frame_shift: AUTHENTICATED_FRAME_SHIFT,
+        remove_dc_offset: true,
+        preemph_coeff: 0.97,
+        low_freq: 20.0,
+        high_freq: 0.0,
+        use_power: true,
+        use_log: true,
+        subtract_mean: false,
+        round_to_power_of_two: true,
+    };
+    let (mut features, frames) = kaldi_fbank_with_window(pcm, &opts, KaldiFbankWindow::Povey)?;
+    if features.len()
+        != frames
+            .checked_mul(AUTHENTICATED_N_MELS as usize)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("firered-asr-aed-l feature shape overflow".to_owned())
+            })?
+    {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l Kaldi frontend returned an invalid feature shape".to_owned(),
+        ));
+    }
+    if features.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l Kaldi frontend returned non-finite features".to_owned(),
+        ));
+    }
+    cmvn.apply(&mut features, frames)?;
+    if features.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l CMVN returned non-finite features".to_owned(),
+        ));
+    }
+    Ok((features, frames))
+}
+
 /// Constructs the loud-partial [`VokraError::UnsupportedOp`] returned by
 /// [`FireredAsrAed::transcribe_tokens`] and the [`AsrEngine`] path until
 /// the FireRedASR-AED-L forward lands.
@@ -2761,6 +2927,66 @@ mod tests {
     #[test]
     fn authenticated_frontend_uses_fire_red_private_mel_geometry() {
         assert_eq!(AUTHENTICATED_N_MELS, 80);
+        assert_eq!(AUTHENTICATED_FRONTEND_SAMPLE_RATE, 16_000);
+        assert_eq!(AUTHENTICATED_FRAME_LENGTH, 400);
+        assert_eq!(AUTHENTICATED_FRAME_SHIFT, 160);
+    }
+
+    fn identity_cmvn() -> FireRedCmvn {
+        let mut stats = vec![0.0_f32; (AUTHENTICATED_N_MELS as usize + 1) * 2];
+        stats[AUTHENTICATED_N_MELS as usize] = 1.0;
+        for index in 0..AUTHENTICATED_N_MELS as usize {
+            stats[AUTHENTICATED_N_MELS as usize + 1 + index] = 1.0;
+        }
+        FireRedCmvn::from_stats(&stats, AUTHENTICATED_N_MELS as usize)
+            .expect("synthetic identity CMVN has the authenticated 2x81 shape")
+    }
+
+    #[test]
+    fn pcm_frontend_is_finite_shaped_and_deterministic() {
+        let cmvn = identity_cmvn();
+        let pcm: Vec<f32> = (0..2_000)
+            .map(|index| (index as f32 * 0.013).sin())
+            .collect();
+        let (first, first_frames) =
+            pcm_to_features(&pcm, AUTHENTICATED_FRONTEND_SAMPLE_RATE, &cmvn)
+                .expect("valid synthetic PCM must cross the source frontend");
+        let (second, second_frames) =
+            pcm_to_features(&pcm, AUTHENTICATED_FRONTEND_SAMPLE_RATE, &cmvn)
+                .expect("the same source frontend call must be repeatable");
+        assert_eq!(
+            first_frames,
+            1 + (pcm.len() - AUTHENTICATED_FRAME_LENGTH) / AUTHENTICATED_FRAME_SHIFT
+        );
+        assert_eq!(first_frames, second_frames);
+        assert_eq!(first.len(), first_frames * AUTHENTICATED_N_MELS as usize);
+        assert_eq!(first, second);
+        assert!(first.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn pcm_frontend_rejects_wrong_shape_rate_nonfinite_and_cmvn() {
+        let cmvn = identity_cmvn();
+        assert!(pcm_to_features(&[], 16_000, &cmvn).is_err());
+        assert!(pcm_to_features(&vec![0.0; 399], 16_000, &cmvn).is_err());
+        assert!(pcm_to_features(&vec![0.0; 800], 8_000, &cmvn).is_err());
+        assert!(pcm_to_features(&[f32::NAN; 800], 16_000, &cmvn).is_err());
+        let wrong_dim = FireRedCmvn::from_stats(&[0.0, 1.0, 1.0, 0.0], 1)
+            .expect("small synthetic CMVN is structurally valid");
+        assert!(pcm_to_features(&vec![0.0; 800], 16_000, &wrong_dim).is_err());
+    }
+
+    #[test]
+    fn pcm_to_token_api_rejects_unauthenticated_cmvn() {
+        let model = FireredAsrAed::from_gguf(&spec_stamped_gguf()).expect("bind");
+        let error = model
+            .transcribe_tokens_with_cmvn(&vec![0.0; 1_600], 16_000, &identity_cmvn(), 1)
+            .expect_err("synthetic CMVN must never unlock a real token forward");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message)
+                if message.contains("exact authenticated cmvn.txt")
+        ));
     }
 
     #[test]

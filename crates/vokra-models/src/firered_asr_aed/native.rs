@@ -617,7 +617,21 @@ pub fn relative_positional_encoding(
 pub struct FireRedCmvn {
     means: Vec<f32>,
     inverse_std: Vec<f32>,
+    authenticated: bool,
 }
+
+/// Exact inspected `cmvn.txt` byte length.  The corresponding 40-hex value
+/// in the inspection artifact table is a Git blob SHA-1; the SHA-256 used for
+/// raw-byte authentication is [`AUTHENTICATED_CMVN_SHA256`].
+pub const AUTHENTICATED_CMVN_TEXT_BYTES: usize = 2_985;
+/// SHA-256 of the inspected FireRed `cmvn.txt` sidecar bytes.
+pub const AUTHENTICATED_CMVN_SHA256: [u8; 32] = [
+    0x11, 0x81, 0x6d, 0xb6, 0x12, 0xb4, 0x33, 0x18, 0xab, 0x01, 0xf9, 0xcf, 0xd0, 0x5e, 0xe1, 0x21,
+    0xdd, 0x39, 0x00, 0xb7, 0xa3, 0x9d, 0x89, 0x3f, 0x59, 0xd0, 0x10, 0x4a, 0x06, 0xc1, 0x99, 0xd2,
+];
+/// Git blob SHA-1 recorded for the same inspected sidecar.  This is exposed
+/// for handoff tooling but is not mistaken for a SHA-256 digest.
+pub const AUTHENTICATED_CMVN_GIT_BLOB_SHA1: &str = "f425c7dec4fcb1a62ba57bb7c2de173fb4e47dce";
 
 impl FireRedCmvn {
     /// Builds CMVN from the upstream 2×(dim+1) row-major Kaldi stats matrix.
@@ -661,7 +675,36 @@ impl FireRedCmvn {
             }
             inverse_std.push(inverse);
         }
-        Ok(Self { means, inverse_std })
+        Ok(Self {
+            means,
+            inverse_std,
+            authenticated: false,
+        })
+    }
+
+    /// Parses and authenticates the exact inspected `cmvn.txt` sidecar.
+    ///
+    /// Authentication is over the raw bytes before parsing.  The parser then
+    /// rechecks the known three-line, 2×81 ASCII structure and the source's
+    /// fixed frame count/terminal sentinel, so a caller cannot turn an
+    /// arbitrary 2×81 matrix into an authenticated runtime transform.
+    pub fn from_authenticated_bytes(raw: &[u8]) -> Result<Self> {
+        if raw.len() != AUTHENTICATED_CMVN_TEXT_BYTES {
+            return Err(VokraError::ModelLoad(format!(
+                "FireRed CMVN sidecar has {} bytes, expected {}",
+                raw.len(),
+                AUTHENTICATED_CMVN_TEXT_BYTES
+            )));
+        }
+        if crate::strict_checkpoint::sha256_bytes(raw) != AUTHENTICATED_CMVN_SHA256 {
+            return Err(VokraError::ModelLoad(
+                "FireRed CMVN sidecar SHA-256 mismatch".to_owned(),
+            ));
+        }
+        let stats = parse_authenticated_cmvn_text(raw)?;
+        let mut cmvn = Self::from_stats(&stats, 80)?;
+        cmvn.authenticated = true;
+        Ok(cmvn)
     }
 
     /// Applies `(x - means) * inverse_std` to row-major `[frames, dim]` data.
@@ -696,6 +739,62 @@ impl FireRedCmvn {
     pub fn dim(&self) -> usize {
         self.means.len()
     }
+
+    /// Returns whether this transform came from the exact inspected sidecar.
+    #[must_use]
+    pub const fn is_authenticated(&self) -> bool {
+        self.authenticated
+    }
+}
+
+/// Parses the inspected text-sidecar structure after its raw-byte digest has
+/// already been checked by [`FireRedCmvn::from_authenticated_bytes`].  Kept
+/// separate so model-free tests exercise structural rejection independently
+/// from the digest gate; callers cannot set the authenticated state through
+/// this helper.
+fn parse_authenticated_cmvn_text(raw: &[u8]) -> Result<Vec<f32>> {
+    let text = std::str::from_utf8(raw)
+        .map_err(|_| VokraError::ModelLoad("FireRed CMVN sidecar is not valid UTF-8".to_owned()))?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    if lines.len() != 4 || lines[0] != "[" || lines[3] != "" || !lines[2].ends_with(']') {
+        return Err(VokraError::ModelLoad(
+            "FireRed CMVN sidecar must have exactly three bracketed lines".to_owned(),
+        ));
+    }
+    let mut rows = Vec::with_capacity(2);
+    for (index, line) in lines[1..3].iter().enumerate() {
+        let row = if index == 1 {
+            line.strip_suffix(']').ok_or_else(|| {
+                VokraError::ModelLoad(
+                    "FireRed CMVN sidecar closing bracket is malformed".to_owned(),
+                )
+            })?
+        } else {
+            line
+        };
+        let values = row
+            .split_whitespace()
+            .map(|value| {
+                value.parse::<f32>().map_err(|_| {
+                    VokraError::ModelLoad(
+                        "FireRed CMVN sidecar contains a non-numeric value".to_owned(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if values.len() != 81 || values.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::ModelLoad(
+                "FireRed CMVN sidecar requires two finite rows of 81 values".to_owned(),
+            ));
+        }
+        rows.push(values);
+    }
+    if rows[0][80] != 1_183_022_220.0 || rows[1][80] != 0.0 {
+        return Err(VokraError::ModelLoad(
+            "FireRed CMVN sidecar frame-count structure is not authenticated".to_owned(),
+        ));
+    }
+    Ok([rows[0].as_slice(), rows[1].as_slice()].concat())
 }
 
 /// FireRed's exact two-layer, unpadded stride-2 Conv2d subsampling stem.
@@ -3404,9 +3503,74 @@ mod tests {
     fn cmvn_matches_upstream_formula() {
         // dim=2, count=4; means=(2, 3), variance=(1, 4).
         let cmvn = FireRedCmvn::from_stats(&[8.0, 12.0, 4.0, 20.0, 52.0, 4.0], 2).unwrap();
+        assert!(!cmvn.is_authenticated());
         let mut values = [3.0, 5.0, 1.0, 7.0];
         cmvn.apply(&mut values, 2).unwrap();
         assert_eq!(values, [1.0, 1.0, -1.0, 2.0]);
+    }
+
+    #[test]
+    fn authenticated_cmvn_gate_rejects_wrong_length_hash_and_structure() {
+        assert!(FireRedCmvn::from_authenticated_bytes(&[]).is_err());
+        let mut wrong_hash = vec![b' '; AUTHENTICATED_CMVN_TEXT_BYTES];
+        wrong_hash[0] = b'[';
+        assert!(FireRedCmvn::from_authenticated_bytes(&wrong_hash).is_err());
+
+        // These malformed payloads are intentionally tested at the raw-byte
+        // boundary.  The fixed SHA gate rejects them before any parser can
+        // treat non-finite values, wrong row counts, or a wrong frame-count
+        // sentinel as an authenticated transform.
+        for marker in [&b"nan"[..], &b"inf"[..], &b"0"[..]] {
+            let mut malformed = vec![b' '; AUTHENTICATED_CMVN_TEXT_BYTES];
+            malformed[..marker.len()].copy_from_slice(marker);
+            assert!(FireRedCmvn::from_authenticated_bytes(&malformed).is_err());
+        }
+        assert_eq!(AUTHENTICATED_CMVN_TEXT_BYTES, 2_985);
+        assert_eq!(AUTHENTICATED_CMVN_GIT_BLOB_SHA1.len(), 40);
+    }
+
+    fn synthetic_cmvn_text(
+        first_bins: usize,
+        second_bins: usize,
+        count: &str,
+        finite: bool,
+        closing_bracket: bool,
+    ) -> Vec<u8> {
+        let first_value = if finite { "0" } else { "NaN" };
+        let mut first = vec![first_value; first_bins].join(" ");
+        first.push(' ');
+        first.push_str(count);
+        let mut second = vec!["1"; second_bins].join(" ");
+        second.push_str(" 0");
+        if closing_bracket {
+            second.push(']');
+        }
+        format!("[\n{first}\n{second}\n").into_bytes()
+    }
+
+    #[test]
+    fn authenticated_cmvn_parser_checks_structure_without_digest_bypass() {
+        let valid = synthetic_cmvn_text(80, 80, "1183022220", true, true);
+        let parsed = parse_authenticated_cmvn_text(&valid).expect("synthetic 2x81 text parses");
+        assert_eq!(parsed.len(), 162);
+        assert_eq!(parsed[80], 1_183_022_220.0);
+        assert_eq!(parsed[161], 0.0);
+
+        assert!(
+            parse_authenticated_cmvn_text(&synthetic_cmvn_text(79, 80, "1183022220", true, true))
+                .is_err()
+        );
+        assert!(
+            parse_authenticated_cmvn_text(&synthetic_cmvn_text(80, 80, "1", true, true)).is_err()
+        );
+        assert!(
+            parse_authenticated_cmvn_text(&synthetic_cmvn_text(80, 80, "1183022220", false, true))
+                .is_err()
+        );
+        assert!(
+            parse_authenticated_cmvn_text(&synthetic_cmvn_text(80, 80, "1183022220", true, false))
+                .is_err()
+        );
     }
 
     #[test]
