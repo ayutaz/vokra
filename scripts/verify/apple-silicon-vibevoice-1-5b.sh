@@ -58,7 +58,7 @@ self_test() {
   for token in Darwin arm64 VOKRA_REMOTE_APPLE_SILICON=1 VOKRA_VIBEVOICE_GGUF VOKRA_VIBEVOICE_REFERENCE_DIR \
     parity_vibevoice_1_5b_real VIBEVOICE_CPU_TOKENS_MEASURED VIBEVOICE_METAL_TOKENS_MEASURED \
     VIBEVOICE_CPU_OFFICIAL_DIFFUSION_LATENTS_CAPTURED VIBEVOICE_METAL_OFFICIAL_DIFFUSION_LATENTS_CAPTURED \
-    exact=true MEASURED_NOT_GATED official_pcm.f32le packet.json vibevoice-apple-summary.json NO_UPLOAD \
+    exact=true MEASURED_NOT_GATED official_pcm.f32le packet.json vibevoice-apple-summary.json NO_UPLOAD apple-transfer-manifest.sha256 \
     reference_environment license_audit BLOCKED_UNREVIEWED_TRANSITIVE BLOCKED_UNVERIFIED_API_SMOKE GHSA-xrqw-3rrv-vx5w AUTHENTICATED_CLEAR --license-audit --no-project package-resolution-and-dependency-markers-v2 1ea002fe37f4ddc4df9f7535b5ae3a42661fc1eaa0a28e8ae6dbba0fa7e9649b 987a1f7204c2d7f2baa1c537ebaa06ca4bc872d2aae60f25a78393967da7bf8c ba80c08b17b2d04356264b9f9d42393e9c8be66bc0cd9fda6139dc007d943909 \
     'VOKRA_VIBEVOICE_BACKEND=cpu' 'VOKRA_VIBEVOICE_BACKEND=metal' '--ignored --exact --nocapture' '--expected-head' '--approval-evidence' '--approval-evidence-sha256' '--transfer-manifest' '--transfer-manifest-sha256' '--bundle' '--evidence-dir' '--offline' '--test-threads=1' 'vibevoice-apple-transfer-v1'; do
     grep -Fq -- "$token" "$0" || { printf 'self-test missing %s\n' "$token" >&2; fail=1; }
@@ -74,8 +74,8 @@ self_test() {
     [[ "$line" =~ ^[0-9]+$ && "$line" -gt "$gate_line" ]] || { printf 'self-test operation precedes license gate: %s\n' "$token" >&2; fail=1; }
   done
   for token in 'require_transfer_manifest ' 'require_bundle '; do
-    line="$(awk -v gate="$gate_line" -v token="$token" 'NR < gate && index($0, token) {print NR; exit}' "$0")"
-    [[ "$line" =~ ^[0-9]+$ && "$line" -lt "$gate_line" ]] || { printf 'self-test input authentication follows license gate: %s\n' "$token" >&2; fail=1; }
+    line="$(awk -v gate="$gate_line" -v token="$token" 'NR > gate && index($0, token) {print NR; exit}' "$0")"
+    [[ "$line" =~ ^[0-9]+$ && "$line" -gt "$gate_line" ]] || { printf 'self-test bundle authentication is not after factual license gate: %s\n' "$token" >&2; fail=1; }
   done
   grep -Fq -- 'REFERENCE_AUDIT_UV=(uv run --no-cache --no-project --offline --python 3.12 python)' "$0" || { printf 'self-test missing no-cache audit command\n' >&2; fail=1; }
   if grep -En '(^|[[:space:]])uv[[:space:]]+sync([[:space:]]|$)' "$0" >/dev/null; then
@@ -99,6 +99,44 @@ for index, block in enumerate(blocks):
 PY
   then
     printf 'inline Python syntax validation failed\n' >&2; fail=1
+  fi
+  if ! (
+    set -euo pipefail
+    fixture="$(mktemp -d "${TMPDIR:-/tmp}/vibevoice-apple-transfer.XXXXXX")"
+    cleanup_fixture() { rm -r -- "$fixture"; }
+    trap cleanup_fixture EXIT
+    names=(manifest.json inspection-manifest.json token_ids.u32le prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le packet.json public-artifact.json artifact-sha256.txt reference-sha256.txt native-cpu.log vibevoice-1.5b.gguf)
+    for name in "${names[@]}"; do printf x > "$fixture/$name"; done
+    fixture_head="$(printf '0%.0s' {1..40})"
+    fixture_approval="$(printf '1%.0s' {1..64})"
+    UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$fixture" "$fixture_head" "$fixture_approval" <<'PY'
+import hashlib, json, pathlib, sys
+root, expected_head, approval_sha = map(pathlib.Path, sys.argv[1:])
+expected_head, approval_sha = str(expected_head), str(approval_sha)
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            value.update(block)
+    return value.hexdigest()
+names = sorted(path.name for path in root.iterdir())
+rows = [{"path": name, "bytes": (root / name).stat().st_size, "sha256": digest(root / name)} for name in names]
+payload = {
+    "schema": "vibevoice-apple-transfer-v1", "expected_head": expected_head,
+    "approval_evidence_sha256": approval_sha, "status": "MEASURED_NOT_GATED", "publication": "NO_UPLOAD",
+    "reference_manifest_sha256": next(row["sha256"] for row in rows if row["path"] == "manifest.json"),
+    "input_packet_sha256": next(row["sha256"] for row in rows if row["path"] == "packet.json"),
+    "gguf_sha256": next(row["sha256"] for row in rows if row["path"] == "vibevoice-1.5b.gguf"),
+    "native_cpu_log_sha256": next(row["sha256"] for row in rows if row["path"] == "native-cpu.log"),
+    "files": rows,
+}
+(root / "apple-transfer-manifest.json").write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    (cd "$fixture" && shasum -a 256 apple-transfer-manifest.json > apple-transfer-manifest.sha256)
+    printf x > "$fixture/apple-transfer-args.txt"
+    require_transfer_manifest "$fixture" "$fixture/apple-transfer-manifest.json" "$(sha256_file "$fixture/apple-transfer-manifest.json")" "$fixture_head" "$fixture_approval"
+  ); then
+    printf 'transfer producer/consumer closure self-test failed\n' >&2; fail=1
   fi
   (( fail == 0 )) && printf '[vibevoice-apple] self-test: OK\n' || return 1
 }
@@ -333,9 +371,12 @@ main() {
   validate_approval "$approval" "$expected_head" "$approval_sha"
   [[ -d "$VOKRA_ROOT/.git" && -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'clean checkout required'
   [[ "$(git -C "$VOKRA_ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD differs from --expected-head'
+  # This is deliberately before transfer/GGUF hashing and before any host or
+  # Cargo work. The current approval is inspection-only, not execution assent.
+  license_audit_preflight
+  die 'BLOCKED_APPROVAL/INSPECTION_ONLY: this approval cannot authorize VibeVoice Apple execution'
   require_transfer_manifest "$bundle" "$transfer" "$transfer_sha" "$expected_head" "$approval_sha"
   require_bundle "$bundle"
-  license_audit_preflight
   [[ "${VOKRA_REMOTE_APPLE_SILICON:-0}" == 1 ]] || die 'VOKRA_REMOTE_APPLE_SILICON=1 is required'
   [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || die 'disposable Darwin arm64 is required'
   local mem

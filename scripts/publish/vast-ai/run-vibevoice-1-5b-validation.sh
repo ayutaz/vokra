@@ -134,7 +134,7 @@ require_cargo_singleton() {
 
 self_test() {
   local fail=0 token
-  for token in "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_LICENSE_ROWS_SHA256" "package-resolution-and-dependency-markers-v2" "vibevoice_1_5b_inspect.py" "vibevoice_1_5b_dump_reference.py" "vibevoice_1_5b_reference" "uv.lock" "--license-audit" "--no-project" "BLOCKED_UNREVIEWED_TRANSITIVE" "BLOCKED_UNVERIFIED_API_SMOKE" "GHSA-xrqw-3rrv-vx5w" "reference_environment_identity" "local_dir" "RepoFile" "RepoFolder" "AUTHENTICATED_EVIDENCE_COMPLETE" "REFERENCE_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "official_pcm.f32le" "diffusion_initial_native.f32le" "NO_UPLOAD" "--expected-head" "--approval-evidence" "--approval-sha256" "--reference-packet" "--reference-packet-sha256" "vibevoice-apple-transfer-v1" "apple-packet" "--offline" "--test-threads=1" "vibevoice_1_5b_real_cpu_matches_official_reference"; do
+  for token in "$HF_REPOSITORY" "$HF_REVISION" "$QWEN_REPOSITORY" "$QWEN_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_LICENSE_ROWS_SHA256" "package-resolution-and-dependency-markers-v2" "vibevoice_1_5b_inspect.py" "vibevoice_1_5b_dump_reference.py" "vibevoice_1_5b_reference" "uv.lock" "--license-audit" "--no-project" "BLOCKED_UNREVIEWED_TRANSITIVE" "BLOCKED_UNVERIFIED_API_SMOKE" "GHSA-xrqw-3rrv-vx5w" "reference_environment_identity" "local_dir" "RepoFile" "RepoFolder" "AUTHENTICATED_EVIDENCE_COMPLETE" "REFERENCE_EVIDENCE_COMPLETE" "INSPECTION_ERROR" "official_pcm.f32le" "diffusion_initial_native.f32le" "NO_UPLOAD" "--expected-head" "--approval-evidence" "--approval-sha256" "--reference-packet" "--reference-packet-sha256" "vibevoice-apple-transfer-v1" "apple-packet" "apple-transfer-manifest.sha256" "--offline" "--test-threads=1" "vibevoice_1_5b_real_cpu_matches_official_reference"; do
     if ! grep -Fq -- "$token" "$0" && ! grep -Fq -- "$token" "$INSPECTOR" && ! grep -Fq -- "$token" "$REFERENCE"; then
       log "self-test missing contract token: $token"; fail=1
     fi
@@ -264,6 +264,10 @@ main() {
   [[ "$work_real" != "$approval_real" && "$work_real" != "$approval_real"/* && "$approval_real" != "$work_real"/* ]] || die 'work directory overlaps approval evidence'
   [[ "$work_real" != "$packet_real" && "$work_real" != "$packet_real"/* && "$packet_real" != "$work_real"/* ]] || die 'work directory overlaps reference packet'
   if ! license_audit_preflight; then die 'dependency/license gate is unresolved; no VibeVoice model/source acquisition is permitted'; fi
+  # The only checked-in approval is inspection-only and can never authorize
+  # reference/native execution. A future execution approval needs a distinct
+  # schema and an explicit legal decision; never infer it from this document.
+  die 'BLOCKED_APPROVAL/INSPECTION_ONLY: this approval cannot authorize VibeVoice reference or native execution'
   WORK_DIR="$requested"; WORK_PARENT="$(dirname "$WORK_DIR")"
   require_host; require_tools
   require_absent_path "$WORK_DIR"
@@ -537,7 +541,7 @@ payload = {
 }
 output.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 PY
-  sha256sum "$apple_packet/apple-transfer-manifest.json" > "$apple_packet/apple-transfer-manifest.sha256"
+  (cd "$apple_packet" && sha256sum apple-transfer-manifest.json > apple-transfer-manifest.sha256)
   {
     printf '%q ' scripts/verify/apple-silicon-vibevoice-1-5b.sh \
       --expected-head "$expected_head" \
