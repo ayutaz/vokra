@@ -426,9 +426,13 @@ def self_test():
    directory=tarfile.TarInfo("folder/"); directory.type=tarfile.DIRTYPE; t.addfile(directory)
    member=tarfile.TarInfo("folder/state"); member.size=1; t.addfile(member,io.BytesIO(b"x"))
   assert archive_inventory(good_archive)["members"][0]["directory"]
-  import torch
-  safe_pt=Path(d)/"safe.pt"; torch.save({"x":torch.ones(1)},safe_pt)
-  assert safe_checkpoint_probe(safe_pt)["unsafe_globals"]==[]
+  try:
+   import torch
+  except ModuleNotFoundError:
+   torch = None
+  if torch is not None:
+   safe_pt=Path(d)/"safe.pt"; torch.save({"x":torch.ones(1)},safe_pt)
+   assert safe_checkpoint_probe(safe_pt)["unsafe_globals"]==[]
   bad_archive=Path(d)/"bad.pt"
   with tarfile.open(bad_archive,"w") as t:
    member=tarfile.TarInfo("../escape"); member.size=1; t.addfile(member,io.BytesIO(b"x"))

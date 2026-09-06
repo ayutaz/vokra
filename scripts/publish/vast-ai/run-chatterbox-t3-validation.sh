@@ -11,6 +11,62 @@ VARIANT="${CHATTERBOX_VARIANT:-base}"
 WORK="${CHATTERBOX_T3_WORK_DIR:-/dev/shm/vokra-chatterbox-t3-validation}"
 UV_CACHE_DIR="${CHATTERBOX_T3_UV_CACHE_DIR:-/tmp/vokra-chatterbox-t3-uv-cache}"
 die(){ echo "chatterbox-t3-vast: ERROR: $*" >&2; exit 2; }
+sha256_file(){ sha256sum "$1" | awk '{print $1}'; }
+require_clean_expected_head(){
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head must be exactly 40 lowercase hexadecimal characters'
+  [[ -d "$ROOT/.git" ]] || die 'checkout is missing .git'
+  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'clean checkout required'
+  actual="$(git -C "$ROOT" rev-parse HEAD)" || die 'cannot resolve checkout HEAD'
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual differs from expected $expected"
+}
+require_regular_approval_path(){
+  local input="$1" path="$1" rest component current base
+  [[ -n "$path" && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 2
+  if [[ "$path" != /* ]]; then base="$(pwd -P)" || return 2; path="$base/$path"; fi
+  [[ "$path" != */../* && "$path" != */.. && "$path" != *'/./'* && "$path" != *'/.' ]] || return 2
+  rest="${path#/}"; current="/"
+  while [[ -n "$rest" ]]; do
+    if [[ "$rest" == */* ]]; then component="${rest%%/*}"; rest="${rest#*/}"; else component="$rest"; rest=""; fi
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 2
+    current="$current$component"; [[ ! -L "$current" ]] || return 2; current="$current/"
+  done
+  [[ -f "$input" && ! -L "$input" ]]
+}
+require_approval_binding(){
+  local approval="$1" expected_sha="$2"
+  [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 must be exactly 64 lowercase hexadecimal characters'
+  require_regular_approval_path "$approval" || die 'approval evidence must be a regular file with safe non-symlink ancestry'
+  [[ "$(sha256_file "$approval")" == "$expected_sha" ]] || die 'approval evidence SHA-256 differs from caller binding'
+}
+require_blocked_approval(){
+  local approval="$1" expected_head="$2" scope='{"source_url":"https://github.com/resemble-ai/chatterbox.git","source_revision":"5de7a54aa4e5e2baadb0182dde554908b48b85c2","variants":["base","nano","turbo"]}'
+  local scope_sha
+  scope_sha="$(printf '%s' "$scope" | sha256sum | awk '{print $1}')"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$approval" "$expected_head" "$scope_sha" <<'PY'
+import json, pathlib, sys
+def pairs(items):
+    out = {}
+    for key, value in items:
+        if key in out:
+            raise ValueError("duplicate approval key: " + key)
+        out[key] = value
+    return out
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=pairs)
+    expected = {"schema", "decision", "status", "evidence_stage", "no_upload", "expected_head", "source_url", "source_revision", "variants", "scope_sha256"}
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError("approval schema is not exact")
+    if value["schema"] != "chatterbox-vast-approval-v1" or value["decision"] != "BLOCKED" or value["status"] != "BLOCKED" or value["evidence_stage"] != "INSPECTION_ONLY" or value["no_upload"] is not True:
+        raise ValueError("approval is not the blocked inspection disposition")
+    if value["expected_head"] != sys.argv[2] or value["source_url"] != "https://github.com/resemble-ai/chatterbox.git" or value["source_revision"] != "5de7a54aa4e5e2baadb0182dde554908b48b85c2" or value["variants"] != ["base", "nano", "turbo"] or value["scope_sha256"] != sys.argv[3]:
+        raise ValueError("approval identity or scope mismatch")
+    raise RuntimeError("BLOCKED_APPROVAL/INSPECTION_ONLY")
+except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError, RuntimeError) as error:
+    raise SystemExit(str(error))
+PY
+}
+claim_absent_directory(){ local path="$1"; [[ ! -e "$path" && ! -L "$path" ]] || return 2; mkdir "$path" || return 2; [[ -d "$path" && ! -L "$path" ]]; }
 license_audit_preflight(){
   set +e
   local audit_output audit_rc
@@ -27,6 +83,8 @@ license_audit_preflight(){
 }
 require_absent_path(){
   local target="$1" current
+  [[ "$target" == /* && "$target" != *$'\n'* && "$target" != *$'\r'* ]] || die 'work directory must be an absolute path'
+  [[ "$target" != */../* && "$target" != */.. && "$target" != *'/./'* && "$target" != *'/.' ]] || die 'work directory contains dot components'
   [[ ! -e "$target" && ! -L "$target" ]] || die 'work directory must be absent and not a symlink'
   current="$target"
   while [[ "$current" != / && "$current" != . && -n "$current" ]]; do
@@ -54,20 +112,48 @@ require_disjoint_uncreated(){
     [[ "$candidate" != "$base" && "$candidate" != "$base/"* && "$base" != "$candidate/"* ]] || die "work path overlaps protected path: $protected"
   done
 }
-[[ "$VARIANT" == base || "$VARIANT" == nano || "$VARIANT" == turbo ]] || die 'CHATTERBOX_VARIANT must be base, nano, or turbo'
+approval_evidence=''; approval_sha256=''; expected_head=''; self=0; seen_self=0; seen_approval=0; seen_sha=0; seen_head=0
+while (($#)); do
+ case "$1" in
+  --self-test) ((seen_self==0)) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
+  --approval-evidence) ((seen_approval==0 && $#>=2)) || die 'duplicate or missing --approval-evidence'; approval_evidence="$2"; seen_approval=1; shift 2 ;;
+  --approval-sha256) ((seen_sha==0 && $#>=2)) || die 'duplicate or missing --approval-sha256'; [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die 'invalid --approval-sha256'; approval_sha256="$2"; seen_sha=1; shift 2 ;;
+  --expected-head) ((seen_head==0 && $#>=2)) || die 'duplicate or missing --expected-head'; [[ "$2" =~ ^[0-9a-f]{40}$ ]] || die 'invalid --expected-head'; expected_head="$2"; seen_head=1; shift 2 ;;
+  *) die "unknown argument: $1" ;;
+ esac
+done
 self_test(){
-  local fail=0 token
-for token in '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 't3_mtl23ls_v3.safetensors' 'Cangjie5_TC.json' 'mtl_tokenizer.json' 'REFERENCE_EVIDENCE_COMPLETE' 'torch.multinomial' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' 'CHATTERBOX_T3_REFERENCE_PACKET' 'transformers==5.10.4' 'source_declared_transformers' 'isolated_transformers_security_floor' 'isolated_transformers_pin' 'GHSA-xrqw-3rrv-vx5w' 'torch==2.6.0' 'mutable optional Perth' 'reference_environment' 'AUTHENTICATED_CPU_INDEX_METADATA_LOCKED' 'BLOCKED_UNRESOLVED' '2.6.0+cpu' 'https://download.pytorch.org/whl/cpu' 'nvidia-*' 'resemble-perth' 'from pathlib import Path' 'chatterbox_t3' 'uv.lock' '2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f' '1feb25cd45b465dc7fb37dce07599c16218584211640357d541ba969917342d8' 'package_rows' 'license_conclusions' 'inference_turbo(max_gen_len=0)' 'tfmr.wte.' '--import-smoke' '--inspection' '--license-audit'; do
+  local fail=0 token tmp scope scope_sha approval approval_sha
+for token in '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 't3_mtl23ls_v3.safetensors' 'Cangjie5_TC.json' 'mtl_tokenizer.json' 'REFERENCE_EVIDENCE_COMPLETE' 'torch.multinomial' 'NO_UPLOAD' 'BLOCKED_APPROVAL/INSPECTION_ONLY' '--approval-sha256' '--expected-head' 'CARGO_BUILD_JOBS=1' 'CHATTERBOX_T3_REFERENCE_PACKET' 'transformers==5.10.4' 'source_declared_transformers' 'isolated_transformers_security_floor' 'isolated_transformers_pin' 'GHSA-xrqw-3rrv-vx5w' 'torch==2.6.0' 'mutable optional Perth' 'reference_environment' 'AUTHENTICATED_CPU_INDEX_METADATA_LOCKED' 'BLOCKED_UNRESOLVED' '2.6.0+cpu' 'https://download.pytorch.org/whl/cpu' 'nvidia-*' 'resemble-perth' 'from pathlib import Path' 'chatterbox_t3' 'uv.lock' '2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f' '1feb25cd45b465dc7fb37dce07599c16218584211640357d541ba969917342d8' 'package_rows' 'license_conclusions' 'inference_turbo(max_gen_len=0)' 'tfmr.wte.' '--import-smoke' '--inspection' '--license-audit'; do
     grep -Fq -- "$token" "$REFERENCE" "$INSPECTOR" "$0" || { echo "missing contract: $token" >&2; fail=1; }
   done
   if grep -En '(^|[;&|][[:space:]]*)git[[:space:]]+push|hf_hub_upload|upload_file|--push' "$0" | grep -v 'grep -En' >/dev/null; then echo 'publication command found' >&2; fail=1; fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$REFERENCE" --self-test >/dev/null || fail=1
+  if [[ "$seen_approval" != 0 || "$seen_sha" != 0 || "$seen_head" != 0 ]]; then echo 'self-test accepts no approval/head arguments' >&2; fail=1; fi
+  tmp="$(cd -P "$(mktemp -d)" && pwd)"; approval="$tmp/approval.json"
+  printf '{}\n' >"$approval"
+  if require_blocked_approval "$approval" "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then fail=1; fi
+  scope='{"source_url":"https://github.com/resemble-ai/chatterbox.git","source_revision":"5de7a54aa4e5e2baadb0182dde554908b48b85c2","variants":["base","nano","turbo"]}'
+  scope_sha="$(printf '%s' "$scope" | sha256sum | awk '{print $1}')"
+  printf '{"schema":"chatterbox-vast-approval-v1","decision":"BLOCKED","status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","no_upload":true,"expected_head":"%s","source_url":"https://github.com/resemble-ai/chatterbox.git","source_revision":"5de7a54aa4e5e2baadb0182dde554908b48b85c2","variants":["base","nano","turbo"],"scope_sha256":"%s"}\n' "$(printf '0%.0s' {1..40})" "$scope_sha" >"$approval"
+  approval_sha="$(sha256_file "$approval")"; require_approval_binding "$approval" "$approval_sha" || fail=1
+  if require_blocked_approval "$approval" "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then fail=1; fi
+  rm -rf "$tmp"
   (( fail == 0 )) || return 1
   echo 'run-chatterbox-t3-validation.sh self-test: OK'
 }
-[[ "${1:-}" != --self-test || $# == 1 ]] || die '--self-test accepts no arguments'
-if [[ "${1:-}" == --self-test ]]; then self_test; exit 0; fi
+if ((self)); then self_test; exit $?; fi
+[[ "$VARIANT" == base || "$VARIANT" == nano || "$VARIANT" == turbo ]] || die 'CHATTERBOX_VARIANT must be base, nano, or turbo'
+[[ $seen_approval == 1 && $seen_sha == 1 && $seen_head == 1 ]] || die '--approval-evidence, --approval-sha256, and --expected-head are required'
+command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required for caller binding'
+require_clean_expected_head "$expected_head"
+require_approval_binding "$approval_evidence" "$approval_sha256"
 if ! license_audit_preflight; then die 'dependency license audit is unresolved; no Chatterbox model acquisition or reference execution is permitted'; fi
+if require_blocked_approval "$approval_evidence" "$expected_head"; then
+  die 'blocked approval unexpectedly authorized execution'
+else
+  die 'BLOCKED_APPROVAL/INSPECTION_ONLY: Chatterbox acquisition remains disabled'
+fi
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'Linux x86_64 VAST required'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 required'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'clean checkout required'
@@ -78,7 +164,8 @@ parent="$(dirname "$WORK")"; [[ "$(findmnt -T "$parent" -no FSTYPE 2>/dev/null |
 free_kib="$(df -Pk "$parent" | awk 'NR==2{print $4}')"; [[ "$free_kib" =~ ^[0-9]+$ && "$free_kib" -ge $((40*1024*1024)) ]] || die '40 GiB free tmpfs required'
 require_absent_path "$WORK"
 require_disjoint_uncreated "$WORK" "$ROOT" "$PARITY" "$REFERENCE_PROJECT"
-mkdir -p "$WORK"/{model,source,evidence}; export CARGO_BUILD_JOBS=1
+claim_absent_directory "$WORK" || die 'work directory could not be atomically claimed'
+mkdir "$WORK/model" "$WORK/source" "$WORK/evidence"; export CARGO_BUILD_JOBS=1
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python - "$VARIANT" "$WORK/model" "$WORK/tree.json" <<'PY'
 import json, sys
 from pathlib import Path
