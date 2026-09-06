@@ -411,7 +411,11 @@ reference["collection_status"] = inspection["collection_status"]
 reference["inspection_manifest_sha256"] = __import__("hashlib").sha256(open(sys.argv[1], "rb").read()).hexdigest()
 open(sys.argv[3], "w", encoding="utf-8").write(json.dumps(reference, sort_keys=True, indent=2) + "\n")
 PY
-  for artifact in token_ids.u32le prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le packet.json guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le; do
+  for artifact in \
+    token_ids.u32le \
+    prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le \
+    speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le \
+    packet.json guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le; do
     cp -- "$evidence/reference/$artifact" "$evidence/$artifact"
   done
   local public_dir="$WORK_DIR/public" gguf="$evidence/vibevoice-1.5b.gguf"
@@ -473,7 +477,11 @@ PY
   local native_reference="$WORK_DIR/native-reference" reference_file
   [[ ! -e "$native_reference" && ! -L "$native_reference" ]] || die 'native reference path must be absent'
   mkdir "$native_reference" || die 'native reference path was concurrently claimed'
-  for reference_file in manifest.json packet.json token_ids.u32le prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le; do
+  for reference_file in \
+    manifest.json packet.json token_ids.u32le \
+    prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le \
+    speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le \
+    guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le; do
     cp -- "$evidence/$reference_file" "$native_reference/$reference_file"
   done
   local test_selector='vibevoice_1_5b_real_cpu_matches_official_reference'
@@ -496,7 +504,12 @@ PY
   [[ ! -e "$apple_packet" && ! -L "$apple_packet" ]] || die 'Apple packet path must be absent'
   mkdir "$apple_packet" || die 'Apple packet was concurrently claimed'
   local transfer_file
-  for transfer_file in manifest.json inspection-manifest.json token_ids.u32le prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le packet.json public-artifact.json artifact-sha256.txt reference-sha256.txt native-cpu.log vibevoice-1.5b.gguf; do
+  for transfer_file in \
+    manifest.json inspection-manifest.json token_ids.u32le \
+    prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le \
+    speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le \
+    guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le \
+    packet.json public-artifact.json artifact-sha256.txt reference-sha256.txt native-cpu.log vibevoice-1.5b.gguf; do
     cp -- "$evidence/$transfer_file" "$apple_packet/$transfer_file"
   done
   "${UV[@]}" - "$apple_packet" "$expected_head" "$approval_sha" "$apple_packet/packet.json" "$apple_packet/vibevoice-1.5b.gguf" "$apple_packet/apple-transfer-manifest.json" <<'PY'
@@ -504,7 +517,8 @@ import hashlib, json, pathlib, sys
 root, expected_head, approval_sha, packet, gguf, output = map(pathlib.Path, sys.argv[1:])
 expected_head, approval_sha = str(expected_head), str(approval_sha)
 names = [
-    "manifest.json", "inspection-manifest.json", "token_ids.u32le", "prompt_pcm.f32le",
+    "manifest.json", "inspection-manifest.json", "token_ids.u32le",
+    "prompt_pcm.f32le",
     "prompt_latent.f32le", "diffusion_initial.f32le", "diffusion_initial_native.f32le",
     "speech_input_mask.u8", "speech_masks.u8", "speech_replacement_positions.u32le",
     "generated_tokens.u32le", "guidance-scale.txt", "max-generated-tokens.txt",

@@ -541,12 +541,12 @@ def self_test() -> None:
             else:
                 raise AssertionError("unsafe archive path accepted")
         assert member_identity("Demo/data") == member_identity("demo/data")
-        assert member_identity("Cafe\u0301/data") == member_identity("Caf\u00e9/data")
+        assert member_identity("A\u030a/data") == member_identity("\u00c5/data")
         collision = root / "collision-1.0-py3-none-any.whl"
         with zipfile.ZipFile(collision, "w") as archive:
             archive.writestr("collision-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: collision\nVersion: 1.0\n")
-            archive.writestr("Cafe\u0301.txt", b"a")
-            archive.writestr("Caf\u00e9.txt", b"b")
+            archive.writestr("A\u030a.txt", b"a")
+            archive.writestr("\u00c5.txt", b"b")
         try:
             inspect_wheel(collision, "collision", "1.0")
         except SystemExit as error:

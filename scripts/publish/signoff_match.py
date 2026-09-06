@@ -1190,6 +1190,8 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "silero": [],  # §3 row only, §3.1 template does not carry Silero — accepted below
     # M3-M4.
     "cosyvoice2": ["CosyVoice2-0.5B"],
+    "cosyvoice2_flow": ["CosyVoice2-0.5B"],
+    "cosyvoice2_hift": ["CosyVoice2-0.5B"],
     "cosyvoice3": ["FunAudioLLM/Fun-CosyVoice3-0.5B-2512"],
     "voxtral": [
         "Voxtral-Mini-3B-2507",
@@ -2316,6 +2318,12 @@ def _cli_self_test() -> int:
                 failures.append(
                     f"Mac ledger alias '{slug}': want exact rows "
                     f"{want_rows!r}, got {got_rows!r}"
+                )
+        for stem in ("cosyvoice2_flow", "cosyvoice2_hift"):
+            if CONVERTER_TO_SIGNOFF_ROWS.get(stem) != ["CosyVoice2-0.5B"]:
+                failures.append(
+                    f"converter signoff mapping '{stem}' is not pinned to "
+                    "CosyVoice2-0.5B"
                 )
 
     # Converter coverage self-test uses a temporary models dir so it does

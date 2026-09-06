@@ -105,7 +105,13 @@ PY
     fixture="$(mktemp -d "${TMPDIR:-/tmp}/vibevoice-apple-transfer.XXXXXX")"
     cleanup_fixture() { rm -r -- "$fixture"; }
     trap cleanup_fixture EXIT
-    names=(manifest.json inspection-manifest.json token_ids.u32le prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le packet.json public-artifact.json artifact-sha256.txt reference-sha256.txt native-cpu.log vibevoice-1.5b.gguf)
+    names=(
+      manifest.json inspection-manifest.json token_ids.u32le
+      prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le
+      speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le
+      guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le
+      packet.json public-artifact.json artifact-sha256.txt reference-sha256.txt native-cpu.log vibevoice-1.5b.gguf
+    )
     for name in "${names[@]}"; do printf x > "$fixture/$name"; done
     fixture_head="$(printf '0%.0s' {1..40})"
     fixture_approval="$(printf '1%.0s' {1..64})"
@@ -200,7 +206,16 @@ manifest = json.loads(manifest_path.read_text(encoding="utf-8"), object_pairs_ho
 required = {"schema", "expected_head", "approval_evidence_sha256", "status", "publication", "reference_manifest_sha256", "input_packet_sha256", "gguf_sha256", "native_cpu_log_sha256", "files"}
 if set(manifest) != required or manifest["schema"] != "vibevoice-apple-transfer-v1" or manifest["expected_head"] != expected_head or manifest["approval_evidence_sha256"] != approval_sha or manifest["status"] != "MEASURED_NOT_GATED" or manifest["publication"] != "NO_UPLOAD":
     raise SystemExit("transfer manifest identity/status mismatch")
-names = {"manifest.json", "inspection-manifest.json", "token_ids.u32le", "prompt_pcm.f32le", "prompt_latent.f32le", "diffusion_initial.f32le", "diffusion_initial_native.f32le", "speech_input_mask.u8", "speech_masks.u8", "speech_replacement_positions.u32le", "generated_tokens.u32le", "guidance-scale.txt", "max-generated-tokens.txt", "official_pcm.f32le", "official_diffusion_latents.f32le", "packet.json", "public-artifact.json", "artifact-sha256.txt", "reference-sha256.txt", "native-cpu.log", "vibevoice-1.5b.gguf"}
+names = {
+    "manifest.json", "inspection-manifest.json", "token_ids.u32le",
+    "prompt_pcm.f32le", "prompt_latent.f32le", "diffusion_initial.f32le",
+    "diffusion_initial_native.f32le", "speech_input_mask.u8", "speech_masks.u8",
+    "speech_replacement_positions.u32le", "generated_tokens.u32le",
+    "guidance-scale.txt", "max-generated-tokens.txt", "official_pcm.f32le",
+    "official_diffusion_latents.f32le", "packet.json", "public-artifact.json",
+    "artifact-sha256.txt", "reference-sha256.txt", "native-cpu.log",
+    "vibevoice-1.5b.gguf",
+}
 rows = manifest["files"]
 if not isinstance(rows, list) or {row.get("path") for row in rows if isinstance(row, dict)} != names or len(rows) != len(names):
     raise SystemExit("transfer manifest file closure is not exact")
@@ -256,7 +271,8 @@ require_cargo_singleton() {
 require_bundle() {
   local bundle="$1"
   [[ -d "$bundle" ]] || die "bundle missing: $bundle"
-  for file in manifest.json inspection-manifest.json token_ids.u32le prompt_pcm.f32le \
+  for file in manifest.json inspection-manifest.json token_ids.u32le \
+    prompt_pcm.f32le \
     prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le \
     speech_input_mask.u8 speech_masks.u8 \
     speech_replacement_positions.u32le generated_tokens.u32le official_pcm.f32le \
@@ -390,7 +406,11 @@ main() {
   require_absent_evidence "$evidence" "$bundle" "$approval" "$transfer"
   local reference_dir="$evidence/reference" reference_file
   mkdir "$reference_dir" || die 'reference staging directory was concurrently claimed'
-  for reference_file in manifest.json packet.json token_ids.u32le prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le; do
+  for reference_file in \
+    manifest.json packet.json token_ids.u32le \
+    prompt_pcm.f32le prompt_latent.f32le diffusion_initial.f32le diffusion_initial_native.f32le \
+    speech_input_mask.u8 speech_masks.u8 speech_replacement_positions.u32le generated_tokens.u32le \
+    guidance-scale.txt max-generated-tokens.txt official_pcm.f32le official_diffusion_latents.f32le; do
     cp -- "$bundle/$reference_file" "$reference_dir/$reference_file"
   done
   local selector='vibevoice_1_5b_real_cpu_matches_official_reference'
