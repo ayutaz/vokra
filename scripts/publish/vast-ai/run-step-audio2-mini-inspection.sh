@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2317
 # VAST-only Step-Audio-2-mini composite inspection. No conversion, runtime,
 # ONNX execution, parity, upload, or publication is performed.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HF_REPOSITORY="stepfun-ai/Step-Audio-2-mini"
 HF_REVISION="e36fdd5d71e0ea22f09dd94bbab9bfc544ca1e36"
 SOURCE_REPOSITORY="https://github.com/stepfun-ai/Step-Audio2.git"
@@ -11,6 +13,8 @@ TRANSFORMERS_REPOSITORY="https://github.com/huggingface/transformers"
 TRANSFORMERS_TAG="v4.49.0"
 TRANSFORMERS_REVISION="a22a4378d97d06b7a1d9abad6e0086d30fdea199"
 INSPECTOR="tools/parity/step_audio2_mini_inspect.py"
+GATE="$ROOT/tools/parity/step_audio2_mini_gate.py"
+UV_GATE_CMD=(uv run --no-cache --no-project --offline --python 3.12 python "$GATE")
 UV_CMD=(uv run --frozen --project tools/parity --python 3.12 python)
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_DISK_KIB=$((80 * 1024 * 1024))
@@ -18,25 +22,33 @@ MIN_DISK_KIB=$((80 * 1024 * 1024))
 die() { echo "run-step-audio2-mini-inspection: $*" >&2; exit 2; }
 
 self_test() {
-  local self="${BASH_SOURCE[0]}" root fail=0 required status
-  root="$(cd "$(dirname "$self")/../../.." && pwd)"
+  local self="${BASH_SOURCE[0]}" root fail=0 required status gate_line uname_line work_line snapshot_line
+  root="$ROOT"
   [[ -f "$root/$INSPECTOR" ]] || die "inspector missing"
   for required in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$INSPECTOR" "SHARD_BYTES" "COMPANIONS" "campplus.onnx" "speech_tokenizer_v2_25hz.onnx" "flow.pt" "hift.pt" "flow.yaml" "configuration_step_audio_2.py" "modeling_step_audio_2.py" "audio_encoder_config" "n_mels" "n_audio_ctx" "n_audio_state" "n_audio_head" "n_audio_layer" "n_codebook_size" "llm_dim" "kernel_size" "adapter_stride" "preprocessor_config.json" "generation_config.json" "inspection_status" "AUTHENTICATED_EVIDENCE_COMPLETE" "collection_status" "AUTHENTICATED" "INSPECTION_ERROR" "UNVERIFIED" "load_external_data=False" "weights_only=True" "INSPECTION_ONLY" "NO_UPLOAD" "BLOCKED" "MAX_HEADER_BYTES" "requested_revision" "git_blob_sha1" "lfs_pointer_git_blob_sha1" "lfs_payload_sha256" "lfs_payload_size"; do
     if ! grep -Fq -- "$required" "$self" && ! grep -Fq -- "$required" "$root/$INSPECTOR"; then
       echo "self-test FAIL: missing contract: $required" >&2; fail=1
     fi
   done
-  for required in 'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' 'findmnt' 'git status --porcelain --untracked-files=all' 'snapshot_download' 'model_info' 'list_repo_tree' 'CARGO_BUILD_JOBS'; do
+  for required in 'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' 'findmnt' 'git status --porcelain --untracked-files=all' 'snapshot_download' 'model_info' 'list_repo_tree' 'CARGO_BUILD_JOBS' 'BLOCKED_UNRESOLVED_STEP_AUDIO2_MINI_COMPOSITE' '--expected-head' '--approval-evidence' '--approval-sha256'; do
     if ! grep -Fq -- "$required" "$self"; then echo "self-test FAIL: missing VAST gate: $required" >&2; fail=1; fi
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|vokra-cli[[:space:]]+convert|cargo[[:space:]]+(run|test|check))([[:space:]]|$)' "$self" >/dev/null; then
     echo "self-test FAIL: mutation/conversion/Cargo test command found" >&2; fail=1
   fi
-  if grep -En '(^|[[:space:]])(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then
+  if grep -En '(^|[;&|])[[:space:]]*(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then
     echo "self-test FAIL: raw Python/pip command found" >&2; fail=1
   fi
-  if bash "$self" --self-test --work-dir /tmp/step-audio2-self-test >/dev/null 2>&1; then
+  gate_line="$(grep -nF -- '--verify --expected-head' "$self" | tail -n1 | cut -d: -f1)"; uname_line="$(grep -nF 'inspection requires Linux x86_64 VAST' "$self" | tail -n1 | cut -d: -f1)"; work_line="$(grep -n 'mkdir -p "$work_dir"' "$self" | tail -n1 | cut -d: -f1)"; snapshot_line="$(grep -nF 'snapshot_download(repo_id' "$self" | tail -n1 | cut -d: -f1)"
+  [[ "$gate_line" =~ ^[0-9]+$ && "$uname_line" =~ ^[0-9]+$ && "$work_line" =~ ^[0-9]+$ && "$snapshot_line" =~ ^[0-9]+$ && $gate_line -lt $uname_line && $gate_line -lt $work_line && $gate_line -lt $snapshot_line ]] || { echo "self-test FAIL: terminal gate ordering"; fail=1; }
+  UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" --self-test || fail=1
+  if bash "$self" --self-test --self-test >/dev/null 2>&1; then
     echo "self-test FAIL: extra argument accepted" >&2; fail=1
+  else
+    status=$?; [[ "$status" == 2 ]] || { echo "self-test FAIL: expected exit 2, got $status" >&2; fail=1; }
+  fi
+  if bash "$self" --self-test --expected-head bad >/dev/null 2>&1; then
+    echo "self-test FAIL: mixed approval argument accepted" >&2; fail=1
   else
     status=$?; [[ "$status" == 2 ]] || { echo "self-test FAIL: expected exit 2, got $status" >&2; fail=1; }
   fi
@@ -44,19 +56,28 @@ self_test() {
 }
 
 work_dir="/dev/shm/vokra-step-audio2-mini-inspection"
-self=0
+self=0; seen_self=0; seen_work=0; seen_head=0; seen_approval=0; seen_sha=0
+expected_head=''; approval_evidence=''; approval_sha256=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --self-test) self=1; shift ;;
-    --work-dir) [[ $# -ge 2 ]] || die "--work-dir requires a path"; work_dir="$2"; shift 2 ;;
+    --self-test) ((seen_self+=1)); self=1; shift ;;
+    --work-dir) ((seen_work+=1)); [[ $# -ge 2 ]] || die "--work-dir requires a path"; work_dir="$2"; shift 2 ;;
+    --expected-head) ((seen_head+=1)); [[ $# -ge 2 ]] || die "--expected-head requires a value"; expected_head="$2"; shift 2 ;;
+    --approval-evidence) ((seen_approval+=1)); [[ $# -ge 2 ]] || die "--approval-evidence requires a path"; approval_evidence="$2"; shift 2 ;;
+    --approval-sha256) ((seen_sha+=1)); [[ $# -ge 2 ]] || die "--approval-sha256 requires a value"; approval_sha256="$2"; shift 2 ;;
     -h|--help) echo "usage: $0 [--work-dir TMPFS] | --self-test"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if ((self == 1)); then
-  [[ "$work_dir" == "/dev/shm/vokra-step-audio2-mini-inspection" ]] || die "--self-test accepts no other arguments"
+  [[ $seen_self == 1 && $seen_work == 0 && $seen_head == 0 && $seen_approval == 0 && $seen_sha == 0 ]] || die "--self-test accepts no other arguments"
   self_test; exit $?
 fi
+[[ $seen_work -le 1 && $seen_head == 1 && $seen_approval == 1 && $seen_sha == 1 ]] || die "normal run requires one --expected-head, --approval-evidence, and --approval-sha256"
+gate_log=""; gate_rc=0
+if gate_log="$(UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" --verify --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --root "$ROOT" 2>&1)"; then gate_rc=0; else gate_rc=$?; fi
+[[ $gate_rc == 2 && "$gate_log" == *BLOCKED_UNRESOLVED_STEP_AUDIO2_MINI_COMPOSITE* ]] || die "Step-Audio-2 approval gate did not reach the expected terminal blocker: $gate_log"
+die "BLOCKED_UNRESOLVED_STEP_AUDIO2_MINI_COMPOSITE: current blocked approval cannot authorize host checks, acquisition, or inspection"
 
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "inspection requires Linux x86_64 VAST"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
@@ -108,7 +129,7 @@ git clone --filter=blob:none "$TRANSFORMERS_REPOSITORY" "$transformers" >/dev/nu
 [[ "$(git -C "$transformers" rev-parse HEAD)" == "$TRANSFORMERS_REVISION" ]] || die "Transformers revision mismatch"
 [[ "$(git -C "$transformers" describe --exact-match --tags HEAD)" == "$TRANSFORMERS_TAG" ]] || die "Transformers tag mismatch"
 set +e
-"${UV_CMD[@]}" "$INSPECTOR" --snapshot "$snapshot" --source "$source" --transformers "$transformers" --server-tree "$tree" --output "$evidence"
+"${UV_CMD[@]}" "$INSPECTOR" --snapshot "$snapshot" --source "$source" --transformers "$transformers" --server-tree "$tree" --output "$evidence" --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256"
 status=$?
 set -e
 [[ "$status" == 2 ]] || die "inspection did not return required blocker exit 2"

@@ -21,8 +21,7 @@ import warnings
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
-
-from safetensors import safe_open
+from step_audio2_mini_gate import BLOCKED_MARKER, require_blocked_gate
 
 HF_REPOSITORY = "stepfun-ai/Step-Audio-2-mini"
 HF_REVISION = "e36fdd5d71e0ea22f09dd94bbab9bfc544ca1e36"
@@ -390,6 +389,7 @@ def inspect_safetensors(path: Path, snapshot: Path) -> tuple[dict[str, Any], lis
         cursor = end
     if cursor != payload:
         raise RuntimeError("safetensors tail gap")
+    from safetensors import safe_open
     with safe_open(str(path), framework="pt") as handle:
         if set(handle.keys()) != {item["name"] for item in tensors}:
             raise RuntimeError(f"safe_open/header key mismatch: {path}")
@@ -592,13 +592,20 @@ def source_inventory(
 
 
 def write_blocked(output: Path, error: Exception, **extra: Any) -> None:
-    output.mkdir(parents=True, exist_ok=True)
+    if not output.exists():
+        output.mkdir(parents=False, exist_ok=False)
+    elif not output.is_dir() or output.is_symlink():
+        raise RuntimeError("evidence output is not an exclusive regular directory")
     manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "UNVERIFIED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "task": "speech-to-speech composite; no native/ONNX runtime claim", "upstream": {"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None, "status": "UNVERIFIED", "walk": "recursive_file_only"}, "official_source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "status": "UNVERIFIED"}, "transformers": {"repository": TRANSFORMERS_REPOSITORY, "tag": TRANSFORMERS_TAG, "revision": TRANSFORMERS_REVISION, "status": "UNVERIFIED"}, "error_type": type(error).__name__, "reason": str(error), "blockers": [str(error)], **extra}
-    (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    manifest_path = output / "manifest.json"
+    if manifest_path.exists() or manifest_path.is_symlink():
+        raise FileExistsError(f"refusing to clobber existing evidence manifest: {manifest_path}")
+    with manifest_path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
 
 
 def inspect(snapshot: Path, source: Path, transformers: Path, server_tree: Path, output: Path) -> int:
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=False, exist_ok=False)
     identity, files = inventory_snapshot(snapshot, server_tree)
     server_by_path = {row["path"]: row for row in files}
     def server_identity(relative: str) -> dict[str, Any]:
@@ -665,11 +672,15 @@ def inspect(snapshot: Path, source: Path, transformers: Path, server_tree: Path,
         companions[name]["path"] = path.relative_to(snapshot).as_posix()
         companions[name]["server_identity"] = server_identity(companions[name]["path"])
     sources = source_inventory(source, transformers)
-    (output / "snapshot-inventory.json").write_text(json.dumps({"server_tree": identity, "files": files}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "tensor-inventory.json").write_text(json.dumps({"shards": shards, "tensor_count": len(tensors), "tensors": tensors}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "parsed-json.json").write_text(json.dumps(parsed, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "companion-inventory.json").write_text(json.dumps(companions, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "source-inventory.json").write_text(json.dumps({"official": sources, "hf_custom_code": custom_code}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    for filename, value in {
+        "snapshot-inventory.json": {"server_tree": identity, "files": files},
+        "tensor-inventory.json": {"shards": shards, "tensor_count": len(tensors), "tensors": tensors},
+        "parsed-json.json": parsed,
+        "companion-inventory.json": companions,
+        "source-inventory.json": {"official": sources, "hf_custom_code": custom_code},
+    }.items():
+        with (output / filename).open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(value, sort_keys=True, indent=2) + "\n")
     packets = {path.name: {"bytes": path.stat().st_size, "sha256": digest(path)} for path in output.glob("*-inventory.json")}
     write_blocked(output, RuntimeError("component/license/dataset provenance remains unauthenticated; inspection only"), inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE", collection_status="AUTHENTICATED", upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "status": "AUTHENTICATED", "walk": "recursive_file_only", "license": model_license, "server_tree": identity, "files": files}, parsed_json=parsed, json_identities=json_identities, index_identity=index_identity, hf_custom_code=custom_code, shards=shards, tensor_count=len(tensors), companions=companions, official_source=sources, license_evidence={"model": model_license, "official_source": sources["license"], "transformers": sources["transformers"]["license"]}, dataset_provenance={"status": "BLOCKED_UNAUTHENTICATED"}, packets=packets)
     return 2
@@ -677,6 +688,11 @@ def inspect(snapshot: Path, source: Path, transformers: Path, server_tree: Path,
 
 def self_test() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
+    assert source.index("require_blocked_gate(args.expected_head") < source.index("all inspection paths are required") < source.index("return inspect(args.snapshot")
+    blocked = subprocess.run([sys.executable, str(Path(__file__)), "--expected-head", "bad", "--approval-evidence", "/missing/approval", "--approval-sha256", "0" * 64, "--snapshot", "/missing/snapshot", "--source", "/missing/source", "--transformers", "/missing/transformers", "--server-tree", "/missing/tree", "--output", "/missing/output"], capture_output=True, text=True, check=False)
+    assert blocked.returncode == 1 and "lowercase 40-hex" in blocked.stderr
+    root_bypass = subprocess.run([sys.executable, str(Path(__file__)), "--self-test", "--root", "/tmp"], capture_output=True, text=True, check=False)
+    assert root_bypass.returncode == 2 and "unrecognized arguments: --root" in root_bypass.stderr
     assert "weights_only=True" in source and "load_external_data=False" in source and ("onnxruntime." + "InferenceSession") not in source and ("ort." + "InferenceSession") not in source
     assert FORBIDDEN_MODEL_FILES == {"preprocessor_config.json", "generation_config.json"}
     assert "audio_encoder_config" in source and "configuration_step_audio_2.py" in source and "modeling_step_audio_2.py" in source
@@ -963,6 +979,12 @@ def self_test() -> None:
         write_blocked(failed_output, RuntimeError("collection failed"))
         failed_manifest = load_json(failed_output / "manifest.json")
         assert failed_manifest["inspection_status"] == "INSPECTION_ERROR" and failed_manifest["collection_status"] == "UNVERIFIED" and failed_manifest["upstream"]["resolved_revision"] is None
+        try:
+            write_blocked(failed_output, RuntimeError("must not overwrite"))
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing evidence manifest was silently overwritten")
     print("step_audio2_mini_inspect.py self-test: OK (strict JSON/header/ONNX/PT/YAML fail-closed contracts)")
 
 
@@ -974,16 +996,35 @@ def main() -> int:
     parser.add_argument("--server-tree", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-evidence")
+    parser.add_argument("--approval-sha256")
     args = parser.parse_args()
+    checkout_root = Path(__file__).resolve().parents[2]
     if args.self_test:
-        if any(value is not None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output)):
+        if any(value is not None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
+    if any(value is None for value in (args.expected_head, args.approval_evidence, args.approval_sha256)):
+        parser.error("normal run requires --expected-head, --approval-evidence, and --approval-sha256")
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, checkout_root)
+    except RuntimeError as error:
+        if BLOCKED_MARKER in str(error):
+            print(str(error), file=sys.stderr)
+            return 2
+        print(f"gate rejected: {error}", file=sys.stderr)
+        return 1
     if any(value is None for value in (args.snapshot, args.source, args.transformers, args.server_tree, args.output)):
         parser.error("all inspection paths are required")
+    if args.output.exists() or args.output.is_symlink():
+        parser.error("evidence output must be absent and non-symlinked")
     try:
         return inspect(args.snapshot, args.source, args.transformers, args.server_tree, args.output)
+    except FileExistsError as error:
+        print(f"Step-Audio-2 inspection refused to clobber output: {error}", file=sys.stderr)
+        return 2
     except Exception as error:
         write_blocked(args.output, error)
         print(f"Step-Audio-2 inspection BLOCKED: {error}", file=sys.stderr)
