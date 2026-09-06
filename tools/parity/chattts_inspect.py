@@ -18,7 +18,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:  # stdlib-only inspection/self-tests do not parse YAML
+    yaml = None
 
 HF_REPOSITORY = "2Noise/ChatTTS"
 HF_REVISION = "1a3c04a8b0651689bd9242fbb55b1f4b5a9aef84"
@@ -103,21 +106,20 @@ def load_json(path: Path) -> Any:
         raise RuntimeError(f"strict JSON failure at {path}: {error}") from error
 
 
-class StrictYamlLoader(yaml.SafeLoader):
-    """Safe YAML loader that rejects duplicate mapping keys."""
+if yaml is not None:
+    class StrictYamlLoader(yaml.SafeLoader):
+        """Safe YAML loader that rejects duplicate mapping keys."""
 
+    def yaml_mapping(loader: StrictYamlLoader, node: yaml.nodes.MappingNode) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node)
+            if key in result:
+                raise RuntimeError(f"duplicate YAML key: {key}")
+            result[key] = loader.construct_object(value_node)
+        return result
 
-def yaml_mapping(loader: StrictYamlLoader, node: yaml.nodes.MappingNode) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node)
-        if key in result:
-            raise RuntimeError(f"duplicate YAML key: {key}")
-        result[key] = loader.construct_object(value_node)
-    return result
-
-
-StrictYamlLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, yaml_mapping)
+    StrictYamlLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, yaml_mapping)
 
 
 def safe_path(name: str, label: str) -> None:
@@ -380,6 +382,8 @@ def source_config_drift_fixture_test() -> bool:
 
 
 def inspect_semantics(snapshot: Path) -> dict[str, Any]:
+    if yaml is None:
+        raise RuntimeError("PyYAML is required only for official semantic inspection")
     readme = (snapshot / "README.md").read_text(encoding="utf-8")
     if not readme.startswith("---\n") or "\n---\n" not in readme[4:]:
         raise RuntimeError("README strict YAML front matter missing")
@@ -426,21 +430,43 @@ def inspect_semantics(snapshot: Path) -> dict[str, Any]:
     return {"card": fields, "gpt_config": config, "tokenizer": {"version": tokenizer["version"], "vocab": len(tokenizer["model"]["vocab"]), "added_tokens": len(tokenizer["added_tokens"]), "specials": sorted(specials), "special_ids": expected_special_ids}}
 
 
-def blocked_manifest(output: Path, *, status: str, error: str | None = None, evidence: dict[str, Any] | None = None) -> None:
+def blocked_manifest(output: Path, *, status: str, error: str | None = None, evidence: dict[str, Any] | None = None, expected_head: str | None = None, approval_sha256: str | None = None) -> None:
     manifest = {"format": FORMAT, "status": "BLOCKED", "inspection_status": status, "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "native_status": "BLOCKED_NATIVE_BINDING", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "license_evidence": {"weights": "CC-BY-NC-4.0", "source": "AGPLv3+", "dependencies": "REVIEW_REQUIRED_BLOCKER"}, "model": {"repository": HF_REPOSITORY, "revision": HF_REVISION}, "source": {"repository": SOURCE_REPOSITORY, "tag": SOURCE_TAG, "revision": SOURCE_REVISION, "license": "AGPLv3+"}}
     if error:
         manifest["error"] = error
     if evidence:
         manifest["evidence"] = evidence
+    if expected_head is not None:
+        manifest["expected_head"] = expected_head
+    if approval_sha256 is not None:
+        manifest["approval_sha256"] = approval_sha256
     output.mkdir(parents=True, exist_ok=True)
-    (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    target = output / "manifest.json"
+    if target.exists() or target.is_symlink():
+        raise RuntimeError("inspection manifest already exists; no-clobber refusal")
+    temporary = output / f".manifest-{os.getpid()}.tmp"
+    payload = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, target)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def validate_inspection_manifest(manifest: dict[str, Any]) -> None:
     """Independent structural gate used by the Apple worker; never grep status."""
-    required = {"format", "status", "inspection_status", "evidence_stage", "runtime_status", "native_status", "cpu_status", "metal_status", "parity_status", "publication", "license_evidence", "model", "source", "evidence"}
+    required = {"format", "status", "inspection_status", "evidence_stage", "runtime_status", "native_status", "cpu_status", "metal_status", "parity_status", "publication", "license_evidence", "model", "source", "evidence", "expected_head", "approval_sha256"}
     if set(manifest) != required or manifest.get("format") != FORMAT or manifest.get("status") != "BLOCKED" or manifest.get("inspection_status") != "AUTHENTICATED_EVIDENCE_COMPLETE" or manifest.get("native_status") != "BLOCKED_NATIVE_BINDING" or manifest.get("parity_status") != "NOT_RUN" or manifest.get("publication") != "NO_UPLOAD":
         raise RuntimeError("inspection manifest is not an authenticated fail-closed packet")
+    if not re.fullmatch(r"[0-9a-f]{40}", manifest["expected_head"]) or not re.fullmatch(r"[0-9a-f]{64}", manifest["approval_sha256"]):
+        raise RuntimeError("inspection manifest approval binding is malformed")
     evidence = manifest["evidence"]
     if not isinstance(evidence, dict) or set(evidence) != {"model", "source", "semantics"}:
         raise RuntimeError("inspection evidence schema drift")
@@ -470,15 +496,19 @@ def main() -> int:
     parser.add_argument("--source", type=Path)
     parser.add_argument("--server-tree", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--approval-sha256")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.snapshot, args.source, args.server_tree, args.output, args.expected_head, args.approval_sha256)):
+            parser.error("--self-test accepts no other arguments")
         if inspect_safetensors_fixture_tests() and strict_json_fixture_test() and source_mapping_fixture_test() and source_config_drift_fixture_test():
             print("chattts_inspect.py self-test: OK")
             return 0
         return 1
-    if not all((args.snapshot, args.source, args.server_tree, args.output)):
-        parser.error("inspection requires --snapshot --source --server-tree --output")
+    if not all((args.snapshot, args.source, args.server_tree, args.output, args.expected_head, args.approval_sha256)) or not re.fullmatch(r"[0-9a-f]{40}", args.expected_head) or not re.fullmatch(r"[0-9a-f]{64}", args.approval_sha256):
+        parser.error("inspection requires valid --snapshot --source --server-tree --output --expected-head --approval-sha256")
     try:
         model = inspect_model(args.snapshot, args.server_tree)
         source = inspect_source(args.source)
@@ -488,9 +518,9 @@ def main() -> int:
             if name in SELECTED and source["release_sha_map"].get(name) != record["sha256"]:
                 raise RuntimeError(f"source SHA map disagrees with release SHA: {name}")
         semantics = inspect_semantics(args.snapshot)
-        blocked_manifest(args.output, status="AUTHENTICATED_EVIDENCE_COMPLETE", evidence={"model": model, "source": source, "semantics": semantics})
+        blocked_manifest(args.output, status="AUTHENTICATED_EVIDENCE_COMPLETE", evidence={"model": model, "source": source, "semantics": semantics}, expected_head=args.expected_head, approval_sha256=args.approval_sha256)
     except Exception as error:
-        blocked_manifest(args.output, status="INSPECTION_ERROR", error=f"{type(error).__name__}: {error}")
+        blocked_manifest(args.output, status="INSPECTION_ERROR", error=f"{type(error).__name__}: {error}", expected_head=args.expected_head, approval_sha256=args.approval_sha256)
         print(f"ChatTTS inspection blocked: {error}", file=sys.stderr)
     return 2
 

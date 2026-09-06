@@ -9,6 +9,7 @@ dependencies.  Without that gate, only hermetic contract self-tests run.
 from __future__ import annotations
 
 import argparse
+import ast
 from array import array
 import hashlib
 from importlib.metadata import PackageNotFoundError, version as installed_version
@@ -29,6 +30,7 @@ SOURCE_REPOSITORY = "https://github.com/2noise/ChatTTS.git"
 SOURCE_REVISION = "77b89ee281cd479f5b1a787ada330dc975ca1f2a"
 SAMPLE_RATE_HZ = 24_000
 FORMAT = "vokra-chattts-reference-v1"
+APPROVAL_SCHEMA = "vokra-chattts-approval-v1"
 REFERENCE_PROJECT = Path(__file__).parent / "chattts"
 PROJECT_VERSIONS = {
     "huggingface-hub": "1.5.0", "numba": "0.63.1", "numpy": "2.3.5",
@@ -273,6 +275,51 @@ def expected_lock_inventory_for_virtual() -> list[dict[str, Any]]:
 
 def canonical_json_digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def validate_approval(path: Path, expected_head: str, expected_sha256: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise RuntimeError("ChatTTS approval HEAD/SHA format is invalid")
+    if not path.is_absolute() or any(part in {".", ".."} for part in path.parts):
+        raise RuntimeError("ChatTTS approval path must be absolute and free of dot components")
+    cursor = Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor /= part
+        if cursor.is_symlink():
+            raise RuntimeError("ChatTTS approval path has symlink ancestry")
+    if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("ChatTTS approval must be a non-empty regular file")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
+        raise RuntimeError("ChatTTS approval SHA-256 mismatch")
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise RuntimeError(f"duplicate approval JSON key: {key}")
+            result[key] = value
+        return result
+    try:
+        approval = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
+    except Exception as error:
+        raise RuntimeError("ChatTTS approval JSON is invalid") from error
+    required = {"schema", "status", "owner", "expected_head", "upstream_repository", "upstream_revision", "source_repository", "source_revision", "source_license", "weight_license", "scope", "publication", "dependency_audit_status", "native_status"}
+    if not isinstance(approval, dict) or set(approval) != required:
+        raise RuntimeError("ChatTTS approval schema is not exact")
+    expected = {
+        "schema": APPROVAL_SCHEMA, "status": "APPROVED", "expected_head": expected_head,
+        "upstream_repository": HF_REPOSITORY, "upstream_revision": HF_REVISION,
+        "source_repository": SOURCE_REPOSITORY, "source_revision": SOURCE_REVISION,
+        "source_license": "AGPLv3+", "weight_license": "CC-BY-NC-4.0",
+        "scope": "INSPECTION_ONLY", "publication": "NO_UPLOAD",
+        "dependency_audit_status": "BLOCKED_UNRESOLVED", "native_status": "BLOCKED_NATIVE_BINDING",
+    }
+    for key, value in expected.items():
+        if approval.get(key) != value:
+            raise RuntimeError(f"ChatTTS approval identity drift: {key}")
+    owner = approval["owner"].strip().lower() if isinstance(approval["owner"], str) else ""
+    if not owner or owner in {"todo", "pending", "owner", "example", "tbd", "unknown"} or re.search(r"(?:^|[\s_-])(todo|pending|example|tbd|unknown)(?:$|[\s_-])", owner):
+        raise RuntimeError("ChatTTS approval owner is placeholder/empty")
+    return approval
 
 
 def reference_project_identity() -> dict[str, Any]:
@@ -896,7 +943,7 @@ def run_official(snapshot: Path, source: Path, server_tree: Path, request: dict[
     return evidence
 
 
-def write_blocked(output: Path, status: str, error: str | None = None, evidence: dict[str, Any] | None = None) -> None:
+def write_blocked(output: Path, status: str, error: str | None = None, evidence: dict[str, Any] | None = None, *, expected_head: str | None = None, approval_sha256: str | None = None) -> None:
     manifest: dict[str, Any] = {
         "format": FORMAT,
         "status": "BLOCKED",
@@ -912,16 +959,41 @@ def write_blocked(output: Path, status: str, error: str | None = None, evidence:
         "model": {"repository": HF_REPOSITORY, "revision": HF_REVISION},
         "source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "license": "AGPLv3+"},
     }
+    if expected_head is not None:
+        manifest["expected_head"] = expected_head
+    if approval_sha256 is not None:
+        manifest["approval_sha256"] = approval_sha256
     if error:
         manifest["error"] = error
     if evidence:
         manifest["evidence"] = evidence
     output.mkdir(parents=True, exist_ok=True)
-    (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    target = output / "manifest.json"
+    if target.exists() or target.is_symlink():
+        raise RuntimeError("ChatTTS reference manifest already exists; no-clobber refusal")
+    temporary = output / f".manifest-{os.getpid()}.tmp"
+    payload = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, target)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def self_test() -> None:
     dependency_gate_fixture_tests()
+    try:
+        validate_approval(Path("approval.json"), "bad", "0" * 64)
+        raise AssertionError("invalid ChatTTS approval binding accepted")
+    except RuntimeError:
+        pass
     base = {"text": "hello", "seed": 7, "max_new_token": 1, "temperature": 0.3, "top_p": 0.7, "top_k": 20, "repetition_penalty": 1.05}
     assert validate_request(base)["seed"] == 7
     bad = dict(base, max_new_token=0)
@@ -1002,7 +1074,12 @@ def self_test() -> None:
             rng_records.append({"call_index": len(rng_records), "route": route, "source": "ChatTTS/model/gpt.py::GPT.generate", "call_site": "torch.multinomial", "execution_id": digest(base), "probabilities": probability, "sample_ids": samples})
         for route in ("dvae", "decoder"):
             (out / f"{route}_pcm.f32le").write_bytes(raw)
-        from chattts_inspect import SELECTED
+        try:
+            from chattts_inspect import SELECTED
+        except ModuleNotFoundError:
+            tree = ast.parse((Path(__file__).with_name("chattts_inspect.py")).read_text(encoding="utf-8"))
+            selected_node = next(node.value for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "SELECTED" for target in node.targets))
+            SELECTED = ast.literal_eval(selected_node)
         fixed_rows = [{"path": name, "bytes": size, "git_blob_sha1": blob, "lfs_sha256": lfs, "local_verified": True} for name, (size, blob, lfs) in SELECTED.items()]
         fixed_rows.extend({"path": f"legacy-{index}", "bytes": 1, "git_blob_sha1": "a" * 40, "lfs_sha256": None, "local_verified": False} for index in range(14))
         selected_rows = {name: {"bytes": size, "sha256": "a" * 64} for name, (size, _blob, _lfs) in SELECTED.items()}
@@ -1046,8 +1123,26 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-new-token", type=int, default=1)
     parser.add_argument("--dependency-gate", action="store_true")
+    parser.add_argument("--validate-approval", action="store_true")
+    parser.add_argument("--approval-evidence", type=Path)
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        if any(value is not None for value in (args.snapshot, args.source, args.server_tree, args.output, args.approval_evidence, args.approval_sha256, args.expected_head)) or args.dependency_gate or args.validate_approval:
+            parser.error("--self-test accepts no other arguments")
+        self_test()
+        return 0
+    if args.validate_approval:
+        if any(value is not None for value in (args.snapshot, args.source, args.server_tree, args.output)) or args.approval_evidence is None or args.approval_sha256 is None or args.expected_head is None:
+            parser.error("--validate-approval requires only approval evidence, approval SHA, and expected HEAD")
+        try:
+            validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256)
+        except RuntimeError as error:
+            parser.error(str(error))
+        print("ChatTTS approval evidence validation: OK")
+        return 0
     if args.dependency_gate:
         try:
             validate_dependency_gate()
@@ -1060,11 +1155,12 @@ def main() -> int:
             f"lock_rows={REFERENCE_LOCK_PACKAGE_ROWS_SHA256} license_audit={REFERENCE_LICENSE_AUDIT_SHA256}"
         )
         return 0
-    if args.self_test:
-        self_test()
-        return 0
-    if not all((args.snapshot, args.source, args.server_tree, args.output)):
-        parser.error("reference requires --snapshot --source --server-tree --output")
+    if not all((args.snapshot, args.source, args.server_tree, args.output, args.approval_evidence, args.approval_sha256, args.expected_head)):
+        parser.error("reference requires --snapshot --source --server-tree --output and approval binding")
+    try:
+        validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256)
+    except RuntimeError as error:
+        parser.error(str(error))
     request = {"text": args.text, "seed": args.seed, "max_new_token": args.max_new_token, "temperature": 0.3, "top_p": 0.7, "top_k": 20, "repetition_penalty": 1.05}
     if args.output.exists():
         if not args.output.is_dir() or any(args.output.iterdir()):
@@ -1073,9 +1169,9 @@ def main() -> int:
         args.output.mkdir(parents=True)
     try:
         evidence = run_official(args.snapshot, args.source, args.server_tree, validate_request(request), args.output)
-        write_blocked(args.output, "AUTHENTICATED_REFERENCE_EVIDENCE", evidence=evidence)
+        write_blocked(args.output, "AUTHENTICATED_REFERENCE_EVIDENCE", evidence=evidence, expected_head=args.expected_head, approval_sha256=args.approval_sha256)
     except Exception as error:
-        write_blocked(args.output, "INSPECTION_ERROR", f"{type(error).__name__}: {error}")
+        write_blocked(args.output, "INSPECTION_ERROR", f"{type(error).__name__}: {error}", expected_head=args.expected_head, approval_sha256=args.approval_sha256)
         print(f"ChatTTS reference blocked: {error}", file=sys.stderr)
     return 2
 
