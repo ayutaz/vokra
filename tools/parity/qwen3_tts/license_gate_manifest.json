@@ -4,8 +4,8 @@
   "lock_sha256": "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58",
   "package_rows_sha256": "7fd6513b0c8c110b46bd61bd01c93cfc33486cde603740b31c42e60c1114c8bb",
   "review_rows_sha256": "3d6f3eab632282e9035c6970407fd06311872698f4cd377d0224abbec9d76f08",
-  "component_rows_sha256": "ef3fa6664f48467390cd26468fc45987e0b733b0aba5f1250714a1b6d94c8ec7",
-  "approval_scope_sha256": "b01fbc631cc48370ad2b1d5f3b2aa69cda2d6436ae72d07a2ba4e96e0a1e2526",
+  "component_rows_sha256": "23ccc322392a0a0f05fb0e264462e3f3689c114012c5e20b912396a1ca99aa68",
+  "approval_scope_sha256": "46662c9a1a1135c37a4dc00583c1a637f72aa745ca10f2172a38f77df9d1b1da",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -971,7 +971,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "24b85c14c9fd102f0fef2dcba7d2ef8ffcc4b84bebb6395d28995c643af71285",
+      "payload_sha256": "636e298b4cfa96ece1ac35d8186f2521a2560ac3860384d0bdbbadb2d237aeff",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -989,7 +989,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "48d088a3510048d1a9068b78a77989343323581d144384294e911fac488a44df",
+      "payload_sha256": "50c35d364e0e9f2503e42a635bd6b8f45d2b791cc8cf594f9d00aaef6e415a03",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1007,7 +1007,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "f5aa2ea1a1da171e8c09322d1eecf6ba2bf9d049d0b11c264e34cfbc3ec2aa35",
+      "payload_sha256": "4210d9943f08001a9ac5f9dff80025e78cea0a149b62b1c4785307c574b4dc95",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1025,7 +1025,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "018ccae9b66594c27aa660180db0991e6c311796df6cfedebd9a9dbd90cfdc00",
+      "payload_sha256": "eead1bd31bd89f927e64961f48d8d777d4b16da8295527c4766c902ed0e89559",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1043,7 +1043,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "281741110f63a05412cd0cf0c8d4190e5ddf529fb5f2e680b807970e2f3265a1",
+      "payload_sha256": "5fcc538b425546552df46415a4d0c6bbd86a6d14351facd9eab14656321ed4ba",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1063,6 +1063,6 @@
     "sha256": "ea971561acec9f98626f20f5f078bb75fd102986895a5415d9dc59f424175c88",
     "full_audit_sha256": "a6e519c863f70967e51c343abed6ced5bb197f503e6d54141dc87386b44e0459",
     "status": "STALE_REQUIRES_VAST_AUDIT",
-    "stale_reason": "torchaudio CPU-index/version migration invalidated installed-payload and native evidence; rerun the authorized Linux x86_64 VAST audit before approval"
+    "stale_reason": "component fact payload rows were restamped from the recovered compact audit; rerun the authorized exact-head Linux x86_64 VAST audit to bind fresh compact evidence"
   }
 }
