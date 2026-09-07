@@ -1,0 +1,44 @@
+# CLAP HTSAT-fused reference contract
+
+This directory is a VAST-only, reference-side lock for
+`laion/clap-htsat-fused` at revision
+`365dea6ef167def6676140ed93bbc43f84dabb28`. It does not contain weights and
+does not enable the native CLAP binder. The source/model license remains
+`OWNER_REVIEW_PENDING`; the reported HF `apache-2.0` metadata is evidence, not
+an owner approval. No upload is permitted.
+
+The pinned environment is Python 3.12 on Linux x86_64 with CPU-only Torch
+(`torch==2.7.1` from the explicit PyTorch CPU index) and
+`transformers==5.10.4`. The lock is a dependency record only; it is not a
+permission to synchronize or acquire a checkpoint locally.
+The locked Transformers wheel is SHA-256
+`8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e`.
+
+The official processor must authenticate this exact HTSAT audio contract on
+the disposable VAST host: 48 kHz, 10 seconds/480,000 samples, 1024 FFT and
+window, 480 hop, 513 frequency bins, 64 feature size, 1,000 frames,
+50–14,000 Hz, right-side `repeatpad`, and `truncation="fusion"` with no
+attention mask. The inspector records the complete returned feature-extractor
+contract and fails closed on drift; it does not reimplement the mel path.
+
+The state-dict inspector assigns every official tensor to the observed
+`audio_tower`, `text_tower`, `audio_projection`, or `text_projection` role
+(plus exactly `logit_scale_a` and `logit_scale_t` contrastive scalar entries),
+and records exact shape/dtype/name rows.
+Unknown names or a missing required role fail closed. This is an authenticated
+inspection artifact, not a runtime implementation or a numerical parity
+result. A VAST run must use:
+
+```sh
+UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
+  uv run --no-sync --project tools/parity/clap \
+  python tools/parity/clap_dump_reference.py --self-test
+UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
+  uv run --no-sync --project tools/parity/clap \
+  python tools/parity/clap/license_gate.py --self-test
+```
+
+Only after owner approval and a clean disposable VAST checkout may the normal
+reference command be run with a pinned local snapshot and an output directory.
+The resulting metadata remains `INSPECTION_ONLY` until independent review and
+real CPU/Metal parity are completed.

@@ -1,0 +1,35 @@
+[project]
+name = "vokra-clap-reference"
+version = "0.1.0"
+description = "VAST-only official CLAP HTSAT reference inspector"
+requires-python = "==3.12.*"
+dependencies = [
+    "numpy==2.3.5",
+    "torch==2.7.1",
+    "transformers==5.10.4",
+]
+
+[tool.uv]
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.vokra.clap_reference]
+source_repository = "https://huggingface.co/laion/clap-htsat-fused"
+source_revision = "365dea6ef167def6676140ed93bbc43f84dabb28"
+reference_entrypoint = "tools/parity/clap_dump_reference.py"
+isolated_transformers_pin = "5.10.4"
+transformers_wheel_sha256 = "8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"
+license_status = "OWNER_REVIEW_PENDING"
+license_evidence = "HF cardData reports apache-2.0 at the pinned revision; no owner approval is inferred here."
+dependency_audit_status = "PENDING_VAST_AUDIT"
+publication = "NO_UPLOAD"

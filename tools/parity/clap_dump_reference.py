@@ -24,7 +24,50 @@ from typing import Any
 REPOSITORY = "laion/clap-htsat-fused"
 REVISION = "365dea6ef167def6676140ed93bbc43f84dabb28"
 SAMPLE_RATE = 48_000
-DUMPER_VERSION = 1
+PCM_SECONDS = 10
+PCM_SAMPLES = SAMPLE_RATE * PCM_SECONDS
+DUMPER_VERSION = 2
+
+# These are the released preprocessor axes at ``REVISION``.  They are the
+# contract we authenticate from the official processor on VAST; they are not
+# a clean-room reconstruction of its mel implementation.
+PREPROCESSOR_CONTRACT = {
+    "chunk_length_s": 10,
+    "feature_extractor_type": "ClapFeatureExtractor",
+    "feature_size": 64,
+    "fft_window_size": 1024,
+    "frequency_max": 14000,
+    "frequency_min": 50,
+    "hop_length": 480,
+    "max_length_s": 10,
+    "n_fft": 1024,
+    "nb_frequency_bins": 513,
+    "nb_max_frames": 1000,
+    "nb_max_samples": 480000,
+    "padding": "repeatpad",
+    "padding_side": "right",
+    "padding_value": 0.0,
+    "processor_class": "ClapProcessor",
+    "return_attention_mask": False,
+    "sampling_rate": 48000,
+    "top_db": None,
+    "truncation": "fusion",
+}
+
+# Transformers' released ClapModel has explicit audio/text towers and two
+# projection modules.  The inspector records every observed shape/dtype but
+# never supplies expected dimensions from this table.  Unknown names fail
+# closed so a future upstream rename cannot silently enter a native binder.
+ROLE_PREFIXES = {
+    "audio_tower": ("audio_model.",),
+    "text_tower": ("text_model.",),
+    "audio_projection": ("audio_projection.",),
+    "text_projection": ("text_projection.",),
+}
+# These names are the two independent contrastive temperatures in the pinned
+# Transformers 5.10.4 CLAP implementation. Treating an old/sibling scalar
+# name as equivalent would hide a source or checkpoint topology drift.
+SCALAR_ROLES = {"logit_scale_a", "logit_scale_t"}
 
 
 def sha256_file(path: Path) -> str:
@@ -45,10 +88,64 @@ def source_hash() -> tuple[str, str]:
     return str(path), sha256_file(path)
 
 
+def validate_preprocessor_contract(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError("official CLAP feature extractor config is not a dict")
+    missing = sorted(set(PREPROCESSOR_CONTRACT) - set(value))
+    mismatched = {
+        key: {"expected": expected, "actual": value.get(key)}
+        for key, expected in PREPROCESSOR_CONTRACT.items()
+        if value.get(key) != expected
+    }
+    if missing or mismatched:
+        raise RuntimeError(
+            f"official CLAP preprocessing contract drifted: missing={missing}, mismatched={mismatched}"
+        )
+    return {key: value[key] for key in sorted(PREPROCESSOR_CONTRACT)}
+
+
+def state_dict_role(name: str) -> str | None:
+    if name in SCALAR_ROLES:
+        return "contrastive_scalar"
+    for role, prefixes in ROLE_PREFIXES.items():
+        if name.startswith(prefixes):
+            return role
+    return None
+
+
+def build_state_dict_manifest(state_dict: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
+    tensor_manifest: dict[str, dict[str, Any]] = {}
+    roles: dict[str, list[str]] = {
+        **{role: [] for role in ROLE_PREFIXES},
+        "contrastive_scalar": [],
+    }
+    unknown: list[str] = []
+    for name, tensor in sorted(state_dict.items()):
+        role = state_dict_role(name)
+        if role is None:
+            unknown.append(name)
+            continue
+        roles[role].append(name)
+        tensor_manifest[name] = {
+            "role": role,
+            "shape": list(tensor.shape),
+            "dtype": str(tensor.dtype),
+        }
+    required = [role for role in ROLE_PREFIXES if not roles[role]]
+    missing_scalars = sorted(SCALAR_ROLES - set(roles["contrastive_scalar"]))
+    if unknown or required or missing_scalars:
+        raise RuntimeError(
+            "official CLAP state-dict role contract is incomplete: "
+            f"unknown={unknown[:8]}, missing_roles={required}, "
+            f"missing_scalars={missing_scalars}"
+        )
+    return tensor_manifest, roles
+
+
 def deterministic_pcm() -> Any:
     import numpy as np
 
-    samples = SAMPLE_RATE
+    samples = PCM_SAMPLES
     time = np.arange(samples, dtype=np.float64) / SAMPLE_RATE
     signal = (
         0.31 * np.sin(2.0 * np.pi * 220.0 * time)
@@ -63,6 +160,69 @@ def self_test() -> None:
 
     assert REPOSITORY == "laion/clap-htsat-fused"
     assert len(REVISION) == 40 and all(c in "0123456789abcdef" for c in REVISION)
+    assert validate_preprocessor_contract(dict(PREPROCESSOR_CONTRACT)) == {
+        key: PREPROCESSOR_CONTRACT[key] for key in sorted(PREPROCESSOR_CONTRACT)
+    }
+    for key, value in PREPROCESSOR_CONTRACT.items():
+        tampered = dict(PREPROCESSOR_CONTRACT)
+        tampered[key] = "tampered" if isinstance(value, str) else -1
+        try:
+            validate_preprocessor_contract(tampered)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"preprocessor tamper accepted: {key}")
+    class SyntheticTensor:
+        shape = (1,)
+        dtype = "float32"
+
+    synthetic_state = {
+        "audio_model.audio_encoder.weight": SyntheticTensor(),
+        "text_model.embeddings.weight": SyntheticTensor(),
+        "audio_projection.linear1.weight": SyntheticTensor(),
+        "text_projection.linear1.weight": SyntheticTensor(),
+        "logit_scale_a": SyntheticTensor(),
+        "logit_scale_t": SyntheticTensor(),
+    }
+    manifest, roles = build_state_dict_manifest(synthetic_state)
+    assert set(roles) == set(ROLE_PREFIXES) | {"contrastive_scalar"}
+    assert manifest["audio_model.audio_encoder.weight"]["role"] == "audio_tower"
+    try:
+        build_state_dict_manifest(
+            {**synthetic_state, "unexpected.weight": SyntheticTensor()}
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("unknown state-dict role accepted")
+    try:
+        build_state_dict_manifest(
+            {**synthetic_state, "logit_scale": SyntheticTensor()}
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("unexpected contrastive scalar accepted")
+    incomplete_scalar_state = dict(synthetic_state)
+    del incomplete_scalar_state["logit_scale_t"]
+    try:
+        build_state_dict_manifest(incomplete_scalar_state)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("missing contrastive scalar accepted")
+    try:
+        build_state_dict_manifest(
+            {
+                "audio_model.audio_encoder.weight": SyntheticTensor(),
+                "logit_scale_a": SyntheticTensor(),
+                "logit_scale_t": SyntheticTensor(),
+            }
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("incomplete state-dict role manifest accepted")
     # Keep this contract check dependency-free: the real NumPy/Torch path is
     # intentionally imported only by ``dump`` on the VAST reference host.
     pcm = [
@@ -98,10 +258,11 @@ def dump(model_dir: str | None, output_dir: Path) -> None:
         )
 
     state_dict = model.state_dict()
-    tensor_manifest = {
-        name: {"shape": list(tensor.shape), "dtype": str(tensor.dtype)}
-        for name, tensor in sorted(state_dict.items())
-    }
+    feature_extractor = getattr(processor, "feature_extractor", None)
+    if feature_extractor is None or not hasattr(feature_extractor, "to_dict"):
+        raise RuntimeError("official CLAP processor has no inspectable feature extractor")
+    preprocessing = validate_preprocessor_contract(feature_extractor.to_dict())
+    tensor_manifest, state_dict_roles = build_state_dict_manifest(state_dict)
     pcm = deterministic_pcm()
     inputs = processor(audios=[pcm], sampling_rate=SAMPLE_RATE, return_tensors="pt")
     with torch.inference_mode():
@@ -118,6 +279,9 @@ def dump(model_dir: str | None, output_dir: Path) -> None:
         "revision": REVISION,
         "resolved_revision": resolved_revision,
         "sample_rate": SAMPLE_RATE,
+        "pcm_samples": PCM_SAMPLES,
+        "preprocessing": preprocessing,
+        "state_dict_roles": state_dict_roles,
         "dumper_version": DUMPER_VERSION,
         "transformers_version": transformers.__version__,
         "torch_version": torch.__version__,
