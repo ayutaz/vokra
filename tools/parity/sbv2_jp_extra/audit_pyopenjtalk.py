@@ -70,6 +70,7 @@ BUILD_CONSTRAINTS = {
 }
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+MIT_CLASSIFIER = "License :: OSI Approved :: MIT License"
 
 
 class AuditError(RuntimeError):
@@ -342,6 +343,13 @@ def _verify_record(dist: importlib.metadata.Distribution, label: str) -> list[st
     return files
 
 
+def _require_mit_classifier(metadata: Any, label: str) -> None:
+    """Require the authenticated classifier; wheel metadata may omit License."""
+    classifiers = set(metadata.get_all("Classifier", []))
+    if MIT_CLASSIFIER not in classifiers:
+        raise AuditError(f"{label} does not declare the authenticated MIT classifier")
+
+
 def verify_installed_metadata() -> None:
     try:
         pyopenjtalk = importlib.metadata.distribution("pyopenjtalk")
@@ -358,13 +366,9 @@ def verify_installed_metadata() -> None:
         except importlib.metadata.PackageNotFoundError:
             continue
         raise AuditError(f"forbidden GPL/LGPL distribution is installed: {name}")
-    for dist, label, marker in ((pyopenjtalk, "pyopenjtalk", "MIT"), (loguru, "loguru", "MIT")):
+    for dist, label in ((pyopenjtalk, "pyopenjtalk"), (loguru, "loguru")):
         metadata = dist.metadata
-        classifiers = set(metadata.get_all("Classifier", []))
-        if "License :: OSI Approved :: MIT License" not in classifiers:
-            raise AuditError(f"{label} does not declare the authenticated MIT classifier")
-        if marker not in (metadata.get("License") or "").upper() and label == "loguru":
-            raise AuditError(f"{label} metadata does not declare MIT")
+        _require_mit_classifier(metadata, label)
     files = _verify_record(pyopenjtalk, "pyopenjtalk")
     loguru_files = _verify_record(loguru, "loguru")
     loguru_licenses = [Path(name) for name in loguru_files if Path(name).name.upper().startswith(("LICENSE", "COPYING", "NOTICE"))]
@@ -430,6 +434,14 @@ def self_test() -> None:
         good = root / "good.txt"
         good.write_text("MIT License\nPermission is hereby granted", encoding="utf-8")
         assert "MIT" in _license_text(good, "self-test").upper()
+        loguru_metadata = SimpleNamespace(
+            get_all=lambda *_args: [MIT_CLASSIFIER],
+            get=lambda _key: None,
+        )
+        # loguru 0.7.3 omits the optional License field; the authenticated
+        # classifier plus the later RECORD/license-payload checks is enough.
+        _require_mit_classifier(loguru_metadata, "self-test loguru")
+        assert "MIT" in _license_text(good, "self-test loguru payload").upper()
         bad = root / "bad.txt"
         bad.write_text("GNU GPL", encoding="utf-8")
         try:
