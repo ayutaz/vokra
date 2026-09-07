@@ -74,6 +74,16 @@ approval. Its evidence explicitly says
 `publication=NO_UPLOAD`. The real-weight path remains approval-gated and
 cannot be authorized by model-free evidence.
 
+The same model-free worker emits `dependency-license-inventory.json`. It
+enumerates every non-virtual package in the single frozen Linux x86_64 uv
+resolution (`platform_machine == 'x86_64'` and `sys_platform == 'linux'`)
+with exact source and artifact hashes, then records installed METADATA license
+fields/classifiers, bundled LICENSE/COPYING/NOTICE bytes and hashes, and native
+payload files and hashes.
+Missing, multiple, or unknown entries remain explicit fail-closed findings;
+the dependency audit status stays `PENDING_VAST_AUDIT` and never becomes
+`COMPLETE` from this inventory alone.
+
 The raw release preprocessor JSON is validated against the complete
 `PREPROCESSOR_CONTRACT`. Transformers 5.10.4 does not serialize
 `processor_class` through `ClapFeatureExtractor.to_dict()`, so the serializer

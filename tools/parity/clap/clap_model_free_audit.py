@@ -32,6 +32,7 @@ TRANSFORMERS_WHEEL_SHA256 = (
     "8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"
 )
 SCHEMA = "vokra-clap-htsat-fused-model-free-audit-v1"
+EXPECTED_DEPENDENCY_AUDIT_STATUS = "PENDING_VAST_AUDIT"
 WEIGHT_SUFFIXES = {".bin", ".ckpt", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"}
 
 
@@ -94,6 +95,26 @@ def read_json(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{label} is not a JSON object: {path}")
     return value
+
+
+def validate_dependency_inventory(path: Path) -> dict[str, Any]:
+    inventory = read_json(path, "dependency license inventory")
+    if inventory.get("schema") != "vokra-clap-htsat-fused-dependency-license-inventory-v1":
+        raise RuntimeError("dependency license inventory schema drifted")
+    if inventory.get("status") not in {"BLOCKED", "PENDING_OWNER_REVIEW"}:
+        raise RuntimeError("dependency license inventory status is not fail-closed")
+    if inventory.get("dependency_audit_status") != EXPECTED_DEPENDENCY_AUDIT_STATUS:
+        raise RuntimeError(
+            "dependency license inventory status is not the expected "
+            f"{EXPECTED_DEPENDENCY_AUDIT_STATUS}"
+        )
+    return {
+        "path": path.name,
+        "sha256": sha256_file(path),
+        "status": inventory["status"],
+        "dependency_audit_status": inventory["dependency_audit_status"],
+        "findings": inventory.get("findings", []),
+    }
 
 
 def write_atomic_no_replace(path: Path, text: str) -> None:
@@ -288,6 +309,7 @@ def audit(
     config_path: Path,
     preprocessor_path: Path,
     remote_identity_path: Path,
+    dependency_inventory_path: Path | None = None,
 ) -> dict[str, Any]:
     if config_path.parent != preprocessor_path.parent:
         raise RuntimeError("config and preprocessor must come from one metadata snapshot")
@@ -319,6 +341,9 @@ def audit(
     preprocessing_serialized = validate_serializer(extractor.to_dict())
 
     dependencies = audit_dependencies(project_path, lock_path)
+    dependency_inventory: dict[str, Any] | None = None
+    if dependency_inventory_path is not None:
+        dependency_inventory = validate_dependency_inventory(dependency_inventory_path)
     observed_transformers = importlib.metadata.version("transformers")
     if observed_transformers != TRANSFORMERS_VERSION:
         raise RuntimeError(
@@ -366,6 +391,7 @@ def audit(
             "license_evidence_status": dependencies["license_evidence_status"],
             "dependency_audit_status": dependencies["dependency_audit_status"],
             "facts": dependencies,
+            "inventory": dependency_inventory,
         },
         "runtime": {
             "python": platform.python_version(),
@@ -399,6 +425,32 @@ def self_test() -> None:
         raise AssertionError("serializer preprocessing drift was accepted")
     with tempfile.TemporaryDirectory(prefix="vokra-clap-audit-") as temporary:
         root = Path(temporary)
+        inventory = root / "dependency-inventory.json"
+        inventory.write_text(
+            json.dumps(
+                {
+                    "schema": "vokra-clap-htsat-fused-dependency-license-inventory-v1",
+                    "status": "PENDING_OWNER_REVIEW",
+                    "dependency_audit_status": EXPECTED_DEPENDENCY_AUDIT_STATUS,
+                    "findings": [],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        assert validate_dependency_inventory(inventory)["dependency_audit_status"] == EXPECTED_DEPENDENCY_AUDIT_STATUS
+        inventory.write_text(
+            inventory.read_text(encoding="utf-8").replace(
+                EXPECTED_DEPENDENCY_AUDIT_STATUS, "PENDING_OWNER_REVIEW"
+            ),
+            encoding="utf-8",
+        )
+        try:
+            validate_dependency_inventory(inventory)
+        except RuntimeError as exc:
+            assert EXPECTED_DEPENDENCY_AUDIT_STATUS in str(exc)
+        else:
+            raise AssertionError("arbitrary dependency audit status was accepted")
         duplicate = root / "duplicate.json"
         duplicate.write_text('{"role": "audio", "role": "text"}\n', encoding="utf-8")
         try:
@@ -488,10 +540,11 @@ def main() -> int:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--preprocessor", type=Path)
     parser.add_argument("--remote-identity", type=Path)
+    parser.add_argument("--dependency-inventory", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.project, args.lock, args.config, args.preprocessor, args.remote_identity, args.output)):
+        if any(value is not None for value in (args.project, args.lock, args.config, args.preprocessor, args.remote_identity, args.dependency_inventory, args.output)):
             parser.error("--self-test accepts no audit paths")
         self_test()
         print("clap model-free audit self-test: OK")
@@ -507,6 +560,7 @@ def main() -> int:
         config_path=args.config,
         preprocessor_path=args.preprocessor,
         remote_identity_path=args.remote_identity,
+        dependency_inventory_path=args.dependency_inventory,
     )
     try:
         write_atomic_no_replace(

@@ -9,6 +9,7 @@ VOKRA_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/clap"
 REFERENCE_DUMPER="tools/parity/clap_dump_reference.py"
 MODEL_FREE_AUDIT="$PARITY_PROJECT/clap_model_free_audit.py"
+DEPENDENCY_LICENSE_AUDIT="$PARITY_PROJECT/clap_dependency_license_audit.py"
 UPSTREAM_REPO="laion/clap-htsat-fused"
 UPSTREAM_REVISION="365dea6ef167def6676140ed93bbc43f84dabb28"
 MIN_VAST_MEM_KIB=$((64 * 1024 * 1024))
@@ -155,12 +156,13 @@ require_model_free_tooling() {
   [[ -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" ]] || { die 'CLAP uv.lock is missing or symlinked'; return 2; }
   [[ -f "$PARITY_PROJECT/license_gate.py" && ! -L "$PARITY_PROJECT/license_gate.py" ]] || { die 'CLAP license gate is missing or symlinked'; return 2; }
   [[ -f "$MODEL_FREE_AUDIT" && ! -L "$MODEL_FREE_AUDIT" ]] || { die 'CLAP model-free audit is missing or symlinked'; return 2; }
+  [[ -f "$DEPENDENCY_LICENSE_AUDIT" && ! -L "$DEPENDENCY_LICENSE_AUDIT" ]] || { die 'CLAP dependency/license audit is missing or symlinked'; return 2; }
   [[ -f "$VOKRA_ROOT/$REFERENCE_DUMPER" && ! -L "$VOKRA_ROOT/$REFERENCE_DUMPER" ]] || { die 'CLAP reference dumper is missing or symlinked'; return 2; }
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
 }
 
 run_model_free() {
-  local expected="$1" work="$2" metadata_dir metadata_snapshot evidence
+  local expected="$1" work="$2" metadata_dir metadata_snapshot evidence dependency_inventory dependency_inventory_rc
   [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hex'; return 2; }
   require_model_free_tooling
   require_model_free_host
@@ -171,6 +173,7 @@ run_model_free() {
   work="$(cd "$work" && pwd)"
   metadata_dir="$work/metadata"
   evidence="$work/model-free-audit.json"
+  dependency_inventory="$work/dependency-license-inventory.json"
 
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
     "$PARITY_PROJECT/license_gate.py" --self-test >/dev/null || die 'CLAP license/reference gate self-test failed'
@@ -341,6 +344,19 @@ PY
   [[ -d "$metadata_snapshot" && ! -L "$metadata_snapshot" ]] || die 'materialized CLAP metadata directory is missing'
   [[ -f "$metadata_dir/remote-identity.json" && ! -L "$metadata_dir/remote-identity.json" ]] || die 'remote identity evidence is missing'
 
+  set +e
+  UV_CACHE_DIR="$CLAP_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python \
+    "$DEPENDENCY_LICENSE_AUDIT" \
+    --project "$PARITY_PROJECT/pyproject.toml" \
+    --lock "$PARITY_PROJECT/uv.lock" \
+    --output "$dependency_inventory"
+  dependency_inventory_rc=$?
+  set -e
+  [[ -f "$dependency_inventory" && ! -L "$dependency_inventory" ]] || die 'dependency/license inventory was not emitted'
+  if [[ "$dependency_inventory_rc" != 0 ]]; then
+    log "dependency/license inventory remains fail-closed (exit=$dependency_inventory_rc); retaining packet for owner review"
+  fi
+
   UV_CACHE_DIR="$CLAP_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python \
     "$MODEL_FREE_AUDIT" \
     --project "$PARITY_PROJECT/pyproject.toml" \
@@ -348,12 +364,15 @@ PY
     --config "$metadata_snapshot/config.json" \
     --preprocessor "$metadata_snapshot/preprocessor_config.json" \
     --remote-identity "$metadata_dir/remote-identity.json" \
+    --dependency-inventory "$dependency_inventory" \
     --output "$evidence" || die 'CLAP model-free audit failed'
   printf '%s\n' \
     'schema=vokra-clap-htsat-fused-model-free-summary-v1' \
     'status=PASS_MODEL_FREE' \
     "expected_head=$expected" \
     "evidence_sha256=$(sha256_file "$evidence")" \
+    "dependency_inventory_sha256=$(sha256_file "$dependency_inventory")" \
+    'dependency_audit_status=PENDING_VAST_AUDIT' \
     'weights=NOT_ACQUIRED' \
     'model_load=NOT_PERFORMED' \
     'publication=NO_UPLOAD' \
@@ -369,11 +388,11 @@ self_test() {
     '/proc/meminfo' 'df -Pk' 'CARGO_BUILD_JOBS=1' 'cargo fmt --all -- --check' \
     'cargo metadata --no-deps --format-version 1' 'snapshot_download' \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$REFERENCE_DUMPER" \
-    'tools/parity/clap' 'MODEL_FREE_AUDIT=' '--model-free' 'config.json' \
+    'tools/parity/clap' 'MODEL_FREE_AUDIT=' 'DEPENDENCY_LICENSE_AUDIT=' '--model-free' 'config.json' \
     'preprocessor_config.json' 'remote-identity.json' 'materialized' \
     'HfApi' 'list_repo_tree' 'resolved_revision' 'card_data_source' \
-    'card_data_license_status' 'repo_license_file_status' '--remote-identity' \
-    'remote_files' 'local_git_blob_sha1' 'remote_lfs_sha256' 'weights=NOT_ACQUIRED' \
+    'card_data_license_status' 'repo_license_file_status' '--remote-identity' '--dependency-inventory' \
+    'remote_files' 'local_git_blob_sha1' 'remote_lfs_sha256' 'dependency_audit_status=PENDING_VAST_AUDIT' 'weights=NOT_ACQUIRED' \
     'transformers_clap_model_source_sha256' 'tensor_manifest' \
     'validate_feature_extractor_serializer_contract' 'processor_class' \
     'INSPECTION_ONLY' 'no upload' 'VOKRA_CLAP_REAL_GGUF' 'GGUFReader' \
@@ -468,6 +487,11 @@ self_test() {
   if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
     "$MODEL_FREE_AUDIT" --self-test >/dev/null; then
     log 'self-test FAIL: model-free audit self-test failed'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$DEPENDENCY_LICENSE_AUDIT" --self-test >/dev/null; then
+    log 'self-test FAIL: dependency/license audit self-test failed'
     fail=1
   fi
   (( fail == 0 )) || return 1
