@@ -2,7 +2,7 @@
 """Inspect the pinned MOSS Audio Tokenizer Nano source contract.
 
 This is an evidence collector, not a model validator. It materializes only
-the six non-weight files selected by the fixed Hugging Face revision. The
+the seven non-weight files selected by the fixed Hugging Face revision. The
 weight shard is authenticated from the expanded HF server tree/LFS identity
 but is never downloaded. The Transformers probe loads the official custom
 code through ``AutoConfig.from_pretrained`` and constructs the model under
@@ -32,8 +32,9 @@ REPOSITORY = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 TRANSFORMERS_VERSION = "5.10.4"
 PAYLOAD_FILES = (
-    "LICENSE",
+    ".gitattributes",
     "README.md",
+    "__init__.py",
     "config.json",
     "configuration_moss_audio_tokenizer.py",
     "modeling_moss_audio_tokenizer.py",
@@ -57,6 +58,14 @@ EXPECTED_QUANTIZER = {
     "codebook_dim": 8,
     "rvq_dim": 512,
     "output_dim": 768,
+}
+EXPECTED_MODEL_INFO = {
+    "id": REPOSITORY,
+    "sha": REVISION,
+    "private": False,
+    "gated": False,
+    "disabled": False,
+    "cardData_license": "apache-2.0",
 }
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -119,6 +128,17 @@ def safe_relative_path(path: object) -> str:
     if path.startswith("/") or ".." in Path(path).parts:
         raise InspectionError(f"unsafe upstream path: {path!r}")
     return path
+
+
+def validate_model_info(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != set(EXPECTED_MODEL_INFO):
+        raise InspectionError("HF model_info identity schema is not exact")
+    for key, expected in EXPECTED_MODEL_INFO.items():
+        if value.get(key) != expected:
+            raise InspectionError(
+                f"HF model_info.{key}={value.get(key)!r}, expected {expected!r}"
+            )
+    return dict(value)
 
 
 def file_row(path: Path, server_row: dict[str, Any] | None) -> dict[str, Any]:
@@ -471,6 +491,7 @@ def blocked_manifest(
     repository: str,
     revision: str,
     resolved_revision: str | None,
+    model_info: dict[str, Any] | None,
     files: list[dict[str, Any]] | None,
     config: dict[str, Any] | None,
     index: dict[str, Any] | None,
@@ -495,6 +516,7 @@ def blocked_manifest(
             "repository": repository,
             "requested_revision": revision,
             "resolved_revision": resolved_revision,
+            "model_info": model_info,
         },
         "files": files,
         "config_contract": config,
@@ -503,6 +525,10 @@ def blocked_manifest(
         "license": {
             "status": "OWNER_SIGNOFF_REQUIRED",
             "source_and_weight_review": "PENDING_REVIEW",
+            "license_file_present": False,
+            "hf_cardData_license": (
+                model_info.get("cardData_license") if model_info is not None else None
+            ),
         },
         "reference_contract": {
             "frames": 2,
@@ -518,6 +544,16 @@ def blocked_manifest(
 
 def self_test() -> None:
     assert safe_relative_path("config.json") == "config.json"
+    assert "LICENSE" not in MATERIALIZED_FILES
+    assert ".gitattributes" in MATERIALIZED_FILES
+    assert "__init__.py" in MATERIALIZED_FILES
+    assert validate_model_info(EXPECTED_MODEL_INFO) == EXPECTED_MODEL_INFO
+    try:
+        validate_model_info({**EXPECTED_MODEL_INFO, "gated": True})
+    except InspectionError:
+        pass
+    else:
+        raise AssertionError("tampered HF model_info was accepted")
     for bad in ("", "/config.json", "../config.json", "a\\b", "a\x00b"):
         try:
             safe_relative_path(bad)
@@ -628,6 +664,7 @@ def main() -> int:
         "weights_executed": False,
     }
     resolved_revision: str | None = None
+    model_info: dict[str, Any] | None = None
     files: list[dict[str, Any]] | None = None
     config: dict[str, Any] | None = None
     index: dict[str, Any] | None = None
@@ -637,6 +674,7 @@ def main() -> int:
         if not isinstance(tree, dict) or tree.get("repository") != REPOSITORY or tree.get("revision") != REVISION:
             raise InspectionError("server-tree identity is not the fixed Nano revision")
         resolved_revision = tree.get("resolved_revision")
+        model_info = validate_model_info(tree.get("model_info"))
         raw_rows = tree.get("files")
         if not isinstance(raw_rows, list):
             raise InspectionError("server-tree files is not a list")
@@ -658,6 +696,7 @@ def main() -> int:
         repository=REPOSITORY,
         revision=REVISION,
         resolved_revision=resolved_revision,
+        model_info=model_info,
         files=files,
         config=config,
         index=index,

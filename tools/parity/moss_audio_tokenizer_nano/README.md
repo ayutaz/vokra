@@ -12,13 +12,16 @@ Every non-virtual lock row carries
 resolver URL, SHA-256, and positive artifact-size metadata. No package sync is
 performed by the local gate.
 
-The exact upstream payload contract is seven files: `LICENSE`, `README.md`,
+The exact upstream payload contract at the fixed revision is eight files: the
+seven non-weight files `.gitattributes`, `README.md`, `__init__.py`,
 `config.json`, `configuration_moss_audio_tokenizer.py`,
-`modeling_moss_audio_tokenizer.py`, `model.safetensors.index.json`, and
-`model-00001-of-00001.safetensors`. This checkout does not contain authenticated
-byte/SHA-256 evidence for those files at the fixed revision. The manifest
-therefore records those identities as unresolved and the dependency/reference
-route as unresolved. Transformers 5.10.4 is above the GHSA-xrqw-3rrv-vx5w
+`modeling_moss_audio_tokenizer.py`, and `model.safetensors.index.json`, plus
+`model-00001-of-00001.safetensors`. There is no `LICENSE` file in that
+complete tree. The authenticated HF model card reports `cardData.license` as
+`apache-2.0`; this is recorded as metadata only and is not a license-file or
+owner approval claim. This checkout does not contain authenticated byte/SHA-256
+evidence for the fixed tree. The manifest therefore records those identities
+as unresolved and the dependency/reference route as unresolved. Transformers 5.10.4 is above the GHSA-xrqw-3rrv-vx5w
 patched minimum of 5.10.0, but no authenticated API smoke has been run. The
 decoder tap count/shapes and quantizer output shape
 are also explicitly unresolved contract fields; they are not wildcards.
@@ -44,10 +47,10 @@ scripts/publish/vast-ai/run-moss-audio-tokenizer-nano-inspection.sh \
   --expected-head <40-hex-commit>
 ```
 
-The inspection materializes only the six non-weight files on VAST. It does not
+The inspection materializes only the seven non-weight files on VAST. It does not
 download the model shard: that shard is authenticated solely from the expanded
 HF server-tree Git/LFS identity and the checkpoint index reference. The report
-records materialized SHA-256 and canonical Git-blob SHA-1 values for the six
+records materialized SHA-256 and canonical Git-blob SHA-1 values for the seven
 files and server size/LFS identity for the shard, then checks the official
 `AutoConfig.from_pretrained`
 plus meta-device

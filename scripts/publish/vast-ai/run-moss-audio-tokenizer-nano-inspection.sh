@@ -45,7 +45,8 @@ self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token
   [[ -f "$INSPECTOR" ]] || { log 'self-test FAIL: inspector missing'; fail=1; }
   for token in "$HF_REPOSITORY" "$HF_REVISION" 'source_contract_inspector.py' \
-    'model-00001-of-00001.safetensors' \
+    '.gitattributes' '__init__.py' 'model-00001-of-00001.safetensors' \
+    'cardData_license' 'private' 'gated' 'disabled' \
     'snapshot_download' 'list_repo_tree' 'lfs_payload_sha256' \
     'AutoConfig.from_pretrained' 'AutoModel.from_config' 'init_empty_weights' \
     'AUTHENTICATED_META_SHAPE_PROBE' 'AUTHENTICATED_EVIDENCE_COMPLETE' \
@@ -69,6 +70,9 @@ self_test() {
   fi
   if awk '!/grep -Eq.*allow_patterns/ && /allow_patterns=[^#]*model-00001-of-00001\.safetensors/' "$script" | grep -q .; then
     log 'self-test FAIL: weight shard appears in snapshot allow-patterns'; fail=1
+  fi
+  if sed -n '/^selected = {/,/^}/p' "$script" | grep -Fq '"LICENSE"'; then
+    log 'self-test FAIL: nonexistent LICENSE appears in fixed server tree'; fail=1
   fi
   if ! grep -Fq 'weight payload was materialized' "$INSPECTOR" || ! grep -Fq 'content_not_downloaded' "$INSPECTOR"; then
     log 'self-test FAIL: snapshot validator does not enforce server-only weight identity'; fail=1
@@ -177,7 +181,7 @@ from huggingface_hub import HfApi, snapshot_download
 
 repo, revision, destination, tree_path = sys.argv[1:]
 selected = {
-    "LICENSE", "README.md", "config.json",
+    ".gitattributes", "README.md", "__init__.py", "config.json",
     "configuration_moss_audio_tokenizer.py",
     "modeling_moss_audio_tokenizer.py",
     "model.safetensors.index.json",
@@ -188,6 +192,23 @@ api = HfApi(token=os.environ.get("HF_TOKEN") or os.environ.get("HF"))
 info = api.model_info(repo_id=repo, revision=revision)
 if info.sha != revision or not re.fullmatch(r"[0-9a-f]{40}", info.sha or ""):
     raise SystemExit(f"HF revision mismatch: {info.sha!r} != {revision!r}")
+card_data = getattr(info, "cardData", None)
+if card_data is None:
+    card_data = getattr(info, "card_data", None)
+card_license = card_data.get("license") if isinstance(card_data, dict) else getattr(card_data, "license", None)
+model_info = {
+    "id": getattr(info, "id", None),
+    "sha": info.sha,
+    "private": getattr(info, "private", None),
+    "gated": getattr(info, "gated", None),
+    "disabled": getattr(info, "disabled", None),
+    "cardData_license": card_license,
+}
+if model_info != {
+    "id": repo, "sha": revision, "private": False, "gated": False,
+    "disabled": False, "cardData_license": "apache-2.0",
+}:
+    raise SystemExit(f"HF model_info contract mismatch: {model_info!r}")
 rows = {}
 for item in api.list_repo_tree(repo_id=repo, revision=revision, recursive=True, expand=True):
     kind = getattr(item, "type", None)
@@ -235,6 +256,7 @@ Path(tree_path).write_text(json.dumps({
     "repository": repo,
     "revision": revision,
     "resolved_revision": info.sha,
+    "model_info": model_info,
     "files": [rows[name] for name in sorted(rows)],
 }, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 PY
@@ -278,14 +300,16 @@ for key, expected in required.items():
     if manifest.get(key) != expected:
         raise SystemExit(f"inspection did not complete the source contract: {key}={manifest.get(key)!r}")
 files = manifest.get("files")
-if not isinstance(files, list) or len(files) != 7:
+if not isinstance(files, list) or len(files) != 8:
     raise SystemExit("inspection file identities are incomplete")
 materialized = [row for row in files if row.get("materialized") is True]
 server_only = [row for row in files if row.get("materialized") is False]
-if len(materialized) != 6 or any(row.get("status") != "AUTHENTICATED" for row in materialized):
+if len(materialized) != 7 or any(row.get("status") != "AUTHENTICATED" for row in materialized):
     raise SystemExit("materialized source identities are incomplete")
 if len(server_only) != 1 or server_only[0].get("path") != "model-00001-of-00001.safetensors" or server_only[0].get("status") != "AUTHENTICATED_SERVER_IDENTITY_ONLY" or server_only[0].get("content_not_downloaded") is not True or not server_only[0].get("lfs_payload_sha256"):
     raise SystemExit("server-only weight identity is incomplete")
+if manifest.get("license") != {"status": "OWNER_SIGNOFF_REQUIRED", "source_and_weight_review": "PENDING_REVIEW", "license_file_present": False, "hf_cardData_license": "apache-2.0"}:
+    raise SystemExit("license-file absence/cardData license facts are not bound")
 route = manifest.get("transformers_route")
 if not isinstance(route, dict) or route.get("status") != "AUTHENTICATED_META_SHAPE_PROBE" or route.get("weights_loaded") is not False or route.get("weights_executed") is not False:
     raise SystemExit("inspection did not authenticate the model-free Transformers route")
