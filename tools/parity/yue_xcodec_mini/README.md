@@ -43,3 +43,22 @@ Apple validation requires explicit GGUF/reference hashes, an exact regular
 reference set, Darwin arm64/Metal, and separate strict CPU/Metal evidence.
 Numeric results remain MEASURED_NOT_GATED with bounds unset. Do not run
 model acquisition, sync, Cargo, VAST, Apple, conversion, or upload locally.
+
+## Model-free dependency evidence
+
+The 45 lock rows (44 registry distributions plus the virtual project row) are
+audited on Linux x86_64 VAST with:
+
+```bash
+VOKRA_PUBLISH_ON_VAST=1 \
+  scripts/publish/vast-ai/audit-yue-xcodec-mini-dependencies.sh \
+  --output /absolute/path/audit.json \
+  --expected-head <40-lowercase-hex>
+```
+
+The worker synchronizes only the frozen Python closure, then records exact
+locked artifact metadata, installed publisher license metadata and files, and
+native payload size/SHA-256/ELF-NEEDED facts. It never downloads, imports, or
+executes a model or checkpoint. The report is expected to exit 2 with
+`BLOCKED_OWNER_REVIEW` while the manifest rows and all six component reviews
+remain pending; `NO_UPLOAD` is a permanent boundary for this audit.
