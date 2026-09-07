@@ -151,7 +151,7 @@ self_test() {
     'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' 'unlock_requirements' 'vast_first_pass' 'expected_artifacts' \
     'pinned-source frontend' 'SentencePiece/TokenDict' 'transformer_decoder.py' 'batch_beam_search' 'softmax_smoothing' 'length_penalty' 'eos_penalty' 'PREPARED' 'archive_members' \
     'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
-    'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' 'firered-asr-aed-l-reference-trace-v1' 'encoder_each_layer' 'decoder_each_layer' 'frontend_fbank_cmvn' \
+    'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' 'firered-asr-aed-l-reference-trace-v1' 'encoder_each_layer' 'decoder_each_layer' 'frontend_fbank_cmvn' 'official_hypotheses' 'normalized_log_score' 'upstream_cost' 'firered-asr-aed-l-official-beam-trace-v1' 'token_topk' 'beam_prune_topk' 'torch.topk' 'torch_git_version' 'environment' \
     'firered_asr_aed_l_audit.py' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'OWNER_APPROVED' 'OWNER_REVIEW_REQUIRED' 'INVALID' 'distribution_evidence' 'distribution_evidence_sha256' 'lock_artifact' 'source_identity_aggregate' 'native_payloads' 'publisher_urls' 'publisher_url_aggregate' 'license_candidate_aggregate' 'native_payload_aggregate' 'review_ledger' 'exact_digest_gate' 'collection_protocol' 'owner_approval' 'owner-approval-v1' '--owner-approval' 'owner_approval_path' 'yousan' 'approved_at_utc' 'publisher_urls_sha256' 'license_candidates_sha256' 'native_payloads_sha256' 'scope_sha256' 'collection_failures' 'approved_mode' 'is_symlink' 'regular JSON' 'must not overlap' 'reject_duplicate_pairs' 'duplicate JSON key' 'exactly 27 active closure rows' 'native_source_license' 'source_revision_verified' 'source_url_verified' 'license_path' 'license_bytes' 'license_sha256_verified' 'approved_route_expected_artifacts' \
     'NamedTemporaryFile' 'os.link' 'manifest-with-preparation.json' \
     'manifest-with-reference.json' 'final no-clobber manifest' \
@@ -773,6 +773,12 @@ assert reference["publication"] == "NO_UPLOAD"
 assert reference["model"] == {"repository": "FireRedTeam/FireRedASR-AED-L", "revision": "e57f5960d03cff1071ff7acbb409314d1e70ed3d"}
 assert reference["checkpoint"] == {"repository": "FireRedTeam/FireRedASR-AED-L", "revision": "e57f5960d03cff1071ff7acbb409314d1e70ed3d", "bytes": 4678597714, "sha256": "12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3"}
 assert reference["source"]["revision"] == "834635e4cf277ed8ca92049fc375b17c3dc20748"
+environment = reference.get("environment")
+assert isinstance(environment, dict)
+assert isinstance(environment.get("python"), str) and environment["python"]
+assert isinstance(environment.get("platform"), str) and environment["platform"]
+assert isinstance(environment.get("machine"), str) and environment["machine"]
+assert isinstance(environment.get("torch"), str) and environment["torch"]
 assert reference["dependencies"] == {
     "python": "3.12",
     "kaldiio": {"version": "2.18.1", "source": "pypi", "wheel_sha256": "397a4cd18977acaae7acabfba6807ee0a6978c620064381a266eac15b3c1a0a0"},
@@ -817,6 +823,21 @@ assert reference["reference"]["status"] == "REFERENCE_CAPTURED"
 assert reference["reference"]["encoder"] is not None
 assert reference["reference"]["decoder_logits"] is not None
 assert reference["reference"]["official_search"] == contract["search"]
+official_hypotheses = reference["reference"].get("official_hypotheses")
+assert isinstance(official_hypotheses, list) and len(official_hypotheses) == contract["search"]["nbest"]
+for hypothesis in official_hypotheses:
+    assert set(hypothesis) == {"token_ids", "normalized_log_score", "upstream_cost"}
+    assert isinstance(hypothesis["token_ids"], list)
+    assert isinstance(hypothesis["normalized_log_score"], (int, float))
+    assert isinstance(hypothesis["upstream_cost"], (int, float))
+    assert hypothesis["upstream_cost"] == -hypothesis["normalized_log_score"]
+beam_trace = reference["reference"].get("beam_trace")
+assert isinstance(beam_trace, dict)
+assert beam_trace["schema"] == "firered-asr-aed-l-official-beam-trace-v1"
+assert isinstance(beam_trace.get("steps"), list) and beam_trace["steps"]
+assert all("token_topk" in step and "beam_prune_topk" in step for step in beam_trace["steps"])
+assert beam_trace["final_ranking"]["k"] == contract["search"]["nbest"]
+assert "torch.topk" in beam_trace["tie_behavior"]
 trace = reference["reference"]["trace"]
 assert trace["schema"] == "firered-asr-aed-l-reference-trace-v1"
 required = trace["required"]

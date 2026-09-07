@@ -74,8 +74,8 @@
 //!    `named_parameters()` / `named_buffers()` and records their roles. This
 //!    module now verifies the exact 551 encoder names plus 389 decoder names,
 //!    source shapes, F32 types, role layouts, and compiled descriptor digests.
-//!    It retains typed descriptors only; native beam execution remains
-//!    parity-gated. The input SentencePiece companion is intentionally not
+//!    It retains typed descriptors only; native beam execution is available
+//!    through the feature-to-token seam but remains parity-gated. The input SentencePiece companion is intentionally not
 //!    part of inference binding.
 //! 3. **The exact output sidecars and structural markers are now bound.** The
 //!    converter authenticates the inspected `cmvn.txt` and `dict.txt` bytes,
@@ -84,14 +84,15 @@
 //!    only a terminal EOS and rejects every other structural marker. The
 //!    upstream SentencePiece companion is intentionally unbound because it is
 //!    used for text-to-training-IDs; inference detokenization uses the bound
-//!    output dictionary. The complete official beam forward remains an
-//!    independent gate.
+//!    output dictionary. The complete official beam forward now exists as a
+//!    feature-to-token seam, while independent parity remains an explicit gate.
 //! 4. **Full transcription graph gap.** [`native`] exposes CPU/Metal-dispatched
 //!    encoder and decoder feature primitives, including incremental greedy
 //!    token generation, and [`FireredAsrAed::transcribe_tokens_with_cmvn`]
 //!    composes them with the explicit frontend seam. They are VAST
-//!    numerical-parity-pending; the official beam policy is authenticated as
-//!    metadata but native beam execution remains fail-closed until parity.
+//!    numerical-parity-pending; the official beam policy and native beam
+//!    execution are available as a feature-to-token seam, while the ordinary
+//!    transcription surface remains fail-closed until parity.
 //!
 //! The upstream config is additionally awkward to reach: the handoff for
 //! the sibling LLM release
@@ -102,9 +103,9 @@
 //! shares that posture is **not** verified anywhere in this repository,
 //! and this module does not assert that it does.
 //!
-//! So: the remaining blockers are the exact converted-artifact run, the native
-//! official beam loop plus independent CPU beam parity, and (later) the complete
-//! Metal graph. The output dictionary/CMVN sidecars and search policy are already
+//! So: the remaining blockers are the exact converted-artifact run, independent
+//! CPU beam parity, and (later) the complete Metal graph. The output
+//! dictionary/CMVN sidecars and search policy are already
 //! authenticated. The upstream SentencePiece companion is intentionally
 //! unbound here because the pinned tokenizer uses it for text-to-training-IDs;
 //! inference detokenization uses the authenticated output dictionary. The raw
@@ -235,10 +236,10 @@ mod native;
 pub use native::{
     AUTHENTICATED_CMVN_GIT_BLOB_SHA1, AUTHENTICATED_CMVN_SHA256, AUTHENTICATED_CMVN_TEXT_BYTES,
     AUTHENTICATED_DICT_GIT_BLOB_SHA1, AUTHENTICATED_DICT_ROWS, AUTHENTICATED_DICT_SHA256,
-    AUTHENTICATED_DICT_TEXT_BYTES, FIRERED_ASR_AED_HOT_OPS, FireRedCmvn, FireRedConformerBlock,
-    FireRedConformerBlockWeights, FireRedConformerConvolution, FireRedConformerEncoder,
-    FireRedConformerFeedForward, FireRedConv2dSubsampling, FireRedDictionary,
-    FireRedRelativeAttention, relative_positional_encoding,
+    AUTHENTICATED_DICT_TEXT_BYTES, FIRERED_ASR_AED_HOT_OPS, FireRedBeamHypothesis, FireRedCmvn,
+    FireRedConformerBlock, FireRedConformerBlockWeights, FireRedConformerConvolution,
+    FireRedConformerEncoder, FireRedConformerFeedForward, FireRedConv2dSubsampling,
+    FireRedDictionary, FireRedRelativeAttention, relative_positional_encoding,
 };
 
 // ---------------------------------------------------------------------------
@@ -2575,8 +2576,8 @@ impl FireredAsrAed {
     /// authenticated output CMVN/dictionary sidecars and official search
     /// metadata. Input SentencePiece is a training/text-encoding companion;
     /// inference output rendering uses the bound dictionary. The exact PCM
-    /// frontend/encoder/decoder run, native official beam loop, and independent
-    /// CPU parity remain fail-closed. The metadata check is exact converter
+    /// frontend/encoder/decoder run and independent CPU parity remain
+    /// fail-closed. The metadata check is exact converter
     /// provenance plus a complete descriptor bind; it is not a cryptographic
     /// payload signature, and VAST numerical parity remains pending.
     /// Backend coverage is checked before tensor decoding, and no backend ever
@@ -2678,6 +2679,72 @@ impl FireredAsrAed {
         )
     }
 
+    /// Runs the authenticated upstream `batch_beam_search` policy over an
+    /// encoder memory and returns its n-best content hypotheses.  This is a
+    /// feature-to-token seam: `memory` must be the output of
+    /// [`Self::encode_features`], and the caller must supply the exact
+    /// special-token ids bound in the GGUF config. The authenticated policy's
+    /// `decode_max_len=0` selects the encoder-output time `Ti` exactly as
+    /// upstream does; it does not refer to the number of PCM/fbank frames.
+    ///
+    /// The native implementation expands beams sequentially for now.  Every
+    /// branch clones all decoder-layer caches, and no CPU fallback is used for
+    /// a selected Metal backend.  Real-checkpoint numeric parity remains a
+    /// separate VAST gate; this method does not enable the ordinary
+    /// [`AsrEngine`] transcription surface.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_features_beam(
+        &self,
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        sos_id: usize,
+        eos_id: usize,
+    ) -> Result<Vec<FireRedBeamHypothesis>> {
+        let weights = self.runtime_weights.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: feature tensor binding is absent; use from_gguf_with_backend before decoding features".to_owned(),
+            )
+        })?;
+        let config = self.cfg.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: decoder special-token metadata is absent; refusing to guess SOS/EOS ids".to_owned(),
+            )
+        })?;
+        let search = self.search.ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: official batch_beam_search metadata is absent; refusing to guess decode policy".to_owned(),
+            )
+        })?;
+        if !search.is_official() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l: official batch_beam_search metadata drifted; refusing native beam execution".to_owned(),
+            ));
+        }
+        if config.sos_id as usize != sos_id || config.eos_id as usize != eos_id {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-asr-aed-l: decoder ids ({sos_id}, {eos_id}) do not match authenticated metadata ({}, {})",
+                config.sos_id, config.eos_id
+            )));
+        }
+        let compute = Compute::for_backend(self.backend, FIRERED_ASR_AED_HOT_OPS)?;
+        let hypotheses = weights.decode_beam(
+            &compute,
+            memory,
+            source_frames,
+            source_mask,
+            sos_id,
+            eos_id,
+            search.beam_size as usize,
+            search.nbest as usize,
+            search.decode_max_len as usize,
+            search.softmax_smoothing,
+            search.length_penalty,
+            search.eos_penalty,
+        )?;
+        Ok(hypotheses)
+    }
+
     /// Runs the authenticated PCM → Kaldi fbank/CMVN → encoder → greedy
     /// decoder seam and returns raw decoder ids.
     ///
@@ -2685,8 +2752,8 @@ impl FireredAsrAed {
     /// the feature seam. Converted release artifacts also expose the exact
     /// bound transform through [`Self::cmvn`]; callers must not substitute a
     /// guessed/default matrix. Text rendering is available separately through
-    /// [`Self::render_token_ids`], while native beam execution remains a
-    /// parity-gated concern.
+    /// [`Self::render_token_ids`], while the native beam result remains a
+    /// separate parity-gated feature-to-token concern.
     pub fn transcribe_tokens_with_cmvn(
         &self,
         pcm: &[f32],
@@ -3204,8 +3271,7 @@ fn forward_loud_partial_with_dictionary(
     };
     VokraError::UnsupportedOp(format!(
         "firered-asr-aed-l transcribe (loud-partial): the full PCM transcription \
-         route is deferred; frontend, native \
-         beam loop, independent beam parity, and VAST parity \
+         route is deferred; frontend, independent beam parity, and VAST parity \
          gates must land before this API emits real token ids. Feature-to-feature \
          and feature-to-token primitives exist, but remain parity-pending. \
          (1) FRONTEND CONTRACT: the all-or-nothing `vokra.firered_asr_aed_l.*` \
@@ -3228,8 +3294,7 @@ fn forward_loud_partial_with_dictionary(
              (4) NATIVE OPERATOR GAP: the pinned Conformer uses a Conv2d \
              subsampling stem, relative-position attention, and a \
              source-faithful inference-only Conformer block; CPU/Metal feature \
-             routes now exist, while exact fbank, native beam loop, independent \
-             beam parity, and full \
+             routes now exist, while exact fbank, independent beam parity, and full \
              transcription integration remain parity-gated. \
          Output once real: decoder token ids per utterance, rendered through the \
          bound output dictionary after the independent native beam parity gate. \
@@ -3260,7 +3325,7 @@ mod tests {
     //! On a real checkpoint this would be `transcribe_tokens(...)`
     //! returning decoder token ids. The VAST evidence pins the release
     //! geometry and tensor identity, but the native frontend/decoder and
-    //! input tokenizer, native beam loop, and independent parity are still
+    //! input tokenizer and independent beam parity are still
     //! deliberately fail-closed; fabricating a token
     //! sequence would violate CLAUDE.md 教訓 (a)「loud-partial は
     //! fake-complete より honest」.

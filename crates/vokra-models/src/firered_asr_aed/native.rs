@@ -433,6 +433,263 @@ impl FireRedRuntimeWeights {
         Ok(generated)
     }
 
+    /// Runs the pinned FireRed `batch_beam_search` policy over one encoder
+    /// memory.  The implementation intentionally expands each active beam
+    /// serially, but every branch owns a clone of every decoder-layer cache;
+    /// this is the same cache boundary as the upstream decoder and avoids
+    /// sharing mutable state between competing hypotheses.
+    ///
+    /// `decode_max_len == 0` has the source meaning from the upstream method:
+    /// it selects `Ti`, the number of encoder-output rows (not the number of
+    /// PCM/fbank frames).  Returned ids exclude SOS and a terminal EOS, just
+    /// like the upstream `yseq` slice used for detokenisation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode_beam(
+        &self,
+        compute: &Compute,
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        sos_id: usize,
+        eos_id: usize,
+        beam_size: usize,
+        nbest: usize,
+        decode_max_len: usize,
+        softmax_smoothing: f32,
+        length_penalty: f32,
+        eos_penalty: f32,
+    ) -> Result<Vec<FireRedBeamHypothesis>> {
+        let d_model = super::AUTHENTICATED_DECODER_D_MODEL as usize;
+        let vocab_size = super::AUTHENTICATED_DECODER_VOCAB_SIZE as usize;
+        let max_positions = super::AUTHENTICATED_DECODER_MAX_POSITIONS as usize;
+        if source_frames == 0
+            || memory.len()
+                != source_frames.checked_mul(d_model).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "FireRed decoder beam memory shape overflow".to_owned(),
+                    )
+                })?
+            || source_mask.len() != source_frames
+            || !source_mask.iter().any(|&valid| valid)
+            || sos_id >= vocab_size
+            || eos_id >= vocab_size
+            || beam_size == 0
+            || nbest == 0
+            || nbest > beam_size
+            || !softmax_smoothing.is_finite()
+            || softmax_smoothing <= 0.0
+            || !length_penalty.is_finite()
+            || length_penalty < 0.0
+            || !eos_penalty.is_finite()
+            || eos_penalty <= 0.0
+            || eos_penalty > 1.0
+            || !all_finite(&[memory])
+        {
+            return Err(VokraError::InvalidArgument(
+                "firered decoder beam memory, ids, policy, or length is invalid".to_owned(),
+            ));
+        }
+        let max_len = if decode_max_len == 0 {
+            // Upstream TransformerDecoder uses `Ti`, where Ti is the second
+            // dimension of encoder_outputs.  At this seam that is exactly
+            // source_frames (the number of rows in `memory`).
+            source_frames
+        } else {
+            decode_max_len
+        };
+        if max_len == 0 || max_len > max_positions {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered decoder beam max_len must be in 1..={max_positions}, got {max_len}"
+            )));
+        }
+
+        let embedding = self.tensor("decoder.tgt_word_emb.weight")?;
+        let positional = self.tensor("decoder.positional_encoding.pe")?;
+        let output_norm_gamma = self.tensor("decoder.layer_norm_out.weight")?;
+        let output_norm_beta = self.tensor("decoder.layer_norm_out.bias")?;
+        let projection = self.tensor("decoder.tgt_word_prj.weight")?;
+        let embedding_op = FireRedDecoderEmbedding {
+            vocab_size,
+            d_model,
+            max_positions,
+        };
+        let output_head = FireRedDecoderOutputHead {
+            d_model,
+            vocab_size,
+        };
+        let layer_op = FireRedDecoderLayer {
+            d_model,
+            inner_dim: super::AUTHENTICATED_DECODER_FFN_DIM as usize,
+            n_head: super::AUTHENTICATED_DECODER_N_HEAD as usize,
+            source_dim: d_model,
+        };
+
+        let empty_cache =
+            FireRedDecoderCacheState::new(super::AUTHENTICATED_DECODER_N_LAYER as usize);
+        let mut beams = vec![FireRedRuntimeBeam {
+            state: FireRedBeamState::new(),
+            previous: sos_id,
+            cache: empty_cache,
+        }];
+
+        for step in 0..max_len {
+            let mut candidates = Vec::with_capacity(beam_size * beam_size);
+            for (parent, beam) in beams.iter().enumerate() {
+                if beam.state.finished {
+                    // `set_finished_beam_score_to_zero` and
+                    // `set_finished_beam_y_to_eos` in the source expose one
+                    // live EOS continuation and B-1 -INF continuations.
+                    // Keeping only that live continuation is equivalent and
+                    // avoids representing an artificial -1e10 score.
+                    candidates.push(FireRedRuntimeBeamCandidate {
+                        beam: FireRedRuntimeBeam {
+                            state: beam.state.advance(eos_id, 0.0, eos_id, max_len)?,
+                            previous: eos_id,
+                            cache: beam.cache.clone(),
+                        },
+                        parent,
+                        token: eos_id,
+                    });
+                    continue;
+                }
+
+                let (logits, next_cache) = self.decode_step(
+                    compute,
+                    memory,
+                    source_frames,
+                    source_mask,
+                    beam.previous,
+                    step,
+                    &beam.cache,
+                    &embedding_op,
+                    &output_head,
+                    &layer_op,
+                    embedding,
+                    positional,
+                    output_norm_gamma,
+                    output_norm_beta,
+                    projection,
+                )?;
+                let mut token_scores = log_softmax_row(&logits, softmax_smoothing, vocab_size)?;
+                apply_fire_red_eos_penalty(&mut token_scores, eos_id, eos_penalty)?;
+                let top = top_token_indices(&token_scores, beam_size)?;
+                for token in top {
+                    let state = beam
+                        .state
+                        .advance(token, token_scores[token], eos_id, max_len)?;
+                    candidates.push(FireRedRuntimeBeamCandidate {
+                        beam: FireRedRuntimeBeam {
+                            state,
+                            previous: token,
+                            cache: next_cache.clone(),
+                        },
+                        parent,
+                        token,
+                    });
+                }
+            }
+            candidates = prune_beam_candidates(candidates, beam_size)?;
+            beams = candidates
+                .into_iter()
+                .map(|candidate| candidate.beam)
+                .collect();
+            if beams.iter().all(|beam| beam.state.finished) {
+                break;
+            }
+        }
+
+        let mut ranked = Vec::with_capacity(beams.len());
+        for beam in beams {
+            let score = beam.state.ranked_score(eos_id, length_penalty)?;
+            let mut token_ids = beam.state.tokens;
+            if token_ids.last().copied() == Some(eos_id) {
+                token_ids.pop();
+            }
+            ranked.push(FireRedBeamHypothesis {
+                token_ids,
+                normalized_log_score: score,
+            });
+        }
+        ranked.sort_by(|left, right| {
+            right
+                .normalized_log_score
+                .partial_cmp(&left.normalized_log_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.token_ids.cmp(&right.token_ids))
+        });
+        ranked.truncate(nbest);
+        Ok(ranked)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode_step(
+        &self,
+        compute: &Compute,
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        previous: usize,
+        position: usize,
+        cache: &FireRedDecoderCacheState,
+        embedding_op: &FireRedDecoderEmbedding,
+        output_head: &FireRedDecoderOutputHead,
+        layer_op: &FireRedDecoderLayer,
+        embedding: &[f32],
+        positional: &[f32],
+        output_norm_gamma: &[f32],
+        output_norm_beta: &[f32],
+        projection: &[f32],
+    ) -> Result<(Vec<f32>, FireRedDecoderCacheState)> {
+        if previous >= embedding_op.vocab_size || position >= embedding_op.max_positions {
+            return Err(VokraError::InvalidArgument(
+                "firered decoder beam step id or position is invalid".to_owned(),
+            ));
+        }
+        if cache.keys.len() != super::AUTHENTICATED_DECODER_N_LAYER as usize
+            || cache.values.len() != cache.keys.len()
+            || cache.masks.len() != cache.keys.len()
+        {
+            return Err(VokraError::InvalidArgument(
+                "firered decoder beam cache layer count is invalid".to_owned(),
+            ));
+        }
+        let mut hidden = embedding_op.forward(&[previous], &[position], embedding, positional)?;
+        let mut next_cache = FireRedDecoderCacheState::new(cache.keys.len());
+        for layer in 0..super::AUTHENTICATED_DECODER_N_LAYER as usize {
+            let weights = self.decoder_layer_weights(layer)?;
+            let output = layer_op.forward(
+                compute,
+                &hidden,
+                1,
+                &[true],
+                memory,
+                source_frames,
+                source_mask,
+                &cache.keys[layer],
+                &cache.values[layer],
+                &cache.masks[layer],
+                weights,
+            )?;
+            hidden = output.output;
+            next_cache.keys[layer] = output.key_cache;
+            next_cache.values[layer] = output.value_cache;
+            next_cache.masks[layer] = {
+                let mut mask = cache.masks[layer].clone();
+                mask.push(true);
+                mask
+            };
+        }
+        let logits = output_head.forward(
+            compute,
+            &hidden,
+            1,
+            output_norm_gamma,
+            output_norm_beta,
+            projection,
+        )?;
+        Ok((logits, next_cache))
+    }
+
     fn decoder_layer_weights(&self, layer: usize) -> Result<FireRedDecoderLayerWeights<'_>> {
         if layer >= super::AUTHENTICATED_DECODER_N_LAYER as usize {
             return Err(VokraError::InvalidArgument(format!(
@@ -3147,7 +3404,6 @@ impl FireRedDecoderOutputHead {
 /// finished beams are immutable. Length normalisation is explicit and
 /// caller-controlled so this helper does not silently invent a search policy.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Beam helpers are staged until the full PCM route lands.
 pub struct FireRedBeamState {
     /// Generated token ids, excluding the initial SOS id.
     pub tokens: Vec<usize>,
@@ -3157,7 +3413,49 @@ pub struct FireRedBeamState {
     pub finished: bool,
 }
 
-#[allow(dead_code)] // Beam helpers are staged until the full PCM route lands.
+/// One output hypothesis from the source-faithful native beam seam.
+/// `token_ids` excludes both SOS and a terminal EOS. `normalized_log_score`
+/// is the official GNMT-normalized log score (larger is better, and therefore
+/// normally negative); the upstream method returns its negation as a cost.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FireRedBeamHypothesis {
+    /// Content token ids in the bound FireRed vocabulary.
+    pub token_ids: Vec<usize>,
+    /// Official GNMT-normalized accumulated log score.
+    pub normalized_log_score: f32,
+}
+
+#[derive(Debug, Clone)]
+struct FireRedDecoderCacheState {
+    keys: Vec<Vec<f32>>,
+    values: Vec<Vec<f32>>,
+    masks: Vec<Vec<bool>>,
+}
+
+impl FireRedDecoderCacheState {
+    fn new(layers: usize) -> Self {
+        Self {
+            keys: vec![Vec::new(); layers],
+            values: vec![Vec::new(); layers],
+            masks: vec![Vec::new(); layers],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FireRedRuntimeBeam {
+    state: FireRedBeamState,
+    previous: usize,
+    cache: FireRedDecoderCacheState,
+}
+
+#[derive(Debug, Clone)]
+struct FireRedRuntimeBeamCandidate {
+    beam: FireRedRuntimeBeam,
+    parent: usize,
+    token: usize,
+}
+
 impl FireRedBeamState {
     /// Creates an empty, unfinished beam with zero score.
     pub fn new() -> Self {
@@ -3239,6 +3537,113 @@ pub fn apply_fire_red_eos_penalty(
     }
     token_scores[eos_id] *= eos_penalty;
     ensure_finite(token_scores, "FireRed EOS-penalized token scores")
+}
+
+/// Computes one source-equivalent `F.log_softmax(logits / smoothing)` row.
+/// This uses the stable max/log-sum-exp form rather than materialising
+/// probabilities, so very unlikely vocabulary classes remain finite instead
+/// of underflowing to zero. Log-softmax is scalar score glue; all learned
+/// projections and attention softmaxes still run through [`Compute`].
+fn log_softmax_row(logits: &[f32], smoothing: f32, vocab_size: usize) -> Result<Vec<f32>> {
+    if logits.len() != vocab_size
+        || vocab_size == 0
+        || !smoothing.is_finite()
+        || smoothing <= 0.0
+        || logits.iter().any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "FireRed beam log-softmax operands are invalid".to_owned(),
+        ));
+    }
+    let scaled: Vec<f32> = logits.iter().map(|value| *value / smoothing).collect();
+    let max = scaled.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !max.is_finite() {
+        return Err(VokraError::ModelLoad(
+            "FireRed beam log-softmax maximum is non-finite".to_owned(),
+        ));
+    }
+    let normalizer =
+        scaled
+            .iter()
+            .map(|value| (*value - max).exp())
+            .try_fold(0.0_f32, |sum, value| {
+                let next = sum + value;
+                if next.is_finite() {
+                    Ok(next)
+                } else {
+                    Err(VokraError::ModelLoad(
+                        "FireRed beam log-softmax normalizer is non-finite".to_owned(),
+                    ))
+                }
+            })?;
+    if normalizer <= 0.0 || !normalizer.is_finite() {
+        return Err(VokraError::ModelLoad(
+            "FireRed beam log-softmax normalizer is invalid".to_owned(),
+        ));
+    }
+    let log_normalizer = max + normalizer.ln();
+    let mut scores = Vec::with_capacity(vocab_size);
+    for value in scaled {
+        let score = value - log_normalizer;
+        if !score.is_finite() || score > 0.0 {
+            return Err(VokraError::ModelLoad(
+                "FireRed beam log-softmax produced an invalid score".to_owned(),
+            ));
+        }
+        scores.push(score);
+    }
+    Ok(scores)
+}
+
+/// Selects the top token ids with an explicit deterministic tie rule. The
+/// upstream source delegates ties to `torch.topk`; this stable order keeps the
+/// native result reproducible and is recorded in the reference trace for
+/// real-checkpoint parity review.
+fn top_token_indices(scores: &[f32], count: usize) -> Result<Vec<usize>> {
+    if scores.is_empty()
+        || count == 0
+        || count > scores.len()
+        || scores.iter().any(|v| !v.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "FireRed beam top-k token scores are invalid".to_owned(),
+        ));
+    }
+    let mut ids: Vec<usize> = (0..scores.len()).collect();
+    ids.sort_by(|left, right| {
+        scores[*right]
+            .partial_cmp(&scores[*left])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.cmp(right))
+    });
+    ids.truncate(count);
+    Ok(ids)
+}
+
+/// Applies the source global B×B beam prune. Candidate generation supplies at
+/// most `beam_size` rows per live parent; pruning ranks the whole flattened
+/// candidate set, not each parent independently.
+fn prune_beam_candidates(
+    mut candidates: Vec<FireRedRuntimeBeamCandidate>,
+    beam_size: usize,
+) -> Result<Vec<FireRedRuntimeBeamCandidate>> {
+    if beam_size == 0 || candidates.is_empty() {
+        return Err(VokraError::ModelLoad(
+            "firered decoder beam search produced no live candidate".to_owned(),
+        ));
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .beam
+            .state
+            .score
+            .partial_cmp(&left.beam.state.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.parent.cmp(&right.parent))
+            .then_with(|| left.token.cmp(&right.token))
+    });
+    candidates.truncate(beam_size);
+    Ok(candidates)
 }
 
 fn validate_attention_geometry(d_model: usize, n_head: usize) -> Result<()> {
@@ -4773,6 +5178,90 @@ mod tests {
         .ranked_score(7, 1.0)
         .unwrap();
         assert!((ranked - (-6.0 / (7.0 / 6.0))).abs() < 1e-6);
+    }
+
+    #[test]
+    fn beam_selection_has_stable_ties_and_source_log_softmax_semantics() {
+        let scores = log_softmax_row(&[1.0, 1.0, 0.0, -1.0], 1.25, 4).unwrap();
+        assert!(
+            scores
+                .iter()
+                .all(|score| score.is_finite() && *score <= 0.0)
+        );
+        assert_eq!(top_token_indices(&scores, 3).unwrap(), vec![0, 1, 2]);
+        let spread = log_softmax_row(&[1_000.0, -1_000.0, -10_000.0], 1.25, 3).unwrap();
+        assert!(spread.iter().all(|score| score.is_finite()));
+        assert!((spread[0]).abs() < 1e-6);
+        assert!(spread[1] < -1_500.0);
+        assert!(top_token_indices(&scores, 0).is_err());
+        assert!(top_token_indices(&scores, 5).is_err());
+
+        let mut eos_scores = [-2.0, -1.0, -3.0];
+        apply_fire_red_eos_penalty(&mut eos_scores, 1, 0.5).unwrap();
+        assert_eq!(eos_scores, [-2.0, -0.5, -3.0]);
+        assert!(apply_fire_red_eos_penalty(&mut eos_scores, 1, 0.0).is_err());
+        assert!(apply_fire_red_eos_penalty(&mut eos_scores, 3, 1.0).is_err());
+
+        let cache = FireRedDecoderCacheState::new(1);
+        let candidates = vec![
+            FireRedRuntimeBeamCandidate {
+                beam: FireRedRuntimeBeam {
+                    state: FireRedBeamState {
+                        tokens: vec![4],
+                        score: -1.0,
+                        finished: false,
+                    },
+                    previous: 4,
+                    cache: cache.clone(),
+                },
+                parent: 1,
+                token: 4,
+            },
+            FireRedRuntimeBeamCandidate {
+                beam: FireRedRuntimeBeam {
+                    state: FireRedBeamState {
+                        tokens: vec![2],
+                        score: -1.0,
+                        finished: false,
+                    },
+                    previous: 2,
+                    cache: cache.clone(),
+                },
+                parent: 0,
+                token: 2,
+            },
+            FireRedRuntimeBeamCandidate {
+                beam: FireRedRuntimeBeam {
+                    state: FireRedBeamState {
+                        tokens: vec![3],
+                        score: -0.5,
+                        finished: false,
+                    },
+                    previous: 3,
+                    cache,
+                },
+                parent: 1,
+                token: 3,
+            },
+        ];
+        let pruned = prune_beam_candidates(candidates, 2).unwrap();
+        assert_eq!(pruned.len(), 2);
+        assert_eq!(pruned[0].beam.state.tokens, vec![3]);
+        assert_eq!(pruned[1].beam.state.tokens, vec![2]);
+    }
+
+    #[test]
+    fn beam_cache_clones_are_independent_per_branch() {
+        let mut original = FireRedDecoderCacheState::new(2);
+        original.keys[0] = vec![1.0, 2.0];
+        original.values[1] = vec![3.0, 4.0];
+        original.masks[0] = vec![true];
+        let mut branch = original.clone();
+        branch.keys[0][0] = 99.0;
+        branch.masks[0].push(true);
+        assert_eq!(original.keys[0], vec![1.0, 2.0]);
+        assert_eq!(original.masks[0], vec![true]);
+        assert_eq!(branch.values[1], original.values[1]);
     }
 
     #[test]

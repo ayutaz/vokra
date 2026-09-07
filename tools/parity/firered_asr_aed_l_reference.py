@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -137,12 +138,21 @@ SOURCE_MARKERS = {
     ),
     "fireredasr/models/module/transformer_decoder.py": (
         "self.tgt_word_prj.weight = self.tgt_word_emb.weight",
+        "scores = torch.tensor([0.0] + [-self.INF]*(B-1)).float().to(device)",
+        "scores = scores.repeat(N).view(N*B, 1)",
         "t_logit = self.tgt_word_prj(dec_output[:, -1])",
         "t_scores = F.log_softmax(t_logit / softmax_smoothing, dim=-1)",
         "maxlen = decode_max_len if decode_max_len > 0 else Ti",
         "if eos_penalty != 1.0:",
         "torch.topk(scores, k=B, dim=1)",
+        "t_topB_scores = self.set_finished_beam_score_to_zero(t_topB_scores, is_finished)",
+        "t_topB_ys = self.set_finished_beam_y_to_eos(t_topB_ys, is_finished)",
+        "topB_row_number_in_ys",
+        "new_caches.append(cache[topB_row_number_in_ys])",
+        "is_finished = t_ys.eq(self.eos_id)",
+        "ys_lengths = torch.sum(torch.ne(ys, self.eos_id), dim=-1)",
         "Length penalty (follow GNMT)",
+        "nbest_scores = -1.0 * nbest_scores",
         "nbest_ys[n, i, 1:nbest_ys_lengths[n, i]]",
         "cache=caches[i]",
     ),
@@ -170,6 +180,7 @@ OFFICIAL_SEARCH_POLICY = {
     "length_penalty": 0.6,
     "eos_penalty": 1.0,
 }
+OFFICIAL_BEAM_TRACE_SCHEMA = "firered-asr-aed-l-official-beam-trace-v1"
 
 
 def source_records(source_root: Path) -> list[dict[str, Any]]:
@@ -357,13 +368,43 @@ def capture_reference(model: Any, args: Any, source_root: Path, cmvn_path: Path)
         raise RuntimeError(f"pinned upstream trace module path is missing: {error}") from error
     for name, module in stage_modules:
         handles.append(module.register_forward_hook(capture(name)))
+    # The upstream method returns only ``yseq`` and discards its final
+    # normalized score.  Instrument the upstream torch.topk calls while the
+    # method runs so the archive retains the exact candidate/pruning trace and
+    # the final ranked score, without copying the search algorithm here.
+    topk_events: list[dict[str, Any]] = []
+    upstream_topk = torch.topk
+
+    def traced_topk(input_tensor: Any, *topk_args: Any, **topk_kwargs: Any) -> Any:
+        result = upstream_topk(input_tensor, *topk_args, **topk_kwargs)
+        values, indices = result
+        topk_events.append(
+            {
+                "input_shape": [int(dim) for dim in input_tensor.shape],
+                "k": int(topk_kwargs.get("k", topk_args[0] if topk_args else -1)),
+                "dim": int(topk_kwargs.get("dim", topk_args[1] if len(topk_args) > 1 else -1)),
+                "values": values.detach().cpu().tolist(),
+                "indices": indices.detach().cpu().tolist(),
+            }
+        )
+        return result
+
+    torch.topk = traced_topk
     try:
         with torch.no_grad():
             enc_outputs, _, enc_mask = model.encoder(features, lengths)
             hypotheses = model.decoder.batch_beam_search(
-                enc_outputs, enc_mask, 1, 1, 32, 1.0, 0.0, 1.0
+                enc_outputs,
+                enc_mask,
+                OFFICIAL_SEARCH_POLICY["beam_size"],
+                OFFICIAL_SEARCH_POLICY["nbest"],
+                OFFICIAL_SEARCH_POLICY["decode_max_len"],
+                OFFICIAL_SEARCH_POLICY["softmax_smoothing"],
+                OFFICIAL_SEARCH_POLICY["length_penalty"],
+                OFFICIAL_SEARCH_POLICY["eos_penalty"],
             )
     finally:
+        torch.topk = upstream_topk
         for handle in handles:
             handle.remove()
     required_stage_names = [
@@ -378,14 +419,78 @@ def capture_reference(model: Any, args: Any, source_root: Path, cmvn_path: Path)
         raise RuntimeError(f"upstream trace did not observe required stages: {missing_stages!r}")
     if not hypotheses:
         raise RuntimeError("upstream decoder returned no hypothesis")
-    first = hypotheses[0][0]
-    token_ids = first.get("yseq") if isinstance(first, dict) else getattr(first, "yseq", None)
-    if token_ids is None:
-        raise RuntimeError(f"upstream hypothesis has no yseq: {type(first).__name__}")
-    if isinstance(token_ids, torch.Tensor):
-        token_ids = [int(value) for value in token_ids.detach().cpu().tolist()]
-    else:
-        token_ids = [int(value) for value in token_ids]
+    if len(hypotheses) != 1 or len(hypotheses[0]) != OFFICIAL_SEARCH_POLICY["nbest"]:
+        raise RuntimeError("upstream official beam call returned an unexpected n-best shape")
+    if not topk_events:
+        raise RuntimeError("upstream beam trace captured no torch.topk events")
+    final_event = topk_events[-1]
+    expected_final_shape = [1, OFFICIAL_SEARCH_POLICY["beam_size"]]
+    if (
+        final_event["k"] != OFFICIAL_SEARCH_POLICY["nbest"]
+        or final_event["dim"] != 1
+        or final_event["input_shape"] != expected_final_shape
+    ):
+        raise RuntimeError(
+            "upstream beam trace final ranking event mismatch: "
+            f"{final_event!r}; expected k={OFFICIAL_SEARCH_POLICY['nbest']} "
+            f"dim=1 shape={expected_final_shape}"
+        )
+    final_normalized_log_scores = [float(value) for value in final_event["values"][0]]
+    final_upstream_costs = [-value for value in final_normalized_log_scores]
+    official_hypotheses: list[dict[str, Any]] = []
+    for first in hypotheses[0]:
+        token_ids = first.get("yseq") if isinstance(first, dict) else getattr(first, "yseq", None)
+        if token_ids is None:
+            raise RuntimeError(f"upstream hypothesis has no yseq: {type(first).__name__}")
+        if isinstance(token_ids, torch.Tensor):
+            token_ids = [int(value) for value in token_ids.detach().cpu().tolist()]
+        else:
+            token_ids = [int(value) for value in token_ids]
+        official_hypotheses.append(
+            {
+                "token_ids": token_ids,
+                "normalized_log_score": final_normalized_log_scores[len(official_hypotheses)],
+                "upstream_cost": final_upstream_costs[len(official_hypotheses)],
+            }
+        )
+    # Every official iteration has one token top-k and one beam-pruning top-k;
+    # the final n-best ranking is the additional event recorded above.
+    search_steps = []
+    step_events = topk_events[:-1]
+    if len(step_events) % 2 != 0:
+        raise RuntimeError(f"upstream beam trace has incomplete step events: {len(step_events)}")
+    for step in range(0, len(step_events), 2):
+        token_event = step_events[step]
+        prune_event = step_events[step + 1]
+        expected_token_shape = [OFFICIAL_SEARCH_POLICY["beam_size"], EXPECTED_ARGS["odim"]]
+        expected_prune_shape = [1, OFFICIAL_SEARCH_POLICY["beam_size"] ** 2]
+        if (
+            token_event["k"] != OFFICIAL_SEARCH_POLICY["beam_size"]
+            or token_event["dim"] != 1
+            or token_event["input_shape"] != expected_token_shape
+        ):
+            raise RuntimeError(
+                f"upstream beam token top-k event {step // 2} mismatch: "
+                f"{token_event!r}; expected k={OFFICIAL_SEARCH_POLICY['beam_size']} "
+                f"dim=1 shape={expected_token_shape}"
+            )
+        if (
+            prune_event["k"] != OFFICIAL_SEARCH_POLICY["beam_size"]
+            or prune_event["dim"] != 1
+            or prune_event["input_shape"] != expected_prune_shape
+        ):
+            raise RuntimeError(
+                f"upstream beam prune top-k event {step // 2} mismatch: "
+                f"{prune_event!r}; expected k={OFFICIAL_SEARCH_POLICY['beam_size']} "
+                f"dim=1 shape={expected_prune_shape}"
+            )
+        search_steps.append(
+            {
+                "step": step // 2,
+                "token_topk": token_event,
+                "beam_prune_topk": prune_event,
+            }
+        )
     return {
         "pcm": {"sample_rate": 16000, "samples": len(samples), "dtype": "int16"},
         "frontend": {
@@ -421,11 +526,14 @@ def capture_reference(model: Any, args: Any, source_root: Path, cmvn_path: Path)
         # trace.decoder_stages.
         "encoder": taps.get("encoder", [])[-1] if taps.get("encoder") else None,
         "decoder_logits": taps.get("decoder_logits", [])[-1] if taps.get("decoder_logits") else None,
-        # Keep the independent greedy trace for stage debugging, but retain
-        # the pinned deployment policy beside it.  Native execution must not
-        # silently treat a greedy trace as official beam parity.
         "official_search": OFFICIAL_SEARCH_POLICY,
-        "greedy": {"beam_size": 1, "nbest": 1, "decode_max_len": 32, "softmax_smoothing": 1.0, "length_penalty": 0.0, "eos_penalty": 1.0, "token_ids": token_ids},
+        "official_hypotheses": official_hypotheses,
+        "beam_trace": {
+            "schema": OFFICIAL_BEAM_TRACE_SCHEMA,
+            "steps": search_steps,
+            "final_ranking": final_event,
+            "tie_behavior": "delegated-to-pinned-torch.topk; native tie order requires VAST parity review",
+        },
         "status": "REFERENCE_CAPTURED",
     }
 
@@ -456,6 +564,8 @@ def main() -> int:
         parser.error("--source, --checkpoint, --cmvn and --output are required")
     guard_output_path(args.output, args.checkpoint, args.cmvn)
     model, checkpoint_args, state_dict = load_upstream(args.source, args.checkpoint)
+    import torch
+
     result = {
         "format": "vokra-firered-asr-aed-l-upstream-reference-v1",
         "status": "REFERENCE_CAPTURED",
@@ -471,6 +581,13 @@ def main() -> int:
             "revision": SOURCE_REVISION,
             "path": str(args.source),
             "records": source_records(args.source),
+        },
+        "environment": {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "torch": str(torch.__version__),
+            "torch_git_version": getattr(torch.version, "git_version", None),
         },
         "dependencies": {
             "python": "3.12",
@@ -508,6 +625,16 @@ def self_test() -> None:
         "length_penalty": 0.6,
         "eos_penalty": 1.0,
     }
+    assert OFFICIAL_BEAM_TRACE_SCHEMA.endswith("-v1")
+    assert "model.decoder.batch_beam_search" in Path(__file__).read_text(encoding="utf-8")
+    assert "torch.topk" in Path(__file__).read_text(encoding="utf-8")
+    # Schema/control-flow checks only: no synthetic token ids or scores are
+    # asserted here. Those values may be written only by the pinned upstream
+    # checkpoint execution above.
+    hypothesis_fields = {"token_ids", "normalized_log_score", "upstream_cost"}
+    assert hypothesis_fields == {"token_ids", "normalized_log_score", "upstream_cost"}
+    trace_fields = {"token_topk", "beam_prune_topk"}
+    assert trace_fields == {"token_topk", "beam_prune_topk"}
     trace_schema = {
         "schema": "firered-asr-aed-l-reference-trace-v1",
         "required": {
