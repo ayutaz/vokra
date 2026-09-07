@@ -676,16 +676,25 @@ families without acquiring or executing their weights locally:
   stop as `BLOCKED_PENDING_AUTHENTICATED_MANIFEST` before acquiring or running
   a model. The native backbone-plus-adapter binder and parity route remain
   open.
-- HT-Demucs Multi commit `d03266ec` binds both variants to the exact ordered
+- HT-Demucs Multi commits `d03266ec`, `96d4197b`, `4c91f173`, `58beebf2`,
+  `baef9b9c` and `e8fc2658` bind both variants to the exact ordered
   five-member ensemble, full member SHA-256 values, pinned source revision,
   clean Vokra HEAD and external approval record. Its VAST inspection packet
   includes the complete restricted-load tensor/config manifest and an external
   manifest sidecar hash; paths are absent, non-symlinked and disjoint, and all
   publication remains `NO_UPLOAD`. The former report-only worker no longer
   labels an upstream reference dump as CPU parity: it records
-  `REFERENCE_ONLY_CPU_PARITY_NOT_RUN`. The unresolved Python-3.12 torchaudio
-  lock and package/license review, MUSDB18 provenance, weight redistribution
-  decision, native binder and real CPU parity keep the row explicitly blocked.
+  `REFERENCE_ONLY_CPU_PARITY_NOT_RUN`. The Python 3.12 reference closure now
+  excludes inactive `dora-search`, `lameenc`, `openunmix` and `torchaudio`
+  routes, uses a strict PCM16 WAV reader and fail-closed Wiener sentinel, and
+  retains the official `julius.resample_frac` path. Exact-wheel dependency
+  evidence was collected on VAST without acquiring or executing a model. The
+  evidence is factually complete but remains `BLOCKED_OWNER_REVIEW`: NumPy's
+  exact wheel bundles `libgfortran` under `GPL-3.0-or-later WITH
+  GCC-exception-3.1` and `libquadmath` under `LGPL-2.1-or-later`, which the
+  current static dependency policy rejects. MUSDB18 provenance, a separate
+  checkpoint redistribution grant, owner disposition, the native binder and
+  real CPU parity therefore keep the row explicitly blocked and `NO_UPLOAD`.
 - AudioGen Medium commit `b4179c71` makes its inspection approval external and
   SHA-bound to the exact clean HEAD, four-file Hugging Face release identity,
   fixed AudioCraft source and CC-BY-NC-4.0 research-only/no-upload scope. It
@@ -1015,6 +1024,35 @@ reference and CPU-parity leg; only the final Apple CPU/Metal worker remains for
 this row. It does not by itself decrement the public audit or close unrelated
 model rows.
 
+The same source-contract wave closed HT-Demucs Multi's model-free dependency
+route at exact implementation commit
+`e8fc26588dd98e7189ae2d5b172f1be4f14f2f21`. Disposable VAST instance
+`50138441` synchronized the frozen Python 3.12 environment and authenticated
+all 16 installed package/project rows against the lock and downloaded wheel
+bytes. The 829,655-byte evidence JSON is retained at
+`/private/tmp/htdemucs-dependency-evidence-baef9b9c.json` with SHA-256
+`2ccc87081b52d2e8fc430421d17085fce4105d2515b95ff1118478a9a438e056`;
+its package-row and license-row SHA-256 values are
+`4b6fc6cc81a0da62b06c4c275a4b1cdc496e40796e28228f984c962ed6cb25d3`
+and
+`4b3cabcae55752a24cd23cd26a935a21f0020111d19594346055ead552ee8a9b`.
+The collector reported exact closure and no factual collection failures, but
+correctly emitted `BLOCKED_OWNER_REVIEW` and `NO_UPLOAD` for the NumPy bundled
+license finding above.
+
+That instance also validated the exact clean implementation commit with
+`cargo fmt --all -- --check`, metadata, workspace/all-target/all-feature
+Clippy with warnings denied, workspace/all-target/all-feature tests, `cargo
+deny check`, `cargo audit` and the HT-Demucs dependency-audit self-test. The
+682,415-byte recovered validation log is
+`/private/tmp/vokra-validation-e8fc2658.log` with SHA-256
+`cbc893f3c0fd2a04c0fc7b246123c1783d591fd59d6a8f8287aa1b43b6de9476`.
+All executed tests passed; `cargo deny` emitted only its existing unmatched
+`libfuzzer-sys` exception warning. No model, checkpoint, source repository or
+audio was acquired or executed, and no upload occurred. Instance `50138441`
+was destroyed with its storage after both evidence files were recovered; a
+follow-up query returned `not found or no longer exists`.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
@@ -1062,7 +1100,7 @@ authorization.
 | `vokra/canary-1b-flash` | The source converter already binds the full encoder, four-layer AED decoder and tokenizer and rejects encoder-only/duplicate/partial checkpoints at `66811766`. Regenerate the public GGUF and run exact-head VAST/Apple parity. |
 | `vokra/canary-1b-v2` | The source converter already binds the correct main checkpoint, eight-layer decoder and tokenizer and rejects timestamp-auxiliary/duplicate/partial checkpoints at `66811766`. Regenerate the public GGUF and run exact-head VAST/Apple parity. |
 | `vokra/conv-tasnet-libri1mix` | Keep the corrected 345-tensor topology, but resolve the conflicting CC-BY-SA/WHAM declarations before any replacement. |
-| `vokra/htdemucs-multi` | Authenticate the five-member ensemble configuration, ordering, weights, dependency/license closure and native runtime; the digest inspection alone is not parity. |
+| `vokra/htdemucs-multi` | The five-member ensemble ordering, source roles and model-free dependency bytes are authenticated. Obtain an owner disposition for NumPy's bundled GPL-with-GCC-exception/LGPL libraries, MUSDB18 training provenance and the absent separate checkpoint redistribution grant; then complete the native binder and real-weight VAST CPU/reference parity. Keep `NO_UPLOAD` until every gate is approved. |
 | `vokra/lang-id-voxlingua107` | The source converter/runtime already bind ECAPA plus the 12-tensor XVector classifier, ordered 107-label vocabulary and exact axes; conversion input/output and duplicate-key gates are hardened at `d04dde6b`. Regenerate the incomplete public artifact and run VAST/Apple parity. |
 | `vokra/mms-1b-all-base` | Define a dedicated CC-BY-NC backbone-plus-language-adapter contract and vocabulary; the 8.9-MB adapter is not the 1B model. |
 | `vokra/moss-audio-4b-instruct` | Authenticate its distinct topology and add a strict binder; the broad `moss_tts` tag is insufficient. |
