@@ -24,19 +24,22 @@ CORRECTED_MODEL_NAME="moss-audio-tokenizer-nano"
 CORRECTED_VARIANT="nano"
 LEGACY_PUBLIC_REPO="vokra/moss-audio-tokenizer-nano"
 LEGACY_NOTE="historical public Nano GGUF is manifest-authenticated but mis-stamped; never canonical"
-# The official custom-code module paths and the Transformers route have not
-# been authenticated for this revision.  These code-bound sentinels are
-# deliberate: a reference cannot pass until the owner replaces them together
-# with reviewed identities and the gate manifest.
-EXPECTED_MODEL_SOURCE_PATH="UNRESOLVED"
-EXPECTED_CONFIG_SOURCE_PATH="UNRESOLVED"
-EXPECTED_MODEL_SOURCE_SHA256="UNRESOLVED"
-EXPECTED_CONFIG_SOURCE_SHA256="UNRESOLVED"
-EXPECTED_TORCH_VERSION="UNRESOLVED"
-EXPECTED_TRANSFORMERS_VERSION="UNRESOLVED"
-EXPECTED_QUANTIZER_SHAPE="UNRESOLVED"
-EXPECTED_DECODER_TAP_COUNT="UNRESOLVED"
-EXPECTED_DECODER_TAP_SHAPES="UNRESOLVED"
+# These identities are derived from the committed source/API/tap contract:
+# source_contract_inspector.py authenticates the nine meta-device tap shapes
+# and the dedicated license gate binds the two custom-code file SHA-256 values
+# plus the exact CPU Torch/Transformers closure.  The preserved VAST inspector
+# manifests record the worker's local-snapshot dynamic-module paths and their
+# source hashes; those exact paths are the canonical identities emitted by the
+# dumper.  Real-weight execution and owner approval remain separate gates below.
+EXPECTED_MODEL_SOURCE_PATH="transformers_modules/hf/cfb29bb1bac555fe/modeling_moss_audio_tokenizer.py"
+EXPECTED_CONFIG_SOURCE_PATH="transformers_modules/hf/1f68fe91b6890e3e/configuration_moss_audio_tokenizer.py"
+EXPECTED_MODEL_SOURCE_SHA256="b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930"
+EXPECTED_CONFIG_SOURCE_SHA256="b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa"
+EXPECTED_TORCH_VERSION="2.7.1+cpu"
+EXPECTED_TRANSFORMERS_VERSION="5.10.4"
+EXPECTED_QUANTIZER_SHAPE="1x768x2"
+EXPECTED_DECODER_TAP_COUNT="9"
+EXPECTED_DECODER_TAP_SHAPES="1x192x8,1x768x8,1x384x16,1x768x16,1x384x32,1x768x32,1x384x64,1x240x64,1x1x15360"
 EXPECTED_CODES="17,520,1023,502,1005,484,987,466,969,448,951,430,933,412,915,394,274,777,256,759,238,741,220,723,202,705,184,687,166,669,148,651"
 
 MIN_VAST_MEM_KIB=30_000_000
@@ -436,11 +439,24 @@ run_self_test() {
     log 'self-test FAIL: worker/gate/dumper upstream revision contract diverged'; fail=1
   fi
   cases=$((cases + 1))
-  if ! grep -Fq 'EXPECTED_MODEL_SOURCE_PATH="UNRESOLVED"' "$script_path" \
-    || ! grep -Fq 'EXPECTED_TRANSFORMERS_VERSION="UNRESOLVED"' "$script_path" \
+  if grep -Eq '^EXPECTED_(MODEL_SOURCE_PATH|CONFIG_SOURCE_PATH|MODEL_SOURCE_SHA256|CONFIG_SOURCE_SHA256|TORCH_VERSION|TRANSFORMERS_VERSION|QUANTIZER_SHAPE|DECODER_TAP_COUNT|DECODER_TAP_SHAPES)="UNRESOLVED"$' "$script_path" \
     || ! grep -Fq '"status": "UNRESOLVED"' "$NANO_PROJECT/license_gate.py"; then
-    log 'self-test FAIL: unresolved source blocker was weakened'; fail=1
+    log 'self-test FAIL: stale identity sentinel or owner/API approval gate drifted'; fail=1
   fi
+  for required in \
+    'EXPECTED_MODEL_SOURCE_PATH="transformers_modules/hf/cfb29bb1bac555fe/modeling_moss_audio_tokenizer.py"' \
+    'EXPECTED_CONFIG_SOURCE_PATH="transformers_modules/hf/1f68fe91b6890e3e/configuration_moss_audio_tokenizer.py"' \
+    'EXPECTED_MODEL_SOURCE_SHA256="b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930"' \
+    'EXPECTED_CONFIG_SOURCE_SHA256="b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa"' \
+    'EXPECTED_TORCH_VERSION="2.7.1+cpu"' 'EXPECTED_TRANSFORMERS_VERSION="5.10.4"' \
+    'EXPECTED_QUANTIZER_SHAPE="1x768x2"' 'EXPECTED_DECODER_TAP_COUNT="9"' \
+    'EXPECTED_DECODER_TAP_SHAPES="1x192x8,1x768x8,1x384x16,1x768x16,1x384x32,1x768x32,1x384x64,1x240x64,1x1x15360"'; do
+    cases=$((cases + 1))
+    if ! grep -Fq -- "$required" "$script_path"; then
+      log "self-test FAIL: reviewed Nano identity drifted: $required"
+      fail=1
+    fi
+  done
   cases=$((cases + 1))
   EXPECTED_MODEL_SOURCE_PATH='transformers_modules/OpenMOSS-Team/Nano/model.py'
   EXPECTED_CONFIG_SOURCE_PATH='transformers_modules/OpenMOSS-Team/Nano/config.py'
