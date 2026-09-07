@@ -11,6 +11,7 @@ VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/qwen3_tts"
 API_SMOKE="$PARITY_PROJECT/api_smoke.py"
 MODEL_FREE_SMOKE="$PARITY_PROJECT/model_free_api_smoke.py"
+SOURCE_COMPAT="$PARITY_PROJECT/qwen_source_compat.py"
 LICENSE_GATE="$PARITY_PROJECT/license_gate.py"
 LICENSE_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 REFERENCE_AUDIO="$VOKRA_ROOT/tests/parity/utmos/ref-clip.wav"
@@ -90,7 +91,7 @@ require_absent_work_dir() {
   local target="$1" approval="$2" canonical protected other
   [[ ! -e "$target" && ! -L "$target" ]] || { die "work directory must be absent and non-symlink: $target"; return 2; }
   canonical="$(canonicalize_uncreated "$target")" || { die "cannot canonicalize work directory: $target"; return 2; }
-  for protected in "$VOKRA_ROOT" "$PARITY_PROJECT" "$API_SMOKE" "$MODEL_FREE_SMOKE" "$LICENSE_GATE" "$LICENSE_MANIFEST" \
+  for protected in "$VOKRA_ROOT" "$PARITY_PROJECT" "$API_SMOKE" "$MODEL_FREE_SMOKE" "$SOURCE_COMPAT" "$LICENSE_GATE" "$LICENSE_MANIFEST" \
     "$PARITY_PROJECT/uv.lock" "$PARITY_PROJECT/pyproject.toml" "$REFERENCE_AUDIO" "$approval"; do
     [[ -e "$protected" || -L "$protected" ]] || continue
     [[ ! -L "$protected" ]] || { die "protected path is symlinked: $protected"; return 2; }
@@ -137,7 +138,7 @@ require_tooling() {
     command -v "$tool" >/dev/null 2>&1 || { die "required tool missing: $tool"; return 2; }
   done
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || { die 'not a Vokra checkout'; return 2; }
-  [[ -f "$API_SMOKE" && ! -L "$API_SMOKE" && -f "$LICENSE_GATE" && ! -L "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && ! -L "$LICENSE_MANIFEST" ]] || { die 'Qwen3-TTS API smoke inputs are incomplete or symlinked'; return 2; }
+  [[ -f "$API_SMOKE" && ! -L "$API_SMOKE" && -f "$SOURCE_COMPAT" && ! -L "$SOURCE_COMPAT" && -f "$LICENSE_GATE" && ! -L "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && ! -L "$LICENSE_MANIFEST" ]] || { die 'Qwen3-TTS API smoke inputs are incomplete or symlinked'; return 2; }
   [[ -f "$REFERENCE_AUDIO" && ! -L "$REFERENCE_AUDIO" ]] || { die 'fixed reference audio is missing or symlinked'; return 2; }
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
 }
@@ -148,7 +149,7 @@ require_model_free_tooling() {
     command -v "$tool" >/dev/null 2>&1 || { die "required tool missing: $tool"; return 2; }
   done
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || { die 'not a Vokra checkout'; return 2; }
-  [[ -f "$MODEL_FREE_SMOKE" && ! -L "$MODEL_FREE_SMOKE" ]] || { die 'Qwen3-TTS model-free API smoke is missing or symlinked'; return 2; }
+  [[ -f "$MODEL_FREE_SMOKE" && ! -L "$MODEL_FREE_SMOKE" && -f "$SOURCE_COMPAT" && ! -L "$SOURCE_COMPAT" ]] || { die 'Qwen3-TTS model-free API smoke inputs are incomplete or symlinked'; return 2; }
   [[ -f "$PARITY_PROJECT/pyproject.toml" && ! -L "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" ]] || { die 'Qwen3-TTS model-free project inputs are incomplete or symlinked'; return 2; }
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
 }
@@ -219,6 +220,7 @@ run_self_test() {
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract token: $required"; failed=1; }
   done
   grep -Fq -- 'MODEL_FREE_SMOKE=' "$script_path" || { log 'self-test missing model-free worker'; failed=1; }
+  grep -Fq -- 'SOURCE_COMPAT=' "$script_path" || { log 'self-test missing shared compatibility adapter'; failed=1; }
   for helper in step require_model_free_tooling require_vast_host require_absent_work_dir download_source download_metadata_snapshot; do
     grep -Eq "^${helper}[[:space:]]*\(\)" "$script_path" || { log "self-test missing helper definition: $helper"; failed=1; }
   done

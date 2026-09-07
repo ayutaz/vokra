@@ -42,6 +42,20 @@ affected by `GHSA-xrqw-3rrv-vx5w` (<5.10.0). The reviewed dependency is now
 `BLOCKED_UNVERIFIED_API_SMOKE` until an authorized VAST model smoke test is
 completed. This dependency remediation does not claim API parity.
 
+The pinned upstream source contains one `@check_model_inputs()` decorator,
+while Transformers 5.10.4 exposes `check_model_inputs(func)`. Both API smoke
+phases therefore import the single shared bounded compatibility adapter from
+`qwen_source_compat.py` and apply it only inside the disposable clean VAST
+source checkout: target
+`qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py`, original
+bytes `40519`, original SHA-256
+`844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628`, exactly
+one replacement of `@check_model_inputs()` with `@check_model_inputs`, yielding
+patched bytes `40517` and patched SHA-256
+`a9da44f2f6b7ff0beb4dd43e8c4c48138e51423e9bcc515a253ea088381d3b9c`. The
+evidence status is `COMPATIBILITY_PATCH_APPLIED`; this is not raw upstream
+compatibility, and any source/hash/count/path drift blocks before import.
+
 The bounded API smoke is `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh`.
 It is VAST/Linux x86_64-only, requires `VOKRA_PUBLISH_ON_VAST=1`, and stages
 only the fixed 0.6B-Base release plus the authenticated 12-Hz decoder. The

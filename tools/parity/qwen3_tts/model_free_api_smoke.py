@@ -28,6 +28,15 @@ import types
 from pathlib import Path
 from typing import Any
 
+from qwen_source_compat import (
+    PATCH_TARGET as COMPATIBILITY_PATCH_TARGET,
+    PATCHED_BYTES as COMPATIBILITY_PATCHED_BYTES,
+    PATCHED_SHA256 as COMPATIBILITY_PATCHED_SHA256,
+    patch_source_checkout,
+    self_test_filesystem,
+    CompatibilityPatchError,
+)
+
 SCHEMA = "vokra-qwen3-tts-model-free-api-smoke-v1"
 SOURCE_REPOSITORY = "QwenLM/Qwen3-TTS"
 SOURCE_URL = "https://github.com/QwenLM/Qwen3-TTS.git"
@@ -38,6 +47,7 @@ SOURCE_FILES = (
     "qwen_tts/core/models/configuration_qwen3_tts.py",
     "qwen_tts/core/models/processing_qwen3_tts.py",
     "qwen_tts/inference/qwen3_tts_model.py",
+    "qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py",
 )
 VARIANTS: dict[str, dict[str, Any]] = {
     "0.6b-base": {
@@ -334,8 +344,19 @@ def verify_source(source: Path) -> dict[str, Any]:
         path = source / relative
         require_regular(path, f"official source {relative}")
         files[relative] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
+    try:
+        patch = patch_source_checkout(source)
+    except CompatibilityPatchError as error:
+        raise ProbeError(str(error)) from error
+    files[COMPATIBILITY_PATCH_TARGET] = {
+        "original_bytes": patch["original_bytes"],
+        "original_sha256": patch["original_sha256"],
+        "bytes": patch["patched_bytes"],
+        "sha256": patch["patched_sha256"],
+    }
     return {"repository": SOURCE_REPOSITORY, "url": SOURCE_URL, "revision": SOURCE_REVISION,
-            "package_version": SOURCE_PACKAGE_VERSION, "files": files}
+            "package_version": SOURCE_PACKAGE_VERSION, "files": files,
+            "compatibility_patch": patch}
 
 
 def verify_metadata(snapshot: Path, variant: str) -> dict[str, Any]:
@@ -527,6 +548,9 @@ def self_test() -> int:
         assert all(HEX40.fullmatch(identity["revision"]) for identity in VARIANTS.values())
         assert all(HEX64.fullmatch(identity["config_sha256"]) for identity in VARIANTS.values())
         assert HEX64.fullmatch(PROJECT_SHA256) and HEX64.fullmatch(LOCK_SHA256)
+        assert COMPATIBILITY_PATCHED_BYTES == 40517
+        assert HEX64.fullmatch(COMPATIBILITY_PATCHED_SHA256)
+        self_test_filesystem()
         lock = tomllib.loads((Path(__file__).resolve().parent / "uv.lock").read_text(encoding="utf-8"))
         validate_cpu_torch_closure(lock["package"])
         for bad in (

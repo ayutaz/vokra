@@ -93,7 +93,7 @@ run_audit() {
   command -v uv >/dev/null 2>&1 || { echo "qwen3-tts dependency audit: uv unavailable" >&2; return 2; }
   command -v readelf >/dev/null 2>&1 || { echo "qwen3-tts dependency audit: readelf unavailable" >&2; return 2; }
   command -v git >/dev/null 2>&1 || { echo "qwen3-tts dependency audit: git unavailable" >&2; return 2; }
-  for input in pyproject.toml uv.lock license_gate_manifest.json license_gate.py dependency_audit.py; do
+  for input in pyproject.toml uv.lock license_gate_manifest.json license_gate.py dependency_audit.py qwen_source_compat.py; do
     [[ -f "$PARITY_PROJECT/$input" && ! -L "$PARITY_PROJECT/$input" ]] || return 2
   done
   [[ "$output" == /* ]] || return 2
