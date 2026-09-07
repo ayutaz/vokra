@@ -36,5 +36,31 @@ Run only the dependency-free gate and its self-test locally:
 uv run --no-project --python 3.12 python license_gate.py --self-test
 ```
 
+Before owner approval, the fixed-revision source contract can be collected on
+a disposable VAST Linux host without running a model:
+
+```text
+scripts/publish/vast-ai/run-moss-audio-tokenizer-nano-inspection.sh \
+  --expected-head <40-hex-commit>
+```
+
+The inspection materializes only the six non-weight files on VAST. It does not
+download the model shard: that shard is authenticated solely from the expanded
+HF server-tree Git/LFS identity and the checkpoint index reference. The report
+records materialized SHA-256 and canonical Git-blob SHA-1 values for the six
+files and server size/LFS identity for the shard, then checks the official
+`AutoConfig.from_pretrained`
+plus meta-device
+`AutoModel.from_config` route. Decoder and audio shapes are observed by
+meta-device shape propagation; no safetensors tensor is loaded or executed.
+The output remains `BLOCKED` with `OWNER_SIGNOFF_REQUIRED`, `NOT_RUN`, and
+`NO_UPLOAD`. A complete inspection intentionally exits 2 so its evidence must
+be recovered and reviewed before any conversion or parity worker is started.
+An `INSPECTION_ERROR` manifest is never treated as complete.
+
+Evidence output is no-clobber: the inspector refuses an existing output path,
+including a prior evidence directory, and all blocked/error outcomes remain
+exit status 2.
+
 The owner approval path is `MOSS_AUDIO_TOKENIZER_NANO_LICENSE_APPROVAL`; the
 tracked manifest remains `OWNER_SIGNOFF_REQUIRED` and cannot be self-approved.
