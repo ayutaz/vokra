@@ -141,6 +141,7 @@ pub const KYUTAI_STT_TOKENIZER_SHA256: &str =
 pub const KYUTAI_STT_TOKENIZER_ARCH: &str = "kyutai-stt-tokenizer";
 /// Dedicated tokenizer metadata schema version.
 pub const KYUTAI_STT_TOKENIZER_SCHEMA: &str = "sentencepiece-decode-v1";
+/// Model-name metadata stamped on the separately-bound tokenizer GGUF.
 pub const KYUTAI_STT_TOKENIZER_COMPONENT_NAME: &str = "kyutai-stt-2.6b-en-tokenizer";
 const KEY_TOKENIZER_SCHEMA: &str = "vokra.kyutai_stt.tokenizer.schema";
 const KEY_TOKENIZER_CARD: &str = "vokra.kyutai_stt.tokenizer.card";
@@ -3720,6 +3721,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let table_digest = table_digest_override
+            .map(str::to_owned)
             .unwrap_or_else(|| tokenizer_table_sha256(&table_pieces, &table_types));
         if table_digest_override.is_some() {
             pieces[4] = GgufMetadataValue::String("tampered".into());
@@ -3750,7 +3752,7 @@ mod tests {
         builder.add_u32(KEY_TOKENIZER_PAD_ID, 3);
         builder.add_u32(KEY_TOKENIZER_BYTES, KYUTAI_STT_TOKENIZER_BYTES as u32);
         builder.add_string(KEY_TOKENIZER_SHA256, KYUTAI_STT_TOKENIZER_SHA256);
-        builder.add_string(KEY_TOKENIZER_TABLE_SHA256, table_digest);
+        builder.add_string(KEY_TOKENIZER_TABLE_SHA256, &table_digest);
         builder.add_string(
             KEY_TOKENIZER_GIT_BLOB_SHA1,
             KYUTAI_STT_TOKENIZER_GIT_BLOB_SHA1,
@@ -3771,29 +3773,40 @@ mod tests {
     fn dedicated_tokenizer_decodes_boundaries_bytes_and_suppressed_ids() {
         let tokenizer = KyutaiSttTokenizer::from_gguf(&tokenizer_fixture(true)).expect("schema");
         assert_eq!(tokenizer.vocab_size(), 4_000);
-        assert_eq!(tokenizer.decode(&[0, 4, 3, 5, 6, 7, 8]), " hello world€");
         assert_eq!(
-            tokenizer.decode(&[10]),
+            tokenizer
+                .decode(&[0, 4, 3, 5, 6, 7, 8])
+                .expect("live tokenizer decode"),
+            " hello world€"
+        );
+        assert_eq!(
+            tokenizer.decode(&[10]).expect("live control decode"),
             "<control>",
             "live route only suppresses 0/3"
         );
         assert_eq!(
-            tokenizer.decode(&[9]),
+            tokenizer.decode(&[9]).expect("live unused decode"),
             "<0x00>",
             "UNUSED=5 is not byte fallback"
         );
         assert_eq!(
-            tokenizer.decode_text_tokens(&[0, 4, 3, 5, 6, 7, 8, 10]),
+            tokenizer
+                .decode_text_tokens(&[0, 4, 3, 5, 6, 7, 8, 10])
+                .expect("accumulated tokenizer decode"),
             "hello world€",
             "accumulated route strips only the first dummy boundary and skips controls"
         );
         assert_eq!(
-            tokenizer.decode_text_tokens(&[9]),
+            tokenizer
+                .decode_text_tokens(&[9])
+                .expect("accumulated unused decode"),
             "<0x00>",
             "UNUSED=5 remains a literal piece"
         );
         assert_eq!(
-            tokenizer.decode_text_tokens(&[11]),
+            tokenizer
+                .decode_text_tokens(&[11])
+                .expect("accumulated invalid byte decode"),
             "\u{FFFD}",
             "invalid byte fallback is replacement text"
         );
