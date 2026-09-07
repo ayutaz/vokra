@@ -2457,6 +2457,22 @@ impl FireredAsrAed {
         // only after the native byte-level authentication gates pass. Hash
         // metadata is required alongside each blob so a partial/corrupt
         // artifact cannot look like a complete release.
+        let sidecar_keys = [
+            KEY_CMVN_TEXT,
+            KEY_CMVN_TEXT_SHA256,
+            KEY_DICT_TEXT,
+            KEY_DICT_TEXT_SHA256,
+        ];
+        let sidecar_present = sidecar_keys
+            .iter()
+            .filter(|key| file.get(key).is_some())
+            .count();
+        if sidecar_present != 0 && sidecar_present != sidecar_keys.len() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l: CMVN and dict sidecar blobs/hashes must be stamped together"
+                    .to_owned(),
+            ));
+        }
         let cmvn_blob = read_u8_blob(file, KEY_CMVN_TEXT, CMVN_TEXT_BYTES as usize)?;
         let dict_blob = read_u8_blob(file, KEY_DICT_TEXT, DICT_TEXT_BYTES as usize)?;
         let cmvn_hash = file.get(KEY_CMVN_TEXT_SHA256).is_some();
@@ -3202,7 +3218,7 @@ fn forward_loud_partial_with_dictionary(
          dispatch exists after exact converter provenance binding, but VAST \
          numerical parity is pending and PCM-to-feature transcription remains \
          closed. \
-         (3) OUTPUT TEXT CONTRACT: an AED decoder emits token ids in a \
+         (3) OUTPUT/INPUT TEXT CONTRACT: an AED decoder emits token ids in a \
          `{KEY_VOCAB_SIZE}`-wide id space. Output dictionary binding — \
          {dictionary_status}. The upstream `{KEY_TOKENIZER_MODEL}` companion \
          is for text-to-training-IDs and is intentionally not an inference \
@@ -3508,6 +3524,19 @@ mod tests {
                 values: vec![GgufMetadataValue::String("not bytes".to_owned())],
             }),
         );
+        add_u8_blob(
+            &mut wrong_type,
+            KEY_DICT_TEXT,
+            &vec![0; DICT_TEXT_BYTES as usize],
+        );
+        wrong_type.add_string(
+            KEY_CMVN_TEXT_SHA256,
+            &hex_digest(&AUTHENTICATED_CMVN_SHA256),
+        );
+        wrong_type.add_string(
+            KEY_DICT_TEXT_SHA256,
+            &hex_digest(&AUTHENTICATED_DICT_SHA256),
+        );
         let error = FireredAsrAed::from_gguf(&finish(&wrong_type)).expect_err("wrong U8 type");
         assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("Array<U8>")));
 
@@ -3516,6 +3545,19 @@ mod tests {
             &mut oversized,
             KEY_CMVN_TEXT,
             &vec![0; CMVN_TEXT_BYTES as usize + 1],
+        );
+        add_u8_blob(
+            &mut oversized,
+            KEY_DICT_TEXT,
+            &vec![0; DICT_TEXT_BYTES as usize],
+        );
+        oversized.add_string(
+            KEY_CMVN_TEXT_SHA256,
+            &hex_digest(&AUTHENTICATED_CMVN_SHA256),
+        );
+        oversized.add_string(
+            KEY_DICT_TEXT_SHA256,
+            &hex_digest(&AUTHENTICATED_DICT_SHA256),
         );
         let error = FireredAsrAed::from_gguf(&finish(&oversized)).expect_err("oversized blob");
         assert!(
@@ -3591,7 +3633,7 @@ mod tests {
         wrong_name.add_string(KEY_SEARCH_NAME, "greedy");
         let error = FireredAsrAed::from_gguf(&finish(&wrong_name)).expect_err("wrong search name");
         assert!(
-            matches!(error, VokraError::ModelLoad(message) if message.contains("expected batch_beam_search"))
+            matches!(error, VokraError::ModelLoad(message) if message.contains("expected") && message.contains(SEARCH_NAME))
         );
 
         let mut wrong_int = base_builder(Some(LicenseClass::Permissive));
