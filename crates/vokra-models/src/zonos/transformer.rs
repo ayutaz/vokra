@@ -106,7 +106,7 @@ impl KvCache {
                 && block.norm_2_w.len() == d
                 && block.norm_2_b.len() == d
                 && block.mlp_fc1.len() == d * bb.mlp_fc1_out()
-                && block.mlp_fc2.len() == bb.d_intermediate * d
+                && block.mlp_fc2.len() == bb.attn_mlp_d_intermediate * d
         });
         if !block_shapes_valid
             || weights
@@ -258,10 +258,10 @@ impl KvCache {
                 None,
                 &mut projected,
             )?;
-            let mut activated = vec![0.0; bb.d_intermediate];
-            let mut gate = vec![0.0; bb.d_intermediate];
-            compute.silu_f32(&projected[bb.d_intermediate..], &mut gate)?;
-            for index in 0..bb.d_intermediate {
+            let mut activated = vec![0.0; bb.attn_mlp_d_intermediate];
+            let mut gate = vec![0.0; bb.attn_mlp_d_intermediate];
+            compute.silu_f32(&projected[bb.attn_mlp_d_intermediate..], &mut gate)?;
+            for index in 0..bb.attn_mlp_d_intermediate {
                 // Official `_torch.py`: y, gate = fc1.chunk(2), then
                 // fc2(y * silu(gate)).
                 activated[index] = projected[index] * gate[index];
@@ -270,7 +270,7 @@ impl KvCache {
             compute.gemm_f32(
                 1,
                 d,
-                bb.d_intermediate,
+                bb.attn_mlp_d_intermediate,
                 &activated,
                 &block.mlp_fc2,
                 None,
@@ -533,15 +533,16 @@ mod tests {
                     &block.norm_2_b,
                     bb.norm_epsilon,
                 );
-                let projected = scalar_linear(&normed, &block.mlp_fc1, d, 2 * bb.d_intermediate);
+                let projected =
+                    scalar_linear(&normed, &block.mlp_fc1, d, 2 * bb.attn_mlp_d_intermediate);
                 // Keep the oracle's SiLU expression explicit and independent
                 // of the production Compute implementation.
-                let activated: Vec<f32> = projected[..bb.d_intermediate]
+                let activated: Vec<f32> = projected[..bb.attn_mlp_d_intermediate]
                     .iter()
-                    .zip(&projected[bb.d_intermediate..])
+                    .zip(&projected[bb.attn_mlp_d_intermediate..])
                     .map(|(value, gate)| value * (*gate / (1.0 + (-*gate).exp())))
                     .collect();
-                let ffn = scalar_linear(&activated, &block.mlp_fc2, bb.d_intermediate, d);
+                let ffn = scalar_linear(&activated, &block.mlp_fc2, bb.attn_mlp_d_intermediate, d);
                 for (value, update) in hidden[position].iter_mut().zip(ffn) {
                     *value += update;
                 }

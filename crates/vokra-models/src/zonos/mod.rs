@@ -13,7 +13,7 @@
 //!
 //! - **Backbone** (`config.backbone`): a single uniform stack of
 //!   `n_layer=26` GQA transformer blocks. `d_model=2048`,
-//!   `attn_mlp_d_intermediate=8192` (SwiGLU inner width),
+//!   `d_intermediate=0`, `attn_mlp_d_intermediate=8192` (SwiGLU inner width),
 //!   `norm_epsilon=1e-05`. **`rms_norm=false`**: Zonos uses
 //!   `LayerNorm(weight + bias)`, **not** RMSNorm — this is the config's
 //!   own toggle and diverges from the family default (Dia / CosyVoice2
@@ -26,7 +26,7 @@
 //!   contains no SSM layers.
 //! - **SwiGLU MLP** (upstream `zonos/backbone/_torch.py`):
 //!   `y, gate = fc1(x).chunk(2, dim=-1); fc2(y * silu(gate))`. `fc1` has
-//!   width `2 * d_intermediate` (packed for the chunk split).
+//!   width `2 * attn_mlp_d_intermediate` (packed for the chunk split).
 //! - **Prefix conditioner** (`config.prefix_conditioner`): 7 typed
 //!   conditioners consumed positionally before the codebook tokens —
 //!   espeak phonemes, speaker embedding (`cond_dim=128`), and 5 Fourier /
@@ -206,10 +206,14 @@ pub struct ZonosBackboneConfig {
     pub n_layer: usize,
     /// `d_model` — hidden width, 2048.
     pub d_model: usize,
-    /// `attn_mlp_d_intermediate` — SwiGLU FFN inner width, 8192. Note the
-    /// packed fc1 width is `2 * d_intermediate` because SwiGLU chunks the
-    /// pre-activation into `(y, gate)`.
+    /// `d_intermediate` — the source config's legacy SSM width. It is `0` for
+    /// the transformer checkpoint and must remain distinct from the attention
+    /// MLP width below.
     pub d_intermediate: usize,
+    /// `attn_mlp_d_intermediate` — SwiGLU FFN inner width, 8192. Note the
+    /// packed fc1 width is `2 * attn_mlp_d_intermediate` because SwiGLU
+    /// chunks the pre-activation into `(y, gate)`.
+    pub attn_mlp_d_intermediate: usize,
     /// `attn_cfg.num_heads` — Q-heads (GQA), 16.
     pub num_heads: usize,
     /// `attn_cfg.num_heads_kv` — KV-heads (GQA broadcast), 4.
@@ -242,7 +246,8 @@ impl ZonosBackboneConfig {
     pub fn is_well_formed(&self) -> bool {
         self.n_layer != 0
             && self.d_model != 0
-            && self.d_intermediate != 0
+            && self.d_intermediate == 0
+            && self.attn_mlp_d_intermediate != 0
             && self.num_heads != 0
             && self.num_heads_kv != 0
             && self.rotary_emb_dim != 0
@@ -272,10 +277,10 @@ impl ZonosBackboneConfig {
     }
 
     /// Packed fc1 output width — SwiGLU chunks into `(y, gate)`, so the
-    /// fc1 emits `2 * d_intermediate`.
+    /// fc1 emits `2 * attn_mlp_d_intermediate`.
     #[must_use]
     pub fn mlp_fc1_out(&self) -> usize {
-        2 * self.d_intermediate
+        2 * self.attn_mlp_d_intermediate
     }
 }
 
@@ -325,7 +330,8 @@ impl ZonosConfig {
             backbone: ZonosBackboneConfig {
                 n_layer: 26,
                 d_model: 2048,
-                d_intermediate: 8192,
+                d_intermediate: 0,
+                attn_mlp_d_intermediate: 8192,
                 num_heads: 16,
                 num_heads_kv: 4,
                 rotary_emb_dim: 128,
@@ -407,7 +413,8 @@ impl ZonosConfig {
             backbone: ZonosBackboneConfig {
                 n_layer: 2,
                 d_model: 16,
-                d_intermediate: 32,
+                d_intermediate: 0,
+                attn_mlp_d_intermediate: 32,
                 num_heads: 4,
                 num_heads_kv: 2,
                 rotary_emb_dim: 4,
@@ -464,13 +471,14 @@ impl ZonosConfig {
         if !self.backbone.is_well_formed() {
             return Err(VokraError::InvalidArgument(format!(
                 "zonos config: backbone ill-formed (n_layer={}, d_model={}, \
-                 d_intermediate={}, num_heads={}, num_heads_kv={}, \
+                 d_intermediate={}, attn_mlp_d_intermediate={}, num_heads={}, num_heads_kv={}, \
                  rotary_emb_dim={}) — expected GQA well-formed \
                  (num_heads % num_heads_kv == 0, d_model % num_heads == 0, \
                  rotary_emb_dim == d_model / num_heads)",
                 self.backbone.n_layer,
                 self.backbone.d_model,
                 self.backbone.d_intermediate,
+                self.backbone.attn_mlp_d_intermediate,
                 self.backbone.num_heads,
                 self.backbone.num_heads_kv,
                 self.backbone.rotary_emb_dim,
@@ -703,10 +711,10 @@ pub struct ZonosBlockWeights {
     pub norm_2_w: Vec<f32>,
     /// Pre-FFN LayerNorm β, shape `[d_model]`.
     pub norm_2_b: Vec<f32>,
-    /// SwiGLU fc1 (transposed), shape `[d_model, 2 * d_intermediate]`.
+    /// SwiGLU fc1 (transposed), shape `[d_model, 2 * attn_mlp_d_intermediate]`.
     /// Chunked into `(y, gate)` at forward.
     pub mlp_fc1: Vec<f32>,
-    /// SwiGLU fc2 (transposed), shape `[d_intermediate, d_model]`.
+    /// SwiGLU fc2 (transposed), shape `[attn_mlp_d_intermediate, d_model]`.
     pub mlp_fc2: Vec<f32>,
 }
 
@@ -799,8 +807,8 @@ impl ZonosWeights {
                 mlp_fc1: xavier(&mut rng, bb.d_model * mlp_fc1_out, bb.d_model, mlp_fc1_out),
                 mlp_fc2: xavier(
                     &mut rng,
-                    bb.d_intermediate * bb.d_model,
-                    bb.d_intermediate,
+                    bb.attn_mlp_d_intermediate * bb.d_model,
+                    bb.attn_mlp_d_intermediate,
                     bb.d_model,
                 ),
             });
@@ -1280,7 +1288,11 @@ impl ZonosTts {
                 ("norm_2_w", blk.norm_2_w.len(), bb.d_model),
                 ("norm_2_b", blk.norm_2_b.len(), bb.d_model),
                 ("mlp_fc1", blk.mlp_fc1.len(), bb.d_model * mlp_fc1_out),
-                ("mlp_fc2", blk.mlp_fc2.len(), bb.d_intermediate * bb.d_model),
+                (
+                    "mlp_fc2",
+                    blk.mlp_fc2.len(),
+                    bb.attn_mlp_d_intermediate * bb.d_model,
+                ),
             ] {
                 if len != expected {
                     return Err(VokraError::InvalidArgument(format!(
@@ -2522,18 +2534,18 @@ fn transformer_logits(
             let row = &normed[frame * d..(frame + 1) * d];
             let mut projected = vec![0.0; fc1_width];
             compute.gemm_f32(1, fc1_width, d, row, &block.mlp_fc1, None, &mut projected)?;
-            let mut gate = vec![0.0; bb.d_intermediate];
-            gate.copy_from_slice(&projected[bb.d_intermediate..]);
-            let mut silu_gate = vec![0.0; bb.d_intermediate];
+            let mut gate = vec![0.0; bb.attn_mlp_d_intermediate];
+            gate.copy_from_slice(&projected[bb.attn_mlp_d_intermediate..]);
+            let mut silu_gate = vec![0.0; bb.attn_mlp_d_intermediate];
             compute.silu_f32(&gate, &mut silu_gate)?;
-            let mut activated = vec![0.0; bb.d_intermediate];
-            for intermediate in 0..bb.d_intermediate {
+            let mut activated = vec![0.0; bb.attn_mlp_d_intermediate];
+            for intermediate in 0..bb.attn_mlp_d_intermediate {
                 activated[intermediate] = projected[intermediate] * silu_gate[intermediate];
             }
             compute.gemm_f32(
                 1,
                 d,
-                bb.d_intermediate,
+                bb.attn_mlp_d_intermediate,
                 &activated,
                 &block.mlp_fc2,
                 None,
@@ -2694,7 +2706,8 @@ mod tests {
         // config.backbone
         assert_eq!(c.backbone.n_layer, 26);
         assert_eq!(c.backbone.d_model, 2048);
-        assert_eq!(c.backbone.d_intermediate, 8192);
+        assert_eq!(c.backbone.d_intermediate, 0);
+        assert_eq!(c.backbone.attn_mlp_d_intermediate, 8192);
         assert_eq!(c.backbone.num_heads, 16);
         assert_eq!(c.backbone.num_heads_kv, 4);
         assert_eq!(c.backbone.rotary_emb_dim, 128);
@@ -2932,7 +2945,7 @@ mod tests {
             w1.blocks[0].qkv_proj.len(),
             c.backbone.d_model * (c.backbone.q_hidden() + 2 * c.backbone.kv_hidden())
         );
-        // Packed SwiGLU fc1 = d_model * 2 * d_intermediate.
+        // Packed SwiGLU fc1 = d_model * 2 * attn_mlp_d_intermediate.
         assert_eq!(
             w1.blocks[0].mlp_fc1.len(),
             c.backbone.d_model * c.backbone.mlp_fc1_out()

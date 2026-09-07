@@ -111,7 +111,11 @@ self_test() {
     'reference-codes.u32le' 'native-cpu.log' '--native-log' 'AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE' 'exit 2' \
     '--approval-evidence' '--approval-evidence-sha256' '--expected-head' 'preflight-only' 'write_transfer_manifest' \
     'CARGO_BUILD_JOBS=1' '--offline --locked' 'require_native_cpu_log' 'cpu_sentinel_summary=' 'metal_status=NOT_RUN' 'NO_UPLOAD' \
-    'LICENSE' '11357' '7a4a3ea2424c09fbe48d455aed1eaa94d9124835' '58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd' 'apache-2.0' 'card_data_license'; do
+    'LICENSE' '11357' '7a4a3ea2424c09fbe48d455aed1eaa94d9124835' '58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd' 'apache-2.0' 'card_data_license' \
+    'source_semantic_marker_status' 'expected_transformer_config' 'eos_token_id: int = 1024' 'masked_token_id: int = 1025' \
+    'self.required_keys = {c.name for c in self.conditioners if c.uncond_vector is None}' \
+    'logits[..., 1025:].fill_(-torch.inf)' 'unknown_token = -1' \
+    'DacModel.from_pretrained("descript/dac_44khz")' 'roll(k + 1)' 'attn_mlp_d_intermediate'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing Zonos contract: $token" >&2; failed=1; }
   done
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-zonos-cpu-log.XXXXXX")"

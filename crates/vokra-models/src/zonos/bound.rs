@@ -84,7 +84,8 @@ impl ZonosCheckpoint {
         config.validate_v0_1_transformer_contract()?;
         if config.backbone.n_layer != 26
             || config.backbone.d_model != 2048
-            || config.backbone.d_intermediate != 8192
+            || config.backbone.d_intermediate != 0
+            || config.backbone.attn_mlp_d_intermediate != 8192
             || config.num_codebooks != 9
             || config.codebook_vocab != 1026
             || config.head_vocab != 1025
@@ -150,7 +151,7 @@ impl ZonosCheckpoint {
                     file,
                     LABEL,
                     &format!("{prefix}.mlp.fc1.weight"),
-                    2 * bb.d_intermediate,
+                    2 * bb.attn_mlp_d_intermediate,
                     bb.d_model,
                 )?,
                 mlp_fc2: load_gemm_weight(
@@ -158,7 +159,7 @@ impl ZonosCheckpoint {
                     LABEL,
                     &format!("{prefix}.mlp.fc2.weight"),
                     bb.d_model,
-                    bb.d_intermediate,
+                    bb.attn_mlp_d_intermediate,
                 )?,
             });
         }

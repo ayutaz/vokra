@@ -103,10 +103,56 @@ def fixed_source(source: Path) -> None:
         raise RuntimeError("Zonos source origin is not the fixed official repository")
     if git("status", "--porcelain", "--untracked-files=all"):
         raise RuntimeError("Zonos source checkout is dirty")
-    for role in ("zonos/model.py", "zonos/conditioning.py", "zonos/codebook_pattern.py"):
+    # Keep this list in lockstep with zonos_inspect.SOURCE_MARKERS.  The
+    # reference process has its own source checkout and therefore must enforce
+    # the semantic contract independently of the evidence inspector.
+    roles = {
+        "zonos/config.py": (
+            "eos_token_id: int = 1024",
+            "masked_token_id: int = 1025",
+            'd_intermediate: int = 0',
+            'attn_mlp_d_intermediate: int = 0',
+        ),
+        "zonos/conditioning.py": (
+            "self.uncond_vector = nn.Parameter(torch.zeros(output_dim))",
+            "self.phoneme_embedder = nn.Embedding(len(SPECIAL_TOKEN_IDS) + len(symbols), output_dim)",
+            "self.required_keys = {c.name for c in self.conditioners if c.uncond_vector is None}",
+            "return self.norm(self.project(torch.cat(conds, dim=-2)))",
+            "cond_dict[k] /= cond_dict[k].sum(dim=-1)",
+        ),
+        "zonos/model.py": (
+            "self.embeddings = nn.ModuleList([nn.Embedding(1026, dim) for _ in range(self.autoencoder.num_codebooks)])",
+            "self.heads = nn.ModuleList([nn.Linear(dim, 1025, bias=False) for _ in range(self.autoencoder.num_codebooks)])",
+            "logits[..., 1025:].fill_(-torch.inf)",
+            "unknown_token = -1",
+            "eos_in_cb0 = next_token[:, 0] == self.eos_token_id",
+            "out_codes.masked_fill_(out_codes >= 1024, 0)",
+        ),
+        "zonos/autoencoder.py": (
+            'DacModel.from_pretrained("descript/dac_44khz")',
+            "self.codebook_size = self.dac.config.codebook_size",
+            "self.num_codebooks = self.dac.quantizer.n_codebooks",
+            "self.sampling_rate = self.dac.config.sampling_rate",
+        ),
+        "zonos/codebook_pattern.py": (
+            "return torch.stack([codes[:, k].roll(k + 1) for k in range(codes.shape[1])], dim=1)",
+            "return torch.stack([codes[:, k, k + 1 : seq_len - n_q + k + 1] for k in range(n_q)], dim=1)",
+        ),
+        "zonos/backbone/_torch.py": (
+            "self.layers = nn.ModuleList(TransformerBlock(config, i) for i in range(config.n_layer))",
+            "self.norm_f = nn.LayerNorm(config.d_model, eps=config.norm_epsilon)",
+            "x = x + self.mixer(self.norm(x), inference_params, freqs_cis)",
+            "y, gate = self.fc1(x).chunk(2, dim=-1)",
+        ),
+    }
+    for role, markers in roles.items():
         role_path = source / role
         if not role_path.is_file() or role_path.is_symlink():
             raise RuntimeError(f"official Zonos source role is missing: {role}")
+        contents = role_path.read_text(encoding="utf-8")
+        missing = [marker for marker in markers if marker not in contents]
+        if missing:
+            raise RuntimeError(f"official Zonos source semantic markers missing in {role}: {missing!r}")
 
 
 def take(data: bytes, cursor: list[int], count: int) -> bytes:

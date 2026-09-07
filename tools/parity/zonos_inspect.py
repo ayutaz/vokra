@@ -47,6 +47,49 @@ SOURCE_ROLES = (
     "zonos/backbone/_torch.py",
     "zonos/speaker_cloning.py",
 )
+# These are exact, source-authenticated anchors for the semantics that cannot
+# be established by a tensor-name/shape digest alone.  Keep the snippets
+# small and literal: a pinned checkout with a changed implementation must
+# block evidence collection instead of being treated as equivalent.
+SOURCE_MARKERS = {
+    "zonos/config.py": (
+        "eos_token_id: int = 1024",
+        "masked_token_id: int = 1025",
+        'd_intermediate: int = 0',
+        'attn_mlp_d_intermediate: int = 0',
+    ),
+    "zonos/conditioning.py": (
+        "self.uncond_vector = nn.Parameter(torch.zeros(output_dim))",
+        "self.phoneme_embedder = nn.Embedding(len(SPECIAL_TOKEN_IDS) + len(symbols), output_dim)",
+        "self.required_keys = {c.name for c in self.conditioners if c.uncond_vector is None}",
+        "return self.norm(self.project(torch.cat(conds, dim=-2)))",
+        "cond_dict[k] /= cond_dict[k].sum(dim=-1)",
+    ),
+    "zonos/model.py": (
+        "self.embeddings = nn.ModuleList([nn.Embedding(1026, dim) for _ in range(self.autoencoder.num_codebooks)])",
+        "self.heads = nn.ModuleList([nn.Linear(dim, 1025, bias=False) for _ in range(self.autoencoder.num_codebooks)])",
+        "logits[..., 1025:].fill_(-torch.inf)",
+        "unknown_token = -1",
+        "eos_in_cb0 = next_token[:, 0] == self.eos_token_id",
+        "out_codes.masked_fill_(out_codes >= 1024, 0)",
+    ),
+    "zonos/autoencoder.py": (
+        'DacModel.from_pretrained("descript/dac_44khz")',
+        "self.codebook_size = self.dac.config.codebook_size",
+        "self.num_codebooks = self.dac.quantizer.n_codebooks",
+        "self.sampling_rate = self.dac.config.sampling_rate",
+    ),
+    "zonos/codebook_pattern.py": (
+        "return torch.stack([codes[:, k].roll(k + 1) for k in range(codes.shape[1])], dim=1)",
+        "return torch.stack([codes[:, k, k + 1 : seq_len - n_q + k + 1] for k in range(n_q)], dim=1)",
+    ),
+    "zonos/backbone/_torch.py": (
+        "self.layers = nn.ModuleList(TransformerBlock(config, i) for i in range(config.n_layer))",
+        "self.norm_f = nn.LayerNorm(config.d_model, eps=config.norm_epsilon)",
+        "x = x + self.mixer(self.norm(x), inference_params, freqs_cis)",
+        "y, gate = self.fc1(x).chunk(2, dim=-1)",
+    ),
+}
 STATUS_FIELDS = {
     "status": "BLOCKED",
     "evidence_stage": "AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE",
@@ -155,6 +198,25 @@ def source_license_identity(source: Path, blockers: list[str]) -> dict[str, Any]
     except (OSError, ValueError) as error:
         blockers.append(f"Zyphra/Zonos source LICENSE blocked: {error}")
         return {"status": "MISMATCH", "error": str(error)}
+
+
+def source_semantic_marker_status(source: Path) -> dict[str, Any]:
+    """Return exact marker coverage for each fixed upstream source role."""
+    result: dict[str, Any] = {}
+    for role, markers in SOURCE_MARKERS.items():
+        path = source / role
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            result[role] = {"status": "MISMATCH", "markers": [], "error": str(error)}
+            continue
+        missing = [marker for marker in markers if marker not in contents]
+        result[role] = {
+            "status": "MATCHED" if not missing else "MISMATCH",
+            "markers": list(markers),
+            "missing": missing,
+        }
+    return result
 
 
 def local_files(root: Path) -> dict[str, Path]:
@@ -309,6 +371,59 @@ def tensor_manifest(path: Path, blockers: list[str], expected_revision: str = HF
         return {"status": "BLOCKED_MANIFEST", "error": str(error)}
 
 
+def expected_transformer_config() -> dict[str, Any]:
+    """Return the exact v0.1-transformer config contract from the pinned HF snapshot."""
+    return {
+        "backbone": {
+            "d_model": 2048,
+            "d_intermediate": 0,
+            "attn_mlp_d_intermediate": 8192,
+            "n_layer": 26,
+            "ssm_cfg": {},
+            "attn_layer_idx": list(range(26)),
+            "attn_cfg": {
+                "causal": True,
+                "num_heads": 16,
+                "num_heads_kv": 4,
+                "rotary_emb_dim": 128,
+                "rotary_emb_interleaved": True,
+                "qkv_proj_bias": False,
+                "out_proj_bias": False,
+            },
+            "rms_norm": False,
+            "residual_in_fp32": False,
+            "norm_epsilon": 1e-5,
+        },
+        "prefix_conditioner": {
+            "conditioners": [
+                {"type": "EspeakPhonemeConditioner", "name": "espeak"},
+                {"cond_dim": 128, "uncond_type": "learned", "projection": "linear", "type": "PassthroughConditioner", "name": "speaker"},
+                {"input_dim": 8, "uncond_type": "learned", "type": "FourierConditioner", "name": "emotion"},
+                {"min_val": 0, "max_val": 24000, "uncond_type": "learned", "type": "FourierConditioner", "name": "fmax"},
+                {"min_val": 0, "max_val": 400, "uncond_type": "learned", "type": "FourierConditioner", "name": "pitch_std"},
+                {"min_val": 0, "max_val": 40, "uncond_type": "learned", "type": "FourierConditioner", "name": "speaking_rate"},
+                {"min_val": -1, "max_val": 126, "uncond_type": "learned", "type": "IntegerConditioner", "name": "language_id"},
+            ],
+            "projection": "linear",
+        },
+        "eos_token_id": 1024,
+        "masked_token_id": 1025,
+    }
+
+
+def transformer_config(path: Path, blockers: list[str]) -> dict[str, Any]:
+    """Authenticate the complete upstream config rather than trusting constants."""
+    try:
+        actual = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=no_dupes)
+        expected = expected_transformer_config()
+        if actual != expected:
+            raise ValueError("upstream config does not match the fixed transformer contract")
+        return {"status": "MATCHED", "config": actual}
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        blockers.append(f"Zonos upstream config blocked: {error}")
+        return {"status": "MISMATCH", "error": str(error)}
+
+
 def source_inventory(source: Path, blockers: list[str]) -> dict[str, Any]:
     result: dict[str, Any] = {"repository": SOURCE_REPOSITORY, "pinned_revision": SOURCE_REVISION}
     try:
@@ -316,7 +431,7 @@ def source_inventory(source: Path, blockers: list[str]) -> dict[str, Any]:
         head = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
         origin = subprocess.run(["git", "-C", str(source), "remote", "get-url", "origin"], check=True, capture_output=True, text=True).stdout.strip()
         dirty = subprocess.run(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout
-        result.update({"resolved_revision": head, "origin": origin, "clean": not dirty, "roles": [], "tracked_files": []})
+        result.update({"resolved_revision": head, "origin": origin, "clean": not dirty, "roles": [], "semantic_markers": {}, "tracked_files": []})
         if head != SOURCE_REVISION or origin != SOURCE_REPOSITORY or dirty:
             blockers.append("Zyphra/Zonos source identity/origin/clean mismatch")
         result["license"] = source_license_identity(source, blockers)
@@ -328,6 +443,13 @@ def source_inventory(source: Path, blockers: list[str]) -> dict[str, Any]:
             result["roles"].append({"path": role, "sha256": sha256(path), "git_blob_sha1": git_blob_sha1(path)})
         if len(result["roles"]) != len(SOURCE_ROLES):
             blockers.append("Zyphra/Zonos source role inventory is incomplete")
+        result["semantic_markers"] = source_semantic_marker_status(source)
+        for role, marker_result in result["semantic_markers"].items():
+            if marker_result["status"] != "MATCHED":
+                blockers.append(
+                    f"Zyphra/Zonos source semantic markers missing: {role}: "
+                    f"{marker_result.get('missing', marker_result.get('error'))!r}"
+                )
         tracked = subprocess.run(
             ["git", "-C", str(source), "ls-files", "-z"],
             check=True,
@@ -493,12 +615,22 @@ def inspect(snapshot: Path | None, packet: Path | None, manifest: Path | None, u
                 if required not in evidence["upstream_server_tree"]["files"]:
                     blockers.append(f"upstream required file missing: {required}")
                     evidence_error = True
+            if "config.json" in evidence["upstream_server_tree"]["files"]:
+                evidence["upstream_config"] = transformer_config(
+                    upstream_snapshot / "config.json", blockers
+                )
+                evidence_error = evidence_error or evidence["upstream_config"]["status"] != "MATCHED"
         else:
             blockers.append("upstream HF snapshot and server-tree packet are required")
             evidence_error = True
         if source is not None:
             evidence["source"] = source_inventory(source, blockers)
-            evidence_error = evidence_error or evidence["source"].get("resolved_revision") != SOURCE_REVISION or evidence["source"].get("origin") != SOURCE_REPOSITORY or not evidence["source"].get("clean", False) or evidence["source"].get("license", {}).get("status") != "MATCHED"
+            semantic = evidence["source"].get("semantic_markers", {})
+            markers_match = set(semantic) == set(SOURCE_MARKERS) and all(
+                isinstance(value, dict) and value.get("status") == "MATCHED"
+                for value in semantic.values()
+            )
+            evidence_error = evidence_error or evidence["source"].get("resolved_revision") != SOURCE_REVISION or evidence["source"].get("origin") != SOURCE_REPOSITORY or not evidence["source"].get("clean", False) or evidence["source"].get("license", {}).get("status") != "MATCHED" or not markers_match
         else:
             blockers.append("fixed Zyphra/Zonos source checkout is required")
             evidence_error = True
@@ -564,6 +696,31 @@ def self_test() -> None:
     assert model_blockers
     with __import__("tempfile").TemporaryDirectory() as directory:
         root = Path(directory)
+        config_path = root / "config.json"
+        config_path.write_text(json.dumps(expected_transformer_config()), encoding="utf-8")
+        config_blockers: list[str] = []
+        assert transformer_config(config_path, config_blockers)["status"] == "MATCHED"
+        assert not config_blockers
+        config_value = expected_transformer_config()
+        config_value["backbone"]["d_intermediate"] = 8192
+        config_path.write_text(json.dumps(config_value), encoding="utf-8")
+        config_blockers = []
+        assert transformer_config(config_path, config_blockers)["status"] == "MISMATCH"
+        assert config_blockers
+        source_fixture = root / "source-markers"
+        for role, markers in SOURCE_MARKERS.items():
+            path = source_fixture / role
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(markers) + "\n", encoding="utf-8")
+        marker_status = source_semantic_marker_status(source_fixture)
+        assert set(marker_status) == set(SOURCE_MARKERS)
+        assert all(item["status"] == "MATCHED" for item in marker_status.values())
+        (source_fixture / "zonos/model.py").write_text(
+            "\n".join(SOURCE_MARKERS["zonos/model.py"][:-1]) + "\n", encoding="utf-8"
+        )
+        marker_status = source_semantic_marker_status(source_fixture)
+        assert marker_status["zonos/model.py"]["status"] == "MISMATCH"
+        assert marker_status["zonos/model.py"]["missing"]
         missing_license_blockers: list[str] = []
         missing_license = source_license_identity(root / "missing-source", missing_license_blockers)
         assert missing_license["status"] == "MISMATCH" and missing_license_blockers
@@ -702,7 +859,7 @@ def self_test() -> None:
         # readers so this status transition is tested without model files.
         originals = {name: globals()[name] for name in (
             "server_tree", "tensor_manifest", "source_inventory",
-            "reference_evidence", "native_evidence",
+            "transformer_config", "reference_evidence", "native_evidence",
         )}
         globals()["server_tree"] = lambda *args, **kwargs: {
             "status": "MATCHED", "files": {"model.safetensors": {}, "config.json": {}},
@@ -711,9 +868,13 @@ def self_test() -> None:
             "status": "MANIFEST_PACKET",
             "tensors": [{"name": "tensor", "shape": [2 if args else 1], "dtype": "F32"}],
         }
+        globals()["transformer_config"] = lambda path, blockers: {"status": "MATCHED"}
         globals()["source_inventory"] = lambda path, blockers: {
             "resolved_revision": SOURCE_REVISION, "origin": SOURCE_REPOSITORY, "clean": True,
             "license": {"status": "MATCHED"},
+            "semantic_markers": {
+                role: {"status": "MATCHED"} for role in SOURCE_MARKERS
+            },
         }
         globals()["reference_evidence"] = lambda path, blockers, evidence_root: {"status": "MEASURED_NOT_GATED"}
         globals()["native_evidence"] = lambda path, blockers, evidence_root: {"status": "MEASURED_NOT_GATED"}
