@@ -51,7 +51,9 @@ self_test() {
     'AutoConfig.from_pretrained' 'AutoModel.from_config' 'init_empty_weights' \
     'AUTHENTICATED_META_SHAPE_PROBE' 'AUTHENTICATED_EVIDENCE_COMPLETE' \
     'INSPECTION_ERROR' 'weights_loaded' 'weights_executed' 'NO_UPLOAD' \
-    'OWNER_SIGNOFF_REQUIRED' 'BLOCKED_OWNER_APPROVAL' 'refusing pre-existing output' \
+    'REVIEWED' 'BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY' \
+    'vokra_checkout' 'source_and_weight_review' 'docs/license-audit.md:671' \
+    'refusing pre-existing output' \
     'exist_ok=False' 'reserve_output' '--expected-head' \
     '--work-dir' 'VOKRA_PUBLISH_ON_VAST' 'findmnt' 'CARGO_BUILD_JOBS'; do
     if ! grep -Fq -- "$token" "$script" && ! grep -Fq -- "$token" "$INSPECTOR"; then
@@ -264,6 +266,7 @@ PY
 set +e
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --no-sync --frozen --project "$PROJECT" --python 3.12 python "$INSPECTOR" \
   --repository "$HF_REPOSITORY" --revision "$HF_REVISION" \
+  --vokra-root "$ROOT" --expected-head "$expected_head" \
   --snapshot "$work_dir/hf" --server-tree "$work_dir/server-tree.json" \
   --output "$work_dir/evidence"
 inspection_rc=$?
@@ -272,7 +275,7 @@ set -e
 [[ -s "$work_dir/evidence/manifest.json" ]] || die 'inspection manifest is missing'
 
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --no-sync --frozen --project "$PROJECT" --python 3.12 python - \
-  "$work_dir/evidence/manifest.json" <<'PY'
+  "$work_dir/evidence/manifest.json" "$expected_head" <<'PY'
 import json
 import sys
 
@@ -285,11 +288,12 @@ def reject(pairs):
     return result
 
 manifest = json.loads(open(sys.argv[1], encoding="utf-8").read(), object_pairs_hook=reject)
+expected_head = sys.argv[2]
 required = {
     "status": "BLOCKED",
     "evidence_stage": "INSPECTION_ONLY",
     "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
-    "cpu_status": "BLOCKED_OWNER_APPROVAL",
+    "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
     "metal_status": "BLOCKED_BY_CPU",
     "parity_status": "NOT_RUN",
     "publication": "NO_UPLOAD",
@@ -308,8 +312,28 @@ if len(materialized) != 7 or any(row.get("status") != "AUTHENTICATED" for row in
     raise SystemExit("materialized source identities are incomplete")
 if len(server_only) != 1 or server_only[0].get("path") != "model-00001-of-00001.safetensors" or server_only[0].get("status") != "AUTHENTICATED_SERVER_IDENTITY_ONLY" or server_only[0].get("content_not_downloaded") is not True or not server_only[0].get("lfs_payload_sha256"):
     raise SystemExit("server-only weight identity is incomplete")
-if manifest.get("license") != {"status": "OWNER_SIGNOFF_REQUIRED", "source_and_weight_review": "PENDING_REVIEW", "license_file_present": False, "hf_cardData_license": "apache-2.0"}:
-    raise SystemExit("license-file absence/cardData license facts are not bound")
+if manifest.get("license") != {
+    "status": "REVIEWED",
+    "source_and_weight_review": "REVIEWED",
+    "source_and_weight_license": "Apache-2.0",
+    "source_and_weight_conclusion": "Commercial",
+    "owner_signoff": "2026-08-01 yousan",
+    "owner_signoff_citation": "docs/license-audit.md:671",
+    "license_file_present": False,
+    "hf_cardData_license": "apache-2.0",
+}:
+    raise SystemExit("license-file absence/cardData metadata/owner signoff facts are not bound")
+checkout = manifest.get("vokra_checkout")
+if checkout != {"expected_head": expected_head, "head": expected_head, "clean": True}:
+    raise SystemExit(f"Vokra checkout binding is not exact: {checkout!r}")
+if manifest.get("unresolved_gates") != {
+    "python_dependency_closure": "UNRESOLVED",
+    "transformers_api_compatibility": "UNRESOLVED",
+    "real_weight_runtime": "UNRESOLVED",
+    "numerical_parity": "NOT_RUN",
+    "overall_execution_approval": "NOT_APPROVED",
+}:
+    raise SystemExit("unresolved approval gates were weakened")
 route = manifest.get("transformers_route")
 if not isinstance(route, dict) or route.get("status") != "AUTHENTICATED_META_SHAPE_PROBE" or route.get("weights_loaded") is not False or route.get("weights_executed") is not False:
     raise SystemExit("inspection did not authenticate the model-free Transformers route")

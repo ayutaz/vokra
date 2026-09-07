@@ -10,8 +10,9 @@ Accelerate's meta-device context; it never calls ``from_pretrained`` for a
 model and never reads a safetensors tensor payload. Decoder shapes are
 therefore structural/meta-device observations, not numerical parity.
 
-The script intentionally leaves license approval, runtime support, parity, and
-publication blocked.  A complete source inspection exits with status 2 so a
+The script records the existing source/weight owner sign-off but intentionally
+leaves Python closure, API/runtime support, parity, and publication blocked. A
+complete source inspection exits with status 2 so a
 caller cannot accidentally continue into conversion or publication.
 """
 
@@ -22,6 +23,7 @@ import hashlib
 import inspect
 import json
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -139,6 +141,38 @@ def validate_model_info(value: object) -> dict[str, Any]:
                 f"HF model_info.{key}={value.get(key)!r}, expected {expected!r}"
             )
     return dict(value)
+
+
+def validate_vokra_checkout(root: Path, expected_head: str) -> dict[str, Any]:
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+        raise InspectionError("Vokra checkout root must be an absolute real directory")
+    if not HEX40.fullmatch(expected_head):
+        raise InspectionError("expected Vokra checkout HEAD must be lowercase 40-hex")
+    resolved_root = root.resolve(strict=True)
+    if resolved_root.is_symlink():
+        raise InspectionError("resolved Vokra checkout root must not be a symlink")
+    try:
+        head_result = subprocess.run(
+            ["git", "-C", str(resolved_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        status_result = subprocess.run(
+            ["git", "-C", str(resolved_root), "status", "--porcelain", "--untracked-files=all"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise InspectionError(f"cannot inspect Vokra checkout: {error}") from error
+    head = head_result.stdout.strip()
+    clean = status_result.stdout == ""
+    if not HEX40.fullmatch(head) or head != expected_head:
+        raise InspectionError(f"Vokra checkout HEAD mismatch: {head!r} != {expected_head!r}")
+    if not clean:
+        raise InspectionError("Vokra checkout is not clean")
+    return {"expected_head": expected_head, "head": head, "clean": True}
 
 
 def file_row(path: Path, server_row: dict[str, Any] | None) -> dict[str, Any]:
@@ -496,6 +530,7 @@ def blocked_manifest(
     config: dict[str, Any] | None,
     index: dict[str, Any] | None,
     route: dict[str, Any],
+    vokra_checkout: dict[str, Any] | None,
     error: str | None,
 ) -> dict[str, Any]:
     complete = error is None and route.get("status") == "AUTHENTICATED_META_SHAPE_PROBE"
@@ -508,10 +543,11 @@ def blocked_manifest(
         ),
         "collection_status": "AUTHENTICATED" if complete else "INCOMPLETE",
         "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
-        "cpu_status": "BLOCKED_OWNER_APPROVAL",
+        "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
         "metal_status": "BLOCKED_BY_CPU",
         "parity_status": "NOT_RUN",
         "publication": "NO_UPLOAD",
+        "vokra_checkout": vokra_checkout,
         "model": {
             "repository": repository,
             "requested_revision": revision,
@@ -523,8 +559,12 @@ def blocked_manifest(
         "checkpoint_index": index,
         "transformers_route": route,
         "license": {
-            "status": "OWNER_SIGNOFF_REQUIRED",
-            "source_and_weight_review": "PENDING_REVIEW",
+            "status": "REVIEWED",
+            "source_and_weight_review": "REVIEWED",
+            "source_and_weight_license": "Apache-2.0",
+            "source_and_weight_conclusion": "Commercial",
+            "owner_signoff": "2026-08-01 yousan",
+            "owner_signoff_citation": "docs/license-audit.md:671",
             "license_file_present": False,
             "hf_cardData_license": (
                 model_info.get("cardData_license") if model_info is not None else None
@@ -537,6 +577,13 @@ def blocked_manifest(
             "tap_shapes": route.get("taps"),
             "audio_shape": route.get("audio_shape"),
             "numeric_parity": "NOT_RUN",
+        },
+        "unresolved_gates": {
+            "python_dependency_closure": "UNRESOLVED",
+            "transformers_api_compatibility": "UNRESOLVED",
+            "real_weight_runtime": "UNRESOLVED",
+            "numerical_parity": "NOT_RUN",
+            "overall_execution_approval": "NOT_APPROVED",
         },
         "error": error,
     }
@@ -554,6 +601,94 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("tampered HF model_info was accepted")
+    sample_manifest = blocked_manifest(
+        repository=REPOSITORY,
+        revision=REVISION,
+        resolved_revision=REVISION,
+        model_info=EXPECTED_MODEL_INFO,
+        files=[],
+        config=None,
+        index=None,
+        route={"status": "AUTHENTICATED_META_SHAPE_PROBE"},
+        vokra_checkout={"expected_head": "a" * 40, "head": "a" * 40, "clean": True},
+        error=None,
+    )
+    assert sample_manifest["vokra_checkout"] == {
+        "expected_head": "a" * 40,
+        "head": "a" * 40,
+        "clean": True,
+    }
+    assert sample_manifest["license"] == {
+        "status": "REVIEWED",
+        "source_and_weight_review": "REVIEWED",
+        "source_and_weight_license": "Apache-2.0",
+        "source_and_weight_conclusion": "Commercial",
+        "owner_signoff": "2026-08-01 yousan",
+        "owner_signoff_citation": "docs/license-audit.md:671",
+        "license_file_present": False,
+        "hf_cardData_license": "apache-2.0",
+    }
+    assert sample_manifest["cpu_status"] == "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY"
+    assert sample_manifest["unresolved_gates"]["overall_execution_approval"] == "NOT_APPROVED"
+    for bad_head in ("", "0" * 39, "G" * 40):
+        try:
+            validate_vokra_checkout(Path.cwd(), bad_head)
+        except InspectionError:
+            pass
+        else:
+            raise AssertionError(f"invalid expected checkout HEAD accepted: {bad_head!r}")
+    with tempfile.TemporaryDirectory() as temporary:
+        checkout = Path(temporary) / "checkout"
+        checkout.mkdir()
+        def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-C", str(checkout), *arguments],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        git("init", "--quiet")
+        git("config", "user.name", "MOSS Nano self-test")
+        git("config", "user.email", "moss-nano-self-test@example.invalid")
+        tracked = checkout / "tracked.txt"
+        tracked.write_text("clean\n", encoding="utf-8")
+        git("add", "tracked.txt")
+        git("commit", "--quiet", "--no-gpg-sign", "-m", "initial")
+        clean_head = git("rev-parse", "HEAD").stdout.strip()
+        assert validate_vokra_checkout(checkout, clean_head) == {
+            "expected_head": clean_head,
+            "head": clean_head,
+            "clean": True,
+        }
+        try:
+            validate_vokra_checkout(checkout, "0" * 40)
+        except InspectionError as error:
+            assert "HEAD mismatch" in str(error)
+        else:
+            raise AssertionError("wrong valid checkout HEAD was accepted")
+        tracked.write_text("dirty\n", encoding="utf-8")
+        try:
+            validate_vokra_checkout(checkout, clean_head)
+        except InspectionError as error:
+            assert "not clean" in str(error)
+        else:
+            raise AssertionError("dirty tracked checkout was accepted")
+        tracked.write_text("clean\n", encoding="utf-8")
+        (checkout / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+        try:
+            validate_vokra_checkout(checkout, clean_head)
+        except InspectionError as error:
+            assert "not clean" in str(error)
+        else:
+            raise AssertionError("dirty untracked checkout was accepted")
+        symlink = Path(temporary) / "checkout-link"
+        symlink.symlink_to(checkout, target_is_directory=True)
+        try:
+            validate_vokra_checkout(symlink, clean_head)
+        except InspectionError as error:
+            assert "real directory" in str(error)
+        else:
+            raise AssertionError("symlink checkout path was accepted")
     for bad in ("", "/config.json", "../config.json", "a\\b", "a\x00b"):
         try:
             safe_relative_path(bad)
@@ -633,16 +768,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--snapshot", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--server-tree", type=Path)
+    parser.add_argument("--vokra-root", type=Path)
+    parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.snapshot, args.output, args.server_tree)):
+        if any(value is not None for value in (args.snapshot, args.output, args.server_tree, args.vokra_root, args.expected_head)):
             parser.error("--self-test accepts no filesystem arguments")
         return args
     if args.repository != REPOSITORY or args.revision != REVISION:
         parser.error("Nano repository and revision are immutable")
-    if args.snapshot is None or args.output is None or args.server_tree is None:
-        parser.error("--snapshot, --server-tree, and --output are required")
+    if args.snapshot is None or args.output is None or args.server_tree is None or args.vokra_root is None or args.expected_head is None:
+        parser.error("--snapshot, --server-tree, --output, --vokra-root, and --expected-head are required")
+    if not HEX40.fullmatch(args.expected_head):
+        parser.error("--expected-head requires lowercase 40-hex")
     return args
 
 
@@ -651,7 +790,7 @@ def main() -> int:
     if args.self_test:
         self_test()
         return 0
-    assert args.snapshot is not None and args.output is not None and args.server_tree is not None
+    assert args.snapshot is not None and args.output is not None and args.server_tree is not None and args.vokra_root is not None and args.expected_head is not None
     try:
         reserve_output(args.output)
     except InspectionError as caught:
@@ -668,6 +807,7 @@ def main() -> int:
     files: list[dict[str, Any]] | None = None
     config: dict[str, Any] | None = None
     index: dict[str, Any] | None = None
+    vokra_checkout: dict[str, Any] | None = None
     error: str | None = None
     try:
         tree = load_json(args.server_tree)
@@ -675,6 +815,7 @@ def main() -> int:
             raise InspectionError("server-tree identity is not the fixed Nano revision")
         resolved_revision = tree.get("resolved_revision")
         model_info = validate_model_info(tree.get("model_info"))
+        vokra_checkout = validate_vokra_checkout(args.vokra_root, args.expected_head)
         raw_rows = tree.get("files")
         if not isinstance(raw_rows, list):
             raise InspectionError("server-tree files is not a list")
@@ -701,6 +842,7 @@ def main() -> int:
         config=config,
         index=index,
         route=route,
+        vokra_checkout=vokra_checkout,
         error=error,
     )
     output = args.output / "manifest.json"

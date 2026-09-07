@@ -60,9 +60,12 @@ files and server size/LFS identity for the shard, then checks the official
 plus meta-device
 `AutoModel.from_config` route. Decoder and audio shapes are observed by
 meta-device shape propagation; no safetensors tensor is loaded or executed.
-The output remains `BLOCKED` with `OWNER_SIGNOFF_REQUIRED`, `NOT_RUN`, and
-`NO_UPLOAD`. A complete inspection intentionally exits 2 so its evidence must
-be recovered and reviewed before any conversion or parity worker is started.
+The output remains `BLOCKED` with source/weight `REVIEWED` (owner sign-off
+`docs/license-audit.md:671`) but unresolved Python closure, API/runtime
+approval, and `NOT_RUN` numerical parity; publication remains `NO_UPLOAD`. The
+evidence also binds the exact clean Vokra checkout `{expected_head, head,
+clean}`. A complete inspection intentionally exits 2 so its evidence must be
+recovered and reviewed before any conversion or parity worker is started.
 An `INSPECTION_ERROR` manifest is never treated as complete.
 
 Evidence output is no-clobber: the inspector refuses an existing output path,
@@ -70,4 +73,5 @@ including a prior evidence directory, and all blocked/error outcomes remain
 exit status 2.
 
 The owner approval path is `MOSS_AUDIO_TOKENIZER_NANO_LICENSE_APPROVAL`; the
-tracked manifest remains `OWNER_SIGNOFF_REQUIRED` and cannot be self-approved.
+tracked manifest still cannot be self-approved because Python closure, API,
+runtime, and parity gates remain unresolved.
