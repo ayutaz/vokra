@@ -32,6 +32,8 @@ ARCHIVES = {name: row["bytes"] for name, row in HF_FILE_IDENTITIES.items() if na
 HF_EXPECTED_LICENSE = "cc-by-nc-4.0"
 SOURCE_WEIGHTS_LICENSE_BLOB = "108b5f002fc31efe11d881de2cd05329ebe8cc37"
 HISTORICAL_WEIGHTS_LICENSE_BLOB = "dc1adf98654156baeb94d2e055c224a847e5820d"
+RUNTIME_STATUS = "LOUD_PARTIAL_FAIL_CLOSED"
+CPU_STATUS = "NOT_RUN"
 MAX_ZIP_MEMBERS = 200_000
 MAX_ZIP_UNCOMPRESSED = 8_000_000_000
 MAX_CHECKPOINT_NODES = 1_000_000
@@ -492,7 +494,7 @@ def write_manifest(output: Path, **fields: Any) -> None:
     manifest_path = output / "manifest.json"
     if manifest_path.exists() or manifest_path.is_symlink():
         raise RuntimeError("inspection manifest already exists; refusing to clobber evidence")
-    payload = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "LM_ONLY_PCM_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", **fields}
+    payload = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "runtime_status": RUNTIME_STATUS, "cpu_status": CPU_STATUS, "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", **fields}
     with manifest_path.open("x", encoding="utf-8") as stream:
         stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
 
@@ -668,6 +670,11 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("existing inspection manifest was clobbered")
+        fresh = root / "fresh"
+        write_manifest(fresh, test=True)
+        manifest = json.loads((fresh / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["runtime_status"] == RUNTIME_STATUS
+        assert manifest["cpu_status"] == CPU_STATUS
     print("audiogen_medium_inspect --self-test: OK")
 
 
