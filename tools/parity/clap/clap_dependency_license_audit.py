@@ -181,7 +181,9 @@ def safe_dist_path(dist: Any, file: Any, *, prefix: Path | None = None) -> Path:
     prefix_path = Path(sys.prefix) if prefix is None else prefix
     prefix_absolute = prefix_path.absolute()
     prefix_real = prefix_path.resolve()
-    raw_absolute = raw.absolute()
+    # Normalize RECORD's lexical ``..`` entries without resolving symlinks;
+    # symlink ancestry is checked separately below.
+    raw_absolute = Path(os.path.normpath(str(raw.absolute())))
     try:
         raw_absolute.relative_to(prefix_absolute)
     except ValueError as exc:
@@ -193,7 +195,10 @@ def safe_dist_path(dist: Any, file: Any, *, prefix: Path | None = None) -> Path:
         if current == current.parent:
             raise RuntimeError(f"distribution file has unsafe ancestry: {raw}")
         current = current.parent
-    resolved = raw_absolute.resolve(strict=False)
+    try:
+        resolved = raw_absolute.resolve(strict=True)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise RuntimeError(f"distribution file cannot be strictly resolved: {raw}") from exc
     try:
         resolved.relative_to(prefix_real)
     except ValueError as exc:
@@ -213,19 +218,20 @@ def is_native_file(path: Path) -> bool:
     return name.endswith(NATIVE_SUFFIXES) or ".so." in name
 
 
+def is_inventory_candidate(file: Any) -> bool:
+    path = Path(str(file))
+    return is_license_file(path) or is_native_file(path)
+
+
 def distribution_files(dist: Any) -> tuple[list[Any] | None, list[str]]:
     files = dist.files
     if files is None:
         return None, []
     result: list[Any] = []
-    unknown: list[str] = []
     for file in files:
-        path = Path(str(file))
-        if path.is_absolute() or ".." in path.parts:
-            unknown.append(str(file))
-            continue
-        result.append(file)
-    return result, unknown
+        if is_inventory_candidate(file):
+            result.append(file)
+    return result, []
 
 
 def collect_distribution(
@@ -386,6 +392,7 @@ class _SyntheticDistribution:
         license_text: str | None,
         native: bool = False,
         license_expression: str | None = "MIT",
+        extra_files: dict[str, bytes] | None = None,
     ):
         self.root = root
         root.mkdir(parents=True, exist_ok=True)
@@ -405,6 +412,11 @@ class _SyntheticDistribution:
             native_path = root / "module.so"
             native_path.write_bytes(b"native")
             files.append("module.so")
+        for relative, payload in (extra_files or {}).items():
+            target = Path(os.path.normpath(str(root / relative)))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            files.append(relative)
         self._files = files
 
     @property
@@ -445,6 +457,22 @@ def self_test() -> None:
         assert license_record["spdx_expression"] == "MIT"
         assert license_record["legacy_license"] == "MIT"
         assert result["installed_environment"]["distributions"][0]["native_payload"]["status"] == "PRESENT"
+        record_dist = _SyntheticDistribution(
+            root / "lib/python/site-packages/demo.dist-info",
+            "demo-package",
+            "1.0.0",
+            license_text=None,
+            extra_files={
+                "../../../bin/tool": b"console-script",
+                "../../../share/licenses/demo/LICENSE": b"MIT\n",
+            },
+        )
+        record_result = audit(project, lock, [record_dist], prefix=root)
+        assert record_result["status"] == PENDING_STATUS
+        record_row = record_result["installed_environment"]["distributions"][0]
+        assert record_row["license"]["bundled_files_status"] == "PRESENT"
+        assert record_row["file_inventory_errors"] == []
+        assert record_row["license"]["bundled_files"][0]["path"] == "../../../share/licenses/demo/LICENSE"
         duplicate = audit(project, lock, [dist, dist], prefix=root)
         assert duplicate["status"] == "BLOCKED"
         assert duplicate["installed_environment"]["distributions"][0]["distribution_status"] == "MULTIPLE"
@@ -467,6 +495,7 @@ def self_test() -> None:
                 "demo-package",
                 "1.0.0",
                 license_text="MIT\n",
+                native=True,
             )
             escaped_result = audit(project, lock, [escaped], prefix=root)
             assert escaped_result["status"] == "BLOCKED"

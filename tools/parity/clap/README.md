@@ -79,7 +79,10 @@ enumerates every non-virtual package in the single frozen Linux x86_64 uv
 resolution (`platform_machine == 'x86_64'` and `sys_platform == 'linux'`)
 with exact source and artifact hashes, then records installed METADATA license
 fields/classifiers, bundled LICENSE/COPYING/NOTICE bytes and hashes, and native
-payload files and hashes.
+payload files and hashes. RECORD entries such as console scripts and manpages
+are non-target metadata and are ignored; only LICENSE/COPYING/NOTICE and native
+payload candidates are resolved, prefix-checked, and hashed. A candidate that
+escapes the installed prefix remains an explicit fail-closed finding.
 Missing, multiple, or unknown entries remain explicit fail-closed findings;
 the dependency audit status stays `PENDING_VAST_AUDIT` and never becomes
 `COMPLETE` from this inventory alone.
