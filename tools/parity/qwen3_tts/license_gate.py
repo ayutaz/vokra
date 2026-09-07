@@ -835,7 +835,13 @@ def self_test() -> None:
     assert production_manifest["component_rows_sha256"] == canonical_digest(production_components)
     stable_scope = approval_scope(production_manifest)
     assert production_manifest["approval_scope_sha256"] == canonical_digest(stable_scope)
-    assert production_manifest["dependency_audit_evidence"]["status"] == "STALE_REQUIRES_VAST_AUDIT"
+    assert production_manifest["dependency_audit_evidence"] == {
+        "schema": COMPACT_SCHEMA,
+        "path": "dependency_audit_evidence.json",
+        "sha256": "0b532e8da6798536b4d2dd43ce73b7aaf6cd5ed77645c139f0f9038d72933e92",
+        "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
+        "status": "PENDING_OWNER_APPROVAL",
+    }
     assert len(EXPECTED_INACTIVE_ROWS) == 4
     assert ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)
     for volatile_key, volatile_value in (

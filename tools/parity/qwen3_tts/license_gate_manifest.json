@@ -1060,9 +1060,8 @@
   "dependency_audit_evidence": {
     "schema": "vokra-qwen3-tts-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "sha256": "ea971561acec9f98626f20f5f078bb75fd102986895a5415d9dc59f424175c88",
-    "full_audit_sha256": "a6e519c863f70967e51c343abed6ced5bb197f503e6d54141dc87386b44e0459",
-    "status": "STALE_REQUIRES_VAST_AUDIT",
-    "stale_reason": "component fact payload rows were restamped from the recovered compact audit; rerun the authorized exact-head Linux x86_64 VAST audit to bind fresh compact evidence"
+    "sha256": "0b532e8da6798536b4d2dd43ce73b7aaf6cd5ed77645c139f0f9038d72933e92",
+    "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
+    "status": "PENDING_OWNER_APPROVAL"
   }
 }
