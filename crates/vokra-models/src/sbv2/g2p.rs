@@ -9,12 +9,19 @@ use vokra_piper_plus::Phonemizer;
 /// upstream `text/symbols.py`/`text/__init__.py` sources. Piper mappings carry
 /// language-local raw tone ids; production bridges convert them to the global
 /// `tone_embed` rows used by the checkpoint.
+/// First global tone row reserved for ZH (raw tones 0 through 5).
 pub const SBV2_ZH_TONE_START: u8 = 0;
+/// First global tone row reserved for JP/JA (raw tones 0 through 1).
 pub const SBV2_JA_TONE_START: u8 = 6;
+/// First global tone row reserved for EN (raw tones 0 through 3).
 pub const SBV2_EN_TONE_START: u8 = 8;
+/// Number of global tone rows reserved for ZH.
 pub const SBV2_ZH_TONE_COUNT: u8 = 6;
+/// Number of global tone rows reserved for JP/JA.
 pub const SBV2_JA_TONE_COUNT: u8 = 2;
+/// Number of global tone rows reserved for EN.
 pub const SBV2_EN_TONE_COUNT: u8 = 4;
+/// Total number of global tone rows in the authenticated SBV2 checkpoint.
 pub const SBV2_N_TONES: usize = 12;
 
 /// SBV2 input language selector — drives which char-level mapping table
@@ -176,7 +183,7 @@ pub struct PhonemizeResult {
     /// Phoneme ids in SBV2 phoneme-table space (one per output phoneme).
     pub phoneme_ids: Vec<u16>,
     /// Global tone-embedding row per phoneme. Production G2P paths emit
-    /// JP=6..7, ZH=0..5, and EN=8..11; synthetic test mappings may use their
+    /// JP=6 through 7, ZH=0 through 5, and EN=8 through 11; synthetic test mappings may use their
     /// own deliberately small local fixture vocabulary.
     pub tones: Vec<u8>,
     /// Word-boundary flag per phoneme (true = first phoneme of a word).
@@ -350,7 +357,7 @@ pub struct SbV2Phonemizer {
     // Piper-plus id -> (SBV2 phoneme id, English language-local raw tone).
     en_mapping: HashMap<i64, (u16, u8)>,
     // WP-18: ZH real-G2P mapping — same `(SBV2 phoneme id, tone)` shape as
-    // `ja_mapping`, since Mandarin carries lexical tones (raw 0-5). Missing ids
+    // `ja_mapping`, since Mandarin carries lexical tones (raw 0 through 5). Missing ids
     // fall back to `(sbv2_default_phoneme_id, 0)` — the same documented
     // mapping fallback JA uses.
     zh_mapping: HashMap<i64, (u16, u8)>,
@@ -408,10 +415,10 @@ impl SbV2Phonemizer {
     /// `ja_mapping` / `en_mapping`.
     ///
     /// Each `ja_mapping` tone is a Japanese language-local raw value in
-    /// `0..2` (raw values `0` or `1`), and this bridge converts it to the
-    /// authenticated global JP tone rows `6..8` (global values `6` or `7`).
+    /// raw values 0 through 1, and this bridge converts them to the
+    /// authenticated global JP tone rows 6 through 7.
     /// Each `en_mapping` tone is an English language-local raw value in
-    /// `0..4`, converted to global EN rows `8..12` (values `8..11`), because
+    /// raw values 0 through 3, converted to global EN rows 8 through 11, because
     /// upstream English stress refinement emits raw tones 1/2/3, raw 3 for
     /// unstressed input, and raw 0 for punctuation/specials.
     ///
@@ -454,8 +461,8 @@ impl SbV2Phonemizer {
 
     /// WP-18: attaches a real piper-plus `Phonemizer` for the [`Language::ZH`]
     /// dispatch path, plus the piper-plus-id-to-SBV2-phoneme-id mapping
-    /// (Mandarin carries language-local raw tones `0..5`, converted to the
-    /// global ZH rows `0..5`; the mapping's value is
+    /// (Mandarin carries language-local raw tones 0 through 5, converted to
+    /// global ZH rows 0 through 5; the mapping's value is
     /// `(sbv2_phoneme_id, tone)` — same shape as `ja_mapping`).
     ///
     /// Builder-style: returns `self` so it composes with any of the three
@@ -800,7 +807,7 @@ impl SbV2Phonemizer {
 
     /// Real-G2P ZH path: routes `g2p`'s piper-plus phoneme id sequence
     /// through `zh_mapping` into SBV2 phoneme-table space. ZH carries
-    /// Mandarin lexical tones (raw 0-5), so `zh_mapping`'s value is
+    /// Mandarin lexical tones (raw 0 through 5), so `zh_mapping`'s value is
     /// `(sbv2_phoneme_id, tone)` — same shape as `ja_mapping`; a piper id
     /// missing from the mapping falls back to
     /// `(sbv2_default_phoneme_id, 0)`.
