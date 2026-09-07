@@ -343,6 +343,61 @@ Both runs recorded `PASS_MODEL_FREE`, `checkpoint_load=NOT_PERFORMED` and
 component, source, model and operator decisions remain pending, and no row is
 therefore removed from the unresolved denominator.
 
+## 2026-09-08 owner-independent identity closure
+
+PR #79 at remote head `67a700b9d5bedb909a18a515dc05a0ade1e7a75b`
+completed with 109 successful checks and 13 intentionally skipped opt-in
+checks. The following local commits are not covered by that run and will not be
+pushed until their own exact-head VAST workspace verification is green.
+
+MOSS Audio commits `7fd19a91` and `54b1300a` bind the fixed source and both
+model repositories without downloading checkpoint payloads. VAST recorded the
+identity manifest file SHA-256
+`05bdc638e1d32098c077a71563c37a0c362c394fa809ab1b1f53692bbe062ea4`;
+the checked-in evidence SHA-256 is
+`2998d89d2805c507bdbc3e18118bf50a9c18e06479fff1a7dce8b020dd6dae2d`.
+The source tracked tree contains no LICENSE/COPYING/NOTICE filename at the
+fixed revision, and neither model repository has a `LICENSE` file. The HF
+cardData value `apache-2.0` is preserved only as provenance, not inferred as an
+SPDX decision or approval. The 4B index maps 901 entries to three shards and
+the 8B index maps 901 entries to four shards; their sizes, Git pointer blobs
+and LFS OIDs are scope-bound while all shard payloads remain unacquired. The
+new approval scope SHA-256 is
+`08eeab246dac53187c683cfed54e07f4a64a15abd119f3c4cc186bd23b88e69e`.
+
+CLAP commits `832bf4c8`, `85fca834`, `7df517bb` and `c143ece3` bind the
+released config/preprocessor identities and inventory the frozen Linux x86_64
+Python environment. Exact VAST head
+`c143ece3392fba03b7eebd2724a5c9c3d825d720` recorded
+`PASS_MODEL_FREE`; the audit, dependency inventory, summary and remote
+identity SHA-256 values are respectively
+`972dcfdbf7ae76b0ba6c37f7973e4463bdc9d1727a21d1f6fd14f46b4a1d6594`,
+`e9e70f795ce9e1ccada6875384a6be036ddb8334826a7b895140da49da60ef3f`,
+`3018fec62dde209f726cf85544573c31a5e885d079475595fe2b48b00a726228`
+and `28e2f241e1f239279b339347f73dfc730d5a766459b5c1444b43ddff9fb54594`.
+All 34 locked distributions were found. Eight packages contained native
+payloads, including 22 NumPy and 13 Torch files, with no unknown native-file
+inventory. Twenty license findings remain: missing SPDX `License-Expression`
+metadata plus missing bundled license files for Tokenizers and tqdm. The
+dependency packet therefore remains `BLOCKED` for owner review even though the
+model-free boundary is green. The work directory is 1.5 MiB and contains no
+checkpoint suffix, model load, forward pass or upload.
+
+AudioGen commits `9b5c2982`, `6371a40b` and `1083851d` bind the public file
+identities and the fixed AudioCraft source/config chain without acquiring its
+3.7 GB language-model payload or 236 MB compression payload. The VAST manifest,
+tree and acquisition-log SHA-256 values are
+`6c2adb3e3948e138547aa79a2b36d8880db8bf39fc36af7b0d5b8eea9db29f4f`,
+`c445caf1eb26c26ce414edb2fb9601744781a07240b0a2ff1333a1acf2f25a1d`
+and `81d83040e72a2b2d4ad6eab59b823a6e1d2f2614171bdaa5fb3b6dc4c10d2960`.
+The evidence stays `signable=false`, `vast_ready=false` and `NO_UPLOAD`.
+Exact external T5 revision/weight identity, compression build provenance,
+dependency closure, real execution and numerical parity remain blocked.
+
+The local branch currently reaches `c143ece3`; the VAST checkout is clean at
+that exact head. Final workspace test, all-target Clippy, deny and audit logs
+for this batch are still pending and must be recorded before the PR is updated.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
