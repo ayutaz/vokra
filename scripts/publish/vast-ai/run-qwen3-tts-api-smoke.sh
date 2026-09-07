@@ -37,6 +37,7 @@ SELFTEST_MEM_KIB=""
 SELFTEST_FREE_DISK_KIB=""
 
 log() { printf '[qwen3-tts-api-smoke] %s\n' "$*" >&2; }
+step() { printf '\n[qwen3-tts-api-smoke] ==== %s ====\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 host_os() { if [[ -n "$SELFTEST_OS" ]]; then printf '%s\n' "$SELFTEST_OS"; else uname -s; fi; }
 host_arch() { if [[ -n "$SELFTEST_ARCH" ]]; then printf '%s\n' "$SELFTEST_ARCH"; else uname -m; fi; }
@@ -218,6 +219,9 @@ run_self_test() {
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract token: $required"; failed=1; }
   done
   grep -Fq -- 'MODEL_FREE_SMOKE=' "$script_path" || { log 'self-test missing model-free worker'; failed=1; }
+  for helper in step require_model_free_tooling require_vast_host require_absent_work_dir download_source download_metadata_snapshot; do
+    grep -Eq "^${helper}[[:space:]]*\(\)" "$script_path" || { log "self-test missing helper definition: $helper"; failed=1; }
+  done
   metadata_block="$(sed -n '/^download_metadata_snapshot()/,/^}/p' "$script_path")"
   [[ -n "$metadata_block" ]] || { log 'self-test missing metadata-only downloader'; failed=1; }
   if grep -En 'safetensors|model-' <<<"$metadata_block" >/dev/null; then

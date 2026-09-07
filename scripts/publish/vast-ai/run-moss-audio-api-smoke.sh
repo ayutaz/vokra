@@ -79,8 +79,12 @@ require_absent_work_dir() {
     [[ -e "$protected" || -L "$protected" ]] || continue
     [[ ! -L "$protected" ]] || die "protected path is symlinked: $protected"
     other="$(canonicalize_uncreated "$protected")" || die "protected path cannot be canonicalized: $protected"
-    paths_overlap "$canonical" "$other" && die "--work-dir overlaps protected path: $protected"
+    if paths_overlap "$canonical" "$other"; then
+      die "--work-dir overlaps protected path: $protected"
+      return 2
+    fi
   done
+  return 0
 }
 
 canonicalize_uncreated() {
@@ -100,7 +104,7 @@ paths_overlap() { [[ "$1" == "$2" || "$1" == "$2"/* || "$2" == "$1"/* ]]; }
 
 run_self_test() {
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SMOKE" --self-test
-  local script_path="${BASH_SOURCE[0]}" repo_overlap project_overlap
+  local script_path="${BASH_SOURCE[0]}" repo_overlap project_overlap positive_parent positive_path
   for bad in \
     '--self-test --self-test' \
     '--closure-only --self-test' \
@@ -113,6 +117,13 @@ run_self_test() {
   if require_absent_work_dir "$repo_overlap" >/dev/null 2>&1; then die 'self-test accepted work directory inside Vokra checkout'; fi
   project_overlap="$PROJECT/.moss-audio-api-overlap-$$"
   if require_absent_work_dir "$project_overlap" >/dev/null 2>&1; then die 'self-test accepted work directory inside API smoke project'; fi
+  positive_parent="$(mktemp -d "${TMPDIR:-/tmp}/moss-audio-api-positive.XXXXXX")"
+  positive_path="$positive_parent/absent-work"
+  if ! require_absent_work_dir "$positive_path" >/dev/null 2>&1; then
+    rmdir "$positive_parent"
+    die 'self-test rejected a non-overlapping absent work directory'
+  fi
+  rmdir "$positive_parent"
   log 'self-test PASS'
 }
 
