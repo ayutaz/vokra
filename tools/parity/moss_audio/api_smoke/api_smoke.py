@@ -10,6 +10,8 @@ downloads a model and never imports Vokra.
 from __future__ import annotations
 
 import argparse
+import builtins
+from contextlib import contextmanager, nullcontext
 import hashlib
 import importlib
 import inspect
@@ -78,6 +80,7 @@ MODEL_FREE_FORMAT = "vokra-moss-audio-model-free-api-smoke-v1"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UNRESOLVED = {"", "none", "null", "unresolved", "pending", "todo", "owner_review_required"}
+TRUST_REMOTE_CODE_PROMPT_MARKERS = ("custom code", "trust_remote_code", "trust remote code")
 
 
 def canonical(value: Any) -> bytes:
@@ -132,6 +135,55 @@ def write_model_free_evidence(path: Path, evidence: dict[str, Any]) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+class NonInteractiveInputRefusal:
+    def __init__(self) -> None:
+        self.prompt_digests: list[dict[str, Any]] = []
+
+    def __call__(self, prompt: object = "") -> str:
+        prompt_text = str(prompt)
+        if len(prompt_text) > 4096:
+            raise ValueError("trust-remote-code prompt exceeds bounded length")
+        prompt_digest = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+        record = {"bytes": len(prompt_text.encode("utf-8")), "sha256": prompt_digest}
+        self.prompt_digests.append(record)
+        if len(self.prompt_digests) > 1:
+            raise ValueError("unexpected second trust-remote-code prompt")
+        lowered = prompt_text.casefold()
+        if not any(marker in lowered for marker in TRUST_REMOTE_CODE_PROMPT_MARKERS):
+            raise ValueError("unexpected non-trust-remote-code prompt")
+        return "n"
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "installed": True,
+            "decision": "n",
+            "prompt_count": len(self.prompt_digests),
+            "prompt_digests": list(self.prompt_digests),
+        }
+
+
+class ModelFreeApiFailure(ValueError):
+    """A model-free API failure carrying bounded input-prompt evidence."""
+
+    def __init__(self, message: str, *, input_refusal: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.input_refusal = input_refusal
+
+
+@contextmanager
+def install_noninteractive_input_refusal() -> Any:
+    previous = builtins.input
+    refusal = NonInteractiveInputRefusal()
+    builtins.input = refusal
+    try:
+        yield refusal
+    finally:
+        if builtins.input is not refusal:
+            builtins.input = previous
+            raise ValueError("input refusal sentinel was overwritten")
+        builtins.input = previous
 
 
 def require_regular(path: Path, label: str) -> None:
@@ -343,8 +395,9 @@ def verify_snapshot(snapshot: Path, variant: str) -> dict[str, Any]:
     return {"repo": identity["repo"], "revision": identity["revision"], "files": files, "model_type": config["model_type"]}
 
 
-def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
+def api_probe(source: Path, snapshot: Path, *, model_free: bool = False) -> dict[str, Any]:
     sys.path.insert(0, str(source))
+    input_refusal: NonInteractiveInputRefusal | None = None
     try:
         import transformers
         if transformers.__version__ != "5.10.4":
@@ -357,27 +410,41 @@ def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
         processor_class = getattr(processing, "MossAudioProcessor")
         if not all(inspect.isclass(cls) for cls in (config_class, model_class, processor_class)):
             raise TypeError("official MOSS-Audio symbols are not classes")
-        config = config_class.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=True)
-        config_signature = str(inspect.signature(config_class.__init__))
-        model_signature = str(inspect.signature(model_class.__init__))
-        processor_signature = str(inspect.signature(processor_class.__init__))
-        from_pretrained_signature = str(inspect.signature(processor_class.from_pretrained))
-        processor = processor_class.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=True)
-        if processor is None or config.model_type != "moss_audio":
-            raise RuntimeError("official processor/config construction returned an invalid object")
-        return {
-            "transformers": transformers.__version__,
-            "config_class": f"{config_class.__module__}.{config_class.__name__}",
-            "model_class": f"{model_class.__module__}.{model_class.__name__}",
-            "processor_class": f"{processor_class.__module__}.{processor_class.__name__}",
-            "config_signature": config_signature,
-            "model_signature": model_signature,
-            "processor_signature": processor_signature,
-            "processor_from_pretrained_signature": from_pretrained_signature,
-            "config_construction": "PASS",
-            "processor_construction": "PASS",
-            "checkpoint_load": "NOT_PERFORMED",
-        }
+        input_context = install_noninteractive_input_refusal() if model_free else nullcontext(None)
+        with input_context as input_refusal:
+            config = config_class.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=True)
+            config_signature = str(inspect.signature(config_class.__init__))
+            model_signature = str(inspect.signature(model_class.__init__))
+            processor_signature = str(inspect.signature(processor_class.__init__))
+            from_pretrained_signature = str(inspect.signature(processor_class.from_pretrained))
+            processor = processor_class.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=True)
+            if processor is None or config.model_type != "moss_audio":
+                raise RuntimeError("official processor/config construction returned an invalid object")
+            if model_free and input_refusal.evidence()["prompt_count"] != 1:
+                raise ValueError("expected exactly one trust-remote-code prompt per variant")
+            result = {
+                "transformers": transformers.__version__,
+                "config_class": f"{config_class.__module__}.{config_class.__name__}",
+                "model_class": f"{model_class.__module__}.{model_class.__name__}",
+                "processor_class": f"{processor_class.__module__}.{processor_class.__name__}",
+                "config_signature": config_signature,
+                "model_signature": model_signature,
+                "processor_signature": processor_signature,
+                "processor_from_pretrained_signature": from_pretrained_signature,
+                "config_construction": "PASS",
+                "processor_construction": "PASS",
+                "checkpoint_load": "NOT_PERFORMED",
+            }
+            if model_free:
+                result["input_refusal"] = input_refusal.evidence()
+            return result
+    except Exception as exc:  # noqa: BLE001 - model-free failures carry structured prompt evidence
+        if model_free:
+            raise ModelFreeApiFailure(
+                str(exc),
+                input_refusal=input_refusal.evidence() if input_refusal is not None else {"installed": False},
+            ) from None
+        raise
     finally:
         if sys.path and sys.path[0] == str(source):
             sys.path.pop(0)
@@ -478,6 +545,7 @@ def blocked_model_free(
         "variants": variant_records,
         "project": project_record,
         "failure": {"stage": stage, "error_type": type(error).__name__, "error": str(error)},
+        "input_refusal": getattr(error, "input_refusal", {"installed": False}),
         "checkpoint_load": "NOT_PERFORMED",
         "approval": pending_approval(),
         "environment": {"python": platform.python_version(), "platform": platform.platform()},
@@ -524,7 +592,7 @@ def run_model_free(args: argparse.Namespace) -> int:
     api_records: dict[str, Any] = {}
     try:
         for variant in selected:
-            api_records[variant] = api_probe(source, snapshot_root / variant)
+            api_records[variant] = api_probe(source, snapshot_root / variant, model_free=True)
     except Exception as exc:  # noqa: BLE001 - blocked evidence is part of the contract
         return blocked_model_free(
             args,
@@ -624,6 +692,36 @@ def self_test() -> int:
             assert parsed_blocked["checkpoint_load"] == "NOT_PERFORMED"
             assert parsed_blocked["approval"]["source_license"] == "PENDING_OWNER_APPROVAL"
             assert not list(Path(temporary).glob(".blocked.json.*.tmp"))
+            previous_input = builtins.input
+            with install_noninteractive_input_refusal() as refusal:
+                assert builtins.input is refusal
+                assert refusal("The repository contains custom code. Trust remote code? [y/N]") == "n"
+                assert refusal.evidence()["prompt_count"] == 1
+                assert len(refusal.evidence()["prompt_digests"][0]["sha256"]) == 64
+            assert builtins.input is previous_input
+            with install_noninteractive_input_refusal() as refusal:
+                try:
+                    refusal("Unrelated question? [y/N]")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("unknown input prompt was accepted")
+                assert refusal.evidence()["prompt_count"] == 1
+                assert len(refusal.evidence()["prompt_digests"][0]["sha256"]) == 64
+            assert builtins.input is previous_input
+            replacement = lambda prompt="": "y"
+            builtins.input = replacement
+            try:
+                try:
+                    with install_noninteractive_input_refusal():
+                        builtins.input = replacement
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("overwritten input sentinel was not rejected")
+                assert builtins.input is replacement
+            finally:
+                builtins.input = previous_input
         assert HEX40.fullmatch(SOURCE_REVISION)
         assert all(HEX64.fullmatch(value) for value in SOURCE_FILES.values())
         assert VARIANTS["4b"]["hidden_size"] != VARIANTS["8b"]["hidden_size"]

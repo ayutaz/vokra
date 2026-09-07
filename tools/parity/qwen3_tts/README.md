@@ -75,10 +75,12 @@ constructs only config/processor objects, and records `PASS_MODEL_FREE` with
 source/model/operator approval fields still pending. It rejects any checkpoint
 file, never calls `Qwen3TTSModel.from_pretrained`, and is not a parity or
 publication result. Because the reviewed runtime intentionally excludes the
-forbidden `sox` package, the inspection installs a strict import-only `sox`
-sentinel while importing the official source. Any attribute access fails
-closed; successful evidence records `sox_sentinel.installed=true` and
-`sox_sentinel.accesses=0`, and the original `sys.modules` state is restored.
+forbidden `sox` and `onnxruntime` packages, the inspection installs strict
+import-only sentinels for both modules while importing the official source.
+Only inert `__file__` metadata is allowed; functional attributes such as
+`sox.Transformer` and `onnxruntime.InferenceSession` fail closed. Successful
+evidence records each module independently under `optional_sentinels`, with
+`accesses=0`, and the original `sys.modules` state is restored.
 An import/API incompatibility is emitted as atomic `BLOCKED_INCOMPATIBLE_API`
 evidence with `checkpoint_load=NOT_PERFORMED`, never as an unstructured
 traceback.

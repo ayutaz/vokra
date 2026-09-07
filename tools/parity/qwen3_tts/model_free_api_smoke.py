@@ -84,63 +84,95 @@ REQUIRED_DEPENDENCIES = {
 FORBIDDEN_PACKAGES = {"gradio", "onnxruntime", "protobuf", "setuptools", "sox"}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-SOX_SENTINEL_FILE = "/__vokra_import_only_sox_sentinel__.py"
+FORBIDDEN_OPTIONAL_MODULES = {
+    "sox": "/__vokra_import_only_sox_sentinel__.py",
+    "onnxruntime": "/__vokra_import_only_onnxruntime_sentinel__.py",
+}
 
 
 class ProbeError(RuntimeError):
     """A fail-closed model-free probe failure."""
 
 
-class SoxSentinelAccessError(ProbeError):
-    """The forbidden optional sox module was accessed during import."""
+class ForbiddenOptionalModuleAccessError(ProbeError):
+    """A forbidden optional module was accessed during import."""
 
 
 class ApiProbeFailure(ProbeError):
     """An official API import/introspection failure with sentinel evidence."""
 
-    def __init__(self, message: str, *, sentinel_installed: bool, accesses: int, metadata_reads: int) -> None:
+    def __init__(self, message: str, *, sentinel_records: dict[str, dict[str, Any]]) -> None:
         super().__init__(message)
-        self.sentinel_installed = sentinel_installed
-        self.accesses = accesses
-        self.metadata_reads = metadata_reads
+        self.sentinel_records = sentinel_records
 
 
-class _SoxSentinel(types.ModuleType):
-    def __init__(self) -> None:
-        super().__init__("sox")
-        self.accesses = 0
-        self.metadata_reads = 0
+class _ForbiddenOptionalModuleSentinel(types.ModuleType):
+    def __init__(self, module_name: str, sentinel_file: str) -> None:
+        super().__init__(module_name)
+        self._sentinel_file = sentinel_file
+        self._accesses = 0
+        self._metadata_reads = 0
 
     def __getattribute__(self, name: str) -> Any:
         if name == "__file__":
-            reads = object.__getattribute__(self, "metadata_reads")
-            object.__setattr__(self, "metadata_reads", reads + 1)
-            return SOX_SENTINEL_FILE
-        return super().__getattribute__(name)
+            reads = object.__getattribute__(self, "_metadata_reads")
+            object.__setattr__(self, "_metadata_reads", reads + 1)
+            return object.__getattribute__(self, "_sentinel_file")
+        if name.startswith("__") and name.endswith("__"):
+            return super().__getattribute__(name)
+        accesses = object.__getattribute__(self, "_accesses") + 1
+        object.__setattr__(self, "_accesses", accesses)
+        module_name = object.__getattribute__(self, "__name__")
+        raise ForbiddenOptionalModuleAccessError(f"forbidden {module_name} access: {name}")
 
     def __getattr__(self, name: str) -> Any:
-        self.accesses += 1
-        raise SoxSentinelAccessError(f"forbidden sox access: {name}")
+        accesses = object.__getattribute__(self, "_accesses") + 1
+        object.__setattr__(self, "_accesses", accesses)
+        module_name = object.__getattribute__(self, "__name__")
+        raise ForbiddenOptionalModuleAccessError(f"forbidden {module_name} access: {name}")
+
+
+def optional_sentinel_records(sentinels: dict[str, _ForbiddenOptionalModuleSentinel]) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    for module_name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items():
+        sentinel = sentinels.get(module_name)
+        records[module_name] = {
+            "installed": sentinel is not None,
+            "allowed_metadata": ["__file__"],
+            "sentinel_file": sentinel_file,
+            "metadata_reads": object.__getattribute__(sentinel, "_metadata_reads") if sentinel is not None else 0,
+            "accesses": object.__getattribute__(sentinel, "_accesses") if sentinel is not None else 0,
+        }
+    return records
 
 
 @contextmanager
-def install_sox_sentinel() -> Any:
-    """Provide import-only ``sox`` and restore ``sys.modules`` exactly."""
+def install_forbidden_optional_sentinels() -> Any:
+    """Provide inert import-only modules and restore ``sys.modules`` exactly."""
 
-    module_name = "sox"
-    if module_name in sys.modules:
-        raise ProbeError("real or pre-existing sox module is installed")
-    if importlib.util.find_spec(module_name) is not None:
-        raise ProbeError("real sox package is installed")
-    sentinel = _SoxSentinel()
-    sys.modules[module_name] = sentinel
+    for module_name in FORBIDDEN_OPTIONAL_MODULES:
+        if module_name in sys.modules:
+            raise ProbeError(f"real or pre-existing {module_name} module is installed")
+        if importlib.util.find_spec(module_name) is not None:
+            raise ProbeError(f"real {module_name} package is installed")
+    sentinels = {
+        module_name: _ForbiddenOptionalModuleSentinel(module_name, sentinel_file)
+        for module_name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items()
+    }
+    for module_name, sentinel in sentinels.items():
+        sys.modules[module_name] = sentinel
     try:
-        yield sentinel
+        yield sentinels
     finally:
-        if sys.modules.get(module_name) is sentinel:
+        overwritten: list[str] = []
+        for module_name, sentinel in sentinels.items():
+            if module_name not in sys.modules:
+                continue
+            if sys.modules[module_name] is not sentinel:
+                overwritten.append(module_name)
             del sys.modules[module_name]
-        elif module_name in sys.modules:
-            raise ProbeError("sox sentinel was overwritten during API probe")
+        if overwritten:
+            raise ProbeError(f"optional module sentinels were overwritten during API probe: {overwritten}")
 
 
 def pending_approval() -> dict[str, Any]:
@@ -309,9 +341,9 @@ def verify_metadata(snapshot: Path, variant: str) -> dict[str, Any]:
 
 def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
     sys.path.insert(0, str(source))
-    sentinel: _SoxSentinel | None = None
+    sentinels: dict[str, _ForbiddenOptionalModuleSentinel] = {}
     try:
-        with install_sox_sentinel() as sentinel:
+        with install_forbidden_optional_sentinels() as sentinels:
             import qwen_tts
             from qwen_tts import Qwen3TTSModel
             from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSProcessor
@@ -328,8 +360,9 @@ def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
             }
             if versions["transformers"] != "5.10.4":
                 raise ProbeError(f"Transformers runtime drifted: {versions['transformers']}")
-            if sentinel.accesses != 0:
-                raise ProbeError(f"forbidden sox sentinel was accessed {sentinel.accesses} time(s)")
+            sentinel_records = optional_sentinel_records(sentinels)
+            if any(record["accesses"] != 0 for record in sentinel_records.values()):
+                raise ProbeError(f"forbidden optional module access counts: {sentinel_records}")
             return {
                 "imports": [
                     "qwen_tts.Qwen3TTSModel",
@@ -346,19 +379,12 @@ def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
                 "wrapper_signature": str(inspect.signature(Qwen3TTSModel.from_pretrained)),
                 "generate_voice_clone_signature": str(inspect.signature(Qwen3TTSModel.generate_voice_clone)),
                 "checkpoint_load": "NOT_PERFORMED",
-                "sox_sentinel": {
-                    "installed": True,
-                    "allowed_metadata": ["__file__"],
-                    "metadata_reads": sentinel.metadata_reads,
-                    "accesses": 0,
-                },
+                "optional_sentinels": sentinel_records,
             }
     except Exception as exc:  # noqa: BLE001 - API incompatibility is evidence, not a traceback
         raise ApiProbeFailure(
             str(exc),
-            sentinel_installed=sentinel is not None,
-            accesses=sentinel.accesses if sentinel is not None else 0,
-            metadata_reads=sentinel.metadata_reads if sentinel is not None else 0,
+            sentinel_records=optional_sentinel_records(sentinels),
         ) from None
     finally:
         if sys.path and sys.path[0] == str(source):
@@ -403,9 +429,7 @@ def run(args: argparse.Namespace) -> int:
         for variant in variant_names:
             api[variant] = api_probe(source, snapshot_root / variant)
     except Exception as exc:  # noqa: BLE001 - API incompatibility is emitted atomically
-        sentinel_installed = bool(getattr(exc, "sentinel_installed", False))
-        sentinel_accesses = int(getattr(exc, "accesses", 0))
-        sentinel_metadata_reads = int(getattr(exc, "metadata_reads", 0))
+        sentinel_records = getattr(exc, "sentinel_records", optional_sentinel_records({}))
         blocked = {
             "schema": SCHEMA,
             "status": "BLOCKED_INCOMPATIBLE_API",
@@ -417,12 +441,7 @@ def run(args: argparse.Namespace) -> int:
             "api": {
                 "error_type": type(exc).__name__,
                 "error": str(exc),
-                "sox_sentinel": {
-                    "installed": sentinel_installed,
-                    "allowed_metadata": ["__file__"],
-                    "metadata_reads": sentinel_metadata_reads,
-                    "accesses": sentinel_accesses,
-                },
+                "optional_sentinels": sentinel_records,
             },
             "checkpoint_load": "NOT_PERFORMED",
             "approval": pending_approval(),
@@ -435,7 +454,7 @@ def run(args: argparse.Namespace) -> int:
         write_output(output, blocked)
         print(f"BLOCKED_INCOMPATIBLE_API: {exc}", file=sys.stderr)
         return 2
-    sentinel_records = [record["sox_sentinel"] for record in api.values()]
+    sentinel_records = [record["optional_sentinels"] for record in api.values()]
     evidence = {
         "schema": SCHEMA,
         "status": "PASS_MODEL_FREE",
@@ -445,11 +464,15 @@ def run(args: argparse.Namespace) -> int:
         "variants": metadata,
         "project": project_record,
         "api": api,
-        "sox_sentinel": {
-            "installed": all(record["installed"] for record in sentinel_records),
-            "allowed_metadata": ["__file__"],
-            "metadata_reads": sum(record["metadata_reads"] for record in sentinel_records),
-            "accesses": sum(record["accesses"] for record in sentinel_records),
+        "optional_sentinels": {
+            module_name: {
+                "installed": all(record[module_name]["installed"] for record in sentinel_records),
+                "allowed_metadata": ["__file__"],
+                "sentinel_file": FORBIDDEN_OPTIONAL_MODULES[module_name],
+                "metadata_reads": sum(record[module_name]["metadata_reads"] for record in sentinel_records),
+                "accesses": sum(record[module_name]["accesses"] for record in sentinel_records),
+            }
+            for module_name in FORBIDDEN_OPTIONAL_MODULES
         },
         "checkpoint_load": "NOT_PERFORMED",
         "approval": pending_approval(),
@@ -478,31 +501,46 @@ def self_test() -> int:
                 pass
             else:
                 raise AssertionError("duplicate JSON key accepted")
-            if importlib.util.find_spec("sox") is not None:
-                raise AssertionError("real sox package is installed")
-            with install_sox_sentinel() as sentinel:
-                assert sys.modules["sox"] is sentinel
-                assert sentinel.__file__ == SOX_SENTINEL_FILE
-                assert sentinel.metadata_reads == 1
+            if any(importlib.util.find_spec(name) is not None for name in FORBIDDEN_OPTIONAL_MODULES):
+                raise AssertionError("real forbidden optional package is installed")
+            with install_forbidden_optional_sentinels() as sentinels:
+                assert all(sys.modules[name] is sentinels[name] for name in FORBIDDEN_OPTIONAL_MODULES)
+                assert sentinels["sox"].__file__ == FORBIDDEN_OPTIONAL_MODULES["sox"]
+                assert sentinels["onnxruntime"].__file__ == FORBIDDEN_OPTIONAL_MODULES["onnxruntime"]
+                for module_name, functional_attribute in (("sox", "Transformer"), ("onnxruntime", "InferenceSession"), ("sox", "accesses"), ("sox", "sentinel_file")):
+                    try:
+                        getattr(sentinels[module_name], functional_attribute)
+                    except ForbiddenOptionalModuleAccessError:
+                        pass
+                    else:
+                        raise AssertionError(f"{module_name}.{functional_attribute} was allowed")
+                assert object.__getattribute__(sentinels["sox"], "_metadata_reads") == 1
+                assert object.__getattribute__(sentinels["onnxruntime"], "_metadata_reads") == 1
+                assert object.__getattribute__(sentinels["sox"], "_accesses") == 3
+                assert object.__getattribute__(sentinels["onnxruntime"], "_accesses") == 1
+            assert all(name not in sys.modules for name in FORBIDDEN_OPTIONAL_MODULES)
+            for module_name in FORBIDDEN_OPTIONAL_MODULES:
+                prior = types.ModuleType(module_name)
+                sys.modules[module_name] = prior
                 try:
-                    sentinel.Transformer
-                except SoxSentinelAccessError:
-                    pass
-                else:
-                    raise AssertionError("sox sentinel allowed attribute access")
-                assert sentinel.accesses == 1
-            assert "sox" not in sys.modules
-            prior = types.ModuleType("sox")
-            sys.modules["sox"] = prior
+                    try:
+                        with install_forbidden_optional_sentinels():
+                            raise AssertionError(f"pre-existing {module_name} module was clobbered")
+                    except ProbeError:
+                        pass
+                    assert sys.modules[module_name] is prior
+                finally:
+                    del sys.modules[module_name]
             try:
-                try:
-                    with install_sox_sentinel():
-                        raise AssertionError("pre-existing sox module was clobbered")
-                except ProbeError:
-                    pass
-                assert sys.modules["sox"] is prior
-            finally:
-                del sys.modules["sox"]
+                with install_forbidden_optional_sentinels() as sentinels:
+                    sys.modules["sox"] = types.ModuleType("replacement-sox")
+                    sys.modules["onnxruntime"] = types.ModuleType("replacement-onnxruntime")
+                    _ = sentinels
+            except ProbeError:
+                pass
+            else:
+                raise AssertionError("overwritten optional sentinels were accepted")
+            assert all(name not in sys.modules for name in FORBIDDEN_OPTIONAL_MODULES)
             blocked_path = Path(directory) / "blocked.json"
             write_output(blocked_path, {
                 "schema": SCHEMA,
@@ -510,12 +548,10 @@ def self_test() -> int:
                 "publication": "NO_UPLOAD",
                 "checkpoint_load": "NOT_PERFORMED",
                 "api": {
-                    "sox_sentinel": {
-                        "installed": True,
-                        "allowed_metadata": ["__file__"],
-                        "metadata_reads": 1,
-                        "accesses": 1,
-                    }
+                    "optional_sentinels": optional_sentinel_records({
+                        name: _ForbiddenOptionalModuleSentinel(name, sentinel_file)
+                        for name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items()
+                    }),
                 },
                 "approval": pending_approval(),
             })
@@ -524,8 +560,11 @@ def self_test() -> int:
             assert blocked["publication"] == "NO_UPLOAD"
             assert blocked["checkpoint_load"] == "NOT_PERFORMED"
             assert blocked["approval"]["source_license"] == "PENDING_OWNER_APPROVAL"
-            assert blocked["api"]["sox_sentinel"]["allowed_metadata"] == ["__file__"]
-            assert blocked["api"]["sox_sentinel"]["accesses"] == 1
+            assert set(blocked["api"]["optional_sentinels"]) == set(FORBIDDEN_OPTIONAL_MODULES)
+            assert all(
+                record["allowed_metadata"] == ["__file__"]
+                for record in blocked["api"]["optional_sentinels"].values()
+            )
             assert not list(Path(directory).glob(".blocked.json.*.tmp"))
         probe_source = inspect.getsource(api_probe)
         assert "Qwen3TTSModel.from_pretrained(" not in probe_source
