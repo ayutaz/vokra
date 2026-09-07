@@ -1906,9 +1906,10 @@ impl FireredAsrAedSearchConfig {
             eos_penalty: read_f32_key(gguf, KEY_SEARCH_EOS_PENALTY)?,
         };
         if !actual.is_official() {
-            return Err(VokraError::ModelLoad(format!(
+            return Err(VokraError::ModelLoad(
                 "firered-asr-aed-l: authenticated search policy drifted from official batch_beam_search defaults"
-            )));
+                    .to_owned(),
+            ));
         }
         Ok(Some(actual))
     }
@@ -2473,8 +2474,8 @@ impl FireredAsrAed {
                     .to_owned(),
             ));
         }
-        let cmvn_blob = read_u8_blob(file, KEY_CMVN_TEXT, CMVN_TEXT_BYTES as usize)?;
-        let dict_blob = read_u8_blob(file, KEY_DICT_TEXT, DICT_TEXT_BYTES as usize)?;
+        let cmvn_blob = read_u8_blob(file, KEY_CMVN_TEXT, CMVN_TEXT_BYTES)?;
+        let dict_blob = read_u8_blob(file, KEY_DICT_TEXT, DICT_TEXT_BYTES)?;
         let cmvn_hash = file.get(KEY_CMVN_TEXT_SHA256).is_some();
         let dict_hash = file.get(KEY_DICT_TEXT_SHA256).is_some();
         if cmvn_blob.is_some() != cmvn_hash
@@ -2869,7 +2870,7 @@ impl FireredAsrAed {
         if content.last().copied() == Some(config.eos_id) {
             content = &content[..content.len() - 1];
         }
-        if content.iter().any(|&id| id == config.eos_id) {
+        if content.contains(&config.eos_id) {
             return Err(VokraError::InvalidArgument(
                 "firered-asr-aed-l: EOS is only valid as the terminal decoder marker".to_owned(),
             ));
