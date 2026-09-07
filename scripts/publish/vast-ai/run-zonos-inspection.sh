@@ -7,8 +7,17 @@ HF_REPOSITORY="vokra/zonos-v0.1-transformer"
 HF_REVISION="b1bf5c56d470eb9097e9b04f9deca364576574ba"
 UPSTREAM_HF_REPOSITORY="Zyphra/Zonos-v0.1-transformer"
 UPSTREAM_HF_REVISION="9d8331fc49cb5ba8aad2bb56cafd809c66598f4e"
+UPSTREAM_MODEL_PRIVATE=false
+UPSTREAM_MODEL_GATED=false
+UPSTREAM_MODEL_DISABLED=false
+UPSTREAM_MODEL_CARD_DATA_LICENSE="apache-2.0"
 SOURCE_REPOSITORY="https://github.com/Zyphra/Zonos.git"
 SOURCE_REVISION="bc40d98e1e1ab54fc65c483be127a90e3c7c0645"
+SOURCE_LICENSE_PATH="LICENSE"
+SOURCE_LICENSE_SPDX="Apache-2.0"
+SOURCE_LICENSE_BYTES=11357
+SOURCE_LICENSE_GIT_BLOB_SHA1="7a4a3ea2424c09fbe48d455aed1eaa94d9124835"
+SOURCE_LICENSE_SHA256="58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
 WORK="/dev/shm/vokra-zonos-inspection"
 
 die() { echo "zonos-vast: ERROR: $*" >&2; exit 2; }
@@ -31,6 +40,18 @@ require_approval_binding() {
   [[ "$(sha256_file "$approval")" == "$expected_sha" ]] || die 'approval evidence SHA-256 differs from caller binding'
 }
 
+require_source_license_identity() {
+  local source="$1" license actual_sha actual_blob
+  license="$source/$SOURCE_LICENSE_PATH"
+  [[ -f "$license" && ! -L "$license" ]] || die 'cloned Zonos source LICENSE is missing or symlinked'
+  [[ "$(wc -c < "$license" | tr -d '[:space:]')" == "$SOURCE_LICENSE_BYTES" ]] || die 'cloned Zonos source LICENSE byte-size mismatch'
+  actual_sha="$(sha256sum "$license" | awk '{print $1}')"
+  [[ "$actual_sha" == "$SOURCE_LICENSE_SHA256" ]] || die 'cloned Zonos source LICENSE SHA-256 mismatch'
+  actual_blob="$(git -C "$source" rev-parse "$SOURCE_REVISION:$SOURCE_LICENSE_PATH")" || die 'cloned Zonos source LICENSE Git blob is unavailable'
+  [[ "$actual_blob" == "$SOURCE_LICENSE_GIT_BLOB_SHA1" ]] || die 'cloned Zonos source LICENSE Git blob mismatch'
+  [[ "$(git -C "$source" remote get-url origin)" == "$SOURCE_REPOSITORY" ]] || die 'cloned Zonos source origin mismatch'
+}
+
 require_native_cpu_log() {
   local log="$1" named result tests
   named="$(grep -Ec '^test zonos_real_cpu_codes_and_pcm_boundary \.\.\. ok$' "$log" || true)"
@@ -48,6 +69,17 @@ write_transfer_manifest() {
     printf 'schema=zonos-apple-transfer-v1\n'
     printf 'expected_head=%s\n' "$expected_head"
     printf 'approval_evidence_sha256=%s\n' "$approval_sha"
+    printf 'source_license_path=%s\n' "$SOURCE_LICENSE_PATH"
+    printf 'source_license_spdx=%s\n' "$SOURCE_LICENSE_SPDX"
+    printf 'source_license_bytes=%s\n' "$SOURCE_LICENSE_BYTES"
+    printf 'source_license_git_blob_sha1=%s\n' "$SOURCE_LICENSE_GIT_BLOB_SHA1"
+    printf 'source_license_sha256=%s\n' "$SOURCE_LICENSE_SHA256"
+    printf 'upstream_model_id=%s\n' "$UPSTREAM_HF_REPOSITORY"
+    printf 'upstream_model_revision=%s\n' "$UPSTREAM_HF_REVISION"
+    printf 'upstream_model_private=%s\n' "$UPSTREAM_MODEL_PRIVATE"
+    printf 'upstream_model_gated=%s\n' "$UPSTREAM_MODEL_GATED"
+    printf 'upstream_model_disabled=%s\n' "$UPSTREAM_MODEL_DISABLED"
+    printf 'upstream_model_card_data_license=%s\n' "$UPSTREAM_MODEL_CARD_DATA_LICENSE"
     printf 'manifest_sha256=%s\n' "$(sha256_file "$public_manifest")"
     printf 'gguf_sha256=%s\n' "$(sha256_file "$gguf")"
     printf 'dac_gguf_sha256=%s\n' "$(sha256_file "$dac")"
@@ -78,7 +110,8 @@ self_test() {
     'parity_zonos_real.rs' 'VOKRA_ZONOS_DAC_GGUF' 'cargo test --locked -p vokra-models' \
     'reference-codes.u32le' 'native-cpu.log' '--native-log' 'AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE' 'exit 2' \
     '--approval-evidence' '--approval-evidence-sha256' '--expected-head' 'preflight-only' 'write_transfer_manifest' \
-    'CARGO_BUILD_JOBS=1' '--offline --locked' 'require_native_cpu_log' 'cpu_sentinel_summary=' 'metal_status=NOT_RUN' 'NO_UPLOAD'; do
+    'CARGO_BUILD_JOBS=1' '--offline --locked' 'require_native_cpu_log' 'cpu_sentinel_summary=' 'metal_status=NOT_RUN' 'NO_UPLOAD' \
+    'LICENSE' '11357' '7a4a3ea2424c09fbe48d455aed1eaa94d9124835' '58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd' 'apache-2.0' 'card_data_license'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing Zonos contract: $token" >&2; failed=1; }
   done
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-zonos-cpu-log.XXXXXX")"
@@ -157,6 +190,7 @@ UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
 cp -- "$ZONOS_CONDITIONING_PACKET" "$WORK/evidence/conditioning.packet"
 git clone --filter=blob:none --no-checkout "$SOURCE_REPOSITORY" "$WORK/source"
 git -C "$WORK/source" checkout --detach "$SOURCE_REVISION"
+require_source_license_identity "$WORK/source"
 
 set +e
 UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \

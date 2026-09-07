@@ -14,18 +14,29 @@ import re
 import struct
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 PUBLIC_REPOSITORY = "vokra/zonos-v0.1-transformer"
 PUBLIC_REVISION = "b1bf5c56d470eb9097e9b04f9deca364576574ba"
 SOURCE_REPOSITORY = "https://github.com/Zyphra/Zonos.git"
+SOURCE_REVISION = "bc40d98e1e1ab54fc65c483be127a90e3c7c0645"
 UPSTREAM_REPOSITORY = "Zyphra/Zonos-v0.1-transformer"
 UPSTREAM_REVISION = "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e"
 MANIFEST_SHA256 = "6543af3747d3e85bde862c3337744eea31f0105f9df6d8617c1c9afdae805847"
 DTYPE_BYTES = {"F32": 4, "BF16": 2, "F16": 2, "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1}
 PROJECT_PATH = Path(__file__).with_name("pyproject.toml")
 LOCK_PATH = Path(__file__).with_name("uv.lock")
-LICENSE_IDENTITY_AUTHENTICATED = False
+SOURCE_LICENSE_PATH = "LICENSE"
+SOURCE_LICENSE_SPDX = "Apache-2.0"
+SOURCE_LICENSE_BYTES = 11_357
+SOURCE_LICENSE_GIT_BLOB_SHA1 = "7a4a3ea2424c09fbe48d455aed1eaa94d9124835"
+SOURCE_LICENSE_SHA256 = "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+UPSTREAM_MODEL_ID = UPSTREAM_REPOSITORY
+UPSTREAM_MODEL_PRIVATE = False
+UPSTREAM_MODEL_GATED = False
+UPSTREAM_MODEL_DISABLED = False
+UPSTREAM_MODEL_CARD_DATA_LICENSE = "apache-2.0"
 
 
 def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -68,6 +79,104 @@ def json_file(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError("approval evidence must be a JSON object")
     return value
+
+
+def info_field(info: Any, name: str) -> Any:
+    """Read both huggingface_hub objects and the raw API-shaped test doubles."""
+    if isinstance(info, dict):
+        return info.get(name)
+    return getattr(info, name, None)
+
+
+def card_data_license(info: Any) -> Any:
+    card_data = info_field(info, "card_data")
+    if card_data is None:
+        card_data = info_field(info, "cardData")
+    if isinstance(card_data, dict):
+        return card_data.get("license")
+    return getattr(card_data, "license", None)
+
+
+def license_identity_contract() -> dict[str, Any]:
+    """Return the immutable, primary-source license facts used by every gate."""
+    return {
+        "source": {
+            "repository": SOURCE_REPOSITORY,
+            "revision": SOURCE_REVISION,
+            "path": SOURCE_LICENSE_PATH,
+            "spdx": SOURCE_LICENSE_SPDX,
+            "bytes": SOURCE_LICENSE_BYTES,
+            "git_blob_sha1": SOURCE_LICENSE_GIT_BLOB_SHA1,
+            "sha256": SOURCE_LICENSE_SHA256,
+        },
+        "upstream_model": {
+            "id": UPSTREAM_MODEL_ID,
+            "revision": UPSTREAM_REVISION,
+            "private": UPSTREAM_MODEL_PRIVATE,
+            "gated": UPSTREAM_MODEL_GATED,
+            "disabled": UPSTREAM_MODEL_DISABLED,
+            "card_data_license": UPSTREAM_MODEL_CARD_DATA_LICENSE,
+        },
+    }
+
+
+def validate_license_identity_contract() -> None:
+    """Fail closed if the reviewed primary-source identity is edited or absent."""
+    expected = {
+        "source": {
+            "repository": "https://github.com/Zyphra/Zonos.git",
+            "revision": SOURCE_REVISION,
+            "path": "LICENSE",
+            "spdx": "Apache-2.0",
+            "bytes": 11_357,
+            "git_blob_sha1": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835",
+            "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+        },
+        "upstream_model": {
+            "id": "Zyphra/Zonos-v0.1-transformer",
+            "revision": "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e",
+            "private": False,
+            "gated": False,
+            "disabled": False,
+            "card_data_license": "apache-2.0",
+        },
+    }
+    if license_identity_contract() != expected:
+        raise RuntimeError("Zonos primary-source license identity contract drifted")
+
+
+def model_license_identity(info: Any) -> dict[str, Any]:
+    """Authenticate the exact public HF model-info fields before acquisition."""
+    actual = {
+        "id": info_field(info, "id"),
+        "revision": info_field(info, "sha"),
+        "private": info_field(info, "private"),
+        "gated": info_field(info, "gated"),
+        "disabled": info_field(info, "disabled"),
+        "card_data_license": card_data_license(info),
+    }
+    expected = license_identity_contract()["upstream_model"]
+    if actual != expected:
+        raise RuntimeError(f"upstream HF model license identity mismatch: {actual!r}")
+    return actual
+
+
+def source_license_identity(source: Path) -> dict[str, Any]:
+    """Authenticate the exact LICENSE blob in a checked-out upstream source."""
+    path = source / SOURCE_LICENSE_PATH
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError("Zyphra/Zonos source LICENSE is missing or symlinked")
+    actual = {
+        "path": SOURCE_LICENSE_PATH,
+        "spdx": SOURCE_LICENSE_SPDX,
+        "bytes": path.stat().st_size,
+        "git_blob_sha1": git_blob(path),
+        "sha256": sha256(path),
+    }
+    expected = license_identity_contract()["source"]
+    if any(actual[key] != expected[key] for key in actual):
+        raise RuntimeError(f"Zyphra/Zonos source LICENSE identity mismatch: {actual!r}")
+    return actual
 
 
 def sha256_file(path: Path) -> str:
@@ -201,22 +310,25 @@ def verify_local_snapshot(destination: Path, rows: list[dict[str, Any]]) -> None
 
 
 def approval_scope(project_sha256: str, lock_sha256: str) -> dict[str, Any]:
+    validate_license_identity_contract()
     return {
         "schema": "zonos-vast-approval-scope-v1",
         "project_sha256": project_sha256,
         "lock_sha256": lock_sha256,
         "source_repository": SOURCE_REPOSITORY,
-        "source_revision": "bc40d98e1e1ab54fc65c483be127a90e3c7c0645",
+        "source_revision": SOURCE_REVISION,
         "upstream_repository": UPSTREAM_REPOSITORY,
         "upstream_revision": UPSTREAM_REVISION,
         "public_repository": PUBLIC_REPOSITORY,
         "public_revision": PUBLIC_REVISION,
         "no_upload": True,
         "license_review": "AUTHENTICATED_LICENSE_IDENTITY_REQUIRED",
+        "license_identity": license_identity_contract(),
     }
 
 
 def preflight_gate(approval: Path) -> None:
+    validate_license_identity_contract()
     if not approval.is_file() or approval.is_symlink():
         raise RuntimeError("--approval-evidence must be a regular non-symlink file")
     reject_symlink_ancestors(approval)
@@ -252,8 +364,9 @@ def preflight_gate(approval: Path) -> None:
     }
     if any(value[key] != expected for key, expected in expected_values.items()) or value["no_upload"] is not True:
         raise RuntimeError("approval fixed identity/publication fields mismatch")
-    if not LICENSE_IDENTITY_AUTHENTICATED:
-        raise RuntimeError("Zonos source/model license identity is not authenticated in repository")
+    # The exact source LICENSE blob and HF cardData identity are included in
+    # the scope digest above.  This keeps the external approval binding
+    # fail-closed while avoiding a mutable/unconditional boolean gate.
 
 
 def manifest_sha256(rows: list[dict[str, Any]]) -> str:
@@ -300,6 +413,32 @@ def server_file_row(item: Any) -> dict[str, Any]:
     return row
 
 
+def server_tree_packet(
+    repository: str,
+    revision: str,
+    resolved_revision: str,
+    rows: list[dict[str, Any]],
+    model_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the stable public packet and the authenticated upstream variant."""
+    if repository == UPSTREAM_REPOSITORY:
+        if model_info is None:
+            raise RuntimeError("upstream server-tree packet requires model_info")
+    elif model_info is not None:
+        raise RuntimeError("public server-tree packet must not contain model_info")
+    packet: dict[str, Any] = {
+        "repository": repository,
+        "revision": revision,
+        "resolved_revision": resolved_revision,
+        "walk": "recursive_file_only",
+        "complete_recursive": True,
+        "files": sorted(rows, key=lambda row: row["path"]),
+    }
+    if repository == UPSTREAM_REPOSITORY:
+        packet["model_info"] = model_info
+    return packet
+
+
 def stage_snapshot(label: str, repository: str, revision: str, root: Path) -> None:
     from huggingface_hub import HfApi, snapshot_download
 
@@ -307,6 +446,9 @@ def stage_snapshot(label: str, repository: str, revision: str, root: Path) -> No
     info = api.model_info(repository, revision=revision)
     if info.sha != revision:
         raise RuntimeError(f"{repository}: resolved {info.sha} != {revision}")
+    model_info: dict[str, Any] | None = None
+    if repository == UPSTREAM_REPOSITORY:
+        model_info = model_license_identity(info)
     rows: list[dict[str, Any]] = []
     for item in api.list_repo_tree(repository, revision=revision, recursive=True, expand=True):
         if getattr(item, "type", None) != "file":
@@ -320,10 +462,7 @@ def stage_snapshot(label: str, repository: str, revision: str, root: Path) -> No
     if downloaded.resolve() != destination.resolve():
         raise RuntimeError(f"snapshot_download returned an unexpected local path: {downloaded}")
     verify_local_snapshot(destination, rows)
-    packet = {"repository": repository, "revision": revision,
-              "resolved_revision": info.sha, "walk": "recursive_file_only",
-              "complete_recursive": True,
-              "files": sorted(rows, key=lambda row: row["path"])}
+    packet = server_tree_packet(repository, revision, info.sha, rows, model_info)
     (root / f"{label}-server-tree.json").write_text(
         json.dumps(packet, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -430,10 +569,72 @@ def main() -> int:
             parser.error("--self-test accepts no other arguments")
         assert len(PUBLIC_REVISION) == len(UPSTREAM_REVISION) == 40
         assert len(MANIFEST_SHA256) == 64
+        validate_license_identity_contract()
+        from types import SimpleNamespace
+        valid_info = SimpleNamespace(
+            id=UPSTREAM_REPOSITORY,
+            sha=UPSTREAM_REVISION,
+            private=False,
+            gated=False,
+            disabled=False,
+            card_data=SimpleNamespace(license=UPSTREAM_MODEL_CARD_DATA_LICENSE),
+        )
+        assert model_license_identity(valid_info)["card_data_license"] == "apache-2.0"
+        valid_info.card_data.license = "mit"
+        try:
+            model_license_identity(valid_info)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("HF cardData license drift must fail closed")
+        valid_info.card_data.license = UPSTREAM_MODEL_CARD_DATA_LICENSE
+        packet_rows = [{"path": "config.json", "size": 1}]
+        public_packet = server_tree_packet(
+            PUBLIC_REPOSITORY, PUBLIC_REVISION, PUBLIC_REVISION, packet_rows,
+        )
+        assert set(public_packet) == {
+            "repository", "revision", "resolved_revision", "walk",
+            "complete_recursive", "files",
+        }
+        upstream_packet = server_tree_packet(
+            UPSTREAM_REPOSITORY, UPSTREAM_REVISION, UPSTREAM_REVISION,
+            packet_rows, model_license_identity(valid_info),
+        )
+        assert set(upstream_packet) == {
+            "repository", "revision", "resolved_revision", "walk",
+            "complete_recursive", "files", "model_info",
+        }
+        for repository, info in (
+            (PUBLIC_REPOSITORY, model_license_identity(valid_info)),
+            (UPSTREAM_REPOSITORY, None),
+        ):
+            try:
+                server_tree_packet(repository, PUBLIC_REVISION, PUBLIC_REVISION,
+                                   packet_rows, info)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("server-tree packet schema drift must fail closed")
+        with TemporaryDirectory(prefix="zonos-license-selftest-") as license_directory:
+            try:
+                source_license_identity(Path(license_directory))
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("missing source LICENSE must fail closed")
+        original_license_sha = SOURCE_LICENSE_SHA256
+        globals()["SOURCE_LICENSE_SHA256"] = "0" * 64
+        try:
+            validate_license_identity_contract()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("license contract drift must fail closed")
+        finally:
+            globals()["SOURCE_LICENSE_SHA256"] = original_license_sha
         oid = "0" * 64
         assert len(lfs_pointer(oid, 1)) == 40
         assert lfs_pointer(oid, 1) != hashlib.sha1(b"x").hexdigest()
-        from types import SimpleNamespace
         valid_row = SimpleNamespace(type="file", path="weights/model.safetensors",
                                     size=1, blob_id="0" * 40, lfs=None)
         assert server_file_row(valid_row)["git_blob_sha1"] == "0" * 40
@@ -459,7 +660,6 @@ def main() -> int:
             pass
         else:
             raise AssertionError("duplicate approval JSON keys must fail")
-        from tempfile import TemporaryDirectory
         with TemporaryDirectory(prefix="zonos-stage-selftest-") as directory:
             snapshot = Path(directory).resolve()
             payload = snapshot / "payload.bin"
@@ -542,6 +742,40 @@ def main() -> int:
                 pass
             else:
                 raise AssertionError("symlinked staged inputs must fail closed")
+        approval_parent = "/private/tmp" if Path("/private/tmp").is_dir() else "/tmp"
+        with TemporaryDirectory(prefix="zonos-approval-selftest-", dir=approval_parent) as approval_directory:
+            approval = Path(approval_directory) / "approval.json"
+            project_sha = sha256_file(PROJECT_PATH)
+            lock_sha = sha256_file(LOCK_PATH)
+            scope = approval_scope(project_sha, lock_sha)
+            approval.write_text(json.dumps({
+                "schema": "zonos-vast-approval-v1",
+                "decision": "APPROVED",
+                "signer": "self-test",
+                "project_sha256": project_sha,
+                "lock_sha256": lock_sha,
+                "scope_sha256": hashlib.sha256(json.dumps(
+                    scope, sort_keys=True, separators=(",", ":")
+                ).encode()).hexdigest(),
+                "no_upload": True,
+                "source_repository": SOURCE_REPOSITORY,
+                "source_revision": SOURCE_REVISION,
+                "upstream_repository": UPSTREAM_REPOSITORY,
+                "upstream_revision": UPSTREAM_REVISION,
+                "public_repository": PUBLIC_REPOSITORY,
+                "public_revision": PUBLIC_REVISION,
+                "license_review": "AUTHENTICATED_LICENSE_IDENTITY_REQUIRED",
+            }), encoding="utf-8")
+            preflight_gate(approval)
+            approval_value = json.loads(approval.read_text(encoding="utf-8"))
+            approval_value["scope_sha256"] = "0" * 64
+            approval.write_text(json.dumps(approval_value), encoding="utf-8")
+            try:
+                preflight_gate(approval)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("approval scope drift must fail closed")
         print("zonos_vast_stage.py self-test: OK")
         return 0
     if args.preflight_only:
@@ -559,9 +793,8 @@ def main() -> int:
         parser.error("--root and --approval-evidence are required for staging")
     try:
         # This gate intentionally runs before importing huggingface_hub or
-        # touching the requested output root.  The source/model license object
-        # is not authenticated in repository data yet, so production remains
-        # blocked even if an operator submits an approval-shaped document.
+        # touching the requested output root.  The external approval scope is
+        # bound to the authenticated source LICENSE and HF model identity.
         preflight_gate(args.approval_evidence)
         validate_root(args.root)
         claim_root(args.root)

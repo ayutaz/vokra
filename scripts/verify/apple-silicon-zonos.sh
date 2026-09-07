@@ -8,6 +8,13 @@ TEST_NAME='zonos_real_cpu_codes_and_pcm_boundary'
 SOURCE_REVISION='bc40d98e1e1ab54fc65c483be127a90e3c7c0645'
 UPSTREAM_REVISION='9d8331fc49cb5ba8aad2bb56cafd809c66598f4e'
 PUBLIC_REVISION='b1bf5c56d470eb9097e9b04f9deca364576574ba'
+SOURCE_LICENSE_PATH='LICENSE'
+SOURCE_LICENSE_SPDX='Apache-2.0'
+SOURCE_LICENSE_BYTES=11357
+SOURCE_LICENSE_GIT_BLOB_SHA1='7a4a3ea2424c09fbe48d455aed1eaa94d9124835'
+SOURCE_LICENSE_SHA256='58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd'
+UPSTREAM_MODEL_ID='Zyphra/Zonos-v0.1-transformer'
+UPSTREAM_MODEL_CARD_DATA_LICENSE='apache-2.0'
 
 log() { printf '[zonos-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -102,7 +109,7 @@ validate_transfer_manifest() {
   require_file 'Zonos transfer manifest' "$path" || return 2
   [[ "$(sha256_file "$path")" == "$(lower_sha "$expected_sha")" ]] || { die 'transfer manifest SHA-256 mismatch'; return 2; }
   awk '
-    BEGIN { allowed["schema"]; allowed["expected_head"]; allowed["approval_evidence_sha256"]; allowed["manifest_sha256"]; allowed["gguf_sha256"]; allowed["dac_gguf_sha256"]; allowed["conditioning_packet_sha256"]; allowed["reference_codes_sha256"]; allowed["reference_pcm_sha256"]; allowed["native_cpu_log_sha256"]; allowed["cpu_result"]; allowed["cpu_sentinel_summary"]; allowed["status"]; allowed["metal_status"]; allowed["publication"] }
+    BEGIN { allowed["schema"]; allowed["expected_head"]; allowed["approval_evidence_sha256"]; allowed["source_license_path"]; allowed["source_license_spdx"]; allowed["source_license_bytes"]; allowed["source_license_git_blob_sha1"]; allowed["source_license_sha256"]; allowed["upstream_model_id"]; allowed["upstream_model_revision"]; allowed["upstream_model_private"]; allowed["upstream_model_gated"]; allowed["upstream_model_disabled"]; allowed["upstream_model_card_data_license"]; allowed["manifest_sha256"]; allowed["gguf_sha256"]; allowed["dac_gguf_sha256"]; allowed["conditioning_packet_sha256"]; allowed["reference_codes_sha256"]; allowed["reference_pcm_sha256"]; allowed["native_cpu_log_sha256"]; allowed["cpu_result"]; allowed["cpu_sentinel_summary"]; allowed["status"]; allowed["metal_status"]; allowed["publication"] }
     index($0, "=") == 0 { bad=1; next }
     { key=substr($0, 1, index($0, "=") - 1); if (!(key in allowed)) bad=1; count[key]++ }
     END { if (bad) exit 2; for (key in allowed) if (count[key] != 1) exit 3 }
@@ -110,6 +117,17 @@ validate_transfer_manifest() {
   grep -Fxq 'schema=zonos-apple-transfer-v1' "$path" || { die 'transfer manifest schema mismatch'; return 2; }
   grep -Fxq "expected_head=$expected_head" "$path" || { die 'transfer manifest expected HEAD mismatch'; return 2; }
   grep -Fxq "approval_evidence_sha256=$approval_sha" "$path" || { die 'transfer manifest approval binding mismatch'; return 2; }
+  grep -Fxq "source_license_path=$SOURCE_LICENSE_PATH" "$path" || { die 'transfer manifest source license path mismatch'; return 2; }
+  grep -Fxq "source_license_spdx=$SOURCE_LICENSE_SPDX" "$path" || { die 'transfer manifest source license SPDX mismatch'; return 2; }
+  grep -Fxq "source_license_bytes=$SOURCE_LICENSE_BYTES" "$path" || { die 'transfer manifest source license byte-size mismatch'; return 2; }
+  grep -Fxq "source_license_git_blob_sha1=$SOURCE_LICENSE_GIT_BLOB_SHA1" "$path" || { die 'transfer manifest source license Git blob mismatch'; return 2; }
+  grep -Fxq "source_license_sha256=$SOURCE_LICENSE_SHA256" "$path" || { die 'transfer manifest source license SHA-256 mismatch'; return 2; }
+  grep -Fxq "upstream_model_id=$UPSTREAM_MODEL_ID" "$path" || { die 'transfer manifest upstream model ID mismatch'; return 2; }
+  grep -Fxq "upstream_model_revision=$UPSTREAM_REVISION" "$path" || { die 'transfer manifest upstream model revision mismatch'; return 2; }
+  grep -Fxq 'upstream_model_private=false' "$path" || { die 'transfer manifest upstream private flag mismatch'; return 2; }
+  grep -Fxq 'upstream_model_gated=false' "$path" || { die 'transfer manifest upstream gated flag mismatch'; return 2; }
+  grep -Fxq 'upstream_model_disabled=false' "$path" || { die 'transfer manifest upstream disabled flag mismatch'; return 2; }
+  grep -Fxq "upstream_model_card_data_license=$UPSTREAM_MODEL_CARD_DATA_LICENSE" "$path" || { die 'transfer manifest HF cardData license mismatch'; return 2; }
   grep -Fxq "manifest_sha256=$manifest_sha" "$path" || { die 'transfer manifest public manifest mismatch'; return 2; }
   grep -Fxq "gguf_sha256=$gguf_sha" "$path" || { die 'transfer manifest GGUF mismatch'; return 2; }
   grep -Fxq "dac_gguf_sha256=$dac_sha" "$path" || { die 'transfer manifest DAC mismatch'; return 2; }
@@ -147,12 +165,42 @@ try:
     if value["schema"] != "zonos-vast-approval-v1" or value["decision"] != "APPROVED" or value["no_upload"] is not True: raise ValueError("approval decision/publication mismatch")
     if not isinstance(value["signer"], str) or not value["signer"].strip() or value["signer"].strip().upper() in {"TODO", "UNRESOLVED", "PENDING", "OWNER_REVIEW_REQUIRED"}: raise ValueError("approval signer unresolved")
     if value["project_sha256"] != sys.argv[2] or value["lock_sha256"] != sys.argv[3]: raise ValueError("approval project/lock mismatch")
-    scope = {"schema": "zonos-vast-approval-scope-v1", "project_sha256": sys.argv[2], "lock_sha256": sys.argv[3], "source_repository": "https://github.com/Zyphra/Zonos.git", "source_revision": "bc40d98e1e1ab54fc65c483be127a90e3c7c0645", "upstream_repository": "Zyphra/Zonos-v0.1-transformer", "upstream_revision": "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e", "public_repository": "vokra/zonos-v0.1-transformer", "public_revision": "b1bf5c56d470eb9097e9b04f9deca364576574ba", "no_upload": True, "license_review": "AUTHENTICATED_LICENSE_IDENTITY_REQUIRED"}
+    scope = {
+        "schema": "zonos-vast-approval-scope-v1",
+        "project_sha256": sys.argv[2],
+        "lock_sha256": sys.argv[3],
+        "source_repository": "https://github.com/Zyphra/Zonos.git",
+        "source_revision": "bc40d98e1e1ab54fc65c483be127a90e3c7c0645",
+        "upstream_repository": "Zyphra/Zonos-v0.1-transformer",
+        "upstream_revision": "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e",
+        "public_repository": "vokra/zonos-v0.1-transformer",
+        "public_revision": "b1bf5c56d470eb9097e9b04f9deca364576574ba",
+        "no_upload": True,
+        "license_review": "AUTHENTICATED_LICENSE_IDENTITY_REQUIRED",
+        "license_identity": {
+            "source": {
+                "repository": "https://github.com/Zyphra/Zonos.git",
+                "revision": "bc40d98e1e1ab54fc65c483be127a90e3c7c0645",
+                "path": "LICENSE",
+                "spdx": "Apache-2.0",
+                "bytes": 11357,
+                "git_blob_sha1": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835",
+                "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+            },
+            "upstream_model": {
+                "id": "Zyphra/Zonos-v0.1-transformer",
+                "revision": "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e",
+                "private": False,
+                "gated": False,
+                "disabled": False,
+                "card_data_license": "apache-2.0",
+            },
+        },
+    }
     expected = hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if value["scope_sha256"] != expected: raise ValueError("approval scope mismatch")
     for key, expected in (("source_repository", scope["source_repository"]), ("source_revision", scope["source_revision"]), ("upstream_repository", scope["upstream_repository"]), ("upstream_revision", scope["upstream_revision"]), ("public_repository", scope["public_repository"]), ("public_revision", scope["public_revision"]), ("license_review", scope["license_review"])):
         if value[key] != expected: raise ValueError("approval fixed identity mismatch: " + key)
-    raise ValueError("Zonos source/model license identity is not authenticated")
 except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError) as error:
     raise SystemExit("approval BLOCKED: " + str(error))
 PY
@@ -194,7 +242,7 @@ require_sentinel() {
 }
 
 self_test() (
-  local path="${BASH_SOURCE[0]}" temporary fail=0 sha
+  local path="${BASH_SOURCE[0]}" temporary fail=0 sha old_license_gate
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-zonos-apple.XXXXXX")"; temporary="$(cd -P "$temporary" && pwd)"; trap 'rm -rf "$temporary"' EXIT
   printf abc > "$temporary/value"; sha='ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'; require_input 'self-test input' "$temporary/value" "$sha" 3
   printf '%s\n' '{"repository":"vokra/zonos-v0.1-transformer","revision":"b1bf5c56d470eb9097e9b04f9deca364576574ba","resolved_revision":"b1bf5c56d470eb9097e9b04f9deca364576574ba","walk":"recursive_file_only","complete_recursive":true,"files":[{"type":"file","path":"x","size":1,"git_blob_sha1":"0000000000000000000000000000000000000000"}]}' > "$temporary/manifest.json"
@@ -203,12 +251,50 @@ self_test() (
   require_cargo_singleton "$temporary/log"; require_sentinel "$temporary/log" ZONOS_CPU_REFERENCE 'ZONOS_CPU_REFERENCE codes=EXACT.*verdict=MEASURED_NOT_GATED' 'CPU sentinel'; require_sentinel "$temporary/log" ZONOS_METAL_REFERENCE 'ZONOS_METAL_REFERENCE codes=EXACT.*verdict=MEASURED_NOT_GATED' 'Metal sentinel'
   printf '%s\n' 'ZONOS_METAL_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED extra' >> "$temporary/log"
   if require_sentinel "$temporary/log" ZONOS_METAL_REFERENCE 'ZONOS_METAL_REFERENCE codes=EXACT.*verdict=MEASURED_NOT_GATED' 'Metal sentinel' >/dev/null 2>&1; then fail=1; fi
-  local expected_head approval_sha transfer transfer_sha digest native native_sha
-  expected_head='0123456789012345678901234567890123456789'; digest="$sha"; approval_sha="$digest"; transfer="$temporary/transfer.txt"; native="$temporary/native.log"
+  local expected_head approval approval_sha project_sha lock_sha transfer transfer_sha digest native native_sha
+  expected_head='0123456789012345678901234567890123456789'; digest="$sha"; approval="$temporary/approval.json"; transfer="$temporary/transfer.txt"; native="$temporary/native.log"
+  project_sha="$(sha256_file "$ROOT/tools/parity/pyproject.toml")"; lock_sha="$(sha256_file "$ROOT/tools/parity/uv.lock")"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$approval" "$project_sha" "$lock_sha" <<'PY'
+import hashlib, json, pathlib, sys
+path, project_sha, lock_sha = sys.argv[1:]
+scope = {
+    "schema": "zonos-vast-approval-scope-v1",
+    "project_sha256": project_sha,
+    "lock_sha256": lock_sha,
+    "source_repository": "https://github.com/Zyphra/Zonos.git",
+    "source_revision": "bc40d98e1e1ab54fc65c483be127a90e3c7c0645",
+    "upstream_repository": "Zyphra/Zonos-v0.1-transformer",
+    "upstream_revision": "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e",
+    "public_repository": "vokra/zonos-v0.1-transformer",
+    "public_revision": "b1bf5c56d470eb9097e9b04f9deca364576574ba",
+    "no_upload": True,
+    "license_review": "AUTHENTICATED_LICENSE_IDENTITY_REQUIRED",
+    "license_identity": {
+        "source": {"repository": "https://github.com/Zyphra/Zonos.git", "revision": "bc40d98e1e1ab54fc65c483be127a90e3c7c0645", "path": "LICENSE", "spdx": "Apache-2.0", "bytes": 11357, "git_blob_sha1": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835", "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"},
+        "upstream_model": {"id": "Zyphra/Zonos-v0.1-transformer", "revision": "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e", "private": False, "gated": False, "disabled": False, "card_data_license": "apache-2.0"},
+    },
+}
+value = {"schema": "zonos-vast-approval-v1", "decision": "APPROVED", "signer": "self-test", "project_sha256": project_sha, "lock_sha256": lock_sha, "scope_sha256": hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "no_upload": True, "source_repository": scope["source_repository"], "source_revision": scope["source_revision"], "upstream_repository": scope["upstream_repository"], "upstream_revision": scope["upstream_revision"], "public_repository": scope["public_repository"], "public_revision": scope["public_revision"], "license_review": scope["license_review"]}
+pathlib.Path(path).write_text(json.dumps(value), encoding="utf-8")
+PY
+  approval_sha="$(sha256_file "$approval")"; validate_approval "$approval"
+  cp "$approval" "$temporary/approval-drift.json"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$temporary/approval-drift.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["scope_sha256"] = "0" * 64
+path.write_text(json.dumps(value), encoding="utf-8")
+PY
+  if validate_approval "$temporary/approval-drift.json" >/dev/null 2>&1; then
+    echo 'approval scope drift was accepted' >&2
+    fail=1
+  fi
   printf '%s\n' "test $TEST_NAME ... ok" 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' 'ZONOS_CPU_REFERENCE codes=EXACT pcm_max_abs=0.000000e+00 pcm_mean_abs=0.000000e+00 verdict=MEASURED_NOT_GATED' > "$native"
   native_sha="$(sha256_file "$native")"
   printf 'schema=zonos-apple-transfer-v1\nexpected_head=%s\napproval_evidence_sha256=%s\nmanifest_sha256=%s\ngguf_sha256=%s\ndac_gguf_sha256=%s\nconditioning_packet_sha256=%s\nreference_codes_sha256=%s\nreference_pcm_sha256=%s\nnative_cpu_log_sha256=%s\ncpu_result=ONE_PASS\ncpu_sentinel_summary=ZONOS_CPU_REFERENCE codes=EXACT verdict=MEASURED_NOT_GATED\nstatus=MEASURED_NOT_GATED\nmetal_status=NOT_RUN\npublication=NO_UPLOAD\n' \
     "$expected_head" "$approval_sha" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$native_sha" > "$transfer"
+  printf '%s\n' "source_license_path=$SOURCE_LICENSE_PATH" "source_license_spdx=$SOURCE_LICENSE_SPDX" "source_license_bytes=$SOURCE_LICENSE_BYTES" "source_license_git_blob_sha1=$SOURCE_LICENSE_GIT_BLOB_SHA1" "source_license_sha256=$SOURCE_LICENSE_SHA256" "upstream_model_id=$UPSTREAM_MODEL_ID" "upstream_model_revision=$UPSTREAM_REVISION" 'upstream_model_private=false' 'upstream_model_gated=false' 'upstream_model_disabled=false' "upstream_model_card_data_license=$UPSTREAM_MODEL_CARD_DATA_LICENSE" >> "$transfer"
   validate_transfer_manifest "$transfer" "$(sha256_file "$transfer")" "$expected_head" "$approval_sha" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$native_sha"
   printf 'extra=value\n' >> "$transfer"
   if validate_transfer_manifest "$transfer" "$(sha256_file "$transfer")" "$expected_head" "$approval_sha" "$digest" "$digest" "$digest" "$digest" "$digest" "$digest" "$native_sha" >/dev/null 2>&1; then fail=1; fi
@@ -221,7 +307,9 @@ self_test() (
   if validate_absent_evidence "$temporary/link/new/evidence" "$temporary/value" >/dev/null 2>&1; then fail=1; fi
   if "$path" --self-test --manifest x >/dev/null 2>&1 || "$path" --unknown >/dev/null 2>&1; then fail=1; fi
   [[ ! -e "$temporary/evidence" ]] || fail=1
-  for token in 'VOKRA_ZONOS_BACKEND' 'ZONOS_CPU_REFERENCE' 'ZONOS_METAL_REFERENCE' 'verdict=MEASURED_NOT_GATED' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' '--offline' '--test-threads=1' '--expected-head' '--approval-evidence-sha256' '--transfer-manifest-sha256' '--native-cpu-log-sha256' 'claim_evidence_dir' 'reject_symlink_ancestors' 'Apple evidence directory must be absent' 'source/model license identity is not authenticated'; do grep -Fq -- "$token" "$path" || fail=1; done
+  for token in 'VOKRA_ZONOS_BACKEND' 'ZONOS_CPU_REFERENCE' 'ZONOS_METAL_REFERENCE' 'verdict=MEASURED_NOT_GATED' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' '--offline' '--test-threads=1' '--expected-head' '--approval-evidence-sha256' '--transfer-manifest-sha256' '--native-cpu-log-sha256' 'claim_evidence_dir' 'reject_symlink_ancestors' 'Apple evidence directory must be absent' 'source LICENSE' 'Apache-2.0' '11357' '7a4a3ea2424c09fbe48d455aed1eaa94d9124835' '58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd' 'cardData.license' 'upstream_model_card_data_license'; do grep -Fq -- "$token" "$path" || fail=1; done
+  old_license_gate='LICENSE_IDENTITY_AUTHENTICATED'; old_license_gate+=' = False'
+  grep -Fq "$old_license_gate" "$path" && fail=1 || true
   grep -Eq '(^|[;&|][[:space:]]*)(curl|wget|snapshot_download|git[[:space:]]+push|upload\.sh|publish-one\.sh)([[:space:]]|$)' "$path" && fail=1 || true
   (( fail == 0 )) || return 1; log 'self-test PASS'
 )

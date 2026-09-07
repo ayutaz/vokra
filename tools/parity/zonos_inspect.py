@@ -28,6 +28,15 @@ EXPECTED_MANIFEST_SHA256 = "6543af3747d3e85bde862c3337744eea31f0105f9df6d8617c1c
 FORMAT = "vokra-zonos-inspection-v1"
 SOURCE_REPOSITORY = "https://github.com/Zyphra/Zonos.git"
 SOURCE_REVISION = "bc40d98e1e1ab54fc65c483be127a90e3c7c0645"
+SOURCE_LICENSE_PATH = "LICENSE"
+SOURCE_LICENSE_SPDX = "Apache-2.0"
+SOURCE_LICENSE_BYTES = 11_357
+SOURCE_LICENSE_GIT_BLOB_SHA1 = "7a4a3ea2424c09fbe48d455aed1eaa94d9124835"
+SOURCE_LICENSE_SHA256 = "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+UPSTREAM_MODEL_PRIVATE = False
+UPSTREAM_MODEL_GATED = False
+UPSTREAM_MODEL_DISABLED = False
+UPSTREAM_MODEL_CARD_DATA_LICENSE = "apache-2.0"
 SOURCE_ROLES = (
     "zonos/config.py",
     "zonos/model.py",
@@ -103,6 +112,51 @@ def lfs_pointer_sha1(oid: str, size: int) -> str:
     return hashlib.sha1(f"blob {len(pointer)}\0".encode() + pointer).hexdigest()
 
 
+def model_license_identity(packet: dict[str, Any], blockers: list[str]) -> dict[str, Any]:
+    """Validate the exact HF model-info fields authenticated during staging."""
+    expected = {
+        "id": UPSTREAM_HF_REPOSITORY,
+        "revision": UPSTREAM_HF_REVISION,
+        "private": UPSTREAM_MODEL_PRIVATE,
+        "gated": UPSTREAM_MODEL_GATED,
+        "disabled": UPSTREAM_MODEL_DISABLED,
+        "card_data_license": UPSTREAM_MODEL_CARD_DATA_LICENSE,
+    }
+    actual = packet.get("model_info")
+    if actual != expected:
+        blockers.append(f"Zonos HF model license identity mismatch: {actual!r}")
+        return {"status": "MISMATCH", "actual": actual, "expected": expected}
+    return {"status": "MATCHED", **actual}
+
+
+def source_license_identity(source: Path, blockers: list[str]) -> dict[str, Any]:
+    """Re-authenticate the exact source LICENSE after the pinned checkout."""
+    path = source / SOURCE_LICENSE_PATH
+    try:
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("source LICENSE is missing or symlinked")
+        actual = {
+            "path": SOURCE_LICENSE_PATH,
+            "spdx": SOURCE_LICENSE_SPDX,
+            "bytes": path.stat().st_size,
+            "git_blob_sha1": git_blob_sha1(path),
+            "sha256": sha256(path),
+        }
+        expected = {
+            "path": SOURCE_LICENSE_PATH,
+            "spdx": SOURCE_LICENSE_SPDX,
+            "bytes": SOURCE_LICENSE_BYTES,
+            "git_blob_sha1": SOURCE_LICENSE_GIT_BLOB_SHA1,
+            "sha256": SOURCE_LICENSE_SHA256,
+        }
+        if actual != expected:
+            raise ValueError(f"source LICENSE identity mismatch: {actual!r}")
+        return {"status": "MATCHED", **actual}
+    except (OSError, ValueError) as error:
+        blockers.append(f"Zyphra/Zonos source LICENSE blocked: {error}")
+        return {"status": "MISMATCH", "error": str(error)}
+
+
 def local_files(root: Path) -> dict[str, Path]:
     if not root.is_dir():
         raise ValueError(f"missing snapshot: {root}")
@@ -141,7 +195,7 @@ def file_packet(name: str, path: Path, lfs: str | None = None, lfs_size: int | N
     return packet
 
 
-def server_tree(snapshot: Path, packet_path: Path, blockers: list[str], repository: str = HF_REPOSITORY, revision: str = HF_REVISION, require_public: bool = False) -> dict[str, Any]:
+def server_tree(snapshot: Path, packet_path: Path, blockers: list[str], repository: str = HF_REPOSITORY, revision: str = HF_REVISION, require_public: bool = False, require_license: bool = False) -> dict[str, Any]:
     raw = json.loads(packet_path.read_text(encoding="utf-8"), object_pairs_hook=no_dupes)
     if (
         not isinstance(raw, dict)
@@ -195,6 +249,7 @@ def server_tree(snapshot: Path, packet_path: Path, blockers: list[str], reposito
     )
     if not identity:
         blockers.append("Zonos HF server-tree identity mismatch")
+    license_identity = model_license_identity(raw, blockers) if require_license else None
     if missing or extra:
         blockers.append(f"Zonos server/local tree mismatch: missing={missing!r} extra={extra!r}")
     if changed:
@@ -203,12 +258,20 @@ def server_tree(snapshot: Path, packet_path: Path, blockers: list[str], reposito
         "repository": raw.get("repository"),
         "revision": raw.get("revision"),
         "resolved_revision": raw.get("resolved_revision"),
+        "model_info": raw.get("model_info"),
+        "license_identity": license_identity,
         "walk": raw.get("walk"),
         "files": remote,
         "missing": missing,
         "extra": extra,
         "content_mismatch": changed,
-        "status": "MATCHED" if identity and not missing and not extra and not changed else "MISMATCH",
+        "status": "MATCHED" if (
+            identity
+            and not missing
+            and not extra
+            and not changed
+            and (not require_license or license_identity["status"] == "MATCHED")
+        ) else "MISMATCH",
     }
 
 
@@ -256,6 +319,7 @@ def source_inventory(source: Path, blockers: list[str]) -> dict[str, Any]:
         result.update({"resolved_revision": head, "origin": origin, "clean": not dirty, "roles": [], "tracked_files": []})
         if head != SOURCE_REVISION or origin != SOURCE_REPOSITORY or dirty:
             blockers.append("Zyphra/Zonos source identity/origin/clean mismatch")
+        result["license"] = source_license_identity(source, blockers)
         for role in SOURCE_ROLES:
             path = source / role
             if not path.is_file():
@@ -423,7 +487,7 @@ def inspect(snapshot: Path | None, packet: Path | None, manifest: Path | None, u
             blockers.append("upstream 246 tensor manifest packet is required")
             evidence_error = True
         if upstream_snapshot is not None and upstream_packet is not None:
-            evidence["upstream_server_tree"] = server_tree(upstream_snapshot, upstream_packet, blockers, UPSTREAM_HF_REPOSITORY, UPSTREAM_HF_REVISION)
+            evidence["upstream_server_tree"] = server_tree(upstream_snapshot, upstream_packet, blockers, UPSTREAM_HF_REPOSITORY, UPSTREAM_HF_REVISION, require_license=True)
             evidence_error = evidence_error or evidence["upstream_server_tree"]["status"] != "MATCHED"
             for required in ("model.safetensors", "config.json"):
                 if required not in evidence["upstream_server_tree"]["files"]:
@@ -434,7 +498,7 @@ def inspect(snapshot: Path | None, packet: Path | None, manifest: Path | None, u
             evidence_error = True
         if source is not None:
             evidence["source"] = source_inventory(source, blockers)
-            evidence_error = evidence_error or evidence["source"].get("resolved_revision") != SOURCE_REVISION or evidence["source"].get("origin") != SOURCE_REPOSITORY or not evidence["source"].get("clean", False)
+            evidence_error = evidence_error or evidence["source"].get("resolved_revision") != SOURCE_REVISION or evidence["source"].get("origin") != SOURCE_REPOSITORY or not evidence["source"].get("clean", False) or evidence["source"].get("license", {}).get("status") != "MATCHED"
         else:
             blockers.append("fixed Zyphra/Zonos source checkout is required")
             evidence_error = True
@@ -481,8 +545,28 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("duplicate JSON keys must fail")
+    valid_model_packet = {
+        "model_info": {
+            "id": UPSTREAM_HF_REPOSITORY,
+            "revision": UPSTREAM_HF_REVISION,
+            "private": False,
+            "gated": False,
+            "disabled": False,
+            "card_data_license": "apache-2.0",
+        }
+    }
+    model_blockers: list[str] = []
+    assert model_license_identity(valid_model_packet, model_blockers)["status"] == "MATCHED"
+    assert not model_blockers
+    valid_model_packet["model_info"]["card_data_license"] = "mit"
+    model_blockers = []
+    assert model_license_identity(valid_model_packet, model_blockers)["status"] == "MISMATCH"
+    assert model_blockers
     with __import__("tempfile").TemporaryDirectory() as directory:
         root = Path(directory)
+        missing_license_blockers: list[str] = []
+        missing_license = source_license_identity(root / "missing-source", missing_license_blockers)
+        assert missing_license["status"] == "MISMATCH" and missing_license_blockers
         empty_out = root / "empty-evidence"
         assert inspect(None, None, None, None, None, None, None, empty_out) == 2
         empty_record = json.loads((empty_out / "manifest.json").read_text(encoding="utf-8"))
@@ -509,6 +593,41 @@ def self_test() -> None:
         result = server_tree(snapshot, packet, blockers, require_public=True)
         assert result["status"] == "MATCHED" and not blockers
         globals()["PUBLIC_GGUF_BYTES"], globals()["PUBLIC_GGUF_SHA256"] = old_bytes, old_sha
+        upstream_snapshot = root / "upstream-snapshot"
+        upstream_snapshot.mkdir()
+        upstream_file = upstream_snapshot / "config.json"
+        upstream_file.write_bytes(b"x")
+        upstream_packet = root / "upstream-tree.json"
+        valid_model_packet["model_info"]["card_data_license"] = "apache-2.0"
+        upstream_packet.write_text(json.dumps({
+            "repository": UPSTREAM_HF_REPOSITORY,
+            "revision": UPSTREAM_HF_REVISION,
+            "resolved_revision": UPSTREAM_HF_REVISION,
+            "walk": "recursive_file_only",
+            "complete_recursive": True,
+            "model_info": valid_model_packet["model_info"],
+            "files": [file_packet("config.json", upstream_file)],
+        }), encoding="utf-8")
+        blockers = []
+        assert server_tree(
+            upstream_snapshot, upstream_packet, blockers,
+            UPSTREAM_HF_REPOSITORY, UPSTREAM_HF_REVISION, require_license=True,
+        )["status"] == "MATCHED" and not blockers
+        valid_model_packet["model_info"]["card_data_license"] = "mit"
+        upstream_packet.write_text(json.dumps({
+            "repository": UPSTREAM_HF_REPOSITORY,
+            "revision": UPSTREAM_HF_REVISION,
+            "resolved_revision": UPSTREAM_HF_REVISION,
+            "walk": "recursive_file_only",
+            "complete_recursive": True,
+            "model_info": valid_model_packet["model_info"],
+            "files": [file_packet("config.json", upstream_file)],
+        }), encoding="utf-8")
+        blockers = []
+        assert server_tree(
+            upstream_snapshot, upstream_packet, blockers,
+            UPSTREAM_HF_REPOSITORY, UPSTREAM_HF_REVISION, require_license=True,
+        )["status"] == "MISMATCH" and blockers
         manifest = root / "manifest.json"
         manifest.write_text(json.dumps({"revision": HF_REVISION, "tensors": [{}] * EXPECTED_TENSOR_COUNT, "manifest_sha256": EXPECTED_MANIFEST_SHA256}), encoding="utf-8")
         blockers = []
@@ -594,6 +713,7 @@ def self_test() -> None:
         }
         globals()["source_inventory"] = lambda path, blockers: {
             "resolved_revision": SOURCE_REVISION, "origin": SOURCE_REPOSITORY, "clean": True,
+            "license": {"status": "MATCHED"},
         }
         globals()["reference_evidence"] = lambda path, blockers, evidence_root: {"status": "MEASURED_NOT_GATED"}
         globals()["native_evidence"] = lambda path, blockers, evidence_root: {"status": "MEASURED_NOT_GATED"}
