@@ -74,7 +74,14 @@ official `Qwen3TTSModel`, `Qwen3TTSConfig`, and `Qwen3TTSProcessor` APIs,
 constructs only config/processor objects, and records `PASS_MODEL_FREE` with
 source/model/operator approval fields still pending. It rejects any checkpoint
 file, never calls `Qwen3TTSModel.from_pretrained`, and is not a parity or
-publication result.
+publication result. Because the reviewed runtime intentionally excludes the
+forbidden `sox` package, the inspection installs a strict import-only `sox`
+sentinel while importing the official source. Any attribute access fails
+closed; successful evidence records `sox_sentinel.installed=true` and
+`sox_sentinel.accesses=0`, and the original `sys.modules` state is restored.
+An import/API incompatibility is emitted as atomic `BLOCKED_INCOMPATIBLE_API`
+evidence with `checkpoint_load=NOT_PERFORMED`, never as an unstructured
+traceback.
 
 The separate model-free dependency/license audit is
 `scripts/publish/vast-ai/audit-qwen3-tts-dependencies.sh`. It is restricted to

@@ -10,8 +10,10 @@ checkpoint files and never calls ``Qwen3TTSModel.from_pretrained``.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.metadata
+import importlib.util
 import inspect
 import json
 import os
@@ -21,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import types
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +88,59 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 class ProbeError(RuntimeError):
     """A fail-closed model-free probe failure."""
+
+
+class SoxSentinelAccessError(ProbeError):
+    """The forbidden optional sox module was accessed during import."""
+
+
+class ApiProbeFailure(ProbeError):
+    """An official API import/introspection failure with sentinel evidence."""
+
+    def __init__(self, message: str, *, sentinel_installed: bool, accesses: int) -> None:
+        super().__init__(message)
+        self.sentinel_installed = sentinel_installed
+        self.accesses = accesses
+
+
+class _SoxSentinel(types.ModuleType):
+    def __init__(self) -> None:
+        super().__init__("sox")
+        self.accesses = 0
+
+    def __getattr__(self, name: str) -> Any:
+        self.accesses += 1
+        raise SoxSentinelAccessError(f"forbidden sox access: {name}")
+
+
+@contextmanager
+def install_sox_sentinel() -> Any:
+    """Provide import-only ``sox`` and restore ``sys.modules`` exactly."""
+
+    module_name = "sox"
+    if module_name in sys.modules:
+        raise ProbeError("real or pre-existing sox module is installed")
+    if importlib.util.find_spec(module_name) is not None:
+        raise ProbeError("real sox package is installed")
+    sentinel = _SoxSentinel()
+    sys.modules[module_name] = sentinel
+    try:
+        yield sentinel
+    finally:
+        if sys.modules.get(module_name) is sentinel:
+            del sys.modules[module_name]
+        elif module_name in sys.modules:
+            raise ProbeError("sox sentinel was overwritten during API probe")
+
+
+def pending_approval() -> dict[str, Any]:
+    return {
+        "source_license": "PENDING_OWNER_APPROVAL",
+        "model_license": "PENDING_OWNER_APPROVAL",
+        "operator": "PENDING_OWNER_APPROVAL",
+        "signer": None,
+        "scope_sha256": None,
+    }
 
 
 def sha256_file(path: Path) -> str:
@@ -243,40 +299,51 @@ def verify_metadata(snapshot: Path, variant: str) -> dict[str, Any]:
 
 def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
     sys.path.insert(0, str(source))
+    sentinel: _SoxSentinel | None = None
     try:
-        import qwen_tts
-        from qwen_tts import Qwen3TTSModel
-        from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSProcessor
-        config = Qwen3TTSConfig.from_pretrained(str(snapshot), local_files_only=True)
-        processor = Qwen3TTSProcessor.from_pretrained(str(snapshot), local_files_only=True)
-        if processor is None or config.model_type != "qwen3_tts":
-            raise ProbeError("official processor/config construction returned an invalid object")
-        package_root = Path(qwen_tts.__file__).resolve().parents[1]
-        if package_root != source.resolve():
-            raise ProbeError(f"qwen_tts imported from unexpected path: {package_root}")
-        versions = {
-            name: importlib.metadata.version(name)
-            for name in ("accelerate", "einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
-        }
-        if versions["transformers"] != "5.10.4":
-            raise ProbeError(f"Transformers runtime drifted: {versions['transformers']}")
-        return {
-            "imports": [
-                "qwen_tts.Qwen3TTSModel",
-                "qwen_tts.core.models.Qwen3TTSConfig",
-                "qwen_tts.core.models.Qwen3TTSProcessor",
-            ],
-            "package_versions": versions,
-            "config_class": f"{Qwen3TTSConfig.__module__}.{Qwen3TTSConfig.__name__}",
-            "processor_class": f"{Qwen3TTSProcessor.__module__}.{Qwen3TTSProcessor.__name__}",
-            "wrapper_class": f"{Qwen3TTSModel.__module__}.{Qwen3TTSModel.__name__}",
-            "config_from_pretrained": "CALLED_LOCAL_ONLY",
-            "processor_from_pretrained": "CALLED_LOCAL_ONLY",
-            "wrapper_from_pretrained": "NOT_CALLED",
-            "wrapper_signature": str(inspect.signature(Qwen3TTSModel.from_pretrained)),
-            "generate_voice_clone_signature": str(inspect.signature(Qwen3TTSModel.generate_voice_clone)),
-            "checkpoint_load": "NOT_PERFORMED",
-        }
+        with install_sox_sentinel() as sentinel:
+            import qwen_tts
+            from qwen_tts import Qwen3TTSModel
+            from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSProcessor
+            config = Qwen3TTSConfig.from_pretrained(str(snapshot), local_files_only=True)
+            processor = Qwen3TTSProcessor.from_pretrained(str(snapshot), local_files_only=True)
+            if processor is None or config.model_type != "qwen3_tts":
+                raise ProbeError("official processor/config construction returned an invalid object")
+            package_root = Path(qwen_tts.__file__).resolve().parents[1]
+            if package_root != source.resolve():
+                raise ProbeError(f"qwen_tts imported from unexpected path: {package_root}")
+            versions = {
+                name: importlib.metadata.version(name)
+                for name in ("accelerate", "einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
+            }
+            if versions["transformers"] != "5.10.4":
+                raise ProbeError(f"Transformers runtime drifted: {versions['transformers']}")
+            if sentinel.accesses != 0:
+                raise ProbeError(f"forbidden sox sentinel was accessed {sentinel.accesses} time(s)")
+            return {
+                "imports": [
+                    "qwen_tts.Qwen3TTSModel",
+                    "qwen_tts.core.models.Qwen3TTSConfig",
+                    "qwen_tts.core.models.Qwen3TTSProcessor",
+                ],
+                "package_versions": versions,
+                "config_class": f"{Qwen3TTSConfig.__module__}.{Qwen3TTSConfig.__name__}",
+                "processor_class": f"{Qwen3TTSProcessor.__module__}.{Qwen3TTSProcessor.__name__}",
+                "wrapper_class": f"{Qwen3TTSModel.__module__}.{Qwen3TTSModel.__name__}",
+                "config_from_pretrained": "CALLED_LOCAL_ONLY",
+                "processor_from_pretrained": "CALLED_LOCAL_ONLY",
+                "wrapper_from_pretrained": "NOT_CALLED",
+                "wrapper_signature": str(inspect.signature(Qwen3TTSModel.from_pretrained)),
+                "generate_voice_clone_signature": str(inspect.signature(Qwen3TTSModel.generate_voice_clone)),
+                "checkpoint_load": "NOT_PERFORMED",
+                "sox_sentinel": {"installed": True, "accesses": 0},
+            }
+    except Exception as exc:  # noqa: BLE001 - API incompatibility is evidence, not a traceback
+        raise ApiProbeFailure(
+            str(exc),
+            sentinel_installed=sentinel is not None,
+            accesses=sentinel.accesses if sentinel is not None else 0,
+        ) from None
     finally:
         if sys.path and sys.path[0] == str(source):
             sys.path.pop(0)
@@ -288,10 +355,16 @@ def write_output(path: Path, evidence: dict[str, Any]) -> None:
     if path.exists() or path.is_symlink():
         raise ProbeError(f"output already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(evidence, stream, sort_keys=True, indent=2)
-        stream.write("\n")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(evidence, stream, sort_keys=True, indent=2)
+            stream.write("\n")
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def run(args: argparse.Namespace) -> int:
@@ -309,7 +382,38 @@ def run(args: argparse.Namespace) -> int:
     source_record = verify_source(source)
     variant_names = list(VARIANTS) if args.variant == "all" else [args.variant]
     metadata = {variant: verify_metadata(snapshot_root / variant, variant) for variant in variant_names}
-    api = {variant: api_probe(source, snapshot_root / variant) for variant in variant_names}
+    api: dict[str, Any] = {}
+    try:
+        for variant in variant_names:
+            api[variant] = api_probe(source, snapshot_root / variant)
+    except Exception as exc:  # noqa: BLE001 - API incompatibility is emitted atomically
+        sentinel_installed = bool(getattr(exc, "sentinel_installed", False))
+        sentinel_accesses = int(getattr(exc, "accesses", 0))
+        blocked = {
+            "schema": SCHEMA,
+            "status": "BLOCKED_INCOMPATIBLE_API",
+            "publication": "NO_UPLOAD",
+            "expected_head": args.expected_head,
+            "source": source_record,
+            "variants": metadata,
+            "project": project_record,
+            "api": {
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "sox_sentinel": {"installed": sentinel_installed, "accesses": sentinel_accesses},
+            },
+            "checkpoint_load": "NOT_PERFORMED",
+            "approval": pending_approval(),
+            "environment": {
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+            },
+        }
+        write_output(output, blocked)
+        print(f"BLOCKED_INCOMPATIBLE_API: {exc}", file=sys.stderr)
+        return 2
+    sentinel_records = [record["sox_sentinel"] for record in api.values()]
     evidence = {
         "schema": SCHEMA,
         "status": "PASS_MODEL_FREE",
@@ -319,14 +423,12 @@ def run(args: argparse.Namespace) -> int:
         "variants": metadata,
         "project": project_record,
         "api": api,
-        "checkpoint_load": "NOT_PERFORMED",
-        "approval": {
-            "source_license": "PENDING_OWNER_APPROVAL",
-            "model_license": "PENDING_OWNER_APPROVAL",
-            "operator": "PENDING_OWNER_APPROVAL",
-            "signer": None,
-            "scope_sha256": None,
+        "sox_sentinel": {
+            "installed": all(record["installed"] for record in sentinel_records),
+            "accesses": sum(record["accesses"] for record in sentinel_records),
         },
+        "checkpoint_load": "NOT_PERFORMED",
+        "approval": pending_approval(),
         "environment": {
             "python": platform.python_version(),
             "platform": platform.platform(),
@@ -352,6 +454,45 @@ def self_test() -> int:
                 pass
             else:
                 raise AssertionError("duplicate JSON key accepted")
+            if importlib.util.find_spec("sox") is not None:
+                raise AssertionError("real sox package is installed")
+            with install_sox_sentinel() as sentinel:
+                assert sys.modules["sox"] is sentinel
+                try:
+                    sentinel.unapproved_attribute
+                except SoxSentinelAccessError:
+                    pass
+                else:
+                    raise AssertionError("sox sentinel allowed attribute access")
+                assert sentinel.accesses == 1
+            assert "sox" not in sys.modules
+            prior = types.ModuleType("sox")
+            sys.modules["sox"] = prior
+            try:
+                try:
+                    with install_sox_sentinel():
+                        raise AssertionError("pre-existing sox module was clobbered")
+                except ProbeError:
+                    pass
+                assert sys.modules["sox"] is prior
+            finally:
+                del sys.modules["sox"]
+            blocked_path = Path(directory) / "blocked.json"
+            write_output(blocked_path, {
+                "schema": SCHEMA,
+                "status": "BLOCKED_INCOMPATIBLE_API",
+                "publication": "NO_UPLOAD",
+                "checkpoint_load": "NOT_PERFORMED",
+                "api": {"sox_sentinel": {"installed": True, "accesses": 1}},
+                "approval": pending_approval(),
+            })
+            blocked = strict_json(blocked_path.read_text(encoding="utf-8"))
+            assert blocked["status"] == "BLOCKED_INCOMPATIBLE_API"
+            assert blocked["publication"] == "NO_UPLOAD"
+            assert blocked["checkpoint_load"] == "NOT_PERFORMED"
+            assert blocked["approval"]["source_license"] == "PENDING_OWNER_APPROVAL"
+            assert blocked["api"]["sox_sentinel"] == {"installed": True, "accesses": 1}
+            assert not list(Path(directory).glob(".blocked.json.*.tmp"))
         probe_source = inspect.getsource(api_probe)
         assert "Qwen3TTSModel.from_pretrained(" not in probe_source
         assert '"wrapper_from_pretrained": "NOT_CALLED"' in probe_source
