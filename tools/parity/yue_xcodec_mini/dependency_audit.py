@@ -313,7 +313,7 @@ def distribution_fact(row: dict[str, Any], review: dict[str, Any]) -> dict[str, 
         traversal = normalized.startswith("../") or normalized == ".." or any(part in {"", ".", ".."} for part in parts)
         target_license = is_license_name(normalized)
         target_native = any(normalized.casefold().endswith(suffix) or f"{suffix}." in normalized.casefold() for suffix in NATIVE_SUFFIXES)
-        # RECORDs commonly contain harmless ../../../bin and ../../../man
+        # RECORD entries commonly contain harmless ../../../bin and ../../../man
         # entries.  Ignore those non-target paths, but never ignore a path
         # that could carry license or native evidence.
         if traversal and not (target_license or target_native):
