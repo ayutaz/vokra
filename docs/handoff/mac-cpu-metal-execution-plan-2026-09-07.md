@@ -394,9 +394,17 @@ The evidence stays `signable=false`, `vast_ready=false` and `NO_UPLOAD`.
 Exact external T5 revision/weight identity, compression build provenance,
 dependency closure, real execution and numerical parity remain blocked.
 
-The local branch currently reaches `c143ece3`; the VAST checkout is clean at
-that exact head. Final workspace test, all-target Clippy, deny and audit logs
-for this batch are still pending and must be recorded before the PR is updated.
+Exact VAST head `80c17e290cc163d639d88550ffaca2187f2870fb` was clean and
+passed `cargo fmt --all -- --check`, metadata inspection, both architecture
+gates, all-target/all-feature workspace Clippy with warnings denied,
+`cargo test --workspace --no-fail-fast`, `cargo deny check` and `cargo audit`.
+The preflight and full-run log SHA-256 values are respectively
+`af90a3890c757533636ed594aaed18f5300dac8575e3756ebb8c4eb448c2144e` and
+`a746dd9aca6fc3615735356c464e4de6e6f034b64d4ddebf7136d1d73d7130b1`.
+All tests passed; the only deny diagnostic was the existing unmatched
+`libfuzzer-sys` license-exception warning, while advisories, bans, licenses and
+sources were all reported OK. No model payload was downloaded or executed by
+this verification batch.
 
 ## Completion proof
 

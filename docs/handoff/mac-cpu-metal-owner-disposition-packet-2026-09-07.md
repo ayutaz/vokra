@@ -2,6 +2,13 @@
 
 Updated with owner-independent evidence on 2026-09-08.
 
+The closing model-free batch was verified on a clean VAST checkout at exact
+head `80c17e290cc163d639d88550ffaca2187f2870fb`. Workspace tests, all-target and
+all-feature Clippy with warnings denied, deny and audit were green; the
+preflight and full-run log SHA-256 values are
+`af90a3890c757533636ed594aaed18f5300dac8575e3756ebb8c4eb448c2144e` and
+`a746dd9aca6fc3615735356c464e4de6e6f034b64d4ddebf7136d1d73d7130b1`.
+
 ## Purpose and decision boundary
 
 This packet records the owner/legal decisions that are still required before
