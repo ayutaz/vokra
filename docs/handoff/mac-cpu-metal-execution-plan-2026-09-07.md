@@ -464,6 +464,26 @@ All dependency/component owner reviews remain pending, so the result is
 imported or executed model weights, invoked Cargo, or reduced the 63-row live
 public denominator.
 
+Commit `38bb0dbd7448c9136207af115117f67d03eb1af7` records those exact evidence
+files. Follow-up commit `ab1d2586b7f2b2be561ff12716e19c5f8306d84b`
+separates the MMS evidence-source HEAD from the current checkout HEAD, so the
+tracked evidence remains verifiable after it is committed without weakening
+the runner's exact-current-HEAD and clean-worktree checks. The incremental
+bundle SHA-256 from `cb510404` through that follow-up is
+`f2ba8c01e132c8128fc749e03cda714b29126e7f7df5d647f6440b07a3aab5f3`.
+
+Exact clean VAST head `ab1d2586b7f2b2be561ff12716e19c5f8306d84b`
+passed formatting, metadata inspection, both architecture gates, the focused
+MMS/MOSS/YuE model-free self-tests, the expected MMS pending-license refusal,
+all-target/all-feature workspace Clippy with warnings denied,
+`cargo test --workspace --no-fail-fast`, `cargo deny check` and `cargo audit`.
+The preflight and full-run log SHA-256 values are respectively
+`a742f4b2f17e9a8d49987a8bbe315d0073b1e999096c4a3a142976f1c89117fd`
+and `238013c884b3ee405a3e50dd4d4c532f6b5f3a513bc2c72c07c6a63b7513551a`.
+The only dependency-policy diagnostic was the existing unmatched
+`libfuzzer-sys` exception warning; advisories, bans, licenses and sources were
+all reported OK. This verification did not download or execute model weights.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
