@@ -3973,11 +3973,15 @@ mod tests {
         use vokra_core::gguf::GgufFile;
 
         let pid = std::process::id();
-        let input =
-            std::env::temp_dir().join(format!("vokra-convert-main-sbv2-in-{pid}.safetensors"));
-        let config =
-            std::env::temp_dir().join(format!("vokra-convert-main-sbv2-config-{pid}.json"));
-        let output = std::env::temp_dir().join(format!("vokra-convert-main-sbv2-out-{pid}.gguf"));
+        // The production gate rejects symlinked ancestors. macOS exposes the
+        // temporary directory through `/var`, which is a symlink to
+        // `/private/var`; use the canonical test root so the fixture paths
+        // exercise the intended gate on every host.
+        let temp_root = std::fs::canonicalize(std::env::temp_dir())
+            .expect("system temporary directory must be canonicalizable");
+        let input = temp_root.join(format!("vokra-convert-main-sbv2-in-{pid}.safetensors"));
+        let config = temp_root.join(format!("vokra-convert-main-sbv2-config-{pid}.json"));
+        let output = temp_root.join(format!("vokra-convert-main-sbv2-out-{pid}.gguf"));
 
         // One minimal F32 tensor -- enough to exercise the pass-through
         // path; the point of this test is the hparam chunk, not tensor
