@@ -13,6 +13,7 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import importlib.metadata
+import importlib.machinery
 import importlib.util
 import inspect
 import json
@@ -88,6 +89,7 @@ FORBIDDEN_OPTIONAL_MODULES = {
     "sox": "/__vokra_import_only_sox_sentinel__.py",
     "onnxruntime": "/__vokra_import_only_onnxruntime_sentinel__.py",
 }
+ALLOWED_OPTIONAL_METADATA = ["__file__", "__spec__"]
 
 
 class ProbeError(RuntimeError):
@@ -110,14 +112,22 @@ class _ForbiddenOptionalModuleSentinel(types.ModuleType):
     def __init__(self, module_name: str, sentinel_file: str) -> None:
         super().__init__(module_name)
         self._sentinel_file = sentinel_file
+        self.__spec__ = importlib.machinery.ModuleSpec(module_name, loader=None)
         self._accesses = 0
         self._metadata_reads = 0
+        self._metadata_keys: list[str] = []
 
     def __getattribute__(self, name: str) -> Any:
         if name == "__file__":
             reads = object.__getattribute__(self, "_metadata_reads")
             object.__setattr__(self, "_metadata_reads", reads + 1)
+            object.__getattribute__(self, "_metadata_keys").append(name)
             return object.__getattribute__(self, "_sentinel_file")
+        if name == "__spec__":
+            reads = object.__getattribute__(self, "_metadata_reads")
+            object.__setattr__(self, "_metadata_reads", reads + 1)
+            object.__getattribute__(self, "_metadata_keys").append(name)
+            return super().__getattribute__(name)
         if name.startswith("__") and name.endswith("__"):
             return super().__getattribute__(name)
         accesses = object.__getattribute__(self, "_accesses") + 1
@@ -138,9 +148,10 @@ def optional_sentinel_records(sentinels: dict[str, _ForbiddenOptionalModuleSenti
         sentinel = sentinels.get(module_name)
         records[module_name] = {
             "installed": sentinel is not None,
-            "allowed_metadata": ["__file__"],
+            "allowed_metadata": list(ALLOWED_OPTIONAL_METADATA),
             "sentinel_file": sentinel_file,
             "metadata_reads": object.__getattribute__(sentinel, "_metadata_reads") if sentinel is not None else 0,
+            "metadata_keys": list(object.__getattribute__(sentinel, "_metadata_keys")) if sentinel is not None else [],
             "accesses": object.__getattribute__(sentinel, "_accesses") if sentinel is not None else 0,
         }
     return records
@@ -467,7 +478,7 @@ def run(args: argparse.Namespace) -> int:
         "optional_sentinels": {
             module_name: {
                 "installed": all(record[module_name]["installed"] for record in sentinel_records),
-                "allowed_metadata": ["__file__"],
+                "allowed_metadata": list(ALLOWED_OPTIONAL_METADATA),
                 "sentinel_file": FORBIDDEN_OPTIONAL_MODULES[module_name],
                 "metadata_reads": sum(record[module_name]["metadata_reads"] for record in sentinel_records),
                 "accesses": sum(record[module_name]["accesses"] for record in sentinel_records),
@@ -507,6 +518,12 @@ def self_test() -> int:
                 assert all(sys.modules[name] is sentinels[name] for name in FORBIDDEN_OPTIONAL_MODULES)
                 assert sentinels["sox"].__file__ == FORBIDDEN_OPTIONAL_MODULES["sox"]
                 assert sentinels["onnxruntime"].__file__ == FORBIDDEN_OPTIONAL_MODULES["onnxruntime"]
+                assert sentinels["sox"].__spec__.name == "sox"
+                assert sentinels["onnxruntime"].__spec__.name == "onnxruntime"
+                assert sentinels["sox"].__spec__.loader is None
+                assert sentinels["onnxruntime"].__spec__.loader is None
+                assert importlib.util.find_spec("sox").name == "sox"
+                assert importlib.util.find_spec("onnxruntime").name == "onnxruntime"
                 for module_name, functional_attribute in (("sox", "Transformer"), ("onnxruntime", "InferenceSession"), ("sox", "accesses"), ("sox", "sentinel_file")):
                     try:
                         getattr(sentinels[module_name], functional_attribute)
@@ -514,8 +531,8 @@ def self_test() -> int:
                         pass
                     else:
                         raise AssertionError(f"{module_name}.{functional_attribute} was allowed")
-                assert object.__getattribute__(sentinels["sox"], "_metadata_reads") == 1
-                assert object.__getattribute__(sentinels["onnxruntime"], "_metadata_reads") == 1
+                assert object.__getattribute__(sentinels["sox"], "_metadata_reads") >= 3
+                assert object.__getattribute__(sentinels["onnxruntime"], "_metadata_reads") >= 3
                 assert object.__getattribute__(sentinels["sox"], "_accesses") == 3
                 assert object.__getattribute__(sentinels["onnxruntime"], "_accesses") == 1
             assert all(name not in sys.modules for name in FORBIDDEN_OPTIONAL_MODULES)
@@ -562,7 +579,7 @@ def self_test() -> int:
             assert blocked["approval"]["source_license"] == "PENDING_OWNER_APPROVAL"
             assert set(blocked["api"]["optional_sentinels"]) == set(FORBIDDEN_OPTIONAL_MODULES)
             assert all(
-                record["allowed_metadata"] == ["__file__"]
+                record["allowed_metadata"] == ALLOWED_OPTIONAL_METADATA
                 for record in blocked["api"]["optional_sentinels"].values()
             )
             assert not list(Path(directory).glob(".blocked.json.*.tmp"))

@@ -77,8 +77,9 @@ file, never calls `Qwen3TTSModel.from_pretrained`, and is not a parity or
 publication result. Because the reviewed runtime intentionally excludes the
 forbidden `sox` and `onnxruntime` packages, the inspection installs strict
 import-only sentinels for both modules while importing the official source.
-Only inert `__file__` metadata is allowed; functional attributes such as
-`sox.Transformer` and `onnxruntime.InferenceSession` fail closed. Successful
+Only inert `__file__` and valid `__spec__` metadata are allowed; functional
+attributes such as `sox.Transformer` and `onnxruntime.InferenceSession` fail
+closed. Successful
 evidence records each module independently under `optional_sentinels`, with
 `accesses=0`, and the original `sys.modules` state is restored.
 An import/API incompatibility is emitted as atomic `BLOCKED_INCOMPATIBLE_API`
