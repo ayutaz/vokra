@@ -203,6 +203,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Err(message) = validate_kyutai_tokenizer_options(&parsed) {
+        eprintln!("error: {message}\n\n{USAGE}");
+        return ExitCode::from(2);
+    }
+
     let Parsed {
         model,
         input,
@@ -218,21 +223,6 @@ fn main() -> ExitCode {
         ultravox_companion,
         kyutai_tokenizer,
     } = parsed;
-
-    if let Err(message) = validate_kyutai_tokenizer_options(
-        kyutai_tokenizer,
-        config.as_ref(),
-        cmvn.as_ref(),
-        dict.as_ref(),
-        preprocessor.as_ref(),
-        tokenizer.as_ref(),
-        quant,
-        license.as_ref(),
-        revision.as_ref(),
-    ) {
-        eprintln!("error: {message}\n\n{USAGE}");
-        return ExitCode::from(2);
-    }
 
     if revision.is_some() && !ultravox_companion {
         eprintln!(
@@ -824,26 +814,16 @@ struct Parsed {
     kyutai_tokenizer: bool,
 }
 
-fn validate_kyutai_tokenizer_options(
-    kyutai_tokenizer: bool,
-    config: Option<&PathBuf>,
-    cmvn: Option<&PathBuf>,
-    dict: Option<&PathBuf>,
-    preprocessor: Option<&PathBuf>,
-    tokenizer: Option<&PathBuf>,
-    quant: Option<GgmlType>,
-    license: Option<&String>,
-    revision: Option<&String>,
-) -> Result<(), String> {
-    if kyutai_tokenizer
-        && (config.is_some()
-            || cmvn.is_some()
-            || dict.is_some()
-            || preprocessor.is_some()
-            || tokenizer.is_some()
-            || quant.is_some()
-            || license.is_some()
-            || revision.is_some())
+fn validate_kyutai_tokenizer_options(parsed: &Parsed) -> Result<(), String> {
+    if parsed.kyutai_tokenizer
+        && (parsed.config.is_some()
+            || parsed.cmvn.is_some()
+            || parsed.dict.is_some()
+            || parsed.preprocessor.is_some()
+            || parsed.tokenizer.is_some()
+            || parsed.quant.is_some()
+            || parsed.license.is_some()
+            || parsed.revision.is_some())
     {
         return Err(
             "--model kyutai-stt-tokenizer accepts only --input <tokenizer_en_audio_4000.model> and --output <tokenizer.gguf>".to_owned(),
@@ -4135,18 +4115,8 @@ mod tests {
                 value,
             ]))
             .expect("parse precedes mode validation");
-            let error = validate_kyutai_tokenizer_options(
-                parsed.kyutai_tokenizer,
-                parsed.config.as_ref(),
-                parsed.cmvn.as_ref(),
-                parsed.dict.as_ref(),
-                parsed.preprocessor.as_ref(),
-                parsed.tokenizer.as_ref(),
-                parsed.quant,
-                parsed.license.as_ref(),
-                parsed.revision.as_ref(),
-            )
-            .expect_err("unrelated option is not accepted in tokenizer mode");
+            let error = validate_kyutai_tokenizer_options(&parsed)
+                .expect_err("unrelated option is not accepted in tokenizer mode");
             assert!(error.contains("accepts only --input"), "{flag}: {error}");
         }
     }
