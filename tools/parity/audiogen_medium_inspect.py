@@ -53,6 +53,16 @@ ROLE_MARKERS = {
     "transformer": ("StreamingTransformer", "Transformer"),
     "encodec_seanet": ("SEANet", "CompressionModel"),
 }
+ROLE_SEMANTIC_PATTERNS = {
+    "audiogen_lm_config": (r"conditioner\s*:\s*text2sound", r"n_q\s*:\s*4", r"card\s*:\s*2048", r"delays?\s*:\s*\[?\s*0\s*,\s*1\s*,\s*2\s*,\s*3"),
+    "audiogen_solver_config": (r"sample_rate\s*:\s*16000", r"channels\s*:\s*1", r"compression"),
+    "medium_config": (r"dim\s*:\s*1536", r"(?:num_heads|n_heads|heads)\s*:\s*24", r"(?:num_layers|n_layers|layers)\s*:\s*48"),
+    "pretrained_grid": (r"facebook/audiogen-medium", r"medium"),
+    "text2sound_config": (r"model\s*:\s*t5", r"name\s*:\s*t5-large", r"finetune\s*:\s*false"),
+    "encodec_solver_config": (r"sample_rate\s*:\s*16000", r"channels\s*:\s*1", r"encodec_large_nq4_s320"),
+    "encodec_config": (r"n_filters\s*:\s*64", r"bins\s*:\s*2048", r"n_q\s*:\s*4", r"q_dropout\s*:\s*false"),
+    "encodec_default_config": (r"dimension\s*:\s*128", r"ratios\s*:\s*\[?\s*8\s*,\s*5\s*,\s*4\s*,\s*2"),
+}
 SOURCE_ROLE_BLOBS = {"LICENSE": "b93be90515ccd0b9daedaa589e42bf5929693f1f", "LICENSE_weights": "108b5f002fc31efe11d881de2cd05329ebe8cc37", **{path: blob for path, blob in {
     "audiocraft/models/audiogen.py": "5cb889982ddc027e2588b7cfb8ef428b313ce88a",
     "audiocraft/models/builders.py": "038bf99c3d0fbbb86005683d5a2a1b4edcac4298",
@@ -65,8 +75,16 @@ SOURCE_ROLE_BLOBS = {"LICENSE": "b93be90515ccd0b9daedaa589e42bf5929693f1f", "LIC
     "audiocraft/modules/conv.py": "d115cbf8729b642ed78608bd00a4d0fd5afae6fd",
     "audiocraft/modules/lstm.py": "c0866175950c1ca4f6cca98649525e6481853bba",
     "audiocraft/modules/seanet.py": "3e5998e9153afb6e68ea410d565e00ea835db248",
-    "audiocraft/modules/quantization/core_vq.py": "da02a6ce3a7de15353f0fba9e826052beb67c436",
-    "audiocraft/modules/quantization/vq.py": "aa57bea59db95ddae35e0657f723ca3a29ee943b",
+    "audiocraft/quantization/core_vq.py": "da02a6ce3a7de15353f0fba9e826052beb67c436",
+    "audiocraft/quantization/vq.py": "aa57bea59db95ddae35e0657f723ca3a29ee943b",
+    "config/model/lm/audiogen_lm.yaml": "696f74620af193c12208ce66fdb93a37f8ea9d80",
+    "config/solver/audiogen/audiogen_base_16khz.yaml": "dd6aee785c74db19ce9d6f488e68e6eeb471c026",
+    "config/model/lm/model_scale/medium.yaml": "c825d1ff6c3b8cc9ae4959a898e14b40409d95e8",
+    "audiocraft/grids/audiogen/audiogen_pretrained_16khz_eval.py": "12f6d402a3c4a113d4c37be062790fa435b72104",
+    "config/conditioner/text2sound.yaml": "555d4b7c3cecf0ec06c8cb25440b2f426c098ad2",
+    "config/solver/compression/encodec_audiogen_16khz.yaml": "654deaa01ba9cace3f7144cc91921791c081b32a",
+    "config/model/encodec/encodec_large_nq4_s320.yaml": "5f2d77590afd8a81185358c705a6e42853e257c3",
+    "config/model/encodec/default.yaml": "ec62c6c8ef9a686890bdca8b8f27a2f1c232205d",
 }.items()}}
 ROLE_MARKER_PATHS = {
     "audiocraft/models/audiogen.py": "audiogen_model",
@@ -80,8 +98,18 @@ ROLE_MARKER_PATHS = {
     "audiocraft/modules/conv.py": "conv",
     "audiocraft/modules/lstm.py": "lstm",
     "audiocraft/modules/seanet.py": "seanet",
-    "audiocraft/modules/quantization/core_vq.py": "core_vq",
-    "audiocraft/modules/quantization/vq.py": "vq",
+    "audiocraft/quantization/core_vq.py": "core_vq",
+    "audiocraft/quantization/vq.py": "vq",
+}
+ROLE_SEMANTIC_PATHS = {
+    "config/model/lm/audiogen_lm.yaml": "audiogen_lm_config",
+    "config/solver/audiogen/audiogen_base_16khz.yaml": "audiogen_solver_config",
+    "config/model/lm/model_scale/medium.yaml": "medium_config",
+    "audiocraft/grids/audiogen/audiogen_pretrained_16khz_eval.py": "pretrained_grid",
+    "config/conditioner/text2sound.yaml": "text2sound_config",
+    "config/solver/compression/encodec_audiogen_16khz.yaml": "encodec_solver_config",
+    "config/model/encodec/encodec_large_nq4_s320.yaml": "encodec_config",
+    "config/model/encodec/default.yaml": "encodec_default_config",
 }
 
 
@@ -474,6 +502,18 @@ def weights_license_evidence(root: Path, tracked: dict[str, dict[str, Any]]) -> 
     return {"path": "LICENSE_weights", "bytes": path.stat().st_size, "sha256": digest(path), "git_blob_sha1": SOURCE_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-4.0", "clauses": clauses}
 
 
+def source_semantic_contract(source: Path, relative: str) -> dict[str, Any] | None:
+    contract_name = ROLE_SEMANTIC_PATHS.get(relative)
+    if contract_name is None:
+        return None
+    text = (source / relative).read_text(encoding="utf-8", errors="strict")
+    patterns = ROLE_SEMANTIC_PATTERNS[contract_name]
+    missing = [pattern for pattern in patterns if re.search(pattern, text) is None]
+    if missing:
+        raise RuntimeError(f"fixed source semantic contract mismatch: {relative}: {missing}")
+    return {"name": contract_name, "patterns": list(patterns), "status": "AUTHENTICATED_SOURCE_SEMANTICS"}
+
+
 def source_inventory(source: Path) -> dict[str, Any]:
     if git(source, "rev-parse", "HEAD") != SOURCE_REVISION:
         raise RuntimeError("AudioCraft source revision mismatch")
@@ -516,6 +556,13 @@ def source_inventory(source: Path) -> dict[str, Any]:
             role_blockers.append(f"fixed source role Git object mismatch: {relative}")
             continue
         roles[relative] = row
+        try:
+            semantic = source_semantic_contract(source, relative)
+        except (OSError, UnicodeError, RuntimeError) as error:
+            role_blockers.append(str(error))
+            continue
+        if semantic is not None:
+            roles[relative]["semantic_contract"] = semantic
         marker_name = ROLE_MARKER_PATHS.get(relative)
         markers = ROLE_MARKERS.get(marker_name, ())
         if markers and not all(marker in (source / relative).read_text(encoding="utf-8", errors="replace") for marker in markers):
@@ -606,8 +653,8 @@ def main() -> int:
             source = source_inventory(args.source)
             blockers = [
                 "checkpoint payloads were intentionally not downloaded or loaded",
-                "exact T5-family conditioner repository/name/size is not recoverable from public metadata without checkpoint payloads",
-                "release-specific 16-kHz EnCodec/SEANet config and tensor topology are not recoverable from public metadata without compression payloads",
+                "exact external T5 repository revision/weight identity is not recoverable from public metadata without checkpoint payloads",
+                "public compression weight-build provenance remains unauthenticated even though the v1.0.0 16-kHz EnCodec/SEANet config chain is authenticated",
                 "HF weight-build provenance is not independently authenticated against AudioCraft v1.0.0 source",
                 "training-data provenance is unauthenticated",
                 "native AudioGen codec/LM composition is not implemented",
@@ -623,8 +670,8 @@ def main() -> int:
                 approval_evidence={"status": "PENDING_OWNER_APPROVAL"},
                 upstream={**server, "files": files, "model_card": card},
                 archives=model_free_archives(files),
-                compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "BLOCKED_CONFIG_UNRESOLVED", "payload": "NOT_DOWNLOADED"},
-                external_text_conditioner={"family": "T5-family", "status": "BLOCKED_IDENTITY_UNRESOLVED", "selection": None, "payload": "NOT_DOWNLOADED"},
+                compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "SOURCE_CONFIG_AUTHENTICATED_PAYLOAD_BLOCKED", "sample_rate_hz": 16000, "channels": 1, "codec": "encodec_large_nq4_s320", "payload": "NOT_DOWNLOADED"},
+                external_text_conditioner={"family": "T5-family", "status": "SOURCE_CONFIG_AUTHENTICATED_EXTERNAL_IDENTITY_BLOCKED", "selection": "t5-large", "repository": None, "revision": None, "payload": "NOT_DOWNLOADED"},
                 official_source=source,
                 license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_METADATA"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"},
                 blockers=sorted(set(blockers)),
@@ -662,11 +709,11 @@ def main() -> int:
         source = source_inventory(args.source)
         collection_blockers = source["role_blockers"]
         config_blockers = [f"{name} checkpoint config semantics are not fully authenticated" for name, archive in archives.items() if archive["config_evidence"]["status"] != "AUTHENTICATED"]
-        blockers = ["release/source timing gap: HF weights uploaded 2023-07-27 before AudioCraft v1.0.0 execution source", "AudioCraft role identity is bound to v1.0.0 but weight-build provenance is not independently authenticated", "external text conditioner name/size is not fully recovered from authenticated checkpoint", "native AudioGen codec/LM composition is not implemented", "CPU/Metal parity is not run", "training-data provenance is unauthenticated", "source LICENSE_weights is CC-BY-NC-4.0; historical v0.0.2 LICENSE_weights was CC-BY-NC-ND-4.0 (provenance ambiguity)"] + config_blockers + collection_blockers
+        blockers = ["release/source timing gap: HF weights uploaded 2023-07-27 before AudioCraft v1.0.0 execution source", "AudioCraft role identity is bound to v1.0.0 but weight-build provenance is not independently authenticated", "exact external T5 repository revision/weight identity is not fully recovered from authenticated checkpoint", "public compression weight-build provenance remains unauthenticated despite authenticated v1.0.0 16-kHz EnCodec/SEANet config", "native AudioGen codec/LM composition is not implemented", "CPU/Metal parity is not run", "training-data provenance is unauthenticated", "source LICENSE_weights is CC-BY-NC-4.0; historical v0.0.2 LICENSE_weights was CC-BY-NC-ND-4.0 (provenance ambiguity)"] + config_blockers + collection_blockers
         complete = not collection_blockers
         if args.vokra_root is not None:
             validate_clean_head(args.vokra_root, args.expected_head)
-        write_manifest(args.output, inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", collection_status="AUTHENTICATED" if complete else "UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "walk": "recursive_file_only", "server_tree": server, "files": files, "model_card": {"path": "README.md", "license": card["license"], "sha256": digest(readme), "git_blob_sha1": git_blob_sha1(readme)}}, archives=archives, compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "path": "compression_state_dict.bin"}, external_text_conditioner={"status": "UNRESOLVED_BLOCKER", "selection": None}, official_source=source, license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_MODEL_CARD"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"}, blockers=sorted(set(blockers)))
+        write_manifest(args.output, inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", collection_status="AUTHENTICATED" if complete else "UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "walk": "recursive_file_only", "server_tree": server, "files": files, "model_card": {"path": "README.md", "license": card["license"], "sha256": digest(readme), "git_blob_sha1": git_blob_sha1(readme)}}, archives=archives, compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "SOURCE_CONFIG_AUTHENTICATED_PAYLOAD_PRESENT", "sample_rate_hz": 16000, "channels": 1, "codec": "encodec_large_nq4_s320", "path": "compression_state_dict.bin"}, external_text_conditioner={"family": "T5-family", "status": "SOURCE_CONFIG_AUTHENTICATED_EXTERNAL_IDENTITY_BLOCKED", "selection": "t5-large", "repository": None, "revision": None}, official_source=source, license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_MODEL_CARD"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"}, blockers=sorted(set(blockers)))
         return 2
     except Exception as error:
         write_manifest(args.output or Path("."), inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, error_type=type(error).__name__, blockers=[str(error)])
@@ -691,11 +738,21 @@ def self_test() -> None:
     assert ARCHIVES["state_dict.bin"] == 3_678_455_287
     synthetic_files = [{"path": name, "bytes": 1, "git_blob_sha1": None, "lfs_pointer_git_blob_sha1": None, "lfs_payload_sha256": None, "payload_status": "NOT_DOWNLOADED"} for name in HF_FILES]
     assert set(model_free_archives(synthetic_files)) == set(ARCHIVES)
+    assert "audiocraft/modules/quantization/core_vq.py" not in SOURCE_ROLE_BLOBS
+    assert "audiocraft/modules/quantization/vq.py" not in SOURCE_ROLE_BLOBS
+    assert set(ROLE_SEMANTIC_PATHS) <= set(SOURCE_ROLE_BLOBS)
     assert SOURCE_WEIGHTS_LICENSE_BLOB == "108b5f002fc31efe11d881de2cd05329ebe8cc37"
     assert HISTORICAL_WEIGHTS_LICENSE_BLOB == "dc1adf98654156baeb94d2e055c224a847e5820d"
     assert "T5-large" not in ROLE_MARKERS
     class DummyTorch:
         Tensor = type("Tensor", (), {})
+
+    with tempfile.TemporaryDirectory(prefix="audiogen-medium-semantic-") as directory:
+        semantic_root = Path(directory)
+        semantic_path = semantic_root / "config/conditioner/text2sound.yaml"
+        semantic_path.parent.mkdir(parents=True)
+        semantic_path.write_text("model: t5\nname: t5-large\nfinetune: false\n", encoding="utf-8")
+        assert source_semantic_contract(semantic_root, "config/conditioner/text2sound.yaml")["status"] == "AUTHENTICATED_SOURCE_SEMANTICS"
 
     walked = walk_checkpoint({"cfg": {"sample_rate": 16_000, "frame_rate": 50, "num_codebooks": 4, "text_encoder_name": "t5-small"}}, DummyTorch)
     assert not walked["tensors"] and checkpoint_config(walked["scalars"])["sample_rate_hz"] == 16_000
