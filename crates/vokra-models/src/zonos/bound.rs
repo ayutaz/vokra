@@ -81,6 +81,7 @@ impl ZonosCheckpoint {
     /// tensors are explicitly transposed into the row-major `[in, out]` GEMM
     /// layout used by the native compute seam.
     pub fn load_weights(&self, file: &GgufFile, config: &ZonosConfig) -> Result<ZonosWeights> {
+        config.validate_v0_1_transformer_contract()?;
         if config.backbone.n_layer != 26
             || config.backbone.d_model != 2048
             || config.backbone.d_intermediate != 8192

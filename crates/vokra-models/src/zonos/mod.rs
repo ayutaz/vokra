@@ -539,6 +539,19 @@ impl ZonosConfig {
         Ok(())
     }
 
+    /// Rejects a config that is not the source-authenticated v0.1
+    /// transformer contract.  `conditioners` are consumed positionally by
+    /// [`conditioning::build_prefix`], so the generic shape checks above are
+    /// deliberately insufficient for the real checkpoint bind path.
+    pub(crate) fn validate_v0_1_transformer_contract(&self) -> Result<()> {
+        if self != &Self::zonos_v0_1_transformer() {
+            return Err(VokraError::ModelLoad(
+                "zonos: checkpoint bind requires the exact authenticated v0.1 transformer config (backbone, seven ordered conditioners, codebooks, ids, delay, and DAC sample rate)".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Applies the official multi-codebook delay layout.  Each codebook is
     /// shifted by its configured delay and the exposed leading/trailing
     /// positions are filled with the masked token; callers may feed the
@@ -2794,6 +2807,28 @@ mod tests {
         assert!(matches!(
             c.validate_for_forward(),
             Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn authenticated_bind_config_rejects_conditioner_contract_drift() {
+        let mut c = ZonosConfig::zonos_v0_1_transformer();
+        c.conditioners.swap(0, 1);
+        assert!(matches!(
+            c.validate_v0_1_transformer_contract(),
+            Err(VokraError::ModelLoad(message))
+                if message.contains("exact authenticated v0.1 transformer config")
+        ));
+
+        let mut c = ZonosConfig::zonos_v0_1_transformer();
+        c.conditioners[2].kind = ZonosConditionerKind::Fourier {
+            input_dim: 8,
+            min_val: 0.0,
+            max_val: 2.0,
+        };
+        assert!(matches!(
+            c.validate_v0_1_transformer_contract(),
+            Err(VokraError::ModelLoad(_))
         ));
     }
 
