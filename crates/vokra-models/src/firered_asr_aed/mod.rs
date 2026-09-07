@@ -3525,11 +3525,7 @@ mod tests {
                 values: vec![GgufMetadataValue::String("not bytes".to_owned())],
             }),
         );
-        add_u8_blob(
-            &mut wrong_type,
-            KEY_DICT_TEXT,
-            &vec![0; DICT_TEXT_BYTES as usize],
-        );
+        add_u8_blob(&mut wrong_type, KEY_DICT_TEXT, &vec![0; DICT_TEXT_BYTES]);
         wrong_type.add_string(
             KEY_CMVN_TEXT_SHA256,
             &hex_digest(&AUTHENTICATED_CMVN_SHA256),
@@ -3542,16 +3538,8 @@ mod tests {
         assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("Array<U8>")));
 
         let mut oversized = base_builder(Some(LicenseClass::Permissive));
-        add_u8_blob(
-            &mut oversized,
-            KEY_CMVN_TEXT,
-            &vec![0; CMVN_TEXT_BYTES as usize + 1],
-        );
-        add_u8_blob(
-            &mut oversized,
-            KEY_DICT_TEXT,
-            &vec![0; DICT_TEXT_BYTES as usize],
-        );
+        add_u8_blob(&mut oversized, KEY_CMVN_TEXT, &vec![0; CMVN_TEXT_BYTES + 1]);
+        add_u8_blob(&mut oversized, KEY_DICT_TEXT, &vec![0; DICT_TEXT_BYTES]);
         oversized.add_string(
             KEY_CMVN_TEXT_SHA256,
             &hex_digest(&AUTHENTICATED_CMVN_SHA256),
@@ -3566,16 +3554,8 @@ mod tests {
         );
 
         let mut wrong_hash = base_builder(Some(LicenseClass::Permissive));
-        add_u8_blob(
-            &mut wrong_hash,
-            KEY_CMVN_TEXT,
-            &vec![0; CMVN_TEXT_BYTES as usize],
-        );
-        add_u8_blob(
-            &mut wrong_hash,
-            KEY_DICT_TEXT,
-            &vec![0; DICT_TEXT_BYTES as usize],
-        );
+        add_u8_blob(&mut wrong_hash, KEY_CMVN_TEXT, &vec![0; CMVN_TEXT_BYTES]);
+        add_u8_blob(&mut wrong_hash, KEY_DICT_TEXT, &vec![0; DICT_TEXT_BYTES]);
         wrong_hash.add_string(KEY_CMVN_TEXT_SHA256, &"0".repeat(64));
         wrong_hash.add_string(
             KEY_DICT_TEXT_SHA256,
@@ -3588,16 +3568,8 @@ mod tests {
         );
 
         let mut tampered = base_builder(Some(LicenseClass::Permissive));
-        add_u8_blob(
-            &mut tampered,
-            KEY_CMVN_TEXT,
-            &vec![0; CMVN_TEXT_BYTES as usize],
-        );
-        add_u8_blob(
-            &mut tampered,
-            KEY_DICT_TEXT,
-            &vec![0; DICT_TEXT_BYTES as usize],
-        );
+        add_u8_blob(&mut tampered, KEY_CMVN_TEXT, &vec![0; CMVN_TEXT_BYTES]);
+        add_u8_blob(&mut tampered, KEY_DICT_TEXT, &vec![0; DICT_TEXT_BYTES]);
         tampered.add_string(
             KEY_CMVN_TEXT_SHA256,
             &hex_digest(&AUTHENTICATED_CMVN_SHA256),
