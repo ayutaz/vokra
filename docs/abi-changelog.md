@@ -298,6 +298,20 @@ public-release completion is claimed.
 | `vokra-models::cosyvoice2` | `HiFTChain::from_gguf`, `HiFTChain::f0_predictor_forward` | Added strict standalone binder and independently comparable F0/reference seam | Rust-only; full CosyVoice2 composite and real-weight parity remain fail-closed/pending |
 | `vokra-backend-metal` | `MetalContext::sinegen2_deterministic_channel_major_dev` | Added device-resident SineGen2 primitive with no intermediate host readback or CPU fallback | Apple execution remains pending Scaleway verification; no Metal verdict is claimed |
 
+### 2026-09-07 — 0.3.0-dev (BigVGAN variant manifest and HiFT SineGen2 API)
+
+The shared BigVGAN variant/configuration and tensor-manifest contract is now a
+public `vokra-ops` surface, covering the four reviewed released checkpoints.
+The 24-kHz HiFT source path is likewise exposed as `SourceModuleHnNSF2` with
+its deterministic `forward` entry point. These are additive Rust-only
+pre-1.0 APIs; the C ABI remains unchanged. The generated Rust API snapshot was
+rotated with `scripts/rust-public-api-list.sh --update-snapshot`.
+
+| Surface | Symbol(s) | Change | Compatibility |
+|---|---|---|---|
+| `vokra-ops::bigvgan_generator` | `BigVGanVariant`, `BigVGanTensorSpec`, `config_for_variant`, `tensor_manifest_for_variant`, `tag`, `name`, `from_tag`, `sample_rate`, `upstream_hf` | Added the reviewed variant identity, exact config facts, and shared descriptor-only tensor manifest used by conversion and binding | Rust-only additive pre-1.0 surface; unknown tags are rejected and no C ABI symbol changes |
+| `vokra-ops::nsf` | `SourceModuleHnNSF2`, `SourceModuleHnNSF2::forward` | Added the deterministic 24-kHz SineGen2 source-module route for the HiFT path | Rust-only additive pre-1.0 surface; stochastic entropy remains explicitly unsupported and Apple parity is not claimed |
+
 ### 2026-09-01 — 0.3.0-dev (microWakeWord dense I8 GGUF wire support)
 
 The dense signed-I8 GGUF leg is additive within the current `0.3.0` prerelease

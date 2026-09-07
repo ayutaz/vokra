@@ -198,6 +198,7 @@ ENUM vokra-core::safetensors::SafetensorsError|pub enum SafetensorsError {
 ENUM vokra-core::stream::aec_ref::AecRefWindowStatus|pub enum AecRefWindowStatus {
 ENUM vokra-core::stream::event::StreamEvent|pub enum StreamEvent {
 ENUM vokra-ops::aec::AecStatus|pub enum AecStatus {
+ENUM vokra-ops::bigvgan_generator::BigVGanVariant|pub enum BigVGanVariant {
 ENUM vokra-ops::bigvgan_generator::SnakeKind|pub enum SnakeKind {
 ENUM vokra-ops::clustering::DistanceMetric|pub enum DistanceMetric {
 ENUM vokra-ops::clustering::LinkageMethod|pub enum LinkageMethod {
@@ -784,6 +785,7 @@ FN vokra-ops::agc::reset|pub fn reset(&mut self) {
 FN vokra-ops::agc::speech_default|pub fn speech_default() -> Self {
 FN vokra-ops::anti_aliased_upsample::anti_aliased_upsample_f32|pub fn anti_aliased_upsample_f32(
 FN vokra-ops::bigvgan_generator::channels|pub fn channels(&self) -> usize {
+FN vokra-ops::bigvgan_generator::config_for_variant|pub fn config_for_variant(variant: BigVGanVariant) -> BigVGanConfig {
 FN vokra-ops::bigvgan_generator::config|pub fn config(&self) -> &BigVGanConfig {
 FN vokra-ops::bigvgan_generator::effective_parameters|pub fn effective_parameters(&self) -> (Vec<f32>, Vec<f32>) {
 FN vokra-ops::bigvgan_generator::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
@@ -791,13 +793,19 @@ FN vokra-ops::bigvgan_generator::forward_in_place|pub fn forward_in_place(&self,
 FN vokra-ops::bigvgan_generator::forward_with_backend_ops|pub fn forward_with_backend_ops<O: BigVganBackendOps>(
 FN vokra-ops::bigvgan_generator::forward_with_resident_ops|pub fn forward_with_resident_ops<O: BigVganResidentOps>(
 FN vokra-ops::bigvgan_generator::forward|pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
+FN vokra-ops::bigvgan_generator::from_tag|pub fn from_tag(tag: &str) -> Option<Self> {
+FN vokra-ops::bigvgan_generator::name|pub const fn name(self) -> &'static str {
 FN vokra-ops::bigvgan_generator::new|pub fn new(
 FN vokra-ops::bigvgan_generator::new|pub fn new(alpha: Vec<f32>, beta: Vec<f32>, alpha_logscale: bool) -> Result<Self> {
 FN vokra-ops::bigvgan_generator::new|pub fn new(cfg: BigVGanConfig, weights: BigVGanWeights) -> Result<Self> {
 FN vokra-ops::bigvgan_generator::num_kernels|pub fn num_kernels(&self) -> usize {
 FN vokra-ops::bigvgan_generator::num_upsamples|pub fn num_upsamples(&self) -> usize {
 FN vokra-ops::bigvgan_generator::output_channels_at|pub fn output_channels_at(&self, stage: usize) -> u32 {
+FN vokra-ops::bigvgan_generator::sample_rate|pub const fn sample_rate(self) -> u32 {
+FN vokra-ops::bigvgan_generator::tag|pub const fn tag(self) -> &'static str {
+FN vokra-ops::bigvgan_generator::tensor_manifest_for_variant|pub fn tensor_manifest_for_variant(variant: BigVGanVariant) -> Vec<BigVGanTensorSpec> {
 FN vokra-ops::bigvgan_generator::total_upsample_factor|pub fn total_upsample_factor(&self) -> u32 {
+FN vokra-ops::bigvgan_generator::upstream_hf|pub const fn upstream_hf(self) -> &'static str {
 FN vokra-ops::clustering::cluster_with_min_cluster_size|pub fn cluster_with_min_cluster_size(
 FN vokra-ops::clustering::cluster|pub fn cluster(&self, embeddings: &[Vec<f32>]) -> Vec<usize> {
 FN vokra-ops::conformer::config|pub fn config(&self) -> &ConformerConfig {
@@ -1044,6 +1052,7 @@ FN vokra-ops::musicgen_delay_pattern::apply_musicgen_delay_pattern|pub fn apply_
 FN vokra-ops::musicgen_delay_pattern::build_musicgen_delay_pattern|pub fn build_musicgen_delay_pattern(
 FN vokra-ops::nsf::config|pub fn config(&self) -> &SineGenConfig {
 FN vokra-ops::nsf::config|pub fn config(&self) -> &SourceModuleHnNSFConfig {
+FN vokra-ops::nsf::forward|pub fn forward(
 FN vokra-ops::nsf::forward|pub fn forward(&self, f0: &[f32], entropy: NsfEntropy) -> Result<SineGenOutput> {
 FN vokra-ops::nsf::forward|pub fn forward(&self, f0: &[f32], entropy: NsfEntropy) -> Result<SourceModuleHnNSFOutput> {
 FN vokra-ops::nsf::new|pub fn new(cfg: SineGenConfig) -> Self {
@@ -1467,6 +1476,7 @@ STRUCT vokra-ops::bigvgan_generator::AmpBlock1Weights|pub struct AmpBlock1Weight
 STRUCT vokra-ops::bigvgan_generator::AmpBlock1|pub struct AmpBlock1 {
 STRUCT vokra-ops::bigvgan_generator::BigVGanConfig|pub struct BigVGanConfig {
 STRUCT vokra-ops::bigvgan_generator::BigVGanGenerator|pub struct BigVGanGenerator {
+STRUCT vokra-ops::bigvgan_generator::BigVGanTensorSpec|pub struct BigVGanTensorSpec {
 STRUCT vokra-ops::bigvgan_generator::BigVGanWeights|pub struct BigVGanWeights {
 STRUCT vokra-ops::bigvgan_generator::SnakeBeta|pub struct SnakeBeta {
 STRUCT vokra-ops::clustering::AgglomerativeClustering|pub struct AgglomerativeClustering {
@@ -1559,6 +1569,7 @@ STRUCT vokra-ops::musicgen_delay_pattern::MusicGenDelayPattern|pub struct MusicG
 STRUCT vokra-ops::nsf::SineGenConfig|pub struct SineGenConfig {
 STRUCT vokra-ops::nsf::SineGenOutput|pub struct SineGenOutput {
 STRUCT vokra-ops::nsf::SineGen|pub struct SineGen {
+STRUCT vokra-ops::nsf::SourceModuleHnNSF2|pub struct SourceModuleHnNSF2 {
 STRUCT vokra-ops::nsf::SourceModuleHnNSFConfig|pub struct SourceModuleHnNSFConfig {
 STRUCT vokra-ops::nsf::SourceModuleHnNSFOutput|pub struct SourceModuleHnNSFOutput {
 STRUCT vokra-ops::nsf::SourceModuleHnNSFWeights|pub struct SourceModuleHnNSFWeights {
