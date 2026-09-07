@@ -61,6 +61,21 @@ STREAMING_BLOCKERS = (
     "context/window truncation and output ordering are not independently observed",
 )
 STREAMING_CONTRACT_SCHEMA = "vokra-kyutai-stt-streaming-source-contract-v1"
+STREAMING_STEP_POSITION_EXPRESSION = "positions = (state.offsets % CT)[:, None, None]"
+DSM_STREAMING_SEQUENCE = (
+    "audio_tokens = mimi.encode(audio_chunk)",
+    "text_tokens = lm_gen.step(audio_tokens)",
+    "text_tokens_accum.append(text_tokens)",
+)
+LM_STREAMING_SEQUENCE = (
+    "state.cache.gather(dim=2, index=positions)",
+    "state.graphed_main(input_, state.condition_sum, state.condition_cross)",
+    "sample_token(text_logits.float(), self.use_sampling, self.temp_text, self.top_k_text)",
+    "state.offsets = torch.where(state.exec_mask, state.offsets + 1, state.offsets)",
+    "scatter_with_mask_(state.cache[:, :1], -1, positions, text_token[:, None, None], state.exec_mask[:, None, None])",
+    "index = (state.offsets[:, None, None] - self.max_delay + gen_delays_cuda[:, None]) % CT",
+    "out = state.cache.gather(dim=2, index=index)",
+)
 APPROVAL_SCHEMA = "vokra-kyutai-stt-decoder-approval-v1"
 APPROVAL_SCOPE = "KYUTAI_STT_DECODER_PARITY"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -444,6 +459,34 @@ def _require_source_expressions(symbol: ast.AST, role: str, expressions: tuple[s
         raise ValueError(f"authenticated source expression drift in {role}: {missing!r}")
 
 
+def _source_node_position(node: ast.AST, role: str, expression: str) -> tuple[int, int, int, int]:
+    values = tuple(
+        getattr(node, attribute, None)
+        for attribute in ("lineno", "col_offset", "end_lineno", "end_col_offset")
+    )
+    if any(not isinstance(value, int) for value in values):
+        raise ValueError(f"authenticated source expression has no complete AST position in {role}: {expression!r}")
+    return values  # type: ignore[return-value]
+
+
+def _require_source_sequence(symbol: ast.AST, role: str, expressions: tuple[str, ...]) -> None:
+    """Require unique exact AST expressions in source order, fail-closed."""
+    matches: list[tuple[tuple[int, int, int, int], str]] = []
+    nodes = list(ast.walk(symbol))
+    for expression in expressions:
+        found = [node for node in nodes if ast.unparse(node) == expression]
+        found_positions = {_source_node_position(node, role, expression) for node in found}
+        if len(found_positions) != 1:
+            raise ValueError(
+                f"authenticated source expression is not unique in {role}: {expression!r} ({len(found_positions)} positions)"
+            )
+        matches.append((next(iter(found_positions)), expression))
+    positions = [position for position, _ in matches]
+    if positions != sorted(positions):
+        ordered = [expression for _, expression in sorted(matches)]
+        raise ValueError(f"authenticated source expression order drift in {role}: {ordered!r}")
+
+
 def authenticate_streaming_source_contract(dsm_source: Path, moshi_source: Path) -> dict[str, Any]:
     """Authenticate streaming control flow from pinned upstream source bytes.
 
@@ -460,17 +503,8 @@ def authenticate_streaming_source_contract(dsm_source: Path, moshi_source: Path)
     transformer_tree = _source_ast(moshi_source, MOSHI_ROLES[4])
 
     dsm_main = _source_symbol(dsm_tree, "main")
-    _require_source_expressions(
-        dsm_main,
-        DSM_ROLES[1],
-        (
-            "mimi.streaming(1)",
-            "lm_gen.streaming(1)",
-            "audio_tokens = mimi.encode(audio_chunk)",
-            "text_tokens = lm_gen.step(audio_tokens)",
-            "text_tokens_accum.append(text_tokens)",
-        ),
-    )
+    _require_source_expressions(dsm_main, DSM_ROLES[1], ("mimi.streaming(1)", "lm_gen.streaming(1)"))
+    _require_source_sequence(dsm_main, DSM_ROLES[1], DSM_STREAMING_SEQUENCE)
     lm_init = _source_symbol(lm_tree, "_init_streaming_state")
     _require_source_expressions(
         lm_init,
@@ -481,20 +515,8 @@ def authenticate_streaming_source_contract(dsm_source: Path, moshi_source: Path)
         ),
     )
     lm_step = _source_symbol(lm_tree, "_step")
-    _require_source_expressions(
-        lm_step,
-        MOSHI_ROLES[0],
-        (
-            "state.cache.gather(dim=2, index=positions)",
-            "state.graphed_main(input_, state.condition_sum, state.condition_cross)",
-            "sample_token(text_logits.float(), self.use_sampling, self.temp_text, self.top_k_text)",
-            "state.offsets = torch.where(state.exec_mask, state.offsets + 1, state.offsets)",
-            "scatter_with_mask_(state.cache[:, :1], -1, positions, text_token[:, None, None], state.exec_mask[:, None, None])",
-            "index = (state.offsets % CT)[:, None, None]",
-            "index = (state.offsets[:, None, None] - self.max_delay + gen_delays_cuda[:, None]) % CT",
-            "out = state.cache.gather(dim=2, index=index)",
-        ),
-    )
+    _require_source_expressions(lm_step, MOSHI_ROLES[0], (STREAMING_STEP_POSITION_EXPRESSION,))
+    _require_source_sequence(lm_step, MOSHI_ROLES[0], LM_STREAMING_SEQUENCE)
     sampling_fn = _source_symbol(sampling_tree, "sample_token")
     _require_source_expressions(
         sampling_fn,
@@ -641,6 +663,59 @@ def self_test() -> None:
     assert STREAMING_STATUS == "AUTHENTICATED_SOURCE_CONTRACT"
     assert STREAMING_RUNTIME_STATUS == "BLOCKED_NOT_EXECUTED"
     assert all("not independently observed" in blocker for blocker in STREAMING_BLOCKERS)
+    position_tree = ast.parse("def step():\n    positions = (state.offsets % CT)[:, None, None]\n")
+    position_symbol = _source_symbol(position_tree, "step")
+    _require_source_expressions(position_symbol, "synthetic-lm.py", (STREAMING_STEP_POSITION_EXPRESSION,))
+    try:
+        _require_source_expressions(position_symbol, "synthetic-lm.py", ("index = (state.offsets % CT)[:, None, None]",))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("streaming step position assignment accepted a drifted name")
+    dsm_sequence_tree = ast.parse(
+        "def loop():\n"
+        "    audio_tokens = mimi.encode(audio_chunk)\n"
+        "    text_tokens = lm_gen.step(audio_tokens)\n"
+        "    text_tokens_accum.append(text_tokens)\n"
+    )
+    _require_source_sequence(_source_symbol(dsm_sequence_tree, "loop"), "synthetic-dsm.py", DSM_STREAMING_SEQUENCE)
+    dsm_reordered = ast.parse(
+        "def loop():\n"
+        "    text_tokens = lm_gen.step(audio_tokens)\n"
+        "    audio_tokens = mimi.encode(audio_chunk)\n"
+        "    text_tokens_accum.append(text_tokens)\n"
+    )
+    try:
+        _require_source_sequence(_source_symbol(dsm_reordered, "loop"), "synthetic-dsm.py", DSM_STREAMING_SEQUENCE)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("DSM streaming expression reorder was accepted")
+    lm_sequence_source = "\n".join(
+        (
+            "def step():",
+            "    input_ = state.cache.gather(dim=2, index=positions)",
+            "    transformer_out, text_logits = state.graphed_main(input_, state.condition_sum, state.condition_cross)",
+            "    text_token = sample_token(text_logits.float(), self.use_sampling, self.temp_text, self.top_k_text)",
+            "    state.offsets = torch.where(state.exec_mask, state.offsets + 1, state.offsets)",
+            "    scatter_with_mask_(state.cache[:, :1], -1, positions, text_token[:, None, None], state.exec_mask[:, None, None])",
+            "    index = (state.offsets[:, None, None] - self.max_delay + gen_delays_cuda[:, None]) % CT",
+            "    out = state.cache.gather(dim=2, index=index)",
+        )
+    )
+    _require_source_sequence(_source_symbol(ast.parse(lm_sequence_source), "step"), "synthetic-lm.py", LM_STREAMING_SEQUENCE)
+    lm_reordered_lines = lm_sequence_source.splitlines()
+    lm_reordered_lines[1], lm_reordered_lines[2] = lm_reordered_lines[2], lm_reordered_lines[1]
+    try:
+        _require_source_sequence(
+            _source_symbol(ast.parse("\n".join(lm_reordered_lines)), "step"),
+            "synthetic-lm.py",
+            LM_STREAMING_SEQUENCE,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("LM streaming expression reorder was accepted")
     assert TOKENIZER_NAME == "tokenizer_en_audio_4000.model"
     assert TOKENIZER_BYTES == 59_339 and TOKENIZER_SHA256 == "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"
     # Synthetic wire-level checks exercise only malformed-input handling; no
