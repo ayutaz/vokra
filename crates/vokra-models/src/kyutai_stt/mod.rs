@@ -115,7 +115,9 @@ pub const KYUTAI_STT_MIMI_FRAME_RATE_MHZ: u32 = 12_500;
 
 /// Exact Mimi sidecar identity from the authenticated Kyutai STT model tree.
 pub const KYUTAI_STT_MIMI_FILE: &str = "mimi-pytorch-e351c8d8@125.safetensors";
+/// Byte length of [`KYUTAI_STT_MIMI_FILE`] in the authenticated model tree.
 pub const KYUTAI_STT_MIMI_BYTES: usize = 384_644_900;
+/// SHA-256 digest of [`KYUTAI_STT_MIMI_FILE`] in the authenticated model tree.
 pub const KYUTAI_STT_MIMI_SHA256: &str =
     "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50";
 
@@ -127,8 +129,11 @@ pub const KYUTAI_STT_MIMI_FRAME_HOP_SAMPLES: usize = 1_920;
 /// These identities are a sidecar gate only; no tokenizer bytes are embedded
 /// or decoded by the decoder-component GGUF.
 pub const KYUTAI_STT_TOKENIZER_FILE: &str = "tokenizer_en_audio_4000.model";
+/// Byte length of [`KYUTAI_STT_TOKENIZER_FILE`] in the authenticated model tree.
 pub const KYUTAI_STT_TOKENIZER_BYTES: usize = 59_339;
+/// Git blob SHA-1 of [`KYUTAI_STT_TOKENIZER_FILE`] in the authenticated model tree.
 pub const KYUTAI_STT_TOKENIZER_GIT_BLOB_SHA1: &str = "1820a7cbb15efc6a33dd365113c07e3df9d28d80";
+/// SHA-256 digest of [`KYUTAI_STT_TOKENIZER_FILE`] in the authenticated model tree.
 pub const KYUTAI_STT_TOKENIZER_SHA256: &str =
     "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6";
 
