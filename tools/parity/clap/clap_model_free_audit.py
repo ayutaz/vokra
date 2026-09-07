@@ -136,7 +136,7 @@ def require_no_weights(directory: Path) -> None:
         raise RuntimeError(f"model-free metadata directory contains weights: {forbidden}")
 
 
-def load_reference_contract() -> tuple[dict[str, Any], Any, Any]:
+def load_reference_contract() -> tuple[dict[str, Any], Any, Any, Any]:
     """Load the shared contract without importing torch or a model class."""
 
     contract_path = Path(__file__).resolve().parents[1] / "clap_dump_reference.py"
@@ -149,6 +149,7 @@ def load_reference_contract() -> tuple[dict[str, Any], Any, Any]:
         module.PREPROCESSOR_CONTRACT,
         module.validate_preprocessor_contract,
         module.validate_model_config,
+        module.validate_feature_extractor_serializer_contract,
     )
 
 
@@ -299,16 +300,23 @@ def audit(
         config_path=config_path,
         preprocessor_path=preprocessor_path,
     )
-    preprocessor_contract, validate_preprocessor, validate_model_config = load_reference_contract()
+    (
+        preprocessor_contract,
+        validate_preprocessor,
+        validate_model_config,
+        validate_serializer,
+    ) = load_reference_contract()
 
     from transformers import ClapConfig, ClapFeatureExtractor, ClapProcessor
 
     config = ClapConfig.from_dict(config_payload)
     config_contract = validate_model_config(config.to_dict())
+    raw_preprocessing = validate_preprocessor(preprocessor_payload)
+    raw_processor_class = raw_preprocessing["processor_class"]
+    if raw_processor_class != "ClapProcessor":
+        raise RuntimeError(f"raw CLAP processor_class drifted: {raw_processor_class!r}")
     extractor = ClapFeatureExtractor(**preprocessor_payload)
-    preprocessing = validate_preprocessor(extractor.to_dict())
-    if preprocessing != {key: preprocessor_contract[key] for key in sorted(preprocessor_contract)}:
-        raise RuntimeError("official CLAP preprocessing contract did not round-trip")
+    preprocessing_serialized = validate_serializer(extractor.to_dict())
 
     dependencies = audit_dependencies(project_path, lock_path)
     observed_transformers = importlib.metadata.version("transformers")
@@ -316,6 +324,9 @@ def audit(
         raise RuntimeError(
             f"installed Transformers version drifted: {observed_transformers!r}"
         )
+    processor_source = source_fact(ClapProcessor)
+    if processor_source["class"] != raw_processor_class:
+        raise RuntimeError("raw processor_class is not bound to official ClapProcessor source")
     return {
         "schema": SCHEMA,
         "status": "PASS_MODEL_FREE",
@@ -334,12 +345,20 @@ def audit(
             },
         },
         "config_contract": config_contract,
-        "preprocessing_contract": preprocessing,
+        "preprocessing_contract": {
+            "raw_release_metadata": raw_preprocessing,
+            "serializer_round_trip": preprocessing_serialized,
+            "processor_class_binding": {
+                "raw_processor_class": raw_processor_class,
+                "api_class": processor_source["class"],
+                "source": processor_source,
+            },
+        },
         "api_facts": {
             "transformers_version": observed_transformers,
             "config": source_fact(ClapConfig),
             "feature_extractor": source_fact(ClapFeatureExtractor),
-            "processor": source_fact(ClapProcessor),
+            "processor": processor_source,
         },
         "remote_identity": remote_identity,
         "dependency_license_contract": {
@@ -361,6 +380,23 @@ def self_test() -> None:
     assert TRANSFORMERS_VERSION == "5.10.4"
     assert len(TRANSFORMERS_WHEEL_SHA256) == 64
     assert WEIGHT_SUFFIXES == {".bin", ".ckpt", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"}
+    preprocessor_contract, validate_preprocessor, _, validate_serializer = load_reference_contract()
+    raw = validate_preprocessor(dict(preprocessor_contract))
+    assert raw["processor_class"] == "ClapProcessor"
+    serialized = {
+        key: value
+        for key, value in raw.items()
+        if key != "processor_class"
+    }
+    assert validate_serializer(serialized) == serialized
+    try:
+        tampered_serializer = dict(serialized)
+        tampered_serializer["sampling_rate"] = 16_000
+        validate_serializer(tampered_serializer)
+    except RuntimeError as exc:
+        assert "sampling_rate" in str(exc)
+    else:
+        raise AssertionError("serializer preprocessing drift was accepted")
     with tempfile.TemporaryDirectory(prefix="vokra-clap-audit-") as temporary:
         root = Path(temporary)
         duplicate = root / "duplicate.json"

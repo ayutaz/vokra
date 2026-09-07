@@ -375,6 +375,7 @@ self_test() {
     'card_data_license_status' 'repo_license_file_status' '--remote-identity' \
     'remote_files' 'local_git_blob_sha1' 'remote_lfs_sha256' 'weights=NOT_ACQUIRED' \
     'transformers_clap_model_source_sha256' 'tensor_manifest' \
+    'validate_feature_extractor_serializer_contract' 'processor_class' \
     'INSPECTION_ONLY' 'no upload' 'VOKRA_CLAP_REAL_GGUF' 'GGUFReader' \
     'clap_dump_reference.py" --self-test' \
     'git status --porcelain'; do

@@ -74,6 +74,13 @@ approval. Its evidence explicitly says
 `publication=NO_UPLOAD`. The real-weight path remains approval-gated and
 cannot be authorized by model-free evidence.
 
+The raw release preprocessor JSON is validated against the complete
+`PREPROCESSOR_CONTRACT`. Transformers 5.10.4 does not serialize
+`processor_class` through `ClapFeatureExtractor.to_dict()`, so the serializer
+round-trip contract intentionally excludes only that key; the raw
+`processor_class=ClapProcessor` is separately bound to the official
+`ClapProcessor` source fact in the evidence.
+
 Only after owner approval and a clean disposable VAST checkout may the normal
 reference command be run with a pinned local snapshot and an output directory.
 The resulting metadata remains `INSPECTION_ONLY` until independent review and

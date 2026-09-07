@@ -53,6 +53,7 @@ PREPROCESSOR_CONTRACT = {
     "top_db": None,
     "truncation": "fusion",
 }
+SERIALIZER_EXCLUDED_KEYS = {"processor_class"}
 
 # Transformers' released ClapModel has explicit audio/text towers and two
 # projection modules.  The inspector records every observed shape/dtype but
@@ -143,6 +144,30 @@ def validate_preprocessor_contract(value: dict[str, Any]) -> dict[str, Any]:
             f"official CLAP preprocessing contract drifted: missing={missing}, mismatched={mismatched}"
         )
     return {key: value[key] for key in sorted(PREPROCESSOR_CONTRACT)}
+
+
+def validate_feature_extractor_serializer_contract(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate the exact contract retained by ClapFeatureExtractor.to_dict()."""
+
+    expected = {
+        key: PREPROCESSOR_CONTRACT[key]
+        for key in sorted(PREPROCESSOR_CONTRACT)
+        if key not in SERIALIZER_EXCLUDED_KEYS
+    }
+    if not isinstance(value, dict):
+        raise RuntimeError("official CLAP feature extractor serialization is not a dict")
+    missing = sorted(set(expected) - set(value))
+    mismatched = {
+        key: {"expected": expected_value, "actual": value.get(key)}
+        for key, expected_value in expected.items()
+        if value.get(key) != expected_value
+    }
+    if missing or mismatched:
+        raise RuntimeError(
+            "official CLAP feature extractor serializer contract drifted: "
+            f"missing={missing}, mismatched={mismatched}"
+        )
+    return {key: value[key] for key in sorted(expected)}
 
 
 def state_dict_role(name: str) -> str | None:
@@ -278,6 +303,14 @@ def self_test() -> None:
     assert len(REVISION) == 40 and all(c in "0123456789abcdef" for c in REVISION)
     assert validate_preprocessor_contract(dict(PREPROCESSOR_CONTRACT)) == {
         key: PREPROCESSOR_CONTRACT[key] for key in sorted(PREPROCESSOR_CONTRACT)
+    }
+    serializer_contract = {
+        key: value
+        for key, value in PREPROCESSOR_CONTRACT.items()
+        if key not in SERIALIZER_EXCLUDED_KEYS
+    }
+    assert validate_feature_extractor_serializer_contract(serializer_contract) == {
+        key: serializer_contract[key] for key in sorted(serializer_contract)
     }
     synthetic_config = {
         "model_type": "clap",
@@ -421,6 +454,11 @@ def dump(model_dir: str | None, output_dir: Path) -> None:
 
     output_dir.mkdir(parents=True, exist_ok=False)
     source_path, source_sha256 = source_hash()
+    processor_source_path = inspect.getsourcefile(ClapProcessor)
+    if processor_source_path is None:
+        raise RuntimeError("cannot locate official Transformers ClapProcessor source")
+    processor_source_path = str(Path(processor_source_path).resolve())
+    processor_source_sha256 = sha256_file(Path(processor_source_path))
     kwargs = {"revision": REVISION, "local_files_only": model_dir is not None}
     model_source = model_dir or REPOSITORY
     processor = ClapProcessor.from_pretrained(model_source, **kwargs)
@@ -440,7 +478,9 @@ def dump(model_dir: str | None, output_dir: Path) -> None:
     feature_extractor = getattr(processor, "feature_extractor", None)
     if feature_extractor is None or not hasattr(feature_extractor, "to_dict"):
         raise RuntimeError("official CLAP processor has no inspectable feature extractor")
-    preprocessing = validate_preprocessor_contract(feature_extractor.to_dict())
+    preprocessing = validate_feature_extractor_serializer_contract(feature_extractor.to_dict())
+    if PREPROCESSOR_CONTRACT["processor_class"] != ClapProcessor.__name__:
+        raise RuntimeError("official CLAP processor class source drifted")
     tensor_manifest, state_dict_roles = build_state_dict_manifest(state_dict)
     model_config_contract = validate_model_config(model.config.to_dict())
     validate_tensor_manifest(tensor_manifest, state_dict_roles)
@@ -462,6 +502,12 @@ def dump(model_dir: str | None, output_dir: Path) -> None:
         "sample_rate": SAMPLE_RATE,
         "pcm_samples": PCM_SAMPLES,
         "preprocessing": preprocessing,
+        "preprocessing_processor_class": {
+            "raw_release_value": PREPROCESSOR_CONTRACT["processor_class"],
+            "api_class": ClapProcessor.__name__,
+            "source": processor_source_path,
+            "source_sha256": processor_source_sha256,
+        },
         "state_dict_roles": state_dict_roles,
         "model_config_contract": model_config_contract,
         "dumper_version": DUMPER_VERSION,
