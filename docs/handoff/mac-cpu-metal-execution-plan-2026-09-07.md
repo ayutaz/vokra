@@ -243,6 +243,34 @@ withheld repositories documented by their owner decision.
   tests/gates, cloud instance disposition and whether any user action is now
   required.
 
+## 2026-09-07 Wave 1 progress ledger
+
+The source/API closure batch through `1d14acc6` is committed as separate
+family-sized changes. It binds or corrects Qwen3-TTS dependency evidence,
+Zonos configuration, Dia text/generation, OWSM disposition, FireRed dispatch
+tests, Kyutai STT sidecars/streaming seams, the CLAP reference contract,
+AudioGen disposition and the XY-Tokenizer source topology. The owner's dirty
+CosyVoice2 license manifest remains unstaged and unmodified by this batch.
+
+On VAST instance `50138441`, exact head `5c81eff9` passed the focused FireRed,
+Zonos, Dia and Kyutai STT tests, both CLAP contract self-tests, the OWSM
+inspection self-test and `cargo test --workspace --no-fail-fast`. The workspace
+log SHA-256 is
+`c21bb4e241efdf15fc7c8aced4521a009d6934ddf061a7ed5332f547fd546f01`.
+The subsequent all-target Clippy gate found only seven redundant FireRed test
+casts; commit `146d75d8` removes them. AudioGen disposition commit `c6b2e62e`
+and XY-Tokenizer topology commit `1d14acc6` followed, so exact-head VAST
+workspace/Clippy/deny/audit verification and the PR push remain pending for
+this batch.
+
+Model-free audits made no speculative edits for MMS-1B-All, Yue XCodec Mini or
+HT-Demucs Multi. Their real checkpoint identities/manifests, complete native
+compositions and independent CPU parity remain explicit blockers. AudioGen
+still lacks authenticated T5 and 16-kHz EnCodec companions. XY-Tokenizer now
+authenticates the fixed source/config/API topology, but its produced tensor
+manifest still requires independent review before a native binder is allowed.
+These facts do not decrement the 63-row live-public denominator.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
