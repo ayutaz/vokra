@@ -376,9 +376,17 @@ tensor listed in the real manifest:
 
 ## Sidecar format (the four `.gguf.sha256` files)
 
-**Status (updated 2026-08-18)**: all four sidecars carry **real
+**Status (updated 2026-09-07)**: all four sidecars carry **real
 `sha256sum`-format** lines. The original three were committed in `6580061`;
-the ZH sidecar belongs to the explicit four-file leg. The
+the ZH sidecar belongs to the explicit four-file leg. The JP-Extra sidecar
+was regenerated after commit `0ee8359c` corrected the embedded model/source
+identity from the retired multilingual placeholder to the exact
+`litagin/Style-Bert-VITS2-2.0-base-JP-Extra` artifact. GitHub Actions' pinned
+JA recipe (`SBV2_REVISION=a731761009f3c96d104487be6ad332bf1bb5a3a5`, job
+`101584763885`) produced
+`b544487b5e603e2012f7e056f2f836dc2eacd5af52e34f896581dc02ad5097b9`, now
+recorded in `sbv2-v2-jp-extra-base.gguf.sha256`; the prior `4f1c…` value was
+for the pre-identity-correction serialization and must not be reused. The
 gate `[ -s <sidecar> ] && ! grep -q "placeholder" <sidecar>` sketched in
 `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §10 ("fixture 管理"
 / "CI workflow") now evaluates TRUE for every sidecar, so
