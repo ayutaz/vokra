@@ -33,6 +33,15 @@ FORMAT = "vokra-owsm-v4-medium-1b-payload-evidence-v1"
 WRITER_SOURCE = "crates/vokra-convert/src/models/owsm_v4_medium_1b.rs"
 WRITER_STATUS = "MISSING_OWSM_GGUF_WRITER_CONTRACT"
 BLOCKED_ACTION = "UNSPECIFIED_PENDING_WRITER_REVIEW"
+NEXT_VAST_COMMAND = (
+    "CARGO_BUILD_JOBS=1 uv run --frozen --project tools/parity --python 3.12 "
+    "python tools/parity/owsm_v4_medium_1b_prepare_checkpoint.py "
+    "--checkpoint /dev/shm/vokra-owsm-v4-medium-1b/model/"
+    "exp/s2t_train_conv2d8_size1024_e18_d18_mel128_raw_bpe50000/"
+    "valid.total_count.ave_5best.pth "
+    "--structural-manifest /dev/shm/vokra-owsm-v4-medium-1b/evidence/manifest.json "
+    "--output /dev/shm/vokra-owsm-v4-medium-1b/evidence/payload-manifest.json"
+)
 
 
 class EvidenceError(RuntimeError):
@@ -164,6 +173,12 @@ def validate_structural_manifest(
             raise EvidenceError(f"checkpoint structural row differs: {name}")
 
 
+def canonical_name_set_sha256(names: list[str]) -> str:
+    """Hash the sorted source-name set without assigning target names."""
+    validate_unique_names(names)
+    return sha256_bytes(canonical_json(sorted(names)))
+
+
 def load_rows(
     checkpoint: Path,
     structural_manifest: Path | None = None,
@@ -237,6 +252,8 @@ def manifest_without_digest(payload: dict[str, Any]) -> dict[str, Any]:
 def build_manifest(
     checkpoint: Path, rows: list[dict[str, Any]], structural_manifest: Path | None = None
 ) -> dict[str, Any]:
+    source_names = [row["source_name"] for row in rows]
+    source_name_set_sha256 = canonical_name_set_sha256(source_names)
     payload: dict[str, Any] = {
         "format": FORMAT,
         "status": "BLOCKED_WRITER_CONTRACT",
@@ -248,6 +265,13 @@ def build_manifest(
             "target_mapping": "NOT_SPECIFIED_NO_OWSM_WRITER",
             "normalization": "NOT_SPECIFIED_NO_OWSM_WRITER",
             "transposition": "NOT_SPECIFIED_NO_OWSM_WRITER",
+            "source_name_set_sha256": source_name_set_sha256,
+            "source_name_count": len(source_names),
+            "target_name_status": "BLOCKED_UNSPECIFIED",
+            "target_shape_status": "BLOCKED_UNSPECIFIED",
+            "target_dtype_status": "BLOCKED_UNSPECIFIED",
+            "payload_writer_status": "BLOCKED_NO_GGUF_WRITER",
+            "next_vast_command": NEXT_VAST_COMMAND,
             "publication": "NO_UPLOAD",
         },
         "source": {
@@ -267,6 +291,7 @@ def build_manifest(
             else None,
         },
         "tensor_count": len(rows),
+        "source_name_set_sha256": source_name_set_sha256,
         "tensors": rows,
     }
     payload["manifest_sha256"] = sha256_bytes(canonical_json(manifest_without_digest(payload)))
@@ -309,15 +334,29 @@ def verify_manifest(path: Path) -> dict[str, Any]:
     if payload.get("blocked_evidence") is not True:
         raise EvidenceError("payload manifest blocked status is missing")
     writer = payload.get("writer_contract")
-    if not isinstance(writer, dict) or writer != {
+    tensors = payload.get("tensors")
+    if not isinstance(tensors, list):
+        raise EvidenceError("payload manifest tensors are not a list")
+    source_name_set_sha256 = canonical_name_set_sha256([row.get("source_name") for row in tensors])
+    expected_writer = {
         "status": WRITER_STATUS,
         "source_of_truth": WRITER_SOURCE,
         "target_mapping": "NOT_SPECIFIED_NO_OWSM_WRITER",
         "normalization": "NOT_SPECIFIED_NO_OWSM_WRITER",
         "transposition": "NOT_SPECIFIED_NO_OWSM_WRITER",
+        "source_name_set_sha256": source_name_set_sha256,
+        "source_name_count": CHECKPOINT_TENSOR_COUNT,
+        "target_name_status": "BLOCKED_UNSPECIFIED",
+        "target_shape_status": "BLOCKED_UNSPECIFIED",
+        "target_dtype_status": "BLOCKED_UNSPECIFIED",
+        "payload_writer_status": "BLOCKED_NO_GGUF_WRITER",
+        "next_vast_command": NEXT_VAST_COMMAND,
         "publication": "NO_UPLOAD",
-    }:
+    }
+    if not isinstance(writer, dict) or writer != expected_writer:
         raise EvidenceError("payload manifest writer contract is not exact")
+    if payload.get("source_name_set_sha256") != source_name_set_sha256:
+        raise EvidenceError("payload manifest source-name set digest mismatch")
     source = payload.get("source")
     if not isinstance(source, dict) or any(
         source.get(key) != value
@@ -334,7 +373,6 @@ def verify_manifest(path: Path) -> dict[str, Any]:
         }.items()
     ):
         raise EvidenceError("payload manifest source identity is not exact")
-    tensors = payload.get("tensors")
     if not isinstance(tensors, list) or len(tensors) != CHECKPOINT_TENSOR_COUNT:
         raise EvidenceError("payload manifest tensor count mismatch")
     validate_unique_names([row.get("source_name") for row in tensors])
@@ -381,6 +419,14 @@ def build_error_manifest(error: Exception) -> dict[str, Any]:
         "writer_contract": {
             "status": WRITER_STATUS,
             "source_of_truth": WRITER_SOURCE,
+            "target_mapping": "NOT_SPECIFIED_NO_OWSM_WRITER",
+            "normalization": "NOT_SPECIFIED_NO_OWSM_WRITER",
+            "transposition": "NOT_SPECIFIED_NO_OWSM_WRITER",
+            "target_name_status": "BLOCKED_UNSPECIFIED",
+            "target_shape_status": "BLOCKED_UNSPECIFIED",
+            "target_dtype_status": "BLOCKED_UNSPECIFIED",
+            "payload_writer_status": "BLOCKED_NO_GGUF_WRITER",
+            "next_vast_command": NEXT_VAST_COMMAND,
             "publication": "NO_UPLOAD",
         },
     }

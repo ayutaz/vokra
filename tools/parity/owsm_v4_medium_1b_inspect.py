@@ -15,6 +15,24 @@ EXPECTED_README_SHA="0a6706b003418c3d64aabb153afdb08627c52be7add1cca0944b63b9e98
 EXPECTED_STATS_KEYS={"count","sum","sum_square"}; TOKEN_SHA="e19396ec012b0294a11fe85c35e36a1d903bc83e60ea602ddf6cc59b7c0e92f9"
 RUNTIME_STATUS="LOUD_PARTIAL_FAIL_CLOSED"; CPU_STATUS="NOT_RUN"
 IGNORE={".cache",".git"}
+SOURCE_SEMANTIC_FILES={
+ "frontend.default":"espnet2/asr/frontend/default.py",
+ "frontend.stft":"espnet2/layers/stft.py",
+ "frontend.log_mel":"espnet2/layers/log_mel.py",
+ "global_mvn":"espnet2/layers/global_mvn.py",
+}
+SOURCE_SEMANTIC_MARKERS={
+ "frontend.default":(
+  r"class\s+DefaultFrontend\b", r"Stft\s*\(", r"LogMel\s*\(",
+  r"input\s*=\s*input\.unsqueeze\(1\)", r"self\.stft", r"self\.logmel",
+ ),
+ "frontend.stft":(r"class\s+Stft\b", r"center", r"pad_mode"),
+ "frontend.log_mel":(r"class\s+LogMel\b", r"n_mels", r"mel"),
+ "global_mvn":(
+  r"class\s+GlobalMVN\b", r"[\"']count[\"']", r"[\"']sum[\"']",
+  r"[\"']sum_square[\"']", r"mean", r"std",
+ ),
+}
 
 def sha256(path:Path)->str:
  d=hashlib.sha256()
@@ -313,6 +331,49 @@ def source_inventory(root:Path,repo:str,revision:str,roles:tuple[str,...],blocke
   result.update({"resolved_revision":head,"origin":origin,"tags_at_revision":tags,"clean_status":"CLEAN" if not clean else "DIRTY","tracked_files":[identity(p,root) for p in sorted(paths)],"symlinks":symlinks,"gitlinks":gitlinks,"role_files":role_files,"license_files":[identity(p,root) for p in licenses]})
  except Exception as e: blockers.append(f"source inventory blocked: {e}")
  return result
+
+
+def source_semantic_evidence(root:Path, blockers:list[str])->dict[str,Any]:
+ """Authenticate source-level frontend/MVN seams without executing ESPnet."""
+ evidence={}
+ for name,relative in SOURCE_SEMANTIC_FILES.items():
+  path=root/relative
+  packet={"path":relative,"status":"BLOCKED_SOURCE_SEMANTICS"}
+  try:
+   if not path.is_file() or path.is_symlink():
+    raise RuntimeError("source role is missing or non-regular")
+   text=path.read_text(encoding="utf-8")
+   markers=SOURCE_SEMANTIC_MARKERS[name]
+   matched=[marker for marker in markers if re.search(marker,text,re.MULTILINE)]
+   missing=[marker for marker in markers if marker not in matched]
+   packet.update({"sha256":sha256(path),"git_blob_sha1":git_blob_sha1(path),"markers":markers,"matched":matched,"missing":missing})
+   if missing:
+    blockers.append(f"source semantic markers missing: {name}: {missing}")
+   else:
+    packet["status"]="SOURCE_MARKERS_MATCHED"
+  except (OSError,UnicodeError,RuntimeError) as error:
+   blockers.append(f"source semantic evidence blocked: {name}: {error}")
+   packet["error"]=str(error)
+  evidence[name]=packet
+ frontend=evidence.get("frontend.default",{})
+ stft=evidence.get("frontend.stft",{})
+ log_mel=evidence.get("frontend.log_mel",{})
+ mvn=evidence.get("global_mvn",{})
+ all_matched=all(packet.get("status")=="SOURCE_MARKERS_MATCHED" for packet in evidence.values())
+ return {
+  "status":"SOURCE_SEMANTICS_AUTHENTICATED" if all_matched else "BLOCKED_SOURCE_SEMANTICS",
+  "frontend":{
+   "pipeline":["waveform", "channel_unsqueeze", "Stft", "LogMel"],
+   "config_binding":{"fs":"16k","n_fft":512,"win_length":400,"hop_length":160,"n_mels":128},
+   "source_files":{"default":frontend,"stft":stft,"log_mel":log_mel},
+  },
+  "global_mvn":{
+   "stats_file":STATS,
+   "stats_keys":sorted(EXPECTED_STATS_KEYS),
+   "source_file":mvn,
+   "normalization_formula_status":"SOURCE_MARKERS_ONLY_NO_RUNTIME_FORMULA_ASSUMED",
+  },
+ }
 def inspect(snapshot:Path,source:Path,tree:Path,out:Path)->int:
  blockers=[]; local=files(snapshot); tree_packet=server_tree(snapshot,tree,blockers)
  if not {CONFIG,MAIN,BPE,STATS,README}.issubset({p.relative_to(snapshot).as_posix() for p in local}): blockers.append("required OWSM files missing")
@@ -325,10 +386,12 @@ def inspect(snapshot:Path,source:Path,tree:Path,out:Path)->int:
   if name==README and got["sha256"]!=EXPECTED_README_SHA: blockers.append(f"fixed README SHA256 mismatch: {name}")
   if digest is not None and (got["sha256"]!=digest or record.get("lfs_sha256")!=digest): blockers.append(f"fixed LFS identity mismatch: {name}")
  config=config_evidence(snapshot/CONFIG,snapshot,blockers) if (snapshot/CONFIG).is_file() else None; stats=stats_evidence(snapshot/STATS,snapshot,blockers) if (snapshot/STATS).is_file() else None; bpe=bpe_evidence(snapshot/BPE,snapshot,blockers) if (snapshot/BPE).is_file() else None; checkpoint=checkpoint_evidence(snapshot/MAIN,snapshot,blockers) if (snapshot/MAIN).is_file() else None; readme=readme_evidence(snapshot/README,snapshot,blockers) if (snapshot/README).is_file() else None
- source=source_inventory(source,SOURCE_REPOSITORY,SOURCE_REVISION,("espnet2/s2t/espnet_model.py","espnet2/tasks/s2t.py","espnet2/asr/encoder/e_branchformer_encoder.py","espnet2/asr/decoder/transformer_decoder.py","espnet2/asr/frontend/default.py","espnet2/asr/specaug/specaug.py","espnet2/layers/global_mvn.py","espnet2/asr/ctc.py","espnet2/train/preprocessor.py"),blockers)
+ source_root=source
+ source_inventory_packet=source_inventory(source_root,SOURCE_REPOSITORY,SOURCE_REVISION,("espnet2/s2t/espnet_model.py","espnet2/tasks/s2t.py","espnet2/asr/encoder/e_branchformer_encoder.py","espnet2/asr/decoder/transformer_decoder.py","espnet2/asr/frontend/default.py","espnet2/layers/stft.py","espnet2/layers/log_mel.py","espnet2/asr/specaug/specaug.py","espnet2/layers/global_mvn.py","espnet2/asr/ctc.py","espnet2/train/preprocessor.py"),blockers)
+ source_semantics=source_semantic_evidence(source_root,blockers)
  inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if not blockers else "INSPECTION_ERROR"
  blockers += ["native ESPnet S2T frontend/subsampling/encoder/decoder is not implemented","joint CTC/attention beam search and special-token semantics are not implemented","independent CPU numerical parity is not run","Metal is blocked by CPU runtime","dependency provenance is unreviewed","dataset provenance is unauthenticated"]
- payload={"format":FORMAT,"status":"BLOCKED","inspection_status":inspection_status,"evidence_stage":"INSPECTION_ONLY","runtime_status":RUNTIME_STATUS,"cpu_status":CPU_STATUS,"metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"revision":HF_REVISION,"server_tree":tree_packet,"files":[identity(p,snapshot) for p in local],"config":config,"checkpoint":checkpoint,"bpe":bpe,"readme":readme,"stats":stats},"official_source":source,"license_evidence":{"weights":{"status":"AUTHENTICATED_FROM_MODEL_CARD" if readme and readme.get("status")=="AUTHENTICATED_MODEL_CARD" else "BLOCKED_MODEL_CARD","spdx":"cc-by-4.0","card":"README.md"},"espnet_source":"Apache/MIT source declaration requires review","dependencies":"UNREVIEWED_BLOCKER","datasets":"UNAUTHENTICATED_BLOCKER"},"blockers":sorted(set(blockers))}
+ payload={"format":FORMAT,"status":"BLOCKED","inspection_status":inspection_status,"evidence_stage":"INSPECTION_ONLY","runtime_status":RUNTIME_STATUS,"cpu_status":CPU_STATUS,"metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"revision":HF_REVISION,"server_tree":tree_packet,"files":[identity(p,snapshot) for p in local],"config":config,"checkpoint":checkpoint,"bpe":bpe,"readme":readme,"stats":stats},"official_source":source_inventory_packet,"source_semantics":source_semantics,"license_evidence":{"weights":{"status":"AUTHENTICATED_FROM_MODEL_CARD" if readme and readme.get("status")=="AUTHENTICATED_MODEL_CARD" else "BLOCKED_MODEL_CARD","spdx":"cc-by-4.0","card":"README.md"},"espnet_source":"Apache/MIT source declaration requires review","dependencies":"UNREVIEWED_BLOCKER","datasets":"UNAUTHENTICATED_BLOCKER"},"blockers":sorted(set(blockers))}
  out.mkdir(parents=True,exist_ok=True); (out/"manifest.json").write_text(json.dumps(payload,sort_keys=True,indent=2,default=list)+"\n"); return 2
 def write_error_manifest(out:Path,error:Exception)->None:
  payload={"format":FORMAT,"status":"BLOCKED","inspection_status":"INSPECTION_ERROR","evidence_stage":"INSPECTION_ONLY","runtime_status":RUNTIME_STATUS,"cpu_status":CPU_STATUS,"metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","error":str(error),"blockers":[str(error)]}
@@ -385,6 +448,14 @@ def self_test()->None:
   card="---\nlicense: cc-by-4.0\ndatasets:\n- espnet/yodas_owsmv4\n---\nLanguage identification, recognition, translation, timestamp and long-form.\n"; bad=[]; parsed=model_card_frontmatter(card,bad); contract=validate_model_card(parsed,card,bad); assert parsed["datasets"]==["espnet/yodas_owsmv4"] and contract["status"]=="AUTHENTICATED_MODEL_CARD" and not bad
   bad=[]; string_card="---\nlicense: cc-by-4.0\ndatasets: espnet/yodas_owsmv4\n---\nLanguage identification, recognition, translation, timestamp and long-form.\n"; parsed=model_card_frontmatter(string_card,bad); contract=validate_model_card(parsed,string_card,bad); assert parsed["datasets"]=="espnet/yodas_owsmv4" and contract["status"]=="BLOCKED_MODEL_CARD" and any("README dataset declaration mismatch" in item for item in bad)
   bad_yaml=root/"bad.yaml"; bad_yaml.write_text("x: 1\nx: 2\n"); bad=[]; yaml_value(bad_yaml,bad); assert bad
+  semantic_root=root/"semantic-source"; (semantic_root/"espnet2/asr/frontend").mkdir(parents=True); (semantic_root/"espnet2/layers").mkdir(parents=True)
+  (semantic_root/"espnet2/asr/frontend/default.py").write_text("class DefaultFrontend:\n self.stft = Stft()\n self.logmel = LogMel()\n input = input.unsqueeze(1)\n")
+  (semantic_root/"espnet2/layers/stft.py").write_text("class Stft:\n center = True\n pad_mode = 'reflect'\n")
+  (semantic_root/"espnet2/layers/log_mel.py").write_text("class LogMel:\n n_mels = 128\n mel = True\n")
+  (semantic_root/"espnet2/layers/global_mvn.py").write_text("class GlobalMVN:\n count = stats['count']\n sum = stats['sum']\n sum_square = stats['sum_square']\n mean = sum / count\n std = sqrt(mean)\n")
+  semantic_bad=[]; semantic=source_semantic_evidence(semantic_root,semantic_bad); assert semantic["status"]=="SOURCE_SEMANTICS_AUTHENTICATED" and not semantic_bad
+  (semantic_root/"espnet2/layers/log_mel.py").write_text("class LogMel:\n")
+  semantic_bad=[]; semantic=source_semantic_evidence(semantic_root,semantic_bad); assert semantic["status"]=="BLOCKED_SOURCE_SEMANTICS" and semantic_bad
   error_out=root/"error-evidence"; write_error_manifest(error_out,RuntimeError("self-test failure")); error=json.loads((error_out/"manifest.json").read_text()); assert error["inspection_status"]=="INSPECTION_ERROR" and error["publication"]=="NO_UPLOAD" and error["runtime_status"]==RUNTIME_STATUS and error["cpu_status"]==CPU_STATUS
  print("owsm_v4_medium_1b_inspect self-test: OK")
 def main()->int:
