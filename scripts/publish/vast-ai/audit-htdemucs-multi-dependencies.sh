@@ -2,6 +2,7 @@
 # VAST/Linux-only, model-free frozen dependency evidence for HT-Demucs.
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -72,7 +73,7 @@ check_environment() {
 
 self_test() {
   local temp
-  for token in VOKRA_PUBLISH_ON_VAST PYTHONDONTWRITEBYTECODE uv sync --no-install-project --no-sync --frozen --project --expected-head readelf dependency_audit.py BLOCKED_OWNER_REVIEW NO_UPLOAD weights audio source Cargo; do
+  for token in VOKRA_PUBLISH_ON_VAST PYTHONDONTWRITEBYTECODE 'PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"' uv sync --no-install-project --no-sync --frozen --project --expected-head readelf dependency_audit.py BLOCKED_OWNER_REVIEW NO_UPLOAD weights audio source Cargo; do
     grep -Fq -- "$token" "$0" || { die "wrapper contract missing: $token"; return 1; }
   done
   if grep -En '(^|[;&|][[:space:]])(python|python3|pip|conda)([[:space:]]|$)' "$0" >/dev/null; then
