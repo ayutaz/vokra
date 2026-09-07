@@ -4182,7 +4182,7 @@ mod tests {
         let err = KyutaiSttConfig::from_gguf(&file)
             .expect_err("wrong-typed key must be rejected by config reader");
         assert!(
-            matches!(err, VokraError::InvalidArgument(msg) if msg.contains(KEY_SAMPLE_RATE)),
+            matches!(&err, VokraError::InvalidArgument(msg) if msg.contains(KEY_SAMPLE_RATE)),
             "expected InvalidArgument naming sample_rate, got {err:?}"
         );
     }
