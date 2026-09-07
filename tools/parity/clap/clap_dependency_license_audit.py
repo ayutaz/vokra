@@ -485,6 +485,7 @@ def collect_distribution(
     findings: list[str] = []
     row_review_flags: list[str] = []
     sdist_candidates: list[dict[str, Any]] = []
+    sdist_inspection_status = "NOT_ATTEMPTED"
     sdist_inspection_succeeded = False
     if observed_name is None or observed_version is None:
         findings.append("distribution metadata name/version missing")
@@ -512,14 +513,21 @@ def collect_distribution(
                     sdist_data = sdist_fetcher(sdist)
                     sdist_candidates = inspect_sdist_license_evidence(sdist_data, sdist)
                     sdist_inspection_succeeded = True
+                    sdist_inspection_status = "SUCCESS"
                 except (RuntimeError, OSError) as exc:
                     findings.append(f"locked sdist license evidence unavailable: {exc}")
                     sdist_candidates = []
+                    sdist_inspection_status = "FAILED"
                 if sdist_candidates:
                     alternative_publisher_evidence = True
                     row_review_flags.append("locked sdist license evidence requires owner review")
                 elif sdist_inspection_succeeded:
-                    findings.append("locked sdist contains no LICENSE/COPYING/NOTICE evidence")
+                    if alternative_publisher_evidence:
+                        row_review_flags.append(
+                            "exact locked sdist has no bundled candidate; publisher metadata requires owner review"
+                        )
+                    else:
+                        findings.append("locked sdist contains no LICENSE/COPYING/NOTICE evidence")
     installed_candidates = [
         {
             "source": "installed_distribution",
@@ -556,6 +564,7 @@ def collect_distribution(
             "bundled_files_status": license_status,
             "bundled_files": license_files,
             "sdist_files_status": "PRESENT" if sdist_candidates else "NONE",
+            "sdist_inspection_status": sdist_inspection_status,
             "candidate_evidence": candidate_evidence,
             "candidate_evidence_sha256": candidate_evidence_digest,
             "disposition": PENDING_STATUS,
@@ -687,6 +696,7 @@ class _SyntheticDistribution:
         license_expression: str | None = "MIT",
         extra_files: dict[str, bytes] | None = None,
         classifier: bool = True,
+        legacy_license: str | None = None,
     ):
         self.root = root
         root.mkdir(parents=True, exist_ok=True)
@@ -694,7 +704,7 @@ class _SyntheticDistribution:
             "Name": name,
             "Version": version,
             "License-Expression": license_expression,
-            "License": "MIT" if license_text is not None else None,
+            "License": legacy_license if legacy_license is not None else ("MIT" if license_text is not None else None),
             "Classifier": "License :: OSI Approved :: MIT License" if classifier else None,
         }
         files: list[str] = []
@@ -844,6 +854,25 @@ def self_test() -> None:
         )
         assert missing["status"] == "BLOCKED"
         assert "contains no LICENSE/COPYING/NOTICE" in " ".join(missing["findings"])
+        assert missing["installed_environment"]["distributions"][0]["license"]["sdist_inspection_status"] == "SUCCESS"
+        tqdm_shape = _SyntheticDistribution(
+            root / "tqdm-shape",
+            "demo-package",
+            "1.0.0",
+            license_text=None,
+            license_expression=None,
+            classifier=False,
+            legacy_license="MPL-2.0 AND MIT",
+        )
+        tqdm_result = audit(
+            project, empty_lock, [tqdm_shape], prefix=root, sdist_fetcher=empty_fetch
+        )
+        tqdm_row = tqdm_result["installed_environment"]["distributions"][0]
+        assert tqdm_result["status"] == PENDING_STATUS
+        assert tqdm_row["license"]["sdist_files_status"] == "NONE"
+        assert tqdm_row["license"]["sdist_inspection_status"] == "SUCCESS"
+        assert any("no bundled candidate" in item for item in tqdm_row["review_flags"])
+        assert not any("contains no LICENSE/COPYING/NOTICE" in item for item in tqdm_result["findings"])
         def failing_fetch(artifact: dict[str, Any]) -> bytes:
             raise RuntimeError("synthetic network failure")
 
