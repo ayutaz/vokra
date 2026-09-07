@@ -52,7 +52,7 @@ immutable. None of these rows is owner-approved by this document.
 | MOSS-TTS Local | Dependency-license review, complete composite PCM execution boundary and a scope hash over the 438-tensor identity and companion. |
 | SpeechBrain Lang-ID | Source, weight, Python closure and fixture-license review plus a scope hash. |
 | Conv-TasNet Libri1Mix | A legal disposition for the CC-BY-SA-3.0/4.0 and WHAM CC-BY-NC-4.0 conflict; publication remains `NO_UPLOAD`. |
-| HT-Demucs Multi | Weight redistribution terms, the MUSDB18/extra-training-data disposition and a Python-3.12-compatible dependency closure. The exact upstream `torchaudio>=0.8,<2.1` snapshot is not resolvable on Python 3.12; the pinned reference import graph is being repaired without weakening that historical snapshot. |
+| HT-Demucs Multi | Weight redistribution terms, the MUSDB18/extra-training-data disposition and owner disposition for the exact Linux dependency evidence. The repaired Python 3.12 reference closure is reproducible, but its NumPy wheel bundles GPL-with-GCC-exception `libgfortran` and LGPL `libquadmath`, which the current fail-closed policy does not approve. |
 | CLAP HTSAT fused | Review 20 dependency-license findings from the exact VAST inventory, including missing SPDX expression metadata and missing bundled license files for Tokenizers and tqdm. Native payload identities are captured, but no checkpoint was acquired or executed. |
 | AudioGen Medium | Exact external T5 revision/weight identity, compression checkpoint build provenance, dependency closure, real execution/parity and an approval-scope hash. The checked-in model-free evidence is deliberately `signable=false`. |
 | XY-Tokenizer | Complete dependency/license evidence, exact reviewed tensor manifest and scope hash. Current SciPy/SymPy, setuptools, soxr, tokenizers and tqdm evidence is incomplete. |
@@ -84,12 +84,34 @@ The Python 3.12 conflict is narrower than the upstream requirements snapshot:
 the pinned `demucs.audio` module imports `torchaudio` and `lameenc` at module
 load, but its reference-path `convert_audio` function calls the official
 `julius.resample_frac` implementation and does not access either package. The
-implementation under review keeps the upstream snapshot byte-identical,
-loads the fixed PCM16 WAV fixture without `torchaudio`, and provides
-process-local fail-closed stubs whose every attribute access raises. This may
-remove the unsatisfiable and GPL dependencies from the active reference
-closure without changing model or resampler numerics. It is not evidence of
-runtime parity and does not authorize checkpoint acquisition or execution.
+reference closure committed at `4c91f173` keeps the upstream snapshot
+byte-identical, loads the fixed PCM16 WAV fixture without `torchaudio`, and
+provides process-local fail-closed stubs for `lameenc`, `torchaudio` and the
+otherwise-unused `openunmix.filtering.wiener` import seam. Every fixed member
+must report `cac=true`, `wiener_iters=0` and `end_iters=0` before execution;
+any Wiener call fails. Unused `dora-search` is also absent from the active
+closure. These constraints remove all four packages from the exact lock
+without changing the official resampler or active model numerics.
+
+A model-free VAST audit at clean commit
+`baef9b9c8bb7559f8d9cb1dc714718030a138450` verified the Linux x86_64 Python
+3.12 lock as an exact 16-row closure, with zero factual collection failures
+and all model, weight, audio, source-repository, Cargo and upload activity
+false. The lock SHA-256 is
+`8d1b65d5c4a84e18c646d11539977797ec072620f75311077c65e41fa61d3bec`;
+candidate package/license row SHA-256 values are respectively
+`4b6fc6cc81a0da62b06c4c275a4b1cdc496e40796e28228f984c962ed6cb25d3`
+and `4b3cabcae55752a24cd23cd26a935a21f0020111d19594346055ead552ee8a9b`.
+The 829,655-byte evidence JSON has SHA-256
+`2ccc87081b52d2e8fc430421d17085fce4105d2515b95ff1118478a9a438e056`.
+
+That exact NumPy 2.5.3 wheel records bundled
+`numpy.libs/libgfortran-*.so` as `GPL-3.0-or-later WITH GCC-exception-3.1`
+and `numpy.libs/libquadmath-*.so` as `LGPL-2.1-or-later` in its own primary
+license bytes. The current dependency policy rejects GPL/LGPL rows, so the
+collector correctly remains `BLOCKED_OWNER_REVIEW` / `NO_UPLOAD`. This is not
+runtime parity evidence and does not authorize checkpoint acquisition,
+execution or publication.
 
 Primary sources:
 
