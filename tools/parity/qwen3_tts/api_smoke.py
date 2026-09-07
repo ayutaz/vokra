@@ -35,7 +35,7 @@ MODEL_CONFIG_SHA256 = "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef
 DECODER_REPOSITORY = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
-LOCK_SHA256 = "b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2"
+LOCK_SHA256 = "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58"
 TRANSFORMERS_VERSION = "5.10.4"
 TEXT = "The Vokra API smoke packet is short and deterministic."
 LANGUAGE = "English"
@@ -66,6 +66,10 @@ CHECKPOINTS = (
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+EXPECTED_TORCH_FAMILY = "2.7.1"
+CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
+CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 
 
 class SmokeError(RuntimeError):
@@ -310,7 +314,26 @@ def require_lock(lock_path: Path) -> dict[str, Any]:
     for package in packages:
         if isinstance(package, dict) and isinstance(package.get("name"), str) and isinstance(package.get("version"), str):
             versions.setdefault(package["name"], set()).add(package["version"])
+    validate_cpu_torch_rows(packages)
     return {"sha256": actual, "path": str(lock_path), "locked_versions": versions}
+
+
+def validate_cpu_torch_rows(packages: list[Any]) -> None:
+    """Require the exact CPU-index torch/torchaudio family and no CUDA runtime."""
+    for package in packages:
+        if not isinstance(package, dict) or not isinstance(package.get("name"), str):
+            continue
+        package_name = package["name"].casefold()
+        if package_name.startswith(CUDA_RUNTIME_PREFIXES) or package_name in CUDA_RUNTIME_NAMES:
+            raise SmokeError(f"CUDA/NVIDIA runtime package is locked: {package_name}")
+    rows = [package for package in packages if isinstance(package, dict) and package.get("name") in {"torch", "torchaudio"}]
+    if len(rows) != 4 or {row["name"] for row in rows} != {"torch", "torchaudio"}:
+        raise SmokeError("uv.lock must contain both CPU-index torch/torchaudio variants")
+    for row in rows:
+        if row.get("source") != {"registry": PYTORCH_CPU_INDEX}:
+            raise SmokeError(f"{row['name']} is not resolved from the explicit CPU index")
+        if row["version"].split("+", 1)[0] != EXPECTED_TORCH_FAMILY:
+            raise SmokeError("torch/torchaudio version family is not 2.7.1")
 
 
 def artifact(path: Path, label: str) -> dict[str, Any]:
@@ -366,9 +389,16 @@ def expected_package_versions(lock: dict[str, Any]) -> dict[str, str]:
     result: dict[str, str] = {}
     for name in names:
         versions = lock["locked_versions"].get(name)
-        if not versions or len(versions) != 1:
+        if not versions:
             raise SmokeError(f"uv.lock has no unique version for {name}")
-        result[name] = next(iter(versions))
+        if name in {"torch", "torchaudio"}:
+            if versions != {"2.7.1", "2.7.1+cpu"}:
+                raise SmokeError(f"uv.lock has an unsafe {name} version family: {sorted(versions)}")
+            result[name] = "2.7.1+cpu"
+        else:
+            if len(versions) != 1:
+                raise SmokeError(f"uv.lock has no unique version for {name}")
+            result[name] = next(iter(versions))
     if result["transformers"] != TRANSFORMERS_VERSION:
         raise SmokeError("uv.lock Transformers version drifted")
     return result
@@ -654,6 +684,29 @@ def self_test() -> None:
         raise SmokeError("decoder revision is not immutable")
     if not HEX64.fullmatch(LOCK_SHA256) or not HEX64.fullmatch(DECODER_CHECKPOINT_SHA256):
         raise SmokeError("fixed SHA-256 identity is malformed")
+    safe_rows = [
+        {"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torch", "version": "2.7.1+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torchaudio", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torchaudio", "version": "2.7.1+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
+    ]
+    validate_cpu_torch_rows(safe_rows)
+    assert expected_package_versions({"locked_versions": {
+        "accelerate": {"1.12.0"}, "einops": {"0.8.2"}, "librosa": {"1.0.0"},
+        "numpy": {"2.5.2"}, "soundfile": {"0.14.0"}, "torch": {"2.7.1", "2.7.1+cpu"},
+        "torchaudio": {"2.7.1", "2.7.1+cpu"}, "transformers": {"5.10.4"},
+    }})["torchaudio"] == "2.7.1+cpu"
+    for unsafe_rows in (
+        [{**row, "source": {"registry": "https://pypi.org/simple"}} for row in safe_rows],
+        [*safe_rows[:2], {**safe_rows[2], "version": "2.11.0"}, safe_rows[3]],
+        [*safe_rows, {"name": "nvidia-cuda-runtime", "version": "12", "source": {"registry": "https://pypi.org/simple"}}],
+    ):
+        try:
+            validate_cpu_torch_rows(unsafe_rows)
+        except SmokeError:
+            pass
+        else:
+            raise SmokeError("unsafe torch/torchaudio closure was accepted")
     with tempfile.TemporaryDirectory(prefix="qwen3-tts-api-smoke-self-test-") as directory:
         root = Path(directory)
         duplicate = root / "duplicate.json"

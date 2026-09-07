@@ -115,7 +115,7 @@ def _row_key(row: dict[str, Any]) -> tuple[str, str, str]:
 
 
 _MARKER = re.compile(r"\s*(?:(and|or|==|!=|\(|\))|([A-Za-z_][A-Za-z0-9_]*)|('(?:[^'\\]|\\.)*'))")
-_MARKER_VARS = {"implementation_name", "platform_machine", "sys_platform"}
+_MARKER_VARS = {"implementation_name", "platform_machine", "platform_python_implementation", "sys_platform"}
 
 
 def marker_matches(marker: Any, env: dict[str, str]) -> bool:
@@ -662,7 +662,7 @@ def audit_environment(project: Path, fetch_model_licenses: bool) -> dict[str, An
     project_data = tomllib.loads(project_bytes.decode()); lock = tomllib.loads(lock_bytes.decode())
     gate = gate_snapshot(project, lock_bytes, project_bytes)
     repository = repository_identity(project)
-    env = {"implementation_name": sys.implementation.name, "platform_machine": platform.machine().casefold(), "sys_platform": sys.platform}
+    env = {"implementation_name": sys.implementation.name, "platform_machine": platform.machine().casefold(), "platform_python_implementation": platform.python_implementation(), "sys_platform": sys.platform}
     expected_rows, inactive = active_rows(lock, env)
     expected = [identity(row["name"], row["version"]) for row in expected_rows]
     records: list[metadata.Distribution] = list(metadata.distributions())
@@ -937,7 +937,7 @@ def self_test() -> int:
     lock_bytes = lock_path.read_bytes(); project_bytes = project_path.read_bytes()
     lock = tomllib.loads(lock_bytes.decode("utf-8")); project_data = tomllib.loads(project_bytes.decode("utf-8"))
     gate = gate_snapshot(project, lock_bytes, project_bytes)
-    linux_rows, linux_inactive = active_rows(lock, {"implementation_name": "cpython", "platform_machine": "x86_64", "sys_platform": "linux"})
+    linux_rows, linux_inactive = active_rows(lock, {"implementation_name": "cpython", "platform_machine": "x86_64", "platform_python_implementation": "CPython", "sys_platform": "linux"})
     assert project_data["project"]["name"] == "vokra-qwen3-tts-parity"
     assert len(linux_rows) > 0 and len(linux_rows) + len(linux_inactive) == len(lock["package"])
     assert sum(row.get("source") == {"virtual": "."} for row in lock["package"]) == 1
@@ -955,7 +955,8 @@ def self_test() -> int:
     assert gate["status"] == "BLOCKED_UNRESOLVED_REVIEW"
     assert "accelerate==1.12.0" in gate["unresolved_rows"]
     assert identity("foo_bar", "1.0") == "foo-bar==1.0"
-    assert marker_matches("sys_platform == 'linux' and platform_machine == 'x86_64'", {"sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython"})
+    assert marker_matches("sys_platform == 'linux' and platform_machine == 'x86_64'", {"sys_platform": "linux", "platform_machine": "x86_64", "platform_python_implementation": "CPython", "implementation_name": "cpython"})
+    assert marker_matches("platform_python_implementation == 'CPython'", {"platform_python_implementation": "CPython", "sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython"})
     try: marker_matches("python_version == '3.12'", {"sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython"})
     except AuditError: pass
     else: raise AssertionError("unsupported marker variable accepted")

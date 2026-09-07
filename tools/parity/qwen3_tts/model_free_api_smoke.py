@@ -75,14 +75,18 @@ COMMON_ASSETS = {
     "tokenizer_config.json": (7344, "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"),
     "generation_config.json": (245, "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"),
 }
-PROJECT_SHA256 = "7ef84e96d4fb486aa4b6c922fbbe06cb42f8ab56108958106287ccd613ac100e"
-LOCK_SHA256 = "b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2"
+PROJECT_SHA256 = "022e792fb7862641b81a896ed9e482ddae75a34bff1a0270fb4005088ce57e1b"
+LOCK_SHA256 = "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58"
 REQUIRED_DEPENDENCIES = {
     "accelerate==1.12.0", "einops==0.8.2", "librosa==1.0.0", "numpy==2.5.2",
-    "soundfile==0.14.0", "torch==2.7.1", "torchaudio==2.11.0",
+    "soundfile==0.14.0", "torch==2.7.1", "torchaudio==2.7.1",
     "transformers==5.10.4",
 }
 FORBIDDEN_PACKAGES = {"gradio", "onnxruntime", "protobuf", "setuptools", "sox"}
+PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+EXPECTED_TORCH_FAMILY = "2.7.1"
+CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
+CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 FORBIDDEN_OPTIONAL_MODULES = {
@@ -238,6 +242,25 @@ def require_clean_head(root: Path, expected_head: str) -> None:
         raise ProbeError("Vokra checkout is dirty")
 
 
+def validate_cpu_torch_closure(packages: list[dict[str, Any]]) -> None:
+    """Reject PyPI/CUDA torch stacks before any official import is attempted."""
+    names = {str(package.get("name", "")).casefold() for package in packages}
+    forbidden_cuda = sorted(
+        name for name in names
+        if name.startswith(CUDA_RUNTIME_PREFIXES) or name in CUDA_RUNTIME_NAMES
+    )
+    if forbidden_cuda:
+        raise ProbeError(f"CUDA/NVIDIA runtime packages are forbidden: {forbidden_cuda}")
+    selected = [package for package in packages if package.get("name") in {"torch", "torchaudio"}]
+    if len(selected) != 4 or {package.get("name") for package in selected} != {"torch", "torchaudio"}:
+        raise ProbeError("uv.lock must contain both CPU-index torch/torchaudio variants")
+    for package in selected:
+        if package.get("source") != {"registry": PYTORCH_CPU_INDEX}:
+            raise ProbeError(f"{package.get('name')} is not resolved from the explicit CPU index")
+        if str(package.get("version", "")).split("+", 1)[0] != EXPECTED_TORCH_FAMILY:
+            raise ProbeError("torch/torchaudio version family is not 2.7.1")
+
+
 def verify_project(project: Path) -> dict[str, Any]:
     pyproject = project / "pyproject.toml"
     lock_path = project / "uv.lock"
@@ -280,6 +303,7 @@ def verify_project(project: Path) -> dict[str, Any]:
         if name in FORBIDDEN_PACKAGES:
             raise ProbeError(f"forbidden package is locked: {name}")
         rows.append({"name": name, "version": version, "source": source})
+    validate_cpu_torch_closure(rows)
     return {
         "project_sha256": project_hash,
         "lock_sha256": lock_hash,
@@ -503,6 +527,22 @@ def self_test() -> int:
         assert all(HEX40.fullmatch(identity["revision"]) for identity in VARIANTS.values())
         assert all(HEX64.fullmatch(identity["config_sha256"]) for identity in VARIANTS.values())
         assert HEX64.fullmatch(PROJECT_SHA256) and HEX64.fullmatch(LOCK_SHA256)
+        lock = tomllib.loads((Path(__file__).resolve().parent / "uv.lock").read_text(encoding="utf-8"))
+        validate_cpu_torch_closure(lock["package"])
+        for bad in (
+            [{"name": "torch", "version": "2.7.1", "source": {"registry": "https://pypi.org/simple"}}] * 4,
+            [{"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
+            + [{"name": "torchaudio", "version": "2.11.0", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2,
+            [{"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
+            + [{"name": "torchaudio", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
+            + [{"name": "nvidia-cuda-runtime", "version": "12", "source": {"registry": "https://pypi.org/simple"}}],
+        ):
+            try:
+                validate_cpu_torch_closure(bad)
+            except ProbeError:
+                pass
+            else:
+                raise AssertionError("unsafe torch/torchaudio closure was accepted")
         with tempfile.TemporaryDirectory(prefix="qwen3-tts-model-free-self-test-") as directory:
             path = Path(directory) / "duplicate.json"
             path.write_text('{"x":1,"x":2}', encoding="utf-8")

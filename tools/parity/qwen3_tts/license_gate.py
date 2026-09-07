@@ -41,12 +41,16 @@ REGISTRY_PACKAGE_KEYS = (
     frozenset({"name", "version", "source", "dependencies", "resolution-markers", "wheels"}),
 )
 REQUIRES_DIST_KEYS = (frozenset({"name", "specifier"}), frozenset({"name", "specifier", "extras"}), frozenset({"name", "specifier", "marker"}), frozenset({"name", "specifier", "extras", "marker"}), frozenset({"name", "specifier", "index"}), frozenset({"name", "git"}))
-LOCK_SHA256 = "b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2"
-PYPROJECT_SHA256 = "7ef84e96d4fb486aa4b6c922fbbe06cb42f8ab56108958106287ccd613ac100e"
+LOCK_SHA256 = "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58"
+PYPROJECT_SHA256 = "022e792fb7862641b81a896ed9e482ddae75a34bff1a0270fb4005088ce57e1b"
 # setuptools is forbidden in this reference closure: torch declares it as a
 # transitive runtime dependency, but the fixed route never imports it and the
 # package bundles the LGPLv3 autocommand payload.
 FORBIDDEN_PACKAGES = ("gradio", "onnxruntime", "protobuf", "setuptools", "sox")
+PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+EXPECTED_TORCH_FAMILY = "2.7.1"
+CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
+CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 PLACEHOLDER_SENTINELS = {"UNRESOLVED", "OWNER_REVIEW_REQUIRED", "PENDING_REVIEW", "REVIEW_REQUIRED"}
 COMPACT_SCHEMA = "vokra-qwen3-tts-dependency-audit-compact-v1"
 VARIANTS = ("0.6b-base", "0.6b-customvoice", "1.7b-base", "1.7b-customvoice")
@@ -182,6 +186,8 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
     uv = project["tool"]["uv"]
     if not isinstance(uv, dict) or set(uv) != {"package", "index", "sources", "override-dependencies"} or not isinstance(uv["package"], bool) or not isinstance(uv["index"], list) or not isinstance(uv["sources"], dict):
         raise ValueError("pyproject uv configuration drifted")
+    if uv["index"] != [{"name": "pytorch-cpu", "url": PYTORCH_CPU_INDEX, "explicit": True}] or uv["sources"] != {"torch": {"index": "pytorch-cpu"}, "torchaudio": {"index": "pytorch-cpu"}}:
+        raise ValueError("torch/torchaudio are not explicitly bound to the reviewed CPU index")
     if uv["override-dependencies"] != ["setuptools ; python_version < '0'"]:
         raise ValueError("pyproject override dependency drifted")
     identities: set[tuple[str, str, str]] = set()
@@ -235,10 +241,12 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
             if not artifacts:
                 raise ValueError("uv.lock package has no resolver artifacts")
             for artifact in artifacts:
-                if (not isinstance(artifact, dict) or set(artifact) != {"url", "hash", "size", "upload-time"}
+                expected_artifact_keys = {"url", "hash", "upload-time"} if registry == PYTORCH_CPU_INDEX else {"url", "hash", "size", "upload-time"}
+                if (not isinstance(artifact, dict) or set(artifact) not in (expected_artifact_keys, {"url", "hash", "size", "upload-time"})
                         or not isinstance(artifact["url"], str) or not artifact["url"].startswith("https://") or urlparse(artifact["url"]).hostname not in {"files.pythonhosted.org", "download-r2.pytorch.org", "download.pytorch.org"}
                         or not isinstance(artifact["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["hash"])
-                        or not isinstance(artifact["size"], int) or isinstance(artifact["size"], bool) or artifact["size"] <= 0
+                        or ("size" in artifact and (not isinstance(artifact["size"], int) or isinstance(artifact["size"], bool) or artifact["size"] <= 0))
+                        or (registry != PYTORCH_CPU_INDEX and "size" not in artifact)
                         or not isinstance(artifact["upload-time"], str) or not artifact["upload-time"].strip()):
                     raise ValueError("uv.lock artifact URL/hash/size/upload-time is malformed")
                 expected_host = "download-r2.pytorch.org" if registry == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
@@ -266,6 +274,35 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
         identities.add(key)
     if virtual != 1:
         raise ValueError("uv.lock must contain exactly one virtual root")
+    validate_cpu_torch_closure(lock["package"])
+
+
+def validate_cpu_torch_closure(packages: list[dict[str, Any]]) -> None:
+    """Require matching CPU-index torch/torchaudio and reject CUDA runtimes."""
+    runtime_names = {
+        str(package.get("name", "")).casefold()
+        for package in packages
+        if isinstance(package, dict)
+    }
+    forbidden_cuda = sorted(
+        name for name in runtime_names
+        if name.startswith(CUDA_RUNTIME_PREFIXES) or name in CUDA_RUNTIME_NAMES
+    )
+    if forbidden_cuda:
+        raise ValueError(f"CUDA/NVIDIA runtime packages are forbidden: {forbidden_cuda}")
+    selected = [
+        package for package in packages
+        if isinstance(package, dict) and package.get("name") in {"torch", "torchaudio"}
+    ]
+    if len(selected) != 4:
+        raise ValueError("lock must contain exactly two CPU-index torch and two torchaudio variants")
+    for package in selected:
+        if package.get("source") != {"registry": PYTORCH_CPU_INDEX}:
+            raise ValueError(f"{package.get('name')} is not resolved from the explicit CPU index")
+        if str(package.get("version", "")).split("+", 1)[0] != EXPECTED_TORCH_FAMILY:
+            raise ValueError("torch/torchaudio version family is not 2.7.1")
+    if {package["name"] for package in selected} != {"torch", "torchaudio"}:
+        raise ValueError("torch and torchaudio closure is incomplete")
 
 
 def is_placeholder(value: Any) -> bool:
@@ -402,7 +439,13 @@ def validate_model_license_metadata_policy(value: Any) -> None:
 
 def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dict[str, Any], reviews: list[dict[str, Any]], components: list[dict[str, Any]]) -> None:
     """Validate the exact, fail-closed projection of the VAST audit."""
-    if not isinstance(reference, dict) or set(reference) != {"schema", "path", "sha256", "full_audit_sha256", "status"}:
+    if not isinstance(reference, dict) or not isinstance(reference.get("status"), str):
+        fail("compact dependency audit reference is malformed")
+    if reference.get("status") == "STALE_REQUIRES_VAST_AUDIT":
+        if set(reference) != {"schema", "path", "sha256", "full_audit_sha256", "status", "stale_reason"} or not isinstance(reference.get("stale_reason"), str) or not reference["stale_reason"].strip():
+            fail("stale dependency audit reference is malformed")
+        fail("dependency audit evidence is stale; rerun the authorized Linux x86_64 VAST audit before approval")
+    if set(reference) != {"schema", "path", "sha256", "full_audit_sha256", "status"}:
         fail("compact dependency audit reference is malformed")
     if reference.get("schema") != COMPACT_SCHEMA or reference.get("path") != "dependency_audit_evidence.json" or reference.get("status") != "PENDING_OWNER_APPROVAL":
         fail("compact dependency audit reference is not fail-closed")
@@ -759,9 +802,36 @@ def self_test() -> None:
     production_root = Path(__file__).resolve().parent
     production_manifest = strict_json_loads((production_root / "license_gate_manifest.json").read_text(encoding="utf-8"))
     production_lock = tomllib.loads((production_root / "uv.lock").read_text(encoding="utf-8"))
+    production_project = tomllib.loads((production_root / "pyproject.toml").read_text(encoding="utf-8"))
+    _validate_lock_shape(production_lock, production_project)
+    safe_torch_rows = [
+        {"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torch", "version": "2.7.1+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torchaudio", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torchaudio", "version": "2.7.1+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
+    ]
+    validate_cpu_torch_closure(safe_torch_rows)
+    for unsafe_torch_rows in (
+        [{**row, "source": {"registry": "https://pypi.org/simple"}} for row in safe_torch_rows],
+        [*safe_torch_rows[:2], {**safe_torch_rows[2], "version": "2.11.0"}, safe_torch_rows[3]],
+        [*safe_torch_rows, {"name": "nvidia-cuda-runtime", "version": "12", "source": {"registry": "https://pypi.org/simple"}}],
+    ):
+        try:
+            validate_cpu_torch_closure(unsafe_torch_rows)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsafe torch/torchaudio closure was accepted")
     production_rows = package_rows(production_lock)
     production_reviews = review_rows(production_rows, production_manifest)
     production_components = component_rows(production_manifest)
+    # Keep the manifest hash cascade covered even when the stale-evidence
+    # blocker returns before normal component/approval validation.
+    assert production_manifest["package_rows_sha256"] == canonical_digest(production_rows)
+    assert production_manifest["review_rows_sha256"] == canonical_digest(production_reviews)
+    assert production_manifest["component_rows_sha256"] == canonical_digest(production_components)
+    assert production_manifest["approval_scope_sha256"] == canonical_digest(approval_scope(production_manifest))
+    assert production_manifest["dependency_audit_evidence"]["status"] == "STALE_REQUIRES_VAST_AUDIT"
     production_compact = strict_json_loads((production_root / "dependency_audit_evidence.json").read_text(encoding="utf-8"))
     with tempfile.TemporaryDirectory(prefix="qwen3-tts-compact-tamper-") as directory:
         compact_path = Path(directory) / "dependency_audit_evidence.json"

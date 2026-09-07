@@ -1,11 +1,11 @@
 {
   "gate_version": 2,
-  "pyproject_sha256": "7ef84e96d4fb486aa4b6c922fbbe06cb42f8ab56108958106287ccd613ac100e",
-  "lock_sha256": "b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2",
-  "package_rows_sha256": "96b9e02c836283426189e223cf8b2c48ac7d8888819a834bbbb2bc15b26e575f",
-  "review_rows_sha256": "ff22b0182479241998841c28da9f3de24e147e5753323a53b0f2f93a815c6f4c",
+  "pyproject_sha256": "022e792fb7862641b81a896ed9e482ddae75a34bff1a0270fb4005088ce57e1b",
+  "lock_sha256": "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58",
+  "package_rows_sha256": "7fd6513b0c8c110b46bd61bd01c93cfc33486cde603740b31c42e60c1114c8bb",
+  "review_rows_sha256": "72d9ee65dd76e8be3e856359a954fb4fc7e54d75344abd2d43fce87c9da7399e",
   "component_rows_sha256": "cf3c477dcae8e6eb86a9019b4bed4e243a360aceb1c9a710a31ec34fbea62c9d",
-  "approval_scope_sha256": "6ce6cdb73d1ac8824a763e45654d5a69df061389e8ed32e5aa67652d06dec103",
+  "approval_scope_sha256": "5e6a92087125491c9016fe25572cb175af6b6d205ded5ace6c0c42335967d39e",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -829,14 +829,28 @@
     },
     {
       "name": "torchaudio",
-      "version": "2.11.0",
+      "version": "2.7.1",
       "source": {
-        "registry": "https://pypi.org/simple"
+        "registry": "https://download.pytorch.org/whl/cpu"
       },
       "status": "PENDING_OWNER_APPROVAL",
       "license": "UNRESOLVED",
-      "native_bundled": "installed distribution contains 3 bundled native file(s); exact inventory/hash is in compact VAST evidence",
-      "payload_sha256": "34dd384db16a339f503cdc7349332ea1559c145c5aad6ec5fb2a9d2d1123dcfc",
+      "native_bundled": "installed payload/native evidence pending VAST audit after CPU-index migration",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "torchaudio",
+      "version": "2.7.1+cpu",
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_OWNER_APPROVAL",
+      "license": "UNRESOLVED",
+      "native_bundled": "installed payload/native evidence pending VAST audit after CPU-index migration",
+      "payload_sha256": null,
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1046,6 +1060,7 @@
     "path": "dependency_audit_evidence.json",
     "sha256": "ea971561acec9f98626f20f5f078bb75fd102986895a5415d9dc59f424175c88",
     "full_audit_sha256": "a6e519c863f70967e51c343abed6ced5bb197f503e6d54141dc87386b44e0459",
-    "status": "PENDING_OWNER_APPROVAL"
+    "status": "STALE_REQUIRES_VAST_AUDIT",
+    "stale_reason": "torchaudio CPU-index/version migration invalidated installed-payload and native evidence; rerun the authorized Linux x86_64 VAST audit before approval"
   }
 }

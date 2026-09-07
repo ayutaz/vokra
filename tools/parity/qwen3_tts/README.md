@@ -32,7 +32,11 @@ it. The project therefore applies the strict impossible-marker override
 closure, and the gate rejects any lock that reintroduces it because the pinned
 release bundles an LGPLv3 `autocommand` payload.
 
-The isolated reference previously used `transformers==4.57.3`, which is
+The isolated reference pins `torch==2.7.1` and `torchaudio==2.7.1`; both
+resolve from the explicit `https://download.pytorch.org/whl/cpu` index (Linux
+uses the corresponding `+cpu` lock rows). PyPI torchaudio and CUDA/NVIDIA
+runtime packages are rejected by the lock and smoke gates. The isolated
+reference previously used `transformers==4.57.3`, which is
 affected by `GHSA-xrqw-3rrv-vx5w` (<5.10.0). The reviewed dependency is now
 `transformers==5.10.4`; source/API compatibility remains
 `BLOCKED_UNVERIFIED_API_SMOKE` until an authorized VAST model smoke test is
@@ -106,10 +110,15 @@ reviewed VAST report is retained externally by SHA-256; the repository carries
 only `dependency_audit_evidence.json`, a deterministic compact projection of
 the exact active/inactive closure rows, full publisher/native fact hashes,
 fixed-revision model metadata, and the no-model/no-Cargo/no-upload scope.
+The torchaudio source/version migration invalidates the prior installed
+payload/native facts, so the manifest records the dependency evidence as
+`STALE_REQUIRES_VAST_AUDIT`; an authorized Linux x86_64 VAST audit must rerun
+before any owner approval.
 Every factual package/component record has a canonical full-fact digest bound
 back to its manifest row; inactive rows remain pending and carry no installed
-license/native claim. Its status is
-`PENDING_OWNER_APPROVAL`, and both signer and digest are null. The license gate
+license/native claim. The old compact artifact remains
+`PENDING_OWNER_APPROVAL` with null signer and digest, but is not accepted after
+the migration; the manifest status is `STALE_REQUIRES_VAST_AUDIT`. The license gate
 binds this compact file, its full-report SHA-256, all closure row digests, and
 the fixed HF model metadata policy to the manifest; tampering with any of those
 inputs is rejected. The compact evidence records factual installed metadata
