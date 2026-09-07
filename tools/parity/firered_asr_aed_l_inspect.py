@@ -39,8 +39,18 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 README_MARKERS = (
     "license: apache-2.0",
     "it utilizes an attention-based encoder-decoder (aed) architecture.",
-    "beam_size", "nbest", "decode_max_len", "smoothing", "aed_length_penalty", "eos_penalty",
+    '"beam_size": 3', '"nbest": 1', '"decode_max_len": 0',
+    '"softmax_smoothing": 1.25', '"aed_length_penalty": 0.6', '"eos_penalty": 1.0',
 )
+OFFICIAL_SEARCH_POLICY = {
+    "name": "batch_beam_search",
+    "beam_size": 3,
+    "nbest": 1,
+    "decode_max_len": 0,
+    "softmax_smoothing": 1.25,
+    "length_penalty": 0.6,
+    "eos_penalty": 1.0,
+}
 EXPECTED_UNSAFE_GLOBALS = ["argparse.Namespace"]
 
 # These are source-level facts, not guessed checkpoint dimensions.  Keeping
@@ -61,6 +71,14 @@ SOURCE_CONTRACT_MARKERS = {
         "softmax_smoothing=1.0",
         "length_penalty=0.0",
         "eos_penalty=1.0",
+    ),
+    "fireredasr/models/module/transformer_decoder.py": (
+        "t_scores = F.log_softmax(t_logit / softmax_smoothing, dim=-1)",
+        "maxlen = decode_max_len if decode_max_len > 0 else Ti",
+        "if eos_penalty != 1.0:",
+        "torch.topk(scores, k=B, dim=1)",
+        "Length penalty (follow GNMT)",
+        "nbest_ys[n, i, 1:nbest_ys_lengths[n, i]]",
     ),
     "fireredasr/data/asr_feat.py": (
         "class CMVN:",
@@ -366,6 +384,15 @@ def inspect_source_contract(root: Path) -> dict[str, Any]:
     return {
         "status": "AUTHENTICATED_SOURCE_CONTRACT",
         "architecture": "ConformerEncoder + TransformerDecoder + batch_beam_search",
+        "search": {
+            "name": "batch_beam_search",
+            "beam_size": 3,
+            "nbest": 1,
+            "decode_max_len": 0,
+            "softmax_smoothing": 1.25,
+            "length_penalty": 0.6,
+            "eos_penalty": 1.0,
+        },
         "frontend": "ASRFeatExtractor accepts the provided WAV sample_rate dynamically; exact KaldifeatFbank geometry is pinned-source evidence, while the official README normalizes release input to 16 kHz mono",
         "tokenizer": "SentencePiece/TokenDict piece-to-id and detokenization mapping is pinned-source evidence; exact special ids and dictionary binding require checkpoint args plus an independently checked dict",
         "records": records,
@@ -443,6 +470,31 @@ def require_readme_markers(card: str) -> tuple[str, ...]:
         raise ValueError(f"model card markers missing: {missing}")
     return README_MARKERS
 
+
+def validate_official_search_policy_source() -> None:
+    """Model-free contract check for the inspector/reference policy handoff."""
+    if OFFICIAL_SEARCH_POLICY != {
+        "name": "batch_beam_search",
+        "beam_size": 3,
+        "nbest": 1,
+        "decode_max_len": 0,
+        "softmax_smoothing": 1.25,
+        "length_penalty": 0.6,
+        "eos_penalty": 1.0,
+    }:
+        raise ValueError("inspector official search policy constant drifted")
+    required = set(README_MARKERS[-6:])
+    card_markers = set(README_MARKERS)
+    if not all(any(marker in item for item in card_markers) for marker in required):
+        raise ValueError("official search policy README markers are incomplete")
+    reference = Path(__file__).with_name("firered_asr_aed_l_reference.py").read_text(encoding="utf-8")
+    for value in ("batch_beam_search", "3", "1.25", "0.6"):
+        if value not in reference:
+            raise ValueError(f"official search policy missing from reference: {value}")
+    for marker in SOURCE_CONTRACT_MARKERS["fireredasr/models/module/transformer_decoder.py"]:
+        if marker not in reference:
+            raise ValueError(f"decoder marker missing from reference contract: {marker}")
+
 def unlock_requirements() -> list[dict[str, Any]]:
     """Machine-readable evidence still required to leave fail-closed state.
 
@@ -476,8 +528,8 @@ def unlock_requirements() -> list[dict[str, Any]]:
         },
         {
             "id": "tokenizer_binding",
-            "status": "NOT_COLLECTED",
-            "evidence": "exact train_bpe1000.model and dict.txt bytes/hash embedded under vokra.tokenizer.model with a round-trip id/text check",
+            "status": "BOUND",
+            "evidence": "exact cmvn.txt and dict.txt bytes/hash embedded under the FireRed sidecar keys with structural-marker and id/text checks; the SentencePiece companion remains intentionally unbound because it serves text-to-training-IDs, not inference detokenization",
             "artifact": "tokenizer-binding.json",
         },
         {
@@ -495,9 +547,9 @@ def base_manifest() -> dict[str, Any]:
         "status": "BLOCKED",
         "inspection_status": "PENDING",
         "evidence_stage": "INSPECTION_ONLY",
-        "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+        "runtime_status": "LOUD_PARTIAL_FAIL_CLOSED",
         "runtime_status_scope": "full_pcm_transcription_only; feature-to-feature and feature-to-token primitives are parity-pending",
-        "cpu_status": "UNSUPPORTED",
+        "cpu_status": "PARTIAL",
         "metal_status": "BLOCKED_BY_CPU",
         "parity_status": "NOT_RUN",
         "publication": "NO_UPLOAD",
@@ -505,10 +557,10 @@ def base_manifest() -> dict[str, Any]:
         "model": {"repository": REPOSITORY, "revision": REVISION, "license": MODEL_LICENSE, "files": ARTIFACTS, "total_bytes": TOTAL_BYTES},
         "source": {"origin": SOURCE_URL, "revision": SOURCE_REVISION},
         "blockers": [
-            "checkpoint tensor-to-native field mapping and converter/runtime consumption require the VAST preparation/reference evidence",
-            "pinned-source frontend and CMVN rules require a native implementation and parity consumer",
-            "pinned-source SentencePiece/TokenDict rendering and checkpoint special ids require native tokenizer binding",
-            "independent CPU numerical parity is not run",
+            "exact conversion run and converted-artifact tensor consumption remain VAST-gated",
+            "source-pinned frontend/CMVN and native encoder/decoder routes exist, but independent CPU numerical parity is not run",
+            "authenticated output dictionary and special-token rendering are bound; the SentencePiece companion is intentionally unbound because it serves text-to-training-IDs, not inference detokenization",
+            "native official batch_beam_search loop and independent CPU beam parity are not run",
             "complete Metal graph is not implemented",
             "training data and dependency provenance require review",
         ],
@@ -521,6 +573,7 @@ def base_manifest() -> dict[str, Any]:
                 "frontend_values": "upstream_reference.json.reference.frontend.values",
                 "encoder_stage_values": "upstream_reference.json.reference.trace.encoder_stages",
                 "decoder_stage_values": "upstream_reference.json.reference.trace.decoder_stages",
+                "official_search": "upstream_reference.json.reference.official_search",
                 "token_ids": "upstream_reference.json.reference.greedy.token_ids",
             },
             "publication": "NO_UPLOAD",
@@ -569,6 +622,7 @@ def inspect(args: argparse.Namespace) -> int:
     return 2
 
 def self_test() -> None:
+    validate_official_search_policy_source()
     requirement_ids = {item["id"] for item in unlock_requirements()}
     assert requirement_ids == {
         "dependency_license_review",
@@ -594,6 +648,15 @@ def self_test() -> None:
         source_contract = inspect_source_contract(source_fixture)
         assert source_contract["status"] == "AUTHENTICATED_SOURCE_CONTRACT"
         assert source_contract["architecture"] == "ConformerEncoder + TransformerDecoder + batch_beam_search"
+        assert source_contract["search"] == {
+            "name": "batch_beam_search",
+            "beam_size": 3,
+            "nbest": 1,
+            "decode_max_len": 0,
+            "softmax_smoothing": 1.25,
+            "length_penalty": 0.6,
+            "eos_penalty": 1.0,
+        }
         broken_source = source_fixture / "fireredasr/models/fireredasr_aed.py"
         broken_source.write_text("\n".join(SOURCE_CONTRACT_MARKERS["fireredasr/models/fireredasr_aed.py"][:-1]), encoding="utf-8")
         try: inspect_source_contract(source_fixture)

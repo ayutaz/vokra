@@ -146,10 +146,10 @@ self_test() {
     'model.pth.tar' '12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3' \
     'train_bpe1000.model' '473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07' \
     'model_info' 'list_repo_tree' 'path_in_repo' 'git_blob_sha1' 'lfs_sha256' 'weights_only=True' \
-    '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' 'runtime_status_scope' 'full_pcm_transcription_only' \
+    '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' 'LOUD_PARTIAL_FAIL_CLOSED' 'PARTIAL' 'runtime_status_scope' 'full_pcm_transcription_only' \
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
     'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' 'unlock_requirements' 'vast_first_pass' 'expected_artifacts' \
-    'pinned-source frontend' 'SentencePiece/TokenDict' 'PREPARED' 'archive_members' \
+    'pinned-source frontend' 'SentencePiece/TokenDict' 'transformer_decoder.py' 'batch_beam_search' 'softmax_smoothing' 'length_penalty' 'eos_penalty' 'PREPARED' 'archive_members' \
     'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
     'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' 'firered-asr-aed-l-reference-trace-v1' 'encoder_each_layer' 'decoder_each_layer' 'frontend_fbank_cmvn' \
     'firered_asr_aed_l_audit.py' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'OWNER_APPROVED' 'OWNER_REVIEW_REQUIRED' 'INVALID' 'distribution_evidence' 'distribution_evidence_sha256' 'lock_artifact' 'source_identity_aggregate' 'native_payloads' 'publisher_urls' 'publisher_url_aggregate' 'license_candidate_aggregate' 'native_payload_aggregate' 'review_ledger' 'exact_digest_gate' 'collection_protocol' 'owner_approval' 'owner-approval-v1' '--owner-approval' 'owner_approval_path' 'yousan' 'approved_at_utc' 'publisher_urls_sha256' 'license_candidates_sha256' 'native_payloads_sha256' 'scope_sha256' 'collection_failures' 'approved_mode' 'is_symlink' 'regular JSON' 'must not overlap' 'reject_duplicate_pairs' 'duplicate JSON key' 'exactly 27 active closure rows' 'native_source_license' 'source_revision_verified' 'source_url_verified' 'license_path' 'license_bytes' 'license_sha256_verified' 'approved_route_expected_artifacts' \
@@ -315,7 +315,7 @@ if (( self )); then [[ "$work_dir" == "$WORK" && -z "$owner_approval_path" && -z
 require_clean_expected_head "$expected_head"
 require_approval_binding "$owner_approval_path" "$approval_sha256"
 require_blocked_approval "$owner_approval_path" "$expected_head" || die 'approval schema/identity/disposition validation failed'
-die 'BLOCKED_APPROVAL/INSPECTION_ONLY: FireRed dependency/license/source/CMVN/tokenizer/config/native facts remain unresolved; no acquisition or upload'
+die 'BLOCKED_APPROVAL/INSPECTION_ONLY: FireRed dependency/license/source/config/native-beam/parity facts remain unresolved; no acquisition or upload'
 [[ "$(uname -s)" == Linux ]] || die 'Linux VAST required'
 [[ "$(uname -m)" == x86_64 ]] || die 'x86_64 VAST required'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
@@ -582,8 +582,8 @@ fi
     echo 'status=BLOCKED'
     echo 'evidence_stage=INSPECTION_ONLY'
   fi
-  echo 'runtime_status=NOT_IMPLEMENTED_FAIL_CLOSED'
-  echo 'cpu_status=UNSUPPORTED'
+  echo 'runtime_status=LOUD_PARTIAL_FAIL_CLOSED'
+  echo 'cpu_status=PARTIAL'
   echo 'metal_status=BLOCKED_BY_CPU'
   echo 'parity_status=NOT_RUN'
   echo 'publication=NO_UPLOAD'
@@ -720,15 +720,16 @@ manifest = json.loads(open(manifest_path, encoding="utf-8").read(), object_pairs
 reference = json.loads(open(reference_path, encoding="utf-8").read(), object_pairs_hook=reject_duplicate_pairs)
 assert manifest["status"] == "BLOCKED"
 assert manifest["evidence_stage"] == "INSPECTION_ONLY"
-assert manifest["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
+assert manifest["runtime_status"] == "LOUD_PARTIAL_FAIL_CLOSED"
 assert manifest["runtime_status_scope"] == "full_pcm_transcription_only; feature-to-feature and feature-to-token primitives are parity-pending"
+assert manifest["cpu_status"] == "PARTIAL"
 assert manifest["publication"] == "NO_UPLOAD"
 assert manifest["inspection_status"] == "AUTHENTICATED_EVIDENCE_COMPLETE"
 preparation = manifest.get("preparation")
 assert isinstance(preparation, dict)
 assert preparation["status"] == "PREPARED"
 assert preparation["publication"] == "NO_UPLOAD"
-assert preparation["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
+assert preparation["runtime_status"] == "LOUD_PARTIAL_FAIL_CLOSED"
 assert preparation["runtime_status_scope"] == "full_pcm_transcription_only; feature-to-feature and feature-to-token primitives are parity-pending"
 assert preparation["parity_status"] == "NOT_RUN"
 assert preparation["future_gate"]["status"] == "BLOCKED_NOT_RUN"
@@ -743,6 +744,7 @@ assert isinstance(contract, dict)
 assert contract.get("status") == "AUTHENTICATED_SOURCE_CONTRACT"
 expected_paths = [
     "fireredasr/models/fireredasr_aed.py",
+    "fireredasr/models/module/transformer_decoder.py",
     "fireredasr/data/asr_feat.py",
     "fireredasr/tokenizer/aed_tokenizer.py",
     "README.md",
@@ -755,6 +757,15 @@ for record in records:
     assert record["status"] == "SOURCE_FACTS_AUTHENTICATED"
     assert isinstance(record["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
     assert isinstance(record["markers"], list) and record["markers"]
+assert contract["search"] == {
+    "name": "batch_beam_search",
+    "beam_size": 3,
+    "nbest": 1,
+    "decode_max_len": 0,
+    "softmax_smoothing": 1.25,
+    "length_penalty": 0.6,
+    "eos_penalty": 1.0,
+}
 assert "INSPECTION_ERROR" not in json.dumps(manifest)
 assert reference["format"] == "vokra-firered-asr-aed-l-upstream-reference-v1"
 assert reference["status"] == "REFERENCE_CAPTURED"
@@ -776,6 +787,15 @@ assert reference["dependencies"] == {
 source_records = reference["source"]["records"]
 assert isinstance(source_records, list) and len(source_records) == 7
 assert len({record["path"] for record in source_records}) == len(source_records)
+assert [record["path"] for record in source_records] == [
+    "fireredasr/data/asr_feat.py",
+    "fireredasr/models/fireredasr_aed.py",
+    "fireredasr/models/module/conformer_encoder.py",
+    "fireredasr/models/module/transformer_decoder.py",
+    "fireredasr/tokenizer/aed_tokenizer.py",
+    "fireredasr/data/token_dict.py",
+    "README.md",
+]
 assert {record["path"] for record in source_records} == {
     "fireredasr/data/asr_feat.py",
     "fireredasr/models/fireredasr_aed.py",
@@ -796,6 +816,7 @@ assert len(reference["tensor_mapping"]) == 940
 assert reference["reference"]["status"] == "REFERENCE_CAPTURED"
 assert reference["reference"]["encoder"] is not None
 assert reference["reference"]["decoder_logits"] is not None
+assert reference["reference"]["official_search"] == contract["search"]
 trace = reference["reference"]["trace"]
 assert trace["schema"] == "firered-asr-aed-l-reference-trace-v1"
 required = trace["required"]

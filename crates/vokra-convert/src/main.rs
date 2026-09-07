@@ -21,11 +21,11 @@ use vokra_convert::{
     ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
     convert_canary_1b_flash_file_with_tokenizer, convert_cosyvoice2_file,
     convert_cosyvoice2_hift_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
-    convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
-    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
-    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
-    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file,
-    convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
+    convert_file_licensed, convert_file_quantized, convert_firered_asr_aed_l_with_sidecars,
+    convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
+    convert_moshi_file, convert_nanocodec_file, convert_parakeet_ctc_file_with_assets,
+    convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
+    convert_piper_plus_file, convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
     convert_speecht5_file_with_tokenizer, convert_ultravox_llama_companion_file,
     convert_utmos_file,
 };
@@ -47,6 +47,7 @@ USAGE:
     vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model canary-1b-flash --input <prepared.safetensors> --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
+    vokra-convert --model firered-asr-aed-l --input <prepared.safetensors> --cmvn <cmvn.txt> --dict <dict.txt> --output <out.gguf>
     vokra-convert --model reazonspeech-nemo-v2 --input <prepared.safetensors> --tokenizer <tokenizer.vocab> --output <out.gguf>
     vokra-convert --model speecht5-tts --input <model.safetensors> --tokenizer <spm_char.model> --output <out.gguf>
     vokra-convert --model ultravox-llama-companion --input <model.safetensors> \
@@ -166,6 +167,8 @@ OPTIONS:
                        path fails loudly) OR the raw SentencePiece
                        tokenizer file (moshi; optional — without it the
                        monologue decode fails loudly)
+    --cmvn <path>      FireRedASR-AED-L exact authenticated cmvn.txt sidecar
+    --dict <path>      FireRedASR-AED-L exact authenticated dict.txt sidecar
     --output <path>    GGUF file to write
     --revision <hash>  ultravox-llama-companion only: exact audited
                        Meta Llama-3.2-1B-Instruct snapshot revision
@@ -199,6 +202,8 @@ fn main() -> ExitCode {
         model,
         input,
         config,
+        cmvn,
+        dict,
         preprocessor,
         tokenizer,
         output,
@@ -240,8 +245,22 @@ fn main() -> ExitCode {
         eprintln!("error: --preprocessor is only supported for --model parakeet-ctc\n\n{USAGE}");
         return ExitCode::from(2);
     }
+    if let Err(message) =
+        validate_firered_options(model, config.as_ref(), cmvn.as_ref(), dict.as_ref(), quant)
+    {
+        eprintln!("error: {message}\n\n{USAGE}");
+        return ExitCode::from(2);
+    }
 
     let result = match model {
+        ModelKind::FireredAsrAedL => convert_firered_asr_aed_l_with_sidecars(
+            &input,
+            cmvn.as_deref().expect("validated FireRed CMVN sidecar"),
+            dict.as_deref()
+                .expect("validated FireRed dictionary sidecar"),
+            &output,
+            license.as_deref(),
+        ),
         ModelKind::PiperPlus => {
             if quant.is_some() {
                 eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
@@ -765,6 +784,8 @@ struct Parsed {
     model: ModelKind,
     input: PathBuf,
     config: Option<PathBuf>,
+    cmvn: Option<PathBuf>,
+    dict: Option<PathBuf>,
     preprocessor: Option<PathBuf>,
     tokenizer: Option<PathBuf>,
     output: PathBuf,
@@ -772,6 +793,31 @@ struct Parsed {
     license: Option<String>,
     revision: Option<String>,
     ultravox_companion: bool,
+}
+
+fn validate_firered_options(
+    model: ModelKind,
+    config: Option<&PathBuf>,
+    cmvn: Option<&PathBuf>,
+    dict: Option<&PathBuf>,
+    quant: Option<GgmlType>,
+) -> Result<(), String> {
+    if model != ModelKind::FireredAsrAedL && (cmvn.is_some() || dict.is_some()) {
+        return Err("--cmvn/--dict are only supported for --model firered-asr-aed-l".to_owned());
+    }
+    if model == ModelKind::FireredAsrAedL && (cmvn.is_none() || dict.is_none()) {
+        return Err(
+            "--model firered-asr-aed-l requires both --cmvn <cmvn.txt> and --dict <dict.txt>"
+                .to_owned(),
+        );
+    }
+    if model == ModelKind::FireredAsrAedL && config.is_some() {
+        return Err("--model firered-asr-aed-l uses --cmvn and --dict, not --config".to_owned());
+    }
+    if model == ModelKind::FireredAsrAedL && quant.is_some() {
+        return Err("--quantize is not supported for --model firered-asr-aed-l".to_owned());
+    }
+    Ok(())
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -788,6 +834,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut cmvn: Option<PathBuf> = None;
+    let mut dict: Option<PathBuf> = None;
     let mut preprocessor: Option<PathBuf> = None;
     let mut tokenizer: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -825,6 +873,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--cmvn" => {
+                cmvn = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--cmvn requires a value")?,
+                ));
+                i += 2;
+            }
+            "--dict" => {
+                dict = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--dict requires a value")?,
                 ));
                 i += 2;
             }
@@ -878,6 +938,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         model: model.ok_or("--model is required")?,
         input: input.ok_or("--input is required")?,
         config,
+        cmvn,
+        dict,
         preprocessor,
         tokenizer,
         output: output.ok_or("--output is required")?,
@@ -3829,6 +3891,131 @@ mod tests {
             "q9_k",
         ])));
         assert!(err.contains("unknown --quantize"), "got: {err}");
+    }
+
+    #[test]
+    fn firered_parse_and_option_contract_is_model_free() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "firered-asr-aed-l",
+            "--input",
+            "prepared.safetensors",
+            "--cmvn",
+            "cmvn.txt",
+            "--dict",
+            "dict.txt",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("both FireRed sidecars parse");
+        assert_eq!(parsed.cmvn, Some(PathBuf::from("cmvn.txt")));
+        assert_eq!(parsed.dict, Some(PathBuf::from("dict.txt")));
+        validate_firered_options(
+            parsed.model,
+            parsed.config.as_ref(),
+            parsed.cmvn.as_ref(),
+            parsed.dict.as_ref(),
+            parsed.quant,
+        )
+        .expect("both sidecars accepted");
+
+        let missing = parse_args(&args(&[
+            "--model",
+            "firered-asr-aed-l",
+            "--input",
+            "prepared.safetensors",
+            "--cmvn",
+            "cmvn.txt",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("parse precedes contract validation");
+        assert!(
+            validate_firered_options(
+                missing.model,
+                missing.config.as_ref(),
+                missing.cmvn.as_ref(),
+                missing.dict.as_ref(),
+                missing.quant
+            )
+            .is_err()
+        );
+
+        let other = parse_args(&args(&[
+            "--model",
+            "whisper",
+            "--input",
+            "model.safetensors",
+            "--cmvn",
+            "cmvn.txt",
+            "--dict",
+            "dict.txt",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("parse precedes contract validation");
+        assert!(
+            validate_firered_options(
+                other.model,
+                other.config.as_ref(),
+                other.cmvn.as_ref(),
+                other.dict.as_ref(),
+                other.quant
+            )
+            .is_err()
+        );
+
+        let config = parse_args(&args(&[
+            "--model",
+            "firered-asr-aed-l",
+            "--input",
+            "prepared.safetensors",
+            "--cmvn",
+            "cmvn.txt",
+            "--dict",
+            "dict.txt",
+            "--config",
+            "config.json",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("parse precedes contract validation");
+        assert!(
+            validate_firered_options(
+                config.model,
+                config.config.as_ref(),
+                config.cmvn.as_ref(),
+                config.dict.as_ref(),
+                config.quant
+            )
+            .is_err()
+        );
+
+        let quant = parse_args(&args(&[
+            "--model",
+            "firered-asr-aed-l",
+            "--input",
+            "prepared.safetensors",
+            "--cmvn",
+            "cmvn.txt",
+            "--dict",
+            "dict.txt",
+            "--quantize",
+            "q4_k",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("parse precedes contract validation");
+        assert!(
+            validate_firered_options(
+                quant.model,
+                quant.config.as_ref(),
+                quant.cmvn.as_ref(),
+                quant.dict.as_ref(),
+                quant.quant
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -139,6 +139,11 @@ SOURCE_MARKERS = {
         "self.tgt_word_prj.weight = self.tgt_word_emb.weight",
         "t_logit = self.tgt_word_prj(dec_output[:, -1])",
         "t_scores = F.log_softmax(t_logit / softmax_smoothing, dim=-1)",
+        "maxlen = decode_max_len if decode_max_len > 0 else Ti",
+        "if eos_penalty != 1.0:",
+        "torch.topk(scores, k=B, dim=1)",
+        "Length penalty (follow GNMT)",
+        "nbest_ys[n, i, 1:nbest_ys_lengths[n, i]]",
         "cache=caches[i]",
     ),
     "fireredasr/tokenizer/aed_tokenizer.py": (
@@ -154,6 +159,16 @@ SOURCE_MARKERS = {
     "README.md": (
         "ffmpeg -i input_audio -ar 16000 -ac 1 -acodec pcm_s16le -f wav output.wav",
     ),
+}
+
+OFFICIAL_SEARCH_POLICY = {
+    "name": "batch_beam_search",
+    "beam_size": 3,
+    "nbest": 1,
+    "decode_max_len": 0,
+    "softmax_smoothing": 1.25,
+    "length_penalty": 0.6,
+    "eos_penalty": 1.0,
 }
 
 
@@ -406,6 +421,10 @@ def capture_reference(model: Any, args: Any, source_root: Path, cmvn_path: Path)
         # trace.decoder_stages.
         "encoder": taps.get("encoder", [])[-1] if taps.get("encoder") else None,
         "decoder_logits": taps.get("decoder_logits", [])[-1] if taps.get("decoder_logits") else None,
+        # Keep the independent greedy trace for stage debugging, but retain
+        # the pinned deployment policy beside it.  Native execution must not
+        # silently treat a greedy trace as official beam parity.
+        "official_search": OFFICIAL_SEARCH_POLICY,
         "greedy": {"beam_size": 1, "nbest": 1, "decode_max_len": 32, "softmax_smoothing": 1.0, "length_penalty": 0.0, "eos_penalty": 1.0, "token_ids": token_ids},
         "status": "REFERENCE_CAPTURED",
     }
@@ -480,6 +499,15 @@ def self_test() -> None:
     assert EXPECTED_ARGS["sos_id"] == 3 and EXPECTED_ARGS["eos_id"] == 4
     assert EXPECTED_ARGS["n_layers_enc"] == EXPECTED_ARGS["n_layers_dec"] == 16
     assert EXPECTED_ARGS["idim"] == 80 and EXPECTED_ARGS["odim"] == 7832
+    assert OFFICIAL_SEARCH_POLICY == {
+        "name": "batch_beam_search",
+        "beam_size": 3,
+        "nbest": 1,
+        "decode_max_len": 0,
+        "softmax_smoothing": 1.25,
+        "length_penalty": 0.6,
+        "eos_penalty": 1.0,
+    }
     trace_schema = {
         "schema": "firered-asr-aed-l-reference-trace-v1",
         "required": {

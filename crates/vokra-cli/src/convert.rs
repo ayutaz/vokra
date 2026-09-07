@@ -18,12 +18,12 @@ use vokra_convert::{
     convert_cosyvoice2_file, convert_cosyvoice2_hift_file, convert_cosyvoice3_file,
     convert_crepe_file, convert_dac_file, convert_deberta_v2_file, convert_deberta_v3_file,
     convert_file, convert_file_quantized, convert_file_with_policy, convert_file_with_slug,
-    convert_irodori_file, convert_kokoro_file, convert_llama_omni2_file_with_config,
-    convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
-    convert_nanocodec_file, convert_nemotron_asr_file_with_tokenizer,
-    convert_openwakeword_op_file_with_config, convert_parakeet_ctc_file_with_assets,
-    convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
-    convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_firered_asr_aed_l_with_sidecars, convert_irodori_file, convert_kokoro_file,
+    convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
+    convert_moonshine_tiny_file_with_tokenizer, convert_nanocodec_file,
+    convert_nemotron_asr_file_with_tokenizer, convert_openwakeword_op_file_with_config,
+    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
+    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
     convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file, convert_silero_file,
     convert_speecht5_file_with_tokenizer, convert_styletts2_file,
     convert_ultravox_llama_companion_file, convert_vibevoice_file, convert_vits_ja_file,
@@ -105,6 +105,7 @@ USAGE:
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model whisper-medusa-v1 --input <merged.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model firered-asr-aed-l --input <prepared.safetensors> --cmvn <cmvn.txt> --dict <dict.txt> --output <out.gguf>
     vokra-cli convert --model ultravox-llama-companion --input <model.safetensors> \
                       --config <config.json> --revision <audited-revision> \
                       --output <companion.gguf>
@@ -405,6 +406,8 @@ OPTIONS:
                               six axes no tensor shape carries) OR the exact
                               Parakeet-CTC config.json (required together with
                               --preprocessor and --tokenizer)
+    --cmvn <path>             FireRedASR-AED-L exact authenticated cmvn.txt sidecar
+    --dict <path>             FireRedASR-AED-L exact authenticated dict.txt sidecar
     --preprocessor <path>     Parakeet-CTC only: exact upstream
                               preprocessor_config.json (80-bin Slaney mel,
                               16 kHz, n_fft=512, hop=160, win=400,
@@ -487,6 +490,10 @@ struct Parsed {
     raw_model_slug: String,
     input: PathBuf,
     config: Option<PathBuf>,
+    /// FireRedASR-AED-L exact inspected CMVN sidecar.
+    cmvn: Option<PathBuf>,
+    /// FireRedASR-AED-L exact inspected output dictionary sidecar.
+    dict: Option<PathBuf>,
     /// Parakeet-CTC only: exact upstream `preprocessor_config.json`.
     preprocessor: Option<PathBuf>,
     /// M3-10 Wave 8 — Voxtral only. When present, `convert` routes through
@@ -533,11 +540,35 @@ fn parse_quant(s: &str) -> Option<GgmlType> {
     }
 }
 
+fn validate_firered_options(p: &Parsed) -> Result<(), String> {
+    if !matches!(p.model, ModelKind::FireredAsrAedL) && (p.cmvn.is_some() || p.dict.is_some()) {
+        return Err("--cmvn/--dict are only supported for --model firered-asr-aed-l".to_owned());
+    }
+    if matches!(p.model, ModelKind::FireredAsrAedL) && (p.cmvn.is_none() || p.dict.is_none()) {
+        return Err(
+            "--model firered-asr-aed-l requires both --cmvn <cmvn.txt> and --dict <dict.txt>"
+                .to_owned(),
+        );
+    }
+    if matches!(p.model, ModelKind::FireredAsrAedL) && p.config.is_some() {
+        return Err("--model firered-asr-aed-l uses --cmvn and --dict, not --config".to_owned());
+    }
+    if matches!(p.model, ModelKind::FireredAsrAedL) && p.quant.is_some() {
+        return Err("--quantize is not supported for --model firered-asr-aed-l".to_owned());
+    }
+    if matches!(p.model, ModelKind::FireredAsrAedL) && p.policy.is_some() {
+        return Err("--policy-preset is not supported for --model firered-asr-aed-l".to_owned());
+    }
+    Ok(())
+}
+
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
     let mut raw_model_slug: String = String::new();
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut cmvn: Option<PathBuf> = None;
+    let mut dict: Option<PathBuf> = None;
     let mut preprocessor: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
     let mut tokenizer: Option<PathBuf> = None;
@@ -583,6 +614,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--cmvn" => {
+                cmvn = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--cmvn requires a value")?,
+                ));
+                i += 2;
+            }
+            "--dict" => {
+                dict = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--dict requires a value")?,
                 ));
                 i += 2;
             }
@@ -663,6 +706,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         raw_model_slug,
         input: input.ok_or("--input is required")?,
         config,
+        cmvn,
+        dict,
         preprocessor,
         adapter_config,
         tokenizer,
@@ -762,6 +807,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
+    validate_firered_options(&p)?;
     // `--silero-variant` is Silero-VAD-only. Silently dropping it on other
     // models would misrepresent provenance (the flag would appear honored
     // in the CLI diagnostics but write nothing) — FR-EX-08 fail-closed.
@@ -774,6 +820,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
 
     let result = match model {
+        ModelKind::FireredAsrAedL => convert_firered_asr_aed_l_with_sidecars(
+            &p.input,
+            p.cmvn.as_deref().expect("validated FireRed CMVN sidecar"),
+            p.dict
+                .as_deref()
+                .expect("validated FireRed dictionary sidecar"),
+            &p.output,
+            p.license.as_deref(),
+        ),
         ModelKind::SileroVad => {
             // Silero VAD accepts an optional `--silero-variant` selector
             // that stamps `vokra.silero.version` and shifts the model
@@ -2146,6 +2201,96 @@ mod tests {
         assert_eq!(p.input, PathBuf::from("i"));
         assert_eq!(p.output, PathBuf::from("o"));
         assert_eq!(p.quant, Some(GgmlType::Q5K));
+    }
+
+    #[test]
+    fn firered_parse_and_option_contract_is_model_free() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "firered-asr-aed-l",
+            "--input",
+            "prepared.safetensors",
+            "--cmvn",
+            "cmvn.txt",
+            "--dict",
+            "dict.txt",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("both FireRed sidecars parse");
+        assert_eq!(
+            parsed.cmvn.as_deref(),
+            Some(std::path::Path::new("cmvn.txt"))
+        );
+        assert_eq!(
+            parsed.dict.as_deref(),
+            Some(std::path::Path::new("dict.txt"))
+        );
+        validate_firered_options(&parsed).expect("both sidecars accepted");
+
+        for argv in [
+            vec![
+                "--model",
+                "firered-asr-aed-l",
+                "--input",
+                "i",
+                "--cmvn",
+                "c",
+                "--output",
+                "o",
+            ],
+            vec![
+                "--model", "whisper", "--input", "i", "--cmvn", "c", "--dict", "d", "--output", "o",
+            ],
+            vec![
+                "--model",
+                "firered-asr-aed-l",
+                "--input",
+                "i",
+                "--cmvn",
+                "c",
+                "--dict",
+                "d",
+                "--config",
+                "cfg",
+                "--output",
+                "o",
+            ],
+            vec![
+                "--model",
+                "firered-asr-aed-l",
+                "--input",
+                "i",
+                "--cmvn",
+                "c",
+                "--dict",
+                "d",
+                "--quantize",
+                "q4_k",
+                "--output",
+                "o",
+            ],
+            vec![
+                "--model",
+                "firered-asr-aed-l",
+                "--input",
+                "i",
+                "--cmvn",
+                "c",
+                "--dict",
+                "d",
+                "--policy-preset",
+                "fp16",
+                "--output",
+                "o",
+            ],
+        ] {
+            let parsed = parse_args(&args(&argv)).expect("parse precedes option validation");
+            assert!(
+                validate_firered_options(&parsed).is_err(),
+                "invalid FireRed options accepted: {argv:?}"
+            );
+        }
     }
 
     #[test]

@@ -74,21 +74,24 @@
 //!    `named_parameters()` / `named_buffers()` and records their roles. This
 //!    module now verifies the exact 551 encoder names plus 389 decoder names,
 //!    source shapes, F32 types, role layouts, and compiled descriptor digests.
-//!    It retains typed descriptors only; it does not pretend that decoder
-//!    execution or tokenizer rendering is complete.
-//! 3. **No tokenizer blob binding.** The pinned-source
-//!    SentencePiece/TokenDict contract and 7832-entry dictionary are known.
-//!    [`FireRedDictionary`] can authenticate the exact external `dict.txt`
-//!    bytes and render content ids, but the converter stamps no
-//!    [`KEY_TOKENIZER_MODEL`] blob. Full model transcription therefore keeps
-//!    this blocker: [`FireredAsrAed::has_tokenizer`] reports blob presence,
-//!    while structural decoder-marker policy remains caller-bound.
+//!    It retains typed descriptors only; native beam execution remains
+//!    parity-gated. The input SentencePiece companion is intentionally not
+//!    part of inference binding.
+//! 3. **The exact output sidecars and structural markers are now bound.** The
+//!    converter authenticates the inspected `cmvn.txt` and `dict.txt` bytes,
+//!    and the binder parses both only after their raw-byte digests and
+//!    special-token anchors pass. [`FireredAsrAed::render_token_ids`] strips
+//!    only a terminal EOS and rejects every other structural marker. The
+//!    upstream SentencePiece companion is intentionally unbound because it is
+//!    used for text-to-training-IDs; inference detokenization uses the bound
+//!    output dictionary. The complete official beam forward remains an
+//!    independent gate.
 //! 4. **Full transcription graph gap.** [`native`] exposes CPU/Metal-dispatched
 //!    encoder and decoder feature primitives, including incremental greedy
 //!    token generation, and [`FireredAsrAed::transcribe_tokens_with_cmvn`]
 //!    composes them with the explicit frontend seam. They are VAST
-//!    numerical-parity-pending; exact beam policy and tokenizer rendering
-//!    remain fail-closed.
+//!    numerical-parity-pending; the official beam policy is authenticated as
+//!    metadata but native beam execution remains fail-closed until parity.
 //!
 //! The upstream config is additionally awkward to reach: the handoff for
 //! the sibling LLM release
@@ -99,10 +102,14 @@
 //! shares that posture is **not** verified anywhere in this repository,
 //! and this module does not assert that it does.
 //!
-//! So: the remaining blockers are independent frontend/encoder/decoder parity,
-//! the exact upstream beam policy, and tokenizer rendering. The raw
-//! PCM-to-token seam is available only with an explicit authenticated CMVN
-//! object and does not make a text-transcription or PASS claim.
+//! So: the remaining blockers are the exact converted-artifact run, the native
+//! official beam loop plus independent CPU beam parity, and (later) the complete
+//! Metal graph. The output dictionary/CMVN sidecars and search policy are already
+//! authenticated. The upstream SentencePiece companion is intentionally
+//! unbound here because the pinned tokenizer uses it for text-to-training-IDs;
+//! inference detokenization uses the authenticated output dictionary. The raw
+//! PCM-to-token seam remains parity-gated and does not make a text-transcription
+//! or PASS claim.
 //!
 //! # Loud-partial classification
 //!
@@ -319,14 +326,51 @@ const EXPECTED_WEIGHT_LICENSE: &str = "permissive";
 const EXPECTED_PROVENANCE_MODEL_ID: &str = "firered-asr-aed-l";
 const EXPECTED_PROVENANCE_SOURCE: &str = "FireRedTeam/FireRedASR-AED-L prepared F32 checkpoint";
 
-/// GGUF metadata key carrying an embedded tokenizer blob.
+/// GGUF metadata key carrying a generic embedded input tokenizer blob.
 ///
-/// The same wire key the `whisper` binder reads. Today's FireRedASR-AED-L
-/// converter never writes it, which is loud-partial blocker (3): an AED
-/// decoder emits token ids, and without the upstream Mandarin vocabulary
-/// there is nothing to render them with.
-/// [`FireredAsrAed::has_tokenizer`] reports its presence per GGUF.
+/// The same wire key the `whisper` binder reads. FireRed's converted release
+/// binds its output dictionary under [`KEY_DICT_TEXT`] instead; this generic
+/// key is optional and [`FireredAsrAed::has_tokenizer`] reports only its own
+/// presence.
 pub const KEY_TOKENIZER_MODEL: &str = "vokra.tokenizer.model";
+/// GGUF key carrying authenticated CMVN text bytes.
+pub const KEY_CMVN_TEXT: &str = "vokra.firered_asr_aed_l.cmvn_txt";
+/// GGUF key carrying the CMVN SHA-256 text.
+pub const KEY_CMVN_TEXT_SHA256: &str = "vokra.firered_asr_aed_l.cmvn_txt_sha256";
+/// GGUF key carrying authenticated output dictionary text bytes.
+pub const KEY_DICT_TEXT: &str = "vokra.firered_asr_aed_l.dict_txt";
+/// GGUF key carrying the output dictionary SHA-256 text.
+pub const KEY_DICT_TEXT_SHA256: &str = "vokra.firered_asr_aed_l.dict_txt_sha256";
+/// GGUF key carrying the official search algorithm name.
+pub const KEY_SEARCH_NAME: &str = "vokra.firered_asr_aed_l.search.name";
+/// GGUF key carrying the official beam width.
+pub const KEY_SEARCH_BEAM_SIZE: &str = "vokra.firered_asr_aed_l.search.beam_size";
+/// GGUF key carrying the official n-best count.
+pub const KEY_SEARCH_NBEST: &str = "vokra.firered_asr_aed_l.search.nbest";
+/// GGUF key carrying the official decode maximum length.
+pub const KEY_SEARCH_DECODE_MAX_LEN: &str = "vokra.firered_asr_aed_l.search.decode_max_len";
+/// GGUF key carrying the official softmax smoothing value.
+pub const KEY_SEARCH_SOFTMAX_SMOOTHING: &str = "vokra.firered_asr_aed_l.search.softmax_smoothing";
+/// GGUF key carrying the official length penalty.
+pub const KEY_SEARCH_LENGTH_PENALTY: &str = "vokra.firered_asr_aed_l.search.length_penalty";
+/// GGUF key carrying the official EOS penalty.
+pub const KEY_SEARCH_EOS_PENALTY: &str = "vokra.firered_asr_aed_l.search.eos_penalty";
+/// Official FireRed batch beam search algorithm name.
+pub const SEARCH_NAME: &str = "batch_beam_search";
+/// Official FireRed batch beam width.
+pub const SEARCH_BEAM_SIZE: u32 = 3;
+/// Official FireRed n-best output count.
+pub const SEARCH_NBEST: u32 = 1;
+/// Official FireRed decode maximum length (`0` means input length).
+pub const SEARCH_DECODE_MAX_LEN: u32 = 0;
+/// Official FireRed softmax smoothing value.
+pub const SEARCH_SOFTMAX_SMOOTHING: f32 = 1.25;
+/// Official FireRed length penalty.
+pub const SEARCH_LENGTH_PENALTY: f32 = 0.6;
+/// Official FireRed EOS penalty.
+pub const SEARCH_EOS_PENALTY: f32 = 1.0;
+const CMVN_TEXT_BYTES: usize = AUTHENTICATED_CMVN_TEXT_BYTES;
+const DICT_TEXT_BYTES: usize = AUTHENTICATED_DICT_TEXT_BYTES;
 
 // ---------------------------------------------------------------------------
 // Primary-source anchors — cited verbatim in the loud-partial message so a
@@ -1551,6 +1595,76 @@ fn read_u32_key(gguf: &GgufFile, key: &str) -> Result<u32> {
     })
 }
 
+fn read_exact_u32_key(gguf: &GgufFile, key: &str) -> Result<u32> {
+    match gguf.get(key) {
+        Some(GgufMetadataValue::U32(value)) => Ok(*value),
+        Some(value) => Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: GGUF metadata `{key}` must be U32, got {:?}",
+            value.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: GGUF metadata `{key}` is missing; official search metadata is all-or-nothing"
+        ))),
+    }
+}
+
+fn read_f32_key(gguf: &GgufFile, key: &str) -> Result<f32> {
+    let value = match gguf.get(key) {
+        Some(GgufMetadataValue::F32(value)) => *value,
+        Some(value) => {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: GGUF metadata `{key}` must be F32, got {:?}",
+                value.value_type()
+            )));
+        }
+        None => {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: GGUF metadata `{key}` is missing or is not F32"
+            )));
+        }
+    };
+    if !value.is_finite() {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: GGUF metadata `{key}` is non-finite"
+        )));
+    }
+    Ok(value)
+}
+
+fn read_u8_blob(gguf: &GgufFile, key: &str, expected_bytes: usize) -> Result<Option<Vec<u8>>> {
+    let Some(value) = gguf.get(key) else {
+        return Ok(None);
+    };
+    let array = value.as_array().ok_or_else(|| {
+        VokraError::ModelLoad(format!("firered-asr-aed-l: `{key}` must be an Array<U8>"))
+    })?;
+    if array.element_type != GgufValueType::U8 {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: `{key}` must be an Array<U8>, got Array<{:?}>",
+            array.element_type
+        )));
+    }
+    if array.values.len() != expected_bytes {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: `{key}` byte count mismatch: expected {expected_bytes}, got {}",
+            array.values.len(),
+        )));
+    }
+    let mut bytes = Vec::with_capacity(array.values.len());
+    for element in &array.values {
+        let byte = element
+            .as_u64()
+            .and_then(|value| u8::try_from(value).ok())
+            .ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l: `{key}` contains a non-byte element"
+                ))
+            })?;
+        bytes.push(byte);
+    }
+    Ok(Some(bytes))
+}
+
 /// Reads the optional [`KEY_REQUIRED_TENSORS`] declaration.
 ///
 /// Returns `Ok(None)` when the key is absent. Refuses a wrong container
@@ -1711,6 +1825,93 @@ fn validate_tensor_manifest(gguf: &GgufFile, required: Option<&[String]>) -> Res
         }
     }
     Ok(())
+}
+
+/// Official FireRedASR-AED search configuration from the pinned README and
+/// decoder source. This is an authenticated policy marker; execution remains
+/// parity-gated until the native beam loop is independently compared.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FireredAsrAedSearchConfig {
+    /// Official search algorithm name.
+    pub name: &'static str,
+    /// Beam width.
+    pub beam_size: u32,
+    /// Number of hypotheses returned.
+    pub nbest: u32,
+    /// Maximum decode length, with zero selecting input length.
+    pub decode_max_len: u32,
+    /// Logit softmax smoothing divisor.
+    pub softmax_smoothing: f32,
+    /// GNMT-style length penalty.
+    pub length_penalty: f32,
+    /// EOS score penalty.
+    pub eos_penalty: f32,
+}
+
+impl FireredAsrAedSearchConfig {
+    /// Exact values authenticated from the pinned README and decoder source.
+    pub const OFFICIAL: Self = Self {
+        name: SEARCH_NAME,
+        beam_size: SEARCH_BEAM_SIZE,
+        nbest: SEARCH_NBEST,
+        decode_max_len: SEARCH_DECODE_MAX_LEN,
+        softmax_smoothing: SEARCH_SOFTMAX_SMOOTHING,
+        length_penalty: SEARCH_LENGTH_PENALTY,
+        eos_penalty: SEARCH_EOS_PENALTY,
+    };
+
+    fn is_official(self) -> bool {
+        self.name == Self::OFFICIAL.name
+            && self.beam_size == Self::OFFICIAL.beam_size
+            && self.nbest == Self::OFFICIAL.nbest
+            && self.decode_max_len == Self::OFFICIAL.decode_max_len
+            && self.softmax_smoothing.to_bits() == Self::OFFICIAL.softmax_smoothing.to_bits()
+            && self.length_penalty.to_bits() == Self::OFFICIAL.length_penalty.to_bits()
+            && self.eos_penalty.to_bits() == Self::OFFICIAL.eos_penalty.to_bits()
+    }
+
+    fn from_gguf(gguf: &GgufFile) -> Result<Option<Self>> {
+        let keys = [
+            KEY_SEARCH_NAME,
+            KEY_SEARCH_BEAM_SIZE,
+            KEY_SEARCH_NBEST,
+            KEY_SEARCH_DECODE_MAX_LEN,
+            KEY_SEARCH_SOFTMAX_SMOOTHING,
+            KEY_SEARCH_LENGTH_PENALTY,
+            KEY_SEARCH_EOS_PENALTY,
+        ];
+        if !group_present(gguf, &keys) {
+            return Ok(None);
+        }
+        let name = gguf
+            .get(KEY_SEARCH_NAME)
+            .and_then(GgufMetadataValue::as_str)
+            .ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l: `{KEY_SEARCH_NAME}` is missing or not a string"
+                ))
+            })?;
+        if name != SEARCH_NAME {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: `{KEY_SEARCH_NAME}` = `{name}`, expected `{SEARCH_NAME}`"
+            )));
+        }
+        let actual = Self {
+            name: SEARCH_NAME,
+            beam_size: read_exact_u32_key(gguf, KEY_SEARCH_BEAM_SIZE)?,
+            nbest: read_exact_u32_key(gguf, KEY_SEARCH_NBEST)?,
+            decode_max_len: read_exact_u32_key(gguf, KEY_SEARCH_DECODE_MAX_LEN)?,
+            softmax_smoothing: read_f32_key(gguf, KEY_SEARCH_SOFTMAX_SMOOTHING)?,
+            length_penalty: read_f32_key(gguf, KEY_SEARCH_LENGTH_PENALTY)?,
+            eos_penalty: read_f32_key(gguf, KEY_SEARCH_EOS_PENALTY)?,
+        };
+        if !actual.is_official() {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: authenticated search policy drifted from official batch_beam_search defaults"
+            )));
+        }
+        Ok(Some(actual))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2119,7 +2320,11 @@ pub struct FireredAsrAed {
     encoder_specs: Option<Vec<FireRedEncoderTensorSpec>>,
     decoder_specs: Option<Vec<FireRedDecoderTensorSpec>>,
     weight_license: LicenseClass,
+    cmvn: Option<FireRedCmvn>,
+    dictionary: Option<FireRedDictionary>,
+    search: Option<FireredAsrAedSearchConfig>,
     has_tokenizer: bool,
+    has_dictionary: bool,
     backend: BackendKind,
     /// Decoded runtime tensors are opt-in. Inspection-only loads keep this
     /// `None` so a manifest audit never allocates the 4.7 GB checkpoint.
@@ -2130,8 +2335,8 @@ impl FireredAsrAed {
     /// Binds a FireRedASR-AED-L GGUF: verifies the arch tag strictly,
     /// binds the tensor manifest, honours an optional required-tensor
     /// declaration, reads the optional `vokra.firered_asr_aed_l.*`
-    /// group, and surfaces the stamped weight-license class plus whether
-    /// a tokenizer blob rides along.
+    /// group, binds the exact FireRed sidecars/search policy when stamped,
+    /// and surfaces the stamped weight-license class plus renderability.
     ///
     /// Every failure is a distinct [`VokraError::ModelLoad`] naming the
     /// missing / wrong key or tensor, so a reader diagnosing a
@@ -2148,6 +2353,8 @@ impl FireredAsrAed {
     /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors;
     /// - [`VokraError::ModelLoad`] when a [`KEY_REQUIRED_TENSORS`]
     ///   declaration names a tensor that is not in the manifest;
+    /// - [`VokraError::ModelLoad`] when FireRed sidecars/search metadata are
+    ///   partial, drifted, or fail raw-byte authentication;
     /// - [`VokraError::ModelLoad`] when the `vokra.firered_asr_aed_l.*`
     ///   group is partially stamped or fails
     ///   [`FireredAsrAedConfig::validate`].
@@ -2245,9 +2452,62 @@ impl FireredAsrAed {
             .and_then(LicenseClass::from_class_str)
             .unwrap_or(LicenseClass::Unknown);
 
-        // 5. Tokenizer presence — surfaced, never required. The current
-        //    converter does not embed a tokenizer blob; that is loud-partial
-        //    blocker (3) and is reported in the forward's error.
+        // 5. Exact release sidecars and official search policy. The converter
+        // embeds the raw inspected bytes as U8 arrays; binding parses them
+        // only after the native byte-level authentication gates pass. Hash
+        // metadata is required alongside each blob so a partial/corrupt
+        // artifact cannot look like a complete release.
+        let cmvn_blob = read_u8_blob(file, KEY_CMVN_TEXT, CMVN_TEXT_BYTES as usize)?;
+        let dict_blob = read_u8_blob(file, KEY_DICT_TEXT, DICT_TEXT_BYTES as usize)?;
+        let cmvn_hash = file.get(KEY_CMVN_TEXT_SHA256).is_some();
+        let dict_hash = file.get(KEY_DICT_TEXT_SHA256).is_some();
+        if cmvn_blob.is_some() != cmvn_hash
+            || dict_blob.is_some() != dict_hash
+            || cmvn_blob.is_some() != dict_blob.is_some()
+        {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l: CMVN and dict sidecar blobs/hashes must be stamped together"
+                    .to_owned(),
+            ));
+        }
+        let (cmvn, dictionary) = match (cmvn_blob, dict_blob) {
+            (Some(cmvn), Some(dict)) => {
+                let cmvn_sha = file
+                    .get(KEY_CMVN_TEXT_SHA256)
+                    .and_then(GgufMetadataValue::as_str)
+                    .ok_or_else(|| {
+                        VokraError::ModelLoad(format!(
+                            "firered-asr-aed-l: `{KEY_CMVN_TEXT_SHA256}` must be a string"
+                        ))
+                    })?;
+                if cmvn_sha != hex_digest(&AUTHENTICATED_CMVN_SHA256) {
+                    return Err(VokraError::ModelLoad(format!(
+                        "firered-asr-aed-l: `{KEY_CMVN_TEXT_SHA256}` drifted from authenticated sidecar"
+                    )));
+                }
+                let dict_sha = file
+                    .get(KEY_DICT_TEXT_SHA256)
+                    .and_then(GgufMetadataValue::as_str)
+                    .ok_or_else(|| {
+                        VokraError::ModelLoad(format!(
+                            "firered-asr-aed-l: `{KEY_DICT_TEXT_SHA256}` must be a string"
+                        ))
+                    })?;
+                if dict_sha != hex_digest(&AUTHENTICATED_DICT_SHA256) {
+                    return Err(VokraError::ModelLoad(format!(
+                        "firered-asr-aed-l: `{KEY_DICT_TEXT_SHA256}` drifted from authenticated sidecar"
+                    )));
+                }
+                (
+                    Some(FireRedCmvn::from_authenticated_bytes(&cmvn)?),
+                    Some(FireRedDictionary::from_authenticated_bytes(&dict)?),
+                )
+            }
+            (None, None) => (None, None),
+            _ => unreachable!("sidecar all-or-nothing gate checked above"),
+        };
+        let search = FireredAsrAedSearchConfig::from_gguf(file)?;
+        let has_dictionary = dictionary.is_some();
         let has_tokenizer = file.get(KEY_TOKENIZER_MODEL).is_some();
 
         Ok(Self {
@@ -2256,10 +2516,34 @@ impl FireredAsrAed {
             encoder_specs,
             decoder_specs,
             weight_license,
+            cmvn,
+            dictionary,
+            search,
             has_tokenizer,
+            has_dictionary,
             backend: BackendKind::Cpu,
             runtime_weights: None,
         })
+    }
+
+    fn require_executable_contract(&self) -> Result<()> {
+        if self.cmvn.is_none() || self.dictionary.is_none() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l: executable backend binding requires authenticated cmvn.txt and dict.txt sidecars"
+                    .to_owned(),
+            ));
+        }
+        match self.search {
+            Some(policy) if policy.is_official() => Ok(()),
+            Some(_) => Err(VokraError::ModelLoad(
+                "firered-asr-aed-l: executable backend binding requires the official batch_beam_search policy"
+                    .to_owned(),
+            )),
+            None => Err(VokraError::ModelLoad(
+                "firered-asr-aed-l: executable backend binding requires official batch_beam_search policy metadata"
+                    .to_owned(),
+            )),
+        }
     }
 
     /// Binds the exact converter-provenance release for an explicit backend
@@ -2269,18 +2553,21 @@ impl FireredAsrAed {
     /// This is intentionally a separate constructor from [`Self::from_gguf`]:
     /// the latter remains a cheap inspection binder, while this method is the
     /// explicit point at which a caller accepts the multi-gigabyte decode and
-    /// requests feature primitives (encoder and decoder). This is not a
-    /// complete ASR binding: PCM frontend, exact beam search, and tokenizer
-    /// rendering remain fail-closed until their independent VAST evidence is
-    /// installed. The metadata check is exact converter provenance plus a
-    /// complete descriptor bind; it is not a cryptographic payload signature,
-    /// and VAST numerical parity remains pending.
+    /// requests feature primitives (encoder and decoder). It requires the
+    /// authenticated output CMVN/dictionary sidecars and official search
+    /// metadata. Input SentencePiece is a training/text-encoding companion;
+    /// inference output rendering uses the bound dictionary. The exact PCM
+    /// frontend/encoder/decoder run, native official beam loop, and independent
+    /// CPU parity remain fail-closed. The metadata check is exact converter
+    /// provenance plus a complete descriptor bind; it is not a cryptographic
+    /// payload signature, and VAST numerical parity remains pending.
     /// Backend coverage is checked before tensor decoding, and no backend ever
     /// falls back to CPU.
     pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         let _compute = Compute::for_backend(backend, FIRERED_ASR_AED_HOT_OPS)?;
         require_exact_runtime_provenance(file)?;
         let mut model = Self::from_gguf(file)?;
+        model.require_executable_contract()?;
         let runtime_weights = native::FireRedRuntimeWeights::from_gguf(file)?;
         model.backend = backend;
         model.runtime_weights = Some(runtime_weights);
@@ -2332,8 +2619,9 @@ impl FireredAsrAed {
     /// token ids (excluding the supplied SOS id).
     ///
     /// This is intentionally a feature-to-token seam, not a complete
-    /// transcription route. PCM frontend extraction, exact tokenizer
-    /// binding, and upstream beam-search policy remain fail-closed. The
+    /// transcription route. It is the existing greedy diagnostic primitive;
+    /// the authenticated upstream beam-search policy is exposed by
+    /// [`Self::search_config`] but is not silently substituted here. The
     /// caller must supply the checkpoint's exact metadata special ids.
     pub fn decode_features(
         &self,
@@ -2375,15 +2663,12 @@ impl FireredAsrAed {
     /// Runs the authenticated PCM → Kaldi fbank/CMVN → encoder → greedy
     /// decoder seam and returns raw decoder ids.
     ///
-    /// This method intentionally accepts [`FireRedCmvn`] rather than reading
-    /// a guessed CMVN file from the GGUF.  The current converter does not
-    /// carry the inspected binary `cmvn.ark` payload, so accepting an
-    /// unbound/default transform would make a real forward look valid while
-    /// using the wrong acoustic normalization.  The caller must construct
-    /// `cmvn` with [`FireRedCmvn::from_authenticated_bytes`] from the exact
-    /// inspected raw sidecar.  Text rendering
-    /// remains a separate fail-closed tokenizer concern; these are checkpoint
-    /// vocabulary ids only.
+    /// This method accepts an explicitly supplied authenticated transform for
+    /// the feature seam. Converted release artifacts also expose the exact
+    /// bound transform through [`Self::cmvn`]; callers must not substitute a
+    /// guessed/default matrix. Text rendering is available separately through
+    /// [`Self::render_token_ids`], while native beam execution remains a
+    /// parity-gated concern.
     pub fn transcribe_tokens_with_cmvn(
         &self,
         pcm: &[f32],
@@ -2506,30 +2791,97 @@ impl FireredAsrAed {
         self.weight_license.requires_research_flag()
     }
 
-    /// `true` when the GGUF carries a [`KEY_TOKENIZER_MODEL`] blob.
-    ///
-    /// Today's converter never writes one, so this is `false` for every
-    /// GGUF it produces. It is surfaced rather than required because a
-    /// missing tokenizer is a *rendering* blocker, not a *binding* one:
-    /// the weights are still legitimately bound and inspectable.
+    /// `true` when the GGUF carries the generic legacy
+    /// [`KEY_TOKENIZER_MODEL`] input-tokenizer blob. This does not describe
+    /// the separate FireRed output dictionary sidecar.
     #[inline]
     #[must_use]
     pub const fn has_tokenizer(&self) -> bool {
         self.has_tokenizer
     }
 
+    /// `true` when the GGUF carries the authenticated FireRed output
+    /// dictionary sidecar. This does not imply that an input SentencePiece
+    /// tokenizer is embedded.
+    #[inline]
+    #[must_use]
+    pub const fn has_dictionary(&self) -> bool {
+        self.has_dictionary
+    }
+
+    /// The exact inspected CMVN transform embedded in the GGUF, when the
+    /// converter stamped both required FireRed sidecars.
+    #[must_use]
+    pub fn cmvn(&self) -> Option<&FireRedCmvn> {
+        self.cmvn.as_ref()
+    }
+
+    /// The exact inspected FireRed output dictionary embedded in the GGUF,
+    /// when the converter stamped both required sidecars.
+    #[must_use]
+    pub fn dictionary(&self) -> Option<&FireRedDictionary> {
+        self.dictionary.as_ref()
+    }
+
+    /// The authenticated official AED search policy, when stamped by the
+    /// converter. A drifted or partially stamped policy fails at load time.
+    #[must_use]
+    pub fn search_config(&self) -> Option<FireredAsrAedSearchConfig> {
+        self.search
+    }
+
+    /// Renders decoder output using the authenticated FireRed dictionary.
+    ///
+    /// Native greedy decoding currently returns generated ids including a
+    /// terminal EOS when one is selected, while upstream beam results omit
+    /// SOS/EOS before detokenization. This seam accepts either representation
+    /// but refuses every other structural marker and any EOS in the middle of
+    /// the sequence. It does not claim that greedy ids are official beam
+    /// output.
+    pub fn render_token_ids(&self, ids: &[u32]) -> Result<String> {
+        let dictionary = self.dictionary.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: authenticated dict.txt sidecar is absent; refusing to render token ids".to_owned(),
+            )
+        })?;
+        let config = self.cfg.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: decoder special-token metadata is absent; refusing to render token ids".to_owned(),
+            )
+        })?;
+        let mut content = ids;
+        if content.last().copied() == Some(config.eos_id) {
+            content = &content[..content.len() - 1];
+        }
+        if content.iter().any(|&id| id == config.eos_id) {
+            return Err(VokraError::InvalidArgument(
+                "firered-asr-aed-l: EOS is only valid as the terminal decoder marker".to_owned(),
+            ));
+        }
+        if content
+            .iter()
+            .any(|&id| id == config.sos_id || id == config.pad_id || id == config.blank_id)
+        {
+            return Err(VokraError::InvalidArgument(
+                "firered-asr-aed-l: decoder output contains a forbidden structural marker"
+                    .to_owned(),
+            ));
+        }
+        dictionary.decode_token_ids(content)
+    }
+
     /// Transcribes mono `f32` PCM at `sample_rate` Hz to decoder token
     /// ids in the `vokra.firered_asr_aed_l.vocab_size` id space.
     ///
-    /// Token ids rather than text: rendering Mandarin text needs the
-    /// upstream vocabulary, which today's GGUFs do not carry (see
-    /// [`has_tokenizer`](Self::has_tokenizer)).
+    /// Token ids rather than text: rendering is a separate dictionary seam;
+    /// use [`render_token_ids`](Self::render_token_ids) once the authenticated
+    /// output sidecar is bound.
     ///
     /// # Loud-partial (this WP)
     ///
     /// Returns [`VokraError::UnsupportedOp`]. FireRedASR-AED-L's
-    /// exact native frontend/weight mapping and vocabulary are not yet
-    /// independently authenticated —
+    /// exact native frontend/weight mapping and official beam execution are
+    /// not yet independently parity-authenticated —
     /// see [`forward_loud_partial`] for the full message and the
     /// flip-the-switch recipe. **No fabricated token ids are ever
     /// emitted** (FR-EX-08).
@@ -2566,7 +2918,11 @@ impl FireredAsrAed {
         }
         // The gate fires BEFORE any front-end work so a caller can never
         // observe a partial computation that looks like a real forward.
-        Err(forward_loud_partial(self.cfg.as_ref(), self.has_tokenizer))
+        Err(forward_loud_partial_with_dictionary(
+            self.cfg.as_ref(),
+            self.has_tokenizer,
+            self.has_dictionary,
+        ))
     }
 }
 
@@ -2693,9 +3049,9 @@ fn check_sample_rate(cfg: Option<&FireredAsrAedConfig>, sample_rate: u32) -> Res
 /// `dither=0.0`, 16 kHz audio and 80 bins.  The runtime uses the existing
 /// first-party Kaldi implementation in `vokra-ops`; it does not substitute a
 /// librosa/Whisper mel implementation.  CMVN is deliberately supplied by the
-/// caller because the historical GGUF contract does not embed the binary
-/// `cmvn.ark` payload.  A caller must therefore bind the exact inspected
-/// `cmvn.txt`/stats values before invoking this seam.  For a real token
+/// caller because this lower-level helper is also used by model-free
+/// frontend tests. Converted release artifacts bind the exact inspected
+/// `cmvn.txt` transform through [`FireredAsrAed::cmvn`]. For a real token
 /// forward, use [`FireRedCmvn::from_authenticated_bytes`].
 ///
 /// No resampling is performed.  Empty, too-short, non-finite or wrong-rate
@@ -2780,6 +3136,14 @@ pub fn pcm_to_features(
 /// precedent (CLAUDE.md 教訓 (a)).
 #[must_use]
 pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bool) -> VokraError {
+    forward_loud_partial_with_dictionary(cfg, has_tokenizer, false)
+}
+
+fn forward_loud_partial_with_dictionary(
+    cfg: Option<&FireredAsrAedConfig>,
+    has_tokenizer: bool,
+    has_dictionary: bool,
+) -> VokraError {
     let spec_status = match cfg {
         Some(c) => format!(
             "the `vokra.firered_asr_aed_l.*` group IS stamped on this GGUF \
@@ -2787,7 +3151,8 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
              n_layer={el} d_model={ed} n_head={eh} -> head_dim={ehd} \
              ffn_dim={eff}, decoder n_layer={dl} d_model={dd} n_head={dh} -> \
              head_dim={dhd} ffn_dim={dff}), so the source geometry is authenticated \
-             but the native frontend remains unimplemented as a complete graph; \
+             but the native frontend helpers are present and the complete graph \
+             remains parity-gated; \
              reusable helpers exist — blockers (2)-(4) are \
              reported below",
             sr = c.sample_rate,
@@ -2810,19 +3175,19 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
             .to_owned(),
     };
     let tokenizer_status = if has_tokenizer {
-        format!(
-            "a `{KEY_TOKENIZER_MODEL}` blob IS present on this GGUF, so blocker (3) \
-             is already cleared for it"
-        )
+        format!("a `{KEY_TOKENIZER_MODEL}` input-tokenizer blob IS present on this GGUF")
     } else {
-        format!(
-            "no `{KEY_TOKENIZER_MODEL}` blob is present on this GGUF (the normal \
-             state today), so blocker (3) applies in full"
-        )
+        format!("no `{KEY_TOKENIZER_MODEL}` input-tokenizer blob is present on this GGUF")
+    };
+    let dictionary_status = if has_dictionary {
+        "the authenticated output `dict.txt` sidecar IS bound"
+    } else {
+        "the authenticated output `dict.txt` sidecar is NOT bound"
     };
     VokraError::UnsupportedOp(format!(
         "firered-asr-aed-l transcribe (loud-partial): the full PCM transcription \
-         route is deferred; frontend, tokenizer, beam policy, and VAST parity \
+         route is deferred; frontend, native \
+         beam loop, independent beam parity, and VAST parity \
          gates must land before this API emits real token ids. Feature-to-feature \
          and feature-to-token primitives exist, but remain parity-pending. \
          (1) FRONTEND CONTRACT: the all-or-nothing `vokra.firered_asr_aed_l.*` \
@@ -2837,17 +3202,19 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
          dispatch exists after exact converter provenance binding, but VAST \
          numerical parity is pending and PCM-to-feature transcription remains \
          closed. \
-         (3) MISSING TOKENIZER: an AED decoder emits token ids in a \
-         `{KEY_VOCAB_SIZE}`-wide id space. The pinned-source \
-         SentencePiece/TokenDict and dictionary still need a native GGUF \
-         binding — {tokenizer_status}. \
+         (3) OUTPUT TEXT CONTRACT: an AED decoder emits token ids in a \
+         `{KEY_VOCAB_SIZE}`-wide id space. Output dictionary binding — \
+         {dictionary_status}. The upstream `{KEY_TOKENIZER_MODEL}` companion \
+         is for text-to-training-IDs and is intentionally not an inference \
+         requirement — {tokenizer_status}. \
              (4) NATIVE OPERATOR GAP: the pinned Conformer uses a Conv2d \
              subsampling stem, relative-position attention, and a \
              source-faithful inference-only Conformer block; CPU/Metal feature \
-             routes now exist, while exact fbank, beam policy, and full \
+             routes now exist, while exact fbank, native beam loop, independent \
+             beam parity, and full \
              transcription integration remain parity-gated. \
-         Output once real: decoder token ids per utterance, rendered to text only \
-         once a tokenizer blob rides along. \
+         Output once real: decoder token ids per utterance, rendered through the \
+         bound output dictionary after the independent native beam parity gate. \
          Primary sources: HF release {hf}, family reference code {code}, in-repo \
          converter contract {CONVERTER_PATH}, in-repo audit ticket \
          {AUDIT_TICKET_PATH}; the offline bridge is {SIDECAR_PATH} and no Python \
@@ -2875,7 +3242,8 @@ mod tests {
     //! On a real checkpoint this would be `transcribe_tokens(...)`
     //! returning decoder token ids. The VAST evidence pins the release
     //! geometry and tensor identity, but the native frontend/decoder and
-    //! tokenizer are still deliberately fail-closed; fabricating a token
+    //! input tokenizer, native beam loop, and independent parity are still
+    //! deliberately fail-closed; fabricating a token
     //! sequence would violate CLAUDE.md 教訓 (a)「loud-partial は
     //! fake-complete より honest」.
     //!
@@ -2885,7 +3253,7 @@ mod tests {
     //!    slug / default SPDX match the converter exactly, and the arch
     //!    is distinct from every sibling ASR tag.
     //! 2. **Metadata round-trip** — `from_gguf` reads arch, tensor
-    //!    manifest, licence stamp, tokenizer presence and the optional
+    //!    manifest, licence stamp, sidecar presence and the optional
     //!    hyper-parameter group with the documented semantics.
     //! 3. **Negative-space round-trip** — every stated blocker (missing
     //!    arch / foreign arch / empty manifest / absent declared tensor /
@@ -3051,8 +3419,34 @@ mod tests {
         GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
     }
 
+    fn add_u8_blob(builder: &mut GgufBuilder, key: &str, bytes: &[u8]) {
+        builder.add_metadata(
+            key,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U8,
+                values: bytes.iter().copied().map(GgufMetadataValue::U8).collect(),
+            }),
+        );
+    }
+
+    fn add_official_search(builder: &mut GgufBuilder) {
+        builder.add_string(KEY_SEARCH_NAME, SEARCH_NAME);
+        builder.add_u32(KEY_SEARCH_BEAM_SIZE, SEARCH_BEAM_SIZE);
+        builder.add_u32(KEY_SEARCH_NBEST, SEARCH_NBEST);
+        builder.add_u32(KEY_SEARCH_DECODE_MAX_LEN, SEARCH_DECODE_MAX_LEN);
+        builder.add_f32(KEY_SEARCH_SOFTMAX_SMOOTHING, SEARCH_SOFTMAX_SMOOTHING);
+        builder.add_f32(KEY_SEARCH_LENGTH_PENALTY, SEARCH_LENGTH_PENALTY);
+        builder.add_f32(KEY_SEARCH_EOS_PENALTY, SEARCH_EOS_PENALTY);
+    }
+
+    fn test_dictionary() -> FireRedDictionary {
+        let mut pieces = vec![String::new(); AUTHENTICATED_DICT_ROWS];
+        pieces[5] = "▁你好".to_owned();
+        FireRedDictionary::from_test_pieces(pieces)
+    }
+
     /// A minimal inspection GGUF: arch + provenance + tensors, with no
-    /// optional release contract or tokenizer blob.
+    /// optional release contract or input/output text sidecars.
     fn converter_shaped_gguf() -> GgufFile {
         finish(&base_builder(Some(LicenseClass::Permissive)))
     }
@@ -3097,6 +3491,189 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sidecar_group_rejects_partial_wrong_type_oversize_hash_and_tamper() {
+        let mut partial = base_builder(Some(LicenseClass::Permissive));
+        add_u8_blob(&mut partial, KEY_CMVN_TEXT, b"x");
+        let error = FireredAsrAed::from_gguf(&finish(&partial)).expect_err("partial sidecars");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("stamped together"))
+        );
+
+        let mut wrong_type = base_builder(Some(LicenseClass::Permissive));
+        wrong_type.add_metadata(
+            KEY_CMVN_TEXT,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::String,
+                values: vec![GgufMetadataValue::String("not bytes".to_owned())],
+            }),
+        );
+        let error = FireredAsrAed::from_gguf(&finish(&wrong_type)).expect_err("wrong U8 type");
+        assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("Array<U8>")));
+
+        let mut oversized = base_builder(Some(LicenseClass::Permissive));
+        add_u8_blob(
+            &mut oversized,
+            KEY_CMVN_TEXT,
+            &vec![0; CMVN_TEXT_BYTES as usize + 1],
+        );
+        let error = FireredAsrAed::from_gguf(&finish(&oversized)).expect_err("oversized blob");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("byte count mismatch"))
+        );
+
+        let mut wrong_hash = base_builder(Some(LicenseClass::Permissive));
+        add_u8_blob(
+            &mut wrong_hash,
+            KEY_CMVN_TEXT,
+            &vec![0; CMVN_TEXT_BYTES as usize],
+        );
+        add_u8_blob(
+            &mut wrong_hash,
+            KEY_DICT_TEXT,
+            &vec![0; DICT_TEXT_BYTES as usize],
+        );
+        wrong_hash.add_string(KEY_CMVN_TEXT_SHA256, "0".repeat(64));
+        wrong_hash.add_string(KEY_DICT_TEXT_SHA256, hex_digest(&AUTHENTICATED_DICT_SHA256));
+        let error =
+            FireredAsrAed::from_gguf(&finish(&wrong_hash)).expect_err("hash metadata drift");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("cmvn_txt_sha256") && message.contains("drifted"))
+        );
+
+        let mut tampered = base_builder(Some(LicenseClass::Permissive));
+        add_u8_blob(
+            &mut tampered,
+            KEY_CMVN_TEXT,
+            &vec![0; CMVN_TEXT_BYTES as usize],
+        );
+        add_u8_blob(
+            &mut tampered,
+            KEY_DICT_TEXT,
+            &vec![0; DICT_TEXT_BYTES as usize],
+        );
+        tampered.add_string(KEY_CMVN_TEXT_SHA256, hex_digest(&AUTHENTICATED_CMVN_SHA256));
+        tampered.add_string(KEY_DICT_TEXT_SHA256, hex_digest(&AUTHENTICATED_DICT_SHA256));
+        let error = FireredAsrAed::from_gguf(&finish(&tampered)).expect_err("same-size tamper");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("CMVN sidecar SHA-256 mismatch"))
+        );
+    }
+
+    #[test]
+    fn official_search_config_requires_complete_exact_metadata() {
+        let mut exact = base_builder(Some(LicenseClass::Permissive));
+        add_official_search(&mut exact);
+        let model = FireredAsrAed::from_gguf(&finish(&exact)).expect("official search policy");
+        assert_eq!(
+            model.search_config(),
+            Some(FireredAsrAedSearchConfig::OFFICIAL)
+        );
+
+        let mut partial = base_builder(Some(LicenseClass::Permissive));
+        partial.add_string(KEY_SEARCH_NAME, SEARCH_NAME);
+        let error = FireredAsrAed::from_gguf(&finish(&partial)).expect_err("partial search group");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("search.beam_size"))
+        );
+
+        let mut wrong_name = base_builder(Some(LicenseClass::Permissive));
+        add_official_search(&mut wrong_name);
+        wrong_name.add_string(KEY_SEARCH_NAME, "greedy");
+        let error = FireredAsrAed::from_gguf(&finish(&wrong_name)).expect_err("wrong search name");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("expected batch_beam_search"))
+        );
+
+        let mut wrong_int = base_builder(Some(LicenseClass::Permissive));
+        add_official_search(&mut wrong_int);
+        wrong_int.add_string(KEY_SEARCH_BEAM_SIZE, "3");
+        let error = FireredAsrAed::from_gguf(&finish(&wrong_int)).expect_err("wrong integer type");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("search.beam_size") && message.contains("U32"))
+        );
+
+        let mut wrong_u64 = base_builder(Some(LicenseClass::Permissive));
+        add_official_search(&mut wrong_u64);
+        wrong_u64.add_metadata(KEY_SEARCH_BEAM_SIZE, GgufMetadataValue::U64(3));
+        let error = FireredAsrAed::from_gguf(&finish(&wrong_u64)).expect_err("U64 integer type");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("search.beam_size") && message.contains("U32"))
+        );
+
+        let mut wrong_float = base_builder(Some(LicenseClass::Permissive));
+        add_official_search(&mut wrong_float);
+        wrong_float.add_u32(KEY_SEARCH_SOFTMAX_SMOOTHING, 1);
+        let error = FireredAsrAed::from_gguf(&finish(&wrong_float)).expect_err("wrong float type");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("search.softmax_smoothing") && message.contains("F32"))
+        );
+
+        let mut wrong_f64 = base_builder(Some(LicenseClass::Permissive));
+        add_official_search(&mut wrong_f64);
+        wrong_f64.add_metadata(KEY_SEARCH_SOFTMAX_SMOOTHING, GgufMetadataValue::F64(1.25));
+        let error = FireredAsrAed::from_gguf(&finish(&wrong_f64)).expect_err("F64 float type");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("search.softmax_smoothing") && message.contains("F32"))
+        );
+
+        let mut nonfinite = base_builder(Some(LicenseClass::Permissive));
+        add_official_search(&mut nonfinite);
+        nonfinite.add_f32(KEY_SEARCH_LENGTH_PENALTY, f32::NAN);
+        let error =
+            FireredAsrAed::from_gguf(&finish(&nonfinite)).expect_err("nonfinite search float");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("search.length_penalty") && message.contains("non-finite"))
+        );
+    }
+
+    #[test]
+    fn executable_backend_contract_requires_sidecars_and_official_search() {
+        let model = FireredAsrAed::from_gguf(&spec_stamped_gguf()).expect("cheap bind");
+        let error = model
+            .require_executable_contract()
+            .expect_err("cheap inspection bind must not unlock execution");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("cmvn.txt") && message.contains("dict.txt"))
+        );
+    }
+
+    #[test]
+    fn render_requires_bound_dictionary_and_config_and_rejects_markers() {
+        let without_dictionary = FireredAsrAed::from_gguf(&spec_stamped_gguf()).expect("bind");
+        let error = without_dictionary
+            .render_token_ids(&[5])
+            .expect_err("dictionary is required");
+        assert!(
+            matches!(error, VokraError::UnsupportedOp(message) if message.contains("dict.txt"))
+        );
+
+        let without_config = FireredAsrAed::from_gguf(&converter_shaped_gguf()).expect("bind");
+        let mut with_dictionary = without_config;
+        with_dictionary.dictionary = Some(test_dictionary());
+        with_dictionary.has_dictionary = true;
+        let error = with_dictionary
+            .render_token_ids(&[5])
+            .expect_err("decoder config is required");
+        assert!(
+            matches!(error, VokraError::UnsupportedOp(message) if message.contains("special-token metadata"))
+        );
+
+        let mut model = FireredAsrAed::from_gguf(&spec_stamped_gguf()).expect("bind");
+        model.dictionary = Some(test_dictionary());
+        model.has_dictionary = true;
+        assert_eq!(
+            model.render_token_ids(&[5, 4]).expect("terminal EOS"),
+            "你好"
+        );
+        for ids in [&[5, 4, 5][..], &[3][..], &[2][..], &[0][..], &[][..]] {
+            assert!(
+                model.render_token_ids(ids).is_err(),
+                "structural/empty ids must fail"
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Test 1 — Contract-constant pin (cross-crate handshake with the
     //          converter) + sibling arch-tag distinctness.
@@ -3115,6 +3692,15 @@ mod tests {
             "upstream HF slug pin"
         );
         assert_eq!(DEFAULT_LICENSE_SPDX, "apache-2.0", "default SPDX pin");
+        assert_eq!(CMVN_TEXT_BYTES, 2_985, "cmvn sidecar byte pin");
+        assert_eq!(DICT_TEXT_BYTES, 71_448, "dict sidecar byte pin");
+        assert_eq!(SEARCH_NAME, "batch_beam_search", "search algorithm pin");
+        assert_eq!(SEARCH_BEAM_SIZE, 3, "official beam-size pin");
+        assert_eq!(SEARCH_NBEST, 1, "official nbest pin");
+        assert_eq!(SEARCH_DECODE_MAX_LEN, 0, "official max-length pin");
+        assert_eq!(SEARCH_SOFTMAX_SMOOTHING, 1.25, "official smoothing pin");
+        assert_eq!(SEARCH_LENGTH_PENALTY, 0.6, "official length penalty pin");
+        assert_eq!(SEARCH_EOS_PENALTY, 1.0, "official EOS penalty pin");
 
         // The arch / name spellings genuinely differ — a "helpful"
         // normalisation of one into the other would break the wire
@@ -3455,7 +4041,11 @@ mod tests {
         );
         assert!(
             !m.has_tokenizer(),
-            "today's converter writes no tokenizer blob"
+            "the minimal fixture writes no generic input tokenizer blob"
+        );
+        assert!(
+            !m.has_dictionary(),
+            "the minimal fixture writes no output dictionary"
         );
         // The by-name lookup finds the fixture tensor and reports its dims.
         assert_eq!(
@@ -3750,14 +4340,15 @@ mod tests {
                     "gap (2) must be named: {msg}"
                 );
 
-                // Blocker (3): the tokenizer, reported as absent here.
+                // Text contract: input tokenizer and output dictionary are
+                // reported independently on this minimal fixture.
                 assert!(
-                    msg.contains("MISSING TOKENIZER") && msg.contains(KEY_TOKENIZER_MODEL),
-                    "blocker (3) must be named: {msg}"
+                    msg.contains("OUTPUT/INPUT TEXT CONTRACT") && msg.contains(KEY_TOKENIZER_MODEL),
+                    "text contract must be named: {msg}"
                 );
                 assert!(
-                    msg.contains("applies in full"),
-                    "blocker (3) must report this GGUF's actual state: {msg}"
+                    msg.contains("output `dict.txt` sidecar is NOT bound"),
+                    "missing output dictionary must be explicit: {msg}"
                 );
 
                 // The honest diagnosis: the authenticated topology still has
@@ -3812,18 +4403,19 @@ mod tests {
                 );
                 assert!(
                     msg.contains("source geometry is authenticated")
-                        && msg.contains("native frontend remains unimplemented"),
+                        && msg.contains("native frontend helpers are present"),
                     "the message must distinguish source evidence from native work: {msg}"
                 );
                 assert!(
                     msg.contains("blockers (2)-(4) are reported below"),
                     "the message must keep the remaining blockers explicit: {msg}"
                 );
-                // This fixture stamps no tokenizer, so blocker (3) must
-                // still be reported in full.
+                // This fixture stamps neither input tokenizer nor output
+                // dictionary, so both remain explicit.
                 assert!(
-                    msg.contains("blocker (3) applies in full"),
-                    "the missing tokenizer must remain explicit: {msg}"
+                    msg.contains("output `dict.txt` sidecar is NOT bound")
+                        && msg.contains("no `vokra.tokenizer.model` input-tokenizer blob"),
+                    "the missing text assets must remain explicit: {msg}"
                 );
                 // The stamped geometry is echoed so a reader can sanity-check it.
                 assert!(
@@ -3912,7 +4504,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 15 — A tokenizer blob flips blocker (3) in the message.
+    // Test 15 — A generic input tokenizer is surfaced independently from
+    // the output dictionary sidecar.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -3921,6 +4514,10 @@ mod tests {
         b.add_string(KEY_TOKENIZER_MODEL, "synthetic-vocab-blob");
         let m = FireredAsrAed::from_gguf(&finish(&b)).expect("bind");
         assert!(m.has_tokenizer(), "the blob must be surfaced");
+        assert!(
+            !m.has_dictionary(),
+            "generic input tokenizer is not output dict.txt"
+        );
 
         let pcm = vec![0.0_f32; 320];
         let Err(err) = m.transcribe_tokens(&pcm, 16_000) else {
@@ -3928,14 +4525,8 @@ mod tests {
         };
         match err {
             VokraError::UnsupportedOp(msg) => {
-                assert!(
-                    msg.contains("blob IS present on this GGUF"),
-                    "the message must credit the present tokenizer: {msg}"
-                );
-                assert!(
-                    msg.contains("blocker (3) is already cleared"),
-                    "the message must say which blocker the tokenizer clears: {msg}"
-                );
+                assert!(msg.contains("input-tokenizer blob IS present"));
+                assert!(msg.contains("output `dict.txt` sidecar is NOT bound"));
                 // Blockers (1) and (2) are untouched by a tokenizer, so the
                 // gate itself must not move.
                 assert!(

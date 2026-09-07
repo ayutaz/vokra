@@ -6203,6 +6203,33 @@ pub fn convert_whisper_medusa_v1_with_config(
     })
 }
 
+/// Converts FireRedASR-AED-L with explicit authenticated release sidecars.
+///
+/// The generic dispatcher intentionally has no sidecar channel and therefore
+/// refuses this model; callers must pass the exact inspected `cmvn.txt` and
+/// `dict.txt` paths rather than relying on prepared-checkpoint adjacency.
+pub fn convert_firered_asr_aed_l_with_sidecars(
+    input: &Path,
+    cmvn: &Path,
+    dict: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let report = models::firered_asr_aed_l::convert_firered_asr_aed_l_file_with_sidecars(
+        input, cmvn, dict, output, license,
+    )?;
+    Ok(ConvertSummary {
+        model: ModelKind::FireredAsrAedL,
+        tensor_count: report.written,
+        metadata_count: 0,
+        output_bytes: std::fs::metadata(output)?.len(),
+        notes: vec![format!(
+            "firered-asr-aed-l: {} float tensors written with explicit authenticated cmvn.txt/dict.txt sidecars ({} BF16 passthrough), {} non-float skipped",
+            report.written, report.bf16_passthrough, report.skipped_non_float,
+        )],
+    })
+}
+
 /// Errors that can occur while converting a checkpoint.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -13102,7 +13129,10 @@ pub use models::canary::{CanaryReport, convert_canary_file_with_tokenizer};
 pub use models::canary_1b_flash::{
     Canary1bFlashReport, convert_canary_1b_flash_file, convert_canary_1b_flash_file_with_tokenizer,
 };
-pub use models::firered_asr_aed_l::{FireredAsrAedLReport, convert_firered_asr_aed_l_file};
+pub use models::firered_asr_aed_l::{
+    FireredAsrAedLReport, convert_firered_asr_aed_l_file,
+    convert_firered_asr_aed_l_file_with_sidecars,
+};
 // coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
 // FireRedTeam/FireRedASR-LLM-L — public re-export for downstream callers
 // that reach past the `ModelKind::FireredAsrLlmL` dispatch (mirror of

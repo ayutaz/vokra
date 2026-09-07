@@ -245,7 +245,7 @@ def validate_preparation_manifest(main_manifest: dict[str, Any], preparation: di
     """Validate the merged evidence contract without loading model weights."""
     if main_manifest.get("status") != "BLOCKED" or main_manifest.get("evidence_stage") != "INSPECTION_ONLY":
         raise ValueError("inspection status is not blocked/inspection-only")
-    if main_manifest.get("publication") != "NO_UPLOAD" or main_manifest.get("runtime_status") != "NOT_IMPLEMENTED_FAIL_CLOSED" or main_manifest.get("parity_status") != "NOT_RUN":
+    if main_manifest.get("publication") != "NO_UPLOAD" or main_manifest.get("runtime_status") != "LOUD_PARTIAL_FAIL_CLOSED" or main_manifest.get("parity_status") != "NOT_RUN":
         raise ValueError("main manifest publication/runtime/parity status mismatch")
     model = main_manifest.get("model")
     if not isinstance(model, dict) or model.get("repository") != MODEL_REPOSITORY or model.get("revision") != MODEL_REVISION:
@@ -255,7 +255,7 @@ def validate_preparation_manifest(main_manifest: dict[str, Any], preparation: di
         raise ValueError("main manifest checkpoint artifact identity mismatch")
     if preparation.get("format") != PREPARATION_FORMAT or preparation.get("status") != "PREPARED" or preparation.get("publication") != "NO_UPLOAD":
         raise ValueError("preparation status/publication mismatch")
-    if preparation.get("runtime_status") != "NOT_IMPLEMENTED_FAIL_CLOSED" or preparation.get("parity_status") != "NOT_RUN":
+    if preparation.get("runtime_status") != "LOUD_PARTIAL_FAIL_CLOSED" or preparation.get("parity_status") != "NOT_RUN":
         raise ValueError("preparation runtime/parity status mismatch")
     preparation_model = preparation.get("model")
     if not isinstance(preparation_model, dict) or set(preparation_model) != {"repository", "revision"} or preparation_model.get("repository") != MODEL_REPOSITORY or preparation_model.get("revision") != MODEL_REVISION:
@@ -357,7 +357,7 @@ def prepare(checkpoint: Path, output: Path, audit_output: Path) -> dict[str, Any
         "format": PREPARATION_FORMAT,
         "status": "PREPARED",
         "publication": "NO_UPLOAD",
-        "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+        "runtime_status": "LOUD_PARTIAL_FAIL_CLOSED",
         "parity_status": "NOT_RUN",
         "model": {"repository": MODEL_REPOSITORY, "revision": MODEL_REVISION},
         "checkpoint": {**identity, "archive_members": archive_members},
@@ -505,7 +505,7 @@ def self_test() -> None:
             "status": "BLOCKED",
             "evidence_stage": "INSPECTION_ONLY",
             "publication": "NO_UPLOAD",
-            "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+            "runtime_status": "LOUD_PARTIAL_FAIL_CLOSED",
             "parity_status": "NOT_RUN",
             "model": {"repository": MODEL_REPOSITORY, "revision": MODEL_REVISION},
             "artifacts": {"model.pth.tar": {"bytes": CHECKPOINT_BYTES, "sha256": CHECKPOINT_SHA256}},
@@ -514,7 +514,7 @@ def self_test() -> None:
             "format": PREPARATION_FORMAT,
             "status": "PREPARED",
             "publication": "NO_UPLOAD",
-            "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+            "runtime_status": "LOUD_PARTIAL_FAIL_CLOSED",
             "parity_status": "NOT_RUN",
             "model": {"repository": MODEL_REPOSITORY, "revision": MODEL_REVISION},
             "checkpoint": {"repository": MODEL_REPOSITORY, "revision": MODEL_REVISION, "bytes": CHECKPOINT_BYTES, "sha256": CHECKPOINT_SHA256, "archive_members": [{"name": "archive/data.pkl", "bytes": 1, "crc32": 0}]},

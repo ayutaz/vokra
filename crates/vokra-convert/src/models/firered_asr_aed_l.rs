@@ -3,9 +3,10 @@
 //! The only accepted input is the exact safetensors artifact emitted by the
 //! VAST-only preparation sidecar. Every authenticated float tensor is copied
 //! under its verbatim prepared name, and the complete name list is stamped as
-//! a required-tensor manifest for the runtime binder. Native execution remains
-//! fail-closed until CMVN values, decoder mapping, and an independent oracle
-//! are authenticated.
+//! a required-tensor manifest for the runtime binder. The exact inspected CMVN
+//! and dictionary sidecars plus the official AED search defaults are stamped
+//! as authenticated metadata; native beam execution and an independent oracle
+//! remain parity-gated.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -175,6 +176,76 @@ fn sha256_file(path: &Path) -> Result<String, ConvertError> {
     Ok(out)
 }
 
+fn read_authenticated_sidecar(
+    path: &Path,
+    label: &str,
+    expected_bytes: u64,
+    expected_sha256: &str,
+) -> Result<Vec<u8>, ConvertError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(ConvertError::Io)?;
+    if metadata.file_type().is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L {label} sidecar must not be a symlink"
+        )));
+    }
+    if !metadata.file_type().is_file() {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L {label} sidecar must be a regular file"
+        )));
+    }
+    if metadata.len() != expected_bytes {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L {label} sidecar byte count mismatch: expected {expected_bytes}, got {}",
+            metadata.len()
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(ConvertError::Io)?;
+    if bytes.len() as u64 != expected_bytes {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L {label} sidecar byte count mismatch: expected {expected_bytes}, got {}",
+            bytes.len()
+        )));
+    }
+    let digest = sha256_bytes(&bytes);
+    if digest != expected_sha256 {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L {label} sidecar SHA-256 mismatch: expected {expected_sha256}, got {digest}"
+        )));
+    }
+    Ok(bytes)
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut state = [
+        0x6a09e667u32,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let mut block = [0u8; 64];
+    let mut offset = 0usize;
+    while offset + 64 <= bytes.len() {
+        block.copy_from_slice(&bytes[offset..offset + 64]);
+        sha256_block(&mut state, &block);
+        offset += 64;
+    }
+    let tail = &bytes[offset..];
+    block.fill(0);
+    block[..tail.len()].copy_from_slice(tail);
+    block[tail.len()] = 0x80;
+    if tail.len() >= 56 {
+        sha256_block(&mut state, &block);
+        block.fill(0);
+    }
+    block[56..].copy_from_slice(&((bytes.len() as u64) * 8).to_be_bytes());
+    sha256_block(&mut state, &block);
+    state.iter().map(|value| format!("{value:08x}")).collect()
+}
+
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
@@ -185,6 +256,30 @@ const KEY_PROVENANCE_PREPARED_BYTES: &str = "vokra.provenance.prepared_bytes";
 const KEY_PROVENANCE_PREPARED_SHA256: &str = "vokra.provenance.prepared_sha256";
 const KEY_REQUIRED_TENSORS: &str = "vokra.firered_asr_aed_l.required_tensors";
 const KEY_TENSOR_MANIFEST: &str = "vokra.firered_asr_aed_l.tensor_manifest";
+pub const KEY_CMVN_TEXT: &str = "vokra.firered_asr_aed_l.cmvn_txt";
+pub const KEY_CMVN_TEXT_SHA256: &str = "vokra.firered_asr_aed_l.cmvn_txt_sha256";
+pub const KEY_DICT_TEXT: &str = "vokra.firered_asr_aed_l.dict_txt";
+pub const KEY_DICT_TEXT_SHA256: &str = "vokra.firered_asr_aed_l.dict_txt_sha256";
+pub const KEY_SEARCH_NAME: &str = "vokra.firered_asr_aed_l.search.name";
+pub const KEY_SEARCH_BEAM_SIZE: &str = "vokra.firered_asr_aed_l.search.beam_size";
+pub const KEY_SEARCH_NBEST: &str = "vokra.firered_asr_aed_l.search.nbest";
+pub const KEY_SEARCH_DECODE_MAX_LEN: &str = "vokra.firered_asr_aed_l.search.decode_max_len";
+pub const KEY_SEARCH_SOFTMAX_SMOOTHING: &str = "vokra.firered_asr_aed_l.search.softmax_smoothing";
+pub const KEY_SEARCH_LENGTH_PENALTY: &str = "vokra.firered_asr_aed_l.search.length_penalty";
+pub const KEY_SEARCH_EOS_PENALTY: &str = "vokra.firered_asr_aed_l.search.eos_penalty";
+pub const SEARCH_NAME: &str = "batch_beam_search";
+pub const SEARCH_BEAM_SIZE: u32 = 3;
+pub const SEARCH_NBEST: u32 = 1;
+pub const SEARCH_DECODE_MAX_LEN: u32 = 0;
+pub const SEARCH_SOFTMAX_SMOOTHING: f32 = 1.25;
+pub const SEARCH_LENGTH_PENALTY: f32 = 0.6;
+pub const SEARCH_EOS_PENALTY: f32 = 1.0;
+pub const CMVN_TEXT_BYTES: u64 = 2_985;
+pub const CMVN_TEXT_SHA256: &str =
+    "11816db612b43318ab01f9cfd05ee121dd3900b7a39d893f59d0104a06c199d2";
+pub const DICT_TEXT_BYTES: u64 = 71_448;
+pub const DICT_TEXT_SHA256: &str =
+    "6907215aeb034f6926b26bf8abfd650f756781622480a2342ec1f29b2072cafe";
 const SPEC_KEYS: [(&str, u32); 16] = [
     ("vokra.firered_asr_aed_l.sample_rate", SAMPLE_RATE),
     ("vokra.firered_asr_aed_l.n_mels", N_MELS),
@@ -235,12 +330,28 @@ fn publish_no_clobber(temp: &Path, destination: &Path) -> Result<(), ConvertErro
     Ok(())
 }
 
-/// Converts the exact VAST-prepared FireRedASR-AED-L safetensors artifact to
-/// GGUF while preserving the authenticated release provenance and tensor
-/// manifest. The optional license override is intentionally rejected; the
-/// converter accepts only the fixed upstream license contract.
+/// Explicitly refuses the legacy generic-dispatch route: FireRed conversion
+/// cannot proceed without caller-supplied authenticated `cmvn.txt` and
+/// `dict.txt` sidecars. Use [`convert_firered_asr_aed_l_file_with_sidecars`].
+/// The optional license override is also rejected by the sidecar-aware route
+/// unless it matches the fixed upstream license contract.
 pub fn convert_firered_asr_aed_l_file(
+    _input: &Path,
+    _output: &Path,
+    _license: Option<&str>,
+) -> Result<FireredAsrAedLReport, ConvertError> {
+    Err(ConvertError::Usage(
+        "FireRedASR-AED-L conversion requires explicit cmvn.txt and dict.txt sidecars; use the sidecar-aware entrypoint".to_owned(),
+    ))
+}
+
+/// Converts the prepared checkpoint and embeds the exact raw release
+/// sidecars. The sidecars are explicit inputs so a VAST worker cannot silently
+/// discover a replacement from another model directory.
+pub fn convert_firered_asr_aed_l_file_with_sidecars(
     input: &Path,
+    cmvn_path: &Path,
+    dict_path: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<FireredAsrAedLReport, ConvertError> {
@@ -328,6 +439,10 @@ pub fn convert_firered_asr_aed_l_file(
             "FireRedASR-AED-L prepared artifact contains a non-F32 tensor; regenerate with the audited VAST bridge".to_owned(),
         ));
     }
+    let cmvn =
+        read_authenticated_sidecar(cmvn_path, "cmvn.txt", CMVN_TEXT_BYTES, CMVN_TEXT_SHA256)?;
+    let dict =
+        read_authenticated_sidecar(dict_path, "dict.txt", DICT_TEXT_BYTES, DICT_TEXT_SHA256)?;
 
     let mut builder = GgufBuilder::new();
     builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
@@ -357,6 +472,31 @@ pub fn convert_firered_asr_aed_l_file(
     );
     for (key, value) in SPEC_KEYS {
         builder.add_u32(key, value);
+    }
+    builder.add_string(KEY_SEARCH_NAME, SEARCH_NAME);
+    builder.add_u32(KEY_SEARCH_BEAM_SIZE, SEARCH_BEAM_SIZE);
+    builder.add_u32(KEY_SEARCH_NBEST, SEARCH_NBEST);
+    builder.add_u32(KEY_SEARCH_DECODE_MAX_LEN, SEARCH_DECODE_MAX_LEN);
+    builder.add_f32(KEY_SEARCH_SOFTMAX_SMOOTHING, SEARCH_SOFTMAX_SMOOTHING);
+    builder.add_f32(KEY_SEARCH_LENGTH_PENALTY, SEARCH_LENGTH_PENALTY);
+    builder.add_f32(KEY_SEARCH_EOS_PENALTY, SEARCH_EOS_PENALTY);
+    for (key, payload, digest) in [
+        (KEY_CMVN_TEXT, cmvn.as_slice(), CMVN_TEXT_SHA256),
+        (KEY_DICT_TEXT, dict.as_slice(), DICT_TEXT_SHA256),
+    ] {
+        builder.add_metadata(
+            key,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U8,
+                values: payload.iter().copied().map(GgufMetadataValue::U8).collect(),
+            }),
+        );
+        let digest_key = if key == KEY_CMVN_TEXT {
+            KEY_CMVN_TEXT_SHA256
+        } else {
+            KEY_DICT_TEXT_SHA256
+        };
+        builder.add_string(digest_key, digest);
     }
     builder.add_metadata(
         KEY_REQUIRED_TENSORS,
@@ -458,10 +598,16 @@ mod tests {
         std::fs::write(&input, b"arbitrary").expect("input");
         let error = convert_firered_asr_aed_l_file(&input, &output, None)
             .expect_err("non-authenticated prepared input must refuse");
-        assert!(error.to_string().contains("prepared safetensors artifact"));
+        assert!(error.to_string().contains("explicit cmvn.txt and dict.txt"));
         assert!(!output.exists());
-        let error = convert_firered_asr_aed_l_file(&input, &output, Some("mit"))
-            .expect_err("license override must be refused");
+        let error = convert_firered_asr_aed_l_file_with_sidecars(
+            &input,
+            &root.join("cmvn.txt"),
+            &root.join("dict.txt"),
+            &output,
+            Some("mit"),
+        )
+        .expect_err("license override must be refused");
         assert!(error.to_string().contains("fixed Apache-2.0"));
         assert!(!output.exists());
         std::fs::remove_dir_all(root).expect("cleanup");
@@ -476,10 +622,55 @@ mod tests {
         let output = root.join("existing.gguf");
         std::fs::write(&input, b"arbitrary").expect("input");
         std::fs::write(&output, b"sentinel").expect("output");
-        let error = convert_firered_asr_aed_l_file(&input, &output, None)
-            .expect_err("existing output must be rejected before any stream");
+        let error = convert_firered_asr_aed_l_file_with_sidecars(
+            &input,
+            &root.join("cmvn.txt"),
+            &root.join("dict.txt"),
+            &output,
+            None,
+        )
+        .expect_err("existing output must be rejected before any stream");
         assert!(error.to_string().contains("already exists"));
         assert_eq!(std::fs::read(&output).expect("sentinel"), b"sentinel");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn authenticated_sidecar_helper_accepts_exact_bytes_and_rejects_drift() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-firered-sidecar-helper-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp directory");
+        let path = root.join("cmvn.txt");
+        std::fs::write(&path, b"abc").expect("sidecar");
+        let digest = sha256_bytes(b"abc");
+        assert_eq!(
+            read_authenticated_sidecar(&path, "cmvn.txt", 3, &digest).expect("exact sidecar"),
+            b"abc"
+        );
+        let wrong_size = read_authenticated_sidecar(&path, "cmvn.txt", 4, &digest)
+            .expect_err("wrong byte count must fail");
+        assert!(wrong_size.to_string().contains("byte count mismatch"));
+        let wrong_hash = read_authenticated_sidecar(&path, "cmvn.txt", 3, "0".repeat(64).as_str())
+            .expect_err("wrong digest must fail");
+        assert!(wrong_hash.to_string().contains("SHA-256 mismatch"));
+        let missing = read_authenticated_sidecar(&root.join("missing.txt"), "cmvn.txt", 3, &digest)
+            .expect_err("missing sidecar must fail");
+        assert!(matches!(missing, ConvertError::Io(_)));
+        #[cfg(unix)]
+        {
+            let link = root.join("link.txt");
+            std::os::unix::fs::symlink(&path, &link).expect("symlink");
+            let error = read_authenticated_sidecar(&link, "cmvn.txt", 3, &digest)
+                .expect_err("symlink sidecar must fail");
+            assert!(error.to_string().contains("must not be a symlink"));
+        }
+        let directory = root.join("directory");
+        std::fs::create_dir(&directory).expect("directory sidecar");
+        let error = read_authenticated_sidecar(&directory, "cmvn.txt", 3, &digest)
+            .expect_err("directory sidecar must fail before read");
+        assert!(error.to_string().contains("regular file"));
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -540,10 +731,18 @@ mod tests {
             sha256_file(&path).expect("empty hash"),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+        assert_eq!(
+            sha256_bytes(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
 
         std::fs::write(&path, b"abc").expect("abc input");
         assert_eq!(
             sha256_file(&path).expect("hash"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_bytes(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
 

@@ -662,6 +662,11 @@ pub struct FireRedDictionary {
 }
 
 impl FireRedDictionary {
+    #[cfg(test)]
+    pub(crate) fn from_test_pieces(pieces: Vec<String>) -> Self {
+        Self { pieces }
+    }
+
     /// Authenticates and parses the exact inspected dictionary bytes.
     pub fn from_authenticated_bytes(raw: &[u8]) -> Result<Self> {
         if raw.len() != AUTHENTICATED_DICT_TEXT_BYTES {
