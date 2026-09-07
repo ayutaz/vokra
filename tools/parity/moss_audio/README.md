@@ -131,3 +131,12 @@ uv run --project tools/parity/moss_audio/api_smoke --frozen --python 3.12 \
 
 The output is an atomic candidate manifest; it is not an owner approval or a
 license sign-off.
+
+The VAST identity packet reviewed for the fixed revisions is checked in as
+`identity_audit_evidence.json`. Its gate binds the packet SHA-256,
+`manifest.json` SHA-256, source tracked-tree/license-file absence, model tree
+hashes, cardData `apache-2.0` provenance, metadata bytes/Git blobs, checkpoint
+index map count, and shard size/Git-LFS identities. It records no checkpoint
+payload, and its packet binding is included in the fixed approval scope so a
+later evidence replacement cannot reuse an older owner approval. It does not
+change the pending SPDX or owner-approval decisions.

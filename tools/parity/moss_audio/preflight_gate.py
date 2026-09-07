@@ -18,7 +18,7 @@ from typing import Any
 
 import tomllib
 
-GATE_VERSION = 1
+GATE_VERSION = 2
 # The historical main project remains recorded against 5.5.0, below the
 # repository's patched Transformers floor. Its lock and existing license/
 # closure gates are retained; actual official reference execution uses the
@@ -61,17 +61,18 @@ SOURCE_IDENTITY = {
     "repo": "OpenMOSS/MOSS-Audio",
     "revision": "5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883",
     "license_spdx": None,
-    "license": {"path": "LICENSE", "blob_sha256": None, "payload_sha256": None},
+    "license": {"path": None, "status": "ABSENT_AT_FIXED_REVISION"},
+    "license_file": {"path": None, "status": "ABSENT_AT_FIXED_REVISION"},
+    "tracked_tree_sha256": "9cee75e549971e12f6a49e3c290f0f6a24f7c06072dd48a0c5baca99690820ff",
     "files": {
         "src/configuration_moss_audio.py": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
         "src/modeling_moss_audio.py": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c",
         "src/processing_moss_audio.py": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6",
     },
     "source_file_contract": [
-        {"path": "src/configuration_moss_audio.py", "role": "configuration", "bytes": None, "sha256": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd", "git_blob_sha1": None, "status": "UNRESOLVED"},
-        {"path": "src/modeling_moss_audio.py", "role": "modeling", "bytes": None, "sha256": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c", "git_blob_sha1": None, "status": "UNRESOLVED"},
-        {"path": "src/processing_moss_audio.py", "role": "processing", "bytes": None, "sha256": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6", "git_blob_sha1": None, "status": "UNRESOLVED"},
-        {"path": "LICENSE", "role": "license", "bytes": None, "sha256": None, "git_blob_sha1": None, "status": "UNRESOLVED"},
+        {"path": "src/configuration_moss_audio.py", "role": "configuration", "bytes": 4670, "sha256": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd", "git_blob_sha1": "f5cb78bcc2ce91152857b19d213a40160299aeef", "status": "REVIEWED"},
+        {"path": "src/modeling_moss_audio.py", "role": "modeling", "bytes": 22932, "sha256": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c", "git_blob_sha1": "2970f7917e2544fd10b16b1cbcc210b31ae1a2c3", "status": "REVIEWED"},
+        {"path": "src/processing_moss_audio.py", "role": "processing", "bytes": 14970, "sha256": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6", "git_blob_sha1": "5116fed0d59d107d2fa760ad48fdf9e73ac2ea58", "status": "REVIEWED"},
     ],
 }
 VARIANTS = {
@@ -83,18 +84,38 @@ VARIANTS = {
         "config_sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
         "tokenizer_config_sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0",
         "processor_config_sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
-        "license": {"path": "LICENSE", "payload_sha256": None},
+        "license": {"path": "LICENSE", "status": "ABSENT_AT_FIXED_REVISION", "payload_sha256": None},
+        "license_card_data": {"source": "HF_MODEL_INFO_CARD_DATA", "field": "license", "value": "apache-2.0", "spdx": None, "status": "PENDING_OWNER_APPROVAL"},
+        "license_file": {"path": "LICENSE", "status": "ABSENT_AT_FIXED_REVISION"},
+        "tree_sha256": "d3cceb4df1e5291ed04f76ff6b544dfc4a78d99291cea62708236f62da17d3a5",
+        "card_data_sha256": "5ba4af15ea00731e8b06673020a66810efc58cc1730919bb8c91b683af3795df",
+        "metadata_files": {
+            "config.json": {"bytes": 2714, "sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa", "git_blob_sha1": "e28bb45dcc6e9cf11f2bfadb2352d8583e630346"},
+            "tokenizer_config.json": {"bytes": 5404, "sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0", "git_blob_sha1": "ddaf69808214a44fdd26d3785b66c1367c78277a"},
+            "processor_config.json": {"bytes": 426, "sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf", "git_blob_sha1": "bd284896dcd78cc124b92cdc2dffedce22937431"},
+            "vocab.json": {"bytes": 3383407, "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d", "git_blob_sha1": "6bce3a0a3866c4791a74d83d78f6824c3af64ec3"},
+            "merges.txt": {"bytes": 1671853, "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", "git_blob_sha1": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"},
+            "chat_template.jinja": {"bytes": 4116, "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5", "git_blob_sha1": "699ff8df401fe4788525e9c1f9b86a99eadd6230"},
+            "generation_config.json": {"bytes": 121, "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e", "git_blob_sha1": "4835636feaab94c609ee8e876bc0c7c701bc048e"},
+            "model.safetensors.index.json": {"bytes": 80030, "sha256": "713a7c71247fe54ba4fb734a4bcf93ec1c3196a507598215d9c0d78f1d1dd6bd", "git_blob_sha1": "65db839bbbf4c21248acccfcd24516c62d9e1c3a"},
+        },
+        "checkpoint_index": {
+            "path": "model.safetensors.index.json", "bytes": 80030, "sha256": "713a7c71247fe54ba4fb734a4bcf93ec1c3196a507598215d9c0d78f1d1dd6bd", "git_blob_sha1": "65db839bbbf4c21248acccfcd24516c62d9e1c3a", "weight_map_entries": 901, "payload_downloaded": False,
+            "shards": [
+                {"path": "model-00001-of-00003.safetensors", "bytes": 4993537896, "git_blob_sha1": "9de43e508305823b6ee8d4728caa0fbc3b2a6a6e", "lfs_sha256": "a87bddad846a58affb7a737d70c9cb01a41225887b0b25048fc1b543ecaba110"},
+                {"path": "model-00002-of-00003.safetensors", "bytes": 4674299440, "git_blob_sha1": "3ea56151ec609eb4dcfdd70142156d1b1f36afbd", "lfs_sha256": "1a25d9dec4fd4336bc5197c336733d2874f00e51569ac9c0042460d4579ded77"},
+                {"path": "model-00003-of-00003.safetensors", "bytes": 777912448, "git_blob_sha1": "8dc0f297fa8b967685378f93c51257375afceb94", "lfs_sha256": "09ec9f23bdf35a0e7668d94276b8808bc40b05cf5a594508264fa5883c0057d0"},
+            ],
+        },
         "snapshot_files": [
-            {"path": "config.json", "role": "config", "bytes": None, "sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa", "status": "UNRESOLVED"},
+            {"path": "config.json", "role": "config", "bytes": 2714, "sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa", "status": "REVIEWED"},
             {"path": "tokenizer_config.json", "role": "tokenizer", "bytes": 5404, "sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0", "status": "REVIEWED"},
             {"path": "processor_config.json", "role": "processor", "bytes": 426, "sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf", "status": "REVIEWED"},
             {"path": "vocab.json", "role": "common_asset", "bytes": 3383407, "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d", "status": "REVIEWED"},
             {"path": "merges.txt", "role": "common_asset", "bytes": 1671853, "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", "status": "REVIEWED"},
             {"path": "chat_template.jinja", "role": "common_asset", "bytes": 4116, "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5", "status": "REVIEWED"},
             {"path": "generation_config.json", "role": "common_asset", "bytes": 121, "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e", "status": "REVIEWED"},
-            {"path": "model.safetensors.index.json", "role": "checkpoint_index", "bytes": None, "sha256": None, "status": "UNRESOLVED"},
-            {"path": "__UNRESOLVED_CHECKPOINT_SHARD__", "role": "checkpoint_shard", "bytes": None, "sha256": None, "status": "UNRESOLVED"},
-            {"path": "LICENSE", "role": "license", "bytes": None, "sha256": None, "status": "UNRESOLVED"},
+            {"path": "model.safetensors.index.json", "role": "checkpoint_index", "bytes": 80030, "sha256": "713a7c71247fe54ba4fb734a4bcf93ec1c3196a507598215d9c0d78f1d1dd6bd", "status": "REVIEWED"},
         ],
     },
     "8b": {
@@ -105,18 +126,39 @@ VARIANTS = {
         "config_sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
         "tokenizer_config_sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41",
         "processor_config_sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
-        "license": {"path": "LICENSE", "payload_sha256": None},
+        "license": {"path": "LICENSE", "status": "ABSENT_AT_FIXED_REVISION", "payload_sha256": None},
+        "license_card_data": {"source": "HF_MODEL_INFO_CARD_DATA", "field": "license", "value": "apache-2.0", "spdx": None, "status": "PENDING_OWNER_APPROVAL"},
+        "license_file": {"path": "LICENSE", "status": "ABSENT_AT_FIXED_REVISION"},
+        "tree_sha256": "2881ec4d25f0fe97bc8b52cb4e4ea6af3033b56608520f1f8d47a46501c9174a",
+        "card_data_sha256": "5ba4af15ea00731e8b06673020a66810efc58cc1730919bb8c91b683af3795df",
+        "metadata_files": {
+            "config.json": {"bytes": 2715, "sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536", "git_blob_sha1": "393f2b4d18adea5de3a55791b912f7ac198a01f9"},
+            "tokenizer_config.json": {"bytes": 6114, "sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41", "git_blob_sha1": "aaeca3e2ba281c9daeb1d10a4e14c585008ee092"},
+            "processor_config.json": {"bytes": 427, "sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf", "git_blob_sha1": "381a60749bc471161e2928c23f640e58d456f725"},
+            "vocab.json": {"bytes": 3383407, "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d", "git_blob_sha1": "6bce3a0a3866c4791a74d83d78f6824c3af64ec3"},
+            "merges.txt": {"bytes": 1671853, "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", "git_blob_sha1": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"},
+            "chat_template.jinja": {"bytes": 4116, "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5", "git_blob_sha1": "699ff8df401fe4788525e9c1f9b86a99eadd6230"},
+            "generation_config.json": {"bytes": 121, "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e", "git_blob_sha1": "4835636feaab94c609ee8e876bc0c7c701bc048e"},
+            "model.safetensors.index.json": {"bytes": 80030, "sha256": "d980986e77df7ff3b427ffdff58b0ca04e9a93d2e4a097ed2187cef6593a8e67", "git_blob_sha1": "802e1c8d00498e8e145d19a1a3428b7dbd49f04b"},
+        },
+        "checkpoint_index": {
+            "path": "model.safetensors.index.json", "bytes": 80030, "sha256": "d980986e77df7ff3b427ffdff58b0ca04e9a93d2e4a097ed2187cef6593a8e67", "git_blob_sha1": "802e1c8d00498e8e145d19a1a3428b7dbd49f04b", "weight_map_entries": 901, "payload_downloaded": False,
+            "shards": [
+                {"path": "model-00001-of-00004.safetensors", "bytes": 4931218512, "git_blob_sha1": "818616459d09cd467e6a0f8ee91562d7863e8249", "lfs_sha256": "ead244c31d39119e1447f31ff04d7a52698c8352553fec472c6284ed6828c3d6"},
+                {"path": "model-00002-of-00004.safetensors", "bytes": 4983069720, "git_blob_sha1": "7cb539c721036462ee164100bf867a8e2c1e6a29", "lfs_sha256": "cdfb0c2c3c1c98208cd40bb72bbeda4faa2436dca55fc461b535e6e9a80736d6"},
+                {"path": "model-00003-of-00004.safetensors", "bytes": 4999847608, "git_blob_sha1": "bb0ec8fa6decbccd24e5deb58b8b43ab29a20e8e", "lfs_sha256": "eeaeb7cb4575954150f43f81c83988abe48a45d668aed637ce5bf4f0d0d050b8"},
+                {"path": "model-00004-of-00004.safetensors", "bytes": 3190899536, "git_blob_sha1": "6726465bf5772df99a24c0189f9b26bd15bbbda7", "lfs_sha256": "2e9a71c1548f6850c6113e94a3ecafde650a1b4e870c3bca5b686ed744c68792"},
+            ],
+        },
         "snapshot_files": [
-            {"path": "config.json", "role": "config", "bytes": None, "sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536", "status": "UNRESOLVED"},
+            {"path": "config.json", "role": "config", "bytes": 2715, "sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536", "status": "REVIEWED"},
             {"path": "tokenizer_config.json", "role": "tokenizer", "bytes": 6114, "sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41", "status": "REVIEWED"},
             {"path": "processor_config.json", "role": "processor", "bytes": 427, "sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf", "status": "REVIEWED"},
             {"path": "vocab.json", "role": "common_asset", "bytes": 3383407, "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d", "status": "REVIEWED"},
             {"path": "merges.txt", "role": "common_asset", "bytes": 1671853, "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", "status": "REVIEWED"},
             {"path": "chat_template.jinja", "role": "common_asset", "bytes": 4116, "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5", "status": "REVIEWED"},
             {"path": "generation_config.json", "role": "common_asset", "bytes": 121, "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e", "status": "REVIEWED"},
-            {"path": "model.safetensors.index.json", "role": "checkpoint_index", "bytes": None, "sha256": None, "status": "UNRESOLVED"},
-            {"path": "__UNRESOLVED_CHECKPOINT_SHARD__", "role": "checkpoint_shard", "bytes": None, "sha256": None, "status": "UNRESOLVED"},
-            {"path": "LICENSE", "role": "license", "bytes": None, "sha256": None, "status": "UNRESOLVED"},
+            {"path": "model.safetensors.index.json", "role": "checkpoint_index", "bytes": 80030, "sha256": "d980986e77df7ff3b427ffdff58b0ca04e9a93d2e4a097ed2187cef6593a8e67", "status": "REVIEWED"},
         ],
     },
 }
@@ -125,6 +167,16 @@ COMMON_ASSETS = {
     "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
     "chat_template.jinja": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
     "generation_config.json": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+}
+IDENTITY_EVIDENCE_FORMAT = "vokra-moss-audio-no-weight-identity-evidence-v1"
+IDENTITY_EVIDENCE_SHA256 = "2998d89d2805c507bdbc3e18118bf50a9c18e06479fff1a7dce8b020dd6dae2d"
+IDENTITY_MANIFEST_FILE_SHA256 = "05bdc638e1d32098c077a71563c37a0c362c394fa809ab1b1f53692bbe062ea4"
+IDENTITY_MANIFEST_SHA256 = "d5420e58ba7d847828ff888a221c87bc1c2ffa9f57f08b0bd92a7ef2ffdd1624"
+IDENTITY_EVIDENCE_BINDING = {
+    "format": IDENTITY_EVIDENCE_FORMAT,
+    "evidence_sha256": IDENTITY_EVIDENCE_SHA256,
+    "manifest_file_sha256": IDENTITY_MANIFEST_FILE_SHA256,
+    "manifest_sha256": IDENTITY_MANIFEST_SHA256,
 }
 
 # The historical 5.5.0 project and its existing license/closure gates remain
@@ -208,6 +260,10 @@ def load_json(path: Path) -> Any:
 
 def canonical(value: Any) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def identity_digest(value: Any) -> str:
+    return sha256((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
 
 
 def validate_api_smoke_project(project: Path) -> tuple[bool, str]:
@@ -399,6 +455,71 @@ def resolved_hex64(value: Any) -> bool:
     return isinstance(value, str) and HEX64.fullmatch(value) is not None
 
 
+def tracked_license_filename(relative: str) -> bool:
+    name = Path(relative).name.casefold()
+    return any(
+        name == prefix or name.startswith(tuple(f"{prefix}{separator}" for separator in ("-", "_", ".")))
+        for prefix in ("license", "licence", "copying", "notice")
+    )
+
+
+def validate_identity_evidence(project: Path) -> tuple[bool, str]:
+    path = project / "identity_audit_evidence.json"
+    if path.is_symlink() or not path.is_file():
+        return block("MOSS identity evidence is missing")
+    if sha256_file(path) != IDENTITY_EVIDENCE_SHA256:
+        return block("MOSS identity evidence SHA-256 does not match the fixed packet")
+    try:
+        evidence = load_json(path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        return block(f"MOSS identity evidence is unreadable: {exc}")
+    expected_keys = {"approval", "format", "manifest_file_sha256", "manifest_sha256", "no_model_weights", "publication", "source", "variants"}
+    if not isinstance(evidence, dict) or set(evidence) != expected_keys:
+        return block("MOSS identity evidence schema is not exact")
+    if (evidence.get("format") != IDENTITY_EVIDENCE_FORMAT
+            or evidence.get("manifest_file_sha256") != IDENTITY_MANIFEST_FILE_SHA256
+            or evidence.get("manifest_sha256") != IDENTITY_MANIFEST_SHA256
+            or evidence.get("approval") != "PENDING_OWNER_APPROVAL"
+            or evidence.get("no_model_weights") is not True
+            or evidence.get("publication") != "NO_UPLOAD"):
+        return block("MOSS identity evidence is not the fixed no-weight packet")
+    source = evidence.get("source")
+    expected_source_keys = {"repository", "revision", "license", "license_file", "tracked_tree_sha256", "license_filenames", "files"}
+    if not isinstance(source, dict) or set(source) != expected_source_keys:
+        return block("MOSS source identity evidence schema is not exact")
+    if (source.get("repository") != "https://github.com/OpenMOSS/MOSS-Audio.git"
+            or source.get("revision") != SOURCE_IDENTITY["revision"]
+            or source.get("license") != {"spdx": None, "status": "PENDING_OWNER_APPROVAL"}
+            or source.get("license_file") != {"path": None, "status": "ABSENT_AT_FIXED_REVISION"}
+            or source.get("tracked_tree_sha256") != SOURCE_IDENTITY["tracked_tree_sha256"]
+            or source.get("license_filenames") != []):
+        return block("MOSS source identity/license absence evidence drifted")
+    expected_source_files = {
+        row["path"]: {"bytes": row["bytes"], "sha256": row["sha256"], "git_blob_sha1": row["git_blob_sha1"]}
+        for row in SOURCE_IDENTITY["source_file_contract"]
+    }
+    if source.get("files") != expected_source_files:
+        return block("MOSS source file evidence drifted")
+    variants = evidence.get("variants")
+    if not isinstance(variants, dict) or set(variants) != set(VARIANTS):
+        return block("MOSS model identity evidence variants are incomplete")
+    expected_variant_keys = {"repository", "revision", "tree_sha256", "card_data_sha256", "license_file", "license_card_data", "metadata", "index"}
+    for variant, identity in VARIANTS.items():
+        record = variants[variant]
+        if not isinstance(record, dict) or set(record) != expected_variant_keys:
+            return block(f"MOSS {variant} identity evidence schema is not exact")
+        if (record.get("repository") != identity["repo"]
+                or record.get("revision") != identity["revision"]
+                or record.get("tree_sha256") != identity["tree_sha256"]
+                or record.get("card_data_sha256") != identity["card_data_sha256"]
+                or record.get("license_file") != identity["license_file"]
+                or record.get("license_card_data") != identity["license_card_data"]
+                or record.get("metadata") != identity["metadata_files"]
+                or record.get("index") != identity["checkpoint_index"]):
+            return block(f"MOSS {variant} metadata/index/license evidence drifted")
+    return True, "PASS"
+
+
 def validate_artifact(value: Any, label: str, registry: str) -> None:
     if not isinstance(value, dict) or set(value) != ARTIFACT_KEYS:
         raise ValueError(f"{label} artifact schema is not exact")
@@ -565,6 +686,19 @@ def verify_source(
         return block(f"official source revision is unreadable: {exc}")
     if revision != (expected_revision or SOURCE_IDENTITY["revision"]):
         return block("official source revision mismatch")
+    try:
+        tracked = subprocess.run(
+            ["git", "-C", str(source), "ls-files", "-z"], check=True,
+            capture_output=True, text=True,
+        ).stdout.split("\x00")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return block(f"official source tracked tree is unreadable: {exc}")
+    tracked = sorted(relative for relative in tracked if relative)
+    if any(tracked_license_filename(relative) for relative in tracked):
+        return block("official source contains a tracked license filename")
+    if expected_revision in (None, SOURCE_IDENTITY["revision"]):
+        if identity_digest(tracked) != SOURCE_IDENTITY["tracked_tree_sha256"]:
+            return block("official source tracked tree identity mismatch")
     contract = contract or SOURCE_IDENTITY["source_file_contract"]
     if any(
         row["status"] != "REVIEWED"
@@ -604,16 +738,16 @@ def fixed_identity_blocker() -> str | None:
     if not resolved_string(SOURCE_IDENTITY.get("license_spdx")):
         return "official source license SPDX identity is incomplete"
     source_license = SOURCE_IDENTITY["license"]
-    if not resolved_hex64(source_license.get("blob_sha256")) or not resolved_hex64(source_license.get("payload_sha256")):
-        return "official source LICENSE blob/payload identity is incomplete"
+    if source_license != {"path": None, "status": "ABSENT_AT_FIXED_REVISION"}:
+        return "official source license-file absence identity is incomplete"
     for row in SOURCE_IDENTITY["source_file_contract"]:
         if row["status"] != "REVIEWED" or not isinstance(row["bytes"], int) or not HEX64.fullmatch(str(row["sha256"])) or not HEX40.fullmatch(str(row["git_blob_sha1"])):
             return f"official source file identity is incomplete: {row['path']}"
     for variant, identity in VARIANTS.items():
         if not resolved_string(identity.get("license_spdx")):
             return f"{variant} model license SPDX identity is incomplete"
-        if not resolved_hex64(identity["license"].get("payload_sha256")):
-            return f"{variant} model LICENSE identity is incomplete"
+        if identity["license"].get("status") != "ABSENT_AT_FIXED_REVISION":
+            return f"{variant} model LICENSE absence identity is incomplete"
         for row in identity["snapshot_files"]:
             if row["status"] != "REVIEWED" or not isinstance(row["bytes"], int) or not HEX64.fullmatch(str(row["sha256"])):
                 return f"{variant} snapshot identity is incomplete: {row['path']}"
@@ -626,14 +760,45 @@ def fixed_identity_blocker() -> str | None:
 
 
 def expected_components() -> list[dict[str, Any]]:
+    fixed = component_identity_projection()
     components = [
-        {"id": "source:OpenMOSS/MOSS-Audio@5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883", "kind": "source", "identity": SOURCE_IDENTITY},
-        {"id": "model:OpenMOSS-Team/MOSS-Audio-4B-Instruct@6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d", "kind": "model", "identity": VARIANTS["4b"]},
-        {"id": "model:OpenMOSS-Team/MOSS-Audio-8B-Instruct@6521a39181b47a18f2d9f4b3acfb5bca7b76b57f", "kind": "model", "identity": VARIANTS["8b"]},
+        {"id": "source:OpenMOSS/MOSS-Audio@5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883", "kind": "source", "identity": fixed["source"]},
+        {"id": "model:OpenMOSS-Team/MOSS-Audio-4B-Instruct@6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d", "kind": "model", "identity": fixed["variants"]["4b"]},
+        {"id": "model:OpenMOSS-Team/MOSS-Audio-8B-Instruct@6521a39181b47a18f2d9f4b3acfb5bca7b76b57f", "kind": "model", "identity": fixed["variants"]["8b"]},
         {"id": "public-license:moss-audio-4b-instruct", "kind": "public_artifact", "identity": {"artifact": "moss-audio-4b-instruct", "license_spdx": None, "license_payload_sha256": None}},
         {"id": "public-license:moss-audio-8b-instruct", "kind": "public_artifact", "identity": {"artifact": "moss-audio-8b-instruct", "license_spdx": None, "license_payload_sha256": None}},
     ]
     return [dict(row, status="PENDING_REVIEW", license=None, payload_sha256=None, signer=None, approval_digest=None) for row in components]
+
+
+def manifest_identity_projection() -> dict[str, Any]:
+    source_keys = ("repo", "revision", "license_spdx", "license", "license_file", "tracked_tree_sha256", "files", "source_file_contract")
+    variant_keys = tuple(VARIANTS["4b"].keys())
+    return {
+        "source": {key: SOURCE_IDENTITY[key] for key in source_keys},
+        "variants": {
+            variant: {key: VARIANTS[variant][key] for key in variant_keys}
+            for variant in VARIANTS
+        },
+        "common_assets": COMMON_ASSETS,
+        "identity_evidence": IDENTITY_EVIDENCE_BINDING,
+    }
+
+
+def component_identity_projection() -> dict[str, Any]:
+    source_keys = ("repo", "revision", "license_spdx", "license", "license_file", "tracked_tree_sha256", "files", "source_file_contract")
+    variant_keys = (
+        "config_sha256", "license", "license_spdx", "model_name", "processor_config_sha256",
+        "repo", "revision", "snapshot_files", "tokenizer_config_sha256",
+    )
+    return {
+        "source": {key: SOURCE_IDENTITY[key] for key in source_keys},
+        "variants": {
+            variant: {key: VARIANTS[variant][key] for key in variant_keys}
+            for variant in VARIANTS
+        },
+        "common_assets": COMMON_ASSETS,
+    }
 
 
 def block(reason: str) -> tuple[bool, str]:
@@ -645,6 +810,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
              expected_head: str | None = None, selected_variants: list[str] | None = None,
              api_smoke_project_path: Path | None = None,
              *, _self_test: bool = False) -> tuple[bool, str]:
+    project_root = project
     lock_path, pyproject_path = project / "uv.lock", project / "pyproject.toml"
     if any(path.is_symlink() or not path.is_file() for path in (lock_path, pyproject_path, manifest_path)):
         return block("lock, pyproject, or MOSS-Audio gate manifest is missing")
@@ -654,8 +820,8 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         return block(f"gate input is unreadable: {exc}")
     try:
-        project = tomllib.loads(project_bytes.decode("utf-8"))
-        validate_project_schema(project)
+        project_config = tomllib.loads(project_bytes.decode("utf-8"))
+        validate_project_schema(project_config)
     except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError) as exc:
         return block(f"pyproject.toml schema is invalid: {exc}")
     if not _self_test:
@@ -670,6 +836,9 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         )
         if not api_ok:
             return block(api_reason)
+    identity_ok, identity_reason = validate_identity_evidence(project_root)
+    if not identity_ok:
+        return block(identity_reason)
     # The bridge proves only that the patched API route was smoke-tested; the
     # active 5.5.0 conversion/reference lock remains unchanged.
     if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS or manifest.get("gate_version") != GATE_VERSION:
@@ -708,7 +877,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
             return block(f"dependency native/bundled review is unresolved: {row.get('id')}")
         if not isinstance(row.get("payload_sha256"), str) or not HEX64.fullmatch(row["payload_sha256"]):
             return block(f"dependency payload identity is unresolved: {row.get('id')}")
-    fixed_identities = {"source": SOURCE_IDENTITY, "variants": VARIANTS, "common_assets": COMMON_ASSETS}
+    fixed_identities = manifest_identity_projection()
     components = manifest.get("component_reviews")
     expected = expected_components()
     component_fields = {"id", "kind", "identity", "status", "license", "payload_sha256", "signer", "approval_digest"}
@@ -770,6 +939,56 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
 def self_test() -> int:
     project = Path(__file__).resolve().parent
     manifest_path = project / "license_gate_manifest.json"
+    identity_ok, identity_reason = validate_identity_evidence(project)
+    if not identity_ok:
+        print(f"moss_audio identity evidence self-test baseline failed: {identity_reason}", file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory(prefix="moss-audio-identity-evidence-") as temporary:
+        candidate_project = Path(temporary)
+        shutil.copy2(project / "identity_audit_evidence.json", candidate_project / "identity_audit_evidence.json")
+        candidate = json.loads((candidate_project / "identity_audit_evidence.json").read_text(encoding="utf-8"))
+        candidate["variants"]["4b"]["index"]["weight_map_entries"] = 902
+        (candidate_project / "identity_audit_evidence.json").write_text(json.dumps(candidate), encoding="utf-8")
+        tampered_ok, tampered_reason = validate_identity_evidence(candidate_project)
+        if tampered_ok or "identity evidence SHA-256" not in tampered_reason:
+            print("moss_audio identity evidence SHA-256 tamper accepted", file=sys.stderr)
+            return 1
+    manifest = load_json(manifest_path)
+    scope = {
+        "lock_sha256": LOCK_SHA256,
+        "pyproject_sha256": PYPROJECT_SHA256,
+        "package_rows_sha256": manifest["package_rows_sha256"],
+        "dependency_reviews": manifest["dependency_reviews"],
+        "component_reviews": manifest["component_reviews"],
+        "fixed_identities": manifest_identity_projection(),
+        "no_upload": "NO_UPLOAD",
+    }
+    if manifest.get("fixed_identities") != manifest_identity_projection() or manifest.get("approval_scope_sha256") != canonical(scope):
+        print("moss_audio fixed identity scope hash is stale", file=sys.stderr)
+        return 1
+    tampered_scope = json.loads(json.dumps(scope))
+    tampered_scope["fixed_identities"]["identity_evidence"]["evidence_sha256"] = "0" * 64
+    if canonical(tampered_scope) == manifest["approval_scope_sha256"]:
+        print("moss_audio identity evidence packet was not bound to approval scope", file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory(prefix="moss-audio-license-filename-") as temporary:
+        source = Path(temporary) / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src/a.py").write_text("a", encoding="utf-8")
+        subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(source), "config", "user.email", "self-test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(source), "config", "user.name", "self-test"], check=True)
+        subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(source), "commit", "-qm", "baseline"], check=True)
+        contract = [{"path": "src/a.py", "role": "test", "bytes": 1, "sha256": sha256(b"a"), "git_blob_sha1": subprocess.run(["git", "-C", str(source), "hash-object", "src/a.py"], check=True, capture_output=True, text=True).stdout.strip(), "status": "REVIEWED"}]
+        for filename in ("LICENSE-MIT", "COPYING.LESSER", "NOTICE_extra"):
+            (source / filename).write_text("synthetic", encoding="utf-8")
+            subprocess.run(["git", "-C", str(source), "add", filename], check=True)
+            subprocess.run(["git", "-C", str(source), "commit", "-qm", filename], check=True)
+            revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+            if verify_source(source, contract=contract, expected_revision=revision)[0]:
+                print(f"moss_audio tracked source {filename} was accepted", file=sys.stderr)
+                return 1
     ok, reason = validate(project, manifest_path)
     if ok or ("unresolved" not in reason and "artifact" not in reason and "BLOCKED_UNVERIFIED_API_SMOKE" not in reason and "API smoke evidence" not in reason):
         print(f"moss_audio preflight gate: expected pending review, got {reason}", file=sys.stderr)
@@ -860,7 +1079,7 @@ def self_test() -> int:
             print("moss_audio snapshot hash tamper accepted", file=sys.stderr); return 1
         mini_source = root / "source"
         (mini_source / "src").mkdir(parents=True)
-        source_payloads = {"src/a.py": b"alpha", "src/b.py": b"beta", "LICENSE": b"license"}
+        source_payloads = {"src/a.py": b"alpha", "src/b.py": b"beta"}
         for relative, payload in source_payloads.items():
             (mini_source / relative).write_bytes(payload)
         subprocess.run(["git", "-C", str(mini_source), "init", "-q"], check=True)
@@ -870,7 +1089,7 @@ def self_test() -> int:
         subprocess.run(["git", "-C", str(mini_source), "commit", "-qm", "baseline"], check=True)
         mini_revision = subprocess.run(["git", "-C", str(mini_source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
         mini_source_contract = []
-        for relative in ("src/a.py", "src/b.py", "LICENSE"):
+        for relative in ("src/a.py", "src/b.py"):
             payload = source_payloads[relative]
             blob = subprocess.run(["git", "-C", str(mini_source), "hash-object", relative], check=True, capture_output=True, text=True).stdout.strip()
             mini_source_contract.append({"path": relative, "role": "test", "bytes": len(payload), "sha256": sha256(payload), "git_blob_sha1": blob, "status": "REVIEWED"})
@@ -902,8 +1121,15 @@ def self_test() -> int:
             print("moss_audio source hash tamper accepted", file=sys.stderr); return 1
         subprocess.run(["git", "-C", str(mini_source), "update-index", "--no-assume-unchanged", "src/a.py"], check=True)
         (mini_source / "src/a.py").write_bytes(original)
+        (mini_source / "LICENSE").write_text("synthetic license", encoding="utf-8")
+        subprocess.run(["git", "-C", str(mini_source), "add", "LICENSE"], check=True)
+        subprocess.run(["git", "-C", str(mini_source), "commit", "-qm", "tracked license"], check=True)
+        license_revision = subprocess.run(["git", "-C", str(mini_source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        if verify_source(mini_source, contract=mini_source_contract, expected_revision=license_revision)[0]:
+            print("moss_audio tracked source LICENSE was accepted", file=sys.stderr); return 1
         shutil.copy2(project / "uv.lock", test_project / "uv.lock")
         shutil.copy2(project / "pyproject.toml", test_project / "pyproject.toml")
+        shutil.copy2(project / "identity_audit_evidence.json", test_project / "identity_audit_evidence.json")
         base = json.loads(manifest_path.read_text(encoding="utf-8"))
         base["component_reviews"] = expected_components()
         for row in base["dependency_reviews"]:
@@ -923,6 +1149,14 @@ def self_test() -> int:
         if not good:
             print(f"moss_audio preflight gate: approved baseline failed: {reason}", file=sys.stderr)
             return 1
+        identity_candidate = json.loads((test_project / "identity_audit_evidence.json").read_text(encoding="utf-8"))
+        identity_candidate["variants"]["4b"]["index"]["weight_map_entries"] = 902
+        (test_project / "identity_audit_evidence.json").write_text(json.dumps(identity_candidate), encoding="utf-8")
+        identity_ok, identity_reason = validate(test_project, approved, evidence, _self_test=True)
+        if identity_ok or "identity evidence SHA-256" not in identity_reason:
+            print("moss_audio identity evidence tamper was accepted", file=sys.stderr)
+            return 1
+        shutil.copy2(project / "identity_audit_evidence.json", test_project / "identity_audit_evidence.json")
         duplicate_manifest = root / "duplicate-manifest.json"
         duplicate_manifest.write_text('{"gate_version":1,"gate_version":1}', encoding="utf-8")
         duplicate_ok, duplicate_reason = validate(test_project, duplicate_manifest, evidence, _self_test=True)

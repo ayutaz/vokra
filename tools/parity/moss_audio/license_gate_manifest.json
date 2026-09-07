@@ -1,5 +1,5 @@
 {
-  "approval_scope_sha256": "50948bb28d02a01ad2e1f754052a6e1b8ff8b1bf9f90dd9c525a1c464de58001",
+  "approval_scope_sha256": "08eeab246dac53187c683cfed54e07f4a64a15abd119f3c4cc186bd23b88e69e",
   "component_reviews": [
     {
       "approval_digest": null,
@@ -11,45 +11,41 @@
           "src/processing_moss_audio.py": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6"
         },
         "license": {
-          "blob_sha256": null,
-          "path": "LICENSE",
-          "payload_sha256": null
+          "path": null,
+          "status": "ABSENT_AT_FIXED_REVISION"
+        },
+        "license_file": {
+          "path": null,
+          "status": "ABSENT_AT_FIXED_REVISION"
         },
         "license_spdx": null,
         "repo": "OpenMOSS/MOSS-Audio",
         "revision": "5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883",
+        "tracked_tree_sha256": "9cee75e549971e12f6a49e3c290f0f6a24f7c06072dd48a0c5baca99690820ff",
         "source_file_contract": [
           {
-            "bytes": null,
-            "git_blob_sha1": null,
+            "bytes": 4670,
+            "git_blob_sha1": "f5cb78bcc2ce91152857b19d213a40160299aeef",
             "path": "src/configuration_moss_audio.py",
             "role": "configuration",
             "sha256": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
-            "status": "UNRESOLVED"
+            "status": "REVIEWED"
           },
           {
-            "bytes": null,
-            "git_blob_sha1": null,
+            "bytes": 22932,
+            "git_blob_sha1": "2970f7917e2544fd10b16b1cbcc210b31ae1a2c3",
             "path": "src/modeling_moss_audio.py",
             "role": "modeling",
             "sha256": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c",
-            "status": "UNRESOLVED"
+            "status": "REVIEWED"
           },
           {
-            "bytes": null,
-            "git_blob_sha1": null,
+            "bytes": 14970,
+            "git_blob_sha1": "5116fed0d59d107d2fa760ad48fdf9e73ac2ea58",
             "path": "src/processing_moss_audio.py",
             "role": "processing",
             "sha256": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6",
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "git_blob_sha1": null,
-            "path": "LICENSE",
-            "role": "license",
-            "sha256": null,
-            "status": "UNRESOLVED"
+            "status": "REVIEWED"
           }
         ]
       },
@@ -66,6 +62,7 @@
         "config_sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
         "license": {
           "path": "LICENSE",
+          "status": "ABSENT_AT_FIXED_REVISION",
           "payload_sha256": null
         },
         "license_spdx": null,
@@ -75,11 +72,11 @@
         "revision": "6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d",
         "snapshot_files": [
           {
-            "bytes": null,
+            "bytes": 2714,
             "path": "config.json",
             "role": "config",
             "sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
-            "status": "UNRESOLVED"
+            "status": "REVIEWED"
           },
           {
             "bytes": 5404,
@@ -124,25 +121,11 @@
             "status": "REVIEWED"
           },
           {
-            "bytes": null,
+            "bytes": 80030,
             "path": "model.safetensors.index.json",
             "role": "checkpoint_index",
-            "sha256": null,
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "path": "__UNRESOLVED_CHECKPOINT_SHARD__",
-            "role": "checkpoint_shard",
-            "sha256": null,
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "path": "LICENSE",
-            "role": "license",
-            "sha256": null,
-            "status": "UNRESOLVED"
+            "sha256": "713a7c71247fe54ba4fb734a4bcf93ec1c3196a507598215d9c0d78f1d1dd6bd",
+            "status": "REVIEWED"
           }
         ],
         "tokenizer_config_sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0"
@@ -160,6 +143,7 @@
         "config_sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
         "license": {
           "path": "LICENSE",
+          "status": "ABSENT_AT_FIXED_REVISION",
           "payload_sha256": null
         },
         "license_spdx": null,
@@ -169,11 +153,11 @@
         "revision": "6521a39181b47a18f2d9f4b3acfb5bca7b76b57f",
         "snapshot_files": [
           {
-            "bytes": null,
+            "bytes": 2715,
             "path": "config.json",
             "role": "config",
             "sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
-            "status": "UNRESOLVED"
+            "status": "REVIEWED"
           },
           {
             "bytes": 6114,
@@ -218,25 +202,11 @@
             "status": "REVIEWED"
           },
           {
-            "bytes": null,
+            "bytes": 80030,
             "path": "model.safetensors.index.json",
             "role": "checkpoint_index",
-            "sha256": null,
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "path": "__UNRESOLVED_CHECKPOINT_SHARD__",
-            "role": "checkpoint_shard",
-            "sha256": null,
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "path": "LICENSE",
-            "role": "license",
-            "sha256": null,
-            "status": "UNRESOLVED"
+            "sha256": "d980986e77df7ff3b427ffdff58b0ca04e9a93d2e4a097ed2187cef6593a8e67",
+            "status": "REVIEWED"
           }
         ],
         "tokenizer_config_sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41"
@@ -936,6 +906,12 @@
       "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
       "vocab.json": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d"
     },
+    "identity_evidence": {
+      "evidence_sha256": "2998d89d2805c507bdbc3e18118bf50a9c18e06479fff1a7dce8b020dd6dae2d",
+      "format": "vokra-moss-audio-no-weight-identity-evidence-v1",
+      "manifest_file_sha256": "05bdc638e1d32098c077a71563c37a0c362c394fa809ab1b1f53692bbe062ea4",
+      "manifest_sha256": "d5420e58ba7d847828ff888a221c87bc1c2ffa9f57f08b0bd92a7ef2ffdd1624"
+    },
     "source": {
       "files": {
         "src/configuration_moss_audio.py": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
@@ -943,45 +919,41 @@
         "src/processing_moss_audio.py": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6"
       },
       "license": {
-        "blob_sha256": null,
-        "path": "LICENSE",
-        "payload_sha256": null
+        "path": null,
+        "status": "ABSENT_AT_FIXED_REVISION"
+      },
+      "license_file": {
+        "path": null,
+        "status": "ABSENT_AT_FIXED_REVISION"
       },
       "license_spdx": null,
       "repo": "OpenMOSS/MOSS-Audio",
       "revision": "5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883",
+      "tracked_tree_sha256": "9cee75e549971e12f6a49e3c290f0f6a24f7c06072dd48a0c5baca99690820ff",
       "source_file_contract": [
         {
-          "bytes": null,
-          "git_blob_sha1": null,
+          "bytes": 4670,
+          "git_blob_sha1": "f5cb78bcc2ce91152857b19d213a40160299aeef",
           "path": "src/configuration_moss_audio.py",
           "role": "configuration",
           "sha256": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
-          "status": "UNRESOLVED"
+          "status": "REVIEWED"
         },
         {
-          "bytes": null,
-          "git_blob_sha1": null,
+          "bytes": 22932,
+          "git_blob_sha1": "2970f7917e2544fd10b16b1cbcc210b31ae1a2c3",
           "path": "src/modeling_moss_audio.py",
           "role": "modeling",
           "sha256": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c",
-          "status": "UNRESOLVED"
+          "status": "REVIEWED"
         },
         {
-          "bytes": null,
-          "git_blob_sha1": null,
+          "bytes": 14970,
+          "git_blob_sha1": "5116fed0d59d107d2fa760ad48fdf9e73ac2ea58",
           "path": "src/processing_moss_audio.py",
           "role": "processing",
           "sha256": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6",
-          "status": "UNRESOLVED"
-        },
-        {
-          "bytes": null,
-          "git_blob_sha1": null,
-          "path": "LICENSE",
-          "role": "license",
-          "sha256": null,
-          "status": "UNRESOLVED"
+          "status": "REVIEWED"
         }
       ]
     },
@@ -990,20 +962,40 @@
         "config_sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
         "license": {
           "path": "LICENSE",
+          "status": "ABSENT_AT_FIXED_REVISION",
           "payload_sha256": null
         },
         "license_spdx": null,
         "model_name": "moss-audio-4b-instruct",
         "processor_config_sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
+        "license_card_data": {"source": "HF_MODEL_INFO_CARD_DATA", "field": "license", "value": "apache-2.0", "spdx": null, "status": "PENDING_OWNER_APPROVAL"},
+        "license_file": {"path": "LICENSE", "status": "ABSENT_AT_FIXED_REVISION"},
+        "tree_sha256": "d3cceb4df1e5291ed04f76ff6b544dfc4a78d99291cea62708236f62da17d3a5",
+        "card_data_sha256": "5ba4af15ea00731e8b06673020a66810efc58cc1730919bb8c91b683af3795df",
+        "metadata_files": {
+          "config.json": {"bytes": 2714, "sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa", "git_blob_sha1": "e28bb45dcc6e9cf11f2bfadb2352d8583e630346"},
+          "tokenizer_config.json": {"bytes": 5404, "sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0", "git_blob_sha1": "ddaf69808214a44fdd26d3785b66c1367c78277a"},
+          "processor_config.json": {"bytes": 426, "sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf", "git_blob_sha1": "bd284896dcd78cc124b92cdc2dffedce22937431"},
+          "vocab.json": {"bytes": 3383407, "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d", "git_blob_sha1": "6bce3a0a3866c4791a74d83d78f6824c3af64ec3"},
+          "merges.txt": {"bytes": 1671853, "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", "git_blob_sha1": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"},
+          "chat_template.jinja": {"bytes": 4116, "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5", "git_blob_sha1": "699ff8df401fe4788525e9c1f9b86a99eadd6230"},
+          "generation_config.json": {"bytes": 121, "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e", "git_blob_sha1": "4835636feaab94c609ee8e876bc0c7c701bc048e"},
+          "model.safetensors.index.json": {"bytes": 80030, "sha256": "713a7c71247fe54ba4fb734a4bcf93ec1c3196a507598215d9c0d78f1d1dd6bd", "git_blob_sha1": "65db839bbbf4c21248acccfcd24516c62d9e1c3a"}
+        },
+        "checkpoint_index": {"path": "model.safetensors.index.json", "bytes": 80030, "sha256": "713a7c71247fe54ba4fb734a4bcf93ec1c3196a507598215d9c0d78f1d1dd6bd", "git_blob_sha1": "65db839bbbf4c21248acccfcd24516c62d9e1c3a", "weight_map_entries": 901, "payload_downloaded": false, "shards": [
+          {"path": "model-00001-of-00003.safetensors", "bytes": 4993537896, "git_blob_sha1": "9de43e508305823b6ee8d4728caa0fbc3b2a6a6e", "lfs_sha256": "a87bddad846a58affb7a737d70c9cb01a41225887b0b25048fc1b543ecaba110"},
+          {"path": "model-00002-of-00003.safetensors", "bytes": 4674299440, "git_blob_sha1": "3ea56151ec609eb4dcfdd70142156d1b1f36afbd", "lfs_sha256": "1a25d9dec4fd4336bc5197c336733d2874f00e51569ac9c0042460d4579ded77"},
+          {"path": "model-00003-of-00003.safetensors", "bytes": 777912448, "git_blob_sha1": "8dc0f297fa8b967685378f93c51257375afceb94", "lfs_sha256": "09ec9f23bdf35a0e7668d94276b8808bc40b05cf5a594508264fa5883c0057d0"}
+        ]},
         "repo": "OpenMOSS-Team/MOSS-Audio-4B-Instruct",
         "revision": "6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d",
         "snapshot_files": [
           {
-            "bytes": null,
+            "bytes": 2714,
             "path": "config.json",
             "role": "config",
             "sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
-            "status": "UNRESOLVED"
+            "status": "REVIEWED"
           },
           {
             "bytes": 5404,
@@ -1048,25 +1040,11 @@
             "status": "REVIEWED"
           },
           {
-            "bytes": null,
+            "bytes": 80030,
             "path": "model.safetensors.index.json",
             "role": "checkpoint_index",
-            "sha256": null,
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "path": "__UNRESOLVED_CHECKPOINT_SHARD__",
-            "role": "checkpoint_shard",
-            "sha256": null,
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "path": "LICENSE",
-            "role": "license",
-            "sha256": null,
-            "status": "UNRESOLVED"
+            "sha256": "713a7c71247fe54ba4fb734a4bcf93ec1c3196a507598215d9c0d78f1d1dd6bd",
+            "status": "REVIEWED"
           }
         ],
         "tokenizer_config_sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0"
@@ -1075,20 +1053,41 @@
         "config_sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
         "license": {
           "path": "LICENSE",
+          "status": "ABSENT_AT_FIXED_REVISION",
           "payload_sha256": null
         },
         "license_spdx": null,
         "model_name": "moss-audio-8b-instruct",
         "processor_config_sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
+        "license_card_data": {"source": "HF_MODEL_INFO_CARD_DATA", "field": "license", "value": "apache-2.0", "spdx": null, "status": "PENDING_OWNER_APPROVAL"},
+        "license_file": {"path": "LICENSE", "status": "ABSENT_AT_FIXED_REVISION"},
+        "tree_sha256": "2881ec4d25f0fe97bc8b52cb4e4ea6af3033b56608520f1f8d47a46501c9174a",
+        "card_data_sha256": "5ba4af15ea00731e8b06673020a66810efc58cc1730919bb8c91b683af3795df",
+        "metadata_files": {
+          "config.json": {"bytes": 2715, "sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536", "git_blob_sha1": "393f2b4d18adea5de3a55791b912f7ac198a01f9"},
+          "tokenizer_config.json": {"bytes": 6114, "sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41", "git_blob_sha1": "aaeca3e2ba281c9daeb1d10a4e14c585008ee092"},
+          "processor_config.json": {"bytes": 427, "sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf", "git_blob_sha1": "381a60749bc471161e2928c23f640e58d456f725"},
+          "vocab.json": {"bytes": 3383407, "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d", "git_blob_sha1": "6bce3a0a3866c4791a74d83d78f6824c3af64ec3"},
+          "merges.txt": {"bytes": 1671853, "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", "git_blob_sha1": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"},
+          "chat_template.jinja": {"bytes": 4116, "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5", "git_blob_sha1": "699ff8df401fe4788525e9c1f9b86a99eadd6230"},
+          "generation_config.json": {"bytes": 121, "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e", "git_blob_sha1": "4835636feaab94c609ee8e876bc0c7c701bc048e"},
+          "model.safetensors.index.json": {"bytes": 80030, "sha256": "d980986e77df7ff3b427ffdff58b0ca04e9a93d2e4a097ed2187cef6593a8e67", "git_blob_sha1": "802e1c8d00498e8e145d19a1a3428b7dbd49f04b"}
+        },
+        "checkpoint_index": {"path": "model.safetensors.index.json", "bytes": 80030, "sha256": "d980986e77df7ff3b427ffdff58b0ca04e9a93d2e4a097ed2187cef6593a8e67", "git_blob_sha1": "802e1c8d00498e8e145d19a1a3428b7dbd49f04b", "weight_map_entries": 901, "payload_downloaded": false, "shards": [
+          {"path": "model-00001-of-00004.safetensors", "bytes": 4931218512, "git_blob_sha1": "818616459d09cd467e6a0f8ee91562d7863e8249", "lfs_sha256": "ead244c31d39119e1447f31ff04d7a52698c8352553fec472c6284ed6828c3d6"},
+          {"path": "model-00002-of-00004.safetensors", "bytes": 4983069720, "git_blob_sha1": "7cb539c721036462ee164100bf867a8e2c1e6a29", "lfs_sha256": "cdfb0c2c3c1c98208cd40bb72bbeda4faa2436dca55fc461b535e6e9a80736d6"},
+          {"path": "model-00003-of-00004.safetensors", "bytes": 4999847608, "git_blob_sha1": "bb0ec8fa6decbccd24e5deb58b8b43ab29a20e8e", "lfs_sha256": "eeaeb7cb4575954150f43f81c83988abe48a45d668aed637ce5bf4f0d0d050b8"},
+          {"path": "model-00004-of-00004.safetensors", "bytes": 3190899536, "git_blob_sha1": "6726465bf5772df99a24c0189f9b26bd15bbbda7", "lfs_sha256": "2e9a71c1548f6850c6113e94a3ecafde650a1b4e870c3bca5b686ed744c68792"}
+        ]},
         "repo": "OpenMOSS-Team/MOSS-Audio-8B-Instruct",
         "revision": "6521a39181b47a18f2d9f4b3acfb5bca7b76b57f",
         "snapshot_files": [
           {
-            "bytes": null,
+            "bytes": 2715,
             "path": "config.json",
             "role": "config",
             "sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
-            "status": "UNRESOLVED"
+            "status": "REVIEWED"
           },
           {
             "bytes": 6114,
@@ -1133,32 +1132,18 @@
             "status": "REVIEWED"
           },
           {
-            "bytes": null,
+            "bytes": 80030,
             "path": "model.safetensors.index.json",
             "role": "checkpoint_index",
-            "sha256": null,
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "path": "__UNRESOLVED_CHECKPOINT_SHARD__",
-            "role": "checkpoint_shard",
-            "sha256": null,
-            "status": "UNRESOLVED"
-          },
-          {
-            "bytes": null,
-            "path": "LICENSE",
-            "role": "license",
-            "sha256": null,
-            "status": "UNRESOLVED"
+            "sha256": "d980986e77df7ff3b427ffdff58b0ca04e9a93d2e4a097ed2187cef6593a8e67",
+            "status": "REVIEWED"
           }
         ],
         "tokenizer_config_sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41"
       }
     }
   },
-  "gate_version": 1,
+  "gate_version": 2,
   "lock_sha256": "f26e7504e980c5a62fdcb1bd2ed1d9726da09c839cb9f251412b4d4145fbd59f",
   "no_upload": "NO_UPLOAD",
   "operator_approval": {
