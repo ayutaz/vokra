@@ -12,11 +12,14 @@ EOF
 }
 if [[ "${1:-}" == --self-test ]]; then
   [[ $# == 1 ]] || die '--self-test accepts no arguments'
-  grep -Fq 'torch.load' "$INSPECTOR"
-  grep -Fq 'weights_only=True' "$INSPECTOR"
+  grep -Fq 'metadata-only' "$INSPECTOR"
+  grep -Fq 'model-free' "$INSPECTOR"
+  grep -Fq 'PENDING_OWNER_APPROVAL' "$INSPECTOR"
+  grep -Fq 'checkpoint payloads were intentionally not downloaded or loaded' "$INSPECTOR"
   grep -Fq 'NO_UPLOAD' "$INSPECTOR"
-  grep -Fq 'LM_ONLY_PCM_FAIL_CLOSED' "$INSPECTOR"
-  grep -Fq 'dedicated uv.lock absent' "$INSPECTOR"
+  grep -Fq 'LOUD_PARTIAL_FAIL_CLOSED' "$INSPECTOR"
+  download_word='snapshot'; download_suffix='_download'
+  if grep -Fq "${download_word}${download_suffix}" "$0"; then die 'validation script contains a payload download route'; fi
   uv_word='uv'; sync_word='sy'; sync_suffix='nc'; project_prefix='--pro'; project_suffix='ject'
   if grep -Fq -- "${uv_word} ${sync_word}${sync_suffix}" "$0" || grep -Fq -- "${uv_word} run ${project_prefix}${project_suffix}" "$0"; then die 'validation self-test found an executable project route'; fi
   UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --self-test

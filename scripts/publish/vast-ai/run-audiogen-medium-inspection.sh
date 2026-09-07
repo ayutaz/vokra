@@ -3,15 +3,49 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/audiogen_medium_reference"
 INSPECTOR="$ROOT/tools/parity/audiogen_medium_inspect.py"
+METADATA_AUDIT="$ROOT/tools/parity/audiogen_medium_reference/metadata_audit.py"
 REFERENCE="$ROOT/tools/parity/audiogen_medium_dump_reference.py"
 HF_REPOSITORY="facebook/audiogen-medium"; HF_REVISION="1277dd7dfd8fa57a205a70acc5de0ee90804502f"
 SOURCE_URL="https://github.com/facebookresearch/audiocraft.git"; SOURCE_REVISION="a2b96756956846e194c9255d0cdadc2b47c93f1b"
-MIN_MEM_KIB=$((64*1024*1024)); MIN_DISK_KIB=$((16*1024*1024))
+MIN_MEM_KIB=$((64*1024*1024)); MIN_DISK_KIB=$((16*1024*1024)); MODEL_FREE_MIN_DISK_KIB=$((256*1024))
 die(){ echo "audiogen-medium-vast: BLOCKED: $*" >&2; exit 2; }
 usage(){ cat >&2 <<'EOF'
-usage: run-audiogen-medium-inspection.sh --expected-head <40-hex> \
-       --approval-evidence <file> --approval-sha256 <64-hex> [--self-test]
+usage: run-audiogen-medium-inspection.sh --model-free --expected-head <40-hex>
+   or: run-audiogen-medium-inspection.sh --expected-head <40-hex> \
+       --approval-evidence <file> --approval-sha256 <64-hex>
+   or: run-audiogen-medium-inspection.sh --self-test
 EOF
+}
+validate_model_free_manifest(){
+  local path="$1" expected_head="$2"
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python - "$path" "$expected_head" <<'PY'
+import json,sys
+from pathlib import Path
+def unique(pairs):
+ out={}
+ for key,value in pairs:
+  if key in out: raise SystemExit(f"duplicate manifest key: {key}")
+  out[key]=value
+ return out
+m=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"),object_pairs_hook=unique)
+expected_head=sys.argv[2]
+expected_keys={"format","status","evidence_stage","runtime_status","cpu_status","metal_status","parity_status","publication","inspection_status","collection_status","expected_head","approval_evidence","upstream","archives","compression_companion","external_text_conditioner","official_source","license_evidence","blockers"}
+if set(m) != expected_keys: raise SystemExit("model-free manifest root closure mismatch")
+required={"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE","collection_status":"AUTHENTICATED","runtime_status":"LOUD_PARTIAL_FAIL_CLOSED","cpu_status":"NOT_RUN","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD"}
+for key,want in required.items():
+ if m.get(key)!=want: raise SystemExit(f"model-free marker mismatch: {key}={m.get(key)!r}")
+if m.get("expected_head") != expected_head: raise SystemExit("model-free expected HEAD mismatch")
+if m.get("approval_evidence") != {"status":"PENDING_OWNER_APPROVAL"}: raise SystemExit("model-free approval state is not pending")
+up=m.get("upstream")
+if not isinstance(up,dict) or up.get("repository")!="facebook/audiogen-medium" or up.get("requested_revision")!="1277dd7dfd8fa57a205a70acc5de0ee90804502f" or up.get("resolved_revision")!="1277dd7dfd8fa57a205a70acc5de0ee90804502f": raise SystemExit("model-free upstream identity mismatch")
+archives=m.get("archives")
+if not isinstance(archives,dict) or set(archives) != {"compression_state_dict.bin","state_dict.bin"}: raise SystemExit("model-free archive closure mismatch")
+for name,row in archives.items():
+ if not isinstance(row,dict) or row.get("payload_status") != "NOT_DOWNLOADED" or row.get("execution") != "NOT_PERFORMED": raise SystemExit(f"model-free payload execution marker mismatch: {name}")
+for key in ("compression_companion","external_text_conditioner"):
+ companion=m.get(key)
+ if not isinstance(companion,dict) or companion.get("payload") != "NOT_DOWNLOADED": raise SystemExit(f"model-free companion payload marker mismatch: {key}")
+PY
 }
 validate_manifest(){
   local path="$1"
@@ -28,7 +62,7 @@ def unique(pairs):
 m=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"),object_pairs_hook=unique); expected_head=sys.argv[2]; approval_sha256=sys.argv[3]
 expected_keys={"format","status","evidence_stage","runtime_status","cpu_status","metal_status","parity_status","publication","inspection_status","collection_status","expected_head","approval_evidence","upstream","archives","compression_companion","external_text_conditioner","official_source","license_evidence","blockers"}
 if set(m) != expected_keys: raise SystemExit(f"manifest root closure mismatch: {sorted(set(m)^expected_keys)}")
-required={"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE","collection_status":"AUTHENTICATED","runtime_status":"LM_ONLY_PCM_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD"}
+required={"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE","collection_status":"AUTHENTICATED","runtime_status":"LOUD_PARTIAL_FAIL_CLOSED","cpu_status":"NOT_RUN","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD"}
 for key,want in required.items():
  if m.get(key)!=want: raise SystemExit(f"manifest marker mismatch: {key}={m.get(key)!r}")
 up=m.get("upstream")
@@ -41,23 +75,37 @@ PY
 }
 self_test(){
   [[ $# == 1 ]] || die '--self-test accepts no arguments'
-  grep -Fq 'LM_ONLY_PCM_FAIL_CLOSED' "$INSPECTOR"
+  grep -Fq 'LOUD_PARTIAL_FAIL_CLOSED' "$INSPECTOR"
   grep -Fq 'AUTHENTICATED_EVIDENCE_COMPLETE' "$INSPECTOR"
+  grep -Fq -- '--model-free' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq 'PENDING_OWNER_APPROVAL' "$INSPECTOR"
+  grep -Fq 'NOT_DOWNLOADED' "$ROOT/tools/parity/audiogen_medium_reference/metadata_audit.py"
   grep -Fq 'snapshot_download' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq 'dedicated AudioGen uv.lock absent; fail before downloads' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq 'PASS_MODEL_FREE' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq 'evidence_sha256' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq 'exit 0' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq 'payload_status' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq 'VOKRA_PUBLISH_ON_VAST=1' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq -- '--model-free' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- '--expected-head' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- '--approval-sha256' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- 'uv run --no-project --offline' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   if "$0" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1; then die 'duplicate --expected-head was accepted'; fi
   if "$0" --expected-head 0000000000000000000000000000000000000000 --approval-evidence a --approval-evidence b >/dev/null 2>&1; then die 'duplicate --approval-evidence was accepted'; fi
   if "$0" --expected-head 0000000000000000000000000000000000000000 --approval-evidence a --approval-sha256 0000000000000000000000000000000000000000000000000000000000000000 --approval-sha256 1111111111111111111111111111111111111111111111111111111111111111 >/dev/null 2>&1; then die 'duplicate --approval-sha256 was accepted'; fi
+  if "$0" --model-free --expected-head 0000000000000000000000000000000000000000 --approval-evidence a >/dev/null 2>&1; then die 'model-free approval mix was accepted'; fi
+  if "$0" --model-free --expected-head 0000000000000000000000000000000000000000 --approval-sha256 0000000000000000000000000000000000000000000000000000000000000000 >/dev/null 2>&1; then die 'model-free approval hash mix was accepted'; fi
   UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --self-test
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$METADATA_AUDIT" --self-test
   UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$REFERENCE" --self-test
   echo 'run-audiogen-medium-inspection.sh self-test: OK'
 }
 if [[ "${1:-}" == --self-test ]]; then self_test "$@"; exit 0; fi
-expected_head=''; approval_evidence=''; approval_sha256=''; seen_head=0; seen_approval=0; seen_approval_sha=0
+expected_head=''; approval_evidence=''; approval_sha256=''; model_free=0; seen_head=0; seen_approval=0; seen_approval_sha=0
 while (($#)); do
   case "$1" in
+    --model-free) (( model_free == 0 )) || die 'duplicate --model-free'; model_free=1; shift ;;
     --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen_head=1; shift 2 ;;
     --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty path'; approval_evidence="$2"; seen_approval=1; shift 2 ;;
     --approval-sha256) (( seen_approval_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; approval_sha256="$2"; seen_approval_sha=1; shift 2 ;;
@@ -65,13 +113,39 @@ while (($#)); do
   esac
 done
 (( seen_head == 1 )) || die '--expected-head is required'
-(( seen_approval == 1 )) || die '--approval-evidence is required'
-(( seen_approval_sha == 1 )) || die '--approval-sha256 is required'
+if (( model_free == 1 )); then
+  (( seen_approval == 0 )) || die '--model-free cannot mix with --approval-evidence'
+  (( seen_approval_sha == 0 )) || die '--model-free cannot mix with --approval-sha256'
+else
+  (( seen_approval == 1 )) || die '--approval-evidence is required'
+  (( seen_approval_sha == 1 )) || die '--approval-sha256 is required'
+fi
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST requires Linux x86_64'
-[[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
-[[ -f "$PROJECT/uv.lock" ]] || die 'dedicated AudioGen uv.lock absent; fail before downloads'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
 [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
+if (( model_free == 1 )); then
+  [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
+  for command in git uv awk df sha256sum realpath; do command -v "$command" >/dev/null || die "missing tool: $command"; done
+  work="/dev/shm/vokra-audiogen-medium-model-free-${expected_head}"
+  [[ -d /dev/shm && ! -L /dev/shm && "$(realpath -e /dev/shm)" == /dev/shm ]] || die 'model-free work parent is not the fixed /dev/shm path'
+  root_real="$(realpath -e "$ROOT")"; [[ "$root_real" != /dev/shm && "$root_real" != /dev/shm/* ]] || die 'model-free work path overlaps checkout'
+  [[ ! -e "$work" && ! -L "$work" ]] || die 'model-free work path must be absent (no-clobber)'
+  free_kib="$(df -Pk "$(dirname "$work")" | awk 'NR==2{print $4}')"; [[ "$free_kib" =~ ^[0-9]+$ && $free_kib -ge $MODEL_FREE_MIN_DISK_KIB ]] || die 'model-free small disk guard failed'
+  mkdir "$work"; mkdir -p "$work/source" "$work/evidence"
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$METADATA_AUDIT" "$work/tree.json" >>"$work/evidence/acquisition.log" 2>&1
+  git clone --filter=blob:none "$SOURCE_URL" "$work/source/repo" >>"$work/evidence/acquisition.log" 2>&1
+  git -C "$work/source/repo" checkout --detach "$SOURCE_REVISION" >>"$work/evidence/acquisition.log" 2>&1
+  set +e
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --model-free --source "$work/source/repo" --server-tree "$work/tree.json" --output "$work/evidence" --expected-head "$expected_head" --vokra-root "$ROOT" >>"$work/evidence/acquisition.log" 2>&1
+  inspector_rc=$?
+  set -e
+  [[ "$inspector_rc" == 2 ]] || die "model-free inspector returned unexpected status: $inspector_rc"
+  validate_model_free_manifest "$work/evidence/manifest.json" "$expected_head" || die 'model-free inspection did not produce complete authenticated evidence'
+  evidence_sha256="$(sha256sum "$work/evidence/manifest.json" | awk '{print $1}')"
+  printf '{"status":"PASS_MODEL_FREE","evidence_sha256":"%s","payload":"NOT_DOWNLOADED","load":"NOT_PERFORMED","run":"NOT_PERFORMED","upload":"NO_UPLOAD","approval":"PENDING_OWNER_APPROVAL"}\n' "$evidence_sha256"
+  exit 0
+fi
+[[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
 mem_kib="$(awk '$1=="MemTotal:"{print $2;exit}' /proc/meminfo)"; [[ "$mem_kib" =~ ^[0-9]+$ && $mem_kib -ge $MIN_MEM_KIB ]] || die '64 GiB memory guard failed'
 for command in git uv awk find df; do command -v "$command" >/dev/null || die "missing tool: $command"; done

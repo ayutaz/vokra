@@ -276,6 +276,45 @@ def inventory_snapshot(root: Path, packet_path: Path) -> tuple[dict[str, Any], l
     return {"repository": packet["repository"], "requested_revision": packet["requested_revision"], "resolved_revision": packet["resolved_revision"], "walk": packet["walk"], "cache_excluded": cache_excluded}, sorted(rows, key=lambda row: row["path"])
 
 
+def inventory_server_metadata(packet_path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str]]:
+    """Validate HF tree/card metadata without opening any checkpoint payload."""
+    packet = load_json(packet_path)
+    required = {"repository", "requested_revision", "resolved_revision", "walk", "files", "model_card"}
+    if not isinstance(packet, dict) or set(packet) != required:
+        raise RuntimeError("HF metadata packet envelope is not exact")
+    if (packet["repository"], packet["requested_revision"], packet["resolved_revision"], packet["walk"]) != (HF_REPOSITORY, HF_REVISION, HF_REVISION, "recursive_file_only"):
+        raise RuntimeError("HF metadata repository/revision/walk mismatch")
+    card = packet["model_card"]
+    if not isinstance(card, dict) or set(card) != {"path", "license"} or card != {"path": "README.md", "license": HF_EXPECTED_LICENSE}:
+        raise RuntimeError("HF metadata model-card license is not authenticated")
+    rows = packet["files"]
+    if not isinstance(rows, list):
+        raise RuntimeError("HF metadata files must be a list")
+    names: set[str] = set()
+    checked: list[dict[str, Any]] = []
+    required_row = {"path", "type", "size", "git_blob_sha1", "lfs_pointer_git_blob_sha1", "lfs_payload_sha256", "lfs_payload_size"}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != required_row or row.get("type") != "file":
+            raise RuntimeError("HF metadata row schema/type mismatch")
+        name = row["path"]
+        safe_relative(name, "HF metadata")
+        if name in names or name not in HF_FILES:
+            raise RuntimeError(f"unexpected/duplicate HF metadata path: {name}")
+        fixed = HF_FILE_IDENTITIES[name]
+        if row["size"] != fixed["bytes"]:
+            raise RuntimeError(f"fixed HF metadata size mismatch: {name}")
+        if name.endswith(".bin"):
+            if row["git_blob_sha1"] is not None or row["lfs_pointer_git_blob_sha1"] != fixed["lfs_pointer_git_blob_sha1"] or row["lfs_payload_sha256"] != fixed["lfs_payload_sha256"] or row["lfs_payload_size"] != fixed["bytes"]:
+                raise RuntimeError(f"fixed HF LFS metadata mismatch: {name}")
+        elif row["git_blob_sha1"] != fixed["git_blob_sha1"] or any(row[key] is not None for key in ("lfs_pointer_git_blob_sha1", "lfs_payload_sha256", "lfs_payload_size")):
+            raise RuntimeError(f"fixed HF Git metadata mismatch: {name}")
+        names.add(name)
+        checked.append({"path": name, "bytes": row["size"], "git_blob_sha1": row["git_blob_sha1"], "lfs_pointer_git_blob_sha1": row["lfs_pointer_git_blob_sha1"], "lfs_payload_sha256": row["lfs_payload_sha256"], "lfs_payload_size": row["lfs_payload_size"], "payload_status": "NOT_DOWNLOADED"})
+    if names != HF_FILES:
+        raise RuntimeError(f"HF metadata file set mismatch: {sorted(names)}")
+    return {"repository": packet["repository"], "requested_revision": packet["requested_revision"], "resolved_revision": packet["resolved_revision"], "walk": packet["walk"], "payloads": "NOT_DOWNLOADED"}, sorted(checked, key=lambda row: row["path"]), card
+
+
 def parse_model_card(text: str) -> dict[str, str]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -499,10 +538,36 @@ def write_manifest(output: Path, **fields: Any) -> None:
         stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
 
 
+def validate_model_free_options(*, snapshot: Path | None, approval_evidence: str | None, approval_sha256: str | None, expected_head: str | None, source: Path | None, server_tree: Path | None, output: Path | None, vokra_root: Path | None) -> None:
+    """Enforce the owner-independent metadata boundary before approval handling."""
+    if snapshot is not None or approval_evidence is not None or approval_sha256 is not None:
+        raise RuntimeError("model-free metadata inspection cannot mix snapshot or approval arguments")
+    if any(value is None for value in (expected_head, source, server_tree, output, vokra_root)):
+        raise RuntimeError("model-free metadata inspection requires expected-head, source, server-tree, output, and vokra-root")
+
+
+def model_free_archives(files: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Keep checkpoint archives in the manifest; other metadata stays upstream.files."""
+    return {
+        name: {
+            "bytes": row["bytes"],
+            "git_blob_sha1": row["git_blob_sha1"],
+            "lfs_pointer_git_blob_sha1": row["lfs_pointer_git_blob_sha1"],
+            "lfs_payload_sha256": row["lfs_payload_sha256"],
+            "payload_status": row["payload_status"],
+            "execution": "NOT_PERFORMED",
+        }
+        for name, row in ((item["path"], item) for item in files)
+        if name in ARCHIVES
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--snapshot", type=Path)
+    parser.add_argument("--metadata-only", action="store_true")
+    parser.add_argument("--model-free", action="store_true")
     parser.add_argument("--source", type=Path)
     parser.add_argument("--server-tree", type=Path)
     parser.add_argument("--output", type=Path)
@@ -515,6 +580,8 @@ def main() -> int:
     if args.self_test:
         self_test()
         return 0
+    if (args.model_free or args.metadata_only) and args.validate_approval:
+        parser.error("model-free metadata inspection cannot mix with --validate-approval")
     if args.validate_approval:
         if args.approval_evidence is None or args.approval_sha256 is None or args.expected_head is None:
             parser.error("--validate-approval requires --approval-evidence, --approval-sha256, and --expected-head")
@@ -524,6 +591,47 @@ def main() -> int:
             return 0
         except (OSError, RuntimeError, UnicodeError, ValueError) as error:
             print(f"approval BLOCKED: {error}", file=sys.stderr)
+            return 2
+    if args.model_free and args.metadata_only:
+        parser.error("--model-free and --metadata-only are aliases; pass only one")
+    if args.model_free or args.metadata_only:
+        try:
+            validate_model_free_options(snapshot=args.snapshot, approval_evidence=args.approval_evidence, approval_sha256=args.approval_sha256, expected_head=args.expected_head, source=args.source, server_tree=args.server_tree, output=args.output, vokra_root=args.vokra_root)
+        except RuntimeError as error:
+            parser.error(str(error))
+        try:
+            if args.vokra_root is not None:
+                validate_clean_head(args.vokra_root, args.expected_head)
+            server, files, card = inventory_server_metadata(args.server_tree)
+            source = source_inventory(args.source)
+            blockers = [
+                "checkpoint payloads were intentionally not downloaded or loaded",
+                "exact T5-family conditioner repository/name/size is not recoverable from public metadata without checkpoint payloads",
+                "release-specific 16-kHz EnCodec/SEANet config and tensor topology are not recoverable from public metadata without compression payloads",
+                "HF weight-build provenance is not independently authenticated against AudioCraft v1.0.0 source",
+                "training-data provenance is unauthenticated",
+                "native AudioGen codec/LM composition is not implemented",
+                "CPU/Metal parity is not run",
+                "source LICENSE_weights is CC-BY-NC-4.0; historical v0.0.2 LICENSE_weights is CC-BY-NC-ND-4.0 (provenance ambiguity)",
+                "owner approval evidence is pending; model-free closure does not authorize real inspection or publication",
+            ] + source["role_blockers"]
+            write_manifest(
+                args.output,
+                inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if not source["role_blockers"] else "INSPECTION_ERROR",
+                collection_status="AUTHENTICATED" if not source["role_blockers"] else "UNVERIFIED",
+                expected_head=args.expected_head,
+                approval_evidence={"status": "PENDING_OWNER_APPROVAL"},
+                upstream={**server, "files": files, "model_card": card},
+                archives=model_free_archives(files),
+                compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "BLOCKED_CONFIG_UNRESOLVED", "payload": "NOT_DOWNLOADED"},
+                external_text_conditioner={"family": "T5-family", "status": "BLOCKED_IDENTITY_UNRESOLVED", "selection": None, "payload": "NOT_DOWNLOADED"},
+                official_source=source,
+                license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_METADATA"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"},
+                blockers=sorted(set(blockers)),
+            )
+            return 2
+        except Exception as error:
+            write_manifest(args.output, inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", expected_head=args.expected_head, approval_evidence={"status": "PENDING_OWNER_APPROVAL"}, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, error_type=type(error).__name__, blockers=[str(error)])
             return 2
     if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head)):
         parser.error("normal runs require --approval-evidence, --approval-sha256, and --expected-head")
@@ -568,8 +676,21 @@ def main() -> int:
 def self_test() -> None:
     global HF_FILE_IDENTITIES
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40
+    validate_model_free_options(snapshot=None, approval_evidence=None, approval_sha256=None, expected_head="a" * 40, source=Path("source"), server_tree=Path("tree.json"), output=Path("evidence"), vokra_root=Path("."))
+    for mixed in (
+        {"snapshot": Path("snapshot"), "approval_evidence": None, "approval_sha256": None},
+        {"snapshot": None, "approval_evidence": "approval.json", "approval_sha256": None},
+    ):
+        try:
+            validate_model_free_options(**mixed, expected_head="a" * 40, source=Path("source"), server_tree=Path("tree.json"), output=Path("evidence"), vokra_root=Path("."))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("model-free approval/snapshot mix was accepted")
     assert HF_FILES == {".gitattributes", "README.md", "compression_state_dict.bin", "state_dict.bin"}
     assert ARCHIVES["state_dict.bin"] == 3_678_455_287
+    synthetic_files = [{"path": name, "bytes": 1, "git_blob_sha1": None, "lfs_pointer_git_blob_sha1": None, "lfs_payload_sha256": None, "payload_status": "NOT_DOWNLOADED"} for name in HF_FILES]
+    assert set(model_free_archives(synthetic_files)) == set(ARCHIVES)
     assert SOURCE_WEIGHTS_LICENSE_BLOB == "108b5f002fc31efe11d881de2cd05329ebe8cc37"
     assert HISTORICAL_WEIGHTS_LICENSE_BLOB == "dc1adf98654156baeb94d2e055c224a847e5820d"
     assert "T5-large" not in ROLE_MARKERS
