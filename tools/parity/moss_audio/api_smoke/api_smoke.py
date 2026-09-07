@@ -108,6 +108,32 @@ def strict_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
 
 
+def pending_approval() -> dict[str, Any]:
+    return {
+        "source_license": "PENDING_OWNER_APPROVAL",
+        "model_license": "PENDING_OWNER_APPROVAL",
+        "operator": "PENDING_OWNER_APPROVAL",
+        "signer": None,
+        "scope_sha256": None,
+    }
+
+
+def write_model_free_evidence(path: Path, evidence: dict[str, Any]) -> None:
+    if not path.is_absolute() or path.exists() or path.is_symlink():
+        raise ValueError("model-free evidence output must be an absent absolute path")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def require_regular(path: Path, label: str) -> None:
     if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
         raise ValueError(f"{label} is missing, symlinked, or empty: {path}")
@@ -254,6 +280,36 @@ def verify_source(source: Path) -> dict[str, Any]:
     return {"repo": SOURCE_REPO, "revision": SOURCE_REVISION, "files": files}
 
 
+def expected_language_config(variant: str) -> dict[str, Any]:
+    identity = VARIANTS[variant]
+    return {
+        "hidden_size": identity["hidden_size"],
+        "intermediate_size": identity["intermediate_size"],
+        "num_hidden_layers": 36,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "vocab_size": 151936,
+        "max_position_embeddings": 40960,
+        "rope_theta": 1000000.0,
+        "rms_norm_eps": 1.0e-6,
+        "attention_bias": False,
+    }
+
+
+def validate_config_topology(config: dict[str, Any], variant: str) -> None:
+    if config.get("model_type") != "moss_audio" or config.get("architectures") != ["MossAudioModel"]:
+        raise ValueError("MOSS-Audio config model identity is not exact")
+    language_config = config.get("language_config")
+    if not isinstance(language_config, dict):
+        raise ValueError("MOSS-Audio language_config is not an object")
+    for key, expected in expected_language_config(variant).items():
+        if language_config.get(key) != expected:
+            raise ValueError(f"{variant} language_config.{key} topology metadata drifted")
+    if "hidden_size" in config or "intermediate_size" in config:
+        raise ValueError("MOSS-Audio topology must be nested under language_config")
+
+
 def verify_snapshot(snapshot: Path, variant: str) -> dict[str, Any]:
     identity = VARIANTS[variant]
     expected = {"config.json": identity["config_sha256"], **identity["metadata"]}
@@ -281,10 +337,9 @@ def verify_snapshot(snapshot: Path, variant: str) -> dict[str, Any]:
             raise ValueError(f"model metadata hash drifted for {name}: {actual_hash}")
         files[name] = {"sha256": actual_hash, "bytes": path.stat().st_size}
     config = strict_json(snapshot / "config.json")
-    if not isinstance(config, dict) or config.get("model_type") != "moss_audio" or config.get("architectures") != ["MossAudioModel"]:
-        raise ValueError("MOSS-Audio config model identity is not exact")
-    if config.get("hidden_size") != identity["hidden_size"] or config.get("intermediate_size") != identity["intermediate_size"]:
-        raise ValueError(f"{variant} config topology metadata drifted")
+    if not isinstance(config, dict):
+        raise ValueError("MOSS-Audio config is not an object")
+    validate_config_topology(config, variant)
     return {"repo": identity["repo"], "revision": identity["revision"], "files": files, "model_type": config["model_type"]}
 
 
@@ -406,6 +461,32 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
+def blocked_model_free(
+    args: argparse.Namespace,
+    project_record: dict[str, Any],
+    source_record: dict[str, Any],
+    variant_records: dict[str, Any],
+    stage: str,
+    error: Exception,
+) -> int:
+    evidence = {
+        "format": MODEL_FREE_FORMAT,
+        "status": "BLOCKED_INCOMPATIBLE_API",
+        "publication": "NO_UPLOAD",
+        "expected_head": args.expected_head,
+        "source": source_record,
+        "variants": variant_records,
+        "project": project_record,
+        "failure": {"stage": stage, "error_type": type(error).__name__, "error": str(error)},
+        "checkpoint_load": "NOT_PERFORMED",
+        "approval": pending_approval(),
+        "environment": {"python": platform.python_version(), "platform": platform.platform()},
+    }
+    write_model_free_evidence(Path(args.output), evidence)
+    print(f"BLOCKED_INCOMPATIBLE_API ({stage}): {error}", file=sys.stderr)
+    return 2
+
+
 def run_model_free(args: argparse.Namespace) -> int:
     if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
         raise ValueError("VOKRA_PUBLISH_ON_VAST=1 is required")
@@ -423,41 +504,36 @@ def run_model_free(args: argparse.Namespace) -> int:
         raise ValueError("variant selection is invalid")
     require_clean_head(root, args.expected_head)
     rows, project_hash, lock_hash = verify_project(project)
-    source_record = verify_source(source)
-    variant_records = {
-        variant: verify_snapshot(snapshot_root / variant, variant) for variant in selected
-    }
+    try:
+        source_record = verify_source(source)
+    except Exception as exc:  # noqa: BLE001 - authenticated source failures are structured
+        return blocked_model_free(args, {"sha256": project_hash, "lock_sha256": lock_hash, "packages": rows}, {}, {}, "source", exc)
+    variant_records: dict[str, Any] = {}
+    for variant in selected:
+        try:
+            variant_records[variant] = verify_snapshot(snapshot_root / variant, variant)
+        except Exception as exc:  # noqa: BLE001 - metadata failures are structured
+            return blocked_model_free(
+                args,
+                {"sha256": project_hash, "lock_sha256": lock_hash, "packages": rows},
+                source_record,
+                variant_records,
+                f"metadata:{variant}",
+                exc,
+            )
     api_records: dict[str, Any] = {}
     try:
         for variant in selected:
             api_records[variant] = api_probe(source, snapshot_root / variant)
     except Exception as exc:  # noqa: BLE001 - blocked evidence is part of the contract
-        evidence = {
-            "format": MODEL_FREE_FORMAT,
-            "status": "BLOCKED_INCOMPATIBLE_API",
-            "publication": "NO_UPLOAD",
-            "expected_head": args.expected_head,
-            "source": source_record,
-            "variants": variant_records,
-            "project": {"sha256": project_hash, "lock_sha256": lock_hash, "packages": rows},
-            "api": {"error_type": type(exc).__name__, "error": str(exc)},
-            "checkpoint_load": "NOT_PERFORMED",
-            "approval": {
-                "source_license": "PENDING_OWNER_APPROVAL",
-                "model_license": "PENDING_OWNER_APPROVAL",
-                "operator": "PENDING_OWNER_APPROVAL",
-                "signer": None,
-                "scope_sha256": None,
-            },
-            "environment": {"python": platform.python_version(), "platform": platform.platform()},
-        }
-        output.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
-        print(f"BLOCKED_INCOMPATIBLE_API: {exc}", file=sys.stderr)
-        return 2
+        return blocked_model_free(
+            args,
+            {"sha256": project_hash, "lock_sha256": lock_hash, "packages": rows},
+            source_record,
+            variant_records,
+            "api",
+            exc,
+        )
     evidence = {
         "format": MODEL_FREE_FORMAT,
         "status": "PASS_MODEL_FREE",
@@ -468,20 +544,10 @@ def run_model_free(args: argparse.Namespace) -> int:
         "project": {"sha256": project_hash, "lock_sha256": lock_hash, "packages": rows},
         "api": api_records,
         "checkpoint_load": "NOT_PERFORMED",
-        "approval": {
-            "source_license": "PENDING_OWNER_APPROVAL",
-            "model_license": "PENDING_OWNER_APPROVAL",
-            "operator": "PENDING_OWNER_APPROVAL",
-            "signer": None,
-            "scope_sha256": None,
-        },
+        "approval": pending_approval(),
         "environment": {"python": platform.python_version(), "platform": platform.platform()},
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
-        handle.write("\n")
+    write_model_free_evidence(output, evidence)
     print("MOSS_AUDIO_MODEL_FREE_API_SMOKE PASS_MODEL_FREE (no checkpoint load, no upload)")
     return 0
 
@@ -509,6 +575,55 @@ def self_test() -> int:
                 pass
             else:
                 raise AssertionError("duplicate JSON key accepted")
+            valid_topology = {
+                "model_type": "moss_audio",
+                "architectures": ["MossAudioModel"],
+                "language_config": {
+                    **expected_language_config("4b"),
+                    "attention_dropout": 0.0,
+                },
+            }
+            validate_config_topology(valid_topology, "4b")
+            tampered_topology = dict(valid_topology)
+            tampered_topology["language_config"] = dict(valid_topology["language_config"])
+            tampered_topology["language_config"]["hidden_size"] = 4096
+            try:
+                validate_config_topology(tampered_topology, "4b")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("tampered nested language topology accepted")
+            root_topology = dict(valid_topology)
+            root_topology["hidden_size"] = 2560
+            try:
+                validate_config_topology(root_topology, "4b")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("root-level language topology accepted")
+            blocked_path = Path(temporary) / "blocked.json"
+            blocked_evidence = {
+                "format": MODEL_FREE_FORMAT,
+                "status": "BLOCKED_INCOMPATIBLE_API",
+                "publication": "NO_UPLOAD",
+                "checkpoint_load": "NOT_PERFORMED",
+                "approval": pending_approval(),
+                "failure": {"stage": "metadata:4b", "error": "topology drift"},
+            }
+            write_model_free_evidence(blocked_path, blocked_evidence)
+            before = blocked_path.read_bytes()
+            try:
+                write_model_free_evidence(blocked_path, blocked_evidence)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("blocked evidence output was clobbered")
+            assert blocked_path.read_bytes() == before
+            parsed_blocked = strict_json(blocked_path)
+            assert parsed_blocked["status"] == "BLOCKED_INCOMPATIBLE_API"
+            assert parsed_blocked["checkpoint_load"] == "NOT_PERFORMED"
+            assert parsed_blocked["approval"]["source_license"] == "PENDING_OWNER_APPROVAL"
+            assert not list(Path(temporary).glob(".blocked.json.*.tmp"))
         assert HEX40.fullmatch(SOURCE_REVISION)
         assert all(HEX64.fullmatch(value) for value in SOURCE_FILES.values())
         assert VARIANTS["4b"]["hidden_size"] != VARIANTS["8b"]["hidden_size"]

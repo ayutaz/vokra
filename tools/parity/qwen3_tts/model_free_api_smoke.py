@@ -84,6 +84,7 @@ REQUIRED_DEPENDENCIES = {
 FORBIDDEN_PACKAGES = {"gradio", "onnxruntime", "protobuf", "setuptools", "sox"}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+SOX_SENTINEL_FILE = "/__vokra_import_only_sox_sentinel__.py"
 
 
 class ProbeError(RuntimeError):
@@ -97,16 +98,25 @@ class SoxSentinelAccessError(ProbeError):
 class ApiProbeFailure(ProbeError):
     """An official API import/introspection failure with sentinel evidence."""
 
-    def __init__(self, message: str, *, sentinel_installed: bool, accesses: int) -> None:
+    def __init__(self, message: str, *, sentinel_installed: bool, accesses: int, metadata_reads: int) -> None:
         super().__init__(message)
         self.sentinel_installed = sentinel_installed
         self.accesses = accesses
+        self.metadata_reads = metadata_reads
 
 
 class _SoxSentinel(types.ModuleType):
     def __init__(self) -> None:
         super().__init__("sox")
         self.accesses = 0
+        self.metadata_reads = 0
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "__file__":
+            reads = object.__getattribute__(self, "metadata_reads")
+            object.__setattr__(self, "metadata_reads", reads + 1)
+            return SOX_SENTINEL_FILE
+        return super().__getattribute__(name)
 
     def __getattr__(self, name: str) -> Any:
         self.accesses += 1
@@ -336,13 +346,19 @@ def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
                 "wrapper_signature": str(inspect.signature(Qwen3TTSModel.from_pretrained)),
                 "generate_voice_clone_signature": str(inspect.signature(Qwen3TTSModel.generate_voice_clone)),
                 "checkpoint_load": "NOT_PERFORMED",
-                "sox_sentinel": {"installed": True, "accesses": 0},
+                "sox_sentinel": {
+                    "installed": True,
+                    "allowed_metadata": ["__file__"],
+                    "metadata_reads": sentinel.metadata_reads,
+                    "accesses": 0,
+                },
             }
     except Exception as exc:  # noqa: BLE001 - API incompatibility is evidence, not a traceback
         raise ApiProbeFailure(
             str(exc),
             sentinel_installed=sentinel is not None,
             accesses=sentinel.accesses if sentinel is not None else 0,
+            metadata_reads=sentinel.metadata_reads if sentinel is not None else 0,
         ) from None
     finally:
         if sys.path and sys.path[0] == str(source):
@@ -389,6 +405,7 @@ def run(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001 - API incompatibility is emitted atomically
         sentinel_installed = bool(getattr(exc, "sentinel_installed", False))
         sentinel_accesses = int(getattr(exc, "accesses", 0))
+        sentinel_metadata_reads = int(getattr(exc, "metadata_reads", 0))
         blocked = {
             "schema": SCHEMA,
             "status": "BLOCKED_INCOMPATIBLE_API",
@@ -400,7 +417,12 @@ def run(args: argparse.Namespace) -> int:
             "api": {
                 "error_type": type(exc).__name__,
                 "error": str(exc),
-                "sox_sentinel": {"installed": sentinel_installed, "accesses": sentinel_accesses},
+                "sox_sentinel": {
+                    "installed": sentinel_installed,
+                    "allowed_metadata": ["__file__"],
+                    "metadata_reads": sentinel_metadata_reads,
+                    "accesses": sentinel_accesses,
+                },
             },
             "checkpoint_load": "NOT_PERFORMED",
             "approval": pending_approval(),
@@ -425,6 +447,8 @@ def run(args: argparse.Namespace) -> int:
         "api": api,
         "sox_sentinel": {
             "installed": all(record["installed"] for record in sentinel_records),
+            "allowed_metadata": ["__file__"],
+            "metadata_reads": sum(record["metadata_reads"] for record in sentinel_records),
             "accesses": sum(record["accesses"] for record in sentinel_records),
         },
         "checkpoint_load": "NOT_PERFORMED",
@@ -458,8 +482,10 @@ def self_test() -> int:
                 raise AssertionError("real sox package is installed")
             with install_sox_sentinel() as sentinel:
                 assert sys.modules["sox"] is sentinel
+                assert sentinel.__file__ == SOX_SENTINEL_FILE
+                assert sentinel.metadata_reads == 1
                 try:
-                    sentinel.unapproved_attribute
+                    sentinel.Transformer
                 except SoxSentinelAccessError:
                     pass
                 else:
@@ -483,7 +509,14 @@ def self_test() -> int:
                 "status": "BLOCKED_INCOMPATIBLE_API",
                 "publication": "NO_UPLOAD",
                 "checkpoint_load": "NOT_PERFORMED",
-                "api": {"sox_sentinel": {"installed": True, "accesses": 1}},
+                "api": {
+                    "sox_sentinel": {
+                        "installed": True,
+                        "allowed_metadata": ["__file__"],
+                        "metadata_reads": 1,
+                        "accesses": 1,
+                    }
+                },
                 "approval": pending_approval(),
             })
             blocked = strict_json(blocked_path.read_text(encoding="utf-8"))
@@ -491,7 +524,8 @@ def self_test() -> int:
             assert blocked["publication"] == "NO_UPLOAD"
             assert blocked["checkpoint_load"] == "NOT_PERFORMED"
             assert blocked["approval"]["source_license"] == "PENDING_OWNER_APPROVAL"
-            assert blocked["api"]["sox_sentinel"] == {"installed": True, "accesses": 1}
+            assert blocked["api"]["sox_sentinel"]["allowed_metadata"] == ["__file__"]
+            assert blocked["api"]["sox_sentinel"]["accesses"] == 1
             assert not list(Path(directory).glob(".blocked.json.*.tmp"))
         probe_source = inspect.getsource(api_probe)
         assert "Qwen3TTSModel.from_pretrained(" not in probe_source

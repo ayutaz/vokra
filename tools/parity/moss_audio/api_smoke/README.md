@@ -15,6 +15,11 @@ imports the official configuration, model, and processor classes. It constructs
 only the configuration and processor; model instantiation and checkpoint
 loading are explicitly not performed. An incompatible API produces
 `BLOCKED_INCOMPATIBLE_API` evidence and never becomes a compatibility PASS.
+The metadata gate verifies the hash-authenticated config plus selected nested
+`language_config` structural axes (including variant-specific hidden and
+intermediate sizes), along with `model_type=moss_audio` and
+`architectures=["MossAudioModel"]`; legitimate additional nested config keys
+are retained, while root-level topology fields are rejected.
 
 The model-free phase is executable before owner evidence is available:
 
@@ -28,6 +33,9 @@ configuration/model/processor classes, constructs config and processor objects,
 and records `PASS_MODEL_FREE` while source/model/operator approvals remain
 `PENDING_OWNER_APPROVAL`. This evidence is an API compatibility inspection,
 not a parity result, and cannot satisfy the approval-bound full worker.
+Source, metadata, and API incompatibilities are emitted as atomic structured
+`BLOCKED_INCOMPATIBLE_API` evidence without overwriting an existing output;
+infrastructure and explicit input precondition failures still stop normally.
 
 Before the approval-bound full worker can install its project environment, it runs the
 stdlib-only `--closure-only` preflight. That gate requires an owner approval
