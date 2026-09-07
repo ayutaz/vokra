@@ -136,6 +136,13 @@ and every withheld/withdrawn row has an explicit owner decision.  Rows without
 that evidence remain `APPROVAL_BLOCKED`; they are not silently dropped from
 the 63-row denominator.
 
+The consolidated review surface is
+`docs/handoff/mac-cpu-metal-owner-disposition-packet-2026-09-07.md`. It
+separates the seven families that already have an immutable approval scope
+from the families whose source, dependency, native-payload or license evidence
+is still incomplete. The packet is not an approval and authorizes neither
+execution nor publication.
+
 ### Wave 3 — public-artifact repair and CPU parity (27 rows)
 
 Run small family-specific VAST jobs after Waves 1 and 2.  Each job performs
@@ -260,8 +267,49 @@ log SHA-256 is
 The subsequent all-target Clippy gate found only seven redundant FireRed test
 casts; commit `146d75d8` removes them. AudioGen disposition commit `c6b2e62e`
 and XY-Tokenizer topology commit `1d14acc6` followed, so exact-head VAST
-workspace/Clippy/deny/audit verification and the PR push remain pending for
-this batch.
+workspace/Clippy/deny/audit verification and the PR push were the next batch
+gate.
+
+Exact VAST head `22bc4f9198ec360bfb0420745953f4e77fde7823` then passed
+`cargo test --workspace --no-fail-fast`, all-target Clippy with warnings
+denied, `cargo deny check` and `cargo audit`. The corresponding log SHA-256
+values are `684c743a62a46a4f0793123ac2a1e196c56aba687b5d03bba2425d6010f8d4cf`,
+`75a5370e2bd41a3bf965c53960100de4691a316ddfc58253209c34fdf289c8bc`,
+`cae215ad3eb07523400e35aff2eb59116f4594be2ff2a417c5d397e3f26c1102`
+and `49263fa54da8102c6f01ec005cd5be7e851eb6ad40bae65831a9dd28cf31514f`.
+That head was pushed to PR #79. Its GitHub run completed 108 checks
+successfully and skipped 13 opt-in checks; the sole failure was the
+bound-architecture parser treating the substring `ARCH` inside eight new
+FireRed `SEARCH` constants as model-architecture declarations. Commit
+`1cc898a5` renames only those Rust constant identifiers in the converter and
+binder while preserving every GGUF wire key and numeric search value; both
+architecture gates pass after the correction.
+
+The next source slice is committed as `43235c80`, `1cc898a5`, `aaace7e5`,
+`d58a6d7f`, `a7010fec` and `c44d6af2`.
+MOSS Audio Tokenizer Nano now binds the fixed Transformers mapping, official
+API methods, nine-stage decoder layout and exact model-free tap/audio shapes.
+Exact VAST head `aaace7e51cb42a2b4ea90319e7dd195d3952ae7b` authenticated
+the seven non-weight files and the server-only identity of the 87,922,568-byte
+weight shard without materializing it; `weights_loaded=false` and
+`weights_executed=false`. The blocked evidence-manifest SHA-256 is
+`33c00a78d6e9fecd350feeb760ee36bc17960427bdd7807c598c2f4c325c157b`.
+
+SBV2 JP-Extra now has a strict model-free sidecar validator over the pinned HF
+revision and official source blobs. The source authenticates language rows
+`ZH=0`, `JP=1`, `EN=2`, raw-tone counts `6/2/4`, global offsets `0/6/8`,
+`n_vocab=178` and `n_tones=12`. Commit `c44d6af2` corrects the runtime and
+dumper to those rows, converts JP raw `0/1` to global `6/7`, preserves all four
+authenticated EN raw stress/special values as global `8..11`, and rejects
+out-of-band raw tones. Existing independent binary fixtures were not edited;
+real sidecar regeneration and focused parity remain VAST gates before a
+production JP-Extra route is enabled.
+
+CLAP commit `d58a6d7f` pins the released HTSAT/text configuration and requires
+all six state-dict roles before emitting inspection evidence. OWSM commit
+`a7010fec` authenticates the fixed ESPnet frontend/STFT/LogMel/GlobalMVN source
+seams and the 1,172-name source manifest while leaving target mapping, the
+native writer/runtime and CPU parity explicitly blocked.
 
 Model-free audits made no speculative edits for MMS-1B-All, Yue XCodec Mini or
 HT-Demucs Multi. Their real checkpoint identities/manifests, complete native
