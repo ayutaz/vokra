@@ -81,6 +81,8 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UNRESOLVED = {"", "none", "null", "unresolved", "pending", "todo", "owner_review_required"}
 TRUST_REMOTE_CODE_PROMPT_MARKERS = ("custom code", "trust_remote_code", "trust remote code")
+MODEL_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".gguf", ".onnx")
+MODEL_WEIGHT_PREFIXES = ("model-", "pytorch_model", "consolidated.", "adapter_model")
 
 
 def canonical(value: Any) -> bytes:
@@ -362,6 +364,13 @@ def validate_config_topology(config: dict[str, Any], variant: str) -> None:
         raise ValueError("MOSS-Audio topology must be nested under language_config")
 
 
+def is_checkpoint_path(path: Path) -> bool:
+    """Return whether a transported snapshot path looks like model weights."""
+
+    name = path.name.casefold()
+    return name.endswith(MODEL_WEIGHT_SUFFIXES) or name.startswith(MODEL_WEIGHT_PREFIXES)
+
+
 def verify_snapshot(snapshot: Path, variant: str) -> dict[str, Any]:
     identity = VARIANTS[variant]
     expected = {"config.json": identity["config_sha256"], **identity["metadata"]}
@@ -374,10 +383,7 @@ def verify_snapshot(snapshot: Path, variant: str) -> dict[str, Any]:
     actual = sorted(path.name for path in entries if path.name != ".cache")
     if actual != sorted(expected):
         raise ValueError(f"metadata snapshot closure drifted: {actual}")
-    nested_weights = [
-        path for path in snapshot.rglob("*")
-        if path.name.endswith(".safetensors") or path.name.startswith("model-")
-    ]
+    nested_weights = [path for path in snapshot.rglob("*") if is_checkpoint_path(path)]
     if nested_weights:
         raise ValueError(f"checkpoint file reached model-free snapshot: {nested_weights[0]}")
     files: dict[str, Any] = {}
@@ -726,6 +732,14 @@ def self_test() -> int:
         assert all(HEX64.fullmatch(value) for value in SOURCE_FILES.values())
         assert VARIANTS["4b"]["hidden_size"] != VARIANTS["8b"]["hidden_size"]
         assert MODEL_FREE_FORMAT.endswith("-v1")
+        assert is_checkpoint_path(Path("pytorch_model.bin"))
+        assert is_checkpoint_path(Path("weights/model-00001-of-00002.safetensors"))
+        assert is_checkpoint_path(Path("adapter_model.pt"))
+        assert is_checkpoint_path(Path("checkpoint.pth"))
+        assert is_checkpoint_path(Path("weights.gguf"))
+        assert is_checkpoint_path(Path("export.onnx"))
+        assert not is_checkpoint_path(Path("config.json"))
+        assert not is_checkpoint_path(Path("tokenizer_config.json"))
         print("moss_audio API smoke self-test PASS (stdlib-only, no model, no network)")
         return 0
     except Exception as exc:  # noqa: BLE001
