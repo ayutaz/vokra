@@ -69,7 +69,14 @@ allowlisted snapshot is copied into regular files before the audit, so cache
 symlinks cannot satisfy the metadata gate. It then runs the frozen
 Transformers config/feature-extractor API and records lock/dependency/license
 facts. Dependency license evidence remains explicitly `PENDING`; it is not an
-approval. Its evidence explicitly says
+approval. If an installed distribution has no bundled license file, the
+collector may fetch only its exact, hash-and-size-pinned PyPI sdist. The
+bounded in-memory archive inspection hashes only safe LICENSE/COPYING/NOTICE
+members and writes no archive payloads. Missing PEP-639
+`License-Expression` is an owner-review flag when legacy metadata, classifiers,
+or license bytes exist; it is not treated as a factual collection failure.
+All SPDX/native-license disposition remains `PENDING_OWNER_REVIEW` and
+publication remains `NO_UPLOAD`. Its evidence explicitly says
 `weights=NOT_ACQUIRED`, `model_load=NOT_PERFORMED`, and
 `publication=NO_UPLOAD`. The real-weight path remains approval-gated and
 cannot be authorized by model-free evidence.
