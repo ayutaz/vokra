@@ -7,7 +7,7 @@ dependencies = [
     "numpy>=1.26,<3",
     "soundfile==0.14.0",
     "torch==2.13.0",
-    "transformers==4.57.6",
+    "transformers==5.10.4",
 ]
 
 [tool.uv]
