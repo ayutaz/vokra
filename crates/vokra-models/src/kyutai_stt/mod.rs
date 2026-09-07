@@ -2796,13 +2796,11 @@ mod tests {
     use vokra_core::gguf::GgufBuilder;
 
     #[test]
-    fn public_gguf_load_is_fail_closed_without_real_tensor_binding() {
+    fn public_gguf_load_is_fail_closed_without_full_composite_runtime() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let error = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect_err("public load must reject synthesized fallback");
-        assert!(
-            matches!(error, VokraError::ModelLoad(message) if message.contains("synthesized") && message.contains("authenticated"))
-        );
+        assert_public_load_blocked(error);
     }
 
     /// Every hparam matches the primary source
@@ -3777,7 +3775,8 @@ mod tests {
             tokenizer
                 .decode(&[0, 4, 3, 5, 6, 7, 8])
                 .expect("live tokenizer decode"),
-            " hello world€"
+            " hello world<0xE2><0x82><0xAC>",
+            "live route renders pieces literally and does not aggregate byte fallback"
         );
         assert_eq!(
             tokenizer.decode(&[10]).expect("live control decode"),
@@ -3864,10 +3863,11 @@ mod tests {
     // -----------------------------------------------------------------------
     // GGUF-loader (`from_gguf` / `from_gguf_with_policy` / `from_path`) tests
     //
-    // These pin the loud-partial scaffold the M2-13 gate + arch check +
-    // config round-trip + license read + synthesized-weight `transcribe`
-    // arm depend on. Every path fails loudly (FR-EX-08) — never a silent
-    // zero-fill / substitution / mis-typed cast.
+    // These pin the public loader's unconditional composite-runtime blocker,
+    // config round-trip/type validation, license read, and synthesized-weight
+    // `transcribe` arm. Every path fails loudly (FR-EX-08) — never a silent
+    // zero-fill / substitution / mis-typed cast. Decoder-component arch and
+    // manifest behavior is covered by `from_component_gguf` tests above.
     // -----------------------------------------------------------------------
 
     /// Builds a metadata-only GGUF whose `vokra.model.arch` is `arch`
@@ -3904,6 +3904,18 @@ mod tests {
     /// `stt_2_6b_en` and stays fast.
     fn build_tiny_gguf(arch: Option<&str>) -> Vec<u8> {
         build_gguf_for_config(arch, &KyutaiSttConfig::tiny_for_tests())
+    }
+
+    fn assert_public_load_blocked(error: VokraError) {
+        assert!(
+            matches!(&error, VokraError::ModelLoad(message)
+                if message.contains("blocked")
+                    && message.contains("decoder component manifest binding")
+                    && message.contains("Mimi")
+                    && message.contains("native parity")
+                    && message.contains("synthesized")),
+            "expected stable full-composite blocker, got {error:?}"
+        );
     }
 
     fn manifest_fixture(names: &[String], dtype: GgmlType) -> GgufFile {
@@ -4074,31 +4086,16 @@ mod tests {
         b.to_bytes().expect("serialize kyutai-stt fixture GGUF")
     }
 
-    /// A GGUF with no `vokra.model.arch` fails
-    /// [`KyutaiSttAsr::from_gguf_with_policy`] with a message that names
-    /// the expected arch tag + the primary source URL. Never a silent
-    /// substitution (FR-EX-08).
+    /// The public loader deliberately does not inspect decoder metadata: it
+    /// remains unconditionally blocked until full Mimi/streaming/native ASR
+    /// support exists. Decoder-component arch validation is tested by the
+    /// strict component binder, not this public gate.
     #[test]
-    fn from_gguf_rejects_missing_arch() {
+    fn public_loader_blocks_before_arch_inspection() {
         let bytes = build_gguf_with_hparams(None);
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect_err("missing arch must be rejected");
-        assert!(
-            matches!(err, VokraError::ModelLoad(msg) if msg.contains("authenticated") && msg.contains("blocked"))
-        );
-    }
-
-    /// A GGUF whose arch is a sibling (`csm`) fails with a message that
-    /// names both `kyutai-stt` and the offending tag so the caller can
-    /// diagnose the mis-routed conversion.
-    #[test]
-    fn from_gguf_rejects_wrong_arch() {
-        let bytes = build_gguf_with_hparams(Some("csm"));
-        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect_err("wrong arch must be rejected");
-        assert!(
-            matches!(err, VokraError::ModelLoad(msg) if msg.contains("authenticated") && msg.contains("blocked"))
-        );
+            .expect_err("public loader must remain blocked");
+        assert_public_load_blocked(err);
     }
 
     /// The `vokra.kyutai_stt.*` chunk group round-trips through the
@@ -4117,8 +4114,8 @@ mod tests {
         assert_eq!(cfg, want);
     }
 
-    /// Correct CC-BY-4.0 provenance does not bypass the missing composite
-    /// model/Mimi/tokenizer binder.
+    /// Correct CC-BY-4.0 provenance does not bypass the missing Mimi neural
+    /// PCM/streaming/transcription runtime.
     #[test]
     fn from_gguf_with_valid_license_still_fails_closed() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
@@ -4135,7 +4132,7 @@ mod tests {
             &CompliancePolicy::strict(),
         )
         .expect_err("valid provenance must not synthesize public weights");
-        assert!(matches!(err, VokraError::ModelLoad(msg) if msg.contains("authenticated")));
+        assert_public_load_blocked(err);
     }
 
     /// A public load is rejected before a transcribe call can reach the
@@ -4145,34 +4142,31 @@ mod tests {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect_err("public loader must fail before transcribe");
-        assert!(matches!(err, VokraError::ModelLoad(msg) if msg.contains("synthesized")));
+        assert_public_load_blocked(err);
     }
 
-    /// A GGUF with `n_layer = 0` (a scaffold converter path that never
-    /// wrote the real hparams) fails at the downstream
-    /// [`KyutaiSttConfig::validate_for_forward`] gate — the loud FR-EX-08
-    /// surface, not deep inside a GEMM.
+    /// A zero-placeholder GGUF is still rejected by the public composite
+    /// gate before metadata parsing or synthesized construction.
     #[test]
-    fn from_gguf_rejects_zero_placeholder_config() {
+    fn public_loader_ignores_zero_placeholder_metadata() {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         b.add_string(
             chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
             LicenseClass::AttributionRequired.as_str(),
         );
-        // Deliberately omit every `vokra.kyutai_stt.*` chunk — every
-        // read decays to the `0` placeholder branch.
+        // Deliberately omit every `vokra.kyutai_stt.*` chunk. The public
+        // loader must not claim to validate this metadata path.
         let bytes = b.to_bytes().expect("serialize");
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect_err("0-placeholder config must be rejected");
-        assert!(matches!(err, VokraError::ModelLoad(msg) if msg.contains("blocked")));
+        assert_public_load_blocked(err);
     }
 
     /// A GGUF that mis-types `sample_rate` (F32 instead of U32 — a
-    /// hypothetical bad converter path) fails with a loud
-    /// [`VokraError::InvalidArgument`] naming the offending key
-    /// (FR-EX-08 — never a silent type coercion). This pins the
-    /// [`read_u32_or_zero`] helper's type check.
+    /// hypothetical bad converter path) is checked through the config
+    /// reader directly. The public loader intentionally ignores bytes and
+    /// therefore cannot be used to test metadata type validation.
     #[test]
     fn from_gguf_rejects_wrong_typed_key() {
         let mut b = GgufBuilder::new();
@@ -4184,13 +4178,18 @@ mod tests {
         // sample_rate riding as F32 instead of U32.
         b.add_f32(KEY_SAMPLE_RATE, 24_000.0);
         let bytes = b.to_bytes().expect("serialize");
-        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect_err("wrong-typed key must be rejected");
-        assert!(matches!(err, VokraError::ModelLoad(msg) if msg.contains("authenticated")));
+        let file = GgufFile::parse(bytes).expect("parse wrong-typed fixture");
+        let err = KyutaiSttConfig::from_gguf(&file)
+            .expect_err("wrong-typed key must be rejected by config reader");
+        assert!(
+            matches!(err, VokraError::InvalidArgument(msg) if msg.contains(KEY_SAMPLE_RATE)),
+            "expected InvalidArgument naming sample_rate, got {err:?}"
+        );
     }
 
-    /// `from_path` propagates the same fail-closed public binder error as the
-    /// raw-byte loader and never constructs synthesized weights.
+    /// `from_path` propagates the same stable fail-closed composite blocker
+    /// as the raw-byte public loader and never constructs synthesized
+    /// weights.
     #[test]
     fn from_path_is_fail_closed() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
@@ -4203,7 +4202,7 @@ mod tests {
         // Best-effort cleanup — never a panic on cleanup failure (test
         // determinism must not depend on tmp cleanup).
         let _ = std::fs::remove_file(&path);
-        assert!(matches!(via_path, VokraError::ModelLoad(msg) if msg.contains("authenticated")));
+        assert_public_load_blocked(via_path);
     }
 
     /// `from_path` on a non-existent file surfaces
