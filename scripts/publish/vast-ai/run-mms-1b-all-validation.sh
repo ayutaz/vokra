@@ -12,6 +12,10 @@ PREPARER="tools/parity/mms_1b_all_prepare_checkpoint.py"
 REFERENCE_DUMPER="tools/parity/mms_1b_all_dump_reference.py"
 PREFLIGHT_GATE="$PARITY_PROJECT/license_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
+DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
+API_INSPECTOR="$PARITY_PROJECT/api_model_free_inspector.py"
+PREFLIGHT_AUDIT="$PARITY_PROJECT/dependency_audit_evidence.json"
+PREFLIGHT_API="$PARITY_PROJECT/api_model_free_evidence.json"
 UPSTREAM_REPO="facebook/mms-1b-all"
 UPSTREAM_REVISION="3d33597edbdaaba14a8e858e2c8caa76e3cec0cd"
 MIN_VAST_MEM_KIB=$((64 * 1024 * 1024))
@@ -36,12 +40,12 @@ EOF
 
 license_preflight() {
   local language="$1" expected_head="$2" approval="$3"
-  for required in "$PARITY_PROJECT/pyproject.toml" "$PARITY_PROJECT/uv.lock" "$PREFLIGHT_MANIFEST"; do
+  for required in "$PARITY_PROJECT/pyproject.toml" "$PARITY_PROJECT/uv.lock" "$PREFLIGHT_MANIFEST" "$DEPENDENCY_AUDIT" "$API_INSPECTOR" "$PREFLIGHT_AUDIT" "$PREFLIGHT_API"; do
     [[ -f "$required" ]] || die "BLOCKED_PENDING_AUTHENTICATED_MANIFEST: missing MMS closure input $required"
   done
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
     --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
-    --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval" --language "$language" \
+    --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval" --dependency-audit "$PREFLIGHT_AUDIT" --api-evidence "$PREFLIGHT_API" --language "$language" \
     --expected-head "$expected_head" \
     || die 'dedicated MMS closure/license/approval gate is unresolved'
 }
@@ -93,7 +97,7 @@ self_test() {
     'prepared_manifest.json' 'reference_manifest.json' 'tensor_manifest' \
     'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' 'no upload' 'MMS_LANGUAGE' 'azj-script_cyrillic' \
     'cac-dialect_sanmateoixtatan' 'vocabs/' 'git status --porcelain' \
-    'tools/parity/mms_1b_all/license_gate.py' '--prepared-manifest' '--reference-manifest' '--expected-head' 'pyproject.toml' 'uv.lock' \
+    'tools/parity/mms_1b_all/license_gate.py' 'dependency_audit.py' 'api_model_free_inspector.py' 'dependency_audit_evidence.json' 'api_model_free_evidence.json' '--prepared-manifest' '--reference-manifest' '--dependency-audit' '--api-evidence' '--expected-head' 'pyproject.toml' 'uv.lock' \
     '--language "$language"' 'work_disk_root' 'nearest existing canonical ancestor' \
     'mms_1b_all_prepare_checkpoint.py --self-test' \
     'mms_1b_all_dump_reference.py --self-test'; do
@@ -156,6 +160,16 @@ self_test() {
   if ! UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 \
     python "$VOKRA_ROOT/$REFERENCE_DUMPER" --self-test >/dev/null; then
     log 'self-test FAIL: independent dumper self-test failed'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 \
+    python "$DEPENDENCY_AUDIT" --self-test >/dev/null; then
+    log 'self-test FAIL: dependency audit self-test failed'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 \
+    python "$API_INSPECTOR" --self-test >/dev/null; then
+    log 'self-test FAIL: model-free API inspector self-test failed'
     fail=1
   fi
   (( fail == 0 )) || return 1
