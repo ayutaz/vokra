@@ -25,6 +25,10 @@ EXPECTED_SOURCE = {
     "stdout_wrapper_blob": "23c6e76462753190d77a1b58dfe022012c90a028",
     "init_blob": "495e57b50d87a4ca3e8fe8dbaf003b4888581927",
     "license_blob": "0ad25db4bd1d86c452db3f9602ccdbe172438f52",
+    "deberta_config_blob": "9fb6b0ac2ec49b6556e58b5ed9492eb33166714d",
+    "deberta_special_tokens_blob": "a8b3208c2884c4efb86e49300fdd3dc877220cdf",
+    "deberta_tokenizer_config_blob": "8ab2175580e45760875557201e5543019ca3039b",
+    "deberta_vocab_blob": "ef3652a1877f4c898e6fcb3e605c432c7bcc56b1",
 }
 EXPECTED_KEYS = {
     "schema",
@@ -50,6 +54,22 @@ EXPECTED_SOURCE_FILES = (
     ("common/stdout_wrapper.py", "stdout_wrapper_blob"),
     ("text/__init__.py", "init_blob"),
     ("LICENSE", "license_blob"),
+    (
+        "bert/deberta-v2-large-japanese-char-wwm/config.json",
+        "deberta_config_blob",
+    ),
+    (
+        "bert/deberta-v2-large-japanese-char-wwm/special_tokens_map.json",
+        "deberta_special_tokens_blob",
+    ),
+    (
+        "bert/deberta-v2-large-japanese-char-wwm/tokenizer_config.json",
+        "deberta_tokenizer_config_blob",
+    ),
+    (
+        "bert/deberta-v2-large-japanese-char-wwm/vocab.txt",
+        "deberta_vocab_blob",
+    ),
 )
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -134,7 +154,7 @@ def validate(payload: object) -> None:
     tone_offsets = root["tone_offsets"]
     if tone_offsets != {"ZH": 0, "JP": 6, "EN": 8}:
         raise ValueError("tone_offsets drifted from the authenticated source values")
-    if n_vocab != 178 or n_tones != 12:
+    if n_vocab != 112 or n_tones != 12:
         raise ValueError("source vocabulary/tone dimensions do not match the authenticated JP table")
 
     fixtures = root["fixtures"]
@@ -244,12 +264,12 @@ def self_test() -> None:
         "model": {
             "hf_repo": "litagin/Style-Bert-VITS2-2.0-base-JP-Extra",
             "hf_revision": EXPECTED_SOURCE["hf_revision"],
-            "n_vocab": 178,
+            "n_vocab": 112,
             "n_tones": 12,
             "dimensions_proof": "authenticated_source_symbol_and_tone_table",
         },
-        "phoneme_symbols": symbols + [f"symbol-{index}" for index in range(175)],
-        "sorted_phoneme_symbols": sorted(symbols + [f"symbol-{index}" for index in range(175)]),
+        "phoneme_symbols": symbols + [f"symbol-{index}" for index in range(109)],
+        "sorted_phoneme_symbols": sorted(symbols + [f"symbol-{index}" for index in range(109)]),
         "language_ids": {"ZH": 0, "JP": 1, "EN": 2},
         "tone_counts": {"ZH": 6, "JP": 2, "EN": 4},
         "tone_offsets": {"ZH": 0, "JP": 6, "EN": 8},

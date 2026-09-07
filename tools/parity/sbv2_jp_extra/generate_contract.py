@@ -528,7 +528,7 @@ def _symbol_table(symbols_module: Any) -> tuple[list[str], int]:
         raise ContractError("official symbols.py does not expose a non-empty symbols sequence")
     values = list(values)
     n_tones = getattr(symbols_module, "num_tones", None)
-    if len(values) != 178 or len(set(values)) != len(values):
+    if len(values) != 112 or len(set(values)) != len(values):
         raise ContractError("authenticated source symbol table drifted from the JP-Extra boundary")
     if not isinstance(n_tones, int) or isinstance(n_tones, bool) or n_tones != 12:
         raise ContractError("authenticated source num_tones drifted from the JP-Extra boundary")
@@ -715,7 +715,7 @@ def _fake_git_source(directory: Path) -> tuple[dict[str, str], Path]:
     (source / "bert/deberta-v2-large-japanese-char-wwm").mkdir(parents=True)
     files = {
         "text/symbols.py": (
-            "symbols = [" + ",".join(repr(f"symbol-{i}") for i in range(178)) + "]\n"
+            "symbols = [" + ",".join(repr(f"symbol-{i}") for i in range(112)) + "]\n"
             "language_tone_start_map = {'ZH': 0, 'JP': 6, 'EN': 8}\n"
             "language_id_map = {'ZH': 0, 'JP': 1, 'EN': 2}\n"
             "num_tones = 12\n"

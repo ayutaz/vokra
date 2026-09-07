@@ -19,6 +19,14 @@ worker, using these immutable identities:
 - `common/stdout_wrapper.py` blob: `23c6e76462753190d77a1b58dfe022012c90a028`
 - `text/__init__.py` blob: `495e57b50d87a4ca3e8fe8dbaf003b4888581927`
 - License blob: `0ad25db4bd1d86c452db3f9602ccdbe172438f52`
+- `bert/deberta-v2-large-japanese-char-wwm/config.json` blob:
+  `9fb6b0ac2ec49b6556e58b5ed9492eb33166714d`
+- `bert/deberta-v2-large-japanese-char-wwm/special_tokens_map.json` blob:
+  `a8b3208c2884c4efb86e49300fdd3dc877220cdf`
+- `bert/deberta-v2-large-japanese-char-wwm/tokenizer_config.json` blob:
+  `8ab2175580e45760875557201e5543019ca3039b`
+- `bert/deberta-v2-large-japanese-char-wwm/vocab.txt` blob:
+  `ef3652a1877f4c898e6fcb3e605c432c7bcc56b1`
 
 The worker must verify every identity before importing the reference. A
 different revision or missing blob is a hard failure, not a best-effort
@@ -105,14 +113,14 @@ uv run --no-project --offline --python 3.12 \
 The VAST-only producer is `generate_contract.py`, driven by
 `scripts/publish/vast-ai/run-sbv2-jp-extra-g2p-contract.sh`. The worker clones
 the official repository at the fixed commit, checks the commit and the
-authenticated Japanese/symbol/sequence/license Git blob identities before
+authenticated Japanese/symbol/sequence/license/tokenizer Git blob identities before
 loading only the upstream Japanese module and shared sequence mapper, then
 invokes the official `text_normalize` + `g2p(..., use_jp_extra=True)` path for
 the fixed corpus below. It never imports the package initializer as a package
 (which could eagerly load English), and never contains a Japanese G2P mirror or
 fallback. The producer derives `n_vocab=len(symbols)` and `n_tones=num_tones`
 from authenticated `text/symbols.py`, and refuses any source-table drift from
-the fixed `178`/`12` boundary. This is deliberately a source-table proof, not
+the fixed `112`/`12` boundary. This is deliberately a source-table proof, not
 a model/checkpoint claim; model compatibility remains the responsibility of
 the existing strict GGUF/checkpoint binder and VAST parity worker.
 
@@ -150,10 +158,18 @@ an independently reviewed complete hash. The existing generic
 The fixed upstream `text/symbols.py` contract authenticates the exact schema
 values required by `validate_contract.py`: `language_id_map` is
 `{"ZH": 0, "JP": 1, "EN": 2}`, tone counts are `ZH=6`, `JP=2`, `EN=4`,
-the tone starts are `ZH=0`, `JP=6`, `EN=8`, and the checkpoint boundary is
-`n_vocab=178`, `n_tones=12`. The JP-only worker uses the official shared
-mapper from `text/__init__.py` to convert raw JP tones into the global `6..7`
-band; no English frontend is loaded.
+the tone starts are `ZH=0`, `JP=6`, `EN=8`, and the authenticated source boundary is
+`n_vocab=112`, `n_tones=12`. This vocabulary count is fixed by the authenticated
+source table rather than inferred from model weights: the official model
+implementation uses `len(symbols)` for its embedding size in
+`models_jp_extra.py` (blob `1bb2dd2e3b76a3d1978cd591eb4d4415c4c8a9ba`), and
+the training entry point passes `len(symbols)` to `SynthesizerTrn` in
+`train_ms_jp_extra.py` (blob `4ac102adf1b264c7bd0488b76a5e0174bc988ac2`).
+The JP-only worker uses the official shared
+mapper from `text/__init__.py` to convert raw JP tones into the global `6..7` band;
+no English frontend is loaded. These source dimensions do not establish
+real-weight compatibility: the strict GGUF weight binder and numerical parity
+gate remain separate.
 
 ## Primary-source identity checks
 
@@ -164,13 +180,13 @@ AGPL source. Run them in the VAST worker before generating the sidecar:
 gh api repos/litagin02/Style-Bert-VITS2/commits/ef93f388fc1ddf0dc0f598126c1964923f1df94f \
   --jq .sha
 gh api 'repos/litagin02/Style-Bert-VITS2/git/trees/ef93f388fc1ddf0dc0f598126c1964923f1df94f?recursive=1' \
-  --jq '.tree[] | select(.path == "text/symbols.py" or .path == "text/japanese.py" or .path == "text/japanese_mora_list.py" or .path == "common/log.py" or .path == "common/stdout_wrapper.py" or .path == "text/__init__.py" or .path == "LICENSE") | [.path,.sha] | @tsv'
+  --jq '.tree[] | select(.path == "text/symbols.py" or .path == "text/japanese.py" or .path == "text/japanese_mora_list.py" or .path == "common/log.py" or .path == "common/stdout_wrapper.py" or .path == "text/__init__.py" or .path == "LICENSE" or .path == "bert/deberta-v2-large-japanese-char-wwm/config.json" or .path == "bert/deberta-v2-large-japanese-char-wwm/special_tokens_map.json" or .path == "bert/deberta-v2-large-japanese-char-wwm/tokenizer_config.json" or .path == "bert/deberta-v2-large-japanese-char-wwm/vocab.txt") | [.path,.sha] | @tsv'
 curl --fail --silent --show-error \
   https://huggingface.co/api/models/litagin/Style-Bert-VITS2-2.0-base-JP-Extra/revision/a731761009f3c96d104487be6ad332bf1bb5a3a5 \
   | jq -e --arg rev a731761009f3c96d104487be6ad332bf1bb5a3a5 '.sha == $rev'
 ```
 
-The corresponding immutable primary-source URLs are the [HF revision](https://huggingface.co/litagin/Style-Bert-VITS2-2.0-base-JP-Extra/commit/a731761009f3c96d104487be6ad332bf1bb5a3a5), the [official source commit](https://github.com/litagin02/Style-Bert-VITS2/commit/ef93f388fc1ddf0dc0f598126c1964923f1df94f), and the authenticated `symbols.py`, `japanese.py`, `japanese_mora_list.py`, `common/log.py`, `common/stdout_wrapper.py`, `text/__init__.py`, and `LICENSE` blobs at that commit.
+The corresponding immutable primary-source URLs are the [HF revision](https://huggingface.co/litagin/Style-Bert-VITS2-2.0-base-JP-Extra/commit/a731761009f3c96d104487be6ad332bf1bb5a3a5), the [official source commit](https://github.com/litagin02/Style-Bert-VITS2/commit/ef93f388fc1ddf0dc0f598126c1964923f1df94f), and the authenticated `symbols.py`, `japanese.py`, `japanese_mora_list.py`, `common/log.py`, `common/stdout_wrapper.py`, `text/__init__.py`, `LICENSE`, and DeBERTa tokenizer files at that commit.
 
 The fixed `text/__init__.py` path applies the language start offset to raw
 G2P tones. Therefore JP raw tones `0/1` become global SBV2 tone ids `6/7`
