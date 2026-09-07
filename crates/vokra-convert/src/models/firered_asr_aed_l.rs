@@ -260,14 +260,15 @@ pub const KEY_CMVN_TEXT: &str = "vokra.firered_asr_aed_l.cmvn_txt";
 pub const KEY_CMVN_TEXT_SHA256: &str = "vokra.firered_asr_aed_l.cmvn_txt_sha256";
 pub const KEY_DICT_TEXT: &str = "vokra.firered_asr_aed_l.dict_txt";
 pub const KEY_DICT_TEXT_SHA256: &str = "vokra.firered_asr_aed_l.dict_txt_sha256";
-pub const KEY_SEARCH_NAME: &str = "vokra.firered_asr_aed_l.search.name";
-pub const KEY_SEARCH_BEAM_SIZE: &str = "vokra.firered_asr_aed_l.search.beam_size";
-pub const KEY_SEARCH_NBEST: &str = "vokra.firered_asr_aed_l.search.nbest";
-pub const KEY_SEARCH_DECODE_MAX_LEN: &str = "vokra.firered_asr_aed_l.search.decode_max_len";
-pub const KEY_SEARCH_SOFTMAX_SMOOTHING: &str = "vokra.firered_asr_aed_l.search.softmax_smoothing";
-pub const KEY_SEARCH_LENGTH_PENALTY: &str = "vokra.firered_asr_aed_l.search.length_penalty";
-pub const KEY_SEARCH_EOS_PENALTY: &str = "vokra.firered_asr_aed_l.search.eos_penalty";
-pub const SEARCH_NAME: &str = "batch_beam_search";
+pub const KEY_DECODE_POLICY_NAME: &str = "vokra.firered_asr_aed_l.search.name";
+pub const KEY_DECODE_POLICY_BEAM_SIZE: &str = "vokra.firered_asr_aed_l.search.beam_size";
+pub const KEY_DECODE_POLICY_NBEST: &str = "vokra.firered_asr_aed_l.search.nbest";
+pub const KEY_DECODE_POLICY_MAX_LEN: &str = "vokra.firered_asr_aed_l.search.decode_max_len";
+pub const KEY_DECODE_POLICY_SOFTMAX_SMOOTHING: &str =
+    "vokra.firered_asr_aed_l.search.softmax_smoothing";
+pub const KEY_DECODE_POLICY_LENGTH_PENALTY: &str = "vokra.firered_asr_aed_l.search.length_penalty";
+pub const KEY_DECODE_POLICY_EOS_PENALTY: &str = "vokra.firered_asr_aed_l.search.eos_penalty";
+pub const DECODE_POLICY_NAME: &str = "batch_beam_search";
 pub const SEARCH_BEAM_SIZE: u32 = 3;
 pub const SEARCH_NBEST: u32 = 1;
 pub const SEARCH_DECODE_MAX_LEN: u32 = 0;
@@ -473,13 +474,16 @@ pub fn convert_firered_asr_aed_l_file_with_sidecars(
     for (key, value) in SPEC_KEYS {
         builder.add_u32(key, value);
     }
-    builder.add_string(KEY_SEARCH_NAME, SEARCH_NAME);
-    builder.add_u32(KEY_SEARCH_BEAM_SIZE, SEARCH_BEAM_SIZE);
-    builder.add_u32(KEY_SEARCH_NBEST, SEARCH_NBEST);
-    builder.add_u32(KEY_SEARCH_DECODE_MAX_LEN, SEARCH_DECODE_MAX_LEN);
-    builder.add_f32(KEY_SEARCH_SOFTMAX_SMOOTHING, SEARCH_SOFTMAX_SMOOTHING);
-    builder.add_f32(KEY_SEARCH_LENGTH_PENALTY, SEARCH_LENGTH_PENALTY);
-    builder.add_f32(KEY_SEARCH_EOS_PENALTY, SEARCH_EOS_PENALTY);
+    builder.add_string(KEY_DECODE_POLICY_NAME, DECODE_POLICY_NAME);
+    builder.add_u32(KEY_DECODE_POLICY_BEAM_SIZE, SEARCH_BEAM_SIZE);
+    builder.add_u32(KEY_DECODE_POLICY_NBEST, SEARCH_NBEST);
+    builder.add_u32(KEY_DECODE_POLICY_MAX_LEN, SEARCH_DECODE_MAX_LEN);
+    builder.add_f32(
+        KEY_DECODE_POLICY_SOFTMAX_SMOOTHING,
+        SEARCH_SOFTMAX_SMOOTHING,
+    );
+    builder.add_f32(KEY_DECODE_POLICY_LENGTH_PENALTY, SEARCH_LENGTH_PENALTY);
+    builder.add_f32(KEY_DECODE_POLICY_EOS_PENALTY, SEARCH_EOS_PENALTY);
     for (key, payload, digest) in [
         (KEY_CMVN_TEXT, cmvn.as_slice(), CMVN_TEXT_SHA256),
         (KEY_DICT_TEXT, dict.as_slice(), DICT_TEXT_SHA256),

@@ -342,21 +342,22 @@ pub const KEY_DICT_TEXT: &str = "vokra.firered_asr_aed_l.dict_txt";
 /// GGUF key carrying the output dictionary SHA-256 text.
 pub const KEY_DICT_TEXT_SHA256: &str = "vokra.firered_asr_aed_l.dict_txt_sha256";
 /// GGUF key carrying the official search algorithm name.
-pub const KEY_SEARCH_NAME: &str = "vokra.firered_asr_aed_l.search.name";
+pub const KEY_DECODE_POLICY_NAME: &str = "vokra.firered_asr_aed_l.search.name";
 /// GGUF key carrying the official beam width.
-pub const KEY_SEARCH_BEAM_SIZE: &str = "vokra.firered_asr_aed_l.search.beam_size";
+pub const KEY_DECODE_POLICY_BEAM_SIZE: &str = "vokra.firered_asr_aed_l.search.beam_size";
 /// GGUF key carrying the official n-best count.
-pub const KEY_SEARCH_NBEST: &str = "vokra.firered_asr_aed_l.search.nbest";
+pub const KEY_DECODE_POLICY_NBEST: &str = "vokra.firered_asr_aed_l.search.nbest";
 /// GGUF key carrying the official decode maximum length.
-pub const KEY_SEARCH_DECODE_MAX_LEN: &str = "vokra.firered_asr_aed_l.search.decode_max_len";
+pub const KEY_DECODE_POLICY_MAX_LEN: &str = "vokra.firered_asr_aed_l.search.decode_max_len";
 /// GGUF key carrying the official softmax smoothing value.
-pub const KEY_SEARCH_SOFTMAX_SMOOTHING: &str = "vokra.firered_asr_aed_l.search.softmax_smoothing";
+pub const KEY_DECODE_POLICY_SOFTMAX_SMOOTHING: &str =
+    "vokra.firered_asr_aed_l.search.softmax_smoothing";
 /// GGUF key carrying the official length penalty.
-pub const KEY_SEARCH_LENGTH_PENALTY: &str = "vokra.firered_asr_aed_l.search.length_penalty";
+pub const KEY_DECODE_POLICY_LENGTH_PENALTY: &str = "vokra.firered_asr_aed_l.search.length_penalty";
 /// GGUF key carrying the official EOS penalty.
-pub const KEY_SEARCH_EOS_PENALTY: &str = "vokra.firered_asr_aed_l.search.eos_penalty";
+pub const KEY_DECODE_POLICY_EOS_PENALTY: &str = "vokra.firered_asr_aed_l.search.eos_penalty";
 /// Official FireRed batch beam search algorithm name.
-pub const SEARCH_NAME: &str = "batch_beam_search";
+pub const DECODE_POLICY_NAME: &str = "batch_beam_search";
 /// Official FireRed batch beam width.
 pub const SEARCH_BEAM_SIZE: u32 = 3;
 /// Official FireRed n-best output count.
@@ -1851,7 +1852,7 @@ pub struct FireredAsrAedSearchConfig {
 impl FireredAsrAedSearchConfig {
     /// Exact values authenticated from the pinned README and decoder source.
     pub const OFFICIAL: Self = Self {
-        name: SEARCH_NAME,
+        name: DECODE_POLICY_NAME,
         beam_size: SEARCH_BEAM_SIZE,
         nbest: SEARCH_NBEST,
         decode_max_len: SEARCH_DECODE_MAX_LEN,
@@ -1872,38 +1873,38 @@ impl FireredAsrAedSearchConfig {
 
     fn from_gguf(gguf: &GgufFile) -> Result<Option<Self>> {
         let keys = [
-            KEY_SEARCH_NAME,
-            KEY_SEARCH_BEAM_SIZE,
-            KEY_SEARCH_NBEST,
-            KEY_SEARCH_DECODE_MAX_LEN,
-            KEY_SEARCH_SOFTMAX_SMOOTHING,
-            KEY_SEARCH_LENGTH_PENALTY,
-            KEY_SEARCH_EOS_PENALTY,
+            KEY_DECODE_POLICY_NAME,
+            KEY_DECODE_POLICY_BEAM_SIZE,
+            KEY_DECODE_POLICY_NBEST,
+            KEY_DECODE_POLICY_MAX_LEN,
+            KEY_DECODE_POLICY_SOFTMAX_SMOOTHING,
+            KEY_DECODE_POLICY_LENGTH_PENALTY,
+            KEY_DECODE_POLICY_EOS_PENALTY,
         ];
         if !group_present(gguf, &keys) {
             return Ok(None);
         }
         let name = gguf
-            .get(KEY_SEARCH_NAME)
+            .get(KEY_DECODE_POLICY_NAME)
             .and_then(GgufMetadataValue::as_str)
             .ok_or_else(|| {
                 VokraError::ModelLoad(format!(
-                    "firered-asr-aed-l: `{KEY_SEARCH_NAME}` is missing or not a string"
+                    "firered-asr-aed-l: `{KEY_DECODE_POLICY_NAME}` is missing or not a string"
                 ))
             })?;
-        if name != SEARCH_NAME {
+        if name != DECODE_POLICY_NAME {
             return Err(VokraError::ModelLoad(format!(
-                "firered-asr-aed-l: `{KEY_SEARCH_NAME}` = `{name}`, expected `{SEARCH_NAME}`"
+                "firered-asr-aed-l: `{KEY_DECODE_POLICY_NAME}` = `{name}`, expected `{DECODE_POLICY_NAME}`"
             )));
         }
         let actual = Self {
-            name: SEARCH_NAME,
-            beam_size: read_exact_u32_key(gguf, KEY_SEARCH_BEAM_SIZE)?,
-            nbest: read_exact_u32_key(gguf, KEY_SEARCH_NBEST)?,
-            decode_max_len: read_exact_u32_key(gguf, KEY_SEARCH_DECODE_MAX_LEN)?,
-            softmax_smoothing: read_f32_key(gguf, KEY_SEARCH_SOFTMAX_SMOOTHING)?,
-            length_penalty: read_f32_key(gguf, KEY_SEARCH_LENGTH_PENALTY)?,
-            eos_penalty: read_f32_key(gguf, KEY_SEARCH_EOS_PENALTY)?,
+            name: DECODE_POLICY_NAME,
+            beam_size: read_exact_u32_key(gguf, KEY_DECODE_POLICY_BEAM_SIZE)?,
+            nbest: read_exact_u32_key(gguf, KEY_DECODE_POLICY_NBEST)?,
+            decode_max_len: read_exact_u32_key(gguf, KEY_DECODE_POLICY_MAX_LEN)?,
+            softmax_smoothing: read_f32_key(gguf, KEY_DECODE_POLICY_SOFTMAX_SMOOTHING)?,
+            length_penalty: read_f32_key(gguf, KEY_DECODE_POLICY_LENGTH_PENALTY)?,
+            eos_penalty: read_f32_key(gguf, KEY_DECODE_POLICY_EOS_PENALTY)?,
         };
         if !actual.is_official() {
             return Err(VokraError::ModelLoad(
@@ -3447,13 +3448,16 @@ mod tests {
     }
 
     fn add_official_search(builder: &mut GgufBuilder) {
-        builder.add_string(KEY_SEARCH_NAME, SEARCH_NAME);
-        builder.add_u32(KEY_SEARCH_BEAM_SIZE, SEARCH_BEAM_SIZE);
-        builder.add_u32(KEY_SEARCH_NBEST, SEARCH_NBEST);
-        builder.add_u32(KEY_SEARCH_DECODE_MAX_LEN, SEARCH_DECODE_MAX_LEN);
-        builder.add_f32(KEY_SEARCH_SOFTMAX_SMOOTHING, SEARCH_SOFTMAX_SMOOTHING);
-        builder.add_f32(KEY_SEARCH_LENGTH_PENALTY, SEARCH_LENGTH_PENALTY);
-        builder.add_f32(KEY_SEARCH_EOS_PENALTY, SEARCH_EOS_PENALTY);
+        builder.add_string(KEY_DECODE_POLICY_NAME, DECODE_POLICY_NAME);
+        builder.add_u32(KEY_DECODE_POLICY_BEAM_SIZE, SEARCH_BEAM_SIZE);
+        builder.add_u32(KEY_DECODE_POLICY_NBEST, SEARCH_NBEST);
+        builder.add_u32(KEY_DECODE_POLICY_MAX_LEN, SEARCH_DECODE_MAX_LEN);
+        builder.add_f32(
+            KEY_DECODE_POLICY_SOFTMAX_SMOOTHING,
+            SEARCH_SOFTMAX_SMOOTHING,
+        );
+        builder.add_f32(KEY_DECODE_POLICY_LENGTH_PENALTY, SEARCH_LENGTH_PENALTY);
+        builder.add_f32(KEY_DECODE_POLICY_EOS_PENALTY, SEARCH_EOS_PENALTY);
     }
 
     fn test_dictionary() -> FireRedDictionary {
@@ -3595,7 +3599,7 @@ mod tests {
         );
 
         let mut partial = base_builder(Some(LicenseClass::Permissive));
-        partial.add_string(KEY_SEARCH_NAME, SEARCH_NAME);
+        partial.add_string(KEY_DECODE_POLICY_NAME, DECODE_POLICY_NAME);
         let error = FireredAsrAed::from_gguf(&finish(&partial)).expect_err("partial search group");
         assert!(
             matches!(error, VokraError::ModelLoad(message) if message.contains("search.beam_size"))
@@ -3603,15 +3607,15 @@ mod tests {
 
         let mut wrong_name = base_builder(Some(LicenseClass::Permissive));
         add_official_search(&mut wrong_name);
-        wrong_name.add_string(KEY_SEARCH_NAME, "greedy");
+        wrong_name.add_string(KEY_DECODE_POLICY_NAME, "greedy");
         let error = FireredAsrAed::from_gguf(&finish(&wrong_name)).expect_err("wrong search name");
         assert!(
-            matches!(error, VokraError::ModelLoad(message) if message.contains("expected") && message.contains(SEARCH_NAME))
+            matches!(error, VokraError::ModelLoad(message) if message.contains("expected") && message.contains(DECODE_POLICY_NAME))
         );
 
         let mut wrong_int = base_builder(Some(LicenseClass::Permissive));
         add_official_search(&mut wrong_int);
-        wrong_int.add_string(KEY_SEARCH_BEAM_SIZE, "3");
+        wrong_int.add_string(KEY_DECODE_POLICY_BEAM_SIZE, "3");
         let error = FireredAsrAed::from_gguf(&finish(&wrong_int)).expect_err("wrong integer type");
         assert!(
             matches!(error, VokraError::ModelLoad(message) if message.contains("search.beam_size") && message.contains("U32"))
@@ -3619,7 +3623,7 @@ mod tests {
 
         let mut wrong_u64 = base_builder(Some(LicenseClass::Permissive));
         add_official_search(&mut wrong_u64);
-        wrong_u64.add_metadata(KEY_SEARCH_BEAM_SIZE, GgufMetadataValue::U64(3));
+        wrong_u64.add_metadata(KEY_DECODE_POLICY_BEAM_SIZE, GgufMetadataValue::U64(3));
         let error = FireredAsrAed::from_gguf(&finish(&wrong_u64)).expect_err("U64 integer type");
         assert!(
             matches!(error, VokraError::ModelLoad(message) if message.contains("search.beam_size") && message.contains("U32"))
@@ -3627,7 +3631,7 @@ mod tests {
 
         let mut wrong_float = base_builder(Some(LicenseClass::Permissive));
         add_official_search(&mut wrong_float);
-        wrong_float.add_u32(KEY_SEARCH_SOFTMAX_SMOOTHING, 1);
+        wrong_float.add_u32(KEY_DECODE_POLICY_SOFTMAX_SMOOTHING, 1);
         let error = FireredAsrAed::from_gguf(&finish(&wrong_float)).expect_err("wrong float type");
         assert!(
             matches!(error, VokraError::ModelLoad(message) if message.contains("search.softmax_smoothing") && message.contains("F32"))
@@ -3635,7 +3639,10 @@ mod tests {
 
         let mut wrong_f64 = base_builder(Some(LicenseClass::Permissive));
         add_official_search(&mut wrong_f64);
-        wrong_f64.add_metadata(KEY_SEARCH_SOFTMAX_SMOOTHING, GgufMetadataValue::F64(1.25));
+        wrong_f64.add_metadata(
+            KEY_DECODE_POLICY_SOFTMAX_SMOOTHING,
+            GgufMetadataValue::F64(1.25),
+        );
         let error = FireredAsrAed::from_gguf(&finish(&wrong_f64)).expect_err("F64 float type");
         assert!(
             matches!(error, VokraError::ModelLoad(message) if message.contains("search.softmax_smoothing") && message.contains("F32"))
@@ -3643,7 +3650,7 @@ mod tests {
 
         let mut nonfinite = base_builder(Some(LicenseClass::Permissive));
         add_official_search(&mut nonfinite);
-        nonfinite.add_f32(KEY_SEARCH_LENGTH_PENALTY, f32::NAN);
+        nonfinite.add_f32(KEY_DECODE_POLICY_LENGTH_PENALTY, f32::NAN);
         let error =
             FireredAsrAed::from_gguf(&finish(&nonfinite)).expect_err("nonfinite search float");
         assert!(
@@ -3718,7 +3725,10 @@ mod tests {
         assert_eq!(DEFAULT_LICENSE_SPDX, "apache-2.0", "default SPDX pin");
         assert_eq!(CMVN_TEXT_BYTES, 2_985, "cmvn sidecar byte pin");
         assert_eq!(DICT_TEXT_BYTES, 71_448, "dict sidecar byte pin");
-        assert_eq!(SEARCH_NAME, "batch_beam_search", "search algorithm pin");
+        assert_eq!(
+            DECODE_POLICY_NAME, "batch_beam_search",
+            "search algorithm pin"
+        );
         assert_eq!(SEARCH_BEAM_SIZE, 3, "official beam-size pin");
         assert_eq!(SEARCH_NBEST, 1, "official nbest pin");
         assert_eq!(SEARCH_DECODE_MAX_LEN, 0, "official max-length pin");
