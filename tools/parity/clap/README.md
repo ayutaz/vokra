@@ -49,6 +49,31 @@ UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
   python tools/parity/clap/license_gate.py --self-test
 ```
 
+Before any owner-approved real-weight inspection, the VAST worker supports an
+independent model-free closure:
+
+```sh
+VOKRA_PUBLISH_ON_VAST=1 \
+  scripts/publish/vast-ai/run-clap-htsat-fused-validation.sh \
+  --model-free --expected-head <clean-40-hex> \
+  --work-dir /tmp/vokra-clap-model-free
+```
+
+This path resolves only `config.json` and `preprocessor_config.json` from the
+pinned revision. `HfApi.model_info` (using the public `card_data` property),
+`list_repo_files`, and an expanded `list_repo_tree` first authenticate the
+resolved commit and record CardData license metadata separately from any
+repository `LICENSE` file. The tree packet binds each selected metadata file's
+remote size/blob or LFS identity to its materialized local bytes. The
+allowlisted snapshot is copied into regular files before the audit, so cache
+symlinks cannot satisfy the metadata gate. It then runs the frozen
+Transformers config/feature-extractor API and records lock/dependency/license
+facts. Dependency license evidence remains explicitly `PENDING`; it is not an
+approval. Its evidence explicitly says
+`weights=NOT_ACQUIRED`, `model_load=NOT_PERFORMED`, and
+`publication=NO_UPLOAD`. The real-weight path remains approval-gated and
+cannot be authorized by model-free evidence.
+
 Only after owner approval and a clean disposable VAST checkout may the normal
 reference command be run with a pinned local snapshot and an output directory.
 The resulting metadata remains `INSPECTION_ONLY` until independent review and
