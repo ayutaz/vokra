@@ -19,6 +19,8 @@ worker, using these immutable identities:
 - `common/stdout_wrapper.py` blob: `23c6e76462753190d77a1b58dfe022012c90a028`
 - `text/__init__.py` blob: `495e57b50d87a4ca3e8fe8dbaf003b4888581927`
 - License blob: `0ad25db4bd1d86c452db3f9602ccdbe172438f52`
+- `pyopenjtalk/__init__.py` blob:
+  `656c5089f529150828b5b6fe512b0ca942d9a3a8`
 - `bert/deberta-v2-large-japanese-char-wwm/config.json` blob:
   `9fb6b0ac2ec49b6556e58b5ed9492eb33166714d`
 - `bert/deberta-v2-large-japanese-char-wwm/special_tokens_map.json` blob:
@@ -68,6 +70,11 @@ pyopenjtalk can be built or imported. The post-install phase checks installed
 package metadata, `RECORD`, bundled voice files, native binary inventory and
 license payloads before `generate_contract.py`; if it fails, the generator is
 not reached. Both phases explicitly reject GPL/LGPL or unexpected payloads.
+The Open JTalk dictionary is fixed runtime G2P data, not model weight: the
+worker authenticates its archive URL, size, SHA-256, exact tar members, and
+license, then authenticates the extracted payload again before and after the
+generator. Automatic dictionary download is disabled by supplying the verified
+`OPEN_JTALK_DICT_DIR` payload to the generator.
 The build-only constraints in the SBV2
 project pin `setuptools==80.9.0`, `setuptools-scm==9.2.0`, `cython==3.1.4`,
 `cmake==4.1.0`, and `numpy==2.5.2` via uv's supported

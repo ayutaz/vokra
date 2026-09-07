@@ -18,6 +18,8 @@ SOURCE_COMMIT="ef93f388fc1ddf0dc0f598126c1964923f1df94f"
 PYOPENJTALK_SOURCE_URL="https://github.com/r9y9/pyopenjtalk.git"
 PYOPENJTALK_COMMIT="0f0fc44e782a8134cd9a51d80b57b48a7c95bb80"
 PYOPENJTALK_TAG="v0.4.1"
+OPEN_JTALK_DICT_URL="https://github.com/r9y9/open_jtalk/releases/download/v1.11.1/open_jtalk_dic_utf_8-1.11.tar.gz"
+OPEN_JTALK_DICT_ARCHIVE_NAME="open_jtalk_dic_utf_8-1.11.tar.gz"
 LOGURU_SOURCE_URL="https://github.com/Delgan/loguru.git"
 LOGURU_COMMIT="ae3bfd1b85b6b4a3db535f69b975687c79498be4"
 LOGURU_TAG="0.7.3"
@@ -47,7 +49,7 @@ require_vast() {
 
 require_tooling() {
   local tool
-  for tool in git uv sha256sum; do
+  for tool in git uv sha256sum curl tar; do
     command -v "$tool" >/dev/null 2>&1 || { die "required tool missing: $tool"; return 2; }
   done
   [[ -f "$GENERATOR" && ! -L "$GENERATOR" ]] || { die 'contract generator is missing or symlinked'; return 2; }
@@ -104,6 +106,10 @@ run_self_test() {
     'PYOPENJTALK_SOURCE_URL' 'PYOPENJTALK_COMMIT' 'PYOPENJTALK_TAG' 'audit_pyopenjtalk.py' \
     'pyopenjtalk license audit' 'build-constraint-dependencies' \
     'LICENSE_mei_normal.htsvoice' 'submodule update' \
+    'OPEN_JTALK_DICT_URL' 'OPEN_JTALK_DICT_ARCHIVE_NAME' 'open_jtalk_dic_utf_8-1.11.tar.gz' \
+    'fe6ba0e43542cef98339abdffd903e062008ea170b04e7e2a35da805902f382a' '23646843' \
+    'DICTIONARY_ARCHIVE_PASS' 'DICTIONARY_PAYLOAD_PASS' 'OPEN_JTALK_DICT_DIR' 'curl' 'tar -xzf' \
+    'UV_PROJECT_ENVIRONMENT' 'sbv2-venv' \
     'LOGURU_SOURCE_URL' 'LOGURU_COMMIT' 'LOGURU_TAG' 'LOGURU_TAG_OBJECT' 'loguru-source' '--loguru-source-dir' 'verify_loguru_source' '5285f420ff222526f9afa7acf507362367132f9c' '4ea6eb8e860bee2582875b19ceac328ac17dc7af' \
     'HF_HUB_OFFLINE=1' 'TRANSFORMERS_OFFLINE=1' \
     'NO_UPLOAD' 'git clone' 'git checkout' 'verify_source_tree' \
@@ -126,7 +132,10 @@ run_self_test() {
     'ef3652a1877f4c898e6fcb3e605c432c7bcc56b1'; do
     grep -Fq -- "$token" "$GENERATOR" || { log "self-test missing authenticated tokenizer token: $token"; failed=1; }
   done
-  for token in PYOPENJTALK_COMMIT SOURCE_BLOBS SUBMODULES BUILD_CONSTRAINTS UPSTREAM_BUILD_REQUIREMENTS \
+  for token in PYOPENJTALK_COMMIT SOURCE_BLOBS 'pyopenjtalk/__init__.py' '656c5089f529150828b5b6fe512b0ca942d9a3a8' \
+    OPEN_JTALK_DICT_BASE_URL \
+    OPEN_JTALK_DICT_FILES OPEN_JTALK_DICT_ROOT verify_dictionary_archive verify_dictionary_directory \
+    SUBMODULES BUILD_CONSTRAINTS UPSTREAM_BUILD_REQUIREMENTS \
     STATIC_SOURCE_LOCK_LICENSE_PASS POST_INSTALL_PAYLOAD_PASS 'residual=build-only archive hashes'; do
     grep -Fq -- "$token" "$PYOPENJTALK_AUDIT" || { log "self-test missing pyopenjtalk evidence token: $token"; failed=1; }
   done
@@ -161,7 +170,7 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 expected_head='' output='' work='' arg source_dir pyopenjtalk_source_dir loguru_source_dir
+  local self_test=0 expected_head='' output='' work='' arg source_dir pyopenjtalk_source_dir loguru_source_dir dictionary_archive dictionary_dir project_env
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --self-test) [[ "$self_test" == 0 ]] || { die 'duplicate --self-test'; return 2; }; self_test=1; shift ;;
@@ -193,6 +202,9 @@ main() {
   source_dir="$work/official-source"
   pyopenjtalk_source_dir="$work/pyopenjtalk-source"
   loguru_source_dir="$work/loguru-source"
+  dictionary_archive="$work/$OPEN_JTALK_DICT_ARCHIVE_NAME"
+  dictionary_dir="$work/open_jtalk_dic_utf_8-1.11"
+  project_env="$work/sbv2-venv"
   git clone --quiet --no-checkout "$SOURCE_URL" "$source_dir"
   git -C "$source_dir" fetch --quiet --depth=1 origin "$SOURCE_COMMIT"
   git -C "$source_dir" checkout --quiet --detach "$SOURCE_COMMIT"
@@ -208,17 +220,26 @@ main() {
   git -C "$loguru_source_dir" fetch --quiet --depth=1 origin "refs/tags/$LOGURU_TAG:refs/tags/$LOGURU_TAG"
   git -C "$loguru_source_dir" checkout --quiet --detach "$LOGURU_COMMIT"
   log "verified loguru source checkout at $LOGURU_COMMIT before dependency audit"
+  curl --fail --location --silent --show-error --output "$dictionary_archive" "$OPEN_JTALK_DICT_URL"
+  log "downloaded fixed Open JTalk dictionary archive before audit"
   VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --no-project --offline --python 3.12 python "$PYOPENJTALK_AUDIT" --phase static \
-    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir" --loguru-source-dir "$loguru_source_dir"
-  VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
+    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir" --loguru-source-dir "$loguru_source_dir" \
+    --dictionary-archive "$dictionary_archive"
+  tar -xzf "$dictionary_archive" -C "$work"
+  VOKRA_PUBLISH_ON_VAST=1 UV_PROJECT_ENVIRONMENT="$project_env" UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PYOPENJTALK_AUDIT" --phase post \
-    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir" --loguru-source-dir "$loguru_source_dir"
-  VOKRA_PUBLISH_ON_VAST=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
+    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir" --loguru-source-dir "$loguru_source_dir" \
+    --dictionary-archive "$dictionary_archive" --dictionary-dir "$dictionary_dir"
+  VOKRA_PUBLISH_ON_VAST=1 UV_PROJECT_ENVIRONMENT="$project_env" OPEN_JTALK_DICT_DIR="$dictionary_dir" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$GENERATOR" \
     --vokra-root "$VOKRA_ROOT" --expected-head "$expected_head" \
     --source-dir "$source_dir" \
     --work-dir "$work" --output "$output"
+  VOKRA_PUBLISH_ON_VAST=1 UV_PROJECT_ENVIRONMENT="$project_env" UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
+    uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PYOPENJTALK_AUDIT" --phase post \
+    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir" --loguru-source-dir "$loguru_source_dir" \
+    --dictionary-archive "$dictionary_archive" --dictionary-dir "$dictionary_dir"
   log 'contract generation complete; publication=NO_UPLOAD; model weights=NOT_ACQUIRED'
   return 0
 }

@@ -12,20 +12,40 @@ import argparse
 import base64
 import hashlib
 import importlib.metadata
+import io
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
 import tomllib
 import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Mapping
 
 
 PYOPENJTALK_COMMIT = "0f0fc44e782a8134cd9a51d80b57b48a7c95bb80"
 PYOPENJTALK_TAG = "v0.4.1"
 PYOPENJTALK_URL = "https://github.com/r9y9/pyopenjtalk.git"
 PYOPENJTALK_SDIST_SHA256 = "d5ada46f7fc2b52c1c79c273eb9668ff6ad7ab276a8db9d8be119ef93440f0dc"
+OPEN_JTALK_DICT_URL = "https://github.com/r9y9/open_jtalk/releases/download/v1.11.1/open_jtalk_dic_utf_8-1.11.tar.gz"
+OPEN_JTALK_DICT_BASE_URL = "https://github.com/r9y9/open_jtalk/releases/download/v1.11.1"
+OPEN_JTALK_DICT_ARCHIVE_NAME = "open_jtalk_dic_utf_8-1.11.tar.gz"
+OPEN_JTALK_DICT_ROOT = "open_jtalk_dic_utf_8-1.11/"
+OPEN_JTALK_DICT_ARCHIVE_SIZE = 23646843
+OPEN_JTALK_DICT_ARCHIVE_SHA256 = "fe6ba0e43542cef98339abdffd903e062008ea170b04e7e2a35da805902f382a"
+OPEN_JTALK_DICT_FILES = {
+    "COPYING": (5865, "f4eca42ebd930e2c6e57fca58319d989bebcd1510cb7714b149c50f5425135ea"),
+    "char.bin": (262496, "888ee94c5a8a7a26d24ab3f1b7155441351954fd51ea06b4a2f78bd742492b2f"),
+    "left-id.def": (77672, "db1adac8a7f9e5854cd82ea044c85115249206c8181b9d88cf92ae2ee5e87b84"),
+    "matrix.bin": (3792262, "62fd16b4f64c851d5dc352ef0d5740c5fc83ddc7c203b2b0b1fc5271969a14ce"),
+    "pos-id.def": (1923, "3460aa742053085af47cdfc889a1e0e6f557e89b406e501ba81c9ccc286de0c7"),
+    "rewrite.def": (7457, "7f7c8dfbfe24092e8a149a9b6e0a3a7f1c2cf37d6c3dc29d1cccc6c004da9c1c"),
+    "right-id.def": (77672, "db1adac8a7f9e5854cd82ea044c85115249206c8181b9d88cf92ae2ee5e87b84"),
+    "sys.dic": (103073776, "ca57d9029691a70a5dfb99afc2844180256161d7130da65b1a867510e129b9a6"),
+    "unk.dic": (5690, "ce97851ecda075914fa3ffe7294a1ab34ee4f6d56ba6bf9197d74143b5dffbfe"),
+}
 LOGURU_SOURCE_URL = "https://github.com/Delgan/loguru.git"
 LOGURU_TAG = "0.7.3"
 LOGURU_TAG_OBJECT = "eb27ef8546577adbb88ad36b62b4eca9e9dae217"
@@ -41,6 +61,7 @@ LOGURU_SDIST_SIZE = 63559
 LOGURU_WHEEL_SHA256 = "31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c"
 LOGURU_WHEEL_SIZE = 61595
 SOURCE_BLOBS = {
+    "pyopenjtalk/__init__.py": "656c5089f529150828b5b6fe512b0ca942d9a3a8",
     "pyproject.toml": "9de1588afb8603b1ca9f13c3faca1f658057ba33",
     "LICENSE.md": "d66bbcca2d9f4d1f9244ea80ec5acda93dbb469b",
     ".gitmodules": "e70e7ee15d28fe99ec08bc42b19399e6ba291827",
@@ -174,6 +195,97 @@ def _require_modified_bsd(text: str, label: str) -> None:
         raise AuditError(f"{label} is not the expected modified BSD text")
 
 
+def _verify_license_bytes(data: bytes, label: str) -> None:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise AuditError(f"{label} is not readable UTF-8") from error
+    upper = text.upper()
+    if "GPL" in upper or "LGPL" in upper:
+        raise AuditError(f"forbidden GPL/LGPL marker in {label}")
+    _require_modified_bsd(text, label)
+
+
+def verify_dictionary_archive(
+    archive_path: Path,
+    *,
+    expected_size: int = OPEN_JTALK_DICT_ARCHIVE_SIZE,
+    expected_sha256: str = OPEN_JTALK_DICT_ARCHIVE_SHA256,
+    expected_root: str = OPEN_JTALK_DICT_ROOT,
+    expected_files: Mapping[str, tuple[int, str]] = OPEN_JTALK_DICT_FILES,
+) -> None:
+    """Authenticate the fixed Open JTalk dictionary archive before extraction."""
+
+    if archive_path.name != OPEN_JTALK_DICT_ARCHIVE_NAME:
+        raise AuditError(f"dictionary archive name drifted: {archive_path.name}")
+    _regular(archive_path, "Open JTalk dictionary archive")
+    if archive_path.stat().st_size != expected_size:
+        raise AuditError("Open JTalk dictionary archive size drifted")
+    if _sha256(archive_path) != expected_sha256:
+        raise AuditError("Open JTalk dictionary archive SHA-256 drifted")
+    # tarfile normalizes a directory member's trailing slash, while the
+    # authenticated source semantics name the root with a slash.
+    root_name = expected_root.rstrip("/")
+    expected_names = {root_name, *(root_name + "/" + name for name in expected_files)}
+    try:
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            members = archive.getmembers()
+            names = [member.name for member in members]
+            if len(names) != len(set(names)) or set(names) != expected_names:
+                raise AuditError("Open JTalk dictionary archive member set drifted")
+            for member in members:
+                parts = member.name.split("/")
+                if member.name.startswith("/") or "\\" in member.name or any(
+                    part in {".", ".."} for part in parts
+                ):
+                    raise AuditError(f"unsafe Open JTalk dictionary archive path: {member.name}")
+                if member.name == root_name:
+                    if not member.isdir() or member.linkname:
+                        raise AuditError("Open JTalk dictionary archive root is not a regular directory")
+                    continue
+                if not member.isreg() or member.linkname:
+                    raise AuditError(f"Open JTalk dictionary archive member is not regular: {member.name}")
+                name = member.name.removeprefix(root_name + "/")
+                expected_file_size, expected_file_sha256 = expected_files[name]
+                if member.size != expected_file_size:
+                    raise AuditError(f"Open JTalk dictionary archive size drifted: {name}")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise AuditError(f"cannot read Open JTalk dictionary archive member: {name}")
+                data = stream.read()
+                if len(data) != expected_file_size or hashlib.sha256(data).hexdigest() != expected_file_sha256:
+                    raise AuditError(f"Open JTalk dictionary archive payload drifted: {name}")
+                if name == "COPYING":
+                    _verify_license_bytes(data, "Open JTalk dictionary archive COPYING")
+    except (OSError, tarfile.TarError) as error:
+        raise AuditError(f"cannot read Open JTalk dictionary archive: {error}") from error
+
+
+def verify_dictionary_directory(
+    dictionary_dir: Path,
+    *,
+    expected_files: Mapping[str, tuple[int, str]] = OPEN_JTALK_DICT_FILES,
+) -> None:
+    """Authenticate the exact direct-file payload produced from the archive."""
+
+    if dictionary_dir.is_symlink() or not dictionary_dir.is_dir():
+        raise AuditError(f"Open JTalk dictionary payload must be a regular directory: {dictionary_dir}")
+    try:
+        entries = list(dictionary_dir.iterdir())
+    except OSError as error:
+        raise AuditError(f"cannot inspect Open JTalk dictionary payload: {error}") from error
+    names = {entry.name for entry in entries}
+    if len(entries) != len(names) or names != set(expected_files):
+        raise AuditError("Open JTalk dictionary payload member set drifted")
+    for name, (expected_size, expected_sha256) in expected_files.items():
+        path = dictionary_dir / name
+        _regular(path, f"Open JTalk dictionary payload/{name}")
+        if path.stat().st_size != expected_size or _sha256(path) != expected_sha256:
+            raise AuditError(f"Open JTalk dictionary payload drifted: {name}")
+    copying = _license_text(dictionary_dir / "COPYING", "Open JTalk dictionary COPYING")
+    _require_modified_bsd(copying, "Open JTalk dictionary COPYING")
+
+
 def _verify_repo(
     root: Path,
     expected_commit: str,
@@ -214,6 +326,12 @@ def verify_source_tree(source_dir: Path) -> None:
         _regular(file_path, f"pyopenjtalk {path}")
         if _git_blob(file_path) != expected:
             raise AuditError(f"pyopenjtalk worktree blob drifted: {path}")
+    try:
+        init_text = (source_dir / "pyopenjtalk/__init__.py").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise AuditError(f"cannot read authenticated pyopenjtalk dictionary source semantics: {error}") from error
+    if OPEN_JTALK_DICT_BASE_URL not in init_text or OPEN_JTALK_DICT_ARCHIVE_NAME not in init_text:
+        raise AuditError("pyopenjtalk dictionary URL/name semantics drifted")
     try:
         build_metadata = tomllib.loads((source_dir / "pyproject.toml").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
@@ -467,6 +585,38 @@ def verify_installed_metadata() -> None:
         raise AuditError(f"unexpected pyopenjtalk native binary inventory: {sorted(native)}")
 
 
+def _write_dictionary_fixture(
+    archive_path: Path,
+    members: Mapping[str, tuple[str, bytes]],
+) -> None:
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, mode="w:gz") as archive:
+        root_info = tarfile.TarInfo(OPEN_JTALK_DICT_ROOT)
+        root_info.type = tarfile.DIRTYPE
+        root_info.mtime = 0
+        archive.addfile(root_info)
+        for name, (kind, data) in members.items():
+            info = tarfile.TarInfo(OPEN_JTALK_DICT_ROOT + name)
+            info.mtime = 0
+            if kind == "regular":
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+            elif kind == "symlink":
+                info.type = tarfile.SYMTYPE
+                info.linkname = "char.bin"
+                archive.addfile(info)
+            else:
+                raise AssertionError(f"unknown self-test archive member kind: {kind}")
+
+
+def _expect_failure(label: str, operation: Any) -> None:
+    try:
+        operation()
+    except AuditError:
+        return
+    raise AssertionError(f"self-test accepted forbidden case: {label}")
+
+
 def self_test() -> None:
     import tempfile
 
@@ -557,15 +707,125 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("empty non-RECORD hash/size was accepted")
+        bsd = (
+            b"Copyright 2024\n"
+            b"Redistribution and use in source and binary forms are permitted.\n"
+            b"This software is provided by the copyright holders and contributors.\n"
+            b"All rights reserved.\n"
+        )
+        payloads = {"COPYING": bsd}
+        payloads.update({name: f"{name}\n".encode() for name in OPEN_JTALK_DICT_FILES if name != "COPYING"})
+        expected_files = {
+            name: (len(data), hashlib.sha256(data).hexdigest()) for name, data in payloads.items()
+        }
+        good_archive = root / "dictionary-good" / OPEN_JTALK_DICT_ARCHIVE_NAME
+        _write_dictionary_fixture(good_archive, {name: ("regular", data) for name, data in payloads.items()})
+        verify_dictionary_archive(
+            good_archive,
+            expected_size=good_archive.stat().st_size,
+            expected_sha256=_sha256(good_archive),
+            expected_files=expected_files,
+        )
+        good_dir = root / "dictionary-good" / OPEN_JTALK_DICT_ROOT.rstrip("/")
+        good_dir.mkdir()
+        for name, data in payloads.items():
+            (good_dir / name).write_bytes(data)
+        verify_dictionary_directory(good_dir, expected_files=expected_files)
+        bad_expected = dict(expected_files)
+        bad_expected["char.bin"] = (expected_files["char.bin"][0], "0" * 64)
+        _expect_failure(
+            "dictionary payload hash drift",
+            lambda: verify_dictionary_archive(
+                good_archive,
+                expected_size=good_archive.stat().st_size,
+                expected_sha256=_sha256(good_archive),
+                expected_files=bad_expected,
+            ),
+        )
+        traversal = dict((name, ("regular", data)) for name, data in payloads.items())
+        traversal["../escape"] = ("regular", b"escape")
+        traversal_archive = root / "dictionary-traversal" / OPEN_JTALK_DICT_ARCHIVE_NAME
+        _write_dictionary_fixture(traversal_archive, traversal)
+        _expect_failure(
+            "dictionary archive traversal",
+            lambda: verify_dictionary_archive(
+                traversal_archive,
+                expected_size=traversal_archive.stat().st_size,
+                expected_sha256=_sha256(traversal_archive),
+                expected_files=expected_files,
+            ),
+        )
+        symlink_members = dict((name, ("regular", data)) for name, data in payloads.items())
+        symlink_members["char.bin"] = ("symlink", b"")
+        symlink_archive = root / "dictionary-symlink" / OPEN_JTALK_DICT_ARCHIVE_NAME
+        _write_dictionary_fixture(symlink_archive, symlink_members)
+        _expect_failure(
+            "dictionary archive symlink",
+            lambda: verify_dictionary_archive(
+                symlink_archive,
+                expected_size=symlink_archive.stat().st_size,
+                expected_sha256=_sha256(symlink_archive),
+                expected_files=expected_files,
+            ),
+        )
+        extra_members = dict((name, ("regular", data)) for name, data in payloads.items())
+        extra_members["extra"] = ("regular", b"extra")
+        extra_archive = root / "dictionary-extra" / OPEN_JTALK_DICT_ARCHIVE_NAME
+        _write_dictionary_fixture(extra_archive, extra_members)
+        _expect_failure(
+            "dictionary archive extra member",
+            lambda: verify_dictionary_archive(
+                extra_archive,
+                expected_size=extra_archive.stat().st_size,
+                expected_sha256=_sha256(extra_archive),
+                expected_files=expected_files,
+            ),
+        )
+        extra_dir = root / "dictionary-extra-dir"
+        shutil.copytree(good_dir, extra_dir)
+        (extra_dir / "extra").write_bytes(b"extra")
+        _expect_failure("dictionary payload extra member", lambda: verify_dictionary_directory(extra_dir, expected_files=expected_files))
+        symlink_dir = root / "dictionary-symlink-dir"
+        shutil.copytree(good_dir, symlink_dir)
+        (symlink_dir / "char.bin").unlink()
+        (symlink_dir / "char.bin").symlink_to("missing")
+        _expect_failure("dictionary payload symlink", lambda: verify_dictionary_directory(symlink_dir, expected_files=expected_files))
+        bad_license_dir = root / "dictionary-license"
+        shutil.copytree(good_dir, bad_license_dir)
+        bad_license = b"not a license\n"
+        (bad_license_dir / "COPYING").write_bytes(bad_license)
+        bad_license_expected = dict(expected_files)
+        bad_license_expected["COPYING"] = (len(bad_license), hashlib.sha256(bad_license).hexdigest())
+        bad_license_archive = root / "dictionary-license-archive" / OPEN_JTALK_DICT_ARCHIVE_NAME
+        bad_license_payloads = dict(payloads)
+        bad_license_payloads["COPYING"] = bad_license
+        _write_dictionary_fixture(
+            bad_license_archive,
+            {name: ("regular", data) for name, data in bad_license_payloads.items()},
+        )
+        _expect_failure(
+            "dictionary archive COPYING license",
+            lambda: verify_dictionary_archive(
+                bad_license_archive,
+                expected_size=bad_license_archive.stat().st_size,
+                expected_sha256=_sha256(bad_license_archive),
+                expected_files=bad_license_expected,
+            ),
+        )
+        _expect_failure(
+            "dictionary COPYING license",
+            lambda: verify_dictionary_directory(bad_license_dir, expected_files=bad_license_expected),
+        )
     assert HEX40.fullmatch(PYOPENJTALK_COMMIT)
     assert HEX40.fullmatch(LOGURU_TAG_OBJECT)
     assert HEX40.fullmatch(LOGURU_COMMIT)
     assert HEX64.fullmatch(LOGURU_LICENSE_SHA256)
     assert HEX64.fullmatch(LOGURU_PYPROJECT_SHA256)
     assert HEX64.fullmatch(PYOPENJTALK_SDIST_SHA256)
+    assert HEX64.fullmatch(OPEN_JTALK_DICT_ARCHIVE_SHA256)
     assert HEX64.fullmatch(LOGURU_SDIST_SHA256)
     assert HEX64.fullmatch(LOGURU_WHEEL_SHA256)
-    assert LOGURU_SDIST_SIZE > 0 and LOGURU_WHEEL_SIZE > 0
+    assert LOGURU_SDIST_SIZE > 0 and LOGURU_WHEEL_SIZE > 0 and OPEN_JTALK_DICT_ARCHIVE_SIZE > 0
     print("sbv2 pyopenjtalk license audit self-test: PASS")
 
 
@@ -575,6 +835,8 @@ def main() -> int:
     parser.add_argument("--project-dir", type=Path)
     parser.add_argument("--source-dir", type=Path)
     parser.add_argument("--loguru-source-dir", type=Path)
+    parser.add_argument("--dictionary-archive", type=Path)
+    parser.add_argument("--dictionary-dir", type=Path)
     parser.add_argument("--phase", choices=("static", "post"), default="post")
     args = parser.parse_args()
     if args.self_test:
@@ -582,30 +844,40 @@ def main() -> int:
             args.project_dir is not None
             or args.source_dir is not None
             or args.loguru_source_dir is not None
+            or args.dictionary_archive is not None
+            or args.dictionary_dir is not None
             or args.phase != "post"
         ):
             parser.error("--self-test accepts no execution options")
         self_test()
         return 0
-    if args.project_dir is None or args.source_dir is None or args.loguru_source_dir is None:
-        parser.error("execution requires --project-dir, --source-dir, and --loguru-source-dir")
+    if args.project_dir is None or args.source_dir is None or args.loguru_source_dir is None or args.dictionary_archive is None:
+        parser.error(
+            "execution requires --project-dir, --source-dir, --loguru-source-dir, and --dictionary-archive"
+        )
+    if args.phase == "static" and args.dictionary_dir is not None:
+        parser.error("--dictionary-dir is only valid for --phase post")
+    if args.phase == "post" and args.dictionary_dir is None:
+        parser.error("--phase post requires --dictionary-dir")
     try:
         verify_lock(args.project_dir)
         verify_source_tree(args.source_dir)
         verify_loguru_source(args.loguru_source_dir)
+        verify_dictionary_archive(args.dictionary_archive)
         if args.phase == "post":
+            verify_dictionary_directory(args.dictionary_dir)
             verify_installed_metadata()
     except (AuditError, OSError, ValueError) as error:
         print(f"sbv2 pyopenjtalk license audit BLOCKED: {error}", file=sys.stderr)
         return 2
     if args.phase == "static":
         print(
-            "STATIC_SOURCE_LOCK_LICENSE_PASS; residual=build-only archive hashes "
+            "STATIC_SOURCE_LOCK_LICENSE_PASS; DICTIONARY_ARCHIVE_PASS; residual=build-only archive hashes "
             "are not lock-authenticated and require VAST archive/license/native audit"
         )
     else:
         print(
-            "POST_INSTALL_PAYLOAD_PASS; residual=build-only archive hashes "
+            "POST_INSTALL_PAYLOAD_PASS; DICTIONARY_ARCHIVE_PASS; DICTIONARY_PAYLOAD_PASS; residual=build-only archive hashes "
             "are not lock-authenticated and require VAST archive/license/native audit"
         )
     return 0
