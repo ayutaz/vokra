@@ -19,6 +19,17 @@ dependencies = [
 
 [tool.uv]
 package = false
+# pyopenjtalk 0.4.1 is sdist-only.  Keep its PEP 517 build environment
+# reproducible without making these tools runtime dependencies.  The selected
+# pins satisfy the authenticated v0.4.1 source's minimum/unversioned build
+# requirements; they are project policy pins, not upstream exact versions.
+build-constraint-dependencies = [
+    "setuptools==80.9.0",
+    "setuptools-scm==9.2.0",
+    "cython==3.1.4",
+    "cmake==4.1.0",
+    "numpy==2.5.2",
+]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]

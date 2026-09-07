@@ -11,9 +11,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 GENERATOR="$VOKRA_ROOT/tools/parity/sbv2_jp_extra/generate_contract.py"
+PYOPENJTALK_AUDIT="$VOKRA_ROOT/tools/parity/sbv2_jp_extra/audit_pyopenjtalk.py"
 PARITY_PROJECT="${SBV2_G2P_PROJECT:-$VOKRA_ROOT/tools/parity/sbv2}"
 SOURCE_URL="https://github.com/litagin02/Style-Bert-VITS2.git"
 SOURCE_COMMIT="ef93f388fc1ddf0dc0f598126c1964923f1df94f"
+PYOPENJTALK_SOURCE_URL="https://github.com/r9y9/pyopenjtalk.git"
+PYOPENJTALK_COMMIT="0f0fc44e782a8134cd9a51d80b57b48a7c95bb80"
+PYOPENJTALK_TAG="v0.4.1"
 
 log() { printf '[sbv2-jp-extra-g2p] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -43,6 +47,7 @@ require_tooling() {
     command -v "$tool" >/dev/null 2>&1 || { die "required tool missing: $tool"; return 2; }
   done
   [[ -f "$GENERATOR" && ! -L "$GENERATOR" ]] || { die 'contract generator is missing or symlinked'; return 2; }
+  [[ -f "$PYOPENJTALK_AUDIT" && ! -L "$PYOPENJTALK_AUDIT" ]] || { die 'pyopenjtalk license audit is missing or symlinked'; return 2; }
   [[ -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" ]] || { die 'pinned SBV2 reference uv.lock is missing'; return 2; }
 }
 
@@ -92,6 +97,9 @@ run_self_test() {
     "$SOURCE_URL" "$SOURCE_COMMIT" 'VOKRA_PUBLISH_ON_VAST=1' 'Linux/VAST-only' \
     '--expected-head' '--output' '--work-dir' \
     '--project' 'SBV2_G2P_PROJECT' \
+    'PYOPENJTALK_SOURCE_URL' 'PYOPENJTALK_COMMIT' 'PYOPENJTALK_TAG' 'audit_pyopenjtalk.py' \
+    'pyopenjtalk license audit' 'build-constraint-dependencies' \
+    'LICENSE_mei_normal.htsvoice' 'submodule update' \
     'NO_UPLOAD' 'git clone' 'git checkout' 'verify_source_tree' \
     'model/checkpoint bytes' 'model_weight_acquisition' 'cargo' \
     'g2p_en' 'distance' 'num2words' '__vokra_num2words_sentinel__' 'numeric-text G2P' \
@@ -101,6 +109,24 @@ run_self_test() {
   for token in symbols_blob japanese_blob mora_blob common_log_blob stdout_wrapper_blob init_blob license_blob; do
     grep -Fq -- "$token" "$GENERATOR" || { log "self-test missing authenticated blob token: $token"; failed=1; }
   done
+  for token in PYOPENJTALK_COMMIT SOURCE_BLOBS SUBMODULES BUILD_CONSTRAINTS UPSTREAM_BUILD_REQUIREMENTS \
+    STATIC_SOURCE_LOCK_LICENSE_PASS POST_INSTALL_PAYLOAD_PASS 'residual=build-only archive hashes'; do
+    grep -Fq -- "$token" "$PYOPENJTALK_AUDIT" || { log "self-test missing pyopenjtalk evidence token: $token"; failed=1; }
+  done
+  grep -Fq -- 'build-constraint-dependencies' "$PARITY_PROJECT/pyproject.toml" || {
+    log 'self-test missing uv build constraint configuration'
+    failed=1
+  }
+  UV_CACHE_DIR="${UV_CACHE_DIR:-$VOKRA_ROOT/.cache/uv-sbv2-jp-extra}" \
+    uv run --no-project --offline --python 3.12 python "$PYOPENJTALK_AUDIT" --self-test \
+    || failed=1
+  static_line="$(grep -n -- '--phase static' "${BASH_SOURCE[0]}" | head -n 1 | cut -d: -f1)"
+  post_line="$(grep -n -- '--phase post' "${BASH_SOURCE[0]}" | head -n 1 | cut -d: -f1)"
+  generator_line="$(grep -n -- 'generate_contract.py' "${BASH_SOURCE[0]}" | tail -n 1 | cut -d: -f1)"
+  [[ -n "$static_line" && -n "$post_line" && -n "$generator_line" && "$static_line" -lt "$post_line" && "$post_line" -lt "$generator_line" ]] || {
+    log 'self-test phase ordering is not static-audit, project-build/post-audit, generator'
+    failed=1
+  }
   if grep -En '(^|[[:space:]])(python3?|pip)([[:space:]]|$)' "${BASH_SOURCE[0]}" | grep -v 'uv run' >/dev/null; then
     log 'self-test found forbidden bare Python/pip invocation'
     failed=1
@@ -118,7 +144,7 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 expected_head='' output='' work='' arg source_dir
+  local self_test=0 expected_head='' output='' work='' arg source_dir pyopenjtalk_source_dir
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --self-test) [[ "$self_test" == 0 ]] || { die 'duplicate --self-test'; return 2; }; self_test=1; shift ;;
@@ -148,10 +174,23 @@ main() {
   [[ "$output" != "$work"/* && "$work" != "$output"/* ]] || { die 'output and worker directory must be disjoint'; return 2; }
   mkdir -m 700 "$work"
   source_dir="$work/official-source"
+  pyopenjtalk_source_dir="$work/pyopenjtalk-source"
   git clone --quiet --no-checkout "$SOURCE_URL" "$source_dir"
   git -C "$source_dir" fetch --quiet --depth=1 origin "$SOURCE_COMMIT"
   git -C "$source_dir" checkout --quiet --detach "$SOURCE_COMMIT"
   log "verified source checkout at $SOURCE_COMMIT before official import"
+  git clone --quiet --no-checkout "$PYOPENJTALK_SOURCE_URL" "$pyopenjtalk_source_dir"
+  git -C "$pyopenjtalk_source_dir" fetch --quiet --depth=1 origin "$PYOPENJTALK_COMMIT"
+  git -C "$pyopenjtalk_source_dir" fetch --quiet --depth=1 origin "refs/tags/$PYOPENJTALK_TAG:refs/tags/$PYOPENJTALK_TAG"
+  git -C "$pyopenjtalk_source_dir" checkout --quiet --detach "$PYOPENJTALK_COMMIT"
+  git -C "$pyopenjtalk_source_dir" submodule update --quiet --init --recursive
+  log "verified pyopenjtalk source checkout at $PYOPENJTALK_COMMIT before dependency audit"
+  VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
+    uv run --no-project --offline --python 3.12 python "$PYOPENJTALK_AUDIT" --phase static \
+    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir"
+  VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
+    uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PYOPENJTALK_AUDIT" --phase post \
+    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir"
   VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$GENERATOR" \
     --vokra-root "$VOKRA_ROOT" --expected-head "$expected_head" \

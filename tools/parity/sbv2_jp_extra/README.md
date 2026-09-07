@@ -24,6 +24,55 @@ The worker must verify every identity before importing the reference. A
 different revision or missing blob is a hard failure, not a best-effort
 substitution.
 
+The Japanese frontend's only native G2P dependency is the sdist-only
+`pyopenjtalk==0.4.1`. Its PyPI sdist is pinned in `tools/parity/sbv2/uv.lock`
+to SHA-256
+`d5ada46f7fc2b52c1c79c273eb9668ff6ad7ab276a8db9d8be119ef93440f0dc`.
+The VAST wrapper clones and audits the corresponding upstream commit
+`0f0fc44e782a8134cd9a51d80b57b48a7c95bb80` before any Python import. The
+authenticated license chain is:
+
+- fixed build declaration: `pyproject.toml` blob
+  `9de1588afb8603b1ca9f13c3faca1f658057ba33`; its source-declared
+  `setuptools>=64`, `setuptools_scm>=8`, `cython>=0.29.16`, `cmake`, and
+  Python-3.12-applicable `numpy>=1.25.0` requirements are checked against the
+  project-selected build constraints;
+
+- pyopenjtalk MIT: `LICENSE.md` blob
+  `d66bbcca2d9f4d1f9244ea80ec5acda93dbb469b`;
+- bundled `mei_normal.htsvoice` CC-BY-3.0: license blob
+  `753611721aea5b6ab7f713229c04cdbf8e63dff5`;
+- modified Open JTalk BSD: submodule commit
+  `462fc38e7520aa89e4d32b2611749208528c901e`, with `src/COPYING` blob
+  `495268369d51f7794083769e3305ef108593ab94`, dictionary `COPYING` blobs
+  `05d9789fde8883f09b0b9a814a53e6000346e964` and
+  `8c50c6c47472d3b190177ce754c5227091040856`;
+- modified HTS Engine BSD: submodule commit
+  `214e26dfb7f728ff9db39c14a59db709abcc121d`, with `src/COPYING` blob
+  `55081f59b6f2e3ec7be3e32e72cca9ebea099671`;
+- `loguru==0.7.3` MIT, pinned directly in the SBV2 reference project.
+
+`audit_pyopenjtalk.py` has two fail-closed phases. The static phase checks the
+sdist lock identity, the authenticated source/tag, two native submodules, all
+license blobs, and the upstream build-system declaration before project
+dependency resolution/build. If static checks fail, the worker stops before
+pyopenjtalk can be built or imported. The post-install phase checks installed
+package metadata, `RECORD`, bundled voice files, native binary inventory and
+license payloads before `generate_contract.py`; if it fails, the generator is
+not reached. Both phases explicitly reject GPL/LGPL or unexpected payloads.
+The build-only constraints in the SBV2
+project pin `setuptools==80.9.0`, `setuptools-scm==9.2.0`, `cython==3.1.4`,
+`cmake==4.1.0`, and `numpy==2.5.2` via uv's supported
+`build-constraint-dependencies` setting. These constraints do not add runtime
+dependencies.
+
+The lock records the application sdist/wheel hashes for pyopenjtalk and
+loguru, but uv's build-only constraint packages are not project packages and
+therefore have no archive hashes in this lock. The audit intentionally does
+not claim those archives are hash-authenticated; the VAST run must retain its
+download/archive evidence and native build payload inspection as a residual
+release blocker.
+
 ## Required generated artifacts
 
 The VAST worker should emit a hash-bound contract sidecar containing, as data:

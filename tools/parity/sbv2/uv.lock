@@ -8,6 +8,15 @@ supported-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 
+[manifest]
+build-constraints = [
+    { name = "cmake", specifier = "==4.1.0" },
+    { name = "cython", specifier = "==3.1.4" },
+    { name = "numpy", specifier = "==2.5.2" },
+    { name = "setuptools", specifier = "==80.9.0" },
+    { name = "setuptools-scm", specifier = "==9.2.0" },
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.5"

@@ -1,0 +1,550 @@
+#!/usr/bin/env -S uv run --no-project --offline --python 3.12
+"""Fail-closed audit for the SBV2 pyopenjtalk reference dependency.
+
+The audit deliberately uses importlib.metadata and git plumbing only: it does
+not import pyopenjtalk or execute native code.  The VAST wrapper runs it before
+the official Style-Bert-VITS2 module is imported.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import importlib.metadata
+import re
+import subprocess
+import sys
+import tomllib
+import urllib.parse
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+
+PYOPENJTALK_COMMIT = "0f0fc44e782a8134cd9a51d80b57b48a7c95bb80"
+PYOPENJTALK_TAG = "v0.4.1"
+PYOPENJTALK_URL = "https://github.com/r9y9/pyopenjtalk.git"
+PYOPENJTALK_SDIST_SHA256 = "d5ada46f7fc2b52c1c79c273eb9668ff6ad7ab276a8db9d8be119ef93440f0dc"
+LOGURU_SDIST_SHA256 = "19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6"
+LOGURU_SDIST_SIZE = 63559
+LOGURU_WHEEL_SHA256 = "31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c"
+LOGURU_WHEEL_SIZE = 61595
+SOURCE_BLOBS = {
+    "pyproject.toml": "9de1588afb8603b1ca9f13c3faca1f658057ba33",
+    "LICENSE.md": "d66bbcca2d9f4d1f9244ea80ec5acda93dbb469b",
+    ".gitmodules": "e70e7ee15d28fe99ec08bc42b19399e6ba291827",
+    "pyopenjtalk/htsvoice/LICENSE_mei_normal.htsvoice": "753611721aea5b6ab7f713229c04cdbf8e63dff5",
+    "pyopenjtalk/htsvoice/README.md": "6dff758c2495c69157ea84c05aff9a114eeb3f2c",
+}
+UPSTREAM_BUILD_REQUIREMENTS = {
+    "setuptools>=64",
+    "setuptools_scm>=8",
+    "cython>=0.29.16",
+    "cmake",
+    "numpy>=1.25.0; python_version>='3.9'",
+    "oldest-supported-numpy; python_version<'3.9'",
+}
+SUBMODULES = {
+    "lib/open_jtalk": {
+        "url": "https://github.com/r9y9/open_jtalk.git",
+        "commit": "462fc38e7520aa89e4d32b2611749208528c901e",
+        "blobs": {
+            "src/COPYING": "495268369d51f7794083769e3305ef108593ab94",
+            "src/mecab-naist-jdic/COPYING": "05d9789fde8883f09b0b9a814a53e6000346e964",
+            "src/mecab/COPYING": "8c50c6c47472d3b190177ce754c5227091040856",
+        },
+    },
+    "lib/hts_engine_API": {
+        "url": "https://github.com/r9y9/hts_engine_API.git",
+        "commit": "214e26dfb7f728ff9db39c14a59db709abcc121d",
+        "blobs": {"src/COPYING": "55081f59b6f2e3ec7be3e32e72cca9ebea099671"},
+    },
+}
+BUILD_CONSTRAINTS = {
+    "setuptools==80.9.0",
+    "setuptools-scm==9.2.0",
+    "cython==3.1.4",
+    "cmake==4.1.0",
+    "numpy==2.5.2",
+}
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class AuditError(RuntimeError):
+    pass
+
+
+def _git(root: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args], check=True, capture_output=True, text=True
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AuditError(f"git command failed in {root}: {args!r}: {error}") from error
+    return result.stdout.strip()
+
+
+def _git_blob(path: Path) -> str:
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise AuditError(f"cannot read source file {path}: {error}") from error
+    return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise AuditError(f"cannot hash {path}: {error}") from error
+    return digest.hexdigest()
+
+
+def _tree(root: Path) -> dict[str, tuple[str, str]]:
+    rows: dict[str, tuple[str, str]] = {}
+    for line in _git(root, "ls-tree", "-r", "HEAD").splitlines():
+        fields = line.split(None, 3)
+        if len(fields) == 4:
+            _mode, kind, blob, path = fields
+            rows[path] = (kind, blob)
+    return rows
+
+
+def _require_clean_regular_checkout(root: Path, label: str, *, allow_gitlinks: set[str]) -> None:
+    status = _git(root, "status", "--porcelain", "--untracked-files=all")
+    if status:
+        raise AuditError(f"{label} checkout is dirty or contains untracked files")
+    for line in _git(root, "ls-files", "-s").splitlines():
+        fields = line.split(None, 3)
+        if len(fields) != 4:
+            raise AuditError(f"{label} has malformed index entry")
+        mode, _object, _stage, relative = fields
+        if mode == "160000":
+            if relative not in allow_gitlinks:
+                raise AuditError(f"{label} has an unexpected gitlink: {relative}")
+            continue
+        if mode not in {"100644", "100755"}:
+            raise AuditError(f"{label} has a symlink or non-regular tracked path: {relative}")
+        _regular(root / relative, f"{label}/{relative}")
+
+
+def _regular(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise AuditError(f"{label} must be a regular file: {path}")
+
+
+def _license_text(path: Path, label: str) -> str:
+    _regular(path, label)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise AuditError(f"{label} is not readable UTF-8: {path}: {error}") from error
+    upper = text.upper()
+    if "GPL" in upper or "LGPL" in upper:
+        raise AuditError(f"forbidden GPL/LGPL marker in {label}: {path}")
+    return text
+
+
+def _require_modified_bsd(text: str, label: str) -> None:
+    upper = text.upper()
+    # These clauses are the authenticated modified-BSD form used by both
+    # pinned native projects; their text does not literally say "BSD".
+    required = (
+        "ALL RIGHTS RESERVED",
+        "REDISTRIBUTION AND USE IN SOURCE AND BINARY FORMS",
+        "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS",
+    )
+    if any(marker not in upper for marker in required):
+        raise AuditError(f"{label} is not the expected modified BSD text")
+
+
+def _verify_repo(
+    root: Path,
+    expected_commit: str,
+    expected_url: str,
+    label: str,
+    *,
+    allow_gitlinks: set[str] | None = None,
+) -> dict[str, tuple[str, str]]:
+    if not root.is_dir() or not (root / ".git").exists():
+        raise AuditError(f"{label} is not a git checkout: {root}")
+    if _git(root, "rev-parse", "HEAD") != expected_commit:
+        raise AuditError(f"{label} commit is not authenticated: {_git(root, 'rev-parse', 'HEAD')}")
+    actual_url = _git(root, "config", "--get", "remote.origin.url").removesuffix(".git") + ".git"
+    if actual_url != expected_url:
+        raise AuditError(f"{label} origin drifted: {actual_url} != {expected_url}")
+    _require_clean_regular_checkout(root, label, allow_gitlinks=allow_gitlinks or set())
+    return _tree(root)
+
+
+def verify_source_tree(source_dir: Path) -> None:
+    tree = _verify_repo(
+        source_dir,
+        PYOPENJTALK_COMMIT,
+        PYOPENJTALK_URL,
+        "pyopenjtalk source",
+        allow_gitlinks=set(SUBMODULES),
+    )
+    try:
+        tag_commit = _git(source_dir, "rev-parse", f"refs/tags/{PYOPENJTALK_TAG}^{{}}")
+    except AuditError as error:
+        raise AuditError(f"pyopenjtalk release tag is missing: {PYOPENJTALK_TAG}") from error
+    if tag_commit != PYOPENJTALK_COMMIT:
+        raise AuditError(f"pyopenjtalk release tag drifted: {tag_commit} != {PYOPENJTALK_COMMIT}")
+    for path, expected in SOURCE_BLOBS.items():
+        if tree.get(path) != ("blob", expected):
+            raise AuditError(f"pyopenjtalk source blob drifted: {path}")
+        file_path = source_dir / path
+        _regular(file_path, f"pyopenjtalk {path}")
+        if _git_blob(file_path) != expected:
+            raise AuditError(f"pyopenjtalk worktree blob drifted: {path}")
+    try:
+        build_metadata = tomllib.loads((source_dir / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise AuditError(f"cannot parse authenticated pyopenjtalk build metadata: {error}") from error
+    build_requires = set(build_metadata.get("build-system", {}).get("requires", []))
+    if build_requires != UPSTREAM_BUILD_REQUIREMENTS:
+        raise AuditError(f"pyopenjtalk build-system requirements drifted: {sorted(build_requires)}")
+    selected_names = {entry.split("==", 1)[0].replace("-", "_") for entry in BUILD_CONSTRAINTS}
+    for requirement in build_requires:
+        name = re.match(r"^([A-Za-z0-9_-]+)", requirement)
+        if name is None or name.group(1).replace("-", "_") not in selected_names:
+            continue
+        minimum = re.search(r">=([0-9.]+)", requirement)
+        if minimum is None:
+            continue
+        selected = next(
+            entry.split("==", 1)[1]
+            for entry in BUILD_CONSTRAINTS
+            if entry.split("==", 1)[0].replace("-", "_") == name.group(1).replace("-", "_")
+        )
+        if tuple(int(part) for part in selected.split(".")) < tuple(int(part) for part in minimum.group(1).split(".")):
+            raise AuditError(f"selected build constraint does not satisfy {requirement}: {selected}")
+    mit = _license_text(source_dir / "LICENSE.md", "pyopenjtalk MIT license")
+    if "MIT" not in mit.upper() or "Permission is hereby granted" not in mit:
+        raise AuditError("pyopenjtalk LICENSE.md is not the expected MIT text")
+    voice = _license_text(
+        source_dir / "pyopenjtalk/htsvoice/LICENSE_mei_normal.htsvoice",
+        "mei_normal.htsvoice license",
+    )
+    if (
+        "CREATIVE COMMONS ATTRIBUTION 3.0" not in voice.upper()
+        and "CC BY 3.0" not in voice.upper()
+        and "CC-BY-3.0" not in voice.upper()
+    ):
+        raise AuditError("mei_normal.htsvoice license is not authenticated CC-BY-3.0")
+    readme = _license_text(source_dir / "pyopenjtalk/htsvoice/README.md", "voice license README")
+    if "LICENSE_MEI" not in readme.upper():
+        raise AuditError("voice README does not bind the bundled voice license")
+
+    for relative, expected in SUBMODULES.items():
+        submodule = source_dir / relative
+        sub_tree = _verify_repo(submodule, expected["commit"], expected["url"], relative)
+        parent_row = tree.get(relative)
+        if parent_row != ("commit", expected["commit"]):
+            raise AuditError(f"parent submodule pointer drifted: {relative}")
+        for path, blob in expected["blobs"].items():
+            if sub_tree.get(path) != ("blob", blob):
+                raise AuditError(f"{relative} license blob drifted: {path}")
+            text = _license_text(submodule / path, f"{relative}/{path}")
+            _require_modified_bsd(text, f"{relative}/{path}")
+
+
+def verify_lock(project_dir: Path) -> None:
+    try:
+        project = tomllib.loads((project_dir / "pyproject.toml").read_text(encoding="utf-8"))
+        lock = tomllib.loads((project_dir / "uv.lock").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise AuditError(f"cannot parse SBV2 uv metadata: {error}") from error
+    constraints = set(project.get("tool", {}).get("uv", {}).get("build-constraint-dependencies", []))
+    if constraints != BUILD_CONSTRAINTS:
+        raise AuditError(f"build constraints are not the authenticated exact set: {sorted(constraints)}")
+    dependencies = project.get("project", {}).get("dependencies", [])
+    if "pyopenjtalk==0.4.1" not in dependencies or "loguru==0.7.3" not in dependencies:
+        raise AuditError("SBV2 project does not pin pyopenjtalk 0.4.1 and loguru 0.7.3 directly")
+    rows = [row for row in lock.get("package", []) if row.get("name") == "pyopenjtalk"]
+    if len(rows) != 1:
+        raise AuditError("uv.lock must contain exactly one pyopenjtalk package row")
+    row = rows[0]
+    if row.get("version") != "0.4.1" or row.get("source", {}).get("registry") != "https://pypi.org/simple":
+        raise AuditError("uv.lock pyopenjtalk version/source drifted")
+    sdist = row.get("sdist", {})
+    if sdist.get("hash") != f"sha256:{PYOPENJTALK_SDIST_SHA256}" or sdist.get("size") != 1397999:
+        raise AuditError("uv.lock pyopenjtalk sdist identity drifted")
+    if row.get("wheels"):
+        raise AuditError("pyopenjtalk unexpectedly has a wheel in the pinned lock")
+    loguru_rows = [row for row in lock.get("package", []) if row.get("name") == "loguru"]
+    if len(loguru_rows) != 1:
+        raise AuditError("uv.lock must contain exactly one loguru package row")
+    loguru = loguru_rows[0]
+    if loguru.get("version") != "0.7.3" or loguru.get("source", {}).get("registry") != "https://pypi.org/simple":
+        raise AuditError("uv.lock loguru version/source drifted")
+    loguru_sdist = loguru.get("sdist", {})
+    if loguru_sdist.get("hash") != f"sha256:{LOGURU_SDIST_SHA256}" or loguru_sdist.get("size") != LOGURU_SDIST_SIZE:
+        raise AuditError("uv.lock loguru sdist identity drifted")
+    wheels = loguru.get("wheels", [])
+    if len(wheels) != 1 or wheels[0].get("hash") != f"sha256:{LOGURU_WHEEL_SHA256}" or wheels[0].get("size") != LOGURU_WHEEL_SIZE:
+        raise AuditError("uv.lock loguru wheel identity drifted")
+    manifest = lock.get("manifest", {})
+    manifest_constraints = {
+        row.get("name"): row.get("specifier") for row in manifest.get("build-constraints", [])
+    }
+    expected_manifest = {entry.split("==", 1)[0]: "==" + entry.split("==", 1)[1] for entry in BUILD_CONSTRAINTS}
+    if manifest_constraints != expected_manifest:
+        raise AuditError(f"uv.lock build-constraint manifest drifted: {manifest_constraints}")
+
+
+def _metadata_files(dist: importlib.metadata.Distribution) -> list[str]:
+    return [str(path).replace("\\", "/") for path in (dist.files or [])]
+
+
+def _verify_record(dist: importlib.metadata.Distribution, label: str) -> list[str]:
+    files = _metadata_files(dist)
+    record_candidates = [Path(name) for name in files if Path(name).name == "RECORD"]
+    if len(record_candidates) != 1:
+        raise AuditError(f"installed {label} must have exactly one RECORD")
+    record_path = Path(dist.locate_file(record_candidates[0]))
+    try:
+        record_rows = [line.split(",") for line in record_path.read_text(encoding="utf-8").splitlines()]
+    except (OSError, UnicodeDecodeError) as error:
+        raise AuditError(f"cannot read {label} RECORD: {error}") from error
+    record_names: set[str] = set()
+    for row in record_rows:
+        if len(row) != 3:
+            raise AuditError(f"{label} RECORD has a malformed row")
+        name = urllib.parse.unquote(row[0])
+        if not name or name in record_names or name.startswith("/") or ".." in Path(name).parts:
+            raise AuditError(f"{label} RECORD has an invalid/duplicate path: {name}")
+        record_names.add(name)
+        installed_path = Path(dist.locate_file(name))
+        _regular(installed_path, f"installed {label}/{name}")
+        is_record = name == str(record_candidates[0])
+        if is_record:
+            if row[1] or row[2]:
+                raise AuditError(f"{label} RECORD row must omit its own hash and size: {name}")
+            continue
+        if not row[2] or not row[2].isdigit() or int(row[2]) != installed_path.stat().st_size:
+            raise AuditError(f"{label} RECORD size mismatch: {name}")
+        if not row[1].startswith("sha256=") or not row[1].removeprefix("sha256="):
+            raise AuditError(f"{label} RECORD requires a non-empty sha256 hash: {name}")
+        else:
+            encoded = row[1].removeprefix("sha256=")
+            actual = base64.urlsafe_b64encode(hashlib.sha256(installed_path.read_bytes()).digest()).rstrip(b"=").decode()
+            if actual != encoded:
+                raise AuditError(f"{label} RECORD hash mismatch: {name}")
+    if record_names != set(files):
+        raise AuditError(f"{label} installed file list does not match RECORD")
+    return files
+
+
+def verify_installed_metadata() -> None:
+    try:
+        pyopenjtalk = importlib.metadata.distribution("pyopenjtalk")
+        loguru = importlib.metadata.distribution("loguru")
+    except importlib.metadata.PackageNotFoundError as error:
+        raise AuditError(f"required distribution is not installed: {error}") from error
+    if pyopenjtalk.version != "0.4.1":
+        raise AuditError(f"installed pyopenjtalk version drifted: {pyopenjtalk.version}")
+    if loguru.version != "0.7.3":
+        raise AuditError(f"installed loguru version drifted: {loguru.version}")
+    for name in ("g2p_en", "distance", "num2words"):
+        try:
+            importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        raise AuditError(f"forbidden GPL/LGPL distribution is installed: {name}")
+    for dist, label, marker in ((pyopenjtalk, "pyopenjtalk", "MIT"), (loguru, "loguru", "MIT")):
+        metadata = dist.metadata
+        classifiers = set(metadata.get_all("Classifier", []))
+        if "License :: OSI Approved :: MIT License" not in classifiers:
+            raise AuditError(f"{label} does not declare the authenticated MIT classifier")
+        if marker not in (metadata.get("License") or "").upper() and label == "loguru":
+            raise AuditError(f"{label} metadata does not declare MIT")
+    files = _verify_record(pyopenjtalk, "pyopenjtalk")
+    loguru_files = _verify_record(loguru, "loguru")
+    loguru_licenses = [Path(name) for name in loguru_files if Path(name).name.upper().startswith(("LICENSE", "COPYING", "NOTICE"))]
+    if not loguru_licenses:
+        raise AuditError("installed loguru has no license payload")
+    for relative in loguru_licenses:
+        text = _license_text(Path(loguru.locate_file(relative)), "installed loguru license")
+        if "MIT" not in text.upper():
+            raise AuditError(f"installed loguru license is not MIT: {relative}")
+    required = {
+        "pyopenjtalk/htsvoice/mei_normal.htsvoice",
+        "pyopenjtalk/htsvoice/LICENSE_mei_normal.htsvoice",
+    }
+    if not required.issubset(files):
+        raise AuditError(f"installed pyopenjtalk is missing bundled voice/license: {sorted(required - set(files))}")
+    license_payloads = [
+        Path(name)
+        for name in files
+        if Path(name).name.upper().startswith(("LICENSE", "COPYING", "NOTICE"))
+    ]
+    expected_license_paths = {
+        Path(name)
+        for name in files
+        if Path(name).name.upper() == "LICENSE.MD"
+    } | {Path("pyopenjtalk/htsvoice/LICENSE_mei_normal.htsvoice")}
+    unexpected = [path for path in license_payloads if path not in expected_license_paths]
+    if unexpected:
+        raise AuditError(f"unexpected pyopenjtalk license payloads: {unexpected}")
+    license_candidates = [Path(name) for name in files if Path(name).name.upper() == "LICENSE.MD"]
+    if not license_candidates:
+        raise AuditError("installed pyopenjtalk has no LICENSE.md payload")
+    for relative in license_candidates:
+        text = _license_text(Path(pyopenjtalk.locate_file(relative)), "installed pyopenjtalk MIT license")
+        if "MIT" in text.upper() and "Permission is hereby granted" in text:
+            break
+    else:
+        raise AuditError("installed pyopenjtalk LICENSE.md is not the expected MIT text")
+    voice_path = Path(pyopenjtalk.locate_file("pyopenjtalk/htsvoice/LICENSE_mei_normal.htsvoice"))
+    voice = _license_text(voice_path, "installed mei_normal.htsvoice license")
+    if (
+        "CREATIVE COMMONS ATTRIBUTION 3.0" not in voice.upper()
+        and "CC BY 3.0" not in voice.upper()
+        and "CC-BY-3.0" not in voice.upper()
+    ):
+        raise AuditError("installed mei_normal.htsvoice license is not CC-BY-3.0")
+
+    native = [
+        Path(name)
+        for name in files
+        if name.startswith("pyopenjtalk/") and name.endswith((".so", ".dylib", ".pyd"))
+    ]
+    expected_native = {"openjtalk", "htsengine"}
+    native_stems = {path.name.split(".", 1)[0] for path in native}
+    if native_stems != expected_native:
+        raise AuditError(f"unexpected pyopenjtalk native binary inventory: {sorted(native)}")
+
+
+def self_test() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="sbv2-pyopenjtalk-audit-") as raw:
+        root = Path(raw)
+        good = root / "good.txt"
+        good.write_text("MIT License\nPermission is hereby granted", encoding="utf-8")
+        assert "MIT" in _license_text(good, "self-test").upper()
+        bad = root / "bad.txt"
+        bad.write_text("GNU GPL", encoding="utf-8")
+        try:
+            _license_text(bad, "self-test forbidden")
+        except AuditError:
+            pass
+        else:
+            raise AssertionError("GPL self-test was accepted")
+        repo = root / "checkout"
+        repo.mkdir()
+        (repo / "tracked.txt").write_text("clean\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "audit@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "audit-self-test"], check=True)
+        subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "clean"], check=True)
+        _require_clean_regular_checkout(repo, "self-test", allow_gitlinks=set())
+        (repo / "untracked.txt").write_text("unexpected\n", encoding="utf-8")
+        try:
+            _require_clean_regular_checkout(repo, "self-test dirty", allow_gitlinks=set())
+        except AuditError:
+            pass
+        else:
+            raise AssertionError("untracked source file was accepted")
+        (repo / "untracked.txt").unlink()
+        (repo / "tracked.txt").unlink()
+        (repo / "tracked.txt").symlink_to("missing-target")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "symlink"], check=True)
+        try:
+            _require_clean_regular_checkout(repo, "self-test symlink", allow_gitlinks=set())
+        except AuditError:
+            pass
+        else:
+            raise AssertionError("tracked symlink was accepted")
+        record_root = root / "record-fixture"
+        (record_root / "pkg.dist-info").mkdir(parents=True)
+        payload_path = record_root / "payload.bin"
+        payload_path.write_bytes(b"payload")
+        record_path = record_root / "pkg.dist-info/RECORD"
+        payload_hash = base64.urlsafe_b64encode(hashlib.sha256(payload_path.read_bytes()).digest()).rstrip(b"=").decode()
+        record_path.write_text(
+            f"payload.bin,sha256={payload_hash},{payload_path.stat().st_size}\n"
+            "pkg.dist-info/RECORD,,\n",
+            encoding="utf-8",
+        )
+        distribution = SimpleNamespace(
+            files=[Path("payload.bin"), Path("pkg.dist-info/RECORD")],
+            locate_file=lambda name: record_root / str(name),
+        )
+        _verify_record(distribution, "self-test")
+        record_path.write_text(
+            "payload.bin,md5=not-allowed,7\n"
+            "pkg.dist-info/RECORD,,\n",
+            encoding="utf-8",
+        )
+        try:
+            _verify_record(distribution, "self-test bad hash")
+        except AuditError:
+            pass
+        else:
+            raise AssertionError("non-sha256 RECORD hash was accepted")
+        record_path.write_text(
+            "payload.bin,sha256=,\n"
+            "pkg.dist-info/RECORD,,\n",
+            encoding="utf-8",
+        )
+        try:
+            _verify_record(distribution, "self-test bad size")
+        except AuditError:
+            pass
+        else:
+            raise AssertionError("empty non-RECORD hash/size was accepted")
+    assert HEX40.fullmatch(PYOPENJTALK_COMMIT)
+    assert HEX64.fullmatch(PYOPENJTALK_SDIST_SHA256)
+    assert HEX64.fullmatch(LOGURU_SDIST_SHA256)
+    assert HEX64.fullmatch(LOGURU_WHEEL_SHA256)
+    assert LOGURU_SDIST_SIZE > 0 and LOGURU_WHEEL_SIZE > 0
+    print("sbv2 pyopenjtalk license audit self-test: PASS")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--project-dir", type=Path)
+    parser.add_argument("--source-dir", type=Path)
+    parser.add_argument("--phase", choices=("static", "post"), default="post")
+    args = parser.parse_args()
+    if args.self_test:
+        if args.project_dir is not None or args.source_dir is not None or args.phase != "post":
+            parser.error("--self-test accepts no execution options")
+        self_test()
+        return 0
+    if args.project_dir is None or args.source_dir is None:
+        parser.error("execution requires --project-dir and --source-dir")
+    try:
+        verify_lock(args.project_dir)
+        verify_source_tree(args.source_dir)
+        if args.phase == "post":
+            verify_installed_metadata()
+    except (AuditError, OSError, ValueError) as error:
+        print(f"sbv2 pyopenjtalk license audit BLOCKED: {error}", file=sys.stderr)
+        return 2
+    if args.phase == "static":
+        print(
+            "STATIC_SOURCE_LOCK_LICENSE_PASS; residual=build-only archive hashes "
+            "are not lock-authenticated and require VAST archive/license/native audit"
+        )
+    else:
+        print(
+            "POST_INSTALL_PAYLOAD_PASS; residual=build-only archive hashes "
+            "are not lock-authenticated and require VAST archive/license/native audit"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
