@@ -14500,7 +14500,8 @@ fn write_new_file(output: &Path, bytes: &[u8]) -> Result<(), ConvertError> {
 #[cfg(test)]
 mod kyutai_tokenizer_output_tests {
     use super::{convert_kyutai_stt_tokenizer_file, write_new_file};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_path(label: &str) -> PathBuf {
         std::fs::canonicalize(std::env::temp_dir())
@@ -14509,6 +14510,41 @@ mod kyutai_tokenizer_output_tests {
                 "vokra-kyutai-tokenizer-{label}-{}",
                 std::process::id()
             ))
+    }
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let parent = std::fs::canonicalize(std::env::temp_dir())
+                .expect("temporary directory must be canonicalizable");
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock must be after UNIX epoch")
+                .as_nanos();
+            for attempt in 0..1024u32 {
+                let path = parent.join(format!(
+                    "vokra-kyutai-tokenizer-{label}-{}-{nonce}-{attempt}",
+                    std::process::id()
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("create unique test directory {path:?}: {error}"),
+                }
+            }
+            panic!("could not claim a unique test directory after 1024 attempts");
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
@@ -14540,17 +14576,19 @@ mod kyutai_tokenizer_output_tests {
     #[cfg(unix)]
     #[test]
     fn tokenizer_input_symlink_is_rejected_before_read() {
-        let target = test_path("input-target.model");
-        let link = test_path("tokenizer_en_audio_4000.model");
+        let temp = TestDir::new("input-symlink");
+        let target = temp.path().join("input-target.model");
+        let link = temp
+            .path()
+            .join(super::models::kyutai_stt::TOKENIZER_ASSET_NAME);
+        let output = temp.path().join("output.gguf");
         std::fs::write(&target, b"not a tokenizer").expect("create target");
         std::os::unix::fs::symlink(&target, &link).expect("create input symlink");
-        let error = convert_kyutai_stt_tokenizer_file(&link, &test_path("output.gguf"))
+        let error = convert_kyutai_stt_tokenizer_file(&link, &output)
             .expect_err("symlink input must fail closed");
         assert!(
             matches!(error, super::ConvertError::Usage(message) if message.contains("regular"))
         );
-        std::fs::remove_file(link).expect("remove input symlink");
-        std::fs::remove_file(target).expect("remove target");
     }
 }
 
