@@ -595,6 +595,7 @@ pub struct KyutaiSttStreamingContract {
     frame_hop_samples: usize,
     n_q: usize,
     audio_card: usize,
+    text_card: usize,
     text_pad_id: u32,
     silence_prefix_samples: usize,
     right_padding_samples: usize,
@@ -623,6 +624,7 @@ impl KyutaiSttStreamingContract {
             frame_hop_samples: KYUTAI_STT_MIMI_FRAME_HOP_SAMPLES,
             n_q: config.n_q,
             audio_card: config.audio_card,
+            text_card: config.text_card,
             text_pad_id: config.text_pad_id,
             silence_prefix_samples: sample_rate,
             right_padding_samples: sample_rate
@@ -659,6 +661,12 @@ impl KyutaiSttStreamingContract {
     #[must_use]
     pub const fn audio_card(self) -> usize {
         self.audio_card
+    }
+
+    /// Number of SentencePiece text vocabulary entries.
+    #[must_use]
+    pub const fn text_card(self) -> usize {
+        self.text_card
     }
 
     /// Number of left-padding PCM samples prescribed by upstream.
@@ -752,6 +760,234 @@ impl KyutaiSttStreamingContract {
             )));
         }
         Ok(())
+    }
+}
+
+/// Authenticated side-car pair for the fixed STT-2.6B-EN release.
+///
+/// The decoder GGUF intentionally does not embed Mimi or SentencePiece
+/// weights.  This binding therefore checks the model-variant configuration,
+/// the two upstream filenames, and the complete raw-byte identities before a
+/// caller composes the three artifacts.  It does not parse or execute either
+/// side-car; Mimi neural metadata is checked separately by
+/// [`KyutaiSttStreamingContract::validate_mimi_config`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KyutaiSttAuthenticatedSidecars;
+
+impl KyutaiSttAuthenticatedSidecars {
+    /// Authenticates the exact Mimi and tokenizer files named by the fixed
+    /// Kyutai STT-2.6B-EN config.
+    ///
+    /// The filenames are passed explicitly so a same-content file under a
+    /// stale or legacy name cannot silently satisfy the composition gate.
+    /// This method is an identity/binding gate only; it does not claim that
+    /// either side-car can be decoded by the runtime.
+    pub fn bind(
+        config: &KyutaiSttConfig,
+        mimi_file: &str,
+        mimi_bytes: &[u8],
+        tokenizer_file: &str,
+        tokenizer_bytes: &[u8],
+    ) -> Result<Self> {
+        config.validate_for_forward()?;
+        if config != &KyutaiSttConfig::stt_2_6b_en() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt sidecars: only the authenticated stt-2.6b-en config is supported"
+                    .to_owned(),
+            ));
+        }
+        if mimi_file != KYUTAI_STT_MIMI_FILE {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt Mimi: expected authenticated sidecar `{KYUTAI_STT_MIMI_FILE}`, got `{mimi_file}`"
+            )));
+        }
+        if tokenizer_file != KYUTAI_STT_TOKENIZER_FILE {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt tokenizer: expected authenticated sidecar `{KYUTAI_STT_TOKENIZER_FILE}`, got `{tokenizer_file}`"
+            )));
+        }
+        validate_mimi_bytes(mimi_bytes)?;
+        validate_tokenizer_bytes(tokenizer_bytes)?;
+        Ok(Self)
+    }
+}
+
+/// Source-level text/second-stream demux for the `dep_q=0` STT input.
+///
+/// Upstream delayed-streams input has one text channel followed by the
+/// `n_q` Mimi channels.  For STT the depformer owns no audio channels
+/// (`dep_q=0`), so all remaining channels belong to the Mimi second stream.
+/// This type only separates and validates the row-major token packet; it does
+/// not run the decoder, sample text, or perform SentencePiece decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KyutaiSttInputPacket {
+    text_tokens: Vec<u32>,
+    mimi_codes: Vec<u32>,
+}
+
+impl KyutaiSttInputPacket {
+    /// Demultiplexes `[frames, text + n_q audio]` into the decoder seam's two
+    /// explicit inputs.
+    pub fn from_interleaved(config: &KyutaiSttConfig, tokens: &[u32]) -> Result<Self> {
+        config.validate_for_forward()?;
+        if config.dep_q != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt input demux requires dep_q=0, got {}",
+                config.dep_q
+            )));
+        }
+        if tokens.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt input demux: token packet is empty".to_owned(),
+            ));
+        }
+        let channels = config.n_channels();
+        if tokens.len() % channels != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt input demux: token packet length {} is not a multiple of {} channels",
+                tokens.len(),
+                channels
+            )));
+        }
+        let frames = tokens.len() / channels;
+        let text_rows = config.text_card.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt input demux: text rows overflow".to_owned())
+        })?;
+        let audio_rows = config.audio_card.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt input demux: audio rows overflow".to_owned())
+        })?;
+        let mut text_tokens = Vec::with_capacity(frames);
+        let mimi_capacity = frames.checked_mul(config.n_q).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt input demux: Mimi packet overflows".to_owned())
+        })?;
+        let mut mimi_codes = Vec::with_capacity(mimi_capacity);
+        for frame in tokens.chunks_exact(channels) {
+            let text = frame[0];
+            if text as usize >= text_rows {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kyutai-stt input demux: text token {text} exceeds embedding rows {text_rows}"
+                )));
+            }
+            text_tokens.push(text);
+            for (channel, &code) in frame[1..].iter().enumerate() {
+                if code as usize >= audio_rows {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "kyutai-stt input demux: audio token at channel {channel} value {code} exceeds embedding rows {audio_rows}"
+                    )));
+                }
+                mimi_codes.push(code);
+            }
+        }
+        Ok(Self {
+            text_tokens,
+            mimi_codes,
+        })
+    }
+
+    /// Number of synchronized text/audio frames in the packet.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.text_tokens.len()
+    }
+
+    /// Text stream, one token per frame.
+    #[must_use]
+    pub fn text_tokens(&self) -> &[u32] {
+        &self.text_tokens
+    }
+
+    /// Row-major Mimi stream, `[frames, n_q]`.
+    #[must_use]
+    pub fn mimi_codes(&self) -> &[u32] {
+        &self.mimi_codes
+    }
+
+    /// Splits the packet into owned decoder inputs.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<u32>, Vec<u32>) {
+        (self.text_tokens, self.mimi_codes)
+    }
+}
+
+/// Explicit streaming wire-state for validated Mimi frames and emitted text.
+///
+/// This is deliberately not the transformer's KV cache or a generation
+/// engine.  It captures only the source-level input/output contract that can
+/// be proven without model execution: each accepted frame has exactly `n_q`
+/// Mimi codes, and text ids `0`/`text_pad_id` are suppressed before the
+/// SentencePiece boundary.  Native ASR remains fail-closed until the real
+/// stateful decoder and tokenizer are independently bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KyutaiSttStreamingState {
+    contract: KyutaiSttStreamingContract,
+    frames_seen: usize,
+    emitted_text_tokens: Vec<u32>,
+}
+
+impl KyutaiSttStreamingState {
+    /// Starts an empty state for the authenticated STT streaming contract.
+    #[must_use]
+    pub fn new(contract: KyutaiSttStreamingContract) -> Self {
+        Self {
+            contract,
+            frames_seen: 0,
+            emitted_text_tokens: Vec::new(),
+        }
+    }
+
+    /// Validates and accepts one complete row of Mimi codes.
+    pub fn push_mimi_frame(&mut self, frame: &[u32]) -> Result<()> {
+        if self.contract.validate_mimi_codes(frame)? != 1 {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt streaming state: expected exactly one Mimi frame".to_owned(),
+            ));
+        }
+        self.frames_seen = self.frames_seen.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "kyutai-stt streaming state: frame count overflow".to_owned(),
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Applies the upstream text-output suppression rule.
+    ///
+    /// Returns `Some(token)` only for a token that would be forwarded to the
+    /// SentencePiece boundary.  Decoder output is restricted to
+    /// `[0, text_card)`; the extra `text_card` row is an input-embedding
+    /// initial-token row accepted only by [`KyutaiSttInputPacket`].  No
+    /// detokenization is performed here.
+    pub fn push_text_token(&mut self, token: u32) -> Result<Option<u32>> {
+        if token as usize >= self.contract.text_card {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt streaming state: decoder output token {token} is outside [0, text_card={}) (input-only initial row is not output)",
+                self.contract.text_card
+            )));
+        }
+        if self.contract.emits_text_token(token) {
+            self.emitted_text_tokens.push(token);
+            Ok(Some(token))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Number of validated Mimi frames accepted so far.
+    #[must_use]
+    pub fn frames_seen(&self) -> usize {
+        self.frames_seen
+    }
+
+    /// Text tokens that passed the upstream suppression boundary.
+    #[must_use]
+    pub fn emitted_text_tokens(&self) -> &[u32] {
+        &self.emitted_text_tokens
+    }
+
+    /// Consumes the state and returns filtered text tokens.
+    #[must_use]
+    pub fn into_text_tokens(self) -> Vec<u32> {
+        self.emitted_text_tokens
     }
 }
 
@@ -2796,6 +3032,76 @@ mod tests {
             Err(VokraError::InvalidArgument(_))
         ));
         assert_eq!(contract.validate_mimi_codes(&[0; 32]).unwrap(), 1);
+    }
+
+    #[test]
+    fn sidecar_binding_rejects_legacy_or_unverified_identity() {
+        let config = KyutaiSttConfig::stt_2_6b_en();
+        assert!(matches!(
+            KyutaiSttAuthenticatedSidecars::bind(
+                &config,
+                "mimi-pytorch-e351c8d8@125.safetensors",
+                &[],
+                "tokenizer_spm_4k_en.model",
+                &[],
+            ),
+            Err(VokraError::ModelLoad(message)) if message.contains("tokenizer_en_audio_4000.model")
+        ));
+        assert!(matches!(
+            KyutaiSttAuthenticatedSidecars::bind(
+                &config,
+                "mimi-pytorch-e351c8d8@125.safetensors",
+                &[],
+                "tokenizer_en_audio_4000.model",
+                &[],
+            ),
+            Err(VokraError::ModelLoad(message)) if message.contains("Mimi")
+        ));
+    }
+
+    #[test]
+    fn dep_q0_input_demux_splits_text_and_mimi_streams() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        // Each row is [text, audio_0, audio_1, audio_2, audio_3].
+        let packet =
+            KyutaiSttInputPacket::from_interleaved(&config, &[1, 2, 3, 4, 5, 6, 7, 0, 1, 2])
+                .expect("two dep_q=0 input frames");
+        assert_eq!(packet.frames(), 2);
+        assert_eq!(packet.text_tokens(), &[1, 6]);
+        assert_eq!(packet.mimi_codes(), &[2, 3, 4, 5, 7, 0, 1, 2]);
+        assert!(matches!(
+            KyutaiSttInputPacket::from_interleaved(&config, &[0; 4]),
+            Err(VokraError::InvalidArgument(message)) if message.contains("multiple of 5")
+        ));
+    }
+
+    #[test]
+    fn streaming_state_validates_frames_and_suppresses_text_markers() {
+        let contract = KyutaiSttStreamingContract::from_config(&KyutaiSttConfig::stt_2_6b_en())
+            .expect("fixed STT streaming contract");
+        let mut state = KyutaiSttStreamingState::new(contract);
+        state
+            .push_mimi_frame(&[0; 32])
+            .expect("one complete Mimi frame");
+        assert_eq!(state.frames_seen(), 1);
+        assert_eq!(state.push_text_token(0).unwrap(), None);
+        assert_eq!(state.push_text_token(3).unwrap(), None);
+        assert_eq!(state.push_text_token(17).unwrap(), Some(17));
+        assert_eq!(
+            state
+                .push_text_token(contract.text_card() as u32 - 1)
+                .unwrap(),
+            Some(3999)
+        );
+        assert!(matches!(
+            state.push_text_token(contract.text_card() as u32),
+            Err(VokraError::InvalidArgument(message)) if message.contains("input-only initial row")
+        ));
+        assert_eq!(state.emitted_text_tokens(), &[17, 3999]);
+        assert!(matches!(
+            state.push_mimi_frame(&[0; 31]),
+            Err(VokraError::InvalidArgument(_))
+        ));
     }
 
     #[test]
