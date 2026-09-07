@@ -52,7 +52,7 @@ immutable. None of these rows is owner-approved by this document.
 | MOSS-TTS Local | Dependency-license review, complete composite PCM execution boundary and a scope hash over the 438-tensor identity and companion. |
 | SpeechBrain Lang-ID | Source, weight, Python closure and fixture-license review plus a scope hash. |
 | Conv-TasNet Libri1Mix | A legal disposition for the CC-BY-SA-3.0/4.0 and WHAM CC-BY-NC-4.0 conflict; publication remains `NO_UPLOAD`. |
-| HT-Demucs Multi | MUSDB18 provenance, weight redistribution terms and a Python-3.12-compatible dependency closure. The current torchaudio constraint is not resolvable as written. |
+| HT-Demucs Multi | Weight redistribution terms, the MUSDB18/extra-training-data disposition and a Python-3.12-compatible dependency closure. The exact upstream `torchaudio>=0.8,<2.1` snapshot is not resolvable on Python 3.12; the pinned reference import graph is being repaired without weakening that historical snapshot. |
 | CLAP HTSAT fused | Review 20 dependency-license findings from the exact VAST inventory, including missing SPDX expression metadata and missing bundled license files for Tokenizers and tqdm. Native payload identities are captured, but no checkpoint was acquired or executed. |
 | AudioGen Medium | Exact external T5 revision/weight identity, compression checkpoint build provenance, dependency closure, real execution/parity and an approval-scope hash. The checked-in model-free evidence is deliberately `signable=false`. |
 | XY-Tokenizer | Complete dependency/license evidence, exact reviewed tensor manifest and scope hash. Current SciPy/SymPy, setuptools, soxr, tokenizers and tqdm evidence is incomplete. |
@@ -61,6 +61,42 @@ immutable. None of these rows is owner-approved by this document.
 | NSNet2 / RMVPE / corrected SpeechBrain and WeSpeaker artifacts | Exact replacement-versus-withdrawal decision and missing provenance/license sign-off. RMVPE's absent exact-source license may not be inferred as permissive. |
 | SeamlessM4T-v2-Large | Decide between a real gated research-only artifact and withdrawal of the empty public repository. |
 | `dynet38`, `qwen-omni-utils`, `soynlp`, Triton/NVIDIA payload issues | Resolve the exact release/source mismatch, GPL/LGPL conflict or bundled native-payload review before the affected family can receive a scope hash. |
+
+### HT-Demucs Multi primary-source boundary (2026-09-08)
+
+The fixed source checkout remains `facebookresearch/demucs` at
+`e976d93ecc3865e5757426930257e200846a520a`. Its repository `LICENSE` is MIT
+and the repository README says that Demucs is released under that license.
+That proves the source-code boundary; it does not separately state
+redistribution terms for the five externally hosted `.th` checkpoint files.
+
+The same official README states that HT-Demucs was trained on MUSDB HQ plus an
+additional 800-song dataset. The official `sigsep-mus-db` README distinguishes
+its MIT-licensed parser from the full music dataset and says access to the
+tracks is restricted to academic-purpose use. Therefore this packet does not
+infer a commercial checkpoint-redistribution right from the source-code MIT
+license or from the parser license. Until the owner selects an exact
+disposition, the safe proposal is engine support plus direct-upstream,
+no-upload reference validation only; Vokra must not mirror the checkpoint
+bytes in its official model zoo.
+
+The Python 3.12 conflict is narrower than the upstream requirements snapshot:
+the pinned `demucs.audio` module imports `torchaudio` and `lameenc` at module
+load, but its reference-path `convert_audio` function calls the official
+`julius.resample_frac` implementation and does not access either package. The
+implementation under review keeps the upstream snapshot byte-identical,
+loads the fixed PCM16 WAV fixture without `torchaudio`, and provides
+process-local fail-closed stubs whose every attribute access raises. This may
+remove the unsatisfiable and GPL dependencies from the active reference
+closure without changing model or resampler numerics. It is not evidence of
+runtime parity and does not authorize checkpoint acquisition or execution.
+
+Primary sources:
+
+- <https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/LICENSE>
+- <https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/README.md>
+- <https://raw.githubusercontent.com/facebookresearch/demucs/e976d93ecc3865e5757426930257e200846a520a/demucs/audio.py>
+- <https://github.com/sigsep/sigsep-mus-db/blob/master/README.md>
 
 ## Owner decision vocabulary
 
