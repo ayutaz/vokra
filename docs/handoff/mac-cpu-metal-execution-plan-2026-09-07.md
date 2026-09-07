@@ -406,6 +406,64 @@ All tests passed; the only deny diagnostic was the existing unmatched
 sources were all reported OK. No model payload was downloaded or executed by
 this verification batch.
 
+PR head `55a1363813e7f25061b0f4bcec6da6b6de84dda6` then completed all
+122 reported checks: 109 succeeded, 13 opt-in checks were intentionally
+skipped, no check failed, and GitHub reported the merge state as clean. This
+head includes the hosted-runner-safe grouped-FSQ allocation proof.
+
+The model-free XY-Tokenizer dependency collector ran on the same exact clean
+VAST head without acquiring or executing a checkpoint. It covered all 57
+active lock rows: 51 produced bounded license/native-payload evidence and six
+remained fail-closed (`scipy`, `setuptools`, `soxr`, `sympy`, `tokenizers`,
+and `tqdm`). The collection report, raw license evidence, blocked dependency
+audit and blocked license-gate manifest SHA-256 values are respectively
+`604e9cc74a5814f97bcd2be106e1f620f5f4d2d45052ce3c78fb485583f17210`,
+`3e2471835be2b5cb767f3181050c98ff82dc12e039c9b4257af684d713306ffc`,
+`428efa4d2214a21b734690b99d554dee1663fd6de2204fa29fd742e4a878c7c6`
+and `deb6ebf7e6e3deded5587aff9e5a4b509a9c12f0f100877a1c9629c403efc828`.
+The outcome remains `BLOCKED`, `NO_UPLOAD` and owner-sign-off-required; no
+package was promoted into the tracked approval surface. After local recovery
+and hash verification, the two VAST XY evidence directories and the unused
+CLAP uv cache were destroyed.
+
+The next model-free closure slice is split into commits
+`0a020f9c9fc4e37f78a1f9b7115fb3cc60551283` (MMS-1B-All),
+`9b87d8142673539b5d9ea67348a4630ac3f73900` (MOSS Audio Tokenizer Nano) and
+`cb510404c6be556ec386d82291811393b2a1fce5` (YuE xcodec-mini). The incremental
+bundle SHA-256 is
+`88429420bd447ef16f4596f1ffc04e86d63d94bdc794392314f1c944d8aba5da`.
+It was transferred to VAST instance `50138441`; the remote checkout was clean
+at exact head `cb510404c6be556ec386d82291811393b2a1fce5` before and after all three
+audits.
+
+MMS-1B-All recorded a 34-of-34 normalized `name==version` distribution
+multiset with no missing, unexpected or duplicate entry. The model-free API
+and dependency report SHA-256 values are respectively
+`cb1b80d2b0efc380c03a4cd49714863279088cd2bc8313c93ffd0e1071bca1f7`
+and `f9153cabd44d27b2bf597dbd15f50f6d59830ae376c2881a45782c8a64878ed5`.
+The API probe imported the official class only: it did not acquire or load a
+checkpoint, instantiate a model, or run a forward pass. Package/native owner
+review, the composed backbone/adapter/vocabulary manifest, runtime and parity
+remain blocked, and publication remains `NO_UPLOAD`.
+
+The MOSS Nano report SHA-256 is
+`d1d9a05b45fbce8f20156c91c61df849af75c61ba9227a89f7e68c920e567547`.
+It found the exact 51 installed distributions represented by 52 lock rows
+including the virtual project, hashed 92 native files across 24 packages and
+reported no `readelf` error. Missing publisher/locked-sdist license evidence
+for `tokenizers==0.22.2` and `triton==3.3.1`, plus all outstanding owner review
+rows, keep the result `BLOCKED` and `NO_UPLOAD`.
+
+The YuE xcodec-mini report and matching sidecar bind SHA-256
+`df32295b532ab27fdb8b4e58f98f2aa913c8f64ad329a839e564557dd92047c1`.
+The audit covered 45 lock rows, 44 registry package facts and six component
+reviews. Twenty-one non-target console/man RECORD traversals were recorded and
+ignored; targeted path blockers and native/`readelf` errors were both zero.
+All dependency/component owner reviews remain pending, so the result is
+`BLOCKED_OWNER_REVIEW` and `NO_UPLOAD`. None of these three audits acquired,
+imported or executed model weights, invoked Cargo, or reduced the 63-row live
+public denominator.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
