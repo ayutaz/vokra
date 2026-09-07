@@ -112,15 +112,27 @@ PyPI package is deliberately **not** required just to report tensor counts.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
+import re
 import struct
 import sys
+import time
 from pathlib import Path
 
 # --- identity -----------------------------------------------------------
 
 LOG_PREFIX = "[sbv2-prep]"
+
+# A primary checkpoint download runs in the 60-minute `parity` job. Prefer a
+# server-provided RateLimit reset, then Retry-After, then bounded fallback
+# delays. Keep retry sleeping bounded so any server-provided delay cannot
+# consume the whole job (or turn a transient throttle into an unbounded wait).
+# The remaining time is deliberately left for conversion/reference work.
+RETRY_BACKOFF_SECONDS = (15, 30, 60)
+MAX_RETRY_WAIT_SECONDS = 45 * 60
 
 # Matches `crates/vokra-convert/src/models/sbv2.rs`'s `UPSTREAM_HF` const
 # verbatim — litagin02's SBV2 v2 releases span several checkpoint repos
@@ -753,21 +765,140 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def _header_value(headers: object, name: str) -> object | None:
+    """Read a header from both case-insensitive and plain mappings."""
+    if headers is None or not hasattr(headers, "items"):
+        return None
+    for key, value in headers.items():
+        if str(key).lower() == name.lower():
+            return value
+    return None
+
+
+def rate_limit_reset_seconds(response: object) -> float | None:
+    """Return the IETF ``RateLimit`` reset delay, including safety margin.
+
+    huggingface_hub 1.27 parses values such as ``"api";r=0;t=192`` and
+    waits ``t + 1`` seconds. Keep the same behavior here because HF may emit
+    this header instead of ``Retry-After`` for a throttled API response.
+    """
+    headers = getattr(response, "headers", None)
+    raw = _header_value(headers, "ratelimit")
+    if raw is None:
+        return None
+    match = re.search(r"(?:^|[;,])\s*t\s*=\s*(\d+)\b", str(raw), re.IGNORECASE)
+    if match is None:
+        return None
+    return float(int(match.group(1)) + 1)
+
+
+def retry_after_seconds(response: object, *, now: datetime | None = None) -> float | None:
+    """Return a valid HTTP ``Retry-After`` delay, or ``None``.
+
+    RFC 9110 permits either integer delta-seconds or an HTTP-date. Invalid,
+    negative, and missing values are ignored so callers can use their bounded
+    exponential/backoff fallback. A date in the past means retry immediately;
+    a future date is rounded up so the request is never retried early.
+    """
+    raw = _header_value(getattr(response, "headers", None), "retry-after")
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+
+    try:
+        delay = int(value, 10)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at is None or retry_at.tzinfo is None:
+            return None
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        delay = max(0.0, (retry_at - current).total_seconds())
+        # HTTP-date has one-second resolution. Ceil to avoid an early retry.
+        return float(int(delay) if delay.is_integer() else int(delay) + 1)
+
+    return float(delay) if delay >= 0 else None
+
+
+def retry_delay_seconds(response: object) -> tuple[float | None, str | None]:
+    """Return the preferred server delay and its source label."""
+    rate_limit_delay = rate_limit_reset_seconds(response)
+    if rate_limit_delay is not None:
+        return rate_limit_delay, "RateLimit reset (+1s safety)"
+    retry_after_delay = retry_after_seconds(response)
+    if retry_after_delay is not None:
+        return retry_after_delay, "Retry-After"
+    return None, None
+
+
+def snapshot_download_with_429_retry(
+    download_fn,
+    *,
+    error_type,
+    sleep_fn=time.sleep,
+    clock_fn=time.monotonic,
+    max_retry_wait: float = MAX_RETRY_WAIT_SECONDS,
+    **kwargs,
+):
+    """Run a snapshot download with bounded, 429-specific retries.
+
+    A valid ``RateLimit`` reset (the format emitted by Hugging Face) takes
+    precedence over ``Retry-After`` and fallback delays. The entire retry
+    sleep budget is bounded; a server delay that cannot be honored within that
+    budget fails loudly instead of being silently clamped. Every non-429
+    exception and the final exhausted 429 are re-raised unchanged.
+
+    ``download_fn``/``error_type`` are parameters rather than imports so this
+    policy can be unit-tested without a network or the HF package installed.
+    """
+    deadline = clock_fn() + max_retry_wait
+    for attempt in range(len(RETRY_BACKOFF_SECONDS) + 1):
+        try:
+            return download_fn(**kwargs)
+        except error_type as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code != 429 or attempt == len(RETRY_BACKOFF_SECONDS):
+                raise
+            delay, source = retry_delay_seconds(getattr(exc, "response", None))
+            if delay is None:
+                delay = float(RETRY_BACKOFF_SECONDS[attempt])
+                source = "bounded fallback"
+            remaining = deadline - clock_fn()
+            if delay > remaining:
+                raise RuntimeError(
+                    f"snapshot_download HTTP 429 {source} delay {delay:g}s "
+                    f"exceeds remaining retry budget {max(0.0, remaining):g}s"
+                ) from exc
+            print(
+                f"{LOG_PREFIX} snapshot_download HTTP 429; retry "
+                f"{attempt + 2}/{len(RETRY_BACKOFF_SECONDS) + 1} after "
+                f"{delay:g}s ({source})",
+                flush=True,
+            )
+            sleep_fn(delay)
+    raise AssertionError("unreachable retry state")
+
+
 def download_checkpoint(hf_repo: str, output_dir: Path, revision: "str | None") -> Path:
     """Downloads ``hf_repo`` (safetensors + JSON files only) into
     ``output_dir`` via ``huggingface_hub.snapshot_download``.
 
     ``huggingface_hub`` is imported here (not at module level) so
     ``--help`` works even in an interpreter without it installed. Download
-    failures (bad repo id, network error, auth error, ...) are **not**
-    caught here — they propagate as raw exceptions with their own
-    informative messages and full traceback, per FR-EX-08 "no silent
-    fallback": swallowing them into a shorter ``sys.exit`` string would
-    lose diagnostic information for what is, unlike a missing config field,
-    a genuine unexpected failure rather than an anticipated "not found"
-    case.
+    HTTP 429 failures are retried with the server's valid ``RateLimit`` reset
+    first, then ``Retry-After`` (or bounded fallback delays), while all other
+    failures propagate as raw exceptions with their own informative messages.
+    A retry delay that cannot be honored within the bounded job budget fails
+    loudly rather than being silently clamped.
     """
     try:
+        from huggingface_hub.errors import HfHubHTTPError
         from huggingface_hub import snapshot_download
     except ImportError as exc:
         sys.exit(
@@ -781,7 +912,9 @@ def download_checkpoint(hf_repo: str, output_dir: Path, revision: "str | None") 
     # own. Deliberately never accept a token as a CLI flag: argv can leak
     # via `ps`/shell history, mirroring `scripts/publish/upload.sh`'s
     # env-only token convention (HF_TOKEN / HF env vars, never argv).
-    local_dir = snapshot_download(
+    local_dir = snapshot_download_with_429_retry(
+        snapshot_download,
+        error_type=HfHubHTTPError,
         repo_id=hf_repo,
         repo_type="model",
         revision=revision,
