@@ -118,27 +118,20 @@ are exactly false, and `siblings` is a non-empty safe, duplicate-free
 `{rfilename}` tree with no LICENSE-like file. The audit records only the tree
 count/list/hash and response SHA/size; it does not retain arbitrary API JSON.
 README text and arbitrary metadata are never accepted as license evidence. It never acquires weights,
-imports model code, invokes Cargo, or uploads anything. The audit itself
-currently reports `BLOCKED` because owner approval is still pending. The
-reviewed VAST report is retained externally by SHA-256; the repository carries
-only `dependency_audit_evidence.json`, a deterministic compact projection of
-the exact active/inactive closure rows, full publisher/native fact hashes,
-fixed-revision model metadata, and the no-model/no-Cargo/no-upload scope.
-The torchaudio source/version migration invalidates the prior installed
-payload/native facts, so the manifest records the dependency evidence as
-`STALE_REQUIRES_VAST_AUDIT`; an authorized Linux x86_64 VAST audit must rerun
-before any owner approval.
+imports model code, invokes Cargo, or uploads anything. The dependency audit
+evidence is currently `STALE_REQUIRES_VAST_AUDIT` because the torchaudio
+CPU-index/version migration invalidated the prior installed-payload and native
+facts; an authorized Linux x86_64 VAST audit must rerun before owner approval.
+The owner-approval scope intentionally excludes this volatile dependency-audit
+reference to avoid a hash cycle; the compact bytes, full-report SHA-256, input
+hashes, closure/facts, and approval state remain bound separately by the gate.
 Every factual package/component record has a canonical full-fact digest bound
 back to its manifest row; inactive rows remain pending and carry no installed
-license/native claim. The old compact artifact remains
-`PENDING_OWNER_APPROVAL` with null signer and digest, but is not accepted after
-the migration; the manifest status is `STALE_REQUIRES_VAST_AUDIT`. The license gate
-binds this compact file, its full-report SHA-256, all closure row digests, and
-the fixed HF model metadata policy to the manifest; tampering with any of those
-inputs is rejected. The compact evidence records factual installed metadata
-only and is not an owner legal conclusion. Dependency synchronization, model
-download, and API/model smoke cannot progress until legitimate
-dependency/component reviews and authenticated owner evidence are recorded.
+license/native claim. The compact evidence records factual installed metadata
+only and is not an owner legal conclusion. Owner approval and checkpoint/full
+API smoke remain blocked until a fresh exact-head VAST audit and legitimate
+dependency/component reviews are recorded; dependency synchronization and
+model-free API smoke are independent and may proceed.
 Run its `--self-test` locally; do not run the production audit on the
 maintainer machine. The production audit can optionally emit the compact
 projection with `--compact-output <absent-path>` when a separately authorized

@@ -5,7 +5,7 @@
   "package_rows_sha256": "7fd6513b0c8c110b46bd61bd01c93cfc33486cde603740b31c42e60c1114c8bb",
   "review_rows_sha256": "72d9ee65dd76e8be3e856359a954fb4fc7e54d75344abd2d43fce87c9da7399e",
   "component_rows_sha256": "cf3c477dcae8e6eb86a9019b4bed4e243a360aceb1c9a710a31ec34fbea62c9d",
-  "approval_scope_sha256": "5e6a92087125491c9016fe25572cb175af6b6d205ded5ace6c0c42335967d39e",
+  "approval_scope_sha256": "bc20153ed43580801f6077781748f5beacb50fbfdfbc4234bf4a89520baf0969",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",

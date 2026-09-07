@@ -314,6 +314,10 @@ def is_placeholder(value: Any) -> bool:
 
 
 def approval_scope(manifest: dict[str, Any]) -> dict[str, Any]:
+    # Dependency-audit evidence is volatile: its compact/full digests and
+    # status change when an authorized VAST audit is refreshed.  Bind that
+    # evidence separately in validate_dependency_audit_evidence() instead of
+    # creating a hash cycle through this owner-approval scope.
     return {
         "lock_sha256": manifest.get("lock_sha256"),
         "pyproject_sha256": manifest.get("pyproject_sha256"),
@@ -322,13 +326,6 @@ def approval_scope(manifest: dict[str, Any]) -> dict[str, Any]:
         "component_rows_sha256": manifest.get("component_rows_sha256"),
         "identities": manifest.get("identities"),
         "model_license_metadata": manifest.get("model_license_metadata"),
-        # The compact file digest is deliberately excluded to avoid a
-        # self-referential hash cycle; its bytes are checked separately.
-        "dependency_audit_evidence": {
-            key: value
-            for key, value in (manifest.get("dependency_audit_evidence") or {}).items()
-            if key != "sha256"
-        },
         "publication": manifest.get("publication"),
         "package_decision": "APPROVED",
         "component_decision": "APPROVED",
@@ -830,8 +827,26 @@ def self_test() -> None:
     assert production_manifest["package_rows_sha256"] == canonical_digest(production_rows)
     assert production_manifest["review_rows_sha256"] == canonical_digest(production_reviews)
     assert production_manifest["component_rows_sha256"] == canonical_digest(production_components)
-    assert production_manifest["approval_scope_sha256"] == canonical_digest(approval_scope(production_manifest))
+    stable_scope = approval_scope(production_manifest)
+    assert production_manifest["approval_scope_sha256"] == canonical_digest(stable_scope)
     assert production_manifest["dependency_audit_evidence"]["status"] == "STALE_REQUIRES_VAST_AUDIT"
+    for volatile_key, volatile_value in (
+        ("sha256", "1" * 64),
+        ("full_audit_sha256", "2" * 64),
+        ("status", "PENDING_OWNER_APPROVAL"),
+        ("stale_reason", "fresh audit pending"),
+    ):
+        candidate = json.loads(json.dumps(production_manifest))
+        candidate["dependency_audit_evidence"][volatile_key] = volatile_value
+        assert approval_scope(candidate) == stable_scope
+    for fixed_key, mutate in (
+        ("review rows", lambda value: value.update(review_rows_sha256="0" * 64)),
+        ("identities", lambda value: value["identities"].update(official_source_revision="0" * 40)),
+        ("publication", lambda value: value.update(publication="UPLOAD")),
+    ):
+        candidate = json.loads(json.dumps(production_manifest))
+        mutate(candidate)
+        assert approval_scope(candidate) != stable_scope, fixed_key
     production_compact = strict_json_loads((production_root / "dependency_audit_evidence.json").read_text(encoding="utf-8"))
     with tempfile.TemporaryDirectory(prefix="qwen3-tts-compact-tamper-") as directory:
         compact_path = Path(directory) / "dependency_audit_evidence.json"
