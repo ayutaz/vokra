@@ -20,6 +20,8 @@ usage() {
   cat <<'EOF' >&2
 usage: run-moss-audio-api-smoke.sh --variant <4b|8b|all> \
   --approval-evidence <file> --expected-head <40-hex> [--work-dir <absent-dir>]
+       run-moss-audio-api-smoke.sh --model-free --variant <4b|8b|all> \
+  --expected-head <40-hex> [--work-dir <absent-dir>]
        run-moss-audio-api-smoke.sh --closure-only --variant <4b|8b|all> \
   --approval-evidence <file> --expected-head <40-hex>
        run-moss-audio-api-smoke.sh --self-test
@@ -29,6 +31,10 @@ non-weight model metadata, then imports the official config/model/processor
 classes under Transformers 5.10.4 without loading a checkpoint. It has no
 upload or model-weight path. --closure-only performs only local HEAD,
 project/lock, and approval closure checks.
+
+The --model-free phase skips owner approval, stages only metadata, imports the
+official classes, and records pending source/model/operator approvals. It never
+loads a checkpoint, uploads, or claims parity.
 EOF
 }
 
@@ -59,7 +65,7 @@ require_inputs() {
 }
 
 require_absent_work_dir() {
-  local target="$1" probe
+  local target="$1" probe canonical protected other
   [[ "$target" == /* ]] || die '--work-dir must be absolute'
   [[ "$target" != *'/../'* && "$target" != ../* && "$target" != '..' ]] || die '--work-dir must not contain parent traversal'
   probe="$target"
@@ -68,11 +74,33 @@ require_absent_work_dir() {
     probe="$(dirname "$probe")"
   done
   [[ ! -e "$target" && ! -L "$target" ]] || die '--work-dir must be absent'
+  canonical="$(canonicalize_uncreated "$target")" || die '--work-dir cannot be canonicalized'
+  for protected in "$VOKRA_ROOT" "$PROJECT" "$SMOKE" "$PROJECT/uv.lock" "$PROJECT/pyproject.toml"; do
+    [[ -e "$protected" || -L "$protected" ]] || continue
+    [[ ! -L "$protected" ]] || die "protected path is symlinked: $protected"
+    other="$(canonicalize_uncreated "$protected")" || die "protected path cannot be canonicalized: $protected"
+    paths_overlap "$canonical" "$other" && die "--work-dir overlaps protected path: $protected"
+  done
 }
+
+canonicalize_uncreated() {
+  local path="$1" suffix='' name parent
+  while [[ ! -d "$path" || -L "$path" ]]; do
+    name="${path##*/}"
+    [[ -n "$name" ]] && suffix="/$name$suffix"
+    parent="${path%/*}"
+    [[ "$parent" == "$path" ]] && parent='/'
+    path="$parent"
+    [[ ! -L "$path" ]] || return 1
+  done
+  (cd -P "$path" && printf '%s%s\n' "$PWD" "$suffix")
+}
+
+paths_overlap() { [[ "$1" == "$2" || "$1" == "$2"/* || "$2" == "$1"/* ]]; }
 
 run_self_test() {
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SMOKE" --self-test
-  local script_path="${BASH_SOURCE[0]}"
+  local script_path="${BASH_SOURCE[0]}" repo_overlap project_overlap
   for bad in \
     '--self-test --self-test' \
     '--closure-only --self-test' \
@@ -81,7 +109,60 @@ run_self_test() {
     # shellcheck disable=SC2086
     if bash "$script_path" $bad >/dev/null 2>&1; then die "accepted malformed args: $bad"; fi
   done
+  repo_overlap="$VOKRA_ROOT/.moss-audio-api-overlap-$$"
+  if require_absent_work_dir "$repo_overlap" >/dev/null 2>&1; then die 'self-test accepted work directory inside Vokra checkout'; fi
+  project_overlap="$PROJECT/.moss-audio-api-overlap-$$"
+  if require_absent_work_dir "$project_overlap" >/dev/null 2>&1; then die 'self-test accepted work directory inside API smoke project'; fi
   log 'self-test PASS'
+}
+
+run_model_free() {
+  local selection="$1" expected_head="$2" work_dir="$3"
+  local selected source_dir snapshot_root evidence smoke_status evidence_sha
+  [[ "$selection" == 4b || "$selection" == 8b || "$selection" == all ]] || die '--variant must be 4b, 8b, or all'
+  require_head "$expected_head"
+  require_inputs
+  require_host
+  [[ -n "$work_dir" ]] || work_dir="${VOKRA_SCRATCH:-$HOME/scratchpad}/moss-audio-model-free-api-smoke-${expected_head:0:12}"
+  require_absent_work_dir "$work_dir"
+  mkdir -p "$work_dir"
+  selected="$selection"
+  source_dir="$work_dir/official-source"
+  snapshot_root="$work_dir/metadata"
+  evidence="$work_dir/model-free-api-smoke-evidence.json"
+  step 'Install the reviewed frozen model-free API smoke environment'
+  UV_NO_CACHE=1 uv sync --project "$PROJECT" --frozen --python 3.12
+  step 'Checkout the exact official source without model files'
+  git clone --filter=blob:none --no-checkout "$SOURCE_REPO" "$source_dir"
+  git -C "$source_dir" checkout --detach "$SOURCE_REVISION"
+  mkdir -p "$snapshot_root"
+  for variant in ${selected/all/4b 8b}; do
+    local repo revision
+    if [[ "$variant" == 4b ]]; then repo='OpenMOSS-Team/MOSS-Audio-4B-Instruct'; revision='6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d'; else repo='OpenMOSS-Team/MOSS-Audio-8B-Instruct'; revision='6521a39181b47a18f2d9f4b3acfb5bca7b76b57f'; fi
+    step "Acquire $variant metadata only"
+    download_metadata "$repo" "$revision" "$snapshot_root/$variant"
+  done
+  step 'Run official model-free API smoke'
+  set +e
+  UV_NO_CACHE=1 uv run --no-cache --project "$PROJECT" --frozen --python 3.12 python "$SMOKE" \
+    --model-free --vokra-root "$VOKRA_ROOT" --project "$PROJECT" --source-dir "$source_dir" \
+    --snapshot-root "$snapshot_root" --expected-head "$expected_head" --variant "$selected" --output "$evidence"
+  smoke_status=$?
+  set -e
+  evidence_sha='UNAVAILABLE'
+  if [[ -f "$evidence" && ! -L "$evidence" ]]; then evidence_sha="$(sha256sum "$evidence" | awk '{print $1}')"; fi
+  cat > "$work_dir/model-free-summary.txt" <<EOF
+format=vokra-moss-audio-model-free-api-summary-v1
+status=$([[ "$smoke_status" == 0 ]] && echo PASS_MODEL_FREE || echo BLOCKED_OR_FAILED)
+exit_status=$smoke_status
+expected_head=$expected_head
+evidence_sha256=$evidence_sha
+checkpoint_load=NOT_PERFORMED
+publication=NO_UPLOAD
+approvals=PENDING_OWNER_APPROVAL
+EOF
+  [[ "$smoke_status" == 0 ]] || { die "model-free API smoke did not pass (exit=$smoke_status); evidence=$evidence; destroy the VAST instance"; return 2; }
+  log "PASS_MODEL_FREE: no checkpoint load and no upload; evidence=$evidence (sha256=$evidence_sha); destroy the VAST instance"
 }
 
 download_metadata() {
@@ -95,8 +176,8 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
 }
 
 main() {
-  local selection='' approval='' expected_head='' work_dir='' self_test=0 closure_only=0
-  local seen_variant=0 seen_approval=0 seen_head=0 seen_work=0 seen_self=0 seen_closure=0
+  local selection='' approval='' expected_head='' work_dir='' self_test=0 closure_only=0 model_free=0
+  local seen_variant=0 seen_approval=0 seen_head=0 seen_work=0 seen_self=0 seen_closure=0 seen_model_free=0
   while (( $# > 0 )); do
     case "$1" in
       --variant) (( seen_variant == 0 )) || die 'duplicate --variant'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--variant requires a value'; selection="$2"; seen_variant=1; shift 2 ;;
@@ -105,13 +186,20 @@ main() {
       --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--work-dir requires a value'; work_dir="$2"; seen_work=1; shift 2 ;;
       --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; self_test=1; seen_self=1; shift ;;
       --closure-only) (( seen_closure == 0 )) || die 'duplicate --closure-only'; closure_only=1; seen_closure=1; shift ;;
+      --model-free) (( seen_model_free == 0 )) || die 'duplicate --model-free'; model_free=1; seen_model_free=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) usage; die "unknown argument: $1" ;;
     esac
   done
   if (( self_test == 1 )); then
-    [[ -z "$selection$approval$expected_head$work_dir" && "$closure_only" == 0 ]] || die '--self-test accepts no other options'
+    [[ -z "$selection$approval$expected_head$work_dir" && "$closure_only" == 0 && "$model_free" == 0 ]] || die '--self-test accepts no other options'
     run_self_test
+    return
+  fi
+  if (( model_free == 1 )); then
+    [[ "$seen_approval" == 0 && "$seen_closure" == 0 ]] || die '--model-free does not accept approval evidence or --closure-only'
+    [[ "$seen_variant" == 1 && "$seen_head" == 1 ]] || die '--model-free requires --variant and --expected-head'
+    run_model_free "$selection" "$expected_head" "$work_dir"
     return
   fi
   [[ "$selection" == 4b || "$selection" == 8b || "$selection" == all ]] || die '--variant must be 4b, 8b, or all'

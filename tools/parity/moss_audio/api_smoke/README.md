@@ -16,7 +16,20 @@ only the configuration and processor; model instantiation and checkpoint
 loading are explicitly not performed. An incompatible API produces
 `BLOCKED_INCOMPATIBLE_API` evidence and never becomes a compatibility PASS.
 
-Before any project environment can be installed, the VAST worker runs the
+The model-free phase is executable before owner evidence is available:
+
+```text
+scripts/publish/vast-ai/run-moss-audio-api-smoke.sh --model-free --variant all \
+  --expected-head <HEAD>
+```
+
+It stages only the exact source and metadata files, imports the official
+configuration/model/processor classes, constructs config and processor objects,
+and records `PASS_MODEL_FREE` while source/model/operator approvals remain
+`PENDING_OWNER_APPROVAL`. This evidence is an API compatibility inspection,
+not a parity result, and cannot satisfy the approval-bound full worker.
+
+Before the approval-bound full worker can install its project environment, it runs the
 stdlib-only `--closure-only` preflight. That gate requires an owner approval
 bound to the exact Vokra HEAD, project/lock bytes, package identities, and
 source/4B/8B license-review evidence. The normal VAST result writes a digest

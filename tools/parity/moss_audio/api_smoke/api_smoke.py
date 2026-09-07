@@ -66,14 +66,15 @@ VARIANTS = {
         },
     },
 }
-PROJECT_SHA256 = "dbe9843be3eab4f88f7708747e49dc515a255e8df0ba239eeb2ca7baae9fdfb9"
-LOCK_SHA256 = "937a6b7d8673b83b0b32457567118ad6c34e8dc2158f9bce354697dd88c98ed6"
+PROJECT_SHA256 = "88e75db26222b51082795736cca686504dc10f00fec69ff20b056e84dda8e396"
+LOCK_SHA256 = "12d4e35ffed35574d9ee5392d2a309761a4767c59b7fbdf926501fd7a7ba1fb3"
 REQUIRED_DEPENDENCIES = {
     "accelerate==1.12.0", "einops==0.8.1", "numpy==2.3.5", "safetensors==0.7.0",
     "scipy==1.16.3", "soundfile==0.13.1", "tiktoken==0.12.0", "torch==2.9.1",
     "torchaudio==2.9.1", "transformers==5.10.4",
 }
 FORMAT = "vokra-moss-audio-transformers-api-smoke-v1"
+MODEL_FREE_FORMAT = "vokra-moss-audio-model-free-api-smoke-v1"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UNRESOLVED = {"", "none", "null", "unresolved", "pending", "todo", "owner_review_required"}
@@ -124,8 +125,16 @@ def require_clean_head(root: Path, expected: str) -> None:
 
 
 def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
-    if set(lock) != {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}:
+    expected_top_level = {
+        "version", "revision", "requires-python", "resolution-markers",
+        "supported-markers", "manifest", "package",
+    }
+    if set(lock) != expected_top_level:
         raise ValueError("uv.lock top-level schema drifted")
+    if lock["manifest"] != {
+        "constraints": [{"name": "setuptools", "specifier": ">=83.0.0"}]
+    }:
+        raise ValueError("uv.lock manifest constraints drifted")
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for package in lock["package"]:
@@ -257,6 +266,12 @@ def verify_snapshot(snapshot: Path, variant: str) -> dict[str, Any]:
     actual = sorted(path.name for path in entries if path.name != ".cache")
     if actual != sorted(expected):
         raise ValueError(f"metadata snapshot closure drifted: {actual}")
+    nested_weights = [
+        path for path in snapshot.rglob("*")
+        if path.name.endswith(".safetensors") or path.name.startswith("model-")
+    ]
+    if nested_weights:
+        raise ValueError(f"checkpoint file reached model-free snapshot: {nested_weights[0]}")
     files: dict[str, Any] = {}
     for name, expected_hash in expected.items():
         path = snapshot / name
@@ -277,6 +292,8 @@ def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
     sys.path.insert(0, str(source))
     try:
         import transformers
+        if transformers.__version__ != "5.10.4":
+            raise ValueError(f"Transformers runtime drifted: {transformers.__version__}")
         configuration = importlib.import_module("src.configuration_moss_audio")
         modeling = importlib.import_module("src.modeling_moss_audio")
         processing = importlib.import_module("src.processing_moss_audio")
@@ -389,6 +406,86 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_model_free(args: argparse.Namespace) -> int:
+    if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
+        raise ValueError("VOKRA_PUBLISH_ON_VAST=1 is required")
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        raise ValueError("model-free API smoke requires VAST Linux x86_64")
+    root = Path(args.vokra_root)
+    project = Path(args.project)
+    source = Path(args.source_dir)
+    snapshot_root = Path(args.snapshot_root)
+    output = Path(args.output)
+    if not output.is_absolute() or output.exists() or output.is_symlink():
+        raise ValueError("model-free evidence output must be an absent absolute path")
+    selected = ["4b", "8b"] if args.variant == "all" else [args.variant]
+    if any(variant not in VARIANTS for variant in selected) or len(set(selected)) != len(selected):
+        raise ValueError("variant selection is invalid")
+    require_clean_head(root, args.expected_head)
+    rows, project_hash, lock_hash = verify_project(project)
+    source_record = verify_source(source)
+    variant_records = {
+        variant: verify_snapshot(snapshot_root / variant, variant) for variant in selected
+    }
+    api_records: dict[str, Any] = {}
+    try:
+        for variant in selected:
+            api_records[variant] = api_probe(source, snapshot_root / variant)
+    except Exception as exc:  # noqa: BLE001 - blocked evidence is part of the contract
+        evidence = {
+            "format": MODEL_FREE_FORMAT,
+            "status": "BLOCKED_INCOMPATIBLE_API",
+            "publication": "NO_UPLOAD",
+            "expected_head": args.expected_head,
+            "source": source_record,
+            "variants": variant_records,
+            "project": {"sha256": project_hash, "lock_sha256": lock_hash, "packages": rows},
+            "api": {"error_type": type(exc).__name__, "error": str(exc)},
+            "checkpoint_load": "NOT_PERFORMED",
+            "approval": {
+                "source_license": "PENDING_OWNER_APPROVAL",
+                "model_license": "PENDING_OWNER_APPROVAL",
+                "operator": "PENDING_OWNER_APPROVAL",
+                "signer": None,
+                "scope_sha256": None,
+            },
+            "environment": {"python": platform.python_version(), "platform": platform.platform()},
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+        print(f"BLOCKED_INCOMPATIBLE_API: {exc}", file=sys.stderr)
+        return 2
+    evidence = {
+        "format": MODEL_FREE_FORMAT,
+        "status": "PASS_MODEL_FREE",
+        "publication": "NO_UPLOAD",
+        "expected_head": args.expected_head,
+        "source": source_record,
+        "variants": variant_records,
+        "project": {"sha256": project_hash, "lock_sha256": lock_hash, "packages": rows},
+        "api": api_records,
+        "checkpoint_load": "NOT_PERFORMED",
+        "approval": {
+            "source_license": "PENDING_OWNER_APPROVAL",
+            "model_license": "PENDING_OWNER_APPROVAL",
+            "operator": "PENDING_OWNER_APPROVAL",
+            "signer": None,
+            "scope_sha256": None,
+        },
+        "environment": {"python": platform.python_version(), "platform": platform.platform()},
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+    print("MOSS_AUDIO_MODEL_FREE_API_SMOKE PASS_MODEL_FREE (no checkpoint load, no upload)")
+    return 0
+
+
 def closure_only(args: argparse.Namespace) -> int:
     root = Path(args.vokra_root)
     project = Path(args.project)
@@ -415,6 +512,7 @@ def self_test() -> int:
         assert HEX40.fullmatch(SOURCE_REVISION)
         assert all(HEX64.fullmatch(value) for value in SOURCE_FILES.values())
         assert VARIANTS["4b"]["hidden_size"] != VARIANTS["8b"]["hidden_size"]
+        assert MODEL_FREE_FORMAT.endswith("-v1")
         print("moss_audio API smoke self-test PASS (stdlib-only, no model, no network)")
         return 0
     except Exception as exc:  # noqa: BLE001
@@ -434,9 +532,19 @@ if __name__ == "__main__":
     parser.add_argument("--variant", choices=["4b", "8b", "all"])
     parser.add_argument("--output")
     parser.add_argument("--closure-only", action="store_true")
+    parser.add_argument("--model-free", action="store_true")
     args = parser.parse_args()
     if args.self_test:
+        if args.model_free or args.closure_only or any(value is not None for value in (args.vokra_root, args.project, args.source_dir, args.snapshot_root, args.approval_evidence, args.expected_head, args.variant, args.output)):
+            parser.error("--self-test accepts no other options")
         raise SystemExit(self_test())
+    if args.model_free:
+        if args.closure_only or args.approval_evidence is not None:
+            parser.error("--model-free does not accept --closure-only or approval evidence")
+        required = (args.vokra_root, args.project, args.source_dir, args.snapshot_root, args.expected_head, args.variant, args.output)
+        if any(value is None for value in required):
+            parser.error("model-free requires Vokra root, project, source, snapshots, expected head, variant, and output")
+        raise SystemExit(run_model_free(args))
     if args.closure_only:
         required = (args.vokra_root, args.project, args.approval_evidence, args.expected_head, args.variant)
         if any(value is None for value in required):

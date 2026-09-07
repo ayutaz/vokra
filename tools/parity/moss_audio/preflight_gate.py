@@ -132,8 +132,8 @@ COMMON_ASSETS = {
 # only after this bridge; model compatibility/parity remains a VAST gate.
 API_SMOKE_FORMAT = "vokra-moss-audio-transformers-api-smoke-v1"
 API_SMOKE_SOURCE_REPO = "https://github.com/OpenMOSS/MOSS-Audio.git"
-API_SMOKE_PROJECT_SHA256 = "dbe9843be3eab4f88f7708747e49dc515a255e8df0ba239eeb2ca7baae9fdfb9"
-API_SMOKE_LOCK_SHA256 = "937a6b7d8673b83b0b32457567118ad6c34e8dc2158f9bce354697dd88c98ed6"
+API_SMOKE_PROJECT_SHA256 = "88e75db26222b51082795736cca686504dc10f00fec69ff20b056e84dda8e396"
+API_SMOKE_LOCK_SHA256 = "12d4e35ffed35574d9ee5392d2a309761a4767c59b7fbdf926501fd7a7ba1fb3"
 API_SMOKE_SOURCE_FILES = {
     "src/configuration_moss_audio.py": SOURCE_IDENTITY["files"]["src/configuration_moss_audio.py"],
     "src/modeling_moss_audio.py": SOURCE_IDENTITY["files"]["src/modeling_moss_audio.py"],

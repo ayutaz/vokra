@@ -59,6 +59,23 @@ input or have symlink ancestry. Run
 the no-model/no-network contract checks. The full four-variant validation
 remains blocked until this API smoke has an authenticated VAST result.
 
+Before owner evidence is available, the same VAST runner exposes an independent
+model-free API phase:
+
+```text
+scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh --model-free --variant all \
+  --expected-head <HEAD>
+```
+
+This phase stages only the exact official source and the five metadata files for
+each selected model revision (`config.json`, `generation_config.json`,
+`merges.txt`, `tokenizer_config.json`, and `vocab.json`). It imports the
+official `Qwen3TTSModel`, `Qwen3TTSConfig`, and `Qwen3TTSProcessor` APIs,
+constructs only config/processor objects, and records `PASS_MODEL_FREE` with
+source/model/operator approval fields still pending. It rejects any checkpoint
+file, never calls `Qwen3TTSModel.from_pretrained`, and is not a parity or
+publication result.
+
 The separate model-free dependency/license audit is
 `scripts/publish/vast-ai/audit-qwen3-tts-dependencies.sh`. It is restricted to
 an already synchronized Linux x86_64 VAST environment and records the active

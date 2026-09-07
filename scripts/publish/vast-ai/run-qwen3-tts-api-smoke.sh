@@ -10,6 +10,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/qwen3_tts"
 API_SMOKE="$PARITY_PROJECT/api_smoke.py"
+MODEL_FREE_SMOKE="$PARITY_PROJECT/model_free_api_smoke.py"
 LICENSE_GATE="$PARITY_PROJECT/license_gate.py"
 LICENSE_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 REFERENCE_AUDIO="$VOKRA_ROOT/tests/parity/utmos/ref-clip.wav"
@@ -24,7 +25,7 @@ DECODER_REPOSITORY="Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION="a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256="836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
 TRANSFORMERS_VERSION="5.10.4"
-LOCK_SHA256="662d92f45f5554be78bdf88934b7e7e0b59d01e3b5953558534b903119714f2a"
+LOCK_SHA256="b5fd403808a15759c5b10331e4da759ad230847baa833e75abba36d53a3cfdd2"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=100000000
 
@@ -88,7 +89,7 @@ require_absent_work_dir() {
   local target="$1" approval="$2" canonical protected other
   [[ ! -e "$target" && ! -L "$target" ]] || { die "work directory must be absent and non-symlink: $target"; return 2; }
   canonical="$(canonicalize_uncreated "$target")" || { die "cannot canonicalize work directory: $target"; return 2; }
-  for protected in "$VOKRA_ROOT" "$PARITY_PROJECT" "$API_SMOKE" "$LICENSE_GATE" "$LICENSE_MANIFEST" \
+  for protected in "$VOKRA_ROOT" "$PARITY_PROJECT" "$API_SMOKE" "$MODEL_FREE_SMOKE" "$LICENSE_GATE" "$LICENSE_MANIFEST" \
     "$PARITY_PROJECT/uv.lock" "$PARITY_PROJECT/pyproject.toml" "$REFERENCE_AUDIO" "$approval"; do
     [[ -e "$protected" || -L "$protected" ]] || continue
     [[ ! -L "$protected" ]] || { die "protected path is symlinked: $protected"; return 2; }
@@ -101,12 +102,19 @@ require_absent_work_dir() {
 usage() {
   cat >&2 <<'EOF'
 usage: run-qwen3-tts-api-smoke.sh --approval-evidence FILE [--work-dir ABSENT_DIR]
+       run-qwen3-tts-api-smoke.sh --model-free --variant <0.6b-base|0.6b-customvoice|1.7b-base|1.7b-customvoice|all> \
+         --expected-head <40-hex> [--work-dir ABSENT_DIR]
        run-qwen3-tts-api-smoke.sh --self-test
 
 On VAST/Linux this stages the fixed Qwen3-TTS 0.6B-Base and official 12-Hz
 decoder snapshots, then calls the official Transformers wrapper with local-only
 loading and a two-token greedy request. It emits strict JSON evidence and
 never uploads, publishes, or pushes artifacts.
+
+The --model-free phase is independent of owner approval: it stages only exact
+source and metadata files, imports the official classes, constructs config and
+processor objects, and never calls the wrapper checkpoint loader. Its evidence
+keeps source/model/operator approvals pending and is not a parity result.
 EOF
 }
 
@@ -130,6 +138,17 @@ require_tooling() {
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || { die 'not a Vokra checkout'; return 2; }
   [[ -f "$API_SMOKE" && ! -L "$API_SMOKE" && -f "$LICENSE_GATE" && ! -L "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && ! -L "$LICENSE_MANIFEST" ]] || { die 'Qwen3-TTS API smoke inputs are incomplete or symlinked'; return 2; }
   [[ -f "$REFERENCE_AUDIO" && ! -L "$REFERENCE_AUDIO" ]] || { die 'fixed reference audio is missing or symlinked'; return 2; }
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
+}
+
+require_model_free_tooling() {
+  local tool
+  for tool in uv git awk find df grep sed sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || { die "required tool missing: $tool"; return 2; }
+  done
+  [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || { die 'not a Vokra checkout'; return 2; }
+  [[ -f "$MODEL_FREE_SMOKE" && ! -L "$MODEL_FREE_SMOKE" ]] || { die 'Qwen3-TTS model-free API smoke is missing or symlinked'; return 2; }
+  [[ -f "$PARITY_PROJECT/pyproject.toml" && ! -L "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" ]] || { die 'Qwen3-TTS model-free project inputs are incomplete or symlinked'; return 2; }
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
 }
 
@@ -168,6 +187,15 @@ download_snapshot() {
     "$repo" "$revision" "$output"
 }
 
+download_metadata_snapshot() {
+  local repo="$1" revision="$2" output="$3"
+  [[ ! -e "$output" ]] || { die "metadata snapshot target must be absent: $output"; return 2; }
+  mkdir -p "$output"
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
+    'import os,sys; from huggingface_hub import snapshot_download; snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3], token=os.environ.get("HF_TOKEN") or os.environ.get("HF"), allow_patterns=["config.json", "generation_config.json", "merges.txt", "tokenizer_config.json", "vocab.json"])' \
+    "$repo" "$revision" "$output"
+}
+
 download_source() {
   local output="$1"
   [[ ! -e "$output" ]] || { die "official source target must be absent: $output"; return 2; }
@@ -182,13 +210,19 @@ download_source() {
 }
 
 run_self_test() {
-  local path_probe worker_probe approval worker_log rc gate_line sync_line download_line failed=0
+  local path_probe worker_probe approval worker_log rc gate_line sync_line download_line failed=0 metadata_block
   local script_path="${BASH_SOURCE[0]}"
   for required in "$SOURCE_REPOSITORY" "$SOURCE_URL" "$SOURCE_REVISION" "$MODEL_REPOSITORY" "$MODEL_REVISION" "$DECODER_REPOSITORY" "$DECODER_REVISION" "$DECODER_CHECKPOINT_SHA256" "$TRANSFORMERS_VERSION" "$LOCK_SHA256" \
     'VOKRA_PUBLISH_ON_VAST=1' 'platform.system()' 'platform.machine()' 'local_files_only=True' 'dtype=float32' 'device_map=cpu' 'Qwen3TTSModel.from_pretrained' \
     'generate_voice_clone' 'max_new_tokens' 'min_new_tokens' 'NO_UPLOAD' 'strict JSON' 'uv sync' 'download_snapshot' 'download_source' 'require_absent_work_dir' '--project' '--manifest' '--license-gate' '--vokra-root' '--approval-evidence' 'clean' 'x86_64'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract token: $required"; failed=1; }
   done
+  grep -Fq -- 'MODEL_FREE_SMOKE=' "$script_path" || { log 'self-test missing model-free worker'; failed=1; }
+  metadata_block="$(sed -n '/^download_metadata_snapshot()/,/^}/p' "$script_path")"
+  [[ -n "$metadata_block" ]] || { log 'self-test missing metadata-only downloader'; failed=1; }
+  if grep -En 'safetensors|model-' <<<"$metadata_block" >/dev/null; then
+    log 'self-test found checkpoint patterns in metadata-only downloader'; failed=1
+  fi
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     log 'self-test found a direct Python or pip invocation'; failed=1
   fi
@@ -197,6 +231,8 @@ run_self_test() {
   fi
   UV_NO_CACHE=1 UV_CACHE_DIR="${QWEN3_TTS_UV_CACHE_DIR:-/tmp/vokra-qwen3-tts-api-smoke-uv-cache}" \
     uv run --no-cache --no-project --offline --python 3.12 python "$API_SMOKE" --self-test || failed=1
+  UV_NO_CACHE=1 UV_CACHE_DIR="${QWEN3_TTS_UV_CACHE_DIR:-/tmp/vokra-qwen3-tts-api-smoke-uv-cache}" \
+    uv run --no-cache --no-project --offline --python 3.12 python "$MODEL_FREE_SMOKE" --self-test || failed=1
 
   set +e
   VOKRA_PUBLISH_ON_VAST=0 uv run --no-cache --no-project --offline --python 3.12 python "$API_SMOKE" \
@@ -256,21 +292,98 @@ run_self_test() {
   echo 'run-qwen3-tts-api-smoke.sh self-test: PASS'
 }
 
+run_model_free() {
+  local variant="$1" expected_head="$2" work_dir="$3"
+  local selected source_dir snapshot_root evidence smoke_rc evidence_sha
+  [[ "$variant" == 0.6b-base || "$variant" == 0.6b-customvoice || "$variant" == 1.7b-base || "$variant" == 1.7b-customvoice || "$variant" == all ]] || { die '--variant is invalid for model-free smoke'; return 2; }
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be lowercase 40-hex'; return 2; }
+  require_model_free_tooling
+  require_vast_host
+  [[ -n "$work_dir" ]] || work_dir="$VOKRA_SCRATCH/qwen3-tts-model-free-api-smoke-${expected_head:0:12}"
+  require_absent_work_dir "$work_dir" ''
+  mkdir -p "$work_dir/evidence"
+  selected="$variant"
+  export HF_HOME="$work_dir/hf-home" HF_HUB_CACHE="$work_dir/hf-home/hub" HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 TOKENIZERS_PARALLELISM=false
+  source_dir="$work_dir/source-qwen3-tts"
+  snapshot_root="$work_dir/metadata"
+  evidence="$work_dir/evidence/model-free-api-smoke.json"
+  step 'Install the reviewed frozen model-free API smoke environment'
+  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
+  step "Stage official source $SOURCE_REPOSITORY@$SOURCE_REVISION"
+  download_source "$source_dir"
+  mkdir -p "$snapshot_root"
+  if [[ "$selected" == all ]]; then
+    for variant_name in 0.6b-base 0.6b-customvoice 1.7b-base 1.7b-customvoice; do
+      local repo revision
+      case "$variant_name" in
+        0.6b-base) repo='Qwen/Qwen3-TTS-12Hz-0.6B-Base'; revision='5d83992436eae1d760afd27aff78a71d676296fc' ;;
+        0.6b-customvoice) repo='Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice'; revision='85e237c12c027371202489a0ec509ded67b5e4b5' ;;
+        1.7b-base) repo='Qwen/Qwen3-TTS-12Hz-1.7B-Base'; revision='fd4b254389122332181a7c3db7f27e918eec64e3' ;;
+        1.7b-customvoice) repo='Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice'; revision='0c0e3051f131929182e2c023b9537f8b1c68adfe' ;;
+      esac
+      step "Acquire $variant_name metadata only"
+      download_metadata_snapshot "$repo" "$revision" "$snapshot_root/$variant_name"
+    done
+  else
+    local repo revision
+    case "$selected" in
+      0.6b-base) repo="$MODEL_REPOSITORY"; revision="$MODEL_REVISION" ;;
+      0.6b-customvoice) repo='Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice'; revision='85e237c12c027371202489a0ec509ded67b5e4b5' ;;
+      1.7b-base) repo='Qwen/Qwen3-TTS-12Hz-1.7B-Base'; revision='fd4b254389122332181a7c3db7f27e918eec64e3' ;;
+      1.7b-customvoice) repo='Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice'; revision='0c0e3051f131929182e2c023b9537f8b1c68adfe' ;;
+    esac
+    step "Acquire $selected metadata only"
+    download_metadata_snapshot "$repo" "$revision" "$snapshot_root/$selected"
+  fi
+  step 'Run official model-free Transformers API probe'
+  set +e
+  PYTHONPATH="$source_dir${PYTHONPATH:+:$PYTHONPATH}" uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$MODEL_FREE_SMOKE" \
+    --vokra-root "$VOKRA_ROOT" --project "$PARITY_PROJECT" --source-dir "$source_dir" \
+    --snapshot-root "$snapshot_root" --expected-head "$expected_head" --variant "$selected" --output "$evidence"
+  smoke_rc=$?
+  set -e
+  evidence_sha='UNAVAILABLE'
+  if [[ -f "$evidence" && ! -L "$evidence" ]]; then evidence_sha="$(sha256sum "$evidence" | awk '{print $1}')"; fi
+  cat > "$work_dir/evidence/summary.txt" <<EOF
+schema=vokra-qwen3-tts-model-free-api-summary-v1
+status=$([[ "$smoke_rc" == 0 ]] && echo PASS_MODEL_FREE || echo BLOCKED_OR_FAILED)
+exit_status=$smoke_rc
+expected_head=$expected_head
+evidence_sha256=$evidence_sha
+checkpoint_load=NOT_PERFORMED
+publication=NO_UPLOAD
+approvals=PENDING_OWNER_APPROVAL
+EOF
+  [[ "$smoke_rc" == 0 ]] || { die "model-free API probe failed (exit=$smoke_rc); evidence=$evidence"; return 2; }
+  log "PASS_MODEL_FREE: no checkpoint load and no upload; evidence=$evidence; destroy the VAST instance"
+}
+
 main() {
-  local approval='' work_dir='' self_test=0 seen_approval=0 seen_work=0 seen_self=0
+  local approval='' work_dir='' variant='' expected_head='' self_test=0 model_free=0
+  local seen_approval=0 seen_work=0 seen_self=0 seen_model_free=0 seen_variant=0 seen_head=0
   while (( $# > 0 )); do
     case "$1" in
       --approval-evidence) (( seen_approval == 0 )) || { die 'duplicate --approval-evidence'; return 2; }; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die '--approval-evidence requires a path'; return 2; }; approval="$2"; seen_approval=1; shift 2 ;;
       --work-dir) (( seen_work == 0 )) || { die 'duplicate --work-dir'; return 2; }; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die '--work-dir requires a path'; return 2; }; work_dir="$2"; seen_work=1; shift 2 ;;
       --self-test) (( seen_self == 0 )) || { die 'duplicate --self-test'; return 2; }; self_test=1; seen_self=1; shift ;;
+      --model-free) (( seen_model_free == 0 )) || { die 'duplicate --model-free'; return 2; }; model_free=1; seen_model_free=1; shift ;;
+      --variant) (( seen_variant == 0 )) || { die 'duplicate --variant'; return 2; }; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die '--variant requires a value'; return 2; }; variant="$2"; seen_variant=1; shift 2 ;;
+      --expected-head) (( seen_head == 0 )) || { die 'duplicate --expected-head'; return 2; }; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die '--expected-head requires a value'; return 2; }; expected_head="$2"; seen_head=1; shift 2 ;;
       -h|--help) usage; return 0 ;;
       *) usage; die "unknown argument: $1" ;;
     esac
   done
   if (( self_test == 1 )); then
-    [[ "$seen_approval" == 0 && "$seen_work" == 0 ]] || { die '--self-test accepts no other arguments'; return 2; }
+    [[ "$seen_approval" == 0 && "$seen_work" == 0 && "$seen_model_free" == 0 && "$seen_variant" == 0 && "$seen_head" == 0 ]] || { die '--self-test accepts no other arguments'; return 2; }
     run_self_test; return
   fi
+  if (( model_free == 1 )); then
+    [[ "$seen_approval" == 0 ]] || { die '--model-free does not accept approval evidence'; return 2; }
+    [[ "$seen_variant" == 1 && "$seen_head" == 1 ]] || { die '--model-free requires --variant and --expected-head'; return 2; }
+    run_model_free "$variant" "$expected_head" "$work_dir"
+    return
+  fi
+  [[ "$seen_variant" == 0 && "$seen_head" == 0 ]] || { die '--variant/--expected-head require --model-free'; return 2; }
   [[ "$seen_approval" == 1 ]] || { usage; die '--approval-evidence is required'; return 2; }
   preflight "$approval"
   require_tooling
