@@ -61,6 +61,40 @@ EXPECTED_QUANTIZER = {
     "rvq_dim": 512,
     "output_dim": 768,
 }
+EXPECTED_MODEL_TYPE = "moss-audio-tokenizer"
+EXPECTED_ARCHITECTURES = ["MossAudioTokenizerModel"]
+EXPECTED_AUTO_MAP = {
+    "AutoConfig": "configuration_moss_audio_tokenizer.MossAudioTokenizerConfig",
+    "AutoModel": "modeling_moss_audio_tokenizer.MossAudioTokenizerModel",
+}
+# These fields are the shape-bearing subset of the official decoder_kwargs in
+# config.json.  The complete byte identity is checked separately; keeping the
+# shape contract here makes a changed upstream config fail before a meta probe
+# can accidentally bless a different decoder topology.
+EXPECTED_DECODER_LAYOUT = [
+    {"module_type": "PatchedPretransform", "patch_size": 4},
+    {"module_type": "Transformer", "input_dimension": 192, "output_dimension": 768},
+    {"module_type": "PatchedPretransform", "patch_size": 2},
+    {"module_type": "Transformer", "input_dimension": 384, "output_dimension": 768},
+    {"module_type": "PatchedPretransform", "patch_size": 2},
+    {"module_type": "Transformer", "input_dimension": 384, "output_dimension": 768},
+    {"module_type": "PatchedPretransform", "patch_size": 2},
+    {"module_type": "Transformer", "input_dimension": 384, "output_dimension": 240},
+    {"module_type": "PatchedPretransform", "patch_size": 240},
+]
+EXPECTED_TAPS = [
+    {"name": "quantizer", "shape": "1x768x2"},
+    {"name": "decoder_0", "shape": "1x192x8"},
+    {"name": "decoder_1", "shape": "1x768x8"},
+    {"name": "decoder_2", "shape": "1x384x16"},
+    {"name": "decoder_3", "shape": "1x768x16"},
+    {"name": "decoder_4", "shape": "1x384x32"},
+    {"name": "decoder_5", "shape": "1x768x32"},
+    {"name": "decoder_6", "shape": "1x384x64"},
+    {"name": "decoder_7", "shape": "1x240x64"},
+    {"name": "decoder_8", "shape": "1x1x15360"},
+]
+EXPECTED_AUDIO_SHAPE = "1x2x7680"
 EXPECTED_MODEL_INFO = {
     "id": REPOSITORY,
     "sha": REVISION,
@@ -325,6 +359,14 @@ def validate_snapshot(
     config = load_json(snapshot / "config.json")
     if not isinstance(config, dict):
         raise InspectionError("config.json top level is not an object")
+    if config.get("model_type") != EXPECTED_MODEL_TYPE:
+        raise InspectionError(
+            f"config.model_type={config.get('model_type')!r}, expected {EXPECTED_MODEL_TYPE!r}"
+        )
+    if config.get("architectures") != EXPECTED_ARCHITECTURES:
+        raise InspectionError("config.architectures is not the official Nano model")
+    if config.get("auto_map") != EXPECTED_AUTO_MAP:
+        raise InspectionError("config.auto_map is not the official Nano API mapping")
     for key, expected in EXPECTED_CONFIG.items():
         if config.get(key) != expected:
             raise InspectionError(
@@ -339,6 +381,13 @@ def validate_snapshot(
                 f"config.quantizer_kwargs.{key}={quantizer.get(key)!r}, "
                 f"expected {expected!r}"
             )
+    decoder_kwargs = config.get("decoder_kwargs")
+    if not isinstance(decoder_kwargs, list) or len(decoder_kwargs) != len(EXPECTED_DECODER_LAYOUT):
+        raise InspectionError("config.decoder_kwargs does not have the official 9-stage layout")
+    for index, expected in enumerate(EXPECTED_DECODER_LAYOUT):
+        actual = decoder_kwargs[index]
+        if not isinstance(actual, dict) or any(actual.get(key) != value for key, value in expected.items()):
+            raise InspectionError(f"config.decoder_kwargs[{index}] shape contract drifted")
     index = load_json(snapshot / "model.safetensors.index.json")
     if not isinstance(index, dict) or not isinstance(index.get("weight_map"), dict):
         raise InspectionError("checkpoint index has no weight_map")
@@ -352,6 +401,10 @@ def validate_snapshot(
             "downsample_rate": EXPECTED_CONFIG["downsample_rate"],
             "number_channels": EXPECTED_CONFIG["number_channels"],
             "quantizer_kwargs": EXPECTED_QUANTIZER,
+            "model_type": EXPECTED_MODEL_TYPE,
+            "architectures": EXPECTED_ARCHITECTURES,
+            "auto_map": EXPECTED_AUTO_MAP,
+            "decoder_layout": EXPECTED_DECODER_LAYOUT,
             "status": "AUTHENTICATED",
         },
         {"weight_map_entries": len(weight_map), "status": "AUTHENTICATED"},
@@ -466,9 +519,18 @@ def api_and_shape_probe(snapshot: Path) -> dict[str, Any]:
     commit = getattr(config, "_commit_hash", None)
     if commit not in {None, REVISION}:
         raise InspectionError(f"custom config commit drifted: {commit!r}")
+    if getattr(config, "model_type", None) != EXPECTED_MODEL_TYPE:
+        raise InspectionError("official AutoConfig model_type drifted")
     with init_empty_weights():
         model = AutoModel.from_config(config, trust_remote_code=True)
     model.eval()
+    if type(config).__name__ != "MossAudioTokenizerConfig":
+        raise InspectionError("AutoConfig did not resolve the official Nano config class")
+    if type(model).__name__ != "MossAudioTokenizerModel":
+        raise InspectionError("AutoModel did not resolve the official Nano model class")
+    api_methods = ("encode", "decode", "forward", "create_decode_session")
+    if any(not callable(getattr(model, method, None)) for method in api_methods):
+        raise InspectionError("official Nano model API is incomplete")
     config_source = source_identity(
         type(config), "Nano config class", snapshot, "configuration_moss_audio_tokenizer.py"
     )
@@ -505,11 +567,25 @@ def api_and_shape_probe(snapshot: Path) -> dict[str, Any]:
         ) from error
     if not taps or not taps[0]["shape"]:
         raise InspectionError("official decoder tap sequence is empty")
+    if taps != EXPECTED_TAPS:
+        raise InspectionError(f"official decoder tap shapes drifted: {taps!r}")
+    if audio_shape != EXPECTED_AUDIO_SHAPE:
+        raise InspectionError(f"official decoded audio shape drifted: {audio_shape!r}")
     return {
         "status": "AUTHENTICATED_META_SHAPE_PROBE",
         "transformers_version": str(transformers.__version__),
         "config_class": f"{type(config).__module__}.{type(config).__name__}",
         "model_class": f"{type(model).__module__}.{type(model).__name__}",
+        "api_path": {
+            "config": "transformers.AutoConfig.from_pretrained",
+            "model": "transformers.AutoModel.from_config",
+            "trust_remote_code": True,
+            "local_files_only": True,
+        },
+        "api_methods": list(api_methods),
+        "model_type": EXPECTED_MODEL_TYPE,
+        "architectures": EXPECTED_ARCHITECTURES,
+        "auto_map": EXPECTED_AUTO_MAP,
         "source_files": {"configuration": config_source, "modeling": model_source},
         "frames": 2,
         "quantizers": 16,
@@ -595,6 +671,9 @@ def self_test() -> None:
     assert ".gitattributes" in MATERIALIZED_FILES
     assert "__init__.py" in MATERIALIZED_FILES
     assert validate_model_info(EXPECTED_MODEL_INFO) == EXPECTED_MODEL_INFO
+    assert EXPECTED_AUTO_MAP["AutoModel"].endswith("MossAudioTokenizerModel")
+    assert len(EXPECTED_DECODER_LAYOUT) == 9
+    assert EXPECTED_TAPS[-1] == {"name": "decoder_8", "shape": "1x1x15360"}
     try:
         validate_model_info({**EXPECTED_MODEL_INFO, "gated": True})
     except InspectionError:
@@ -712,7 +791,11 @@ def self_test() -> None:
         snapshot = Path(temporary)
         config = {
             **EXPECTED_CONFIG,
+            "model_type": EXPECTED_MODEL_TYPE,
+            "architectures": EXPECTED_ARCHITECTURES,
+            "auto_map": EXPECTED_AUTO_MAP,
             "quantizer_kwargs": EXPECTED_QUANTIZER,
+            "decoder_kwargs": EXPECTED_DECODER_LAYOUT,
         }
         (snapshot / "config.json").write_text(json.dumps(config), encoding="utf-8")
         (snapshot / "model.safetensors.index.json").write_text(
@@ -743,6 +826,22 @@ def self_test() -> None:
         assert len(rows) == len(PAYLOAD_FILES)
         assert rows[-1]["materialized"] is False
         assert rows[-1]["content_not_downloaded"] is True
+        for label, mutate in (
+            ("auto-map", lambda value: value.update(auto_map={"AutoModel": "wrong.Model"})),
+            ("decoder-layout", lambda value: value["decoder_kwargs"][0].update(patch_size=8)),
+        ):
+            tampered_config = json.loads(json.dumps(config))
+            mutate(tampered_config)
+            (snapshot / "config.json").write_text(
+                json.dumps(tampered_config), encoding="utf-8"
+            )
+            try:
+                validate_snapshot(snapshot, server_rows)
+            except InspectionError as error:
+                assert "config.json" in str(error), label
+            else:
+                raise AssertionError(f"tampered {label} config was accepted")
+        (snapshot / "config.json").write_text(json.dumps(config), encoding="utf-8")
         mismatch_rows = {name: dict(row) for name, row in server_rows.items()}
         mismatch_rows["config.json"]["git_blob_sha1"] = "0" * 40
         try:

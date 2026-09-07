@@ -49,7 +49,8 @@ self_test() {
     'cardData_license' 'private' 'gated' 'disabled' \
     'snapshot_download' 'list_repo_tree' 'lfs_payload_sha256' \
     'AutoConfig.from_pretrained' 'AutoModel.from_config' 'init_empty_weights' \
-    'AUTHENTICATED_META_SHAPE_PROBE' 'AUTHENTICATED_EVIDENCE_COMPLETE' \
+    'api_path' 'api_methods' 'MossAudioTokenizerModel' 'AUTHENTICATED_META_SHAPE_PROBE' 'AUTHENTICATED_EVIDENCE_COMPLETE' \
+    '1x768x2' '1x1x15360' '1x2x7680' \
     'INSPECTION_ERROR' 'weights_loaded' 'weights_executed' 'NO_UPLOAD' \
     'REVIEWED' 'BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY' \
     'vokra_checkout' 'source_and_weight_review' 'docs/license-audit.md:671' \
@@ -337,8 +338,28 @@ if manifest.get("unresolved_gates") != {
 route = manifest.get("transformers_route")
 if not isinstance(route, dict) or route.get("status") != "AUTHENTICATED_META_SHAPE_PROBE" or route.get("weights_loaded") is not False or route.get("weights_executed") is not False:
     raise SystemExit("inspection did not authenticate the model-free Transformers route")
-if not isinstance(route.get("taps"), list) or not route["taps"]:
-    raise SystemExit("inspection did not discover decoder tap shapes")
+if route.get("api_path") != {
+    "config": "transformers.AutoConfig.from_pretrained",
+    "model": "transformers.AutoModel.from_config",
+    "trust_remote_code": True,
+    "local_files_only": True,
+} or route.get("api_methods") != ["encode", "decode", "forward", "create_decode_session"]:
+    raise SystemExit("inspection did not authenticate the official Nano API path")
+if route.get("taps") != [
+    {"name": "quantizer", "shape": "1x768x2"},
+    {"name": "decoder_0", "shape": "1x192x8"},
+    {"name": "decoder_1", "shape": "1x768x8"},
+    {"name": "decoder_2", "shape": "1x384x16"},
+    {"name": "decoder_3", "shape": "1x768x16"},
+    {"name": "decoder_4", "shape": "1x384x32"},
+    {"name": "decoder_5", "shape": "1x768x32"},
+    {"name": "decoder_6", "shape": "1x384x64"},
+    {"name": "decoder_7", "shape": "1x240x64"},
+    {"name": "decoder_8", "shape": "1x1x15360"},
+]:
+    raise SystemExit("inspection decoder tap shapes are not the authenticated Nano contract")
+if route.get("audio_shape") != "1x2x7680":
+    raise SystemExit("inspection decoded audio shape is not the authenticated Nano contract")
 PY
 
 (

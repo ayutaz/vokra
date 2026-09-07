@@ -29,6 +29,16 @@ patched minimum of 5.10.0, but no authenticated API smoke has been run. The
 meta-device inspection authenticated quantizer shape `1x768x2` and nine
 decoder taps through `decoder_8`; real-weight/API compatibility and numerical
 parity remain unresolved and blocked.
+The fixed source `config.json` also binds the official Transformers mapping
+`AutoConfig -> MossAudioTokenizerConfig` and `AutoModel ->
+MossAudioTokenizerModel`. The inspection checks this mapping and the
+shape-bearing decoder layout before construction, then requires the official
+model methods `encode`, `decode`, `forward`, and `create_decode_session`.
+Its ordered meta taps are `quantizer 1x768x2`, `decoder_0 1x192x8`,
+`decoder_1 1x768x8`, `decoder_2 1x384x16`, `decoder_3 1x768x16`,
+`decoder_4 1x384x32`, `decoder_5 1x768x32`, `decoder_6 1x384x64`,
+`decoder_7 1x240x64`, and `decoder_8 1x1x15360`; after official channel
+restoration the audio shape must be `1x2x7680`.
 `license_gate.py` intentionally exits 2 before any uv
 sync, source/model acquisition, conversion, Cargo, or CUDA work.
 
