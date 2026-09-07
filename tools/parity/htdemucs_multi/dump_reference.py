@@ -14,10 +14,13 @@ import argparse
 import ast
 import hashlib
 import importlib
+import io
 import json
 import os
 import re
+import struct
 import sys
+import wave
 from types import ModuleType
 from pathlib import Path
 from typing import Any
@@ -34,22 +37,99 @@ CONFIGS = {
 }
 
 
-def install_lameenc_stub() -> ModuleType:
-    """Install a fail-closed codec stub for the official audio helper.
+class _ForbiddenModule(ModuleType):
+    """Module shell whose non-metadata attributes are all fail-closed."""
 
-    ``demucs.audio`` imports ``lameenc`` even though this report path only
-    calls its conversion helper.  The stub permits that import while making
-    every MP3 encoder attribute unavailable; it is installed immediately
-    before importing the authenticated upstream module.
+    _METADATA = frozenset({"__name__", "__class__", "__dict__", "__doc__", "__loader__", "__package__", "__spec__", "__path__"})
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in _ForbiddenModule._METADATA:
+            return ModuleType.__getattribute__(self, name)
+        raise RuntimeError(f"forbidden dependency functionality is unavailable: {ModuleType.__getattribute__(self, '__name__')}.{name}")
+
+
+def install_forbidden_stub(name: str) -> ModuleType:
+    """Install a process-local module stub with no callable dependency API."""
+    stub = _ForbiddenModule(name)
+    sys.modules[name] = stub
+    return stub
+
+
+def install_lameenc_stub() -> ModuleType:
+    """Install the fail-closed GPL codec stub for official ``demucs.audio``."""
+    return install_forbidden_stub("lameenc")
+
+
+def install_torchaudio_stub() -> ModuleType:
+    """Install the fail-closed unused upstream audio-loader stub."""
+    stub = _ForbiddenModule("torchaudio")
+    sys.modules["torchaudio"] = stub
+    return stub
+
+
+def install_openunmix_stub() -> tuple[ModuleType, ModuleType, Any, list[int]]:
+    """Install only the official import seam for ``openunmix.filtering``.
+
+    Pinned HT-Demucs imports ``wiener`` at module import time.  The fixed
+    checkpoint contract uses ``cac=True`` with zero Wiener/end iterations, so
+    this sentinel must never be called; a call is a hard failure rather than a
+    fallback implementation.
     """
-    stub = ModuleType("lameenc")
+    calls: list[int] = []
+
+    def wiener_sentinel(*_args: Any, **_kwargs: Any) -> Any:
+        calls.append(1)
+        raise RuntimeError("openunmix Wiener filtering is forbidden on this reference route")
+
+    filtering = ModuleType("openunmix.filtering")
+    filtering.__path__ = []  # type: ignore[attr-defined]
+    filtering.wiener = wiener_sentinel  # type: ignore[attr-defined]
 
     def blocked_attribute(name: str) -> Any:
-        raise RuntimeError(f"lameenc codec functionality is forbidden: {name}")
+        raise RuntimeError(f"openunmix functionality is unavailable: {name}")
 
-    stub.__getattr__ = blocked_attribute  # type: ignore[attr-defined]
-    sys.modules["lameenc"] = stub
-    return stub
+    filtering.__getattr__ = blocked_attribute  # type: ignore[attr-defined]
+    package = ModuleType("openunmix")
+    package.__path__ = []  # type: ignore[attr-defined]
+    package.filtering = filtering  # type: ignore[attr-defined]
+    package.__getattr__ = blocked_attribute  # type: ignore[attr-defined]
+    sys.modules["openunmix"] = package
+    sys.modules["openunmix.filtering"] = filtering
+    return package, filtering, wiener_sentinel, calls
+
+
+def decode_pinned_wav_bytes(payload: bytes) -> tuple[list[list[float]], int]:
+    """Decode only RIFF/WAVE PCM16 mono 16 kHz little-endian fixture bytes.
+
+    The returned samples are shaped ``[channels, time]`` (one channel) and
+    normalized with the exact signed-PCM16 denominator 32768.  No third-party
+    audio package, resampler, or codec is involved in this reader.
+    """
+    if len(payload) < 12 or payload[:4] != b"RIFF" or payload[8:12] != b"WAVE":
+        raise ValueError("audio fixture must be a RIFF/WAVE file")
+    try:
+        with wave.open(io.BytesIO(payload), "rb") as reader:
+            if reader.getcomptype() != "NONE":
+                raise ValueError("audio fixture must use uncompressed PCM")
+            if reader.getnchannels() != 1:
+                raise ValueError("audio fixture must be mono")
+            if reader.getsampwidth() != 2:
+                raise ValueError("audio fixture must use 16-bit samples")
+            sample_rate = reader.getframerate()
+            if sample_rate != 16000:
+                raise ValueError("audio fixture must use a 16000 Hz sample rate")
+            frame_count = reader.getnframes()
+            frames = reader.readframes(frame_count)
+    except (EOFError, wave.Error) as error:
+        raise ValueError(f"audio fixture is not a valid PCM WAV: {error}") from error
+    if len(frames) != frame_count * 2:
+        raise ValueError("audio fixture PCM frame payload is truncated")
+    values = struct.unpack("<" + "h" * frame_count, frames)
+    return [[sample / 32768.0 for sample in values]], sample_rate
+
+
+def read_pinned_wav(path: Path) -> tuple[list[list[float]], int]:
+    return decode_pinned_wav_bytes(path.read_bytes())
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -233,6 +313,10 @@ def load_official_model(source: Path, checkpoint: Path, model_class: Any, model_
     model = model_class(*package["args"], **package["kwargs"])
     model.load_state_dict(package["state"], strict=True)
     model.eval()
+    if model.cac is not True or model.wiener_iters != 0 or model.end_iters != 0:
+        raise ValueError(
+            f"fixed reference route requires cac=True, wiener_iters=0, end_iters=0: {checkpoint.name}"
+        )
     return model
 
 
@@ -267,17 +351,24 @@ def run(source: Path, weights: Path, fixture: Path, fixture_sha: str, variant: s
     if dependency_gate.get("pyproject_sha256") != sha256(pyproject_path):
         raise ValueError("pyproject digest is not bound to gate")
 
+    openunmix_stub, filtering_stub, wiener_sentinel, wiener_calls = install_openunmix_stub()
     sys.path.insert(0, str(source))
     htdemucs = importlib.import_module("demucs.htdemucs")
+    hdemucs = importlib.import_module("demucs.hdemucs")
+    if (sys.modules.get("openunmix") is not openunmix_stub
+            or sys.modules.get("openunmix.filtering") is not filtering_stub
+            or getattr(htdemucs, "wiener", None) is not wiener_sentinel
+            or getattr(hdemucs, "wiener", None) is not wiener_sentinel):
+        raise RuntimeError("official HT-Demucs/HDemucs modules did not retain the fail-closed Wiener sentinel")
     apply = importlib.import_module("demucs.apply")
+    waveform_rows, sample_rate = read_pinned_wav(fixture)
     import torch
-    import torchaudio
-
-    waveform, sample_rate = torchaudio.load(str(fixture))
     lameenc_stub = install_lameenc_stub()
+    torchaudio_stub = install_torchaudio_stub()
     audio = importlib.import_module("demucs.audio")
-    if sys.modules.get("lameenc") is not lameenc_stub:
-        raise RuntimeError("official audio helper did not retain the fail-closed lameenc stub")
+    if sys.modules.get("lameenc") is not lameenc_stub or sys.modules.get("torchaudio") is not torchaudio_stub:
+        raise RuntimeError("official audio helper did not retain the fail-closed dependency stubs")
+    waveform = torch.tensor(waveform_rows, dtype=torch.float32)
     waveform = audio.convert_audio(waveform, sample_rate, 44100, 2)
     waveform = waveform.unsqueeze(0)
     config_path = source / "demucs" / "remote" / CONFIGS[variant]["config"]
@@ -298,9 +389,11 @@ def run(source: Path, weights: Path, fixture: Path, fixture_sha: str, variant: s
     taps: list[dict[str, Any]] = []
     models: list[Any] = []
     hook_contracts: list[dict[str, Any]] = []
+    member_wiener_guards: list[dict[str, Any]] = []
     for model_id in CONFIGS[variant]["ids"]:
         model = load_official_model(source, weights / model_rows[model_id]["filename"], htdemucs.HTDemucs, model_id)
         models.append(model)
+        member_wiener_guards.append({"model_id": model_id, "cac": model.cac, "wiener_iters": model.wiener_iters, "end_iters": model.end_iters})
         hooks = []
         selected: set[str] = set()
         hook_seen: set[str] = set()
@@ -354,6 +447,8 @@ def run(source: Path, weights: Path, fixture: Path, fixture_sha: str, variant: s
     if not expected_terminals.issubset({tap["name"] for tap in taps}):
         raise ValueError("terminal stem taps are incomplete")
     del bag, bag_stems, models
+    if wiener_calls:
+        raise RuntimeError("openunmix Wiener sentinel was called; reference route is invalid")
     report = {
         "format": "vokra-htdemucs-multi-reference-report-v1",
         "status": "REPORT_ONLY",
@@ -387,6 +482,19 @@ def run(source: Path, weights: Path, fixture: Path, fixture_sha: str, variant: s
         },
         "contracts": {
             "members": [{"model_id": model_id, "terminal_tap": f"{model_id}.stems"} for model_id in CONFIGS[variant]["ids"]],
+            "wiener_guard": {
+                "stub_package": "openunmix",
+                "stub_module": "openunmix.filtering",
+                "symbol": "wiener",
+                "sentinel_identity_bound": True,
+                "bindings": [
+                    {"module": "demucs.htdemucs", "identity": getattr(htdemucs, "wiener", None) is wiener_sentinel},
+                    {"module": "demucs.hdemucs", "identity": getattr(hdemucs, "wiener", None) is wiener_sentinel},
+                ],
+                "sentinel_calls": len(wiener_calls),
+                "output_numeric_path": "UNREACHABLE_SENTINEL; cac=True with zero wiener_iters/end_iters",
+                "members": member_wiener_guards,
+            },
             "intermediate_tap_selection": {"hook_first_invocation_only": True, "max_elements": MAX_INTERMEDIATE_TAP_ELEMENTS, "members": hook_contracts},
             "bag": {
                 "terminal_tap": "bag.stems",
@@ -420,19 +528,81 @@ def main() -> int:
         assert CONFIGS["htdemucs_ft"]["sources"] == 4 and CONFIGS["htdemucs_6s"]["sources"] == 6
         assert MAX_INTERMEDIATE_TAP_ELEMENTS == 1 << 20
         assert "truncated" in f32_tap.__code__.co_varnames
+        wav = io.BytesIO()
+        with wave.open(wav, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(16000)
+            writer.writeframes(struct.pack("<hhh", -32768, 0, 32767))
+        decoded, rate = decode_pinned_wav_bytes(wav.getvalue())
+        assert rate == 16000 and decoded == [[-1.0, 0.0, 32767 / 32768.0]]
+        for malformed in (b"RIFX" + wav.getvalue()[4:], wav.getvalue()[:8] + b"NOPE" + wav.getvalue()[12:]):
+            try:
+                decode_pinned_wav_bytes(malformed)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("malformed WAV was accepted")
+        for channels, width, sample_rate, frames in (
+            (2, 2, 16000, b"\x00\x00\x00\x00"),
+            (1, 1, 16000, b"\x00"),
+            (1, 2, 8000, b"\x00\x00"),
+        ):
+            malformed_wav = io.BytesIO()
+            with wave.open(malformed_wav, "wb") as writer:
+                writer.setnchannels(channels)
+                writer.setsampwidth(width)
+                writer.setframerate(sample_rate)
+                writer.writeframes(frames)
+            try:
+                decode_pinned_wav_bytes(malformed_wav.getvalue())
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("WAV contract violation was accepted")
         stub = install_lameenc_stub()
-        assert sys.modules["lameenc"] is stub
+        torchaudio_stub = install_torchaudio_stub()
+        openunmix_stub, filtering_stub, wiener_sentinel, wiener_calls = install_openunmix_stub()
+        assert (sys.modules["lameenc"] is stub and sys.modules["torchaudio"] is torchaudio_stub
+                and sys.modules["openunmix"] is openunmix_stub
+                and sys.modules["openunmix.filtering"] is filtering_stub
+                and filtering_stub.wiener is wiener_sentinel)
+        imported_wiener: dict[str, Any] = {}
+        exec("from openunmix.filtering import wiener", imported_wiener)
+        assert imported_wiener["wiener"] is wiener_sentinel
         try:
             stub.Encoder
         except RuntimeError:
             pass
         else:
             raise AssertionError("lameenc encoder attribute was exposed")
+        try:
+            torchaudio_stub.load
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("torchaudio loader attribute was exposed")
+        try:
+            wiener_sentinel(None)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("openunmix Wiener sentinel did not fail closed")
+        assert wiener_calls == [1]
+        try:
+            filtering_stub.resample
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("openunmix filtering exposed an unreviewed symbol")
         source = Path(__file__).read_text(encoding="utf-8")
         assert source.index("dependency_path =") < source.index("sys.path.insert")
-        assert source.index("lameenc_stub = install_lameenc_stub()") < source.index('audio = importlib.import_module("demucs.audio")') < source.index("audio.convert_audio")
+        assert source.index("openunmix_stub, filtering_stub, wiener_sentinel, wiener_calls = install_openunmix_stub()") < source.index('htdemucs = importlib.import_module("demucs.htdemucs")') < source.index('hdemucs = importlib.import_module("demucs.hdemucs")')
+        assert source.index("lameenc_stub = install_lameenc_stub()") < source.index("torchaudio_stub = install_torchaudio_stub()") < source.index('audio = importlib.import_module("demucs.audio")') < source.index("audio.convert_audio")
         assert "effective_bag_weights" in source
         assert '"gate_sha256"' in source
+        for token in ("RIFF/WAVE", "PCM16", "32768", "[channels, time]", "read_pinned_wav", "wiener_iters", "end_iters", "cac=True", "demucs.hdemucs", "sentinel_identity_bound", "bindings"):
+            assert token in source
         tree = ast.parse(source)
         forbidden_imports = {
             alias.name
@@ -460,7 +630,7 @@ def main() -> int:
             and node.args[0].value == "lameenc"
             for node in ast.walk(tree)
         )
-        assert "install_lameenc_stub" in source
+        assert "install_lameenc_stub" in source and "install_torchaudio_stub" in source and "install_openunmix_stub" in source
         print("htdemucs multi reference dumper self-test: PASS")
         return 0
     required = {

@@ -56,12 +56,17 @@ FT_MODELS = ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"]
 SIX_MODELS = ["5c90dfd2"]
 SOURCE_ROLE_BLOBS = {
     "LICENSE": "a45a376fb0fcd4a3de06b6c096e62028929a2dcb",
+    "demucs/__init__.py": "e02c0ada9a1831da8c4130bc645b663772b2de80",
     "demucs/apply.py": "1540f3d44fc8bbca1ce377cc80af3cd9212278be",
     "demucs/hdemucs.py": "711d47157a975e04a0ffb044991d2dc3cfd54b66",
     "demucs/htdemucs.py": "5d2eaaa1eb2620a5d2147eb86361e9964fb94528",
+    "demucs/demucs.py": "f6a4305cb420aa83e2a54c8af7a7d73e96afe373",
     "demucs/pretrained.py": "80ae49cb1d3e1894f07eafbb49f95559a9f3de33",
     "demucs/repo.py": "5e20ff5199e5003cf3e2228d41998e53200691de",
+    "demucs/spec.py": "29250459b30e3127912293ea17f168e7caccba9a",
     "demucs/states.py": "361bb4196569bffaf622e39dd067d802dd43b38b",
+    "demucs/transformer.py": "56a465b861d7d018d0eca2779bbd392f07e411a9",
+    "demucs/utils.py": "a3f5993e0281be546c9691963a8343c2b2c85452",
     "demucs/remote/htdemucs_ft.yaml": "ba5c69c272770f5e5db3dd5fcda75b94ba523250",
     "demucs/remote/htdemucs_6s.yaml": "651a0fa536038a3e6d650f7b2bcc0b50ff7a4be9",
 }

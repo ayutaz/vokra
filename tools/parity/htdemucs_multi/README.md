@@ -27,12 +27,16 @@ enable a Vokra runtime forward.
 
 The exact upstream `requirements_minimal.txt` bytes are retained as
 `upstream_requirements_minimal.snapshot` for authenticated provenance only;
-it is not an active Python manifest. The curated active `pyproject.toml`
-import closure excludes the known GPL `lameenc` codec; other dependency
-licenses remain unreviewed. The lock must be generated and audited on VAST,
-then the exact lock and primary package license/artifact records may be
-committed. This checkout intentionally does not claim any dependency or
-bundled-native notice approval.
+it is not an active Python manifest and is preserved byte-for-byte. The
+curated active `pyproject.toml` import closure is
+`einops`, `julius`, `numpy`, `pyyaml`, `torch`, and `tqdm`. The upstream
+`dora-search`, `lameenc`, `openunmix`, and `torchaudio` entries are explicitly
+excluded from active imports: the report manually loads the authenticated
+source and never uses Dora; `lameenc` is a GPL codec; `openunmix` is only
+needed for the official top-level Wiener symbol import; and `torchaudio` is
+replaced by the strict fixture reader below. The generated lock contains none
+of those four packages. This checkout intentionally does not claim any
+dependency or bundled-native notice approval.
 
 The future worker uses the official `demucs.htdemucs.HTDemucs` class and the
 official `BagOfModels`/`apply_model` aggregation from the pinned checkout. It
@@ -47,37 +51,37 @@ never converts or uploads a model. A fixed public audio
 fixture must be supplied by the VAST operator with an independently recorded
 SHA-256; no fixture bytes are bundled or invented here.
 
-The dependency audit row file is deliberately empty and blocked. A VAST
-Python 3.12.14 resolution run proved that the unchanged upstream
-`torchaudio>=0.8,<2.1` constraint is unsatisfiable: available releases are
-`<=2.0.2+cpu` and `>=2.1`, and `2.0.2+cpu` has only cp38/cp39/cp310/cp311
-wheels. The evidence log SHA-256 is
-`ed594c9014232b79e8bed1eceae767f0b339157b93c114aa8d9b3d418c6abeba`, recorded
-at run commit `73307e99c83fdd59ca9693abdc343b929fb518de`. No
-model/checkpoint/Torch import was performed. Do not loosen the upstream pin.
-Before a future compatible source-specific decision, VAST must fill exact
-package rows (`name`, `version`, artifact SHA-256, license) and license rows (`name`, license, status, source, SHA-256),
-then pin each canonical row-array digest and the uv lock digest. Each active
-package row binds a selected artifact `{kind,url,sha256,bytes}`; its license
-evidence repeats that exact artifact identity and binds separate license
-bytes. The virtual project uses `{kind: virtual-local, url: pyproject.toml}`
-only for package identity, while its license must bind the repository-root
-`LICENSE` bytes. Duplicate
-names, malformed rows, GPL/LGPL/unknown licenses, or an unverified
-Python-3.12 `torchaudio<2.1` wheel fail closed. The upstream pin may be
-unsatisfiable on Python 3.12, and older Torch candidates may lack
-`get_unsafe_globals_in_checkpoint`; both wheel compatibility and scanner
-availability must be proven on VAST without changing the pin here. `numpy` is
-included in the curated active source-import closure. The upstream snapshot
-still contains `lameenc`, because it is part of the authenticated upstream
-contract. The official `demucs.audio` module imports the GPL encoder even
-though this route only needs its conversion helper, so the dumper installs a
-temporary fail-closed `lameenc` module stub immediately before that official
-import. The process-local stub makes any encoder attribute access raise; no
-MP3 functionality is exposed.
-The dumper then calls the pinned upstream `convert_audio` for the fixed
-operator fixture, preserving its 16 kHz mono to 44.1 kHz stereo numerics
-without a local resampler mirror.
+The dependency audit row file is deliberately empty and blocked pending
+primary artifact/license bytes. A Linux-x86_64 Python 3.12 `uv.lock` is now
+resolved against the explicit PyTorch CPU index; it contains no CUDA, NVIDIA,
+or Triton package/source. The lock is reproducibility evidence only: exact
+package rows (`name`, `version`, artifact SHA-256, license) and license rows
+remain owner-reviewed gates. Each future package row must bind a selected
+artifact `{kind,url,sha256,bytes}`; its license evidence must repeat that
+identity and bind separate license bytes. The virtual project uses
+`{kind: virtual-local, url: pyproject.toml}` only for package identity, while
+its license must bind the repository-root `LICENSE` bytes. Duplicate names,
+malformed rows, GPL/LGPL/unknown licenses, or CUDA/NVIDIA/Triton indicators
+fail closed. The upstream constraint remains unchanged and is not used as an
+active torchaudio dependency.
+
+Before importing official `demucs.htdemucs`, the dumper installs a
+process-local `openunmix` / `openunmix.filtering` stub that exposes only a
+`wiener` sentinel; any call raises. After each fixed checkpoint is
+safe-loaded and instantiated, `cac=True`, `wiener_iters=0`, and
+`end_iters=0` are asserted. The report records the sentinel identity and
+zero calls, so the stub cannot contribute to output numerics. The official
+`demucs.audio` module imports the GPL encoder even though this route only
+needs its conversion helper, so the dumper then installs temporary
+fail-closed stubs for both `lameenc` and `torchaudio` immediately before that
+official import. Every non-metadata attribute access on either audio stub
+raises; no MP3 or torchaudio functionality is exposed. The fixture reader
+itself is stdlib-only and accepts exactly RIFF/WAVE, uncompressed PCM
+integer, 16-bit, mono, 16000 Hz, little-endian bytes. It returns
+`[channels, time]` and normalizes signed PCM16 values by dividing by 32768.
+After that decode, the dumper calls the pinned upstream `convert_audio`,
+preserving the official 16 kHz mono to 44.1 kHz stereo numerics without a
+local resampler mirror.
 
 The inspection worker is intentionally a separate, no-upload evidence path:
 after its host and directory preflight it may acquire exactly the five fixed

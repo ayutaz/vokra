@@ -28,7 +28,13 @@ UPSTREAM_URL = "https://github.com/facebookresearch/demucs"
 UPSTREAM_REVISION = "e976d93ecc3865e5757426930257e200846a520a"
 WEIGHT_IDS = ("f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d", "5c90dfd2")
 WEIGHT_ROOT = "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/"
-SOURCE_ROLES = {"LICENSE", "demucs/apply.py", "demucs/audio.py", "demucs/hdemucs.py", "demucs/htdemucs.py", "demucs/pretrained.py", "demucs/repo.py", "demucs/states.py", "demucs/remote/htdemucs_ft.yaml", "demucs/remote/htdemucs_6s.yaml"}
+SOURCE_ROLES = {
+    "LICENSE", "demucs/__init__.py", "demucs/apply.py", "demucs/audio.py",
+    "demucs/demucs.py", "demucs/hdemucs.py", "demucs/htdemucs.py",
+    "demucs/pretrained.py", "demucs/repo.py", "demucs/spec.py",
+    "demucs/states.py", "demucs/transformer.py", "demucs/utils.py",
+    "demucs/remote/htdemucs_ft.yaml", "demucs/remote/htdemucs_6s.yaml",
+}
 TARGET_ENV = {
     "python_full_version": "3.12.0", "python_version": "3.12", "sys_platform": "linux",
     "platform_machine": "x86_64", "platform_system": "Linux", "implementation_name": "cpython",
@@ -44,10 +50,22 @@ APPROVAL_KEYS = {
 PLACEHOLDERS = {"", "todo", "unresolved", "pending", "pending_review", "owner_signoff_required"}
 UPSTREAM_REQUIREMENTS_FILE = "upstream_requirements_minimal.snapshot"
 ACTIVE_IMPORT_PACKAGES = {
-    "dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml",
-    "torch", "torchaudio", "tqdm",
+    "einops", "julius", "numpy", "pyyaml",
+    "torch", "tqdm",
 }
-UPSTREAM_REQUIREMENTS_PACKAGES = ACTIVE_IMPORT_PACKAGES - {"numpy"} | {"lameenc"}
+EXCLUDED_UPSTREAM_PACKAGES = {
+    "dora-search": "the report route manually loads the authenticated source and never uses dora-search",
+    "lameenc": "GPL codec is not imported or allowed in the report-only route",
+    "openunmix": "official HTDemucs imports openunmix.filtering.wiener, but fixed cac=True members have wiener_iters=end_iters=0; the fail-closed sentinel is never executed",
+    "torchaudio": "upstream audio loader is replaced by the strict pinned WAV reader; no torchaudio import is allowed",
+}
+FORBIDDEN_LOCK_PACKAGES = frozenset(EXCLUDED_UPSTREAM_PACKAGES)
+FORBIDDEN_LICENSE_POLICY = {
+    "status": "FAIL_CLOSED",
+    "reject": ["GPL", "LGPL", "UNKNOWN", "UNREVIEWED"],
+}
+ALL_CLOSURE_PACKAGES = sorted(ACTIVE_IMPORT_PACKAGES | set(EXCLUDED_UPSTREAM_PACKAGES))
+UPSTREAM_REQUIREMENTS_PACKAGES = ACTIVE_IMPORT_PACKAGES - {"numpy"} | set(EXCLUDED_UPSTREAM_PACKAGES)
 
 
 def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -177,6 +195,8 @@ def parse_lock_data(lock: dict[str, Any], project_data: dict[str, Any] | None = 
     for package in packages:
         if not isinstance(package, dict) or not isinstance(package.get("name"), str) or not isinstance(package.get("version"), str):
             raise ValueError("uv.lock package identity drifted")
+        if package["name"].lower() in FORBIDDEN_LOCK_PACKAGES:
+            raise ValueError(f"excluded upstream package is reachable in uv.lock: {package['name']}")
         identity = (package["name"].lower(), package["version"])
         if identity in seen:
             raise ValueError("uv.lock contains duplicate (name, version)")
@@ -184,7 +204,7 @@ def parse_lock_data(lock: dict[str, Any], project_data: dict[str, Any] | None = 
         source = package.get("source")
         if source == {"registry": "https://registry.invalid"} or not isinstance(source, dict):
             raise ValueError("uv.lock package source drifted")
-        cpu = package["name"].lower() in {"torch", "torchaudio"} and package.get("source", {}).get("registry", "").rstrip("/") == "https://download.pytorch.org/whl/cpu"
+        cpu = package["name"].lower() == "torch" and package.get("source", {}).get("registry", "").rstrip("/") == "https://download.pytorch.org/whl/cpu"
         if package.get("source", {}).get("virtual") == "." and "metadata" not in package:
             raise ValueError("uv.lock virtual project metadata missing")
         if package.get("source", {}).get("virtual") != "." and "metadata" in package:
@@ -292,11 +312,16 @@ def verify_gate_contract(gate: dict[str, Any]) -> None:
     if (not isinstance(active, dict)
             or active.get("path") != "pyproject.toml"
             or active.get("packages") != sorted(ACTIVE_IMPORT_PACKAGES)
-            or active.get("excluded_upstream_packages") != ["lameenc"]):
+            or active.get("excluded_upstream_packages") != [
+                {"name": name, "reason": EXCLUDED_UPSTREAM_PACKAGES[name]}
+                for name in sorted(EXCLUDED_UPSTREAM_PACKAGES)
+            ]):
         raise ValueError("active import closure contract drifted")
     if (not isinstance(active.get("sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", active["sha256"])):
         raise ValueError("active import closure digest is not fixed")
+    if dependency.get("forbidden_or_unreviewed_packages") != ALL_CLOSURE_PACKAGES:
+        raise ValueError("forbidden/unreviewed package set is not the exact active-plus-excluded closure")
 
 
 def audit_source(source: Path, gate: dict[str, Any]) -> dict[str, Any]:
@@ -349,7 +374,10 @@ def audit_dependency_rows(gate: dict[str, Any]) -> dict[str, Any]:
     if pyproject_names != ACTIVE_IMPORT_PACKAGES or len(pyproject_names) != len(dependencies):
         raise ValueError("pyproject direct/import requirement distinction drifted")
     active = dependency["active_import_closure"]
-    if active["packages"] != sorted(pyproject_names) or active["excluded_upstream_packages"] != ["lameenc"]:
+    if active["packages"] != sorted(pyproject_names) or active["excluded_upstream_packages"] != [
+        {"name": name, "reason": EXCLUDED_UPSTREAM_PACKAGES[name]}
+        for name in sorted(EXCLUDED_UPSTREAM_PACKAGES)
+    ]:
         raise ValueError("active import closure package set drifted")
     if sha256(PROJECT / "pyproject.toml") != dependency["pyproject_sha256"] or sha256(PROJECT / "pyproject.toml") != active["sha256"]:
         raise ValueError("dedicated pyproject.toml identity drifted")
@@ -364,7 +392,16 @@ def audit_dependency_rows(gate: dict[str, Any]) -> dict[str, Any]:
     if direct != {"path": dependency["source_file"], "sha256": dependency["source_file_sha256"]}:
         raise ValueError("dependency direct-requirements identity drifted")
     active_row = rows["active_import_closure"]
-    if active_row != {"path": "pyproject.toml", "sha256": dependency["active_import_closure"]["sha256"], "packages": sorted(ACTIVE_IMPORT_PACKAGES), "excluded_upstream_packages": ["lameenc"]}:
+    expected_active_row = {
+        "path": "pyproject.toml",
+        "sha256": dependency["active_import_closure"]["sha256"],
+        "packages": sorted(ACTIVE_IMPORT_PACKAGES),
+        "excluded_upstream_packages": [
+            {"name": name, "reason": EXCLUDED_UPSTREAM_PACKAGES[name]}
+            for name in sorted(EXCLUDED_UPSTREAM_PACKAGES)
+        ],
+    }
+    if active_row != expected_active_row:
         raise ValueError("dependency active-import identity drifted")
     if not isinstance(rows["package_rows"], list) or not isinstance(rows["license_rows"], list):
         raise ValueError("dependency audit rows must be arrays")
@@ -376,11 +413,35 @@ def audit_dependency_rows(gate: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"dependency {key} is not a fixed lowercase 64-hex digest")
         if digest != json_sha256(values):
             raise ValueError(f"dependency {key} does not match canonical row content")
+    if rows["status"] != dependency.get("status"):
+        raise ValueError("dependency audit status is not bound to the gate")
+    compatibility = rows["compatibility"]
+    if (not isinstance(compatibility, dict)
+            or compatibility.get("status") != "REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES"
+            or not isinstance(compatibility.get("reason"), str)
+            or any(name not in compatibility["reason"].lower() for name in EXCLUDED_UPSTREAM_PACKAGES)):
+        raise ValueError("dependency compatibility route is not explicit")
+    if rows["forbidden_license_policy"] != FORBIDDEN_LICENSE_POLICY:
+        raise ValueError("forbidden-license policy schema/status/reject set drifted")
+    if not isinstance(rows["blockers"], list) or not all(isinstance(item, str) and item for item in rows["blockers"]):
+        raise ValueError("dependency blockers must be explicit non-empty strings")
+    if rows["status"] == "BLOCKED_PENDING_PRIMARY_BYTES":
+        if not rows["blockers"]:
+            raise ValueError("pending dependency audit must retain explicit blockers")
+    elif rows["status"] == "APPROVED":
+        if rows["blockers"]:
+            raise ValueError("approved dependency audit cannot retain blockers")
+    else:
+        raise ValueError("dependency audit status is neither blocked-pending nor approved")
+    if not rows["package_rows"] and not rows["license_rows"]:
+        if rows["status"] != "BLOCKED_PENDING_PRIMARY_BYTES":
+            raise ValueError("empty dependency rows are only valid for blocked-pending audits")
+        if rows["package_rows_sha256"] != json_sha256([]) or rows["license_rows_sha256"] != json_sha256([]):
+            raise ValueError("pending dependency rows must use canonical empty-array digests")
+        return {"package_rows": 0, "license_rows": 0, "status": "DEPENDENCY_ROWS_PENDING"}
     if not rows["package_rows"] or not rows["license_rows"]:
-        raise ValueError("dependency package/license rows are incomplete")
+        raise ValueError("dependency package/license rows must be both complete or both pending")
     policy = rows["forbidden_license_policy"]
-    if not isinstance(policy, dict) or policy.get("status") != "FAIL_CLOSED":
-        raise ValueError("forbidden-license policy is not fail-closed")
     license_versions: list[tuple[str, str]] = []
     for row in rows["license_rows"]:
         if not isinstance(row, dict) or not isinstance(row.get("license"), str) or row.get("status") != "APPROVED":
@@ -466,7 +527,7 @@ def audit_lock(gate: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(source, dict) or len(source) != 1 or not next(iter(source)) in {"virtual", "registry"}:
             raise ValueError("uv.lock package source schema is unsupported")
         if "registry" in source:
-            expected_registry = "https://download.pytorch.org/whl/cpu" if package["name"].lower() in {"torch", "torchaudio"} else "https://pypi.org/simple"
+            expected_registry = "https://download.pytorch.org/whl/cpu" if package["name"].lower() == "torch" else "https://pypi.org/simple"
             if source["registry"].rstrip("/") != expected_registry.rstrip("/"):
                 raise ValueError("uv.lock registry does not match the audited index")
         if any(token in json.dumps(package, sort_keys=True).lower() for token in ("cuda", "nvidia", "triton")):
@@ -526,7 +587,7 @@ def audit_lock(gate: dict[str, Any]) -> dict[str, Any]:
         specifier = item.get("specifier", "")
         if specifier != expected_metadata[item["name"].lower()]:
             raise ValueError("uv.lock virtual requires-dist specifier drifted")
-        if item["name"].lower() in {"torch", "torchaudio"}:
+        if item["name"].lower() == "torch":
             if item.get("index", "").rstrip("/") != "https://download.pytorch.org/whl/cpu":
                 raise ValueError("uv.lock virtual Torch index drifted")
         elif "index" in item:
@@ -547,14 +608,20 @@ def audit_lock(gate: dict[str, Any]) -> dict[str, Any]:
                 active.add(reachable[0]); queue.append(reachable[0])
     rows = audit_dependency_rows(gate)
     audit = json.loads((PROJECT / gate["dependency_audit"]["rows_file"]).read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
-    if {(row["name"].lower(), row["version"]) for row in audit["package_rows"]} != active:
+    if not audit["package_rows"] and not audit["license_rows"]:
+        if audit["inactive_package_rows"] or audit["inactive_license_rows"]:
+            raise ValueError("pending dependency rows cannot include inactive package rows")
+        pending_rows = True
+    else:
+        pending_rows = False
+    if not pending_rows and {(row["name"].lower(), row["version"]) for row in audit["package_rows"]} != active:
         raise ValueError("package audit rows do not exactly match reachable lock closure")
     inactive = {(row["name"].lower(), row["version"]) for row in audit["inactive_package_rows"] + audit["inactive_license_rows"]}
-    if inactive & active:
+    if not pending_rows and inactive & active:
         raise ValueError("inactive dependency row is reachable on the target")
     inactive_package = {(row["name"].lower(), row["version"]) for row in audit["inactive_package_rows"]}
     inactive_license = {(row["name"].lower(), row["version"]) for row in audit["inactive_license_rows"]}
-    if inactive_package != inactive_license or inactive_package != set(lock_rows) - active:
+    if not pending_rows and (inactive_package != inactive_license or inactive_package != set(lock_rows) - active):
         raise ValueError("inactive dependency rows do not exactly cover the lock")
     license_by_identity = {(row["name"].lower(), row["version"]): row for row in audit["license_rows"]}
     for row in audit["package_rows"]:
@@ -593,7 +660,7 @@ def audit_lock(gate: dict[str, Any]) -> dict[str, Any]:
         value = dependency.get(key)
         if not isinstance(value, str) or len(value) != 64:
             raise ValueError(f"dependency {key} has not been fixed by primary-byte review")
-    return {"lock_sha256": actual, "status": "LOCK_IDENTITY_OK"}
+    return {"lock_sha256": actual, "status": "LOCK_IDENTITY_OK_PENDING_PRIMARY_BYTES" if pending_rows else "LOCK_IDENTITY_OK"}
 
 
 def self_test() -> None:
@@ -601,11 +668,11 @@ def self_test() -> None:
     verify_gate_contract(gate)
     assert gate["status"].startswith("BLOCKED_")
     assert gate["publication"] == "NO_UPLOAD"
-    assert gate["dependency_audit"]["lock_sha256"] is None
+    assert isinstance(gate["dependency_audit"]["lock_sha256"], str)
     assert len(gate["weights"]) == 5
     dependency = json.loads((PROJECT / "dependency_audit.json").read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
-    assert dependency["compatibility"]["status"] == "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO"
-    assert "scanner" in dependency["compatibility"]["reason"]
+    assert dependency["compatibility"]["status"] == "REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES"
+    assert all(name in dependency["compatibility"]["reason"] for name in ("lameenc", "openunmix", "torchaudio"))
     assert marker_reaches("sys_platform == 'linux' and platform_machine == 'x86_64'")
     assert not marker_reaches("sys_platform == 'darwin'")
     for bad in ("a" * 39, "A" * 40, "g" * 40):
@@ -642,6 +709,8 @@ def self_test() -> None:
         {**base, "package": base["package"] * 2},
         {**base, "package": [{**base["package"][0], "name": "numpy", "source": {"registry": "https://pypi.org/simple"}}]},
         {**base, "package": [{**base["package"][0], "source": {"registry": "https://registry.invalid"}}]},
+        {**base, "package": [{**base["package"][0], "name": "nvidia-cuda-runtime", "source": {"registry": "https://pypi.org/simple"}}]},
+        {**base, "package": [{**base["package"][0], "name": "openunmix", "source": {"registry": "https://pypi.org/simple"}}]},
     ):
         try:
             parse_lock_data(broken)
@@ -653,8 +722,8 @@ def self_test() -> None:
     snapshot = (PROJECT / UPSTREAM_REQUIREMENTS_FILE).read_text(encoding="utf-8")
     project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
     project_names = {re.split(r"[<>=!~;\s]", item.strip(), maxsplit=1)[0].lower() for item in project["project"]["dependencies"]}
-    assert "lameenc" in snapshot
-    assert "lameenc" not in project_names and "numpy" in project_names
+    assert all(name in snapshot for name in ("dora-search", "lameenc", "openunmix", "torchaudio"))
+    assert all(name not in project_names for name in ("dora-search", "lameenc", "openunmix", "torchaudio")) and "numpy" in project_names
     dumper_source = (PROJECT / "dump_reference.py").read_text(encoding="utf-8")
     dumper_tree = ast.parse(dumper_source)
     dumper_imports = {
@@ -682,7 +751,7 @@ def self_test() -> None:
         and node.args[0].value == "lameenc"
         for node in ast.walk(dumper_tree)
     )
-    for token in ("tomllib", "duplicate (name, version)", "CUDA/NVIDIA/Triton", "artifact_sha256", "locked_sdist"):
+    for token in ("tomllib", "duplicate (name, version)", "CUDA/NVIDIA/Triton", "artifact_sha256", "locked_sdist", "REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES", "BLOCKED_PENDING_PRIMARY_BYTES", "forbidden-license policy schema/status/reject set drifted", "empty dependency rows are only valid", "dora-search", "openunmix"):
         assert token in source, f"lock contract missing: {token}"
     try:
         verify_gate_contract({**gate, "weights": gate["weights"][:-1]})
@@ -690,6 +759,32 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("truncated weight set was accepted")
+    altered_dependency = dict(gate["dependency_audit"])
+    altered_dependency["forbidden_or_unreviewed_packages"] = list(reversed(ALL_CLOSURE_PACKAGES))
+    try:
+        verify_gate_contract({**gate, "dependency_audit": altered_dependency})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("forbidden/unreviewed package order drift was accepted")
+    for restored in ("dora-search", "lameenc", "openunmix", "torchaudio"):
+        altered = dict(gate["dependency_audit"])
+        altered["active_import_closure"] = dict(altered["active_import_closure"])
+        altered["active_import_closure"]["packages"] = sorted(set(ACTIVE_IMPORT_PACKAGES) | {restored})
+        try:
+            verify_gate_contract({**gate, "dependency_audit": altered})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"excluded package was accepted as active: {restored}")
+    truncated_roles = dict(gate["upstream"])
+    truncated_roles["roles"] = dict(list(truncated_roles["roles"].items())[:-1])
+    try:
+        verify_gate_contract({**gate, "upstream": truncated_roles})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("truncated source-role set was accepted")
     print("htdemucs multi audit self-test: PASS")
 
 

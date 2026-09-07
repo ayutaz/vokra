@@ -54,14 +54,23 @@ self_test() {
     'e976d93ecc3865e5757426930257e200846a520a' 'jfk-30s.wav' \
     '58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f' \
     'publication' 'MUSDB18' 'provenance_status' '--expected-head' '--approval-evidence' \
-    'BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO' 'REFERENCE_ONLY_CPU_PARITY_NOT_RUN' 'NO_UPLOAD' \
+    'BLOCKED_PENDING_PRIMARY_BYTES' 'REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES' 'REFERENCE_ONLY_CPU_PARITY_NOT_RUN' 'NO_UPLOAD' \
+    'dora-search' 'openunmix' 'torchaudio' 'lameenc' 'excluded_upstream_packages' \
     'CARGO_NET_OFFLINE=true' 'checkout HEAD changed during parity run' 'validation.log'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
     fi
   done
-  for token in 'BagOfModels' 'apply_model' 'raw_f32' 'terminal_tap'; do
+  if grep -Eq '(^|[[:space:]])(dora-search|openunmix|torchaudio|lameenc)([<>=[:space:]\"]|$)' "$PROJECT/pyproject.toml"; then
+    log 'self-test FAIL: excluded dependency appears in active pyproject'
+    fail=1
+  fi
+  if grep -Eq '^name = "(dora-search|openunmix|torchaudio|lameenc)"$' "$PROJECT/uv.lock"; then
+    log 'self-test FAIL: excluded dependency is reachable in uv.lock'
+    fail=1
+  fi
+  for token in 'BagOfModels' 'apply_model' 'raw_f32' 'terminal_tap' 'openunmix.filtering' 'wiener_iters' 'end_iters' 'cac=True'; do
     if ! grep -Fq -- "$token" "$DUMPER"; then
       log "self-test FAIL: dumper missing contract token: $token"
       fail=1

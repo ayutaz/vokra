@@ -108,7 +108,8 @@ self_test() {
     'FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER' 'FULL_WEIGHT_DIGESTS_AUTHENTICATED' \
     'expected_sha256' 'response member id mismatch' \
     'inspection_status' 'COMPLETE' 'ERROR' 'variant_contracts' 'flattened 2,132-tensor' \
-    '--expected-head' '--approval-evidence' 'BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO' \
+    '--expected-head' '--approval-evidence' 'BLOCKED_PENDING_PRIMARY_BYTES' 'REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES' \
+    'dora-search' 'openunmix' 'torchaudio' 'lameenc' 'excluded_upstream_packages' \
     'safe_global_allowlist' 'BLOCKED_SOURCE_ALLOWLIST' 'verdict=BLOCKED' 'blocker_exit=2' \
     'reject_symlink_ancestors' 'work-dir overlaps' 'work-dir must be absent' \
     'CARGO_NET_OFFLINE=true' 'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' \
