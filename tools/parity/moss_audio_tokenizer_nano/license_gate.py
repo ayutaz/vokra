@@ -19,15 +19,27 @@ LOCK_SHA256 = "8d2d2378b0239fe9670800c3e5cbd34be7413cddbb3f7417588a6eca2731333a"
 PROJECT_SHA256 = "62dce602056b995aabbb07b2059504c8513038416e3726575f1b97684a35f66c"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 PAYLOAD_FILES = (
-    "LICENSE", "README.md", "config.json", "configuration_moss_audio_tokenizer.py",
+    ".gitattributes", "README.md", "__init__.py", "config.json", "configuration_moss_audio_tokenizer.py",
     "modeling_moss_audio_tokenizer.py", "model.safetensors.index.json",
     "model-00001-of-00001.safetensors",
 )
-# No authenticated byte/SHA evidence for Nano's fixed revision is present in
-# this checkout. Nulls are intentional: production must remain blocked.
 FILE_IDENTITIES = {
-    name: {"path": name, "role": {"LICENSE":"license", "README.md":"documentation", "config.json":"config", "configuration_moss_audio_tokenizer.py":"source", "modeling_moss_audio_tokenizer.py":"source", "model.safetensors.index.json":"index", "model-00001-of-00001.safetensors":"weights"}[name], "bytes": None, "sha256": None, "status": "UNRESOLVED"}
-    for name in PAYLOAD_FILES
+    ".gitattributes": {"path": ".gitattributes", "role": "_gitattributes", "bytes": 1519, "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361", "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 1519, "canonical_git_blob_sha1": "a6344aac8c09253b3b630fb776ae94478aa0275b", "git_blob_sha1": "a6344aac8c09253b3b630fb776ae94478aa0275b", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
+    "README.md": {"path": "README.md", "role": "readme_md", "bytes": 12491, "sha256": "83cae343211c7c482433c9758f16fc9d17046a0cd450d185b473542e87e35ef8", "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 12491, "canonical_git_blob_sha1": "a276b3e2e399916a0cda4c4145e48655ddd62faa", "git_blob_sha1": "a276b3e2e399916a0cda4c4145e48655ddd62faa", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
+    "__init__.py": {"path": "__init__.py", "role": "__init___py", "bytes": 52, "sha256": "ed0b4910a5e53b1dfc3234cfcf96e2c6890d339f9134a3dfed8481d01b3768fd", "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 52, "canonical_git_blob_sha1": "be87d805388ff76659c35e7273e8c3687b55eeff", "git_blob_sha1": "be87d805388ff76659c35e7273e8c3687b55eeff", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
+    "config.json": {"path": "config.json", "role": "config_json", "bytes": 7385, "sha256": "b38892f8ba00efc18af2ad9eca999c7603f871548c2e7f99258cb1cefc70ee06", "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 7385, "canonical_git_blob_sha1": "1789fbb15e81a782e83a726998b7c910aade93cf", "git_blob_sha1": "1789fbb15e81a782e83a726998b7c910aade93cf", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
+    "configuration_moss_audio_tokenizer.py": {"path": "configuration_moss_audio_tokenizer.py", "role": "configuration", "bytes": 19249, "sha256": "b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa", "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 19249, "canonical_git_blob_sha1": "2efd84a7f1b9682d530616e434b13b8dec560136", "git_blob_sha1": "2efd84a7f1b9682d530616e434b13b8dec560136", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
+    "modeling_moss_audio_tokenizer.py": {"path": "modeling_moss_audio_tokenizer.py", "role": "modeling", "bytes": 138814, "sha256": "b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930", "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 138814, "canonical_git_blob_sha1": "17fc9d059a1dc0fede4cfd1dfed2cffaef70a4c1", "git_blob_sha1": "17fc9d059a1dc0fede4cfd1dfed2cffaef70a4c1", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
+    "model.safetensors.index.json": {"path": "model.safetensors.index.json", "role": "model_safetensors_index_json", "bytes": 34346, "sha256": "2bf639e2c37c8502b1d0d92bf616b8108cb9975d42f587487a103682575b1d6d", "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 34346, "canonical_git_blob_sha1": "c1e82d52cc62a951fa73edf0df3980215c516832", "git_blob_sha1": "c1e82d52cc62a951fa73edf0df3980215c516832", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
+    "model-00001-of-00001.safetensors": {"path": "model-00001-of-00001.safetensors", "role": "weights", "bytes": None, "sha256": None, "status": "AUTHENTICATED_SERVER_IDENTITY_ONLY", "materialized": False, "content_not_downloaded": True, "server_bytes": 87922568, "canonical_git_blob_sha1": None, "git_blob_sha1": None, "lfs_payload_sha256": "34d9880d805eecb21bde975202b1c256dbd0eb98c8680b9d3aeffd2bc6ac2f67", "lfs_pointer_git_blob_sha1": "0eb20a3607f11c3070a66415c638cdf79af3e82a"},
+}
+MODEL_INFO = {
+    "id": REPO,
+    "sha": REVISION,
+    "private": False,
+    "gated": False,
+    "disabled": False,
+    "cardData_license": "apache-2.0",
 }
 ROUTE = {
     "status": "UNRESOLVED",
@@ -42,18 +54,30 @@ ROUTE = {
 REFERENCE_CONTRACT = {
     "frames": 2, "quantizers": 16, "codebook_size": 1024,
     "sample_rate": 48000, "channels": 2, "frame_hop": 3840,
-    # The official Nano decoder tap count/shapes are not authenticated yet.
-    # Nulls are code-bound blockers, not permissive wildcards.
-    "quantizer_shape": None, "decoder_tap_count": None,
-    "decoder_tap_shapes": None,
+    # Shapes are authenticated by the model-free meta-device inspection. They
+    # do not constitute a real-weight/API compatibility or parity approval.
+    "quantizer_shape": "1x768x2", "decoder_tap_count": 9,
+    "decoder_tap_shapes": [
+        {"name": "decoder_0", "shape": "1x192x8"},
+        {"name": "decoder_1", "shape": "1x768x8"},
+        {"name": "decoder_2", "shape": "1x384x16"},
+        {"name": "decoder_3", "shape": "1x768x16"},
+        {"name": "decoder_4", "shape": "1x384x32"},
+        {"name": "decoder_5", "shape": "1x768x32"},
+        {"name": "decoder_6", "shape": "1x384x64"},
+        {"name": "decoder_7", "shape": "1x240x64"},
+        {"name": "decoder_8", "shape": "1x1x15360"},
+    ],
 }
 SENTINELS = {"", "null", "none", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo"}
-LICENSE_SCHEMA = {"id", "license", "status", "conclusion", "native_bundled_review"}
+LICENSE_SCHEMA = {"id", "license", "status", "conclusion", "native_bundled_review", "evidence"}
+MATERIALIZED_MODEL_ROW_SCHEMA = {"path", "role", "bytes", "sha256", "status", "materialized", "content_not_downloaded", "server_size", "canonical_git_blob_sha1", "git_blob_sha1", "lfs_payload_sha256", "lfs_pointer_git_blob_sha1"}
+SERVER_ONLY_MODEL_ROW_SCHEMA = {"path", "role", "bytes", "sha256", "status", "materialized", "content_not_downloaded", "server_bytes", "canonical_git_blob_sha1", "git_blob_sha1", "lfs_payload_sha256", "lfs_pointer_git_blob_sha1"}
 LICENSE_IDS = ["source-apache", "weights-apache", "python-closure"]
 PACKAGE_REVIEW_SCHEMA = {
     "name", "version", "source", "license", "status", "native_bundled_review",
 }
-MANIFEST_SCHEMA = {"gate_version", "lock_sha256", "project_sha256", "package_rows", "package_rows_sha256", "package_review_rows", "package_review_rows_sha256", "license_rows", "license_rows_sha256", "model_rows", "model_rows_sha256", "upstream_repo", "upstream_revision", "reference_route", "reference_contract", "publication_decision", "approval"}
+MANIFEST_SCHEMA = {"gate_version", "lock_sha256", "project_sha256", "package_rows", "package_rows_sha256", "package_review_rows", "package_review_rows_sha256", "license_rows", "license_rows_sha256", "model_rows", "model_rows_sha256", "upstream_repo", "upstream_revision", "model_info", "license_file_present", "reference_route", "reference_contract", "publication_decision", "approval"}
 APPROVAL_SCHEMA = {"status", "signer", "digest"}
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
 PACKAGE_KEYS = {
@@ -107,6 +131,31 @@ def resolved(value: object) -> bool:
         return False
     normalized = "_".join(value.strip().casefold().split())
     return bool(normalized) and normalized not in SENTINELS
+
+
+def valid_model_row(row: object) -> bool:
+    if not isinstance(row, dict) or not isinstance(row.get("materialized"), bool) or not isinstance(row.get("content_not_downloaded"), bool):
+        return False
+    if row["materialized"]:
+        return (
+            set(row) == MATERIALIZED_MODEL_ROW_SCHEMA
+            and row["content_not_downloaded"] is False
+            and isinstance(row.get("bytes"), int) and row["bytes"] > 0
+            and row.get("server_size") == row["bytes"]
+            and isinstance(row.get("sha256"), str) and HEX64.fullmatch(row["sha256"]) is not None
+            and isinstance(row.get("canonical_git_blob_sha1"), str) and re.fullmatch(r"[0-9a-f]{40}", row["canonical_git_blob_sha1"]) is not None
+            and row.get("git_blob_sha1") == row["canonical_git_blob_sha1"]
+            and row.get("lfs_payload_sha256") is None and row.get("lfs_pointer_git_blob_sha1") is None
+        )
+    return (
+        set(row) == SERVER_ONLY_MODEL_ROW_SCHEMA
+        and row["content_not_downloaded"] is True
+        and row.get("bytes") is None and row.get("sha256") is None
+        and row.get("canonical_git_blob_sha1") is None and row.get("git_blob_sha1") is None
+        and isinstance(row.get("server_bytes"), int) and row["server_bytes"] > 0
+        and isinstance(row.get("lfs_payload_sha256"), str) and HEX64.fullmatch(row["lfs_payload_sha256"]) is not None
+        and isinstance(row.get("lfs_pointer_git_blob_sha1"), str) and re.fullmatch(r"[0-9a-f]{40}", row["lfs_pointer_git_blob_sha1"]) is not None
+    )
 
 
 def lock_rows(lock: dict) -> list[dict]:
@@ -237,6 +286,8 @@ def scope(manifest: dict) -> str:
         "model_rows_sha256": manifest.get("model_rows_sha256"),
         "upstream_repo": manifest.get("upstream_repo"),
         "upstream_revision": manifest.get("upstream_revision"),
+        "model_info": manifest.get("model_info"),
+        "license_file_present": manifest.get("license_file_present"),
         "reference_route": manifest.get("reference_route"),
         "reference_contract": manifest.get("reference_contract"),
         "publication_decision": manifest.get("publication_decision"),
@@ -260,9 +311,13 @@ def verify_snapshot(snapshot: Path, manifest_path: Path) -> None:
         blocked(f"invalid snapshot manifest: {error}")
     if not isinstance(manifest, dict):
         blocked("snapshot manifest top-level value must be an object")
+    if manifest.get("model_info") != MODEL_INFO:
+        blocked("snapshot manifest HF model_info identity drifted")
+    if manifest.get("license_file_present") is not False:
+        blocked("snapshot manifest did not record fixed revision LICENSE-file absence")
     rows = manifest.get("model_rows")
     if not isinstance(rows, list) or [row.get("path") for row in rows if isinstance(row, dict)] != list(PAYLOAD_FILES):
-        blocked("snapshot identity table is not the exact seven-file contract")
+        blocked("snapshot identity table is not the exact seven-non-weight-plus-shard contract")
     expected = {row["path"]: row for row in rows}
     entries = list(snapshot.iterdir())
     for entry in entries:
@@ -282,10 +337,15 @@ def verify_snapshot(snapshot: Path, manifest_path: Path) -> None:
         path = snapshot / name
         if path.is_symlink() or not path.is_file():
             blocked(f"snapshot payload is not a regular file: {name}")
-        if row.get("status") != "REVIEWED" or not isinstance(row.get("bytes"), int) or row["bytes"] <= 0 or not isinstance(row.get("sha256"), str) or not HEX64.fullmatch(row["sha256"]):
-            blocked(f"snapshot identity unresolved: {name}")
-        if path.stat().st_size != row["bytes"] or sha_file(path) != row["sha256"]:
+        if not valid_model_row(row) or row != FILE_IDENTITIES.get(name):
+            blocked(f"snapshot identity unresolved or drifted: {name}")
+        if row["materialized"] and (path.stat().st_size != row["bytes"] or sha_file(path) != row["sha256"]):
             blocked(f"snapshot identity mismatch: {name}")
+        if not row["materialized"] and (
+            path.stat().st_size != row["server_bytes"]
+            or sha_file(path) != row["lfs_payload_sha256"]
+        ):
+            blocked(f"server-only snapshot LFS identity mismatch: {name}")
     print("moss Nano snapshot identity: PASS")
 
 
@@ -343,18 +403,22 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path
 
     if manifest.get("upstream_repo") != REPO or manifest.get("upstream_revision") != REVISION:
         blocked("fixed upstream identity drifted")
+    if manifest.get("model_info") != MODEL_INFO:
+        blocked("HF model_info identity drifted")
+    if manifest.get("license_file_present") is not False:
+        blocked("fixed revision LICENSE-file absence was not recorded")
     model_rows = manifest.get("model_rows")
     if not isinstance(model_rows, list) or len(model_rows) != len(PAYLOAD_FILES):
-        blocked("Nano payload identity table must contain exactly seven files")
+        blocked("Nano payload identity table must contain exactly seven non-weight files plus one shard")
     if [row.get("path") for row in model_rows if isinstance(row, dict)] != list(PAYLOAD_FILES):
         blocked("Nano payload files are missing, duplicated, reordered, or extra")
-    if any(not isinstance(row, dict) or set(row) != {"path", "role", "bytes", "sha256", "status"} for row in model_rows):
-        blocked("Nano payload identity schema drifted")
+    if any(not valid_model_row(row) for row in model_rows):
+        blocked("Nano payload identity schema or materialization state drifted")
     if manifest.get("model_rows_sha256") != canon(model_rows):
         blocked("Nano payload identity digest drifted")
     for row in model_rows:
         expected = FILE_IDENTITIES[row["path"]]
-        if row != expected or row["status"] != "REVIEWED" or type(row["bytes"]) is not int or row["bytes"] <= 0 or not isinstance(row["sha256"], str) or not HEX64.fullmatch(row["sha256"]):
+        if row != expected:
             blocked(f"Nano payload identity unresolved or drifted: {row.get('path')}")
 
     licenses = manifest.get("license_rows")
@@ -364,7 +428,7 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path
         blocked("license row schema drifted")
     if manifest.get("license_rows_sha256") != canon(licenses):
         blocked("license rows digest drifted")
-    if any(row["status"] != "REVIEWED" or not resolved(row["license"]) or not resolved(row["conclusion"]) or not resolved(row["native_bundled_review"]) for row in licenses):
+    if any(row["status"] != "REVIEWED" or not resolved(row["license"]) or not resolved(row["conclusion"]) or not resolved(row["native_bundled_review"]) or not resolved(row["evidence"]) for row in licenses):
         blocked("license conclusion/native disposition unresolved")
     contract = manifest.get("reference_contract")
     if not isinstance(contract, dict) or set(contract) != set(REFERENCE_CONTRACT) or any(type(contract[key]) is not int for key, value in REFERENCE_CONTRACT.items() if isinstance(value, int)) or contract != REFERENCE_CONTRACT:
@@ -430,18 +494,21 @@ def self_test() -> None:
             candidate = load_json(json.dumps(valid_lock)); mutate(candidate)
             if artifact_error(candidate) is None:
                 raise SystemExit(f"self-test accepted malformed artifact: {label}")
-        PAYLOAD_FILES = ("demo",)
-        FILE_IDENTITIES = {"demo": {"path": "demo", "role": "upstream", "bytes": 3, "sha256": sha(b"abc"), "status": "REVIEWED"}}
+        PAYLOAD_FILES = ("demo", "weights")
+        FILE_IDENTITIES = {
+            "demo": {"path": "demo", "role": "upstream", "bytes": 3, "sha256": sha(b"abc"), "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 3, "canonical_git_blob_sha1": "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f", "git_blob_sha1": "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
+            "weights": {"path": "weights", "role": "weights", "bytes": None, "sha256": None, "status": "AUTHENTICATED_SERVER_IDENTITY_ONLY", "materialized": False, "content_not_downloaded": True, "server_bytes": 6, "lfs_payload_sha256": "0844df8fee9eeadaa344bc7e1a7ae769602eba35e773c2093c8fb9c3e5ead14e", "canonical_git_blob_sha1": None, "git_blob_sha1": None, "lfs_pointer_git_blob_sha1": "ffffffffffffffffffffffffffffffffffffffff"},
+        }
         ROUTE = {"status": "REVIEWED", "transformers_version": "5.10.4", "reason": "owner evidence"}
         LOCK_SHA256, PROJECT_SHA256 = sha(lock_path.read_bytes()), sha(project_path.read_bytes())
         rows = lock_rows(tomllib.loads(lock_path.read_text()))
         review = [{"name": "demo", "version": "1", "source": {"registry": "https://pypi.org/simple"}, "license": "MIT", "status": "REVIEWED", "native_bundled_review": "reviewed"}, {"name": "demo", "version": "0.1.0", "source": {"virtual": "."}, "license": "project", "status": "REVIEWED", "native_bundled_review": "reviewed"}]
-        licenses = [{"id": ident, "license": "Apache-2.0", "status": "REVIEWED", "conclusion": "reviewed", "native_bundled_review": "reviewed"} for ident in LICENSE_IDS]
+        licenses = [{"id": ident, "license": "Apache-2.0", "status": "REVIEWED", "conclusion": "reviewed", "native_bundled_review": "reviewed", "evidence": "self-test owner evidence"} for ident in LICENSE_IDS]
         model_rows = list(FILE_IDENTITIES.values())
-        manifest = {"gate_version": 1, "lock_sha256": LOCK_SHA256, "project_sha256": PROJECT_SHA256, "package_rows": rows, "package_rows_sha256": canon(rows), "package_review_rows": review, "package_review_rows_sha256": canon(review), "license_rows": licenses, "license_rows_sha256": canon(licenses), "model_rows": model_rows, "model_rows_sha256": canon(model_rows), "upstream_repo": REPO, "upstream_revision": REVISION, "reference_route": ROUTE, "reference_contract": REFERENCE_CONTRACT, "publication_decision": "NO_UPLOAD", "approval": {"status": "OWNER_SIGNOFF_APPROVED", "signer": "owner", "digest": None}}
+        manifest = {"gate_version": 1, "lock_sha256": LOCK_SHA256, "project_sha256": PROJECT_SHA256, "package_rows": rows, "package_rows_sha256": canon(rows), "package_review_rows": review, "package_review_rows_sha256": canon(review), "license_rows": licenses, "license_rows_sha256": canon(licenses), "model_rows": model_rows, "model_rows_sha256": canon(model_rows), "upstream_repo": REPO, "upstream_revision": REVISION, "model_info": MODEL_INFO, "license_file_present": False, "reference_route": ROUTE, "reference_contract": REFERENCE_CONTRACT, "publication_decision": "NO_UPLOAD", "approval": {"status": "OWNER_SIGNOFF_APPROVED", "signer": "owner", "digest": None}}
         manifest["approval"]["digest"] = scope(manifest); manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
         evidence = {"scope_schema": "moss-audio-tokenizer-nano-approval-v1", "scope_sha256": manifest["approval"]["digest"], "approval_digest": manifest["approval"]["digest"], "decision": "APPROVED", "signer": "owner", "manifest_sha256": sha(manifest_path.read_bytes())}; evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
-        snapshot = root / "snapshot"; snapshot.mkdir(); (snapshot / "demo").write_bytes(b"abc")
+        snapshot = root / "snapshot"; snapshot.mkdir(); (snapshot / "demo").write_bytes(b"abc"); (snapshot / "weights").write_bytes(b"weight")
         (snapshot / ".cache" / "huggingface").mkdir(parents=True)
         verify_snapshot(snapshot, manifest_path)
         snapshot_manifest = manifest_path.read_text(encoding="utf-8")
@@ -474,6 +541,16 @@ def self_test() -> None:
                 if path.is_symlink() or path.exists():
                     path.unlink()
             (snapshot / "demo").write_bytes(b"abc")
+        (snapshot / "weights").write_bytes(b"weighx")
+        try:
+            verify_snapshot(snapshot, manifest_path)
+        except SystemExit as error:
+            if error.code != 2:
+                raise
+        else:
+            raise SystemExit("self-test accepted same-size server-only shard tamper")
+        (snapshot / "weights").write_bytes(b"weight")
+        verify_snapshot(snapshot, manifest_path)
         run(lock_path, project_path, manifest_path, evidence_path)
         baseline_manifest = manifest_path.read_text(encoding="utf-8")
         baseline_evidence = evidence_path.read_text(encoding="utf-8")
@@ -513,7 +590,7 @@ def self_test() -> None:
             else:
                 raise SystemExit(f"self-test accepted symlink {label}")
             input_path.unlink(); input_path.write_bytes(original)
-        for label, mutate in (("artifact", None), ("scope", lambda m: m["reference_contract"].update(frames=1)), ("model", lambda m: m["model_rows"][0].update(status="UNRESOLVED")), ("license", lambda m: m["license_rows"][0].update(conclusion="TODO")), ("publication", lambda m: m.update(publication_decision="UPLOAD")), ("arbitrary", lambda m: m["approval"].update(digest="a" * 64)), ("package-schema", lambda m: m["package_review_rows"][0].update(extra="drift")), ("manifest-schema", lambda m: m.update(extra=True)), ("approval-schema", lambda m: m["approval"].update(extra=True))):
+        for label, mutate in (("artifact", None), ("scope", lambda m: m["reference_contract"].update(frames=1)), ("model", lambda m: m["model_rows"][0].update(status="UNRESOLVED")), ("model-shard-materialized", lambda m: m["model_rows"][-1].update(materialized=True)), ("model-info", lambda m: m["model_info"].update(sha="a" * 40)), ("license-file", lambda m: m.update(license_file_present=True)), ("license", lambda m: m["license_rows"][0].update(conclusion="TODO")), ("publication", lambda m: m.update(publication_decision="UPLOAD")), ("arbitrary", lambda m: m["approval"].update(digest="a" * 64)), ("package-schema", lambda m: m["package_review_rows"][0].update(extra="drift")), ("manifest-schema", lambda m: m.update(extra=True)), ("approval-schema", lambda m: m["approval"].update(extra=True))):
             if label == "artifact":
                 lock_path.write_text('version=1\n[[package]]\nname="demo"\nversion="1"\nsource={registry="https://pypi.org/simple"}\nsdist={url="https://files.pythonhosted.org/demo.tar.gz",hash="sha256:' + "a" * 64 + '"}\n' + virtual, encoding="utf-8")
                 try:

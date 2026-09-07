@@ -1326,81 +1326,156 @@
   "license_rows": [
     {
       "id": "source-apache",
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "conclusion": "OWNER_REVIEW_REQUIRED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+      "license": "Apache-2.0",
+      "status": "REVIEWED",
+      "conclusion": "Commercial",
+      "native_bundled_review": "OWNER_SIGNOFF_2026-08-01_YOUSAN",
+      "evidence": "docs/license-audit.md:671"
     },
     {
       "id": "weights-apache",
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "conclusion": "OWNER_REVIEW_REQUIRED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+      "license": "Apache-2.0",
+      "status": "REVIEWED",
+      "conclusion": "Commercial",
+      "native_bundled_review": "OWNER_SIGNOFF_2026-08-01_YOUSAN",
+      "evidence": "docs/license-audit.md:671"
     },
     {
       "id": "python-closure",
       "license": "UNRESOLVED",
       "status": "UNRESOLVED",
       "conclusion": "OWNER_REVIEW_REQUIRED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED",
+      "evidence": "Owner review required for every locked dependency and native closure"
     }
   ],
-  "license_rows_sha256": "0aed26debd987df65d9bae027d8f41a3b99e3f67f26fed1844860f7ae4bd2f06",
+  "license_rows_sha256": "b045cb1b39ad5da024db06f155cb2540913472f6136cd55b9f10323980448512",
   "model_rows": [
     {
-      "path": "LICENSE",
-      "role": "license",
-      "bytes": null,
-      "sha256": null,
-      "status": "UNRESOLVED"
+      "path": ".gitattributes",
+      "role": "_gitattributes",
+      "bytes": 1519,
+      "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 1519,
+      "canonical_git_blob_sha1": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+      "git_blob_sha1": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
     },
     {
       "path": "README.md",
-      "role": "documentation",
-      "bytes": null,
-      "sha256": null,
-      "status": "UNRESOLVED"
+      "role": "readme_md",
+      "bytes": 12491,
+      "sha256": "83cae343211c7c482433c9758f16fc9d17046a0cd450d185b473542e87e35ef8",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 12491,
+      "canonical_git_blob_sha1": "a276b3e2e399916a0cda4c4145e48655ddd62faa",
+      "git_blob_sha1": "a276b3e2e399916a0cda4c4145e48655ddd62faa",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
+    },
+    {
+      "path": "__init__.py",
+      "role": "__init___py",
+      "bytes": 52,
+      "sha256": "ed0b4910a5e53b1dfc3234cfcf96e2c6890d339f9134a3dfed8481d01b3768fd",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 52,
+      "canonical_git_blob_sha1": "be87d805388ff76659c35e7273e8c3687b55eeff",
+      "git_blob_sha1": "be87d805388ff76659c35e7273e8c3687b55eeff",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
     },
     {
       "path": "config.json",
-      "role": "config",
-      "bytes": null,
-      "sha256": null,
-      "status": "UNRESOLVED"
+      "role": "config_json",
+      "bytes": 7385,
+      "sha256": "b38892f8ba00efc18af2ad9eca999c7603f871548c2e7f99258cb1cefc70ee06",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 7385,
+      "canonical_git_blob_sha1": "1789fbb15e81a782e83a726998b7c910aade93cf",
+      "git_blob_sha1": "1789fbb15e81a782e83a726998b7c910aade93cf",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
     },
     {
       "path": "configuration_moss_audio_tokenizer.py",
-      "role": "source",
-      "bytes": null,
-      "sha256": null,
-      "status": "UNRESOLVED"
+      "role": "configuration",
+      "bytes": 19249,
+      "sha256": "b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 19249,
+      "canonical_git_blob_sha1": "2efd84a7f1b9682d530616e434b13b8dec560136",
+      "git_blob_sha1": "2efd84a7f1b9682d530616e434b13b8dec560136",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
     },
     {
       "path": "modeling_moss_audio_tokenizer.py",
-      "role": "source",
-      "bytes": null,
-      "sha256": null,
-      "status": "UNRESOLVED"
+      "role": "modeling",
+      "bytes": 138814,
+      "sha256": "b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 138814,
+      "canonical_git_blob_sha1": "17fc9d059a1dc0fede4cfd1dfed2cffaef70a4c1",
+      "git_blob_sha1": "17fc9d059a1dc0fede4cfd1dfed2cffaef70a4c1",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
     },
     {
       "path": "model.safetensors.index.json",
-      "role": "index",
-      "bytes": null,
-      "sha256": null,
-      "status": "UNRESOLVED"
+      "role": "model_safetensors_index_json",
+      "bytes": 34346,
+      "sha256": "2bf639e2c37c8502b1d0d92bf616b8108cb9975d42f587487a103682575b1d6d",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 34346,
+      "canonical_git_blob_sha1": "c1e82d52cc62a951fa73edf0df3980215c516832",
+      "git_blob_sha1": "c1e82d52cc62a951fa73edf0df3980215c516832",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
     },
     {
       "path": "model-00001-of-00001.safetensors",
       "role": "weights",
       "bytes": null,
       "sha256": null,
-      "status": "UNRESOLVED"
+      "status": "AUTHENTICATED_SERVER_IDENTITY_ONLY",
+      "materialized": false,
+      "content_not_downloaded": true,
+      "server_bytes": 87922568,
+      "canonical_git_blob_sha1": null,
+      "git_blob_sha1": null,
+      "lfs_payload_sha256": "34d9880d805eecb21bde975202b1c256dbd0eb98c8680b9d3aeffd2bc6ac2f67",
+      "lfs_pointer_git_blob_sha1": "0eb20a3607f11c3070a66415c638cdf79af3e82a"
     }
   ],
-  "model_rows_sha256": "e8245ba1e553d1ccedc81166d8f96bf1c167a1cf62c902018935cf072b867f14",
+  "model_rows_sha256": "f41eff27dc4f8fdc0c8b2e4a3112857368995fb26106289806f38008ed0a248a",
   "upstream_repo": "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano",
   "upstream_revision": "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
+  "model_info": {
+    "id": "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano",
+    "sha": "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
+    "private": false,
+    "gated": false,
+    "disabled": false,
+    "cardData_license": "apache-2.0"
+  },
+  "license_file_present": false,
   "reference_route": {
     "status": "UNRESOLVED",
     "transformers_version": "5.10.4",
@@ -1418,9 +1493,19 @@
     "sample_rate": 48000,
     "channels": 2,
     "frame_hop": 3840,
-    "quantizer_shape": null,
-    "decoder_tap_count": null,
-    "decoder_tap_shapes": null
+    "quantizer_shape": "1x768x2",
+    "decoder_tap_count": 9,
+    "decoder_tap_shapes": [
+      {"name": "decoder_0", "shape": "1x192x8"},
+      {"name": "decoder_1", "shape": "1x768x8"},
+      {"name": "decoder_2", "shape": "1x384x16"},
+      {"name": "decoder_3", "shape": "1x768x16"},
+      {"name": "decoder_4", "shape": "1x384x32"},
+      {"name": "decoder_5", "shape": "1x768x32"},
+      {"name": "decoder_6", "shape": "1x384x64"},
+      {"name": "decoder_7", "shape": "1x240x64"},
+      {"name": "decoder_8", "shape": "1x1x15360"}
+    ]
   },
   "publication_decision": "NO_UPLOAD",
   "approval": {

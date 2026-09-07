@@ -253,7 +253,7 @@ download_snapshot() {
   mkdir -p "$output"
   uv run --project "$NANO_PROJECT" --frozen --python 3.12 python -c \
     'import sys; from huggingface_hub import snapshot_download
-snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3], allow_patterns=["LICENSE", "README.md", "config.json", "configuration_moss_audio_tokenizer.py", "modeling_moss_audio_tokenizer.py", "model.safetensors.index.json", "model-00001-of-00001.safetensors"])' \
+snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3], allow_patterns=[".gitattributes", "README.md", "__init__.py", "config.json", "configuration_moss_audio_tokenizer.py", "modeling_moss_audio_tokenizer.py", "model.safetensors.index.json", "model-00001-of-00001.safetensors"])' \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$output"
 }
 
@@ -267,12 +267,12 @@ verify_snapshot_contract() {
       continue
     fi
     case "$name" in
-      LICENSE|README.md|config.json|configuration_moss_audio_tokenizer.py|modeling_moss_audio_tokenizer.py|model.safetensors.index.json|model-00001-of-00001.safetensors) ;;
+      .gitattributes|README.md|__init__.py|config.json|configuration_moss_audio_tokenizer.py|modeling_moss_audio_tokenizer.py|model.safetensors.index.json|model-00001-of-00001.safetensors) ;;
       *) die "Nano snapshot contains an unexpected entry: $name" ;;
     esac
     [[ -f "$entry" && ! -L "$entry" ]] || die "Nano snapshot payload is not a regular file: $name"
   done
-  for entry in LICENSE README.md config.json configuration_moss_audio_tokenizer.py \
+  for entry in .gitattributes README.md __init__.py config.json configuration_moss_audio_tokenizer.py \
     modeling_moss_audio_tokenizer.py model.safetensors.index.json \
     model-00001-of-00001.safetensors; do
     [[ -f "$snapshot/$entry" && ! -L "$snapshot/$entry" ]] || die "pinned Nano snapshot is missing or non-regular: $entry"
@@ -372,7 +372,9 @@ run_self_test() {
     "moss_audio_tokenizer_prepare_checkpoint.py" \
     "moss_audio_tokenizer_dump_reference.py" "--variant nano" "--num-quantizers 16" \
     "--model moss-audio-tokenizer-nano" "--frozen --python 3.12" \
+    ".gitattributes" "__init__.py" "model_info" "license_file_present" \
     "license_preflight" "--no-project --offline" "license_gate.py" "moss_audio_tokenizer_nano" \
+    '--verify-snapshot --snapshot "$snapshot" --manifest "$LICENSE_MANIFEST"' \
     "parity_moss_audio_tokenizer_nano_real" \
     "official_nano_decode_measurement" "--expected-head" "CPU_MEASURED_NOT_GATED_METAL_NOT_RUN" \
     "numeric_bounds=UNSET" "MEASURED_NOT_GATED" "object_pairs_hook=reject"; do
@@ -418,6 +420,13 @@ run_self_test() {
     log 'self-test FAIL: checkpoint index duplicate-key rejection is missing'
     fail=1
   fi
+  for required in 'lfs_payload_sha256' 'server-only snapshot LFS identity mismatch' 'sha_file(path)'; do
+    cases=$((cases + 1))
+    if ! grep -Fq -- "$required" "$NANO_PROJECT/license_gate.py"; then
+      log "self-test FAIL: full snapshot LFS verification token is missing: $required"
+      fail=1
+    fi
+  done
   cases=$((cases + 1))
   if ! grep -Fq "REVISION = \"$UPSTREAM_REVISION\"" "$NANO_PROJECT/license_gate.py" \
     || ! grep -Fq "\"revision\": \"$UPSTREAM_REVISION\"" "$REFERENCE_DUMPER" \

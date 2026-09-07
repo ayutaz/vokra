@@ -18,13 +18,17 @@ seven non-weight files `.gitattributes`, `README.md`, `__init__.py`,
 `modeling_moss_audio_tokenizer.py`, and `model.safetensors.index.json`, plus
 `model-00001-of-00001.safetensors`. There is no `LICENSE` file in that
 complete tree. The authenticated HF model card reports `cardData.license` as
-`apache-2.0`; this is recorded as metadata only and is not a license-file or
-owner approval claim. This checkout does not contain authenticated byte/SHA-256
-evidence for the fixed tree. The manifest therefore records those identities
-as unresolved and the dependency/reference route as unresolved. Transformers 5.10.4 is above the GHSA-xrqw-3rrv-vx5w
+`apache-2.0`; this is recorded separately from the absent license file. The
+2026-08-01 owner sign-off by yousan in `docs/license-audit.md:671` records
+Apache-2.0 / Commercial for source and weights; it does not approve the Python
+closure, API route, or parity. The manifest binds authenticated non-weight
+byte/SHA-256 and canonical Git-blob SHA-1 identities, while the shard remains
+server-identity-only with `content_not_downloaded=true`, server size 87922568,
+LFS payload SHA-256, and LFS pointer Git-blob SHA-1. Transformers 5.10.4 is above the GHSA-xrqw-3rrv-vx5w
 patched minimum of 5.10.0, but no authenticated API smoke has been run. The
-decoder tap count/shapes and quantizer output shape
-are also explicitly unresolved contract fields; they are not wildcards.
+meta-device inspection authenticated quantizer shape `1x768x2` and nine
+decoder taps through `decoder_8`; real-weight/API compatibility and numerical
+parity remain unresolved and blocked.
 `license_gate.py` intentionally exits 2 before any uv
 sync, source/model acquisition, conversion, Cargo, or CUDA work.
 
