@@ -3533,8 +3533,11 @@ mod tests {
             KEY_DICT_TEXT,
             &vec![0; DICT_TEXT_BYTES as usize],
         );
-        wrong_hash.add_string(KEY_CMVN_TEXT_SHA256, "0".repeat(64));
-        wrong_hash.add_string(KEY_DICT_TEXT_SHA256, hex_digest(&AUTHENTICATED_DICT_SHA256));
+        wrong_hash.add_string(KEY_CMVN_TEXT_SHA256, &"0".repeat(64));
+        wrong_hash.add_string(
+            KEY_DICT_TEXT_SHA256,
+            &hex_digest(&AUTHENTICATED_DICT_SHA256),
+        );
         let error =
             FireredAsrAed::from_gguf(&finish(&wrong_hash)).expect_err("hash metadata drift");
         assert!(
@@ -3552,8 +3555,14 @@ mod tests {
             KEY_DICT_TEXT,
             &vec![0; DICT_TEXT_BYTES as usize],
         );
-        tampered.add_string(KEY_CMVN_TEXT_SHA256, hex_digest(&AUTHENTICATED_CMVN_SHA256));
-        tampered.add_string(KEY_DICT_TEXT_SHA256, hex_digest(&AUTHENTICATED_DICT_SHA256));
+        tampered.add_string(
+            KEY_CMVN_TEXT_SHA256,
+            &hex_digest(&AUTHENTICATED_CMVN_SHA256),
+        );
+        tampered.add_string(
+            KEY_DICT_TEXT_SHA256,
+            &hex_digest(&AUTHENTICATED_DICT_SHA256),
+        );
         let error = FireredAsrAed::from_gguf(&finish(&tampered)).expect_err("same-size tamper");
         assert!(
             matches!(error, VokraError::ModelLoad(message) if message.contains("CMVN sidecar SHA-256 mismatch"))
