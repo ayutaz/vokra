@@ -99,3 +99,26 @@ The next VAST first pass must therefore provide a clean Git checkout at the
 fixed revision, complete dependency/license evidence, and safe-loaded
 per-member name/shape/dtype manifests before any converter or native forward
 work can be considered.
+
+## Frozen dependency evidence (VAST only)
+
+The model-free primary-byte candidate collector runs only on a clean Linux
+x86_64 VAST checkout. It verifies the exact project, lock, gate, and reachable
+installed closure, then records locked artifact bytes, publisher license/EULA
+bytes, native ELF hashes/`readelf -d` `NEEDED` facts, and explicit
+model-free activity flags. It never downloads or imports checkpoints, audio, or
+the upstream source repository.
+
+```sh
+VOKRA_PUBLISH_ON_VAST=1 \
+  scripts/publish/vast-ai/audit-htdemucs-multi-dependencies.sh \
+  --expected-head <exact-lowercase-40-hex-head> \
+  --output /vast/evidence/htdemucs-dependency-evidence.json
+```
+
+The wrapper performs the only allowed dependency setup (`uv sync --frozen
+--no-install-project`) and invokes the collector with `uv run --frozen
+--no-sync`. The output is candidate evidence only: it always remains
+`BLOCKED_OWNER_REVIEW` / `NO_UPLOAD`, does not infer SPDX or approval, and
+exits 2 until the owner reviews every primary artifact/license row and the
+existing MUSDB18, weight, and publication blockers.

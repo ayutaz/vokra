@@ -101,7 +101,7 @@ self_test() {
     'd12395a8-e57c48e6.th' '92cfc3b6-ef3bcb9c.th' '04573f0d-f3cf25b2.th' \
     '5c90dfd2-34c22ccb.th' 'weights_only=True' 'no pickle fallback' \
     'KNOWN_HEAD_BYTES' '84141271' '54996327' \
-    'htdemucs_multi_inspect.py' 'INSPECTION_ONLY' 'NOT_IMPLEMENTED' 'UNSUPPORTED' 'BLOCKED_BY_CPU' 'NOT_RUN' 'NO_UPLOAD' \
+    'htdemucs_multi_inspect.py' 'collect_dependency_evidence.py' 'INSPECTION_ONLY' 'NOT_IMPLEMENTED' 'UNSUPPORTED' 'BLOCKED_BY_CPU' 'NOT_RUN' 'NO_UPLOAD' \
     'git status --porcelain' 'htdemucs_multi_inspect.py --self-test' \
     'response-packet' 'x-amz-version-id' 'x-amz-meta-s3cmd-attrs' \
     'sha256_filename_prefix_match' 'sha256_exact_match' \
@@ -109,7 +109,7 @@ self_test() {
     'expected_sha256' 'response member id mismatch' \
     'inspection_status' 'COMPLETE' 'ERROR' 'variant_contracts' 'flattened 2,132-tensor' \
     '--expected-head' '--approval-evidence' 'BLOCKED_PENDING_PRIMARY_BYTES' 'REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES' \
-    'dora-search' 'openunmix' 'torchaudio' 'lameenc' 'excluded_upstream_packages' \
+    'dora-search' 'openunmix' 'torchaudio' 'lameenc' 'excluded_upstream_packages' 'BLOCKED_OWNER_REVIEW' \
     'safe_global_allowlist' 'BLOCKED_SOURCE_ALLOWLIST' 'verdict=BLOCKED' 'blocker_exit=2' \
     'reject_symlink_ancestors' 'work-dir overlaps' 'work-dir must be absent' \
     'CARGO_NET_OFFLINE=true' 'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' \

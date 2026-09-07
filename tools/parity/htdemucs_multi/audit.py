@@ -226,6 +226,37 @@ def parse_lock_data(lock: dict[str, Any], project_data: dict[str, Any] | None = 
     return {"packages": packages, "resolution_markers": markers, "supported_markers": lock["supported-markers"]}
 
 
+def reachable_lock_identities(lock: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return the exact Linux/x86_64 closure used by the static lock audit.
+
+    This is intentionally a small public seam for the VAST dependency evidence
+    collector.  It reuses the same marker evaluator and package schema as the
+    fail-closed audit instead of maintaining a second dependency graph.
+    """
+    parsed = parse_lock_data(lock)
+    packages = parsed["packages"]
+    rows = {(item["name"].lower(), item["version"]): item for item in packages}
+    virtual = [key for key, item in rows.items() if item.get("source") == {"virtual": "."}]
+    if len(virtual) != 1:
+        raise ValueError("uv.lock must contain exactly one virtual project row")
+    reachable = set(virtual)
+    queue = list(virtual)
+    while queue:
+        current = queue.pop()
+        for dependency in rows[current].get("dependencies", []):
+            marker = dependency.get("marker")
+            if marker is not None and not marker_reaches(marker):
+                continue
+            candidates = [key for key in rows if key[0] == dependency["name"].lower()]
+            active = [key for key in candidates if marker_reaches_any(rows[key].get("resolution-markers", []))]
+            if len(active) != 1:
+                raise ValueError(f"dependency closure is ambiguous or missing: {dependency['name']}")
+            if active[0] not in reachable:
+                reachable.add(active[0])
+                queue.append(active[0])
+    return sorted(reachable)
+
+
 def git(source: Path, *args: str) -> str:
     return subprocess.check_output(
         ["git", "-C", str(source), *args], text=True, stderr=subprocess.STDOUT
@@ -751,8 +782,11 @@ def self_test() -> None:
         and node.args[0].value == "lameenc"
         for node in ast.walk(dumper_tree)
     )
-    for token in ("tomllib", "duplicate (name, version)", "CUDA/NVIDIA/Triton", "artifact_sha256", "locked_sdist", "REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES", "BLOCKED_PENDING_PRIMARY_BYTES", "forbidden-license policy schema/status/reject set drifted", "empty dependency rows are only valid", "dora-search", "openunmix"):
+    for token in ("tomllib", "duplicate (name, version)", "CUDA/NVIDIA/Triton", "artifact_sha256", "locked_sdist", "REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES", "BLOCKED_PENDING_PRIMARY_BYTES", "forbidden-license policy schema/status/reject set drifted", "empty dependency rows are only valid", "dora-search", "openunmix", "reachable_lock_identities", "collect_dependency_evidence.py"):
         assert token in source, f"lock contract missing: {token}"
+    collector = PROJECT / "collect_dependency_evidence.py"
+    if not collector.is_file() or collector.is_symlink():
+        raise AssertionError("dependency evidence collector is missing or symlinked")
     try:
         verify_gate_contract({**gate, "weights": gate["weights"][:-1]})
     except ValueError:

@@ -49,13 +49,13 @@ self_test() {
   for token in \
     'VOKRA_PUBLISH_ON_VAST=1' 'Linux' 'x86_64' 'MIN_VAST_MEM_KIB' '/dev/shm' \
     'MIN_FREE_DISK_KIB' '32 * 1024 * 1024' 'uv.lock' 'license_gate_manifest.json' 'audit.py' \
-    'dump_reference.py' 'weights_only=True' '--raw-dir' \
+    'dump_reference.py' 'collect_dependency_evidence.py' 'weights_only=True' '--raw-dir' \
     'PYTHONDONTWRITEBYTECODE' 'NO_UPLOAD' 'REPORT_ONLY' \
     'e976d93ecc3865e5757426930257e200846a520a' 'jfk-30s.wav' \
     '58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f' \
     'publication' 'MUSDB18' 'provenance_status' '--expected-head' '--approval-evidence' \
     'BLOCKED_PENDING_PRIMARY_BYTES' 'REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES' 'REFERENCE_ONLY_CPU_PARITY_NOT_RUN' 'NO_UPLOAD' \
-    'dora-search' 'openunmix' 'torchaudio' 'lameenc' 'excluded_upstream_packages' \
+    'dora-search' 'openunmix' 'torchaudio' 'lameenc' 'excluded_upstream_packages' 'BLOCKED_OWNER_REVIEW' 'NO_UPLOAD' \
     'CARGO_NET_OFFLINE=true' 'checkout HEAD changed during parity run' 'validation.log'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
