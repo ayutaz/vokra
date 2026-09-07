@@ -3,11 +3,13 @@
 This is a dedicated Python 3.12, Linux/x86_64 VAST oracle project for
 `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano` at revision
 `6aa02b01e445cc585582cf0ba480bc3ea6c8dd68`. It is separate from the general
-parity environment and contains a resolver-generated 52-package closure for
+parity environment and contains a resolver-generated 52-lock-row closure for
 Linux/x86_64 Python 3.12: Torch 2.7.1+cu126 from the official PyTorch CUDA
 index and the isolated security pin Transformers 5.10.4 from PyPI. The prior
 5.5.0 pin is previous isolated-reference provenance only; no upstream API
 compatibility is claimed.
+The 52 lock rows comprise 51 active installed distributions plus one virtual
+project row; the virtual row is not an installed package.
 Every non-virtual lock row carries
 resolver URL, SHA-256, and positive artifact-size metadata. No package sync is
 performed by the local gate.
@@ -85,3 +87,22 @@ exit status 2.
 The owner approval path is `MOSS_AUDIO_TOKENIZER_NANO_LICENSE_APPROVAL`; the
 tracked manifest still cannot be self-approved because Python closure, API,
 runtime, and parity gates remain unresolved.
+
+The dependency/native-payload audit is a separate no-model VAST phase.  After
+the exact project has been synced on the disposable Linux/x86_64 host, run:
+
+```text
+scripts/publish/vast-ai/audit-moss-audio-tokenizer-nano-dependencies.sh \
+  --expected-head <40-hex-commit> \
+  --output /dev/shm/moss-audio-tokenizer-nano-dependency-audit.json
+```
+
+It uses `--no-sync` and records every locked artifact URL/hash/size, installed
+package license/EULA bytes, and hashes plus ELF `NEEDED` facts for native
+payloads.  CUDA/NVIDIA and Triton distributions are called out explicitly.
+It never requests model files, imports model code, invokes Cargo, converts, or
+publishes.  A blocked report is expected until the owner reviews the package
+and native-payload rows; it is not a Python/API/runtime/parity approval.  The
+required `--expected-head` is checked against a clean Vokra checkout and is
+bound into the report.  Report creation is atomic and no-replace; a concurrent
+creator cannot be overwritten.
