@@ -4,8 +4,8 @@
   "lock_sha256": "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58",
   "package_rows_sha256": "7fd6513b0c8c110b46bd61bd01c93cfc33486cde603740b31c42e60c1114c8bb",
   "review_rows_sha256": "72d9ee65dd76e8be3e856359a954fb4fc7e54d75344abd2d43fce87c9da7399e",
-  "component_rows_sha256": "cf3c477dcae8e6eb86a9019b4bed4e243a360aceb1c9a710a31ec34fbea62c9d",
-  "approval_scope_sha256": "bc20153ed43580801f6077781748f5beacb50fbfdfbc4234bf4a89520baf0969",
+  "component_rows_sha256": "ef3fa6664f48467390cd26468fc45987e0b733b0aba5f1250714a1b6d94c8ec7",
+  "approval_scope_sha256": "855128ba1f06f0e01353ea49c7ce370515e0c0219f33fbe10ca44d571cf5b24e",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -59,6 +59,8 @@
   },
   "model_license_metadata": {
     "schema": "vokra-hf-model-info-license-v1",
+    "projection_schema": "vokra-hf-model-info-canonical-v1",
+    "payload_identity": "sha256 and byte length of canonical JSON containing schema=vokra-hf-model-info-canonical-v1 plus only id, sha, private=false, gated=false, disabled=false, cardData.license, and sorted siblings.rfilename",
     "endpoint": "https://huggingface.co/api/models/{repo}/revision/{revision}",
     "api_host": "huggingface.co",
     "max_response_bytes": 262144,
@@ -969,7 +971,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "0a9931a7b6ad78a8b81557fd5ef60b5aa4f007bca7fc6cebf2d202bdadfae612",
+      "payload_sha256": "24b85c14c9fd102f0fef2dcba7d2ef8ffcc4b84bebb6395d28995c643af71285",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -987,7 +989,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "31a3bc01d26f3ef55d95dd6bc9ec5494027adc31c3d310722d786d07c408eac8",
+      "payload_sha256": "48d088a3510048d1a9068b78a77989343323581d144384294e911fac488a44df",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1005,7 +1007,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "290406f79190d483fab2870113c3f42ec55c6fd2a4072ecea9f0d8cf684324c9",
+      "payload_sha256": "f5aa2ea1a1da171e8c09322d1eecf6ba2bf9d049d0b11c264e34cfbc3ec2aa35",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1023,7 +1025,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "410f6da1a73ba67824580eb4eac4d38c799a04d4e2f97a5b47d91a2d379ffd06",
+      "payload_sha256": "018ccae9b66594c27aa660180db0991e6c311796df6cfedebd9a9dbd90cfdc00",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null
@@ -1041,7 +1043,7 @@
       "status": "PENDING_OWNER_APPROVAL",
       "license": "apache-2.0 (authenticated HF API cardData.license at exact revision; owner decision pending)",
       "native_bundled": "model artifact native/bundled closure not acquired; owner review required",
-      "payload_sha256": "e597c26c8d117043e140d925a13a8118b0b756103fb651d9424eeca2774682f8",
+      "payload_sha256": "281741110f63a05412cd0cf0c8d4190e5ddf529fb5f2e680b807970e2f3265a1",
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null

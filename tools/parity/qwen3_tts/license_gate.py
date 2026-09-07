@@ -78,10 +78,13 @@ FIXED_IDENTITIES = {
 # pinned revisions.  Their factual license source is the authenticated
 # model-info API projection implemented by dependency_audit.py.  Keep this
 # policy in the gate manifest so the owner approval scope covers the endpoint,
-# bounded response, and the exact cardData field we consume.  The API payload
-# may contain other fields, but none of those fields are accepted as evidence.
+# bounded response, the exact cardData field we consume, and the canonical
+# projection whose bytes are hashed. The raw API body is bounded before
+# parsing but is not retained or used as a stable evidence identity.
 MODEL_LICENSE_METADATA_POLICY = {
     "schema": "vokra-hf-model-info-license-v1",
+    "projection_schema": "vokra-hf-model-info-canonical-v1",
+    "payload_identity": "sha256 and byte length of canonical JSON containing schema=vokra-hf-model-info-canonical-v1 plus only id, sha, private=false, gated=false, disabled=false, cardData.license, and sorted siblings.rfilename",
     "endpoint": "https://huggingface.co/api/models/{repo}/revision/{revision}",
     "api_host": "huggingface.co",
     "max_response_bytes": 262144,
@@ -106,13 +109,20 @@ MODEL_LICENSE_METADATA_POLICY = {
     ],
 }
 EXPECTED_MODEL_METADATA = {
-    "decoder_tokenizer": {"payload_sha256": "5c051d4d49df3a341f06c58ca2b4fe6d803fdd4ce5ef44505a885a7bfdc715d8", "payload_size": 1060, "tree_file_count": 6, "tree_files_sha256": "ee7815e8d725c6921f6317a84602493b8786e9bab0832753f3e4a77fe8b91cc3"},
-    "0.6b-base": {"payload_sha256": "14288b43ce3742c0075b242b1d0ebf626915b76709abfa6c7bc20aa572ebc9b7", "payload_size": 4026, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
-    "0.6b-customvoice": {"payload_sha256": "7714645967db213d0f57ed0e8817bec6baa2b0a26b7e6e107a8aec0af713f5bb", "payload_size": 3644, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
-    "1.7b-base": {"payload_sha256": "18eb177f0ceb345478f90986c8ff9796d58a31b5a43c727319e0e1be3e67663d", "payload_size": 3775, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
-    "1.7b-customvoice": {"payload_sha256": "349ea9bd92172d664896f7abd8eecd156b35e7c55eb02a278a9d27b3e43f88a5", "payload_size": 3977, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
+    "decoder_tokenizer": {"payload_sha256": "24b85c14c9fd102f0fef2dcba7d2ef8ffcc4b84bebb6395d28995c643af71285", "payload_size": 422, "tree_file_count": 6, "tree_files_sha256": "ee7815e8d725c6921f6317a84602493b8786e9bab0832753f3e4a77fe8b91cc3"},
+    "0.6b-base": {"payload_sha256": "48d088a3510048d1a9068b78a77989343323581d144384294e911fac488a44df", "payload_size": 724, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
+    "0.6b-customvoice": {"payload_sha256": "f5aa2ea1a1da171e8c09322d1eecf6ba2bf9d049d0b11c264e34cfbc3ec2aa35", "payload_size": 731, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
+    "1.7b-base": {"payload_sha256": "018ccae9b66594c27aa660180db0991e6c311796df6cfedebd9a9dbd90cfdc00", "payload_size": 724, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
+    "1.7b-customvoice": {"payload_sha256": "281741110f63a05412cd0cf0c8d4190e5ddf529fb5f2e680b807970e2f3265a1", "payload_size": 731, "tree_file_count": 13, "tree_files_sha256": "29738d45ace4763268e69d620c0e02f927d80aae0c023c08508e740b44c346d2"},
 }
 EXPECTED_SOURCE_LICENSE = {"sha256": "a44a6081c73ad75f0255bb2bb5cab74ef1829565a895a24e53a4f11290ab7655", "size": 11343}
+INACTIVE_ROW_REASON = "resolution marker is false or row is unreachable from the virtual project"
+EXPECTED_INACTIVE_ROWS = (
+    ("colorama", "0.4.6", json.dumps({"registry": "https://pypi.org/simple"}, sort_keys=True), INACTIVE_ROW_REASON),
+    ("torch", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON),
+    ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON),
+    ("vokra-qwen3-tts-parity", "0.1.0", json.dumps({"virtual": "."}, sort_keys=True), "virtual project row; no installed distribution is expected"),
+)
 
 
 def fixed_component_identities() -> list[dict[str, Any]]:
@@ -474,7 +484,7 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
     if set(environment) != set(expected_environment) or environment != expected_environment:
         fail("compact dependency audit scope is unsafe or drifted")
     closure = compact["closure"]
-    expected_closure = {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True} if synthetic else {"active_rows": 57, "inactive_rows": 3, "expected_count": 57, "installed_count": 57, "missing": [], "unexpected": [], "exact": True}
+    expected_closure = {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True} if synthetic else {"active_rows": 57, "inactive_rows": 4, "expected_count": 57, "installed_count": 57, "missing": [], "unexpected": [], "exact": True}
     if set(closure) != {"active_rows", "inactive_rows", "expected_count", "installed_count", "missing", "unexpected", "exact", "expected_sha256", "installed_sha256"} or any(closure.get(key) != value for key, value in expected_closure.items()):
         fail("compact dependency audit closure counts are not exact")
     if any(not isinstance(closure.get(key), int) or closure[key] < 0 for key in ("active_rows", "inactive_rows", "expected_count", "installed_count")) or any(not isinstance(closure.get(key), str) or not HEX64.fullmatch(closure[key]) for key in ("expected_sha256", "installed_sha256")):
@@ -487,12 +497,8 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
             fail("synthetic compact approval drifted")
         return
     inactive = compact["inactive_facts"]
-    expected_inactive = {
-        ("colorama", "0.4.6", json.dumps({"registry": "https://pypi.org/simple"}, sort_keys=True), "resolution marker is false or row is unreachable from the virtual project"),
-        ("torch", "2.7.1", json.dumps({"registry": "https://download.pytorch.org/whl/cpu"}, sort_keys=True), "resolution marker is false or row is unreachable from the virtual project"),
-        ("vokra-qwen3-tts-parity", "0.1.0", json.dumps({"virtual": "."}, sort_keys=True), "virtual project row; no installed distribution is expected"),
-    }
-    if not isinstance(inactive, list) or len(inactive) != 3 or [row.get("name") for row in inactive] != sorted(row.get("name") for row in inactive):
+    expected_inactive = set(EXPECTED_INACTIVE_ROWS)
+    if not isinstance(inactive, list) or len(inactive) != len(EXPECTED_INACTIVE_ROWS) or [row.get("name") for row in inactive] != sorted(row.get("name") for row in inactive):
         fail("compact dependency audit inactive rows are malformed or unsorted")
     inactive_keys = set()
     for row in inactive:
@@ -830,6 +836,8 @@ def self_test() -> None:
     stable_scope = approval_scope(production_manifest)
     assert production_manifest["approval_scope_sha256"] == canonical_digest(stable_scope)
     assert production_manifest["dependency_audit_evidence"]["status"] == "STALE_REQUIRES_VAST_AUDIT"
+    assert len(EXPECTED_INACTIVE_ROWS) == 4
+    assert ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)
     for volatile_key, volatile_value in (
         ("sha256", "1" * 64),
         ("full_audit_sha256", "2" * 64),

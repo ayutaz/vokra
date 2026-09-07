@@ -115,8 +115,12 @@ additionally fetches only
 accepts the bounded `cardData.license` projection when the API-returned `id`
 and `sha` match the pinned repository and revision, `private`/`gated`/`disabled`
 are exactly false, and `siblings` is a non-empty safe, duplicate-free
-`{rfilename}` tree with no LICENSE-like file. The audit records only the tree
-count/list/hash and response SHA/size; it does not retain arbitrary API JSON.
+`{rfilename}` tree with no LICENSE-like file. Its stable payload identity is
+the SHA-256 and byte length of canonical JSON with
+`schema=vokra-hf-model-info-canonical-v1` and only those accepted facts
+(including sorted sibling filenames). The raw API body is size-bounded before
+parsing but is not retained or hashed as evidence, so ignored API/card fields,
+whitespace, and object ordering cannot create evidence drift.
 README text and arbitrary metadata are never accepted as license evidence. It never acquires weights,
 imports model code, invokes Cargo, or uploads anything. The dependency audit
 evidence is currently `STALE_REQUIRES_VAST_AUDIT` because the torchaudio

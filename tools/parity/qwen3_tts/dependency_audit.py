@@ -88,6 +88,20 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def _canonical_model_info_bytes(returned_repo: str, returned_sha: str, license_value: str, tree_files: list[str]) -> bytes:
+    """Serialize only the authenticated model-info facts used by the gate."""
+    return canonical_json({
+        "schema": license_gate.MODEL_LICENSE_METADATA_POLICY["projection_schema"],
+        "id": returned_repo,
+        "sha": returned_sha,
+        "private": False,
+        "gated": False,
+        "disabled": False,
+        "cardData": {"license": license_value},
+        "siblings": [{"rfilename": path} for path in sorted(tree_files)],
+    }).encode("utf-8")
+
+
 def normalized_name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value.strip()).casefold()
 
@@ -518,6 +532,7 @@ def _model_info_projection(item: dict[str, str], body: bytes) -> dict[str, Any]:
         raise AuditError("HF model-info cardData.license is not the reviewed Apache tag")
     # Do not retain or inspect README text or arbitrary cardData fields.  The
     # returned projection is intentionally the only accepted metadata source.
+    projection_bytes = _canonical_model_info_bytes(payload["id"], payload["sha"], card_data["license"], tree_files)
     return {
         "schema": license_gate.MODEL_LICENSE_METADATA_POLICY["schema"],
         "component": item["component"],
@@ -530,8 +545,8 @@ def _model_info_projection(item: dict[str, str], body: bytes) -> dict[str, Any]:
         "tree_file_count": len(tree_files),
         "tree_files": tree_files,
         "tree_files_sha256": sha256_bytes(canonical_json(tree_files).encode("utf-8")),
-        "payload_sha256": sha256_bytes(body),
-        "payload_size": len(body),
+        "payload_sha256": sha256_bytes(projection_bytes),
+        "payload_size": len(projection_bytes),
     }
 
 
@@ -1017,10 +1032,33 @@ def self_test() -> int:
         assert model_result["returned_sha"] == model_item["revision"]
         assert model_result["license"] == "apache-2.0"
         assert model_result["license_source"] == "HF_API_CARD_DATA_LICENSE"
-        assert model_result["payload_size"] == len(model_payload)
+        expected_projection = _canonical_model_info_bytes(model_item["repo"], model_item["revision"], "apache-2.0", ["config.json"])
+        assert model_result["payload_size"] == len(expected_projection)
+        assert model_result["payload_sha256"] == sha256_bytes(expected_projection)
         assert model_result["tree_file_count"] == 1
         assert model_result["tree_files"] == ["config.json"]
         assert "content_base64" not in model_result
+        reordered_and_annotated = json.dumps({
+            "downloads": 123,
+            "cardData": {"license": "apache-2.0", "README": "ignored changed text"},
+            "siblings": [{"rfilename": "config.json"}],
+            "disabled": False,
+            "gated": False,
+            "private": False,
+            "sha": model_item["revision"],
+            "id": model_item["repo"],
+            "extra": {"arbitrary": [1, 2, 3]},
+        }, indent=2).encode("utf-8")
+        reordered_result = fetch_model_license_metadata(model_item, lambda value: (value, reordered_and_annotated))
+        assert (reordered_result["payload_sha256"], reordered_result["payload_size"]) == (model_result["payload_sha256"], model_result["payload_size"])
+        tree_order_a = {**json.loads(model_payload), "siblings": [{"rfilename": "config.json"}, {"rfilename": "generation_config.json"}]}
+        tree_order_b = {**json.loads(model_payload), "siblings": [{"rfilename": "generation_config.json"}, {"rfilename": "config.json"}]}
+        tree_order_a_result = fetch_model_license_metadata(model_item, lambda value: (value, json.dumps(tree_order_a, separators=(",", ":")).encode("utf-8")))
+        tree_order_b_result = fetch_model_license_metadata(model_item, lambda value: (value, json.dumps(tree_order_b, separators=(",", ":")).encode("utf-8")))
+        assert (tree_order_a_result["payload_sha256"], tree_order_a_result["payload_size"]) == (tree_order_b_result["payload_sha256"], tree_order_b_result["payload_size"])
+        tree_changed = {**json.loads(model_payload), "siblings": [{"rfilename": "config.json"}, {"rfilename": "generation_config.json"}]}
+        tree_changed_result = fetch_model_license_metadata(model_item, lambda value: (value, json.dumps(tree_changed, separators=(",", ":")).encode("utf-8")))
+        assert tree_changed_result["payload_sha256"] != model_result["payload_sha256"]
         try:
             fetch_model_license_metadata(model_item, lambda value: (value, b'{"id":"x","id":"x"}'))
         except AuditError:
@@ -1045,6 +1083,7 @@ def self_test() -> int:
             {**json.loads(model_payload), "sha": "0" * 40},
             {**json.loads(model_payload), "id": "other/model"},
             {**json.loads(model_payload), "private": True},
+            {**json.loads(model_payload), "gated": True},
             {key: value for key, value in json.loads(model_payload).items() if key != "disabled"},
             {**json.loads(model_payload), "disabled": True},
             {**json.loads(model_payload), "cardData": {"license": "mit"}},
