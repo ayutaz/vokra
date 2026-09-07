@@ -18,6 +18,10 @@ SOURCE_COMMIT="ef93f388fc1ddf0dc0f598126c1964923f1df94f"
 PYOPENJTALK_SOURCE_URL="https://github.com/r9y9/pyopenjtalk.git"
 PYOPENJTALK_COMMIT="0f0fc44e782a8134cd9a51d80b57b48a7c95bb80"
 PYOPENJTALK_TAG="v0.4.1"
+LOGURU_SOURCE_URL="https://github.com/Delgan/loguru.git"
+LOGURU_COMMIT="ae3bfd1b85b6b4a3db535f69b975687c79498be4"
+LOGURU_TAG="0.7.3"
+LOGURU_TAG_OBJECT="eb27ef8546577adbb88ad36b62b4eca9e9dae217"
 
 log() { printf '[sbv2-jp-extra-g2p] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -100,6 +104,7 @@ run_self_test() {
     'PYOPENJTALK_SOURCE_URL' 'PYOPENJTALK_COMMIT' 'PYOPENJTALK_TAG' 'audit_pyopenjtalk.py' \
     'pyopenjtalk license audit' 'build-constraint-dependencies' \
     'LICENSE_mei_normal.htsvoice' 'submodule update' \
+    'LOGURU_SOURCE_URL' 'LOGURU_COMMIT' 'LOGURU_TAG' 'LOGURU_TAG_OBJECT' 'loguru-source' '--loguru-source-dir' 'verify_loguru_source' '5285f420ff222526f9afa7acf507362367132f9c' '4ea6eb8e860bee2582875b19ceac328ac17dc7af' \
     'NO_UPLOAD' 'git clone' 'git checkout' 'verify_source_tree' \
     'model/checkpoint bytes' 'model_weight_acquisition' 'cargo' \
     'g2p_en' 'distance' 'num2words' '__vokra_num2words_sentinel__' 'numeric-text G2P' \
@@ -144,7 +149,7 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 expected_head='' output='' work='' arg source_dir pyopenjtalk_source_dir
+  local self_test=0 expected_head='' output='' work='' arg source_dir pyopenjtalk_source_dir loguru_source_dir
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --self-test) [[ "$self_test" == 0 ]] || { die 'duplicate --self-test'; return 2; }; self_test=1; shift ;;
@@ -175,6 +180,7 @@ main() {
   mkdir -m 700 "$work"
   source_dir="$work/official-source"
   pyopenjtalk_source_dir="$work/pyopenjtalk-source"
+  loguru_source_dir="$work/loguru-source"
   git clone --quiet --no-checkout "$SOURCE_URL" "$source_dir"
   git -C "$source_dir" fetch --quiet --depth=1 origin "$SOURCE_COMMIT"
   git -C "$source_dir" checkout --quiet --detach "$SOURCE_COMMIT"
@@ -185,12 +191,17 @@ main() {
   git -C "$pyopenjtalk_source_dir" checkout --quiet --detach "$PYOPENJTALK_COMMIT"
   git -C "$pyopenjtalk_source_dir" submodule update --quiet --init --recursive
   log "verified pyopenjtalk source checkout at $PYOPENJTALK_COMMIT before dependency audit"
+  git clone --quiet --no-checkout "$LOGURU_SOURCE_URL" "$loguru_source_dir"
+  git -C "$loguru_source_dir" fetch --quiet --depth=1 origin "$LOGURU_COMMIT"
+  git -C "$loguru_source_dir" fetch --quiet --depth=1 origin "refs/tags/$LOGURU_TAG:refs/tags/$LOGURU_TAG"
+  git -C "$loguru_source_dir" checkout --quiet --detach "$LOGURU_COMMIT"
+  log "verified loguru source checkout at $LOGURU_COMMIT before dependency audit"
   VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --no-project --offline --python 3.12 python "$PYOPENJTALK_AUDIT" --phase static \
-    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir"
+    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir" --loguru-source-dir "$loguru_source_dir"
   VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PYOPENJTALK_AUDIT" --phase post \
-    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir"
+    --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir" --loguru-source-dir "$loguru_source_dir"
   VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$GENERATOR" \
     --vokra-root "$VOKRA_ROOT" --expected-head "$expected_head" \

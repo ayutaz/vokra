@@ -26,6 +26,16 @@ PYOPENJTALK_COMMIT = "0f0fc44e782a8134cd9a51d80b57b48a7c95bb80"
 PYOPENJTALK_TAG = "v0.4.1"
 PYOPENJTALK_URL = "https://github.com/r9y9/pyopenjtalk.git"
 PYOPENJTALK_SDIST_SHA256 = "d5ada46f7fc2b52c1c79c273eb9668ff6ad7ab276a8db9d8be119ef93440f0dc"
+LOGURU_SOURCE_URL = "https://github.com/Delgan/loguru.git"
+LOGURU_TAG = "0.7.3"
+LOGURU_TAG_OBJECT = "eb27ef8546577adbb88ad36b62b4eca9e9dae217"
+LOGURU_COMMIT = "ae3bfd1b85b6b4a3db535f69b975687c79498be4"
+LOGURU_SOURCE_BLOBS = {
+    "LICENSE": "5285f420ff222526f9afa7acf507362367132f9c",
+    "pyproject.toml": "4ea6eb8e860bee2582875b19ceac328ac17dc7af",
+}
+LOGURU_LICENSE_SHA256 = "b35d026cc7aca9d5859a02eb87ddf7a386a24c986838651bd1f283f94e003327"
+LOGURU_PYPROJECT_SHA256 = "d49514866c6bb998295f2c64c561eace7c6233082d8ac19ee2ecc9c99f68754c"
 LOGURU_SDIST_SHA256 = "19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6"
 LOGURU_SDIST_SIZE = 63559
 LOGURU_WHEEL_SHA256 = "31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c"
@@ -256,6 +266,44 @@ def verify_source_tree(source_dir: Path) -> None:
             _require_modified_bsd(text, f"{relative}/{path}")
 
 
+def verify_loguru_source(source_dir: Path) -> None:
+    """Authenticate the upstream loguru license source used by the audit."""
+    tree = _verify_repo(source_dir, LOGURU_COMMIT, LOGURU_SOURCE_URL, "loguru source")
+    tag_object = _git(source_dir, "rev-parse", f"refs/tags/{LOGURU_TAG}")
+    if tag_object != LOGURU_TAG_OBJECT:
+        raise AuditError(f"loguru release tag object drifted: {tag_object} != {LOGURU_TAG_OBJECT}")
+    tag_commit = _git(source_dir, "rev-parse", f"refs/tags/{LOGURU_TAG}^{{}}")
+    if tag_commit != LOGURU_COMMIT:
+        raise AuditError(f"loguru release tag commit drifted: {tag_commit} != {LOGURU_COMMIT}")
+    for relative, expected in LOGURU_SOURCE_BLOBS.items():
+        if tree.get(relative) != ("blob", expected):
+            raise AuditError(f"loguru source blob drifted: {relative}")
+        path = source_dir / relative
+        _regular(path, f"loguru {relative}")
+        if _git_blob(path) != expected:
+            raise AuditError(f"loguru worktree blob drifted: {relative}")
+    try:
+        metadata = tomllib.loads((source_dir / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise AuditError(f"cannot parse authenticated loguru build metadata: {error}") from error
+    project = metadata.get("project", {})
+    if project.get("name") != "loguru":
+        raise AuditError(f"loguru source project name drifted: {project.get('name')!r}")
+    license_metadata = project.get("license")
+    if not isinstance(license_metadata, dict) or license_metadata.get("text") != "MIT":
+        raise AuditError("loguru source pyproject license must be {text = \"MIT\"}")
+    if MIT_CLASSIFIER not in set(project.get("classifiers", [])):
+        raise AuditError("loguru source pyproject lacks the authenticated MIT classifier")
+    license_path = source_dir / "LICENSE"
+    license_text = _license_text(license_path, "loguru source MIT license")
+    if _sha256(license_path) != LOGURU_LICENSE_SHA256:
+        raise AuditError("loguru source LICENSE SHA-256 drifted")
+    if "MIT" not in license_text.upper() or "Permission is hereby granted" not in license_text:
+        raise AuditError("loguru source LICENSE is not the expected MIT text")
+    if _sha256(source_dir / "pyproject.toml") != LOGURU_PYPROJECT_SHA256:
+        raise AuditError("loguru source pyproject.toml SHA-256 drifted")
+
+
 def verify_lock(project_dir: Path) -> None:
     try:
         project = tomllib.loads((project_dir / "pyproject.toml").read_text(encoding="utf-8"))
@@ -370,14 +418,7 @@ def verify_installed_metadata() -> None:
         metadata = dist.metadata
         _require_mit_classifier(metadata, label)
     files = _verify_record(pyopenjtalk, "pyopenjtalk")
-    loguru_files = _verify_record(loguru, "loguru")
-    loguru_licenses = [Path(name) for name in loguru_files if Path(name).name.upper().startswith(("LICENSE", "COPYING", "NOTICE"))]
-    if not loguru_licenses:
-        raise AuditError("installed loguru has no license payload")
-    for relative in loguru_licenses:
-        text = _license_text(Path(loguru.locate_file(relative)), "installed loguru license")
-        if "MIT" not in text.upper():
-            raise AuditError(f"installed loguru license is not MIT: {relative}")
+    _verify_record(loguru, "loguru")
     required = {
         "pyopenjtalk/htsvoice/mei_normal.htsvoice",
         "pyopenjtalk/htsvoice/LICENSE_mei_normal.htsvoice",
@@ -439,7 +480,8 @@ def self_test() -> None:
             get=lambda _key: None,
         )
         # loguru 0.7.3 omits the optional License field; the authenticated
-        # classifier plus the later RECORD/license-payload checks is enough.
+        # classifier plus the authenticated source LICENSE and installed
+        # RECORD checks are enough.
         _require_mit_classifier(loguru_metadata, "self-test loguru")
         assert "MIT" in _license_text(good, "self-test loguru payload").upper()
         bad = root / "bad.txt"
@@ -516,6 +558,10 @@ def self_test() -> None:
         else:
             raise AssertionError("empty non-RECORD hash/size was accepted")
     assert HEX40.fullmatch(PYOPENJTALK_COMMIT)
+    assert HEX40.fullmatch(LOGURU_TAG_OBJECT)
+    assert HEX40.fullmatch(LOGURU_COMMIT)
+    assert HEX64.fullmatch(LOGURU_LICENSE_SHA256)
+    assert HEX64.fullmatch(LOGURU_PYPROJECT_SHA256)
     assert HEX64.fullmatch(PYOPENJTALK_SDIST_SHA256)
     assert HEX64.fullmatch(LOGURU_SDIST_SHA256)
     assert HEX64.fullmatch(LOGURU_WHEEL_SHA256)
@@ -528,18 +574,25 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--project-dir", type=Path)
     parser.add_argument("--source-dir", type=Path)
+    parser.add_argument("--loguru-source-dir", type=Path)
     parser.add_argument("--phase", choices=("static", "post"), default="post")
     args = parser.parse_args()
     if args.self_test:
-        if args.project_dir is not None or args.source_dir is not None or args.phase != "post":
+        if (
+            args.project_dir is not None
+            or args.source_dir is not None
+            or args.loguru_source_dir is not None
+            or args.phase != "post"
+        ):
             parser.error("--self-test accepts no execution options")
         self_test()
         return 0
-    if args.project_dir is None or args.source_dir is None:
-        parser.error("execution requires --project-dir and --source-dir")
+    if args.project_dir is None or args.source_dir is None or args.loguru_source_dir is None:
+        parser.error("execution requires --project-dir, --source-dir, and --loguru-source-dir")
     try:
         verify_lock(args.project_dir)
         verify_source_tree(args.source_dir)
+        verify_loguru_source(args.loguru_source_dir)
         if args.phase == "post":
             verify_installed_metadata()
     except (AuditError, OSError, ValueError) as error:
