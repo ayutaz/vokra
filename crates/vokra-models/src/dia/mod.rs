@@ -61,8 +61,13 @@ use vokra_core::{Result, VokraError};
 
 mod bound;
 mod forward;
+mod tokenizer;
 use crate::codec::DacCodecGguf;
 pub use bound::{DiaCheckpoint, DiaTextEmbedding};
+pub use tokenizer::{
+    DIA_SPEAKER_ONE_ID, DIA_SPEAKER_ONE_MARKER, DIA_SPEAKER_TWO_ID, DIA_SPEAKER_TWO_MARKER,
+    DIA_TEXT_SOURCE_VOCAB_SIZE, DiaTokenizer,
+};
 
 /// `vokra.model.arch` a Dia GGUF must carry. Written by
 /// `vokra-convert::models::dia::ARCH`; the compliance registry
@@ -369,6 +374,80 @@ impl DiaConfig {
                     self.tgt_vocab_size,
                 )));
             }
+        }
+        Ok(())
+    }
+
+    /// Binds the exact UTF-8 byte tokenizer used by the pinned Dia source.
+    pub fn tokenizer(&self) -> Result<DiaTokenizer> {
+        DiaTokenizer::from_config(self)
+    }
+
+    /// Encodes text through the authenticated Dia byte/speaker-marker
+    /// boundary.  This does not run model inference.
+    pub fn encode_text(&self, text: &str) -> Result<Vec<u32>> {
+        self.tokenizer()?.encode(text)
+    }
+
+    /// Applies Dia's per-channel delayed-AR layout to frame-major codes.
+    ///
+    /// The returned shape is `[frames + max(delay_pattern), channels]`; this
+    /// is a code composition helper, not a PCM decoder.
+    pub fn apply_delay_pattern(&self, codes: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
+        forward::apply_delay_pattern(self, codes)
+    }
+
+    /// Reverts a strict delayed-AR frame-major code layout.
+    pub fn revert_delay_pattern(&self, delayed: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
+        forward::revert_delay_pattern(self, delayed)
+    }
+}
+
+/// Explicit controls for Dia's delayed autoregressive decoder.
+///
+/// Dia's source sampler takes temperature, top-p, top-k, classifier-free
+/// guidance scale, and a maximum token count.  No defaults are supplied here:
+/// the caller must choose them, and the native route rejects values outside
+/// the authenticated target-vocabulary and audio-length contract.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiaGenerationOptions {
+    /// Maximum delayed-AR steps, bounded by `data.audio_length` and the
+    /// largest per-channel delay.
+    pub max_tokens: usize,
+    /// Classifier-free guidance scale.
+    pub cfg_scale: f32,
+    /// Official sampler temperature; zero selects greedy argmax.
+    pub temperature: f32,
+    /// Official sampler nucleus probability in `[0, 1]`.
+    pub top_p: f32,
+    /// Official sampler top-k candidate count.
+    pub top_k: usize,
+}
+
+impl DiaGenerationOptions {
+    /// Validates decoder controls without touching weights or executing a
+    /// model.  Sampling draws remain caller-owned and are checked by the
+    /// staged route when stochastic sampling is requested.
+    pub fn validate_for(&self, config: &DiaConfig) -> Result<()> {
+        config.validate_for_forward()?;
+        let max_delay = config.delay_pattern.iter().copied().max().unwrap_or(0);
+        if self.max_tokens <= max_delay || self.max_tokens > config.audio_length {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia generation: max_tokens={} must be in ({max_delay}, {}]",
+                self.max_tokens, config.audio_length
+            )));
+        }
+        if !self.cfg_scale.is_finite()
+            || !self.temperature.is_finite()
+            || self.temperature < 0.0
+            || !self.top_p.is_finite()
+            || !(0.0..=1.0).contains(&self.top_p)
+            || self.top_k == 0
+            || self.top_k > config.tgt_vocab_size
+        {
+            return Err(VokraError::InvalidArgument(
+                "dia generation: invalid cfg scale, temperature, top-p, or top-k".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -1010,6 +1089,33 @@ mod tests {
         assert_eq!(c.sample_rate, 44_100);
         // Everything above adds up to a well-formed config.
         c.validate_for_forward().expect("dia-1.6b is well-formed");
+    }
+
+    #[test]
+    fn public_text_and_delay_contracts_are_strict() {
+        let c = DiaConfig::dia_1_6b();
+        assert_eq!(
+            c.encode_text("A[S1]é[S2]").expect("tokenizer"),
+            vec![65, 1, 195, 169, 2]
+        );
+        let codes = vec![vec![1; c.channels], vec![2; c.channels]];
+        let delayed = c.apply_delay_pattern(&codes).expect("delay");
+        assert_eq!(c.revert_delay_pattern(&delayed).expect("revert"), codes);
+    }
+
+    #[test]
+    fn generation_options_reject_unauthenticated_bounds() {
+        let c = DiaConfig::dia_1_6b();
+        let mut options = DiaGenerationOptions {
+            max_tokens: c.audio_length,
+            cfg_scale: 1.0,
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: c.tgt_vocab_size,
+        };
+        options.validate_for(&c).expect("valid options");
+        options.top_k = c.tgt_vocab_size + 1;
+        assert!(options.validate_for(&c).is_err());
     }
 
     #[test]

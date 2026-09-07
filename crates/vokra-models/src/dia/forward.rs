@@ -12,7 +12,7 @@ use vokra_core::{Result, VokraError};
 
 use crate::compute::{Compute, HotOp};
 
-use super::{DiaConfig, DiaEncoderBlockWeights, DiaWeights};
+use super::{DiaConfig, DiaEncoderBlockWeights, DiaGenerationOptions, DiaWeights};
 
 #[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 const HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::RmsNorm, HotOp::Softmax];
@@ -554,15 +554,19 @@ impl<'a> DiaCfgBatchOne<'a> {
         params: SamplingParams,
         draws: &[f32],
     ) -> Result<Vec<Vec<u32>>> {
-        if max_tokens <= *cfg.delay_pattern.iter().max().unwrap_or(&0)
-            || max_tokens > cfg.audio_length
-            || !cfg_scale.is_finite()
-            || self.cond.cfg != cfg
-        {
+        let options = DiaGenerationOptions {
+            max_tokens,
+            cfg_scale,
+            temperature: params.temperature,
+            top_p: params.top_p,
+            top_k: params.top_k,
+        };
+        if self.cond.cfg != cfg {
             return Err(VokraError::InvalidArgument(
-                "dia generation configuration is invalid".to_owned(),
+                "dia generation configuration does not match the route".to_owned(),
             ));
         }
+        options.validate_for(cfg)?;
         let (mut delayed, prefill_steps) = prepare_audio_prompt(cfg, prompt)?;
         self.prepare(text_ids)?;
         let per_sample = cfg
@@ -1442,40 +1446,6 @@ pub(crate) fn revert_generated_audio(
     Ok(output)
 }
 
-/// Official Dia text boundary: UTF-8 bytes, with `[S1]` and `[S2]` replaced
-/// by byte ids 1 and 2, truncated to `data.text_length`.
-#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
-pub(crate) fn encode_text(text: &str, cfg: &DiaConfig) -> Result<Vec<u32>> {
-    // The upstream boundary is byte-first: marker replacement is performed
-    // on UTF-8 bytes, and an empty string is a valid (empty) token sequence.
-    let replaced = replace_byte_marker(
-        &replace_byte_marker(text.as_bytes(), b"[S1]", 1),
-        b"[S2]",
-        2,
-    );
-    Ok(replaced
-        .iter()
-        .take(cfg.text_length)
-        .map(|&value| u32::from(value))
-        .collect())
-}
-
-#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
-fn replace_byte_marker(input: &[u8], marker: &[u8], replacement: u8) -> Vec<u8> {
-    let mut output = Vec::with_capacity(input.len());
-    let mut cursor = 0;
-    while cursor < input.len() {
-        if input[cursor..].starts_with(marker) {
-            output.push(replacement);
-            cursor += marker.len();
-        } else {
-            output.push(input[cursor]);
-            cursor += 1;
-        }
-    }
-    output
-}
-
 /// Inverse delay mapping.  The public strict helper remains separate; this
 /// operation is intended for generation state before terminal sanitization.
 #[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
@@ -1873,12 +1843,12 @@ mod tests {
 
     #[test]
     fn source_text_boundary_is_utf8_bytes_with_speaker_markers() {
-        let cfg = DiaConfig::tiny_for_tests();
+        let cfg = DiaConfig::dia_1_6b();
         assert_eq!(
-            encode_text("A[S1]é[S2]", &cfg).unwrap(),
+            cfg.encode_text("A[S1]é[S2]").unwrap(),
             vec![65, 1, 195, 169, 2]
         );
-        assert_eq!(encode_text("", &cfg).unwrap(), Vec::<u32>::new());
+        assert_eq!(cfg.encode_text("").unwrap(), Vec::<u32>::new());
     }
 
     #[test]
