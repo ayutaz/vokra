@@ -33,6 +33,35 @@ SOURCE_SEMANTIC_MARKERS={
   r"[\"']sum_square[\"']", r"mean", r"std",
  ),
 }
+SOURCE_SEMANTIC_CONTRACT={
+ "frontend.default":(
+  ("stft_domain_conversion", r"self\.stft\s*\("),
+  ("complex_to_power", r"input_stft\.real\s*\*\*\s*2\s*\+\s*input_stft\.imag\s*\*\*\s*2"),
+  ("log_mel_application", r"self\.logmel\s*\(input_power\s*,\s*feats_lens\)"),
+  ("return_feature_lengths", r"return\s+input_feats\s*,\s*feats_lens"),
+ ),
+ "frontend.stft":(
+  ("torch_stft", r"torch\.stft\s*\("),
+  ("center_binding", r"self\.center\s*=\s*center"),
+  ("reflect_padding", r"pad_mode\s*=\s*[\"']reflect[\"']|pad_mode\s*:\s*[^\n]*reflect"),
+ ),
+ "frontend.log_mel":(
+  ("mel_filterbank", r"MelScale|melmat|mel_filter"),
+  ("matrix_application", r"torch\.matmul\s*\(\s*feat\s*,\s*self\.melmat\s*\)"),
+  ("log_output", r"log\s*\(|torch\.log|np\.log"),
+ ),
+ "global_mvn":(
+  ("npz_count", r"stats\s*\[\s*[\"']count[\"']\s*\]"),
+  ("npz_sum", r"stats\s*\[\s*[\"']sum[\"']\s*\]"),
+  ("npz_sum_square", r"stats\s*\[\s*[\"']sum_square[\"']\s*\]"),
+  ("mean_from_sum", r"mean\s*=\s*sum_v\s*/\s*count"),
+  ("variance_from_second_moment", r"var\s*=\s*sum_square_v\s*/\s*count\s*-\s*mean\s*\*\s*mean"),
+  ("epsilon_clamped_std", r"np\.sqrt\s*\(\s*np\.maximum\s*\(\s*var\s*,\s*eps\s*\)\s*\)"),
+  ("padding_mask", r"make_pad_mask\s*\(\s*ilens\s*,\s*x\s*,\s*1\s*\)"),
+  ("mean_normalization", r"x\s*=\s*x\s*-\s*self\.mean|x\s*=\s*x\s*-\s*self\.mean"),
+  ("variance_normalization", r"x\s*/=\s*self\.std"),
+ ),
+}
 
 def sha256(path:Path)->str:
  d=hashlib.sha256()
@@ -346,10 +375,15 @@ def source_semantic_evidence(root:Path, blockers:list[str])->dict[str,Any]:
    markers=SOURCE_SEMANTIC_MARKERS[name]
    matched=[marker for marker in markers if re.search(marker,text,re.MULTILINE)]
    missing=[marker for marker in markers if marker not in matched]
-   packet.update({"sha256":sha256(path),"git_blob_sha1":git_blob_sha1(path),"markers":markers,"matched":matched,"missing":missing})
+   expressions=SOURCE_SEMANTIC_CONTRACT[name]
+   expression_matches=[label for label,expression in expressions if re.search(expression,text,re.MULTILINE)]
+   expression_missing=[label for label,_ in expressions if label not in expression_matches]
+   packet.update({"sha256":sha256(path),"git_blob_sha1":git_blob_sha1(path),"markers":markers,"matched":matched,"missing":missing,"semantic_expressions":[{"label":label,"pattern":expression} for label,expression in expressions],"semantic_expression_matches":expression_matches,"semantic_expression_missing":expression_missing})
    if missing:
     blockers.append(f"source semantic markers missing: {name}: {missing}")
-   else:
+   if expression_missing:
+    blockers.append(f"source semantic expressions missing: {name}: {expression_missing}")
+   if not missing and not expression_missing:
     packet["status"]="SOURCE_MARKERS_MATCHED"
   except (OSError,UnicodeError,RuntimeError) as error:
    blockers.append(f"source semantic evidence blocked: {name}: {error}")
@@ -371,7 +405,7 @@ def source_semantic_evidence(root:Path, blockers:list[str])->dict[str,Any]:
    "stats_file":STATS,
    "stats_keys":sorted(EXPECTED_STATS_KEYS),
    "source_file":mvn,
-   "normalization_formula_status":"SOURCE_MARKERS_ONLY_NO_RUNTIME_FORMULA_ASSUMED",
+   "normalization_formula_status":"SOURCE_EXPRESSIONS_AUTHENTICATED_NO_RUNTIME_FORMULA_EXECUTED" if all_matched else "BLOCKED_SOURCE_EXPRESSIONS",
   },
  }
 def inspect(snapshot:Path,source:Path,tree:Path,out:Path)->int:
@@ -428,7 +462,7 @@ def self_test()->None:
   bad=[]; checkpoint_evidence(bounded_archive,root,bad); assert any("size/name bound" in x for x in bad)
   duplicate=root/"duplicate.json"; duplicate.write_text('{"x":1,"x":2}'); bad=[]; json_packet(duplicate,root,bad); assert bad
   config=root/"config.yaml"; config.write_text("encoder_conf:\n  output_size: 1024\n"); bad=[]; packet=config_evidence(config,root,bad); assert packet["contract_status"]=="BLOCKED_FACTS" and bad
-  config.write_text("model: wrong\n"); bad=[]; packet=config_evidence(config,root,bad); assert packet["contract_status"]=="BLOCKED_FACTS" and any("mismatch" in x for x in bad)
+  config.write_text("model: espnet\nfrontend: wrong\n"); bad=[]; packet=config_evidence(config,root,bad); assert packet["contract_status"]=="BLOCKED_FACTS" and bad
   config.write_text("model: espnet\ntoken_list: [1]\n"); bad=[]; packet=config_evidence(config,root,bad); assert packet["token_list"]["status"]=="BLOCKED_TOKEN_LIST" and any("string array" in x for x in bad)
   symlink_tmp=tempfile.TemporaryDirectory(prefix="owsm-symlink-"); symlink_repo=Path(symlink_tmp.name)
   subprocess.run(["git","init","-q",str(symlink_repo)],check=True,capture_output=True)
@@ -445,14 +479,58 @@ def self_test()->None:
   link.unlink(); link.symlink_to("README.md"); symlink_bad=[]; assert tracked_symlink(symlink_repo,index_path,index_object,symlink_bad) is None and any("differs" in item for item in symlink_bad)
   gitlink_tmp=tempfile.TemporaryDirectory(prefix="owsm-gitlink-"); gitlink_repo=Path(gitlink_tmp.name); subprocess.run(["git","init","-q",str(gitlink_repo)],check=True,capture_output=True); subprocess.run(["git","-C",str(gitlink_repo),"remote","add","origin","wrong/repository"],check=True,capture_output=True); subprocess.run(["git","-C",str(gitlink_repo),"config","user.email","test@example.invalid"],check=True); subprocess.run(["git","-C",str(gitlink_repo),"config","user.name","OWSM self-test"],check=True); (gitlink_repo/"README").write_text("ok\n"); subprocess.run(["git","-C",str(gitlink_repo),"add","README"],check=True,capture_output=True); subprocess.run(["git","-C",str(gitlink_repo),"commit","-qm","initial"],check=True,capture_output=True); subprocess.run(["git","-C",str(gitlink_repo),"update-index","--add","--cacheinfo","160000,"+"1"*40+",submodule"],check=True,capture_output=True); gitlink_bad=[]; gitlink_packet=source_inventory(gitlink_repo,"wrong/repository","0"*40,tuple(),gitlink_bad); assert gitlink_packet["gitlinks"] and any("source nonregular/gitlink" in item for item in gitlink_bad)
   readme=root/README; readme.write_bytes(b"not a model card\xff"); bad=[]; packet=readme_evidence(readme,root,bad); assert packet["status"]=="BLOCKED_README" and bad
-  card="---\nlicense: cc-by-4.0\ndatasets:\n- espnet/yodas_owsmv4\n---\nLanguage identification, recognition, translation, timestamp and long-form.\n"; bad=[]; parsed=model_card_frontmatter(card,bad); contract=validate_model_card(parsed,card,bad); assert parsed["datasets"]==["espnet/yodas_owsmv4"] and contract["status"]=="AUTHENTICATED_MODEL_CARD" and not bad
-  bad=[]; string_card="---\nlicense: cc-by-4.0\ndatasets: espnet/yodas_owsmv4\n---\nLanguage identification, recognition, translation, timestamp and long-form.\n"; parsed=model_card_frontmatter(string_card,bad); contract=validate_model_card(parsed,string_card,bad); assert parsed["datasets"]=="espnet/yodas_owsmv4" and contract["status"]=="BLOCKED_MODEL_CARD" and any("README dataset declaration mismatch" in item for item in bad)
+  card="---\nlicense: cc-by-4.0\ndatasets:\n- espnet/yodas_owsmv4\n---\nLanguage identification, recognition, translation, timestamp and long-form.\n"; bad=[]; parsed=model_card_frontmatter(card,bad)
+  try:
+   import yaml  # type: ignore[import-not-found]
+  except ImportError:
+   assert parsed is None and bad
+  else:
+   contract=validate_model_card(parsed,card,bad); assert parsed["datasets"]==["espnet/yodas_owsmv4"] and contract["status"]=="AUTHENTICATED_MODEL_CARD" and not bad
+   bad=[]; string_card="---\nlicense: cc-by-4.0\ndatasets: espnet/yodas_owsmv4\n---\nLanguage identification, recognition, translation, timestamp and long-form.\n"; parsed=model_card_frontmatter(string_card,bad); contract=validate_model_card(parsed,string_card,bad); assert parsed["datasets"]=="espnet/yodas_owsmv4" and contract["status"]=="BLOCKED_MODEL_CARD" and any("README dataset declaration mismatch" in item for item in bad)
   bad_yaml=root/"bad.yaml"; bad_yaml.write_text("x: 1\nx: 2\n"); bad=[]; yaml_value(bad_yaml,bad); assert bad
   semantic_root=root/"semantic-source"; (semantic_root/"espnet2/asr/frontend").mkdir(parents=True); (semantic_root/"espnet2/layers").mkdir(parents=True)
-  (semantic_root/"espnet2/asr/frontend/default.py").write_text("class DefaultFrontend:\n self.stft = Stft()\n self.logmel = LogMel()\n input = input.unsqueeze(1)\n")
-  (semantic_root/"espnet2/layers/stft.py").write_text("class Stft:\n center = True\n pad_mode = 'reflect'\n")
-  (semantic_root/"espnet2/layers/log_mel.py").write_text("class LogMel:\n n_mels = 128\n mel = True\n")
-  (semantic_root/"espnet2/layers/global_mvn.py").write_text("class GlobalMVN:\n count = stats['count']\n sum = stats['sum']\n sum_square = stats['sum_square']\n mean = sum / count\n std = sqrt(mean)\n")
+  (semantic_root/"espnet2/asr/frontend/default.py").write_text("""class DefaultFrontend:
+ def __init__(self):
+  self.stft = Stft()
+  self.logmel = LogMel()
+  input = input.unsqueeze(1)
+ def forward(self, input, input_lengths):
+  input_stft, feats_lens = self.stft(input, input_lengths)
+  input_power = input_stft.real ** 2 + input_stft.imag ** 2
+  input_feats, _ = self.logmel(input_power, feats_lens)
+  return input_feats, feats_lens
+""")
+  (semantic_root/"espnet2/layers/stft.py").write_text("""import torch
+class Stft:
+ def __init__(self, center=True):
+  self.center = center
+  pad_mode = 'reflect'
+ def forward(self, input):
+  return torch.stft(input, 512, 160, center=self.center)
+""")
+  (semantic_root/"espnet2/layers/log_mel.py").write_text("""class LogMel:
+ def __init__(self):
+  self.n_mels = 128
+  self.melmat = True
+ def forward(self, feat):
+  mel_feat = torch.matmul(feat, self.melmat)
+  return mel_feat.log()
+""")
+  (semantic_root/"espnet2/layers/global_mvn.py").write_text("""import numpy as np
+class GlobalMVN:
+ def __init__(self, stats):
+  count = stats['count']
+  sum_v = stats['sum']
+  sum_square_v = stats['sum_square']
+  mean = sum_v / count
+  var = sum_square_v / count - mean * mean
+  std = np.sqrt(np.maximum(var, eps))
+ def forward(self, x, ilens):
+  mask = make_pad_mask(ilens, x, 1)
+  x = x - self.mean
+  x /= self.std
+  return x, ilens
+""")
   semantic_bad=[]; semantic=source_semantic_evidence(semantic_root,semantic_bad); assert semantic["status"]=="SOURCE_SEMANTICS_AUTHENTICATED" and not semantic_bad
   (semantic_root/"espnet2/layers/log_mel.py").write_text("class LogMel:\n")
   semantic_bad=[]; semantic=source_semantic_evidence(semantic_root,semantic_bad); assert semantic["status"]=="BLOCKED_SOURCE_SEMANTICS" and semantic_bad
