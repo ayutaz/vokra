@@ -319,6 +319,30 @@ authenticates the fixed source/config/API topology, but its produced tensor
 manifest still requires independent review before a native binder is allowed.
 These facts do not decrement the 63-row live-public denominator.
 
+The consolidated branch head
+`67a700b9d5bedb909a18a515dc05a0ade1e7a75b` was then replayed on VAST
+instance `50138441`. The preflight run passed both architecture gates and
+workspace all-target Clippy with warnings denied; its log SHA-256 is
+`1f51e287d0b3bffd2f797b1d8e8ffba50b3f6eaceed8c36d4e2e88a388b949a2`.
+The full run passed `cargo test --workspace --no-fail-fast`, `cargo deny
+check` and `cargo audit`; its combined log SHA-256 is
+`8d5c9867e9ae4a649095aeb734fdd429aedb06ead6a2e1e84e35eeaa861e91d4`.
+The exact-head incremental bundle SHA-256 is
+`e11fc0310c3193f66674068126f7fcca62f72a822d7a6edaf36fb6d59a9f0807`.
+
+At that same clean head, no-checkpoint VAST API smokes passed for all four
+Qwen3-TTS variants and both MOSS Audio variants under the pinned Transformers
+5.10.4 boundary. The Qwen evidence and summary SHA-256 values are
+`8f0bec236166d0a82fa039535f924f26bc8521bdf050df49520f5c47332485a6`
+and `d4c5e42e9b23e3780d030b8a510dbe381d32c7de0f18cee95139ac1ce241ceef`;
+the MOSS values are
+`92302f014b5b3dac39d305f90889380c6ad47754ab0e710bfaae8de5f4751c98`
+and `ca40b03426d23c248dd587daf3dd4c7e593c26adb438e961d4921026901e7457`.
+Both runs recorded `PASS_MODEL_FREE`, `checkpoint_load=NOT_PERFORMED` and
+`publication=NO_UPLOAD`. They close only the model-free API boundary: package,
+component, source, model and operator decisions remain pending, and no row is
+therefore removed from the unresolved denominator.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
