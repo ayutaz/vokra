@@ -168,8 +168,13 @@ impl<'a> DiaBatchOne<'a> {
         }
         let mut padded = vec![self.cfg.text_pad_value; self.cfg.text_length];
         padded[..text_ids.len()].copy_from_slice(text_ids);
+        // Upstream builds the encoder mask from `cond_src != text_pad_value`,
+        // so a byte equal to the source pad value is intentionally treated as
+        // padding even when it occurs inside the caller's slice.
         let mut valid = vec![false; self.cfg.text_length];
-        valid[..text_ids.len()].fill(true);
+        for (slot, &id) in valid.iter_mut().zip(&padded) {
+            *slot = id != self.cfg.text_pad_value;
+        }
         self.prepare_branch(&padded, &valid)
     }
 
@@ -481,7 +486,9 @@ impl<'a> DiaCfgBatchOne<'a> {
         let mut padded = vec![self.cond.cfg.text_pad_value; self.cond.cfg.text_length];
         padded[..text_ids.len()].copy_from_slice(text_ids);
         let mut valid = vec![false; self.cond.cfg.text_length];
-        valid[..text_ids.len()].fill(true);
+        for (slot, &id) in valid.iter_mut().zip(&padded) {
+            *slot = id != self.cond.cfg.text_pad_value;
+        }
         self.uncond.prepare_branch(
             &vec![self.uncond.cfg.text_pad_value; self.uncond.cfg.text_length],
             &valid,
@@ -586,7 +593,6 @@ impl<'a> DiaCfgBatchOne<'a> {
         let mut eos_detected = false;
         let mut eos_countdown: Option<usize> = None;
         let mut finished_step: Option<usize> = None;
-        let mut bos_over = false;
         while dec_step < max_tokens {
             if eos_countdown == Some(0) {
                 break;
@@ -627,14 +633,12 @@ impl<'a> DiaCfgBatchOne<'a> {
                 }
             }
 
-            // Upstream keeps the delayed prompt/BOS values until the
-            // generated stream has passed the largest delay, then switches
-            // to overwrite semantics.  Before that point this is a masked
-            // scatter into unknown slots only.
-            if !bos_over && dec_step.saturating_sub(prefill_steps) > max_delay {
-                bos_over = true;
-            }
-            write_generated_frame(&mut delayed, current_step_idx, &next, cfg, bos_over)?;
+            // The official batched predicate is `all(dec_step -
+            // prefill_step > max_delay for prefill_step in prefill_steps)`;
+            // this route has exactly one prefill step. `update_one` receives
+            // `not bos_over` as its masked-scatter flag.
+            let bos_over = official_bos_over(dec_step, prefill_steps, max_delay);
+            write_generated_frame(&mut delayed, current_step_idx, &next, cfg, !bos_over)?;
             dec_step += 1;
         }
         if draw_offset != draws.len() {
@@ -702,7 +706,7 @@ fn write_generated_frame(
     index: usize,
     sampled: &[u32],
     cfg: &DiaConfig,
-    overwrite: bool,
+    apply_mask: bool,
 ) -> Result<()> {
     let frame = delayed.get_mut(index).ok_or_else(|| {
         VokraError::InvalidArgument("dia generation write exceeds delayed buffer".to_owned())
@@ -713,11 +717,22 @@ fn write_generated_frame(
         ));
     }
     for (slot, &token) in frame.iter_mut().zip(sampled) {
-        if overwrite || *slot == DIA_UNKNOWN {
+        // Mirrors `DecoderOutput.update_one(..., apply_mask)`: masked mode
+        // only fills unknown slots, while unmasked mode overwrites all.
+        if !apply_mask || *slot == DIA_UNKNOWN {
             *slot = token as i32;
         }
     }
     Ok(())
+}
+
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
+fn official_bos_over(dec_step: usize, prefill_step: usize, max_delay: usize) -> bool {
+    // Single-item specialization of upstream's
+    // `all(dec_step - prefill_step > max_delay for prefill_step in
+    // dec_output.prefill_steps)`. Negative differences cannot satisfy the
+    // strict predicate and therefore remain masked.
+    dec_step.checked_sub(prefill_step).unwrap_or(0) > max_delay
 }
 
 #[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
@@ -1370,9 +1385,12 @@ pub(crate) fn prepare_audio_prompt(
         }
     }
     let max_delay = *cfg.delay_pattern.iter().max().unwrap_or(&0);
-    // Upstream allocates `max(prompt_len + max_delay, 1)` columns: row zero
-    // is BOS and prompt rows occupy 1..=prompt_len.
-    let source_len = prompt_len.saturating_add(max_delay).max(prompt_len + 1);
+    // The pinned upstream allocates `max(prompt_len + max_delay, 1)` rows:
+    // row zero is BOS and prompt rows occupy 1..=prompt_len.
+    let source_len = prompt_len
+        .checked_add(max_delay)
+        .ok_or_else(|| VokraError::InvalidArgument("dia audio prompt length overflow".to_owned()))?
+        .max(1);
     let mut source = vec![vec![DIA_UNKNOWN; cfg.channels]; source_len];
     source[0].fill(cfg.audio_bos_value as i32);
     if let Some(frames) = prompt {
@@ -1684,6 +1702,8 @@ pub(crate) fn constrain_audio_logits(cfg: &DiaConfig, logits: &mut [Vec<f32>]) -
                 *value = f32::NEG_INFINITY;
             }
         } else {
+            // Pinned official source dampens channel-zero EOS before the
+            // sampler; this is part of its source contract.
             row[eos] *= 0.8;
         }
     }
@@ -1781,6 +1801,8 @@ mod tests {
         let prompt = vec![vec![1, 2, 3], vec![4, 5, 6]];
         let (delayed, prefill) = prepare_audio_prompt(&cfg, Some(&prompt)).expect("prompt");
         assert_eq!(prefill, 3);
+        // `max(prompt_len + max_delay, 1)` rows are allocated before delay
+        // application, so tiny_for_tests (max delay 2) yields prompt+2 rows.
         assert_eq!(delayed.len(), prompt.len() + 2);
         assert_eq!(delayed[0], vec![cfg.audio_bos_value as i32; 3]);
         assert!(delayed.iter().flatten().any(|&value| value == DIA_UNKNOWN));
@@ -1818,6 +1840,32 @@ mod tests {
         assert_eq!(frame, vec![cfg.audio_eos_value, 5, 6]);
         apply_generation_drain(&cfg, &mut frame, remaining).expect("second drain");
         assert_eq!(frame, vec![cfg.audio_pad_value, cfg.audio_eos_value, 6]);
+    }
+
+    #[test]
+    fn eos_constraint_applies_pinned_channel_zero_scaling() {
+        let cfg = DiaConfig::tiny_for_tests();
+        let eos = cfg.audio_eos_value as usize;
+        let mut logits = vec![vec![0.0; cfg.tgt_vocab_size]; cfg.channels];
+        logits[0][eos] = 3.5;
+        constrain_audio_logits(&cfg, &mut logits).expect("constraints");
+        assert_eq!(logits[0][eos], 2.8);
+        assert!(logits[1][eos].is_infinite() && logits[1][eos].is_sign_negative());
+        assert!(logits[0][eos + 1].is_infinite() && logits[0][eos + 1].is_sign_negative());
+    }
+
+    #[test]
+    fn bos_over_matches_pinned_strict_step_boundary() {
+        assert!(!official_bos_over(0, 1, 2));
+        assert!(!official_bos_over(3, 1, 2));
+        assert!(official_bos_over(4, 1, 2));
+
+        let cfg = DiaConfig::tiny_for_tests();
+        let mut delayed = vec![vec![90; cfg.channels]];
+        write_generated_frame(&mut delayed, 0, &[1, 2, 3], &cfg, true).expect("masked update");
+        assert_eq!(delayed[0], vec![90; cfg.channels]);
+        write_generated_frame(&mut delayed, 0, &[1, 2, 3], &cfg, false).expect("overwrite");
+        assert_eq!(delayed[0], vec![1, 2, 3]);
     }
 
     #[test]
