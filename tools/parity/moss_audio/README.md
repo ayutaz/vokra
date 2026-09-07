@@ -18,16 +18,18 @@ The official calls used as reference are:
 
 The environment is locked by this directory's `uv.lock`. The model snapshot
 and official source checkout are downloaded at exact 40-hex revisions. Config,
-sidecars, source files and generated evidence are all hashed. A missing import,
-source path outside the official checkout, revision/shape drift, non-FP32 CPU
-reference, or modified sidecar aborts loudly.
+sidecars, the complete source tracked-tree path list, and generated evidence
+are all hashed. A missing import, source path outside the official checkout,
+revision/shape drift, non-FP32 CPU reference, or modified sidecar aborts
+loudly.
 
 The VAST worker runs the dependency-free `preflight_gate.py` against the exact
 project/lock bytes before checking host capacity, checkout cleanliness, tokens,
 scratch paths, synchronization, or downloads. The checked-in manifest is
 intentionally pending review and therefore exits 2; no model or source
-acquisition is reachable until dependency, source-license, model-license, and
-exact checkpoint-file evidence is authenticated by a later owner review.
+acquisition is reachable until dependency, source-license-file absence,
+model-license, and exact checkpoint-file evidence is authenticated by a later
+owner review.
 The historical main project lock remains pinned to Transformers 5.5.0 and is
 retained for its existing license and closure gates. The VAST worker now
 requires an owner-approved model-free API-smoke evidence path and SHA-256
@@ -87,3 +89,45 @@ scripts/verify/apple-silicon-moss-audio.sh \
 
 That worker has no network, conversion, publication or deletion path. Pull
 only its evidence, then remove staged model data or destroy the remote host.
+
+## No-weight identity audit
+
+`identity_audit.py` collects owner-independent evidence for the fixed source
+and model revisions without downloading or opening checkpoint shards. It
+authenticates source bytes and the complete clean exact-revision Git tracked
+tree, proving that source `LICENSE`/`COPYING`/`NOTICE` filenames are absent,
+plus metadata bytes and remote Hugging Face Git blob IDs for configuration,
+tokenizer/processor sidecars, vocabulary assets, chat template, generation
+config, and checkpoint index. At each fixed model revision, the complete HF
+tree is required to prove that the repo-level model `LICENSE` is absent; the
+separate `HfApi.model_info(...).cardData.license` value is preserved as
+`HF_MODEL_INFO_CARD_DATA` provenance and is not treated as an SPDX decision.
+Every shard referenced by the index must have a remote size, Git blob SHA-1,
+and LFS SHA-256 OID; it is recorded as `IDENTITY_ONLY_NO_PAYLOAD`.
+
+License SPDX classification and owner approval remain
+`PENDING_OWNER_APPROVAL`. Missing, extra, or mismatched identity evidence is a
+blocking exit 2. The model-free self-test uses only synthetic metadata and no
+model payload:
+
+```sh
+uv run --project tools/parity/moss_audio/api_smoke --frozen --python 3.12 \
+  python tools/parity/moss_audio/identity_audit.py --self-test
+```
+
+On the disposable VAST worker, the `--collect` mode clones only the pinned
+official source checkout and materializes the explicit metadata/index
+allowlist. It queries the complete HF tree and fixed-revision cardData for both
+model revisions, but never requests a shard payload:
+
+```sh
+uv run --project tools/parity/moss_audio/api_smoke --frozen --python 3.12 \
+  python tools/parity/moss_audio/identity_audit.py --collect --variant all \
+  --source-dir /dev/shm/moss-audio-identity/source \
+  --metadata-root /dev/shm/moss-audio-identity/metadata \
+  --tree-root /dev/shm/moss-audio-identity/tree \
+  --output /dev/shm/moss-audio-identity/manifest.json
+```
+
+The output is an atomic candidate manifest; it is not an owner approval or a
+license sign-off.
