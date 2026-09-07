@@ -69,6 +69,47 @@ ROLE_PREFIXES = {
 # name as equivalent would hide a source or checkpoint topology drift.
 SCALAR_ROLES = {"logit_scale_a", "logit_scale_t"}
 
+# These are architecture/configuration facts from the pinned release
+# ``config.json``.  They describe the released HTSAT-fused and RoBERTa
+# topology, not a guessed tensor manifest: individual state-dict shapes are
+# still read from the official loaded model and recorded below.  Keeping this
+# contract separate makes a config drift fail before a future native binder
+# can mistake a sibling CLAP variant for this release.
+MODEL_CONFIG_CONTRACT = {
+    ("model_type",): "clap",
+    ("hidden_size",): 768,
+    ("projection_dim",): 512,
+    ("projection_hidden_act",): "relu",
+    ("num_hidden_layers",): 16,
+    ("audio_config", "model_type"): "clap_audio_model",
+    ("audio_config", "hidden_size"): 768,
+    ("audio_config", "projection_dim"): 512,
+    ("audio_config", "projection_hidden_size"): 768,
+    ("audio_config", "patch_embeds_hidden_size"): 96,
+    ("audio_config", "spec_size"): 256,
+    ("audio_config", "patch_size"): 4,
+    ("audio_config", "patch_stride"): [4, 4],
+    ("audio_config", "num_mel_bins"): 64,
+    ("audio_config", "num_hidden_layers"): 4,
+    ("audio_config", "depths"): [2, 2, 6, 2],
+    ("audio_config", "num_attention_heads"): [4, 8, 16, 32],
+    ("audio_config", "window_size"): 8,
+    ("audio_config", "enable_fusion"): True,
+    ("audio_config", "enable_patch_fusion"): True,
+    ("audio_config", "fusion_num_hidden_layers"): 2,
+    ("audio_config", "fusion_type"): None,
+    ("audio_config", "enable_patch_layer_norm"): True,
+    ("text_config", "model_type"): "clap_text_model",
+    ("text_config", "hidden_size"): 768,
+    ("text_config", "projection_dim"): 512,
+    ("text_config", "intermediate_size"): 3072,
+    ("text_config", "num_hidden_layers"): 12,
+    ("text_config", "num_attention_heads"): 12,
+    ("text_config", "max_position_embeddings"): 514,
+    ("text_config", "vocab_size"): 50265,
+    ("text_config", "type_vocab_size"): 1,
+}
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -113,6 +154,40 @@ def state_dict_role(name: str) -> str | None:
     return None
 
 
+def validate_model_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Authenticate the released model topology without loading weights."""
+
+    if not isinstance(config, dict):
+        raise RuntimeError("official CLAP model config is not a dict")
+    mismatched: dict[str, dict[str, Any]] = {}
+    for path, expected in MODEL_CONFIG_CONTRACT.items():
+        value: Any = config
+        for component in path:
+            if not isinstance(value, dict) or component not in value:
+                mismatched[".".join(path)] = {
+                    "expected": expected,
+                    "actual": "<missing>",
+                }
+                break
+            value = value[component]
+        else:
+            if value != expected:
+                mismatched[".".join(path)] = {
+                    "expected": expected,
+                    "actual": value,
+                }
+    if mismatched:
+        raise RuntimeError(f"official CLAP model config drifted: {mismatched}")
+    return {".".join(path): config_value(config, path) for path in MODEL_CONFIG_CONTRACT}
+
+
+def config_value(config: dict[str, Any], path: tuple[str, ...]) -> Any:
+    value: Any = config
+    for component in path:
+        value = value[component]
+    return value
+
+
 def build_state_dict_manifest(state_dict: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
     tensor_manifest: dict[str, dict[str, Any]] = {}
     roles: dict[str, list[str]] = {
@@ -142,6 +217,47 @@ def build_state_dict_manifest(state_dict: dict[str, Any]) -> tuple[dict[str, dic
     return tensor_manifest, roles
 
 
+def validate_tensor_manifest(
+    tensor_manifest: dict[str, dict[str, Any]],
+    roles: dict[str, list[str]],
+) -> None:
+    """Validate the emitted role/shape schema without touching tensor data."""
+
+    if not tensor_manifest:
+        raise RuntimeError("official CLAP state-dict tensor manifest is empty")
+    expected_roles = set(ROLE_PREFIXES) | {"contrastive_scalar"}
+    if set(roles) != expected_roles:
+        raise RuntimeError(f"CLAP state-dict roles drifted: {sorted(roles)}")
+    missing_roles = [role for role in ROLE_PREFIXES if not roles[role]]
+    if missing_roles:
+        raise RuntimeError(
+            "CLAP state-dict role manifest is missing observed tensors: "
+            f"{missing_roles}"
+        )
+    for name, entry in tensor_manifest.items():
+        if not isinstance(name, str) or not name:
+            raise RuntimeError("CLAP tensor manifest contains an empty tensor name")
+        if not isinstance(entry, dict) or set(entry) != {"role", "shape", "dtype"}:
+            raise RuntimeError(f"CLAP tensor manifest entry is malformed: {name}")
+        role = entry["role"]
+        shape = entry["shape"]
+        dtype = entry["dtype"]
+        if role not in expected_roles:
+            raise RuntimeError(f"CLAP tensor manifest contains unknown role: {name}={role}")
+        if not isinstance(shape, list) or any(
+            not isinstance(axis, int) or axis < 0 for axis in shape
+        ):
+            raise RuntimeError(f"CLAP tensor manifest shape is malformed: {name}={shape}")
+        if not isinstance(dtype, str) or not dtype.startswith("torch."):
+            raise RuntimeError(f"CLAP tensor manifest dtype is malformed: {name}={dtype}")
+    for scalar in sorted(SCALAR_ROLES):
+        entry = tensor_manifest.get(scalar)
+        if entry is None or entry["role"] != "contrastive_scalar" or entry["shape"] != []:
+            raise RuntimeError(
+                f"CLAP contrastive scalar {scalar} must be an observed scalar tensor"
+            )
+
+
 def deterministic_pcm() -> Any:
     import numpy as np
 
@@ -163,6 +279,54 @@ def self_test() -> None:
     assert validate_preprocessor_contract(dict(PREPROCESSOR_CONTRACT)) == {
         key: PREPROCESSOR_CONTRACT[key] for key in sorted(PREPROCESSOR_CONTRACT)
     }
+    synthetic_config = {
+        "model_type": "clap",
+        "hidden_size": 768,
+        "projection_dim": 512,
+        "projection_hidden_act": "relu",
+        "num_hidden_layers": 16,
+        "audio_config": {
+            "model_type": "clap_audio_model",
+            "hidden_size": 768,
+            "projection_dim": 512,
+            "projection_hidden_size": 768,
+            "patch_embeds_hidden_size": 96,
+            "spec_size": 256,
+            "patch_size": 4,
+            "patch_stride": [4, 4],
+            "num_mel_bins": 64,
+            "num_hidden_layers": 4,
+            "depths": [2, 2, 6, 2],
+            "num_attention_heads": [4, 8, 16, 32],
+            "window_size": 8,
+            "enable_fusion": True,
+            "enable_patch_fusion": True,
+            "fusion_num_hidden_layers": 2,
+            "fusion_type": None,
+            "enable_patch_layer_norm": True,
+        },
+        "text_config": {
+            "model_type": "clap_text_model",
+            "hidden_size": 768,
+            "projection_dim": 512,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 12,
+            "num_attention_heads": 12,
+            "max_position_embeddings": 514,
+            "vocab_size": 50265,
+            "type_vocab_size": 1,
+        },
+    }
+    assert validate_model_config(synthetic_config)["audio_config.model_type"] == "clap_audio_model"
+    tampered_config = dict(synthetic_config)
+    tampered_config["audio_config"] = dict(synthetic_config["audio_config"])
+    tampered_config["audio_config"]["enable_fusion"] = False
+    try:
+        validate_model_config(tampered_config)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("model config drift accepted")
     for key, value in PREPROCESSOR_CONTRACT.items():
         tampered = dict(PREPROCESSOR_CONTRACT)
         tampered[key] = "tampered" if isinstance(value, str) else -1
@@ -174,19 +338,34 @@ def self_test() -> None:
             raise AssertionError(f"preprocessor tamper accepted: {key}")
     class SyntheticTensor:
         shape = (1,)
-        dtype = "float32"
+        dtype = "torch.float32"
+
+    class SyntheticScalar:
+        shape = ()
+        dtype = "torch.float32"
 
     synthetic_state = {
         "audio_model.audio_encoder.weight": SyntheticTensor(),
         "text_model.embeddings.weight": SyntheticTensor(),
         "audio_projection.linear1.weight": SyntheticTensor(),
         "text_projection.linear1.weight": SyntheticTensor(),
-        "logit_scale_a": SyntheticTensor(),
-        "logit_scale_t": SyntheticTensor(),
+        "logit_scale_a": SyntheticScalar(),
+        "logit_scale_t": SyntheticScalar(),
     }
     manifest, roles = build_state_dict_manifest(synthetic_state)
+    validate_tensor_manifest(manifest, roles)
     assert set(roles) == set(ROLE_PREFIXES) | {"contrastive_scalar"}
     assert manifest["audio_model.audio_encoder.weight"]["role"] == "audio_tower"
+    missing_audio_manifest = dict(manifest)
+    missing_audio_roles = {role: list(names) for role, names in roles.items()}
+    del missing_audio_manifest["audio_model.audio_encoder.weight"]
+    missing_audio_roles["audio_tower"] = []
+    try:
+        validate_tensor_manifest(missing_audio_manifest, missing_audio_roles)
+    except RuntimeError as error:
+        assert "audio_tower" in str(error)
+    else:
+        raise AssertionError("missing audio role accepted by tensor manifest validator")
     try:
         build_state_dict_manifest(
             {**synthetic_state, "unexpected.weight": SyntheticTensor()}
@@ -263,6 +442,8 @@ def dump(model_dir: str | None, output_dir: Path) -> None:
         raise RuntimeError("official CLAP processor has no inspectable feature extractor")
     preprocessing = validate_preprocessor_contract(feature_extractor.to_dict())
     tensor_manifest, state_dict_roles = build_state_dict_manifest(state_dict)
+    model_config_contract = validate_model_config(model.config.to_dict())
+    validate_tensor_manifest(tensor_manifest, state_dict_roles)
     pcm = deterministic_pcm()
     inputs = processor(audios=[pcm], sampling_rate=SAMPLE_RATE, return_tensors="pt")
     with torch.inference_mode():
@@ -282,6 +463,7 @@ def dump(model_dir: str | None, output_dir: Path) -> None:
         "pcm_samples": PCM_SAMPLES,
         "preprocessing": preprocessing,
         "state_dict_roles": state_dict_roles,
+        "model_config_contract": model_config_contract,
         "dumper_version": DUMPER_VERSION,
         "transformers_version": transformers.__version__,
         "torch_version": torch.__version__,

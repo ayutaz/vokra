@@ -21,6 +21,17 @@ window, 480 hop, 513 frequency bins, 64 feature size, 1,000 frames,
 attention mask. The inspector records the complete returned feature-extractor
 contract and fails closed on drift; it does not reimplement the mel path.
 
+The inspector also authenticates the pinned `config.json` topology before it
+records any tensors: CLAP projection width 512, HTSAT audio tower
+(`spec_size=256`, patch embedding width 96, depths `[2,2,6,2]`, heads
+`[4,8,16,32]`, fusion enabled), and the 12-layer 768-wide RoBERTa-style text
+tower. These are config facts, not invented per-tensor shapes. Every observed
+state-dict entry is then recorded verbatim as a name, role, shape, and dtype;
+the only accepted roles are `audio_tower`, `text_tower`, `audio_projection`,
+`text_projection`, and the two scalar entries `logit_scale_a` and
+`logit_scale_t`. Unknown names, missing roles, malformed shapes, or
+non-scalar contrastive temperatures abort the inspector.
+
 The state-dict inspector assigns every official tensor to the observed
 `audio_tower`, `text_tower`, `audio_projection`, or `text_projection` role
 (plus exactly `logit_scale_a` and `logit_scale_t` contrastive scalar entries),

@@ -51,10 +51,16 @@ pub const ARCH: &str = "clap";
 pub const NAME: &str = "clap-htsat-fused";
 pub const CATEGORY: &str = "classification";
 pub const UPSTREAM_HF: &str = "laion/clap-htsat-fused";
+/// Immutable Hugging Face revision used by the reference-side inspection
+/// contract.  A model name alone is not sufficient provenance for a
+/// two-tower checkpoint: the upstream files and state-dict topology can
+/// change while the repository slug remains stable.
+pub const UPSTREAM_REVISION: &str = "365dea6ef167def6676140ed93bbc43f84dabb28";
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ClapReport {
@@ -92,6 +98,7 @@ pub fn convert_clap_file(
         ),
     );
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
 
     let mut report = ClapReport::default();
     for t in st.tensors() {
@@ -219,6 +226,11 @@ mod tests {
             file.get(KEY_PROVENANCE_UPSTREAM_HF)
                 .and_then(|v| v.as_str()),
             Some(UPSTREAM_HF)
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_REVISION)
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)

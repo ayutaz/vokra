@@ -223,6 +223,18 @@ pub const PRIMARY_SOURCE_HF: &str = "huggingface.co/laion/clap-htsat-fused";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
 
+fn require_string_metadata(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    match file.get(key).and_then(|value| value.as_str()) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(VokraError::ModelLoad(format!(
+            "clap: GGUF metadata `{key}` is `{actual}`, expected `{expected}`; refusing an unverified artifact (FR-EX-08)"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "clap: GGUF is missing required metadata `{key}` for the authenticated {UPSTREAM_HF}@{UPSTREAM_REVISION} inspection contract; refusing an unverified artifact (FR-EX-08)"
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ClapWeights — non-empty tensor gate.
 // ---------------------------------------------------------------------------
@@ -379,11 +391,20 @@ impl Clap {
             }
         }
 
-        // 2. Load the tensor manifest with the non-emptiness gate. This is
+        // 2. Require the complete converter envelope before looking at any
+        // tensors. The model name/category and immutable upstream identity
+        // are part of the converter↔binder boundary; accepting a bare arch
+        // tag would let an unrelated float GGUF reach the CLAP manifest gate.
+        require_string_metadata(file, chunks::KEY_MODEL_NAME, NAME)?;
+        require_string_metadata(file, "vokra.model.category", CATEGORY)?;
+        require_string_metadata(file, KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF)?;
+        require_string_metadata(file, KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION)?;
+
+        // 3. Load the tensor manifest with the non-emptiness gate. This is
         // diagnostic only: no tensor is bound to a runtime weight structure.
         let weights = ClapWeights::from_gguf(file)?;
 
-        // 3. Read the license class only for diagnostics. It is not evidence
+        // 4. Read the license class only for diagnostics. It is not evidence
         //    that this metadata-only artifact is executable.
         let weight_license = file
             .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
@@ -585,6 +606,8 @@ mod tests {
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
         b.add_string("vokra.model.category", CATEGORY);
+        b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
         if let Some(cls) = weight_license_class {
             b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
         }
@@ -773,6 +796,9 @@ mod tests {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
+        b.add_string("vokra.model.category", CATEGORY);
+        b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
         b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, "permissive");
         // NO tensors added.
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
@@ -799,7 +825,29 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 6 — the unverified metadata payload cannot reach audio execution.
+    // Test 6 — the converter envelope is authenticated before tensor access.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn from_gguf_rejects_missing_upstream_revision() {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+        b.add_string(chunks::KEY_MODEL_NAME, NAME);
+        b.add_string("vokra.model.category", CATEGORY);
+        b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+        b.add_tensor("unverified.tensor", GgmlType::F32, vec![1], vec![0u8; 4])
+            .expect("add_tensor");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(VokraError::ModelLoad(message)) = Clap::from_gguf(&file) else {
+            panic!("missing revision must not reach the tensor manifest gate")
+        };
+        assert!(message.contains(KEY_PROVENANCE_UPSTREAM_REVISION));
+        assert!(message.contains(UPSTREAM_REVISION));
+        assert!(message.contains("unverified artifact"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 7 — the unverified metadata payload cannot reach audio execution.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -879,7 +927,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 7 — an empty input does not bypass the manifest gate.
+    // Test 8 — an empty input does not bypass the manifest gate.
     // -----------------------------------------------------------------------
 
     #[test]
