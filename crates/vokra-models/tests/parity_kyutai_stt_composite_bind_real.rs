@@ -22,7 +22,7 @@ fn required_paths() -> Option<(PathBuf, PathBuf, PathBuf, String, String, String
         "VOKRA_KYUTAI_STT_TOKENIZER_GGUF_SHA256",
         "VOKRA_KYUTAI_STT_MIMI_SHA256",
     ]
-    .map(|name| std::env::var_os(name));
+    .map(std::env::var_os);
     if values.iter().all(Option::is_none) {
         eprintln!(
             "skipping Kyutai composite bind: set decoder/tokenizer/Mimi paths and all expected SHA-256 values"
