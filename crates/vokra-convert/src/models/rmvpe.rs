@@ -705,6 +705,16 @@ mod tests {
         p
     }
 
+    /// Append a lexical suffix without letting `PathBuf::push`/`join` erase
+    /// `.` or `..` before the conversion-path gate sees it. Keeping the root
+    /// as an `OsString` also preserves non-UTF-8 roots on Unix.
+    fn raw_path_with_suffix(root: &Path, suffix: &str) -> PathBuf {
+        let mut raw = root.as_os_str().to_os_string();
+        raw.push(std::path::MAIN_SEPARATOR.to_string());
+        raw.push(suffix);
+        PathBuf::from(raw)
+    }
+
     /// Builds a synthetic safetensors buffer with a single BF16 tensor
     /// (mirror of `emotion2vec::tests::synthetic_bf16_safetensors`) so
     /// a byte-identity assert catches any silent widen / downcast
@@ -794,18 +804,15 @@ mod tests {
         std::fs::write(&existing, b"keep").expect("write existing output");
         assert!(validate_conversion_path(&input, "input", true, false).is_ok());
         assert!(validate_conversion_path(&existing, "output", false, true).is_err());
+        let dot_input = raw_path_with_suffix(&root, "./input.safetensors");
         assert!(
-            validate_conversion_path(&root.join("./input.safetensors"), "input", true, false)
-                .is_err()
+            validate_conversion_path(&dot_input, "input", true, false).is_err(),
+            "a raw lexical `.` component must be rejected"
         );
+        let parent_dot_input = raw_path_with_suffix(&root, "nested/../input.safetensors");
         assert!(
-            validate_conversion_path(
-                &root.join("nested/../input.safetensors"),
-                "input",
-                true,
-                false
-            )
-            .is_err()
+            validate_conversion_path(&parent_dot_input, "input", true, false).is_err(),
+            "raw lexical `..` components must be rejected"
         );
         std::fs::remove_dir_all(&root).ok();
     }
