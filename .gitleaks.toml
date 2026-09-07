@@ -169,7 +169,7 @@ regexes = [
   # across docs/*.md, converters, parity preparers, publish scripts, and
   # .github/pins.yaml.  Requiring the `_SHA256`/`sha256` identifier plus an
   # exact 64-hex value keeps this narrower than a bare high-entropy allowlist.
-  '''(?i)\b(?:[a-z][a-z0-9_]*_)?sha-?256['"]?\s*[:=]\s*[`'"]?[a-f0-9]{64}[`'"]?''',
+  '''(?i)\b(?:[a-z][a-z0-9_]*_)?sha-?256['"]?\s*(?:==|=|:)\s*[`'"]?[a-f0-9]{64}[`'"]?''',
 
   # Entries inside a manifest-style SHA256 mapping may use the artifact name
   # as the key instead of repeating `sha256` on every line.  Keep this scoped
@@ -246,7 +246,12 @@ regexes = [
   # Upstream source-revision constants are immutable Git object ids, not
   # credentials.  Keep the assignment name and exact SHA-1 width in the
   # match so ordinary 40-character strings remain scanned.
-  '''(?i)\bTOKENIZER_(?:REV|REVISION|GIT_BLOB)\s*=\s*['"]?[a-f0-9]{40}['"]?''',
+  '''(?i)\bTOKENIZER_(?:REV|REVISION|GIT_BLOB)\s*(?:==|=)\s*['"]?[a-f0-9]{40}['"]?''',
+
+  # JSON provenance maps use a quoted identifier ending in `_blob` for an
+  # authenticated Git object id.  The explicit identifier suffix, JSON colon,
+  # and exact SHA-1 width keep bare 40-character strings in scope.
+  '''(?i)['"][A-Za-z][A-Za-z0-9_]*_blob['"]\s*:\s*['"][a-f0-9]{40}['"]''',
 
   # Parity manifests pin the Git blob for a named upstream source file.  The
   # filename suffix is part of the allowlist: arbitrary quoted key/value
