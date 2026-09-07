@@ -377,16 +377,32 @@ fn qwen3_asr_real_metal_matches_cpu_exact_greedy() {
             Qwen3AsrVariant::B17,
         ),
     ];
+
+    let all_variables = [
+        "VOKRA_QWEN3_ASR_0_6B_GGUF",
+        "VOKRA_QWEN3_ASR_0_6B_REFERENCE_DIR",
+        "VOKRA_QWEN3_ASR_1_7B_GGUF",
+        "VOKRA_QWEN3_ASR_1_7B_REFERENCE_DIR",
+    ];
+    let missing = all_variables
+        .iter()
+        .filter(|variable| std::env::var_os(variable).is_none())
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.len() == all_variables.len() {
+        eprintln!("skip Qwen3-ASR Metal parity: all four GGUF/reference variables are unset");
+        return;
+    }
+    assert!(
+        missing.is_empty(),
+        "Qwen3-ASR Metal parity requires all four GGUF/reference variables; missing: {missing:?}"
+    );
+
     for (gguf_variable, reference_variable, variant) in cases {
-        let (Ok(gguf), Ok(reference_dir)) = (
-            std::env::var(gguf_variable),
-            std::env::var(reference_variable),
-        ) else {
-            panic!(
-                "{} Metal parity requires both {gguf_variable} and {reference_variable}",
-                variant.model_name()
-            );
-        };
+        let gguf = std::env::var(gguf_variable)
+            .unwrap_or_else(|error| panic!("{gguf_variable} is not a valid path: {error}"));
+        let reference_dir = std::env::var(reference_variable)
+            .unwrap_or_else(|error| panic!("{reference_variable} is not a valid path: {error}"));
         let gguf = PathBuf::from(gguf);
         let reference = Reference::load(Path::new(&reference_dir), variant);
         let cpu = execute(&gguf, &reference, variant, BackendKind::Cpu);
