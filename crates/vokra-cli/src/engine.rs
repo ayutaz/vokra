@@ -2288,6 +2288,14 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: None,
     },
     BoundArch {
+        arch: "kyutai-stt-tokenizer",
+        module: "vokra_models::kyutai_stt",
+        entry: "KyutaiSttTokenizer::from_gguf → decode_text_tokens (decode-only sidecar)",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::kyutai_stt::KyutaiSttTokenizer::from_gguf(g).map(|_| ())
+        }),
+    },
+    BoundArch {
         arch: "mt3",
         module: "vokra_models::mt3",
         entry: "Mt3::from_gguf → Mt3::transcribe",

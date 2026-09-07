@@ -138,7 +138,7 @@ pub const KYUTAI_STT_TOKENIZER_GIT_BLOB_SHA1: &str = "1820a7cbb15efc6a33dd365113
 pub const KYUTAI_STT_TOKENIZER_SHA256: &str =
     "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6";
 /// `vokra.model.arch` for the separately-bound decode-only tokenizer GGUF.
-pub const KYUTAI_STT_TOKENIZER_ARCH: &str = "kyutai-stt-tokenizer";
+pub const ARCH_TOKENIZER: &str = "kyutai-stt-tokenizer";
 /// Dedicated tokenizer metadata schema version.
 pub const KYUTAI_STT_TOKENIZER_SCHEMA: &str = "sentencepiece-decode-v1";
 /// Model-name metadata stamped on the separately-bound tokenizer GGUF.
@@ -908,9 +908,9 @@ impl KyutaiSttTokenizer {
             require_tokenizer_occurrence(file, key)?;
         }
         let arch = require_tokenizer_string(file, chunks::KEY_MODEL_ARCH)?;
-        if arch != KYUTAI_STT_TOKENIZER_ARCH {
+        if arch != ARCH_TOKENIZER {
             return Err(VokraError::ModelLoad(format!(
-                "kyutai-stt tokenizer: expected dedicated arch `{KYUTAI_STT_TOKENIZER_ARCH}`, got `{arch}`"
+                "kyutai-stt tokenizer: expected dedicated arch `{ARCH_TOKENIZER}`, got `{arch}`"
             )));
         }
         require_tokenizer_string_value(file, KEY_TOKENIZER_SCHEMA, KYUTAI_STT_TOKENIZER_SCHEMA)?;
@@ -3724,7 +3724,7 @@ mod tests {
             types[4] = GgufMetadataValue::U32(4);
         }
         let mut builder = GgufBuilder::new();
-        builder.add_string(chunks::KEY_MODEL_ARCH, KYUTAI_STT_TOKENIZER_ARCH);
+        builder.add_string(chunks::KEY_MODEL_ARCH, ARCH_TOKENIZER);
         builder.add_string(chunks::KEY_MODEL_NAME, KYUTAI_STT_TOKENIZER_COMPONENT_NAME);
         builder.add_string(KEY_TOKENIZER_SCHEMA, KYUTAI_STT_TOKENIZER_SCHEMA);
         builder.add_u32(KEY_TOKENIZER_CARD, 4_000);
