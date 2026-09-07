@@ -9,6 +9,7 @@ weights and refuses absent or unauthenticated source/checkpoint inputs.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -44,14 +45,22 @@ AUDIO_CARD = 2048
 TEXT_TOKENS = [3, 17, 23, 29]
 AUDIO_CODES = [[(frame * 37 + channel * 11) % AUDIO_CARD for channel in range(N_Q)] for frame in range(len(TEXT_TOKENS))]
 OUTPUT_NAMES = ("input.json", "hidden.f32", "logits.f32", "manifest.json")
-MOSHI_ROLES = ("moshi/moshi/models/lm.py", "moshi/moshi/models/lm_utils.py", "moshi/moshi/models/loaders.py")
+MOSHI_ROLES = (
+    "moshi/moshi/models/lm.py",
+    "moshi/moshi/models/lm_utils.py",
+    "moshi/moshi/models/loaders.py",
+    "moshi/moshi/utils/sampling.py",
+    "moshi/moshi/modules/transformer.py",
+)
 DSM_ROLES = ("configs/config-stt-en-hf.toml", "scripts/stt_from_file_pytorch.py")
-STREAMING_STATUS = "BLOCKED_NOT_AUTHENTICATED"
+STREAMING_STATUS = "AUTHENTICATED_SOURCE_CONTRACT"
+STREAMING_RUNTIME_STATUS = "BLOCKED_NOT_EXECUTED"
 STREAMING_BLOCKERS = (
     "per-step feedback/state transition is not independently observed",
     "temperature-zero tie behavior is not independently observed",
     "context/window truncation and output ordering are not independently observed",
 )
+STREAMING_CONTRACT_SCHEMA = "vokra-kyutai-stt-streaming-source-contract-v1"
 APPROVAL_SCHEMA = "vokra-kyutai-stt-decoder-approval-v1"
 APPROVAL_SCOPE = "KYUTAI_STT_DECODER_PARITY"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -402,6 +411,168 @@ def git_identity(root: Path, repository: str, revision: str, roles: tuple[str, .
     return {"repository": repository, "revision": revision, "roles": rows}
 
 
+def _source_ast(root: Path, relative: str) -> ast.Module:
+    """Parse one authenticated source role without importing or executing it."""
+    path = root / relative
+    try:
+        return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeError) as error:
+        raise ValueError(f"cannot parse authenticated source role {relative}: {error}") from error
+
+
+def _source_symbol(tree: ast.AST, name: str, containing: tuple[str, ...] = ()) -> ast.AST:
+    symbols = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+    if containing:
+        symbols = [
+            node
+            for node in symbols
+            if all(expression in {ast.unparse(child) for child in ast.walk(node)} for expression in containing)
+        ]
+    if len(symbols) != 1:
+        raise ValueError(f"authenticated source symbol {name!r} is not unique")
+    return symbols[0]
+
+
+def _require_source_expressions(symbol: ast.AST, role: str, expressions: tuple[str, ...]) -> None:
+    actual = {ast.unparse(node) for node in ast.walk(symbol)}
+    missing = [expression for expression in expressions if expression not in actual]
+    if missing:
+        raise ValueError(f"authenticated source expression drift in {role}: {missing!r}")
+
+
+def authenticate_streaming_source_contract(dsm_source: Path, moshi_source: Path) -> dict[str, Any]:
+    """Authenticate streaming control flow from pinned upstream source bytes.
+
+    This is deliberately an AST/expression gate, not a second implementation:
+    it records only expressions present in the authenticated source.  It does
+    not execute a model or assert a numerical result.  The temperature-zero
+    tie rule remains blocked because ``torch.argmax`` is an external semantic.
+    """
+    dsm_identity = git_identity(dsm_source, DSM_REPOSITORY, DSM_REVISION, DSM_ROLES)
+    moshi_identity = git_identity(moshi_source, MOSHI_REPOSITORY, MOSHI_REVISION, MOSHI_ROLES)
+    dsm_tree = _source_ast(dsm_source, DSM_ROLES[1])
+    lm_tree = _source_ast(moshi_source, MOSHI_ROLES[0])
+    sampling_tree = _source_ast(moshi_source, MOSHI_ROLES[3])
+    transformer_tree = _source_ast(moshi_source, MOSHI_ROLES[4])
+
+    dsm_main = _source_symbol(dsm_tree, "main")
+    _require_source_expressions(
+        dsm_main,
+        DSM_ROLES[1],
+        (
+            "mimi.streaming(1)",
+            "lm_gen.streaming(1)",
+            "audio_tokens = mimi.encode(audio_chunk)",
+            "text_tokens = lm_gen.step(audio_tokens)",
+            "text_tokens_accum.append(text_tokens)",
+        ),
+    )
+    lm_init = _source_symbol(lm_tree, "_init_streaming_state")
+    _require_source_expressions(
+        lm_init,
+        MOSHI_ROLES[0],
+        (
+            "cache = torch.full((batch_size, self.lm_model.num_codebooks, self.max_delay + 2), lm_model.ungenerated_token_id, device=lm_model.device, dtype=torch.long)",
+            "state.exit_stack.enter_context(self.lm_model.streaming(batch_size))",
+        ),
+    )
+    lm_step = _source_symbol(lm_tree, "_step")
+    _require_source_expressions(
+        lm_step,
+        MOSHI_ROLES[0],
+        (
+            "state.cache.gather(dim=2, index=positions)",
+            "state.graphed_main(input_, state.condition_sum, state.condition_cross)",
+            "sample_token(text_logits.float(), self.use_sampling, self.temp_text, self.top_k_text)",
+            "state.offsets = torch.where(state.exec_mask, state.offsets + 1, state.offsets)",
+            "scatter_with_mask_(state.cache[:, :1], -1, positions, text_token[:, None, None], state.exec_mask[:, None, None])",
+            "index = (state.offsets % CT)[:, None, None]",
+            "index = (state.offsets[:, None, None] - self.max_delay + gen_delays_cuda[:, None]) % CT",
+            "out = state.cache.gather(dim=2, index=index)",
+        ),
+    )
+    sampling_fn = _source_symbol(sampling_tree, "sample_token")
+    _require_source_expressions(
+        sampling_fn,
+        MOSHI_ROLES[3],
+        (
+            "use_sampling and temp > 0.0",
+            "next_token = torch.argmax(logits, dim=-1, keepdim=True)",
+        ),
+    )
+    ring_complete = _source_symbol(transformer_tree, "complete")
+    _require_source_expressions(
+        ring_complete,
+        MOSHI_ROLES[4],
+        (
+            "indexes = indexes % self.capacity",
+            "positions = torch.where(delta <= 0, last_offset + delta, last_offset + delta - self.capacity)",
+            "invalid = indexes >= self.end_offset.view(-1, 1)",
+        ),
+    )
+    attention_forward = _source_symbol(
+        transformer_tree,
+        "forward",
+        ("attn_bias = attn_bias & (delta < self.context)", "F.scaled_dot_product_attention(q, k, v, attn_bias, dropout_p=0.0)"),
+    )
+    _require_source_expressions(
+        attention_forward,
+        MOSHI_ROLES[4],
+        (
+            "attn_bias = attn_bias & (delta < self.context)",
+            "F.scaled_dot_product_attention(q, k, v, attn_bias, dropout_p=0.0)",
+        ),
+    )
+    source_roles = {
+        "dsm": list(DSM_ROLES),
+        "moshi": list(MOSHI_ROLES),
+    }
+    contracts = [
+        {
+            "name": "per_step_feedback_and_state_transition",
+            "status": "SOURCE_EXPRESSION_AUTHENTICATED",
+            "roles": [DSM_ROLES[1], MOSHI_ROLES[0]],
+            "expressions": [
+                "mimi.streaming(1) -> lm_gen.streaming(1)",
+                "mimi.encode(audio_chunk) -> lm_gen.step(audio_tokens)",
+                "state.cache.gather(...) -> state.graphed_main(...) -> generated text token -> state.cache scatter",
+            ],
+        },
+        {
+            "name": "temperature_zero_selection",
+            "status": "SOURCE_EXPRESSION_AUTHENTICATED",
+            "roles": [MOSHI_ROLES[3], MOSHI_ROLES[0]],
+            "expressions": ["if use_sampling and temp > 0.0", "torch.argmax(logits, dim=-1, keepdim=True)"],
+            "tie_resolution": "BLOCKED_EXTERNAL_TORCH_SEMANTICS",
+        },
+        {
+            "name": "context_window_and_output_order",
+            "status": "SOURCE_EXPRESSION_AUTHENTICATED",
+            "roles": [MOSHI_ROLES[4], MOSHI_ROLES[0], DSM_ROLES[1]],
+            "expressions": [
+                "RingKVCache indexes modulo self.capacity",
+                "causal attention delta < self.context",
+                "LMGen output gathered from state.cache using generated delays",
+                "DSM appends one text_tokens result per input chunk in loop order",
+            ],
+        },
+    ]
+    return {
+        "schema": STREAMING_CONTRACT_SCHEMA,
+        "status": STREAMING_STATUS,
+        "runtime_status": STREAMING_RUNTIME_STATUS,
+        "source_identity": {"dsm": dsm_identity, "moshi": moshi_identity},
+        "source_roles": source_roles,
+        "contracts": contracts,
+        "blockers": list(STREAMING_BLOCKERS),
+        "claim_boundary": "source expressions only; no model execution, numerical parity, PCM transcription, or framework tie-rule claim",
+    }
+
+
 def authenticate_model(model: Path, config: Path) -> dict[str, Any]:
     root = model.parent
     if not root.is_absolute() or not root.is_dir() or root.is_symlink():
@@ -467,7 +638,8 @@ def write_output(out: Path, files: dict[str, bytes], manifest: dict[str, Any]) -
 
 def self_test() -> None:
     assert len(TEXT_TOKENS) == 4 and len(AUDIO_CODES) == 4 and all(len(row) == N_Q for row in AUDIO_CODES)
-    assert STREAMING_STATUS == "BLOCKED_NOT_AUTHENTICATED"
+    assert STREAMING_STATUS == "AUTHENTICATED_SOURCE_CONTRACT"
+    assert STREAMING_RUNTIME_STATUS == "BLOCKED_NOT_EXECUTED"
     assert all("not independently observed" in blocker for blocker in STREAMING_BLOCKERS)
     assert TOKENIZER_NAME == "tokenizer_en_audio_4000.model"
     assert TOKENIZER_BYTES == 59_339 and TOKENIZER_SHA256 == "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"
@@ -566,6 +738,7 @@ def real(args: argparse.Namespace) -> None:
     model_record = authenticate_model(args.model / MODEL_NAME, args.model / "config.json")
     dsm_record = git_identity(args.dsm_source, DSM_REPOSITORY, DSM_REVISION, DSM_ROLES)
     moshi_record = git_identity(args.moshi_source, MOSHI_REPOSITORY, MOSHI_REVISION, MOSHI_ROLES)
+    streaming_contract = authenticate_streaming_source_contract(args.dsm_source, args.moshi_source)
     sys.path.insert(0, str(args.moshi_source))
     sys.path.insert(0, str(args.moshi_source / "moshi"))
     sys.path.insert(0, str(args.dsm_source))
@@ -632,7 +805,7 @@ def real(args: argparse.Namespace) -> None:
         }
         for name, body in files.items()
     }
-    manifest = {"format": "vokra-kyutai-stt-decoder-reference-v1", "status": "REFERENCE_READY", "component": "decoder", "scope": "dep_q=0 text decoder plus source-authenticated tokenizer structure; no Mimi neural encoding, streaming sampling loop, or PCM transcription claim", "expected_head": args.expected_head, "approval_sha256": args.approval_sha256, "approval_decision": approval["decision"], "approval_scope": approval["scope"], "model": model_record, "sources": {"dsm": dsm_record, "moshi": moshi_record}, "streaming": {"status": STREAMING_STATUS, "authenticated_source_roles": {"dsm": list(DSM_ROLES), "moshi": list(MOSHI_ROLES)}, "blockers": list(STREAMING_BLOCKERS), "runtime_transition": "FAIL_CLOSED"}, "config": {"n_q": N_Q, "dep_q": 0, "d_model": 2048, "text_card": TEXT_CARD, "audio_card": AUDIO_CARD, "tensor_count": 323, "tokenizer_schema": "sentencepiece-decode-v1"}, "packet": {"text_tokens": TEXT_TOKENS, "mimi_codes": AUDIO_CODES}, "execution": {"implementation": "official Moshi LMModel.forward_text", "dtype": "F32", "device": "cpu", "python_version": f"{sys.version_info.major}.{sys.version_info.minor}", "torch_version": torch.__version__.split("+")[0], "num_threads": torch.get_num_threads(), "num_interop_threads": torch.get_num_interop_threads(), "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(), "publication": "NO_UPLOAD"}, "artifacts": artifacts}
+    manifest = {"format": "vokra-kyutai-stt-decoder-reference-v2", "status": "REFERENCE_READY", "component": "decoder", "scope": "dep_q=0 text decoder plus source-authenticated tokenizer structure; no Mimi neural encoding, streaming sampling loop, or PCM transcription claim", "expected_head": args.expected_head, "approval_sha256": args.approval_sha256, "approval_decision": approval["decision"], "approval_scope": approval["scope"], "model": model_record, "sources": {"dsm": dsm_record, "moshi": moshi_record}, "streaming": {**streaming_contract, "runtime_transition": "FAIL_CLOSED"}, "config": {"n_q": N_Q, "dep_q": 0, "d_model": 2048, "text_card": TEXT_CARD, "audio_card": AUDIO_CARD, "tensor_count": 323, "tokenizer_schema": "sentencepiece-decode-v1"}, "packet": {"text_tokens": TEXT_TOKENS, "mimi_codes": AUDIO_CODES}, "execution": {"implementation": "official Moshi LMModel.forward_text", "dtype": "F32", "device": "cpu", "python_version": f"{sys.version_info.major}.{sys.version_info.minor}", "torch_version": torch.__version__.split("+")[0], "num_threads": torch.get_num_threads(), "num_interop_threads": torch.get_num_interop_threads(), "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(), "publication": "NO_UPLOAD"}, "artifacts": artifacts}
     write_output(args.out, files, manifest)
     print(f"reference written: {args.out}")
 
@@ -645,6 +818,9 @@ def main() -> None:
     approval_parser.add_argument("--expected-head", required=True)
     approval_parser.add_argument("--approval-evidence", required=True)
     approval_parser.add_argument("--approval-sha256", required=True)
+    source_parser = sub.add_parser("validate-source-contract")
+    source_parser.add_argument("--dsm-source", type=Path, required=True)
+    source_parser.add_argument("--moshi-source", type=Path, required=True)
     real_parser = sub.add_parser("real")
     real_parser.add_argument("--model", type=Path, required=True)
     real_parser.add_argument("--dsm-source", type=Path, required=True)
@@ -660,6 +836,8 @@ def main() -> None:
         checkout = require_clean_head(args.expected_head)
         validate_approval(args.approval_evidence, args.expected_head, args.approval_sha256, checkout)
         print("Kyutai STT decoder approval: PASS")
+    elif args.mode == "validate-source-contract":
+        print(json.dumps(authenticate_streaming_source_contract(args.dsm_source, args.moshi_source), sort_keys=True))
     else:
         real(args)
 

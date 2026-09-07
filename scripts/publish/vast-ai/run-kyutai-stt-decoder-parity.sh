@@ -41,10 +41,13 @@ self_test() {
   local self="${BASH_SOURCE[0]}" token fail=0
   for token in "$MODEL_REPO" "$MODEL_REVISION" "$MODEL_SHA256" "$DSM_REVISION" "$MOSHI_REVISION" \
     'NO_UPLOAD' 'uv run' 'official Moshi' 'dep_q=0' '323' 'CARGO_BUILD_JOBS=1' \
-    'MEASUREMENT_ONLY' 'MEASUREMENT_ONLY_NOT_APPLE_READY' 'vokra-convert' 'model.safetensors' 'sentencepiece-decode-v1' 'tokenizer_en_audio_4000.model' 'kyutai-stt-tokenizer' 'tokenizer.gguf' 'tokenizer_sha256' 'tokenizer_table_sha256' 'parity_kyutai_stt_composite_bind_real' 'KYUTAI_STT_COMPOSITE_BIND' 'IDENTITY_SCHEMA_GATE' 'VOKRA_KYUTAI_STT_MIMI_FILE' 'MIMI_SHA256' 'composite-bind.log' 'composite_bind_log_sha256' 'BLOCKED_NOT_AUTHENTICATED' 'FAIL_CLOSED' '--expected-head' '--approval-evidence' '--approval-sha256' 'validate-approval' 'test result' '0 failed' 'vokra-kyutai-stt-decoder-transfer-v2' 'no PCM/streaming parity claim'; do
+    'MEASUREMENT_ONLY' 'MEASUREMENT_ONLY_NOT_APPLE_READY' 'vokra-convert' 'model.safetensors' 'sentencepiece-decode-v1' 'tokenizer_en_audio_4000.model' 'kyutai-stt-tokenizer' 'tokenizer.gguf' 'tokenizer_sha256' 'tokenizer_table_sha256' 'parity_kyutai_stt_composite_bind_real' 'KYUTAI_STT_COMPOSITE_BIND' 'IDENTITY_SCHEMA_GATE' 'VOKRA_KYUTAI_STT_MIMI_FILE' 'MIMI_SHA256' 'composite-bind.log' 'composite_bind_log_sha256' 'AUTHENTICATED_SOURCE_CONTRACT' 'BLOCKED_NOT_EXECUTED' 'vokra-kyutai-stt-streaming-source-contract-v1' 'sampling.py' 'transformer.py' 'validate-source-contract' 'FAIL_CLOSED' '--expected-head' '--approval-evidence' '--approval-sha256' 'validate-approval' 'test result' '0 failed' 'vokra-kyutai-stt-decoder-transfer-v3' 'no PCM/streaming parity claim'; do
     grep -Fq -- "$token" "$self" || { log "self-test missing contract token: $token"; fail=1; }
   done
   grep -Eq '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[[:space:]]' "$self" && fail=1 || true
+  contract_line="$(grep -n -- 'validate-source-contract' "$self" | tail -n 1 | cut -d: -f1)"
+  download_line="$(grep -n -- 'download_hf_file' "$self" | tail -n 1 | cut -d: -f1)"
+  [[ "$contract_line" =~ ^[0-9]+$ && "$download_line" =~ ^[0-9]+$ && "$contract_line" -lt "$download_line" ]] || { log 'source contract preflight must precede model download'; fail=1; }
   synthetic="$(mktemp)"
   printf '%s\n' 'test parity_kyutai_stt_decoder_real_cpu ... ok' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' 'KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu max_abs=0 verdict=MEASUREMENT_ONLY' > "$synthetic"
   validate_measurement_log "$synthetic" || fail=1
@@ -153,6 +156,11 @@ PY
   git -C "$work_dir/dsm" checkout --detach "$DSM_REVISION"
   git clone --no-checkout "https://github.com/kyutai-labs/moshi.git" "$work_dir/moshi"
   git -C "$work_dir/moshi" checkout --detach "$MOSHI_REVISION"
+  source_contract_path="$work_dir/evidence/source-contract.json"
+  [[ ! -e "$source_contract_path" ]] || die 'source contract evidence already exists'
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DUMPER" validate-source-contract \
+    --dsm-source "$work_dir/dsm" --moshi-source "$work_dir/moshi" > "$source_contract_path"
+  [[ -s "$source_contract_path" ]] || die 'source contract evidence is empty'
   for file in model.safetensors config.json mimi-pytorch-e351c8d8@125.safetensors tokenizer_en_audio_4000.model; do
     download_hf_file "$file" "$work_dir/model/$file"
   done
@@ -216,9 +224,11 @@ canonical = b"".join(name.encode() + b"\0" + digest.encode() + b"\n" for name, d
 print(hashlib.sha256(canonical).hexdigest())
 PY
 )"
+  source_contract_sha="$(sha256sum "$source_contract_path" | awk '{print $1}')"
   echo "gguf_sha256=$gguf_sha"
   echo "tokenizer_sha256=$tokenizer_sha"
   echo "tokenizer_table_sha256=$tokenizer_table_sha"
+  echo "streaming_source_contract_sha256=$source_contract_sha"
   echo "reference_manifest_sha256=$reference_sha"
   echo "packet_sha256=$packet_sha"
   echo "reference_logits_sha256=$logits_sha"
@@ -250,10 +260,10 @@ VOKRA_KYUTAI_STT_MIMI_SHA256="$MIMI_SHA256" \
   || die 'VAST composite bind gate failed; evidence log preserved'
 validate_composite_log "$composite_validation_log" || die 'composite bind log validation failed'
 composite_log_sha="$(sha256sum "$composite_validation_log" | awk '{print $1}')"
-UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/evidence/transfer-manifest.json" "$expected_head" "$approval_sha256" "$gguf_sha" "$tokenizer_sha" "$tokenizer_table_sha" "$MIMI_SHA256" "$reference_sha" "$reference_packet_sha" "$log_sha" "$composite_log_sha" <<'PY'
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/evidence/transfer-manifest.json" "$expected_head" "$approval_sha256" "$gguf_sha" "$tokenizer_sha" "$tokenizer_table_sha" "$MIMI_SHA256" "$reference_sha" "$reference_packet_sha" "$source_contract_sha" "$log_sha" "$composite_log_sha" <<'PY'
 import json, os, sys
-out, head, approval_sha, gguf_sha, tokenizer_sha, tokenizer_table_sha, mimi_sha, ref_sha, packet_sha, cpu_log_sha, composite_log_sha = sys.argv[1:]
-payload = {"format": "vokra-kyutai-stt-decoder-transfer-v2", "status": "MEASUREMENT_ONLY_NOT_APPLE_READY", "expected_head": head, "approval_sha256": approval_sha, "gguf_name": "decoder.gguf", "gguf_sha256": gguf_sha, "tokenizer_gguf_name": "tokenizer.gguf", "tokenizer_sha256": tokenizer_sha, "tokenizer_table_sha256": tokenizer_table_sha, "mimi_name": "mimi-pytorch-e351c8d8@125.safetensors", "mimi_sha256": mimi_sha, "reference_manifest_sha256": ref_sha, "reference_packet_sha256": packet_sha, "cpu_log_name": "validation.log", "cpu_log_sha256": cpu_log_sha, "cpu_test_name": "parity_kyutai_stt_decoder_real_cpu", "composite_bind_log_name": "composite-bind.log", "composite_bind_log_sha256": composite_log_sha, "composite_bind_test_name": "parity_kyutai_stt_composite_bind_real", "composite_bind_verdict": "IDENTITY_SCHEMA_GATE_ONLY", "reference_files": ["hidden.f32", "input.json", "logits.f32", "manifest.json"], "no_upload": True}
+out, head, approval_sha, gguf_sha, tokenizer_sha, tokenizer_table_sha, mimi_sha, ref_sha, packet_sha, source_contract_sha, cpu_log_sha, composite_log_sha = sys.argv[1:]
+payload = {"format": "vokra-kyutai-stt-decoder-transfer-v3", "status": "MEASUREMENT_ONLY_NOT_APPLE_READY", "expected_head": head, "approval_sha256": approval_sha, "gguf_name": "decoder.gguf", "gguf_sha256": gguf_sha, "tokenizer_gguf_name": "tokenizer.gguf", "tokenizer_sha256": tokenizer_sha, "tokenizer_table_sha256": tokenizer_table_sha, "mimi_name": "mimi-pytorch-e351c8d8@125.safetensors", "mimi_sha256": mimi_sha, "reference_manifest_sha256": ref_sha, "reference_packet_sha256": packet_sha, "streaming_source_contract_name": "source-contract.json", "streaming_source_contract_sha256": source_contract_sha, "streaming_status": "AUTHENTICATED_SOURCE_CONTRACT", "streaming_runtime_status": "BLOCKED_NOT_EXECUTED", "streaming_blockers": ["per-step feedback/state transition is not independently observed", "temperature-zero tie behavior is not independently observed", "context/window truncation and output ordering are not independently observed"], "cpu_log_name": "validation.log", "cpu_log_sha256": cpu_log_sha, "cpu_test_name": "parity_kyutai_stt_decoder_real_cpu", "composite_bind_log_name": "composite-bind.log", "composite_bind_log_sha256": composite_log_sha, "composite_bind_test_name": "parity_kyutai_stt_composite_bind_real", "composite_bind_verdict": "IDENTITY_SCHEMA_GATE_ONLY", "reference_files": ["hidden.f32", "input.json", "logits.f32", "manifest.json"], "no_upload": True}
 data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
 fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 try:
