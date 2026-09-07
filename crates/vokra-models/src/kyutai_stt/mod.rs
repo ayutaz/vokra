@@ -42,6 +42,12 @@
 //! - **Weight license**: **CC-BY 4.0** (`AttributionRequired`) in the
 //!   upstream card. Publication and runtime binding remain blocked pending
 //!   authenticated composite evidence and owner review.
+//! - **Streaming input contract**: the pinned Kyutai MLX example
+//!   `kyutai-labs/moshi/moshi_mlx/moshi_mlx/run_inference.py` at commit
+//!   `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362` reads 24 kHz PCM, pads
+//!   `audio_silence_prefix_seconds` on the left and
+//!   `audio_delay_seconds + 1.0` on the right, then consumes 1,920-sample
+//!   chunks. It suppresses text ids `0` and `3` before SentencePiece.
 //!
 //! # Boundary — Mimi consumed, never re-implemented
 //!
@@ -85,6 +91,8 @@ use vokra_core::{BackendKind, CompliancePolicy, LicenseClass, Result, VokraError
 
 use crate::compute::{Compute, HotOp};
 use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
+use crate::mimi::MimiNeuralConfig;
+use crate::strict_checkpoint::sha256_bytes;
 
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
@@ -99,6 +107,36 @@ pub const EXPECTED_ARCH: &str = "kyutai-stt";
 /// `mimi_name` names — `mimi-pytorch-e351c8d8@125`, 24 kHz / 12.5 Hz per
 /// the shared Mimi module docs, ADR M4-06 §D3).
 pub const KYUTAI_STT_SAMPLE_RATE: u32 = 24_000;
+
+/// The authenticated Mimi frame rate named by
+/// `mimi-pytorch-e351c8d8@125.safetensors` in the pinned STT `config.json`.
+/// The value is expressed in milli-Hz to avoid a floating-point contract.
+pub const KYUTAI_STT_MIMI_FRAME_RATE_MHZ: u32 = 12_500;
+
+/// Exact Mimi sidecar identity from the authenticated Kyutai STT model tree.
+pub const KYUTAI_STT_MIMI_FILE: &str = "mimi-pytorch-e351c8d8@125.safetensors";
+pub const KYUTAI_STT_MIMI_BYTES: usize = 384_644_900;
+pub const KYUTAI_STT_MIMI_SHA256: &str =
+    "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50";
+
+/// PCM samples in one Mimi frame (`24_000 / 12.5`).  This is the fixed
+/// `1920`-sample chunk used by the pinned upstream streaming example.
+pub const KYUTAI_STT_MIMI_FRAME_HOP_SAMPLES: usize = 1_920;
+
+/// The exact tokenizer sidecar named by the authenticated STT model card.
+/// These identities are a sidecar gate only; no tokenizer bytes are embedded
+/// or decoded by the decoder-component GGUF.
+pub const KYUTAI_STT_TOKENIZER_FILE: &str = "tokenizer_en_audio_4000.model";
+pub const KYUTAI_STT_TOKENIZER_BYTES: usize = 59_339;
+pub const KYUTAI_STT_TOKENIZER_GIT_BLOB_SHA1: &str = "1820a7cbb15efc6a33dd365113c07e3df9d28d80";
+pub const KYUTAI_STT_TOKENIZER_SHA256: &str =
+    "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6";
+
+/// Upstream DSM's output filtering for the STT text stream.  `0` is the
+/// initial/empty stream value and `3` is `existing_text_padding_id` from the
+/// fixed STT config.  The pinned `moshi_mlx/run_inference.py` drops both
+/// before converting ids to SentencePiece pieces.
+pub const KYUTAI_STT_SUPPRESSED_TEXT_TOKENS: [u32; 2] = [0, 3];
 
 /// Deterministic seed retained for the explicit in-module fixture constructor.
 /// It is never used by the public GGUF/path loaders.
@@ -527,6 +565,238 @@ impl KyutaiSttConfig {
             sample_rate: read_u32_or_zero(file, KEY_SAMPLE_RATE)?,
         })
     }
+}
+
+/// The fixed, upstream-verified input contract at the STT/Mimi/streaming
+/// boundary.
+///
+/// This type deliberately contains no model state and performs no inference.
+/// It records only the arithmetic that the pinned Kyutai streaming example
+/// applies before each decoder step:
+///
+/// - PCM is 24 kHz mono at the Mimi boundary;
+/// - Mimi emits one `[n_q]` code row per 1,920 PCM samples (12.5 Hz);
+/// - `audio_silence_prefix_seconds` is prepended on the left;
+/// - the right side receives `audio_delay_seconds + 1.0` seconds of padding;
+/// - text ids `0` and `existing_text_padding_id` are not emitted as pieces.
+///
+/// The right-side extra second is an upstream input-preparation rule, not a
+/// claim that the decoder's learned delay is one whole-second longer.  The
+/// contract therefore keeps the values in samples and never rounds a
+/// fractional number of model frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KyutaiSttStreamingContract {
+    sample_rate: u32,
+    frame_hop_samples: usize,
+    n_q: usize,
+    audio_card: usize,
+    text_pad_id: u32,
+    silence_prefix_samples: usize,
+    right_padding_samples: usize,
+}
+
+impl KyutaiSttStreamingContract {
+    /// Resolves the contract only for the authenticated STT-2.6B-EN config.
+    ///
+    /// The Mimi model is a separate GGUF component.  Its full learned
+    /// weights are not accepted here; callers must pass its independently
+    /// authenticated [`MimiNeuralConfig`] to [`Self::validate_mimi_config`].
+    pub fn from_config(config: &KyutaiSttConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        if config != &KyutaiSttConfig::stt_2_6b_en() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt streaming contract: only the authenticated stt-2.6b-en config is supported".to_owned(),
+            ));
+        }
+        let sample_rate = KYUTAI_STT_SAMPLE_RATE as usize;
+        // The upstream values are 1.0 s silence prefix and 2.5 s model
+        // delay plus 1.0 s trailing margin.  Keep the half-second as exact
+        // integer arithmetic instead of rounding a float-derived frame.
+        let right_padding_seconds_half = 7usize;
+        Ok(Self {
+            sample_rate: KYUTAI_STT_SAMPLE_RATE,
+            frame_hop_samples: KYUTAI_STT_MIMI_FRAME_HOP_SAMPLES,
+            n_q: config.n_q,
+            audio_card: config.audio_card,
+            text_pad_id: config.text_pad_id,
+            silence_prefix_samples: sample_rate,
+            right_padding_samples: sample_rate
+                .checked_mul(right_padding_seconds_half)
+                .and_then(|value| value.checked_div(2))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "kyutai-stt streaming contract: right padding samples overflow".to_owned(),
+                    )
+                })?,
+        })
+    }
+
+    /// PCM sample rate required before Mimi encoding.
+    #[must_use]
+    pub const fn sample_rate(self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Number of PCM samples consumed by one Mimi frame.
+    #[must_use]
+    pub const fn frame_hop_samples(self) -> usize {
+        self.frame_hop_samples
+    }
+
+    /// Number of Mimi codebooks carried by each row-major audio frame.
+    #[must_use]
+    pub const fn n_q(self) -> usize {
+        self.n_q
+    }
+
+    /// Number of entries in each Mimi codebook, excluding the decoder's
+    /// initial-token row.
+    #[must_use]
+    pub const fn audio_card(self) -> usize {
+        self.audio_card
+    }
+
+    /// Number of left-padding PCM samples prescribed by upstream.
+    #[must_use]
+    pub const fn silence_prefix_samples(self) -> usize {
+        self.silence_prefix_samples
+    }
+
+    /// Number of right-padding PCM samples prescribed by upstream.
+    #[must_use]
+    pub const fn right_padding_samples(self) -> usize {
+        self.right_padding_samples
+    }
+
+    /// Returns `(left, right)` PCM padding in samples.
+    #[must_use]
+    pub const fn pcm_padding_samples(self) -> (usize, usize) {
+        (self.silence_prefix_samples, self.right_padding_samples)
+    }
+
+    /// Computes the number of full Mimi frames after applying the upstream
+    /// left/right padding.  This mirrors `steps = padded_samples // 1920` in
+    /// the pinned streaming example; a partial trailing frame is not invented.
+    pub fn padded_frame_count(self, input_samples: usize) -> Result<usize> {
+        let padded = input_samples
+            .checked_add(self.silence_prefix_samples)
+            .and_then(|value| value.checked_add(self.right_padding_samples))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "kyutai-stt streaming contract: padded PCM sample count overflows usize"
+                        .to_owned(),
+                )
+            })?;
+        Ok(padded / self.frame_hop_samples)
+    }
+
+    /// Checks a row-major `[frames, n_q]` Mimi code packet without executing
+    /// the decoder.  The initial-token row (`audio_card`) is not a valid
+    /// encoded Mimi code and is therefore rejected for an input packet.
+    pub fn validate_mimi_codes(self, mimi_codes: &[u32]) -> Result<usize> {
+        if mimi_codes.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt streaming contract: Mimi code packet is empty".to_owned(),
+            ));
+        }
+        if mimi_codes.len() % self.n_q != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt streaming contract: Mimi code packet length {} is not a multiple of n_q={}",
+                mimi_codes.len(),
+                self.n_q,
+            )));
+        }
+        if let Some((index, value)) = mimi_codes
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| (*value as usize) >= self.audio_card)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt streaming contract: Mimi code packet[{index}]={value} is outside [0, {})",
+                self.audio_card,
+            )));
+        }
+        Ok(mimi_codes.len() / self.n_q)
+    }
+
+    /// Reports whether a text token is forwarded to SentencePiece decoding by
+    /// the pinned upstream streaming path.
+    #[must_use]
+    pub const fn emits_text_token(self, token: u32) -> bool {
+        token != KYUTAI_STT_SUPPRESSED_TEXT_TOKENS[0] && token != self.text_pad_id
+    }
+
+    /// Checks the independently authenticated Mimi neural-chain metadata
+    /// needed by STT.  This does not bind or execute Mimi weights.
+    pub fn validate_mimi_config(&self, mimi: &MimiNeuralConfig) -> Result<()> {
+        mimi.validate()?;
+        if mimi.sample_rate != self.sample_rate
+            || mimi.frame_rate_mhz != KYUTAI_STT_MIMI_FRAME_RATE_MHZ
+            || mimi.quantizer.n_q != self.n_q
+            || mimi.quantizer.bins != self.audio_card
+            || mimi.frame_hop_samples()? != self.frame_hop_samples
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt streaming contract: Mimi metadata does not match {} Hz / {} mHz / {} codebooks / {} bins / {} samples per frame: {mimi:?}",
+                self.sample_rate,
+                KYUTAI_STT_MIMI_FRAME_RATE_MHZ,
+                self.n_q,
+                self.audio_card,
+                self.frame_hop_samples,
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Verifies the exact raw SentencePiece sidecar identity authenticated by
+/// the Kyutai STT inspector.  Parsing/decoding the protobuf is intentionally
+/// left to the composite tokenizer gate; this helper prevents an unauthored
+/// or same-size replacement from being accepted as that sidecar.
+pub fn validate_tokenizer_bytes(bytes: &[u8]) -> Result<()> {
+    if bytes.len() != KYUTAI_STT_TOKENIZER_BYTES {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: `{KYUTAI_STT_TOKENIZER_FILE}` has {} bytes; expected {}",
+            bytes.len(),
+            KYUTAI_STT_TOKENIZER_BYTES,
+        )));
+    }
+    let digest = sha256_bytes(bytes);
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual != KYUTAI_STT_TOKENIZER_SHA256 {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: `{KYUTAI_STT_TOKENIZER_FILE}` SHA-256 {actual} does not match authenticated sidecar"
+        )));
+    }
+    Ok(())
+}
+
+/// Verifies the exact raw Mimi sidecar identity authenticated by the Kyutai
+/// STT model tree.  The neural codec binder remains a separate component and
+/// is not invoked by this check.
+pub fn validate_mimi_bytes(bytes: &[u8]) -> Result<()> {
+    if bytes.len() != KYUTAI_STT_MIMI_BYTES {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt Mimi: `{KYUTAI_STT_MIMI_FILE}` has {} bytes; expected {}",
+            bytes.len(),
+            KYUTAI_STT_MIMI_BYTES,
+        )));
+    }
+    let digest = sha256_bytes(bytes);
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual != KYUTAI_STT_MIMI_SHA256 {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt Mimi: `{KYUTAI_STT_MIMI_FILE}` SHA-256 {actual} does not match authenticated sidecar"
+        )));
+    }
+    Ok(())
 }
 
 // Missing numeric keys read as `0` placeholders (a shape-only converter
@@ -2478,6 +2748,125 @@ mod tests {
         // this constant documents the Mimi-side sample rate the caller
         // must use before encoding.
         assert_eq!(KYUTAI_STT_SAMPLE_RATE, 24_000);
+    }
+
+    #[test]
+    fn streaming_contract_matches_pinned_upstream_input_preparation() {
+        let contract = KyutaiSttStreamingContract::from_config(&KyutaiSttConfig::stt_2_6b_en())
+            .expect("fixed STT streaming contract");
+        assert_eq!(contract.sample_rate(), 24_000);
+        assert_eq!(contract.frame_hop_samples(), 1_920);
+        assert_eq!(contract.n_q(), 32);
+        assert_eq!(contract.audio_card(), 2_048);
+        assert_eq!(contract.pcm_padding_samples(), (24_000, 84_000));
+        assert_eq!(contract.padded_frame_count(0).unwrap(), 56);
+        assert_eq!(contract.padded_frame_count(24_000).unwrap(), 68);
+        assert!(!contract.emits_text_token(0));
+        assert!(!contract.emits_text_token(3));
+        assert!(contract.emits_text_token(1));
+    }
+
+    #[test]
+    fn streaming_contract_rejects_wrong_config_and_code_packets() {
+        let mut wrong = KyutaiSttConfig::stt_2_6b_en();
+        wrong.audio_delay_seconds = 2.0;
+        assert!(matches!(
+            KyutaiSttStreamingContract::from_config(&wrong),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let contract = KyutaiSttStreamingContract::from_config(&KyutaiSttConfig::stt_2_6b_en())
+            .expect("fixed STT streaming contract");
+        assert!(matches!(
+            contract.validate_mimi_codes(&[]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            contract.validate_mimi_codes(&[0; 31]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut out_of_range = vec![0u32; 32];
+        out_of_range[31] = 2_048;
+        assert!(matches!(
+            contract.validate_mimi_codes(&out_of_range),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert_eq!(contract.validate_mimi_codes(&[0; 32]).unwrap(), 1);
+    }
+
+    #[test]
+    fn streaming_contract_accepts_only_the_authenticated_mimi_metadata() {
+        let contract = KyutaiSttStreamingContract::from_config(&KyutaiSttConfig::stt_2_6b_en())
+            .expect("fixed STT streaming contract");
+        let mimi = MimiNeuralConfig {
+            sample_rate: 24_000,
+            frame_rate_mhz: 12_500,
+            seanet: crate::mimi::config::MimiSeanetConfig {
+                dimension: 512,
+                n_filters: 64,
+                n_residual_layers: 1,
+                kernel_size: 7,
+                residual_kernel_size: 3,
+                last_kernel_size: 3,
+                compress: 2,
+                dilation_base: 2,
+                ratios: vec![8, 6, 5, 4],
+            },
+            transformer: crate::mimi::config::MimiTransformerConfig {
+                d_model: 512,
+                n_head: 8,
+                n_layer: 8,
+                ff_dim: 2_048,
+                context: 250,
+                max_period: 10_000,
+                layer_scale: 0.01,
+            },
+            quantizer: crate::mimi::config::MimiQuantizerConfig {
+                dimension: 256,
+                n_q: 32,
+                bins: 2_048,
+                input_dimension: 512,
+                output_dimension: 512,
+            },
+        };
+        contract
+            .validate_mimi_config(&mimi)
+            .expect("authenticated Mimi metadata contract");
+        let mut wrong = mimi.clone();
+        wrong.frame_rate_mhz = 25_000;
+        assert!(matches!(
+            contract.validate_mimi_config(&wrong),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn tokenizer_identity_gate_rejects_same_size_unverified_bytes() {
+        let bytes = vec![0u8; KYUTAI_STT_TOKENIZER_BYTES];
+        assert!(matches!(
+            validate_tokenizer_bytes(&bytes),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tokenizer_bytes(&bytes[..bytes.len() - 1]),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn mimi_sidecar_identity_gate_is_explicit_and_fail_closed() {
+        assert_eq!(
+            KYUTAI_STT_MIMI_FILE,
+            "mimi-pytorch-e351c8d8@125.safetensors"
+        );
+        assert_eq!(KYUTAI_STT_MIMI_BYTES, 384_644_900);
+        assert_eq!(
+            KYUTAI_STT_MIMI_SHA256,
+            "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50"
+        );
+        assert!(matches!(
+            validate_mimi_bytes(&[]),
+            Err(VokraError::ModelLoad(_))
+        ));
     }
 
     // -----------------------------------------------------------------------
