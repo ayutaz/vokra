@@ -46,6 +46,12 @@ AUDIO_CODES = [[(frame * 37 + channel * 11) % AUDIO_CARD for channel in range(N_
 OUTPUT_NAMES = ("input.json", "hidden.f32", "logits.f32", "manifest.json")
 MOSHI_ROLES = ("moshi/moshi/models/lm.py", "moshi/moshi/models/lm_utils.py", "moshi/moshi/models/loaders.py")
 DSM_ROLES = ("configs/config-stt-en-hf.toml", "scripts/stt_from_file_pytorch.py")
+STREAMING_STATUS = "BLOCKED_NOT_AUTHENTICATED"
+STREAMING_BLOCKERS = (
+    "per-step feedback/state transition is not independently observed",
+    "temperature-zero tie behavior is not independently observed",
+    "context/window truncation and output ordering are not independently observed",
+)
 APPROVAL_SCHEMA = "vokra-kyutai-stt-decoder-approval-v1"
 APPROVAL_SCOPE = "KYUTAI_STT_DECODER_PARITY"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -151,6 +157,186 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _varint(data: bytes, cursor: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while cursor < len(data) and shift < 64:
+        byte = data[cursor]
+        cursor += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, cursor
+        shift += 7
+    raise ValueError("malformed SentencePiece varint")
+
+
+def _skip_wire(data: bytes, cursor: int, wire: int) -> int:
+    if wire == 0:
+        return _varint(data, cursor)[1]
+    if wire == 1:
+        end = cursor + 8
+    elif wire == 2:
+        length, cursor = _varint(data, cursor)
+        end = cursor + length
+    elif wire == 5:
+        end = cursor + 4
+    else:
+        raise ValueError(f"unsupported SentencePiece wire type {wire}")
+    if end > len(data):
+        raise ValueError("truncated SentencePiece field")
+    return end
+
+
+def _spm_piece(message: bytes) -> tuple[str, int]:
+    piece: str | None = None
+    # sentencepiece_model.proto is proto2 and declares `optional Type type =
+    # 3 [default = NORMAL]`; materialize NORMAL when the field is absent.
+    piece_type = 1
+    cursor = 0
+    while cursor < len(message):
+        tag, cursor = _varint(message, cursor)
+        field, wire = tag >> 3, tag & 7
+        if field == 1 and wire == 2:
+            length, cursor = _varint(message, cursor)
+            end = cursor + length
+            if end > len(message):
+                raise ValueError("truncated SentencePiece piece")
+            piece = message[cursor:end].decode("utf-8")
+            cursor = end
+        elif field == 3 and wire == 0:
+            piece_type, cursor = _varint(message, cursor)
+        else:
+            cursor = _skip_wire(message, cursor, wire)
+    if piece is None:
+        raise ValueError("SentencePiece entry has no piece string")
+    return piece, piece_type
+
+
+def _spm_normalizer(message: bytes) -> tuple[bool, bool]:
+    """Read the two SentencePiece NormalizerSpec bools.
+
+    Proto2 defaults for both fields are true in the pinned
+    ``sentencepiece_model.proto``. Unknown normalizer fields are skipped;
+    this helper records only the flags that affect the decode contract.
+    """
+    add_dummy_prefix = True
+    remove_extra_whitespaces = True
+    cursor = 0
+    while cursor < len(message):
+        tag, cursor = _varint(message, cursor)
+        field, wire = tag >> 3, tag & 7
+        if field in (3, 4) and wire == 0:
+            value, cursor = _varint(message, cursor)
+            if field == 3:
+                add_dummy_prefix = value != 0
+            else:
+                remove_extra_whitespaces = value != 0
+        else:
+            cursor = _skip_wire(message, cursor, wire)
+    return add_dummy_prefix, remove_extra_whitespaces
+
+
+def tokenizer_structure(path: Path) -> dict[str, Any]:
+    """Inspect the authenticated SPM table without importing a tokenizer.
+
+    The bytes are read only after ``authenticate_model`` has checked the
+    fixed filename/size/digest.  This records source facts for the artifact,
+    not handwritten tokenization behavior.
+    """
+    data = path.read_bytes()
+    pieces: list[tuple[str, int]] = []
+    add_dummy_prefix = True
+    remove_extra_whitespaces = True
+    denormalizer_present = False
+    cursor = 0
+    while cursor < len(data):
+        tag, cursor = _varint(data, cursor)
+        field, wire = tag >> 3, tag & 7
+        if field == 1 and wire == 2:
+            length, cursor = _varint(data, cursor)
+            end = cursor + length
+            if end > len(data):
+                raise ValueError("truncated SentencePiece entry")
+            pieces.append(_spm_piece(data[cursor:end]))
+            cursor = end
+        elif field == 3 and wire == 2:
+            length, cursor = _varint(data, cursor)
+            end = cursor + length
+            if end > len(data):
+                raise ValueError("truncated SentencePiece normalizer")
+            add_dummy_prefix, remove_extra_whitespaces = _spm_normalizer(data[cursor:end])
+            cursor = end
+        elif field == 5 and wire == 2:
+            length, cursor = _varint(data, cursor)
+            end = cursor + length
+            if end > len(data):
+                raise ValueError("truncated SentencePiece denormalizer")
+            denormalizer_present = True
+            cursor = end
+        else:
+            cursor = _skip_wire(data, cursor, wire)
+    if len(pieces) != TEXT_CARD:
+        raise ValueError(f"tokenizer carries {len(pieces)} pieces, expected {TEXT_CARD}")
+    expected = [("<unk>", 2), ("<s>", 3), ("</s>", 3), ("<pad>", 3)]
+    if pieces[:4] != expected:
+        raise ValueError(f"tokenizer specials mismatch: {pieces[:4]!r}")
+    if not add_dummy_prefix or not remove_extra_whitespaces:
+        raise ValueError("tokenizer normalizer flags are not the authenticated defaults")
+    if denormalizer_present:
+        raise ValueError("tokenizer denormalizer is present but unsupported")
+    _validate_piece_types(pieces)
+    canonical = bytearray(b"vokra.kyutai_stt.tokenizer.table.v1\0")
+    for index, (piece, piece_type) in enumerate(pieces):
+        encoded = piece.encode("utf-8")
+        canonical.extend(index.to_bytes(4, "little"))
+        canonical.extend(len(encoded).to_bytes(4, "little"))
+        canonical.extend(encoded)
+        canonical.extend(piece_type.to_bytes(4, "little"))
+    table_sha256 = hashlib.sha256(canonical).hexdigest()
+    boundary = next(((index, piece) for index, (piece, _) in enumerate(pieces) if "▁" in piece), None)
+    byte_ids = [
+        index
+        for index, (piece, piece_type) in enumerate(pieces)
+        if piece_type == 6 and len(piece) == 6 and piece.startswith("<0x") and piece.endswith(">")
+    ]
+    byte_example: dict[str, Any] | None = None
+    for start in range(len(byte_ids)):
+        for width in range(1, min(4, len(byte_ids) - start) + 1):
+            ids = byte_ids[start : start + width]
+            raw = bytes(int(pieces[index][0][3:5], 16) for index in ids)
+            try:
+                rendered = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            byte_example = {"ids": ids, "pieces": [pieces[index][0] for index in ids], "rendered": rendered}
+            break
+        if byte_example is not None:
+            break
+    return {
+        "card": len(pieces),
+        "specials": {"unk": 0, "bos": 1, "eos": 2, "pad": 3},
+        "byte_fallback_count": len(byte_ids),
+        # Internal table-integrity digest; whole-file SHA-256 remains the
+        # external identity gate for both the raw sidecar and GGUF output.
+        "table_sha256": table_sha256,
+        "byte_example": byte_example,
+        "boundary_example": None if boundary is None else {"id": boundary[0], "piece": boundary[1], "rendered": boundary[1].replace("▁", " ")},
+        "suppressed_ids": [0, 3],
+        "normalizer": {
+            "add_dummy_prefix": add_dummy_prefix,
+            "remove_extra_whitespaces": remove_extra_whitespaces,
+        },
+        "denormalizer_present": denormalizer_present,
+    }
+
+
+def _validate_piece_types(pieces: list[tuple[str, int]]) -> None:
+    """Reject explicit zero/unknown SentencePiece enum values for Kyutai."""
+    for index, (_, piece_type) in enumerate(pieces):
+        if not 1 <= piece_type <= 6:
+            raise ValueError(f"tokenizer piece {index} has invalid type {piece_type}; expected 1..6")
+
+
 def approval_file(raw_path: Path | str) -> Path:
     raw = str(raw_path)
     if not raw or not raw.startswith("/") or "//" in raw or "/./" in raw or "/../" in raw or raw.endswith(("/.", "/..")):
@@ -238,7 +424,7 @@ def authenticate_model(model: Path, config: Path) -> dict[str, Any]:
     expected = {"card": 2048, "n_q": 32, "dep_q": 0, "delays": [0] * 33, "dim": 2048, "text_card": 4000, "existing_text_padding_id": 3, "num_heads": 32, "num_layers": 48, "hidden_scale": 4.125, "causal": True, "layer_scale": None, "context": 375, "max_period": 100000.0, "gating": "silu", "norm": "rms_norm_f32", "positional_embedding": "rope", "depformer_dim": 1024, "depformer_num_heads": 16, "depformer_num_layers": 6, "depformer_dim_feedforward": None, "depformer_multi_linear": True, "depformer_pos_emb": "none", "depformer_weights_per_step": True, "conditioners": {}, "cross_attention": False, "model_id": {"sig": "dabcc802", "epoch": 50}, "lm_gen_config": {"temp": 0.0, "temp_text": 0.0, "top_k": 250, "top_k_text": 50}, "stt_config": {"audio_delay_seconds": 2.5, "audio_silence_prefix_seconds": 1.0}, "model_type": "stt", "mimi_name": "mimi-pytorch-e351c8d8@125.safetensors", "tokenizer_name": "tokenizer_en_audio_4000.model"}
     if document != expected:
         raise ValueError("Kyutai config axes mismatch")
-    return {
+    record = {
         "repository": HF_REPOSITORY,
         "revision": HF_REVISION,
         "path": MODEL_NAME,
@@ -250,6 +436,8 @@ def authenticate_model(model: Path, config: Path) -> dict[str, Any]:
         "tensor_manifest_sha256": tensor_manifest_digest(tensor_manifest),
         "tensor_manifest": tensor_manifest,
     }
+    record["tokenizer_structure"] = tokenizer_structure(root / TOKENIZER_NAME)
+    return record
 
 
 def write_output(out: Path, files: dict[str, bytes], manifest: dict[str, Any]) -> None:
@@ -279,6 +467,36 @@ def write_output(out: Path, files: dict[str, bytes], manifest: dict[str, Any]) -
 
 def self_test() -> None:
     assert len(TEXT_TOKENS) == 4 and len(AUDIO_CODES) == 4 and all(len(row) == N_Q for row in AUDIO_CODES)
+    assert STREAMING_STATUS == "BLOCKED_NOT_AUTHENTICATED"
+    assert all("not independently observed" in blocker for blocker in STREAMING_BLOCKERS)
+    assert TOKENIZER_NAME == "tokenizer_en_audio_4000.model"
+    assert TOKENIZER_BYTES == 59_339 and TOKENIZER_SHA256 == "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"
+    # Synthetic wire-level checks exercise only malformed-input handling; no
+    # token/text value here is presented as upstream parity evidence.
+    try:
+        _varint(b"\x80", 0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("truncated SentencePiece varint accepted")
+    try:
+        _spm_piece(b"\x18\x01")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("SentencePiece entry without piece accepted")
+    assert _spm_piece(b"\x0a\x01x") == ("x", 1)
+    assert _spm_piece(b"\x0a\x01x\x18\x00") == ("x", 0)
+    assert _spm_piece(b"\x0a\x01x\x18\x05") == ("x", 5)
+    assert _spm_piece(b"\x0a\x01x\x18\x06") == ("x", 6)
+    try:
+        _validate_piece_types([("x", 0)])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("explicit zero SentencePiece type accepted")
+    assert _spm_normalizer(b"\x18\x00\x20\x01") == (False, True)
+    assert _spm_normalizer(b"") == (True, True)
     try:
         json.loads('{"x": 1, "x": 2}', object_pairs_hook=unique)
     except ValueError:
@@ -414,7 +632,7 @@ def real(args: argparse.Namespace) -> None:
         }
         for name, body in files.items()
     }
-    manifest = {"format": "vokra-kyutai-stt-decoder-reference-v1", "status": "REFERENCE_READY", "component": "decoder", "scope": "dep_q=0 text decoder only; no Mimi/tokenizer/streaming/transcription", "expected_head": args.expected_head, "approval_sha256": args.approval_sha256, "approval_decision": approval["decision"], "approval_scope": approval["scope"], "model": model_record, "sources": {"dsm": dsm_record, "moshi": moshi_record}, "config": {"n_q": N_Q, "dep_q": 0, "d_model": 2048, "text_card": TEXT_CARD, "audio_card": AUDIO_CARD, "tensor_count": 323}, "packet": {"text_tokens": TEXT_TOKENS, "mimi_codes": AUDIO_CODES}, "execution": {"implementation": "official Moshi LMModel.forward_text", "dtype": "F32", "device": "cpu", "python_version": f"{sys.version_info.major}.{sys.version_info.minor}", "torch_version": torch.__version__.split("+")[0], "num_threads": torch.get_num_threads(), "num_interop_threads": torch.get_num_interop_threads(), "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(), "publication": "NO_UPLOAD"}, "artifacts": artifacts}
+    manifest = {"format": "vokra-kyutai-stt-decoder-reference-v1", "status": "REFERENCE_READY", "component": "decoder", "scope": "dep_q=0 text decoder plus source-authenticated tokenizer structure; no Mimi neural encoding, streaming sampling loop, or PCM transcription claim", "expected_head": args.expected_head, "approval_sha256": args.approval_sha256, "approval_decision": approval["decision"], "approval_scope": approval["scope"], "model": model_record, "sources": {"dsm": dsm_record, "moshi": moshi_record}, "streaming": {"status": STREAMING_STATUS, "authenticated_source_roles": {"dsm": list(DSM_ROLES), "moshi": list(MOSHI_ROLES)}, "blockers": list(STREAMING_BLOCKERS), "runtime_transition": "FAIL_CLOSED"}, "config": {"n_q": N_Q, "dep_q": 0, "d_model": 2048, "text_card": TEXT_CARD, "audio_card": AUDIO_CARD, "tensor_count": 323, "tokenizer_schema": "sentencepiece-decode-v1"}, "packet": {"text_tokens": TEXT_TOKENS, "mimi_codes": AUDIO_CODES}, "execution": {"implementation": "official Moshi LMModel.forward_text", "dtype": "F32", "device": "cpu", "python_version": f"{sys.version_info.major}.{sys.version_info.minor}", "torch_version": torch.__version__.split("+")[0], "num_threads": torch.get_num_threads(), "num_interop_threads": torch.get_num_interop_threads(), "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(), "publication": "NO_UPLOAD"}, "artifacts": artifacts}
     write_output(args.out, files, manifest)
     print(f"reference written: {args.out}")
 

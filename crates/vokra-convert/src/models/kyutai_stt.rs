@@ -7,10 +7,14 @@
 //! this output is intentionally not a complete ASR model.
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
+use super::canary_1b_flash::{hex, sha256};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
+use crate::spm_proto::{PieceType, parse_model};
 
 pub(crate) const ARCH: &str = "kyutai-stt";
 pub(crate) const NAME: &str = "kyutai-stt-2.6b-en";
@@ -68,6 +72,37 @@ const KEY_AUDIO_DELAY_SECS: &str = "vokra.kyutai_stt.stream.audio_delay_seconds"
 const KEY_AUDIO_SILENCE_PREFIX_SECS: &str = "vokra.kyutai_stt.stream.audio_silence_prefix_seconds";
 const KEY_N_DELAYS: &str = "vokra.kyutai_stt.n_delays";
 const PREFIX_DELAY: &str = "vokra.kyutai_stt.delay.";
+
+/// Dedicated tokenizer component schema.  It is deliberately a distinct
+/// GGUF arch from the decoder component: pairing a tokenizer with a decoder
+/// is an explicit caller operation, never an accidental metadata alias.
+pub(crate) const TOKENIZER_ARCH: &str = "kyutai-stt-tokenizer";
+pub(crate) const TOKENIZER_COMPONENT_NAME: &str = "kyutai-stt-2.6b-en-tokenizer";
+pub(crate) const TOKENIZER_ASSET_NAME: &str = "tokenizer_en_audio_4000.model";
+pub(crate) const MIMI_ASSET_NAME: &str = "mimi-pytorch-e351c8d8@125.safetensors";
+pub(crate) const KEY_TOKENIZER_SCHEMA: &str = "vokra.kyutai_stt.tokenizer.schema";
+pub(crate) const KEY_TOKENIZER_CARD: &str = "vokra.kyutai_stt.tokenizer.card";
+pub(crate) const KEY_TOKENIZER_PIECES: &str = "vokra.kyutai_stt.tokenizer.pieces";
+pub(crate) const KEY_TOKENIZER_TYPES: &str = "vokra.kyutai_stt.tokenizer.types";
+pub(crate) const KEY_TOKENIZER_UNK_ID: &str = "vokra.kyutai_stt.tokenizer.unk_id";
+pub(crate) const KEY_TOKENIZER_BOS_ID: &str = "vokra.kyutai_stt.tokenizer.bos_id";
+pub(crate) const KEY_TOKENIZER_EOS_ID: &str = "vokra.kyutai_stt.tokenizer.eos_id";
+pub(crate) const KEY_TOKENIZER_PAD_ID: &str = "vokra.kyutai_stt.tokenizer.pad_id";
+pub(crate) const KEY_TOKENIZER_BYTES: &str = "vokra.kyutai_stt.tokenizer.bytes";
+pub(crate) const KEY_TOKENIZER_SHA256: &str = "vokra.kyutai_stt.tokenizer.sha256";
+pub(crate) const KEY_TOKENIZER_TABLE_SHA256: &str = "vokra.kyutai_stt.tokenizer.table_sha256";
+pub(crate) const KEY_TOKENIZER_GIT_BLOB_SHA1: &str = "vokra.kyutai_stt.tokenizer.git_blob_sha1";
+pub(crate) const KEY_TOKENIZER_MIMI_FILE: &str = "vokra.kyutai_stt.tokenizer.mimi.file";
+pub(crate) const KEY_TOKENIZER_MIMI_BYTES: &str = "vokra.kyutai_stt.tokenizer.mimi.bytes";
+pub(crate) const KEY_TOKENIZER_MIMI_SHA256: &str = "vokra.kyutai_stt.tokenizer.mimi.sha256";
+pub(crate) const KEY_TOKENIZER_ADD_DUMMY_PREFIX: &str =
+    "vokra.kyutai_stt.tokenizer.normalizer.add_dummy_prefix";
+pub(crate) const KEY_TOKENIZER_REMOVE_EXTRA_WHITESPACES: &str =
+    "vokra.kyutai_stt.tokenizer.normalizer.remove_extra_whitespaces";
+pub(crate) const KEY_TOKENIZER_DENORMALIZER_PRESENT: &str =
+    "vokra.kyutai_stt.tokenizer.denormalizer_present";
+const TOKENIZER_SCHEMA: &str = "sentencepiece-decode-v1";
+const TOKENIZER_TABLE_DIGEST_PREFIX: &[u8] = b"vokra.kyutai_stt.tokenizer.table.v1\0";
 
 /// Conversion accounting retained by the generic converter dispatch API.
 #[derive(Debug, Default)]
@@ -290,6 +325,226 @@ fn component_builder() -> GgufBuilder {
     builder
 }
 
+/// Summary for the metadata-only tokenizer companion.  The tokenizer is
+/// intentionally not a tensor component and must be shipped separately from
+/// the 384 MB Mimi weights. Its Mimi fields declare the expected companion;
+/// runtime composition still requires the independently authenticated bytes.
+#[derive(Debug, Default)]
+pub(crate) struct KyutaiSttTokenizerReport {
+    pub(crate) pieces: usize,
+    pub(crate) byte_fallback_pieces: usize,
+}
+
+fn piece_type_value(piece_type: PieceType) -> Result<u32, ConvertError> {
+    let value = match piece_type {
+        PieceType::Unspecified => {
+            return Err(ConvertError::Parse(
+                "Kyutai tokenizer contains explicit invalid SentencePiece type 0".into(),
+            ));
+        }
+        PieceType::Normal => 1,
+        PieceType::Unknown => 2,
+        PieceType::Control => 3,
+        PieceType::UserDefined => 4,
+        PieceType::Unused => 5,
+        PieceType::Byte => 6,
+        PieceType::Other(value) => {
+            return Err(ConvertError::Parse(format!(
+                "Kyutai tokenizer contains unsupported SentencePiece type {value}"
+            )));
+        }
+    };
+    Ok(value)
+}
+
+fn validate_tokenizer_model(
+    bytes: &[u8],
+) -> Result<(crate::spm_proto::ModelProto, String), ConvertError> {
+    if bytes.len() != 59_339 {
+        return Err(ConvertError::Parse(format!(
+            "Kyutai tokenizer `{}` has {} bytes; expected 59339",
+            TOKENIZER_ASSET_NAME,
+            bytes.len()
+        )));
+    }
+    let digest = hex(&sha256(bytes));
+    if digest != "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6" {
+        return Err(ConvertError::Parse(format!(
+            "Kyutai tokenizer SHA-256 {digest} does not match the authenticated sidecar"
+        )));
+    }
+    let model = parse_model(bytes).map_err(|error| {
+        ConvertError::Parse(format!(
+            "Kyutai tokenizer SentencePiece ModelProto: {error}"
+        ))
+    })?;
+    if model.pieces.len() != TEXT_CARD as usize {
+        return Err(ConvertError::Parse(format!(
+            "Kyutai tokenizer has {} pieces; expected text_card={TEXT_CARD}",
+            model.pieces.len()
+        )));
+    }
+    if !model.normalizer_add_dummy_prefix || !model.normalizer_remove_extra_whitespaces {
+        return Err(ConvertError::Parse(
+            "Kyutai tokenizer normalizer flags differ from the authenticated SentencePiece decode contract"
+                .into(),
+        ));
+    }
+    if model.denormalizer_present {
+        return Err(ConvertError::Parse(
+            "Kyutai tokenizer carries an unsupported denormalizer_spec".into(),
+        ));
+    }
+    let expected_specials = [
+        (0usize, "<unk>", PieceType::Unknown),
+        (1, "<s>", PieceType::Control),
+        (2, "</s>", PieceType::Control),
+        (3, "<pad>", PieceType::Control),
+    ];
+    for (id, expected, expected_type) in expected_specials {
+        let piece = &model.pieces[id];
+        if piece.piece != expected || piece.piece_type != expected_type {
+            return Err(ConvertError::Parse(format!(
+                "Kyutai tokenizer special id {id} is {:?}/{:?}; expected {expected:?}/{expected_type:?}",
+                piece.piece, piece.piece_type
+            )));
+        }
+    }
+    for (id, piece) in model.pieces.iter().enumerate() {
+        if piece.piece.is_empty() {
+            return Err(ConvertError::Parse(format!(
+                "Kyutai tokenizer piece {id} is empty"
+            )));
+        }
+        if !piece.score.is_finite() {
+            return Err(ConvertError::Parse(format!(
+                "Kyutai tokenizer piece {id} has a non-finite score"
+            )));
+        }
+        let _ = piece_type_value(piece.piece_type)?;
+    }
+    Ok((model, digest))
+}
+
+fn tokenizer_builder(model: &crate::spm_proto::ModelProto, digest: &str) -> GgufBuilder {
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, TOKENIZER_ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, TOKENIZER_COMPONENT_NAME);
+    builder.add_string(KEY_TOKENIZER_SCHEMA, TOKENIZER_SCHEMA);
+    builder.add_u32(KEY_TOKENIZER_CARD, model.pieces.len() as u32);
+    builder.add_metadata(
+        KEY_TOKENIZER_PIECES,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: model
+                .pieces
+                .iter()
+                .map(|piece| GgufMetadataValue::String(piece.piece.clone()))
+                .collect(),
+        }),
+    );
+    builder.add_metadata(
+        KEY_TOKENIZER_TYPES,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: model
+                .pieces
+                .iter()
+                .map(|piece| {
+                    GgufMetadataValue::U32(
+                        piece_type_value(piece.piece_type).expect("validated type"),
+                    )
+                })
+                .collect(),
+        }),
+    );
+    builder.add_u32(KEY_TOKENIZER_UNK_ID, 0);
+    builder.add_u32(KEY_TOKENIZER_BOS_ID, 1);
+    builder.add_u32(KEY_TOKENIZER_EOS_ID, 2);
+    builder.add_u32(KEY_TOKENIZER_PAD_ID, 3);
+    builder.add_u32(KEY_TOKENIZER_BYTES, 59_339);
+    builder.add_string(KEY_TOKENIZER_SHA256, digest);
+    builder.add_string(KEY_TOKENIZER_TABLE_SHA256, &tokenizer_table_sha256(model));
+    builder.add_string(
+        KEY_TOKENIZER_GIT_BLOB_SHA1,
+        "1820a7cbb15efc6a33dd365113c07e3df9d28d80",
+    );
+    builder.add_string(KEY_TOKENIZER_MIMI_FILE, MIMI_ASSET_NAME);
+    builder.add_u32(KEY_TOKENIZER_MIMI_BYTES, 384_644_900);
+    builder.add_string(
+        KEY_TOKENIZER_MIMI_SHA256,
+        "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50",
+    );
+    builder.add_bool(
+        KEY_TOKENIZER_ADD_DUMMY_PREFIX,
+        model.normalizer_add_dummy_prefix,
+    );
+    builder.add_bool(
+        KEY_TOKENIZER_REMOVE_EXTRA_WHITESPACES,
+        model.normalizer_remove_extra_whitespaces,
+    );
+    builder.add_bool(
+        KEY_TOKENIZER_DENORMALIZER_PRESENT,
+        model.denormalizer_present,
+    );
+    vokra_core::stamp_provenance(
+        &mut builder,
+        LicenseClass::AttributionRequired,
+        PROVENANCE_LICENSE,
+        Some(PROVENANCE_MODEL_ID),
+        Some(PROVENANCE_SOURCE),
+    );
+    vokra_core::stamp_attribution(&mut builder, ATTRIBUTION);
+    builder
+}
+
+/// Hash the complete ordered tokenizer table, not just the raw sidecar.
+/// Length-prefixing every UTF-8 piece and including its ID and exact enum
+/// value makes the encoding deterministic and unambiguous. This digest is an
+/// internal table-integrity check; it does not replace the external whole-file
+/// SHA-256 identity of the raw tokenizer asset or output GGUF.
+fn tokenizer_table_sha256(model: &crate::spm_proto::ModelProto) -> String {
+    let mut canonical = Vec::new();
+    canonical.extend_from_slice(TOKENIZER_TABLE_DIGEST_PREFIX);
+    for (id, piece) in model.pieces.iter().enumerate() {
+        canonical.extend_from_slice(&(id as u32).to_le_bytes());
+        canonical.extend_from_slice(&(piece.piece.len() as u32).to_le_bytes());
+        canonical.extend_from_slice(piece.piece.as_bytes());
+        canonical.extend_from_slice(
+            &piece_type_value(piece.piece_type)
+                .expect("validated type")
+                .to_le_bytes(),
+        );
+    }
+    hex(&sha256(&canonical))
+}
+
+/// Convert the exact Kyutai STT SentencePiece sidecar into a metadata-only
+/// GGUF tokenizer component. The raw 59,339-byte asset is authenticated and
+/// parsed offline; no model/Mimi weights are read or embedded. The GGUF also
+/// carries a canonical digest of the complete ordered piece/type table so
+/// runtime readback can detect metadata tampering independently of the raw
+/// sidecar SHA-256.
+pub(crate) fn convert_tokenizer(
+    bytes: Vec<u8>,
+) -> Result<(GgufBuilder, KyutaiSttTokenizerReport), ConvertError> {
+    let (model, digest) = validate_tokenizer_model(&bytes)?;
+    let byte_fallback_pieces = model
+        .pieces
+        .iter()
+        .filter(|piece| {
+            piece.piece_type == PieceType::Byte
+                && piece.piece.starts_with("<0x")
+                && piece.piece.ends_with('>')
+        })
+        .count();
+    let report = KyutaiSttTokenizerReport {
+        pieces: model.pieces.len(),
+        byte_fallback_pieces,
+    };
+    Ok((tokenizer_builder(&model, &digest), report))
+}
+
 /// Convert the authenticated decoder component, preserving every BF16 payload
 /// verbatim. No scalar or tensor defaults are synthesized.
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KyutaiSttReport), ConvertError> {
@@ -425,6 +680,17 @@ mod tests {
         assert_eq!(BB_FFN_HIDDEN, 5632);
         assert_eq!(DEP_Q, 0);
         assert_eq!(N_DELAYS, 33);
+    }
+
+    #[test]
+    fn tokenizer_converter_is_exact_and_rejects_unknown_piece_types() {
+        assert!(validate_tokenizer_model(&[]).is_err());
+        assert!(piece_type_value(PieceType::Unspecified).is_err());
+        assert!(piece_type_value(PieceType::Other(99)).is_err());
+        assert_eq!(piece_type_value(PieceType::Unused).unwrap(), 5);
+        assert_eq!(piece_type_value(PieceType::Byte).unwrap(), 6);
+        assert_eq!(TOKENIZER_ARCH, "kyutai-stt-tokenizer");
+        assert_eq!(TOKENIZER_ASSET_NAME, "tokenizer_en_audio_4000.model");
     }
 
     #[test]

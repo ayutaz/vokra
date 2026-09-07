@@ -9,6 +9,7 @@ DUMPER="$ROOT/tools/parity/kyutai_stt_decoder_dump_reference.py"
 MODEL_REPO="kyutai/stt-2.6b-en"
 MODEL_REVISION="a07aec56d22be5589cd0bc8709c75b6cf3e3039d"
 MODEL_SHA256="2471add7da1fdb2d5dc4561e88a9069376333d992760d55d29d1db46c52849b2"
+MIMI_SHA256="09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50"
 DSM_REVISION="4c4f65e147df056adf3346290d64c7b9649b18c9"
 MOSHI_REVISION="e6a55d2722a65870ef52a6c9f6ecfc0e90f38362"
 WORK="/workspace/vokra-kyutai-stt-decoder-parity"
@@ -27,11 +28,20 @@ validate_measurement_log() {
   ! grep -Fq 'verdict=PASS' "$path"
 }
 
+validate_composite_log() {
+  local path="$1"
+  [[ "$(grep -Ec '^test [^r].* \.\.\. ok$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^test parity_kyutai_stt_composite_bind_real \.\.\. ok$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=IDENTITY_SCHEMA_GATE pcm_streaming_parity=BLOCKED$' "$path")" == 1 ]] || return 1
+  ! grep -Fq 'verdict=PASS' "$path"
+}
+
 self_test() {
   local self="${BASH_SOURCE[0]}" token fail=0
   for token in "$MODEL_REPO" "$MODEL_REVISION" "$MODEL_SHA256" "$DSM_REVISION" "$MOSHI_REVISION" \
     'NO_UPLOAD' 'uv run' 'official Moshi' 'dep_q=0' '323' 'CARGO_BUILD_JOBS=1' \
-    'MEASUREMENT_ONLY' 'MEASUREMENT_ONLY_NOT_APPLE_READY' 'vokra-convert' 'model.safetensors' '--expected-head' '--approval-evidence' '--approval-sha256' 'validate-approval' 'test result' '0 failed'; do
+    'MEASUREMENT_ONLY' 'MEASUREMENT_ONLY_NOT_APPLE_READY' 'vokra-convert' 'model.safetensors' 'sentencepiece-decode-v1' 'tokenizer_en_audio_4000.model' 'kyutai-stt-tokenizer' 'tokenizer.gguf' 'tokenizer_sha256' 'tokenizer_table_sha256' 'parity_kyutai_stt_composite_bind_real' 'KYUTAI_STT_COMPOSITE_BIND' 'IDENTITY_SCHEMA_GATE' 'VOKRA_KYUTAI_STT_MIMI_FILE' 'MIMI_SHA256' 'composite-bind.log' 'composite_bind_log_sha256' 'BLOCKED_NOT_AUTHENTICATED' 'FAIL_CLOSED' '--expected-head' '--approval-evidence' '--approval-sha256' 'validate-approval' 'test result' '0 failed' 'vokra-kyutai-stt-decoder-transfer-v2' 'no PCM/streaming parity claim'; do
     grep -Fq -- "$token" "$self" || { log "self-test missing contract token: $token"; fail=1; }
   done
   grep -Eq '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[[:space:]]' "$self" && fail=1 || true
@@ -41,6 +51,16 @@ self_test() {
   printf '%s\n' 'KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu max_abs=0 verdict=MEASUREMENT_ONLY' >> "$synthetic"
   validate_measurement_log "$synthetic" && fail=1 || true
   rm -f "$synthetic"
+  composite_synthetic="$(mktemp)"
+  printf '%s\n' 'test parity_kyutai_stt_composite_bind_real ... ok' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' 'KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=IDENTITY_SCHEMA_GATE pcm_streaming_parity=BLOCKED' > "$composite_synthetic"
+  validate_composite_log "$composite_synthetic" || fail=1
+  printf '%s\n' 'test unexpected_extra ... ok' >> "$composite_synthetic"
+  validate_composite_log "$composite_synthetic" && fail=1 || true
+  printf '%s\n' 'test parity_kyutai_stt_composite_bind_real ... ok' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' 'KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=IDENTITY_SCHEMA_GATE pcm_streaming_parity=BLOCKED' 'KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=IDENTITY_SCHEMA_GATE pcm_streaming_parity=BLOCKED' > "$composite_synthetic"
+  validate_composite_log "$composite_synthetic" && fail=1 || true
+  printf '%s\n' 'KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=PASS pcm_streaming_parity=BLOCKED' >> "$composite_synthetic"
+  validate_composite_log "$composite_synthetic" && fail=1 || true
+  rm -f "$composite_synthetic"
   UV_NO_CACHE=1 uv run --no-project --offline --python 3.12 python "$DUMPER" self-test || fail=1
   (( fail == 0 )) || return 1
   log 'self-test PASS'
@@ -119,7 +139,7 @@ PY
 }
 {
   echo 'status=BLOCKED'
-  echo 'scope=dep_q=0 decoder component only'
+  echo 'scope=dep_q=0 decoder component numerical measurement plus exact SentencePiece tokenizer/Mimi/composite identity-schema gate; no PCM/streaming parity claim'
   echo "model=$MODEL_REPO@$MODEL_REVISION"
   echo "model_sha256=$MODEL_SHA256"
   echo "dsm_revision=$DSM_REVISION"
@@ -160,15 +180,27 @@ if any(item.is_symlink() or not item.is_file() for item in root.iterdir()):
 PY
   cargo build --locked --offline --release -p vokra-convert
   "$ROOT/target/release/vokra-convert" --model kyutai-stt --input "$work_dir/model/model.safetensors" --output "$work_dir/decoder.gguf"
+  "$ROOT/target/release/vokra-convert" --model kyutai-stt-tokenizer --input "$work_dir/model/tokenizer_en_audio_4000.model" --output "$work_dir/tokenizer.gguf"
   UV_NO_CACHE=1 uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$DUMPER" real \
     --model "$work_dir/model" --dsm-source "$work_dir/dsm" --moshi-source "$work_dir/moshi" --out "$work_dir/reference" \
     --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256"
   cargo fmt --all -- --check
   cargo metadata --locked --no-deps --format-version 1 >/dev/null
   gguf_sha="$(sha256sum "$work_dir/decoder.gguf" | awk '{print $1}')"
+  tokenizer_sha="$(sha256sum "$work_dir/tokenizer.gguf" | awk '{print $1}')"
   reference_sha="$(sha256sum "$work_dir/reference/manifest.json" | awk '{print $1}')"
   packet_sha="$(sha256sum "$work_dir/reference/input.json" | awk '{print $1}')"
   logits_sha="$(sha256sum "$work_dir/reference/logits.f32" | awk '{print $1}')"
+  tokenizer_table_sha="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/reference/manifest.json" <<'PY'
+import json, sys
+manifest = json.loads(open(sys.argv[1], encoding="utf-8").read())
+value = manifest["model"]["tokenizer_structure"]["table_sha256"]
+if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+    raise SystemExit("invalid tokenizer table SHA-256 in reference manifest")
+print(value)
+PY
+)"
+  grep -Fq "table_sha256=$tokenizer_table_sha" "$validation_log" || die 'CLI/readback tokenizer table digest differs from Python evidence'
   reference_packet_sha="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/reference" <<'PY'
 import hashlib, pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -185,6 +217,8 @@ print(hashlib.sha256(canonical).hexdigest())
 PY
 )"
   echo "gguf_sha256=$gguf_sha"
+  echo "tokenizer_sha256=$tokenizer_sha"
+  echo "tokenizer_table_sha256=$tokenizer_table_sha"
   echo "reference_manifest_sha256=$reference_sha"
   echo "packet_sha256=$packet_sha"
   echo "reference_logits_sha256=$logits_sha"
@@ -203,10 +237,23 @@ PY
 set +o noclobber
 validate_measurement_log "$validation_log" || die 'measurement log singleton/result validation failed'
 log_sha="$(sha256sum "$validation_log" | awk '{print $1}')"
-UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/evidence/transfer-manifest.json" "$expected_head" "$approval_sha256" "$gguf_sha" "$reference_sha" "$reference_packet_sha" "$log_sha" <<'PY'
+composite_validation_log="$work_dir/evidence/composite-bind.log"
+[[ ! -e "$composite_validation_log" ]] || die 'composite bind log already exists'
+VOKRA_KYUTAI_STT_DECODER_GGUF="$work_dir/decoder.gguf" \
+VOKRA_KYUTAI_STT_TOKENIZER_GGUF="$work_dir/tokenizer.gguf" \
+VOKRA_KYUTAI_STT_MIMI_FILE="$work_dir/model/mimi-pytorch-e351c8d8@125.safetensors" \
+VOKRA_KYUTAI_STT_DECODER_GGUF_SHA256="$gguf_sha" \
+VOKRA_KYUTAI_STT_TOKENIZER_GGUF_SHA256="$tokenizer_sha" \
+VOKRA_KYUTAI_STT_MIMI_SHA256="$MIMI_SHA256" \
+  cargo test --locked --offline --test parity_kyutai_stt_composite_bind_real -p vokra-models -- \
+    --ignored --exact parity_kyutai_stt_composite_bind_real --nocapture > "$composite_validation_log" 2>&1 \
+  || die 'VAST composite bind gate failed; evidence log preserved'
+validate_composite_log "$composite_validation_log" || die 'composite bind log validation failed'
+composite_log_sha="$(sha256sum "$composite_validation_log" | awk '{print $1}')"
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/evidence/transfer-manifest.json" "$expected_head" "$approval_sha256" "$gguf_sha" "$tokenizer_sha" "$tokenizer_table_sha" "$MIMI_SHA256" "$reference_sha" "$reference_packet_sha" "$log_sha" "$composite_log_sha" <<'PY'
 import json, os, sys
-out, head, approval_sha, gguf_sha, ref_sha, packet_sha, cpu_log_sha = sys.argv[1:]
-payload = {"format": "vokra-kyutai-stt-decoder-transfer-v1", "status": "MEASUREMENT_ONLY_NOT_APPLE_READY", "expected_head": head, "approval_sha256": approval_sha, "gguf_name": "decoder.gguf", "gguf_sha256": gguf_sha, "reference_manifest_sha256": ref_sha, "reference_packet_sha256": packet_sha, "cpu_log_name": "validation.log", "cpu_log_sha256": cpu_log_sha, "cpu_test_name": "parity_kyutai_stt_decoder_real_cpu", "reference_files": ["hidden.f32", "input.json", "logits.f32", "manifest.json"], "no_upload": True}
+out, head, approval_sha, gguf_sha, tokenizer_sha, tokenizer_table_sha, mimi_sha, ref_sha, packet_sha, cpu_log_sha, composite_log_sha = sys.argv[1:]
+payload = {"format": "vokra-kyutai-stt-decoder-transfer-v2", "status": "MEASUREMENT_ONLY_NOT_APPLE_READY", "expected_head": head, "approval_sha256": approval_sha, "gguf_name": "decoder.gguf", "gguf_sha256": gguf_sha, "tokenizer_gguf_name": "tokenizer.gguf", "tokenizer_sha256": tokenizer_sha, "tokenizer_table_sha256": tokenizer_table_sha, "mimi_name": "mimi-pytorch-e351c8d8@125.safetensors", "mimi_sha256": mimi_sha, "reference_manifest_sha256": ref_sha, "reference_packet_sha256": packet_sha, "cpu_log_name": "validation.log", "cpu_log_sha256": cpu_log_sha, "cpu_test_name": "parity_kyutai_stt_decoder_real_cpu", "composite_bind_log_name": "composite-bind.log", "composite_bind_log_sha256": composite_log_sha, "composite_bind_test_name": "parity_kyutai_stt_composite_bind_real", "composite_bind_verdict": "IDENTITY_SCHEMA_GATE_ONLY", "reference_files": ["hidden.f32", "input.json", "logits.f32", "manifest.json"], "no_upload": True}
 data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
 fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 try:

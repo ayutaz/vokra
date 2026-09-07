@@ -22,20 +22,21 @@ use vokra_convert::{
     convert_canary_1b_flash_file_with_tokenizer, convert_cosyvoice2_file,
     convert_cosyvoice2_hift_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
     convert_file_licensed, convert_file_quantized, convert_firered_asr_aed_l_with_sidecars,
-    convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
-    convert_moshi_file, convert_nanocodec_file, convert_parakeet_ctc_file_with_assets,
-    convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
-    convert_piper_plus_file, convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
+    convert_kyutai_stt_tokenizer_file, convert_moonshine_base_file_with_tokenizer,
+    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
+    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
+    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file,
+    convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
     convert_speecht5_file_with_tokenizer, convert_ultravox_llama_companion_file,
-    convert_utmos_file,
+    convert_utmos_file, kyutai_stt_tokenizer_table_sha256,
 };
-use vokra_core::gguf::{FrontendSpec, GgmlType, chunks};
+use vokra_core::gguf::{FrontendSpec, GgmlType, GgufMetadataValue, GgufValueType, chunks};
 
 const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|kyutai-stt-tokenizer|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model nanocodec --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -52,6 +53,7 @@ USAGE:
     vokra-convert --model speecht5-tts --input <model.safetensors> --tokenizer <spm_char.model> --output <out.gguf>
     vokra-convert --model ultravox-llama-companion --input <model.safetensors> \
                   --config <config.json> --revision <audited-revision> --output <companion.gguf>
+    vokra-convert --model kyutai-stt-tokenizer --input <tokenizer_en_audio_4000.model> --output <tokenizer.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -80,6 +82,9 @@ OPTIONS:
                        tokens (not a complete PCM/transcription ASR artifact)
                        — SoTA plan Phase 2; weight
                        license = CC-BY 4.0 attribution required), or
+                       kyutai-stt-tokenizer (exact SentencePiece tokenizer
+                       sidecar; emits a separate decode-only GGUF and accepts
+                       only --input/--output), or
                        parakeet-tdt (NVIDIA Parakeet-TDT-0.6B-v3 English
                        ASR — FastConformer encoder + TDT decoder — SoTA
                        plan Phase 2; weight license = CC-BY 4.0
@@ -211,7 +216,23 @@ fn main() -> ExitCode {
         license,
         revision,
         ultravox_companion,
+        kyutai_tokenizer,
     } = parsed;
+
+    if let Err(message) = validate_kyutai_tokenizer_options(
+        kyutai_tokenizer,
+        config.as_ref(),
+        cmvn.as_ref(),
+        dict.as_ref(),
+        preprocessor.as_ref(),
+        tokenizer.as_ref(),
+        quant,
+        license.as_ref(),
+        revision.as_ref(),
+    ) {
+        eprintln!("error: {message}\n\n{USAGE}");
+        return ExitCode::from(2);
+    }
 
     if revision.is_some() && !ultravox_companion {
         eprintln!(
@@ -226,22 +247,24 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    if !matches!(
-        model,
-        ModelKind::Parakeet
-            | ModelKind::ParakeetCtc
-            | ModelKind::ParakeetTdt11b
-            | ModelKind::Canary1bFlash
-            | ModelKind::ReazonspeechNemoV2
-            | ModelKind::SpeechT5Tts
-    ) && tokenizer.is_some()
+    if !kyutai_tokenizer
+        && !matches!(
+            model,
+            ModelKind::Parakeet
+                | ModelKind::ParakeetCtc
+                | ModelKind::ParakeetTdt11b
+                | ModelKind::Canary1bFlash
+                | ModelKind::ReazonspeechNemoV2
+                | ModelKind::SpeechT5Tts
+        )
+        && tokenizer.is_some()
     {
         eprintln!(
             "error: --tokenizer is only supported for Parakeet, Canary-1B-Flash, ReazonSpeech-NeMo-v2, and SpeechT5-TTS models in the standalone converter\n\n{USAGE}"
         );
         return ExitCode::from(2);
     }
-    if model != ModelKind::ParakeetCtc && preprocessor.is_some() {
+    if !kyutai_tokenizer && model != ModelKind::ParakeetCtc && preprocessor.is_some() {
         eprintln!("error: --preprocessor is only supported for --model parakeet-ctc\n\n{USAGE}");
         return ExitCode::from(2);
     }
@@ -665,6 +688,9 @@ fn main() -> ExitCode {
             // documents the schema and refuses every missing key by name.
             convert_beat_this_with_config(&input, &output, config.as_deref(), license.as_deref())
         }
+        ModelKind::KyutaiStt if kyutai_tokenizer => {
+            convert_kyutai_stt_tokenizer_file(&input, &output)
+        }
         ModelKind::UltravoxV05Llama321b if ultravox_companion => {
             if quant.is_some() {
                 eprintln!(
@@ -718,7 +744,9 @@ fn main() -> ExitCode {
             for note in &summary.notes {
                 println!("  note: {note}");
             }
-            let verified = if ultravox_companion {
+            let verified = if kyutai_tokenizer {
+                verify_kyutai_tokenizer(&output)
+            } else if ultravox_companion {
                 verify_ultravox_companion(&output)
             } else {
                 verify(model, &output)
@@ -793,6 +821,35 @@ struct Parsed {
     license: Option<String>,
     revision: Option<String>,
     ultravox_companion: bool,
+    kyutai_tokenizer: bool,
+}
+
+fn validate_kyutai_tokenizer_options(
+    kyutai_tokenizer: bool,
+    config: Option<&PathBuf>,
+    cmvn: Option<&PathBuf>,
+    dict: Option<&PathBuf>,
+    preprocessor: Option<&PathBuf>,
+    tokenizer: Option<&PathBuf>,
+    quant: Option<GgmlType>,
+    license: Option<&String>,
+    revision: Option<&String>,
+) -> Result<(), String> {
+    if kyutai_tokenizer
+        && (config.is_some()
+            || cmvn.is_some()
+            || dict.is_some()
+            || preprocessor.is_some()
+            || tokenizer.is_some()
+            || quant.is_some()
+            || license.is_some()
+            || revision.is_some())
+    {
+        return Err(
+            "--model kyutai-stt-tokenizer accepts only --input <tokenizer_en_audio_4000.model> and --output <tokenizer.gguf>".to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_firered_options(
@@ -843,6 +900,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut license: Option<String> = None;
     let mut revision: Option<String> = None;
     let mut ultravox_companion = false;
+    let mut kyutai_tokenizer = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -853,11 +911,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     v.as_str(),
                     "ultravox-llama-companion" | "ultravox_llama_companion"
                 );
-                model = Some(ModelKind::from_arg(v).ok_or_else(|| {
+                kyutai_tokenizer =
+                    matches!(v.as_str(), "kyutai-stt-tokenizer" | "kyutai_stt_tokenizer");
+                let model_arg = if kyutai_tokenizer {
+                    "kyutai-stt"
+                } else {
+                    v.as_str()
+                };
+                model = Some(ModelKind::from_arg(model_arg).ok_or_else(|| {
                     format!(
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
-                         dac | csm | moshi | denoise | dia | zonos | kyutai-stt | \
+                         dac | csm | moshi | denoise | dia | zonos | kyutai-stt | kyutai-stt-tokenizer | \
                          parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | vits-ja | styletts2 | fsmn-vad)"
                     )
@@ -947,6 +1012,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         license,
         revision,
         ultravox_companion,
+        kyutai_tokenizer,
     })
 }
 
@@ -997,6 +1063,195 @@ fn verify_ultravox_companion(output: &PathBuf) -> Result<(), ExitCode> {
 /// multi-GiB output (the 14 GiB Moshi full-7B GGUF) stays within the
 /// streaming converter's bounded-memory contract instead of re-reading
 /// the whole file into an owned buffer (M4 cc-06).
+/// Strictly verifies the metadata-only Kyutai tokenizer component after the
+/// converter has written it. This is intentionally separate from the decoder
+/// verifier: a decoder GGUF must never satisfy the tokenizer route by sharing
+/// the `ModelKind::KyutaiStt` catalog entry.
+fn verify_kyutai_tokenizer(output: &PathBuf) -> Result<(), ExitCode> {
+    let file = vokra_mmap::open_gguf(output).map_err(|error| {
+        eprintln!("error: Kyutai tokenizer GGUF failed to load back: {error}");
+        ExitCode::FAILURE
+    })?;
+    if !file.tensors().is_empty() {
+        eprintln!(
+            "error: Kyutai tokenizer verification: {} tensors found; expected metadata-only output",
+            file.tensors().len()
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    let required_keys = [
+        "vokra.model.arch",
+        "general.name",
+        "vokra.kyutai_stt.tokenizer.schema",
+        "vokra.kyutai_stt.tokenizer.card",
+        "vokra.kyutai_stt.tokenizer.pieces",
+        "vokra.kyutai_stt.tokenizer.types",
+        "vokra.kyutai_stt.tokenizer.unk_id",
+        "vokra.kyutai_stt.tokenizer.bos_id",
+        "vokra.kyutai_stt.tokenizer.eos_id",
+        "vokra.kyutai_stt.tokenizer.pad_id",
+        "vokra.kyutai_stt.tokenizer.bytes",
+        "vokra.kyutai_stt.tokenizer.sha256",
+        "vokra.kyutai_stt.tokenizer.table_sha256",
+        "vokra.kyutai_stt.tokenizer.git_blob_sha1",
+        "vokra.kyutai_stt.tokenizer.mimi.file",
+        "vokra.kyutai_stt.tokenizer.mimi.bytes",
+        "vokra.kyutai_stt.tokenizer.mimi.sha256",
+        "vokra.kyutai_stt.tokenizer.normalizer.add_dummy_prefix",
+        "vokra.kyutai_stt.tokenizer.normalizer.remove_extra_whitespaces",
+        "vokra.kyutai_stt.tokenizer.denormalizer_present",
+    ];
+    for key in &required_keys {
+        let occurrences = file
+            .metadata()
+            .iter()
+            .filter(|(name, _)| name == *key)
+            .count();
+        if occurrences != 1 {
+            eprintln!(
+                "error: Kyutai tokenizer verification: metadata `{key}` occurs {occurrences} times"
+            );
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    let allowed_tokenizer_keys = &required_keys;
+    if file.metadata().iter().any(|(key, _)| {
+        key.starts_with("vokra.kyutai_stt.tokenizer.")
+            && !allowed_tokenizer_keys.iter().any(|allowed| *allowed == key)
+    }) {
+        eprintln!("error: Kyutai tokenizer verification: unexpected tokenizer metadata");
+        return Err(ExitCode::FAILURE);
+    }
+    let string_matches = |key: &str, expected: &str| matches!(file.get(key), Some(GgufMetadataValue::String(value)) if value == expected);
+    for (key, expected) in [
+        ("vokra.model.arch", "kyutai-stt-tokenizer"),
+        ("general.name", "kyutai-stt-2.6b-en-tokenizer"),
+        (
+            "vokra.kyutai_stt.tokenizer.schema",
+            "sentencepiece-decode-v1",
+        ),
+        (
+            "vokra.kyutai_stt.tokenizer.sha256",
+            "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6",
+        ),
+        (
+            "vokra.kyutai_stt.tokenizer.git_blob_sha1",
+            "1820a7cbb15efc6a33dd365113c07e3df9d28d80",
+        ),
+        (
+            "vokra.kyutai_stt.tokenizer.mimi.file",
+            "mimi-pytorch-e351c8d8@125.safetensors",
+        ),
+        (
+            "vokra.kyutai_stt.tokenizer.mimi.sha256",
+            "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50",
+        ),
+    ] {
+        if !string_matches(key, expected) {
+            eprintln!("error: Kyutai tokenizer verification: `{key}` does not match `{expected}`");
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    let u32_matches = |key: &str, expected: u32| matches!(file.get(key), Some(GgufMetadataValue::U32(value)) if *value == expected);
+    for (key, expected) in [
+        ("vokra.kyutai_stt.tokenizer.card", 4_000),
+        ("vokra.kyutai_stt.tokenizer.unk_id", 0),
+        ("vokra.kyutai_stt.tokenizer.bos_id", 1),
+        ("vokra.kyutai_stt.tokenizer.eos_id", 2),
+        ("vokra.kyutai_stt.tokenizer.pad_id", 3),
+        ("vokra.kyutai_stt.tokenizer.bytes", 59_339),
+        ("vokra.kyutai_stt.tokenizer.mimi.bytes", 384_644_900),
+    ] {
+        if !u32_matches(key, expected) {
+            eprintln!("error: Kyutai tokenizer verification: `{key}` does not match {expected}");
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    for (key, expected) in [
+        (
+            "vokra.kyutai_stt.tokenizer.normalizer.add_dummy_prefix",
+            true,
+        ),
+        (
+            "vokra.kyutai_stt.tokenizer.normalizer.remove_extra_whitespaces",
+            true,
+        ),
+        ("vokra.kyutai_stt.tokenizer.denormalizer_present", false),
+    ] {
+        if !matches!(file.get(key), Some(GgufMetadataValue::Bool(value)) if *value == expected) {
+            eprintln!("error: Kyutai tokenizer verification: `{key}` does not match {expected}");
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    let pieces = match file.get("vokra.kyutai_stt.tokenizer.pieces") {
+        Some(GgufMetadataValue::Array(array))
+            if array.element_type == GgufValueType::String && array.values.len() == 4_000 =>
+        {
+            &array.values
+        }
+        _ => {
+            eprintln!("error: Kyutai tokenizer verification: invalid pieces array");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let types = match file.get("vokra.kyutai_stt.tokenizer.types") {
+        Some(GgufMetadataValue::Array(array))
+            if array.element_type == GgufValueType::U32 && array.values.len() == 4_000 =>
+        {
+            &array.values
+        }
+        _ => {
+            eprintln!("error: Kyutai tokenizer verification: invalid types array");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let actual_table_sha256 = kyutai_stt_tokenizer_table_sha256(&file).map_err(|error| {
+        eprintln!("error: Kyutai tokenizer verification: table digest failed: {error}");
+        ExitCode::FAILURE
+    })?;
+    if !string_matches(
+        "vokra.kyutai_stt.tokenizer.table_sha256",
+        &actual_table_sha256,
+    ) {
+        eprintln!(
+            "error: Kyutai tokenizer verification: canonical table digest mismatch ({actual_table_sha256})"
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    for (id, (expected_piece, expected_type)) in
+        [("<unk>", 2), ("<s>", 3), ("</s>", 3), ("<pad>", 3)]
+            .into_iter()
+            .enumerate()
+    {
+        if !matches!(&pieces[id], GgufMetadataValue::String(value) if value.as_str() == expected_piece)
+            || !matches!(&types[id], GgufMetadataValue::U32(value) if *value == expected_type)
+        {
+            eprintln!("error: Kyutai tokenizer verification: special id {id} mismatch");
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    for id in 0..4_000 {
+        match &pieces[id] {
+            GgufMetadataValue::String(value) if !value.is_empty() => {}
+            _ => {
+                eprintln!("error: Kyutai tokenizer verification: piece {id} is empty or mistyped");
+                return Err(ExitCode::FAILURE);
+            }
+        }
+        match &types[id] {
+            GgufMetadataValue::U32(value) if *value <= 6 => {}
+            _ => {
+                eprintln!("error: Kyutai tokenizer verification: piece {id} type is unsupported");
+                return Err(ExitCode::FAILURE);
+            }
+        }
+    }
+    println!(
+        "verified Kyutai tokenizer load: metadata-only, 4000 SentencePiece entries, schema=sentencepiece-decode-v1, table_sha256={actual_table_sha256}"
+    );
+    Ok(())
+}
+
 fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
     let file = match vokra_mmap::open_gguf(output) {
         Ok(f) => f,
@@ -3837,6 +4092,63 @@ mod tests {
         assert!(parsed.ultravox_companion);
         assert_eq!(parsed.revision.as_deref(), Some(revision));
         assert_eq!(parsed.config, Some(PathBuf::from("config.json")));
+    }
+
+    #[test]
+    fn parses_kyutai_tokenizer_alias_without_new_model_kind() {
+        for alias in ["kyutai-stt-tokenizer", "kyutai_stt_tokenizer"] {
+            let parsed = parse_args(&args(&[
+                "--model",
+                alias,
+                "--input",
+                "tokenizer_en_audio_4000.model",
+                "--output",
+                "tokenizer.gguf",
+            ]))
+            .expect("Kyutai tokenizer alias");
+            assert_eq!(parsed.model, ModelKind::KyutaiStt);
+            assert!(parsed.kyutai_tokenizer);
+            assert!(!parsed.ultravox_companion);
+        }
+    }
+
+    #[test]
+    fn kyutai_tokenizer_mode_rejects_unrelated_options() {
+        for (flag, value) in [
+            ("--config", "config.json"),
+            ("--cmvn", "cmvn.txt"),
+            ("--dict", "dict.txt"),
+            ("--preprocessor", "preprocessor.json"),
+            ("--tokenizer", "other-tokenizer.model"),
+            ("--quantize", "q4_k"),
+            ("--license", "apache-2.0"),
+            ("--revision", "0123456789abcdef0123456789abcdef01234567"),
+        ] {
+            let parsed = parse_args(&args(&[
+                "--model",
+                "kyutai-stt-tokenizer",
+                "--input",
+                "tokenizer_en_audio_4000.model",
+                "--output",
+                "tokenizer.gguf",
+                flag,
+                value,
+            ]))
+            .expect("parse precedes mode validation");
+            let error = validate_kyutai_tokenizer_options(
+                parsed.kyutai_tokenizer,
+                parsed.config.as_ref(),
+                parsed.cmvn.as_ref(),
+                parsed.dict.as_ref(),
+                parsed.preprocessor.as_ref(),
+                parsed.tokenizer.as_ref(),
+                parsed.quant,
+                parsed.license.as_ref(),
+                parsed.revision.as_ref(),
+            )
+            .expect_err("unrelated option is not accepted in tokenizer mode");
+            assert!(error.contains("accepts only --input"), "{flag}: {error}");
+        }
     }
 
     /// The legacy `whisper-base` label from pre-M2-06 CLI invocations must

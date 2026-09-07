@@ -52,7 +52,7 @@ use std::fmt;
 use std::path::Path;
 
 pub use quantize::{QuantizeError, quantize};
-use vokra_core::gguf::GgmlType;
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType};
 
 /// Which model's conversion routine to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14387,6 +14387,171 @@ pub fn convert_kyutai_stt_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::KyutaiStt, input, output)
+}
+
+/// Convert the exact `tokenizer_en_audio_4000.model` SentencePiece sidecar
+/// into a separate metadata-only Kyutai tokenizer GGUF. The output declares
+/// the fixed Mimi filename/size/digest but never embeds Mimi bytes; runtime
+/// composition must still present and authenticate the Mimi artifact.
+pub fn convert_kyutai_stt_tokenizer_file(
+    tokenizer: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    if tokenizer.file_name().and_then(|name| name.to_str())
+        != Some(models::kyutai_stt::TOKENIZER_ASSET_NAME)
+    {
+        return Err(ConvertError::Usage(format!(
+            "Kyutai STT tokenizer input must be named `{}`",
+            models::kyutai_stt::TOKENIZER_ASSET_NAME
+        )));
+    }
+    let input_metadata = std::fs::symlink_metadata(tokenizer)?;
+    if !input_metadata.file_type().is_file() || input_metadata.file_type().is_symlink() {
+        return Err(ConvertError::Usage(
+            "Kyutai STT tokenizer input must be a regular non-symlink file".into(),
+        ));
+    }
+    let bytes = std::fs::read(tokenizer)?;
+    let (builder, report) = models::kyutai_stt::convert_tokenizer(bytes)?;
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let output_bytes = builder.to_bytes()?;
+    write_new_file(output, &output_bytes)?;
+    Ok(ConvertSummary {
+        model: ModelKind::KyutaiStt,
+        tensor_count,
+        metadata_count,
+        output_bytes: output_bytes.len() as u64,
+        notes: vec![format!(
+            "kyutai-stt-tokenizer: {} exact SentencePiece entries, {} byte-fallback entries; dedicated decode-only component declares expected Mimi companion {}",
+            report.pieces,
+            report.byte_fallback_pieces,
+            models::kyutai_stt::MIMI_ASSET_NAME,
+        )],
+    })
+}
+
+/// Recompute the dedicated Kyutai tokenizer table digest from serialized GGUF
+/// metadata for strict CLI readback. The canonical encoding is shared with
+/// the converter stamp and runtime binder; it is an internal table-integrity
+/// check, not a replacement for the external whole-file SHA-256.
+pub fn kyutai_stt_tokenizer_table_sha256(file: &GgufFile) -> Result<String, ConvertError> {
+    let pieces = match file.get("vokra.kyutai_stt.tokenizer.pieces") {
+        Some(GgufMetadataValue::Array(array)) if array.element_type == GgufValueType::String => {
+            &array.values
+        }
+        _ => {
+            return Err(ConvertError::Parse(
+                "Kyutai tokenizer pieces array is invalid".into(),
+            ));
+        }
+    };
+    let types = match file.get("vokra.kyutai_stt.tokenizer.types") {
+        Some(GgufMetadataValue::Array(array)) if array.element_type == GgufValueType::U32 => {
+            &array.values
+        }
+        _ => {
+            return Err(ConvertError::Parse(
+                "Kyutai tokenizer types array is invalid".into(),
+            ));
+        }
+    };
+    if pieces.len() != types.len() {
+        return Err(ConvertError::Parse(
+            "Kyutai tokenizer pieces/types cardinality differs".into(),
+        ));
+    }
+    let mut canonical = Vec::new();
+    canonical.extend_from_slice(b"vokra.kyutai_stt.tokenizer.table.v1\0");
+    for (id, (piece, piece_type)) in pieces.iter().zip(types).enumerate() {
+        let GgufMetadataValue::String(piece) = piece else {
+            return Err(ConvertError::Parse(format!(
+                "Kyutai tokenizer piece {id} is not a string"
+            )));
+        };
+        let GgufMetadataValue::U32(piece_type) = piece_type else {
+            return Err(ConvertError::Parse(format!(
+                "Kyutai tokenizer type {id} is not UINT32"
+            )));
+        };
+        canonical.extend_from_slice(&(id as u32).to_le_bytes());
+        canonical.extend_from_slice(&(piece.len() as u32).to_le_bytes());
+        canonical.extend_from_slice(piece.as_bytes());
+        canonical.extend_from_slice(&piece_type.to_le_bytes());
+    }
+    Ok(models::canary_1b_flash::hex(
+        &models::canary_1b_flash::sha256(&canonical),
+    ))
+}
+
+/// Write a converter artifact without clobbering an existing path. `create_new`
+/// also rejects an output symlink and closes the check/write race window.
+fn write_new_file(output: &Path, bytes: &[u8]) -> Result<(), ConvertError> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod kyutai_tokenizer_output_tests {
+    use super::{convert_kyutai_stt_tokenizer_file, write_new_file};
+    use std::path::PathBuf;
+
+    fn test_path(label: &str) -> PathBuf {
+        std::fs::canonicalize(std::env::temp_dir())
+            .expect("temporary directory must be canonicalizable")
+            .join(format!(
+                "vokra-kyutai-tokenizer-{label}-{}",
+                std::process::id()
+            ))
+    }
+
+    #[test]
+    fn tokenizer_output_is_create_new_and_never_clobbers() {
+        let output = test_path("existing.gguf");
+        std::fs::write(&output, b"sentinel").expect("create sentinel");
+        let error = write_new_file(&output, b"replacement").expect_err("existing output");
+        assert!(matches!(error, super::ConvertError::Io(_)));
+        assert_eq!(std::fs::read(&output).expect("read sentinel"), b"sentinel");
+        std::fs::remove_file(output).expect("remove test sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tokenizer_output_symlink_is_rejected_by_create_new() {
+        let target = test_path("output-target.gguf");
+        let output = test_path("output-link.gguf");
+        std::fs::write(&target, b"sentinel").expect("create target");
+        std::os::unix::fs::symlink(&target, &output).expect("create output symlink");
+        assert!(matches!(
+            write_new_file(&output, b"replacement"),
+            Err(super::ConvertError::Io(_))
+        ));
+        assert_eq!(std::fs::read(&target).expect("read target"), b"sentinel");
+        std::fs::remove_file(output).expect("remove output symlink");
+        std::fs::remove_file(target).expect("remove target");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tokenizer_input_symlink_is_rejected_before_read() {
+        let target = test_path("input-target.model");
+        let link = test_path("tokenizer_en_audio_4000.model");
+        std::fs::write(&target, b"not a tokenizer").expect("create target");
+        std::os::unix::fs::symlink(&target, &link).expect("create input symlink");
+        let error = convert_kyutai_stt_tokenizer_file(&link, &test_path("output.gguf"))
+            .expect_err("symlink input must fail closed");
+        assert!(
+            matches!(error, super::ConvertError::Usage(message) if message.contains("regular"))
+        );
+        std::fs::remove_file(link).expect("remove input symlink");
+        std::fs::remove_file(target).expect("remove target");
+    }
 }
 
 /// Convert an NVIDIA **Parakeet-TDT-0.6B-v3** safetensors checkpoint
