@@ -5,12 +5,24 @@ use std::collections::HashMap;
 use vokra_core::{Result, VokraError};
 use vokra_piper_plus::Phonemizer;
 
+/// Fixed SBV2 v2 language-row and global-tone facts from the authenticated
+/// upstream `text/symbols.py`/`text/__init__.py` sources. Piper mappings carry
+/// language-local raw tone ids; production bridges convert them to the global
+/// `tone_embed` rows used by the checkpoint.
+pub const SBV2_ZH_TONE_START: u8 = 0;
+pub const SBV2_JA_TONE_START: u8 = 6;
+pub const SBV2_EN_TONE_START: u8 = 8;
+pub const SBV2_ZH_TONE_COUNT: u8 = 6;
+pub const SBV2_JA_TONE_COUNT: u8 = 2;
+pub const SBV2_EN_TONE_COUNT: u8 = 4;
+pub const SBV2_N_TONES: usize = 12;
+
 /// SBV2 input language selector — drives which char-level mapping table
 /// (and which tone convention) `SbV2Phonemizer::phonemize` uses, and
 /// selects which row of
 /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
 /// `language_embed` table
-/// ([`super::text_encoder::N_LANGUAGES`] = 3: JA/EN/ZH) is broadcast-added
+/// ([`super::text_encoder::N_LANGUAGES`] = 3: ZH/JA/EN) is broadcast-added
 /// to every position.
 ///
 /// `Hash` derives are required so [`Language`] can key a
@@ -21,16 +33,18 @@ use vokra_piper_plus::Phonemizer;
 ///
 /// The real SBV2 v2 base checkpoint
 /// (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`) ships a 3-row
-/// `enc_p.language_emb.weight` table (JA/EN/ZH), so this enum must expose
+/// `enc_p.language_emb.weight` table (ZH/JP/EN), so this enum must expose
 /// all three variants for [`super::text_encoder::SbV2TextEncoder::forward`]'s
-/// `language_id` argument to be constructible for a real ZH request.
+/// `language_id` argument to be constructible for a real ZH request. The
+/// authenticated upstream row order is ZH=0, JP=1, EN=2; the Rust `JA` name
+/// denotes that upstream JP row.
 /// **A production ZH G2P is not implemented in this crate** — Vokra's ZH
 /// G2P is out of scope for the M6 SBV2 v2 land. Selecting `ZH` at
 /// [`SbV2Phonemizer::phonemize`] currently returns a loud
 /// [`VokraError::NotImplemented`] (never a silent JA fallback — FR-EX-08);
 /// the ZH variant exists so future ZH G2P work can plug in without a
 /// second breaking enum change, and so a caller who has ZH phoneme ids
-/// from another source can still hit the `language_id = 2` code path via
+/// from another source can still hit the `language_id = 0` code path via
 /// [`SbV2Phonemizer::from_fixture`] or by constructing a
 /// [`PhonemizeResult`] directly.
 ///
@@ -38,9 +52,9 @@ use vokra_piper_plus::Phonemizer;
 ///
 /// **Forward pointer — additive to the M6 scope note above (which still
 /// describes the runtime `phonemize()` ZH arm's fail-closed state)**. The
-/// SBV2 v2 language-embed table's row-2 dispatch (`Language::ZH` →
-/// `language_id() = 2` → [`super::text_encoder::SbV2TextEncoder`]'s
-/// `language_embed` row 2) is downstream-ready as of WP-16 (three-row
+/// SBV2 v2 language-embed table's row-0 dispatch (`Language::ZH` →
+/// `language_id() = 0` → [`super::text_encoder::SbV2TextEncoder`]'s
+/// `language_embed` row 0) is downstream-ready as of WP-16 (three-row
 /// table landed) and exercised in synthetic-parity tests. What is still
 /// open is the phonemizer wiring itself.
 ///
@@ -60,14 +74,15 @@ use vokra_piper_plus::Phonemizer;
 /// (WP-20) and license sign-off. WP-21 is docs-only sweep, not gap-fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
-    /// Japanese input (SBV2 pitch-accent tones, 0-2). Maps to
+    /// Japanese input (SBV2 raw pitch-accent tones, 0-1; global rows 6-7).
+    /// Maps to
     /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
-    /// `language_embed` row 0.
+    /// `language_embed` row 1.
     JA,
-    /// English input (tones are always 0 — SBV2 has no EN pitch accent).
-    /// Maps to row 1.
+    /// English input (global tone band 8-11; SBV2 has no EN pitch accent).
+    /// Maps to row 2.
     EN,
-    /// Simplified Chinese input (SBV2 v2 language embed table id = 2 —
+    /// Simplified Chinese input (SBV2 v2 language embed table id = 0 —
     /// downstream-ready per WP-17). Owner decision 2026-08-09: the ZH G2P
     /// path reuses piper-plus's own 8-language phonemizer via the
     /// excluded-workspace `integrations/vokra-piper-g2p` crate (which
@@ -81,25 +96,25 @@ pub enum Language {
     /// G2P returns [`VokraError::NotImplemented`] (never a silent
     /// fall-through to a synthetic char-map — ZH deliberately has none, so
     /// a wiring miss cannot be hidden by "looks like it worked" output).
-    /// Tones are Mandarin lexical tones 0-4.
+    /// Raw tones are Mandarin lexical tones 0-5 and already occupy global
+    /// tone rows 0-5.
     ZH,
 }
 
 impl Language {
     /// Returns the row index into
     /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
-    /// `language_embed` table that this language selects, per the
-    /// tentative row-ordering convention documented on
-    /// [`SbV2TextEncoder::forward`](super::text_encoder::SbV2TextEncoder::forward)'s
-    /// `language_id` doc (`JA = 0, EN = 1, ZH = 2`).
+    /// `language_embed` table that this language selects. The fixed upstream
+    /// `language_id_map` is `{ZH: 0, JP: 1, EN: 2}`; `JA` is Vokra's spelling
+    /// for the upstream JP row.
     ///
     /// The type is `u8` because the downstream text-encoder forward takes
     /// a `u8` `language_id`; 3 fits comfortably.
     pub fn language_id(self) -> u8 {
         match self {
-            Language::JA => 0,
-            Language::EN => 1,
-            Language::ZH => 2,
+            Language::ZH => 0,
+            Language::JA => 1,
+            Language::EN => 2,
         }
     }
 }
@@ -112,7 +127,8 @@ impl Language {
 /// [`SbV2Phonemizer::phonemize_ja_char_mapping`],
 /// [`SbV2Phonemizer::phonemize_en_via_piper`] and
 /// [`SbV2Phonemizer::phonemize_en_char_mapping`] — historically fell back
-/// silently to `sbv2_default_phoneme_id` (tone `0`) for any input the
+/// silently to `sbv2_default_phoneme_id` (the language's global default
+/// tone) for any input the
 /// active mapping did not cover, producing byte-valid but wrong TTS audio
 /// with no signal to the caller. FR-EX-08 forbids that class of silent
 /// failure, so every [`SbV2Phonemizer`] construction path now defaults to
@@ -133,7 +149,8 @@ pub enum OovPolicy {
     #[default]
     Strict,
     /// Any OOV input is silently replaced by `sbv2_default_phoneme_id`
-    /// (tone `0` on the JA paths). Matches the pre-WP-14 behavior. Opt in
+    /// (global tone row `6` on the real JA piper path; synthetic test paths
+    /// retain their local fixture row `0`). Matches the pre-WP-14 behavior. Opt in
     /// explicitly with [`SbV2Phonemizer::with_oov_policy`]; never the
     /// default, per FR-EX-08.
     Lenient,
@@ -158,7 +175,9 @@ pub enum OovPolicy {
 pub struct PhonemizeResult {
     /// Phoneme ids in SBV2 phoneme-table space (one per output phoneme).
     pub phoneme_ids: Vec<u16>,
-    /// Pitch-accent tone per phoneme: 0-2 for JA, all 0 for EN.
+    /// Global tone-embedding row per phoneme. Production G2P paths emit
+    /// JP=6..7, ZH=0..5, and EN=8..11; synthetic test mappings may use their
+    /// own deliberately small local fixture vocabulary.
     pub tones: Vec<u8>,
     /// Word-boundary flag per phoneme (true = first phoneme of a word).
     pub word_boundaries: Vec<bool>,
@@ -282,7 +301,7 @@ impl PhonemizeFixture {
 ///    synthetic paths below are never consulted while a fixture is
 ///    installed. A miss is a loud [`VokraError::InvalidArgument`], never a
 ///    silent fall-through to the other paths (FR-EX-08). Covers all three
-///    languages (JA / EN / ZH).
+///    languages (ZH / JP / EN).
 /// 2. [`from_piper_g2p`](Self::from_piper_g2p) (Task 15) wires the real
 ///    piper-plus [`Phonemizer`] reuse boundary (M1-01-A,
 ///    `docs/piper-plus-integration.md` §7): input text is phonemized by
@@ -328,9 +347,10 @@ pub struct SbV2Phonemizer {
     // to `sbv2_default_phoneme_id` (a documented mapping fallback, not a
     // silent no-op — FR-EX-08).
     ja_mapping: HashMap<i64, (u16, u8)>,
-    en_mapping: HashMap<i64, u16>,
+    // Piper-plus id -> (SBV2 phoneme id, English language-local raw tone).
+    en_mapping: HashMap<i64, (u16, u8)>,
     // WP-18: ZH real-G2P mapping — same `(SBV2 phoneme id, tone)` shape as
-    // `ja_mapping`, since Mandarin carries lexical tones (0-4). Missing ids
+    // `ja_mapping`, since Mandarin carries lexical tones (raw 0-5). Missing ids
     // fall back to `(sbv2_default_phoneme_id, 0)` — the same documented
     // mapping fallback JA uses.
     zh_mapping: HashMap<i64, (u16, u8)>,
@@ -387,17 +407,26 @@ impl SbV2Phonemizer {
     /// phoneme id sequence is routed into SBV2 phoneme-table space through
     /// `ja_mapping` / `en_mapping`.
     ///
+    /// Each `ja_mapping` tone is a Japanese language-local raw value in
+    /// `0..2` (raw values `0` or `1`), and this bridge converts it to the
+    /// authenticated global JP tone rows `6..8` (global values `6` or `7`).
+    /// Each `en_mapping` tone is an English language-local raw value in
+    /// `0..4`, converted to global EN rows `8..12` (values `8..11`), because
+    /// upstream English stress refinement emits raw tones 1/2/3, raw 3 for
+    /// unstressed input, and raw 0 for punctuation/specials.
+    ///
     /// A piper-plus id produced by `ja_g2p` / `en_g2p` that is absent from
     /// the corresponding mapping falls back to the default SBV2 phoneme id
-    /// (`0`) — a documented mapping fallback, not a silent no-op. A `text`
+    /// (`0`) and that language's global default tone — a documented mapping
+    /// fallback, not a silent no-op. A `text`
     /// that `ja_g2p` / `en_g2p` itself cannot phonemize instead propagates
     /// that `Err` out of [`phonemize`](SbV2Phonemizer::phonemize): the
     /// real-G2P path never falls through to the synthetic char mapping
     /// (FR-EX-08).
     ///
-    /// **ZH is not wired here**: this constructor's 2-language surface is
-    /// unchanged for backward compatibility with pre-WP-18 call sites (JA
-    /// and EN are always present in the SBV2 v2 fleet, ZH is optional).
+    /// **ZH is not wired here**: this constructor's dispatch surface remains
+    /// two-language (JA and EN; ZH is optional), while its mapping values
+    /// carry the raw tone needed by the authenticated global-tone conversion.
     /// Chain [`with_zh_g2p`](Self::with_zh_g2p) on the returned value to
     /// enable [`Language::ZH`] dispatch; without that chained call
     /// `phonemize(_, Language::ZH)` fails loudly with
@@ -406,7 +435,7 @@ impl SbV2Phonemizer {
         ja_g2p: Box<dyn Phonemizer>,
         en_g2p: Box<dyn Phonemizer>,
         ja_mapping: HashMap<i64, (u16, u8)>,
-        en_mapping: HashMap<i64, u16>,
+        en_mapping: HashMap<i64, (u16, u8)>,
     ) -> Self {
         Self {
             fixtures: None,
@@ -425,7 +454,8 @@ impl SbV2Phonemizer {
 
     /// WP-18: attaches a real piper-plus `Phonemizer` for the [`Language::ZH`]
     /// dispatch path, plus the piper-plus-id-to-SBV2-phoneme-id mapping
-    /// (Mandarin carries lexical tones 0-4, so the mapping's value is
+    /// (Mandarin carries language-local raw tones `0..5`, converted to the
+    /// global ZH rows `0..5`; the mapping's value is
     /// `(sbv2_phoneme_id, tone)` — same shape as `ja_mapping`).
     ///
     /// Builder-style: returns `self` so it composes with any of the three
@@ -442,8 +472,8 @@ impl SbV2Phonemizer {
     /// fixture's `(Language::ZH, text)` entries always win over `zh_g2p`.
     ///
     /// A piper-plus id produced by `zh_g2p` that is absent from
-    /// `zh_mapping` falls back to `(sbv2_default_phoneme_id, 0)` — the same
-    /// documented mapping fallback JA uses (not a silent no-op, FR-EX-08).
+    /// `zh_mapping` falls back to `(sbv2_default_phoneme_id, 0)` — the
+    /// documented global ZH start row (not a silent no-op, FR-EX-08).
     /// A `text` that `zh_g2p` itself cannot phonemize propagates that `Err`
     /// out of [`phonemize`](Self::phonemize).
     ///
@@ -589,9 +619,9 @@ impl SbV2Phonemizer {
         let mut wb = Vec::with_capacity(piper_ids.len());
         for (i, piper_id) in piper_ids.iter().enumerate() {
             let (id, tone) = match self.ja_mapping.get(piper_id).copied() {
-                Some(pair) => pair,
+                Some((id, raw_tone)) => (id, global_tone(Language::JA, raw_tone)?),
                 None => match self.oov_policy {
-                    OovPolicy::Lenient => (self.sbv2_default_phoneme_id, 0),
+                    OovPolicy::Lenient => (self.sbv2_default_phoneme_id, SBV2_JA_TONE_START),
                     OovPolicy::Strict => {
                         return Err(oov_error_piper(Language::JA, *piper_id, i, "ja_mapping"));
                     }
@@ -607,7 +637,7 @@ impl SbV2Phonemizer {
             // COSMETIC-BUNDLE (2026-08-09): the pre-fix `TODO(Task 17-19):
             // tighten word-boundary detection when text encoder lands` is
             // now moot — the SBV2 v2 real-checkpoint text encoder consumes
-            // a `language_embed` [3, d_model] table (JA/EN/ZH one-hot),
+            // a `language_embed` [3, d_model] table (ZH/JP/EN one-hot),
             // not the design-doc-guessed `wb_embed [2, d_model]` table
             // (see `sbv2::text_encoder::N_LANGUAGES`'s "Formerly the SBV2
             // v2 design doc §7 assumed a `word_boundary_emb` table" note
@@ -669,23 +699,25 @@ impl SbV2Phonemizer {
     }
 
     /// Real-G2P EN path: routes `g2p`'s piper-plus phoneme id sequence
-    /// through `en_mapping` into SBV2 phoneme-table space. EN carries no
-    /// pitch-accent tone (SBV2 has none for English), so `tones` is all `0`.
+    /// through `en_mapping` into SBV2 phoneme-table space. English raw tones
+    /// are converted to the authenticated global EN band 8..11.
     fn phonemize_en_via_piper(&self, g2p: &dyn Phonemizer, text: &str) -> Result<PhonemizeResult> {
         let piper_ids = g2p.phonemize(text)?;
         let mut ids = Vec::with_capacity(piper_ids.len());
+        let mut tones = Vec::with_capacity(piper_ids.len());
         let mut wb = Vec::with_capacity(piper_ids.len());
         for (i, piper_id) in piper_ids.iter().enumerate() {
-            let id = match self.en_mapping.get(piper_id).copied() {
-                Some(id) => id,
+            let (id, tone) = match self.en_mapping.get(piper_id).copied() {
+                Some((id, raw_tone)) => (id, global_tone(Language::EN, raw_tone)?),
                 None => match self.oov_policy {
-                    OovPolicy::Lenient => self.sbv2_default_phoneme_id,
+                    OovPolicy::Lenient => (self.sbv2_default_phoneme_id, SBV2_EN_TONE_START),
                     OovPolicy::Strict => {
                         return Err(oov_error_piper(Language::EN, *piper_id, i, "en_mapping"));
                     }
                 },
             };
             ids.push(id);
+            tones.push(tone);
             // COSMETIC-BUNDLE (2026-08-09): the pre-fix
             // `TODO(Task 17-19): tighten word-boundary detection` is moot
             // for the same M6 reason documented on `phonemize_ja_via_piper`
@@ -695,7 +727,6 @@ impl SbV2Phonemizer {
             // consumer reads it here.
             wb.push(i == 0);
         }
-        let tones = vec![0u8; ids.len()];
         Ok(PhonemizeResult {
             phoneme_ids: ids,
             tones,
@@ -769,7 +800,7 @@ impl SbV2Phonemizer {
 
     /// Real-G2P ZH path: routes `g2p`'s piper-plus phoneme id sequence
     /// through `zh_mapping` into SBV2 phoneme-table space. ZH carries
-    /// Mandarin lexical tones (0-4), so `zh_mapping`'s value is
+    /// Mandarin lexical tones (raw 0-5), so `zh_mapping`'s value is
     /// `(sbv2_phoneme_id, tone)` — same shape as `ja_mapping`; a piper id
     /// missing from the mapping falls back to
     /// `(sbv2_default_phoneme_id, 0)`.
@@ -779,11 +810,10 @@ impl SbV2Phonemizer {
         let mut tones = Vec::with_capacity(piper_ids.len());
         let mut wb = Vec::with_capacity(piper_ids.len());
         for (i, piper_id) in piper_ids.iter().enumerate() {
-            let (id, tone) = self
-                .zh_mapping
-                .get(piper_id)
-                .copied()
-                .unwrap_or((self.sbv2_default_phoneme_id, 0));
+            let (id, tone) = match self.zh_mapping.get(piper_id).copied() {
+                Some((id, raw_tone)) => (id, global_tone(Language::ZH, raw_tone)?),
+                None => (self.sbv2_default_phoneme_id, SBV2_ZH_TONE_START),
+            };
             ids.push(id);
             tones.push(tone);
             // TODO(WP-19+): tighten word-boundary detection when the
@@ -802,6 +832,28 @@ impl SbV2Phonemizer {
             bert_input_text: text.to_string(),
         })
     }
+}
+
+/// Converts a language-local raw tone id from a piper mapping into the fixed
+/// global `tone_embed` row. Rejecting out-of-band values here prevents a
+/// caller-supplied mapping from accidentally indexing another language's
+/// tone rows.
+fn global_tone(language: Language, raw_tone: u8) -> Result<u8> {
+    let (start, count) = match language {
+        Language::ZH => (SBV2_ZH_TONE_START, SBV2_ZH_TONE_COUNT),
+        Language::JA => (SBV2_JA_TONE_START, SBV2_JA_TONE_COUNT),
+        Language::EN => (SBV2_EN_TONE_START, SBV2_EN_TONE_COUNT),
+    };
+    if raw_tone >= count {
+        return Err(VokraError::InvalidArgument(format!(
+            "SBV2 {language:?} raw tone {raw_tone} is outside the authenticated local range 0..{count}"
+        )));
+    }
+    start.checked_add(raw_tone).ok_or_else(|| {
+        VokraError::InvalidArgument(format!(
+            "SBV2 {language:?} tone offset overflow for raw tone {raw_tone}"
+        ))
+    })
 }
 
 // WP-14 OOV error constructors, factored out so all four Strict-arm sites

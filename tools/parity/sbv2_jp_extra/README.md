@@ -14,6 +14,7 @@ worker, using these immutable identities:
 - Official source commit: `ef93f388fc1ddf0dc0f598126c1964923f1df94f`
 - `text/symbols.py` blob: `846de64584e9ba4b8d96aab36d4efbcefb1a11e7`
 - `text/japanese.py` blob: `5c055875626c16bd7d3489d02b4952ec90a3bbf6`
+- `text/english.py` blob: `4a2af9523f2f96b7b34a0fff7589a82e1122ecae`
 - `text/__init__.py` blob: `495e57b50d87a4ca3e8fe8dbaf003b4888581927`
 - License blob: `0ad25db4bd1d86c452db3f9602ccdbe172438f52`
 
@@ -58,9 +59,12 @@ The fixed upstream `text/symbols.py` contract authenticates the exact schema
 values required by `validate_contract.py`: `language_id_map` is
 `{"ZH": 0, "JP": 1, "EN": 2}`, tone counts are `ZH=6`, `JP=2`, `EN=4`,
 the tone starts are `ZH=0`, `JP=6`, `EN=8`, and the checkpoint boundary is
-`n_vocab=178`, `n_tones=12`. The existing runtime/dumper convention
-`{"JA": 0, "EN": 1, "ZH": 2}` is therefore a known blocker and must not be
-treated as authenticated JP-Extra behavior until corrected and reverified.
+`n_vocab=178`, `n_tones=12`. The authenticated English source refines raw
+stress/special tones to `0..3`, which `text/__init__.py` offsets to global
+rows `8..11`. The runtime and dumper now use the authenticated
+`{"ZH": 0, "JP/JA": 1, "EN": 2}` row order and convert raw language-local
+tones into those global bands; the sidecar gate remains required before any
+production JP-Extra route is added.
 
 ## Primary-source identity checks
 
@@ -71,13 +75,13 @@ AGPL source. Run them in the VAST worker before generating the sidecar:
 gh api repos/litagin02/Style-Bert-VITS2/commits/ef93f388fc1ddf0dc0f598126c1964923f1df94f \
   --jq .sha
 gh api 'repos/litagin02/Style-Bert-VITS2/git/trees/ef93f388fc1ddf0dc0f598126c1964923f1df94f?recursive=1' \
-  --jq '.tree[] | select(.path == "text/symbols.py" or .path == "text/japanese.py" or .path == "text/__init__.py" or .path == "LICENSE") | [.path,.sha] | @tsv'
+  --jq '.tree[] | select(.path == "text/symbols.py" or .path == "text/japanese.py" or .path == "text/english.py" or .path == "text/__init__.py" or .path == "LICENSE") | [.path,.sha] | @tsv'
 curl --fail --silent --show-error \
   https://huggingface.co/api/models/litagin/Style-Bert-VITS2-2.0-base-JP-Extra/revision/a731761009f3c96d104487be6ad332bf1bb5a3a5 \
   | jq -e --arg rev a731761009f3c96d104487be6ad332bf1bb5a3a5 '.sha == $rev'
 ```
 
-The corresponding immutable primary-source URLs are the [HF revision](https://huggingface.co/litagin/Style-Bert-VITS2-2.0-base-JP-Extra/commit/a731761009f3c96d104487be6ad332bf1bb5a3a5), the [official source commit](https://github.com/litagin02/Style-Bert-VITS2/commit/ef93f388fc1ddf0dc0f598126c1964923f1df94f), and the [symbols.py](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/text/symbols.py), [japanese.py](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/text/japanese.py), [text/__init__.py](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/text/__init__.py), and [license](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/LICENSE) blobs.
+The corresponding immutable primary-source URLs are the [HF revision](https://huggingface.co/litagin/Style-Bert-VITS2-2.0-base-JP-Extra/commit/a731761009f3c96d104487be6ad332bf1bb5a3a5), the [official source commit](https://github.com/litagin02/Style-Bert-VITS2/commit/ef93f388fc1ddf0dc0f598126c1964923f1df94f), and the [symbols.py](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/text/symbols.py), [japanese.py](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/text/japanese.py), [english.py](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/text/english.py), [text/__init__.py](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/text/__init__.py), and [license](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/LICENSE) blobs.
 
 The fixed `text/__init__.py` path applies the language start offset to raw
 G2P tones. Therefore JP raw tones `0/1` become global SBV2 tone ids `6/7`

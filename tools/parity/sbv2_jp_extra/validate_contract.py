@@ -19,6 +19,7 @@ EXPECTED_SOURCE = {
     "source_commit": "ef93f388fc1ddf0dc0f598126c1964923f1df94f",
     "symbols_blob": "846de64584e9ba4b8d96aab36d4efbcefb1a11e7",
     "japanese_blob": "5c055875626c16bd7d3489d02b4952ec90a3bbf6",
+    "english_blob": "4a2af9523f2f96b7b34a0fff7589a82e1122ecae",
     "init_blob": "495e57b50d87a4ca3e8fe8dbaf003b4888581927",
     "license_blob": "0ad25db4bd1d86c452db3f9602ccdbe172438f52",
 }

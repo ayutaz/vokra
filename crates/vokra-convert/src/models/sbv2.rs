@@ -285,10 +285,12 @@ const KEY_N_SDP_LAYERS: &str = "vokra.sbv2.n_sdp_layers";
 const KEY_SAMPLE_RATE: &str = "vokra.sbv2.sample_rate";
 
 // M6 refactor (2026-08-06): the SBV2 v2 base checkpoint's real
-// `enc_p.language_emb.weight` table is `[3, 192]` (JA/EN/ZH). This value
+// `enc_p.language_emb.weight` table is `[3, 192]` (ZH/JP/EN). This value
 // is a fixed architectural constant, not a config-authored one — it
 // mirrors `crates/vokra-models/src/sbv2/text_encoder.rs`'s
-// `N_LANGUAGES = 3`. See the module doc's "M6 refactor" section for the
+// `N_LANGUAGES = 3`. The converter performs a direct 1:1 tensor rename; it
+// does not reorder language rows or tone rows. See the module doc's
+// "M6 refactor" section for the
 // primary-source verification behind it and why the metadata is stamped
 // forward-looking (the loader's own `language_embed` length check already
 // gates on the same value even without this metadata being present).
@@ -1387,7 +1389,7 @@ fn write_hparams(b: &mut GgufBuilder, cfg: &SbV2Config) {
     b.add_bool(KEY_FLOW_MEAN_ONLY, cfg.flow_mean_only);
     b.add_u32(KEY_N_SDP_LAYERS, cfg.n_sdp_layers);
     b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
-    // Fixed-architecture: [`N_LANGUAGES`] = 3 (JA/EN/ZH); see its own doc
+    // Fixed-architecture: [`N_LANGUAGES`] = 3 (ZH/JP/EN); see its own doc
     // and the module doc's "M6 refactor" section.
     b.add_u32(KEY_N_LANGUAGES, N_LANGUAGES);
 
@@ -2474,7 +2476,7 @@ mod tests {
         assert_eq!(get_u32(KEY_DECODER_CONV_PRE_KERNEL), 7);
         assert_eq!(get_u32(KEY_DECODER_CONV_POST_KERNEL), 7);
         // M6 refactor (2026-08-06): `n_languages` is a fixed
-        // architectural constant (JA/EN/ZH = 3), not a config field, and
+        // architectural constant (ZH/JP/EN = 3), not a config field, and
         // is always stamped as long as the config side-car triggers the
         // hparam-writing path. See the module doc's "M6 refactor" section
         // for the primary-source verification.

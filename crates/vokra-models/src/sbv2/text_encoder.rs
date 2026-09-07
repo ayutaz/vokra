@@ -54,9 +54,9 @@ const LN_EPS: f32 = 1e-5;
 /// Number of languages in the SBV2 v2 base checkpoint's
 /// `enc_p.language_emb.weight` table. Real upstream shape observed on
 /// `litagin/Style-Bert-VITS2-2.0-base-JP-Extra` is `[3, 192]` — one row
-/// per supported language: JA / EN / ZH (see [`SbV2TextEncoder::forward`]'s
-/// `language_id` doc for the tentative row-ordering convention this crate
-/// assumes, pending real-checkpoint config verification).
+/// per supported language: ZH / JP / EN. The fixed upstream
+/// `language_id_map` is `{ZH: 0, JP: 1, EN: 2}`; Vokra's `Language::JA`
+/// names the upstream JP row.
 ///
 /// Formerly the SBV2 v2 design doc §7 assumed a `word_boundary_emb` table
 /// (`[2, d_model]`, one row per boundary flag) at this slot — that
@@ -83,8 +83,8 @@ pub struct SbV2TextEncoder {
     /// Pitch-accent tone embedding table, row-major `[n_tones, d_model]`.
     tone_embed: Vec<f32>,
     /// Per-language embedding table, row-major `[N_LANGUAGES, d_model]`
-    /// (row `0` = JA, `1` = EN, `2` = ZH by tentative convention — see
-    /// [`forward`](Self::forward)'s `language_id` doc).
+    /// (row `0` = ZH, `1` = JP/JA, `2` = EN per authenticated upstream
+    /// mapping — see [`forward`](Self::forward)'s `language_id` doc).
     language_embed: Vec<f32>,
     /// Transformer stack, applied to the summed+scaled embedding in
     /// order. An empty stack is a legitimate, exercised no-op
@@ -145,7 +145,7 @@ impl SbV2TextEncoder {
         debug_assert_eq!(
             language_embed.len(),
             N_LANGUAGES * d_model,
-            "language_embed must be [N_LANGUAGES, d_model] (N_LANGUAGES = 3: JA/EN/ZH)"
+            "language_embed must be [N_LANGUAGES, d_model] (N_LANGUAGES = 3: ZH/JP/EN)"
         );
         for block in &transformer_layers {
             debug_assert_eq!(
@@ -188,18 +188,11 @@ impl SbV2TextEncoder {
     /// (`out[i * d_model .. (i + 1) * d_model]` is position `i`'s hidden
     /// vector).
     ///
-    /// # `language_id` row-ordering convention (tentative — TODO owner)
+    /// # `language_id` row-ordering convention
     ///
-    /// Row `0` = JA, row `1` = EN, row `2` = ZH. **This ordering is
-    /// tentative**: the real
-    /// `litagin/Style-Bert-VITS2-2.0-base-JP-Extra` checkpoint ships
-    /// weights-only (no config.json enumerates the language row order), so
-    /// this crate cannot verify it from primary source alone. The
-    /// tentative ordering matches the alphabetical / JP-Extra-family
-    /// convention used across VITS-JA / SBV2-JP-Extra derivatives and is
-    /// what
-    /// [`SbV2Model::synthesize`](super::mod::SbV2Model)'s
-    /// [`Language`](super::g2p::Language) → `language_id` mapping assumes.
+    /// The authenticated upstream `language_id_map` is row `0` = ZH,
+    /// row `1` = JP (Vokra `JA`), and row `2` = EN. The converter preserves
+    /// `enc_p.language_emb.weight` row order during its direct tensor rename.
     ///
     /// # Panics
     ///

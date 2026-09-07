@@ -31,9 +31,9 @@
 //! **Forward pointer — additive, does not contradict the JP-Extra caveat
 //! above (which still governs real-checkpoint audio quality).** As of the
 //! Phase D SBV2 v2 wave, the ZH code path is wired end-to-end at the
-//! scaffolding level: [`text_encoder::N_LANGUAGES`] = 3 (JA/EN/ZH),
-//! [`Language::ZH`] and its `language_id() = 2` dispatch to
-//! [`SbV2TextEncoder`]'s `language_embed` row 2 are exercised in
+//! scaffolding level: [`text_encoder::N_LANGUAGES`] = 3 (ZH/JP/EN),
+//! [`Language::ZH`] and its `language_id() = 0` dispatch to
+//! [`SbV2TextEncoder`]'s `language_embed` row 0 are exercised in
 //! synthetic-parity tests, and the WordPiece tokenizer aimed at the
 //! owner-approved ZH BERT checkpoint (`hfl/chinese-roberta-wwm-ext-large`,
 //! Apache-2.0) landed as [`vokra_bert::wordpiece::BertWordpieceTokenizer`]
@@ -89,7 +89,11 @@ pub use rng_mode::RngMode;
 pub use decoder::SbV2Decoder;
 pub use duration::{ConvFlow, DDSConv, ElementwiseAffine, SbV2SDP, SdpLayerNorm, length_regulate};
 pub use flow::{Flip, FlowLayer, SbV2Flow, SbV2TransformerCouplingLayer};
-pub use g2p::{Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
+pub use g2p::{
+    Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SBV2_EN_TONE_COUNT, SBV2_EN_TONE_START,
+    SBV2_JA_TONE_COUNT, SBV2_JA_TONE_START, SBV2_N_TONES, SBV2_ZH_TONE_COUNT, SBV2_ZH_TONE_START,
+    SbV2Phonemizer,
+};
 pub use parity::{
     ATOL_DEFAULT, AtolCalibration, MEL_LOSS_ATOL, PER_TENSOR_ATOL, UTMOS_ATOL,
     atol_calibration_for, tolerance_for,
@@ -1285,7 +1289,7 @@ impl SbV2Model {
         // via [`Language::language_id`], which pins the row of
         // `SbV2TextEncoder::language_embed` that gets broadcast-added to
         // every position. See `SbV2TextEncoder::forward`'s `language_id`
-        // doc for the tentative JA=0/EN=1/ZH=2 row-ordering convention.
+        // doc for the authenticated ZH=0/JP(JA)=1/EN=2 row-ordering convention.
         //
         // Wave-4 INTERMEDIATE-ACCESSORS: capture both the pre-transformer
         // sum (`phoneme_embed`) and the post-transformer hidden state
@@ -2120,7 +2124,7 @@ impl TtsEngine for SbV2Model {
         // everything else (including `None`) -> JA (SBV2 v2's base config
         // is Japanese-first, per its JP-Extra heritage — see
         // `decoder.rs`'s module doc). ZH selection routes to the
-        // language_embed row 2 code path but currently returns
+        // language_embed row 0 code path but currently returns
         // NotImplemented at either the phonemizer or the BERT tokenizer
         // step below — see `Language`'s ZH scope note.
         let language = match request.language.as_deref() {
@@ -2772,7 +2776,7 @@ impl SbV2Model {
         let phoneme_embed = load_tensor_f32("sbv2.text_encoder.phoneme_embed")?;
         let tone_embed = load_tensor_f32("sbv2.text_encoder.tone_embed")?;
         // M6 refactor (2026-08-06): the real base checkpoint has
-        // `enc_p.language_emb.weight [3, 192]` (JA/EN/ZH), never a
+        // `enc_p.language_emb.weight [3, 192]` (ZH/JP/EN), never a
         // `word_boundary_emb`. The converter now emits this under
         // `sbv2.text_encoder.language_embed`; the runtime cross-checks
         // its length is exactly N_LANGUAGES * d_model so a stale

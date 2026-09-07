@@ -38,7 +38,10 @@
 //! output shape.
 
 use vokra_core::VokraError;
-use vokra_models::sbv2::{Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
+use vokra_models::sbv2::{
+    Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SBV2_EN_TONE_START, SBV2_JA_TONE_START,
+    SbV2Phonemizer,
+};
 
 #[test]
 fn ja_phonemize_produces_ids() {
@@ -51,19 +54,22 @@ fn ja_phonemize_produces_ids() {
 }
 
 #[test]
-fn en_phonemize_zero_tones() {
+fn en_synthetic_phonemize_uses_local_zero_tones() {
     let p = SbV2Phonemizer::synthetic_for_test();
     let r = p.phonemize("hello world", Language::EN).expect("phonemize");
-    assert!(r.tones.iter().all(|&t| t == 0), "EN tones must be all zero");
+    assert!(
+        r.tones.iter().all(|&t| t == 0),
+        "synthetic EN fixture tones remain local zeros"
+    );
 }
 
 /// M6 refactor (2026-08-06): `Language::ZH` selects the SBV2 v2 real
-/// checkpoint's `enc_p.language_emb.weight` row 2, but no in-crate ZH G2P
+/// checkpoint's `enc_p.language_emb.weight` row 0, but no in-crate ZH G2P
 /// is wired — [`SbV2Phonemizer::phonemize`] must therefore return a loud
 /// [`VokraError::NotImplemented`] on the char-mapping / real-piper paths,
 /// never a silent JA fallback (FR-EX-08). The fixture path is unaffected
 /// (a caller with pre-computed ZH phoneme ids can still hit
-/// `language_id = 2` code paths via [`PhonemizeFixture`]).
+/// `language_id = 0` code paths via [`PhonemizeFixture`]).
 #[test]
 fn zh_phonemize_fails_loudly_without_fixture() {
     let p = SbV2Phonemizer::synthetic_for_test();
@@ -82,17 +88,17 @@ fn zh_phonemize_fails_loudly_without_fixture() {
     }
 }
 
-/// M6 refactor: `Language::language_id` pins the tentative row-ordering
-/// convention (`JA = 0, EN = 1, ZH = 2`) that
+/// M6 refactor: `Language::language_id` pins the authenticated upstream
+/// row-ordering convention (`ZH = 0, JA/JP = 1, EN = 2`) that
 /// [`SbV2TextEncoder::forward`](vokra_models::sbv2::SbV2TextEncoder::forward)
 /// consumes. Pinning it here (a plain enum-value equality check) catches
 /// an accidental permutation that would otherwise only manifest as a
 /// parity mismatch on a real checkpoint.
 #[test]
 fn language_id_row_ordering_is_stable() {
-    assert_eq!(Language::JA.language_id(), 0);
-    assert_eq!(Language::EN.language_id(), 1);
-    assert_eq!(Language::ZH.language_id(), 2);
+    assert_eq!(Language::ZH.language_id(), 0);
+    assert_eq!(Language::JA.language_id(), 1);
+    assert_eq!(Language::EN.language_id(), 2);
 }
 
 /// Regression: EN word-boundary flags must align to each word start,
@@ -172,13 +178,115 @@ fn wired_with_passthrough_phonemizer() {
         vec![0u16; 6],
         "empty en_mapping -> every piper id falls back to the default"
     );
-    assert_eq!(r.tones, vec![0u8; 6], "EN tones are always zero");
+    assert_eq!(
+        r.tones,
+        vec![SBV2_EN_TONE_START; 6],
+        "EN uses the authenticated global tone band start"
+    );
     assert_eq!(
         r.word_boundaries,
         vec![true, false, false, false, false, false],
         "conservative rule: only the first emitted phoneme starts a word"
     );
     assert_eq!(r.bert_input_text, "3 4");
+}
+
+/// Piper mappings carry language-local raw tones. The production bridge must
+/// convert JP's raw 0/1 values to the authenticated global rows 6/7.
+#[test]
+fn piper_japanese_tones_use_global_band_and_reject_drift() {
+    use std::collections::HashMap;
+    use vokra_piper_plus::{PassthroughPhonemizer, PhonemeTable};
+
+    let symbols = vec![
+        "_".to_owned(),
+        "^".to_owned(),
+        "$".to_owned(),
+        "a".to_owned(),
+        "i".to_owned(),
+    ];
+    let table = PhonemeTable::from_symbols(&symbols).expect("valid table");
+    let ja = Box::new(PassthroughPhonemizer::new(table.clone()));
+    let en = Box::new(PassthroughPhonemizer::new(table));
+    let ja_mapping = HashMap::from([
+        (0_i64, (10_u16, 0_u8)),
+        (1_i64, (11_u16, 1_u8)),
+        (2_i64, (12_u16, 0_u8)),
+        (3_i64, (13_u16, 1_u8)),
+        (4_i64, (14_u16, 0_u8)),
+    ]);
+    let p = SbV2Phonemizer::from_piper_g2p(ja, en, ja_mapping, HashMap::new());
+    let r = p.phonemize("3 4", Language::JA).expect("mapped JP input");
+    assert_eq!(r.tones, vec![7, 7, 6, 6, 6, 6]);
+    assert!(
+        r.tones
+            .iter()
+            .all(|&tone| (SBV2_JA_TONE_START..SBV2_JA_TONE_START + 2).contains(&tone))
+    );
+
+    let ja = Box::new(PassthroughPhonemizer::new(
+        PhonemeTable::from_symbols(&symbols).expect("valid table"),
+    ));
+    let en = Box::new(PassthroughPhonemizer::new(
+        PhonemeTable::from_symbols(&symbols).expect("valid table"),
+    ));
+    let drifted = SbV2Phonemizer::from_piper_g2p(
+        ja,
+        en,
+        HashMap::from([(1_i64, (10_u16, 2_u8))]),
+        HashMap::new(),
+    );
+    match drifted.phonemize("3 4", Language::JA) {
+        Err(VokraError::InvalidArgument(msg)) => assert!(msg.contains("raw tone 2")),
+        other => panic!("JP tone outside the authenticated local band must fail: {other:?}"),
+    }
+}
+
+/// English piper mappings carry the raw stress/special tone emitted by the
+/// authenticated upstream refine step. The production bridge preserves all
+/// four raw values in the global EN band 8..11 and rejects drift.
+#[test]
+fn piper_english_tones_use_global_band_and_reject_drift() {
+    use std::collections::HashMap;
+    use vokra_piper_plus::{PassthroughPhonemizer, PhonemeTable};
+
+    let symbols = vec![
+        "_".to_owned(),
+        "^".to_owned(),
+        "$".to_owned(),
+        "a".to_owned(),
+        "i".to_owned(),
+    ];
+    let table = PhonemeTable::from_symbols(&symbols).expect("valid table");
+    let ja = Box::new(PassthroughPhonemizer::new(table.clone()));
+    let en = Box::new(PassthroughPhonemizer::new(table));
+    let en_mapping = HashMap::from([
+        (0_i64, (20_u16, 0_u8)),
+        (1_i64, (21_u16, 1_u8)),
+        (2_i64, (22_u16, 2_u8)),
+        (3_i64, (23_u16, 3_u8)),
+        (4_i64, (24_u16, 0_u8)),
+    ]);
+    let p = SbV2Phonemizer::from_piper_g2p(ja, en, HashMap::new(), en_mapping);
+    let r = p.phonemize("3 4", Language::EN).expect("mapped EN input");
+    assert_eq!(r.tones, vec![9, 11, 8, 8, 8, 10]);
+
+    let ja = Box::new(PassthroughPhonemizer::new(
+        PhonemeTable::from_symbols(&symbols).expect("valid table"),
+    ));
+    let en = Box::new(PassthroughPhonemizer::new(
+        PhonemeTable::from_symbols(&symbols).expect("valid table"),
+    ));
+    let drifted = SbV2Phonemizer::from_piper_g2p(
+        ja,
+        en,
+        HashMap::new(),
+        HashMap::from([(1_i64, (20_u16, 4_u8))]),
+    );
+    match drifted.phonemize("3 4", Language::EN) {
+        Err(VokraError::InvalidArgument(msg)) => assert!(msg.contains("raw tone 4")),
+        other => panic!("EN tone outside the authenticated local band must fail: {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -584,7 +692,7 @@ fn zh_without_wired_g2p_returns_not_implemented() {
 ///
 /// With an empty `zh_mapping`, every one of the framed piper ids falls
 /// back to `sbv2_default_phoneme_id` (0), and ZH tones default to 0 as
-/// well (Mandarin has 5 lexical tones 0-4, but the empty mapping's second
+/// well (Mandarin has 6 raw lexical tone rows 0-5, but the empty mapping's second
 /// coordinate is unspecified so it takes the same `(default_id, 0)`
 /// fallback — see the parallel `wired_with_passthrough_phonemizer` test's
 /// docstring for the exact framed-id enumeration).

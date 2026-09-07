@@ -312,6 +312,23 @@ rotated with `scripts/rust-public-api-list.sh --update-snapshot`.
 | `vokra-ops::bigvgan_generator` | `BigVGanVariant`, `BigVGanTensorSpec`, `config_for_variant`, `tensor_manifest_for_variant`, `tag`, `name`, `from_tag`, `sample_rate`, `upstream_hf` | Added the reviewed variant identity, exact config facts, and shared descriptor-only tensor manifest used by conversion and binding | Rust-only additive pre-1.0 surface; unknown tags are rejected and no C ABI symbol changes |
 | `vokra-ops::nsf` | `SourceModuleHnNSF2`, `SourceModuleHnNSF2::forward` | Added the deterministic 24-kHz SineGen2 source-module route for the HiFT path | Rust-only additive pre-1.0 surface; stochastic entropy remains explicitly unsupported and Apple parity is not claimed |
 
+### 2026-09-07 — 0.3.0-dev (SBV2 authenticated language/tone mapping correction)
+
+The SBV2 language and tone mapping now follows the authenticated fixed
+upstream source: language rows are `ZH=0`, `JA/JP=1`, `EN=2`, replacing the
+previous runtime convention `JA=0`, `EN=1`, `ZH=2`. Production piper mappings
+interpret Japanese and Chinese tone values as language-local raw values and
+convert them to the global tone bands `JP 6..7`, `ZH 0..5`, and `EN 8..11`
+(`EN` raw 0 maps to global row 8). The new public
+`SBV2_*_TONE_{START,COUNT}` constants and `SBV2_N_TONES` are re-exported from
+`vokra_models::sbv2`.
+
+| Surface | Change | Compatibility |
+|---|---|---|
+| `vokra-models::sbv2::Language` | `language_id()` now returns `ZH=0`, `JA=1`, `EN=2` | Behavior-breaking for callers that persisted or assumed the prior row convention; stale reference sidecars require VAST regeneration. |
+| `vokra-models::sbv2::SbV2Phonemizer` | `ja_mapping` tones are raw `0..1` and become global `6..7`; `zh_mapping` raw `0..5` remains global `0..5`; `en_mapping` changes from `HashMap<i64, u16>` to `HashMap<i64, (u16, u8)>` and raw `0..3` becomes global `8..11` | Behavior/source-breaking for callers that supplied the old EN mapping type, global JP/EN tones, or expected EN tone `0`; out-of-band raw values now fail closed. |
+| `vokra_models::sbv2` | Added/re-exported `SBV2_ZH_TONE_START`, `SBV2_JA_TONE_START`, `SBV2_EN_TONE_START`, matching `*_TONE_COUNT`, and `SBV2_N_TONES` | Rust-only additive pre-1.0 API; no C ABI change. |
+
 ### 2026-09-01 — 0.3.0-dev (microWakeWord dense I8 GGUF wire support)
 
 The dense signed-I8 GGUF leg is additive within the current `0.3.0` prerelease
@@ -2427,7 +2444,8 @@ IF-01 semver freeze is M5-13/v1.0 GA).
 ### 2026-08-10 — 1.0.0-rc.1-dev (SBV2 v2 ZH branch: WP-07 `vokra-math` + WP-13a/14/16/18/19 — Rust surface only, advisory)
 
 Grouped additive **Rust public API** entry covering the 2026-08-10 wave
-that landed the SBV2 v2 Chinese (`language_id = 2`) branch and the
+that landed the SBV2 v2 Chinese branch (the original entry used
+`language_id = 2`; the authenticated mapping now places ZH at row 0) and the
 first-party scalar transcendental crate it — plus `vokra-ops`,
 `vokra-bert` and `vokra-models::sbv2` — was extracted for. C ABI
 (`include/vokra.h`, 33 fn + 11 typedef baseline) is **untouched**
@@ -2442,8 +2460,8 @@ loader path unaffected).
 | WP-07 (new crate `vokra-math`)           | 7 new top-level `pub fn` for `f32`: `exp`, `tanh`, `sqrt`, `sin`, `cos`, `log`, `log1p`                                                                                                     | Added   | Extracts the scalar transcendental primitives that `vokra-backend-cpu`'s scalar path already used so `vokra-ops`, `vokra-bert` and `vokra-models::sbv2` can reach them without pulling the whole CPU-kernel tier upward (WP-05 owner decision, `docs/adr/sbv2-libm-strategy.md`). `core`-only, no `libm`. Follows the M5-03 `vokra-vad-micro` precedent for first-party leaf-crate additions. | no        |
 | WP-14 (`vokra-convert`)                  | `convert_bert_base_file(input, output, license, tokenizer_bytes, do_lower_case) -> Result<BertBaseReport, ConvertError>`; `pub struct BertBaseReport`; `ModelKind::BertBase` variant + slug + `convert_file` dispatch | Added   | Plain-BERT (`BertForMaskedLM`) converter for `hfl/chinese-roberta-wwm-ext-large` (Apache-2.0). Emits `bert_base.*` tensor names + `vokra.bert_base.*` hparam chunk + optional `vokra.bert.wordpiece.*` tokenizer side-car. First consumer = SBV2 v2 ZH branch; the `--tokenizer` + `do_lower_case` axes also cover future English WordPiece checkpoints. | no        |
 | WP-16 (`vokra-bert`)                     | `pub struct BertBaseEncoder` (+ `impl BertEncoder for BertBaseEncoder` in `lib.rs`, `from_gguf` constructor, `forward(ids, segments)`, `d_model()`)                                       | Added   | Clean-room plain-BERT encoder (Devlin 2018) sitting on WP-14's GGUF schema. The runtime side of the WP-14 converter; consumed by WP-19.                | no        |
-| WP-18 (`vokra-models::sbv2::g2p`)        | `Language::ZH` enum variant (language_id = 2); `SbV2Phonemizer::with_zh_g2p(zh_g2p: Box<dyn Phonemizer>, zh_mapping: HashMap<i64, (u16, u8)>) -> Self` builder                              | Added   | SBV2 v2 gains ZH via piper-plus 8-language G2P reuse; this WP lands only the vokra-models-side trait boundary + delegation. `phonemize(_, Language::ZH)` fail-closes with `NotImplemented` when no ZH G2P is wired (FR-EX-08 — no synthetic char-map that could mask absence). | no        |
-| WP-19 (`vokra-models::sbv2`)             | `SbV2Model::from_gguf_with_zh_bert(main, bert_ja, bert_en, bert_zh) -> Result<Self>` additive 4-file loader; `SbV2BertContainer` gains `zh: Option<BertBaseEncoder>` + `zh_tokenizer: Option<BertWordpieceTokenizer>` fields (both default `None`) | Added   | Wires WP-16 + WP-17 into the SBV2 v2 language-id-2 slot without changing the pre-WP-19 3-file `from_gguf(main, bert_ja, bert_en)` signature — every existing call site keeps compiling and behaving identically. `d_bert` consistency guard extended to the ZH branch. | no        |
+| WP-18 (`vokra-models::sbv2::g2p`)        | `Language::ZH` enum variant (historical language_id = 2; corrected by the authenticated mapping to row 0); `SbV2Phonemizer::with_zh_g2p(zh_g2p: Box<dyn Phonemizer>, zh_mapping: HashMap<i64, (u16, u8)>) -> Self` builder | Added   | SBV2 v2 gains ZH via piper-plus 8-language G2P reuse; this WP lands only the vokra-models-side trait boundary + delegation. `phonemize(_, Language::ZH)` fail-closes with `NotImplemented` when no ZH G2P is wired (FR-EX-08 — no synthetic char-map that could mask absence). | no        |
+| WP-19 (`vokra-models::sbv2`)             | `SbV2Model::from_gguf_with_zh_bert(main, bert_ja, bert_en, bert_zh) -> Result<Self>` additive 4-file loader; `SbV2BertContainer` gains `zh: Option<BertBaseEncoder>` + `zh_tokenizer: Option<BertWordpieceTokenizer>` fields (both default `None`) | Added   | Wires WP-16 + WP-17 into the SBV2 v2 ZH row-0 slot without changing the pre-WP-19 3-file `from_gguf(main, bert_ja, bert_en)` signature — every existing call site keeps compiling and behaving identically. `d_bert` consistency guard extended to the ZH branch. | no        |
 | WP-13a (`vokra-models::sbv2`, behaviour) | `<SbV2Model as TtsEngine>::synthesize` — pre-Blocker-3 orphan rejection block that returned `VokraError::InvalidArgument` on `SynthesisRequest::speaker_embedding = Some(_)` is **removed** | Fixed   | The Blocker-3 refactor (commits `0351a3a` / `2a50088` / `70bd8a7`, speaker conditioning moved into the pipeline) landed the test + rustdoc contract but accidentally left the adapter's upstream rejection block intact. WP-13a removes the orphan; the loud-error contract is now correctly enforced by the inherent `SbV2Model::synthesize` (which raises `InvalidArgument` when `.with_external_speaker_projection` has not been wired). No signature change. | no        |
 
 **Companion WPs recorded in prose only (no Rust surface change, out-of-scope

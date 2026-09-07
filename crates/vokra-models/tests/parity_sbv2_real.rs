@@ -542,7 +542,7 @@ fn phonemize_fixture_from_manifest(
 /// M6 refactor (2026-08-06): `"ZH"` is now accepted for
 /// `request.language` because [`Language`] gained a `ZH` variant to match
 /// the real SBV2 v2 checkpoint's `enc_p.language_emb.weight [3, d_model]`
-/// row 2. Note that under the fixture-only bypass this test uses, ZH is
+/// row 0. Note that under the fixture-only bypass this test uses, ZH is
 /// reachable in the text encoder but will loud-fail at the BERT
 /// tokenizer step (see `SbV2Model::synthesize`'s ZH note); a real ZH
 /// parity run requires the pending ZH BERT + G2P plumbing.
