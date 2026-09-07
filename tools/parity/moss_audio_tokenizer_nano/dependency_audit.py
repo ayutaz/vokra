@@ -258,7 +258,8 @@ def audit_rows(lock: dict[str, Any], canonical_rows: list[dict[str, Any]]) -> li
     for key, canonical_row in canonical_by_key.items():
         raw = raw_by_key[key]
         for field in ("name", "version", "source", "resolution-markers", "dependencies"):
-            if raw.get(field) != canonical_row.get(field):
+            raw_value = raw.get(field, []) if field in {"resolution-markers", "dependencies"} else raw.get(field)
+            if raw_value != canonical_row.get(field):
                 raise AuditError(f"raw/canonical lock {field} differs for audit identity: {key[:2]}")
         merged = dict(canonical_row)
         if raw.get("source") != {"virtual": "."}:
@@ -769,11 +770,12 @@ def self_test() -> int:
         raise SystemExit("self-test accepted CUDA torch identity")
     audit_source = {"registry": "https://pypi.org/simple"}
     audit_canonical = [{"name": "tokenizers", "version": "0.22.2", "source": audit_source,
-                        "resolution-markers": ["platform_machine == 'x86_64'"], "dependencies": []}]
+                        "resolution-markers": [], "dependencies": []}]
     audit_artifact = {"url": f"https://{PYPI_HOST}/packages/tokenizers-0.22.2.tar.gz",
                       "hash": "sha256:" + "a" * 64, "size": 1,
                       "upload-time": "2026-01-01T00:00:00Z"}
-    audit_raw = {**audit_canonical[0], "sdist": audit_artifact, "wheels": []}
+    audit_raw = {"name": audit_canonical[0]["name"], "version": audit_canonical[0]["version"],
+                 "source": audit_source, "sdist": audit_artifact, "wheels": []}
     if "sdist" in audit_canonical[0] or "wheels" in audit_canonical[0]:
         raise SystemExit("self-test canonical lock rows unexpectedly carry resolver artifacts")
     bound = audit_rows({"package": [audit_raw]}, audit_canonical)
