@@ -217,6 +217,60 @@ def contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, A
     return project_data, lock_data, manifest, rows, project_bytes, lock_bytes
 
 
+def audit_rows(lock: dict[str, Any], canonical_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rebind resolver artifacts to the manifest-authenticated lock rows.
+
+    ``license_gate.lock_rows`` intentionally strips ``sdist``/``wheels`` so
+    its result is stable for the package-row manifest digest.  The dependency
+    audit needs those resolver identities to fetch a locked sdist, however.
+    ``artifact_error`` has already authenticated the raw package tables before
+    this helper is called; this second exact identity check prevents an
+    artifact from being attached to a different marker/dependency row.
+    """
+    packages = lock.get("package")
+    if not isinstance(packages, list):
+        raise AuditError("lock package table is not a list for audit artifact binding")
+    raw_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for package in packages:
+        if not isinstance(package, dict):
+            raise AuditError("lock package row is not an object for audit artifact binding")
+        try:
+            key = package_key(package)
+        except (KeyError, TypeError):
+            raise AuditError("lock package row has no exact audit identity") from None
+        if key in raw_by_key:
+            raise AuditError(f"duplicate raw lock identity for audit artifact binding: {key[:2]}")
+        raw_by_key[key] = package
+
+    canonical_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in canonical_rows:
+        try:
+            key = package_key(row)
+        except (KeyError, TypeError):
+            raise AuditError("canonical lock row has no exact audit identity") from None
+        if key in canonical_by_key:
+            raise AuditError(f"duplicate canonical lock identity for audit artifact binding: {key[:2]}")
+        canonical_by_key[key] = row
+    if set(raw_by_key) != set(canonical_by_key):
+        raise AuditError("raw and canonical lock identities differ for audit artifact binding")
+
+    result: list[dict[str, Any]] = []
+    for key, canonical_row in canonical_by_key.items():
+        raw = raw_by_key[key]
+        for field in ("name", "version", "source", "resolution-markers", "dependencies"):
+            if raw.get(field) != canonical_row.get(field):
+                raise AuditError(f"raw/canonical lock {field} differs for audit identity: {key[:2]}")
+        merged = dict(canonical_row)
+        if raw.get("source") != {"virtual": "."}:
+            if "sdist" not in raw and "wheels" not in raw:
+                raise AuditError(f"raw lock artifacts are incomplete for audit identity: {key[:2]}")
+            for artifact_key in ("sdist", "wheels"):
+                if artifact_key in raw:
+                    merged[artifact_key] = raw[artifact_key]
+        result.append(merged)
+    return sorted(result, key=lambda row: (row["name"], row["version"]))
+
+
 def compare_multiset(expected: list[str], actual: list[str]) -> dict[str, Any]:
     want, got = Counter(expected), Counter(actual)
     return {
@@ -594,7 +648,8 @@ def git_identity(project: Path, expected_head: str) -> dict[str, Any]:
 def audit_environment(project: Path, expected_head: str,
                       sdist_fetcher: Callable[[str], tuple[str, bytes]] | None = None) -> dict[str, Any]:
     project_data, lock, manifest, canonical_rows, project_bytes, lock_bytes = contract(project)
-    real_rows = [row for row in canonical_rows if row.get("source") != {"virtual": "."}]
+    bound_rows = audit_rows(lock, canonical_rows)
+    real_rows = [row for row in bound_rows if row.get("source") != {"virtual": "."}]
     active_rows = [row for row in real_rows if active_marker(row)]
     inactive_rows = [row for row in real_rows if not active_marker(row)]
     records = installed_distributions()
@@ -712,6 +767,40 @@ def self_test() -> int:
             raise SystemExit(f"self-test accepted forbidden distribution: {forbidden}")
     if forbidden_accelerator_row({"name": "torch", "version": "2.7.1+cu126", "source": {"registry": "https://download.pytorch.org/whl/cu126"}}) is None:
         raise SystemExit("self-test accepted CUDA torch identity")
+    audit_source = {"registry": "https://pypi.org/simple"}
+    audit_canonical = [{"name": "tokenizers", "version": "0.22.2", "source": audit_source,
+                        "resolution-markers": ["platform_machine == 'x86_64'"], "dependencies": []}]
+    audit_artifact = {"url": f"https://{PYPI_HOST}/packages/tokenizers-0.22.2.tar.gz",
+                      "hash": "sha256:" + "a" * 64, "size": 1,
+                      "upload-time": "2026-01-01T00:00:00Z"}
+    audit_raw = {**audit_canonical[0], "sdist": audit_artifact, "wheels": []}
+    if "sdist" in audit_canonical[0] or "wheels" in audit_canonical[0]:
+        raise SystemExit("self-test canonical lock rows unexpectedly carry resolver artifacts")
+    bound = audit_rows({"package": [audit_raw]}, audit_canonical)
+    if bound != [{**audit_canonical[0], "sdist": audit_artifact, "wheels": []}]:
+        raise SystemExit("self-test failed to restore raw resolver artifacts")
+    for altered in (
+        {**audit_raw, "resolution-markers": ["tampered"]},
+        {**audit_raw, "dependencies": [{"name": "wrong", "marker": "always"}]},
+    ):
+        try:
+            audit_rows({"package": [altered]}, audit_canonical)
+        except AuditError:
+            pass
+        else:
+            raise SystemExit("self-test accepted a raw/canonical lock identity mismatch")
+    try:
+        audit_rows({"package": [audit_raw, dict(audit_raw)]}, audit_canonical)
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted a duplicate raw lock identity")
+    try:
+        audit_rows({"package": []}, audit_canonical)
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted a missing raw lock identity")
     state = approval_state(manifest)
     if not state["package_review_blockers"] or not state["license_review_blockers"] or state["publication_permitted"]:
         raise SystemExit("self-test did not preserve fail-closed owner boundaries")
@@ -731,8 +820,8 @@ def self_test() -> int:
     with tarfile.open(fileobj=body, mode="w:gz") as archive:
         data = b"Apache-2.0\n"; info = tarfile.TarInfo("demo/LICENSE"); info.size = len(data); archive.addfile(info, io.BytesIO(data))
     raw = body.getvalue()
-    fake = {"name": "demo", "version": "1", "source": {"registry": "https://pypi.org/simple"},
-            "sdist": {"url": f"https://{PYPI_HOST}/packages/demo-1.tar.gz", "hash": "sha256:" + sha256_bytes(raw), "size": len(raw), "upload-time": "2026-01-01T00:00:00Z"}}
+    fake = {"name": "tokenizers", "version": "0.22.2", "source": {"registry": "https://pypi.org/simple"},
+            "sdist": {"url": f"https://{PYPI_HOST}/packages/tokenizers-0.22.2.tar.gz", "hash": "sha256:" + sha256_bytes(raw), "size": len(raw), "upload-time": "2026-01-01T00:00:00Z"}}
     evidence = fetch_locked_sdist(fake, lambda url: (url, raw))
     if evidence["license_files"][0]["sha256"] != sha256_bytes(b"Apache-2.0\n"):
         raise SystemExit("self-test exact sdist license bytes failed")
@@ -743,7 +832,7 @@ def self_test() -> int:
     else:
         raise SystemExit("self-test accepted sdist hash tamper")
     try:
-        fetch_locked_sdist(fake, lambda url: ("https://evil.invalid/demo.tar.gz", raw))
+        fetch_locked_sdist(fake, lambda url: ("https://evil.invalid/tokenizers-0.22.2.tar.gz", raw))
     except AuditError:
         pass
     else:
