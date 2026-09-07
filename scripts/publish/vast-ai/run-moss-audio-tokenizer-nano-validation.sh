@@ -402,7 +402,9 @@ run_self_test() {
     'cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --workspace --all-targets' \
     'cargo deny --locked --offline check' 'cargo audit --no-fetch' \
     'check-zero-deps.sh' 'check-forbidden-symbols.sh' \
-    'transfer="$work_dir/apple-transfer"' 'GGUF, reference, args, and summary' 'direct VAST-to-Apple'; do
+    'transfer="$work_dir/apple-transfer"' 'GGUF, reference, args, and summary' 'direct VAST-to-Apple' \
+    'download.pytorch.org/whl/cpu' '2.7.1+cpu' 'torch.version.cuda is None' \
+    'torch.cuda.is_available' 'CUDA/NVIDIA/Triton'; do
     cases=$((cases + 1))
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: required offline gate/transfer token is missing: $required"
@@ -683,6 +685,8 @@ main() {
 
   step "Sync locked Python 3.12 parity environment"
   uv sync --project "$NANO_PROJECT" --frozen --python 3.12
+  uv run --project "$NANO_PROJECT" --frozen --python 3.12 python -c \
+    'import platform,torch; assert platform.system() == "Linux" and platform.machine() == "x86_64"; assert torch.__version__ == "2.7.1+cpu"; assert torch.version.cuda is None; assert not torch.cuda.is_available(); print("Nano CPU closure: torch=2.7.1+cpu cuda=None")'
 
   step "Download immutable official Nano snapshot"
   download_snapshot "$snapshot"

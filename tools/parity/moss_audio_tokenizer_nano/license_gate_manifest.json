@@ -1,8 +1,8 @@
 {
   "gate_version": 1,
-  "lock_sha256": "8d2d2378b0239fe9670800c3e5cbd34be7413cddbb3f7417588a6eca2731333a",
-  "project_sha256": "62dce602056b995aabbb07b2059504c8513038416e3726575f1b97684a35f66c",
-  "package_rows_sha256": "f52a1c6a4b05497a6da9bbbf06cb5fcd3f0a591a0b60051b7d8b07cc5d4b5d83",
+  "lock_sha256": "29d49a9d88d73e185d3c125c3ac0c09baa83b51d3835e231ba634610bef3d8d1",
+  "project_sha256": "ec4075893adeaed5e82d475284c14241a71a330100d07d387bc62befb7a1b6ce",
+  "package_rows_sha256": "fbd1ec4719e81b2a11df8627300fda612862f337c5312560e5b2b20fdc6ac14a",
   "package_rows": [
     {
       "name": "accelerate",
@@ -296,160 +296,6 @@
       "dependencies": []
     },
     {
-      "name": "nvidia-cublas-cu12",
-      "version": "12.6.4.1",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-cuda-cupti-cu12",
-      "version": "12.6.80",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-cuda-nvrtc-cu12",
-      "version": "12.6.77",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-cuda-runtime-cu12",
-      "version": "12.6.77",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-cudnn-cu12",
-      "version": "9.5.1.17",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": [
-        {
-          "name": "nvidia-cublas-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        }
-      ]
-    },
-    {
-      "name": "nvidia-cufft-cu12",
-      "version": "11.3.0.4",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": [
-        {
-          "name": "nvidia-nvjitlink-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        }
-      ]
-    },
-    {
-      "name": "nvidia-cufile-cu12",
-      "version": "1.11.1.6",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-curand-cu12",
-      "version": "10.3.7.77",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-cusolver-cu12",
-      "version": "11.7.1.2",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": [
-        {
-          "name": "nvidia-cublas-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cusparse-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-nvjitlink-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        }
-      ]
-    },
-    {
-      "name": "nvidia-cusparse-cu12",
-      "version": "12.5.4.2",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": [
-        {
-          "name": "nvidia-nvjitlink-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        }
-      ]
-    },
-    {
-      "name": "nvidia-cusparselt-cu12",
-      "version": "0.6.3",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-nccl-cu12",
-      "version": "2.26.2",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-nvjitlink-cu12",
-      "version": "12.6.85",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
-      "name": "nvidia-nvtx-cu12",
-      "version": "12.6.77",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
       "name": "packaging",
       "version": "26.3",
       "source": {
@@ -569,9 +415,9 @@
     },
     {
       "name": "torch",
-      "version": "2.7.1+cu126",
+      "version": "2.7.1+cpu",
       "source": {
-        "registry": "https://download.pytorch.org/whl/cu126"
+        "registry": "https://download.pytorch.org/whl/cpu"
       },
       "resolution-markers": [],
       "dependencies": [
@@ -592,71 +438,11 @@
           "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
         },
         {
-          "name": "nvidia-cublas-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cuda-cupti-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cuda-nvrtc-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cuda-runtime-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cudnn-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cufft-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cufile-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-curand-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cusolver-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cusparse-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-cusparselt-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-nccl-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-nvjitlink-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "nvidia-nvtx-cu12",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
           "name": "setuptools",
           "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
         },
         {
           "name": "sympy",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "triton",
           "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
         },
         {
@@ -716,20 +502,6 @@
         },
         {
           "name": "typer",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        }
-      ]
-    },
-    {
-      "name": "triton",
-      "version": "3.3.1",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": [
-        {
-          "name": "setuptools",
           "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
         }
       ]
@@ -1002,146 +774,6 @@
       "native_bundled_review": "OWNER_REVIEW_REQUIRED"
     },
     {
-      "name": "nvidia-cublas-cu12",
-      "version": "12.6.4.1",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cuda-cupti-cu12",
-      "version": "12.6.80",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cuda-nvrtc-cu12",
-      "version": "12.6.77",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cuda-runtime-cu12",
-      "version": "12.6.77",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cudnn-cu12",
-      "version": "9.5.1.17",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cufft-cu12",
-      "version": "11.3.0.4",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cufile-cu12",
-      "version": "1.11.1.6",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-curand-cu12",
-      "version": "10.3.7.77",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cusolver-cu12",
-      "version": "11.7.1.2",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cusparse-cu12",
-      "version": "12.5.4.2",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-cusparselt-cu12",
-      "version": "0.6.3",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-nccl-cu12",
-      "version": "2.26.2",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-nvjitlink-cu12",
-      "version": "12.6.85",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "nvidia-nvtx-cu12",
-      "version": "12.6.77",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
       "name": "packaging",
       "version": "26.3",
       "source": {
@@ -1253,9 +885,9 @@
     },
     {
       "name": "torch",
-      "version": "2.7.1+cu126",
+      "version": "2.7.1+cpu",
       "source": {
-        "registry": "https://download.pytorch.org/whl/cu126"
+        "registry": "https://download.pytorch.org/whl/cpu"
       },
       "license": "UNRESOLVED",
       "status": "UNRESOLVED",
@@ -1274,16 +906,6 @@
     {
       "name": "transformers",
       "version": "5.10.4",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
-      "name": "triton",
-      "version": "3.3.1",
       "source": {
         "registry": "https://pypi.org/simple"
       },
@@ -1322,7 +944,7 @@
       "native_bundled_review": "OWNER_REVIEW_REQUIRED"
     }
   ],
-  "package_review_rows_sha256": "fc582bd6821028e7981e3b2a564a89f21ba973e87c423821c495f00281f62353",
+  "package_review_rows_sha256": "4579636bb692ac532aafbf75dfee95ae14bbd1b828acd5c845239a368250ce8b",
   "license_rows": [
     {
       "id": "source-apache",
@@ -1496,15 +1118,42 @@
     "quantizer_shape": "1x768x2",
     "decoder_tap_count": 9,
     "decoder_tap_shapes": [
-      {"name": "decoder_0", "shape": "1x192x8"},
-      {"name": "decoder_1", "shape": "1x768x8"},
-      {"name": "decoder_2", "shape": "1x384x16"},
-      {"name": "decoder_3", "shape": "1x768x16"},
-      {"name": "decoder_4", "shape": "1x384x32"},
-      {"name": "decoder_5", "shape": "1x768x32"},
-      {"name": "decoder_6", "shape": "1x384x64"},
-      {"name": "decoder_7", "shape": "1x240x64"},
-      {"name": "decoder_8", "shape": "1x1x15360"}
+      {
+        "name": "decoder_0",
+        "shape": "1x192x8"
+      },
+      {
+        "name": "decoder_1",
+        "shape": "1x768x8"
+      },
+      {
+        "name": "decoder_2",
+        "shape": "1x384x16"
+      },
+      {
+        "name": "decoder_3",
+        "shape": "1x768x16"
+      },
+      {
+        "name": "decoder_4",
+        "shape": "1x384x32"
+      },
+      {
+        "name": "decoder_5",
+        "shape": "1x768x32"
+      },
+      {
+        "name": "decoder_6",
+        "shape": "1x384x64"
+      },
+      {
+        "name": "decoder_7",
+        "shape": "1x240x64"
+      },
+      {
+        "name": "decoder_8",
+        "shape": "1x1x15360"
+      }
     ]
   },
   "publication_decision": "NO_UPLOAD",

@@ -3,8 +3,10 @@
 
 The audit reads the checked-in lock/manifest and the installed distribution
 metadata only.  It never imports torch, Transformers, custom model code, or
-weights.  Locked artifacts are reported by their resolver URL/hash/size; when
-a wheel does not carry publisher license files, the exact locked PyPI sdist
+weights.  Locked artifacts are reported by their resolver URL/hash and
+resolver-supplied size; the official PyTorch CPU wheel index omits the Torch
+wheel size, which remains unresolved rather than being invented. When a wheel
+does not carry publisher license files, the exact locked PyPI sdist
 is the only permitted fallback.  Native ELF payloads (including CUDA/NVIDIA
 and Triton payloads) are hashed and inspected with ``readelf`` where present.
 The report deliberately remains BLOCKED while the owner review rows are
@@ -51,6 +53,8 @@ LICENSE_NAMES = {
     "nvidia_sla", "nvidia-sla", "end_user_license", "end-user-license",
 }
 NATIVE_FAMILIES = ("nvidia-", "torch", "triton")
+CPU_TORCH_SOURCE = {"registry": "https://download.pytorch.org/whl/cpu"}
+CPU_TORCH_VERSION = "2.7.1+cpu"
 MAX_LICENSE_BYTES = 2 * 1024 * 1024
 MAX_SDIST_BYTES = 64 * 1024 * 1024
 MAX_MEMBER_BYTES = 8 * 1024 * 1024
@@ -146,6 +150,27 @@ def package_key(row: dict[str, Any]) -> tuple[str, str, str]:
     return row["name"], row["version"], canonical(row["source"])
 
 
+def forbidden_accelerator_row(row: dict[str, Any]) -> str | None:
+    """Return a blocker for any CUDA/NVIDIA/Triton lock identity."""
+    name = norm_name(row.get("name", ""))
+    if name.startswith("nvidia-"):
+        return f"CUDA/NVIDIA distribution is forbidden in the CPU closure: {row.get('name')}=={row.get('version')}"
+    if name == "triton":
+        return f"Triton distribution is forbidden in the CPU closure: {row.get('name')}=={row.get('version')}"
+    if name == "torch" and (row.get("version") != CPU_TORCH_VERSION or row.get("source") != CPU_TORCH_SOURCE):
+        return f"torch is not the exact CPU wheel identity: {row.get('version')} from {row.get('source')}"
+    return None
+
+
+def validate_cpu_closure(rows: list[dict[str, Any]]) -> None:
+    blockers = [reason for row in rows if (reason := forbidden_accelerator_row(row))]
+    torch_rows = [row for row in rows if norm_name(row.get("name", "")) == "torch"]
+    if len(torch_rows) != 1:
+        blockers.append(f"CPU closure must contain exactly one torch row, found {len(torch_rows)}")
+    if blockers:
+        raise AuditError("; ".join(blockers))
+
+
 def contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[dict[str, Any]], bytes, bytes]:
     validate_project_path(project)
     project_path, lock_path, manifest_path = (project / name for name in ("pyproject.toml", "uv.lock", "license_gate_manifest.json"))
@@ -167,6 +192,7 @@ def contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, A
         rows = license_gate.lock_rows(lock_data)
         if license_gate.artifact_error(lock_data):
             raise AuditError(license_gate.artifact_error(lock_data) or "malformed resolver artifact")
+        validate_cpu_closure(rows)
         license_gate.project_identity(project_bytes)
     except (SystemExit, ValueError) as exc:
         raise AuditError(f"closure schema is invalid: {exc}") from exc
@@ -580,6 +606,14 @@ def audit_environment(project: Path, expected_head: str,
                     "virtual_project_rows": sum(row.get("source") == {"virtual": "."} for row in lock.get("package", []))})
     reviews = {(row.get("name"), row.get("version")): row for row in manifest.get("package_review_rows", []) if isinstance(row, dict)}
     packages, failures = [], []
+    for record in records:
+        name = norm_name(record["name"])
+        if name.startswith("nvidia-"):
+            failures.append(f"CUDA/NVIDIA distribution is installed in the CPU closure: {record['identity']}")
+        elif name == "triton":
+            failures.append(f"Triton distribution is installed in the CPU closure: {record['identity']}")
+        elif name == "torch" and record["version"] != CPU_TORCH_VERSION:
+            failures.append(f"installed torch is not the exact CPU wheel identity: {record['identity']}")
     for review in manifest.get("package_review_rows", []):
         if isinstance(review, dict) and (review.get("status") != "REVIEWED" or review.get("license") in {None, "UNRESOLVED"} or review.get("native_bundled_review") in {None, "OWNER_REVIEW_REQUIRED"}):
             failures.append(f"manifest package review remains unresolved: {review.get('name')}=={review.get('version')}")
@@ -666,11 +700,18 @@ def run(project: Path, output: Path, expected_head: str) -> int:
 def self_test() -> int:
     project = Path(__file__).resolve().parent
     _, lock, manifest, rows, _, _ = contract(project)
-    if len(rows) != 52 or len(manifest["package_review_rows"]) != 52 or sum(row.get("source") == {"virtual": "."} for row in lock["package"]) != 1:
-        raise SystemExit("self-test expected 51 active distributions plus one virtual project row")
-    nvidia = next(row for row in lock["package"] if row["name"] == "nvidia-cublas-cu12")
-    if nvidia.get("sdist") is not None or not nvidia.get("wheels"):
-        raise SystemExit("self-test lost the locked CUDA wheel-only fact")
+    if len(rows) != 37 or len(manifest["package_review_rows"]) != 37 or sum(row.get("source") == {"virtual": "."} for row in lock["package"]) != 1:
+        raise SystemExit("self-test expected 36 active distributions plus one virtual project row")
+    torch_row = next((row for row in rows if norm_name(row["name"]) == "torch"), None)
+    if torch_row is None or torch_row["version"] != CPU_TORCH_VERSION or torch_row["source"] != CPU_TORCH_SOURCE:
+        raise SystemExit("self-test lost the locked torch 2.7.1+cpu identity")
+    if any(forbidden_accelerator_row(row) for row in rows):
+        raise SystemExit("self-test found a forbidden CUDA/NVIDIA/Triton lock row")
+    for forbidden in ("nvidia-cublas-cu12", "triton"):
+        if forbidden_accelerator_row({"name": forbidden, "version": "1", "source": {"registry": "https://pypi.org/simple"}}) is None:
+            raise SystemExit(f"self-test accepted forbidden distribution: {forbidden}")
+    if forbidden_accelerator_row({"name": "torch", "version": "2.7.1+cu126", "source": {"registry": "https://download.pytorch.org/whl/cu126"}}) is None:
+        raise SystemExit("self-test accepted CUDA torch identity")
     state = approval_state(manifest)
     if not state["package_review_blockers"] or not state["license_review_blockers"] or state["publication_permitted"]:
         raise SystemExit("self-test did not preserve fail-closed owner boundaries")

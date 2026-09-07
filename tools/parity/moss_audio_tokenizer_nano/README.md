@@ -3,16 +3,18 @@
 This is a dedicated Python 3.12, Linux/x86_64 VAST oracle project for
 `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano` at revision
 `6aa02b01e445cc585582cf0ba480bc3ea6c8dd68`. It is separate from the general
-parity environment and contains a resolver-generated 52-lock-row closure for
-Linux/x86_64 Python 3.12: Torch 2.7.1+cu126 from the official PyTorch CUDA
-index and the isolated security pin Transformers 5.10.4 from PyPI. The prior
+parity environment and contains a resolver-generated 37-lock-row closure for
+Linux/x86_64 Python 3.12: Torch 2.7.1+cpu from the official PyTorch CPU
+index and the isolated security pin Transformers 5.10.4 from PyPI. CUDA,
+NVIDIA, and Triton distributions are explicitly rejected. The prior
 5.5.0 pin is previous isolated-reference provenance only; no upstream API
 compatibility is claimed.
-The 52 lock rows comprise 51 active installed distributions plus one virtual
+The 37 lock rows comprise 36 active installed distributions plus one virtual
 project row; the virtual row is not an installed package.
-Every non-virtual lock row carries
-resolver URL, SHA-256, and positive artifact-size metadata. No package sync is
-performed by the local gate.
+Every non-virtual lock row carries resolver URL and SHA-256 metadata. The
+official PyTorch CPU simple index omits the Torch wheel's size field; that
+single unresolved byte fact remains owner-review evidence for the VAST audit.
+No package sync is performed by the local gate.
 
 The exact upstream payload contract at the fixed revision is eight files: the
 seven non-weight files `.gitattributes`, `README.md`, `__init__.py`,
@@ -42,7 +44,7 @@ Its ordered meta taps are `quantizer 1x768x2`, `decoder_0 1x192x8`,
 `decoder_7 1x240x64`, and `decoder_8 1x1x15360`; after official channel
 restoration the audio shape must be `1x2x7680`.
 `license_gate.py` intentionally exits 2 before any uv
-sync, source/model acquisition, conversion, Cargo, or CUDA work.
+sync, source/model acquisition, conversion, Cargo, or accelerator work.
 
 The first public `vokra/moss-audio-tokenizer-nano` GGUF is historically
 mis-stamped with Full metadata and is never accepted by this gate. A corrected
@@ -99,7 +101,7 @@ scripts/publish/vast-ai/audit-moss-audio-tokenizer-nano-dependencies.sh \
 
 It uses `--no-sync` and records every locked artifact URL/hash/size, installed
 package license/EULA bytes, and hashes plus ELF `NEEDED` facts for native
-payloads.  CUDA/NVIDIA and Triton distributions are called out explicitly.
+payloads. CUDA/NVIDIA and Triton distributions are explicitly rejected.
 It never requests model files, imports model code, invokes Cargo, converts, or
 publishes.  A blocked report is expected until the owner reviews the package
 and native-payload rows; it is not a Python/API/runtime/parity approval.  The

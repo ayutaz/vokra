@@ -32,6 +32,8 @@ EXPECTED_TRANSFORMERS_VERSION="UNRESOLVED"
 EXPECTED_QUANTIZER_SHAPE="UNRESOLVED"
 EXPECTED_DECODER_TAP_COUNT="UNRESOLVED"
 EXPECTED_DECODER_TAP_SHAPES="UNRESOLVED"
+EXPECTED_CPU_TORCH_VERSION="2.7.1+cpu"
+EXPECTED_CPU_TORCH_INDEX="https://download.pytorch.org/whl/cpu"
 EXPECTED_CODES="17,520,1023,502,1005,484,987,466,969,448,951,430,933,412,915,394,274,777,256,759,238,741,220,723,202,705,184,687,166,669,148,651"
 
 log() { printf '[moss-tokenizer-nano-apple] %s\n' "$*" >&2; }
@@ -362,6 +364,10 @@ run_self_test() (
     || die 'Apple source identity blocker was weakened'
   grep -Fq 'EXPECTED_TRANSFORMERS_VERSION="UNRESOLVED"' "$script_path" \
     || die 'Apple route blocker was weakened'
+  grep -Fq 'EXPECTED_CPU_TORCH_VERSION="2.7.1+cpu"' "$script_path" \
+    || die 'Apple CPU Torch identity is missing'
+  grep -Fq 'EXPECTED_CPU_TORCH_INDEX="https://download.pytorch.org/whl/cpu"' "$script_path" \
+    || die 'Apple CPU Torch index identity is missing'
   grep -Fq '(frame * 257 + quantizer * 503 + 17) % CODEBOOK_SIZE' \
     "$VOKRA_ROOT/tools/parity/moss_audio_tokenizer_dump_reference.py" \
     || die 'Apple/dumper deterministic code contract diverged'

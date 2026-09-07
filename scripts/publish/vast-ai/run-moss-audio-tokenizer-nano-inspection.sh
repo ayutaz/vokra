@@ -45,6 +45,7 @@ self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token
   [[ -f "$INSPECTOR" ]] || { log 'self-test FAIL: inspector missing'; fail=1; }
   for token in "$HF_REPOSITORY" "$HF_REVISION" 'source_contract_inspector.py' \
+    'download.pytorch.org/whl/cpu' '2.7.1+cpu' 'torch.version.cuda is None' 'torch.cuda.is_available' \
     '.gitattributes' '__init__.py' 'model-00001-of-00001.safetensors' \
     'cardData_license' 'private' 'gated' 'disabled' \
     'snapshot_download' 'list_repo_tree' 'lfs_payload_sha256' \
@@ -170,6 +171,11 @@ mkdir "$work_dir/hf"
 # This sync installs only the locked reference tooling. It does not acquire a
 # model and is intentionally after all host/worktree guards.
 uv sync --project "$PROJECT" --frozen --python 3.12
+
+# Bind the synced environment to the exact Linux CPU wheel before acquiring
+# any upstream source bytes. This imports Torch only; no model code/weights.
+uv run --no-sync --frozen --project "$PROJECT" --python 3.12 python -c \
+  'import platform,torch; assert platform.system() == "Linux" and platform.machine() == "x86_64"; assert torch.__version__ == "2.7.1+cpu"; assert torch.version.cuda is None; assert not torch.cuda.is_available(); print("Nano CPU closure: torch=2.7.1+cpu cuda=None")'
 
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --no-sync --frozen --project "$PROJECT" --python 3.12 python - \
   "$HF_REPOSITORY" "$HF_REVISION" "$work_dir/hf" "$work_dir/server-tree.json" <<'PY'
