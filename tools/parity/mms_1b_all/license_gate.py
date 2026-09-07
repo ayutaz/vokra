@@ -42,9 +42,11 @@ MANIFEST_KEYS = {
     "gate_version", "lock_sha256", "project_sha256", "package_rows",
     "package_rows_sha256", "package_review_rows", "package_review_rows_sha256",
     "identities", "license_rows", "license_rows_sha256", "publication_decision",
+    "evidence_source_head",
 }
 PENDING_MANIFEST_KEYS = {
     "schema", "status", "publication", "project_sha256", "lock_sha256",
+    "evidence_source_head",
     "dependency_audit_sha256", "dependency_audit_status", "api_model_free_evidence_sha256",
     "api_model_free_evidence_status", "model_evidence_status",
     "owner_review", "blockers",
@@ -134,6 +136,12 @@ def resolved(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     return value.strip().casefold() not in PLACEHOLDERS
+
+
+def validate_expected_head(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise ValueError("expected Vokra HEAD must be exactly 40 lowercase hexadecimal characters")
+    return value
 
 
 def artifact(value: Any, label: str, registry: str) -> None:
@@ -382,6 +390,14 @@ def validate_api_evidence(path: Path, project_digest: str, lock_digest: str, exp
         raise ValueError("model-free API evidence records prohibited execution")
 
 
+def validate_pending_source_head(dependency: dict[str, Any], api: dict[str, Any], source_head: Any) -> None:
+    if not isinstance(source_head, str) or not re.fullmatch(r"[0-9a-f]{40}", source_head):
+        raise ValueError("pending evidence source HEAD is malformed")
+    for label, report in (("dependency", dependency), ("API", api)):
+        if not isinstance(report, dict) or report.get("expected_head") != source_head or report.get("head") != source_head or report.get("clean") is not True:
+            raise ValueError(f"pending {label} evidence source HEAD binding is not exact")
+
+
 def project_schema(project: dict[str, Any]) -> None:
     if set(project) != {"project", "tool"} or not isinstance(project["project"], dict) or not isinstance(project["tool"], dict):
         raise ValueError("dedicated pyproject schema is not exact")
@@ -530,12 +546,20 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
     except (KeyError, TypeError, ValueError) as error:
         blocked(str(error))
     lock_digest, project_digest = sha(lock_bytes), sha(project_bytes)
+    try:
+        validate_expected_head(expected_head)
+    except ValueError as error:
+        blocked(str(error))
     if isinstance(manifest, dict) and set(manifest) == PENDING_MANIFEST_KEYS:
         try:
-            if manifest.get("schema") != "vokra-mms-1b-all-license-gate-pending-v1" or manifest.get("status") != "BLOCKED_PENDING_OWNER_REVIEW" or manifest.get("publication") != "NO_UPLOAD" or manifest.get("project_sha256") != project_digest or manifest.get("lock_sha256") != lock_digest or manifest.get("dependency_audit_sha256") != sha_file(dependency_path) or manifest.get("dependency_audit_status") != "BLOCKED_PENDING_OWNER_REVIEW" or manifest.get("api_model_free_evidence_sha256") != sha_file(api_path) or manifest.get("api_model_free_evidence_status") != "MODEL_FREE_API_VALIDATED" or manifest.get("model_evidence_status") != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or manifest.get("owner_review") != "PENDING_OWNER_APPROVAL" or not isinstance(manifest.get("blockers"), list) or not manifest["blockers"]:
+            source_head = manifest.get("evidence_source_head")
+            if not isinstance(source_head, str) or not re.fullmatch(r"[0-9a-f]{40}", source_head) or manifest.get("schema") != "vokra-mms-1b-all-license-gate-pending-v1" or manifest.get("status") != "BLOCKED_PENDING_OWNER_REVIEW" or manifest.get("publication") != "NO_UPLOAD" or manifest.get("project_sha256") != project_digest or manifest.get("lock_sha256") != lock_digest or manifest.get("dependency_audit_sha256") != sha_file(dependency_path) or manifest.get("dependency_audit_status") != "BLOCKED_PENDING_OWNER_REVIEW" or manifest.get("api_model_free_evidence_sha256") != sha_file(api_path) or manifest.get("api_model_free_evidence_status") != "MODEL_FREE_API_VALIDATED" or manifest.get("model_evidence_status") != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or manifest.get("owner_review") != "PENDING_OWNER_APPROVAL" or not isinstance(manifest.get("blockers"), list) or not manifest["blockers"]:
                 raise ValueError("pending closure manifest is not exact")
-            validate_dependency_audit(dependency_path, rows, project_digest, lock_digest, expected_head)
-            validate_api_evidence(api_path, project_digest, lock_digest, expected_head)
+            validate_dependency_audit(dependency_path, rows, project_digest, lock_digest)
+            validate_api_evidence(api_path, project_digest, lock_digest)
+            dependency_evidence = load_json(dependency_path)
+            api_evidence = load_json(api_path)
+            validate_pending_source_head(dependency_evidence, api_evidence, source_head)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
             blocked(f"pending dependency closure is invalid: {error}")
         blocked("dependency/native package review and owner approval are pending; no model evidence may be acquired")
@@ -551,16 +575,17 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         blocked(f"approval evidence is unreadable: {error}")
     try:
-        validate_dependency_audit(dependency_path, rows, project_digest, lock_digest, expected_head)
-        validate_api_evidence(api_path, project_digest, lock_digest, expected_head)
+        source_head = manifest.get("evidence_source_head")
+        validate_expected_head(source_head)
+        validate_dependency_audit(dependency_path, rows, project_digest, lock_digest)
+        validate_api_evidence(api_path, project_digest, lock_digest)
+        validate_pending_source_head(load_json(dependency_path), load_json(api_path), source_head)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
         blocked(f"dependency audit evidence is invalid: {error}")
     if not isinstance(approval, dict) or set(approval) != APPROVAL_KEYS:
         blocked("approval evidence schema is not exact")
     if not LANGUAGE.fullmatch(explicit_language):
         blocked("explicit language adapter is malformed")
-    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
-        blocked("expected Vokra HEAD must be exactly 40 lowercase hexadecimal characters")
     if manifest.get("lock_sha256") != lock_digest or manifest.get("project_sha256") != project_digest or not HEX64.fullmatch(lock_digest) or not HEX64.fullmatch(project_digest):
         blocked("manifest does not bind exact project/lock bytes")
     if manifest.get("package_rows") != rows or manifest.get("package_rows_sha256") != canon(rows):
@@ -625,11 +650,35 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
 
 def self_test() -> None:
     assert load_json.__name__ == "load_json"
+    assert validate_expected_head("a" * 40) == "a" * 40
+    for malformed_head in ("", "a" * 39, "A" * 40, "not-a-head"):
+        try:
+            validate_expected_head(malformed_head)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted malformed current expected HEAD")
     for value in (None, "", "TODO", "OWNER_SIGNOFF_REQUIRED", "pending_review"):
         assert not resolved(value)
     assert resolved("owner signoff recorded in external evidence")
     assert LANGUAGE.fullmatch("eng") and LANGUAGE.fullmatch("azj-script_cyrillic")
     assert not LANGUAGE.fullmatch("eng/../x")
+    source_head = "c" * 40
+    dependency_provenance = {"expected_head": source_head, "head": source_head, "clean": True}
+    api_provenance = {"expected_head": source_head, "head": source_head, "clean": True}
+    validate_pending_source_head(dependency_provenance, api_provenance, source_head)
+    for source, dep, api in (
+        ("bad", dependency_provenance, api_provenance),
+        (source_head, {**dependency_provenance, "head": "d" * 40}, api_provenance),
+        (source_head, dependency_provenance, {**api_provenance, "clean": False}),
+        (source_head, dependency_provenance, {**api_provenance, "expected_head": "e" * 40}),
+    ):
+        try:
+            validate_pending_source_head(dep, api, source)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted pending evidence source-head tamper")
     inventory_rows = [
         {"name": "Demo-Pkg", "version": "1.0", "source": {"registry": "https://pypi.org/simple"}},
         {"name": "second_pkg", "version": "2.0+cpu", "source": {"registry": "https://pypi.org/simple"}},

@@ -38,6 +38,13 @@ clean worktree): the generated evidence itself must not make the checkout
 dirty before the second generator runs.  Only after both outputs are
 independently reviewed should they be copied into this directory and bound by
 the pending manifest.
+The pending manifest records that evidence source HEAD separately.  The
+pending gate requires both reports to agree with that source HEAD, while the
+runner still verifies the current checkout HEAD independently; committing the
+tracked evidence therefore does not create a self-referential HEAD contract.
+The eventual complete manifest carries the same `evidence_source_head` field;
+only the separate owner approval record is bound to the runner's current
+checkout HEAD.
 On VAST, pass `--repo-root` pointing at the clean Vokra checkout and the exact
 transferred `--expected-head`; keep `--output` outside that checkout until both
 commands succeed.  The dependency audit additionally requires

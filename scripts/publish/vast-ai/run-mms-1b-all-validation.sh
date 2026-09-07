@@ -133,6 +133,10 @@ self_test() {
       fail=1
     fi
   done
+  if "$path" --language eng --expected-head 0000000000000000000000000000000000000000 --approval-evidence "$path" >/dev/null 2>&1; then
+    log 'self-test FAIL: wrong current expected HEAD accepted'
+    fail=1
+  fi
   local gate_line host_line path_line head_line
   # shellcheck disable=SC2016 # match literal source token
   gate_line="$(grep -n 'license_preflight "\$language" "\$expected_head" "\$approval_evidence"' "$path" | tail -n 1 | cut -d: -f1)"

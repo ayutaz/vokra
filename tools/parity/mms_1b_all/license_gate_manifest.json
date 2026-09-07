@@ -4,6 +4,7 @@
   "publication": "NO_UPLOAD",
   "project_sha256": "b10ae33a4a478d115cc544eeb08659be6bf07e91f20e18a2393e12938dc86caf",
   "lock_sha256": "67642c52d17ce1964e8d187eba588f43c4389867a9b04b9c3ed88ed40d3061b8",
+  "evidence_source_head": "cb510404c6be556ec386d82291811393b2a1fce5",
   "dependency_audit_sha256": "f9153cabd44d27b2bf597dbd15f50f6d59830ae376c2881a45782c8a64878ed5",
   "dependency_audit_status": "BLOCKED_PENDING_OWNER_REVIEW",
   "api_model_free_evidence_sha256": "cb1b80d2b0efc380c03a4cd49714863279088cd2bc8313c93ffd0e1071bca1f7",
