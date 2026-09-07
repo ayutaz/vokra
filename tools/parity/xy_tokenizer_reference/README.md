@@ -37,6 +37,14 @@ decision may permit a separate Luna implementation/review to materialize a
 dumper-compatible `dependency_audit.json` with `AUDITED_ALLOW`; this is not
 automatic functionality, and the generator never creates that status itself.
 
-The source route remains blocked by the separate topology/native-runtime and
-numerical-parity gates. No model, checkpoint, dependency sync, or network
-operation is allowed on the maintainer Mac.
+The fixed source/config contract now authenticates the 16 kHz frontend, the
+semantic/acoustic encoder and adapter axes, 8×1024 RVQ (3072/512 dimensions),
+12.5 Hz downsample path, and the public `XY_Tokenizer` tokenize/detokenize,
+encode/decode, and checkpoint-loader API. This is not production approval:
+even a successful disposable reference
+run is reported as `REFERENCE_INSPECTION_COMPLETE`, while exact tensor names,
+shapes, and raw payload identities remain
+`BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST` until the collected manifest is
+independently reviewed and authenticated. Native runtime and numerical parity
+remain blocked. No model, checkpoint, dependency sync, or network operation is
+allowed on the maintainer Mac.

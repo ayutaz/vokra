@@ -7,7 +7,9 @@ upstream checkout, calls its public ``inference_tokenize`` and
 ``inference_detokenize`` methods, and records f32 taps from the official
 modules.  The dependency gate is fail-closed: the repository currently has no
 version-keyed primary-source license review for this source's transitive
-closure, so no checkpoint or source import is permitted yet.
+closure, so no checkpoint or source import is permitted yet. The fixed source
+and config topology/API contract is authenticated separately; tensor-role
+evidence remains blocked until the disposable checkpoint inspection.
 """
 
 from __future__ import annotations
@@ -46,7 +48,8 @@ UPSTREAM_REVISION = "c83433728e698ed0698e88cb5096bc221fb8f8c5"
 FORMAT = "vokra-xy-tokenizer-official-reference-v1"
 DEPENDENCY_LICENSE_AUDIT_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
 DEPENDENCY_LICENSE_BLOCKER = "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER"
-TOPOLOGY_UNVERIFIED_BLOCKER = "TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER"
+TOPOLOGY_CONTRACT = "vokra-xy-tokenizer-topology-v1"
+TENSOR_MANIFEST_BLOCKER = "BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST"
 REFERENCE_PROJECT = Path(__file__).parent / "xy_tokenizer_reference"
 FRONTEND_CLASS_DECLARATION = "class MelFeatureExtractor(SequenceFeatureExtractor):"
 FRONTEND_CAPTURE_DESCRIPTION = "official feature extractor output observed as semantic/acoustic encoder pre-hook input"
@@ -376,13 +379,20 @@ def run_official(
 ) -> dict[str, Any]:
     import torch
     import yaml
+    from xy_tokenizer_inspect_reference import (
+        classify_tensor_roles,
+        validate_model_api,
+        validate_topology,
+    )
 
+    source_api = validate_model_api(source)
     sys.path.insert(0, str(source))
     module = importlib.import_module("xy_tokenizer.model")
     model_class = module.XY_Tokenizer
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, Mapping) or not isinstance(config.get("generator_params"), Mapping):
         raise RuntimeError("official YAML generator_params mapping is missing")
+    topology = validate_topology(config)
     model = model_class(config["generator_params"])
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     if not isinstance(state, Mapping):
@@ -390,6 +400,7 @@ def run_official(
     state = state.get("generator", state)
     if not isinstance(state, Mapping) or not all(isinstance(key, str) for key in state):
         raise RuntimeError("official checkpoint is not a string-keyed state dict")
+    tensor_roles = classify_tensor_roles(state)
     model.load_state_dict(state, strict=True)
     model.eval()
     torch.set_num_threads(1)
@@ -457,9 +468,14 @@ def run_official(
         records[name] = _write_value(output, name, value)
     manifest = {
         "format": FORMAT,
-        "status": "REFERENCE_COMPLETE",
+        # Execution completed, but this is not an approval: tensor-role
+        # evidence is collected below and remains independently unauthenticated.
+        "status": "REFERENCE_INSPECTION_COMPLETE",
         "source": authenticate_source(source),
+        "source_api": source_api,
         "upstream": authenticate_artifacts(checkpoint, config_path),
+        "topology": topology,
+        "tensor_roles": tensor_roles,
         "oracle": {
             "implementation": "official XY_Tokenizer",
             "methods": ["inference_tokenize", "inference_detokenize"],
@@ -475,7 +491,7 @@ def run_official(
         "dependency_license_audit": dependency_audit["status"],
         "dependency_audit": dependency_audit,
         "records": records,
-        "blockers": [TOPOLOGY_UNVERIFIED_BLOCKER],
+        "blockers": [TENSOR_MANIFEST_BLOCKER],
         "native_status": "BLOCKED_UNTIL_RUNTIME_AND_PARITY_REVIEW",
         "publication": "NO_UPLOAD",
     }
@@ -495,7 +511,8 @@ def self_test() -> None:
     assert len(set(SOURCE_ROLE_BLOBS.values())) == len(SOURCE_ROLE_BLOBS)
     assert DEPENDENCY_LICENSE_AUDIT_STATUS == "BLOCKED_UNREVIEWED_TRANSITIVE"
     assert DEPENDENCY_LICENSE_BLOCKER == "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER"
-    assert TOPOLOGY_UNVERIFIED_BLOCKER == "TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER"
+    assert TOPOLOGY_CONTRACT == "vokra-xy-tokenizer-topology-v1"
+    assert TENSOR_MANIFEST_BLOCKER == "BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST"
     assert "feature_extractor" not in TAP_MODULES
     assert TAP_MODULES[0] == "semantic_encoder" and TAP_MODULES[-1] == "vocos"
     assert FRONTEND_CLASS_DECLARATION == "class MelFeatureExtractor(SequenceFeatureExtractor):"

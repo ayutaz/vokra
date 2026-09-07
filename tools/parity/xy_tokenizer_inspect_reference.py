@@ -11,6 +11,7 @@ runtime or numerical result.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -59,8 +60,137 @@ SOURCE_LICENSE_HEADING = "## License 📜"
 SOURCE_LICENSE_DECLARATION = "XY-Tokenizer is released under the Apache 2.0 license."
 SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE = "SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE"
 SOURCE_LICENSE_EVIDENCE_UNAVAILABLE = "SOURCE_LICENSE_EVIDENCE_UNAVAILABLE"
-TOPOLOGY_UNVERIFIED_BLOCKER = "TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER"
+TOPOLOGY_CONTRACT = "vokra-xy-tokenizer-topology-v1"
+TENSOR_MANIFEST_BLOCKER = "BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST"
 EVIDENCE_FILENAME = "manifest.json"
+
+# These are selected structural axes from the authenticated source config at
+# SOURCE_REVISION. They are deliberately not a guessed full tensor manifest:
+# checkpoint tensor names/shapes remain evidence-bound to a later VAST load.
+TOPOLOGY_AXES: dict[str, Any] = {
+    "feature_extractor_kwargs": {
+        "chunk_length": 30,
+        "feature_size": 80,
+        "hop_length": 160,
+        "n_fft": 400,
+        "n_samples": 480_000,
+        "nb_max_frames": 3000,
+        "padding_side": "right",
+        "padding_value": 0.0,
+        "return_attention_mask": False,
+        "sampling_rate": 16_000,
+    },
+    "semantic_encoder_kwargs": {
+        "num_mel_bins": 80,
+        "sampling_rate": 16_000,
+        "hop_length": 160,
+        "stride_size": 2,
+        "kernel_size": 3,
+        "d_model": 768,
+        "scale_embedding": False,
+        "max_audio_seconds": 30,
+        "encoder_layers": 12,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+        "activation_function": "gelu",
+    },
+    "semantic_encoder_adapter_kwargs": {
+        "input_dim": 768,
+        "output_dim": 768,
+        "d_model": 768,
+        "max_source_positions": 1500,
+        "encoder_layers": 4,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+    },
+    "acoustic_encoder_kwargs": {
+        "num_mel_bins": 80,
+        "sampling_rate": 16_000,
+        "hop_length": 160,
+        "stride_size": 2,
+        "kernel_size": 3,
+        "d_model": 768,
+        "scale_embedding": False,
+        "max_audio_seconds": 30,
+        "encoder_layers": 12,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+        "activation_function": "gelu",
+    },
+    "pre_rvq_adapter_kwargs": {
+        "input_dim": 1536,
+        "output_dim": 768,
+        "d_model": 768,
+        "max_source_positions": 1500,
+        "encoder_layers": 4,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+    },
+    "downsample_kwargs": {"d_model": 768, "avg_pooler": 4},
+    "quantizer_kwargs": {
+        "input_dim": 3072,
+        "rvq_dim": 512,
+        "output_dim": 3072,
+        "num_quantizers": 8,
+        "codebook_size": 1024,
+        "codebook_dim": 512,
+        "quantizer_dropout": 0.0,
+        "commitment": 1,
+    },
+    "post_rvq_adapter_kwargs": {
+        "input_dim": 3072,
+        "output_dim": 3072,
+        "d_model": 768,
+        "max_source_positions": 375,
+        "encoder_layers": 4,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+    },
+    "upsample_kwargs": {"d_model": 768, "stride": 4},
+    "acoustic_decoder_kwargs": {
+        "num_mel_bins": 80,
+        "sampling_rate": 16_000,
+        "hop_length": 160,
+        "stride_size": 2,
+        "kernel_size": 3,
+        "d_model": 768,
+        "scale_embedding": False,
+        "max_audio_seconds": 30,
+        "decoder_layers": 12,
+        "decoder_attention_heads": 12,
+        "decoder_ffn_dim": 3072,
+        "activation_function": "gelu",
+    },
+    "vocos_kwargs": {
+        "input_channels": 80,
+        "dim": 512,
+        "intermediate_dim": 4096,
+        "num_layers": 30,
+        "n_fft": 640,
+        "hop_size": 160,
+        "padding": "same",
+    },
+}
+MODEL_MODULES = (
+    "semantic_encoder",
+    "semantic_encoder_adapter",
+    "acoustic_encoder",
+    "pre_rvq_adapter",
+    "downsample",
+    "quantizer",
+    "post_rvq_adapter",
+    "upsample",
+    "acoustic_decoder",
+    "vocos",
+)
+MODEL_METHODS = (
+    "inference_tokenize",
+    "inference_detokenize",
+    "encode",
+    "decode",
+    "load_from_checkpoint",
+)
+GENERATOR_PARAM_KEYS = ("sample_rate", *TOPOLOGY_AXES.keys())
 
 
 def sha256(path: Path) -> str:
@@ -96,6 +226,109 @@ def json_load_unique(path: Path) -> Any:
         return value
 
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
+
+
+def _exact_value(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(
+            _exact_value(actual[key], expected[key]) for key in expected
+        )
+    return actual == expected
+
+
+def validate_topology(config: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(config, Mapping) or set(config) != {"sample_rate", "generator_params"}:
+        raise ValueError("config schema is not canonical")
+    generator = config["generator_params"]
+    if not isinstance(generator, Mapping):
+        raise ValueError("generator_params is not a mapping")
+    if set(generator) != set(GENERATOR_PARAM_KEYS):
+        raise ValueError("authenticated generator_params key set drifted")
+    if type(generator["sample_rate"]) is not int or generator["sample_rate"] != 16_000:
+        raise ValueError("authenticated generator_params.sample_rate drifted")
+    selected = {
+        "sample_rate": config["sample_rate"],
+        "generator_params.sample_rate": generator["sample_rate"],
+        "downsample_rate": 1280,
+    }
+    for name, expected in TOPOLOGY_AXES.items():
+        actual = generator.get(name)
+        if not isinstance(actual, Mapping) or not _exact_value(actual, expected):
+            raise ValueError(f"authenticated topology axis drifted: {name}")
+        selected[name] = dict(actual)
+    if type(config["sample_rate"]) is not int or config["sample_rate"] != 16_000:
+        raise ValueError("authenticated sample_rate drifted")
+    return {"schema": TOPOLOGY_CONTRACT, "axes": selected}
+
+
+def validate_model_api(source: Path) -> dict[str, Any]:
+    model_path = source / "xy_tokenizer/model.py"
+    tree = ast.parse(model_path.read_text(encoding="utf-8"), filename=str(model_path))
+    model_classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "XY_Tokenizer"]
+    if len(model_classes) != 1:
+        raise RuntimeError("official XY_Tokenizer class contract is not unique")
+    class_node = model_classes[0]
+    methods = {
+        node.name
+        for node in class_node.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    if not set(MODEL_METHODS) <= methods or "__init__" not in methods:
+        raise RuntimeError("official XY_Tokenizer API methods drifted")
+    load_method = next(
+        node for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == "load_from_checkpoint"
+    )
+    if not any(
+        isinstance(decorator, ast.Name) and decorator.id == "classmethod"
+        for decorator in load_method.decorator_list
+    ):
+        raise RuntimeError("official load_from_checkpoint classmethod contract drifted")
+    assigned = {
+        node.targets[0].attr
+        for node in ast.walk(class_node)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Attribute)
+        and isinstance(node.targets[0].value, ast.Name)
+        and node.targets[0].value.id == "self"
+    }
+    missing = sorted((set(MODEL_MODULES) | {"feature_extractor"}) - assigned)
+    if missing:
+        raise RuntimeError(f"official XY_Tokenizer module roles drifted: {missing}")
+    return {
+        "schema": "vokra-xy-tokenizer-api-v1",
+        "class": "XY_Tokenizer",
+        "modules": list(MODEL_MODULES),
+        "methods": list(MODEL_METHODS),
+        "frontend": "MelFeatureExtractor",
+    }
+
+
+def tensor_role(name: str) -> str | None:
+    for module in MODEL_MODULES:
+        if name == module or name.startswith(module + "."):
+            return module
+    return None
+
+
+def classify_tensor_roles(state: Mapping[str, torch.Tensor]) -> dict[str, Any]:
+    roles: dict[str, list[str]] = {module: [] for module in MODEL_MODULES}
+    unknown: list[str] = []
+    for name in sorted(state):
+        role = tensor_role(name)
+        if role is None:
+            unknown.append(name)
+        else:
+            roles[role].append(name)
+    missing = [module for module in MODEL_MODULES if not roles[module]]
+    if unknown or missing:
+        raise RuntimeError(
+            f"authenticated tensor role manifest is incomplete: unknown={unknown[:8]}, missing={missing}"
+        )
+    return {"schema": "vokra-xy-tokenizer-tensor-roles-v1", "roles": roles}
 
 
 def regular_files(root: Path) -> list[Path]:
@@ -218,20 +451,16 @@ def parse_config(text: str) -> dict[str, Any]:
         value = yaml.load(text, Loader=StrictYamlLoader)
     except yaml.YAMLError as error:
         raise ValueError(f"strict YAML parse failed: {error}") from error
-    if not isinstance(value, dict) or set(value) != {"sample_rate", "generator_params"}:
-        raise ValueError("config schema is not canonical")
     if (
-        isinstance(value["sample_rate"], bool)
-        or not isinstance(value["sample_rate"], int)
-        or value["sample_rate"] != 16_000
-        or not isinstance(value["generator_params"], dict)
+        not isinstance(value, dict)
+        or set(value) != {"sample_rate", "generator_params"}
+        or isinstance(value.get("sample_rate"), bool)
+        or not isinstance(value.get("sample_rate"), int)
+        or not isinstance(value.get("generator_params"), dict)
     ):
         raise ValueError("config sample_rate/generator_params envelope is not canonical")
-    # The fixed config bytes are authenticated, but no independently reviewed
-    # topology extraction is present in this checkout. Preserve the parsed
-    # bytes for evidence while carrying the blocker; never promote guessed
-    # fields or the old self-declared TOPOLOGY_CONTRACT.
-    return {"raw": value, "topology_status": TOPOLOGY_UNVERIFIED_BLOCKER}
+    topology = validate_topology(value)
+    return {"raw": value, "topology_status": "AUTHENTICATED", "topology": topology}
 
 
 def parse_weight_license(readme: Path) -> dict[str, str]:
@@ -397,6 +626,7 @@ def source_inventory(source: Path) -> dict[str, Any]:
                 raise RuntimeError(f"source fixed role mismatch: {relative}")
             roles.append({"path": relative, "mode": mode_object[0], "git_blob_sha1": expected})
     license_evidence = source_license_evidence(source, entries)
+    api_contract = validate_model_api(source)
     return {
         "repository": SOURCE_REPOSITORY,
         "revision": SOURCE_REVISION,
@@ -405,6 +635,7 @@ def source_inventory(source: Path) -> dict[str, Any]:
         "role_status": role_status,
         "license_status": license_evidence["status"],
         "license_evidence": license_evidence,
+        "api_contract": api_contract,
     }
 
 
@@ -427,15 +658,14 @@ def inspect(
     if source_data["role_status"] != "AUTHENTICATED":
         raise RuntimeError(source_data["role_status"])
     config_data = parse_config(config.read_text(encoding="utf-8"))
-    known_blockers: list[str] = []
-    if config_data.get("topology_status") == TOPOLOGY_UNVERIFIED_BLOCKER:
-        known_blockers.append(TOPOLOGY_UNVERIFIED_BLOCKER)
+    known_blockers: list[str] = [TENSOR_MANIFEST_BLOCKER]
 
     # The only checkpoint load permitted by this inspection path. A failure is
     # fatal; there is intentionally no unrestricted pickle fallback.
     checkpoint_value = torch.load(str(checkpoint), map_location="cpu", weights_only=True)
     state = state_dict_from_checkpoint(checkpoint_value)
     validate_state_dict(state)
+    tensor_roles = classify_tensor_roles(state)
     prepared.parent.mkdir(parents=True, exist_ok=True)
     save_file({name: tensor.detach().cpu().contiguous() for name, tensor in state.items()}, str(prepared))
 
@@ -445,10 +675,10 @@ def inspect(
         tensor = state[name].detach().cpu().contiguous()
         raw = raw_tensor_bytes(tensor)
         dtype = str(tensor.dtype).removeprefix("torch.")
-        tensors.append({"name": name, "shape": [int(dim) for dim in tensor.shape], "dtype": dtype, "elements": int(tensor.numel()), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        tensors.append({"name": name, "role": tensor_role(name), "shape": [int(dim) for dim in tensor.shape], "dtype": dtype, "elements": int(tensor.numel()), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
         dtype_counts[dtype] = dtype_counts.get(dtype, 0) + 1
     output.mkdir(parents=True, exist_ok=True)
-    tensor_manifest = {"tensor_count": len(tensors), "dtype_counts": dtype_counts, "tensors": tensors}
+    tensor_manifest = {"tensor_count": len(tensors), "dtype_counts": dtype_counts, "role_manifest": tensor_roles, "tensors": tensors}
     (output / "tensor-inventory.json").write_text(json.dumps(tensor_manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     (output / "config.json").write_text(json.dumps(config_data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     (output / "source-inventory.json").write_text(json.dumps(source_data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -498,7 +728,7 @@ def write_error_manifest(output: Path, error: Exception) -> None:
         path = output / name
         if path.exists() and path.is_file():
             path.unlink()
-    manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "FAILED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "error": str(error), "blockers": ["authenticated collection unavailable", SOURCE_LICENSE_EVIDENCE_UNAVAILABLE, TOPOLOGY_UNVERIFIED_BLOCKER]}
+    manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "FAILED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "error": str(error), "blockers": ["authenticated collection unavailable", SOURCE_LICENSE_EVIDENCE_UNAVAILABLE, TENSOR_MANIFEST_BLOCKER]}
     (output / EVIDENCE_FILENAME).write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
@@ -517,7 +747,8 @@ def self_test() -> None:
     assert SOURCE_LICENSE_DECLARATION == "XY-Tokenizer is released under the Apache 2.0 license."
     assert SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE in source
     assert SOURCE_LICENSE_EVIDENCE_UNAVAILABLE in source
-    assert TOPOLOGY_UNVERIFIED_BLOCKER in source
+    assert TOPOLOGY_CONTRACT in source
+    assert TENSOR_MANIFEST_BLOCKER in source
     assert parse_source_license_readme(
         "# XY-Tokenizer\n\n## License 📜\n\n"
         "XY-Tokenizer is released under the Apache 2.0 license.\n\n"
@@ -578,12 +809,30 @@ def self_test() -> None:
     }
     assert SELECTED_MODEL_FILES == {".gitattributes", "README.md", "xy_tokenizer.ckpt"}
     assert CONFIG_RELATIVE.as_posix() not in SELECTED_MODEL_FILES
-    config_data = parse_config("sample_rate: 16000\ngenerator_params: {}\n")
-    assert config_data["topology_status"] == TOPOLOGY_UNVERIFIED_BLOCKER
-    anchored = parse_config(
-        "sample_rate: &sample_rate 16000\ngenerator_params:\n  sample_rate: *sample_rate\n"
+    generator_fixture = {
+        name: value for name, value in TOPOLOGY_AXES.items()
+        if name not in {"sample_rate", "downsample_rate"}
+    }
+    generator_fixture["sample_rate"] = 16_000
+    config_text = yaml.safe_dump(
+        {"sample_rate": 16_000, "generator_params": generator_fixture},
+        sort_keys=False,
     )
-    assert anchored["raw"] == {"sample_rate": 16000, "generator_params": {"sample_rate": 16000}}
+    config_data = parse_config(config_text)
+    assert config_data["topology_status"] == "AUTHENTICATED"
+    assert config_data["topology"]["schema"] == TOPOLOGY_CONTRACT
+    tampered_fixture = json.loads(json.dumps(generator_fixture))
+    tampered_fixture["quantizer_kwargs"]["num_quantizers"] = 7
+    try:
+        parse_config(yaml.safe_dump({"sample_rate": 16_000, "generator_params": tampered_fixture}, sort_keys=False))
+    except ValueError as error:
+        assert "topology" in str(error)
+    else:
+        raise AssertionError("tampered topology was accepted")
+    anchored = parse_config(
+        "sample_rate: &sample_rate 16000\n" + yaml.safe_dump({"generator_params": generator_fixture}, sort_keys=False)
+    )
+    assert anchored["topology_status"] == "AUTHENTICATED"
     try:
         parse_config("sample_rate: 16000\nsample_rate: 16000\ngenerator_params: {}\n")
     except ValueError:
@@ -618,6 +867,40 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("unsafe YAML anchor/alias construct was accepted")
+    role_state = {
+        f"{module}.weight": torch.ones(1) for module in MODEL_MODULES
+    }
+    role_manifest = classify_tensor_roles(role_state)
+    assert role_manifest["schema"] == "vokra-xy-tokenizer-tensor-roles-v1"
+    assert set(role_manifest["roles"]) == set(MODEL_MODULES)
+    for invalid_roles in (
+        {**role_state, "untrusted.weight": torch.ones(1)},
+        {key: value for key, value in role_state.items() if not key.startswith("vocos.")},
+    ):
+        try:
+            classify_tensor_roles(invalid_roles)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("invalid tensor role manifest was accepted")
+    with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-api-") as directory:
+        fake_source = Path(directory)
+        model_file = fake_source / "xy_tokenizer/model.py"
+        model_file.parent.mkdir(parents=True)
+        assignments = "\n".join(f"        self.{name} = None" for name in (*MODEL_MODULES, "feature_extractor"))
+        model_file.write_text(
+            "class XY_Tokenizer:\n"
+            "    def __init__(self, generator_params):\n"
+            f"{assignments}\n"
+            "    def inference_tokenize(self, x, input_lengths): pass\n"
+            "    def inference_detokenize(self, codes, codes_lengths): pass\n"
+            "    def encode(self, wav_list, overlap_seconds=10, device=None): pass\n"
+            "    def decode(self, codes_list, overlap_seconds=10, device=None): pass\n"
+            "    @classmethod\n"
+            "    def load_from_checkpoint(cls, config_path, ckpt_path): pass\n",
+            encoding="utf-8",
+        )
+        assert validate_model_api(fake_source)["class"] == "XY_Tokenizer"
     bad_state = {"layer..weight": torch.ones(1)}
     try:
         validate_state_dict(bad_state)
