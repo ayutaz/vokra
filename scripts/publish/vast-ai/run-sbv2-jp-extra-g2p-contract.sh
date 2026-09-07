@@ -105,6 +105,7 @@ run_self_test() {
     'pyopenjtalk license audit' 'build-constraint-dependencies' \
     'LICENSE_mei_normal.htsvoice' 'submodule update' \
     'LOGURU_SOURCE_URL' 'LOGURU_COMMIT' 'LOGURU_TAG' 'LOGURU_TAG_OBJECT' 'loguru-source' '--loguru-source-dir' 'verify_loguru_source' '5285f420ff222526f9afa7acf507362367132f9c' '4ea6eb8e860bee2582875b19ceac328ac17dc7af' \
+    'HF_HUB_OFFLINE=1' 'TRANSFORMERS_OFFLINE=1' \
     'NO_UPLOAD' 'git clone' 'git checkout' 'verify_source_tree' \
     'model/checkpoint bytes' 'model_weight_acquisition' 'cargo' \
     'g2p_en' 'distance' 'num2words' '__vokra_num2words_sentinel__' 'numeric-text G2P' \
@@ -113,6 +114,17 @@ run_self_test() {
   done
   for token in symbols_blob japanese_blob mora_blob common_log_blob stdout_wrapper_blob init_blob license_blob; do
     grep -Fq -- "$token" "$GENERATOR" || { log "self-test missing authenticated blob token: $token"; failed=1; }
+  done
+  for token in deberta_config_blob deberta_special_tokens_blob deberta_tokenizer_config_blob deberta_vocab_blob \
+    'bert/deberta-v2-large-japanese-char-wwm/config.json' \
+    'bert/deberta-v2-large-japanese-char-wwm/special_tokens_map.json' \
+    'bert/deberta-v2-large-japanese-char-wwm/tokenizer_config.json' \
+    'bert/deberta-v2-large-japanese-char-wwm/vocab.txt' \
+    '9fb6b0ac2ec49b6556e58b5ed9492eb33166714d' \
+    'a8b3208c2884c4efb86e49300fdd3dc877220cdf' \
+    '8ab2175580e45760875557201e5543019ca3039b' \
+    'ef3652a1877f4c898e6fcb3e605c432c7bcc56b1'; do
+    grep -Fq -- "$token" "$GENERATOR" || { log "self-test missing authenticated tokenizer token: $token"; failed=1; }
   done
   for token in PYOPENJTALK_COMMIT SOURCE_BLOBS SUBMODULES BUILD_CONSTRAINTS UPSTREAM_BUILD_REQUIREMENTS \
     STATIC_SOURCE_LOCK_LICENSE_PASS POST_INSTALL_PAYLOAD_PASS 'residual=build-only archive hashes'; do
@@ -202,7 +214,7 @@ main() {
   VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PYOPENJTALK_AUDIT" --phase post \
     --project-dir "$PARITY_PROJECT" --source-dir "$pyopenjtalk_source_dir" --loguru-source-dir "$loguru_source_dir"
-  VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
+  VOKRA_PUBLISH_ON_VAST=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 UV_CACHE_DIR="${UV_CACHE_DIR:-$work/uv-cache}" \
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$GENERATOR" \
     --vokra-root "$VOKRA_ROOT" --expected-head "$expected_head" \
     --source-dir "$source_dir" \

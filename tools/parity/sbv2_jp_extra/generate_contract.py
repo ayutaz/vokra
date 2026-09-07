@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from contextlib import chdir
 import hashlib
 import importlib
 import importlib.util
@@ -47,6 +48,10 @@ EXPECTED_SOURCE: dict[str, str] = {
     "stdout_wrapper_blob": "23c6e76462753190d77a1b58dfe022012c90a028",
     "init_blob": "495e57b50d87a4ca3e8fe8dbaf003b4888581927",
     "license_blob": "0ad25db4bd1d86c452db3f9602ccdbe172438f52",
+    "deberta_config_blob": "9fb6b0ac2ec49b6556e58b5ed9492eb33166714d",
+    "deberta_special_tokens_blob": "a8b3208c2884c4efb86e49300fdd3dc877220cdf",
+    "deberta_tokenizer_config_blob": "8ab2175580e45760875557201e5543019ca3039b",
+    "deberta_vocab_blob": "ef3652a1877f4c898e6fcb3e605c432c7bcc56b1",
 }
 SOURCE_PATHS: tuple[tuple[str, str], ...] = (
     ("symbols_blob", "text/symbols.py"),
@@ -56,6 +61,19 @@ SOURCE_PATHS: tuple[tuple[str, str], ...] = (
     ("stdout_wrapper_blob", "common/stdout_wrapper.py"),
     ("init_blob", "text/__init__.py"),
     ("license_blob", "LICENSE"),
+    (
+        "deberta_config_blob",
+        "bert/deberta-v2-large-japanese-char-wwm/config.json",
+    ),
+    (
+        "deberta_special_tokens_blob",
+        "bert/deberta-v2-large-japanese-char-wwm/special_tokens_map.json",
+    ),
+    (
+        "deberta_tokenizer_config_blob",
+        "bert/deberta-v2-large-japanese-char-wwm/tokenizer_config.json",
+    ),
+    ("deberta_vocab_blob", "bert/deberta-v2-large-japanese-char-wwm/vocab.txt"),
 )
 LANGUAGE_IDS = {"ZH": 0, "JP": 1, "EN": 2}
 TONE_COUNTS = {"ZH": 6, "JP": 2, "EN": 4}
@@ -410,7 +428,11 @@ def import_official_text(source_dir: Path, evidence: SourceEvidence) -> tuple[An
     sys.modules["common"] = common
     _load_source_module("common.stdout_wrapper", source_dir / "common/stdout_wrapper.py")
     _load_source_module("common.log", source_dir / "common/log.py")
-    japanese = _load_source_module("text.japanese", source_dir / "text/japanese.py")
+    # The authenticated upstream module resolves its DeBERTa tokenizer from a
+    # source-root-relative path.  Keep this narrowly scoped to that module and
+    # let contextlib restore the caller's CWD even when import raises.
+    with chdir(source_dir):
+        japanese = _load_source_module("text.japanese", source_dir / "text/japanese.py")
     sequence = _load_official_sequence(source_dir / "text/__init__.py", symbols)
     expected_files = {
         "text.japanese": source_dir / "text/japanese.py",
@@ -690,6 +712,7 @@ def _fake_git_source(directory: Path) -> tuple[dict[str, str], Path]:
     source = directory / "fake-source"
     (source / "text").mkdir(parents=True)
     (source / "common").mkdir(parents=True)
+    (source / "bert/deberta-v2-large-japanese-char-wwm").mkdir(parents=True)
     files = {
         "text/symbols.py": (
             "symbols = [" + ",".join(repr(f"symbol-{i}") for i in range(178)) + "]\n"
@@ -725,6 +748,10 @@ def _fake_git_source(directory: Path) -> tuple[dict[str, str], Path]:
             "    return phones, tones, language\n"
         ),
         "LICENSE": "fake license\n",
+        "bert/deberta-v2-large-japanese-char-wwm/config.json": "{}\n",
+        "bert/deberta-v2-large-japanese-char-wwm/special_tokens_map.json": "{}\n",
+        "bert/deberta-v2-large-japanese-char-wwm/tokenizer_config.json": "{}\n",
+        "bert/deberta-v2-large-japanese-char-wwm/vocab.txt": "token\n",
     }
     for relative, content in files.items():
         path = source / relative
@@ -758,8 +785,14 @@ def self_test() -> None:
         assert evidence.commit == expected["source_commit"]
         _expect_failure("wrong commit", lambda: verify_source_tree(source, {**expected, "source_commit": "0" * 40}))
         _expect_failure("wrong blob", lambda: verify_source_tree(source, {**expected, "symbols_blob": "0" * 40}))
+        _expect_failure(
+            "tokenizer blob drift",
+            lambda: verify_source_tree(source, {**expected, "deberta_vocab_blob": "0" * 40}),
+        )
 
+        cwd_before = Path.cwd()
         sequence, symbols_module, japanese = import_official_text(source, evidence)
+        assert Path.cwd() == cwd_before
         assert symbols_module.symbols[1] == "symbol-1"
         _expect_failure(
             "source symbol table drift",
