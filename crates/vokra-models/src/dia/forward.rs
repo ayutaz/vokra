@@ -732,7 +732,7 @@ fn official_bos_over(dec_step: usize, prefill_step: usize, max_delay: usize) -> 
     // `all(dec_step - prefill_step > max_delay for prefill_step in
     // dec_output.prefill_steps)`. Negative differences cannot satisfy the
     // strict predicate and therefore remain masked.
-    dec_step.checked_sub(prefill_step).unwrap_or(0) > max_delay
+    dec_step.saturating_sub(prefill_step) > max_delay
 }
 
 #[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired

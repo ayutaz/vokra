@@ -877,9 +877,7 @@ impl KyutaiSttTokenizer {
             KEY_TOKENIZER_DENORMALIZER_PRESENT,
         ];
         for (key, _) in file.metadata() {
-            if key.starts_with("vokra.kyutai_stt.tokenizer.")
-                && !allowed.iter().any(|expected| *expected == key.as_str())
-            {
+            if key.starts_with("vokra.kyutai_stt.tokenizer.") && !allowed.contains(&key.as_str()) {
                 return Err(VokraError::ModelLoad(format!(
                     "kyutai-stt tokenizer: unexpected metadata `{key}`"
                 )));
