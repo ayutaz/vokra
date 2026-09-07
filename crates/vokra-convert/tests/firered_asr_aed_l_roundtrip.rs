@@ -25,7 +25,7 @@ fn aliases_dispatch_to_distinct_model_kind() {
 }
 
 #[test]
-fn direct_dispatch_and_license_dispatch_reject_unprepared_input_without_output() {
+fn direct_dispatch_and_license_dispatch_require_explicit_sidecars_without_output() {
     let input = temp_path("input");
     let output = temp_path("output");
     std::fs::write(&input, b"arbitrary checkpoint").expect("input");
@@ -33,7 +33,7 @@ fn direct_dispatch_and_license_dispatch_reject_unprepared_input_without_output()
     for (result, expected_error) in [
         (
             convert_file(ModelKind::FireredAsrAedL, &input, &output),
-            "VAST prepared safetensors artifact",
+            "explicit cmvn.txt and dict.txt sidecars",
         ),
         (
             convert_file_licensed(
@@ -42,7 +42,7 @@ fn direct_dispatch_and_license_dispatch_reject_unprepared_input_without_output()
                 &output,
                 Some("apache-2.0"),
             ),
-            "fixed Apache-2.0 weight license",
+            "explicit cmvn.txt and dict.txt sidecars",
         ),
     ] {
         let error = result.expect_err("FireRed conversion must reject an unprepared artifact");
