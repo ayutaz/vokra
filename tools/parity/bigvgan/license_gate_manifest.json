@@ -89,6 +89,7 @@
     },
     "publication": "NO_UPLOAD"
   },
+  "approval_scope_sha256": "73f8b60a0f71be420dfbaf1fc7213743701816a301303ff98ba46bbf2d09bce4",
   "publication": "NO_UPLOAD",
   "approval": {"status":"OWNER_SIGNOFF_REQUIRED","signer":null,"digest":null}
 }

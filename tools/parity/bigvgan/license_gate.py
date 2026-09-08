@@ -28,7 +28,7 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 MANIFEST_KEYS = {
     "gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows",
     "package_review_rows_sha256", "identities", "required_package_rows", "forbidden_dependencies",
-    "license_rows", "license_rows_sha256", "audit_evidence", "publication", "approval",
+    "license_rows", "license_rows_sha256", "audit_evidence", "approval_scope_sha256", "publication", "approval",
 }
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
@@ -288,7 +288,6 @@ def validate_project_schema(project: dict[str, Any]) -> None:
 
 
 def approval_scope(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-    approval = manifest.get("approval")
     return canonical_digest({
         "schema": "bigvgan-approval-scope-v1",
         "lock_sha256": manifest.get("lock_sha256"),
@@ -304,7 +303,6 @@ def approval_scope(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         "publication": manifest.get("publication"),
         "expected_decision": "APPROVED",
         "expected_status": "OWNER_SIGNOFF_APPROVED",
-        "signer": approval.get("signer") if isinstance(approval, dict) else None,
     })
 
 
@@ -402,6 +400,10 @@ def run(
         fail("license rows contain missing, extra, reordered, or duplicate identities")
     if canonical_digest(license_rows) != manifest.get("license_rows_sha256"):
         fail("license/native/bundled review rows drifted")
+    scope = approval_scope(manifest, rows)
+    approval_scope_sha256 = manifest.get("approval_scope_sha256")
+    if not isinstance(approval_scope_sha256, str) or not HEX64.fullmatch(approval_scope_sha256) or approval_scope_sha256 != scope:
+        fail("approval scope is not bound to the fixed identities, platform evidence, and NO_UPLOAD decision")
     reviewed_identities = manifest.get("identities")
     if not isinstance(reviewed_identities, dict):
         fail("reviewed model/source identities are missing from the manifest")
@@ -433,7 +435,6 @@ def run(
     approval = manifest.get("approval")
     if not isinstance(approval, dict) or set(approval) != {"status", "signer", "digest"} or approval.get("status") != "OWNER_SIGNOFF_APPROVED" or not isinstance(approval.get("signer"), str) or not approval["signer"] or not HEX64.fullmatch(str(approval.get("digest", ""))):
         fail("owner approval remains pending or has an invalid schema")
-    scope = approval_scope(manifest, rows)
     if approval["digest"] != scope or manifest.get("publication") != "NO_UPLOAD":
         fail("owner approval does not cover the exact closure and NO_UPLOAD decision")
     if evidence_path is None or not regular_file(evidence_path):
@@ -677,6 +678,7 @@ source = { registry = 'https://pypi.org/simple' }
             "license_rows": license_rows,
             "license_rows_sha256": canonical_digest(license_rows),
             "audit_evidence": dict(EXPECTED_AUDIT_EVIDENCE),
+            "approval_scope_sha256": "",
             "publication": "NO_UPLOAD",
             "approval": {"status": "OWNER_SIGNOFF_APPROVED", "signer": "self-test-signer", "digest": ""},
         }
@@ -693,6 +695,11 @@ source = { registry = 'https://pypi.org/simple' }
             "model_license_blob_sha256": "1" * 64,
         }
         manifest["approval"]["digest"] = approval_scope(manifest, rows)
+        manifest["approval_scope_sha256"] = manifest["approval"]["digest"]
+        signer_independent_scope = manifest["approval_scope_sha256"]
+        manifest["approval"]["signer"] = "different-self-test-signer"
+        assert approval_scope(manifest, rows) == signer_independent_scope
+        manifest["approval"]["signer"] = "self-test-signer"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         expected_evidence = {
             "schema": "bigvgan-approval-evidence-v1",
@@ -833,9 +840,12 @@ source = { registry = 'https://pypi.org/simple' }
         expect_manifest_blocked("license-row-reordered", lambda value: value.update(license_rows=list(reversed(value["license_rows"]))))
         expect_manifest_blocked("license-row-duplicate", lambda value: value["license_rows"].__setitem__(1, dict(value["license_rows"][0])))
         expect_manifest_blocked("audit-evidence-tamper", lambda value: value["audit_evidence"]["linux"].update(native_payload_count=143))
+        expect_manifest_blocked("identity-tamper", lambda value: value["identities"].update(model_revision="e" * 40))
         expect_manifest_blocked("audit-evidence-missing", lambda value: value.pop("audit_evidence"))
         expect_manifest_blocked("audit-evidence-platform-missing", lambda value: value["audit_evidence"].pop("arm64-darwin"))
         expect_manifest_blocked("audit-evidence-platform-extra", lambda value: value["audit_evidence"].update(windows=dict(EXPECTED_AUDIT_EVIDENCE["linux"])))
+        expect_manifest_blocked("approval-scope-tamper", lambda value: value.update(approval_scope_sha256="0" * 64))
+        expect_manifest_blocked("publication-tamper", lambda value: value.update(publication="UPLOAD"))
         expect_blocked("evidence-row-missing", lambda value: value["rows"].pop())
         expect_blocked("evidence-row-extra", lambda value: value["rows"].append(dict(value["rows"][0])))
         expect_blocked("evidence-row-duplicate", lambda value: value["rows"].__setitem__(1, dict(value["rows"][0])))

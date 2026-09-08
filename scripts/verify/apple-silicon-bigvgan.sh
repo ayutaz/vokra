@@ -120,7 +120,7 @@ run_self_test() {
     'parity_bigvgan_real.rs' 'real-weight BigVGAN base parity' 'BigVGAN Metal' \
     'one final readback' 'NO_UPLOAD' 'CPU_ATOL' 'METAL_ATOL' 'archive_sha256=' 'tar -czf' '--gguf-sha256' '--reference-sha256' \
     '--model-revision' '--checkpoint-sha256' '--config-sha256' '--source-revision' \
-    '--approval-evidence' 'license_preflight' 'require_disjoint_evidence' '! -L' \
+    '--approval-evidence' 'license_preflight' 'approval_scope_sha256' 'require_disjoint_evidence' '! -L' \
     'evidence directory must be absent before validation'; do
     grep -Fq -- "$token" "$path" || { log "self-test FAIL: missing argument/host contract: $token"; fail=1; }
   done

@@ -195,7 +195,7 @@ run_self_test() {
     'BIGVGAN_SOURCE_REVISION' 'nvidia/bigvgan_base_24khz_100band' \
     'https://github.com/NVIDIA/BigVGAN' 'bigvgan_prepare_checkpoint.py' \
     'bigvgan_dump_reference.py' 'weights_only=True' 'cargo test --locked --release' \
-    'parity_bigvgan_real' 'NO_UPLOAD' 'uv sync --project' '--frozen --python 3.12' 'license_gate.py' \
+    'parity_bigvgan_real' 'NO_UPLOAD' 'approval_scope_sha256' 'uv sync --project' '--frozen --python 3.12' 'license_gate.py' \
     'audit_linux_closure.py' 'OWNER_REVIEW_REQUIRED' 'bigvgan-evidence.tar.gz' 'archive_sha256=' \
     'license_gate_manifest.json' '--no-project --offline --python 3.12' '--approval-evidence' \
     '<APPLE_APPROVAL_EVIDENCE>' '<APPLE_EVIDENCE_DIR>'; do

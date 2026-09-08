@@ -112,7 +112,7 @@ run_self_test() {
   for token in 'run-bigvgan-dependency-preflight.sh --self-test' \
     'preflight_linux_closure.py' 'audit_linux_closure.py' '--no-project --offline --python 3.12' \
     'OWNER_REVIEW_REQUIRED' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'NO_UPLOAD' 'VOKRA_PUBLISH_ON_VAST=1' \
-    'EXPECTED_LOCK_SHA256' 'lock_sha256' 'git status --porcelain --untracked-files=all' \
+    'EXPECTED_LOCK_SHA256' 'lock_sha256' 'approval_scope_sha256' 'git status --porcelain --untracked-files=all' \
     '--target x86_64-linux|arm64-darwin' 'bigvgan-darwin-closure-candidate-v1' 'arm64-darwin'; do
     grep -Fq -- "$token" "$path" || { log "self-test FAIL: missing contract: $token"; fail=1; }
   done
