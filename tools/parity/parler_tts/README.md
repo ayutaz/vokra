@@ -149,3 +149,20 @@ infer a weight license from raw bytes. No license class is inferred from raw
 LICENSE bytes. The audit can inspect only an environment synchronized by a
 separately authorized, named VAST job; it does not download weights, import
 model/Torch code, or invoke Cargo.
+
+Before owner review is complete, the same VAST host may run the explicit
+dependency-only collection path:
+
+```sh
+bash scripts/publish/vast-ai/audit-parler-tts-dependencies.sh \
+  --model-free --output /dev/shm/parler-dependency-audit.json
+```
+
+This mode uses only the frozen project bytes, installed distribution metadata,
+publisher license files, and native ELF dependency facts. It performs no
+network request, model/source import, checkpoint access, Cargo invocation, or
+upload. Its report includes a canonical `approval_scope` digest and the exact
+pending review rows, but never changes the manifest or promotes the
+`PENDING_REVIEW`/`null` operator approval fields. Missing installed facts remain
+blocked and must be resolved by owner review or the separately authorized
+post-sync audit.

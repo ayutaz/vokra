@@ -9,22 +9,26 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/parler_tts"
 AUDIT="$PARITY_PROJECT/dependency_audit.py"
 OUTPUT=""
+MODEL_FREE=0
 SELF_TEST=0
 MIN_VAST_MEM_KIB=60000000
 
 usage() {
   cat <<'EOF' >&2
 usage: audit-parler-tts-dependencies.sh --output <audit.json>
+       audit-parler-tts-dependencies.sh --model-free --output <audit.json>
        audit-parler-tts-dependencies.sh --self-test
 
 The target environment must already have been synchronized by a separately
 authorized, named VAST Parler-TTS job. This wrapper only inspects that frozen
 environment: it never runs uv sync, imports model/Torch code, invokes Cargo, or
-downloads model weights. For installed distributions without publisher files,
-the audit may fetch only the exact locked PyPI sdist and inspect its in-memory
-LICENSE/COPYING/NOTICE/COPYRIGHT members. It also fetches only the exact
-primary-source LICENSE paths named by license_gate_manifest.json, with a
-bounded HF model-info fallback for the two allow-listed Parler model repos.
+downloads model weights. In the normal mode, installed distributions without
+publisher files may trigger an exact locked PyPI sdist fetch, and the audit
+fetches only the exact primary-source LICENSE paths named by
+license_gate_manifest.json (with a bounded HF model-info fallback for the two
+allow-listed Parler model repos). `--model-free` is a separate dependency-only
+mode: it never performs any network request and records only local frozen-lock,
+installed metadata/license bytes, and native ELF facts.
 EOF
 }
 
@@ -145,19 +149,33 @@ run_audit() {
   mkdir -p "$(dirname "$output")" || return 2
   # --no-sync is intentional: a separately authorized named VAST sync must
   # happen before this wrapper is invoked.
+  local mode_args=()
+  if (( MODEL_FREE )); then
+    mode_args+=(--model-free)
+  else
+    mode_args+=(--fetch-model-licenses)
+  fi
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 \
-    python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses
+    python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" "${mode_args[@]}"
 }
 
 self_test() {
   local failed=0 probe_root blocked_output probe_parent=/tmp
   [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
+  grep -Fq -- '--model-free' "$0" || failed=1
+  grep -Fq -- 'MODEL_FREE_DEPENDENCY_ONLY' "$AUDIT" || failed=1
   grep -Fq -- 'primary-source LICENSE paths' "$0" || failed=1
   grep -Fq -- 'exact locked PyPI sdist' "$0" || failed=1
   grep -Fq -- 'never downloads model weights' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   grep -Fq -- 'uv run --no-cache --no-project --offline --python 3.12' "$0" || failed=1
+  if "$0" --model-free --self-test >/dev/null 2>&1; then failed=1; fi
+  if "$0" --self-test --model-free >/dev/null 2>&1; then failed=1; fi
+  if "$0" --self-test --output /private/tmp/unused.json >/dev/null 2>&1; then failed=1; fi
+  if "$0" --model-free >/dev/null 2>&1; then failed=1; fi
+  if "$0" --model-free --model-free --output /private/tmp/unused.json >/dev/null 2>&1; then failed=1; fi
+  if "$0" --unknown-option >/dev/null 2>&1; then failed=1; fi
   probe_root="$(mktemp -d "$probe_parent/parler-dependency-audit-wrapper.XXXXXX")"
   blocked_output="$probe_root/blocked.json"
   if VOKRA_PUBLISH_ON_VAST=0 run_audit "$blocked_output" >/dev/null 2>&1; then
@@ -192,6 +210,10 @@ while (( $# > 0 )); do
       [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$OUTPUT" ]] || { usage; exit 2; }
       OUTPUT="$2"; shift 2
       ;;
+    --model-free)
+      (( MODEL_FREE == 0 )) || { usage; exit 2; }
+      MODEL_FREE=1; shift
+      ;;
     --self-test)
       (( SELF_TEST == 0 )) || { usage; exit 2; }
       SELF_TEST=1; shift
@@ -202,7 +224,7 @@ while (( $# > 0 )); do
 done
 
 if (( SELF_TEST != 0 )); then
-  [[ -z "$OUTPUT" ]] || { usage; exit 2; }
+  [[ -z "$OUTPUT" && "$MODEL_FREE" == 0 ]] || { usage; exit 2; }
   self_test
 else
   [[ -n "$OUTPUT" ]] || { usage; exit 2; }

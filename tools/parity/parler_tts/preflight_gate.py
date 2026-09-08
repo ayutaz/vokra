@@ -347,6 +347,24 @@ def reviewed_value(value: Any) -> bool:
     return normalized not in REVIEW_PLACEHOLDERS
 
 
+def canonical_approval_scope(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the exact scope without requiring owner review to be complete."""
+    return {
+        "lock_sha256": LOCK_SHA256,
+        "pyproject_sha256": PYPROJECT_SHA256,
+        "package_rows_sha256": manifest["package_rows_sha256"],
+        "package_rows": rows,
+        "review_rows": manifest["review_rows"],
+        "source_identity": manifest["source_identity"],
+        "variants": VARIANTS,
+        "dac_identity": DAC_IDENTITY,
+        "model_metadata_fallback": MODEL_METADATA_FALLBACK,
+        "dac_provenance": manifest["dac_provenance"],
+        "reference_route": manifest["reference_route"],
+        "model_reviews": manifest["model_reviews"],
+    }
+
+
 def validate(project: Path, manifest_path: Path, evidence_path: Path | None = None) -> tuple[bool, str]:
     lock_path = project / "uv.lock"
     pyproject_path = project / "pyproject.toml"
@@ -442,15 +460,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
             or not reviewed_value(item.get("evidence"))
         ):
             return blocked("model/DAC license or native/bundled review is unresolved")
-    scope = {
-        "lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256,
-        "package_rows_sha256": manifest["package_rows_sha256"], "package_rows": rows, "review_rows": review_rows,
-        "source_identity": manifest["source_identity"], "variants": VARIANTS,
-        "dac_identity": DAC_IDENTITY, "model_metadata_fallback": MODEL_METADATA_FALLBACK,
-        "dac_provenance": manifest["dac_provenance"],
-        "reference_route": route,
-        "model_reviews": model_reviews,
-    }
+    scope = canonical_approval_scope(manifest, rows)
     scope_sha256 = canonical_digest(scope)
     if manifest.get("approval_scope_sha256") != scope_sha256:
         return blocked("operator approval scope is not bound to exact inputs")

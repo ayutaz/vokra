@@ -675,6 +675,7 @@ def _inspect_package(
     record: dict[str, Any] | None,
     duplicate: bool,
     sdist_fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+    allow_sdist_fetch: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
     lock_data = {
         "name": row["name"],
@@ -689,17 +690,27 @@ def _inspect_package(
     native, unsafe_native = _native_files(dist)
     locked_sdist: dict[str, Any] | None = None
     if not publisher:
-        try:
-            locked_sdist = _fetch_locked_sdist(row, sdist_fetcher)
-        except AuditError as exc:
+        if not allow_sdist_fetch:
             locked_sdist = {
-                "status": "BLOCKED",
+                "status": "NOT_REQUESTED_MODEL_FREE",
                 "archive_identity": {
                     "requested_url": row.get("sdist", {}).get("url") if isinstance(row.get("sdist"), dict) else None,
                 },
                 "publisher_files": [],
-                "error": str(exc),
+                "reason": "model-free mode never performs network acquisition",
             }
+        else:
+            try:
+                locked_sdist = _fetch_locked_sdist(row, sdist_fetcher)
+            except AuditError as exc:
+                locked_sdist = {
+                    "status": "BLOCKED",
+                    "archive_identity": {
+                        "requested_url": row.get("sdist", {}).get("url") if isinstance(row.get("sdist"), dict) else None,
+                    },
+                    "publisher_files": [],
+                    "error": str(exc),
+                }
     installed = {
         "name": dist.metadata.get("Name"),
         "version": dist.version,
@@ -1188,6 +1199,7 @@ def audit_environment(
     project: Path,
     fetch_model_licenses: bool = True,
     sdist_fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+    model_free: bool = False,
 ) -> dict[str, Any]:
     project_data, lock, manifest, project_bytes, lock_bytes = _contract(project)
     expected_rows = _expected_packages(lock)
@@ -1205,7 +1217,8 @@ def audit_environment(
         key = identity(row["name"], row["version"])
         candidates = by_identity.get(key, [])
         package, package_failures = _inspect_package(
-            row, candidates[0] if len(candidates) == 1 else None, len(candidates) > 1, sdist_fetcher
+            row, candidates[0] if len(candidates) == 1 else None, len(candidates) > 1, sdist_fetcher,
+            allow_sdist_fetch=not model_free,
         )
         packages.append(package)
         failures.extend(package_failures)
@@ -1215,8 +1228,11 @@ def audit_environment(
         failures.append(f"Python runtime is not 3.12: {platform.python_version()}")
     if sys.platform != "linux" or platform.machine().casefold() not in {"x86_64", "amd64"}:
         failures.append(f"audit host is not Linux x86_64: {sys.platform}/{platform.machine()}")
-    model_license_files, license_failures = audit_model_licenses(manifest) if fetch_model_licenses else ([], [])
+    model_license_files, license_failures = audit_model_licenses(manifest) if fetch_model_licenses and not model_free else ([], [])
     failures.extend(license_failures)
+    rows = preflight_gate.canonical_package_rows(lock, project_data["project"])
+    approval_scope = preflight_gate.canonical_approval_scope(manifest, rows)
+    approval_scope_sha256 = preflight_gate.canonical_digest(approval_scope)
     return {
         "schema": SCHEMA,
         "status": "BLOCKED" if failures else "PASS",
@@ -1237,6 +1253,7 @@ def audit_environment(
             "uv_lock_bytes": len(lock_bytes),
             "uv_lock_sha256": sha256_bytes(lock_bytes),
         },
+        "audit_mode": "MODEL_FREE_DEPENDENCY_ONLY" if model_free else "POST_SYNC_LICENSE_AUDIT",
         "lock_rows": {
             "accounted_rows": len(lock["package"]),
             "active_linux_installed": active_rows,
@@ -1262,19 +1279,27 @@ def audit_environment(
             "non_license_files": [],
             "proof": "audit code has no model-weight acquisition path and imports no model/Torch code; HF metadata responses are bounded JSON only; DAC proof is digests/metadata with NO_UPLOAD",
         },
+        "approval_scope": {
+            "status": "PENDING_OWNER_REVIEW",
+            "scope_sha256": approval_scope_sha256,
+            "scope": approval_scope,
+            "operator_approval": manifest.get("operator_approval"),
+            "policy": "canonical scope is collected only; pending/null review and approval fields are never promoted",
+        },
         "failures": sorted(set(failures)),
     }
 
 
-def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
+def run(project: Path, output: Path, fetch_model_licenses: bool, model_free: bool = False) -> int:
     try:
-        report = audit_environment(project, fetch_model_licenses)
+        report = audit_environment(project, fetch_model_licenses, model_free=model_free)
     except (AuditError, OSError, UnicodeError, ValueError) as exc:
         report = {
             "schema": SCHEMA,
             "status": "BLOCKED",
             "environment": {"model_code_imported": False, "cargo_invoked": False},
             "model_acquisition": {"requested_files": [], "metadata_requests": [], "non_license_requests": [], "non_license_files": []},
+            "audit_mode": "MODEL_FREE_DEPENDENCY_ONLY" if model_free else "POST_SYNC_LICENSE_AUDIT",
             "failures": [str(exc)],
         }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1303,6 +1328,13 @@ def self_test() -> int:
     assert not _is_license_path("pkg/README.md")
     _project, _lock, _manifest, _project_bytes, _lock_bytes = _contract(Path(__file__).resolve().parent)
     assert all(row["name"].casefold() != "setuptools" for row in preflight_gate.canonical_package_rows(_lock, _project["project"]))
+
+    scope = preflight_gate.canonical_approval_scope(
+        _manifest, preflight_gate.canonical_package_rows(_lock, _project["project"])
+    )
+    assert len(preflight_gate.canonical_digest(scope)) == 64
+    assert _manifest["approval_scope_sha256"] is None
+    assert all(row["status"] == "PENDING_REVIEW" for row in _manifest["review_rows"])
 
     manifest = load_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
     proof = dac_provenance.validate_proof(DAC_PROOF_PATH)
@@ -1679,6 +1711,15 @@ def self_test() -> int:
     assert package["installed"]["locked_sdist_license_audit"]["status"] == "PASS"
     assert not any("missing publisher LICENSE/NOTICE evidence" in failure for failure in package_failures)
     assert not any("missing package license metadata" in failure for failure in package_failures)
+    offline_package, offline_failures = _inspect_package(
+        good_row,
+        {"distribution": EmptyPublisherDistribution(), "identity": "demo==1", "location": "self-test"},
+        False,
+        lambda _url: (_ for _ in ()).throw(AssertionError("model-free mode performed a network fetch")),
+        allow_sdist_fetch=False,
+    )
+    assert offline_package["installed"]["locked_sdist_license_audit"]["status"] == "NOT_REQUESTED_MODEL_FREE"
+    assert any("missing publisher LICENSE/NOTICE evidence" in failure for failure in offline_failures)
     blocked_row, _ = synthetic_row(good_archive)
     blocked_row["sdist"]["hash"] = "sha256:" + "0" * 64
     blocked_package, blocked_failures = _inspect_package(
@@ -1740,15 +1781,18 @@ def main() -> int:
     parser.add_argument("--project", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--fetch-model-licenses", action="store_true")
+    parser.add_argument("--model-free", action="store_true", help="inspect local dependency facts only; perform no network requests")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if args.project is not None or args.output is not None or args.fetch_model_licenses:
+        if args.project is not None or args.output is not None or args.fetch_model_licenses or args.model_free:
             parser.error("--self-test accepts no project/output/fetch arguments")
         return self_test()
     if args.project is None or args.output is None:
         parser.error("--project and --output are required")
-    return run(args.project, args.output, args.fetch_model_licenses)
+    if args.model_free and args.fetch_model_licenses:
+        parser.error("--model-free cannot be combined with --fetch-model-licenses")
+    return run(args.project, args.output, args.fetch_model_licenses, args.model_free)
 
 
 if __name__ == "__main__":
