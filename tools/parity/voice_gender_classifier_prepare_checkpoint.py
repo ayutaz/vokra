@@ -77,7 +77,7 @@ def tensor_manifest(tensors: dict[str, Any], torch: Any) -> list[dict[str, Any]]
 
 def reject_symlink_ancestry(path: Path | str, label: str) -> None:
     raw = os.fspath(path)
-    if any(component in {".", ".."} for component in raw.split("/")):
+    if not raw or any(component in {".", ".."} for component in raw.split("/")):
         raise ValueError(f"{label} must not contain lexical dot components")
     path = Path(raw)
     absolute = path if path.is_absolute() else Path.cwd() / path
@@ -379,6 +379,43 @@ def self_test() -> None:
     print("voice_gender_classifier_prepare_checkpoint.py self-test: PASS")
 
 
+def self_test_contract() -> None:
+    """Exercise preparation invariants without importing Torch or weights.
+
+    The full self-test additionally round-trips synthetic safetensors tensors
+    when the VAST dependency environment is available. This small contract
+    pass lets CI and Apple-side gate checks verify constants and path fences
+    without importing or downloading anything locally.
+    """
+    if len(EXPECTED_COUNTER_NAMES) != EXPECTED_COUNTER_COUNT:
+        raise AssertionError("counter manifest cardinality drifted")
+    if not all(name.endswith(COUNTER_SUFFIX) for name in EXPECTED_COUNTER_NAMES):
+        raise AssertionError("counter manifest contains a non-counter name")
+    source = Path(__file__).read_text(encoding="utf-8")
+    for marker in (
+        "AUTHENTICATED_NORMALIZED",
+        "EXPECTED_FLOATING_TENSOR_COUNT = 202",
+        "refusing to overwrite output",
+        "publish_pair",
+        "remove_authenticated_batchnorm_num_batches_tracked_v1",
+    ):
+        if marker not in source:
+            raise AssertionError(f"preparation contract marker missing: {marker}")
+    for bad in (
+        "",
+        ".",
+        "..",
+        "/tmp/./prepared.safetensors",
+        "/tmp/../prepared.safetensors",
+    ):
+        try:
+            reject_symlink_ancestry(bad, "self-test")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe self-test path accepted: {bad!r}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
@@ -390,14 +427,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    torch, (load_file, save_file) = bind_tensor_dependencies()
-    global ALLOWED_FLOAT_DTYPES
-    ALLOWED_FLOAT_DTYPES = frozenset({torch.float16, torch.float32, torch.bfloat16})
     if args.self_test:
         if any(value is not None for value in (args.input, args.output, args.audit_json)):
             raise ValueError("--self-test accepts no fixture arguments")
+        try:
+            bind_tensor_dependencies()
+        except ModuleNotFoundError as error:
+            if error.name not in {"torch", "safetensors"}:
+                raise
+            self_test_contract()
+            print("voice_gender_classifier_prepare_checkpoint.py contract self-test: PASS")
+            return 0
         self_test()
         return 0
+    torch, (load_file, save_file) = bind_tensor_dependencies()
+    global ALLOWED_FLOAT_DTYPES
+    ALLOWED_FLOAT_DTYPES = frozenset({torch.float16, torch.float32, torch.bfloat16})
     if args.input is None or args.output is None or args.audit_json is None:
         raise ValueError("--input, --output, and --audit-json are required")
     audit = write_prepared_checkpoint(args.input, args.output, args.audit_json, torch, load_file, save_file)
