@@ -257,6 +257,15 @@ def active_linux(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(reachable.values(), key=lambda row: (norm_name(row["name"]), row["version"], canonical(row["source"])))
 
 
+def sorted_identity_ids(rows: list[dict[str, Any]]) -> list[str]:
+    """Return the single serialized identity order used by all reports."""
+    return sorted(identity(row["name"], row["version"]) for row in rows)
+
+
+def sorted_identity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(rows, key=lambda row: identity(row["name"], row["version"]))
+
+
 def validate_contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bytes, bytes]:
     project_path, lock_path = project / "pyproject.toml", project / "uv.lock"
     if not project.is_dir() or project.is_symlink() or not project_path.is_file() or not lock_path.is_file():
@@ -442,8 +451,9 @@ def locked_sdist_license(row: dict[str, Any]) -> dict[str, Any]:
 def audit(project: Path, expected_head: str | None) -> dict[str, Any]:
     project_data, lock_data, rows, project_bytes, lock_bytes = validate_contract(project)
     active = active_linux(rows)
+    report_rows = sorted_identity_rows(active)
     installed = installed_distributions()
-    expected_ids = [identity(row["name"], row["version"]) for row in active]
+    expected_ids = sorted_identity_ids(active)
     observed_ids = sorted(installed)
     failures: list[str] = []
     if sys.platform != "linux" or platform.machine().casefold() not in {"x86_64", "amd64"}:
@@ -454,7 +464,7 @@ def audit(project: Path, expected_head: str | None) -> dict[str, Any]:
         missing = sorted(set(expected_ids) - set(observed_ids)); extra = sorted(set(observed_ids) - set(expected_ids))
         failures.append(f"installed closure differs from Linux lock: missing={missing!r} extra={extra!r}")
     package_reports = []
-    for row in active:
+    for row in report_rows:
         key = identity(row["name"], row["version"]); candidates = installed.get(key, [])
         if len(candidates) != 1:
             package_reports.append({"lock": row, "installed": None, "status": "BLOCKED_INSTALLED_IDENTITY"})
@@ -482,7 +492,7 @@ def audit(project: Path, expected_head: str | None) -> dict[str, Any]:
     return {
         "schema": SCHEMA, "status": status, "review": "PENDING_OWNER_APPROVAL",
         "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"], "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes), "lock_sha256_scope": sha256_bytes(canonical(rows).encode())},
-        "closure": {"lock_rows": len(rows), "active_linux_rows": len(active), "expected": sorted(expected_ids), "observed": observed_ids, "exact": expected_ids == observed_ids},
+        "closure": {"lock_rows": len(rows), "active_linux_rows": len(active), "expected": expected_ids, "observed": observed_ids, "exact": expected_ids == observed_ids},
         "packages": package_reports, "failures": sorted(set(failures)),
         "environment": {"python": platform.python_version(), "platform": sys.platform, "machine": platform.machine(), "readelf_required": True, "model_code_imported": False, "weights_acquired": False, "weights_imported": False, "weights_executed": False, "cargo_invoked": False},
         "git": {"expected_head": expected_head, "head_unverified": expected_head is None},
@@ -533,9 +543,10 @@ def make_self_test_evidence(project: Path, expected_head: str) -> dict[str, Any]
     """Build an in-memory report fixture shared by validator self-tests."""
     project_data, lock_data, rows, project_bytes, lock_bytes = validate_contract(project)
     active = active_linux(rows)
-    expected_ids = [identity(row["name"], row["version"]) for row in active]
+    report_rows = sorted_identity_rows(active)
+    expected_ids = sorted_identity_ids(active)
     package_reports = []
-    for row in active:
+    for row in report_rows:
         installed = {"name": row["name"], "version": row["version"], "license": None, "license_expression": None, "license_classifiers": [], "publisher_license_files": [], "unsafe_license_paths": [], "locked_sdist_license": None, "native_payloads": []}
         if identity(row["name"], row["version"]) == "torch-complex==0.4.4":
             artifact = row["sdist"]
@@ -559,7 +570,8 @@ def validate_evidence(path: Path, expected_head: str, project: Path) -> dict[str
     value = strict_json(path)
     project_data, lock_data, rows, project_bytes, lock_bytes = validate_contract(project)
     active = active_linux(rows)
-    expected_ids = [identity(row["name"], row["version"]) for row in active]
+    report_rows = sorted_identity_rows(active)
+    expected_ids = sorted_identity_ids(active)
     root_keys = {"schema", "status", "review", "project", "closure", "packages", "failures", "environment", "git", "model_acquisition", "publication"}
     if set(value) != root_keys:
         raise AuditError("dependency evidence root schema drift")
@@ -601,7 +613,7 @@ def validate_evidence(path: Path, expected_head: str, project: Path) -> dict[str
         package_ids.append(identity(str(item["lock"].get("name", "")), str(item["lock"].get("version", ""))))
     if package_ids != expected_ids:
         raise AuditError("dependency evidence package identity/order drift")
-    expected_rows = {identity(row["name"], row["version"]): row for row in active}
+    expected_rows = {identity(row["name"], row["version"]): row for row in report_rows}
     for item in packages:
         if not isinstance(item, dict) or set(item) != {"lock", "installed"}:
             raise AuditError("dependency evidence package report schema drift")
@@ -661,6 +673,11 @@ def self_test() -> int:
     active_ids = {identity(row["name"], row["version"]) for row in active}
     if "pyreadline3==3.5.6" in active_ids or "torch==2.6.0" in active_ids or "torch==2.6.0+cpu" not in active_ids:
         raise SystemExit("self-test selected a non-Linux dependency row")
+    canonical_ids = sorted_identity_ids(active)
+    if canonical_ids != sorted(canonical_ids) or canonical_ids != sorted_identity_ids(list(reversed(active))):
+        raise SystemExit("self-test identity ordering is not canonical")
+    if canonical_ids.index("torch-complex==0.4.4") > canonical_ids.index("torch==2.6.0+cpu"):
+        raise SystemExit("self-test torch identity ordering regression")
     for marker, expected in LINUX_MARKER_VALUES.items():
         if linux_marker(marker) is not expected:
             raise SystemExit(f"self-test marker evaluation drift: {marker}")
