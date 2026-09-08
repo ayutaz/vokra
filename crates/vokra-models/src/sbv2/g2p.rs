@@ -228,13 +228,21 @@ pub struct PhonemizeResult {
 /// implementation and its dictionary never cross into the runtime crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SbV2JapaneseG2pSource {
+    /// Authenticated JP-Extra model identifier.
     pub model_name: String,
+    /// Upstream repository URL that owns the model and source contract.
     pub upstream_repository: String,
+    /// Immutable Hugging Face revision for the model artifact.
     pub hf_revision: String,
+    /// Immutable source commit for the native G2P implementation.
     pub source_commit: String,
+    /// Git blob identity for the ordered phone-symbol table.
     pub symbols_blob: String,
+    /// Git blob identity for the Japanese lexicon resource.
     pub japanese_blob: String,
+    /// Git blob identity for the mora resource.
     pub mora_blob: String,
+    /// Git blob identity for the sequence resource.
     pub sequence_blob: String,
 }
 
@@ -351,6 +359,7 @@ pub struct SbV2JapaneseG2pOutput {
 /// SBV2 contract binding and conversion. Python, eSpeak, pyopenjtalk and
 /// dictionary downloads cannot implement this trait inside the runtime.
 pub trait SbV2JapaneseG2pProvider: Send + Sync {
+    /// Phonemizes one normalized utterance into source-aligned JP-Extra data.
     fn phonemize(&self, text: &str) -> Result<SbV2JapaneseG2pOutput>;
 }
 
@@ -663,7 +672,7 @@ impl SbV2Phonemizer {
             })?;
             symbol_to_id.insert(symbol.clone(), id);
         }
-        let mut phonemizer = Self {
+        let phonemizer = Self {
             fixtures: None,
             ja_native_g2p: Some(provider),
             ja_native_symbols: symbol_to_id,
