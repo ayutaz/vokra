@@ -406,10 +406,10 @@ def validate_history(payload: Any, source_date: str) -> dict[str, Any]:
         if not isinstance(item, dict):
             raise AuditError("HF history entry is not an object")
         commit_id = item.get("id")
-        created = item.get("createdAt")
+        created = item.get("date")
         if not isinstance(commit_id, str) or not HEX40.fullmatch(commit_id) or commit_id in seen:
             raise AuditError("HF history commit identity is malformed or duplicated")
-        created = _iso_date(created, "HF history createdAt")
+        created = _iso_date(created, "HF history date")
         if created[:10] >= source_date[:10]:
             raise AuditError("HF history contains a commit not preceding the source commit")
         seen.add(commit_id)
@@ -638,7 +638,7 @@ def _fixture() -> tuple[Any, Any, Any, Any, Any, bytes, bytes, bytes, bytes, byt
     commit = {"sha": SOURCE_REVISION, "commit": {"committer": {"date": "2026-07-24T00:00:00Z"}, "tree": {"sha": tree_sha}}}
     tree = {"sha": tree_sha, "truncated": False, "tree": [{"path": SOURCE_DECLARATION_PATH, "type": "blob", "mode": "100644", "sha": source_blob_sha, "size": len(source_content)}]}
     blob = {"sha": source_blob_sha, "encoding": "base64", "size": len(source_content), "content": base64.b64encode(source_content).decode()}
-    history = [{"id": REVISION if index == 0 else f"{index:040x}", "createdAt": f"2024-09-{25-index:02d}T00:00:00Z"} for index in range(11)]
+    history = [{"id": REVISION if index == 0 else f"{index:040x}", "date": f"2024-09-{25-index:02d}T00:00:00Z"} for index in range(11)]
     license_raw = (b"Apache License\nVersion 2.0\nTERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n" + b"x" * 100)
     license_blob_sha = _git_blob_sha1(license_raw)
     next(row for row in rows if row["rfilename"] == "LICENSE")["blobId"] = license_blob_sha
@@ -682,6 +682,23 @@ def self_test() -> None:
         raise AssertionError("source declaration size tamper was accepted")
     report = build_report(fixed, current, history, commit, tree, blob, license_raw, license_headers, checkout, raw_fixed, raw_current, raw_history, raw_commit, raw_tree, raw_blob, expected_source_blob=source_blob_sha, expected_license_blob=license_blob_sha, expected_license_bytes=len(license_raw))
     validate_report(report, head, expected_source_blob=source_blob_sha, expected_license_blob=license_blob_sha, expected_license_bytes=len(license_raw))
+    malformed_history_cases = []
+    created_at_history = json.loads(json.dumps(history))
+    created_at_history[0]["createdAt"] = created_at_history[0].pop("date")
+    malformed_history_cases.append(created_at_history)
+    missing_date_history = json.loads(json.dumps(history))
+    missing_date_history[0].pop("date")
+    malformed_history_cases.append(missing_date_history)
+    invalid_date_history = json.loads(json.dumps(history))
+    invalid_date_history[0]["date"] = "2024-09-25T12:32:32+00:00"
+    malformed_history_cases.append(invalid_date_history)
+    for malformed_history in malformed_history_cases:
+        try:
+            validate_history(malformed_history, SOURCE_COMMIT_DATE + "T00:00:00Z")
+        except AuditError:
+            pass
+        else:
+            raise AssertionError("HF history date schema tamper was accepted")
     saved_evidence_tamper_cases = (
         lambda value: next(row for row in value["upstream"]["files"] if row["path"] in SHARD_FILES).__setitem__("lfs_pointer_size", next(row for row in value["upstream"]["files"] if row["path"] in SHARD_FILES)["lfs_pointer_size"] + 1),
         lambda value: next(row for row in value["upstream"]["files"] if row["path"] == "LICENSE").__setitem__("git_blob_sha1", "0" * 40),
