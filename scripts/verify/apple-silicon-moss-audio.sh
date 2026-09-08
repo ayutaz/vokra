@@ -206,7 +206,7 @@ require_reference() {
   require_manifest_value "$manifest" processing_source_sha256 05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6 || return 2
   require_manifest_value "$manifest" config_model_type moss_audio || return 2
   require_manifest_value "$manifest" tensor_count 901 || return 2
-  require_manifest_value "$manifest" transformers_version 5.5.0 || return 2
+  require_manifest_value "$manifest" transformers_version 5.10.4 || return 2
   require_manifest_pattern "$manifest" torch_version '2\.9\.1(\+cpu)?' || return 2
   require_manifest_value "$manifest" sample_rate 16000 || return 2
   require_manifest_value "$manifest" source_audio_sha256 241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a || return 2
@@ -344,7 +344,7 @@ run_self_test() (
       'config_sha256=e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa' \
       'config_model_type=moss_audio' \
       'tensor_count=901' \
-      'transformers_version=5.5.0' \
+      'transformers_version=5.10.4' \
       'torch_version=2.9.1+cpu' \
       'sample_rate=16000' \
       'source_audio_sha256=241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a' \

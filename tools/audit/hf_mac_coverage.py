@@ -167,16 +167,22 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "correctly stamped replacement",
     ),
     "vokra/moss-audio-4b-instruct": (
-        "no-runtime-binder",
-        "the public file shares the broad moss_tts arch tag but is not one of the "
-        "strictly authenticated Nano, Base, v1.5, Local or VoiceGenerator releases; "
-        "the CLI refuses family-shared topology inference",
+        "partial",
+        "the public file carries the historical moss_tts stamp and placeholder "
+        "axes, but its exact 901-tensor manifest reaches the strict MOSS-Audio "
+        "legacy binder for token-level CPU/Metal execution. The old file has no "
+        "authenticated embedded tokenizer/chat/processor sidecars, so CLI string "
+        "generation remains fail-closed; corrected moss_audio conversion and real-"
+        "weight parity are separate pending gates",
     ),
     "vokra/moss-audio-8b-instruct": (
-        "no-runtime-binder",
-        "the public file shares the broad moss_tts arch tag but is not one of the "
-        "strictly authenticated Nano, Base, v1.5, Local or VoiceGenerator releases; "
-        "the CLI refuses family-shared topology inference",
+        "partial",
+        "the public file carries the historical moss_tts stamp and placeholder "
+        "axes, but its exact 901-tensor manifest reaches the strict MOSS-Audio "
+        "legacy binder for token-level CPU/Metal execution. The old file has no "
+        "authenticated embedded tokenizer/chat/processor sidecars, so CLI string "
+        "generation remains fail-closed; corrected moss_audio conversion and real-"
+        "weight parity are separate pending gates",
     ),
     "vokra/moss-tts-local-transformer-v1.5": (
         "partial",

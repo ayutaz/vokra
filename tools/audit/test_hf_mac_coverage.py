@@ -300,10 +300,16 @@ const BOUND_ARCHES: &[BoundArch] = &[
             ("moss-tts-local.gguf",),
             "moss_tts",
         )
-        moss_audio_instruct = audit.RepoRecord(
+        moss_audio_4b_instruct = audit.RepoRecord(
             "vokra/moss-audio-4b-instruct",
             "abc",
             ("moss-audio-4b.gguf",),
+            "moss_tts",
+        )
+        moss_audio_8b_instruct = audit.RepoRecord(
+            "vokra/moss-audio-8b-instruct",
+            "abc",
+            ("moss-audio-8b.gguf",),
             "moss_tts",
         )
         musicgen_medium = audit.RepoRecord(
@@ -519,10 +525,13 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(
             audit.classify(moss_local, routed, bound).metal_code, "blocked-by-cpu"
         )
-        self.assertEqual(
-            audit.classify(moss_audio_instruct, routed, bound).cpu_code,
-            "no-runtime-binder",
-        )
+        for moss_audio_instruct in (moss_audio_4b_instruct, moss_audio_8b_instruct):
+            with self.subTest(repo=moss_audio_instruct.repo):
+                coverage = audit.classify(moss_audio_instruct, routed, bound)
+                self.assertEqual(coverage.cpu_code, "partial")
+                self.assertEqual(coverage.metal_code, "blocked-by-cpu")
+                self.assertIn("strict MOSS-Audio legacy binder", coverage.reason)
+                self.assertIn("real-weight parity", coverage.reason)
         self.assertEqual(audit.classify(musicgen_medium, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(musicgen_medium, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(musicgen_large, routed, bound).cpu_code, "full")
