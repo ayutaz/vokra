@@ -1171,6 +1171,47 @@ model-free actions but do not decrement the 63 unresolved public rows: the
 remaining real-weight, dependency/license, native-runtime, publication and
 Apple-hardware gates remain explicit below.
 
+#### 2026-09-08 post-baseline source and metadata closure
+
+Eleven separately reviewed commits after PR #79's remote head prepare the next
+exact-head model-free VAST wave without acquiring or executing a model locally:
+
+- `d8127d37` authenticates the OWSM reference project's locked dependency and
+  source-license closure while preserving owner review as a fail-closed gate.
+- `d09c1ae9` and `788edf12` isolate Irodori TextBlock's source contract and
+  audit its exact Python 3.12 dependency, license and native-library closure.
+- `6dda20a8` records AudioGen's exact T5 candidate and 16-kHz EnCodec companion
+  metadata without claiming that the historical T5 linkage is authenticated.
+- `1e238343` distinguishes the official MOSS-Audio 4B and 8B topologies instead
+  of treating their configuration identities as interchangeable.
+- `e4cada52` authenticates the CosyVoice3 source dependency closure and records
+  the forbidden `librosa -> soxr` path; the complete composite remains blocked.
+- `6f3a026e` adds MMS-1B-All's exact eight-role Hugging Face metadata audit. It
+  requires an explicit adapter language and never defaults to English.
+- `3d727c53` authenticates Baichuan-Audio's public source roles and keeps the
+  missing Matcha source, custom Hugging Face code, HiFT payload and distinct
+  license scopes unresolved rather than inferring inheritance.
+- `d41b229e` audits Qwen2-Audio's complete public GitHub branch history. Only a
+  completed clean-head audit may record `SOURCE_LICENSE_UNKNOWN_BLOCKER`; API,
+  checkout or history failures remain a distinct incomplete-audit blocker.
+- `163c58bf` authenticates VibeVoice-ASR's fixed Qwen2.5-7B 14-file metadata
+  closure, four LFS shards, Apache-2.0 license bytes, source declaration and
+  main-branch chronology without downloading a checkpoint.
+- `943b1b12` batches nine model-free/source-only workers behind one clean exact
+  HEAD, explicit MMS language and strict recovered-evidence manifest. It accepts
+  only completed factual dispositions, copies at most 1 MiB per evidence/log
+  file and 8 MiB total, records SHA-256 readback, and keeps `NO_UPLOAD`.
+
+The prepared implementation head is
+`943b1b126292a60827d1127e10cb0f82f7350248`. Local verification was limited to
+model-free self-tests, shell syntax/diff checks and the normal five commit
+gates; no local model construction, inference or broad Cargo run occurred.
+This preparation does not decrement the 63 unresolved public rows. Before any
+Scaleway allocation, bind a disposable VAST checkout to the final documentation
+head, run the workspace/static gates and the nine-worker model-free batch,
+recover only its bounded evidence, then destroy the instance and storage. MMS
+execution must wait for an explicit owner-selected adapter language.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
