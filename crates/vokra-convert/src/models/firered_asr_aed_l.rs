@@ -9,7 +9,8 @@
 //! remain parity-gated.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{
@@ -299,6 +300,7 @@ const SPEC_KEYS: [(&str, u32); 16] = [
     ("vokra.firered_asr_aed_l.eos_id", EOS_ID),
     ("vokra.firered_asr_aed_l.pad_id", PAD_ID),
 ];
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Owns a sibling temporary and removes it if conversion fails before the
 /// final publish.  Keeping this guard local to this converter prevents a
@@ -321,14 +323,83 @@ impl Drop for AtomicOutputGuard {
 /// atomic same-directory create and therefore gives this converter a
 /// no-clobber finalization primitive on the Linux VAST worker.
 fn publish_no_clobber(temp: &Path, destination: &Path) -> Result<(), ConvertError> {
+    validate_publish_paths(temp, destination)?;
     std::fs::hard_link(temp, destination).map_err(ConvertError::Io)?;
-    if let Err(error) = std::fs::remove_file(temp) {
-        // The destination was created by this call.  Do not leave a claimed
-        // output behind if retiring our own temporary fails.
-        let _ = std::fs::remove_file(destination);
-        return Err(ConvertError::Io(error));
+    // The destination is now the published artifact.  Retiring our private
+    // sibling is best-effort: a cleanup error must not turn a successful
+    // publication into a false failure or remove the final artifact.
+    let _ = std::fs::remove_file(temp);
+    Ok(())
+}
+
+fn validate_publish_paths(temp: &Path, destination: &Path) -> Result<(), ConvertError> {
+    reject_unsafe_path(temp, "temporary output")?;
+    reject_unsafe_path(destination, "output")?;
+    if temp.is_symlink() || !temp.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L temporary output must be a regular non-symlink file: {}",
+            temp.display()
+        )));
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        ConvertError::Usage("FireRedASR-AED-L output must have a parent directory".to_owned())
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L output parent must be an existing regular non-symlink directory: {}",
+            parent.display()
+        )));
+    }
+    // Re-resolve the canonical parent immediately before publication.  The
+    // lexical walk above rejects unexpected symlink ancestry while allowing
+    // macOS's conventional `/var` link.
+    parent.canonicalize().map_err(ConvertError::Io)?;
+    if destination.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L output must not be a symlink: {}",
+            destination.display()
+        )));
     }
     Ok(())
+}
+
+fn temporary_output_candidate(
+    parent: &Path,
+    output_name: &std::ffi::OsStr,
+    sequence: u64,
+) -> PathBuf {
+    parent.join(format!(
+        ".{}.tmp-{}-{}",
+        output_name.to_string_lossy(),
+        std::process::id(),
+        sequence
+    ))
+}
+
+fn create_temporary_output(
+    parent: &Path,
+    output_name: &std::ffi::OsStr,
+    sequence: &AtomicU64,
+) -> Result<(PathBuf, std::fs::File), ConvertError> {
+    for _ in 0..32 {
+        let candidate = temporary_output_candidate(
+            parent,
+            output_name,
+            sequence.fetch_add(1, Ordering::Relaxed),
+        );
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+    }
+    Err(ConvertError::Usage(
+        "FireRedASR-AED-L exhausted temporary output candidates".to_owned(),
+    ))
 }
 
 /// Explicitly refuses the legacy generic-dispatch route: FireRed conversion
@@ -361,6 +432,7 @@ pub fn convert_firered_asr_aed_l_file_with_sidecars(
             "FireRedASR-AED-L conversion has a fixed Apache-2.0 weight license; arbitrary --license overrides are refused".to_owned(),
         ));
     }
+    validate_conversion_paths(input, cmvn_path, dict_path, output)?;
     // This operation is intentionally VAST-only: the prepared artifact is
     // ~4.7 GB and is never acquired or executed on the maintainer machine.
     // Hashing is streamed, and only one tensor payload is buffered below.
@@ -397,20 +469,6 @@ pub fn convert_firered_asr_aed_l_file_with_sidecars(
     let output_name = output_path.file_name().ok_or_else(|| {
         ConvertError::Usage("FireRedASR-AED-L output must name a file".to_owned())
     })?;
-    let temporary_path = output_path
-        .parent()
-        .expect("canonical output path has a parent")
-        .join(format!(
-            ".{}.tmp-{}",
-            output_name.to_string_lossy(),
-            std::process::id()
-        ));
-    if temporary_path.exists() || temporary_path.is_symlink() {
-        return Err(ConvertError::Usage(format!(
-            "FireRedASR-AED-L temporary output already exists or is a symlink: {}",
-            temporary_path.display()
-        )));
-    }
     let input_bytes = std::fs::metadata(input)?.len();
     if input_bytes != PREPARED_BYTES {
         return Err(ConvertError::Usage(format!(
@@ -550,10 +608,13 @@ pub fn convert_firered_asr_aed_l_file_with_sidecars(
             dimensions: tensor.shape.clone(),
         })
         .collect();
-    let output_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary_path)?;
+    let (temporary_path, output_file) = create_temporary_output(
+        output_path
+            .parent()
+            .expect("canonical output path has a parent"),
+        output_name,
+        &OUTPUT_SEQUENCE,
+    )?;
     let mut temporary = AtomicOutputGuard {
         path: temporary_path,
         published: false,
@@ -586,6 +647,89 @@ pub fn convert_firered_asr_aed_l_file_with_sidecars(
     publish_no_clobber(&temporary.path, &output_path)?;
     temporary.published = true;
     Ok(report)
+}
+
+fn validate_conversion_paths(
+    input: &Path,
+    cmvn_path: &Path,
+    dict_path: &Path,
+    output: &Path,
+) -> Result<(), ConvertError> {
+    for (path, label) in [
+        (input, "checkpoint"),
+        (cmvn_path, "cmvn.txt"),
+        (dict_path, "dict.txt"),
+        (output, "output"),
+    ] {
+        reject_unsafe_path(path, label)?;
+    }
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L output already exists or is symlinked: {}",
+            output.display()
+        )));
+    }
+    for (path, label) in [
+        (input, "checkpoint"),
+        (cmvn_path, "cmvn.txt"),
+        (dict_path, "dict.txt"),
+    ] {
+        if path.is_symlink() || !path.is_file() {
+            return Err(ConvertError::Usage(format!(
+                "FireRedASR-AED-L {label} must be a regular non-symlink file: {}",
+                path.display()
+            )));
+        }
+    }
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Usage("FireRedASR-AED-L output must have a parent directory".to_owned())
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L output parent must be an existing regular non-symlink directory: {}",
+            parent.display()
+        )));
+    }
+    Ok(())
+}
+
+fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
+    if path
+        .to_string_lossy()
+        .split('/')
+        .any(|component| matches!(component, "." | ".."))
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(ConvertError::Usage(format!(
+            "FireRedASR-AED-L {label} must not contain lexical dot components"
+        )));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(ConvertError::Io)?
+            .join(path)
+    };
+    let mut current = absolute.as_path();
+    loop {
+        if current.is_symlink() && current != Path::new("/var") {
+            return Err(ConvertError::Usage(format!(
+                "FireRedASR-AED-L {label} has symlink ancestry: {}",
+                current.display()
+            )));
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -636,6 +780,50 @@ mod tests {
         .expect_err("existing output must be rejected before any stream");
         assert!(error.to_string().contains("already exists"));
         assert_eq!(std::fs::read(&output).expect("sentinel"), b"sentinel");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn conversion_paths_reject_dot_components_and_symlink_ancestors() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-firered-path-boundary-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp directory");
+        let input = root.join("prepared.safetensors");
+        let cmvn = root.join("cmvn.txt");
+        let dict = root.join("dict.txt");
+        let output = root.join("output.gguf");
+        for path in [&input, &cmvn, &dict] {
+            std::fs::write(path, b"fixture").expect("fixture file");
+        }
+        validate_conversion_paths(&input, &cmvn, &dict, &output)
+            .expect("regular conversion paths accepted");
+        let dotted = root.join(".").join("output.gguf");
+        assert!(reject_unsafe_path(&dotted, "output").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let real_parent = root.join("real-parent");
+            let linked_parent = root.join("linked-parent");
+            std::fs::create_dir(&real_parent).expect("real parent");
+            symlink(&real_parent, &linked_parent).expect("linked parent");
+            let linked_input = linked_parent.join("prepared.safetensors");
+            let linked_cmvn = linked_parent.join("cmvn.txt");
+            let linked_dict = linked_parent.join("dict.txt");
+            let linked_output = linked_parent.join("output.gguf");
+            assert!(
+                validate_conversion_paths(
+                    &linked_input,
+                    &linked_cmvn,
+                    &linked_dict,
+                    &linked_output
+                )
+                .expect_err("symlink ancestry accepted")
+                .to_string()
+                .contains("symlink ancestry")
+            );
+        }
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -721,6 +909,25 @@ mod tests {
             temporary.exists(),
             "failed publication retains its own temp for guard cleanup"
         );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn temporary_output_retries_after_candidate_collision() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-firered-temp-sequence-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp directory");
+        let output_name = std::ffi::OsStr::new("output.gguf");
+        let sequence = AtomicU64::new(0);
+        let occupied = temporary_output_candidate(&root, output_name, 0);
+        std::fs::write(&occupied, b"occupied").expect("occupied candidate");
+        let (candidate, file) = create_temporary_output(&root, output_name, &sequence)
+            .expect("next candidate should be created");
+        drop(file);
+        assert_ne!(candidate, occupied);
+        assert!(candidate.exists());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
