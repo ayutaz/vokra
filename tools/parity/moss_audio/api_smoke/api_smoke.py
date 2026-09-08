@@ -446,6 +446,54 @@ def validate_config_topology(config: dict[str, Any], variant: str) -> None:
         raise ValueError("MOSS-Audio topology must be nested under language_config")
 
 
+def validate_api_config(config: Any, config_class: type[Any], config_dict: dict[str, Any], variant: str) -> None:
+    """Validate the normalized object returned by MossAudioConfig.from_pretrained."""
+    if not isinstance(config, config_class):
+        raise TypeError("official MOSS-Audio config object has the wrong class")
+    if not isinstance(config_dict, dict):
+        raise TypeError("official MOSS-Audio API config did not expose an object")
+    expected_root = {
+        "adapter_hidden_size": 8192,
+        "auto_map": {
+            "AutoConfig": "configuration_moss_audio.MossAudioConfig",
+            "AutoProcessor": "processing_moss_audio.MossAudioProcessor",
+        },
+        "bos_token_id": 151643,
+        "deepstack_num_inject_layers": 3,
+        "eos_token_id": 151645,
+        "ignore_index": -100,
+        "model_type": "moss_audio",
+        "num_hidden_layers": 36,
+        "tie_word_embeddings": False,
+        "vocab_size": 151936,
+    }
+    for key, expected in expected_root.items():
+        if config_dict.get(key) != expected:
+            raise ValueError(f"{variant} API config.{key} propagated metadata drifted")
+    normalized_root = {
+        "architectures": None,
+        "dtype": None,
+        "transformers_version": "5.10.4",
+    }
+    for key, expected in normalized_root.items():
+        if key not in config_dict or config_dict[key] != expected:
+            raise ValueError(f"{variant} API config.{key} normalization drifted")
+    audio_config = config_dict.get("audio_config")
+    if not isinstance(audio_config, dict):
+        raise ValueError("MOSS-Audio API audio_config is not an object")
+    for key, expected in expected_audio_config().items():
+        if audio_config.get(key) != expected:
+            raise ValueError(f"{variant} API audio_config.{key} topology metadata drifted")
+    language_config = config_dict.get("language_config")
+    if not isinstance(language_config, dict):
+        raise ValueError("MOSS-Audio API language_config is not an object")
+    for key, expected in expected_language_config(variant).items():
+        if language_config.get(key) != expected:
+            raise ValueError(f"{variant} API language_config.{key} topology metadata drifted")
+    if any(key in config_dict for key in ("hidden_size", "intermediate_size")):
+        raise ValueError("MOSS-Audio API topology must be nested under language_config")
+
+
 def validate_processor_config(processor_config: dict[str, Any], variant: str) -> None:
     if processor_config != expected_processor_config():
         raise ValueError(f"{variant} processor topology metadata drifted")
@@ -513,7 +561,7 @@ def api_probe(source: Path, snapshot: Path, variant: str, *, model_free: bool = 
             config_dict = config.to_dict() if hasattr(config, "to_dict") else None
             if not isinstance(config_dict, dict):
                 raise TypeError("official MOSS-Audio config did not expose a JSON object")
-            validate_config_topology(config_dict, variant)
+            validate_api_config(config, config_class, config_dict, variant)
             config_signature = str(inspect.signature(config_class.__init__))
             model_signature = str(inspect.signature(model_class.__init__))
             processor_signature = str(inspect.signature(processor_class.__init__))
@@ -768,9 +816,49 @@ def self_test() -> int:
             }
             validate_config_topology(valid_topology, "4b")
             validate_processor_config(expected_processor_config(), "4b")
+            class MossAudioConfigFixture:
+                pass
+
+            constructed_topology = dict(valid_topology)
+            constructed_topology.update({"architectures": None, "dtype": None, "transformers_version": "5.10.4"})
+            validate_api_config(MossAudioConfigFixture(), MossAudioConfigFixture, constructed_topology, "4b")
+            for missing_key in ("architectures", "dtype", "transformers_version"):
+                missing_normalized_key = dict(constructed_topology)
+                del missing_normalized_key[missing_key]
+                try:
+                    validate_api_config(MossAudioConfigFixture(), MossAudioConfigFixture, missing_normalized_key, "4b")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"missing constructed normalization key accepted: {missing_key}")
+            try:
+                validate_config_topology(constructed_topology, "4b")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("constructed normalized config accepted as raw transport config")
             valid_8b = dict(valid_topology)
             valid_8b["language_config"] = expected_language_config("8b")
             validate_config_topology(valid_8b, "8b")
+            constructed_8b = dict(constructed_topology)
+            constructed_8b["language_config"] = expected_language_config("8b")
+            validate_api_config(MossAudioConfigFixture(), MossAudioConfigFixture, constructed_8b, "8b")
+            for tampered_api_config, target_variant, label in (
+                (constructed_topology, "8b", "constructed 4B config accepted as 8B"),
+                (constructed_8b, "4b", "constructed 8B config accepted as 4B"),
+            ):
+                try:
+                    validate_api_config(MossAudioConfigFixture(), MossAudioConfigFixture, tampered_api_config, target_variant)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(label)
+            try:
+                validate_api_config(object(), MossAudioConfigFixture, constructed_topology, "4b")
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("wrong constructed config class accepted")
             for mismatched_config, target_variant, label in (
                 (valid_topology, "8b", "4B config accepted as 8B"),
                 (valid_8b, "4b", "8B config accepted as 4B"),
