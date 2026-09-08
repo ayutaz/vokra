@@ -364,6 +364,13 @@ def expected_language_config(variant: str) -> dict[str, Any]:
     }
 
 
+def expected_api_language_config(variant: str) -> dict[str, Any]:
+    expected = expected_language_config(variant)
+    del expected["rope_theta"]
+    expected["rope_parameters"] = {"rope_theta": 1000000, "rope_type": "default"}
+    return expected
+
+
 def expected_audio_config() -> dict[str, Any]:
     return {
         "_attn_implementation": "eager",
@@ -487,7 +494,19 @@ def validate_api_config(config: Any, config_class: type[Any], config_dict: dict[
     language_config = config_dict.get("language_config")
     if not isinstance(language_config, dict):
         raise ValueError("MOSS-Audio API language_config is not an object")
-    for key, expected in expected_language_config(variant).items():
+    expected_language = expected_api_language_config(variant)
+    if "rope_theta" in language_config:
+        raise ValueError("MOSS-Audio API language_config.rope_theta normalization drifted")
+    rope_parameters = language_config.get("rope_parameters")
+    if (
+        not isinstance(rope_parameters, dict)
+        or set(rope_parameters) != {"rope_theta", "rope_type"}
+        or type(rope_parameters["rope_theta"]) is not int
+        or rope_parameters["rope_theta"] != 1000000
+        or rope_parameters["rope_type"] != "default"
+    ):
+        raise ValueError(f"{variant} API language_config.rope_parameters normalization drifted")
+    for key, expected in expected_language.items():
         if language_config.get(key) != expected:
             raise ValueError(f"{variant} API language_config.{key} topology metadata drifted")
     if any(key in config_dict for key in ("hidden_size", "intermediate_size")):
@@ -821,7 +840,24 @@ def self_test() -> int:
 
             constructed_topology = dict(valid_topology)
             constructed_topology.update({"architectures": None, "dtype": None, "transformers_version": "5.10.4"})
+            constructed_topology["language_config"] = expected_api_language_config("4b")
             validate_api_config(MossAudioConfigFixture(), MossAudioConfigFixture, constructed_topology, "4b")
+            for label, mutation in (
+                ("missing rope_parameters", lambda language: language.pop("rope_parameters")),
+                ("tampered rope_parameters", lambda language: language["rope_parameters"].update({"rope_theta": 2_000_000})),
+                ("extra rope_parameters key", lambda language: language["rope_parameters"].update({"extra": True})),
+                ("retained rope_theta", lambda language: language.update({"rope_theta": 1_000_000})),
+            ):
+                tampered_normalized = dict(constructed_topology)
+                tampered_normalized["language_config"] = dict(constructed_topology["language_config"])
+                tampered_normalized["language_config"]["rope_parameters"] = dict(constructed_topology["language_config"]["rope_parameters"])
+                mutation(tampered_normalized["language_config"])
+                try:
+                    validate_api_config(MossAudioConfigFixture(), MossAudioConfigFixture, tampered_normalized, "4b")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"{label} accepted")
             for missing_key in ("architectures", "dtype", "transformers_version"):
                 missing_normalized_key = dict(constructed_topology)
                 del missing_normalized_key[missing_key]
@@ -841,7 +877,7 @@ def self_test() -> int:
             valid_8b["language_config"] = expected_language_config("8b")
             validate_config_topology(valid_8b, "8b")
             constructed_8b = dict(constructed_topology)
-            constructed_8b["language_config"] = expected_language_config("8b")
+            constructed_8b["language_config"] = expected_api_language_config("8b")
             validate_api_config(MossAudioConfigFixture(), MossAudioConfigFixture, constructed_8b, "8b")
             for tampered_api_config, target_variant, label in (
                 (constructed_topology, "8b", "constructed 4B config accepted as 8B"),
