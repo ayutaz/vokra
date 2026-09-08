@@ -189,7 +189,7 @@ impl DiaGenerationState {
         let prompt_frames = self.prefill_steps.saturating_sub(1);
         let within_audio_limit = prompt_frames
             .checked_add(self.generated_steps)
-            .map_or(false, |frames| frames < self.config.audio_length);
+            .is_some_and(|frames| frames < self.config.audio_length);
         if !within_audio_limit {
             return Err(VokraError::InvalidArgument(
                 "dia generation exceeds the configured audio length".to_owned(),
