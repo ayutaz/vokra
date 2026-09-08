@@ -3,14 +3,17 @@
 
 The oracle imports ``nisqa.NISQA_lib.NISQA_DIM`` from the exact clean upstream
 revision, calls the official mel/segmentation functions, strict-loads
-``weights/nisqa.tar``, hooks real official modules, and invokes the official
-forward. It never imports Vokra and defines no mirror model. Execute the real
-dump only on VAST; ``--self-test`` is stdlib-only.
+``weights/nisqa.tar`` through PyTorch's restricted ``weights_only`` loader,
+hooks real official modules, and invokes the official forward. It never imports
+Vokra and defines no mirror model. Execute the real dump only on VAST;
+``--self-test`` is stdlib-only. Checkpoints requiring arbitrary pickle globals
+are rejected before any output is created.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import math
@@ -77,6 +80,7 @@ MODEL_ARG_KEYS = (
     "pool_att_h",
     "pool_att_dropout",
 )
+BLOCKED_UNSAFE_PICKLE = "BLOCKED_UNSAFE_PICKLE"
 
 
 def sha256_file(path: Path) -> str:
@@ -155,6 +159,70 @@ def write_f32(path: Path, values: object) -> dict[str, object]:
     }
 
 
+def _assert_checkpoint_loader_contract() -> None:
+    """Keep checkpoint deserialization restricted against future regressions."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    load_calls = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "load"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "torch"
+            ):
+                load_calls += 1
+                weights_only = [
+                    keyword
+                    for keyword in node.keywords
+                    if keyword.arg == "weights_only"
+                ]
+                assert len(weights_only) == 1
+                assert isinstance(weights_only[0].value, ast.Constant)
+                assert weights_only[0].value.value is True
+            if (
+                isinstance(function, ast.Name)
+                and function.id == "setattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "object"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "patch"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "load"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "torch"
+                ):
+                    raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, ast.ImportFrom):
+            assert all(alias.name != "Unpickler" for alias in node.names)
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            assert not name.endswith("Unpickler")
+    assert load_calls > 0
+
+
 def dump(
     source: Path,
     checkpoint_path: Path,
@@ -190,7 +258,16 @@ def dump(
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     torch.use_deterministic_algorithms(True)
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    try:
+        checkpoint = torch.load(
+            checkpoint_path, map_location="cpu", weights_only=True
+        )
+    except Exception as error:  # noqa: BLE001 - fail-closed deserialization boundary
+        raise RuntimeError(
+            f"{BLOCKED_UNSAFE_PICKLE}: NISQA checkpoint requires pickle globals "
+            "outside PyTorch's restricted weights_only loader; unsafe fallback "
+            "is forbidden"
+        ) from error
     args = checkpoint["args"]
     model = official.NISQA_DIM(**{key: args[key] for key in MODEL_ARG_KEYS}).cpu().eval()
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
@@ -289,6 +366,8 @@ def self_test() -> None:
     assert first == second and len(first) == 32
     assert max(abs(value) for value in first) < 1.0
     assert len(MODEL_ARG_KEYS) == 37
+    assert BLOCKED_UNSAFE_PICKLE == "BLOCKED_UNSAFE_PICKLE"
+    _assert_checkpoint_loader_contract()
     print("nisqa_dump_reference: self-test OK")
 
 

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # nemo_pt_to_safetensors.py — extract weights from NVIDIA .nemo (tar.gz) or
-# torch .pt / .pth pickle into a single .safetensors + a .stripped-manifest.json
-# sidecar. Companion of strip_int_tensors.py (which strips int tensors from
-# already-safetensors files).
+# torch .pt / .pth checkpoint into a single .safetensors + a
+# .stripped-manifest.json sidecar. Checkpoints are deserialized only through
+# PyTorch's restricted weights_only loader; unsupported pickle globals fail
+# closed and are never retried with arbitrary pickle execution. Companion of
+# strip_int_tensors.py (which strips int tensors from already-safetensors
+# files).
 #
 # Why:
 #   Vokra converters expect safetensors input. Some upstream ASR checkpoints
@@ -20,6 +23,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import json
 import posixpath
@@ -41,6 +45,7 @@ INT_DTYPES = {
     "torch.bool",
 }
 KEEP_DTYPES = {"torch.float32", "torch.float16", "torch.bfloat16"}
+BLOCKED_UNSAFE_PICKLE = "BLOCKED_UNSAFE_PICKLE"
 
 PREFERRED_NEMO_CHECKPOINTS = (
     "model_weights.ckpt",
@@ -48,6 +53,84 @@ PREFERRED_NEMO_CHECKPOINTS = (
     "model_weights.pt",
     "weights.pt",
 )
+
+
+def _safe_torch_load(source: object, description: str):
+    """Load a checkpoint without ever enabling arbitrary pickle execution."""
+    import torch
+
+    try:
+        return torch.load(source, map_location="cpu", weights_only=True)
+    except Exception as error:  # noqa: BLE001 - fail-closed deserialization boundary
+        raise SystemExit(
+            f"{BLOCKED_UNSAFE_PICKLE}: {description} requires pickle globals "
+            "outside PyTorch's restricted weights_only loader; unsafe fallback "
+            "is forbidden"
+        ) from error
+
+
+def _assert_checkpoint_loader_contract() -> None:
+    """Keep checkpoint deserialization restricted against future regressions."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    load_calls = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "load"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "torch"
+            ):
+                load_calls += 1
+                weights_only = [
+                    keyword
+                    for keyword in node.keywords
+                    if keyword.arg == "weights_only"
+                ]
+                assert len(weights_only) == 1
+                assert isinstance(weights_only[0].value, ast.Constant)
+                assert weights_only[0].value.value is True
+            if (
+                isinstance(function, ast.Name)
+                and function.id == "setattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "object"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "patch"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "load"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "torch"
+                ):
+                    raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, ast.ImportFrom):
+            assert all(alias.name != "Unpickler" for alias in node.names)
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            assert not name.endswith("Unpickler")
+    assert load_calls == 1
 
 
 def normalize_archive_member(name: str) -> str:
@@ -154,8 +237,6 @@ def extract_state_dict_from_nemo(
     path: Path, checkpoint_member: str | None = None
 ):
     """`.nemo` is either tar / tar.gz / zip containing model_weights.{ckpt,pt}."""
-    import torch
-
     # Try tar auto-detect (handles both plain tar and tar.gz)
     tar = None
     try:
@@ -179,8 +260,8 @@ def extract_state_dict_from_nemo(
                 data = zf.read(ckpt_name)
                 print(f"  torch.load({len(data):,} bytes)")
                 return (
-                    torch.load(
-                        io.BytesIO(data), map_location="cpu", weights_only=False
+                    _safe_torch_load(
+                        io.BytesIO(data), f"{path} member {ckpt_name!r}"
                     ),
                     ckpt_name,
                 )
@@ -204,19 +285,19 @@ def extract_state_dict_from_nemo(
             raise SystemExit(f"could not open {ckpt_name} inside tar")
         data = f.read()
     print(f"  torch.load({len(data):,} bytes)")
-    sd = torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
+    sd = _safe_torch_load(io.BytesIO(data), f"{path} member {ckpt_name!r}")
     return sd, ckpt_name
 
 
 def extract_state_dict_from_pt(path: Path):
     """Raw torch.load, possibly wrapped {'state_dict': ...} or {'model': ...}."""
-    import torch
     print(f"  torch.load({path.stat().st_size:,} bytes)")
-    sd = torch.load(str(path), map_location="cpu", weights_only=False)
-    return sd
+    return _safe_torch_load(str(path), str(path))
 
 
 def self_test_checkpoint_selection() -> None:
+    assert BLOCKED_UNSAFE_PICKLE == "BLOCKED_UNSAFE_PICKLE"
+    _assert_checkpoint_loader_contract()
     assert normalize_archive_member(".") == "."
     assert normalize_archive_member("./") == "."
     canary_members = [

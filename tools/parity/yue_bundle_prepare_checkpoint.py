@@ -79,7 +79,8 @@ later training step and is typically the "final" one — default here.
 
 Keys are ordered by (variant subset order, per-file dict-iteration
 order — Python dict preserves insertion order since 3.7, and
-``torch.load(weights_only=True)`` is deterministic). Identical
+the restricted ``torch.load(weights_only=True)`` path is deterministic).
+Identical
 ``--ckpt-dir`` + ``--variant`` + ``--snapshot`` input produces
 byte-identical output (safetensors serialization is deterministic
 for fixed key ordering).
@@ -109,6 +110,7 @@ the bundled RepCodec/DAC source trees.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import sys
@@ -165,6 +167,7 @@ UPSAMPLER_CHECKPOINT_SHA256 = (
     "8af97a29d3483f9d4a3755992837501bd7d6caa1a69382ed16e64039e0ea0998"
 )
 UPSAMPLER_TENSOR_COUNT = 81
+BLOCKED_UNSAFE_PICKLE = "BLOCKED_UNSAFE_PICKLE"
 
 XCODEC_REVISION = "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5"
 XCODEC_FIXED_FILES: dict[str, tuple[int, str]] = {
@@ -302,22 +305,14 @@ def _load_one(path: Path, role: str) -> dict:
     """
     import torch
 
-    # First try weights_only=True (default in torch 2.6+). Upstream YuE
-    # xcodec_mini training snapshots embed `omegaconf.listconfig.ListConfig`
-    # (Hydra config wrapper) in the state dict — safe unpickler refuses it.
-    # We fall back to weights_only=False for m-a-p/xcodec_mini_infer +
-    # m-a-p/YuE-upsampler because we trust the upstream HF org (verified
-    # 2026-08-01: apache-2.0 org, cardData sha256 match) and there's no
-    # available torch.serialization.safe_globals entry for OmegaConf types.
-    # This is a well-known accepted trade-off for legacy Hydra-based
-    # training snapshots — see torch documentation.
     try:
         raw = torch.load(str(path), map_location="cpu", weights_only=True)
-    except Exception:
-        try:
-            raw = torch.load(str(path), map_location="cpu", weights_only=False)
-        except Exception as exc:  # noqa: BLE001
-            sys.exit(f"torch.load({path!s}) failed: {exc}")
+    except Exception as error:  # noqa: BLE001 - fail-closed deserialization boundary
+        sys.exit(
+            f"{BLOCKED_UNSAFE_PICKLE}: torch.load({path!s}) requires pickle "
+            "globals outside PyTorch's restricted weights_only loader; unsafe "
+            f"fallback is forbidden ({error})"
+        )
 
     if role == "codec":
         if not isinstance(raw, dict):
@@ -361,6 +356,70 @@ def _load_one(path: Path, role: str) -> dict:
     return prefixed
 
 
+def _assert_checkpoint_loader_contract() -> None:
+    """Keep checkpoint deserialization restricted against future regressions."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    load_calls = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "load"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "torch"
+            ):
+                load_calls += 1
+                weights_only = [
+                    keyword
+                    for keyword in node.keywords
+                    if keyword.arg == "weights_only"
+                ]
+                assert len(weights_only) == 1
+                assert isinstance(weights_only[0].value, ast.Constant)
+                assert weights_only[0].value.value is True
+            if (
+                isinstance(function, ast.Name)
+                and function.id == "setattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "object"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "patch"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "load"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "torch"
+                ):
+                    raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, ast.ImportFrom):
+            assert all(alias.name != "Unpickler" for alias in node.names)
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            assert not name.endswith("Unpickler")
+    assert load_calls == 1
+
+
 def _partition(sd: dict, allow_strip_any: bool):
     """Split into ``(kept, dropped_int, unknown_other)`` — same taxonomy the
     ``nemo_pt_to_safetensors.py`` / ``sepformer_prepare_checkpoint.py`` /
@@ -385,6 +444,13 @@ def _partition(sd: dict, allow_strip_any: bool):
     return kept, dropped, unknown
 
 
+def self_test() -> None:
+    assert BLOCKED_UNSAFE_PICKLE == "BLOCKED_UNSAFE_PICKLE"
+    assert set(VARIANT_SUBSETS) == {"upsampler", "xcodec-mini"}
+    _assert_checkpoint_loader_contract()
+    print("yue_bundle_prepare_checkpoint: self-test PASS")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=(
@@ -394,7 +460,7 @@ def main() -> int:
         ),
     )
     ap.add_argument(
-        "--ckpt-dir", required=True, type=Path,
+        "--ckpt-dir", required=False, type=Path,
         help=(
             "directory holding the upstream files — typically the output of "
             "`huggingface-cli download m-a-p/YuE-upsampler --local-dir <dir>` "
@@ -402,7 +468,7 @@ def main() -> int:
         ),
     )
     ap.add_argument(
-        "--variant", required=True,
+        "--variant", required=False,
         choices=sorted(VARIANT_SUBSETS.keys()),
         help=(
             "which of the two YuE bundle variants to merge: "
@@ -412,7 +478,7 @@ def main() -> int:
         ),
     )
     ap.add_argument(
-        "--snapshot", required=False, default="151000",
+        "--snapshot", required=False, default=None,
         choices=("131000", "151000"),
         help=(
             "which Vocos decoder training snapshot to pick "
@@ -421,14 +487,35 @@ def main() -> int:
         ),
     )
     ap.add_argument(
-        "--output", required=True, type=Path,
+        "--output", required=False, type=Path,
         help="destination .safetensors path (parent will be mkdir'd).",
     )
     ap.add_argument(
         "--allow-strip-any", action="store_true",
         help="also strip fp64 / complex tensors (default: refuse them loudly).",
     )
+    ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
+
+    if args.self_test:
+        if (
+            args.ckpt_dir is not None
+            or args.variant is not None
+            or args.snapshot is not None
+            or args.output is not None
+            or args.allow_strip_any
+        ):
+            ap.error(
+                "--self-test cannot be combined with --ckpt-dir, --variant, "
+                "--snapshot, --output, or --allow-strip-any"
+            )
+        self_test()
+        return 0
+
+    args.snapshot = args.snapshot or "151000"
+    for name in ("ckpt_dir", "variant", "output"):
+        if getattr(args, name) is None:
+            ap.error(f"--{name.replace('_', '-')} is required unless --self-test is used")
 
     if args.variant == "upsampler" and args.snapshot != "151000":
         ap.error(

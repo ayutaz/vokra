@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Prepare the exact public NISQA v2 multidimensional checkpoint.
 
-The upstream release is a trusted torch pickle. This offline-only sidecar pins
+The upstream release is an authenticated torch checkpoint. This offline-only sidecar pins
 the source tree and checkpoint hashes, validates the checkpoint-derived args,
 removes only BatchNorm ``num_batches_tracked`` counters, and emits the exact 94
-F32 tensors accepted by the strict Rust converter. Run real work on VAST.
+F32 tensors accepted by the strict Rust converter. Run real work on VAST. Only
+PyTorch's restricted ``weights_only`` loader is permitted; checkpoints requiring
+arbitrary pickle globals are rejected before any output is created.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import subprocess
@@ -20,6 +23,7 @@ from pathlib import Path
 SOURCE_REVISION = "fe84f0f252abec382b24367d5b22498a7ce34dbb"
 CHECKPOINT_SHA256 = "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c"
 TENSOR_COUNT = 94
+BLOCKED_UNSAFE_PICKLE = "BLOCKED_UNSAFE_PICKLE"
 SOURCE_FILES = {
     Path("nisqa/NISQA_lib.py"): (
         77_206,
@@ -118,6 +122,70 @@ def validate_args(args: dict[str, object]) -> None:
             raise ValueError(f"checkpoint arg {key}={actual!r}, expected {expected!r}")
 
 
+def _assert_checkpoint_loader_contract() -> None:
+    """Keep checkpoint deserialization restricted against future regressions."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    load_calls = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "load"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "torch"
+            ):
+                load_calls += 1
+                weights_only = [
+                    keyword
+                    for keyword in node.keywords
+                    if keyword.arg == "weights_only"
+                ]
+                assert len(weights_only) == 1
+                assert isinstance(weights_only[0].value, ast.Constant)
+                assert weights_only[0].value.value is True
+            if (
+                isinstance(function, ast.Name)
+                and function.id == "setattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "object"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "patch"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "load"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "torch"
+                ):
+                    raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, ast.ImportFrom):
+            assert all(alias.name != "Unpickler" for alias in node.names)
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            assert not name.endswith("Unpickler")
+    assert load_calls > 0
+
+
 def prepare(source: Path, checkpoint_path: Path, output: Path, manifest: Path) -> None:
     try:
         import torch
@@ -134,7 +202,16 @@ def prepare(source: Path, checkpoint_path: Path, output: Path, manifest: Path) -
     if output.exists() or manifest.exists():
         raise ValueError("refusing to overwrite prepared output")
 
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    try:
+        checkpoint = torch.load(
+            checkpoint_path, map_location="cpu", weights_only=True
+        )
+    except Exception as error:  # noqa: BLE001 - fail-closed deserialization boundary
+        raise RuntimeError(
+            f"{BLOCKED_UNSAFE_PICKLE}: NISQA checkpoint requires pickle globals "
+            "outside PyTorch's restricted weights_only loader; unsafe fallback "
+            "is forbidden"
+        ) from error
     if not isinstance(checkpoint, dict):
         raise TypeError("official checkpoint root is not a dictionary")
     args = checkpoint.get("args")
@@ -181,6 +258,8 @@ def self_test() -> None:
     assert EXPECTED_ARGS["cnn_pool_3"] == [6, 3]
     assert EXPECTED_ARGS["td_sa_nhead"] == 1
     assert EXPECTED_ARGS["ms_sr"] is None
+    assert BLOCKED_UNSAFE_PICKLE == "BLOCKED_UNSAFE_PICKLE"
+    _assert_checkpoint_loader_contract()
     print("nisqa_v2_weight_prepare_checkpoint: self-test OK")
 
 
