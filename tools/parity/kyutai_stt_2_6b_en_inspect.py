@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Inspect fixed Kyutai STT-2.6B-EN evidence without conversion or runtime."""
 from __future__ import annotations
-import argparse, hashlib, io, json, os, platform, re, subprocess, sys, tarfile, tempfile, zipfile
+import argparse, hashlib, io, json, os, platform, re, stat, subprocess, sys, tarfile, tempfile, zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -216,15 +216,18 @@ def write_manifest_no_replace(evidence:Path, manifest:dict[str,Any])->None:
  output=evidence/"manifest.json"
  if output.exists() or output.is_symlink(): raise ValueError("manifest output already exists")
  fd, temporary=tempfile.mkstemp(prefix=".manifest.",suffix=".tmp",dir=evidence)
+ expected=None
  try:
-  try: stream=os.fdopen(fd,"w",encoding="utf-8",newline="")
-  except BaseException:
-   try: os.close(fd)
-   except OSError: pass
-   raise
+  temporary_stat=os.fstat(fd)
+  if not stat.S_ISREG(temporary_stat.st_mode): raise ValueError("manifest temporary is not regular")
+  expected=(temporary_stat.st_dev,temporary_stat.st_ino)
+  stream=os.fdopen(fd,"w",encoding="utf-8",newline="")
+  fd=-1
   with stream:
    stream.write(json.dumps(manifest,indent=2,sort_keys=True)+"\n"); stream.flush(); os.fsync(stream.fileno())
+  verify_file_identity(Path(temporary),expected,"temporary manifest")
   os.link(temporary,output)
+  verify_file_identity(output,expected,"published manifest")
   try:
    directory_fd=os.open(evidence,os.O_RDONLY)
   except OSError:
@@ -234,8 +237,29 @@ def write_manifest_no_replace(evidence:Path, manifest:dict[str,Any])->None:
    except OSError: pass
    finally: os.close(directory_fd)
  finally:
-  try: os.unlink(temporary)
-  except FileNotFoundError: pass
+  if fd >= 0:
+   try: os.close(fd)
+   except OSError: pass
+  cleanup_owned_file(Path(temporary),expected)
+def verify_file_identity(path:Path,expected:tuple[int,int]|None,label:str)->None:
+ if expected is None or not hasattr(os,"O_NOFOLLOW"):
+  raise ValueError(f"{label} identity cannot be verified safely")
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  current=os.fstat(fd)
+  if not stat.S_ISREG(current.st_mode) or (current.st_dev,current.st_ino)!=expected:
+   raise ValueError(f"{label} was replaced or is not regular: {path}")
+  os.fsync(fd)
+ finally:
+  os.close(fd)
+def cleanup_owned_file(path:Path,expected:tuple[int,int]|None)->None:
+ if expected is None: return
+ try:
+  current=os.stat(path,follow_symlinks=False)
+  if stat.S_ISREG(current.st_mode) and (current.st_dev,current.st_ino)==expected:
+   path.unlink()
+ except OSError:
+  pass
 def inspect(a:argparse.Namespace)->int:
  m=base()
  m["expected_head"]=a.expected_head
@@ -406,6 +430,13 @@ def self_test()->None:
   assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out),expected_head="0"*40,approval_evidence=str(root/"missing-approval.json"),approval_sha256="0"*64))==2
   assert preserved.read_bytes()==before
   assert not list(out.glob(".manifest.*"))
+  owned=Path(d)/"owned-manifest.tmp"; owned.write_bytes(b"owner")
+  owned_stat=os.stat(owned,follow_symlinks=False); owned.unlink(); owned.write_bytes(b"replacement")
+  try: verify_file_identity(owned,(owned_stat.st_dev,owned_stat.st_ino),"temporary manifest")
+  except ValueError: pass
+  else: raise AssertionError("replacement manifest temporary was accepted")
+  cleanup_owned_file(owned,(owned_stat.st_dev,owned_stat.st_ino))
+  assert owned.read_bytes()==b"replacement"
   linked_evidence=Path(d)/"linked-evidence"; linked_evidence.symlink_to(out,target_is_directory=True)
   try: write_manifest_no_replace(linked_evidence,{"status":"BLOCKED"})
   except ValueError: pass

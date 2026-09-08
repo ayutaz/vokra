@@ -491,6 +491,23 @@ impl KyutaiSttConfig {
                 self.backbone.hidden_scale, self.backbone.d_model,
             )));
         }
+        if !self.backbone.rope_max_period.is_finite() || self.backbone.rope_max_period <= 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt config: rope_max_period={} must be finite and > 0",
+                self.backbone.rope_max_period
+            )));
+        }
+        if !self.causal {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt config: causal must be true for the streaming decoder".to_owned(),
+            ));
+        }
+        if !self.rms_norm_eps.is_finite() || self.rms_norm_eps <= 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt config: rms_norm_eps={} must be finite and > 0",
+                self.rms_norm_eps
+            )));
+        }
         if self.backbone.context == 0 {
             return Err(VokraError::InvalidArgument(
                 "kyutai-stt config: backbone.context must be > 0 (no forward \
@@ -516,6 +533,34 @@ impl KyutaiSttConfig {
                 self.audio_card, self.text_card,
             )));
         }
+        if self.sample_rate != KYUTAI_STT_SAMPLE_RATE {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt config: sample_rate={} must match the authenticated Mimi boundary {}",
+                self.sample_rate, KYUTAI_STT_SAMPLE_RATE
+            )));
+        }
+        if !self.audio_delay_seconds.is_finite()
+            || self.audio_delay_seconds < 0.0
+            || !self.audio_silence_prefix_seconds.is_finite()
+            || self.audio_silence_prefix_seconds < 0.0
+        {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt config: streaming delay/prefix seconds must be finite and non-negative"
+                    .to_owned(),
+            ));
+        }
+        if self.depformer.n_layer == 0
+            || self.depformer.d_model == 0
+            || self.depformer.n_head == 0
+            || self.depformer.d_model % self.depformer.n_head != 0
+            || !self.depformer.multi_linear
+            || !self.depformer.weights_per_step
+        {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt config: depformer structure is not the authenticated streaming contract"
+                    .to_owned(),
+            ));
+        }
         let n_channels = self.n_q.checked_add(1).ok_or_else(|| {
             VokraError::InvalidArgument("kyutai-stt channel count overflows usize".to_owned())
         })?;
@@ -526,6 +571,11 @@ impl KyutaiSttConfig {
                 self.delays.len(),
                 n_channels,
             )));
+        }
+        if self.delays.iter().any(|delay| *delay != 0) {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt config: authenticated dep_q=0 delays must be all zero".to_owned(),
+            ));
         }
         if (self.text_pad_id as usize) >= self.text_card {
             return Err(VokraError::InvalidArgument(format!(
@@ -2966,6 +3016,44 @@ mod tests {
         ));
         let mut c = KyutaiSttConfig::tiny_for_tests();
         c.backbone.hidden_scale = 0.0;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn config_streaming_axes_are_fail_closed() {
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.causal = false;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.sample_rate = 16_000;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.audio_delay_seconds = f32::NAN;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.delays[0] = 1;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.depformer.multi_linear = false;
         assert!(matches!(
             c.validate_for_forward(),
             Err(VokraError::InvalidArgument(_))
