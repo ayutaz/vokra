@@ -16,6 +16,11 @@ The source files are deserialized only after their official SHA-256 digests
 match.  At most one checkpoint state dict is resident at a time.  The output
 contains raw F32 state-dict tensors; it never imports the AudioSeal package and
 does not run inference.  Rust performs the final exact 310-name/shape gate.
+
+The pinned public ``.pth`` format currently contains an ``xp.cfg`` object and
+is therefore blocked before any input is read or output is created. An
+official tensor-only serialization is required before this bridge can be
+enabled.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import hashlib
 import json
 import os
 import struct
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +40,11 @@ from typing import Any, Mapping
 
 CHECKPOINT_REVISION = "3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba"
 SOURCE_REVISION = "e63a8a0e5cdf7bb797159c92ba15961557fe9bd2"
+BLOCKED_CURRENT_FORMAT = (
+    "BLOCKED_UNSAFE_PICKLE: the pinned AudioSeal checkpoints contain the "
+    "upstream xp.cfg object; conversion is disabled until an official "
+    "tensor-only serialization is provided"
+)
 
 INPUTS = {
     "generator_base": (
@@ -99,10 +110,17 @@ def load_state(path: Path) -> Mapping[str, Any]:
             "`uv run --no-project --python 3.12 --with torch python ...` on VAST"
         ) from error
 
-    # Deserializing pickle is acceptable only after require_source verified the
-    # exact official digest.  The public checkpoint carries xp.cfg objects, so
-    # weights_only=True cannot represent the complete outer mapping.
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    # The public checkpoint may carry xp.cfg objects that the safe loader cannot
+    # represent.  A pinned digest is provenance evidence, not permission to
+    # execute arbitrary pickle globals: refuse such a bundle explicitly.
+    try:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as error:  # noqa: BLE001 — safe loader refusal is terminal
+        raise RuntimeError(
+            f"{path}: weights_only=True refused ({type(error).__name__}: "
+            f"{str(error)[:160]}); AudioSeal checkpoint is BLOCKED because "
+            "unsafe pickle deserialization is not permitted"
+        ) from error
     if not isinstance(checkpoint, Mapping):
         raise ValueError(f"{path}: checkpoint root is not a mapping")
     if "best_state" in checkpoint:
@@ -200,6 +218,15 @@ def tensor_bytes(value: Any, spec: TensorSpec) -> memoryview:
 
 
 def prepare(paths: Mapping[str, Path], output: Path, force: bool) -> None:
+    # The pinned public format contains an xp.cfg object, so its complete
+    # payload is not representable by the restricted unpickler.  Stop before
+    # touching any input or creating an output; source hashes are not a waiver
+    # for arbitrary pickle execution.
+    raise RuntimeError(BLOCKED_CURRENT_FORMAT)
+
+
+def _prepare_verified_tensor_only(paths: Mapping[str, Path], output: Path, force: bool) -> None:
+    """Retained implementation for a future official tensor-only format."""
     if output.exists() and not force:
         raise ValueError(f"output already exists: {output} (pass --force to replace it)")
     if output.resolve() in {path.resolve() for path in paths.values()}:
@@ -264,6 +291,39 @@ def prepare(paths: Mapping[str, Path], output: Path, force: bool) -> None:
 
 
 def self_test() -> None:
+    import ast
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "load"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+    ]
+    assert calls, "safe loader contract has no torch.load call"
+    for call in calls:
+        weights_only = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "weights_only"),
+            None,
+        )
+        assert isinstance(weights_only, ast.Constant) and weights_only.value is True, (
+            "every torch.load call must explicitly set weights_only=True"
+        )
+    assert BLOCKED_CURRENT_FORMAT.startswith("BLOCKED_UNSAFE_PICKLE:")
+    try:
+        prepare(
+            {prefix: Path(f"/nonexistent/{filename}") for prefix, (filename, *_rest) in INPUTS.items()},
+            Path("/nonexistent/audioseal.safetensors"),
+            False,
+        )
+    except RuntimeError as error:
+        assert str(error) == BLOCKED_CURRENT_FORMAT
+    else:
+        raise AssertionError("current AudioSeal pickle format was not blocked")
     assert sum(item[2] for item in INPUTS.values()) == 310
     assert len({item[1] for item in INPUTS.values()}) == 4
     assert all(len(item[1]) == 64 for item in INPUTS.values())
@@ -308,16 +368,20 @@ def main() -> int:
     if args.self_test:
         self_test()
         return 0
-    prepare(
-        {
-            "generator_base": args.generator_base,
-            "detector_base": args.detector_base,
-            "generator_streaming": args.generator_streaming,
-            "detector_streaming": args.detector_streaming,
-        },
-        args.output,
-        args.force,
-    )
+    try:
+        prepare(
+            {
+                "generator_base": args.generator_base,
+                "detector_base": args.detector_base,
+                "generator_streaming": args.generator_streaming,
+                "detector_streaming": args.detector_streaming,
+            },
+            args.output,
+            args.force,
+        )
+    except RuntimeError as error:
+        print(f"audioseal_prepare_checkpoint: {error}", file=sys.stderr)
+        return 2
     return 0
 
 

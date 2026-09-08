@@ -41,14 +41,11 @@ Then::
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
-import io
 import json
-import pickle
 import sys
-import types
-
-import torch
+from pathlib import Path
 
 # Upstream inference constants, quoted from the HF space's score.py:
 #     'domains':  torch.zeros(bs, dtype=torch.int)
@@ -73,40 +70,16 @@ def die(msg: str) -> "None":
     raise SystemExit(2)
 
 
-class _TolerantUnpickler(pickle.Unpickler):
-    """Stubs classes this venv cannot import (omegaconf/hydra hparams).
-
-    Only the ``state_dict`` is consumed downstream; the stubs never reach it
-    (a stub landing among the tensors is caught by the ``is Tensor`` check).
-    """
-
-    def find_class(self, module, name):
-        try:
-            return super().find_class(module, name)
-        except Exception:
-            return type(
-                name,
-                (),
-                {
-                    "__module__": f"STUB:{module}",
-                    "__init__": lambda self, *a, **k: None,
-                    "__setstate__": lambda self, state: None,
-                },
-            )
-
-
 def load_state_dict(path: str) -> "dict[str, torch.Tensor]":
-    """Loads the ckpt's ``state_dict``, preferring torch's safe loader."""
+    """Load the ckpt's ``state_dict`` with torch's safe loader only."""
+    import torch
+
     try:
         obj = torch.load(path, map_location="cpu", weights_only=True)
-    except Exception:
-        tolerant = types.ModuleType("tolerant_pickle")
-        tolerant.Unpickler = _TolerantUnpickler
-        tolerant.load = lambda f, **k: _TolerantUnpickler(f, **k).load()
-        tolerant.loads = lambda b, **k: _TolerantUnpickler(io.BytesIO(b), **k).load()
-        tolerant.dump, tolerant.dumps = pickle.dump, pickle.dumps
-        obj = torch.load(
-            path, map_location="cpu", pickle_module=tolerant, weights_only=False
+    except Exception as error:  # noqa: BLE001 — safe refusal is terminal
+        die(
+            f"weights_only=True refused checkpoint ({type(error).__name__}: "
+            f"{str(error)[:160]}); unsafe pickle deserialization is not permitted"
         )
     if not isinstance(obj, dict):
         die(f"checkpoint root is {type(obj).__name__}, expected a dict")
@@ -245,12 +218,48 @@ def derive_config(sd: "dict[str, torch.Tensor]") -> dict:
     }
 
 
+def self_test() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "load"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+    ]
+    assert calls, "safe loader contract has no torch.load call"
+    for call in calls:
+        weights_only = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "weights_only"),
+            None,
+        )
+        assert isinstance(weights_only, ast.Constant) and weights_only.value is True, (
+            "every torch.load call must explicitly set weights_only=True"
+        )
+    assert not any(isinstance(node, ast.ClassDef) and node.name.endswith("Unpickler") for node in ast.walk(tree))
+    print("utmos_prepare_checkpoint: safe-loader self-test PASS")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--ckpt", required=True, help="UTMOS22-strong .ckpt")
-    ap.add_argument("--output", required=True, help="flat safetensors out")
-    ap.add_argument("--config-out", required=True, help="config JSON side-car out")
+    ap.add_argument("--ckpt", help="UTMOS22-strong .ckpt")
+    ap.add_argument("--output", help="flat safetensors out")
+    ap.add_argument("--config-out", help="config JSON side-car out")
+    ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
+
+    if args.self_test:
+        if any(value is not None for value in (args.ckpt, args.output, args.config_out)):
+            ap.error("--self-test accepts no checkpoint or output arguments")
+        self_test()
+        return 0
+    if any(value is None for value in (args.ckpt, args.output, args.config_out)):
+        ap.error("--ckpt, --output, and --config-out are required unless --self-test is used")
+
+    import torch
 
     sd = load_state_dict(args.ckpt)
     tensors, dropped, non_tensor = {}, [], []

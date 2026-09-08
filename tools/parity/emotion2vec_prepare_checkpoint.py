@@ -16,6 +16,7 @@ generic squeeze, tensor dropping, or dtype coercion is allowed.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import sys
@@ -125,9 +126,16 @@ def prepare(source: Path, output: Path) -> None:
     except ImportError as error:
         sys.exit(f"missing offline parity dependency: {error}")
 
-    # Pickle deserialization is reached only after the immutable official hash
-    # passes.  The release predates weights_only-safe serialization.
-    raw = torch.load(str(source), map_location="cpu", weights_only=False)
+    # The immutable official hash is provenance evidence, not permission to
+    # execute arbitrary pickle globals.  Refuse artifacts the safe loader
+    # cannot represent.
+    try:
+        raw = torch.load(str(source), map_location="cpu", weights_only=True)
+    except Exception as error:  # noqa: BLE001 — safe refusal is terminal
+        sys.exit(
+            f"weights_only=True refused checkpoint ({type(error).__name__}: "
+            f"{str(error)[:160]}); unsafe pickle deserialization is not permitted"
+        )
     if not isinstance(raw, dict) or not isinstance(raw.get("model"), dict):
         sys.exit("official checkpoint must contain a dict-valued top-level 'model'")
     state = raw["model"]
@@ -198,6 +206,26 @@ def prepare(source: Path, output: Path) -> None:
 
 
 def self_test() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "load"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+    ]
+    assert calls, "safe loader contract has no torch.load call"
+    for call in calls:
+        weights_only = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "weights_only"),
+            None,
+        )
+        assert isinstance(weights_only, ast.Constant) and weights_only.value is True, (
+            "every torch.load call must explicitly set weights_only=True"
+        )
     manifest = expected_manifest()
     assert manifest_sha256(manifest) == GGUF_MANIFEST_SHA256
     assert manifest["d2v_model.blocks.7.attn.qkv.weight"] == [3072, 1024]
