@@ -36,7 +36,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|kyutai-stt-tokenizer|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|clap|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|kyutai-stt-tokenizer|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model nanocodec --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -60,7 +60,11 @@ OPTIONS:
                        checkpoint tensor shapes: base/small/medium/large-v3/
                        turbo — unknown shapes error out, no silent fallback
                        per FR-EX-08), silero-vad (ONNX), campplus (CAM++
-                       speaker-encoder ONNX), kokoro (Kokoro-82M StyleTTS 2
+                       speaker-encoder ONNX), clap (CLAP HTSAT-fused; the
+                       converter is inspection-only until the authenticated
+                       VAST checkpoint manifest, native preprocessing/forward
+                       contract, and dependency/license closure are complete),
+                       kokoro (Kokoro-82M StyleTTS 2
                        派生 iSTFTNet safetensors), piper-plus (MB-iSTFT-VITS2
                        voice: ONNX + config.json), cosyvoice2 (CosyVoice2-0.5B
                        LLM safetensors), voxtral (Mistral Voxtral safetensors;

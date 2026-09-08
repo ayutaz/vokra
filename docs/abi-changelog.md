@@ -4315,6 +4315,17 @@ represent persistent streaming state. This is an implemented binding surface,
 not a numerical or Apple-hardware verdict: the 512-invocation LiteRT
 stage-trace parity run remains VAST-gated, and no publication is implied.
 
+### 2026-09-09 — CLAP converter inspection-only correction (pre-1.0 advisory)
+
+The CLAP converter no longer emits GGUF by passing through arbitrary,
+unverified safetensors. It now returns an `INSPECTION_ONLY` error before
+reading the input or creating/replacing the output. The existing public
+converter function/signature and CLAP identity constants are preserved;
+`ClapReport` remains the compatibility return type. A future conversion
+requires the owner-reviewed checkpoint tensor manifest and strict native
+preprocessing/forward and dependency/license evidence. This is a behavior
+correction with no C ABI change and no parity or publication claim.
+
 ### Post-1.0 semver contract (rejection of the pre-1.0 free-change rule)
 
 The "Pre-1.0 policy (prerelease semver)" section above **is explicitly

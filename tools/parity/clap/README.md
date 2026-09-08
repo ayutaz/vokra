@@ -16,6 +16,13 @@ permission to synchronize or acquire a checkpoint locally.
 The locked Transformers wheel is SHA-256
 `8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e`.
 
+The Rust `vokra-convert --model clap` route is also fail-closed while this
+evidence is incomplete. It returns an `INSPECTION_ONLY` usage error before
+reading the input or touching the output, so arbitrary safetensors cannot be
+published with CLAP provenance. A GGUF conversion requires the owner-reviewed
+VAST checkpoint manifest, native preprocessing/forward contract, and
+dependency/license closure described below.
+
 The official processor must authenticate this exact HTSAT audio contract on
 the disposable VAST host: 48 kHz, 10 seconds/480,000 samples, 1024 FFT and
 window, 480 hop, 513 frequency bins, 64 feature size, 1,000 frames,

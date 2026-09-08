@@ -6987,6 +6987,14 @@ pub fn convert_file_licensed(
     output: &Path,
     license: Option<&str>,
 ) -> Result<ConvertSummary, ConvertError> {
+    // CLAP has only a model-free processor/config contract at present. Keep
+    // this guard before the shared checkpoint read so even a missing or large
+    // caller-supplied file cannot be treated as a conversion attempt.
+    if matches!(model, ModelKind::Clap) {
+        return Err(ConvertError::Usage(
+            models::clap::INSPECTION_ONLY_REASON.to_owned(),
+        ));
+    }
     if matches!(model, ModelKind::CosyVoice2Hift) {
         return Err(ConvertError::Usage(
             "cosyvoice2-hift requires the exact cosyvoice2.yaml sidecar; use the CLI --config path"
@@ -12059,6 +12067,11 @@ pub fn convert_file_quantized(
     output: &Path,
     quant: GgmlType,
 ) -> Result<ConvertSummary, ConvertError> {
+    if matches!(model, ModelKind::Clap) {
+        return Err(ConvertError::Usage(
+            models::clap::INSPECTION_ONLY_REASON.to_owned(),
+        ));
+    }
     let bytes = std::fs::read(input)?;
 
     let builder = match model {
