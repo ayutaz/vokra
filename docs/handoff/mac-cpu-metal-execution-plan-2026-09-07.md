@@ -668,6 +668,31 @@ their immutable owner/legal dispositions and authorized real-weight VAST CPU
 conversion/reference/parity work before the final Scaleway Apple CPU/Metal
 batch.
 
+## 2026-09-08 final pre-Scaleway contract replay
+
+At pushed PR head `1e7d0609ed34543b119ee7ea635a347f950919a2`, the
+dependency-free preflight self-tests for Qwen3-ASR, Qwen3-TTS, SpeechT5 TTS,
+MOSS Audio, Ultravox, WeSpeaker and Yue XCodec Mini all exited zero.  The
+corresponding VAST worker `--self-test` contracts also all exited zero.  These
+checks exercise the fail-closed approval path, tamper and duplicate-key
+rejection, synchronization/acquisition ordering, exact Cargo-result sentinels,
+no-upload boundary and generated Apple handoff contract without downloading
+or executing model weights.
+
+The tracked approval-scope SHA-256 values remain, respectively,
+`da581832351b223b890814c0bf45ba036174da24dd7fd47a58236c1dde33ced1`,
+`46662c9a1a1135c37a4dc00583c1a637f72aa745ca10f2172a38f77df9d1b1da`,
+`99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba`,
+`08eeab246dac53187c683cfed54e07f4a64a15abd119f3c4cc186bd23b88e69e`,
+`35e73acdfdffa729464400a11cdc2f890b216dc59476a79acebd24bfe8ae555b`,
+`0133cb13d4869903f89d6bbcaee9e784a69cf158804ae76bf4a52c7a0ca3efd0`
+and
+`6f8378213db1ef19924c42cb76a194ed013093c048aba910808eb14e2dcef262`.
+These are canonical approval-scope digests stored inside each manifest, not
+whole-file hashes.  Every production manifest remains intentionally
+fail-closed at owner review; this replay records readiness but grants no
+approval, model-execution authority or publication authority.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
