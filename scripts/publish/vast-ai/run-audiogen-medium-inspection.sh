@@ -4,6 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/audiogen_medium_reference"
 INSPECTOR="$ROOT/tools/parity/audiogen_medium_inspect.py"
 METADATA_AUDIT="$ROOT/tools/parity/audiogen_medium_reference/metadata_audit.py"
+T5_METADATA_AUDIT="$ROOT/tools/parity/audiogen_medium_reference/t5_metadata_audit.py"
 REFERENCE="$ROOT/tools/parity/audiogen_medium_dump_reference.py"
 HF_REPOSITORY="facebook/audiogen-medium"; HF_REVISION="1277dd7dfd8fa57a205a70acc5de0ee90804502f"
 SOURCE_URL="https://github.com/facebookresearch/audiocraft.git"; SOURCE_REVISION="a2b96756956846e194c9255d0cdadc2b47c93f1b"
@@ -18,9 +19,11 @@ EOF
 }
 validate_model_free_manifest(){
   local path="$1" expected_head="$2"
-  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python - "$path" "$expected_head" <<'PY'
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python - "$path" "$expected_head" "$PROJECT" <<'PY'
 import json,sys
 from pathlib import Path
+sys.path.insert(0, sys.argv[3])
+from companion_contract import contract as canonical_companion_contract
 def unique(pairs):
  out={}
  for key,value in pairs:
@@ -29,7 +32,7 @@ def unique(pairs):
  return out
 m=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"),object_pairs_hook=unique)
 expected_head=sys.argv[2]
-expected_keys={"format","status","evidence_stage","runtime_status","cpu_status","metal_status","parity_status","publication","inspection_status","collection_status","expected_head","approval_evidence","upstream","archives","compression_companion","external_text_conditioner","official_source","license_evidence","blockers"}
+expected_keys={"format","status","evidence_stage","runtime_status","cpu_status","metal_status","parity_status","publication","companion_contract","t5_server_metadata","inspection_status","collection_status","expected_head","approval_evidence","upstream","archives","compression_companion","external_text_conditioner","official_source","license_evidence","blockers"}
 if set(m) != expected_keys: raise SystemExit("model-free manifest root closure mismatch")
 required={"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE","collection_status":"AUTHENTICATED","runtime_status":"LOUD_PARTIAL_FAIL_CLOSED","cpu_status":"NOT_RUN","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD"}
 for key,want in required.items():
@@ -45,14 +48,21 @@ for name,row in archives.items():
 for key in ("compression_companion","external_text_conditioner"):
  companion=m.get(key)
  if not isinstance(companion,dict) or companion.get("payload") != "NOT_DOWNLOADED": raise SystemExit(f"model-free companion payload marker mismatch: {key}")
+contract=m.get("companion_contract")
+if contract != canonical_companion_contract(): raise SystemExit("model-free companion contract identity mismatch")
+if m.get("t5_server_metadata") != contract["text_conditioner"]["server_metadata"]: raise SystemExit("model-free T5 server metadata binding mismatch")
+if m["t5_server_metadata"].get("payload") != "NOT_DOWNLOADED": raise SystemExit("model-free T5 metadata crossed payload boundary")
+if contract.get("text_conditioner",{}).get("payload") != "NOT_DOWNLOADED" or contract.get("compression_companion",{}).get("payload") != "NOT_DOWNLOADED": raise SystemExit("model-free companion contract crossed payload boundary")
 PY
 }
 validate_manifest(){
   local path="$1"
   local expected_head="$2" approval_sha256="$3"
-  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python - "$path" "$expected_head" "$approval_sha256" <<'PY'
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python - "$path" "$expected_head" "$approval_sha256" "$PROJECT" <<'PY'
 import json,sys
 from pathlib import Path
+sys.path.insert(0, sys.argv[4])
+from companion_contract import contract as canonical_companion_contract
 def unique(pairs):
  out={}
  for key,value in pairs:
@@ -60,7 +70,7 @@ def unique(pairs):
   out[key]=value
  return out
 m=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"),object_pairs_hook=unique); expected_head=sys.argv[2]; approval_sha256=sys.argv[3]
-expected_keys={"format","status","evidence_stage","runtime_status","cpu_status","metal_status","parity_status","publication","inspection_status","collection_status","expected_head","approval_evidence","upstream","archives","compression_companion","external_text_conditioner","official_source","license_evidence","blockers"}
+expected_keys={"format","status","evidence_stage","runtime_status","cpu_status","metal_status","parity_status","publication","companion_contract","t5_server_metadata","inspection_status","collection_status","expected_head","approval_evidence","upstream","archives","compression_companion","external_text_conditioner","official_source","license_evidence","blockers"}
 if set(m) != expected_keys: raise SystemExit(f"manifest root closure mismatch: {sorted(set(m)^expected_keys)}")
 required={"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE","collection_status":"AUTHENTICATED","runtime_status":"LOUD_PARTIAL_FAIL_CLOSED","cpu_status":"NOT_RUN","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD"}
 for key,want in required.items():
@@ -69,6 +79,13 @@ up=m.get("upstream")
 if not isinstance(up,dict) or up.get("repository")!="facebook/audiogen-medium" or up.get("requested_revision")!="1277dd7dfd8fa57a205a70acc5de0ee90804502f" or up.get("resolved_revision")!="1277dd7dfd8fa57a205a70acc5de0ee90804502f": raise SystemExit("upstream identity mismatch")
 if m.get("inspection_status") in {"INSPECTION_ERROR","FAILED"} or m.get("collection_status")!="AUTHENTICATED": raise SystemExit("incomplete/error evidence rejected")
 if m.get("expected_head") != expected_head: raise SystemExit("expected HEAD was not recorded")
+contract=m.get("companion_contract")
+if contract != canonical_companion_contract(): raise SystemExit("companion contract identity mismatch")
+if m.get("t5_server_metadata") != contract["text_conditioner"]["server_metadata"]: raise SystemExit("T5 server metadata binding mismatch")
+if m["compression_companion"].get("payload") != "PRESENT" or m["compression_companion"].get("path") != "compression_state_dict.bin": raise SystemExit("normal compression companion state mismatch")
+if m["external_text_conditioner"].get("payload") != "NOT_DOWNLOADED": raise SystemExit("normal T5 payload boundary mismatch")
+if m["t5_server_metadata"].get("payload") != "NOT_DOWNLOADED": raise SystemExit("normal T5 metadata crossed payload boundary")
+if contract.get("text_conditioner",{}).get("payload") != "NOT_DOWNLOADED" or contract.get("compression_companion",{}).get("payload") != "NOT_DOWNLOADED": raise SystemExit("companion contract crossed payload boundary")
 approval=m.get("approval_evidence")
 if not isinstance(approval,dict) or approval.get("evidence_sha256") != approval_sha256 or approval.get("schema") != "vokra-audiogen-medium-inspection-approval-v1": raise SystemExit("approval evidence binding mismatch")
 PY
@@ -86,11 +103,34 @@ self_test(){
   grep -Fq 'evidence_sha256' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq 'exit 0' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq 'payload_status' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq 't5_metadata_audit.py' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  grep -Fq -- '--t5-server-metadata' "$INSPECTOR"
+  grep -Fq 'companion_contract' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq 'VOKRA_PUBLISH_ON_VAST=1' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- '--model-free' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- '--expected-head' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- '--approval-sha256' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- 'uv run --no-project --offline' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
+  synthetic="$(mktemp -d /private/tmp/audiogen-medium-manifest-self-test.XXXXXX)"
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python - "$synthetic" "$PROJECT" <<'PY'
+import json,sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from companion_contract import contract
+root=Path(sys.argv[1]); canonical=contract(); head="a"*40; approval_sha="b"*64
+common={"format":"vokra-audiogen-medium-inspection-v2","status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","runtime_status":"LOUD_PARTIAL_FAIL_CLOSED","cpu_status":"NOT_RUN","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE","collection_status":"AUTHENTICATED","expected_head":head,"upstream":{"repository":"facebook/audiogen-medium","requested_revision":"1277dd7dfd8fa57a205a70acc5de0ee90804502f","resolved_revision":"1277dd7dfd8fa57a205a70acc5de0ee90804502f"},"archives":{"compression_state_dict.bin":{"payload_status":"NOT_DOWNLOADED","execution":"NOT_PERFORMED"},"state_dict.bin":{"payload_status":"NOT_DOWNLOADED","execution":"NOT_PERFORMED"}},"official_source":{},"license_evidence":{},"blockers":[],"companion_contract":canonical,"t5_server_metadata":canonical["text_conditioner"]["server_metadata"],"external_text_conditioner":{**canonical["text_conditioner"],"payload":"NOT_DOWNLOADED"}}
+model_free={**common,"approval_evidence":{"status":"PENDING_OWNER_APPROVAL"},"compression_companion":{**canonical["compression_companion"],"payload":"NOT_DOWNLOADED"}}
+normal={**common,"approval_evidence":{"schema":"vokra-audiogen-medium-inspection-approval-v1","evidence_sha256":approval_sha},"compression_companion":{**canonical["compression_companion"],"payload":"PRESENT"}}
+for name,value in (("model-free.json",model_free),("normal.json",normal)):
+    (root/name).write_text(json.dumps(value),encoding="utf-8")
+drift=json.loads(json.dumps(model_free)); drift["t5_server_metadata"]["files"][0]["bytes"]=0
+(root/"drift.json").write_text(json.dumps(drift),encoding="utf-8")
+PY
+  validate_model_free_manifest "$synthetic/model-free.json" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa || die 'synthetic model-free manifest was rejected'
+  validate_manifest "$synthetic/normal.json" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb || die 'synthetic normal manifest was rejected'
+  if validate_model_free_manifest "$synthetic/drift.json" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then die 'synthetic T5 metadata drift was accepted'; fi
+  if UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$T5_METADATA_AUDIT" --self-test "$synthetic/illegal.json" >/dev/null 2>&1; then die 'T5 metadata CLI accepted mixed self-test/output modes'; fi
+  rm -rf "$synthetic"
   if "$0" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1; then die 'duplicate --expected-head was accepted'; fi
   if "$0" --expected-head 0000000000000000000000000000000000000000 --approval-evidence a --approval-evidence b >/dev/null 2>&1; then die 'duplicate --approval-evidence was accepted'; fi
   if "$0" --expected-head 0000000000000000000000000000000000000000 --approval-evidence a --approval-sha256 0000000000000000000000000000000000000000000000000000000000000000 --approval-sha256 1111111111111111111111111111111111111111111111111111111111111111 >/dev/null 2>&1; then die 'duplicate --approval-sha256 was accepted'; fi
@@ -98,6 +138,7 @@ self_test(){
   if "$0" --model-free --expected-head 0000000000000000000000000000000000000000 --approval-sha256 0000000000000000000000000000000000000000000000000000000000000000 >/dev/null 2>&1; then die 'model-free approval hash mix was accepted'; fi
   UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --self-test
   UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$METADATA_AUDIT" --self-test
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$T5_METADATA_AUDIT" --self-test
   UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$REFERENCE" --self-test
   echo 'run-audiogen-medium-inspection.sh self-test: OK'
 }
@@ -133,10 +174,11 @@ if (( model_free == 1 )); then
   free_kib="$(df -Pk "$(dirname "$work")" | awk 'NR==2{print $4}')"; [[ "$free_kib" =~ ^[0-9]+$ && $free_kib -ge $MODEL_FREE_MIN_DISK_KIB ]] || die 'model-free small disk guard failed'
   mkdir "$work"; mkdir -p "$work/source" "$work/evidence"
   UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$METADATA_AUDIT" "$work/tree.json" >>"$work/evidence/acquisition.log" 2>&1
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$T5_METADATA_AUDIT" "$work/t5-tree.json" >>"$work/evidence/acquisition.log" 2>&1
   git clone --filter=blob:none "$SOURCE_URL" "$work/source/repo" >>"$work/evidence/acquisition.log" 2>&1
   git -C "$work/source/repo" checkout --detach "$SOURCE_REVISION" >>"$work/evidence/acquisition.log" 2>&1
   set +e
-  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --model-free --source "$work/source/repo" --server-tree "$work/tree.json" --output "$work/evidence" --expected-head "$expected_head" --vokra-root "$ROOT" >>"$work/evidence/acquisition.log" 2>&1
+  UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --model-free --source "$work/source/repo" --server-tree "$work/tree.json" --t5-server-metadata "$work/t5-tree.json" --output "$work/evidence" --expected-head "$expected_head" --vokra-root "$ROOT" >>"$work/evidence/acquisition.log" 2>&1
   inspector_rc=$?
   set -e
   [[ "$inspector_rc" == 2 ]] || die "model-free inspector returned unexpected status: $inspector_rc"
@@ -154,7 +196,8 @@ work=/dev/shm/vokra-audiogen-medium-inspection
 mkdir "$work"
 mkdir -p "$work/model" "$work/source" "$work/evidence"
 free_kib="$(df -Pk /dev/shm | awk 'NR==2{print $4}')"; [[ "$free_kib" =~ ^[0-9]+$ && $free_kib -ge $MIN_DISK_KIB ]] || die '16 GiB tmpfs guard failed'
-UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python - "$HF_REPOSITORY" "$HF_REVISION" "$work/model" "$work/tree.json" <<'PY' >"$work/evidence/acquisition.log" 2>&1
+UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python "$T5_METADATA_AUDIT" "$work/t5-tree.json" >>"$work/evidence/acquisition.log" 2>&1
+UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python - "$HF_REPOSITORY" "$HF_REVISION" "$work/model" "$work/tree.json" <<'PY' >>"$work/evidence/acquisition.log" 2>&1
 import hashlib,json,sys
 from pathlib import Path
 from huggingface_hub import HfApi,RepoFile,RepoFolder,snapshot_download
@@ -185,6 +228,6 @@ Path(out).write_text(json.dumps({"repository":repo,"requested_revision":rev,"res
 PY
 git clone --filter=blob:none "$SOURCE_URL" "$work/source/repo" >>"$work/evidence/acquisition.log" 2>&1
 git -C "$work/source/repo" checkout --detach "$SOURCE_REVISION" >>"$work/evidence/acquisition.log" 2>&1
-UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$INSPECTOR" --snapshot "$work/model" --source "$work/source/repo" --server-tree "$work/tree.json" --output "$work/evidence" --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --vokra-root "$ROOT" >>"$work/evidence/acquisition.log" 2>&1 || [[ $? == 2 ]]
+UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-/private/tmp/vokra-audiogen-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$INSPECTOR" --snapshot "$work/model" --source "$work/source/repo" --server-tree "$work/tree.json" --t5-server-metadata "$work/t5-tree.json" --output "$work/evidence" --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --vokra-root "$ROOT" >>"$work/evidence/acquisition.log" 2>&1 || [[ $? == 2 ]]
 validate_manifest "$work/evidence/manifest.json" "$expected_head" "$approval_sha256" || die 'inspection did not produce complete authenticated evidence'
 exit 2

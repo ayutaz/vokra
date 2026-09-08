@@ -21,6 +21,9 @@ SOURCE_TAG = "v1.0.0"
 SOURCE_REVISION = "a2b96756956846e194c9255d0cdadc2b47c93f1b"
 FORMAT = "vokra-audiogen-medium-inspection-v2"
 PROJECT = Path(__file__).with_name("audiogen_medium_reference")
+sys.path.insert(0, str(PROJECT))
+from companion_contract import contract as companion_contract
+from t5_metadata_audit import load_packet as load_t5_metadata_packet
 HF_FILES = {".gitattributes", "README.md", "compression_state_dict.bin", "state_dict.bin"}
 HF_FILE_IDENTITIES = {
     ".gitattributes": {"bytes": 1_519, "git_blob_sha1": "a6344aac8c09253b3b630fb776ae94478aa0275b"},
@@ -580,17 +583,17 @@ def write_manifest(output: Path, **fields: Any) -> None:
     manifest_path = output / "manifest.json"
     if manifest_path.exists() or manifest_path.is_symlink():
         raise RuntimeError("inspection manifest already exists; refusing to clobber evidence")
-    payload = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "runtime_status": RUNTIME_STATUS, "cpu_status": CPU_STATUS, "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", **fields}
+    payload = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "runtime_status": RUNTIME_STATUS, "cpu_status": CPU_STATUS, "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "companion_contract": companion_contract(), **fields}
     with manifest_path.open("x", encoding="utf-8") as stream:
         stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
 
 
-def validate_model_free_options(*, snapshot: Path | None, approval_evidence: str | None, approval_sha256: str | None, expected_head: str | None, source: Path | None, server_tree: Path | None, output: Path | None, vokra_root: Path | None) -> None:
+def validate_model_free_options(*, snapshot: Path | None, approval_evidence: str | None, approval_sha256: str | None, expected_head: str | None, source: Path | None, server_tree: Path | None, output: Path | None, vokra_root: Path | None, t5_server_metadata: Path | None) -> None:
     """Enforce the owner-independent metadata boundary before approval handling."""
     if snapshot is not None or approval_evidence is not None or approval_sha256 is not None:
         raise RuntimeError("model-free metadata inspection cannot mix snapshot or approval arguments")
-    if any(value is None for value in (expected_head, source, server_tree, output, vokra_root)):
-        raise RuntimeError("model-free metadata inspection requires expected-head, source, server-tree, output, and vokra-root")
+    if any(value is None for value in (expected_head, source, server_tree, output, vokra_root, t5_server_metadata)):
+        raise RuntimeError("model-free metadata inspection requires expected-head, source, server-tree, output, vokra-root, and t5-server-metadata")
 
 
 def model_free_archives(files: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -617,6 +620,7 @@ def main() -> int:
     parser.add_argument("--model-free", action="store_true")
     parser.add_argument("--source", type=Path)
     parser.add_argument("--server-tree", type=Path)
+    parser.add_argument("--t5-server-metadata", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--validate-approval", action="store_true")
     parser.add_argument("--approval-evidence")
@@ -643,18 +647,19 @@ def main() -> int:
         parser.error("--model-free and --metadata-only are aliases; pass only one")
     if args.model_free or args.metadata_only:
         try:
-            validate_model_free_options(snapshot=args.snapshot, approval_evidence=args.approval_evidence, approval_sha256=args.approval_sha256, expected_head=args.expected_head, source=args.source, server_tree=args.server_tree, output=args.output, vokra_root=args.vokra_root)
+            validate_model_free_options(snapshot=args.snapshot, approval_evidence=args.approval_evidence, approval_sha256=args.approval_sha256, expected_head=args.expected_head, source=args.source, server_tree=args.server_tree, output=args.output, vokra_root=args.vokra_root, t5_server_metadata=args.t5_server_metadata)
         except RuntimeError as error:
             parser.error(str(error))
         try:
             if args.vokra_root is not None:
                 validate_clean_head(args.vokra_root, args.expected_head)
+            t5_metadata = load_t5_metadata_packet(args.t5_server_metadata)
             server, files, card = inventory_server_metadata(args.server_tree)
             source = source_inventory(args.source)
             blockers = [
                 "checkpoint payloads were intentionally not downloaded or loaded",
-                "exact external T5 repository revision/weight identity is not recoverable from public metadata without checkpoint payloads",
-                "public compression weight-build provenance remains unauthenticated even though the v1.0.0 16-kHz EnCodec/SEANet config chain is authenticated",
+                "canonical external T5 repository/revision/file identity is pinned, but the historical AudioGen checkpoint linkage is not recorded by upstream",
+                "release-specific 16-kHz EnCodec payload identity is pinned, but its tensor manifest and weight-build provenance require payload inspection",
                 "HF weight-build provenance is not independently authenticated against AudioCraft v1.0.0 source",
                 "training-data provenance is unauthenticated",
                 "native AudioGen codec/LM composition is not implemented",
@@ -670,8 +675,9 @@ def main() -> int:
                 approval_evidence={"status": "PENDING_OWNER_APPROVAL"},
                 upstream={**server, "files": files, "model_card": card},
                 archives=model_free_archives(files),
-                compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "SOURCE_CONFIG_AUTHENTICATED_PAYLOAD_BLOCKED", "sample_rate_hz": 16000, "channels": 1, "codec": "encodec_large_nq4_s320", "payload": "NOT_DOWNLOADED"},
-                external_text_conditioner={"family": "T5-family", "status": "SOURCE_CONFIG_AUTHENTICATED_EXTERNAL_IDENTITY_BLOCKED", "selection": "t5-large", "repository": None, "revision": None, "payload": "NOT_DOWNLOADED"},
+                compression_companion={**companion_contract()["compression_companion"], "role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "SOURCE_CONFIG_AUTHENTICATED_PAYLOAD_BLOCKED", "codec": "encodec_large_nq4_s320"},
+                external_text_conditioner={**companion_contract()["text_conditioner"], "family": "T5-family", "status": "CANONICAL_PIN_HISTORICAL_LINK_UNVERIFIED", "selection": "t5-large"},
+                t5_server_metadata=t5_metadata,
                 official_source=source,
                 license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_METADATA"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"},
                 blockers=sorted(set(blockers)),
@@ -680,8 +686,8 @@ def main() -> int:
         except Exception as error:
             write_manifest(args.output, inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", expected_head=args.expected_head, approval_evidence={"status": "PENDING_OWNER_APPROVAL"}, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, error_type=type(error).__name__, blockers=[str(error)])
             return 2
-    if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head)):
-        parser.error("normal runs require --approval-evidence, --approval-sha256, and --expected-head")
+    if any(value is None for value in (args.approval_evidence, args.approval_sha256, args.expected_head, args.t5_server_metadata)):
+        parser.error("normal runs require --approval-evidence, --approval-sha256, --expected-head, and --t5-server-metadata")
     try:
         approval = validate_approval(Path(args.approval_evidence), args.expected_head, args.approval_sha256, raw_path=args.approval_evidence)
         if args.vokra_root is not None:
@@ -707,13 +713,14 @@ def main() -> int:
                 raise RuntimeError(f"fixed archive size mismatch: {name}")
             archives[name] = inspect_torch_archive(path)
         source = source_inventory(args.source)
+        t5_metadata = load_t5_metadata_packet(args.t5_server_metadata)
         collection_blockers = source["role_blockers"]
         config_blockers = [f"{name} checkpoint config semantics are not fully authenticated" for name, archive in archives.items() if archive["config_evidence"]["status"] != "AUTHENTICATED"]
-        blockers = ["release/source timing gap: HF weights uploaded 2023-07-27 before AudioCraft v1.0.0 execution source", "AudioCraft role identity is bound to v1.0.0 but weight-build provenance is not independently authenticated", "exact external T5 repository revision/weight identity is not fully recovered from authenticated checkpoint", "public compression weight-build provenance remains unauthenticated despite authenticated v1.0.0 16-kHz EnCodec/SEANet config", "native AudioGen codec/LM composition is not implemented", "CPU/Metal parity is not run", "training-data provenance is unauthenticated", "source LICENSE_weights is CC-BY-NC-4.0; historical v0.0.2 LICENSE_weights was CC-BY-NC-ND-4.0 (provenance ambiguity)"] + config_blockers + collection_blockers
+        blockers = ["release/source timing gap: HF weights uploaded 2023-07-27 before AudioCraft v1.0.0 execution source", "AudioCraft role identity is bound to v1.0.0 but weight-build provenance is not independently authenticated", "canonical external T5 repository/revision/file identity is pinned, but the historical AudioGen checkpoint linkage is not recorded by upstream", "release-specific 16-kHz EnCodec payload identity is pinned, but its tensor manifest and weight-build provenance require payload inspection", "native AudioGen codec/LM composition is not implemented", "CPU/Metal parity is not run", "training-data provenance is unauthenticated", "source LICENSE_weights is CC-BY-NC-4.0; historical v0.0.2 LICENSE_weights was CC-BY-NC-ND-4.0 (provenance ambiguity)"] + config_blockers + collection_blockers
         complete = not collection_blockers
         if args.vokra_root is not None:
             validate_clean_head(args.vokra_root, args.expected_head)
-        write_manifest(args.output, inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", collection_status="AUTHENTICATED" if complete else "UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "walk": "recursive_file_only", "server_tree": server, "files": files, "model_card": {"path": "README.md", "license": card["license"], "sha256": digest(readme), "git_blob_sha1": git_blob_sha1(readme)}}, archives=archives, compression_companion={"role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "SOURCE_CONFIG_AUTHENTICATED_PAYLOAD_PRESENT", "sample_rate_hz": 16000, "channels": 1, "codec": "encodec_large_nq4_s320", "path": "compression_state_dict.bin"}, external_text_conditioner={"family": "T5-family", "status": "SOURCE_CONFIG_AUTHENTICATED_EXTERNAL_IDENTITY_BLOCKED", "selection": "t5-large", "repository": None, "revision": None}, official_source=source, license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_MODEL_CARD"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"}, blockers=sorted(set(blockers)))
+        write_manifest(args.output, inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", collection_status="AUTHENTICATED" if complete else "UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "walk": "recursive_file_only", "server_tree": server, "files": files, "model_card": {"path": "README.md", "license": card["license"], "sha256": digest(readme), "git_blob_sha1": git_blob_sha1(readme)}}, archives=archives, compression_companion={**companion_contract()["compression_companion"], "role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "SOURCE_CONFIG_AUTHENTICATED_PAYLOAD_PRESENT", "codec": "encodec_large_nq4_s320", "payload": "PRESENT"}, external_text_conditioner={**companion_contract()["text_conditioner"], "family": "T5-family", "status": "CANONICAL_PIN_HISTORICAL_LINK_UNVERIFIED", "selection": "t5-large"}, t5_server_metadata=t5_metadata, official_source=source, license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_MODEL_CARD"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"}, blockers=sorted(set(blockers)))
         return 2
     except Exception as error:
         write_manifest(args.output or Path("."), inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, error_type=type(error).__name__, blockers=[str(error)])
@@ -723,13 +730,13 @@ def main() -> int:
 def self_test() -> None:
     global HF_FILE_IDENTITIES
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40
-    validate_model_free_options(snapshot=None, approval_evidence=None, approval_sha256=None, expected_head="a" * 40, source=Path("source"), server_tree=Path("tree.json"), output=Path("evidence"), vokra_root=Path("."))
+    validate_model_free_options(snapshot=None, approval_evidence=None, approval_sha256=None, expected_head="a" * 40, source=Path("source"), server_tree=Path("tree.json"), output=Path("evidence"), vokra_root=Path("."), t5_server_metadata=Path("t5-tree.json"))
     for mixed in (
         {"snapshot": Path("snapshot"), "approval_evidence": None, "approval_sha256": None},
         {"snapshot": None, "approval_evidence": "approval.json", "approval_sha256": None},
     ):
         try:
-            validate_model_free_options(**mixed, expected_head="a" * 40, source=Path("source"), server_tree=Path("tree.json"), output=Path("evidence"), vokra_root=Path("."))
+            validate_model_free_options(**mixed, expected_head="a" * 40, source=Path("source"), server_tree=Path("tree.json"), output=Path("evidence"), vokra_root=Path("."), t5_server_metadata=Path("t5-tree.json"))
         except RuntimeError:
             pass
         else:
