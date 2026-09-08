@@ -92,6 +92,16 @@ REQUIRED_DEPENDENCIES = {
     "soundfile==0.14.0", "torch==2.7.1", "torchaudio==2.7.1",
     "transformers==5.10.4",
 }
+EXPECTED_PACKAGE_VERSIONS = {
+    "accelerate": "1.12.0",
+    "einops": "0.8.2",
+    "librosa": "1.0.0",
+    "numpy": "2.5.2",
+    "soundfile": "0.14.0",
+    "torch": "2.7.1",
+    "torchaudio": "2.7.1",
+    "transformers": "5.10.4",
+}
 FORBIDDEN_PACKAGES = {"gradio", "onnxruntime", "protobuf", "setuptools", "sox"}
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 EXPECTED_TORCH_FAMILY = "2.7.1"
@@ -104,6 +114,26 @@ FORBIDDEN_OPTIONAL_MODULES = {
     "onnxruntime": "/__vokra_import_only_onnxruntime_sentinel__.py",
 }
 ALLOWED_OPTIONAL_METADATA = ["__file__", "__spec__"]
+SOURCE_FILE_SET = set(SOURCE_FILES)
+SOURCE_FILE_CLASS_PATHS = {
+    "config": "qwen_tts/core/models/configuration_qwen3_tts.py",
+    "processor": "qwen_tts/core/models/processing_qwen3_tts.py",
+    "wrapper": "qwen_tts/inference/qwen3_tts_model.py",
+}
+PROJECT_RECORD_KEYS = {"project_sha256", "lock_sha256", "packages"}
+PACKAGE_RECORD_KEYS = {"name", "version", "source"}
+VARIANT_RECORD_KEYS = {"repository", "revision", "files", "model_type", "tts_model_type", "checkpoint_files"}
+METADATA_RECORD_KEYS = {"bytes", "sha256"}
+API_RECORD_KEYS = {
+    "imports", "package_versions", "config_class", "processor_class", "wrapper_class",
+    "config_from_pretrained", "processor_from_pretrained", "wrapper_from_pretrained",
+    "wrapper_signature", "generate_voice_clone_signature", "checkpoint_load",
+    "optional_sentinels", "source_facts",
+}
+API_SOURCE_FACT_KEYS = {"path", "bytes", "sha256"}
+SENTINEL_RECORD_KEYS = {"installed", "allowed_metadata", "sentinel_file", "metadata_reads", "metadata_keys", "accesses"}
+APPROVAL_KEYS = {"source_license", "model_license", "operator", "signer", "scope_sha256"}
+ENVIRONMENT_KEYS = {"python", "platform", "machine"}
 
 
 class ProbeError(RuntimeError):
@@ -230,6 +260,181 @@ def strict_json(text: str) -> Any:
     return json.loads(text, object_pairs_hook=reject_duplicates)
 
 
+def require_exact_keys(value: Any, expected: set[str], label: str) -> None:
+    if not isinstance(value, dict) or set(value) != expected:
+        actual = sorted(value) if isinstance(value, dict) else type(value).__name__
+        raise ProbeError(f"{label} keys drifted: expected={sorted(expected)} actual={actual}")
+
+
+def source_fact(cls: Any, source_root: Path) -> dict[str, Any]:
+    source = inspect.getsourcefile(cls)
+    if source is None:
+        raise ProbeError(f"cannot locate source for {cls.__name__}")
+    path = Path(source).resolve()
+    try:
+        relative = path.relative_to(source_root.resolve()).as_posix()
+    except ValueError as error:
+        raise ProbeError(f"{cls.__name__} source escapes official checkout") from error
+    if relative not in SOURCE_FILE_SET:
+        raise ProbeError(f"{cls.__name__} source path is outside fixed source contract: {relative}")
+    return {"path": relative, "bytes": path.stat().st_size, "sha256": sha256_file(path)}
+
+
+def validate_source_record(source: dict[str, Any]) -> None:
+    require_exact_keys(source, {"repository", "url", "revision", "package_version", "files", "compatibility_patch"}, "source")
+    if source["repository"] != SOURCE_REPOSITORY or source["url"] != SOURCE_URL or source["revision"] != SOURCE_REVISION:
+        raise ProbeError("official source identity drifted")
+    if source["package_version"] != SOURCE_PACKAGE_VERSION:
+        raise ProbeError("official source package version drifted")
+    files = source["files"]
+    if not isinstance(files, dict) or set(files) != SOURCE_FILE_SET:
+        raise ProbeError("official source file identity set drifted")
+    for relative, record in files.items():
+        if relative not in SOURCE_FILE_SET or not isinstance(record, dict):
+            raise ProbeError(f"official source file record is malformed: {relative}")
+        if relative == COMPATIBILITY_PATCH_TARGET:
+            require_exact_keys(record, {"original_bytes", "original_sha256", "bytes", "sha256"}, f"source file {relative}")
+            if record["original_bytes"] != 40519 or record["original_sha256"] != "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628":
+                raise ProbeError(f"official source original identity drifted: {relative}")
+        else:
+            require_exact_keys(record, {"bytes", "sha256"}, f"source file {relative}")
+        if not isinstance(record["bytes"], int) or record["bytes"] <= 0 or not isinstance(record["sha256"], str) or not HEX64.fullmatch(record["sha256"]):
+            raise ProbeError(f"official source file identity is malformed: {relative}")
+    patch = source["compatibility_patch"]
+    require_exact_keys(patch, {"status", "target", "operation", "original_bytes", "original_sha256", "patched_bytes", "patched_sha256", "replacement_count", "transformers_api"}, "compatibility patch")
+    expected_patch = {
+        "status": "COMPATIBILITY_PATCH_APPLIED",
+        "target": COMPATIBILITY_PATCH_TARGET,
+        "operation": "replace_exactly_one_decorator",
+        "original_bytes": 40519,
+        "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628",
+        "patched_bytes": COMPATIBILITY_PATCHED_BYTES,
+        "patched_sha256": COMPATIBILITY_PATCHED_SHA256,
+        "replacement_count": 1,
+        "transformers_api": "check_model_inputs(func)",
+    }
+    if patch != expected_patch:
+        raise ProbeError("compatibility patch identity drifted")
+    patch_file = files[COMPATIBILITY_PATCH_TARGET]
+    if patch_file["bytes"] != COMPATIBILITY_PATCHED_BYTES or patch_file["sha256"] != COMPATIBILITY_PATCHED_SHA256:
+        raise ProbeError("patched source file identity drifted")
+
+
+def validate_project_record(project: dict[str, Any]) -> None:
+    require_exact_keys(project, PROJECT_RECORD_KEYS, "project")
+    if project["project_sha256"] != PROJECT_SHA256 or project["lock_sha256"] != LOCK_SHA256:
+        raise ProbeError("Qwen3-TTS project/lock identity drifted")
+    packages = project["packages"]
+    if not isinstance(packages, list) or not packages:
+        raise ProbeError("Qwen3-TTS locked package inventory is empty")
+    seen: set[tuple[str, str, str]] = set()
+    for package in packages:
+        require_exact_keys(package, PACKAGE_RECORD_KEYS, "locked package")
+        name, version, source = package["name"], package["version"], package["source"]
+        if not isinstance(name, str) or not isinstance(version, str) or not isinstance(source, dict) or set(source) != {"registry"} or not isinstance(source["registry"], str):
+            raise ProbeError("locked package identity is malformed")
+        key = (name, version, source["registry"])
+        if key in seen:
+            raise ProbeError(f"duplicate locked package: {key}")
+        seen.add(key)
+    expected_packages = verify_project(Path(__file__).resolve().parent)["packages"]
+    if packages != expected_packages:
+        raise ProbeError("locked package inventory differs from the fixed uv.lock")
+
+
+def validate_variant_record(variant: str, record: dict[str, Any]) -> None:
+    require_exact_keys(record, VARIANT_RECORD_KEYS, f"variant {variant}")
+    expected = VARIANTS.get(variant)
+    if expected is None or record["repository"] != expected["repository"] or record["revision"] != expected["revision"]:
+        raise ProbeError(f"variant identity drifted: {variant}")
+    if record["model_type"] != "qwen3_tts" or record["tts_model_type"] != expected["tts_model_type"] or record["checkpoint_files"] != "NONE_PRESENT":
+        raise ProbeError(f"variant checkpoint/config contract drifted: {variant}")
+    files = record["files"]
+    if not isinstance(files, dict) or set(files) != set(COMMON_ASSETS) | {"config.json"}:
+        raise ProbeError(f"variant metadata file set drifted: {variant}")
+    expected_files = {"config.json": (expected["config_bytes"], expected["config_sha256"]), **COMMON_ASSETS}
+    for name, file_record in files.items():
+        require_exact_keys(file_record, METADATA_RECORD_KEYS, f"{variant} metadata {name}")
+        if file_record["bytes"] != expected_files[name][0] or file_record["sha256"] != expected_files[name][1]:
+            raise ProbeError(f"variant metadata identity drifted: {variant}/{name}")
+
+
+def validate_sentinel_records(records: dict[str, Any], label: str) -> None:
+    if not isinstance(records, dict) or set(records) != set(FORBIDDEN_OPTIONAL_MODULES):
+        raise ProbeError(f"{label} optional sentinel set drifted")
+    for module_name, record in records.items():
+        require_exact_keys(record, SENTINEL_RECORD_KEYS, f"{label} sentinel {module_name}")
+        if record["installed"] is not True or record["allowed_metadata"] != ALLOWED_OPTIONAL_METADATA or record["sentinel_file"] != FORBIDDEN_OPTIONAL_MODULES[module_name] or record["accesses"] != 0:
+            raise ProbeError(f"{label} optional sentinel contract drifted: {module_name}")
+        if not isinstance(record["metadata_reads"], int) or record["metadata_reads"] < 0 or not isinstance(record["metadata_keys"], list) or len(record["metadata_keys"]) != record["metadata_reads"] or any(key not in ALLOWED_OPTIONAL_METADATA for key in record["metadata_keys"]):
+            raise ProbeError(f"{label} optional sentinel metadata reads malformed: {module_name}")
+
+
+def validate_api_record(variant: str, api: dict[str, Any], source_files: dict[str, Any]) -> None:
+    require_exact_keys(api, API_RECORD_KEYS, f"API {variant}")
+    expected_classes = {
+        "config_class": "qwen_tts.core.models.configuration_qwen3_tts.Qwen3TTSConfig",
+        "processor_class": "qwen_tts.core.models.processing_qwen3_tts.Qwen3TTSProcessor",
+        "wrapper_class": "qwen_tts.inference.qwen3_tts_model.Qwen3TTSModel",
+    }
+    for key, expected in expected_classes.items():
+        if api[key] != expected:
+            raise ProbeError(f"API {variant} {key} drifted")
+    if api["config_from_pretrained"] != "CALLED_LOCAL_ONLY" or api["processor_from_pretrained"] != "CALLED_LOCAL_ONLY" or api["wrapper_from_pretrained"] != "NOT_CALLED" or api["checkpoint_load"] != "NOT_PERFORMED":
+        raise ProbeError(f"API {variant} checkpoint/API call contract drifted")
+    if not isinstance(api["wrapper_signature"], str) or not api["wrapper_signature"] or not isinstance(api["generate_voice_clone_signature"], str) or not api["generate_voice_clone_signature"]:
+        raise ProbeError(f"API {variant} signature evidence is missing")
+    imports = api["imports"]
+    if not isinstance(imports, list) or imports != ["qwen_tts.Qwen3TTSModel", "qwen_tts.core.models.Qwen3TTSConfig", "qwen_tts.core.models.Qwen3TTSProcessor"]:
+        raise ProbeError(f"API {variant} import contract drifted")
+    versions = api["package_versions"]
+    if versions != EXPECTED_PACKAGE_VERSIONS:
+        raise ProbeError(f"API {variant} package version evidence drifted")
+    source_facts = api["source_facts"]
+    if not isinstance(source_facts, dict) or set(source_facts) != set(SOURCE_FILE_CLASS_PATHS):
+        raise ProbeError(f"API {variant} source fact set drifted")
+    for label, relative in SOURCE_FILE_CLASS_PATHS.items():
+        fact = source_facts[label]
+        require_exact_keys(fact, API_SOURCE_FACT_KEYS, f"API {variant} source {label}")
+        if fact["path"] != relative or fact["bytes"] != source_files[relative]["bytes"] or fact["sha256"] != source_files[relative]["sha256"]:
+            raise ProbeError(f"API {variant} source identity drifted: {label}")
+    validate_sentinel_records(api["optional_sentinels"], f"API {variant}")
+
+
+def validate_approval(approval: dict[str, Any]) -> None:
+    require_exact_keys(approval, APPROVAL_KEYS, "approval")
+    if approval != pending_approval():
+        raise ProbeError("owner approval state is not pending")
+
+
+def validate_evidence(path: Path, expected_head: str, expected_variant: str) -> dict[str, Any]:
+    require_regular(path, "model-free API smoke evidence")
+    if not HEX40.fullmatch(expected_head):
+        raise ProbeError("expected HEAD must be exactly 40 lowercase hex")
+    if expected_variant not in {*VARIANTS, "all"}:
+        raise ProbeError("expected variant scope is invalid")
+    evidence = strict_json(path.read_text(encoding="utf-8"))
+    require_exact_keys(evidence, {"schema", "status", "publication", "expected_head", "source", "variants", "project", "api", "optional_sentinels", "checkpoint_load", "approval", "environment"}, "evidence")
+    if evidence["schema"] != SCHEMA or evidence["status"] != "PASS_MODEL_FREE" or evidence["publication"] != "NO_UPLOAD" or evidence["expected_head"] != expected_head or evidence["checkpoint_load"] != "NOT_PERFORMED":
+        raise ProbeError("model-free evidence status/HEAD/checkpoint contract drifted")
+    validate_source_record(evidence["source"])
+    validate_project_record(evidence["project"])
+    selected = list(VARIANTS) if expected_variant == "all" else [expected_variant]
+    variants = evidence["variants"]
+    api = evidence["api"]
+    if not isinstance(variants, dict) or set(variants) != set(selected) or not isinstance(api, dict) or set(api) != set(selected):
+        raise ProbeError("evidence variant scope is missing or contains unexpected variants")
+    for variant in selected:
+        validate_variant_record(variant, variants[variant])
+        validate_api_record(variant, api[variant], evidence["source"]["files"])
+    validate_sentinel_records(evidence["optional_sentinels"], "aggregate")
+    validate_approval(evidence["approval"])
+    require_exact_keys(evidence["environment"], ENVIRONMENT_KEYS, "environment")
+    if any(not isinstance(evidence["environment"][key], str) or not evidence["environment"][key] for key in ENVIRONMENT_KEYS):
+        raise ProbeError("environment evidence is malformed")
+    return {"path": str(path.resolve()), "sha256": sha256_file(path), "expected_head": expected_head, "variant_scope": expected_variant}
+
+
 def require_regular(path: Path, label: str) -> None:
     if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
         raise ProbeError(f"{label} is missing, symlinked, or empty: {path}")
@@ -343,7 +548,8 @@ def verify_source(source: Path) -> dict[str, Any]:
     for relative in SOURCE_FILES:
         path = source / relative
         require_regular(path, f"official source {relative}")
-        files[relative] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
+        if relative != COMPATIBILITY_PATCH_TARGET:
+            files[relative] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
     try:
         patch = patch_source_checkout(source)
     except CompatibilityPatchError as error:
@@ -434,6 +640,11 @@ def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
                 "wrapper_from_pretrained": "NOT_CALLED",
                 "wrapper_signature": str(inspect.signature(Qwen3TTSModel.from_pretrained)),
                 "generate_voice_clone_signature": str(inspect.signature(Qwen3TTSModel.generate_voice_clone)),
+                "source_facts": {
+                    "config": source_fact(Qwen3TTSConfig, source),
+                    "processor": source_fact(Qwen3TTSProcessor, source),
+                    "wrapper": source_fact(Qwen3TTSModel, source),
+                },
                 "checkpoint_load": "NOT_PERFORMED",
                 "optional_sentinels": sentinel_records,
             }
@@ -526,6 +737,11 @@ def run(args: argparse.Namespace) -> int:
                 "allowed_metadata": list(ALLOWED_OPTIONAL_METADATA),
                 "sentinel_file": FORBIDDEN_OPTIONAL_MODULES[module_name],
                 "metadata_reads": sum(record[module_name]["metadata_reads"] for record in sentinel_records),
+                "metadata_keys": [
+                    key
+                    for record in sentinel_records
+                    for key in record[module_name]["metadata_keys"]
+                ],
                 "accesses": sum(record[module_name]["accesses"] for record in sentinel_records),
             }
             for module_name in FORBIDDEN_OPTIONAL_MODULES
@@ -622,6 +838,128 @@ def self_test() -> int:
             else:
                 raise AssertionError("overwritten optional sentinels were accepted")
             assert all(name not in sys.modules for name in FORBIDDEN_OPTIONAL_MODULES)
+            expected_head = "a" * 40
+            generic_hash = "b" * 64
+            source_files = {
+                relative: {"bytes": 1, "sha256": generic_hash}
+                for relative in SOURCE_FILES
+            }
+            source_files[COMPATIBILITY_PATCH_TARGET] = {
+                "original_bytes": 40519,
+                "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628",
+                "bytes": COMPATIBILITY_PATCHED_BYTES,
+                "sha256": COMPATIBILITY_PATCHED_SHA256,
+            }
+            source_record = {
+                "repository": SOURCE_REPOSITORY,
+                "url": SOURCE_URL,
+                "revision": SOURCE_REVISION,
+                "package_version": SOURCE_PACKAGE_VERSION,
+                "files": source_files,
+                "compatibility_patch": {
+                    "status": "COMPATIBILITY_PATCH_APPLIED",
+                    "target": COMPATIBILITY_PATCH_TARGET,
+                    "operation": "replace_exactly_one_decorator",
+                    "original_bytes": 40519,
+                    "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628",
+                    "patched_bytes": COMPATIBILITY_PATCHED_BYTES,
+                    "patched_sha256": COMPATIBILITY_PATCHED_SHA256,
+                    "replacement_count": 1,
+                    "transformers_api": "check_model_inputs(func)",
+                },
+            }
+            source_facts = {
+                label: {"path": relative, "bytes": source_files[relative]["bytes"], "sha256": source_files[relative]["sha256"]}
+                for label, relative in SOURCE_FILE_CLASS_PATHS.items()
+            }
+            package_versions = dict(EXPECTED_PACKAGE_VERSIONS)
+            sentinel_record = {
+                module: {
+                    "installed": True,
+                    "allowed_metadata": list(ALLOWED_OPTIONAL_METADATA),
+                    "sentinel_file": sentinel,
+                    "metadata_reads": 0,
+                    "metadata_keys": [],
+                    "accesses": 0,
+                }
+                for module, sentinel in FORBIDDEN_OPTIONAL_MODULES.items()
+            }
+            api_record = {
+                "imports": ["qwen_tts.Qwen3TTSModel", "qwen_tts.core.models.Qwen3TTSConfig", "qwen_tts.core.models.Qwen3TTSProcessor"],
+                "package_versions": package_versions,
+                "config_class": "qwen_tts.core.models.configuration_qwen3_tts.Qwen3TTSConfig",
+                "processor_class": "qwen_tts.core.models.processing_qwen3_tts.Qwen3TTSProcessor",
+                "wrapper_class": "qwen_tts.inference.qwen3_tts_model.Qwen3TTSModel",
+                "config_from_pretrained": "CALLED_LOCAL_ONLY",
+                "processor_from_pretrained": "CALLED_LOCAL_ONLY",
+                "wrapper_from_pretrained": "NOT_CALLED",
+                "wrapper_signature": "(model_path)",
+                "generate_voice_clone_signature": "(text)",
+                "source_facts": source_facts,
+                "checkpoint_load": "NOT_PERFORMED",
+                "optional_sentinels": sentinel_record,
+            }
+            metadata_records = {}
+            for variant, identity in VARIANTS.items():
+                expected_files = {"config.json": (identity["config_bytes"], identity["config_sha256"]), **COMMON_ASSETS}
+                metadata_records[variant] = {
+                    "repository": identity["repository"],
+                    "revision": identity["revision"],
+                    "files": {name: {"bytes": size, "sha256": digest} for name, (size, digest) in expected_files.items()},
+                    "model_type": "qwen3_tts",
+                    "tts_model_type": identity["tts_model_type"],
+                    "checkpoint_files": "NONE_PRESENT",
+                }
+            valid_evidence = {
+                "schema": SCHEMA,
+                "status": "PASS_MODEL_FREE",
+                "publication": "NO_UPLOAD",
+                "expected_head": expected_head,
+                "source": source_record,
+                "variants": metadata_records,
+                "project": {
+                    "project_sha256": PROJECT_SHA256,
+                    "lock_sha256": LOCK_SHA256,
+                    "packages": verify_project(Path(__file__).resolve().parent)["packages"],
+                },
+                "api": {variant: json.loads(json.dumps(api_record)) for variant in VARIANTS},
+                "optional_sentinels": sentinel_record,
+                "checkpoint_load": "NOT_PERFORMED",
+                "approval": pending_approval(),
+                "environment": {"python": "3.12.0", "platform": "Linux", "machine": "x86_64"},
+            }
+            evidence_path = Path(directory) / "valid-evidence.json"
+            evidence_path.write_text(json.dumps(valid_evidence, sort_keys=True) + "\n", encoding="utf-8")
+            assert validate_evidence(evidence_path, expected_head, "all")["variant_scope"] == "all"
+            tamper_cases = {
+                "stale-head": lambda value: value.update(expected_head="c" * 40),
+                "missing-variant": lambda value: value["variants"].pop("1.7b-base"),
+                "status": lambda value: value.update(status="BLOCKED_INCOMPATIBLE_API"),
+                "publication": lambda value: value.update(publication="UPLOAD"),
+                "checkpoint": lambda value: value.update(checkpoint_load="PERFORMED"),
+                "api": lambda value: value["api"]["0.6b-base"].update(wrapper_from_pretrained="CALLED"),
+                "package-version": lambda value: value["api"]["0.6b-base"]["package_versions"].update(torch="2.7.2"),
+                "source": lambda value: value["source"]["files"].pop(SOURCE_FILES[0]),
+                "lock": lambda value: value["project"].update(lock_sha256="0" * 64),
+                "unknown": lambda value: value.update(unexpected=True),
+            }
+            for name, mutate in tamper_cases.items():
+                tampered = json.loads(json.dumps(valid_evidence))
+                mutate(tampered)
+                evidence_path.write_text(json.dumps(tampered, sort_keys=True) + "\n", encoding="utf-8")
+                try:
+                    validate_evidence(evidence_path, expected_head, "all")
+                except ProbeError:
+                    pass
+                else:
+                    raise AssertionError(f"tampered evidence was accepted: {name}")
+            evidence_path.write_text('{"schema":1,"schema":2}\n', encoding="utf-8")
+            try:
+                validate_evidence(evidence_path, expected_head, "all")
+            except (ProbeError, ValueError):
+                pass
+            else:
+                raise AssertionError("duplicate evidence JSON key was accepted")
             blocked_path = Path(directory) / "blocked.json"
             write_output(blocked_path, {
                 "schema": SCHEMA,
@@ -660,6 +998,8 @@ def self_test() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--validate-evidence", action="store_true")
+    parser.add_argument("--evidence", type=Path)
     parser.add_argument("--vokra-root", type=Path)
     parser.add_argument("--project", type=Path)
     parser.add_argument("--source-dir", type=Path)
@@ -668,8 +1008,20 @@ def main() -> int:
     parser.add_argument("--variant", choices=[*VARIANTS, "all"])
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.validate_evidence:
+        if any(value is not None for value in (args.vokra_root, args.project, args.source_dir, args.snapshot_root, args.output)) or args.self_test:
+            parser.error("--validate-evidence accepts only --evidence, --expected-head, and --variant")
+        if args.evidence is None or args.expected_head is None or args.variant is None:
+            parser.error("--validate-evidence requires --evidence, --expected-head, and --variant")
+        try:
+            result = validate_evidence(args.evidence, args.expected_head, args.variant)
+        except (ProbeError, OSError, ValueError, UnicodeError) as error:
+            print(f"qwen3_tts evidence validation: BLOCKED: {error}", file=sys.stderr)
+            return 2
+        print(f"QWEN3_TTS_MODEL_FREE_API_EVIDENCE VALIDATED sha256={result['sha256']} variant_scope={result['variant_scope']}")
+        return 0
     if args.self_test:
-        if any(value is not None for value in (args.vokra_root, args.project, args.source_dir, args.snapshot_root, args.expected_head, args.variant, args.output)):
+        if any(value is not None for value in (args.vokra_root, args.project, args.source_dir, args.snapshot_root, args.expected_head, args.variant, args.output, args.evidence)):
             parser.error("--self-test accepts no other arguments")
         return self_test()
     required = (args.vokra_root, args.project, args.source_dir, args.snapshot_root, args.expected_head, args.variant, args.output)

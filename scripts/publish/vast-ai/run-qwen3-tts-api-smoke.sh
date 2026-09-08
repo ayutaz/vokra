@@ -116,7 +116,9 @@ never uploads, publishes, or pushes artifacts.
 The --model-free phase is independent of owner approval: it stages only exact
 source and metadata files, imports the official classes, constructs config and
 processor objects, and never calls the wrapper checkpoint loader. Its evidence
-keeps source/model/operator approvals pending and is not a parity result.
+is validated immediately by the offline evidence contract, records its exact
+variant scope and SHA-256 hand-off identity, keeps source/model/operator
+approvals pending, and is not a parity result.
 EOF
 }
 
@@ -212,11 +214,11 @@ download_source() {
 }
 
 run_self_test() {
-  local path_probe worker_probe approval worker_log rc gate_line sync_line download_line failed=0 metadata_block
+  local path_probe worker_probe approval worker_log rc gate_line sync_line download_line validate_line evidence_line failed=0 metadata_block
   local script_path="${BASH_SOURCE[0]}"
   for required in "$SOURCE_REPOSITORY" "$SOURCE_URL" "$SOURCE_REVISION" "$MODEL_REPOSITORY" "$MODEL_REVISION" "$DECODER_REPOSITORY" "$DECODER_REVISION" "$DECODER_CHECKPOINT_SHA256" "$TRANSFORMERS_VERSION" "$LOCK_SHA256" \
     'VOKRA_PUBLISH_ON_VAST=1' 'platform.system()' 'platform.machine()' 'local_files_only=True' 'dtype=float32' 'device_map=cpu' 'Qwen3TTSModel.from_pretrained' \
-    'generate_voice_clone' 'max_new_tokens' 'min_new_tokens' 'NO_UPLOAD' 'strict JSON' 'uv sync' 'download_snapshot' 'download_source' 'require_absent_work_dir' '--project' '--manifest' '--license-gate' '--vokra-root' '--approval-evidence' 'clean' 'x86_64'; do
+    'generate_voice_clone' 'max_new_tokens' 'min_new_tokens' 'NO_UPLOAD' 'strict JSON' 'uv sync' 'download_snapshot' 'download_source' 'require_absent_work_dir' '--project' '--manifest' '--license-gate' '--vokra-root' '--approval-evidence' '--validate-evidence' 'variant_scope=' 'evidence_sha256=' 'clean' 'x86_64'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract token: $required"; failed=1; }
   done
   grep -Fq -- 'MODEL_FREE_SMOKE=' "$script_path" || { log 'self-test missing model-free worker'; failed=1; }
@@ -235,6 +237,10 @@ run_self_test() {
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|.*--push)([[:space:]]|$)' "$script_path" | grep -v 'never uploads' >/dev/null; then
     log 'self-test found a publication command'; failed=1
   fi
+  # shellcheck disable=SC2016
+  validate_line="$(grep -nF -- '--validate-evidence --evidence "$evidence"' "$script_path" | grep -v 'validate_line=' | cut -d: -f1)"
+  evidence_line="$(grep -nE '^  evidence_sha=' "$script_path" | cut -d: -f1)"
+  [[ "$validate_line" =~ ^[0-9]+$ && "$evidence_line" =~ ^[0-9]+$ && "$validate_line" -lt "$evidence_line" ]] || { log 'self-test evidence validator does not precede hand-off hash'; failed=1; }
   UV_NO_CACHE=1 UV_CACHE_DIR="${QWEN3_TTS_UV_CACHE_DIR:-/tmp/vokra-qwen3-tts-api-smoke-uv-cache}" \
     uv run --no-cache --no-project --offline --python 3.12 python "$API_SMOKE" --self-test || failed=1
   UV_NO_CACHE=1 UV_CACHE_DIR="${QWEN3_TTS_UV_CACHE_DIR:-/tmp/vokra-qwen3-tts-api-smoke-uv-cache}" \
@@ -348,6 +354,13 @@ run_model_free() {
     --snapshot-root "$snapshot_root" --expected-head "$expected_head" --variant "$selected" --output "$evidence"
   smoke_rc=$?
   set -e
+  if [[ "$smoke_rc" == 0 ]]; then
+    step 'Validate model-free API smoke evidence before hand-off'
+    UV_NO_CACHE=1 UV_CACHE_DIR="${QWEN3_TTS_UV_CACHE_DIR:-/tmp/vokra-qwen3-tts-api-smoke-uv-cache}" \
+      uv run --no-cache --no-project --offline --python 3.12 python "$MODEL_FREE_SMOKE" \
+      --validate-evidence --evidence "$evidence" --expected-head "$expected_head" --variant "$selected" \
+      || { die "model-free API evidence validation failed: $evidence"; return 2; }
+  fi
   evidence_sha='UNAVAILABLE'
   if [[ -f "$evidence" && ! -L "$evidence" ]]; then evidence_sha="$(sha256sum "$evidence" | awk '{print $1}')"; fi
   cat > "$work_dir/evidence/summary.txt" <<EOF
@@ -355,6 +368,7 @@ schema=vokra-qwen3-tts-model-free-api-summary-v1
 status=$([[ "$smoke_rc" == 0 ]] && echo PASS_MODEL_FREE || echo BLOCKED_OR_FAILED)
 exit_status=$smoke_rc
 expected_head=$expected_head
+variant_scope=$selected
 evidence_sha256=$evidence_sha
 checkpoint_load=NOT_PERFORMED
 publication=NO_UPLOAD

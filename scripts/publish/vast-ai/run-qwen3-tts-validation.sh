@@ -13,6 +13,7 @@ PARITY_PROJECT="$VOKRA_ROOT/tools/parity/qwen3_tts"
 REFERENCE_DUMPER="$PARITY_PROJECT/dump_reference.py"
 LICENSE_GATE="$PARITY_PROJECT/license_gate.py"
 LICENSE_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
+API_SMOKE_VALIDATOR="$PARITY_PROJECT/model_free_api_smoke.py"
 REFERENCE_AUDIO="$VOKRA_ROOT/tests/parity/utmos/ref-clip.wav"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
@@ -71,14 +72,17 @@ require_absent_work_dir() {
 
 usage() {
   cat <<'EOF' >&2
-usage: run-qwen3-tts-validation.sh --approval-evidence <json> --expected-head <40-lowercase-hex> [--variant <slug|all>] [--work-dir <absent-dir>]
+usage: run-qwen3-tts-validation.sh --approval-evidence <json> --expected-head <40-lowercase-hex> --api-smoke-evidence <json> --api-smoke-sha256 <64-lowercase-hex> [--variant <slug|all>] [--work-dir <absent-dir>]
        run-qwen3-tts-validation.sh --self-test
 
 Converts the exact immutable Qwen3-TTS main release into corrected GGUFs and
 the separately authenticated official 12-Hz decoder on VAST, then runs the
 independent official CPU reference and native real-weight parity test. The
 public pre-contract GGUFs are never downloaded or treated as canonical.
-There is no upload, publish, push, or download path for generated artifacts.
+Before approval, host, environment sync, snapshot, or model access, it
+validates the external model-free API-smoke evidence and its SHA-256 hand-off
+for the selected variant scope. There is no upload, publish, push, or download
+path for generated artifacts.
 EOF
 }
 
@@ -223,6 +227,26 @@ require_transformers_api_smoke() {
   esac
 }
 
+require_api_smoke_evidence() {
+  local evidence="$1" expected_sha="$2" expected_head="$3" selection="$4" work_dir="$5" approval="$6" canonical protected other
+  [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || { die '--api-smoke-sha256 must be lowercase 64-hex'; return 2; }
+  [[ -f "$evidence" && ! -L "$evidence" && -s "$evidence" ]] || { die '--api-smoke-evidence must be a non-empty regular non-symlink file'; return 2; }
+  command -v sha256sum >/dev/null 2>&1 || { die 'sha256sum is required before API smoke hand-off'; return 2; }
+  command -v uv >/dev/null 2>&1 || { die 'uv is required before API smoke hand-off'; return 2; }
+  [[ "$(sha256_file "$evidence")" == "$expected_sha" ]] || { die 'API smoke evidence SHA-256 differs from --api-smoke-sha256'; return 2; }
+  canonical="$(canonicalize_uncreated "$evidence")" || { die 'cannot canonicalize API smoke evidence'; return 2; }
+  for protected in "$VOKRA_ROOT" "$PARITY_PROJECT" "$API_SMOKE_VALIDATOR" "$approval" "$work_dir"; do
+    [[ -n "$protected" && ( -e "$protected" || -L "$protected" ) ]] || continue
+    [[ ! -L "$protected" ]] || { die "API smoke protected path is symlinked: $protected"; return 2; }
+    other="$(canonicalize_uncreated "$protected")" || { die "cannot canonicalize API smoke protected path: $protected"; return 2; }
+    paths_overlap "$canonical" "$other" && { die "API smoke evidence overlaps protected path: $protected"; return 2; }
+  done
+  [[ "$selection" == all ]] || { die 'real-weight Qwen3-TTS validation requires all API-smoke variants'; return 2; }
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$API_SMOKE_VALIDATOR" \
+    --validate-evidence --evidence "$evidence" --expected-head "$expected_head" --variant "$selection" \
+    || { die 'API smoke evidence contract validation failed'; return 2; }
+}
+
 download_snapshot() {
   local repo="$1" revision="$2" output="$3"
   if [[ -e "$output" ]]; then
@@ -301,7 +325,7 @@ require_exact_marker() {
 }
 
 run_self_test() {
-  local script_path="${BASH_SOURCE[0]}" failed=0 required gate_line sync_line cpu_command cpu_log_token cpu_sentinel_token
+  local script_path="${BASH_SOURCE[0]}" failed=0 required api_smoke_line gate_line sync_line cpu_command cpu_log_token cpu_sentinel_token overlap_evidence
   for required in \
     '0.6b-base' '0.6b-customvoice' '1.7b-base' '1.7b-customvoice' \
     '5d83992436eae1d760afd27aff78a71d676296fc' \
@@ -323,7 +347,7 @@ run_self_test() {
     'TRANSFORMERS_VERSION="5.10.4"' 'previous_isolated_transformers_pin=transformers==4.57.3' \
     'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w' 'transformers_security_patched_minimum=5.10.0' \
     'transformers_compatibility_status=BLOCKED_UNVERIFIED_API_SMOKE' 'require_transformers_api_smoke' \
-    'AUTHENTICATED_API_SMOKE' 'UNKNOWN_STATUS' \
+    'AUTHENTICATED_API_SMOKE' 'UNKNOWN_STATUS' 'API_SMOKE_VALIDATOR=' 'require_api_smoke_evidence' '--api-smoke-evidence' '--api-smoke-sha256' \
     'license_gate_manifest.json' '--no-project --offline --python 3.12' 'test result: ok. 1 passed' \
     '--gguf-0.6b-base-sha256' '--gguf-0.6b-customvoice-sha256' '--gguf-1.7b-base-sha256' \
     '--gguf-1.7b-customvoice-sha256' '--decoder-gguf-sha256' '--reference-0.6b-base-sha256' \
@@ -347,6 +371,9 @@ run_self_test() {
   if "$script_path" --self-test --self-test >/dev/null 2>&1; then
     log 'self-test accepted duplicate --self-test'; failed=1
   fi
+  if "$script_path" --approval-evidence /tmp/qwen3-missing-approval --expected-head "$(printf '0%.0s' {1..40})" >/dev/null 2>&1; then
+    log 'self-test accepted a real-weight run without API smoke evidence'; failed=1
+  fi
   local download_block path_probe
   download_block="$(awk '/^download_snapshot\(\)/,/^\}/ {print}' "$script_path")"
   [[ "$download_block" != *"--with"* && "$download_block" != *"--no-project"* ]] || { log 'self-test download path uses an unreviewed uv environment'; failed=1; }
@@ -365,6 +392,10 @@ run_self_test() {
   rm -rf "$path_probe/real-parent" "$path_probe/link-parent"
   if require_absent_work_dir "$VOKRA_ROOT/qwen3-tts-self-test-work" "$path_probe/approval.json" >/dev/null 2>&1; then failed=1; fi
   if require_absent_work_dir "$path_probe/approval.json/child" "$path_probe/approval.json" >/dev/null 2>&1; then failed=1; fi
+  overlap_evidence="$VOKRA_ROOT/qwen3-tts-api-smoke-self-test-evidence.json"
+  printf '{}\n' > "$overlap_evidence"
+  if require_api_smoke_evidence "$overlap_evidence" "$(sha256_file "$overlap_evidence")" "$(printf '0%.0s' {1..40})" all '' "$path_probe/approval.json" >/dev/null 2>&1; then failed=1; fi
+  rm -f "$overlap_evidence"
   rm -rf "$path_probe"
   cpu_command="$(grep -F 'cargo test --manifest-path' "$script_path" | grep -F 'qwen3_tts_real_cpu_matches_official_reference' || true)"
   [[ "$cpu_command" == *'--ignored --exact --nocapture --test-threads=1'* ]] || { log 'self-test CPU command is not exact/ignored/nocapture'; failed=1; }
@@ -374,6 +405,11 @@ run_self_test() {
   grep -Fq "require_exact_test_result \"\$evidence/parity-cpu.log\" qwen3_tts_real_cpu_matches_official_reference" "$script_path" || { log 'self-test does not require exactly one CPU test pass'; failed=1; }
   grep -Fq '0 failed; 0 ignored; 0 measured' "$script_path" || { log 'self-test does not reject failed/ignored/filtered test results'; failed=1; }
   grep -Fq "$cpu_sentinel_token" "$script_path" || { log 'self-test does not require per-variant CPU sentinels'; failed=1; }
+  # shellcheck disable=SC2016
+  api_smoke_line="$(grep -nF 'require_api_smoke_evidence "$api_smoke_evidence" "$api_smoke_sha256" "$expected_head" "$selection" "$work_dir" "$approval"' "$script_path" | grep -v 'api_smoke_line=' | cut -d: -f1)"
+  # shellcheck disable=SC2016
+  gate_line="$(grep -nF 'preflight "$approval"' "$script_path" | tail -n1 | cut -d: -f1)"
+  [[ "$api_smoke_line" =~ ^[0-9]+$ && "$gate_line" =~ ^[0-9]+$ && "$api_smoke_line" -lt "$gate_line" ]] || { log 'self-test API smoke evidence gate ordering is invalid'; failed=1; }
   local result_probe duplicate_probe malformed_probe
   result_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-result-selftest.XXXXXX")"
   printf '%s\n' \
@@ -468,20 +504,22 @@ run_variant() {
 }
 
 main() {
-  local selection='all' work_dir='' approval='' expected_head='' self_test=0 self_test_seen=0 variant_seen=0
+  local selection='all' work_dir='' approval='' expected_head='' api_smoke_evidence='' api_smoke_sha256='' self_test=0 self_test_seen=0 variant_seen=0 api_smoke_evidence_seen=0 api_smoke_sha256_seen=0
   while (( $# > 0 )); do
     case "$1" in
       --variant) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$variant_seen" == 0 ]] || { usage; return 2; }; selection="$2"; variant_seen=1; shift 2 ;;
       --work-dir) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$work_dir" ]] || { usage; return 2; }; work_dir="$2"; shift 2 ;;
       --approval-evidence) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$approval" ]] || { usage; return 2; }; approval="$2"; shift 2 ;;
       --expected-head) [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ && -z "$expected_head" ]] || { usage; return 2; }; expected_head="$2"; shift 2 ;;
+      --api-smoke-evidence) [[ $# -ge 2 && -n "$2" && "$2" != -* && "$api_smoke_evidence_seen" == 0 ]] || { usage; return 2; }; api_smoke_evidence="$2"; api_smoke_evidence_seen=1; shift 2 ;;
+      --api-smoke-sha256) [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ && "$api_smoke_sha256_seen" == 0 ]] || { usage; return 2; }; api_smoke_sha256="$2"; api_smoke_sha256_seen=1; shift 2 ;;
       --self-test) (( self_test_seen == 0 )) || { usage; return 2; }; self_test=1; self_test_seen=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) usage; die "unknown argument: $1" ;;
     esac
   done
   if (( self_test == 1 )); then
-    [[ "$selection" == all && -z "$work_dir" && -z "$approval" && -z "$expected_head" ]] || die '--self-test accepts no other arguments'
+    [[ "$selection" == all && -z "$work_dir" && -z "$approval" && -z "$expected_head" && "$api_smoke_evidence_seen" == 0 && "$api_smoke_sha256_seen" == 0 ]] || die '--self-test accepts no other arguments'
     local saved_status="$TRANSFORMERS_COMPATIBILITY_STATUS"
     TRANSFORMERS_COMPATIBILITY_STATUS='BLOCKED_UNVERIFIED_API_SMOKE'; require_transformers_api_smoke && return 1 || :
     TRANSFORMERS_COMPATIBILITY_STATUS='AUTHENTICATED_API_SMOKE'; require_transformers_api_smoke || return 1
@@ -490,7 +528,9 @@ main() {
     run_self_test; return
   fi
   case "$selection" in all) ;; *) die 'this four-variant validation requires --variant all' ;; esac
-  [[ -n "$approval" && -n "$expected_head" ]] || { usage; die '--approval-evidence and --expected-head are required'; }
+  [[ -n "$approval" && -n "$expected_head" && "$api_smoke_evidence_seen" == 1 && "$api_smoke_sha256_seen" == 1 ]] || { usage; die '--approval-evidence, --expected-head, --api-smoke-evidence, and --api-smoke-sha256 are required'; }
+  require_api_smoke_evidence "$api_smoke_evidence" "$api_smoke_sha256" "$expected_head" "$selection" "$work_dir" "$approval"
+  TRANSFORMERS_COMPATIBILITY_STATUS='AUTHENTICATED_API_SMOKE'
   require_transformers_api_smoke
   preflight "$approval"; require_tooling; require_vast_host
   local actual_head
@@ -548,7 +588,7 @@ main() {
     require_exact_marker "$evidence/parity-cpu.log" "QWEN3_TTS_PARITY variant=$variant backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"
   done
   {
-    echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'previous_isolated_transformers_pin=transformers==4.57.3'; echo 'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w'; echo 'transformers_security_patched_minimum=5.10.0'; echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"; echo "transformers_compatibility_status=$TRANSFORMERS_COMPATIBILITY_STATUS"; echo 'nested_decoder_sha256=validated_in_reference'; echo "decoder_gguf_sha256=$(sha256_file "$decoder_gguf")"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"; echo 'public_precontract_artifacts=NOT_USED'; echo 'upload=NOT_PERFORMED'
+    echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'previous_isolated_transformers_pin=transformers==4.57.3'; echo 'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w'; echo 'transformers_security_patched_minimum=5.10.0'; echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"; echo "transformers_compatibility_status=$TRANSFORMERS_COMPATIBILITY_STATUS"; echo "api_smoke_evidence_sha256=$api_smoke_sha256"; echo "api_smoke_variant_scope=$selection"; echo 'nested_decoder_sha256=validated_in_reference'; echo "decoder_gguf_sha256=$(sha256_file "$decoder_gguf")"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"; echo 'public_precontract_artifacts=NOT_USED'; echo 'upload=NOT_PERFORMED'
   } > "$evidence/summary.txt"
   (cd "$work_dir" && find evidence -type f -print0 | sort -z | xargs -0 sha256sum > evidence/SHA256SUMS)
   log 'MEASURED_NOT_GATED: pull evidence only, then destroy the VAST instance'
