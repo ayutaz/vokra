@@ -553,6 +553,56 @@ owner dispositions, while Kyutai still requires actual Mimi/tokenizer/streaming
 runtime completion, a reviewed numerical bound, real VAST CPU parity and the
 final Apple run.
 
+## 2026-09-08 owner-review binding and exact-head verification
+
+Three additional owner-independent changes were reviewed and committed as
+`ef24f6f8` (MOSS Nano model-free route evidence), `2f85fd9b` (FireRed
+source-ready gate status) and `504858bc` (CLAP owner-review evidence
+candidate).  MOSS Nano now binds the exact AutoConfig/meta-device AutoModel
+route, custom-source identities, API surface and tap shapes to the earlier
+inspection manifest and final dependency audit.  It remains fail-closed with
+37 package-review rows, no owner approval digest, no real-weight execution and
+`NO_UPLOAD`.  FireRed now distinguishes its authenticated CMVN, output
+dictionary and source-implemented native seams from the still-blocked empty
+config, dependency/provenance review and real parity.  CLAP now binds the
+previous model-free audit, dependency inventory and summary to the existing
+commercial model-license row in a non-approving candidate whose payload
+SHA-256 is
+`91a8a82f8c420ac5f456f12f021bd385c43b50f947e9e05e547272ae3cec85aa`.
+Its dependency and runtime approvals remain pending and publication remains
+`NO_UPLOAD`.
+
+The unpushed exact head
+`504858bcfe4f7809090ef6b25f5105e40b42c509` was transferred in a git bundle
+with SHA-256
+`5a03c13a1ba63bc180c6eaf38b9a6b32ab57786d7c77f006cffd31892eed27f6`.
+The first disposable worker, `50215996`, never advanced past VAST's
+`Preparing GPUs` state and was destroyed rather than left billing.  Replacement
+worker `50216331` checked out the bundle at a clean exact head and passed
+formatting, metadata, zero-dependency, forbidden-symbol, fixture-EOL,
+pipefail, binder/converter handshake, catalog-reality and all focused
+MOSS/FireRed/CLAP self-tests.  The fast-gate log SHA-256 is
+`33de969c149bc09ba6af8e695827a278c2f09857fb4a19a08754c5ab4db66b44`.
+
+The exact-head workspace run completed 322 suites with 8,008 passed, zero
+failed and 100 explicitly ignored tests.  Its log SHA-256 is
+`b806817aa050c1523015361ff604a9275738de892b1f9600c0ad1a3c8d78a10f`.
+All-target Clippy with warnings denied also passed; its log SHA-256 is
+`5d9c9a2be47364e07779796032ae9353407244fa901de68211ca1910aaec102a`.
+Finally, cargo-deny 0.20.2 reported advisories, bans and licenses OK (with only
+the existing unmatched `libfuzzer-sys` exception warning), cargo-audit 0.22.2
+completed a 1,242-advisory database scan with exit zero, and the repeated
+zero-dependency gate passed.  The combined dependency-gate log SHA-256 is
+`87ae6974f7075315c4f70ea1d7e38890b4a265a2165da30acee6af6fdfdc0ec3`.
+
+After the small text logs were recovered and their hashes rechecked, both
+disposable workers and their storage returned `instances: null`.  The VAST
+inventory then contained only protected unrelated instance
+`50122020`/`ralomi-m5-robustness`; this campaign did not modify it.  No model
+weights were downloaded or executed in this verification, and the unresolved
+public denominator therefore remains 63 rows (62 model rows plus the one
+non-artifact row).
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously

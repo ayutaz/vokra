@@ -9,6 +9,12 @@ preflight and full-run log SHA-256 values are
 `af90a3890c757533636ed594aaed18f5300dac8575e3756ebb8c4eb448c2144e` and
 `a746dd9aca6fc3615735356c464e4de6e6f034b64d4ddebf7136d1d73d7130b1`.
 
+The subsequent MOSS Nano, FireRed and CLAP binding batch was verified at clean
+exact head `504858bcfe4f7809090ef6b25f5105e40b42c509`. The workspace result was
+8,008 passed, zero failed and 100 explicitly ignored tests across 322 suites;
+Clippy, deny, audit and the focused fail-closed gates were green. This advances
+review evidence only and does not record an owner approval.
+
 ## Purpose and decision boundary
 
 This packet records the owner/legal decisions that are still required before
@@ -48,12 +54,13 @@ immutable. None of these rows is owner-approved by this document.
 |---|---|
 | Parler-TTS English / Multilingual | Approval-scope hash and remaining package review. Fixed source/model/DAC/GGUF identities alone are insufficient. |
 | BigVGAN | One combined approval-scope hash over the fixed source/model/checkpoint/config, Linux and Darwin package/native-payload closures and license payload evidence. |
-| MOSS Audio Tokenizer Nano | Final Python dependency closure and a scope hash. The fixed source/API/tap contract and Apache source/weight review do not approve real execution. |
+| MOSS Audio Tokenizer Nano | The final CPU-only 37-row locked closure and exact AutoConfig/meta-device source/API/tap route are now hash-bound. All 37 package rows still require owner review, the approval digest is absent, and no real-weight runtime or parity was executed. |
 | MOSS-TTS Local | Dependency-license review, complete composite PCM execution boundary and a scope hash over the 438-tensor identity and companion. |
 | SpeechBrain Lang-ID | Source, weight, Python closure and fixture-license review plus a scope hash. |
 | Conv-TasNet Libri1Mix | A legal disposition for the CC-BY-SA-3.0/4.0 and WHAM CC-BY-NC-4.0 conflict; publication remains `NO_UPLOAD`. |
 | HT-Demucs Multi | Weight redistribution terms, the MUSDB18/extra-training-data disposition and owner disposition for the exact Linux dependency evidence. The repaired Python 3.12 reference closure is reproducible, but its NumPy wheel bundles GPL-with-GCC-exception `libgfortran` and LGPL `libquadmath`, which the current fail-closed policy does not approve. |
-| CLAP HTSAT fused | Review 20 dependency-license findings from the exact VAST inventory, including missing SPDX expression metadata and missing bundled license files for Tokenizers and tqdm. Native payload identities are captured, but no checkpoint was acquired or executed. |
+| CLAP HTSAT fused | The exact model-free audit, dependency inventory and summary are bound to candidate payload `91a8a82f8c420ac5f456f12f021bd385c43b50f947e9e05e547272ae3cec85aa`. The existing model-license row is commercial, but dependency review and explicit runtime owner approval remain pending; no checkpoint was acquired or executed. |
+| FireRedASR-AED-L | CMVN, output-dictionary and native source seams are authenticated/source-implemented, but the empty config, dependency/training provenance review, complete transcription route and real CPU parity remain blocked. No approval scope is inferred from the source-ready labels. |
 | AudioGen Medium | Exact external T5 revision/weight identity, compression checkpoint build provenance, dependency closure, real execution/parity and an approval-scope hash. The checked-in model-free evidence is deliberately `signable=false`. |
 | XY-Tokenizer | Complete dependency/license evidence, exact reviewed tensor manifest and scope hash. Current SciPy/SymPy, setuptools, soxr, tokenizers and tqdm evidence is incomplete. |
 | CosyVoice2 HiFT | Packet completeness is deliberately unassessed here because the owner manifest is dirty and outside this campaign's staging scope. |
