@@ -26,7 +26,9 @@ DECODER_REPOSITORY="Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION="a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256="836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
 TRANSFORMERS_VERSION="5.10.4"
-LOCK_SHA256="865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58"
+LOCK_SHA256="549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
+SECURITY_ADVISORY_STATUS="BLOCKED_SECURITY_ADVISORY"
+SECURITY_ADVISORY_REASON="accelerate==1.12.0 is affected by GHSA-4j2p-28q2-5m79; no verified safe real-weight load alternative is available"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=100000000
 
@@ -178,6 +180,7 @@ license_gate() {
 
 preflight() {
   local approval="$1"
+  die "$SECURITY_ADVISORY_STATUS: $SECURITY_ADVISORY_REASON"
   [[ -s "$approval" && ! -L "$approval" ]] || { die 'approval evidence must be a non-empty regular non-symlink file'; return 2; }
   license_gate "$approval"
 }

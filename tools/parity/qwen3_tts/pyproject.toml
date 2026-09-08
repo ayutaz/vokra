@@ -7,7 +7,6 @@ dependencies = [
     # The official source tree is staged at the fixed Git revision and loaded
     # through PYTHONPATH; installing qwen-tts would also install its demo and
     # ONNX extras (gradio, onnxruntime, protobuf, and sox).
-    "accelerate==1.12.0",
     "einops==0.8.2",
     "librosa==1.0.0",
     "numpy==2.5.2",

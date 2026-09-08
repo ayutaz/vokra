@@ -49,8 +49,13 @@ MODEL_CONFIG_SHA256 = "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef
 DECODER_REPOSITORY = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
-LOCK_SHA256 = "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58"
+LOCK_SHA256 = "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
 TRANSFORMERS_VERSION = "5.10.4"
+SECURITY_ADVISORY_STATUS = "BLOCKED_SECURITY_ADVISORY"
+SECURITY_ADVISORY_REASON = (
+    "accelerate==1.12.0 is affected by GHSA-4j2p-28q2-5m79 (no patched release "
+    "is available); the real-weight device_map=cpu path has no verified safe alternative"
+)
 TEXT = "The Vokra API smoke packet is short and deterministic."
 LANGUAGE = "English"
 MAX_NEW_TOKENS = 2
@@ -102,6 +107,11 @@ def require_execution_host_values(publish: str, system: str, machine: str) -> No
     """Self-test seam for the host gate; production never supplies overrides."""
     if publish != "1" or system != "Linux" or machine != "x86_64":
         raise SmokeError("API smoke requires VAST Linux x86_64")
+
+
+def require_security_clearance() -> None:
+    """Keep the real-weight route closed until the advisory is resolved."""
+    raise SmokeError(f"{SECURITY_ADVISORY_STATUS}: {SECURITY_ADVISORY_REASON}")
 
 
 def reject_symlink_ancestry(path: Path) -> None:
@@ -412,7 +422,7 @@ def require_decoder(model_dir: Path, decoder_dir: Path) -> dict[str, Any]:
 
 
 def expected_package_versions(lock: dict[str, Any]) -> dict[str, str]:
-    names = ("accelerate", "einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
+    names = ("einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
     result: dict[str, str] = {}
     for name in names:
         versions = lock["locked_versions"].get(name)
@@ -560,7 +570,7 @@ def validate_evidence_data(data: Any) -> None:
             raise SmokeError("passing evidence lacks authenticated identities")
         if not isinstance(data["approval"]["path"], str) or not isinstance(data["vokra_checkout"]["root"], str) or not isinstance(data["vokra_checkout"]["head"], str):
             raise SmokeError("passing evidence lacks approval/Vokra checkout paths")
-        required_packages = {"accelerate", "einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers", "qwen_tts_source"}
+        required_packages = {"einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers", "qwen_tts_source"}
         if set(data["package_versions"]) != required_packages or any(not isinstance(value, str) or not value for value in data["package_versions"].values()):
             raise SmokeError("passing evidence package versions are incomplete")
         if data["api"]["method"] != "Qwen3TTSModel.from_pretrained" or data["api"]["local_files_only"] is not True or data["api"]["dtype"] != "float32" or data["api"]["device_map"] != "cpu" or data["api"]["wrapper"] != "generate_voice_clone":
@@ -577,6 +587,7 @@ def write_evidence(path: Path, data: dict[str, Any]) -> None:
 
 
 def run_smoke(args: argparse.Namespace) -> int:
+    require_security_clearance()
     require_execution_host()
     require_input_boundaries(args)
     vokra_checkout = require_vokra_checkout(args.vokra_root)
@@ -627,7 +638,7 @@ def run_smoke(args: argparse.Namespace) -> int:
 
         actual_versions = {
             name: importlib.metadata.version(name)
-            for name in ("accelerate", "einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
+            for name in ("einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
         }
         if actual_versions != package_versions:
             raise SmokeError(f"installed package versions differ from uv.lock: {actual_versions!r} != {package_versions!r}")
@@ -719,6 +730,12 @@ def self_test() -> None:
     global LOCK_SHA256
     if "torch" in sys.modules or "transformers" in sys.modules:
         raise SmokeError("self-test imported a model dependency")
+    try:
+        require_security_clearance()
+    except SmokeError as error:
+        assert str(error).startswith(f"{SECURITY_ADVISORY_STATUS}: ")
+    else:
+        raise SmokeError("real-weight security advisory was not fail-closed")
     for values in (("0", "Linux", "x86_64"), ("1", "Darwin", "arm64"), ("1", "Linux", "aarch64")):
         try:
             require_execution_host_values(*values)
@@ -746,7 +763,7 @@ def self_test() -> None:
     ]
     validate_cpu_torch_rows(safe_rows)
     assert expected_package_versions({"locked_versions": {
-        "accelerate": {"1.12.0"}, "einops": {"0.8.2"}, "librosa": {"1.0.0"},
+        "einops": {"0.8.2"}, "librosa": {"1.0.0"},
         "numpy": {"2.5.2"}, "soundfile": {"0.14.0"}, "torch": {"2.7.1", "2.7.1+cpu"},
         "torchaudio": {"2.7.1", "2.7.1+cpu"}, "transformers": {"5.10.4"},
     }})["torchaudio"] == "2.7.1+cpu"

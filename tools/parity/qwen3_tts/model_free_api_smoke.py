@@ -85,15 +85,14 @@ COMMON_ASSETS = {
     "tokenizer_config.json": (7344, "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"),
     "generation_config.json": (245, "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"),
 }
-PROJECT_SHA256 = "022e792fb7862641b81a896ed9e482ddae75a34bff1a0270fb4005088ce57e1b"
-LOCK_SHA256 = "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58"
+PROJECT_SHA256 = "d59ac7d5e6b07be957907c785e58a62b2e88da1a2b26531742a5fc45f8d3d645"
+LOCK_SHA256 = "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
 REQUIRED_DEPENDENCIES = {
-    "accelerate==1.12.0", "einops==0.8.2", "librosa==1.0.0", "numpy==2.5.2",
+    "einops==0.8.2", "librosa==1.0.0", "numpy==2.5.2",
     "soundfile==0.14.0", "torch==2.7.1", "torchaudio==2.7.1",
     "transformers==5.10.4",
 }
 EXPECTED_PACKAGE_VERSIONS = {
-    "accelerate": "1.12.0",
     "einops": "0.8.2",
     "librosa": "1.0.0",
     "numpy": "2.5.2",
@@ -618,7 +617,7 @@ def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
                 raise ProbeError(f"qwen_tts imported from unexpected path: {package_root}")
             versions = {
                 name: importlib.metadata.version(name)
-                for name in ("accelerate", "einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
+                for name in ("einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
             }
             if versions["transformers"] != "5.10.4":
                 raise ProbeError(f"Transformers runtime drifted: {versions['transformers']}")

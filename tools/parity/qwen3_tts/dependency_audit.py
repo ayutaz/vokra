@@ -968,7 +968,8 @@ def self_test() -> int:
     else:
         raise AssertionError("setuptools dependency reintroduction was accepted")
     assert gate["status"] == "BLOCKED_UNRESOLVED_REVIEW"
-    assert "accelerate==1.12.0" in gate["unresolved_rows"]
+    assert "accelerate==1.12.0" not in gate["unresolved_rows"]
+    assert "psutil==7.2.2" not in gate["unresolved_rows"]
     assert identity("foo_bar", "1.0") == "foo-bar==1.0"
     assert marker_matches("sys_platform == 'linux' and platform_machine == 'x86_64'", {"sys_platform": "linux", "platform_machine": "x86_64", "platform_python_implementation": "CPython", "implementation_name": "cpython"})
     assert marker_matches("platform_python_implementation == 'CPython'", {"platform_python_implementation": "CPython", "sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython"})

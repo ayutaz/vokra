@@ -1,11 +1,11 @@
 {
   "gate_version": 2,
-  "pyproject_sha256": "022e792fb7862641b81a896ed9e482ddae75a34bff1a0270fb4005088ce57e1b",
-  "lock_sha256": "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58",
-  "package_rows_sha256": "7fd6513b0c8c110b46bd61bd01c93cfc33486cde603740b31c42e60c1114c8bb",
-  "review_rows_sha256": "3d6f3eab632282e9035c6970407fd06311872698f4cd377d0224abbec9d76f08",
+  "pyproject_sha256": "d59ac7d5e6b07be957907c785e58a62b2e88da1a2b26531742a5fc45f8d3d645",
+  "lock_sha256": "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8",
+  "package_rows_sha256": "97ae69be24437d9b64846bef5b12f1765112a661302eff711bb95d8da214ad27",
+  "review_rows_sha256": "f383e1afd179e6b2cb5b64ccc0e5fb3216e30e12a222804923df1d960e3ff3b1",
   "component_rows_sha256": "23ccc322392a0a0f05fb0e264462e3f3689c114012c5e20b912396a1ca99aa68",
-  "approval_scope_sha256": "46662c9a1a1135c37a4dc00583c1a637f72aa745ca10f2172a38f77df9d1b1da",
+  "approval_scope_sha256": "44daa1a9191e73a615e3ca32134a66a3619704b125587784afb4186a42b4f989",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -87,20 +87,6 @@
     ]
   },
   "review_rows": [
-    {
-      "name": "accelerate",
-      "version": "1.12.0",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "status": "PENDING_OWNER_APPROVAL",
-      "license": "Apache",
-      "native_bundled": "no native files observed in the installed distribution",
-      "payload_sha256": "28c1877f42fbab52085a1565422d4a6e6d523cb5b0f884f57f1752b31c6fbea1",
-      "approval_schema": "v1",
-      "approval_signer": null,
-      "approval_digest": null
-    },
     {
       "name": "annotated-doc",
       "version": "0.0.5",
@@ -578,20 +564,6 @@
       "approval_digest": null
     },
     {
-      "name": "psutil",
-      "version": "7.2.2",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "status": "PENDING_OWNER_APPROVAL",
-      "license": "BSD-3-Clause",
-      "native_bundled": "installed distribution contains 1 bundled native file(s); exact inventory/hash is in compact VAST evidence",
-      "payload_sha256": "0c1c14563148cf7b9698311a90824602710cb2e3e456843d8a1106cdf7a67974",
-      "approval_schema": "v1",
-      "approval_signer": null,
-      "approval_digest": null
-    },
-    {
       "name": "pycparser",
       "version": "3.0",
       "source": {
@@ -1060,8 +1032,9 @@
   "dependency_audit_evidence": {
     "schema": "vokra-qwen3-tts-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "sha256": "0b532e8da6798536b4d2dd43ce73b7aaf6cd5ed77645c139f0f9038d72933e92",
+    "sha256": "563d70ce7977f83ea56717e10ccb3d2a7f9d444ee2cbd4481ea302aad101a78b",
     "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
-    "status": "PENDING_OWNER_APPROVAL"
+    "status": "STALE_REQUIRES_VAST_AUDIT",
+    "stale_reason": "The reviewed closure changed after removing accelerate==1.12.0 and its psutil transitive dependency; rerun the authorized Linux x86_64 VAST audit before owner approval."
   }
 }

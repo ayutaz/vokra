@@ -41,8 +41,8 @@ REGISTRY_PACKAGE_KEYS = (
     frozenset({"name", "version", "source", "dependencies", "resolution-markers", "wheels"}),
 )
 REQUIRES_DIST_KEYS = (frozenset({"name", "specifier"}), frozenset({"name", "specifier", "extras"}), frozenset({"name", "specifier", "marker"}), frozenset({"name", "specifier", "extras", "marker"}), frozenset({"name", "specifier", "index"}), frozenset({"name", "git"}))
-LOCK_SHA256 = "865514909ea6b9253d8883fd1acabfcc1d51ad58361da6966965102bdf67bc58"
-PYPROJECT_SHA256 = "022e792fb7862641b81a896ed9e482ddae75a34bff1a0270fb4005088ce57e1b"
+LOCK_SHA256 = "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
+PYPROJECT_SHA256 = "d59ac7d5e6b07be957907c785e58a62b2e88da1a2b26531742a5fc45f8d3d645"
 # setuptools is forbidden in this reference closure: torch declares it as a
 # transitive runtime dependency, but the fixed route never imports it and the
 # package bundles the LGPLv3 autocommand payload.
@@ -449,8 +449,22 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
     if not isinstance(reference, dict) or not isinstance(reference.get("status"), str):
         fail("compact dependency audit reference is malformed")
     if reference.get("status") == "STALE_REQUIRES_VAST_AUDIT":
-        if set(reference) != {"schema", "path", "sha256", "full_audit_sha256", "status", "stale_reason"} or not isinstance(reference.get("stale_reason"), str) or not reference["stale_reason"].strip():
+        if (
+            set(reference) != {"schema", "path", "sha256", "full_audit_sha256", "status", "stale_reason"}
+            or reference.get("schema") != COMPACT_SCHEMA
+            or reference.get("path") != "dependency_audit_evidence.json"
+            or not isinstance(reference.get("sha256"), str)
+            or not HEX64.fullmatch(reference["sha256"])
+            or not isinstance(reference.get("full_audit_sha256"), str)
+            or not HEX64.fullmatch(reference["full_audit_sha256"])
+            or not isinstance(reference.get("stale_reason"), str)
+            or not reference["stale_reason"].strip()
+        ):
             fail("stale dependency audit reference is malformed")
+        if path.is_symlink() or not path.is_file():
+            fail("stale dependency audit bytes are missing")
+        if digest_bytes(path.read_bytes()) != reference["sha256"]:
+            fail("stale dependency audit bytes drifted")
         fail("dependency audit evidence is stale; rerun the authorized Linux x86_64 VAST audit before approval")
     if set(reference) != {"schema", "path", "sha256", "full_audit_sha256", "status"}:
         fail("compact dependency audit reference is malformed")
@@ -838,9 +852,10 @@ def self_test() -> None:
     assert production_manifest["dependency_audit_evidence"] == {
         "schema": COMPACT_SCHEMA,
         "path": "dependency_audit_evidence.json",
-        "sha256": "0b532e8da6798536b4d2dd43ce73b7aaf6cd5ed77645c139f0f9038d72933e92",
+        "sha256": "563d70ce7977f83ea56717e10ccb3d2a7f9d444ee2cbd4481ea302aad101a78b",
         "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
-        "status": "PENDING_OWNER_APPROVAL",
+        "status": "STALE_REQUIRES_VAST_AUDIT",
+        "stale_reason": "The reviewed closure changed after removing accelerate==1.12.0 and its psutil transitive dependency; rerun the authorized Linux x86_64 VAST audit before owner approval.",
     }
     assert len(EXPECTED_INACTIVE_ROWS) == 4
     assert ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)
@@ -862,32 +877,53 @@ def self_test() -> None:
         mutate(candidate)
         assert approval_scope(candidate) != stable_scope, fixed_key
     production_compact = strict_json_loads((production_root / "dependency_audit_evidence.json").read_text(encoding="utf-8"))
-    with tempfile.TemporaryDirectory(prefix="qwen3-tts-compact-tamper-") as directory:
-        compact_path = Path(directory) / "dependency_audit_evidence.json"
-        compact_base = json.loads(json.dumps(production_compact))
-        reference_base = json.loads(json.dumps(production_manifest["dependency_audit_evidence"]))
-        for label, mutate in (
-            ("declared license", lambda value: value["license_facts"]["packages"][0].update(declared_license="GPL-3.0-only")),
-            ("native count", lambda value: value["license_facts"]["packages"][0].update(native_file_count=99)),
-            ("model repo", lambda value: value["model_facts"]["metadata_records"][0].update(repo="tampered/model")),
-            ("model revision", lambda value: value["model_facts"]["metadata_records"][0].update(revision="0" * 40)),
-            ("model license", lambda value: value["model_facts"]["metadata_records"][0].update(license="mit")),
-            ("model tree hash", lambda value: value["model_facts"]["metadata_records"][0].update(tree_files_sha256="0" * 64)),
-            ("source license", lambda value: value["model_facts"]["license_file_records"][-1].update(sha256="0" * 64)),
-            ("aggregate count", lambda value: value["native_facts"].update(bundled_file_count=0)),
-        ):
-            candidate = json.loads(json.dumps(compact_base))
-            mutate(candidate)
-            compact_path.write_text(json.dumps(candidate), encoding="utf-8")
-            candidate_reference = json.loads(json.dumps(reference_base))
-            candidate_reference["sha256"] = digest_bytes(compact_path.read_bytes())
-            try:
-                validate_dependency_audit_evidence(compact_path, candidate_reference, production_manifest, production_reviews, production_components)
-            except SystemExit as error:
-                if error.code != 2:
-                    raise SystemExit(f"qwen3-tts gate self-test production {label}: exit {error.code}") from error
-            else:
-                raise SystemExit(f"qwen3-tts gate self-test production {label}: tamper accepted")
+    if production_manifest["dependency_audit_evidence"]["status"] == "STALE_REQUIRES_VAST_AUDIT":
+        assert production_compact == {
+            "schema": COMPACT_SCHEMA,
+            "path": "dependency_audit_evidence.json",
+            "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
+            "status": "STALE_REQUIRES_VAST_AUDIT",
+            "stale_reason": "The reviewed closure changed after removing accelerate==1.12.0 and its psutil transitive dependency; rerun the authorized Linux x86_64 VAST audit before owner approval.",
+        }
+        try:
+            validate_dependency_audit_evidence(
+                production_root / "dependency_audit_evidence.json",
+                production_manifest["dependency_audit_evidence"],
+                production_manifest,
+                production_reviews,
+                production_components,
+            )
+        except SystemExit as error:
+            assert error.code == 2
+        else:
+            raise SystemExit("qwen3-tts gate self-test accepted stale dependency evidence")
+    else:
+        with tempfile.TemporaryDirectory(prefix="qwen3-tts-compact-tamper-") as directory:
+            compact_path = Path(directory) / "dependency_audit_evidence.json"
+            compact_base = json.loads(json.dumps(production_compact))
+            reference_base = json.loads(json.dumps(production_manifest["dependency_audit_evidence"]))
+            for label, mutate in (
+                ("declared license", lambda value: value["license_facts"]["packages"][0].update(declared_license="GPL-3.0-only")),
+                ("native count", lambda value: value["license_facts"]["packages"][0].update(native_file_count=99)),
+                ("model repo", lambda value: value["model_facts"]["metadata_records"][0].update(repo="tampered/model")),
+                ("model revision", lambda value: value["model_facts"]["metadata_records"][0].update(revision="0" * 40)),
+                ("model license", lambda value: value["model_facts"]["metadata_records"][0].update(license="mit")),
+                ("model tree hash", lambda value: value["model_facts"]["metadata_records"][0].update(tree_files_sha256="0" * 64)),
+                ("source license", lambda value: value["model_facts"]["license_file_records"][-1].update(sha256="0" * 64)),
+                ("aggregate count", lambda value: value["native_facts"].update(bundled_file_count=0)),
+            ):
+                candidate = json.loads(json.dumps(compact_base))
+                mutate(candidate)
+                compact_path.write_text(json.dumps(candidate), encoding="utf-8")
+                candidate_reference = json.loads(json.dumps(reference_base))
+                candidate_reference["sha256"] = digest_bytes(compact_path.read_bytes())
+                try:
+                    validate_dependency_audit_evidence(compact_path, candidate_reference, production_manifest, production_reviews, production_components)
+                except SystemExit as error:
+                    if error.code != 2:
+                        raise SystemExit(f"qwen3-tts gate self-test production {label}: exit {error.code}") from error
+                else:
+                    raise SystemExit(f"qwen3-tts gate self-test production {label}: tamper accepted")
     with tempfile.TemporaryDirectory(prefix="qwen3-tts-license-gate-") as directory:
         root = Path(directory)
         lock = root / "uv.lock"
