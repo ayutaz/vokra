@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 SELF="${BASH_SOURCE[0]}"
 WORK_PARENT=/dev/shm
+SBV2_WORK_PREFIX=/tmp/vokra-sbv2-jp-extra-g2p-
 FORMAT=vokra-mac-pre-scaleway-model-free-batch-v1
 MAX_FILE=1048576
 MAX_TOTAL=8388608
@@ -80,6 +81,29 @@ require_work() {
   if overlap "$canonical" "$root_real"; then
     die 'work root overlaps checkout'
   fi
+  return 0
+}
+sbv2_worker_path() {
+  local expected="$1"
+  printf '%s%s\n' "$SBV2_WORK_PREFIX" "$expected"
+}
+require_sbv2_worker_identity() {
+  local worker="$1" expected="$2" main_work="$3" output_dir="$4"
+  hex40 "$expected" || die 'SBV2 worker identity requires lowercase HEX40'
+  [[ "$worker" == "$(sbv2_worker_path "$expected")" ]] || die "SBV2 worker path identity mismatch: $worker"
+  [[ "$worker" == "$SBV2_WORK_PREFIX"* ]] || die 'SBV2 worker path prefix drifted'
+  if overlap "$worker" "$ROOT"; then die 'SBV2 worker overlaps checkout'; fi
+  if overlap "$worker" "$main_work"; then die 'SBV2 worker overlaps batch work root'; fi
+  if overlap "$worker" "$output_dir"; then die 'SBV2 worker overlaps evidence output'; fi
+  return 0
+}
+require_sbv2_worker() {
+  local worker="$1" expected="$2" main_work="$3" output_dir="$4" canonical
+  require_sbv2_worker_identity "$worker" "$expected" "$main_work" "$output_dir"
+  no_symlink_ancestors "$worker" || die 'SBV2 worker has symlinked ancestry'
+  canonical="$(canonical_absent "$worker")" || die 'SBV2 worker must be absolute, dot-free, and absent'
+  [[ "$canonical" == "$worker" ]] || die 'SBV2 worker path canonicalization drifted'
+  [[ "$canonical" != /dev/shm/* ]] || die 'SBV2 worker must be on an exec-capable disk path, not tmpfs'
   return 0
 }
 safe_evidence_path() {
@@ -286,7 +310,7 @@ PY
 self_test() {
   [[ "$#" == 1 ]] || die '--self-test accepts no arguments'
   local fail=0 token
-  for token in '--expected-head' '--mms-language' '--output-dir' 'NOT_ACQUIRED' 'NO_UPLOAD' 'PIPESTATUS' 'object_pairs_hook' 'MAX_FILE' 'MAX_TOTAL' 'batch-manifest.json' 'run-audiogen-medium-inspection.sh' 'audit-cosyvoice3-source.sh' 'audit-irodori-text-block-dependencies.sh' 'run-moss-audio-api-smoke.sh' 'run-owsm-v4-medium-1b-inspection.sh' 'run-sbv2-jp-extra-g2p-contract.sh' 'run-mms-1b-all-validation.sh' 'run-qwen2-audio-7b-instruct-inspection.sh' 'run-vibevoice-asr-inspection.sh' 'BLOCKED_FACTUAL_AUDIT' '--validate-evidence' 'owsm factual dependency validator'; do
+  for token in '--expected-head' '--mms-language' '--output-dir' 'NOT_ACQUIRED' 'NO_UPLOAD' 'PIPESTATUS' 'object_pairs_hook' 'MAX_FILE' 'MAX_TOTAL' 'batch-manifest.json' 'SBV2_WORK_PREFIX' 'sbv2_worker_path' 'require_sbv2_worker' 'run-audiogen-medium-inspection.sh' 'audit-cosyvoice3-source.sh' 'audit-irodori-text-block-dependencies.sh' 'run-moss-audio-api-smoke.sh' 'run-owsm-v4-medium-1b-inspection.sh' 'run-sbv2-jp-extra-g2p-contract.sh' 'run-mms-1b-all-validation.sh' 'run-qwen2-audio-7b-instruct-inspection.sh' 'run-vibevoice-asr-inspection.sh' 'BLOCKED_FACTUAL_AUDIT' '--validate-evidence' 'owsm factual dependency validator'; do
     grep -Fq -- "$token" "$SELF" || { echo "self-test missing token: $token" >&2; fail=1; }
   done
   if safe_evidence_path /private/tmp/illegal.safetensors 1 || safe_evidence_path /private/tmp/illegal.json "$((MAX_FILE + 1))"; then
@@ -354,6 +378,40 @@ PY
     if validate_batch_manifest "$fixture/$mutation.json" "$head" jpn >/dev/null 2>&1; then echo "self-test accepted $mutation manifest tamper" >&2; fail=1; fi
   done
   ACTIVE_HEAD="$head"
+  local sbv2_head_path original_sbv2_prefix="$SBV2_WORK_PREFIX"
+  [[ "$original_sbv2_prefix" == /tmp/vokra-sbv2-jp-extra-g2p- ]] || {
+    echo 'self-test SBV2 worker prefix drifted' >&2
+    fail=1
+  }
+  SBV2_WORK_PREFIX="$fixture/sbv2-"
+  sbv2_head_path="$(sbv2_worker_path "$head")"
+  if ! require_sbv2_worker "$sbv2_head_path" "$head" "$fixture/main" "$fixture/output"; then
+    echo 'self-test rejected a canonical absent SBV2 worker path' >&2
+    fail=1
+  fi
+  mkdir "$sbv2_head_path"
+  if (require_sbv2_worker "$sbv2_head_path" "$head" "$fixture/main" "$fixture/output") >/dev/null 2>&1; then
+    echo 'self-test accepted a stale SBV2 worker path' >&2
+    fail=1
+  fi
+  rmdir "$sbv2_head_path"
+  mkdir "$fixture/real"
+  ln -s real "$fixture/link"
+  SBV2_WORK_PREFIX="$fixture/link/sbv2-"
+  sbv2_head_path="$(sbv2_worker_path "$head")"
+  if (require_sbv2_worker "$sbv2_head_path" "$head" "$fixture/main" "$fixture/output") >/dev/null 2>&1; then
+    echo 'self-test accepted SBV2 worker symlink ancestry' >&2
+    fail=1
+  fi
+  rm -f "$fixture/link"
+  rmdir "$fixture/real"
+  SBV2_WORK_PREFIX="$original_sbv2_prefix"
+  SBV2_WORK_PREFIX="$fixture/mismatch-"
+  if (require_sbv2_worker_identity "$fixture/other-$head" "$head" "$fixture/main" "$fixture/output") >/dev/null 2>&1; then
+    echo 'self-test accepted a mismatched SBV2 worker identity' >&2
+    fail=1
+  fi
+  SBV2_WORK_PREFIX="$original_sbv2_prefix"
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$ROOT/tools/parity/owsm_v4_medium_1b_reference" "$fixture/owsm-valid.json" "$head" <<'PY'
 import importlib.util, pathlib, sys
 project, output, head = map(pathlib.Path, sys.argv[1:])
@@ -414,8 +472,10 @@ main() {
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is required'
   require_tools
   require_output_dir "$output_dir"
-  local work="$WORK_PARENT/vokra-mac-pre-scaleway-model-free-batch-$expected_head"
+  local work="$WORK_PARENT/vokra-mac-pre-scaleway-model-free-batch-$expected_head" sbv2_work
   require_work "$work"
+  sbv2_work="$(sbv2_worker_path "$expected_head")"
+  require_sbv2_worker "$sbv2_work" "$expected_head" "$work" "$output_dir"
   mkdir "$work" || die 'work root claim failed'
   mkdir "$work/logs" "$work/evidence" "$work/irodori" "$work/mms" "$work/vibevoice" "$work/sbv2" || die 'work subdirectory creation failed'
   local rows="$work/rows.tsv" actual_head
@@ -426,7 +486,7 @@ main() {
   run_audit irodori 2 "$work/irodori/dependency-audit.json" vokra-irodori-text-block-dependency-audit-v1 BLOCKED_OWNER_REVIEW NO_UPLOAD "$work/logs/irodori.log" env VOKRA_PUBLISH_ON_VAST=1 VOKRA_VAST_AUDIT=1 bash "$ROOT/scripts/publish/vast-ai/audit-irodori-text-block-dependencies.sh" --expected-head "$expected_head" --output "$work/irodori/dependency-audit.json" >> "$rows"
   run_audit moss-audio 0 "$work/moss/model-free-api-smoke-evidence.json" vokra-moss-audio-model-free-api-smoke-v1 PASS_MODEL_FREE NO_UPLOAD "$work/logs/moss-audio.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-moss-audio-api-smoke.sh" --model-free --variant all --expected-head "$expected_head" --work-dir "$work/moss" >> "$rows"
   run_audit owsm 2 "/dev/shm/vokra-owsm-v4-medium-1b-source-only/evidence/dependency-audit.json" vokra-owsm-v4-medium-1b-dependency-audit-v1 BLOCKED_FACTUAL_AUDIT NO_UPLOAD "$work/logs/owsm.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-owsm-v4-medium-1b-inspection.sh" --source-only --expected-head "$expected_head" >> "$rows"
-  run_audit sbv2 0 "$work/sbv2/contract.json" vokra-sbv2-jp-extra-g2p-v1 SBV2_CONTRACT NO_UPLOAD "$work/logs/sbv2.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-sbv2-jp-extra-g2p-contract.sh" --expected-head "$expected_head" --work-dir "$work/sbv2-work" --output "$work/sbv2/contract.json" >> "$rows"
+  run_audit sbv2 0 "$work/sbv2/contract.json" vokra-sbv2-jp-extra-g2p-v1 SBV2_CONTRACT NO_UPLOAD "$work/logs/sbv2.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-sbv2-jp-extra-g2p-contract.sh" --expected-head "$expected_head" --work-dir "$sbv2_work" --output "$work/sbv2/contract.json" >> "$rows"
   run_audit mms 2 "$work/mms/metadata.json" vokra-mms-1b-all-hf-metadata-evidence-v2 BLOCKED_PENDING_OWNER_REVIEW NO_UPLOAD "$work/logs/mms.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-mms-1b-all-validation.sh" --metadata-only --language "$mms_language" --expected-head "$expected_head" --output "$work/mms/metadata.json" >> "$rows"
   run_audit qwen2-audio 2 "$work/qwen2-audio/source-license-history.json" vokra-qwen2-audio-source-license-history-v1 SOURCE_LICENSE_UNKNOWN_BLOCKER NO_UPLOAD "$work/logs/qwen2-audio.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-qwen2-audio-7b-instruct-inspection.sh" --source-license-audit --expected-head "$expected_head" --work-dir "$work/qwen2-audio" >> "$rows"
   run_audit vibevoice-asr 2 "$work/vibevoice/metadata.json" vokra-vibevoice-asr-qwen2-5-7b-metadata-v1 BLOCKED NO_UPLOAD "$work/logs/vibevoice-asr.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-vibevoice-asr-inspection.sh" --metadata-only --expected-head "$expected_head" --output "$work/vibevoice/metadata.json" >> "$rows"

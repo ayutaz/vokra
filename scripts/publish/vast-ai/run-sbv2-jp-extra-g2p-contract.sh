@@ -49,7 +49,7 @@ require_vast() {
 
 require_tooling() {
   local tool
-  for tool in git uv sha256sum curl tar; do
+  for tool in git uv sha256sum curl tar findmnt; do
     command -v "$tool" >/dev/null 2>&1 || { die "required tool missing: $tool"; return 2; }
   done
   [[ -f "$GENERATOR" && ! -L "$GENERATOR" ]] || { die 'contract generator is missing or symlinked'; return 2; }
@@ -85,6 +85,27 @@ require_absent_path() {
   [[ -d "${path%/*}" && ! -L "${path%/*}" ]] || { die "$label parent must be a real directory: ${path%/*}"; return 2; }
 }
 
+require_exec_mount_parent() {
+  local path="$1" parent options
+  parent="${path%/*}"
+  [[ -d "$parent" && ! -L "$parent" ]] || { die "worker directory parent must be a real directory: $parent"; return 2; }
+  options="$(findmnt -T "$parent" -n -o OPTIONS 2>/dev/null)" || {
+    die "cannot inspect worker directory parent mount options: $parent"
+    return 2
+  }
+  [[ -n "$options" ]] || { die "worker directory parent mount options are missing: $parent"; return 2; }
+  case "$options" in
+    *$'\n'*|*$'\r'*|*[[:space:]]*) die "worker directory parent mount options are ambiguous: $parent"; return 2 ;;
+  esac
+  [[ "$options" =~ ^[^,[:space:]]+(,[^,[:space:]]+)*$ ]] || {
+    die "worker directory parent mount options are malformed: $parent"
+    return 2
+  }
+  case ",$options," in
+    *,noexec,*) die "worker directory parent mount is noexec; choose an exec-capable work directory: $parent"; return 2 ;;
+  esac
+}
+
 require_expected_head() {
   local expected="$1" actual status
   [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { die 'expected HEAD must be lowercase 40-hex'; return 2; }
@@ -95,7 +116,7 @@ require_expected_head() {
 }
 
 run_self_test() {
-  local failed=0 token
+  local failed=0 token fixture guard_body
   UV_CACHE_DIR="${UV_CACHE_DIR:-$VOKRA_ROOT/.cache/uv-sbv2-jp-extra}" \
     uv run --no-project --offline --python 3.12 python "$GENERATOR" --self-test \
     || failed=1
@@ -115,7 +136,7 @@ run_self_test() {
     'NO_UPLOAD' 'git clone' 'git checkout' 'verify_source_tree' \
     'model/checkpoint bytes' 'model_weight_acquisition' 'cargo' \
     'g2p_en' 'distance' 'num2words' '__vokra_num2words_sentinel__' 'numeric-text G2P' \
-    'forbidden GPL frontend dependency'; do
+    'forbidden GPL frontend dependency' findmnt; do
     grep -Fq -- "$token" "${BASH_SOURCE[0]}" || { log "self-test missing contract token: $token"; failed=1; }
   done
   for token in symbols_blob japanese_blob mora_blob common_log_blob stdout_wrapper_blob init_blob license_blob; do
@@ -165,12 +186,100 @@ run_self_test() {
     log 'self-test accepted duplicate --self-test'
     failed=1
   fi
+  fixture="$(mktemp -d /private/tmp/vokra-sbv2-exec-guard.XXXXXX)"
+  guard_body="$(awk '/^require_exec_mount_parent\(\) \{/{capture=1} capture {print} capture && /^\}/{exit}' "${BASH_SOURCE[0]}")"
+  if ! bash -c '
+    set -euo pipefail
+    findmnt() { printf "%s\n" "rw,exec"; }
+    '"$guard_body"'
+    require_exec_mount_parent "$1/child"
+  ' bash "$fixture"; then
+    log 'self-test rejected an exec-capable mount'
+    failed=1
+  fi
+  if bash -c '
+    set -euo pipefail
+    findmnt() { printf "%s\n" "rw,noexec"; }
+    '"$guard_body"'
+    require_exec_mount_parent "$1/child"
+  ' bash "$fixture" >/dev/null 2>&1; then
+    log 'self-test accepted a noexec mount'
+    failed=1
+  fi
+  if bash -c '
+    set -euo pipefail
+    findmnt() { return 0; }
+    '"$guard_body"'
+    require_exec_mount_parent "$1/child"
+  ' bash "$fixture" >/dev/null 2>&1; then
+    log 'self-test accepted missing mount options'
+    failed=1
+  fi
+  if bash -c '
+    set -euo pipefail
+    findmnt() { printf "%s\n%s\n" "rw,exec" "rw,exec"; }
+    '"$guard_body"'
+    require_exec_mount_parent "$1/child"
+  ' bash "$fixture" >/dev/null 2>&1; then
+    log 'self-test accepted multiple mount option lines'
+    failed=1
+  fi
+  if ! bash -c '
+    set -euo pipefail
+    findmnt() { printf "%s\n" "rw,notnoexec"; }
+    '"$guard_body"'
+    require_exec_mount_parent "$1/child"
+  ' bash "$fixture" >/dev/null 2>&1; then
+    log 'self-test rejected a non-exact noexec token'
+    failed=1
+  fi
+  if bash -c '
+    set -euo pipefail
+    findmnt() { printf "%s\n" "rw,,exec"; }
+    '"$guard_body"'
+    require_exec_mount_parent "$1/child"
+  ' bash "$fixture" >/dev/null 2>&1; then
+    log 'self-test accepted an ambiguous mount option list'
+    failed=1
+  fi
+  if ! bash -c '
+    set -euo pipefail
+    findmnt() { printf "%s\n" "rw,relatime,nouserxattr"; }
+    '"$guard_body"'
+    require_exec_mount_parent "$1/child"
+  ' bash "$fixture" >/dev/null 2>&1; then
+    log 'self-test rejected an overlay mount without noexec'
+    failed=1
+  fi
+  if [[ "$fixture" == /private/tmp/vokra-sbv2-exec-guard.* && -d "$fixture" ]]; then
+    rmdir "$fixture"
+  else
+    log 'self-test fixture cleanup guard failed; preserving fixture'
+    failed=1
+  fi
+  local unsafe_mktemp_option='-u'
+  if grep -Fq -- "mktemp $unsafe_mktemp_option" "$0"; then
+    log 'self-test found unsafe unclaimed temporary workdir allocation'
+    failed=1
+  fi
+  grep -Fq -- 'mktemp -d -p /tmp sbv2-jp-extra-g2p.XXXXXX' "$0" || {
+    log 'self-test missing atomic default workdir claim'
+    failed=1
+  }
+  grep -Fq -- 'work_claimed=1' "$0" || {
+    log 'self-test missing default workdir claim state'
+    failed=1
+  }
+  grep -Fq -- 'trap - EXIT' "$0" || {
+    log 'self-test missing claim-preserving trap release'
+    failed=1
+  }
   [[ "$failed" == 0 ]] || return 1
   echo 'run-sbv2-jp-extra-g2p-contract.sh self-test: PASS'
 }
 
 main() {
-  local self_test=0 expected_head='' output='' work='' arg source_dir pyopenjtalk_source_dir loguru_source_dir dictionary_archive dictionary_dir project_env
+  local self_test=0 expected_head='' output='' work='' arg source_dir pyopenjtalk_source_dir loguru_source_dir dictionary_archive dictionary_dir project_env work_claimed=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --self-test) [[ "$self_test" == 0 ]] || { die 'duplicate --self-test'; return 2; }; self_test=1; shift ;;
@@ -191,14 +300,24 @@ main() {
   require_tooling
   require_expected_head "$expected_head"
   if [[ -z "$work" ]]; then
-    work="$(mktemp -d -p /tmp sbv2-jp-extra-g2p.XXXXXX)"
-    rmdir "$work"
+    require_exec_mount_parent /tmp/sbv2-jp-extra-g2p-parent-probe
+    work="$(mktemp -d -p /tmp sbv2-jp-extra-g2p.XXXXXX)" || { die 'cannot atomically claim default worker directory'; return 2; }
+    chmod 700 "$work" || { rmdir "$work" 2>/dev/null || true; die 'cannot secure default worker directory'; return 2; }
+    work_claimed=1
+    cleanup_claimed_work() { [[ "$work_claimed" == 1 && -d "$work" && ! -L "$work" ]] && rmdir "$work" 2>/dev/null || true; }
+    trap cleanup_claimed_work EXIT
+  else
+    require_absent_path "$work" 'worker directory'
+    require_exec_mount_parent "$work"
   fi
-  require_absent_path "$work" 'worker directory'
   require_absent_path "$output" 'contract output'
   require_absent_path "$output.sha256" 'contract SHA-256 sidecar'
   [[ "$output" != "$work"/* && "$work" != "$output"/* ]] || { die 'output and worker directory must be disjoint'; return 2; }
-  mkdir -m 700 "$work"
+  if [[ "$work_claimed" == 0 ]]; then
+    mkdir -m 700 "$work"
+  else
+    trap - EXIT
+  fi
   source_dir="$work/official-source"
   pyopenjtalk_source_dir="$work/pyopenjtalk-source"
   loguru_source_dir="$work/loguru-source"
