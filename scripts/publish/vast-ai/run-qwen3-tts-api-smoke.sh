@@ -27,8 +27,9 @@ DECODER_REVISION="a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256="836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
 TRANSFORMERS_VERSION="5.10.4"
 LOCK_SHA256="549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
-SECURITY_ADVISORY_STATUS="BLOCKED_SECURITY_ADVISORY"
-SECURITY_ADVISORY_REASON="accelerate==1.12.0 is affected by GHSA-4j2p-28q2-5m79; no verified safe real-weight load alternative is available"
+SECURITY_ADVISORY_ID="GHSA-4j2p-28q2-5m79"
+CPU_LOAD_MODE="DEFAULT_CPU_NO_DEVICE_MAP"
+CPU_LOAD_LOW_CPU_MEM_USAGE="false"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=100000000
 
@@ -112,8 +113,9 @@ usage: run-qwen3-tts-api-smoke.sh --approval-evidence FILE [--work-dir ABSENT_DI
 
 On VAST/Linux this stages the fixed Qwen3-TTS 0.6B-Base and official 12-Hz
 decoder snapshots, then calls the official Transformers wrapper with local-only
-loading and a two-token greedy request. It emits strict JSON evidence and
-never uploads, publishes, or pushes artifacts.
+loading and a two-token greedy request. The real-weight phase requires at
+least 60-GB RAM and 100-GB free scratch space. It emits strict JSON evidence
+and never uploads, publishes, or pushes artifacts.
 
 The --model-free phase is independent of owner approval: it stages only exact
 source and metadata files, imports the official classes, constructs config and
@@ -178,9 +180,27 @@ license_gate() {
     uv run --no-cache --no-project --offline --python 3.12 python "$LICENSE_GATE" "${args[@]}"
 }
 
+security_preflight() {
+  local dependency_file
+  for dependency_file in "$PARITY_PROJECT/pyproject.toml" "$PARITY_PROJECT/uv.lock"; do
+    [[ -f "$dependency_file" && ! -L "$dependency_file" ]] || {
+      die "BLOCKED_SECURITY_ADVISORY: $SECURITY_ADVISORY_ID dependency input is missing: $dependency_file"
+      return 2
+    }
+    grep -Fq 'accelerate' "$dependency_file" && {
+      die "BLOCKED_SECURITY_ADVISORY: $SECURITY_ADVISORY_ID accelerate dependency is declared in $dependency_file"
+      return 2
+    }
+  done
+  [[ "$CPU_LOAD_MODE" == "DEFAULT_CPU_NO_DEVICE_MAP" && "$CPU_LOAD_LOW_CPU_MEM_USAGE" == false ]] || {
+    die "BLOCKED_SECURITY_ADVISORY: $SECURITY_ADVISORY_ID CPU load contract drifted"
+    return 2
+  }
+}
+
 preflight() {
   local approval="$1"
-  die "$SECURITY_ADVISORY_STATUS: $SECURITY_ADVISORY_REASON"
+  security_preflight
   [[ -s "$approval" && ! -L "$approval" ]] || { die 'approval evidence must be a non-empty regular non-symlink file'; return 2; }
   license_gate "$approval"
 }
@@ -220,13 +240,13 @@ run_self_test() {
   local path_probe worker_probe approval worker_log rc gate_line sync_line download_line validate_line evidence_line failed=0 metadata_block
   local script_path="${BASH_SOURCE[0]}"
   for required in "$SOURCE_REPOSITORY" "$SOURCE_URL" "$SOURCE_REVISION" "$MODEL_REPOSITORY" "$MODEL_REVISION" "$DECODER_REPOSITORY" "$DECODER_REVISION" "$DECODER_CHECKPOINT_SHA256" "$TRANSFORMERS_VERSION" "$LOCK_SHA256" \
-    'VOKRA_PUBLISH_ON_VAST=1' 'platform.system()' 'platform.machine()' 'local_files_only=True' 'dtype=float32' 'device_map=cpu' 'Qwen3TTSModel.from_pretrained' \
+    'VOKRA_PUBLISH_ON_VAST=1' 'platform.system()' 'platform.machine()' 'local_files_only=True' 'dtype=float32' 'low_cpu_mem_usage=False' 'DEFAULT_CPU_NO_DEVICE_MAP' 'Qwen3TTSModel.from_pretrained' \
     'generate_voice_clone' 'max_new_tokens' 'min_new_tokens' 'NO_UPLOAD' 'strict JSON' 'uv sync' 'download_snapshot' 'download_source' 'require_absent_work_dir' '--project' '--manifest' '--license-gate' '--vokra-root' '--approval-evidence' '--validate-evidence' 'variant_scope=' 'evidence_sha256=' 'clean' 'x86_64'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract token: $required"; failed=1; }
   done
   grep -Fq -- 'MODEL_FREE_SMOKE=' "$script_path" || { log 'self-test missing model-free worker'; failed=1; }
   grep -Fq -- 'SOURCE_COMPAT=' "$script_path" || { log 'self-test missing shared compatibility adapter'; failed=1; }
-  for helper in step require_model_free_tooling require_vast_host require_absent_work_dir download_source download_metadata_snapshot; do
+  for helper in step require_model_free_tooling require_vast_host require_absent_work_dir download_source download_metadata_snapshot security_preflight; do
     grep -Eq "^${helper}[[:space:]]*\(\)" "$script_path" || { log "self-test missing helper definition: $helper"; failed=1; }
   done
   metadata_block="$(sed -n '/^download_metadata_snapshot()/,/^}/p' "$script_path")"
@@ -267,6 +287,7 @@ run_self_test() {
   SELFTEST_OS=Linux SELFTEST_ARCH=x86_64 SELFTEST_MEM_KIB=60000000 SELFTEST_FREE_DISK_KIB=100000000
   require_vast_host >/dev/null 2>&1 || { log 'self-test rejected a minimum VAST host'; failed=1; }
   SELFTEST_OS='' SELFTEST_ARCH='' SELFTEST_MEM_KIB='' SELFTEST_FREE_DISK_KIB=''
+  security_preflight >/dev/null 2>&1 || { log 'self-test rejected the remediated CPU load contract'; failed=1; }
 
   path_probe="$(mktemp -d "${TMPDIR:-/tmp}/qwen3-tts-api-path-selftest.XXXXXX")"
   approval="$path_probe/approval.json"; printf '{}\n' > "$approval"
@@ -313,6 +334,7 @@ run_model_free() {
   [[ "$variant" == 0.6b-base || "$variant" == 0.6b-customvoice || "$variant" == 1.7b-base || "$variant" == 1.7b-customvoice || "$variant" == all ]] || { die '--variant is invalid for model-free smoke'; return 2; }
   [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be lowercase 40-hex'; return 2; }
   require_model_free_tooling
+  security_preflight
   require_vast_host
   [[ -n "$work_dir" ]] || work_dir="$VOKRA_SCRATCH/qwen3-tts-model-free-api-smoke-${expected_head:0:12}"
   require_absent_work_dir "$work_dir" ''

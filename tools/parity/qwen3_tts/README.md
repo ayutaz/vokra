@@ -59,16 +59,20 @@ compatibility, and any source/hash/count/path drift blocks before import.
 The bounded API smoke is `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh`.
 It is VAST/Linux x86_64-only, requires `VOKRA_PUBLISH_ON_VAST=1`, and stages
 only the fixed 0.6B-Base release plus the authenticated 12-Hz decoder. The
-real-weight route is explicitly fail-closed with
-`BLOCKED_SECURITY_ADVISORY`: `accelerate==1.12.0` is affected by
-`GHSA-4j2p-28q2-5m79`, and no safe replacement for the official
-`device_map="cpu"` load has been proven without a checkpoint. Therefore the
-worker cannot sync, download, import, or run a model until the advisory is
-resolved and legitimate dependency/component reviews and authenticated owner
-evidence are recorded. After those gates pass it calls the official
-`Qwen3TTSModel.from_pretrained` wrapper
-with `local_files_only=True`, `dtype=float32`, and `device_map="cpu"`, then
-emits `api-smoke.json` under the disposable work directory. The evidence is a
+previous `accelerate==1.12.0` route was removed because of
+`GHSA-4j2p-28q2-5m79`. Inspection of the pinned official source shows that the
+wrapper does not import Accelerate and forwards loader kwargs to Transformers,
+so the candidate route uses ordinary CPU `from_pretrained` with
+`local_files_only=True`, `dtype=float32`, no `device_map`, and
+`low_cpu_mem_usage=False`. The shell and Python gates reject any lock that
+reintroduces Accelerate before synchronization or model download. This is a
+Accelerate-free load design candidate, not a completed reference result: the
+existing owner/license gate remains before dependency synchronization and model
+acquisition, the VAST worker requires at least 60 GB RAM and 100 GB free
+scratch space, and the real-weight load remains unverified until an authorized
+VAST run. After those gates pass it calls the official
+`Qwen3TTSModel.from_pretrained` wrapper and emits `api-smoke.json` under the
+disposable work directory. The evidence is a
 strict `vokra-qwen3-tts-api-smoke-v1` JSON document containing the exact source,
 model, decoder, lock, approval-evidence SHA-256 plus the existing license gate
 manifest digest/approval scope/owner sign-offs, Vokra checkout HEAD/clean

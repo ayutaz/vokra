@@ -412,7 +412,10 @@ def main() -> int:
         torch.set_num_interop_threads(1)
     torch.manual_seed(1234)
     numpy.random.seed(1234)
-    tts = Qwen3TTSModel.from_pretrained(str(model_dir), local_files_only=True, dtype=torch.float32, device_map="cpu")
+    tts = Qwen3TTSModel.from_pretrained(
+        str(model_dir), local_files_only=True, dtype=torch.float32,
+        low_cpu_mem_usage=False,
+    )
     if tts.device.type != "cpu":
         die(f"official model selected {tts.device}, expected CPU")
     input_ids = tts._tokenize_texts([tts._build_assistant_text(TEXT)])[0][0].detach().cpu()

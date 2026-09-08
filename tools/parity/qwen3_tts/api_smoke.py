@@ -51,11 +51,9 @@ DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
 LOCK_SHA256 = "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
 TRANSFORMERS_VERSION = "5.10.4"
-SECURITY_ADVISORY_STATUS = "BLOCKED_SECURITY_ADVISORY"
-SECURITY_ADVISORY_REASON = (
-    "accelerate==1.12.0 is affected by GHSA-4j2p-28q2-5m79 (no patched release "
-    "is available); the real-weight device_map=cpu path has no verified safe alternative"
-)
+SECURITY_ADVISORY_ID = "GHSA-4j2p-28q2-5m79"
+CPU_LOAD_MODE = "DEFAULT_CPU_NO_DEVICE_MAP"
+CPU_LOAD_LOW_CPU_MEM_USAGE = False
 TEXT = "The Vokra API smoke packet is short and deterministic."
 LANGUAGE = "English"
 MAX_NEW_TOKENS = 2
@@ -109,9 +107,12 @@ def require_execution_host_values(publish: str, system: str, machine: str) -> No
         raise SmokeError("API smoke requires VAST Linux x86_64")
 
 
-def require_security_clearance() -> None:
-    """Keep the real-weight route closed until the advisory is resolved."""
-    raise SmokeError(f"{SECURITY_ADVISORY_STATUS}: {SECURITY_ADVISORY_REASON}")
+def require_cpu_load_contract() -> None:
+    """Prove the real-weight route does not select Accelerate dispatch."""
+    if CPU_LOAD_MODE != "DEFAULT_CPU_NO_DEVICE_MAP" or CPU_LOAD_LOW_CPU_MEM_USAGE is not False:
+        raise SmokeError(
+            f"BLOCKED_SECURITY_ADVISORY: {SECURITY_ADVISORY_ID} CPU load contract drifted"
+        )
 
 
 def reject_symlink_ancestry(path: Path) -> None:
@@ -343,6 +344,15 @@ def require_lock(lock_path: Path) -> dict[str, Any]:
         raise SmokeError("uv.lock contains forbidden setuptools")
     if any(
         isinstance(package, dict)
+        and (
+            package.get("name") == "accelerate"
+            or any(isinstance(dependency, dict) and dependency.get("name") == "accelerate" for dependency in package.get("dependencies", []))
+        )
+        for package in packages
+    ):
+        raise SmokeError(f"BLOCKED_SECURITY_ADVISORY: {SECURITY_ADVISORY_ID} accelerate dependency is locked")
+    if any(
+        isinstance(package, dict)
         and any(isinstance(dependency, dict) and dependency.get("name") == "setuptools" for dependency in package.get("dependencies", []))
         for package in packages
     ):
@@ -472,7 +482,7 @@ def validate_evidence_data(data: Any) -> None:
         raise SmokeError("Vokra checkout evidence schema or unknown fields drifted")
     if set(data["environment"]) != {"python", "platform", "machine", "device", "torch_threads"}:
         raise SmokeError("environment evidence schema or unknown fields drifted")
-    if set(data["api"]) != {"method", "local_files_only", "dtype", "device_map", "model_device", "wrapper", "max_new_tokens", "min_new_tokens", "sample_rate", "samples", "code_packet_frames", "code_packet_codebooks"}:
+    if set(data["api"]) != {"method", "local_files_only", "dtype", "device_map", "low_cpu_mem_usage", "model_device", "wrapper", "max_new_tokens", "min_new_tokens", "sample_rate", "samples", "code_packet_frames", "code_packet_codebooks"}:
         raise SmokeError("API evidence schema or unknown fields drifted")
     if set(data["inputs"]) - {"reference_audio"}:
         raise SmokeError("input evidence schema or unknown fields drifted")
@@ -573,8 +583,8 @@ def validate_evidence_data(data: Any) -> None:
         required_packages = {"einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers", "qwen_tts_source"}
         if set(data["package_versions"]) != required_packages or any(not isinstance(value, str) or not value for value in data["package_versions"].values()):
             raise SmokeError("passing evidence package versions are incomplete")
-        if data["api"]["method"] != "Qwen3TTSModel.from_pretrained" or data["api"]["local_files_only"] is not True or data["api"]["dtype"] != "float32" or data["api"]["device_map"] != "cpu" or data["api"]["wrapper"] != "generate_voice_clone":
-            raise SmokeError("passing evidence does not prove the fixed local-only API call")
+        if data["api"]["method"] != "Qwen3TTSModel.from_pretrained" or data["api"]["local_files_only"] is not True or data["api"]["dtype"] != "float32" or data["api"]["device_map"] is not None or data["api"]["low_cpu_mem_usage"] is not False or data["api"]["wrapper"] != "generate_voice_clone":
+            raise SmokeError("passing evidence does not prove the fixed local-only default-CPU API call")
     if data["status"] == "FAIL" and not data["error"]:
         raise SmokeError("failed API smoke evidence lacks an error")
 
@@ -587,7 +597,6 @@ def write_evidence(path: Path, data: dict[str, Any]) -> None:
 
 
 def run_smoke(args: argparse.Namespace) -> int:
-    require_security_clearance()
     require_execution_host()
     require_input_boundaries(args)
     vokra_checkout = require_vokra_checkout(args.vokra_root)
@@ -607,7 +616,8 @@ def run_smoke(args: argparse.Namespace) -> int:
     package_versions: dict[str, str] = {}
     api: dict[str, Any] = {
         "method": "Qwen3TTSModel.from_pretrained",
-        "local_files_only": True, "dtype": "float32", "device_map": "cpu",
+        "local_files_only": True, "dtype": "float32", "device_map": None,
+        "low_cpu_mem_usage": False,
         "model_device": None, "wrapper": "generate_voice_clone",
         "max_new_tokens": MAX_NEW_TOKENS, "min_new_tokens": MIN_NEW_TOKENS,
         "sample_rate": None, "samples": None, "code_packet_frames": None,
@@ -624,6 +634,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         decoder = require_decoder(args.model_dir, args.decoder_dir)
         checkpoints.append("decoder_snapshot_verified")
         lock = require_lock(args.lock)
+        require_cpu_load_contract()
         package_versions = expected_package_versions(lock)
         checkpoints.append("lock_verified")
         inputs["reference_audio"] = artifact(args.reference_audio, "reference audio")
@@ -654,7 +665,8 @@ def run_smoke(args: argparse.Namespace) -> int:
         torch.manual_seed(1234)
         numpy.random.seed(1234)
         tts = Qwen3TTSModel.from_pretrained(
-            str(args.model_dir), local_files_only=True, dtype=torch.float32, device_map="cpu"
+            str(args.model_dir), local_files_only=True, dtype=torch.float32,
+            low_cpu_mem_usage=False,
         )
         if getattr(tts, "device", None) is None or tts.device.type != "cpu":
             raise SmokeError(f"official model selected {getattr(tts, 'device', None)!r}, expected CPU")
@@ -730,12 +742,7 @@ def self_test() -> None:
     global LOCK_SHA256
     if "torch" in sys.modules or "transformers" in sys.modules:
         raise SmokeError("self-test imported a model dependency")
-    try:
-        require_security_clearance()
-    except SmokeError as error:
-        assert str(error).startswith(f"{SECURITY_ADVISORY_STATUS}: ")
-    else:
-        raise SmokeError("real-weight security advisory was not fail-closed")
+    require_cpu_load_contract()
     for values in (("0", "Linux", "x86_64"), ("1", "Darwin", "arm64"), ("1", "Linux", "aarch64")):
         try:
             require_execution_host_values(*values)
@@ -806,7 +813,8 @@ def self_test() -> None:
             "inputs": {}, "call_checkpoints": [],
             "api": {
                 "method": "Qwen3TTSModel.from_pretrained", "local_files_only": True,
-                "dtype": "float32", "device_map": "cpu", "model_device": None,
+                "dtype": "float32", "device_map": None, "low_cpu_mem_usage": False,
+                "model_device": None,
                 "wrapper": "generate_voice_clone", "max_new_tokens": 2,
                 "min_new_tokens": 2, "sample_rate": None, "samples": None,
                 "code_packet_frames": None, "code_packet_codebooks": None,
@@ -884,6 +892,20 @@ def self_test() -> None:
             pass
         else:
             raise SmokeError("setuptools package reintroduction was accepted")
+        finally:
+            LOCK_SHA256 = original_lock_sha
+        advisory_lock = root / "accelerate-uv.lock"
+        advisory_lock.write_text(
+            '[project]\nname = "test"\n\n[[package]]\nname = "accelerate"\nversion = "1.12.0"\n',
+            encoding="utf-8",
+        )
+        LOCK_SHA256 = sha256_file(advisory_lock)
+        try:
+            require_lock(advisory_lock)
+        except SmokeError as error:
+            assert str(error).startswith(f"BLOCKED_SECURITY_ADVISORY: {SECURITY_ADVISORY_ID}")
+        else:
+            raise SmokeError("accelerate advisory dependency was accepted")
         finally:
             LOCK_SHA256 = original_lock_sha
         forbidden_dependency_lock = root / "forbidden-dependency-uv.lock"
