@@ -220,6 +220,38 @@ canonical_candidate() {
   (cd -P "$value" && printf '%s%s\n' "$PWD" "$suffix")
 }
 
+reject_dot_components() {
+  local value="$1"
+  case "$value" in
+    .|..|./*|../*|*/./*|*/../*|*/.|*/..)
+      die "path contains a lexical dot component: $value"
+      return 2
+      ;;
+  esac
+}
+
+canonical_file() {
+  local raw="$1" value parent name canonical_parent
+  reject_dot_components "$raw" || return 2
+  [[ -n "$raw" && "$raw" != */ ]] || { die 'file path is empty or has a trailing slash'; return 2; }
+  value="$raw"
+  [[ "$value" = /* ]] || value="$PWD/$value"
+  [[ -f "$value" && ! -L "$value" ]] || { die "path is not an existing regular non-symlink file: $raw"; return 2; }
+  parent="${value%/*}"
+  name="${value##*/}"
+  if [[ -z "$parent" ]]; then
+    parent=/
+  fi
+  if [[ "$parent" == / ]]; then
+    canonical_parent=/
+  else
+    canonical_parent="$(canonical_candidate "$parent")" || return 2
+  fi
+  [[ -f "$canonical_parent/$name" && ! -L "$canonical_parent/$name" ]] \
+    || { die "file changed during canonicalization: $raw"; return 2; }
+  printf '%s/%s\n' "$canonical_parent" "$name"
+}
+
 paths_overlap() {
   local left="${1%/}" right="${2%/}"
   [[ "$left" == "$right" || "$left" == "$right"/* || "$right" == "$left"/* ]]
@@ -231,7 +263,7 @@ validate_work_dir() {
   canonical_work="$(canonical_candidate "$work")" || return 2
   canonical_root="$(canonical_candidate "$VOKRA_ROOT")" || return 2
   canonical_project="$(canonical_candidate "$LANG_ID_PROJECT")" || return 2
-  approval_real="$(canonical_candidate "$approval")" || return 2
+  approval_real="$(canonical_file "$approval")" || return 2
   paths_overlap "$canonical_work" "$canonical_root" && { die '--work-dir overlaps checkout'; return 2; }
   paths_overlap "$canonical_work" "$canonical_project" && { die '--work-dir overlaps project'; return 2; }
   paths_overlap "$canonical_work" "$approval_real" && { die '--work-dir overlaps approval'; return 2; }
@@ -519,6 +551,21 @@ run_self_test() {
   mkdir -p "$probe/real/existing"
   ln -s "$probe/real" "$probe/link"
   printf '{}' > "$probe/approval.json"
+  if [[ "$(canonical_file "$probe/approval.json")" != "$probe/approval.json" ]]; then
+    log 'self-test FAIL: existing regular approval file was not canonicalized'; fail=1
+  fi
+  ln -s "$probe/approval.json" "$probe/approval-link.json"
+  if canonical_file "$probe/approval-link.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: symlink approval file accepted'; fail=1
+  fi
+  printf '{}' > "$probe/real/existing/approval.json"
+  if canonical_file "$probe/link/existing/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: approval file under symlink ancestor accepted'; fail=1
+  fi
+  if canonical_file "$probe/./approval.json" >/dev/null 2>&1 \
+    || canonical_file "$probe/../$(basename "$probe")/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: lexical dot approval path accepted'; fail=1
+  fi
   if validate_work_dir "$probe/link/existing/nested/new" "$probe/approval.json" >/dev/null 2>&1; then
     log 'self-test FAIL: existing descendant under symlink ancestor accepted'; fail=1
   fi
@@ -533,7 +580,7 @@ run_self_test() {
     "$GGUF_ENV" "$REFERENCE_DIR_ENV" "EXPECTED_N_MELS=60" \
     "EXPECTED_EMBEDDING_DIM=256" "EXPECTED_CLASS_COUNT=107" \
     "embedding_model.ckpt" "classifier.ckpt" "label_encoder.txt" "hyperparams.yaml" "config.json" \
-    "snapshot_download" "code-bound upstream identity is unresolved" "model_free_audit.py" "MODEL_FREE_SOURCE_LICENSE_FIXTURE_AUDIT" \
+    "snapshot_download" "code-bound upstream identity is unresolved" "model_free_audit.py" "MODEL_FREE_SOURCE_LICENSE_FIXTURE_AUDIT" "canonical_file" \
     "--approval-evidence" "--approval-evidence-sha256" "write_transfer_manifest" "publication=NO_UPLOAD" "APPLE_LANG_ID_APPROVAL_EVIDENCE"; do
     if ! grep -Fq -- "$required" "$script_path"; then log "self-test FAIL: missing $required"; fail=1; fi
   done
@@ -558,12 +605,14 @@ run_self_test() {
   model_free_block="$(sed -n '/^run_model_free_audit()/,/^run_logged()/p' "$script_path")"
   full_host_block="$(sed -n '/^require_vast_host()/,/^require_tooling()/p' "$script_path")"
   if grep -Fq 'require_vast_host' <<<"$model_free_block" \
-    || grep -Fq 'MIN_FREE_DISK_KIB' <<<"$model_free_block"; then
+    || grep -Fq 'MIN_FREE_DISK_KIB' <<<"$model_free_block" \
+    || ! grep -Fq '  require_model_free_host' <<<"$model_free_block"; then
     log 'self-test FAIL: model-free route still inherits the full 150-GB host guard'
     fail=1
   fi
   if ! grep -Fq 'MIN_FREE_DISK_KIB' <<<"$full_host_block" \
-    || ! grep -Fq 'MIN_VAST_MEM_KIB' <<<"$full_host_block"; then
+    || ! grep -Fq 'MIN_VAST_MEM_KIB' <<<"$full_host_block" \
+    || ! grep -Fq '  require_vast_host' "$script_path"; then
     log 'self-test FAIL: full real-weight host guard lost its exact capacity checks'
     fail=1
   fi
