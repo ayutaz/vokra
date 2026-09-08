@@ -283,6 +283,8 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev b86df3
 
 **UTMOS22-strong 状態訂正（2026-08-26、下表の旧「要 owner sign-off / weight 非配布」文言を supersede）**: §3.1 は 2026-07-23 に `yousan` が Commercial として sign-off 済みで、`vokra/utmos22-strong` revision `49974674621965c7b83cb4f4793dd362e48a43de` は `utmos22-strong.gguf` 412,639,296 bytes（SHA-256 `790e538c8cadd8b9d73ecbe0cf3d95c659cf2736022fcdf15e177a77f8a181ea`）を MIT で公開済み。これは Hugging Face 公式 API と固定 revision のモデルカードを 2026-08-25 に再確認した現行事実であり、今回の Mac route 作業は既存 artefact を監査・実行するだけで upload / 差替を行わない。
 
+**UTMOS22-strong 現行安全状態（2026-09-09）**: 上記公開・license/sign-off と、下表に残る M5-15 の upstream parity 数値は、旧unsafe pickle 経路で得た**履歴記録**であり、現行環境で再生成可能な証跡や安全な実行承認ではない。現 worker `tools/parity/utmos_dump_reference.py` は `BLOCKED_UNSAFE_PICKLE` stub として torch import/load、upstream source download、checkpoint read、output write を行わず終了する。`tools/parity/utmos_prepare_checkpoint.py` は restricted loader（明示した `weights_only=True`）のみを使用し、安全loader拒否時は unsafe fallback なしで停止する。安全な reference 再生成には owner-approved safe state-dict wiring が必要であり、これは license sign-off とは別の実行ブロッカーである。
+
 | モデル | Code License | Weight License | 商用可 | Vokra 公式配布 | 備考 |
 |-------|------------|-------------|-----|-------------|-----|
 | **Silero VAD v5** | MIT | MIT | ○ | ★ 公式 zoo | v5 で 3x faster、size ~2MB (v4 は 1.7MB) |
@@ -422,6 +424,8 @@ compositionであり、standalone EnCodec配布やHF再公開を追加しない�
 - 詳細な checklist 通過は依頼者判断（sign-off はここでは行わない）。
 
 ### Owner sign-off template（依頼者記入）
+
+**UTMOS22-strong §3.1 実行状態追補（2026-09-09）**: 同表の旧 `upstream parity 達成` / `upstream 実装を import する dumper` 記載は、旧unsafe pickle 経路に基づく履歴である。現行 `tools/parity/utmos_dump_reference.py` は `BLOCKED_UNSAFE_PICKLE` で停止し、`tools/parity/utmos_prepare_checkpoint.py` は `weights_only=True` の restricted loader に拒否された場合に fail closed する。owner-approved safe state-dict wiring が完了するまで、旧数値を再実行可能な parity evidence と扱わない。
 
 **位置付け（重要）**: 前節 §CC-verified 事実確認は Claude Code（CC）が一次公表資料（upstream の LICENSE ファイル / model card / GitHub 等）を写した **事実の記録** である。本節は、その事実を踏まえて **依頼者（`ayutaz`）が下す配布可否の法務的意思決定** を記録する場である。CC はライセンス facts の verification（upstream の license 表記の引用）のみを担い、"このモデルを商用配布して良いか / research-only で扱うか / 拒否するか" という distribute-or-not の法務判断は本節で依頼者が明示的にサインオフする。
 
@@ -1045,6 +1049,28 @@ This correction supersedes the stale topology and local-size statements in the Q
 7. **PR reviewer 確認** → 依頼者が最終承認、Claude Code は audit ドキュメント更新を必ず含める
 
 ---
+
+### Restricted checkpoint-loader correction (2026-09-09)
+
+The current HEAD safety contract supersedes any older prepare-script wording
+that described unrestricted pickle loading. After fixed-identity verification,
+`audioseal_prepare_checkpoint.py` and `demucs_prepare_checkpoint.py` read
+checkpoint bytes only through restricted `weights_only=True`. If the safe
+loader encounters AudioSeal's `xp.cfg` object or Demucs's top-level `klass`
+object, no output is created and the route is BLOCKED. The four
+AudioSeal checkpoints and HT-Demucs/HT-Demucs Multi runtime facts above remain
+historical implementation/licensing records; this correction does not revoke
+the standalone AudioSeal API or erase past measurements/publication history.
+
+`emotion2vec_prepare_checkpoint.py`, `fcpe_prepare_checkpoint.py`, and
+`utmos_prepare_checkpoint.py` now permit only restricted
+`torch.load(..., weights_only=True)`. A safe-loader refusal is a hard
+`BLOCKED` result; no tolerant unpickler, custom pickle module, or unrestricted
+fallback remains. Regeneration and any future VAST parity
+must use an official tensor-only artifact or an owner-approved state-dict
+route, with provenance/license gates still independently satisfied. Existing
+GGUF publication and parity records are retained as historical facts and are
+not evidence that a new unsafe legacy conversion is authorized.
 
 ## 10. 定期監査
 

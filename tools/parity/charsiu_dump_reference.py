@@ -28,8 +28,6 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-
 REVISION = "e9bf8dd314313fc57f6e4d0b5425bde4bbeac80f"
 CHECKPOINT_SHA256 = "6dc8a18422db7c22e951d5f72dc2afc267b942eb0b8459ac6dcc0cf412536de1"
 CONFIG_SHA256 = "7406aa4f917267640865688aa62f2337664a3abb9a49a2f204d932b53aeb6cb7"
@@ -59,6 +57,8 @@ def verify_file(path: Path, expected: str, label: str) -> str:
 
 
 def deterministic_pcm() -> np.ndarray:
+    import numpy as np
+
     # Compute in float64, then pin the exact little-endian float32 bytes.
     i = np.arange(400, dtype=np.float64)
     pcm = (
@@ -70,12 +70,26 @@ def deterministic_pcm() -> np.ndarray:
 
 
 def self_test() -> None:
+    import numpy as np
+
     pcm = deterministic_pcm()
     if pcm.shape != (400,) or pcm.dtype != np.dtype("<f4"):
         raise AssertionError(f"unexpected deterministic PCM shape/dtype: {pcm.shape} {pcm.dtype}")
     actual = hashlib.sha256(pcm.tobytes()).hexdigest()
     if actual != PCM_SHA256:
         raise AssertionError(f"deterministic PCM SHA-256 {actual} != {PCM_SHA256}")
+    source = Path(__file__).read_text(encoding="utf-8")
+    required = 'torch.load(args.checkpoint_bin, map_location="cpu", weights_only=True)'
+    if required not in source:
+        raise AssertionError("safe torch.load(weights_only=True) call is missing")
+    for forbidden in (
+        "torch.load(args.checkpoint_bin, map_location=" + '"cpu")',
+        "weights_only=" + "False",
+        "torch.load" + " =",
+        "except " + "TypeError",
+    ):
+        if forbidden in source:
+            raise AssertionError(f"unsafe deserialization contract found: {forbidden}")
     print("charsiu_dump_reference self-test: PASS")
 
 
@@ -100,6 +114,7 @@ def main() -> int:
     config_hash = verify_file(args.config, CONFIG_SHA256, "canonical config")
 
     import torch
+    import numpy as np
     import transformers
     from transformers import Wav2Vec2Config, Wav2Vec2ForCTC
 
@@ -127,10 +142,12 @@ def main() -> int:
     model = Wav2Vec2ForCTC(config)
     try:
         state = torch.load(args.checkpoint_bin, map_location="cpu", weights_only=True)
-    except TypeError:
-        # The uv lock currently resolves a modern torch; this branch keeps the
-        # offline script usable with older audited torch wheels as well.
-        state = torch.load(args.checkpoint_bin, map_location="cpu")
+    except Exception as exc:  # noqa: BLE001 - fail closed on unsafe pickle content
+        die(
+            "BLOCKED: canonical checkpoint cannot be loaded with "
+            f"torch weights_only=True ({type(exc).__name__}: {exc}); "
+            "no unsafe deserialization fallback is permitted"
+        )
     if not isinstance(state, dict):
         die(f"checkpoint root is {type(state).__name__}, expected a state-dict mapping")
     missing, unexpected = model.load_state_dict(state, strict=False)

@@ -2265,6 +2265,26 @@ destroyed and read back absent. Historical packet instances `49168183` and
 absent; their Apple packets require future VAST regeneration. Unrelated active
 training instance `49466383` was not touched.
 
+## Restricted checkpoint-loader correction (2026-09-09)
+
+The current HEAD prepare-script contract is stricter than older historical
+completion notes. After fixed-identity verification, AudioSeal's pinned
+`.pth` files (which contain `xp.cfg`) and Meta Demucs's pinned `.th` files
+(which contain a top-level `klass`) are read only through restricted
+`weights_only=True`; when the safe loader rejects those legacy objects, no
+output is created and the route is BLOCKED. Neither source identity nor a
+prior license/publication record authorizes unsafe pickle execution. The standalone
+AudioSeal runtime/API and all historical measurements remain unchanged.
+
+Emotion2vec, FCPE, and UTMOS preparation now use only restricted
+`torch.load(..., weights_only=True)`. Any safe-loader refusal is preserved as
+an explicit `BLOCKED` outcome; custom unpicklers and unrestricted fallbacks
+are removed. New regeneration or VAST parity requires an official
+tensor-only artifact or owner-approved state-dict route, plus the existing
+provenance/license gates. Historical real-weight, parity, and publication
+claims above are retained as records and do not authorize a new unsafe
+legacy conversion.
+
 ## Final branch exit gates
 
 - [ ] Live audit: CPU `partial=0`, `no-runtime-binder=0`, Metal
