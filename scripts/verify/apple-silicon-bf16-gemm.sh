@@ -29,7 +29,10 @@ sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 require_abs() { [[ "$1" == /* ]] || die "$2 must be absolute: $1"; }
 
 require_bf16_support() {
-  [[ "${VOKRA_TEST_FORCE_NO_BF16:-0}" == 1 ]] && die 'BF16 support was intentionally disabled'
+  if [[ "${VOKRA_TEST_FORCE_NO_BF16:-0}" == 1 ]]; then
+    die 'BF16 support was intentionally disabled'
+    return 2
+  fi
   local value
   value="$(sysctl -n hw.optional.arm.FEAT_BF16 2>/dev/null || true)"
   [[ "$value" == 1 ]] || die 'Darwin does not positively report hw.optional.arm.FEAT_BF16'
