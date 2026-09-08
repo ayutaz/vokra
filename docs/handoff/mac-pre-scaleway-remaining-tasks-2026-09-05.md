@@ -1212,6 +1212,75 @@ head, run the workspace/static gates and the nine-worker model-free batch,
 recover only its bounded evidence, then destroy the instance and storage. MMS
 execution must wait for an explicit owner-selected adapter language.
 
+#### 2026-09-08 final model-free batch and exact-head validation
+
+Disposable VAST instance `50237377` completed that nine-worker model-free
+wave at clean implementation head
+`86efd5cf0de0e201e364299bf5747a819477dc65`. Corrective commits discovered by
+the real workers were kept separate and reviewed: `9c6ac30d` hardens the batch
+work-root gate, `41388772` hardens Qwen2-Audio output handling, `35686c9c` and
+`023aa874` separate and normalize the MOSS-Audio API contract, `bf2e60e8` and
+`c98bd300` complete and canonicalize the OWSM Linux closure, `68837e4e` moves
+SBV2 execution off the no-exec tmpfs, and `a327a3bb` plus `86efd5cf` bind the
+VibeVoice source tree and current Hugging Face history timestamp schema.
+
+The final batch manifest reports `PASS_MODEL_FREE`, exact expected/actual HEAD
+equality, `model_payloads=NOT_ACQUIRED` and `publication=NO_UPLOAD`. All nine
+rows have their expected exit and an `ACCEPTED_FACTUAL_DISPOSITION`. The
+evidence SHA-256 values are:
+
+- AudioGen: `46936deb4538c9ea25eeaddc6922964e9c5c5b263fc9d3c7dc1071735f2b5f48`.
+- CosyVoice3: `9ead7ff98841183c40445e33647a9496bd9ea867b613c7154b93739e939e581d`.
+- Irodori: `37ba7cb76bee99a0aa8898c09ddf11b01a3f6683fe325b557685d0e25c8944bc`.
+- MOSS-Audio: `b410496010dcc64baf00e85ae34c9bbc9562c152b98241f4c74d310e0022e3ec`.
+- OWSM: `e8aae7e3a16e0815c3c4c366a1718997b884e9c09e4826d7b24bd9768b8eaf34`.
+- SBV2: `770e5481d0335a22b52ca511adcab2fa8a9231a74c6db49d8f60e0c6a3c4ea8f`.
+- MMS (`jpn`): `1155f16d2fba80ad95a37ffad6f9b2e4776d7f3770071b9bf3f9333e9785f0cc`.
+- Qwen2-Audio: `ce765ec05eb57e2c1fb3721648046090310db58a88df0920c72df6fd6d80c8de`.
+- VibeVoice-ASR: `d991cab34b65d987b509bf65994ae7962c511e92776f959e10d599529ec05526`.
+
+The 6,607-byte batch manifest has SHA-256
+`5dd20296f7a39575870858e2d54a618b7bd2c1b38da1c4c16b1db8e42e92f011`.
+Its 18 referenced evidence/log files were independently read back after
+transfer: every recorded size and SHA-256 matched. The combined local archive
+is `/private/tmp/vokra-pre-scaleway-final-evidence-86efd5cf.tar.gz`, 266,558
+bytes, SHA-256
+`6e240214ff1d2afe094ba1baa1ff0154d526d57146dcdaa0e764388ceaf6da0e`.
+
+At the same exact head, `cargo fmt`, the forbidden-symbol and zero-dependency
+gates, `cargo metadata`, workspace/all-target/all-feature tests, workspace/
+all-target/all-feature Clippy with warnings denied, `cargo deny check` and
+`cargo audit` all completed successfully on VAST. The principal log SHA-256
+values are full test
+`f2f5b13a5cce63e14c6e9fc6e940c88ba79eaca6bdffe527c95524789855c603`,
+Clippy
+`2670e36fe7991f948f762f34e210902d2319c02daf6cf27506bd9f434b551f3e`,
+cargo-deny
+`cae215ad3eb07523400e35aff2eb59116f4594be2ff2a417c5d397e3f26c1102`
+and cargo-audit
+`01ed47e312cde79358be1d34373ecce034e5a4250154f6d07f8f0b7da08f4127`.
+Cargo-deny emitted only the pre-existing unmatched `libfuzzer-sys` exception
+warning.
+
+A transient unauthenticated GitHub API rate-limit response was preserved as an
+incomplete audit and never accepted as factual evidence. The worker was stopped
+without compute billing until the official reset, then the final batch ran from
+a fresh 60-request window. The nine-worker batch acquired or executed no
+external checkpoint/model weight; workspace validation used only the repository's
+committed test fixtures and synthetic paths. No model ran on the maintainer Mac
+and no upload occurred. After evidence recovery, instance `50237377` and its
+storage were destroyed; its individual query returned `instances: null`. The
+only remaining VAST inventory entry was the unrelated running instance
+`50243461` (`ralomi-m6-int8-net5`), which this wave did not use, stop or destroy.
+
+The read-only live Hugging Face audit was repeated again without weight access:
+194 public repositories, 193 GGUF-bearing repositories and 198 GGUF files; CPU
+is `full=131`, `partial=43`, `no-runtime-binder=19`, `not-artifact=1`, while
+Metal is `full=131`, `blocked-by-cpu=62`, `not-artifact=1`. This exact-head
+model-free closure therefore completes the prepared nine-worker wave but does
+not convert any of those live artifact/runtime rows into a real-weight or Apple
+hardware verdict.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
