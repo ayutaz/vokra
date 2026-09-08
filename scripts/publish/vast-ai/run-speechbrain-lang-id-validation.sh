@@ -267,6 +267,7 @@ validate_work_dir() {
   paths_overlap "$canonical_work" "$canonical_root" && { die '--work-dir overlaps checkout'; return 2; }
   paths_overlap "$canonical_work" "$canonical_project" && { die '--work-dir overlaps project'; return 2; }
   paths_overlap "$canonical_work" "$approval_real" && { die '--work-dir overlaps approval'; return 2; }
+  return 0
 }
 
 require_vast_host() {
@@ -566,11 +567,14 @@ run_self_test() {
     || canonical_file "$probe/../$(basename "$probe")/approval.json" >/dev/null 2>&1; then
     log 'self-test FAIL: lexical dot approval path accepted'; fail=1
   fi
+  if ! validate_work_dir "$probe/normal-output" "$probe/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: non-overlapping work directory was not accepted'; fail=1
+  fi
   if validate_work_dir "$probe/link/existing/nested/new" "$probe/approval.json" >/dev/null 2>&1; then
     log 'self-test FAIL: existing descendant under symlink ancestor accepted'; fail=1
   fi
-  if validate_work_dir "$probe/real/existing/nested/new" "$probe/approval.json" >/dev/null 2>&1; then
-    log 'self-test FAIL: work path overlapping approval parent accepted'; fail=1
+  if validate_work_dir "$probe/approval.json/nested/new" "$probe/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: work path under approval file accepted'; fail=1
   fi
   rm -rf "$probe"
   trap - RETURN
