@@ -26,6 +26,48 @@ ARTIFACTS = {
 }
 TOTAL_BYTES = sum(v[0] for v in ARTIFACTS.values())
 MAX_HEADER_BYTES = 64 * 1024 * 1024
+
+# These are the two *external* release files that the offline converter is
+# allowed to embed.  Keep the wire keys here as part of the worker contract:
+# an artifact can be byte-authenticated and still be accidentally handed to a
+# different model key by a future worker.  The Rust binder mirrors these keys
+# in `vokra-models/src/firered_asr_aed/mod.rs`.
+SIDECAR_BINDINGS = {
+    "cmvn.txt": {
+        "role": "inference_cmvn_text",
+        "metadata_key": "vokra.firered_asr_aed_l.cmvn_txt",
+        "digest_key": "vokra.firered_asr_aed_l.cmvn_txt_sha256",
+        "bytes": 2_985,
+        "sha256": CMVN_SHA256,
+        "git_blob_sha1": ARTIFACTS["cmvn.txt"][1],
+    },
+    "dict.txt": {
+        "role": "inference_output_dictionary_text",
+        "metadata_key": "vokra.firered_asr_aed_l.dict_txt",
+        "digest_key": "vokra.firered_asr_aed_l.dict_txt_sha256",
+        "bytes": 71_448,
+        "sha256": DICT_SHA256,
+        "git_blob_sha1": ARTIFACTS["dict.txt"][1],
+    },
+}
+
+STRUCTURAL_MARKER_POLICY = {
+    "status": "AUTHENTICATED_DICTIONARY_ANCHORS",
+    "dictionary_anchor_rows": [
+        ["<blank>", 0],
+        ["<unk>", 1],
+        ["<pad>", 2],
+        ["<sos>", 3],
+        ["<eos>", 4],
+    ],
+    "forbidden_decoder_ids": [["blank", 0], ["pad", 2], ["sos", 3]],
+    "unknown_id": 1,
+    "unknown_policy": "render_dictionary_token",
+    "eos_id": 4,
+    "eos_policy": "strip_only_if_terminal",
+    "ordinary_content_id_range": [5, 7_832],
+    "sentencepiece_boundary": "replace U+2581 with ASCII space, then trim",
+}
 SOURCE_ROLES = (
     "fireredasr/data/asr_feat.py", "fireredasr/data/token_dict.py",
     "fireredasr/models/fireredasr.py", "fireredasr/models/fireredasr_aed.py",
@@ -395,6 +437,7 @@ def inspect_source_contract(root: Path) -> dict[str, Any]:
         },
         "frontend": "ASRFeatExtractor accepts the provided WAV sample_rate dynamically; exact KaldifeatFbank geometry is pinned-source evidence, while the official README normalizes release input to 16 kHz mono",
         "tokenizer": "SentencePiece/TokenDict piece-to-id and detokenization mapping is pinned-source evidence; exact special ids and dictionary binding require checkpoint args plus an independently checked dict",
+        "structural_marker_policy": STRUCTURAL_MARKER_POLICY,
         "records": records,
     }
 
@@ -426,13 +469,67 @@ def inspect_dict(path: Path) -> dict[str, Any]:
         tokens.append(fields[0]); ids.append(int(fields[1]))
     if len(set(tokens)) != len(tokens) or ids != list(range(7832)) or list(zip(tokens[:5], ids[:5])) != [("<blank>", 0), ("<unk>", 1), ("<pad>", 2), ("<sos>", 3), ("<eos>", 4)] or list(zip(tokens[-3:], ids[-3:])) != [("龟", 7829), ("龠", 7830), ("龢", 7831)]:
         raise ValueError("dict.txt token/id structure mismatch")
-    return {"bytes": path.stat().st_size, "sha256": digest(path), "lines": len(lines), "first": list(zip(tokens[:5], ids[:5])), "last": list(zip(tokens[-3:], ids[-3:]))}
+    return {
+        "bytes": path.stat().st_size,
+        "sha256": digest(path),
+        "lines": len(lines),
+        "first": list(zip(tokens[:5], ids[:5])),
+        "last": list(zip(tokens[-3:], ids[-3:])),
+        "structural_marker_policy": STRUCTURAL_MARKER_POLICY,
+    }
 
 
 def inspect_cmvn(path: Path) -> dict[str, Any]:
     if digest(path) != CMVN_SHA256:
         raise ValueError("cmvn.txt SHA256 mismatch")
     return parse_cmvn(path.read_text(encoding="ascii"), path.stat().st_size, digest(path))
+
+
+def validate_sidecar_binding_record(
+    name: str,
+    contract: dict[str, Any],
+    artifact: dict[str, Any],
+    structure: dict[str, Any],
+) -> None:
+    """Check one sidecar's identity before publishing the worker manifest."""
+    if name not in SIDECAR_BINDINGS or contract != SIDECAR_BINDINGS[name]:
+        raise ValueError(f"FireRed sidecar contract is not canonical: {name}")
+    for evidence, label in ((artifact, "artifact"), (structure, "structure")):
+        if evidence.get("bytes") != contract["bytes"] or evidence.get("sha256") != contract["sha256"]:
+            raise ValueError(f"FireRed sidecar {label} identity drifted: {name}")
+
+
+def inspect_sidecar_binding(
+    files: dict[str, Path], server_artifacts: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Bind the release sidecars to their exact converter metadata keys.
+
+    ``validate_artifact_identity`` authenticates the HF object identity, while
+    the structure helpers authenticate the bytes consumed by the native
+    binder.  Keeping the final mapping in one object prevents a later worker
+    from validating ``cmvn.txt`` and ``dict.txt`` independently and then
+    swapping their GGUF destinations.
+    """
+    records: dict[str, Any] = {}
+    for name, contract in SIDECAR_BINDINGS.items():
+        path = files.get(name)
+        if path is None or not path.is_file() or path.is_symlink():
+            raise ValueError(f"FireRed sidecar is not a regular file: {name}")
+        expected = ARTIFACTS[name]
+        artifact = validate_artifact_identity(name, path, expected, server_artifacts.get(name, {}))
+        structure = inspect_cmvn(path) if name == "cmvn.txt" else inspect_dict(path)
+        validate_sidecar_binding_record(name, contract, artifact, structure)
+        records[name] = {
+            **contract,
+            "artifact": artifact,
+            "structure": structure,
+            "status": "AUTHENTICATED_EXTERNAL_SIDECAR_BOUND",
+        }
+    return {
+        "status": "AUTHENTICATED_EXTERNAL_SIDECARS_BOUND",
+        "required_for": "converter_and_executable_runtime",
+        "records": records,
+    }
 
 
 def parse_cmvn(raw: str, size: int, sha: str) -> dict[str, Any]:
@@ -602,6 +699,7 @@ def inspect(args: argparse.Namespace) -> int:
         manifest["artifacts"]["train_bpe1000.model"].update({"structure": inspect_sentencepiece(files["train_bpe1000.model"]), "status": "STRUCTURE_AUTHENTICATED"})
         manifest["artifacts"]["dict.txt"].update({"structure": inspect_dict(files["dict.txt"])})
         manifest["artifacts"]["cmvn.txt"].update({"structure": inspect_cmvn(files["cmvn.txt"]), "status": "STRUCTURE_AUTHENTICATED"})
+        manifest["sidecar_binding"] = inspect_sidecar_binding(files, server_artifacts)
         if files["config.yaml"].stat().st_size != 0:
             raise ValueError("config.yaml must be the authenticated empty file")
         manifest["structures"] = {"dict.txt": {"bytes": files["dict.txt"].stat().st_size, "sha256": digest(files["dict.txt"]), "status": "STRUCTURE_AUTHENTICATED"}, "cmvn.ark": {"bytes": files["cmvn.ark"].stat().st_size, "sha256": digest(files["cmvn.ark"]), "status": "STRUCTURAL_REVIEW_REQUIRED"}, "cmvn.txt": {"bytes": files["cmvn.txt"].stat().st_size, "sha256": digest(files["cmvn.txt"]), "status": "STRUCTURE_AUTHENTICATED"}, "config_yaml": {"bytes": 0, "sha256": digest(files["config.yaml"]), "status": "BLOCKER_EMPTY_CONFIG"}, "tokenizer": {"bytes": files["train_bpe1000.model"].stat().st_size, "sha256": digest(files["train_bpe1000.model"]), "status": "STRUCTURE_AUTHENTICATED"}}
@@ -623,6 +721,35 @@ def inspect(args: argparse.Namespace) -> int:
 
 def self_test() -> None:
     validate_official_search_policy_source()
+    assert set(SIDECAR_BINDINGS) == {"cmvn.txt", "dict.txt"}
+    assert SIDECAR_BINDINGS["cmvn.txt"]["metadata_key"] == "vokra.firered_asr_aed_l.cmvn_txt"
+    assert SIDECAR_BINDINGS["dict.txt"]["metadata_key"] == "vokra.firered_asr_aed_l.dict_txt"
+    assert SIDECAR_BINDINGS["cmvn.txt"]["digest_key"].endswith("cmvn_txt_sha256")
+    assert SIDECAR_BINDINGS["dict.txt"]["digest_key"].endswith("dict_txt_sha256")
+    assert STRUCTURAL_MARKER_POLICY == {
+        "status": "AUTHENTICATED_DICTIONARY_ANCHORS",
+        "dictionary_anchor_rows": [["<blank>", 0], ["<unk>", 1], ["<pad>", 2], ["<sos>", 3], ["<eos>", 4]],
+        "forbidden_decoder_ids": [["blank", 0], ["pad", 2], ["sos", 3]],
+        "unknown_id": 1,
+        "unknown_policy": "render_dictionary_token",
+        "eos_id": 4,
+        "eos_policy": "strip_only_if_terminal",
+        "ordinary_content_id_range": [5, 7_832],
+        "sentencepiece_boundary": "replace U+2581 with ASCII space, then trim",
+    }
+    assert 1 not in [token_id for _, token_id in STRUCTURAL_MARKER_POLICY["forbidden_decoder_ids"]]
+    assert STRUCTURAL_MARKER_POLICY["unknown_id"] == 1
+    assert STRUCTURAL_MARKER_POLICY["unknown_policy"] == "render_dictionary_token"
+    cmvn_contract = SIDECAR_BINDINGS["cmvn.txt"]
+    cmvn_identity = {"bytes": cmvn_contract["bytes"], "sha256": cmvn_contract["sha256"]}
+    validate_sidecar_binding_record("cmvn.txt", cmvn_contract, cmvn_identity, cmvn_identity)
+    swapped = dict(cmvn_contract, metadata_key=SIDECAR_BINDINGS["dict.txt"]["metadata_key"])
+    try:
+        validate_sidecar_binding_record("cmvn.txt", swapped, cmvn_identity, cmvn_identity)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("swapped external sidecar destination accepted")
     requirement_ids = {item["id"] for item in unlock_requirements()}
     assert requirement_ids == {
         "dependency_license_review",
@@ -647,6 +774,7 @@ def self_test() -> None:
             path.write_text("\n".join(markers) + "\n", encoding="utf-8")
         source_contract = inspect_source_contract(source_fixture)
         assert source_contract["status"] == "AUTHENTICATED_SOURCE_CONTRACT"
+        assert source_contract["structural_marker_policy"] == STRUCTURAL_MARKER_POLICY
         assert source_contract["architecture"] == "ConformerEncoder + TransformerDecoder + batch_beam_search"
         assert source_contract["search"] == {
             "name": "batch_beam_search",

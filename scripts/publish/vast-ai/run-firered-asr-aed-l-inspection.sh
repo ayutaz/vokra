@@ -160,6 +160,8 @@ self_test() {
     'f68c6b43f739697d7ab02ff6debacee130e1d541' 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30' \
     'uv lock --check' 'source/kaldi-native-fbank' 'setup.py' 'cmake' 'make' 'cc' 'c++' 'g++' 'native build toolchain' \
     'forbidden CUDA dependency row' 'download.pytorch.org/whl/cpu' 'license hash is not authenticated' \
+    'sidecar_binding' 'AUTHENTICATED_EXTERNAL_SIDECARS_BOUND' 'AUTHENTICATED_EXTERNAL_SIDECAR_BOUND' 'converter_and_executable_runtime' \
+    'vokra.firered_asr_aed_l.cmvn_txt' 'vokra.firered_asr_aed_l.dict_txt' 'structural_marker_policy' 'forbidden_decoder_ids' 'unknown_policy' 'render_dictionary_token' 'strip_only_if_terminal' 'ordinary_content_id_range' \
     '--no-sync' 'FIRERED_PROJECT' 'firered_asr_aed_l/pyproject.toml' 'firered_asr_aed_l/uv.lock' \
     '--expected-head' '--approval-sha256' 'FIRERED_APPROVAL_VALID_BUT_BLOCKED' 'AUTHENTICATED_CMVN_TXT_BINDING_PARITY_PENDING' 'SOURCE_IMPLEMENTED_PARITY_PENDING' 'AUTHENTICATED_OUTPUT_DICTIONARY_BINDING' 'BLOCKED_EMPTY_CONFIG' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE' 'AUTHENTICATED_SOURCE_CONTRACT' \
     "cargo fmt --manifest-path \"\$ROOT/Cargo.toml\" --all -- --check" \
@@ -650,6 +652,55 @@ grep -Fq '"status": "BLOCKED"' "$work_dir/evidence/manifest.json" || die 'blocke
 grep -Fq '"evidence_stage": "INSPECTION_ONLY"' "$work_dir/evidence/manifest.json" || die 'inspection stage missing'
 grep -Fq '"publication": "NO_UPLOAD"' "$work_dir/evidence/manifest.json" || die 'publication status missing'
 grep -Fq '"inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE"' "$work_dir/evidence/manifest.json" || die 'inspection did not complete authenticated evidence'
+# The inspector must publish one explicit artifact-to-GGUF-key binding for
+# each inference sidecar.  Keep this check before preparation so a worker can
+# never proceed with independently validated, but swapped, cmvn/dict inputs.
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python - "$work_dir/evidence/manifest.json" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+binding = manifest.get("sidecar_binding")
+if not isinstance(binding, dict) or binding.get("status") != "AUTHENTICATED_EXTERNAL_SIDECARS_BOUND":
+    raise SystemExit("external sidecar binding is missing or unauthenticated")
+if binding.get("required_for") != "converter_and_executable_runtime":
+    raise SystemExit("external sidecar binding scope drifted")
+records = binding.get("records")
+if not isinstance(records, dict) or set(records) != {"cmvn.txt", "dict.txt"}:
+    raise SystemExit("external sidecar binding record set drifted")
+expected_marker_policy = {
+    "status": "AUTHENTICATED_DICTIONARY_ANCHORS",
+    "dictionary_anchor_rows": [["<blank>", 0], ["<unk>", 1], ["<pad>", 2], ["<sos>", 3], ["<eos>", 4]],
+    "forbidden_decoder_ids": [["blank", 0], ["pad", 2], ["sos", 3]],
+    "unknown_id": 1,
+    "unknown_policy": "render_dictionary_token",
+    "eos_id": 4,
+    "eos_policy": "strip_only_if_terminal",
+    "ordinary_content_id_range": [5, 7832],
+    "sentencepiece_boundary": "replace U+2581 with ASCII space, then trim",
+}
+dictionary_structure = records["dict.txt"].get("structure")
+if not isinstance(dictionary_structure, dict) or dictionary_structure.get("structural_marker_policy") != expected_marker_policy:
+    raise SystemExit("dictionary structural-marker policy drifted from the runtime contract")
+source_contract = manifest.get("official_source_contract") or manifest.get("source_contract")
+if not isinstance(source_contract, dict) or source_contract.get("structural_marker_policy") != expected_marker_policy:
+    raise SystemExit("source structural-marker policy is missing or drifted")
+expected = {
+    "cmvn.txt": ("inference_cmvn_text", "vokra.firered_asr_aed_l.cmvn_txt", "vokra.firered_asr_aed_l.cmvn_txt_sha256", 2985, "11816db612b43318ab01f9cfd05ee121dd3900b7a39d893f59d0104a06c199d2"),
+    "dict.txt": ("inference_output_dictionary_text", "vokra.firered_asr_aed_l.dict_txt", "vokra.firered_asr_aed_l.dict_txt_sha256", 71448, "6907215aeb034f6926b26bf8abfd650f756781622480a2342ec1f29b2072cafe"),
+}
+for name, (role, metadata_key, digest_key, size, sha256) in expected.items():
+    row = records[name]
+    if row.get("status") != "AUTHENTICATED_EXTERNAL_SIDECAR_BOUND":
+        raise SystemExit(f"{name} sidecar status is not authenticated")
+    if (row.get("role"), row.get("metadata_key"), row.get("digest_key"), row.get("bytes"), row.get("sha256")) != (role, metadata_key, digest_key, size, sha256):
+        raise SystemExit(f"{name} sidecar-to-GGUF binding drifted")
+    artifact = row.get("artifact")
+    if not isinstance(artifact, dict) or artifact.get("bytes") != size or artifact.get("sha256") != sha256:
+        raise SystemExit(f"{name} sidecar artifact identity is not bound")
+print("FireRed external sidecar artifact/worker binding: PASS")
+PY
 prepared_path="$work_dir/evidence/firered-asr-aed-l.prepared.safetensors"
 preparation_manifest="$work_dir/evidence/firered-asr-aed-l.prepared.safetensors.manifest.json"
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$FIRERED_PROJECT" --python 3.12 python "$PREPARER" \
