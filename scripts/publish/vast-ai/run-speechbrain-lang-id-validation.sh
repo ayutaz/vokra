@@ -12,6 +12,7 @@ if [[ -z "$VOKRA_SCRATCH" ]]; then VOKRA_SCRATCH="$HOME/scratchpad"; fi
 LANG_ID_PROJECT="$VOKRA_ROOT/tools/parity/speechbrain_lang_id"
 LICENSE_GATE="$LANG_ID_PROJECT/preflight_gate.py"
 LICENSE_MANIFEST="$LANG_ID_PROJECT/license_gate_manifest.json"
+MODEL_FREE_AUDIT="$LANG_ID_PROJECT/model_free_audit.py"
 
 MODEL_KIND="lang-id-voxlingua107"
 UPSTREAM_REPO="speechbrain/lang-id-voxlingua107-ecapa"
@@ -45,6 +46,8 @@ usage() {
 usage: run-speechbrain-lang-id-validation.sh --approval-evidence <regular-json-file>
        --approval-evidence-sha256 <lowercase-sha256> --expected-head <lowercase-40-hex>
        [--work-dir <absent-dir>]
+       run-speechbrain-lang-id-validation.sh --model-free --expected-head <lowercase-40-hex>
+       [--work-dir <absent-dir>]
        run-speechbrain-lang-id-validation.sh --self-test
 
 VAST/Linux-only non-publishing VoxLingua107 worker. It uses the official
@@ -54,6 +57,8 @@ classification smoke, and records hashes/manifests. Parity stays NOT_GATED
 until numeric bounds are reviewed and Metal is measured separately.
 Actual runs require Linux x86_64, VOKRA_PUBLISH_ON_VAST=1, exact 64 GiB RAM,
 150 GB free disk, and a clean checkout. --self-test is offline and hermetic.
+--model-free performs only the checkout/lock/source-identity/fixture audit and
+emits a blocked, no-upload report; it never downloads or executes a model.
 EOF
 }
 
@@ -263,6 +268,60 @@ require_tooling() {
     || die "VAST checkout must be clean"
 }
 
+require_model_free_tooling() {
+  local tool path
+  for tool in uv git sha256sum awk grep find wc tr; do
+    command -v "$tool" >/dev/null 2>&1 || die "required model-free VAST tool missing: $tool"
+  done
+  [[ -d "$VOKRA_ROOT/.git" && -f "$LANG_ID_PROJECT/pyproject.toml" && -f "$LANG_ID_PROJECT/uv.lock" ]] \
+    || die "model-free VAST checkout or dedicated Lang-ID project is missing"
+  [[ -f "$LICENSE_GATE" && ! -L "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && ! -L "$LICENSE_MANIFEST" ]] \
+    || die "model-free Lang-ID preflight inputs are missing or symlinked"
+  [[ -f "$MODEL_FREE_AUDIT" && ! -L "$MODEL_FREE_AUDIT" ]] \
+    || die "model-free Lang-ID audit script is missing or symlinked"
+  path="$VOKRA_ROOT/$REFERENCE_INPUT"
+  [[ -f "$path" && ! -L "$path" ]] || die "fixed Lang-ID fixture is missing or symlinked"
+}
+
+run_model_free_audit() {
+  local expected_head="$1" requested_work_dir="$2" run_stamp work_dir evidence_dir audit_log audit_report audit_rc summary_file
+  require_clean_expected_head "$expected_head"
+  require_vast_host
+  require_model_free_tooling
+  run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  if [[ -n "$requested_work_dir" ]]; then work_dir="$requested_work_dir"
+  else work_dir="$VOKRA_SCRATCH/speechbrain-lang-id-model-free/$run_stamp"; fi
+  validate_work_dir "$work_dir" "$LICENSE_MANIFEST"
+  evidence_dir="$work_dir/evidence"
+  audit_log="$evidence_dir/model-free-audit.log"
+  audit_report="$evidence_dir/model-free-audit.json"
+  summary_file="$evidence_dir/summary.txt"
+  mkdir -p "$evidence_dir"
+  set +e
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$MODEL_FREE_AUDIT" \
+    --lock "$LANG_ID_PROJECT/uv.lock" --project "$LANG_ID_PROJECT/pyproject.toml" \
+    --manifest "$LICENSE_MANIFEST" --fixture "$VOKRA_ROOT/$REFERENCE_INPUT" \
+    --output "$audit_report" >"$audit_log" 2>&1
+  audit_rc=$?
+  set -e
+  cat "$audit_log" >&2
+  [[ "$audit_rc" == 2 && -s "$audit_report" ]] || die "model-free audit did not produce its intentional blocked report"
+  {
+    echo "execution_status=BLOCKED_OWNER_REVIEW"
+    echo "evidence_stage=MODEL_FREE_SOURCE_LICENSE_FIXTURE_AUDIT"
+    echo "expected_head=$expected_head"
+    echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "audit_report=$audit_report"
+    echo "publication_status=NO_UPLOAD"
+    echo "model_status=NOT_ACQUIRED"
+    echo "parity_status=NOT_RUN"
+    echo "verdict=BLOCKED"
+  } > "$summary_file"
+  echo "run-speechbrain-lang-id-validation: BLOCKED_OWNER_REVIEW (model-free, no-upload)" >&2
+  echo "Model-free audit report: $audit_report" >&2
+  return 2
+}
+
 run_logged() {
   local label="$1" output="$2" status
   shift 2
@@ -443,7 +502,7 @@ run_self_test() {
     "$GGUF_ENV" "$REFERENCE_DIR_ENV" "EXPECTED_N_MELS=60" \
     "EXPECTED_EMBEDDING_DIM=256" "EXPECTED_CLASS_COUNT=107" \
     "embedding_model.ckpt" "classifier.ckpt" "label_encoder.txt" "hyperparams.yaml" "config.json" \
-    "snapshot_download" "code-bound upstream identity is unresolved" \
+    "snapshot_download" "code-bound upstream identity is unresolved" "model_free_audit.py" "MODEL_FREE_SOURCE_LICENSE_FIXTURE_AUDIT" \
     "--approval-evidence" "--approval-evidence-sha256" "write_transfer_manifest" "publication=NO_UPLOAD" "APPLE_LANG_ID_APPROVAL_EVIDENCE"; do
     if ! grep -Fq -- "$required" "$script_path"; then log "self-test FAIL: missing $required"; fail=1; fi
   done
@@ -528,6 +587,11 @@ run_self_test() {
   if "$script_path" --approval-evidence --work-dir x >/dev/null 2>&1; then log "self-test FAIL: option used as approval value accepted"; fail=1; fi
   if "$script_path" --approval-evidence one --approval-evidence two >/dev/null 2>&1; then log "self-test FAIL: duplicate approval accepted"; fail=1; fi
   if "$script_path" --approval-evidence one --approval-evidence-sha256 one >/dev/null 2>&1; then log "self-test FAIL: malformed approval SHA accepted"; fail=1; fi
+  if "$script_path" --model-free >/dev/null 2>&1; then log "self-test FAIL: model-free route accepted without expected-head"; fail=1; fi
+  if "$script_path" --model-free --model-free >/dev/null 2>&1; then log "self-test FAIL: duplicate model-free accepted"; fail=1; fi
+  if "$script_path" --model-free --expected-head "$(printf '%040d' 1)" --expected-head "$(printf '%040d' 2)" >/dev/null 2>&1; then log "self-test FAIL: duplicate model-free expected-head accepted"; fail=1; fi
+  if "$script_path" --self-test --model-free >/dev/null 2>&1; then log "self-test FAIL: mixed self-test/model-free accepted"; fail=1; fi
+  if "$script_path" --model-free --expected-head "$(printf '%040d' 1)" --approval-evidence one --approval-evidence-sha256 "$(printf '%064d' 1)" >/dev/null 2>&1; then log "self-test FAIL: model-free route accepted approval arguments"; fail=1; fi
   if "$script_path" --approval-evidence one --approval-evidence-sha256 "$(printf '%064d' 1)" --approval-evidence-sha256 "$(printf '%064d' 2)" >/dev/null 2>&1; then log "self-test FAIL: duplicate approval SHA accepted"; fail=1; fi
   if "$script_path" --approval-evidence one >/dev/null 2>&1; then log "self-test FAIL: missing expected-head accepted"; fail=1; fi
   if "$script_path" --expected-head >/dev/null 2>&1; then log "self-test FAIL: missing expected-head value accepted"; fail=1; fi
@@ -547,6 +611,15 @@ run_self_test() {
     log "self-test FAIL: license gate did not block before host/scratch"
     fail=1
   fi
+  set +e
+  VOKRA_ROOT="$fake_root" VOKRA_SCRATCH="$fake_scratch" "$script_path" \
+    --model-free --expected-head "$(printf '%040d' 1)" >"$fake_root/model-free.log" 2>&1
+  rc=$?
+  set -e
+  if [[ $rc -ne 2 || -e "$fake_scratch" ]] || ! grep -Eq 'missing \.git|not a git repository' "$fake_root/model-free.log"; then
+    log "self-test FAIL: model-free audit did not stop before VAST scratch"
+    fail=1
+  fi
   rm -rf "$fake_root"
   if [[ $fail -eq 0 ]]; then
     echo "run-speechbrain-lang-id-validation.sh self-test: OK ($cases cases)"
@@ -556,8 +629,8 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 requested_work_dir="" approval_evidence="" approval_evidence_sha="" expected_head="" run_stamp work_dir upstream_dir evidence_dir
-  local seen_work_dir=0 seen_self_test=0 seen_approval=0 seen_approval_sha=0 seen_expected_head=0
+  local self_test=0 model_free=0 requested_work_dir="" approval_evidence="" approval_evidence_sha="" expected_head="" run_stamp work_dir upstream_dir evidence_dir
+  local seen_work_dir=0 seen_self_test=0 seen_model_free=0 seen_approval=0 seen_approval_sha=0 seen_expected_head=0
   local prepared_path prepared_manifest gguf_path reference_dir score_path
   local run_log env_log prep_log prep_contract_log reference_log reference_contract_log convert_log parity_log cli_log gate_log summary_file
   local tensor_count source_hashes tensor_count_file reference_manifest_sha approval_sha gguf_sha transfer_manifest transfer_manifest_sha
@@ -583,6 +656,10 @@ main() {
         (( seen_expected_head == 0 )) || { die "duplicate --expected-head"; return 2; }
         [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--expected-head requires a lowercase 40-hex value"; return 2; }
         expected_head="$2"; seen_expected_head=1; shift 2 ;;
+      --model-free)
+        (( self_test == 0 )) || { die "--self-test must be exclusive"; return 2; }
+        (( seen_model_free == 0 )) || { die "duplicate --model-free"; return 2; }
+        seen_model_free=1; model_free=1; shift ;;
       --self-test)
         (( seen_self_test == 0 )) || { die "duplicate --self-test"; return 2; }
         seen_self_test=1; self_test=1; shift ;;
@@ -591,8 +668,15 @@ main() {
     esac
   done
   if [[ $self_test -eq 1 ]]; then
-    [[ -z "$requested_work_dir$approval_evidence$approval_evidence_sha" ]] || { die "--self-test accepts no other arguments"; return 2; }
+    [[ -z "$requested_work_dir$approval_evidence$approval_evidence_sha$expected_head" && "$model_free" == 0 ]] || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test; return $?
+  fi
+  if [[ "$model_free" == 1 ]]; then
+    [[ "$seen_expected_head" == 1 && "$seen_approval" == 0 && "$seen_approval_sha" == 0 ]] \
+      || { usage; die "--model-free requires --expected-head and accepts no approval evidence"; return 2; }
+    [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hexadecimal characters'; return 2; }
+    run_model_free_audit "$expected_head" "$requested_work_dir"
+    return $?
   fi
   [[ -n "$approval_evidence" && "$seen_approval_sha" == 1 && "$seen_expected_head" == 1 ]] || { usage; die "--approval-evidence, --approval-evidence-sha256 and --expected-head are required"; return 2; }
   [[ "$approval_evidence_sha" =~ ^[0-9a-f]{64}$ ]] || { die '--approval-evidence-sha256 must be exactly 64 lowercase hexadecimal characters'; return 2; }
