@@ -7,8 +7,9 @@
 //! 1. `F0Predictor` — mel → F0 sequence (this file, Wave 2).
 //! 2. `SourceModuleHnNSF` — F0 → source signal (see [`crate::nsf`], Wave 1).
 //! 3. `HiFTGenerator` chain — upsample + source fusion + resblocks +
-//!    magnitude/phase → iSTFT (Wave 3, forthcoming).
-//! 4. Parity harness — synthesized-weight shape/determinism pin (Wave 4).
+//!    magnitude/phase → iSTFT, with scalar and device-resident execution.
+//! 4. Parity harness — synthesized-weight shape/determinism pin. Real-weight
+//!    parity remains a separately gated owner/VAST validation task.
 //!
 //! Multiple published models feed the same layer (CosyVoice2 / CosyVoice3
 //! / Chatterbox family), so this lives in `vokra-ops` rather than a
@@ -251,9 +252,8 @@ impl F0Predictor {
 }
 
 // ---------------------------------------------------------------------------
-// Primitive helpers (kept local to hiftnet.rs; shared with the coming Wave 3
-// generator chain rather than promoted to a public op until a second caller
-// materialises).
+// Primitive helpers kept local to hiftnet.rs and shared by the HiFTGenerator
+// chain rather than promoted to a public op until a second caller materialises.
 // ---------------------------------------------------------------------------
 
 /// ELU activation: `x` for `x > 0`, `exp(x) - 1` otherwise. Upstream uses
@@ -430,10 +430,9 @@ impl Snake {
 /// Naive `O(in × out × kernel × t_in)` scatter — every convolution in this
 /// vocoder is small (kernel ≤ 16, in/out ≤ 512), so the arithmetic budget
 /// per synthesis step is modest; a matmul refactor is deferred.
-// Wave 3b (HiFTGenerator chain) is the intended consumer. Wave 3a lands
-// this primitive on its own so its arithmetic can be reviewed and
-// property-tested in isolation before the chain plugs it in — dropping
-// the lint here keeps the intent visible.
+// This private primitive is used by the scalar HiFTGenerator decode path. Keep
+// the lint allowance explicit because the resident backend has its own device
+// implementation of the same operation.
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 fn conv_transpose1d(

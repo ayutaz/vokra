@@ -11,8 +11,8 @@
 //! embedding a Python interpreter and re-breaking the NFR-DS-02
 //! zero-dep posture). Output: a GGUF carrying every float tensor
 //! verbatim under its upstream safetensors name, plus the
-//! `vokra.provenance.*` / `vokra.model.*` metadata chunks a future
-//! native BigVGAN loader will read.
+//! `vokra.provenance.*` / `vokra.model.*` metadata chunks read by the strict
+//! native BigVGAN binder in `crates/vokra-models/src/bigvgan/`.
 //!
 //! # Provenance
 //!

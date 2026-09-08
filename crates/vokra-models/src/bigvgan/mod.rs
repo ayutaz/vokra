@@ -89,8 +89,19 @@ mod metal_resident;
 #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 use metal_resident::MetalBigVganResidentOps;
 
-/// Complete learned-op registry for every released BigVGAN variant.
-pub const BIGVGAN_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::SnakeActivation, HotOp::SnakeBeta];
+/// Complete backend-dispatched op registry for every released BigVGAN variant.
+///
+/// The scalar glue (alias-free filtering, MRF averaging, residual adds, and
+/// terminal clamp/tanh) remains outside [`Compute`], but the learned path also
+/// contains the per-stage transposed convolution. Keeping that op in the
+/// registry makes unsupported backends fail before the first dispatch instead
+/// of discovering the gap part-way through a decode.
+pub const BIGVGAN_HOT_OPS: &[HotOp] = &[
+    HotOp::Conv1d,
+    HotOp::ConvTranspose1d,
+    HotOp::SnakeActivation,
+    HotOp::SnakeBeta,
+];
 
 impl BigVganBackendOps for HifiGanComputeOps<'_> {
     fn snake(
@@ -810,6 +821,18 @@ fn synthesized_weights_for_config(cfg: &BigVGanConfig) -> BigVGanWeights {
 mod tests {
     use super::*;
     use vokra_core::gguf::GgufBuilder;
+
+    #[test]
+    fn backend_registry_covers_every_bigvgan_compute_op() {
+        for op in [
+            HotOp::Conv1d,
+            HotOp::ConvTranspose1d,
+            HotOp::SnakeActivation,
+            HotOp::SnakeBeta,
+        ] {
+            assert!(BIGVGAN_HOT_OPS.contains(&op), "missing BigVGAN op {op:?}");
+        }
+    }
 
     // ---- T1: constants pinned against the converter ------------------
 
