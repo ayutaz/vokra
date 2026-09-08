@@ -172,10 +172,15 @@ fn validate_io_paths(input: &Path, output: &Path) -> Result<(), ConvertError> {
 
 fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
     let raw = path.to_string_lossy();
-    if raw
+    #[cfg(windows)]
+    let has_lexical_dot = raw
+        .split(['/', '\\'])
+        .any(|component| matches!(component, "." | ".."));
+    #[cfg(not(windows))]
+    let has_lexical_dot = raw
         .split('/')
-        .any(|component| matches!(component, "." | ".."))
-    {
+        .any(|component| matches!(component, "." | ".."));
+    if has_lexical_dot {
         return Err(ConvertError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("{ARCH}: {label} must not contain lexical dot components"),
@@ -435,7 +440,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "vokra-voice-gender-io-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();

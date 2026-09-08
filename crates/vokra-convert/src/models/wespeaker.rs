@@ -313,10 +313,15 @@ pub fn convert_wespeaker_file(
 
 fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
     let raw = path.to_string_lossy();
-    if raw
+    #[cfg(windows)]
+    let has_lexical_dot = raw
+        .split(['/', '\\'])
+        .any(|component| matches!(component, "." | ".."));
+    #[cfg(not(windows))]
+    let has_lexical_dot = raw
         .split('/')
-        .any(|component| matches!(component, "." | ".."))
-    {
+        .any(|component| matches!(component, "." | ".."));
+    if has_lexical_dot {
         return Err(ConvertError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("wespeaker: {label} must not contain lexical dot components"),

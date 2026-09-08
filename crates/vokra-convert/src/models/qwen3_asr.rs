@@ -501,10 +501,16 @@ fn open_temporary_output(output: &Path) -> Result<(PathBuf, std::fs::File), Conv
 }
 
 fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
-    if path
-        .to_string_lossy()
+    let raw = path.to_string_lossy();
+    #[cfg(windows)]
+    let has_lexical_dot = raw
+        .split(['/', '\\'])
+        .any(|component| matches!(component, "." | ".."));
+    #[cfg(not(windows))]
+    let has_lexical_dot = raw
         .split('/')
-        .any(|component| matches!(component, "." | ".."))
+        .any(|component| matches!(component, "." | ".."));
+    if has_lexical_dot
         || path
             .components()
             .any(|component| matches!(component, Component::CurDir | Component::ParentDir))

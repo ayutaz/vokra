@@ -163,10 +163,14 @@ fn validate_conversion_paths(input: &Path, output: &Path) -> Result<(), ConvertE
 }
 
 fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
-    if path
-        .to_string_lossy()
-        .split('/')
-        .any(|part| matches!(part, "." | ".."))
+    let raw = path.to_string_lossy();
+    #[cfg(windows)]
+    let has_lexical_dot = raw
+        .split(['/', '\\'])
+        .any(|part| matches!(part, "." | ".."));
+    #[cfg(not(windows))]
+    let has_lexical_dot = raw.split('/').any(|part| matches!(part, "." | ".."));
+    if has_lexical_dot
         || path
             .components()
             .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
@@ -263,11 +267,11 @@ fn write_no_clobber(destination: &Path, payload: &[u8]) -> Result<(), ConvertErr
 }
 
 fn ensure_file_identity_support() -> Result<(), ConvertError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         Err(ConvertError::Usage(
             "CLAP atomic publication requires a supported file identity API on this platform"
@@ -291,11 +295,77 @@ fn same_file_identity(file: &std::fs::File, path: &Path) -> bool {
             && expected.dev() == actual.dev()
             && expected.ino() == actual.ino()
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+
+        let Some(expected) = windows_file_identity(file.as_raw_handle()) else {
+            return false;
+        };
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+            return false;
+        };
+        if !metadata.file_type().is_file() {
+            return false;
+        }
+        let Ok(candidate) = std::fs::File::open(path) else {
+            return false;
+        };
+        windows_file_identity(candidate.as_raw_handle()) == Some(expected)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (file, path);
         false
     }
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[allow(dead_code)] // The unused fields preserve the Win32 ABI layout.
+struct WindowsFileTime {
+    low_date_time: u32,
+    high_date_time: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[allow(dead_code)] // The unused fields preserve the Win32 ABI layout.
+struct WindowsByHandleFileInformation {
+    file_attributes: u32,
+    creation_time: WindowsFileTime,
+    last_access_time: WindowsFileTime,
+    last_write_time: WindowsFileTime,
+    volume_serial_number: u32,
+    file_size_high: u32,
+    file_size_low: u32,
+    number_of_links: u32,
+    file_index_high: u32,
+    file_index_low: u32,
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    #[link_name = "GetFileInformationByHandle"]
+    fn get_file_information_by_handle(
+        file: std::os::windows::io::RawHandle,
+        information: *mut WindowsByHandleFileInformation,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn windows_file_identity(handle: std::os::windows::io::RawHandle) -> Option<(u32, u64)> {
+    let mut information = std::mem::MaybeUninit::<WindowsByHandleFileInformation>::uninit();
+    let succeeded =
+        unsafe { get_file_information_by_handle(handle, information.as_mut_ptr()) } != 0;
+    if !succeeded {
+        return None;
+    }
+    let information = unsafe { information.assume_init() };
+    let file_index =
+        (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low);
+    Some((information.volume_serial_number, file_index))
 }
 
 fn remove_owned_temp(file: &std::fs::File, path: &Path) {

@@ -209,10 +209,16 @@ fn validate_io_paths(
 }
 
 fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
-    if path
-        .to_string_lossy()
+    let raw = path.to_string_lossy();
+    #[cfg(windows)]
+    let has_lexical_dot = raw
+        .split(['/', '\\'])
+        .any(|component| matches!(component, "." | ".."));
+    #[cfg(not(windows))]
+    let has_lexical_dot = raw
         .split('/')
-        .any(|component| matches!(component, "." | ".."))
+        .any(|component| matches!(component, "." | ".."));
+    if has_lexical_dot
         || path
             .components()
             .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
@@ -668,7 +674,11 @@ mod tests {
         write_output_no_clobber(&output, b"fresh").expect("write fresh output");
         let error = write_output_no_clobber(&output, b"replacement")
             .expect_err("atomic writer must refuse a claimed final path");
-        assert!(error.to_string().contains("File exists"));
+        assert!(matches!(
+            error,
+            ConvertError::Io(ref error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
         assert_eq!(
             std::fs::read(&output).expect("read atomically published output"),
             b"fresh"
