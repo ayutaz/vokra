@@ -644,6 +644,16 @@ only the existing unmatched `libfuzzer-sys` exception warning;
 dependency-gate log SHA-256 is
 `149cb29504484717cc474ce5ce07b0740ce6cba4ebdd57b892f1cd8ea8606186`.
 
+The read-only live Hugging Face audit was repeated at PR head
+`5d2ee9fd55344f4f5d62e88c0b9fc7c1a45ceafa` after the verified batch was
+pushed.  It again found 194 public repositories, 193 GGUF-bearing
+repositories and 198 GGUF files.  CPU classification remained `full=131`,
+`partial=43`, `no-runtime-binder=19`, `not-artifact=1`; Metal remained
+`full=131`, `blocked-by-cpu=62`, `not-artifact=1`.  The audit's invariant that
+no CPU-complete public repository lacks a complete Metal source route passed.
+Only public metadata, README bytes and GGUF filenames were read; no model
+payload was acquired or executed.
+
 The four recovered text logs total 682,756 bytes and their local SHA-256
 values match the remote values above.  Instance `50262953` and its storage
 were destroyed after recovery; the individual API readback returned
