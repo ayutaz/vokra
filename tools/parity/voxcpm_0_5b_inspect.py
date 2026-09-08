@@ -34,6 +34,8 @@ PUBLIC_MANIFEST_SHA256 = "d364689d5593ed8886029907a5d17e7659b94f7f310fe95b133c54
 AUDIOVAE_BYTES = 301_494_192
 MAX_HEADER_BYTES = 64 * 1024 * 1024
 AUDIOVAE_SOURCE = "src/voxcpm/modules/audiovae/audio_vae.py"
+TOKENIZER_MODEL_TYPE = "BPE"
+TOKENIZER_VOCAB_SIZE = 73_448
 AUDIOVAE_CONTRACT = {
     "sample_rate_hz": 16_000,
     "encoder_dim": 128,
@@ -145,9 +147,42 @@ def check_tokenizer(snapshot: Path) -> dict[str, Any]:
     if not isinstance(tokens, dict) or not tokens.get("bos_token") or not tokens.get("eos_token"):
         raise RuntimeError("special token map is incomplete")
     tokenizer = load_json(snapshot / "tokenizer.json")
+    model = validate_tokenizer_model(tokenizer)
+    return {"config": config, "special_tokens": tokens, "model": model, "json_sha256": digest(snapshot / "tokenizer.json")}
+
+
+def validate_tokenizer_model(tokenizer: Any, *, expected_vocab_size: int | None = None) -> dict[str, Any]:
+    """Validate the immutable BPE envelope without tokenizing any text.
+
+    The tokenizer file is a required companion of the MiniCPM text LM.  A
+    version-only check would let a different tokenizer silently feed valid
+    but semantically wrong ids into the model, so this inspection pins the
+    model family and the vocabulary cardinality already authenticated by
+    `config.json`.  BPE merges and token strings remain evidence fields; the
+    Rust runtime intentionally does not reimplement this JSON parser.
+    """
+    expected_size = TOKENIZER_VOCAB_SIZE if expected_vocab_size is None else expected_vocab_size
+    if not isinstance(expected_size, int) or isinstance(expected_size, bool) or expected_size <= 0:
+        raise RuntimeError("tokenizer.json expected vocabulary size is invalid")
     if not isinstance(tokenizer, dict) or tokenizer.get("version") != "1.0":
         raise RuntimeError("tokenizer.json version mismatch")
-    return {"config": config, "special_tokens": tokens, "json_sha256": digest(snapshot / "tokenizer.json")}
+    model = tokenizer.get("model")
+    if not isinstance(model, dict) or model.get("type") != TOKENIZER_MODEL_TYPE:
+        raise RuntimeError("tokenizer.json model type is not the authenticated BPE contract")
+    vocab = model.get("vocab")
+    if not isinstance(vocab, dict) or len(vocab) != expected_size:
+        raise RuntimeError("tokenizer.json BPE vocabulary size mismatch")
+    ids = []
+    for token, token_id in vocab.items():
+        if not isinstance(token, str) or not isinstance(token_id, int) or isinstance(token_id, bool):
+            raise RuntimeError("tokenizer.json BPE vocabulary entry is malformed")
+        ids.append(token_id)
+    if sorted(ids) != list(range(expected_size)):
+        raise RuntimeError("tokenizer.json BPE vocabulary ids are not a contiguous source range")
+    merges = model.get("merges")
+    if not isinstance(merges, list) or any(not isinstance(merge, str) for merge in merges):
+        raise RuntimeError("tokenizer.json BPE merges are malformed")
+    return {"type": TOKENIZER_MODEL_TYPE, "vocab_size": len(vocab), "merge_count": len(merges)}
 
 
 def check_model_card(snapshot: Path) -> dict[str, Any]:
@@ -346,6 +381,37 @@ def self_test() -> None:
     assert AUDIOVAE_CONTRACT["sample_rate_hz"] == 16_000
     assert AUDIOVAE_CONTRACT["encoder_rates"] == [2, 5, 8, 8]
     assert AUDIOVAE_CONTRACT["decoder_rates"] == [8, 8, 5, 2]
+    assert TOKENIZER_MODEL_TYPE == "BPE"
+    assert TOKENIZER_VOCAB_SIZE == 73_448
+    try:
+        validate_tokenizer_model({"version": "1.0", "model": {"type": "WordPiece"}})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("non-BPE tokenizer model accepted")
+    small_bpe = {
+        "version": "1.0",
+        "model": {"type": "BPE", "vocab": {"a": 0, "b": 1, "ab": 2}, "merges": ["a b"]},
+    }
+    assert validate_tokenizer_model(small_bpe, expected_vocab_size=3) == {
+        "type": "BPE", "vocab_size": 3, "merge_count": 1
+    }
+    tampered_ids = json.loads(json.dumps(small_bpe))
+    tampered_ids["model"]["vocab"]["ab"] = 3
+    try:
+        validate_tokenizer_model(tampered_ids, expected_vocab_size=3)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("tampered BPE vocabulary ids accepted")
+    tampered_merges = json.loads(json.dumps(small_bpe))
+    tampered_merges["model"]["merges"] = ["a", 1]
+    try:
+        validate_tokenizer_model(tampered_merges, expected_vocab_size=3)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("tampered BPE merges accepted")
     assert PUBLIC_MANIFEST_SHA256 == "d364689d5593ed8886029907a5d17e7659b94f7f310fe95b133c545b6901c509"
     try:
         inspect(Path("/missing-snapshot"), Path("/missing-tree"), Path("/tmp/voxcpm-self-test"))

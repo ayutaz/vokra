@@ -6,9 +6,10 @@ use crate::compute::Compute;
 use crate::strict_checkpoint::load_tensor;
 use crate::voxcpm2::{
     LocalDit, LocalEncoder, MiniCpm4BlockWeights, MiniCpm4Config, MiniCpm4KvCache, MiniCpm4Stack,
-    MiniCpm4StackWeights, UnifiedCfm,
+    MiniCpm4StackWeights, UnifiedCfm, VoxCpm2Config,
 };
 use vokra_core::gguf::GgufFile;
+use vokra_ops::vae_continuous::ContinuousVaeConfig;
 
 /// VoxCPM emits two 64-wide feature rows for every generated LM step.
 pub const FEATURE_PATCHES_PER_STEP: usize = 2;
@@ -22,6 +23,162 @@ const VOXCPM_FFN: usize = 4_096;
 const VOXCPM_KV: usize = 128;
 #[allow(dead_code)] // Used only by the staged GGUF generation path.
 const VOXCPM_VOCAB: usize = 73_448;
+
+/// Token ids emitted by the authenticated upstream tokenizer.
+///
+/// VoxCPM's tokenizer is a Hugging Face `tokenizer.json` companion, not a
+/// model tensor.  The Rust runtime deliberately does not pretend to parse
+/// that BPE file here: the complete-composite binder must authenticate it
+/// first.  This packet is the narrow, model-free seam for a separately
+/// authenticated tokenizer to hand ids to the staged generation route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoxCpm2TextTokenPacket {
+    ids: Vec<u32>,
+    vocab_size: u32,
+    max_length: u32,
+}
+
+impl VoxCpm2TextTokenPacket {
+    /// Validate ids produced by an external, authenticated VoxCPM tokenizer.
+    ///
+    /// This method checks only the immutable LM bounds from `config.json`;
+    /// it does not tokenize text, resolve BPE merges, or authorize public
+    /// synthesis.  Those operations remain behind the complete-composite
+    /// gate until tokenizer evidence is bound by the converter.
+    pub fn from_external_tokenizer_ids(config: &VoxCpm2Config, ids: Vec<u32>) -> Result<Self> {
+        config.validate_for_forward()?;
+        if ids.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "voxcpm tokenizer packet must contain at least one token".to_owned(),
+            ));
+        }
+        if ids.len() > config.max_length as usize {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxcpm tokenizer packet length {} exceeds max_length {}",
+                ids.len(),
+                config.max_length
+            )));
+        }
+        if let Some((index, token)) = ids
+            .iter()
+            .enumerate()
+            .find(|(_, token)| **token >= config.lm.vocab_size)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxcpm tokenizer packet token {token} at index {index} is outside vocab_size {}",
+                config.lm.vocab_size
+            )));
+        }
+        Ok(Self {
+            ids,
+            vocab_size: config.lm.vocab_size,
+            max_length: config.max_length,
+        })
+    }
+
+    /// Token ids in source order. The returned slice cannot mutate identity
+    /// metadata or bypass construction-time validation.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u32] {
+        &self.ids
+    }
+
+    /// Number of token ids in the packet.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// Whether the packet has no token ids. Valid packets are non-empty;
+    /// this accessor mirrors collection APIs for callers that branch on it.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// Authenticated vocabulary bound copied from the source config.
+    #[must_use]
+    pub fn vocab_size(&self) -> u32 {
+        self.vocab_size
+    }
+
+    /// Authenticated maximum sequence length copied from the source config.
+    #[must_use]
+    pub fn max_length(&self) -> u32 {
+        self.max_length
+    }
+}
+
+/// A validated continuous AudioVAE latent packet in source channel-major
+/// `[latent_dim, frames]` layout.
+///
+/// VoxCPM does not use discrete codec indices.  Keeping the VAE identity on
+/// the packet prevents a future composite route from feeding a latent stream
+/// from another variant or sample-rate contract into this decoder.  The
+/// packet constructor is model-free; it does not claim that values are
+/// learned outputs until a real AudioVAE/CFM binder supplies them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoxCpm2AudioVaeLatentPacket {
+    values: Vec<f32>,
+    latent_dim: u32,
+    sample_rate_hz: u32,
+}
+
+impl VoxCpm2AudioVaeLatentPacket {
+    /// Validate channel-major latents against an authenticated VAE config.
+    pub fn from_channel_major(vae: &ContinuousVaeConfig, values: Vec<f32>) -> Result<Self> {
+        vae.validate_for_forward()?;
+        let latent_dim = usize::try_from(vae.latent_dim).map_err(|_| {
+            VokraError::InvalidArgument("voxcpm AudioVAE latent_dim overflows usize".to_owned())
+        })?;
+        if values.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "voxcpm AudioVAE latent packet is empty".to_owned(),
+            ));
+        }
+        if values.len() % latent_dim != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxcpm AudioVAE latent packet length {} is not divisible by latent_dim {}",
+                values.len(),
+                latent_dim
+            )));
+        }
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "voxcpm AudioVAE latent packet contains non-finite values".to_owned(),
+            ));
+        }
+        Ok(Self {
+            values,
+            latent_dim: vae.latent_dim,
+            sample_rate_hz: vae.out_sample_rate_hz,
+        })
+    }
+
+    /// The validated channel-major latent values.
+    #[must_use]
+    pub fn as_slice(&self) -> &[f32] {
+        &self.values
+    }
+
+    /// Number of latent frames.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.values.len() / self.latent_dim as usize
+    }
+
+    /// Latent channel count authenticated from the VAE config.
+    #[must_use]
+    pub fn latent_dim(&self) -> u32 {
+        self.latent_dim
+    }
+
+    /// Output sample rate authenticated from the VAE config.
+    #[must_use]
+    pub fn sample_rate_hz(&self) -> u32 {
+        self.sample_rate_hz
+    }
+}
 
 /// Source-shaped feature-generation loop. VoxCPM pre-fills the text prompt
 /// into its base LM and then autoregressively emits a 2×64 feature patch per
@@ -1454,6 +1611,53 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn external_token_packet_pins_authenticated_lm_bounds() {
+        let config = VoxCpm2Config::voxcpm_0_5b();
+        let packet = VoxCpm2TextTokenPacket::from_external_tokenizer_ids(
+            &config,
+            vec![1, 42, config.lm.vocab_size - 1],
+        )
+        .expect("in-range external tokenizer ids");
+        assert_eq!(packet.as_slice(), &[1, 42, config.lm.vocab_size - 1]);
+        assert_eq!(packet.vocab_size(), 73_448);
+        assert_eq!(packet.max_length(), 4_096);
+        assert!(!packet.is_empty());
+
+        assert!(
+            VoxCpm2TextTokenPacket::from_external_tokenizer_ids(
+                &config,
+                vec![config.lm.vocab_size]
+            )
+            .is_err()
+        );
+        assert!(VoxCpm2TextTokenPacket::from_external_tokenizer_ids(&config, Vec::new()).is_err());
+        assert!(
+            VoxCpm2TextTokenPacket::from_external_tokenizer_ids(
+                &config,
+                vec![0; config.max_length as usize + 1]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn audio_vae_latent_packet_pins_channel_major_identity() {
+        let vae = ContinuousVaeConfig::voxcpm_0_5b();
+        let packet = VoxCpm2AudioVaeLatentPacket::from_channel_major(
+            &vae,
+            vec![0.0; vae.latent_dim as usize * 2],
+        )
+        .expect("canonical latent packet");
+        assert_eq!(packet.latent_dim(), 64);
+        assert_eq!(packet.sample_rate_hz(), 16_000);
+        assert_eq!(packet.frames(), 2);
+        assert_eq!(packet.as_slice().len(), 128);
+
+        assert!(VoxCpm2AudioVaeLatentPacket::from_channel_major(&vae, vec![0.0; 63]).is_err());
+        assert!(VoxCpm2AudioVaeLatentPacket::from_channel_major(&vae, vec![f32::NAN; 64]).is_err());
+    }
 
     #[test]
     fn batch1_flow_draws_are_caller_owned_and_layout_explicit() {

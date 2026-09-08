@@ -1027,43 +1027,53 @@ impl AudioVaeDecoder {
         terminal: CausalConv1d,
         terminal_activation: Snake,
     ) -> Result<Self> {
-        if stem.in_channels != AUDIO_VAE_LATENT_DIM
-            || stem.out_channels != 1536
-            || stem.kernel != 7
-            || stem.dilation != 1
-            || stem.stride != 1
-            || stem.padding != 3
-            || stem.groups != 1
-            || stages.len() != AUDIO_VAE_DECODER_RATES.len()
+        let decoder = Self {
+            stem,
+            stages,
+            terminal,
+            terminal_activation,
+        };
+        decoder.validate_source_topology()?;
+        Ok(decoder)
+    }
+
+    /// Revalidate the complete source 0.5B decoder topology without reading
+    /// or executing any learned values. Public fields intentionally remain
+    /// inspectable, so every packet decode repeats this check before a
+    /// caller-mutated decoder can reach a backend operation.
+    pub(crate) fn validate_source_topology(&self) -> Result<()> {
+        if self.stem.in_channels != AUDIO_VAE_LATENT_DIM
+            || self.stem.out_channels != 1536
+            || self.stem.kernel != 7
+            || self.stem.dilation != 1
+            || self.stem.stride != 1
+            || self.stem.padding != 3
+            || self.stem.groups != 1
+            || self.stages.len() != AUDIO_VAE_DECODER_RATES.len()
         {
             return Err(VokraError::InvalidArgument(
                 "voxcpm AudioVAE decoder stem/rate contract mismatch".to_owned(),
             ));
         }
-        let mut channels = stem.out_channels;
-        for (stage, &rate) in stages.iter().zip(AUDIO_VAE_DECODER_RATES.iter()) {
+        let mut channels = self.stem.out_channels;
+        for (stage, &rate) in self.stages.iter().zip(AUDIO_VAE_DECODER_RATES.iter()) {
             channels = stage.validate(channels, rate)?;
         }
         if channels != 96
-            || terminal_activation.alpha.len() != channels
-            || terminal.in_channels != channels
-            || terminal.out_channels != 1
-            || terminal.kernel != 7
-            || terminal.dilation != 1
-            || terminal.stride != 1
-            || terminal.padding != 3
-            || terminal.groups != 1
+            || self.terminal_activation.alpha.len() != channels
+            || self.terminal.in_channels != channels
+            || self.terminal.out_channels != 1
+            || self.terminal.kernel != 7
+            || self.terminal.dilation != 1
+            || self.terminal.stride != 1
+            || self.terminal.padding != 3
+            || self.terminal.groups != 1
         {
             return Err(VokraError::InvalidArgument(
                 "voxcpm AudioVAE decoder terminal contract mismatch".to_owned(),
             ));
         }
-        Ok(Self {
-            stem,
-            stages,
-            terminal,
-            terminal_activation,
-        })
+        Ok(())
     }
 
     #[allow(dead_code)] // Staged topology constructor awaits complete composite authorization.
@@ -1144,6 +1154,101 @@ impl AudioVaeDecoder {
 mod tests {
     use super::*;
 
+    fn metadata_conv(
+        in_channels: usize,
+        out_channels: usize,
+        kernel: usize,
+        dilation: usize,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+    ) -> CausalConv1d {
+        CausalConv1d {
+            weight_g: Vec::new(),
+            weight_v: Vec::new(),
+            bias: Vec::new(),
+            in_channels,
+            out_channels,
+            kernel,
+            dilation,
+            stride,
+            padding,
+            groups,
+        }
+    }
+
+    fn metadata_transpose(
+        in_channels: usize,
+        out_channels: usize,
+        kernel: usize,
+        stride: usize,
+    ) -> CausalConvTranspose1d {
+        CausalConvTranspose1d {
+            weight_g: Vec::new(),
+            weight_v: Vec::new(),
+            bias: Vec::new(),
+            in_channels,
+            out_channels,
+            kernel,
+            stride,
+            groups: 1,
+        }
+    }
+
+    fn metadata_stage(channels: usize, rate: usize) -> DecoderStage {
+        let next_channels = channels / 2;
+        let residuals = std::array::from_fn(|index| {
+            let dilation = 3usize.pow(index as u32);
+            ResidualUnit {
+                filter: metadata_conv(
+                    next_channels,
+                    next_channels,
+                    7,
+                    dilation,
+                    1,
+                    3 * dilation,
+                    next_channels,
+                ),
+                activation: Snake {
+                    alpha: vec![0.0; next_channels],
+                },
+                pointwise_activation: Snake {
+                    alpha: vec![0.0; next_channels],
+                },
+                pointwise: metadata_conv(next_channels, next_channels, 1, 1, 1, 0, 1),
+            }
+        });
+        DecoderStage {
+            activation: Snake {
+                alpha: vec![0.0; channels],
+            },
+            upsample: metadata_transpose(channels, next_channels, 2 * rate, rate),
+            residuals,
+        }
+    }
+
+    fn metadata_source_decoder() -> AudioVaeDecoder {
+        let stem = metadata_conv(AUDIO_VAE_LATENT_DIM, 1536, 7, 1, 1, 3, 1);
+        let mut channels = 1536;
+        let stages = AUDIO_VAE_DECODER_RATES
+            .into_iter()
+            .map(|rate| {
+                let stage = metadata_stage(channels, rate);
+                channels /= 2;
+                stage
+            })
+            .collect();
+        let terminal = metadata_conv(channels, 1, 7, 1, 1, 3, 1);
+        AudioVaeDecoder {
+            stem,
+            stages,
+            terminal,
+            terminal_activation: Snake {
+                alpha: vec![0.0; channels],
+            },
+        }
+    }
+
     fn conv(channels: usize, stride: usize) -> CausalConv1d {
         CausalConv1d::new(
             vec![1.0; channels],
@@ -1210,6 +1315,23 @@ mod tests {
         let terminal =
             CausalConv1d::new(vec![1.0], vec![1.0; 3], vec![0.0], 1, 1, 3, 1, 1, 1, 1).unwrap();
         assert!(AudioVaeEncoder::from_source(stem, Vec::new(), terminal).is_err());
+    }
+
+    #[test]
+    fn decoder_topology_validator_rejects_public_stage_drift_before_execution() {
+        let mut decoder = metadata_source_decoder();
+        decoder
+            .validate_source_topology()
+            .expect("metadata-only source topology must validate");
+        // The fields are public for inspection/binding, so a caller can
+        // mutate them after construction. The reusable validator must still
+        // reject this source-topology drift before any backend operation.
+        decoder.stages[1].upsample.stride = 7;
+        let error = decoder
+            .validate_source_topology()
+            .expect_err("drifted public decoder must be rejected");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("stage contract"));
     }
 
     #[test]

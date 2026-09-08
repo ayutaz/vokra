@@ -123,7 +123,8 @@ pub use bound::{VoxCpm2Checkpoint, VoxCpm2StopProjection};
 pub(crate) use generation::StagedGenerationRuntime;
 pub use generation::{
     CausalLanguageState, EulerFlow, FEATURE_PATCHES_PER_STEP, FeatureGenerationLoop,
-    LearnedStopController, PrefillState, ScalarQuantizer, StopController, VoxCpm2FlowDraws,
+    LearnedStopController, PrefillState, ScalarQuantizer, StopController,
+    VoxCpm2AudioVaeLatentPacket, VoxCpm2FlowDraws, VoxCpm2TextTokenPacket,
 };
 pub use local::{LocalDit, LocalDitWeights, LocalEncoder, UnifiedCfm};
 pub use minicpm4::{
@@ -1109,6 +1110,42 @@ impl VoxCpm2Tts {
             ));
         }
         decoder.decode_with_backend(latents, time, backend)
+    }
+
+    /// Decode a validated continuous AudioVAE latent packet through the
+    /// explicitly selected backend. Packet identity is rechecked against
+    /// this receiver before any learned operation runs, so a packet created
+    /// for another VAE variant or sample-rate contract cannot cross the
+    /// composite boundary accidentally.
+    pub fn decode_audio_vae_packet_with_backend(
+        &self,
+        decoder: &AudioVaeDecoder,
+        packet: &VoxCpm2AudioVaeLatentPacket,
+        backend: BackendKind,
+    ) -> Result<Vec<f32>> {
+        if packet.latent_dim() != self.vae.latent_dim {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxcpm AudioVAE latent packet dim {} does not match receiver dim {}",
+                packet.latent_dim(),
+                self.vae.latent_dim
+            )));
+        }
+        if packet.sample_rate_hz() != self.vae.out_sample_rate_hz {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxcpm AudioVAE latent packet sample rate {} does not match receiver rate {}",
+                packet.sample_rate_hz(),
+                self.vae.out_sample_rate_hz
+            )));
+        }
+        decoder.validate_source_topology()?;
+        if decoder.stem.in_channels != packet.latent_dim() as usize {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxcpm AudioVAE decoder input dim {} does not match packet dim {}",
+                decoder.stem.in_channels,
+                packet.latent_dim()
+            )));
+        }
+        self.decode_audio_vae_with_backend(decoder, packet.as_slice(), packet.frames(), backend)
     }
 
     /// True iff the weight store was built by
