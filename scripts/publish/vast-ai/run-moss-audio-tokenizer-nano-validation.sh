@@ -7,6 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
+VAST_CONTRACT_SCRIPT="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+APPLE_CONTRACT_SCRIPT="$VOKRA_ROOT/scripts/verify/apple-silicon-moss-audio-tokenizer-nano.sh"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 NANO_PROJECT="$PARITY_PROJECT/moss_audio_tokenizer_nano"
@@ -40,7 +42,18 @@ EXPECTED_TRANSFORMERS_VERSION="5.10.4"
 EXPECTED_QUANTIZER_SHAPE="1x768x2"
 EXPECTED_DECODER_TAP_COUNT="9"
 EXPECTED_DECODER_TAP_SHAPES="1x192x8,1x768x8,1x384x16,1x768x16,1x384x32,1x768x32,1x384x64,1x240x64,1x1x15360"
+EXPECTED_CPU_TORCH_VERSION="2.7.1+cpu"
+EXPECTED_CPU_TORCH_INDEX="https://download.pytorch.org/whl/cpu"
 EXPECTED_CODES="17,520,1023,502,1005,484,987,466,969,448,951,430,933,412,915,394,274,777,256,759,238,741,220,723,202,705,184,687,166,669,148,651"
+
+CONTRACT_NAMES=(
+  EXPECTED_MODEL_SOURCE_PATH EXPECTED_CONFIG_SOURCE_PATH
+  EXPECTED_MODEL_SOURCE_SHA256 EXPECTED_CONFIG_SOURCE_SHA256
+  EXPECTED_TORCH_VERSION EXPECTED_TRANSFORMERS_VERSION
+  EXPECTED_QUANTIZER_SHAPE EXPECTED_DECODER_TAP_COUNT
+  EXPECTED_DECODER_TAP_SHAPES EXPECTED_CPU_TORCH_VERSION
+  EXPECTED_CPU_TORCH_INDEX EXPECTED_CODES
+)
 
 MIN_VAST_MEM_KIB=30_000_000
 MIN_FREE_DISK_KIB=5_000_000
@@ -78,10 +91,62 @@ sha256_file() {
   fi
 }
 
+contract_value() {
+  local script="$1" name="$2"
+  awk -F= -v expected="$name" '
+    $1 == expected && $0 ~ /^[^=]+="[^"]*"$/ {
+      count++
+      value=$0
+      sub(/^[^=]+="/, "", value)
+      sub(/"$/, "", value)
+    }
+    END {
+      if (count != 1) exit 2
+      print value
+    }
+  ' "$script"
+}
+
+validate_contract_definitions() {
+  local script="$1" line name count
+  [[ -f "$script" && ! -L "$script" ]] || { die "contract script is missing or symlinked: $script"; return 2; }
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ "$line" == EXPECTED_* ]] || continue
+    [[ "$line" == *=* ]] || continue
+    [[ "$line" =~ ^EXPECTED_[A-Z0-9_]+=\"[^\"]*\"$ ]] \
+      || { die "malformed contract definition in $script: $line"; return 2; }
+    name="${line%%=*}"
+    case " ${CONTRACT_NAMES[*]} " in
+      *" $name "*) ;;
+      *) die "unknown contract definition in $script: $name"; return 2 ;;
+    esac
+  done < "$script"
+  for name in "${CONTRACT_NAMES[@]}"; do
+    count="$(awk -F= -v expected="$name" '$1 == expected && $0 ~ /^[^=]+="[^"]*"$/ {count++} END {print count + 0}' "$script")"
+    [[ "$count" == 1 ]] || { die "contract definition $name occurs $count times in $script"; return 2; }
+  done
+}
+
+require_cross_contract() {
+  local counterpart="$1" current="$2" name current_value counterpart_value
+  validate_contract_definitions "$current" || return 2
+  validate_contract_definitions "$counterpart" || return 2
+  for name in "${CONTRACT_NAMES[@]}"; do
+    current_value="$(contract_value "$current" "$name")" || { die "cannot parse $name from $current"; return 2; }
+    counterpart_value="$(contract_value "$counterpart" "$name")" || { die "cannot parse $name from $counterpart"; return 2; }
+    [[ "$current_value" == "$counterpart_value" ]] \
+      || { die "cross-contract drift for $name: $current_value != $counterpart_value"; return 2; }
+  done
+}
+
 license_preflight() {
   local approval="$1"
   command -v uv >/dev/null 2>&1 || { die "required tool missing: uv"; return 2; }
   [[ -f "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" ]] || { die "Nano approval gate/manifest is missing"; return 2; }
+  [[ -f "$NANO_PROJECT/pyproject.toml" && ! -L "$NANO_PROJECT/pyproject.toml" ]] || { die "Nano parity pyproject is missing or symlinked"; return 2; }
+  grep -Fqx "url = \"$EXPECTED_CPU_TORCH_INDEX\"" "$NANO_PROJECT/pyproject.toml" \
+    || { die "Nano parity project CPU Torch index drifted"; return 2; }
   [[ -f "$approval" && ! -L "$approval" ]] || { die "--approval-evidence must be a regular non-symlink file"; return 2; }
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$LICENSE_GATE" \
     --lock "$NANO_PROJECT/uv.lock" --project "$NANO_PROJECT/pyproject.toml" \
@@ -228,6 +293,7 @@ require_reference() {
   done
   runtime="$(awk -F, '$1 == "runtime" {print; count++} END {if (count != 1) exit 1}' "$path")" || { die 'reference must contain exactly one runtime row'; return 2; }
   [[ "$runtime" == "runtime,torch-${EXPECTED_TORCH_VERSION},transformers-${EXPECTED_TRANSFORMERS_VERSION}" ]] || { die 'reference Transformers route is not the reviewed exact route'; return 2; }
+  [[ "$EXPECTED_TORCH_VERSION" == "$EXPECTED_CPU_TORCH_VERSION" ]] || { die 'reviewed Torch route is not the CPU Torch closure'; return 2; }
   [[ "$EXPECTED_TORCH_VERSION" != UNRESOLVED && "$EXPECTED_TRANSFORMERS_VERSION" != UNRESOLVED ]] || { die 'reference Transformers route is unresolved; owner review is required'; return 2; }
   model_source="$(awk -F, '$1 == "source_file" && $2 == "model" {print $3 "," $4}' "$path")"
   config_source="$(awk -F, '$1 == "source_file" && $2 == "config" {print $3 "," $4}' "$path")"
@@ -439,9 +505,8 @@ run_self_test() {
     log 'self-test FAIL: worker/gate/dumper upstream revision contract diverged'; fail=1
   fi
   cases=$((cases + 1))
-  if grep -Eq '^EXPECTED_(MODEL_SOURCE_PATH|CONFIG_SOURCE_PATH|MODEL_SOURCE_SHA256|CONFIG_SOURCE_SHA256|TORCH_VERSION|TRANSFORMERS_VERSION|QUANTIZER_SHAPE|DECODER_TAP_COUNT|DECODER_TAP_SHAPES)="UNRESOLVED"$' "$script_path" \
-    || ! grep -Fq '"status": "AUTHENTICATED_META_SHAPE_PROBE"' "$NANO_PROJECT/license_gate.py"; then
-    log 'self-test FAIL: stale identity sentinel or model-free route evidence drifted'; fail=1
+  if ! grep -Fq '"status": "AUTHENTICATED_META_SHAPE_PROBE"' "$NANO_PROJECT/license_gate.py"; then
+    log 'self-test FAIL: model-free route evidence drifted'; fail=1
   fi
   for required in 'AUTHENTICATED_MODEL_FREE_META_ROUTE' 'inspection_manifest_sha256' 'dependency_audit_report_sha256' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY' 'NO_UPLOAD'; do
     cases=$((cases + 1))
@@ -462,7 +527,9 @@ run_self_test() {
     'EXPECTED_CONFIG_SOURCE_SHA256="b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa"' \
     'EXPECTED_TORCH_VERSION="2.7.1+cpu"' 'EXPECTED_TRANSFORMERS_VERSION="5.10.4"' \
     'EXPECTED_QUANTIZER_SHAPE="1x768x2"' 'EXPECTED_DECODER_TAP_COUNT="9"' \
-    'EXPECTED_DECODER_TAP_SHAPES="1x192x8,1x768x8,1x384x16,1x768x16,1x384x32,1x768x32,1x384x64,1x240x64,1x1x15360"'; do
+    'EXPECTED_DECODER_TAP_SHAPES="1x192x8,1x768x8,1x384x16,1x768x16,1x384x32,1x768x32,1x384x64,1x240x64,1x1x15360"' \
+    'EXPECTED_CPU_TORCH_VERSION="2.7.1+cpu"' \
+    'EXPECTED_CPU_TORCH_INDEX="https://download.pytorch.org/whl/cpu"'; do
     cases=$((cases + 1))
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: reviewed Nano identity drifted: $required"
@@ -470,15 +537,40 @@ run_self_test() {
     fi
   done
   cases=$((cases + 1))
-  EXPECTED_MODEL_SOURCE_PATH='transformers_modules/OpenMOSS-Team/Nano/model.py'
-  EXPECTED_CONFIG_SOURCE_PATH='transformers_modules/OpenMOSS-Team/Nano/config.py'
-  EXPECTED_MODEL_SOURCE_SHA256='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-  EXPECTED_CONFIG_SOURCE_SHA256='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
-  EXPECTED_TORCH_VERSION='2.13.0'
-  EXPECTED_TRANSFORMERS_VERSION='5.15.0'
-  EXPECTED_QUANTIZER_SHAPE='1x1'
-  EXPECTED_DECODER_TAP_COUNT='2'
-  EXPECTED_DECODER_TAP_SHAPES='1x1,1x2'
+  if ! require_cross_contract "$APPLE_CONTRACT_SCRIPT" "$script_path" >/dev/null 2>&1; then
+    log 'self-test FAIL: Apple/VAST Nano contract is not synchronized'; fail=1
+  fi
+  cp "$APPLE_CONTRACT_SCRIPT" "$tmp/apple-contract-drift.sh"
+  sed 's/^EXPECTED_DECODER_TAP_COUNT="9"$/EXPECTED_DECODER_TAP_COUNT="8"/' \
+    "$tmp/apple-contract-drift.sh" > "$tmp/apple-contract-drift.tmp"
+  mv "$tmp/apple-contract-drift.tmp" "$tmp/apple-contract-drift.sh"
+  cases=$((cases + 1))
+  if require_cross_contract "$tmp/apple-contract-drift.sh" "$script_path" >/dev/null 2>&1; then
+    log 'self-test FAIL: Apple contract drift was accepted'; fail=1
+  fi
+  cp "$APPLE_CONTRACT_SCRIPT" "$tmp/apple-contract-duplicate.sh"
+  printf '%s\n' 'EXPECTED_DECODER_TAP_COUNT="9"' >> "$tmp/apple-contract-duplicate.sh"
+  cases=$((cases + 1))
+  if require_cross_contract "$tmp/apple-contract-duplicate.sh" "$script_path" >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate Apple contract definition was accepted'; fail=1
+  fi
+  cp "$APPLE_CONTRACT_SCRIPT" "$tmp/apple-contract-unknown.sh"
+  printf '%s\n' 'EXPECTED_UNTRUSTED="malicious"' >> "$tmp/apple-contract-unknown.sh"
+  cases=$((cases + 1))
+  if require_cross_contract "$tmp/apple-contract-unknown.sh" "$script_path" >/dev/null 2>&1; then
+    log 'self-test FAIL: unknown Apple contract definition was accepted'; fail=1
+  fi
+  cases=$((cases + 1))
+  printf -v EXPECTED_MODEL_SOURCE_PATH '%s' 'transformers_modules/OpenMOSS-Team/Nano/model.py'
+  printf -v EXPECTED_CONFIG_SOURCE_PATH '%s' 'transformers_modules/OpenMOSS-Team/Nano/config.py'
+  printf -v EXPECTED_MODEL_SOURCE_SHA256 '%s' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  printf -v EXPECTED_CONFIG_SOURCE_SHA256 '%s' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  printf -v EXPECTED_TORCH_VERSION '%s' '2.13.0'
+  printf -v EXPECTED_CPU_TORCH_VERSION '%s' '2.13.0'
+  printf -v EXPECTED_TRANSFORMERS_VERSION '%s' '5.15.0'
+  printf -v EXPECTED_QUANTIZER_SHAPE '%s' '1x1'
+  printf -v EXPECTED_DECODER_TAP_COUNT '%s' '2'
+  printf -v EXPECTED_DECODER_TAP_SHAPES '%s' '1x1,1x2'
   printf '%s\n' \
     "source,nano,$UPSTREAM_REPO,$UPSTREAM_REVISION" \
     'runtime,torch-2.13.0,transformers-5.15.0' \
@@ -687,6 +779,8 @@ main() {
   [[ -n "$approval_evidence" && -n "$expected_head" ]] || { die "--approval-evidence and --expected-head are required"; usage; return 2; }
   [[ -f "$approval_evidence" && ! -L "$approval_evidence" ]] || { die "--approval-evidence must be a regular non-symlink file"; return 2; }
   license_preflight "$approval_evidence"
+  require_cross_contract "$APPLE_CONTRACT_SCRIPT" "$VAST_CONTRACT_SCRIPT" \
+    || die 'Apple/VAST Nano contract drifted or contains duplicate/unknown definitions'
   require_expected_head "$expected_head"
   require_tooling
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
