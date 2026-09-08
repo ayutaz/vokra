@@ -29,6 +29,68 @@ MEMBERS=(
 log() { printf '[htdemucs-multi-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 
+download_member() {
+  local member="$1" target="$work_dir/weights/$1" headers="$work_dir/response/$1.headers" meta="$work_dir/response/$1.meta"
+  local temporary_target temporary_headers temporary_meta temporary_target_identity temporary_headers_identity temporary_meta_identity
+  local target_identity headers_identity meta_identity
+  same_inode() {
+    local candidate="$1" expected="$2" actual
+    [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
+    actual="$(stat -c '%d:%i' "$candidate")" || return 1
+    [[ "$actual" == "$expected" ]]
+  }
+  unlink_owned() {
+    local candidate="$1" expected="$2"
+    if same_inode "$candidate" "$expected"; then
+      rm -f "$candidate" || true
+    fi
+  }
+  temporary_target="$(mktemp "${target}.tmp.XXXXXX")" || { die "checkpoint temp reservation failed: $member"; return 2; }
+  temporary_target_identity="$(stat -c '%d:%i' "$temporary_target")" || { unlink_owned "$temporary_target" ""; die "checkpoint temp identity failed: $member"; return 2; }
+  temporary_headers="$(mktemp "${headers}.tmp.XXXXXX")" || { unlink_owned "$temporary_target" "$temporary_target_identity"; die "checkpoint temp reservation failed: $member"; return 2; }
+  temporary_headers_identity="$(stat -c '%d:%i' "$temporary_headers")" || { unlink_owned "$temporary_target" "$temporary_target_identity"; unlink_owned "$temporary_headers" ""; die "checkpoint temp identity failed: $member"; return 2; }
+  temporary_meta="$(mktemp "${meta}.tmp.XXXXXX")" || { unlink_owned "$temporary_target" "$temporary_target_identity"; unlink_owned "$temporary_headers" "$temporary_headers_identity"; die "checkpoint temp reservation failed: $member"; return 2; }
+  temporary_meta_identity="$(stat -c '%d:%i' "$temporary_meta")" || { unlink_owned "$temporary_target" "$temporary_target_identity"; unlink_owned "$temporary_headers" "$temporary_headers_identity"; unlink_owned "$temporary_meta" ""; die "checkpoint temp identity failed: $member"; return 2; }
+  cleanup_temp() {
+    unlink_owned "$temporary_target" "$temporary_target_identity"
+    unlink_owned "$temporary_headers" "$temporary_headers_identity"
+    unlink_owned "$temporary_meta" "$temporary_meta_identity"
+  }
+  if ! curl --fail --location --retry 3 --silent --show-error \
+    --dump-header "$temporary_headers" \
+    --write-out '%{http_code}\t%{url_effective}\t%{size_download}\n' \
+    "$WEIGHT_ROOT/$member" --output "$temporary_target" > "$temporary_meta"; then
+    cleanup_temp
+    die "checkpoint download failed: $member"
+    return 2
+  fi
+  same_inode "$temporary_target" "$temporary_target_identity" || { cleanup_temp; die "checkpoint temp identity changed: $member"; return 2; }
+  same_inode "$temporary_headers" "$temporary_headers_identity" || { cleanup_temp; die "checkpoint temp identity changed: $member"; return 2; }
+  same_inode "$temporary_meta" "$temporary_meta_identity" || { cleanup_temp; die "checkpoint temp identity changed: $member"; return 2; }
+  target_identity="$temporary_target_identity"
+  headers_identity="$temporary_headers_identity"
+  meta_identity="$temporary_meta_identity"
+  if ln "$temporary_target" "$target" && same_inode "$target" "$target_identity"; then :; else
+    cleanup_temp
+    die "checkpoint output already exists: $member"
+    return 2
+  fi
+  if ln "$temporary_headers" "$headers" && same_inode "$headers" "$headers_identity"; then :; else
+    unlink_owned "$target" "$target_identity"
+    cleanup_temp
+    die "checkpoint response headers already exists: $member"
+    return 2
+  fi
+  if ln "$temporary_meta" "$meta" && same_inode "$meta" "$meta_identity"; then :; else
+    unlink_owned "$headers" "$headers_identity"
+    unlink_owned "$target" "$target_identity"
+    cleanup_temp
+    die "checkpoint response metadata already exists: $member"
+    return 2
+  fi
+  cleanup_temp
+}
+
 reject_symlink_ancestors() {
   local path="$1" rest component current
   if [[ "$path" != /* || "$path" == */ ]]; then
@@ -114,7 +176,8 @@ self_test() {
     'reject_symlink_ancestors' 'work-dir overlaps' 'work-dir must be absent' \
     'CARGO_NET_OFFLINE=true' 'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' \
     'transfer-packet' 'inspection_manifest' 'manifest.sha256' 'transfer_manifest_sha256' \
-    'checkout HEAD changed before inspection evidence completion'; do
+    'checkout HEAD changed before inspection evidence completion' 'download_member' 'mktemp' 'same_inode' 'cleanup_temp' \
+    'temporary_target_identity' 'cli_path' 'O_NOFOLLOW' 'write_no_clobber' 'regular_identity' 'unlink_owned' 'os.link' 'os.fsync'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
@@ -230,11 +293,7 @@ for config in htdemucs_ft.yaml htdemucs_6s.yaml; do
 done
 
 for member in "${MEMBERS[@]}"; do
-  curl --fail --location --retry 3 --silent --show-error \
-    --dump-header "$work_dir/response/$member.headers" \
-    --write-out '%{http_code}\t%{url_effective}\t%{size_download}\n' \
-    "$WEIGHT_ROOT/$member" --output "$work_dir/weights/$member" \
-    > "$work_dir/response/$member.meta"
+  download_member "$member"
 done
 
 [[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] \
@@ -244,7 +303,10 @@ UV_CACHE_DIR="$HTDEMUCS_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT
   "$work_dir/response" "$work_dir/weights" "$work_dir/evidence/response-packet.json" <<'PY'
 import hashlib
 import json
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
 response_dir, weights_dir, output = map(Path, sys.argv[1:])
@@ -298,7 +360,50 @@ for member in members:
     }
     if observed_bytes != counted:
         raise SystemExit(f"curl observed size differs from local size: {member}")
-Path(output).write_text(json.dumps({"members": rows}, sort_keys=False, indent=2) + "\n", encoding="utf-8")
+output_path = Path(output)
+fd, temporary_name = tempfile.mkstemp(prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent)
+temporary_path = Path(temporary_name)
+temporary_stat = os.fstat(fd)
+if not stat.S_ISREG(temporary_stat.st_mode):
+    raise SystemExit("packet reservation is not a regular file")
+temporary_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
+def regular_identity(path, expected=None):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        descriptor_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_stat.st_mode):
+            raise SystemExit("packet output is not a regular file")
+        identity = (descriptor_stat.st_dev, descriptor_stat.st_ino)
+        if expected is not None and identity != expected:
+            raise SystemExit("packet output inode changed during publish")
+        return identity
+    finally:
+        os.close(descriptor)
+def unlink_owned(path, expected):
+    try:
+        if regular_identity(path, expected) == expected:
+            path.unlink()
+    except (FileNotFoundError, OSError, SystemExit):
+        pass
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as stream:
+        json.dump({"members": rows}, stream, sort_keys=False, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    identity = regular_identity(temporary_path, temporary_identity)
+    os.link(temporary_path, output_path, follow_symlinks=False)
+    try:
+        regular_identity(output_path, identity)
+    except (OSError, SystemExit):
+        unlink_owned(output_path, identity)
+        raise
+finally:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    unlink_owned(temporary_path, temporary_identity)
 PY
 
 set +e
@@ -319,7 +424,10 @@ uv run --no-project --offline --python 3.12 python - \
   "$expected_head" "$actual_head" "$approval_sha" "$gate_sha" <<'PY'
 import hashlib
 import json
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 manifest_path, transfer_dir = map(Path, sys.argv[1:3])
 expected_head, actual_head, approval_sha, gate_sha = sys.argv[3:]
@@ -332,11 +440,58 @@ manifest.update({
     "approval_sha256": approval_sha,
     "license_gate_sha256": gate_sha,
 })
-manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-inspection_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 members = manifest.get("members")
 if not isinstance(members, dict):
     raise SystemExit("inspection manifest has no member digest rows")
+transfer_dir.mkdir(mode=0o700)
+inspection_copy = transfer_dir / "htdemucs_multi_manifest.json"
+def write_no_clobber(path, data):
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    temporary_stat = os.fstat(fd)
+    if not stat.S_ISREG(temporary_stat.st_mode):
+        raise RuntimeError("transfer reservation is not a regular file")
+    temporary_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
+    def regular_identity(candidate, expected=None):
+        descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            descriptor_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(descriptor_stat.st_mode):
+                raise RuntimeError("transfer output is not a regular file")
+            identity = (descriptor_stat.st_dev, descriptor_stat.st_ino)
+            if expected is not None and identity != expected:
+                raise RuntimeError("transfer output inode changed during publish")
+            return identity
+        finally:
+            os.close(descriptor)
+    def unlink_owned(candidate, expected):
+        try:
+            if regular_identity(candidate, expected) == expected:
+                candidate.unlink()
+        except (FileNotFoundError, OSError, RuntimeError):
+            pass
+    try:
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        identity = regular_identity(temporary, temporary_identity)
+        os.link(temporary, path, follow_symlinks=False)
+        try:
+            regular_identity(path, identity)
+        except (OSError, RuntimeError):
+            unlink_owned(path, identity)
+            raise
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        unlink_owned(temporary, temporary_identity)
+
+enriched_manifest = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+write_no_clobber(inspection_copy, enriched_manifest)
+inspection_digest = hashlib.sha256(inspection_copy.read_bytes()).hexdigest()
 transfer = {
     "schema": "vokra-htdemucs-multi-transfer-v1",
     "status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST",
@@ -356,16 +511,13 @@ transfer = {
         for model_id, row in members.items()
     ],
 }
-transfer_dir.mkdir(mode=0o700)
-inspection_copy = transfer_dir / "htdemucs_multi_manifest.json"
-inspection_copy.write_bytes(manifest_path.read_bytes())
 transfer_path = transfer_dir / "manifest.json"
-transfer_path.write_text(json.dumps(transfer, indent=2) + "\n", encoding="utf-8")
+write_no_clobber(transfer_path, (json.dumps(transfer, indent=2) + "\n").encode("utf-8"))
 digest = hashlib.sha256(transfer_path.read_bytes()).hexdigest()
-(transfer_dir / "manifest.sha256").write_text(f"{digest}  manifest.json\n", encoding="ascii")
+write_no_clobber(transfer_dir / "manifest.sha256", f"{digest}  manifest.json\n".encode("ascii"))
 PY
 UV_CACHE_DIR="$HTDEMUCS_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python - \
-  "$work_dir/evidence/htdemucs_multi_manifest.json" "$expected_head" "$actual_head" "$approval_sha" "$gate_sha" <<'PY'
+  "$work_dir/transfer-packet/htdemucs_multi_manifest.json" "$expected_head" "$actual_head" "$approval_sha" "$gate_sha" <<'PY'
 import json
 import re
 import sys

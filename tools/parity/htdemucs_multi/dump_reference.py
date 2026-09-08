@@ -18,8 +18,10 @@ import io
 import json
 import os
 import re
+import stat
 import struct
 import sys
+import tempfile
 import wave
 from types import ModuleType
 from pathlib import Path
@@ -147,6 +149,23 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def cli_path(raw: str | os.PathLike[str], label: str) -> Path:
+    """Parse a CLI path without losing lexical dot components."""
+    raw_text = os.fspath(raw)
+    if not isinstance(raw_text, str) or not raw_text.startswith("/") or raw_text in {"", "/"}:
+        raise ValueError(f"{label} must be an absolute non-root path")
+    components = raw_text.split("/")
+    if raw_text.endswith("/") or any(component in {"", ".", ".."} for component in components[1:]):
+        raise ValueError(f"{label} contains an unsafe lexical path component")
+    current = Path("/")
+    for component in components[1:-1]:
+        current /= component
+        if current.exists():
+            if current.is_symlink() or not current.is_dir():
+                raise ValueError(f"{label} has an unsafe symlink or non-directory ancestor")
+    return Path(raw_text)
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -181,6 +200,79 @@ def reject_overlap(candidate: Path, protected: list[tuple[str, Path]]) -> None:
         path_text = str(path)
         if candidate_text == path_text or candidate_text.startswith(path_text + os.sep) or path_text.startswith(candidate_text + os.sep):
             raise ValueError(f"output path overlaps {label}")
+
+
+def _owned_regular_identity(path: Path, expected: tuple[int, int] | None = None) -> tuple[int, int]:
+    """Verify a regular file through an O_NOFOLLOW descriptor and return its inode."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        descriptor_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_stat.st_mode):
+            raise ValueError("temporary output is not a regular file")
+        identity = (descriptor_stat.st_dev, descriptor_stat.st_ino)
+        if expected is not None and identity != expected:
+            raise RuntimeError("file identity changed during output publication")
+        return identity
+    finally:
+        os.close(descriptor)
+
+
+def _unlink_owned(path: Path, expected: tuple[int, int]) -> None:
+    try:
+        if _owned_regular_identity(path, expected) == expected:
+            path.unlink()
+    except (FileNotFoundError, OSError, ValueError, RuntimeError):
+        # Never remove a path whose current inode is not ours.
+        pass
+
+
+def write_bytes_no_clobber(path: Path, data: bytes) -> None:
+    """Publish a complete file with an atomic same-directory no-clobber claim."""
+    parent = path.parent
+    resolved_parent = parent.resolve(strict=True)
+    macos_var_alias = (
+        str(parent).startswith("/var/")
+        and resolved_parent == Path("/private") / parent.relative_to("/")
+    )
+    if parent.is_symlink() or not parent.is_dir() or (resolved_parent != parent and not macos_var_alias):
+        raise ValueError("output parent must be an existing canonical directory")
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=parent)
+    temporary = Path(temporary_name)
+    temporary_identity: tuple[int, int] | None = None
+    try:
+        temporary_identity = _owned_regular_identity(temporary)
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        identity = _owned_regular_identity(temporary, temporary_identity)
+        os.link(temporary, path, follow_symlinks=False)
+        try:
+            _owned_regular_identity(path, identity)
+        except (OSError, ValueError, RuntimeError):
+            _unlink_owned(path, identity)
+            raise
+        try:
+            directory_fd = os.open(parent, os.O_RDONLY)
+        except OSError:
+            pass
+        else:
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if temporary_identity is not None:
+            _unlink_owned(temporary, temporary_identity)
+
+
+def write_json_no_clobber(path: Path, payload: dict[str, Any]) -> None:
+    write_bytes_no_clobber(path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
 def verify_inputs(source: Path, weights: Path, variant: str, gate: dict[str, Any]) -> dict[str, Any]:
@@ -261,8 +353,7 @@ def f32_tap(value: Any, name: str, raw_dir: Path, selected: set[str]) -> dict[st
     raw_path = raw_dir / filename
     if raw_path.exists() or raw_path.is_symlink():
         raise ValueError(f"raw tap filename collision: {filename}")
-    with raw_path.open("xb") as stream:
-        stream.write(raw)
+    write_bytes_no_clobber(raw_path, raw)
     selected.add(name)
     return {"name": name, "shape": [int(axis) for axis in data.shape], "count": full_count, "raw_count": int(raw_data.numel()), "bytes": len(raw), "sha256": digest, "raw_file": filename, "raw_offset": 0, "truncated": truncated}
 
@@ -505,20 +596,20 @@ def run(source: Path, weights: Path, fixture: Path, fixture_sha: str, variant: s
         },
         "taps": taps,
     }
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_no_clobber(output, report)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
-    parser.add_argument("--source-dir", type=Path)
-    parser.add_argument("--weights-dir", type=Path)
-    parser.add_argument("--audio-fixture", type=Path)
+    parser.add_argument("--source-dir")
+    parser.add_argument("--weights-dir")
+    parser.add_argument("--audio-fixture")
     parser.add_argument("--audio-sha256")
     parser.add_argument("--variant", choices=sorted(CONFIGS))
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--raw-dir", type=Path)
-    parser.add_argument("--gate", type=Path, default=Path(__file__).with_name("license_gate_manifest.json"))
+    parser.add_argument("--output")
+    parser.add_argument("--raw-dir")
+    parser.add_argument("--gate", default=str(Path(__file__).with_name("license_gate_manifest.json")))
     args = parser.parse_args()
     if args.self_test:
         if any(value is not None for value in (args.source_dir, args.weights_dir, args.audio_fixture, args.audio_sha256, args.variant, args.output, args.raw_dir)):
@@ -536,6 +627,85 @@ def main() -> int:
             writer.writeframes(struct.pack("<hhh", -32768, 0, 32767))
         decoded, rate = decode_pinned_wav_bytes(wav.getvalue())
         assert rate == 16000 and decoded == [[-1.0, 0.0, 32767 / 32768.0]]
+        with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-taps-") as directory:
+            raw_dir = Path(directory).resolve(strict=True)
+            raw_path = raw_dir / "0000-fixture.stems.f32"
+            write_bytes_no_clobber(raw_path, b"\x00\x00\x80?\x00\x00\x00\xc0")
+            original_raw = raw_path.read_bytes()
+            try:
+                write_bytes_no_clobber(raw_path, b"replacement")
+            except FileExistsError:
+                pass
+            else:
+                raise AssertionError("existing raw tap was overwritten")
+            assert raw_path.read_bytes() == original_raw
+            assert not list(raw_dir.glob(f".{raw_path.name}.*.tmp"))
+            report_path = raw_dir / "report.json"
+            write_json_no_clobber(report_path, {"status": "REPORT_ONLY"})
+            original_report = report_path.read_bytes()
+            try:
+                write_json_no_clobber(report_path, {"status": "replacement"})
+            except FileExistsError:
+                pass
+            else:
+                raise AssertionError("existing report was overwritten")
+            assert report_path.read_bytes() == original_report
+            assert not list(raw_dir.glob(f".{report_path.name}.*.tmp"))
+            original_identity = _owned_regular_identity
+            race_path = raw_dir / "race.json"
+            replaced = False
+
+            def replace_competing_final(path: Path, expected: tuple[int, int] | None = None) -> tuple[int, int]:
+                nonlocal replaced
+                if path == race_path and expected is not None and not replaced:
+                    path.unlink()
+                    path.write_bytes(b"competitor")
+                    replaced = True
+                return original_identity(path, expected)
+
+            globals()["_owned_regular_identity"] = replace_competing_final
+            try:
+                write_json_no_clobber(race_path, {"status": "replacement"})
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("replacement final was accepted")
+            finally:
+                globals()["_owned_regular_identity"] = original_identity
+            assert race_path.read_bytes() == b"competitor"
+            assert not list(raw_dir.glob(f".{race_path.name}.*.tmp"))
+            cleanup_path = raw_dir / "cleanup.json"
+            original_unlink = Path.unlink
+
+            def deny_cleanup(self: Path, *args: Any, **kwargs: Any) -> None:
+                raise PermissionError("self-test cleanup failure")
+
+            Path.unlink = deny_cleanup  # type: ignore[method-assign]
+            try:
+                write_json_no_clobber(cleanup_path, {"complete": True})
+            finally:
+                Path.unlink = original_unlink  # type: ignore[method-assign]
+            assert cleanup_path.read_bytes() == b'{\n  "complete": true\n}\n'
+            for temporary in raw_dir.glob(f".{cleanup_path.name}.*.tmp"):
+                temporary.unlink()
+        with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-cli-") as directory:
+            root = Path(directory).resolve(strict=True)
+            for raw in (str(root / ".." / "output"), "relative/output", "/"):
+                try:
+                    cli_path(raw, "output")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("unsafe CLI path was accepted")
+            real = root / "real"
+            real.mkdir()
+            (root / "link").symlink_to(real, target_is_directory=True)
+            try:
+                cli_path(str(root / "link" / "output"), "output")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("symlink-ancestor CLI path was accepted")
         for malformed in (b"RIFX" + wav.getvalue()[4:], wav.getvalue()[:8] + b"NOPE" + wav.getvalue()[12:]):
             try:
                 decode_pinned_wav_bytes(malformed)
@@ -601,7 +771,7 @@ def main() -> int:
         assert source.index("lameenc_stub = install_lameenc_stub()") < source.index("torchaudio_stub = install_torchaudio_stub()") < source.index('audio = importlib.import_module("demucs.audio")') < source.index("audio.convert_audio")
         assert "effective_bag_weights" in source
         assert '"gate_sha256"' in source
-        for token in ("RIFF/WAVE", "PCM16", "32768", "[channels, time]", "read_pinned_wav", "wiener_iters", "end_iters", "cac=True", "demucs.hdemucs", "sentinel_identity_bound", "bindings"):
+        for token in ("RIFF/WAVE", "PCM16", "32768", "[channels, time]", "read_pinned_wav", "wiener_iters", "end_iters", "cac=True", "demucs.hdemucs", "sentinel_identity_bound", "bindings", "temporary_identity", "O_NOFOLLOW", "unlink_owned"):
             assert token in source
         tree = ast.parse(source)
         forbidden_imports = {
@@ -646,7 +816,16 @@ def main() -> int:
     if missing:
         parser.error("missing required options: " + ", ".join(missing))
     try:
-        run(args.source_dir, args.weights_dir, args.audio_fixture, args.audio_sha256, args.variant, args.output, args.raw_dir, args.gate)
+        source_dir = cli_path(args.source_dir, "source-dir")
+        weights_dir = cli_path(args.weights_dir, "weights-dir")
+        audio_fixture = cli_path(args.audio_fixture, "audio-fixture")
+        output = cli_path(args.output, "output")
+        raw_dir = cli_path(args.raw_dir, "raw-dir")
+        gate = cli_path(args.gate, "gate")
+    except ValueError as error:
+        parser.error(str(error))
+    try:
+        run(source_dir, weights_dir, audio_fixture, args.audio_sha256, args.variant, output, raw_dir, gate)
     except (AssertionError, KeyError, OSError, RuntimeError, TypeError, ValueError, ImportError) as error:
         print(f"htdemucs reference report BLOCKED: {error}", file=sys.stderr)
         return 2

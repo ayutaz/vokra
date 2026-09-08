@@ -95,6 +95,10 @@ before deserialization and permits only the exact reviewed set bound to the
 pinned `demucs/htdemucs.py` source blob; unknown globals and a missing/dirty
 source checkout block before `torch.load`. The restricted load uses
 `weights_only=True` and an inert class token, never `weights_only=False`.
+Checkpoint downloads, response packets, manifests, transfer sidecars, and
+reference raw taps are staged in the destination directory, fsynced, and
+claimed with same-directory hard links; an existing final is never clobbered,
+and private temporary names are cleanup-best-effort after a successful claim.
 The next VAST first pass must therefore provide a clean Git checkout at the
 fixed revision, complete dependency/license evidence, and safe-loaded
 per-member name/shape/dtype manifests before any converter or native forward

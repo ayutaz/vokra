@@ -14,6 +14,7 @@ from fractions import Fraction
 import hashlib
 import json
 import math
+import os
 import re
 import stat
 import subprocess
@@ -161,6 +162,97 @@ def json_load_unique(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
 
 
+def cli_path(raw: str | os.PathLike[str], label: str) -> Path:
+    """Parse a CLI path without losing lexical dot components."""
+    raw_text = os.fspath(raw)
+    if not isinstance(raw_text, str) or not raw_text.startswith("/") or raw_text in {"", "/"}:
+        raise ValueError(f"{label} must be an absolute non-root path")
+    components = raw_text.split("/")
+    if raw_text.endswith("/") or any(component in {"", ".", ".."} for component in components[1:]):
+        raise ValueError(f"{label} contains an unsafe lexical path component")
+    current = Path("/")
+    for component in components[1:-1]:
+        current /= component
+        if current.exists():
+            if current.is_symlink() or not current.is_dir():
+                raise ValueError(f"{label} has an unsafe symlink or non-directory ancestor")
+    return Path(raw_text)
+
+
+def _owned_regular_identity(path: Path, expected: tuple[int, int] | None = None) -> tuple[int, int]:
+    """Verify a regular file through an O_NOFOLLOW descriptor and return its inode."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        descriptor_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_stat.st_mode):
+            raise ValueError("temporary manifest is not a regular file")
+        identity = (descriptor_stat.st_dev, descriptor_stat.st_ino)
+        if expected is not None and identity != expected:
+            raise RuntimeError("file identity changed during manifest publication")
+        return identity
+    finally:
+        os.close(descriptor)
+
+
+def _unlink_owned(path: Path, expected: tuple[int, int]) -> None:
+    try:
+        if _owned_regular_identity(path, expected) == expected:
+            path.unlink()
+    except (FileNotFoundError, OSError, ValueError, RuntimeError):
+        # Never remove a path whose current inode is not ours.
+        pass
+
+
+def _write_no_clobber(path: Path, data: bytes) -> None:
+    """Write bytes privately, then claim *path* with an atomic hard-link.
+
+    The final path is never opened for writing. A competing or pre-existing
+    final therefore wins without being overwritten, while a failed write
+    leaves no partial public artifact.
+    """
+    parent = path.parent
+    resolved_parent = parent.resolve(strict=True)
+    macos_var_alias = (
+        str(parent).startswith("/var/")
+        and resolved_parent == Path("/private") / parent.relative_to("/")
+    )
+    if parent.is_symlink() or not parent.is_dir() or (resolved_parent != parent and not macos_var_alias):
+        raise ValueError("manifest parent must be an existing canonical directory")
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=parent)
+    temporary = Path(temporary_name)
+    temporary_identity: tuple[int, int] | None = None
+    try:
+        temporary_identity = _owned_regular_identity(temporary)
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        identity = _owned_regular_identity(temporary, temporary_identity)
+        os.link(temporary, path, follow_symlinks=False)
+        try:
+            _owned_regular_identity(path, identity)
+        except (OSError, ValueError, RuntimeError):
+            _unlink_owned(path, identity)
+            raise
+        try:
+            directory_fd = os.open(parent, os.O_RDONLY)
+        except OSError:
+            pass
+        else:
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if temporary_identity is not None:
+            _unlink_owned(temporary, temporary_identity)
+
+
 def write_json_manifest(path: Path, payload: dict[str, Any]) -> None:
     """Serialize an evidence manifest while retaining canonical source order.
 
@@ -170,7 +262,7 @@ def write_json_manifest(path: Path, payload: dict[str, Any]) -> None:
     make the serialized evidence fail the exact ensemble-order gate.
     """
 
-    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    _write_no_clobber(path, (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode("utf-8"))
 
 
 def require_exact_weight_directory(path: Path) -> Path:
@@ -822,6 +914,52 @@ def self_test() -> None:
         )
         reloaded_manifest = json_load_unique(manifest_path)
         assert list(reloaded_manifest["members"]) == list(MEMBERS)
+        original = manifest_path.read_bytes()
+        try:
+            write_json_manifest(manifest_path, {"replacement": True})
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing manifest was overwritten")
+        assert manifest_path.read_bytes() == original
+        assert not list(manifest_path.parent.glob(f".{manifest_path.name}.*.tmp"))
+        original_identity = _owned_regular_identity
+        race_path = manifest_path.parent / "race.json"
+        replaced = False
+
+        def replace_competing_final(path: Path, expected: tuple[int, int] | None = None) -> tuple[int, int]:
+            nonlocal replaced
+            if path == race_path and expected is not None and not replaced:
+                path.unlink()
+                path.write_bytes(b"competitor")
+                replaced = True
+            return original_identity(path, expected)
+
+        globals()["_owned_regular_identity"] = replace_competing_final
+        try:
+            write_json_manifest(race_path, {"replacement": True})
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("replacement final was accepted")
+        finally:
+            globals()["_owned_regular_identity"] = original_identity
+        assert race_path.read_bytes() == b"competitor"
+        assert not list(manifest_path.parent.glob(f".{race_path.name}.*.tmp"))
+        cleanup_path = manifest_path.parent / "cleanup.json"
+        original_unlink = Path.unlink
+
+        def deny_cleanup(self: Path, *args: Any, **kwargs: Any) -> None:
+            raise PermissionError("self-test cleanup failure")
+
+        Path.unlink = deny_cleanup  # type: ignore[method-assign]
+        try:
+            write_json_manifest(cleanup_path, {"complete": True})
+        finally:
+            Path.unlink = original_unlink  # type: ignore[method-assign]
+        assert cleanup_path.read_bytes() == b'{\n  "complete": true\n}\n'
+        for temporary in cleanup_path.parent.glob(f".{cleanup_path.name}.*.tmp"):
+            temporary.unlink()
     with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-error-") as directory:
         error_evidence = Path(directory)
         write_error_manifest(error_evidence, RuntimeError("self-test error"))
@@ -842,6 +980,27 @@ def self_test() -> None:
             assert "flattened" in str(error)
         else:
             raise AssertionError("flattened historical artifact was accepted")
+    with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-cli-") as directory:
+        root = Path(directory).resolve(strict=True)
+        for raw in (str(root / ".." / "output"), "relative/output", "/"):
+            try:
+                cli_path(raw, "output")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("unsafe CLI path was accepted")
+        real = root / "real"
+        real.mkdir()
+        (root / "link").symlink_to(real, target_is_directory=True)
+        try:
+            cli_path(str(root / "link" / "output"), "output")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("symlink-ancestor CLI path was accepted")
+    source_text = Path(__file__).read_text(encoding="utf-8")
+    for token in ("temporary_identity", "O_NOFOLLOW", "_unlink_owned", "cli_path"):
+        assert token in source_text
 
 
 def inspect(source_dir: Path, weights_dir: Path, response_packet: Path, evidence: Path) -> int:
@@ -1005,10 +1164,10 @@ def write_error_manifest(evidence: Path, error: Exception) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
-    parser.add_argument("--source-dir", type=Path)
-    parser.add_argument("--weights-dir", type=Path)
-    parser.add_argument("--response-packet", type=Path)
-    parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument("--source-dir")
+    parser.add_argument("--weights-dir")
+    parser.add_argument("--response-packet")
+    parser.add_argument("--evidence-dir")
     args = parser.parse_args()
     if args.self_test:
         if any(value is not None for value in (args.source_dir, args.weights_dir, args.response_packet, args.evidence_dir)):
@@ -1019,9 +1178,16 @@ def main() -> int:
     if None in (args.source_dir, args.weights_dir, args.response_packet, args.evidence_dir):
         parser.error("normal runs require --source-dir, --weights-dir, --response-packet, and --evidence-dir")
     try:
-        return inspect(args.source_dir, args.weights_dir, args.response_packet, args.evidence_dir)
+        source_dir = cli_path(args.source_dir, "source-dir")
+        weights_dir = cli_path(args.weights_dir, "weights-dir")
+        response_packet = cli_path(args.response_packet, "response-packet")
+        evidence_dir = cli_path(args.evidence_dir, "evidence-dir")
+    except ValueError as error:
+        parser.error(str(error))
+    try:
+        return inspect(source_dir, weights_dir, response_packet, evidence_dir)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
-        write_error_manifest(args.evidence_dir, error)
+        write_error_manifest(evidence_dir, error)
         print(f"HT-Demucs inspection error: {error}", file=sys.stderr)
         return 2
 
