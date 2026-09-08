@@ -35,6 +35,11 @@ SNAPSHOT_FILES=(embedding_model.ckpt classifier.ckpt label_encoder.txt hyperpara
 
 MIN_VAST_MEM_KIB=67108864
 MIN_FREE_DISK_KIB=$((150 * 1024 * 1024))
+# Model-free mode audits only checkout metadata, the locked environment, and
+# fixed source/fixture identities. Keep its host guard explicit and small; it
+# must not inherit the real-weight artifact capacity requirement above.
+MIN_MODEL_FREE_MEM_KIB=$((4 * 1024 * 1024))
+MIN_MODEL_FREE_DISK_KIB=$((4 * 1024 * 1024))
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 log() { printf '[speechbrain-lang-id-vast] %s\n' "$*" >&2; }
@@ -55,10 +60,13 @@ pinned SpeechBrain loader, prepares a strict Vokra checkpoint, dumps an
 independent reference, converts GGUF, runs CPU measurement and CLI
 classification smoke, and records hashes/manifests. Parity stays NOT_GATED
 until numeric bounds are reviewed and Metal is measured separately.
-Actual runs require Linux x86_64, VOKRA_PUBLISH_ON_VAST=1, exact 64 GiB RAM,
-150 GB free disk, and a clean checkout. --self-test is offline and hermetic.
+Full real-weight runs require Linux x86_64, VOKRA_PUBLISH_ON_VAST=1, exact
+64 GiB RAM, 150 GB free disk, and a clean checkout. --self-test is offline and
+hermetic.
 --model-free performs only the checkout/lock/source-identity/fixture audit and
-emits a blocked, no-upload report; it never downloads or executes a model.
+emits a blocked, no-upload report; it never downloads or executes a model. It
+uses a separate lightweight host guard (4 GiB RAM and 4 GiB free disk) and
+does not require the 150 GB full-run guard.
 EOF
 }
 
@@ -250,6 +258,29 @@ require_vast_host() {
   (( free_kib >= MIN_FREE_DISK_KIB )) || die "free disk=$free_kib KiB is below the exact 150-GB guard"
 }
 
+require_model_free_host() {
+  local mem_kib free_kib disk_root
+  [[ "$(printenv VOKRA_PUBLISH_ON_VAST 2>/dev/null || true)" == "1" ]] \
+    || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
+  [[ "$(uname -s)" == "Linux" ]] || die "this worker is VAST/Linux-only"
+  [[ "$(uname -m)" == "x86_64" ]] || die "VAST host must be x86_64"
+  [[ -r /proc/meminfo ]] || die "/proc/meminfo is unavailable"
+  mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
+  [[ "$mem_kib" =~ ^[0-9]+$ ]] || die "could not read MemTotal"
+  (( mem_kib >= MIN_MODEL_FREE_MEM_KIB )) \
+    || die "MemTotal=$mem_kib KiB is below the model-free 4-GiB guard"
+  disk_root="$VOKRA_SCRATCH"
+  while [[ ! -e "$disk_root" && ! -L "$disk_root" ]]; do
+    [[ "$disk_root" != / ]] || die "scratch path has no existing disk ancestor"
+    disk_root="$(dirname "$disk_root")"
+  done
+  disk_root="$(canonical_candidate "$disk_root")" || return 2
+  free_kib="$(df -Pk "$disk_root" | awk 'NR == 2 {print $4}')"
+  [[ "$free_kib" =~ ^[0-9]+$ ]] || die "could not read free disk"
+  (( free_kib >= MIN_MODEL_FREE_DISK_KIB )) \
+    || die "free disk=$free_kib KiB is below the model-free 4-GiB guard"
+}
+
 require_tooling() {
   local tool path
   for tool in uv cargo rustc rustfmt git sha256sum awk grep find tee wc tr sort df; do
@@ -286,7 +317,7 @@ require_model_free_tooling() {
 run_model_free_audit() {
   local expected_head="$1" requested_work_dir="$2" run_stamp work_dir evidence_dir audit_log audit_report audit_rc summary_file
   require_clean_expected_head "$expected_head"
-  require_vast_host
+  require_model_free_host
   require_model_free_tooling
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   if [[ -n "$requested_work_dir" ]]; then work_dir="$requested_work_dir"
@@ -482,7 +513,7 @@ PY
 }
 
 run_self_test() {
-  local script_path="$0" fail=0 cases=0 required fake_root fake_scratch rc probe approval
+  local script_path="$0" fail=0 cases=0 required fake_root fake_scratch rc probe approval model_free_block full_host_block
   probe="$(cd -P "$(mktemp -d)" && pwd -P)"
   trap 'rm -rf "$probe"' RETURN
   mkdir -p "$probe/real/existing"
@@ -519,9 +550,23 @@ run_self_test() {
     'lang-id[' 'lang-id: 107 scores in official label order' '--backend cpu' \
     'MIN_VAST_MEM_KIB=67108864' 'MIN_FREE_DISK_KIB=$((150 * 1024 * 1024))' '--expected-head' 'require_clean_expected_head' '--test-threads=1' \
     '/proc/meminfo' 'df -Pk' 'VOKRA_PUBLISH_ON_VAST=1' \
+    'MIN_MODEL_FREE_MEM_KIB=$((4 * 1024 * 1024))' 'MIN_MODEL_FREE_DISK_KIB=$((4 * 1024 * 1024))' \
+    'require_model_free_host' \
     'git status --porcelain --untracked-files=all' 'mindepth 1 -maxdepth 1'; do
     if ! grep -Fq -- "$required" "$script_path"; then log "self-test FAIL: missing gate/sentinel $required"; fail=1; fi
   done
+  model_free_block="$(sed -n '/^run_model_free_audit()/,/^run_logged()/p' "$script_path")"
+  full_host_block="$(sed -n '/^require_vast_host()/,/^require_tooling()/p' "$script_path")"
+  if grep -Fq 'require_vast_host' <<<"$model_free_block" \
+    || grep -Fq 'MIN_FREE_DISK_KIB' <<<"$model_free_block"; then
+    log 'self-test FAIL: model-free route still inherits the full 150-GB host guard'
+    fail=1
+  fi
+  if ! grep -Fq 'MIN_FREE_DISK_KIB' <<<"$full_host_block" \
+    || ! grep -Fq 'MIN_VAST_MEM_KIB' <<<"$full_host_block"; then
+    log 'self-test FAIL: full real-weight host guard lost its exact capacity checks'
+    fail=1
+  fi
   cases=$((cases + 1))
   local unsafe_weights unsafe_pickle unsafe_torch
   unsafe_weights="weights_only=$(printf False)"
