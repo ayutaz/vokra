@@ -78,6 +78,7 @@ pub fn convert_clap_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<ClapReport, ConvertError> {
+    ensure_file_identity_support()?;
     validate_conversion_paths(input, output)?;
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
@@ -267,11 +268,11 @@ fn write_no_clobber(destination: &Path, payload: &[u8]) -> Result<(), ConvertErr
 }
 
 fn ensure_file_identity_support() -> Result<(), ConvertError> {
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     {
         Ok(())
     }
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     {
         Err(ConvertError::Usage(
             "CLAP atomic publication requires a supported file identity API on this platform"
@@ -295,77 +296,11 @@ fn same_file_identity(file: &std::fs::File, path: &Path) -> bool {
             && expected.dev() == actual.dev()
             && expected.ino() == actual.ino()
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-
-        let Some(expected) = windows_file_identity(file.as_raw_handle()) else {
-            return false;
-        };
-        let Ok(metadata) = std::fs::symlink_metadata(path) else {
-            return false;
-        };
-        if !metadata.file_type().is_file() {
-            return false;
-        }
-        let Ok(candidate) = std::fs::File::open(path) else {
-            return false;
-        };
-        windows_file_identity(candidate.as_raw_handle()) == Some(expected)
-    }
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     {
         let _ = (file, path);
         false
     }
-}
-
-#[cfg(windows)]
-#[repr(C)]
-#[allow(dead_code)] // The unused fields preserve the Win32 ABI layout.
-struct WindowsFileTime {
-    low_date_time: u32,
-    high_date_time: u32,
-}
-
-#[cfg(windows)]
-#[repr(C)]
-#[allow(dead_code)] // The unused fields preserve the Win32 ABI layout.
-struct WindowsByHandleFileInformation {
-    file_attributes: u32,
-    creation_time: WindowsFileTime,
-    last_access_time: WindowsFileTime,
-    last_write_time: WindowsFileTime,
-    volume_serial_number: u32,
-    file_size_high: u32,
-    file_size_low: u32,
-    number_of_links: u32,
-    file_index_high: u32,
-    file_index_low: u32,
-}
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    #[link_name = "GetFileInformationByHandle"]
-    fn get_file_information_by_handle(
-        file: std::os::windows::io::RawHandle,
-        information: *mut WindowsByHandleFileInformation,
-    ) -> i32;
-}
-
-#[cfg(windows)]
-fn windows_file_identity(handle: std::os::windows::io::RawHandle) -> Option<(u32, u64)> {
-    let mut information = std::mem::MaybeUninit::<WindowsByHandleFileInformation>::uninit();
-    let succeeded =
-        unsafe { get_file_information_by_handle(handle, information.as_mut_ptr()) } != 0;
-    if !succeeded {
-        return None;
-    }
-    let information = unsafe { information.assume_init() };
-    let file_index =
-        (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low);
-    Some((information.volume_serial_number, file_index))
 }
 
 fn remove_owned_temp(file: &std::fs::File, path: &Path) {
@@ -397,8 +332,10 @@ fn validate_publish_path(destination: &Path) -> Result<(), ConvertError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use vokra_core::gguf::GgufFile;
 
+    #[cfg(unix)]
     fn scratch_path(tag: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!(
@@ -412,6 +349,7 @@ mod tests {
         p
     }
 
+    #[cfg(unix)]
     fn safetensors_two_towers(
         audio_name: &str,
         audio_bf16: &[u8],
@@ -434,6 +372,23 @@ mod tests {
         out
     }
 
+    #[test]
+    fn lexical_dot_paths_are_rejected_on_every_platform() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-clap-dot-paths-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("root");
+        assert!(reject_unsafe_path(&root.join(".").join("artifact.gguf"), "output").is_err());
+        assert!(reject_unsafe_path(&root.join("..").join("artifact.gguf"), "output").is_err());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn both_towers_pass_through_verbatim() {
         // Audio tower (HTSAT) — BF16.
@@ -503,6 +458,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn output_publication_is_no_clobber_and_path_bounded() {
         let root = std::env::temp_dir().join(format!(
@@ -526,8 +482,6 @@ mod tests {
             std::fs::read(&output).expect("published artifact"),
             b"first"
         );
-        let dotted = root.join(".").join("dotted.gguf");
-        assert!(validate_conversion_paths(&output, &dotted).is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
@@ -537,6 +491,36 @@ mod tests {
             symlink(&real, &linked).expect("symlink");
             assert!(validate_publish_path(&linked.join("artifact.gguf")).is_err());
         }
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn non_unix_publication_fails_closed_without_touching_output() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-clap-unsupported-publication-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("root");
+        let output = root.join("artifact.gguf");
+
+        let input = root.join("input.safetensors");
+        let error = convert_clap_file(&input, &output, None).expect_err("unsupported conversion");
+        assert!(matches!(error, ConvertError::Usage(_)));
+        assert!(!output.exists(), "unsupported publication created output");
+
+        std::fs::write(&input, b"not a safetensors file").expect("input");
+        std::fs::write(&output, b"existing").expect("existing output");
+        let error = convert_clap_file(&input, &output, None).expect_err("unsupported conversion");
+        assert!(matches!(error, ConvertError::Usage(_)));
+        assert_eq!(
+            std::fs::read(&output).expect("read preserved output"),
+            b"existing"
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
