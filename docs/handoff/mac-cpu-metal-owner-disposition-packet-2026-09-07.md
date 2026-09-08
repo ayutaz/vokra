@@ -37,7 +37,7 @@ record.
 
 | Family | Manifest | Approval scope SHA-256 | Remaining decision |
 |---|---|---|---|
-| Qwen3-ASR 0.6B / 1.7B | `tools/parity/qwen3_asr/license_gate_manifest.json` | `e368984045fe3d73015c8e4d5e8696e050d5eb983796738a794ab112c5519a4a` | Review two model-license rows and 31 package rows; approve or withhold source/model/operator execution. |
+| Qwen3-ASR 0.6B / 1.7B | `tools/parity/qwen3_asr/license_gate_manifest.json` | `da581832351b223b890814c0bf45ba036174da24dd7fd47a58236c1dde33ced1` | Review two model-license rows and 40 package rows; approve or withhold source/model/operator execution. |
 | Qwen3-TTS four variants | `tools/parity/qwen3_tts/license_gate_manifest.json` | `46662c9a1a1135c37a4dc00583c1a637f72aa745ca10f2172a38f77df9d1b1da` | The exact-head no-checkpoint API smoke is green for all four variants. Resolve the remaining component/dependency owner reviews; no model was loaded and publication remains `NO_UPLOAD`. |
 | SpeechT5-TTS + HiFi-GAN | `tools/parity/speecht5_tts/license_gate_manifest.json` | `99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba` | Dependency/model rows are reviewed; operator approval and the still-unverified API smoke must close before execution. |
 | MOSS Audio 4B / 8B | `tools/parity/moss_audio/license_gate_manifest.json` | `08eeab246dac53187c683cfed54e07f4a64a15abd119f3c4cc186bd23b88e69e` | The exact-head no-checkpoint API smoke is green and the fixed index/shard identities are bound for both variants. The source tree and model repositories have no license file at their fixed revisions; cardData `apache-2.0` remains provenance only. Resolve source/model SPDX, dependency rows and owner/operator decisions; no payload was acquired or loaded. |

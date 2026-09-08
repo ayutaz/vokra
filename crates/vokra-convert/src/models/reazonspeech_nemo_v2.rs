@@ -7,7 +7,9 @@
 //! checkpoint is never converted on the maintainer Mac.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{
@@ -38,6 +40,7 @@ pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
 const TENSOR_COUNT: usize = 965;
 const TOKENIZER_PIECES: usize = 3_000;
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
@@ -124,6 +127,7 @@ pub fn convert_reazonspeech_nemo_v2_file_with_tokenizer(
     license: Option<&str>,
     tokenizer_vocab: &Path,
 ) -> Result<ReazonspeechNemoV2Report, ConvertError> {
+    validate_io_paths(input, tokenizer_vocab, output)?;
     if let Some(value) = license.filter(|value| !value.is_empty()) {
         if !value.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX) {
             return Err(ConvertError::Usage(format!(
@@ -166,7 +170,7 @@ pub fn convert_reazonspeech_nemo_v2_file_with_tokenizer(
     let output_bytes = builder
         .to_bytes()
         .map_err(|error| ConvertError::Gguf(error.to_string()))?;
-    std::fs::write(output, output_bytes).map_err(ConvertError::Io)?;
+    write_output_no_clobber(output, &output_bytes)?;
 
     Ok(ReazonspeechNemoV2Report {
         read: TENSOR_COUNT,
@@ -174,6 +178,163 @@ pub fn convert_reazonspeech_nemo_v2_file_with_tokenizer(
         skipped_non_float: 0,
         bf16_passthrough: 0,
     })
+}
+
+fn validate_io_paths(
+    input: &Path,
+    tokenizer_vocab: &Path,
+    output: &Path,
+) -> Result<(), ConvertError> {
+    reject_unsafe_path(input, "checkpoint")?;
+    reject_unsafe_path(tokenizer_vocab, "tokenizer")?;
+    reject_unsafe_path(output, "output")?;
+    require_regular_file(input, "checkpoint")?;
+    require_regular_file(tokenizer_vocab, "tokenizer")?;
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "reazonspeech-nemo-v2 output must be absent and non-symlink: {}",
+            output.display()
+        )));
+    }
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Usage("reazonspeech-nemo-v2 output must have a parent directory".to_owned())
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "reazonspeech-nemo-v2 output parent must be an existing regular non-symlink directory: {}",
+            parent.display()
+        )));
+    }
+    Ok(())
+}
+
+fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
+    if path
+        .to_string_lossy()
+        .split('/')
+        .any(|component| matches!(component, "." | ".."))
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(ConvertError::Usage(format!(
+            "reazonspeech-nemo-v2 {label} must not contain lexical dot components"
+        )));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(ConvertError::Io)?
+            .join(path)
+    };
+    let mut current = absolute.as_path();
+    loop {
+        if current.is_symlink() && current != Path::new("/var") {
+            return Err(ConvertError::Usage(format!(
+                "reazonspeech-nemo-v2 {label} has symlink ancestry: {}",
+                current.display()
+            )));
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
+}
+
+fn require_regular_file(path: &Path, label: &str) -> Result<(), ConvertError> {
+    if path.is_symlink() || !path.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "reazonspeech-nemo-v2 {label} must be a regular non-symlink file: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn write_output_no_clobber(output: &Path, bytes: &[u8]) -> Result<(), ConvertError> {
+    write_output_no_clobber_with_allocator(output, bytes, || {
+        OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    })
+}
+
+fn write_output_no_clobber_with_allocator<F>(
+    output: &Path,
+    bytes: &[u8],
+    mut next_sequence: F,
+) -> Result<(), ConvertError>
+where
+    F: FnMut() -> u64,
+{
+    if output.parent().is_none() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output must have a parent directory",
+        )));
+    }
+    let mut temporary = None;
+    for _ in 0..32_u64 {
+        let candidate = temporary_output_path(output, next_sequence());
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+    }
+    let Some((temporary_path, mut temporary_file)) = temporary else {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique temporary output",
+        )));
+    };
+    let result = (|| {
+        temporary_file.write_all(bytes)?;
+        temporary_file.sync_all()?;
+        std::fs::hard_link(&temporary_path, output)?;
+        Ok::<(), std::io::Error>(())
+    })();
+    drop(temporary_file);
+    let cleanup = std::fs::remove_file(&temporary_path);
+    // hard_link publishes a complete, synced artifact. Cleanup is best effort
+    // so a post-publication unlink error never reports a false conversion
+    // failure alongside a valid final output.
+    match result {
+        Ok(()) => {
+            let _ = cleanup;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = cleanup;
+            Err(ConvertError::Io(error))
+        }
+    }
+}
+
+fn temporary_output_path(output: &Path, sequence: u64) -> PathBuf {
+    output
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(
+            ".{}.{}.{}.tmp",
+            output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("output"),
+            std::process::id(),
+            sequence
+        ))
 }
 
 fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
@@ -478,6 +639,122 @@ mod tests {
     fn wrong_tokenizer_hash_is_rejected_before_structure() {
         let error = validate_tokenizer_vocab(b"<unk>\t0\n").expect_err("wrong hash");
         assert!(error.to_string().contains("SHA-256"));
+    }
+
+    #[test]
+    fn conversion_paths_reject_non_regular_inputs_and_existing_outputs() {
+        let root =
+            std::env::temp_dir().join(format!("vokra-reazonspeech-paths-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create path-test directory");
+        let input = root.join("checkpoint.safetensors");
+        let tokenizer = root.join("tokenizer.vocab");
+        let output = root.join("output.gguf");
+        std::fs::write(&input, b"checkpoint").expect("write checkpoint");
+        std::fs::write(&tokenizer, b"tokenizer").expect("write tokenizer");
+        assert!(require_regular_file(&input, "checkpoint").is_ok());
+        assert!(require_regular_file(&tokenizer, "tokenizer").is_ok());
+
+        std::fs::write(&output, b"existing").expect("write existing output");
+        let error =
+            convert_reazonspeech_nemo_v2_file_with_tokenizer(&input, &output, None, &tokenizer)
+                .expect_err("existing output must be refused before parsing");
+        assert!(error.to_string().contains("output must be absent"));
+        assert_eq!(
+            std::fs::read(&output).expect("read preserved output"),
+            b"existing"
+        );
+        std::fs::remove_file(&output).expect("remove output for atomic-write checks");
+
+        write_output_no_clobber(&output, b"fresh").expect("write fresh output");
+        let error = write_output_no_clobber(&output, b"replacement")
+            .expect_err("atomic writer must refuse a claimed final path");
+        assert!(error.to_string().contains("File exists"));
+        assert_eq!(
+            std::fs::read(&output).expect("read atomically published output"),
+            b"fresh"
+        );
+        std::fs::remove_file(&output).expect("remove atomic output");
+
+        let error =
+            convert_reazonspeech_nemo_v2_file_with_tokenizer(&input, &output, None, &tokenizer)
+                .expect_err("invalid tokenizer must fail before output publication");
+        assert!(error.to_string().contains("SHA-256"));
+        assert!(
+            !output.exists(),
+            "failed conversion must not leave a final output"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let input_link = root.join("checkpoint-link.safetensors");
+            symlink(&input, &input_link).expect("create checkpoint symlink");
+            let error = require_regular_file(&input_link, "checkpoint")
+                .expect_err("checkpoint symlink must be refused");
+            assert!(error.to_string().contains("non-symlink"));
+
+            let tokenizer_link = root.join("tokenizer-link.vocab");
+            symlink(&tokenizer, &tokenizer_link).expect("create tokenizer symlink");
+            let error = require_regular_file(&tokenizer_link, "tokenizer")
+                .expect_err("tokenizer symlink must be refused");
+            assert!(error.to_string().contains("non-symlink"));
+
+            let output_link = root.join("output-link.gguf");
+            symlink(&output, &output_link).expect("create output symlink");
+            let error = convert_reazonspeech_nemo_v2_file_with_tokenizer(
+                &input,
+                &output_link,
+                None,
+                &tokenizer,
+            )
+            .expect_err("output symlink must be refused");
+            assert!(error.to_string().contains("output has symlink ancestry"));
+        }
+
+        assert!(reject_unsafe_path(&root.join("./checkpoint.safetensors"), "checkpoint").is_err());
+        assert!(reject_unsafe_path(&root.join("../checkpoint.safetensors"), "checkpoint").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let real_parent = root.join("real-parent");
+            let link_parent = root.join("link-parent");
+            std::fs::create_dir(&real_parent).expect("create real parent");
+            symlink(&real_parent, &link_parent).expect("create symlink parent");
+            assert!(
+                reject_unsafe_path(&link_parent.join("checkpoint.safetensors"), "checkpoint")
+                    .is_err()
+            );
+            assert!(reject_unsafe_path(&link_parent.join("tokenizer.vocab"), "tokenizer").is_err());
+            assert!(reject_unsafe_path(&link_parent.join("output.gguf"), "output").is_err());
+        }
+
+        std::fs::remove_dir_all(root).expect("remove path-test directory");
+    }
+
+    #[test]
+    fn output_writer_advances_sequence_after_temp_collision() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-reazonspeech-sequence-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create sequence-test directory");
+        let output = root.join("output.gguf");
+        let blocked = temporary_output_path(&output, 41);
+        std::fs::write(&blocked, b"reserved").expect("reserve first temp candidate");
+        let mut sequences = [41_u64, 42].into_iter();
+        write_output_no_clobber_with_allocator(&output, b"published", || {
+            sequences.next().expect("allocator sequence")
+        })
+        .expect("advance to an unused temp candidate");
+        assert_eq!(
+            std::fs::read(&output).expect("read published output"),
+            b"published"
+        );
+        assert_eq!(
+            std::fs::read(&blocked).expect("read blocked candidate"),
+            b"reserved"
+        );
+        std::fs::remove_dir_all(root).expect("remove sequence-test directory");
     }
 
     #[test]

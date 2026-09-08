@@ -50,8 +50,8 @@ except ModuleNotFoundError:  # pragma: no cover - package import path
     )
 
 GATE_VERSION = 1
-LOCK_SHA256 = "1f9bcf22394deb5e53a737277409b4fa83a82cef421c260fd4e47aa6ddb612a7"
-PYPROJECT_SHA256 = "f1d18ddd13b0abbe39371ffc34ad09e8bb705569eaf98dd664f8dd052ffc359b"
+LOCK_SHA256 = "807bf3ad2cbc236c7a83b6a5fcd2d5d36fe1a5bccd2eef4d1b659aee49b2e6d1"
+PYPROJECT_SHA256 = "aa12415124f42b414e5fee217aafab3240c0dc2290e8705a257b1482bc96bba2"
 OFFICIAL_WHEEL_SCHEMA = "vokra-qwen3-asr-official-transformers-wheel-v1"
 REFERENCE_AUDIO_SHA256 = "241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -612,10 +612,14 @@ def self_test() -> int:
         print("qwen3-asr preflight gate: official wheel schema self-test failed", file=sys.stderr)
         return 1
     ok, reason = validate(project, manifest)
-    if ok or "unresolved" not in reason and "approval" not in reason:
+    if ok or ("unresolved" not in reason and "approval" not in reason):
         print("qwen3-asr preflight gate: self-test expected pending approval", file=sys.stderr)
         return 1
-    print("qwen3-asr preflight gate: self-test PASS")
+    # The checked-in manifest intentionally has no owner approval yet.  That
+    # is the expected production disposition, not a self-test failure: the
+    # self-test proves that the gate rejects an unresolved approval and keeps
+    # the execution path fail-closed.
+    print("qwen3-asr preflight gate: self-test PASS (approval remains pending)")
     return 0
 
 

@@ -105,6 +105,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vokra_core::gguf::{
     GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufStreamWriter, GgufTensorDecl,
@@ -205,6 +206,7 @@ pub(crate) const KEY_TEXT_ATTENTION_BIAS: &str = "vokra.qwen3_asr.text.attention
 pub(crate) const KEY_AUDIO_START_TOKEN_ID: &str = "vokra.qwen3_asr.audio_start_token_id";
 pub(crate) const KEY_AUDIO_END_TOKEN_ID: &str = "vokra.qwen3_asr.audio_end_token_id";
 pub(crate) const KEY_AUDIO_TOKEN_ID: &str = "vokra.qwen3_asr.audio_token_id";
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Which Qwen3-ASR release the converter is bound to. The two sizes
 /// share arch, category, provenance stamps, and BF16 pass-through
@@ -392,10 +394,21 @@ pub fn convert_qwen3_asr_file_with_variant(
     }
 
     let axes = variant.axes();
+    reject_unsafe_path(input, "checkpoint input")?;
+    reject_unsafe_path(output, "output")?;
     if output.exists() || output.is_symlink() {
         return Err(parse_error(format!(
             "output path already exists or is symlinked: {}",
             output.display()
+        )));
+    }
+    let output_parent = output
+        .parent()
+        .ok_or_else(|| parse_error("output path must have a parent directory"))?;
+    if !output_parent.is_dir() || output_parent.is_symlink() {
+        return Err(parse_error(format!(
+            "output parent must be an existing regular non-symlink directory: {}",
+            output_parent.display()
         )));
     }
     let mut checkpoint = CheckpointReader::open(input)?;
@@ -417,19 +430,36 @@ pub fn convert_qwen3_asr_file_with_variant(
         })
         .collect::<Vec<_>>();
 
-    let output_file = std::fs::File::create(output)?;
-    let mut writer = GgufStreamWriter::begin(std::io::BufWriter::new(output_file), &b, &decls)?;
-    let mut payload = Vec::new();
-    for declaration in &decls {
-        checkpoint.read_tensor_into(&declaration.name, &mut payload)?;
-        writer.write_tensor(&declaration.name, &payload)?;
+    let (temporary_path, output_file) = open_temporary_output(output)?;
+    let result = (|| -> Result<(), ConvertError> {
+        let mut writer = GgufStreamWriter::begin(std::io::BufWriter::new(output_file), &b, &decls)?;
+        let mut payload = Vec::new();
+        for declaration in &decls {
+            checkpoint.read_tensor_into(&declaration.name, &mut payload)?;
+            writer.write_tensor(&declaration.name, &payload)?;
+        }
+        drop(payload);
+        let output_file = writer
+            .finish()?
+            .into_inner()
+            .map_err(|error| ConvertError::Io(error.into_error()))?;
+        output_file.sync_all().map_err(ConvertError::Io)?;
+        std::fs::hard_link(&temporary_path, output).map_err(ConvertError::Io)?;
+        Ok(())
+    })();
+    let cleanup = std::fs::remove_file(&temporary_path);
+    // hard_link publishes a complete, synced artifact. Cleanup is best effort
+    // so a post-publication unlink error never reports a false conversion
+    // failure alongside a valid final output.
+    match result {
+        Ok(()) => {
+            let _ = cleanup;
+        }
+        Err(error) => {
+            let _ = cleanup;
+            return Err(error);
+        }
     }
-    drop(payload);
-    let output_file = writer
-        .finish()?
-        .into_inner()
-        .map_err(|error| ConvertError::Io(error.into_error()))?;
-    output_file.sync_all().map_err(ConvertError::Io)?;
 
     Ok(Qwen3AsrReport {
         read: decls.len(),
@@ -437,6 +467,76 @@ pub fn convert_qwen3_asr_file_with_variant(
         bf16_passthrough: decls.len(),
         metadata_count,
     })
+}
+
+fn open_temporary_output(output: &Path) -> Result<(PathBuf, std::fs::File), ConvertError> {
+    let parent = output
+        .parent()
+        .ok_or_else(|| parse_error("output path must have a parent directory"))?;
+    for _ in 0..32_u64 {
+        let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("output"),
+            std::process::id(),
+            sequence
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+    }
+    Err(ConvertError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique temporary output",
+    )))
+}
+
+fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
+    if path
+        .to_string_lossy()
+        .split('/')
+        .any(|component| matches!(component, "." | ".."))
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(parse_error(format!(
+            "{label} must not contain lexical dot components"
+        )));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(ConvertError::Io)?
+            .join(path)
+    };
+    let mut current = absolute.as_path();
+    loop {
+        if current.is_symlink() && current != Path::new("/var") {
+            return Err(parse_error(format!(
+                "{label} has symlink ancestry: {}",
+                current.display()
+            )));
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
 }
 
 fn metadata_builder(axes: &VariantAxes) -> GgufBuilder {
@@ -507,6 +607,7 @@ fn read_exact_sidecar(
     axes: &VariantAxes,
 ) -> Result<Vec<u8>, ConvertError> {
     let path = directory.join(spec.name);
+    reject_unsafe_path(&path, "sidecar")?;
     if path.is_symlink() || !path.is_file() {
         return Err(parse_error(format!(
             "{}@{} sidecar {} is missing, symlinked, or not a regular file",
@@ -586,6 +687,7 @@ struct ResolvedSources {
 }
 
 fn resolve_sources(input: &Path) -> Result<ResolvedSources, ConvertError> {
+    reject_unsafe_path(input, "checkpoint input")?;
     if input.is_symlink() || !input.is_file() {
         return Err(parse_error(format!(
             "checkpoint input {} is missing, symlinked, or not a regular file",
@@ -663,6 +765,7 @@ fn resolve_sources(input: &Path) -> Result<ResolvedSources, ConvertError> {
         .into_iter()
         .map(|name| {
             let path = directory.join(&name);
+            reject_unsafe_path(&path, "shard")?;
             if path.is_symlink() || !path.is_file() {
                 return Err(parse_error(format!(
                     "shard index {} references missing, symlinked, or non-regular file {}",
@@ -1249,7 +1352,7 @@ mod tests {
                 read_exact_sidecar(&directory, spec, &axes)
                     .expect_err("symlink sidecar")
                     .to_string()
-                    .contains("symlinked")
+                    .contains("symlink")
             );
         }
         std::fs::remove_dir_all(directory).ok();
@@ -1270,7 +1373,19 @@ mod tests {
                 resolve_sources(&link)
                     .expect_err("symlink checkpoint input")
                     .to_string()
-                    .contains("symlinked")
+                    .contains("symlink")
+            );
+            let real_parent = directory.join("real-parent");
+            let link_parent = directory.join("link-parent");
+            std::fs::create_dir(&real_parent).expect("create real parent");
+            symlink(&real_parent, &link_parent).expect("create symlink parent");
+            let nested = link_parent.join("nested.safetensors");
+            std::fs::write(real_parent.join("nested.safetensors"), []).expect("create nested");
+            assert!(
+                resolve_sources(&nested)
+                    .expect_err("symlink checkpoint ancestry")
+                    .to_string()
+                    .contains("symlink ancestry")
             );
             std::fs::remove_dir_all(directory).ok();
         }
@@ -1308,6 +1423,65 @@ mod tests {
                 .to_string()
                 .contains("unsafe/non-local")
         );
+        std::fs::write(
+            &index,
+            br#"{"weight_map":{"tensor":"./model-00001-of-00002.safetensors"}}"#,
+        )
+        .expect("write dot-component index");
+        assert!(
+            resolve_sources(&index)
+                .expect_err("dot-component shard path")
+                .to_string()
+                .contains("unsafe/non-local")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let real_dir = directory.join("real-shards");
+            let linked_dir = directory.join("linked-shards");
+            std::fs::create_dir(&real_dir).expect("create real shard directory");
+            std::fs::write(real_dir.join("model.safetensors"), []).expect("create shard");
+            symlink(&real_dir, &linked_dir).expect("create linked shard directory");
+            let linked_index = linked_dir.join("model.safetensors.index.json");
+            std::fs::write(
+                &linked_index,
+                br#"{"weight_map":{"tensor":"model.safetensors"}}"#,
+            )
+            .expect("write linked index");
+            assert!(
+                resolve_sources(&linked_index)
+                    .expect_err("symlink shard ancestry")
+                    .to_string()
+                    .contains("symlink ancestry")
+            );
+        }
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn output_path_rejects_dot_components_and_symlink_ancestors() {
+        let directory = scratch_directory("output-path");
+        let dotted = directory.join(".").join("output.gguf");
+        assert!(
+            reject_unsafe_path(&dotted, "output")
+                .expect_err("dot output path")
+                .to_string()
+                .contains("lexical dot")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let real_parent = directory.join("real-parent");
+            let link_parent = directory.join("link-parent");
+            std::fs::create_dir(&real_parent).expect("create real output parent");
+            symlink(&real_parent, &link_parent).expect("create linked output parent");
+            assert!(
+                reject_unsafe_path(&link_parent.join("output.gguf"), "output")
+                    .expect_err("symlink output ancestry")
+                    .to_string()
+                    .contains("symlink ancestry")
+            );
+        }
         std::fs::remove_dir_all(directory).ok();
     }
 
