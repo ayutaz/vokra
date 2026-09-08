@@ -729,6 +729,52 @@ VAST inventory row was the unrelated protected instance `50243461` /
 `ralomi-m6-int8-net5`, which this campaign did not modify.  The owner's
 pre-existing dirty CosyVoice2 license-gate manifest remained unstaged.
 
+## 2026-09-08 Windows CLAP fail-closed VAST replay
+
+GitHub Actions exposed that the preceding Windows portability change had
+introduced direct Win32 FFI and `unsafe` blocks into the CLAP publisher, which
+the workspace correctly rejects under `-D unsafe-code`.  Commit
+`a81621e262e41ab90771833b29fe1094b53b304e` removes that implementation.
+File-identity-backed atomic publication remains enabled on Unix.  Non-Unix
+targets now return an explicit usage error before reading or parsing the input,
+and regression coverage proves that neither a new nor an existing output is
+touched.  The cross-platform lexical dot-component rejection remains covered.
+
+Disposable VAST instance `50274776` received the single unpushed commit through
+a 1.3 KiB git bundle.  The local and remote bundle SHA-256 was
+`96940891b6e4fa52c258c1d042a2dd6e683bfa6102fbf72049583ad88ab35595`.
+The clean remote checkout matched the exact 40-character head above.  No model
+checkpoint, weight or Hugging Face token was acquired, transferred or
+executed.
+
+`cargo test --workspace --all-targets --locked` completed 305 result groups
+with 8,001 passed, zero failed and 100 explicitly ignored tests.  The
+678,558-byte workspace log SHA-256 is
+`3acf72d11759f5367b71cfab26d475d222f5b64a9e4ab101322e5ed94df221ab`.
+All-target, all-feature workspace Clippy with code warnings denied exited zero;
+its 3,144-byte log SHA-256 is
+`a8cd026b731ba59ca5fc3b192f1fb830d7c30bdaedd3df88da96e99390b20d24`.
+The existing `clippy.toml`/crate MSRV configuration notice remained the only
+warning class and did not bypass `-D warnings`.
+
+Formatting, locked metadata, exact-commit diff, zero-dependency,
+forbidden-symbol, fixture-EOL, pipefail-lint, architecture-handshake,
+bound-architecture and zoo-manifest gates all passed.  Their 2,151-byte log
+SHA-256 is
+`f0e1d12b0d1e14ae2f9c7f666b232b0a4e003ea717ef04a5943dbd02815619b0`.
+`cargo-deny` 0.20.2 reported advisories, bans, licenses and sources OK, with
+only the existing unmatched `libfuzzer-sys` exception warning;
+`cargo-audit` 0.22.2 loaded 1,242 advisories and exited zero.  The 572-byte
+dependency-gate log SHA-256 is
+`67164119f2553af005caf5f71b578c72c276bdada9c94681427379fceb98fa5a`.
+
+All four recovered text logs matched their remote hashes and total 684,425
+bytes.  Instance `50274776` and its storage were destroyed after recovery; the
+individual API readback returned `instances: null`.  The only remaining VAST
+inventory row was the unrelated protected instance `50243461` /
+`ralomi-m6-int8-net5`, which this campaign did not modify.  The owner's
+pre-existing dirty CosyVoice2 license-gate manifest remained unstaged.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
