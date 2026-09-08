@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import stat
 import subprocess
@@ -584,8 +585,58 @@ def write_manifest(output: Path, **fields: Any) -> None:
     if manifest_path.exists() or manifest_path.is_symlink():
         raise RuntimeError("inspection manifest already exists; refusing to clobber evidence")
     payload = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "runtime_status": RUNTIME_STATUS, "cpu_status": CPU_STATUS, "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "companion_contract": companion_contract(), **fields}
-    with manifest_path.open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+    encoded = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{manifest_path.name}.", dir=output)
+    temporary = Path(temporary_name)
+    temporary_info = os.fstat(descriptor)
+    if not stat.S_ISREG(temporary_info.st_mode):
+        os.close(descriptor)
+        raise RuntimeError("inspection temporary is not a regular file")
+    reserved_identity = (temporary_info.st_dev, temporary_info.st_ino)
+    published = False
+
+    def unlink_if_owned(path: Path) -> None:
+        try:
+            current = os.lstat(path)
+            if (current.st_dev, current.st_ino) == reserved_identity and stat.S_ISREG(current.st_mode):
+                path.unlink()
+        except OSError:
+            pass
+
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        verify_descriptor = os.open(temporary, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            verified = os.fstat(verify_descriptor)
+            if (verified.st_dev, verified.st_ino) != reserved_identity or not stat.S_ISREG(verified.st_mode):
+                raise RuntimeError("inspection temporary identity changed")
+            os.fsync(verify_descriptor)
+        finally:
+            os.close(verify_descriptor)
+        try:
+            os.link(temporary, manifest_path, follow_symlinks=False)
+        except FileExistsError as error:
+            raise RuntimeError("inspection manifest appeared during publication; refusing to clobber evidence") from error
+        published = True
+        final_descriptor = os.open(manifest_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            final_info = os.fstat(final_descriptor)
+            if (final_info.st_dev, final_info.st_ino) != reserved_identity or not stat.S_ISREG(final_info.st_mode):
+                raise RuntimeError("inspection manifest identity changed after publication")
+        finally:
+            os.close(final_descriptor)
+    except Exception:
+        if published:
+            unlink_if_owned(manifest_path)
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        unlink_if_owned(temporary)
 
 
 def validate_model_free_options(*, snapshot: Path | None, approval_evidence: str | None, approval_sha256: str | None, expected_head: str | None, source: Path | None, server_tree: Path | None, output: Path | None, vokra_root: Path | None, t5_server_metadata: Path | None) -> None:
@@ -860,6 +911,61 @@ def self_test() -> None:
         manifest = json.loads((fresh / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["runtime_status"] == RUNTIME_STATUS
         assert manifest["cpu_status"] == CPU_STATUS
+        assert not list(fresh.glob(".manifest.json.*"))
+        original_open = os.open
+        temporary_attacker: Path | None = None
+        def replace_temporary(path: str | bytes | Path, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+            nonlocal temporary_attacker
+            candidate = Path(path)
+            if temporary_attacker is None and candidate.parent == root / "temporary-race" and candidate.name.startswith(".manifest.json.") and not (flags & os.O_CREAT):
+                candidate.unlink()
+                temporary_attacker = candidate
+                attacker = original_open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(attacker, b"attacker-temp\n")
+                os.close(attacker)
+            if dir_fd is None:
+                return original_open(path, flags, mode)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+        os.open = replace_temporary  # type: ignore[assignment]
+        temporary_race = root / "temporary-race"
+        try:
+            try: write_manifest(temporary_race, test=True)
+            except RuntimeError as error: assert "temporary identity changed" in str(error)
+            else: raise AssertionError("replaced temporary was published")
+        finally: os.open = original_open  # type: ignore[assignment]
+        assert not (temporary_race / "manifest.json").exists() and temporary_attacker is not None and temporary_attacker.read_bytes() == b"attacker-temp\n"
+        temporary_attacker.unlink()
+        original_open = os.open
+        final_attacker = False
+        final_race = root / "final-race"
+        def replace_final(path: str | bytes | Path, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+            nonlocal final_attacker
+            candidate = Path(path)
+            if candidate == final_race / "manifest.json" and not (flags & os.O_CREAT) and not final_attacker:
+                final_attacker = True
+                candidate.unlink()
+                candidate.write_bytes(b"attacker-final\n")
+            if dir_fd is None:
+                return original_open(path, flags, mode)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+        os.open = replace_final  # type: ignore[assignment]
+        try:
+            try: write_manifest(final_race, test=True)
+            except RuntimeError as error: assert "manifest identity changed" in str(error)
+            else: raise AssertionError("replaced final was accepted")
+        finally: os.open = original_open  # type: ignore[assignment]
+        assert final_attacker and (final_race / "manifest.json").read_bytes() == b"attacker-final\n"
+        cleanup_race = root / "cleanup-race"
+        original_unlink = Path.unlink
+        def fail_temporary_cleanup(path: Path, missing_ok: bool = False) -> None:
+            if path.parent == cleanup_race and path.name.startswith(".manifest.json."):
+                raise OSError("injected cleanup failure")
+            original_unlink(path, missing_ok=missing_ok)
+        Path.unlink = fail_temporary_cleanup  # type: ignore[assignment]
+        try: write_manifest(cleanup_race, test=True)
+        finally: Path.unlink = original_unlink  # type: ignore[assignment]
+        assert (cleanup_race / "manifest.json").is_file()
+        for leaked in cleanup_race.glob(".manifest.json.*"): original_unlink(leaked)
     print("audiogen_medium_inspect --self-test: OK")
 
 
