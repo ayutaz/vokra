@@ -62,6 +62,18 @@ TRANSFORMERS_SOURCE_MEMBERS = {
     "configuration_clap": "transformers/models/clap/configuration_clap.py",
     "roberta_tokenizer": "transformers/models/roberta/tokenization_roberta.py",
 }
+# The pinned 5.10.4 wheel contains these package-marker modules as legitimate
+# zero-byte Python files.  Every other ``transformers/**/*.py`` member must
+# remain non-empty; keeping this allowlist exact prevents a missing or newly
+# empty source file from disappearing into the full-tree digest.
+EXPECTED_EMPTY_TRANSFORMERS_PYTHON_MEMBERS = frozenset(
+    {
+        "transformers/models/dialogpt/__init__.py",
+        "transformers/models/dit/__init__.py",
+        "transformers/models/megatron_gpt2/__init__.py",
+    }
+)
+EMPTY_PYTHON_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 # These are the official, model-independent preprocessing entrypoints.  The
 # audit records their source identities rather than reimplementing or running
@@ -581,6 +593,7 @@ def validate_source_contract(contract: dict[str, Any]) -> None:
     if source_tree.get("canonical_tree_sha256") != canonical_tree_digest(archive_rows):
         raise RuntimeError("CLAP full Transformers Python tree digest is invalid")
     tree_paths: list[str] = []
+    empty_tree_paths: set[str] = set()
     for row in archive_rows:
         if not isinstance(row, dict) or not isinstance(row.get("path"), str):
             raise RuntimeError("CLAP full Transformers Python tree row is malformed")
@@ -588,14 +601,27 @@ def validate_source_contract(contract: dict[str, Any]) -> None:
         validate_archive_member_name(path)
         if not path.startswith("transformers/") or not path.endswith(".py"):
             raise RuntimeError("CLAP full Transformers Python tree contains a non-source path")
-        if not isinstance(row.get("size"), int) or row["size"] < 1:
-            raise RuntimeError("CLAP full Transformers Python tree contains an empty source")
+        size = row.get("size")
         digest = row.get("sha256")
+        if not isinstance(size, int) or size < 0:
+            raise RuntimeError("CLAP full Transformers Python tree source size is invalid")
+        if size == 0:
+            empty_tree_paths.add(path)
+            if path not in EXPECTED_EMPTY_TRANSFORMERS_PYTHON_MEMBERS:
+                raise RuntimeError(
+                    "CLAP full Transformers Python tree contains an unexpected empty source"
+                )
+            if digest != EMPTY_PYTHON_SHA256:
+                raise RuntimeError(
+                    "CLAP full Transformers Python tree empty-source hash is invalid"
+                )
         if not isinstance(digest, str) or len(digest) != SOURCE_SHA256_HEX_LENGTH:
             raise RuntimeError("CLAP full Transformers Python tree hash is malformed")
         tree_paths.append(path)
     if len(tree_paths) != len(set(tree_paths)):
         raise RuntimeError("CLAP full Transformers Python tree contains duplicate paths")
+    if empty_tree_paths != set(EXPECTED_EMPTY_TRANSFORMERS_PYTHON_MEMBERS):
+        raise RuntimeError("CLAP full Transformers Python tree empty-source set drifted")
     tree_by_path = {row["path"]: row for row in archive_rows}
     for label, member in TRANSFORMERS_SOURCE_MEMBERS.items():
         archive = archive_members.get(label)
@@ -1182,6 +1208,14 @@ def self_test() -> None:
         {"path": value["path"], "size": value["size"], "sha256": value["sha256"]}
         for value in archive_members.values()
     ]
+    tree_rows.extend(
+        {
+            "path": path,
+            "size": 0,
+            "sha256": EMPTY_PYTHON_SHA256,
+        }
+        for path in sorted(EXPECTED_EMPTY_TRANSFORMERS_PYTHON_MEMBERS)
+    )
     synthetic_source_contract = {
         "schema": SOURCE_CONTRACT_SCHEMA,
         "status": SOURCE_STATUS_AUTHENTICATED,
@@ -1320,6 +1354,89 @@ def self_test() -> None:
         assert "tree" in str(exc)
     else:
         raise AssertionError("deleted wheel source member was accepted")
+    def refresh_tree(contract: dict[str, Any]) -> None:
+        tree = contract["wheel_binding"]["python_source_tree"]
+        tree["member_count"] = len(tree["archive_rows"])
+        tree["canonical_tree_sha256"] = canonical_tree_digest(tree["archive_rows"])
+        tree["installed_rows"] = json.loads(json.dumps(tree["archive_rows"]))
+
+    missing_empty_member = json.loads(json.dumps(synthetic_source_contract))
+    missing_empty_member["wheel_binding"]["python_source_tree"]["archive_rows"] = [
+        row
+        for row in missing_empty_member["wheel_binding"]["python_source_tree"]["archive_rows"]
+        if row["path"] != sorted(EXPECTED_EMPTY_TRANSFORMERS_PYTHON_MEMBERS)[0]
+    ]
+    refresh_tree(missing_empty_member)
+    try:
+        validate_source_contract(missing_empty_member)
+    except RuntimeError as exc:
+        assert "empty-source set" in str(exc)
+    else:
+        raise AssertionError("missing fixed empty wheel member was accepted")
+    extra_empty_member = json.loads(json.dumps(synthetic_source_contract))
+    extra_empty_member["wheel_binding"]["python_source_tree"]["archive_rows"].append(
+        {"path": "transformers/models/unexpected/__init__.py", "size": 0, "sha256": EMPTY_PYTHON_SHA256}
+    )
+    refresh_tree(extra_empty_member)
+    try:
+        validate_source_contract(extra_empty_member)
+    except RuntimeError as exc:
+        assert "unexpected empty" in str(exc)
+    else:
+        raise AssertionError("unexpected empty wheel member was accepted")
+    unexpected_empty_member = json.loads(json.dumps(synthetic_source_contract))
+    unexpected_empty_member["wheel_binding"]["python_source_tree"]["archive_rows"] = [
+        {
+            **row,
+            "size": 0,
+            "sha256": EMPTY_PYTHON_SHA256,
+        }
+        if row["path"] == "transformers/models/clap/feature_extraction_clap.py"
+        else row
+        for row in unexpected_empty_member["wheel_binding"]["python_source_tree"]["archive_rows"]
+    ]
+    refresh_tree(unexpected_empty_member)
+    try:
+        validate_source_contract(unexpected_empty_member)
+    except RuntimeError as exc:
+        assert "unexpected empty" in str(exc) or "empty-source set" in str(exc)
+    else:
+        raise AssertionError("unexpected zero-sized source member was accepted")
+    nonempty_fixed_member = json.loads(json.dumps(synthetic_source_contract))
+    nonempty_fixed_member["wheel_binding"]["python_source_tree"]["archive_rows"] = [
+        {
+            **row,
+            "size": 1,
+            "sha256": "a" * 64,
+        }
+        if row["path"] == sorted(EXPECTED_EMPTY_TRANSFORMERS_PYTHON_MEMBERS)[0]
+        else row
+        for row in nonempty_fixed_member["wheel_binding"]["python_source_tree"]["archive_rows"]
+    ]
+    refresh_tree(nonempty_fixed_member)
+    try:
+        validate_source_contract(nonempty_fixed_member)
+    except RuntimeError as exc:
+        assert "empty-source set" in str(exc)
+    else:
+        raise AssertionError("nonempty drift of fixed empty member was accepted")
+    empty_hash_drift = json.loads(json.dumps(synthetic_source_contract))
+    empty_hash_drift["wheel_binding"]["python_source_tree"]["archive_rows"] = [
+        {
+            **row,
+            "sha256": "0" * 64,
+        }
+        if row["path"] == sorted(EXPECTED_EMPTY_TRANSFORMERS_PYTHON_MEMBERS)[0]
+        else row
+        for row in empty_hash_drift["wheel_binding"]["python_source_tree"]["archive_rows"]
+    ]
+    refresh_tree(empty_hash_drift)
+    try:
+        validate_source_contract(empty_hash_drift)
+    except RuntimeError as exc:
+        assert "empty-source hash" in str(exc)
+    else:
+        raise AssertionError("empty marker hash drift was accepted")
     tampered_reference = json.loads(json.dumps(synthetic_source_contract))
     tampered_reference["source_reference"]["transformers_sources"]["processor"]["source_sha256"] = "0" * 64
     try:
