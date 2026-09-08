@@ -254,12 +254,6 @@ fn validate_io_paths(
     reject_unsafe_path(input, "checkpoint")?;
     reject_unsafe_path(tokenizer_vocab, "tokenizer")?;
     reject_unsafe_path(output, "output")?;
-    if input.is_symlink() || !input.is_file() {
-        return Err(ConvertError::Usage(format!(
-            "canary-1b-v2 checkpoint must be a regular non-symlink file: {}",
-            input.display()
-        )));
-    }
     if tokenizer_vocab.is_symlink() || !tokenizer_vocab.is_file() {
         return Err(ConvertError::Usage(format!(
             "canary-1b-v2 tokenizer must be a regular non-symlink file: {}",
@@ -583,5 +577,22 @@ mod tests {
             assert!(reject_unsafe_path(&linked_output, "output").is_err());
         }
         std::fs::remove_dir_all(root).expect("remove path-test directory");
+    }
+
+    #[test]
+    fn dedicated_path_authenticates_tokenizer_before_checkpoint_io() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-canary-tokenizer-first-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create test directory");
+        let checkpoint = root.join("does-not-exist.safetensors");
+        let tokenizer = root.join("tokenizer.vocab");
+        let output = root.join("output.gguf");
+        std::fs::write(&tokenizer, b"unauthenticated").expect("write tokenizer fixture");
+        let error = convert_canary_file_with_tokenizer(&checkpoint, &output, None, &tokenizer)
+            .expect_err("tokenizer authentication must precede checkpoint I/O");
+        assert!(error.to_string().contains("SHA-256"));
+        std::fs::remove_dir_all(root).expect("remove test directory");
     }
 }
