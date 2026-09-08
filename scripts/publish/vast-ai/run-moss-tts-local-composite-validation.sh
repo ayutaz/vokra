@@ -8,6 +8,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 LOCAL_PROJECT="$VOKRA_ROOT/tools/parity/moss_tts_local"
 LOCAL_GATE="$LOCAL_PROJECT/preflight_gate.py"
+MODEL_FREE_AUDIT="$LOCAL_PROJECT/model_free_audit.py"
 LOCAL_MANIFEST="$LOCAL_PROJECT/license_gate_manifest.json"
 V2_PROJECT="$VOKRA_ROOT/tools/parity/moss_audio_tokenizer_v2"
 V2_GATE="$V2_PROJECT/license_gate.py"
@@ -136,6 +137,7 @@ usage() {
 usage: run-moss-tts-local-composite-validation.sh --expected-head 40-HEX \
        --local-approval-evidence FILE --v2-approval-evidence FILE [--work-dir DIR]
        run-moss-tts-local-composite-validation.sh --self-test
+       run-moss-tts-local-composite-validation.sh --model-free-audit --output FILE
 
 VAST-only real-weight staging. It authenticates the fixed Local Transformer
 and MOSS Audio Tokenizer v2 inputs, runs the independent official row/code
@@ -144,6 +146,21 @@ MEASURED_NOT_GATED. It never uploads, publishes, or pushes a model.
 The disposable Apple worker consumes this bundle for the corresponding Metal
 comparison.
 EOF
+}
+
+run_model_free_audit() {
+  local output="$1" canonical_output canonical_root canonical_local
+  [[ -n "$output" && "$output" = /* ]] || { die '--model-free-audit output must be an absolute path'; return 2; }
+  [[ -f "$MODEL_FREE_AUDIT" && ! -L "$MODEL_FREE_AUDIT" ]] || { die 'model-free audit is missing'; return 2; }
+  [[ ! -e "$output" && ! -L "$output" ]] || { die 'model-free audit output must be absent'; return 2; }
+  canonical_output="$(canonical_candidate "$output")" || return 2
+  canonical_root="$(canonical_candidate "$VOKRA_ROOT")" || return 2
+  canonical_local="$(canonical_candidate "$LOCAL_PROJECT")" || return 2
+  paths_overlap "$canonical_output" "$canonical_root" && { die 'model-free audit output overlaps checkout'; return 2; }
+  paths_overlap "$canonical_output" "$canonical_local" && { die 'model-free audit output overlaps Local project'; return 2; }
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$MODEL_FREE_AUDIT" --lock "$LOCAL_PROJECT/uv.lock" --project "$LOCAL_PROJECT/pyproject.toml" \
+    --manifest "$LOCAL_MANIFEST" --output "$canonical_output"
 }
 
 require_clean_expected_head() {
@@ -459,6 +476,8 @@ self_test() {
   grep -F 'require_local_reference' "$0" >/dev/null || die 'strict Local reference validator is missing'
   grep -F 'require_v2_reference' "$0" >/dev/null || die 'strict v2 CSV validator is missing'
   grep -F 'require_resolver_artifacts "$V2_PROJECT/uv.lock"' "$0" >/dev/null || die 'v2 resolver artifact validation is missing'
+  grep -F 'run_model_free_audit' "$0" >/dev/null || die 'model-free audit route is missing'
+  grep -F 'MODEL_FREE_AUDIT' "$0" >/dev/null || die 'model-free audit source is missing'
   grep -F 'exact=true' "$0" >/dev/null
   grep -F 'exact_to_cpu=true' "$0" >/dev/null
   for token in 'apple-transfer-manifest.txt' 'format=moss-tts-local-transfer-v1' 'cpu_vs_official=MEASURED_NOT_GATED' 'metal_vs_official=NOT_RUN' 'metal_vs_cpu=NOT_RUN' 'publication=NO_UPLOAD' 'native_cpu_log=' 'native_cpu_log_sha256='; do grep -Fq "$token" "$0" || die "transfer packet field is missing: $token"; done
@@ -470,6 +489,7 @@ self_test() {
   if VOKRA_PUBLISH_ON_VAST=1 "$0" --expected-head "$(printf '%040d' 1)" --work-dir >/dev/null 2>&1; then die 'missing work-dir value was accepted'; fi
   if VOKRA_PUBLISH_ON_VAST=1 "$0" --work-dir a --work-dir b >/dev/null 2>&1; then die 'duplicate work-dir was accepted'; fi
   if VOKRA_PUBLISH_ON_VAST=1 "$0" trailing >/dev/null 2>&1; then die 'unknown/trailing argument was accepted'; fi
+  if "$0" --model-free-audit --output "$VOKRA_ROOT/moss-local-audit.json" >/dev/null 2>&1; then die 'model-free audit accepted checkout-overlapping output'; fi
   local evidence_log
   evidence_log="$(mktemp "${TMPDIR:-/tmp}/moss-tts-local-evidence.XXXXXX")"
   local v2_fixture="$evidence_log.v2"
@@ -573,6 +593,10 @@ self_test() {
 
 main() {
   if [[ "${1:-}" == --self-test ]]; then (($# == 1)) || { die '--self-test does not accept extra arguments'; return 2; }; self_test; return 0; fi
+  if [[ "${1:-}" == --model-free-audit ]]; then
+    [[ $# == 3 && "${2:-}" == --output ]] || { usage; die '--model-free-audit requires exactly --output FILE'; return 2; }
+    run_model_free_audit "$3"; return $?
+  fi
   local work_dir="${VOKRA_SCRATCH}/moss-tts-local-composite" expected_head='' local_approval='' v2_approval='' seen_work_dir=0 seen_expected_head=0 seen_local_approval=0 seen_v2_approval=0
   while (($#)); do
     case "$1" in

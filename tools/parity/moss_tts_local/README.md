@@ -57,3 +57,16 @@ and the measurement-only CPU/Metal status. A detached
 Publication is always `NO_UPLOAD`; numeric
 and composite PCM status remain measurement-only and are never manufactured by
 these scripts.
+
+Before owner approval, the model-free audit can emit a small pending review
+packet without importing Python model libraries or touching weights:
+
+```bash
+bash scripts/publish/vast-ai/run-moss-tts-local-composite-validation.sh \
+  --model-free-audit --output /absolute/path/moss-local-audit.json
+```
+
+The packet's canonical scope includes the locked dependency review rows, the
+fixed 438-tensor Local identity, and the required MOSS Audio Tokenizer v2
+companion identity/topology. It reports package/native and composite PCM work
+as pending facts; it cannot create owner approval or upload evidence.

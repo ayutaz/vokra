@@ -29,6 +29,28 @@ SOURCE_DIGESTS = {
     "qwen3_source": "100163bd7ecf31a59bafacc0b032ace9339edc992a3eb4cc80662502e04e46f0",
     "processor_config": "db574bfebad009e05193196a63a4eeecd353eeca177ccfff28b9379d595d88b7",
 }
+COMPANION_IDENTITY = {
+    "role": "required_audio_tokenizer_v2",
+    "repository": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+    "revision": "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169",
+    "manifest_sha256": "a83915cffe78cee7f031e18ac3de1bbd64e93b3e4af843ff28d531ccf81748c6",
+    "tensor_manifest": {
+        "tensor_count": 2094,
+        "parameter_count": 2123701248,
+        "tensor_bytes_f32": 8494804992,
+        "sample_rate": 48000,
+        "channels": 2,
+        "quantizers": 12,
+        "codebook_size": 1024,
+        "samples_per_frame": 3840,
+    },
+    "pcm_contract": {
+        "sample_rate": 48000,
+        "channels": 2,
+        "samples_per_frame": 3840,
+        "codebooks": 12,
+    },
+}
 LOCAL_IDENTITY = {
     "repository": REPOSITORY,
     "revision": REVISION,
@@ -71,7 +93,7 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
 
 
-SCOPE_KEYS = ("lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows", "package_review_rows_sha256", "local_identity", "prompt_contract", "publication", "numeric_state", "composite_pcm")
+SCOPE_KEYS = ("lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows", "package_review_rows_sha256", "local_identity", "companion_identity", "prompt_contract", "publication", "numeric_state", "composite_pcm")
 
 
 def approval_scope(manifest: dict[str, Any]) -> str:
@@ -286,7 +308,7 @@ def validate(project: Path, manifest_path: Path, approval_evidence: Path | None 
     virtual = [package for package in lock_data["package"] if package.get("source") == {"virtual": "."}]
     if not isinstance(project_identity, dict) or not isinstance(project_identity.get("name"), str) or not isinstance(project_identity.get("version"), str) or len(virtual) != 1 or (virtual[0]["name"], virtual[0]["version"]) != (project_identity["name"], project_identity["version"]):
         return blocked("Local virtual project row is not bound to pyproject identity")
-    expected_manifest_keys = {"gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows_sha256", "package_review_rows", "local_identity", "prompt_contract", "publication", "numeric_state", "composite_pcm", "approval"}
+    expected_manifest_keys = {"gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows_sha256", "package_review_rows", "local_identity", "companion_identity", "prompt_contract", "publication", "numeric_state", "composite_pcm", "approval_scope_sha256", "approval"}
     if not isinstance(manifest, dict) or set(manifest) != expected_manifest_keys or manifest.get("gate_version") != 1 or manifest.get("lock_sha256") != LOCK_SHA256 or manifest.get("project_sha256") != PROJECT_SHA256:
         return blocked("Local gate version or closure digest drifted")
     if manifest.get("package_rows_sha256") != canonical(rows):
@@ -319,10 +341,15 @@ def validate(project: Path, manifest_path: Path, approval_evidence: Path | None 
         return blocked("Local package review rows digest drifted")
     if manifest.get("local_identity") != LOCAL_IDENTITY:
         return blocked("fixed Local full-tree identity contract drifted")
+    if manifest.get("companion_identity") != COMPANION_IDENTITY:
+        return blocked("required MOSS Audio Tokenizer v2 companion identity drifted")
     if manifest.get("prompt_contract") != {"shape": ["rows", 13], "dtype": "u32le", "nonempty": True}:
         return blocked("prompt contract drifted")
     if manifest.get("publication") != "NO_UPLOAD" or manifest.get("numeric_state") != "MEASURED_NOT_GATED" or manifest.get("composite_pcm") != "COMPOSITE_PCM_NOT_RUN":
         return blocked("publication or measurement posture drifted")
+    expected_scope = approval_scope(manifest)
+    if manifest.get("approval_scope_sha256") != expected_scope or not HEX64.fullmatch(str(manifest.get("approval_scope_sha256"))):
+        return blocked("pending approval scope is not canonical")
     if not reviewed(LOCAL_IDENTITY.get("license")) or LOCAL_IDENTITY.get("model_path") != "model.safetensors" or not isinstance(LOCAL_IDENTITY.get("model_bytes"), int) or not HEX64.fullmatch(LOCAL_IDENTITY.get("model_sha256", "") or "") or any(not isinstance(row.get("bytes"), int) or not isinstance(row.get("path"), str) or not re.fullmatch(r"[0-9a-f]{40}", row.get("git_blob_sha1", "")) for row in LOCAL_IDENTITY["source_roles"]):
         return blocked("Local model/source identity is unresolved")
     for row in reviews:
@@ -331,7 +358,6 @@ def validate(project: Path, manifest_path: Path, approval_evidence: Path | None 
     approval = manifest.get("approval")
     if not isinstance(approval, dict) or set(approval) != {"status", "signer", "scope_sha256", "digest", "evidence_sha256"} or approval.get("status") != "OWNER_SIGNOFF_APPROVED":
         return blocked("Local owner signoff remains required")
-    expected_scope = approval_scope(manifest)
     if not reviewed(approval.get("signer")) or approval.get("scope_sha256") != expected_scope or approval.get("digest") != expected_scope or not HEX64.fullmatch(str(approval.get("scope_sha256"))) or not HEX64.fullmatch(str(approval.get("digest"))):
         return blocked("Local approval scope/signer is not canonical")
     if approval_evidence is None or not approval_evidence.is_file() or approval_evidence.is_symlink():
@@ -506,6 +532,7 @@ def self_test() -> int:
         approved["package_review_rows_sha256"] = canonical(approved["package_review_rows"])
         signer = "owner@example.invalid"
         scope = approval_scope(approved)
+        approved["approval_scope_sha256"] = scope
         approved["approval"] = {"status": "OWNER_SIGNOFF_APPROVED", "signer": signer, "scope_sha256": scope, "digest": scope, "evidence_sha256": None}
         evidence = root / "approval.json"
         evidence_data = {"schema": "moss-tts-local-approval-v1", "manifest_sha256": approval_manifest_digest(approved), "scope_sha256": scope, "signer": signer, "approval_digest": scope, "decision": "APPROVED"}

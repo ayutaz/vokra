@@ -522,6 +522,28 @@
       }
     ]
   },
+  "companion_identity": {
+    "role": "required_audio_tokenizer_v2",
+    "repository": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+    "revision": "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169",
+    "manifest_sha256": "a83915cffe78cee7f031e18ac3de1bbd64e93b3e4af843ff28d531ccf81748c6",
+    "tensor_manifest": {
+      "tensor_count": 2094,
+      "parameter_count": 2123701248,
+      "tensor_bytes_f32": 8494804992,
+      "sample_rate": 48000,
+      "channels": 2,
+      "quantizers": 12,
+      "codebook_size": 1024,
+      "samples_per_frame": 3840
+    },
+    "pcm_contract": {
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples_per_frame": 3840,
+      "codebooks": 12
+    }
+  },
   "prompt_contract": {
     "shape": [
       "rows",
@@ -533,6 +555,7 @@
   "publication": "NO_UPLOAD",
   "numeric_state": "MEASURED_NOT_GATED",
   "composite_pcm": "COMPOSITE_PCM_NOT_RUN",
+  "approval_scope_sha256": "8ca95ea8b8bb7e9b9c9c76afb6a8adff3aa94ced152b52868c0fb916eda90ad3",
   "approval": {
     "status": "OWNER_SIGNOFF_REQUIRED",
     "signer": null,
