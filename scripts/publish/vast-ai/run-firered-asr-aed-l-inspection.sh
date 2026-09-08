@@ -6,7 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 # The pinned source/release contract and VAST checkpoint identity are recorded;
-# native conversion/runtime/parity remain fail-closed pending operator work.
+# native conversion/runtime seams are source-implemented and authenticated, but
+# real CPU parity and the complete transcription route remain fail-closed.
 INSPECTOR="$ROOT/tools/parity/firered_asr_aed_l_inspect.py"
 PREPARER="$ROOT/tools/parity/firered_asr_aed_l_prepare_checkpoint.py"
 REFERENCE="$ROOT/tools/parity/firered_asr_aed_l_reference.py"
@@ -25,7 +26,7 @@ MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_DISK_KIB=$((32 * 1024 * 1024))
 UV_CACHE_DIR="${FIRERED_ASR_UV_CACHE_DIR:-/tmp/vokra-firered-asr-uv-cache}"
 APPROVAL_SCHEMA="vokra-firered-asr-aed-l-blocked-approval-v1"
-APPROVAL_SCOPE_JSON='{"cmvn_status":"BLOCKED_STRUCTURAL_REVIEW_REQUIRED","config_status":"BLOCKED_EMPTY_CONFIG","dependency_status":"BLOCKED_UNREVIEWED_TRANSITIVE","kaldi_native_fbank_revision":"f68c6b43f739697d7ab02ff6debacee130e1d541","kaldi_native_fbank_url":"https://github.com/csukuangfj/kaldi-native-fbank.git","license_status":"BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE","model_repository":"FireRedTeam/FireRedASR-AED-L","model_revision":"e57f5960d03cff1071ff7acbb409314d1e70ed3d","native_status":"BLOCKED_NATIVE_BINDING","source_revision":"834635e4cf277ed8ca92049fc375b17c3dc20748","source_status":"AUTHENTICATED_SOURCE_CONTRACT","source_url":"https://github.com/FireRedTeam/FireRedASR.git","tokenizer_status":"BLOCKED_TOKENIZER_BINDING"}'
+APPROVAL_SCOPE_JSON='{"cmvn_status":"AUTHENTICATED_CMVN_TXT_BINDING_PARITY_PENDING","config_status":"BLOCKED_EMPTY_CONFIG","dependency_status":"BLOCKED_UNREVIEWED_TRANSITIVE","kaldi_native_fbank_revision":"f68c6b43f739697d7ab02ff6debacee130e1d541","kaldi_native_fbank_url":"https://github.com/csukuangfj/kaldi-native-fbank.git","license_status":"BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE","model_repository":"FireRedTeam/FireRedASR-AED-L","model_revision":"e57f5960d03cff1071ff7acbb409314d1e70ed3d","native_status":"SOURCE_IMPLEMENTED_PARITY_PENDING","source_revision":"834635e4cf277ed8ca92049fc375b17c3dc20748","source_status":"AUTHENTICATED_SOURCE_CONTRACT","source_url":"https://github.com/FireRedTeam/FireRedASR.git","tokenizer_status":"AUTHENTICATED_OUTPUT_DICTIONARY_BINDING"}'
 
 log() { printf '[firered-asr-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
@@ -160,7 +161,7 @@ self_test() {
     'uv lock --check' 'source/kaldi-native-fbank' 'setup.py' 'cmake' 'make' 'cc' 'c++' 'g++' 'native build toolchain' \
     'forbidden CUDA dependency row' 'download.pytorch.org/whl/cpu' 'license hash is not authenticated' \
     '--no-sync' 'FIRERED_PROJECT' 'firered_asr_aed_l/pyproject.toml' 'firered_asr_aed_l/uv.lock' \
-    '--expected-head' '--approval-sha256' 'FIRERED_APPROVAL_VALID_BUT_BLOCKED' 'BLOCKED_STRUCTURAL_REVIEW_REQUIRED' 'BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE' 'AUTHENTICATED_SOURCE_CONTRACT' \
+    '--expected-head' '--approval-sha256' 'FIRERED_APPROVAL_VALID_BUT_BLOCKED' 'AUTHENTICATED_CMVN_TXT_BINDING_PARITY_PENDING' 'SOURCE_IMPLEMENTED_PARITY_PENDING' 'AUTHENTICATED_OUTPUT_DICTIONARY_BINDING' 'BLOCKED_EMPTY_CONFIG' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE' 'AUTHENTICATED_SOURCE_CONTRACT' \
     "cargo fmt --manifest-path \"\$ROOT/Cargo.toml\" --all -- --check" \
     "cargo metadata --manifest-path \"\$ROOT/Cargo.toml\" --locked --no-deps --format-version 1"; do
     if ! grep -Fq -- "$token" "$path"; then log "self-test FAIL: missing token $token"; fail=1; fi
@@ -876,4 +877,4 @@ finally:
             Path(final_path).unlink()
         raise
 PY
-die 'FireRedASR inspection, preparation and independent upstream reference evidence preserved as final no-clobber manifest; native conversion/runtime/parity remain blocked'
+die 'FireRedASR inspection, preparation and independent upstream reference evidence preserved as final no-clobber manifest; native seams are implemented but real CPU parity and full transcription remain blocked'

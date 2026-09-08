@@ -12,7 +12,10 @@ from typing import Any
 
 APPROVAL_SCHEMA = "vokra-firered-asr-aed-l-blocked-approval-v1"
 SCOPE: dict[str, str] = {
-    "cmvn_status": "BLOCKED_STRUCTURAL_REVIEW_REQUIRED",
+    # The converter and binder authenticate the exact inference sidecar
+    # (`cmvn.txt`).  Upstream `cmvn.ark` remains an independent reference
+    # input, and real numerical parity has not been run.
+    "cmvn_status": "AUTHENTICATED_CMVN_TXT_BINDING_PARITY_PENDING",
     "config_status": "BLOCKED_EMPTY_CONFIG",
     "dependency_status": "BLOCKED_UNREVIEWED_TRANSITIVE",
     "kaldi_native_fbank_revision": "f68c6b43f739697d7ab02ff6debacee130e1d541",
@@ -20,11 +23,16 @@ SCOPE: dict[str, str] = {
     "license_status": "BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE",
     "model_repository": "FireRedTeam/FireRedASR-AED-L",
     "model_revision": "e57f5960d03cff1071ff7acbb409314d1e70ed3d",
-    "native_status": "BLOCKED_NATIVE_BINDING",
+    # Native frontend/encoder/decoder/beam seams are source-implemented and
+    # authenticated, but the ordinary transcription route stays fail-closed
+    # until real CPU parity is collected.
+    "native_status": "SOURCE_IMPLEMENTED_PARITY_PENDING",
     "source_revision": "834635e4cf277ed8ca92049fc375b17c3dc20748",
     "source_status": "AUTHENTICATED_SOURCE_CONTRACT",
     "source_url": "https://github.com/FireRedTeam/FireRedASR.git",
-    "tokenizer_status": "BLOCKED_TOKENIZER_BINDING",
+    # Inference renders through the authenticated output dictionary.  The
+    # SentencePiece companion is intentionally not an inference requirement.
+    "tokenizer_status": "AUTHENTICATED_OUTPUT_DICTIONARY_BINDING",
 }
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -139,6 +147,12 @@ def enforce_blocked_approval(path: Path | str, approval_sha256: str, expected_he
 
 def self_test(root: Path) -> None:
     """Exercise the gate without touching model inputs or importing torch."""
+    assert SCOPE["cmvn_status"] == "AUTHENTICATED_CMVN_TXT_BINDING_PARITY_PENDING"
+    assert SCOPE["native_status"] == "SOURCE_IMPLEMENTED_PARITY_PENDING"
+    assert SCOPE["tokenizer_status"] == "AUTHENTICATED_OUTPUT_DICTIONARY_BINDING"
+    assert SCOPE["config_status"].startswith("BLOCKED_")
+    assert SCOPE["dependency_status"].startswith("BLOCKED_")
+    assert SCOPE["license_status"].startswith("BLOCKED_")
     with tempfile.TemporaryDirectory(prefix="firered-gate-") as directory:
         path = Path(directory).resolve() / "approval.json"
         head = "0" * 40
