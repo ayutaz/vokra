@@ -77,7 +77,10 @@ require_work() {
   [[ ! -e "$work" && ! -L "$work" ]] || die 'work root must be absent (no-clobber)'
   canonical="$(canonical_absent "$work")" || die 'work root is not canonical'
   root_real="$(cd -P "$ROOT" && pwd)"
-  overlap "$canonical" "$root_real" && die 'work root overlaps checkout'
+  if overlap "$canonical" "$root_real"; then
+    die 'work root overlaps checkout'
+  fi
+  return 0
 }
 safe_evidence_path() {
   local path="$1" size="${2:-0}"
@@ -294,6 +297,22 @@ self_test() {
   local fixture head
   fixture="$(mktemp -d /private/tmp/vokra-mac-batch-self-test.XXXXXX)"
   head="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  local require_work_body
+  require_work_body="$(awk '/^require_work\(\) \{/{capture=1} capture {print} capture && /^\}/{exit}' "$SELF")"
+  if ! bash -c '
+    set -euo pipefail
+    WORK_PARENT="$1"; ROOT="$2"
+    uname() { [[ "${1-}" == -s ]] && printf "%s\\n" Linux || printf "%s\\n" x86_64; }
+    findmnt() { printf "%s\\n" tmpfs; }
+    no_symlink_ancestors() { return 0; }
+    canonical_absent() { printf "%s\\n" "$1"; }
+    overlap() { return 1; }
+    '"$require_work_body"'
+    require_work "$WORK_PARENT/child"
+  ' bash "$fixture" "$fixture"; then
+    echo 'self-test non-overlapping work root returned failure' >&2
+    fail=1
+  fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$fixture" "$FORMAT" "$head" <<'PY'
 import hashlib, json, pathlib, sys
 root, schema, head = sys.argv[1:]
