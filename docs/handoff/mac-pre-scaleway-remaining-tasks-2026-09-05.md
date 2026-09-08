@@ -1493,6 +1493,89 @@ its host resources unavailable; provider readback remained
 `actual_status=exited` and `cur_state=stopped`, with storage-only billing. No
 replacement instance was rented.
 
+### 2026-09-09 exact-head security and owner-independent replay
+
+The final owner-independent source/security wave was validated at clean
+implementation head `caf70eb1f8c25f38a5aed5235f6d3f6b7b69eaa2` on disposable
+VAST instance `50320338` (`vokra-prescaleway-caf70eb1`). The exact-head
+`cargo test --workspace --all-targets --locked` run completed **305 suites,
+8,010 passed, zero failed and 100 ignored**. Workspace/all-target/all-feature
+Clippy with warnings denied, format, locked metadata, zero-deps,
+forbidden-symbol, fixture-EOL, pipefail, architecture-handshake,
+bound-architecture and zoo-manifest gates all exited zero. `cargo-deny 0.20.2`
+reported advisories, bans, licenses and sources OK apart from the pre-existing
+unused `libfuzzer-sys` exception warning. `cargo-audit 0.22.2` loaded 1,242
+RustSec advisories and found no vulnerability in the 22 first-party lock
+entries. A repository-wide AST audit found 93 direct `torch.load` calls; every
+one has an explicit constant `weights_only=True`, with no implicit or unsafe
+call left.
+
+The nine-worker model-free batch also ran at that exact head with MMS language
+`jpn`. Its manifest reports `PASS_MODEL_FREE`, exact expected/actual HEAD
+equality, `model_payloads=NOT_ACQUIRED` and `publication=NO_UPLOAD`. AudioGen,
+CosyVoice3, Irodori, OWSM, MMS, Qwen2-Audio and VibeVoice-ASR produced their
+expected fail-closed factual dispositions; MOSS-Audio and the SBV2 JP-Extra
+G2P contract passed. The manifest SHA-256 is
+`cf96cc367b18e03a1b6955f010e906ff5a0e8701e80046196a60e3db7e23aa4e`.
+
+The remaining named model-free replays produced these exact-head results:
+
+- FireRedASR AED-L correctly remains `BLOCKED_OWNER_REVIEW` / `NO_UPLOAD`;
+  evidence SHA-256
+  `ab2a4c238530cecacddae87f569e0ebdce7fd23531e526e60e34f004920a2855`.
+- All four Qwen3-TTS variants passed their no-checkpoint API smoke; evidence
+  SHA-256
+  `dfe3691374d69d9ed2b98a5c6359ff7b235198368b61104c237b36a455bd48cf`.
+- CLAP passed the locked-wheel/source-only/model-free audit while retaining
+  dependency-license owner review; evidence SHA-256
+  `70085150a8971003cd3ac660fe84f1e7b74ce2dcd0678ec11deadd282b54f107`.
+- Parler-TTS was synchronized from its frozen project before audit and now
+  stops only on missing publisher `LICENSE`/`NOTICE` evidence for
+  `tokenizers==0.22.2`; evidence SHA-256
+  `52463e4e3717663efec1feddb912459f093e9570d64d34ab26063d730ff269e2`.
+- SpeechT5's frozen dependency/license audit passed; compact evidence SHA-256
+  `fd3974c09ea3d0f256988c6706186b8451e2c87c5f81560305e5793491fe0621`.
+- BigVGAN's exact locked Linux closure was staged and verified with
+  `OWNER_REVIEW_REQUIRED`, `BLOCKED_UNREVIEWED_TRANSITIVE` and `NO_UPLOAD`;
+  candidate SHA-256
+  `fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086`.
+- CosyVoice2 HiFT returned `LINUX_CLOSURE_CANDIDATE_VERIFIED` while preserving
+  owner review and `NO_UPLOAD`; candidate SHA-256
+  `eaa2c8c1217a272261166c06e1d871b5616374cfc3f4f004b60f29dc635f706b`.
+- MOSS Audio Tokenizer Nano authenticated the non-weight files, server-only
+  checkpoint identity and meta-device shape route, then remained `BLOCKED`
+  with no weight load or parity; evidence SHA-256
+  `24217e911ddaf00e979a5eae01ec079290ff7f33e8756423e8748fb733c9775f`.
+
+The principal workspace, Clippy, static-gate, Rust security and safe-loader
+audit log SHA-256 values are respectively
+`3ac9af5d6ac7712ef5212123f31a71a5bbf232d0374f77898c4ea846ea66b308`,
+`b34870f08b658d4ba3772aa1e55964bbb4fce17ac168dd24b1b1c60ddd1bc6f2`,
+`cdecffb10e4f735b04539d8a8c3c18cd691c5a0cd67b7d0f56ac749498658932`,
+`67164119f2553af005caf5f71b578c72c276bdada9c94681427379fceb98fa5a`
+and
+`f731306d75d60c597bcbcad2e0e2a9b033fc98e7e7a01486775608a86a224672`.
+The recovered 956-KiB archive is
+`/private/tmp/vokra-evidence-caf70eb1.tar.gz`, SHA-256
+`bda3463275665d2144b33c616e88f3884c8e8ec8c5ccefb3d75e0459f7129fb5`.
+Every internal checksum was verified again after transfer, and an archive-name
+boundary check found no model, checkpoint, GGUF, ONNX or wheel payload.
+
+No Hugging Face token was transferred, no external model/checkpoint weight was
+acquired or executed, no upload occurred and no model ran on the maintainer
+Mac. After evidence recovery, instance `50320338` and its 150-GB storage were
+destroyed; the individual provider query returned `instances: null`.
+
+This replay completes every currently identified **owner-independent**
+non-Scaleway source, model-free, security and repository-verification task.
+The remaining non-Scaleway work requires external input: immutable owner/legal
+decisions, missing authoritative upstream license/source/tensor/codec facts or
+native-composite decisions and, only for approved scopes, authenticated
+real-weight VAST conversion, independent-reference and CPU-parity runs.
+Scaleway cannot resolve those inputs; it is needed only for the final Apple
+Silicon CPU/reference, Metal/reference and Metal/CPU no-fallback verdicts once
+each row is otherwise ready.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
