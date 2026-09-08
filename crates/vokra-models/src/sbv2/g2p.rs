@@ -921,7 +921,7 @@ impl SbV2Phonemizer {
                 output.phones.len()
             )));
         }
-        if output.word2ph.is_empty() || output.word2ph.iter().any(|&width| width == 0) {
+        if output.word2ph.is_empty() || output.word2ph.contains(&0) {
             return Err(VokraError::InvalidArgument(
                 "SBV2 JP-Extra native Japanese G2P returned an invalid word2ph sequence".to_owned(),
             ));
@@ -1238,6 +1238,39 @@ fn hex_digest(bytes: &[u8; 32]) -> String {
     output
 }
 
+// WP-14 OOV error constructors, factored out so all four Strict-arm sites
+// (`phonemize_{ja,en}_via_piper` + `phonemize_{ja,en}_char_mapping`) share
+// the same message shape — a caller that greps error text for one form
+// will find every path. Both messages carry the concrete offending value
+// (char or piper phoneme id) AND its 0-based position AND the mapping
+// name AND the WP-14 opt-out affordance, so no field the WP-14 tests
+// (`crates/vokra-models/tests/sbv2_g2p.rs` `wp14_*`) assert on drifts
+// silently between paths.
+
+fn oov_error_char(language: Language, c: char, position: usize, mapping_name: &str) -> VokraError {
+    VokraError::InvalidArgument(format!(
+        "SbV2Phonemizer::phonemize ({language:?} char path): char {c:?} \
+         (U+{codepoint:04X}) at position {position} is absent from {mapping_name} — \
+         OovPolicy::Strict rejects this per FR-EX-08. Add a mapping entry, or opt into \
+         legacy silent fallback via SbV2Phonemizer::with_oov_policy(OovPolicy::Lenient).",
+        codepoint = c as u32,
+    ))
+}
+
+fn oov_error_piper(
+    language: Language,
+    piper_id: i64,
+    position: usize,
+    mapping_name: &str,
+) -> VokraError {
+    VokraError::InvalidArgument(format!(
+        "SbV2Phonemizer::phonemize ({language:?} piper path): piper phoneme id {piper_id} at \
+         position {position} is absent from {mapping_name} (SBV2 id) — OovPolicy::Strict \
+         rejects this per FR-EX-08. Add a mapping entry, or opt into legacy silent fallback \
+         via SbV2Phonemizer::with_oov_policy(OovPolicy::Lenient)."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1274,37 +1307,4 @@ mod tests {
         assert_eq!(result.word_boundaries, vec![true, true]);
         assert_eq!(result.bert_input_text, "正規化");
     }
-}
-
-// WP-14 OOV error constructors, factored out so all four Strict-arm sites
-// (`phonemize_{ja,en}_via_piper` + `phonemize_{ja,en}_char_mapping`) share
-// the same message shape — a caller that greps error text for one form
-// will find every path. Both messages carry the concrete offending value
-// (char or piper phoneme id) AND its 0-based position AND the mapping
-// name AND the WP-14 opt-out affordance, so no field the WP-14 tests
-// (`crates/vokra-models/tests/sbv2_g2p.rs` `wp14_*`) assert on drifts
-// silently between paths.
-
-fn oov_error_char(language: Language, c: char, position: usize, mapping_name: &str) -> VokraError {
-    VokraError::InvalidArgument(format!(
-        "SbV2Phonemizer::phonemize ({language:?} char path): char {c:?} \
-         (U+{codepoint:04X}) at position {position} is absent from {mapping_name} — \
-         OovPolicy::Strict rejects this per FR-EX-08. Add a mapping entry, or opt into \
-         legacy silent fallback via SbV2Phonemizer::with_oov_policy(OovPolicy::Lenient).",
-        codepoint = c as u32,
-    ))
-}
-
-fn oov_error_piper(
-    language: Language,
-    piper_id: i64,
-    position: usize,
-    mapping_name: &str,
-) -> VokraError {
-    VokraError::InvalidArgument(format!(
-        "SbV2Phonemizer::phonemize ({language:?} piper path): piper phoneme id {piper_id} at \
-         position {position} is absent from {mapping_name} (SBV2 id) — OovPolicy::Strict \
-         rejects this per FR-EX-08. Add a mapping entry, or opt into legacy silent fallback \
-         via SbV2Phonemizer::with_oov_policy(OovPolicy::Lenient)."
-    ))
 }

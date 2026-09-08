@@ -453,14 +453,14 @@ mod tests {
         assert!(
             validate_io_paths(
                 &input,
-                &Path::new(&format!("{}/./dotted.gguf", root.display()))
+                Path::new(&format!("{}/./dotted.gguf", root.display()))
             )
             .is_err()
         );
         assert!(
             validate_io_paths(
                 &input,
-                &Path::new(&format!("{}/../dotted.gguf", root.display()))
+                Path::new(&format!("{}/../dotted.gguf", root.display()))
             )
             .is_err()
         );
