@@ -38,11 +38,12 @@ parity remain unresolved and blocked.
 The fixed source `config.json` also binds the official Transformers mapping
 `AutoConfig -> MossAudioTokenizerConfig` and `AutoModel ->
 MossAudioTokenizerModel`. The dependency-free audit checks this mapping and
-the shape-bearing decoder layout. The model construction probe is currently
-`BLOCKED_SECURITY_ADVISORY`: replacing its former meta-device helper with a
-PyTorch-only context has not been revalidated on VAST, so the inspector stops
-before source or weight access. The official model methods remain part of the
-recorded contract for future revalidation.
+the shape-bearing decoder layout. The model construction probe now uses
+PyTorch's native `torch.device("meta")` context and does not import a
+third-party meta-device helper. It remains a model-free shape probe only; the
+inspector's output is still `BLOCKED` for runtime/parity approval until the
+route is actually run on VAST and reviewed. The official model methods remain
+part of the recorded contract.
 Its ordered meta taps are `quantizer 1x768x2`, `decoder_0 1x192x8`,
 `decoder_1 1x768x8`, `decoder_2 1x384x16`, `decoder_3 1x768x16`,
 `decoder_4 1x384x32`, `decoder_5 1x768x32`, `decoder_6 1x384x64`,
@@ -70,12 +71,12 @@ scripts/publish/vast-ai/run-moss-audio-tokenizer-nano-inspection.sh \
   --expected-head <40-hex-commit>
 ```
 
-The inspection is currently stopped before VAST environment sync or any HF
-source/weight access by `BLOCKED_SECURITY_ADVISORY`. The dependency/native
-payload audit remains available as a no-model, dependency-free audit; the
-former `AutoConfig.from_pretrained` plus meta-device `AutoModel.from_config`
-probe must be revalidated on VAST before it can be restored. No safetensors
-tensor is loaded or executed by the blocked route.
+The inspection performs its host, clean-checkout, pinned-environment, and
+source-only acquisition guards before the model-free probe. It materializes
+only the seven non-weight files; the safetensors shard remains server-identity
+only. The `AutoConfig.from_pretrained` plus meta-device
+`AutoModel.from_config` probe does not load or execute a safetensors tensor.
+The dependency/native payload audit remains a separate no-model phase.
 The output remains `BLOCKED` with source/weight `REVIEWED` (owner sign-off
 `docs/license-audit.md:671`) but unresolved Python closure, real-weight/API
 runtime approval, and `NOT_RUN` numerical parity; publication remains
@@ -86,8 +87,8 @@ recovered and reviewed before any conversion or parity worker is started.
 An `INSPECTION_ERROR` manifest is never treated as complete.
 
 Evidence output is no-clobber: the inspector refuses an existing output path,
-including a prior evidence directory, and all blocked/error outcomes remain
-exit status 2.
+including a prior evidence directory, and every inspection exits status 2 so
+the evidence cannot be mistaken for runtime, parity, or publication approval.
 
 The owner approval path is `MOSS_AUDIO_TOKENIZER_NANO_LICENSE_APPROVAL`; the
 tracked manifest still cannot be self-approved because the 35 package-review
