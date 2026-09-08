@@ -1,6 +1,6 @@
 # MOSS Audio Tokenizer v2 reference gate
 
-This dedicated Linux/x86_64 Python 3.12 VAST oracle resolves a 52-package
+This dedicated Linux/x86_64 Python 3.12 VAST oracle resolves a 50-package
 closure with Torch 2.7.1+cu126 from the official PyTorch CUDA index and
 Transformers 5.10.4 from PyPI. The checked-in lock is resolver-generated and
 records URL, SHA-256, and positive size metadata for every non-virtual

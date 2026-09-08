@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Pinned official MOSS Audio Tokenizer Nano oracle; VAST only"
 requires-python = "==3.12.*"
 dependencies = [
-    "accelerate==1.10.1",
     "huggingface-hub==1.27.0",
     "numpy==2.3.5",
     "safetensors==0.8.0",

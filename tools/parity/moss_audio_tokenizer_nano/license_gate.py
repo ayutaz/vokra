@@ -15,8 +15,8 @@ from urllib.parse import urlparse
 REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 # These are code-bound after the staged files are finalized; a byte drift blocks.
-LOCK_SHA256 = "29d49a9d88d73e185d3c125c3ac0c09baa83b51d3835e231ba634610bef3d8d1"
-PROJECT_SHA256 = "ec4075893adeaed5e82d475284c14241a71a330100d07d387bc62befb7a1b6ce"
+LOCK_SHA256 = "d124044b0c03ddc91dce362773d36c9ba4b187b78fcdd0c02826e1c6566ff74d"
+PROJECT_SHA256 = "94cc65df02993b01f8e9e0fa0eb4c1f7405a6087722eb5a7203a703c4e786611"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 PAYLOAD_FILES = (
     ".gitattributes", "README.md", "__init__.py", "config.json", "configuration_moss_audio_tokenizer.py",
@@ -42,18 +42,19 @@ MODEL_INFO = {
     "cardData_license": "apache-2.0",
 }
 ROUTE = {
-    # The VAST source-contract probe authenticated the official config/meta
-    # construction path without acquiring or executing a weight.  This is a
-    # model-free route binding only; the real-weight/API runtime remains
-    # fail-closed below.
-    "status": "AUTHENTICATED_META_SHAPE_PROBE",
+    # The former model-free route used a vulnerable helper.  Until an
+    # equivalent PyTorch-only meta construction is revalidated on VAST, the
+    # inspection remains blocked before source or weight access.
+    "status": "BLOCKED_SECURITY_ADVISORY",
     "transformers_version": "5.10.4",
     "previous_isolated_transformers_pin": "5.5.0",
     "isolated_transformers_pin": "transformers==5.10.4",
     "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
     "transformers_security_patched_minimum": "5.10.0",
-    "transformers_compatibility_status": "AUTHENTICATED_MODEL_FREE_META_ROUTE",
-    "reason": "official AutoConfig plus meta-device AutoModel route and callable API surface are authenticated; real-weight/API runtime, numerical parity, and owner approval remain blocked",
+    "transformers_compatibility_status": "BLOCKED_SECURITY_ADVISORY",
+    "reason": "official AutoModel meta construction requires VAST revalidation without the former vulnerable helper; source and weight access remain blocked",
+    "source_access": False,
+    "weight_access": False,
     "api_path": {
         "config": "transformers.AutoConfig.from_pretrained",
         "model": "transformers.AutoModel.from_config",
@@ -107,7 +108,7 @@ ROUTE = {
         "collection_status": "AUTHENTICATED",
         "dependency_audit_report_sha256": "5cc7c9dc22331f081af6b50e80244f2805e4006590c4b2b9c828cc68e5dbc5ac",
         "dependency_audit_status": "BLOCKED",
-        "dependency_audit_package_review_rows": 37,
+        "dependency_audit_package_review_rows": 35,
         "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
         "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
         "metal_status": "BLOCKED_BY_CPU",
@@ -426,6 +427,8 @@ def verify_snapshot(snapshot: Path, manifest_path: Path) -> None:
 
 
 def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path | None) -> None:
+    if ROUTE.get("status") == "BLOCKED_SECURITY_ADVISORY":
+        blocked("BLOCKED_SECURITY_ADVISORY: Nano inspection is disabled until the meta route is revalidated on VAST")
     for path, label in ((lock_path, "lock"), (project_path, "project"), (manifest_path, "manifest")):
         if path.is_symlink() or not path.is_file():
             blocked(f"{label} input is missing or not a regular file")
@@ -453,8 +456,8 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path
         blocked("lock/project bytes differ from code-bound closure")
     if manifest.get("lock_sha256") != LOCK_SHA256 or manifest.get("project_sha256") != PROJECT_SHA256:
         blocked("manifest lock/project hashes differ from code-bound closure")
-    if manifest.get("reference_route") != ROUTE or ROUTE["status"] != "AUTHENTICATED_META_SHAPE_PROBE":
-        blocked("official Transformers model-free route evidence is not authenticated")
+    if manifest.get("reference_route") != ROUTE:
+        blocked("official Transformers model-free route identity drifted")
     if manifest.get("package_rows") != rows or manifest.get("package_rows_sha256") != canon(rows):
         blocked("canonical lock rows drifted")
 
@@ -587,7 +590,7 @@ def self_test() -> None:
                 "collection_status": "AUTHENTICATED",
                 "dependency_audit_report_sha256": "c" * 64,
                 "dependency_audit_status": "BLOCKED",
-                "dependency_audit_package_review_rows": 37,
+                "dependency_audit_package_review_rows": 35,
                 "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
                 "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
                 "metal_status": "BLOCKED_BY_CPU",
@@ -649,6 +652,17 @@ def self_test() -> None:
         run(lock_path, project_path, manifest_path, evidence_path)
         baseline_manifest = manifest_path.read_text(encoding="utf-8")
         baseline_evidence = evidence_path.read_text(encoding="utf-8")
+        synthetic_route = ROUTE
+        ROUTE = {"status": "BLOCKED_SECURITY_ADVISORY"}
+        try:
+            run(lock_path, project_path, manifest_path, evidence_path)
+        except SystemExit as error:
+            if error.code != 2:
+                raise
+        else:
+            raise SystemExit("self-test allowed the production security advisory route")
+        finally:
+            ROUTE = synthetic_route
         for label, target, payload in (
             ("manifest-duplicate", manifest_path, '{"gate_version":1,"gate_version":1}'),
             ("manifest-nested-duplicate", manifest_path, '{"model_rows":{"path":"a","path":"b"}}'),

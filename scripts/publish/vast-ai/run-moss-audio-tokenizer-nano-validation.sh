@@ -26,13 +26,11 @@ CORRECTED_MODEL_NAME="moss-audio-tokenizer-nano"
 CORRECTED_VARIANT="nano"
 LEGACY_PUBLIC_REPO="vokra/moss-audio-tokenizer-nano"
 LEGACY_NOTE="historical public Nano GGUF is manifest-authenticated but mis-stamped; never canonical"
-# These identities are derived from the committed source/API/tap contract:
-# source_contract_inspector.py authenticates the nine meta-device tap shapes
-# and the dedicated license gate binds the two custom-code file SHA-256 values
-# plus the exact CPU Torch/Transformers closure.  The preserved VAST inspector
-# manifests record the worker's local-snapshot dynamic-module paths and their
-# source hashes; those exact paths are the canonical identities emitted by the
-# dumper.  Real-weight execution and owner approval remain separate gates below.
+# These identities are retained as the future VAST revalidation contract.
+# The current dedicated license gate is BLOCKED_SECURITY_ADVISORY before source
+# or weight access because the former model-free meta route has not been
+# revalidated without its vulnerable helper. Real-weight execution and owner
+# approval remain separate gates below.
 EXPECTED_MODEL_SOURCE_PATH="transformers_modules/hf/cfb29bb1bac555fe/modeling_moss_audio_tokenizer.py"
 EXPECTED_CONFIG_SOURCE_PATH="transformers_modules/hf/1f68fe91b6890e3e/configuration_moss_audio_tokenizer.py"
 EXPECTED_MODEL_SOURCE_SHA256="b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930"
@@ -505,13 +503,13 @@ run_self_test() {
     log 'self-test FAIL: worker/gate/dumper upstream revision contract diverged'; fail=1
   fi
   cases=$((cases + 1))
-  if ! grep -Fq '"status": "AUTHENTICATED_META_SHAPE_PROBE"' "$NANO_PROJECT/license_gate.py"; then
-    log 'self-test FAIL: model-free route evidence drifted'; fail=1
+  if ! grep -Fq '"status": "BLOCKED_SECURITY_ADVISORY"' "$NANO_PROJECT/license_gate.py"; then
+    log 'self-test FAIL: security advisory disposition drifted'; fail=1
   fi
-  for required in 'AUTHENTICATED_MODEL_FREE_META_ROUTE' 'inspection_manifest_sha256' 'dependency_audit_report_sha256' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY' 'NO_UPLOAD'; do
+  for required in 'BLOCKED_SECURITY_ADVISORY' 'inspection_manifest_sha256' 'dependency_audit_report_sha256' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY' 'NO_UPLOAD'; do
     cases=$((cases + 1))
     if ! grep -Fq -- "$required" "$NANO_PROJECT/license_gate.py"; then
-      log "self-test FAIL: authenticated route/blocked disposition token is missing: $required"
+      log "self-test FAIL: blocked disposition token is missing: $required"
       fail=1
     fi
   done

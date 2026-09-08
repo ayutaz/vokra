@@ -8,8 +8,8 @@ from urllib.parse import urlparse
 
 REVISION = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"
 REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
-LOCK_SHA256 = "23fc3310193562199d13dfdccb051d639d6c086950ce1b53f9043b55e9eed6d7"
-PROJECT_SHA256 = "0a2d27585b43e27785fb5cb98b36ac2d78375cc1b3095605c649e0c2027a7cbf"
+LOCK_SHA256 = "3aefd135a248a89b642149eac6f163e34d3627d8be9edf4a5f11a86239da22b2"
+PROJECT_SHA256 = "43e9a650d535be221037cefc7fea85eac508270e18980171e7fe04217353dc9c"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UNRESOLVED = ("UNRESOLVED", "OWNER_REVIEW_REQUIRED", "PENDING_REVIEW", "REVIEW_REQUIRED")
 PACKAGE_REVIEW_SCHEMA = {"name", "version", "source", "license", "status", "native_bundled_review"}

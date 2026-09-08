@@ -1,47 +1,9 @@
 {
   "gate_version": 1,
-  "lock_sha256": "29d49a9d88d73e185d3c125c3ac0c09baa83b51d3835e231ba634610bef3d8d1",
-  "project_sha256": "ec4075893adeaed5e82d475284c14241a71a330100d07d387bc62befb7a1b6ce",
-  "package_rows_sha256": "fbd1ec4719e81b2a11df8627300fda612862f337c5312560e5b2b20fdc6ac14a",
+  "lock_sha256": "d124044b0c03ddc91dce362773d36c9ba4b187b78fcdd0c02826e1c6566ff74d",
+  "project_sha256": "94cc65df02993b01f8e9e0fa0eb4c1f7405a6087722eb5a7203a703c4e786611",
+  "package_rows_sha256": "aca70d723a55f63fa518683cc9a5a56995eb14601d0cb598dc5d7ed1f1a0d376",
   "package_rows": [
-    {
-      "name": "accelerate",
-      "version": "1.10.1",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": [
-        {
-          "name": "huggingface-hub",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "numpy",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "packaging",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "psutil",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "pyyaml",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "safetensors",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
-          "name": "torch",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        }
-      ]
-    },
     {
       "name": "annotated-doc",
       "version": "0.0.5",
@@ -305,15 +267,6 @@
       "dependencies": []
     },
     {
-      "name": "psutil",
-      "version": "7.0.0",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "resolution-markers": [],
-      "dependencies": []
-    },
-    {
       "name": "pygments",
       "version": "2.21.0",
       "source": {
@@ -546,10 +499,6 @@
       "resolution-markers": [],
       "dependencies": [
         {
-          "name": "accelerate",
-          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
-        },
-        {
           "name": "huggingface-hub",
           "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
         },
@@ -573,16 +522,6 @@
     }
   ],
   "package_review_rows": [
-    {
-      "name": "accelerate",
-      "version": "1.10.1",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
     {
       "name": "annotated-doc",
       "version": "0.0.5",
@@ -784,16 +723,6 @@
       "native_bundled_review": "OWNER_REVIEW_REQUIRED"
     },
     {
-      "name": "psutil",
-      "version": "7.0.0",
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "license": "UNRESOLVED",
-      "status": "UNRESOLVED",
-      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
-    },
-    {
       "name": "pygments",
       "version": "2.21.0",
       "source": {
@@ -944,7 +873,7 @@
       "native_bundled_review": "OWNER_REVIEW_REQUIRED"
     }
   ],
-  "package_review_rows_sha256": "4579636bb692ac532aafbf75dfee95ae14bbd1b828acd5c845239a368250ce8b",
+  "package_review_rows_sha256": "8dc1be9119152e63f70e4f1774ba44a93a2fd8675a8521e6eaa299144b639f91",
   "license_rows": [
     {
       "id": "source-apache",
@@ -1099,14 +1028,14 @@
   },
   "license_file_present": false,
   "reference_route": {
-    "status": "AUTHENTICATED_META_SHAPE_PROBE",
+    "status": "BLOCKED_SECURITY_ADVISORY",
     "transformers_version": "5.10.4",
     "previous_isolated_transformers_pin": "5.5.0",
     "isolated_transformers_pin": "transformers==5.10.4",
     "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
     "transformers_security_patched_minimum": "5.10.0",
-    "transformers_compatibility_status": "AUTHENTICATED_MODEL_FREE_META_ROUTE",
-    "reason": "official AutoConfig plus meta-device AutoModel route and callable API surface are authenticated; real-weight/API runtime, numerical parity, and owner approval remain blocked",
+    "transformers_compatibility_status": "BLOCKED_SECURITY_ADVISORY",
+    "reason": "official AutoModel meta construction requires VAST revalidation without the former vulnerable helper; source and weight access remain blocked",
     "api_path": {
       "config": "transformers.AutoConfig.from_pretrained",
       "model": "transformers.AutoModel.from_config",
@@ -1197,13 +1126,15 @@
       "collection_status": "AUTHENTICATED",
       "dependency_audit_report_sha256": "5cc7c9dc22331f081af6b50e80244f2805e4006590c4b2b9c828cc68e5dbc5ac",
       "dependency_audit_status": "BLOCKED",
-      "dependency_audit_package_review_rows": 37,
+      "dependency_audit_package_review_rows": 35,
       "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
       "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
       "metal_status": "BLOCKED_BY_CPU",
       "parity_status": "NOT_RUN",
       "publication": "NO_UPLOAD"
-    }
+    },
+    "source_access": false,
+    "weight_access": false
   },
   "reference_contract": {
     "frames": 2,

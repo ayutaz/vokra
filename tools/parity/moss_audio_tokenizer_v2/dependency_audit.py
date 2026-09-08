@@ -627,7 +627,7 @@ def self_test() -> int:
     project = Path(__file__).resolve().parent
     _, lock, manifest, canonical_rows, _, _ = contract(project)
     rows = artifact_rows(lock, canonical_rows)
-    assert len(rows) == 52 and len(manifest["package_review_rows"]) == 52
+    assert len(rows) == 50 and len(manifest["package_review_rows"]) == 50
     tokenizers = next(row for row in rows if row["name"] == "tokenizers")
     assert isinstance(tokenizers.get("sdist"), dict) and tokenizers["sdist"].get("url", "").startswith("https://files.pythonhosted.org/")
     state = approval_state(manifest)

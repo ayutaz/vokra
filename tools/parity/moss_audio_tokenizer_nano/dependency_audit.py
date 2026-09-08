@@ -756,8 +756,8 @@ def run(project: Path, output: Path, expected_head: str) -> int:
 def self_test() -> int:
     project = Path(__file__).resolve().parent
     _, lock, manifest, rows, _, _ = contract(project)
-    if len(rows) != 37 or len(manifest["package_review_rows"]) != 37 or sum(row.get("source") == {"virtual": "."} for row in lock["package"]) != 1:
-        raise SystemExit("self-test expected 36 active distributions plus one virtual project row")
+    if len(rows) != 35 or len(manifest["package_review_rows"]) != 35 or sum(row.get("source") == {"virtual": "."} for row in lock["package"]) != 1:
+        raise SystemExit("self-test expected 34 active distributions plus one virtual project row")
     torch_row = next((row for row in rows if norm_name(row["name"]) == "torch"), None)
     if torch_row is None or torch_row["version"] != CPU_TORCH_VERSION or torch_row["source"] != CPU_TORCH_SOURCE:
         raise SystemExit("self-test lost the locked torch 2.7.1+cpu identity")

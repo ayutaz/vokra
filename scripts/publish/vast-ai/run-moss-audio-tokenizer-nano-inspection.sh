@@ -9,6 +9,7 @@ PROJECT="$ROOT/tools/parity/moss_audio_tokenizer_nano"
 INSPECTOR="$PROJECT/source_contract_inspector.py"
 HF_REPOSITORY="OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 HF_REVISION="6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
+SECURITY_ADVISORY="BLOCKED_SECURITY_ADVISORY"
 MIN_MEM_KIB=30000000
 MIN_DISK_KIB=5000000
 DEFAULT_WORK_DIR="/dev/shm/vokra-moss-audio-tokenizer-nano-inspection"
@@ -49,8 +50,8 @@ self_test() {
     '.gitattributes' '__init__.py' 'model-00001-of-00001.safetensors' \
     'cardData_license' 'private' 'gated' 'disabled' \
     'snapshot_download' 'list_repo_tree' 'lfs_payload_sha256' \
-    'AutoConfig.from_pretrained' 'AutoModel.from_config' 'init_empty_weights' \
-    'api_path' 'api_methods' 'MossAudioTokenizerModel' 'AUTHENTICATED_META_SHAPE_PROBE' 'AUTHENTICATED_EVIDENCE_COMPLETE' \
+    'AutoConfig.from_pretrained' 'AutoModel.from_config' 'BLOCKED_SECURITY_ADVISORY' \
+    'api_path' 'api_methods' 'MossAudioTokenizerModel' \
     '1x768x2' '1x1x15360' '1x2x7680' \
     'INSPECTION_ERROR' 'weights_loaded' 'weights_executed' 'NO_UPLOAD' \
     'REVIEWED' 'BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY' \
@@ -72,6 +73,9 @@ self_test() {
   if grep -Fq 'AutoModel.from_pretrained' "$INSPECTOR"; then
     log 'self-test FAIL: model from_pretrained route found'; fail=1
   fi
+  if grep -Eiq 'accelerate|init_empty_weights' "$INSPECTOR"; then
+    log 'self-test FAIL: vulnerable meta-device helper remains in inspection path'; fail=1
+  fi
   if awk '!/grep -Eq.*allow_patterns/ && /allow_patterns=[^#]*model-00001-of-00001\.safetensors/' "$script" | grep -q .; then
     log 'self-test FAIL: weight shard appears in snapshot allow-patterns'; fail=1
   fi
@@ -85,12 +89,14 @@ self_test() {
     log 'self-test FAIL: Python inspector self-test failed'; fail=1
   fi
   local sync_line download_line probe_line
+  local advisory_line
+  advisory_line="$(grep -n 'die "\$SECURITY_ADVISORY:' "$script" | head -n 1 | cut -d: -f1)"
   sync_line="$(grep -n '^uv sync --project' "$script" | tail -n 1 | cut -d: -f1)"
   download_line="$(grep -n 'snapshot_download(' "$script" | tail -n 1 | cut -d: -f1)"
   # The self-test searches for the literal shell variable reference.
   # shellcheck disable=SC2016
   probe_line="$(grep -n -- 'python "\$INSPECTOR"' "$script" | tail -n 1 | cut -d: -f1)"
-  if [[ -z "$sync_line$download_line$probe_line" || "$sync_line" -ge "$download_line" || "$download_line" -ge "$probe_line" ]]; then
+  if [[ -z "$advisory_line$sync_line$download_line$probe_line" || "$advisory_line" -ge "$sync_line" || "$sync_line" -ge "$download_line" || "$download_line" -ge "$probe_line" ]]; then
     log 'self-test FAIL: sync/acquisition/probe order is not fail-closed'; fail=1
   fi
   (( fail == 0 )) || return 1
@@ -140,6 +146,9 @@ fi
 
 [[ "$seen_head" == 1 ]] || die '--expected-head is required'
 [[ "$seen_self" == 0 ]] || die '--self-test cannot be combined with normal arguments'
+# The former meta-device helper has no patched release for the fixed advisory.
+# Stop before host checks, environment sync, or any HF source/weight access.
+die "$SECURITY_ADVISORY: Nano model-free construction requires VAST revalidation before source or weight access"
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'Linux x86_64 VAST is required'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -d "$ROOT/.git" && -f "$ROOT/Cargo.toml" ]] || die 'not a Vokra checkout'
@@ -342,7 +351,7 @@ if manifest.get("unresolved_gates") != {
 }:
     raise SystemExit("unresolved approval gates were weakened")
 route = manifest.get("transformers_route")
-if not isinstance(route, dict) or route.get("status") != "AUTHENTICATED_META_SHAPE_PROBE" or route.get("weights_loaded") is not False or route.get("weights_executed") is not False:
+if not isinstance(route, dict) or route.get("status") != "BLOCKED_SECURITY_ADVISORY" or route.get("weights_loaded") is not False or route.get("weights_executed") is not False:
     raise SystemExit("inspection did not authenticate the model-free Transformers route")
 if route.get("api_path") != {
     "config": "transformers.AutoConfig.from_pretrained",

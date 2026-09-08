@@ -4,11 +4,11 @@
 This is an evidence collector, not a model validator. It materializes only
 the seven non-weight files selected by the fixed Hugging Face revision. The
 weight shard is authenticated from the expanded HF server tree/LFS identity
-but is never downloaded. The Transformers probe loads the official custom
-code through ``AutoConfig.from_pretrained`` and constructs the model under
-Accelerate's meta-device context; it never calls ``from_pretrained`` for a
-model and never reads a safetensors tensor payload. Decoder shapes are
-therefore structural/meta-device observations, not numerical parity.
+but is never downloaded. The Transformers probe is currently security-blocked
+before any source or weight access because its former meta-device
+implementation depended on a vulnerable third-party release. The
+dependency-free metadata and source contract validators remain available for
+separately authenticated audits.
 
 The script records the existing source/weight owner sign-off but intentionally
 leaves Python closure, API/runtime support, parity, and publication blocked. A
@@ -33,6 +33,7 @@ from typing import Any
 REPOSITORY = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 TRANSFORMERS_VERSION = "5.10.4"
+SECURITY_ADVISORY = "BLOCKED_SECURITY_ADVISORY"
 PAYLOAD_FILES = (
     ".gitattributes",
     "README.md",
@@ -498,102 +499,13 @@ def reserve_output(path: Path) -> None:
 
 
 def api_and_shape_probe(snapshot: Path) -> dict[str, Any]:
-    """Run only config/meta construction and shape propagation; no weights."""
+    """Reject the unverified model-construction route before source access."""
 
-    try:
-        import torch
-        import transformers
-        from accelerate import init_empty_weights
-        from transformers import AutoConfig, AutoModel
-    except Exception as error:  # noqa: BLE001
-        raise InspectionError(f"reference imports unavailable: {error}") from error
-    if str(transformers.__version__) != TRANSFORMERS_VERSION:
-        raise InspectionError(
-            f"Transformers {transformers.__version__!s} != pinned {TRANSFORMERS_VERSION}"
-        )
-    config = AutoConfig.from_pretrained(
-        str(snapshot),
-        trust_remote_code=True,
-        local_files_only=True,
+    raise InspectionError(
+        f"{SECURITY_ADVISORY}: official AutoModel meta construction has not "
+        "been revalidated without the former meta-device helper on VAST"
     )
-    commit = getattr(config, "_commit_hash", None)
-    if commit not in {None, REVISION}:
-        raise InspectionError(f"custom config commit drifted: {commit!r}")
-    if getattr(config, "model_type", None) != EXPECTED_MODEL_TYPE:
-        raise InspectionError("official AutoConfig model_type drifted")
-    with init_empty_weights():
-        model = AutoModel.from_config(config, trust_remote_code=True)
-    model.eval()
-    if type(config).__name__ != "MossAudioTokenizerConfig":
-        raise InspectionError("AutoConfig did not resolve the official Nano config class")
-    if type(model).__name__ != "MossAudioTokenizerModel":
-        raise InspectionError("AutoModel did not resolve the official Nano model class")
-    api_methods = ("encode", "decode", "forward", "create_decode_session")
-    if any(not callable(getattr(model, method, None)) for method in api_methods):
-        raise InspectionError("official Nano model API is incomplete")
-    config_source = source_identity(
-        type(config), "Nano config class", snapshot, "configuration_moss_audio_tokenizer.py"
-    )
-    model_source = source_identity(
-        type(model), "Nano model class", snapshot, "modeling_moss_audio_tokenizer.py"
-    )
-    quantizer = getattr(model, "quantizer", None)
-    decoder = getattr(model, "decoder", None)
-    if quantizer is None or decoder is None or not hasattr(decoder, "__iter__"):
-        raise InspectionError("official model lacks quantizer/decoder modules")
 
-    # Meta tensors carry dimensions through official operators without reading
-    # any safetensors bytes. Input values and lengths are intentionally
-    # undefined; keeping both on meta prevents an accidental value-bearing
-    # CPU path from masquerading as shape-only inspection.
-    codes = torch.empty((16, 1, 2), dtype=torch.long, device="meta")
-    taps: list[dict[str, Any]] = []
-    try:
-        with torch.inference_mode():
-            hidden = quantizer.decode_codes(codes)
-            taps.append({"name": "quantizer", "shape": shape(hidden)})
-            lengths = torch.empty((1,), dtype=torch.long, device="meta")
-            for index, module in enumerate(decoder):
-                hidden, lengths = module(hidden, lengths)
-                taps.append({"name": f"decoder_{index}", "shape": shape(hidden)})
-            audio = hidden
-            restore = getattr(model, "_restore_channels_from_codec", None)
-            if callable(restore):
-                audio, _ = restore(hidden, lengths)
-            audio_shape = shape(audio)
-    except Exception as error:  # noqa: BLE001
-        raise InspectionError(
-            f"official meta shape propagation failed; no shape inferred: {error}"
-        ) from error
-    if not taps or not taps[0]["shape"]:
-        raise InspectionError("official decoder tap sequence is empty")
-    if taps != EXPECTED_TAPS:
-        raise InspectionError(f"official decoder tap shapes drifted: {taps!r}")
-    if audio_shape != EXPECTED_AUDIO_SHAPE:
-        raise InspectionError(f"official decoded audio shape drifted: {audio_shape!r}")
-    return {
-        "status": "AUTHENTICATED_META_SHAPE_PROBE",
-        "transformers_version": str(transformers.__version__),
-        "config_class": f"{type(config).__module__}.{type(config).__name__}",
-        "model_class": f"{type(model).__module__}.{type(model).__name__}",
-        "api_path": {
-            "config": "transformers.AutoConfig.from_pretrained",
-            "model": "transformers.AutoModel.from_config",
-            "trust_remote_code": True,
-            "local_files_only": True,
-        },
-        "api_methods": list(api_methods),
-        "model_type": EXPECTED_MODEL_TYPE,
-        "architectures": EXPECTED_ARCHITECTURES,
-        "auto_map": EXPECTED_AUTO_MAP,
-        "source_files": {"configuration": config_source, "modeling": model_source},
-        "frames": 2,
-        "quantizers": 16,
-        "taps": taps,
-        "audio_shape": audio_shape,
-        "weights_loaded": False,
-        "weights_executed": False,
-    }
 
 
 def blocked_manifest(
@@ -609,7 +521,7 @@ def blocked_manifest(
     vokra_checkout: dict[str, Any] | None,
     error: str | None,
 ) -> dict[str, Any]:
-    complete = error is None and route.get("status") == "AUTHENTICATED_META_SHAPE_PROBE"
+    complete = False
     return {
         "schema": "vokra-moss-audio-tokenizer-nano-source-contract-v1",
         "status": "BLOCKED",
@@ -688,7 +600,7 @@ def self_test() -> None:
         files=[],
         config=None,
         index=None,
-        route={"status": "AUTHENTICATED_META_SHAPE_PROBE"},
+        route={"status": SECURITY_ADVISORY},
         vokra_checkout={"expected_head": "a" * 40, "head": "a" * 40, "clean": True},
         error=None,
     )
@@ -777,6 +689,7 @@ def self_test() -> None:
             raise AssertionError(f"unsafe path accepted: {bad!r}")
     source = Path(__file__).read_text(encoding="utf-8")
     assert ("AutoModel." + "from_pretrained") not in source
+    assert SECURITY_ADVISORY in source
     assert '"weights_loaded": False' in source
     with tempfile.TemporaryDirectory() as temporary:
         output = Path(temporary) / "evidence"
@@ -889,68 +802,12 @@ def main() -> int:
     if args.self_test:
         self_test()
         return 0
-    assert args.snapshot is not None and args.output is not None and args.server_tree is not None and args.vokra_root is not None and args.expected_head is not None
-    try:
-        reserve_output(args.output)
-    except InspectionError as caught:
-        print(f"moss Nano source-contract inspector: BLOCKED: {caught}", file=sys.stderr)
-        return 2
-    route: dict[str, Any] = {
-        "status": "BLOCKED_UNVERIFIED_API_SMOKE",
-        "transformers_version": TRANSFORMERS_VERSION,
-        "weights_loaded": False,
-        "weights_executed": False,
-    }
-    resolved_revision: str | None = None
-    model_info: dict[str, Any] | None = None
-    files: list[dict[str, Any]] | None = None
-    config: dict[str, Any] | None = None
-    index: dict[str, Any] | None = None
-    vokra_checkout: dict[str, Any] | None = None
-    error: str | None = None
-    try:
-        tree = load_json(args.server_tree)
-        if not isinstance(tree, dict) or tree.get("repository") != REPOSITORY or tree.get("revision") != REVISION:
-            raise InspectionError("server-tree identity is not the fixed Nano revision")
-        resolved_revision = tree.get("resolved_revision")
-        model_info = validate_model_info(tree.get("model_info"))
-        vokra_checkout = validate_vokra_checkout(args.vokra_root, args.expected_head)
-        raw_rows = tree.get("files")
-        if not isinstance(raw_rows, list):
-            raise InspectionError("server-tree files is not a list")
-        server_rows = {}
-        for raw in raw_rows:
-            if not isinstance(raw, dict) or raw.get("path") in server_rows:
-                raise InspectionError("server-tree has malformed/duplicate rows")
-            path = safe_relative_path(raw.get("path"))
-            if path not in PAYLOAD_FILES:
-                continue
-            server_rows[path] = raw
-        if set(server_rows) != set(PAYLOAD_FILES):
-            raise InspectionError("server-tree selected file set is incomplete")
-        files, config, index = validate_snapshot(args.snapshot, server_rows)
-        route = api_and_shape_probe(args.snapshot)
-    except (InspectionError, AssertionError, OSError, ValueError) as caught:
-        error = str(caught)
-    manifest = blocked_manifest(
-        repository=REPOSITORY,
-        revision=REVISION,
-        resolved_revision=resolved_revision,
-        model_info=model_info,
-        files=files,
-        config=config,
-        index=index,
-        route=route,
-        vokra_checkout=vokra_checkout,
-        error=error,
+    print(
+        f"moss Nano source-contract inspector: BLOCKED: {SECURITY_ADVISORY}: "
+        "the official AutoModel meta route requires VAST revalidation before "
+        "source or weight access",
+        file=sys.stderr,
     )
-    output = args.output / "manifest.json"
-    output.write_text(
-        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    print(json.dumps(manifest, ensure_ascii=False, sort_keys=True), file=sys.stderr)
     return 2
 
 

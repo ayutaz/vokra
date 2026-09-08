@@ -3,13 +3,13 @@
 This is a dedicated Python 3.12, Linux/x86_64 VAST oracle project for
 `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano` at revision
 `6aa02b01e445cc585582cf0ba480bc3ea6c8dd68`. It is separate from the general
-parity environment and contains a resolver-generated 37-lock-row closure for
+parity environment and contains a resolver-generated 35-lock-row closure for
 Linux/x86_64 Python 3.12: Torch 2.7.1+cpu from the official PyTorch CPU
 index and the isolated security pin Transformers 5.10.4 from PyPI. CUDA,
 NVIDIA, and Triton distributions are explicitly rejected. The prior
 5.5.0 pin is previous isolated-reference provenance only; real-weight/API
 runtime compatibility is not claimed.
-The 37 lock rows comprise 36 active installed distributions plus one virtual
+The 35 lock rows comprise 34 active installed distributions plus one virtual
 project row; the virtual row is not an installed package.
 Every non-virtual lock row carries resolver URL and SHA-256 metadata. The
 official PyTorch CPU simple index omits the Torch wheel's size field; that
@@ -37,9 +37,12 @@ through `decoder_8`; real-weight/API runtime compatibility and numerical
 parity remain unresolved and blocked.
 The fixed source `config.json` also binds the official Transformers mapping
 `AutoConfig -> MossAudioTokenizerConfig` and `AutoModel ->
-MossAudioTokenizerModel`. The inspection checks this mapping and the
-shape-bearing decoder layout before construction, then requires the official
-model methods `encode`, `decode`, `forward`, and `create_decode_session`.
+MossAudioTokenizerModel`. The dependency-free audit checks this mapping and
+the shape-bearing decoder layout. The model construction probe is currently
+`BLOCKED_SECURITY_ADVISORY`: replacing its former meta-device helper with a
+PyTorch-only context has not been revalidated on VAST, so the inspector stops
+before source or weight access. The official model methods remain part of the
+recorded contract for future revalidation.
 Its ordered meta taps are `quantizer 1x768x2`, `decoder_0 1x192x8`,
 `decoder_1 1x768x8`, `decoder_2 1x384x16`, `decoder_3 1x768x16`,
 `decoder_4 1x384x32`, `decoder_5 1x768x32`, `decoder_6 1x384x64`,
@@ -67,15 +70,12 @@ scripts/publish/vast-ai/run-moss-audio-tokenizer-nano-inspection.sh \
   --expected-head <40-hex-commit>
 ```
 
-The inspection materializes only the seven non-weight files on VAST. It does not
-download the model shard: that shard is authenticated solely from the expanded
-HF server-tree Git/LFS identity and the checkpoint index reference. The report
-records materialized SHA-256 and canonical Git-blob SHA-1 values for the seven
-files and server size/LFS identity for the shard, then checks the official
-`AutoConfig.from_pretrained`
-plus meta-device
-`AutoModel.from_config` route. Decoder and audio shapes are observed by
-meta-device shape propagation; no safetensors tensor is loaded or executed.
+The inspection is currently stopped before VAST environment sync or any HF
+source/weight access by `BLOCKED_SECURITY_ADVISORY`. The dependency/native
+payload audit remains available as a no-model, dependency-free audit; the
+former `AutoConfig.from_pretrained` plus meta-device `AutoModel.from_config`
+probe must be revalidated on VAST before it can be restored. No safetensors
+tensor is loaded or executed by the blocked route.
 The output remains `BLOCKED` with source/weight `REVIEWED` (owner sign-off
 `docs/license-audit.md:671`) but unresolved Python closure, real-weight/API
 runtime approval, and `NOT_RUN` numerical parity; publication remains
@@ -90,7 +90,7 @@ including a prior evidence directory, and all blocked/error outcomes remain
 exit status 2.
 
 The owner approval path is `MOSS_AUDIO_TOKENIZER_NANO_LICENSE_APPROVAL`; the
-tracked manifest still cannot be self-approved because the 37 package-review
+tracked manifest still cannot be self-approved because the 35 package-review
 rows, real-weight runtime, and parity gates remain unresolved. The authenticated
 model-free route is evidence only and does not grant execution approval.
 
