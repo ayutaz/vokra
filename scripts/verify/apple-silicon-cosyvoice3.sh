@@ -5,6 +5,7 @@ set -euo pipefail
 # Apple CPU/Metal support before the complete composite has passed VAST parity.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REFERENCE="$ROOT/tools/parity/cosyvoice3_dump_reference.py"
+SOURCE_AUDIT="$ROOT/tools/parity/cosyvoice3_source_audit.py"
 die(){ echo "cosyvoice3-apple: ERROR: $*" >&2; exit 2; }
 COSYVOICE3_SELF_TEST_TMP=""
 # shellcheck disable=SC2329 # Invoked by the EXIT trap below.
@@ -13,8 +14,8 @@ cleanup_self_test() {
 }
 self_test(){
   local fail=0 token tmp valid duplicate link
-  for token in 'AUTHENTICATED_REFERENCE_EVIDENCE' 'REFERENCE_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'sample_rate' 'flow_rand_noise_full' 'native_status' 'comparison_status' 'NO_UPLOAD' 'manifest.json' 'approved_lock_status'; do
-    grep -Fq -- "$token" "$REFERENCE" "$0" || { echo "missing contract: $token" >&2; fail=1; }
+  for token in 'AUTHENTICATED_REFERENCE_EVIDENCE' 'REFERENCE_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'sample_rate' 'flow_rand_noise_full' 'native_status' 'comparison_status' 'NO_UPLOAD' 'manifest.json' 'approved_lock_status' 'cosyvoice3_source_audit.py' 'BLOCKED_FORBIDDEN_SOXR_CLOSURE'; do
+    grep -Fq -- "$token" "$REFERENCE" "$SOURCE_AUDIT" "$0" || { echo "missing contract: $token" >&2; fail=1; }
   done
   if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$0" | grep -v 'grep -En' >/dev/null; then fail=1; fi
   # This is stdlib-only.  Never invoke the dedicated project: its inventory
@@ -35,6 +36,7 @@ self_test(){
   if validate_manifest "$duplicate" >/dev/null 2>&1; then fail=1; fi
   if validate_manifest "$link" >/dev/null 2>&1; then fail=1; fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$REFERENCE" --self-test || fail=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SOURCE_AUDIT" --self-test || fail=1
   (( fail == 0 )) || return 1
   echo 'apple-silicon-cosyvoice3.sh self-test: OK'
 }

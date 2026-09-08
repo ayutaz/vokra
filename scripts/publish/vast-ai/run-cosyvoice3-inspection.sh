@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 INSPECTOR="$ROOT/tools/parity/cosyvoice3_inspect.py"
+SOURCE_AUDIT="$ROOT/tools/parity/cosyvoice3_source_audit.py"
 PROJECT="$ROOT/tools/parity/cosyvoice3_reference"
 WORK="${COSYVOICE3_WORK_DIR:-/dev/shm/vokra-cosyvoice3-inspection}"
 UV_CACHE_DIR="${COSYVOICE3_UV_CACHE_DIR:-/tmp/vokra-cosyvoice3-uv-cache}"
@@ -19,8 +20,8 @@ self_test(){
   if "$0" --self-test --self-test >/dev/null 2>&1 || "$0" --self-test --expected-head bad >/dev/null 2>&1; then
     log 'self-test accepted duplicate or mixed --self-test arguments'; fail=1
   fi
-  for token in "$HF_REPO" "$HF_REV" "$SOURCE_REV" "$MATCHA_REV" 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'weights_only=True' 'CARGO_BUILD_JOBS=1'; do
-    grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test missing $token"; fail=1; }
+  for token in "$HF_REPO" "$HF_REV" "$SOURCE_REV" "$MATCHA_REV" 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'weights_only=True' 'CARGO_BUILD_JOBS=1' 'cosyvoice3_source_audit.py' 'BLOCKED_FORBIDDEN_SOXR_CLOSURE'; do
+    grep -Fq -- "$token" "$INSPECTOR" "$SOURCE_AUDIT" "$0" || { log "self-test missing $token"; fail=1; }
   done
   if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$0" <<'PY'
 import re
@@ -37,6 +38,10 @@ for call in calls:
 PY
   then
     log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SOURCE_AUDIT" --self-test >/dev/null; then
+    log 'self-test FAIL: source/dependency audit contract regression'
     fail=1
   fi
   if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$INSPECTOR" <<'PY'

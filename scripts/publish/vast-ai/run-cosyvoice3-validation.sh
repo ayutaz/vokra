@@ -6,6 +6,7 @@ set -euo pipefail
 # before any model or source download is attempted.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 REFERENCE="$ROOT/tools/parity/cosyvoice3_dump_reference.py"
+SOURCE_AUDIT="$ROOT/tools/parity/cosyvoice3_source_audit.py"
 PROJECT="$ROOT/tools/parity/cosyvoice3_reference"
 GATE="$ROOT/tools/parity/cosyvoice3_gate.py"
 SOURCE_REVISION="0d990d60740bf174904a5185cce910b847bd3684"
@@ -65,8 +66,8 @@ self_test(){
   if "$0" --self-test --self-test >/dev/null 2>&1 || "$0" --self-test --expected-head bad >/dev/null 2>&1; then
     echo 'self-test accepted duplicate or mixed --self-test arguments' >&2; fail=1
   fi
-  for token in "$SOURCE_REVISION" "$MODEL_REVISION" "$MATCHA_REVISION" 'AUTHENTICATED_REFERENCE_EVIDENCE' 'REFERENCE_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'CausalMaskedDiffWithDiT' 'CausalHiFTGenerator' 'flow_rand_noise_full' 'official_output_pcm' 'prompt_sha256' 'cosyvoice3_validate_reference.py'; do
-    grep -Fq -- "$token" "$REFERENCE" "$0" || { echo "missing contract: $token" >&2; fail=1; }
+  for token in "$SOURCE_REVISION" "$MODEL_REVISION" "$MATCHA_REVISION" 'AUTHENTICATED_REFERENCE_EVIDENCE' 'REFERENCE_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'CausalMaskedDiffWithDiT' 'CausalHiFTGenerator' 'flow_rand_noise_full' 'official_output_pcm' 'prompt_sha256' 'cosyvoice3_validate_reference.py' 'cosyvoice3_source_audit.py' 'BLOCKED_FORBIDDEN_SOXR_CLOSURE'; do
+    grep -Fq -- "$token" "$REFERENCE" "$SOURCE_AUDIT" "$0" || { echo "missing contract: $token" >&2; fail=1; }
   done
   if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload|convert' "$0" | grep -v 'grep -En' >/dev/null; then fail=1; fi
   tmp="$(mktemp -d)"
@@ -110,6 +111,7 @@ EOF
     echo 'production-shaped lock probe did not stop before work/cache' >&2; fail=1;
   }
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$REFERENCE" --self-test || fail=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SOURCE_AUDIT" --self-test || fail=1
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/cosyvoice3_validate_reference.py" --self-test || fail=1
   (( fail == 0 )) || return 1
   echo 'run-cosyvoice3-validation.sh self-test: OK'

@@ -43,6 +43,15 @@ source_revision = "0d990d60740bf174904a5185cce910b847bd3684"
 matcha_repository = "https://github.com/shivammehta25/Matcha-TTS"
 matcha_revision = "dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
 route = "official lower-level classes are still blocked: frontend + YAML mel_spectrogram import librosa"
+# Model-free source/dependency audit: the complete official route is not
+# replaced by a narrower component route.  PyPI's authenticated metadata for
+# librosa 0.10.2 declares soxr>=0.3.2, which Vokra rejects.
+source_dependency_audit = "tools/parity/cosyvoice3_source_audit.py"
+official_requirements_url = "https://raw.githubusercontent.com/FunAudioLLM/CosyVoice/0d990d60740bf174904a5185cce910b847bd3684/requirements.txt"
+librosa_metadata_url = "https://pypi.org/pypi/librosa/0.10.2/json"
+forbidden_dependency = "soxr>=0.3.2"
+complete_composite_status = "BLOCKED_FORBIDDEN_SOXR_CLOSURE"
+component_contract_status = "LLM_SOURCE_CONTRACT_ONLY_FLOW_HIFT_BLOCKED"
 # CosyVoice3's pinned upstream environment declares transformers 4.51.3 and
 # huggingface-hub 0.24.7. Keep that provenance separate from the isolated
 # reference pins: transformers 5.10.4 requires huggingface-hub >=1.5.0, the
