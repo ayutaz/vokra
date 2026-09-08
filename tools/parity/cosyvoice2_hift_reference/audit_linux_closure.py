@@ -23,6 +23,13 @@ import tomllib
 LINUX_MARKER = "platform_machine == 'x86_64' and sys_platform == 'linux'"
 REGISTRIES = {"https://pypi.org/simple": "files.pythonhosted.org", "https://download.pytorch.org/whl/cpu": "download-r2.pytorch.org"}
 EXPECTED_NAMES = {"cosyvoice2-hift-reference", "filelock", "fsspec", "jinja2", "markupsafe", "mpmath", "networkx", "numpy", "scipy", "setuptools", "sympy", "torch", "typing-extensions"}
+EXPECTED_LOCK_MANIFEST = {
+    "constraints": [{"name": "setuptools", "specifier": ">=83.0.0"}],
+}
+TORCH_LINUX_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl"
+TORCH_LINUX_HASH = "sha256:8f8b3cfc53010a4b4a3c7ecb88c212e9decc4f5eeb6af75c3c803937d2d60947"
+TORCH_LINUX_SIZE = 175_833_687
+TORCH_LINUX_UPLOAD_TIME = "2025-06-03T18:27:57Z"
 NATIVE_SUFFIXES = (".so", ".dylib", ".dll", ".a")
 NATIVE_MAGICS = (b"\x7fELF", b"!<arch>\n", b"MZ")
 FORBIDDEN = ("nvidia", "triton", "librosa", "soxr", "soundfile")
@@ -99,6 +106,7 @@ def load_lock(path: Path) -> dict[str, Any]:
             "requires-python",
             "resolution-markers",
             "supported-markers",
+            "manifest",
             "package",
         }
         or lock["version"] != 1
@@ -106,6 +114,8 @@ def load_lock(path: Path) -> dict[str, Any]:
         or lock["requires-python"] != "==3.12.*"
     ):
         fail("uv.lock top-level schema drifted")
+    if lock["manifest"] != EXPECTED_LOCK_MANIFEST:
+        fail("uv.lock manifest constraints drifted")
     if lock["resolution-markers"] != [LINUX_MARKER] or lock["supported-markers"] != [LINUX_MARKER]:
         fail("uv.lock Linux marker drifted")
     return lock
@@ -199,12 +209,27 @@ def locked_artifact(row: dict[str, Any]) -> tuple[dict[str, Any], str, int]:
         fail(f"{row['name']} has no wheels")
     candidates = []
     for artifact in wheels:
-        if not isinstance(artifact, dict) or set(artifact) != {"url", "hash", "size", "upload-time"}:
+        authenticated_torch = (
+            row.get("name") == "torch"
+            and row.get("version") == "2.7.1+cpu"
+            and row.get("source", {}).get("registry") == "https://download.pytorch.org/whl/cpu"
+        )
+        if not isinstance(artifact, dict) or set(artifact) not in (
+            {"url", "hash", "size", "upload-time"},
+            {"url", "hash", "upload-time"},
+        ) or ("size" not in artifact and not authenticated_torch):
             fail(f"{row['name']} artifact schema drifted")
         url = artifact["url"]
         name = safe_filename(url)
         if urlparse(url).hostname != REGISTRIES[row["source"]["registry"]]:
             fail(f"{row['name']} artifact host does not match its registry")
+        if authenticated_torch and (
+            artifact.get("url") != TORCH_LINUX_URL
+            or artifact.get("hash") != TORCH_LINUX_HASH
+            or artifact.get("upload-time") != TORCH_LINUX_UPLOAD_TIME
+            or ("size" in artifact and artifact.get("size") != TORCH_LINUX_SIZE)
+        ):
+            fail("authenticated Linux torch artifact drifted")
         if wheel_compatible(name):
             candidates.append((name, artifact))
     if not candidates:
@@ -212,9 +237,17 @@ def locked_artifact(row: dict[str, Any]) -> tuple[dict[str, Any], str, int]:
     candidates.sort(key=lambda item: (0 if "cp312" in item[0] else 1, item[0]))
     name, artifact = candidates[0]
     match = re.fullmatch(r"sha256:([0-9a-f]{64})", artifact["hash"])
-    if match is None or isinstance(artifact["size"], bool) or not isinstance(artifact["size"], int) or artifact["size"] <= 0:
+    if match is None:
         fail(f"{row['name']} artifact hash/size malformed")
-    return artifact, name, artifact["size"]
+    if "size" in artifact:
+        if isinstance(artifact["size"], bool) or not isinstance(artifact["size"], int) or artifact["size"] <= 0:
+            fail(f"{row['name']} artifact hash/size malformed")
+        size = artifact["size"]
+    elif row.get("name") == "torch" and row.get("version") == "2.7.1+cpu":
+        size = TORCH_LINUX_SIZE
+    else:
+        fail(f"{row['name']} artifact hash/size malformed")
+    return artifact, name, size
 
 
 def normalize_member(name: str) -> str:
@@ -457,6 +490,19 @@ def self_test() -> None:
     assert Path(__file__).with_name("pyproject.toml").is_file()
     with tempfile.TemporaryDirectory(prefix="cosyvoice2-hift-audit-") as temp:
         root = Path(temp)
+        tampered_lock = root / "tampered-uv.lock"
+        tampered_lock.write_text(
+            Path(__file__).with_name("uv.lock")
+            .read_text(encoding="utf-8")
+            .replace('specifier = ">=83.0.0"', 'specifier = ">=84.0.0"', 1),
+            encoding="utf-8",
+        )
+        try:
+            load_lock(tampered_lock)
+        except SystemExit as error:
+            assert "manifest constraints" in str(error)
+        else:
+            raise AssertionError("uv.lock manifest constraint tamper was accepted")
         wheel = root / "demo-1.0-py3-none-any.whl"
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr("demo-1.0.dist-info/", b"")

@@ -33,10 +33,17 @@ AUTHORIZED_STATUS = "APPROVED"
 AUTHORIZED_SIGNOFF = "OWNER_SIGNED_OFF"
 APPROVAL_SCHEMA = "cosyvoice2-hift-approval-scope-v1"
 APPROVED_COMPONENT_STATUSES = {"APPROVED", "REVIEWED"}
-LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
+LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "manifest", "package"}
+EXPECTED_LOCK_MANIFEST = {
+    "constraints": [{"name": "setuptools", "specifier": ">=83.0.0"}],
+}
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
 PYPI_REGISTRY = "https://pypi.org/simple"
 REGISTRY_HOSTS = {PYPI_REGISTRY: "files.pythonhosted.org", PYTORCH_CPU_INDEX: "download-r2.pytorch.org"}
+TORCH_LINUX_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl"
+TORCH_LINUX_HASH = "sha256:8f8b3cfc53010a4b4a3c7ecb88c212e9decc4f5eeb6af75c3c803937d2d60947"
+TORCH_LINUX_SIZE = 175_833_687
+TORCH_LINUX_UPLOAD_TIME = "2025-06-03T18:27:57Z"
 PACKAGE_BASE_KEYS = {"name", "version", "source", "dependencies", "resolution-markers", "sdist", "wheels", "metadata"}
 EXPECTED_SOURCE = {
     "repository": "https://github.com/FunAudioLLM/CosyVoice.git",
@@ -114,6 +121,8 @@ def read_toml(path: Path) -> dict[str, Any]:
 def package_rows(lock: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if set(lock) != LOCK_KEYS or lock.get("version") != 1 or lock.get("revision") != 3:
         fail("uv.lock top-level schema drifted")
+    if lock.get("manifest") != EXPECTED_LOCK_MANIFEST:
+        fail("uv.lock manifest constraints drifted")
     rows = lock.get("package")
     if not isinstance(rows, list) or not rows:
         fail("uv.lock has no package rows")
@@ -150,7 +159,16 @@ def package_rows(lock: dict[str, Any]) -> dict[str, dict[str, Any]]:
                         fail(f"uv.lock wheels schema is malformed: {name}")
                     continue
                 for artifact in artifacts:
-                    if not isinstance(artifact, dict) or set(artifact) != ARTIFACT_KEYS:
+                    authenticated_torch = (
+                        artifact_key == "wheels"
+                        and name == "torch"
+                        and row.get("version") == "2.7.1+cpu"
+                        and registry == PYTORCH_CPU_INDEX
+                    )
+                    if not isinstance(artifact, dict) or set(artifact) not in (
+                        ARTIFACT_KEYS,
+                        ARTIFACT_KEYS - {"size"},
+                    ) or ("size" not in artifact and not authenticated_torch):
                         fail(f"uv.lock artifact schema drifted: {name}")
                     url = artifact.get("url", "")
                     host = REGISTRY_HOSTS[registry]
@@ -158,7 +176,15 @@ def package_rows(lock: dict[str, Any]) -> dict[str, dict[str, Any]]:
                         fail(f"uv.lock artifact URL host is not approved: {name}")
                     if not isinstance(artifact.get("hash"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["hash"]):
                         fail(f"uv.lock artifact hash is not SHA-256: {name}")
-                    if isinstance(artifact.get("size"), bool) or not isinstance(artifact.get("size"), int) or artifact["size"] <= 0:
+                    if authenticated_torch:
+                        if (
+                            artifact.get("url") != TORCH_LINUX_URL
+                            or artifact.get("hash") != TORCH_LINUX_HASH
+                            or artifact.get("upload-time") != TORCH_LINUX_UPLOAD_TIME
+                            or ("size" in artifact and artifact.get("size") != TORCH_LINUX_SIZE)
+                        ):
+                            fail("uv.lock authenticated Linux torch artifact drifted")
+                    elif isinstance(artifact.get("size"), bool) or not isinstance(artifact.get("size"), int) or artifact["size"] <= 0:
                         fail(f"uv.lock artifact size is not positive: {name}")
                     if not isinstance(artifact.get("upload-time"), str) or not artifact["upload-time"].strip():
                         fail(f"uv.lock artifact upload-time is missing: {name}")
@@ -385,6 +411,14 @@ def self_test() -> None:
     validate_project(project)
     rows = validate_lock(lock)
     assert len(rows) == 13
+    tampered_lock = copy.deepcopy(lock)
+    tampered_lock["manifest"]["constraints"][0]["specifier"] = ">=84.0.0"
+    try:
+        validate_lock(tampered_lock)
+    except GateError as error:
+        assert "manifest constraints" in str(error)
+    else:
+        raise AssertionError("uv.lock manifest constraint tamper was accepted")
     project_sha256 = sha256_bytes((here / "pyproject.toml").read_bytes())
     lock_sha256 = sha256_bytes((here / "uv.lock").read_bytes())
     manifest = validate_license_manifest(here / MANIFEST_NAME, project_sha256, lock_sha256)
