@@ -693,6 +693,42 @@ whole-file hashes.  Every production manifest remains intentionally
 fail-closed at owner review; this replay records readiness but grants no
 approval, model-execution authority or publication authority.
 
+## 2026-09-08 Windows portability exact-head VAST replay
+
+Commit `3b5d8c36b05dce2b2edeb8938831ef35eb589dae` makes the converter
+safety tests portable to Windows while preserving the fail-closed path and
+file-identity checks.  Disposable VAST instance `50271869` received the
+single unpushed commit through a 3.1 KiB git bundle.  The remote checkout was
+clean and matched that exact head; no model checkpoint or weight was acquired
+or executed.
+
+`cargo test --workspace --all-targets --locked` completed 305 result groups
+with 8,000 passed, zero failed and 100 explicitly ignored tests.  The
+678,475-byte workspace log SHA-256 is
+`2bd17c19d88875cad583f3ceb7c4e01aad5a409ef399caaa12127e8d0327f2c6`.
+All-target, all-feature workspace Clippy with code warnings denied exited
+zero; its 3,144-byte log SHA-256 is
+`b5ca128511a937e58f5b873d375ec83fb73f8285e26a52e5b4c582b691dcded6`.
+The existing `clippy.toml`/crate MSRV configuration notice remained the only
+warning class and did not bypass `-D warnings`.
+
+Formatting, locked metadata, diff, zero-dependency, forbidden-symbol,
+fixture-EOL, pipefail-lint, architecture-handshake, bound-architecture and
+zoo-manifest gates all passed.  Their 7,078-byte log SHA-256 is
+`e4a698a8a26f4eae7691e7b0c931b593eff826295a750f973440b9de00e4fab5`.
+`cargo-deny` 0.20.2 reported advisories, bans, licenses and sources OK, with
+only the existing unmatched `libfuzzer-sys` exception warning;
+`cargo-audit` 0.22.2 loaded 1,242 advisories and exited zero.  The 572-byte
+dependency-gate log SHA-256 is
+`67164119f2553af005caf5f71b578c72c276bdada9c94681427379fceb98fa5a`.
+
+All four recovered text logs matched their remote hashes and total 689,269
+bytes.  Instance `50271869` and its storage were destroyed after recovery;
+the individual API readback returned `instances: null`.  The only remaining
+VAST inventory row was the unrelated protected instance `50243461` /
+`ralomi-m6-int8-net5`, which this campaign did not modify.  The owner's
+pre-existing dirty CosyVoice2 license-gate manifest remained unstaged.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
