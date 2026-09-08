@@ -1480,13 +1480,14 @@ fixed project/lock/dependency identities were updated together. Both stdlib
 self-tests, the VAST runner self-test, `uv lock --check` and diff hygiene pass
 without model or network access.
 
-The separate real-weight MOSS Audio reference tree intentionally remains
-fail-closed on `accelerate==1.12.0`: it uses `low_cpu_mem_usage=True` for the
-4B/8B sharded checkpoint load, and removing that dependency without measuring
-the replacement's peak memory and parity would be speculative. This is not a
-Scaleway task. It requires either an owner decision to withhold the path, a
-patched upstream release, or explicit real-weight authorization followed by a
-high-memory VAST comparison before changing the loader and its approval scope.
+At that point the separate real-weight MOSS Audio reference tree intentionally
+remained fail-closed on `accelerate==1.12.0`: it used
+`low_cpu_mem_usage=True` for the 4B/8B sharded checkpoint load. Commit
+`417ed469` later prepared the explicit `low_cpu_mem_usage=False` high-memory
+replacement and changed its approval scope, but did not measure peak memory or
+parity. This is not a Scaleway task. It requires either an owner decision to
+withhold the path or explicit real-weight authorization followed by a
+high-memory VAST comparison before the candidate may be accepted.
 An attempt to restart instance `50284673` for the Python-only follow-up found
 its host resources unavailable; provider readback remained
 `actual_status=exited` and `cur_state=stopped`, with storage-only billing. No
@@ -1686,13 +1687,16 @@ new Python lock trees. The advisory covers every published Accelerate release
 through `1.14.0` and has no patched release. Commits `97023524` and
 `dbf56e3f` remove the unused package through `uv remove` from MOSS Audio
 Tokenizer v2 and from the Qwen3-TTS model-free environment. MOSS Audio
-Tokenizer Nano and the Qwen3-TTS real-weight route now stop with
-`BLOCKED_SECURITY_ADVISORY` before source or checkpoint acquisition where a
-safe replacement for Accelerate-backed loading has not yet been proved. The
-MOSS Audio 4B/8B real-weight reference tree remains a separate explicit
-security blocker because its official loader uses `low_cpu_mem_usage=True`;
-changing that path requires an owner-authorized high-memory VAST load/parity
-comparison or an owner decision to withhold it.
+Tokenizer Nano and the Qwen3-TTS real-weight route stopped with
+`BLOCKED_SECURITY_ADVISORY` before source or checkpoint acquisition at that
+baseline. Later commits `09f177f1` and `0af34a7a` prepare Accelerate-free
+PyTorch-meta and ordinary CPU candidates, respectively, without claiming VAST
+or real-weight evidence. Commit `417ed469` also removes Accelerate from the
+MOSS Audio 4B/8B real-weight closure and explicitly uses
+`low_cpu_mem_usage=False` on a Linux x86_64 host with at least 120,000,000 KiB
+RAM. These candidates require a new exact-head VAST dependency/meta replay
+and, for real weights, owner-authorized high-memory load/parity comparison or
+an owner decision to withhold them.
 
 All 39 lock files added or changed by this PR were rescanned at exact clean
 implementation head `dbf56e3fbf3afc5f2e6263bef4955c0ef82f4370`; none contains

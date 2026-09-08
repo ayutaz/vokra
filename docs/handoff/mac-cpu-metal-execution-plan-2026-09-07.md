@@ -362,8 +362,11 @@ cardData value `apache-2.0` is preserved only as provenance, not inferred as an
 SPDX decision or approval. The 4B index maps 901 entries to three shards and
 the 8B index maps 901 entries to four shards; their sizes, Git pointer blobs
 and LFS OIDs are scope-bound while all shard payloads remain unacquired. The
-new approval scope SHA-256 is
+historical approval scope SHA-256 was
 `08eeab246dac53187c683cfed54e07f4a64a15abd119f3c4cc186bd23b88e69e`.
+Commit `417ed469` later removed vulnerable Accelerate from the real-weight
+reference closure; the replacement scope is
+`cdda6be3a60e4b703c0d26d249a21703b69c2024f10bfabedf4896e2d7bb2b9a`.
 
 CLAP commits `832bf4c8`, `85fca834`, `7df517bb` and `c143ece3` bind the
 released config/preprocessor identities and inventory the frozen Linux x86_64
@@ -679,11 +682,12 @@ rejection, synchronization/acquisition ordering, exact Cargo-result sentinels,
 no-upload boundary and generated Apple handoff contract without downloading
 or executing model weights.
 
-The tracked approval-scope SHA-256 values remain, respectively,
+After the follow-ups recorded below, the currently tracked approval-scope
+SHA-256 values are, respectively,
 `da581832351b223b890814c0bf45ba036174da24dd7fd47a58236c1dde33ced1`,
 `44daa1a9191e73a615e3ca32134a66a3619704b125587784afb4186a42b4f989`,
 `99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba`,
-`08eeab246dac53187c683cfed54e07f4a64a15abd119f3c4cc186bd23b88e69e`,
+`cdda6be3a60e4b703c0d26d249a21703b69c2024f10bfabedf4896e2d7bb2b9a`,
 `35e73acdfdffa729464400a11cdc2f890b216dc59476a79acebd24bfe8ae555b`,
 `0133cb13d4869903f89d6bbcaee9e784a69cf158804ae76bf4a52c7a0ca3efd0`
 and
@@ -905,13 +909,15 @@ dependency identities were updated in both the smoke and parent preflight.
 `uv lock --check`, both Python self-tests and the VAST runner self-test pass
 without model or network access.
 
-The real-weight reference tree is different: its 4B/8B shard loader uses
-`low_cpu_mem_usage=True`. With no safe Accelerate release available, changing
-that route requires an owner-authorized, high-memory VAST load/parity
-comparison or an owner decision to withhold it. It is therefore an explicit
-non-Scaleway external-input/VAST blocker, not hidden completed work. The old
-worker could not be restarted because its host had no free resources and
-remained stopped/exited; no additional instance was rented.
+The real-weight reference tree was different: its 4B/8B shard loader used
+`low_cpu_mem_usage=True`. Commit `417ed469` now removes Accelerate from that
+closure and explicitly selects ordinary CPU loading with
+`low_cpu_mem_usage=False`; Linux x86_64 and at least 120,000,000 KiB RAM are
+required before model loading. This is an implementation candidate, not
+parity evidence. An owner-authorized high-memory VAST load/parity comparison
+or an owner decision to withhold it remains required. The old worker could not
+be restarted because its host had no free resources and remained
+stopped/exited; no additional instance was rented.
 
 ## 2026-09-09 Accelerate follow-up completed
 
@@ -943,11 +949,21 @@ token, upload or maintainer-Mac model execution was involved. Instance
 fields reading `stopped`; storage remains until exact-id destruction is
 authorized. Instance `50293364` was not touched.
 
-All currently known owner-independent non-Scaleway work is therefore complete.
-The remaining non-Scaleway actions require owner/legal/source decisions and,
-where approved, authenticated real-weight VAST conversion/reference/CPU
-parity. Scaleway remains limited to the final Apple Silicon CPU and Metal
-no-fallback evidence.
+The security replay completed the then-current fail-closed baseline. Three
+later implementation commits prepare Accelerate-free candidates without
+claiming new remote evidence: `09f177f1` restores the MOSS Nano source-only
+meta probe with PyTorch's native meta device and rejects every non-meta
+parameter/buffer; `0af34a7a` prepares Qwen3-TTS ordinary CPU loading with no
+`device_map` and `low_cpu_mem_usage=False`; `417ed469` prepares the analogous
+128-GB-class MOSS Audio 4B/8B route and removes Accelerate from its lock. Their
+model-free self-tests and lock checks pass locally without model import or
+execution, but their Linux evidence is not refreshed and no real-weight
+result exists.
+
+The next non-Scaleway actions are therefore a new exact-head VAST dependency
+and Nano meta-inspection replay, followed only where explicitly approved by
+authenticated real-weight conversion/reference/CPU parity. Scaleway remains
+limited to the final Apple Silicon CPU and Metal no-fallback evidence.
 
 ## Completion proof
 
