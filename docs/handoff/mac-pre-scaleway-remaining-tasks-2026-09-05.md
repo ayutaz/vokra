@@ -1281,6 +1281,84 @@ model-free closure therefore completes the prepared nine-worker wave but does
 not convert any of those live artifact/runtime rows into a real-weight or Apple
 hardware verdict.
 
+### 2026-09-09 remaining model-free approval-scope closure
+
+Twelve separately reviewed commits after PR #79's remote head `e035db14`
+complete another set of non-Apple, model-free source and approval-scope tasks:
+
+- `f922d9a9` corrects Qwen3-ASR's locked dependency audit counts.
+- `5392bc76` and `5cab9fe0` add Parler-TTS's model-free dependency audit and
+  make its self-tests portable across macOS and Linux.
+- `7b9332dc` binds BigVGAN's future owner approval to the reviewed dependency
+  scope without treating that scope as approval.
+- `be5a8e45`, `9aa22bc7`, `1cb33f19` and `32d187cb` add SpeechBrain Lang-ID's
+  model-free audit, separate its lightweight host guard from the real-weight
+  capacity guard, harden approval-path canonicalization and fix the real
+  non-overlapping work-directory success status.
+- `5283e195` adds MOSS TTS Local's model-free approval audit.
+- `cd0e3dc9` and `8484bdcb` bind AudioGen's model-free dependency scope and
+  remove the last macOS-only temporary-path assumption from its Linux worker.
+- `9007c442` binds XY Tokenizer's exact source, checkpoint and lock review
+  scope while preserving its inspection-only status.
+
+The final implementation head is
+`32d187cbe0b2f82dc268122bd89c648b5053b3c4`. On disposable VAST instance
+`50284673`, `cargo test --workspace --all-targets --locked` completed **305
+suites, 8,001 passed, zero failed and 100 ignored**. Workspace/all-target/
+all-feature Clippy with warnings denied, format, locked metadata, zero-deps,
+forbidden-symbol, fixture-EOL, pipefail, architecture-handshake,
+bound-architecture and zoo-manifest gates all completed successfully. The
+current `cargo-deny 0.20.2` result was `advisories ok, bans ok, licenses ok,
+sources ok`, apart from the pre-existing unmatched `libfuzzer-sys` exception
+warning. `cargo-audit 0.22.2` loaded 1,242 RustSec advisories and found no
+vulnerability in the 22 first-party lock entries.
+
+The principal exact-head evidence SHA-256 values are full workspace test
+`c79ae7633df7333ed5e0f8644292c0d02f423c891a5156e19760bb872d7dd59b`,
+Clippy `dce1437429b0571fdf4c28fd95e4702060526871eb7b599aacb7255de9ea004b`,
+static gates `bf45860eb8424bf4d80c0d6d487d2b5125f32af2c7af3e76ce58e494ca842b02`,
+cargo-deny `cae215ad3eb07523400e35aff2eb59116f4594be2ff2a417c5d397e3f26c1102`
+and cargo-audit
+`01ed47e312cde79358be1d34373ecce034e5a4250154f6d07f8f0b7da08f4127`.
+SpeechBrain's fixed exact-head model-free report has SHA-256
+`62623507647198a5ccf50eabf7541404944cd240474e19f41797a7cdc0bcdd30`
+and correctly remains `BLOCKED_OWNER_REVIEW` / `NO_UPLOAD`.
+
+The other family audits were completed at parent head `1cb33f19`, before the
+final SpeechBrain-only status fix:
+
+- Parler's normal dependency audit passed; evidence SHA-256
+  `16603cef05a3b4ebfe4b79ed834ed8a66176d02cb3e438aee3b21a4133f2c7c0`.
+- MOSS TTS Local produced the intended model-free
+  `BLOCKED_OWNER_REVIEW` report; evidence SHA-256
+  `1f561ae6a2cac187ff40f1b84820d2c20f705c01a6c4e65664c4c7bf103cb843`.
+- AudioGen completed `PASS_MODEL_FREE` with no model payload, execution or
+  upload; evidence SHA-256
+  `70789bbc791da0881c0781c460758b8ff78d569d30096d4d0905cf9848d24bcc`.
+- XY Tokenizer authenticated 51 of 57 locked dependency rows and correctly
+  blocked six rows: SciPy and SymPy legacy license declarations, setuptools'
+  vendored LGPL declaration, soxr's forbidden LGPL identifier, and missing
+  unambiguous license bytes for tokenizers and tqdm. Its collection report
+  SHA-256 is
+  `604e9cc74a5814f97bcd2be106e1f620f5f4d2d45052ce3c78fb485583f17210`.
+
+The 244-KiB recovered evidence archive is
+`/private/tmp/vokra-vast-32d187cb.tar.gz`, SHA-256
+`c95ede1a909143d14d578d51acbd7bd003a746a2cf6f0e9721d70e7eff254879`;
+its internal `SHA256SUMS` was generated before transfer and the archive hash
+matched after transfer. No external checkpoint/model weight was downloaded or
+executed on the maintainer Mac, and no upload occurred. Instance `50284673`
+was stopped after recovery and showed `exited`; permanent destruction remains
+pending the provider safety approval for that exact instance id. The unrelated
+running instance `50293364` (`ralomi-m4r-reazonspeech`) was not modified.
+
+This wave closes the named model-free/source-scope work but still does not
+decrement the 63 unresolved public rows. Scaleway is needed only for the final
+Apple Silicon CPU/Metal hardware verdicts. The remaining non-Scaleway work is
+the explicit owner/legal dispositions, missing strict binders or native
+composites, authenticated real-weight VAST conversion/reference/CPU parity,
+and authorized public-artifact replacement or withdrawal described below.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
