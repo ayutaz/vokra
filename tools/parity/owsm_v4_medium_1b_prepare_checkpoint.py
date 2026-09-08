@@ -27,7 +27,7 @@ CHECKPOINT_TENSOR_COUNT = 1172
 INSPECTION_MANIFEST_SHA256 = "82de20eea3cf3a247624c76cd8e108e562addda0c8582577515cf88abb3053d9"
 HISTORICAL_INSPECTION_LOG_SHA256 = "4df29428ea8ce381311c5e407d937b6a517750f4edcbc88b8c606cdef82dc93b"
 BPE_SHA256 = "7ddb01f03dab493c18ab69391e98744c090f897890d8b529b30cae52a8d9eef4"
-STATS_SHA256 = "00c22dba27594df1d8f74a491b20c6e6e8c17e92159f81dfd634f98c098654"
+STATS_SHA256 = "00c22dba27594df8f1d8f74a491b20c6e6e8c17e92159f81dfd634f98c098654"
 TOKEN_LIST_SHA256 = "e19396ec012b0294a11fe85c35e36a1d903bc83e60ea602ddf6cc59b7c0e92f9"
 FORMAT = "vokra-owsm-v4-medium-1b-payload-evidence-v1"
 WRITER_SOURCE = "crates/vokra-convert/src/models/owsm_v4_medium_1b.rs"
@@ -436,6 +436,7 @@ def self_test() -> None:
     assert len(HF_REVISION) == len(SOURCE_REVISION) == 40
     assert CHECKPOINT_TENSOR_COUNT == 1172
     assert len(CHECKPOINT_SHA256) == 64
+    assert STATS_SHA256 == "00c22dba27594df8f1d8f74a491b20c6e6e8c17e92159f81dfd634f98c098654"
     with tempfile.TemporaryDirectory(prefix="owsm-prepare-self-test-") as temporary:
         root = Path(temporary)
         checkpoint = root / "synthetic.pth"
@@ -536,6 +537,16 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("no-clobber publication was accepted")
+        wrong_stats = root / "wrong-stats.json"
+        wrong_stats_payload = json.loads(output.read_text(encoding="utf-8"))
+        wrong_stats_payload["source"]["stats_sha256"] = "0" * 64
+        write_atomic_no_replace(wrong_stats, wrong_stats_payload)
+        try:
+            verify_manifest(wrong_stats)
+        except EvidenceError as error:
+            assert "source identity" in str(error)
+        else:
+            raise AssertionError("tampered stats identity was accepted")
         tampered = json.loads(output.read_text(encoding="utf-8"))
         tampered["status"] = "PASS"
         output.write_text(json.dumps(tampered), encoding="utf-8")

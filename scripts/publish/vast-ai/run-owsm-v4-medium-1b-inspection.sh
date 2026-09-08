@@ -2,8 +2,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HF_REPOSITORY="espnet/owsm_v4_medium_1B"; HF_REVISION="e10985c8f1d592e905c24d2ac2b2c53e3feb24dc"
-SOURCE_URL="https://github.com/espnet/espnet.git"; SOURCE_REVISION="cccc29023d43a3f504e28df7d1324bb4eb6daedd"
-INSPECTOR="$ROOT/tools/parity/owsm_v4_medium_1b_inspect.py"; PREPARER="$ROOT/tools/parity/owsm_v4_medium_1b_prepare_checkpoint.py"; CHECKPOINT_RELATIVE="exp/s2t_train_conv2d8_size1024_e18_d18_mel128_raw_bpe50000/valid.total_count.ave_5best.pth"; MIN_MEM_KIB=$((128*1024*1024)); MIN_DISK_KIB=$((32*1024*1024))
+SOURCE_URL="https://github.com/espnet/espnet.git"; SOURCE_REVISION="cccc29023d43a3f504e28df7d1324bb4eb6daedd"; STATS_RELATIVE="exp/s2t_stats_raw_bpe50000/train/feats_stats.npz"; STATS_SHA256="00c22dba27594df8f1d8f74a491b20c6e6e8c17e92159f81dfd634f98c098654"; STATS_GIT_BLOB_SHA1="81dc0b816d8ccfe65c4606442e80552f2bec95ed"; STATS_BYTES=1786; CONFIG_RELATIVE="exp/s2t_train_conv2d8_size1024_e18_d18_mel128_raw_bpe50000/config.yaml"; CONFIG_GIT_BLOB_SHA1="fbf425c85d183f9103cb5e2c84ebffb0f425a930"; CONFIG_BYTES=494398
+INSPECTOR="$ROOT/tools/parity/owsm_v4_medium_1b_inspect.py"; PREPARER="$ROOT/tools/parity/owsm_v4_medium_1b_prepare_checkpoint.py"; FRONTEND_REFERENCE="$ROOT/tools/parity/owsm_v4_medium_1b_frontend_reference.py"; REFERENCE_PROJECT="$ROOT/tools/parity/owsm_v4_medium_1b_reference"; DEPENDENCY_GATE="$REFERENCE_PROJECT/dependency_license_gate.py"; CHECKPOINT_RELATIVE="exp/s2t_train_conv2d8_size1024_e18_d18_mel128_raw_bpe50000/valid.total_count.ave_5best.pth"; MIN_MEM_KIB=$((128*1024*1024)); MIN_DISK_KIB=$((32*1024*1024))
 APPROVAL_SCHEMA="owsm-v4-medium-1b-vast-approval-v1"
 WRITER_STATUS="MISSING_OWSM_GGUF_WRITER_CONTRACT"; NATIVE_STATUS="NOT_IMPLEMENTED_FAIL_CLOSED"
 LICENSE_STATUS="BLOCKED_SOURCE_DEPENDENCY_DATASET_PROVENANCE"; DEPENDENCY_STATUS="UNREVIEWED_BLOCKER"; DATASET_STATUS="UNAUTHENTICATED_BLOCKER"
@@ -77,7 +77,93 @@ if parent.is_symlink() or not parent.is_dir(): raise SystemExit("directory paren
 PY
 }
 claim_absent_directory(){ local path="$1"; require_absent_directory "$path" || return 1; mkdir "$path"; }
-self_test(){ local path="${BASH_SOURCE[0]}" token fail=0; for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" 'allow_pickle=False' 'weights_only=True' 'canonical_payload_sha256' 'source_name_set_sha256' 'next_vast_command' 'MISSING_OWSM_GGUF_WRITER_CONTRACT' 'structural-manifest' 'resolved revision mismatch' 'selected materialized files mismatch' 'inspection manifest' 'payload manifest' 'SOURCE_SEMANTICS_AUTHENTICATED' 'SOURCE_EXPRESSIONS_AUTHENTICATED_NO_RUNTIME_FORMULA_EXECUTED' 'INSPECTION_ONLY' 'INSPECTION_ERROR' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'NO_UPLOAD' 'exit 2' 'CARGO_BUILD_JOBS=1' 'materialized_files' 'findmnt' 'README.md' 'cc-by-4.0' 'espnet/yodas_owsmv4' 'RepoFile' 'RepoFolder' 'classify_entry' 'OWSM_HF_TREE_SELF_TEST' 'expected HEAD' 'approval-evidence' 'BLOCKED_APPROVAL'; do if ! grep -Fq -- "$token" "$path" && ! grep -Fq -- "$token" "$INSPECTOR" && ! grep -Fq -- "$token" "$PREPARER"; then echo "missing contract $token" >&2; fail=1; fi; done; if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$path" | grep -v 'grep -En' >/dev/null; then fail=1; fi; UV_NO_CACHE=1 uv run --no-sync --frozen --offline --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1; UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREPARER" --self-test || fail=1; if ! OWSM_HF_TREE_SELF_TEST=1 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - <<'PY'
+source_only(){
+  local expected_head="$1" work=/dev/shm/vokra-owsm-v4-medium-1b-source-only stats_path config_path
+  require_clean_expected_head "$expected_head"
+  [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'source-only requires Linux x86_64'
+  [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'source-only requires VOKRA_PUBLISH_ON_VAST=1'
+  [[ "$(findmnt -T /dev/shm -n -o FSTYPE 2>/dev/null)" == tmpfs ]] || die 'source-only requires /dev/shm tmpfs'
+  for command in git uv awk find df findmnt sha256sum; do command -v "$command" >/dev/null || die "missing tool: $command"; done
+  [[ -f "$REFERENCE_PROJECT/pyproject.toml" && ! -L "$REFERENCE_PROJECT/pyproject.toml" ]] || die 'dedicated OWSM reference pyproject is missing or symlinked'
+  [[ -f "$REFERENCE_PROJECT/uv.lock" && ! -L "$REFERENCE_PROJECT/uv.lock" ]] || die 'dedicated OWSM reference uv.lock is missing or symlinked'
+  [[ -f "$DEPENDENCY_GATE" && ! -L "$DEPENDENCY_GATE" ]] || die 'dedicated OWSM dependency/license gate is missing or symlinked'
+  require_absent_directory "$work" || die 'source-only workdir must be absent'
+  claim_absent_directory "$work" || die 'source-only workdir claim raced or was redirected'
+  mkdir "$work/source" "$work/hf" "$work/evidence"
+  export UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}"
+  uv lock --check --offline --project "$REFERENCE_PROJECT" --python 3.12 >"$work/evidence/reference-project-lock.log" 2>&1 || die 'dedicated OWSM uv.lock is stale or unavailable offline'
+  set +e
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DEPENDENCY_GATE" --project "$REFERENCE_PROJECT" >"$work/evidence/dependency-gate.json" 2>&1
+  dependency_rc=$?
+  set -e
+  if [[ "$dependency_rc" == 2 ]]; then
+    die 'OWSM official reference blocked: dependency/license audit is pending owner review'
+  fi
+  [[ "$dependency_rc" == 0 ]] || die 'OWSM dependency/license gate failed unexpectedly'
+  git clone --filter=blob:none "$SOURCE_URL" "$work/source/repo" >"$work/evidence/source.log" 2>&1
+  git -C "$work/source/repo" checkout --detach "$SOURCE_REVISION" >>"$work/evidence/source.log" 2>&1
+  [[ "$(git -C "$work/source/repo" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die 'source-only source HEAD mismatch'
+  [[ "$(git -C "$work/source/repo" remote get-url origin)" == "$SOURCE_URL" ]] || die 'source-only source origin mismatch'
+  [[ -z "$(git -C "$work/source/repo" status --porcelain --untracked-files=all)" ]] || die 'source-only source checkout is dirty'
+  uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$HF_REPOSITORY" "$HF_REVISION" "$work/hf" "$STATS_RELATIVE" "$STATS_SHA256" "$STATS_GIT_BLOB_SHA1" "$STATS_BYTES" "$CONFIG_RELATIVE" "$CONFIG_GIT_BLOB_SHA1" "$CONFIG_BYTES" <<'PY' >"$work/evidence/hf-inputs.log" 2>&1
+import hashlib, pathlib, sys
+from huggingface_hub import HfApi, RepoFile, RepoFolder, snapshot_download
+repo, revision, target, relative, expected_sha, expected_stats_blob, expected_bytes, config_relative, config_blob, config_bytes = sys.argv[1:]
+api = HfApi()
+info = api.model_info(repo_id=repo, revision=revision)
+if info.sha != revision: raise RuntimeError(f"HF revision mismatch: {info.sha!r}")
+tree = {}
+for entry in api.list_repo_tree(repo_id=repo, revision=revision, recursive=True):
+    if isinstance(entry, RepoFolder):
+        continue
+    if not isinstance(entry, RepoFile):
+        raise RuntimeError(f"unexpected HF tree entry: {entry!r}")
+    path = getattr(entry, "path", None)
+    if path in (relative, config_relative):
+        size = getattr(entry, "size", None)
+        blob = getattr(entry, "blob_id", None) or getattr(entry, "oid", None)
+        lfs = getattr(entry, "lfs", None)
+        lfs_sha = getattr(lfs, "sha256", None) if lfs is not None else None
+        if isinstance(lfs, dict): lfs_sha = lfs.get("sha256")
+        if not isinstance(size, int) or size < 0: raise RuntimeError(f"invalid HF tree size: {path!r}")
+        if not isinstance(blob, str) or len(blob) != 40: raise RuntimeError(f"invalid HF Git blob: {path!r}")
+        if lfs_sha is not None and (not isinstance(lfs_sha, str) or len(lfs_sha) != 64): raise RuntimeError(f"invalid HF LFS SHA256: {path!r}")
+        tree[path] = {"size": size, "git_blob_sha1": blob, "lfs_sha256": lfs_sha}
+if set(tree) != {relative, config_relative}: raise RuntimeError(f"HF tree missing fixed inputs: {sorted(tree)!r}")
+if tree[relative]["size"] != int(expected_bytes): raise RuntimeError("HF stats tree size mismatch")
+if tree[relative]["git_blob_sha1"] != expected_stats_blob: raise RuntimeError("HF stats Git blob mismatch")
+if tree[config_relative]["size"] != int(config_bytes): raise RuntimeError("HF config tree size mismatch")
+if tree[config_relative]["git_blob_sha1"] != config_blob: raise RuntimeError("HF config Git blob mismatch")
+print(f"HF_TREE_IDENTITY: revision={info.sha} stats={tree[relative]} config={tree[config_relative]}")
+snapshot_download(repo_id=repo, revision=revision, local_dir=target, allow_patterns=[relative, config_relative])
+root = pathlib.Path(target).resolve()
+expected = root / relative
+config = root / config_relative
+if not expected.is_file() or expected.is_symlink(): raise RuntimeError("stats is not a regular file")
+if not config.is_file() or config.is_symlink(): raise RuntimeError("config is not a regular file")
+files=[]
+for path in root.rglob("*"):
+    if ".cache" in path.parts: continue
+    if path.is_file() or path.is_symlink(): files.append(path.relative_to(root).as_posix())
+if sorted(files) != sorted([relative, config_relative]): raise RuntimeError(f"source-only materialized files mismatch: {files!r}")
+data = expected.read_bytes()
+if len(data) != int(expected_bytes): raise RuntimeError(f"stats byte size mismatch: {len(data)}")
+if hashlib.sha256(data).hexdigest() != expected_sha: raise RuntimeError("stats SHA-256 mismatch")
+config_data = config.read_bytes()
+if len(config_data) != int(config_bytes): raise RuntimeError(f"config byte size mismatch: {len(config_data)}")
+stats_blob = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+if stats_blob != expected_stats_blob: raise RuntimeError(f"stats Git blob mismatch: {stats_blob}")
+blob = hashlib.sha1(f"blob {len(config_data)}\0".encode() + config_data).hexdigest()
+if blob != config_blob: raise RuntimeError(f"config Git blob mismatch: {blob}")
+print("SOURCE_ONLY_STATS_CONFIG_IDENTITY: PASS")
+PY
+  stats_path="$work/hf/$STATS_RELATIVE"; config_path="$work/hf/$CONFIG_RELATIVE"
+  OWSM_ALLOW_OFFICIAL_REFERENCE=1 uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$FRONTEND_REFERENCE" --source "$work/source/repo" --contract "$work/evidence/frontend-source-contract.json" >>"$work/evidence/reference.log" 2>&1
+  OWSM_ALLOW_OFFICIAL_REFERENCE=1 uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$FRONTEND_REFERENCE" --source "$work/source/repo" --config "$config_path" --stats "$stats_path" --dump-official "$work/evidence/frontend-reference.json" >>"$work/evidence/reference.log" 2>&1
+  printf '%s\n' 'SOURCE_ONLY_COMPLETE: NO_CHECKPOINT NO_BPE NO_UPLOAD' >"$work/evidence/source-only.status"
+  echo "source-only evidence: $work/evidence"
+}
+self_test(){ local path="${BASH_SOURCE[0]}" token fail=0; for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" "$STATS_RELATIVE" "$STATS_SHA256" "$CONFIG_RELATIVE" "$CONFIG_GIT_BLOB_SHA1" 'allow_pickle=False' 'weights_only=True' 'canonical_payload_sha256' 'source_name_set_sha256' 'next_vast_command' 'MISSING_OWSM_GGUF_WRITER_CONTRACT' 'structural-manifest' 'resolved revision mismatch' 'selected materialized files mismatch' 'inspection manifest' 'payload manifest' 'SOURCE_SEMANTICS_AUTHENTICATED' 'SOURCE_EXPRESSIONS_AUTHENTICATED_NO_RUNTIME_FORMULA_EXECUTED' 'INSPECTION_ONLY' 'INSPECTION_ERROR' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'SOURCE_ONLY_COMPLETE' 'SOURCE_ONLY_STATS_CONFIG_IDENTITY' 'NO_CHECKPOINT' 'NO_BPE' 'NO_UPLOAD' 'exit 2' 'CARGO_BUILD_JOBS=1' 'materialized_files' 'findmnt' 'README.md' 'cc-by-4.0' 'espnet/yodas_owsmv4' 'RepoFile' 'RepoFolder' 'classify_entry' 'OWSM_HF_TREE_SELF_TEST' 'expected HEAD' 'approval-evidence' 'BLOCKED_APPROVAL' 'OWSM_ALLOW_OFFICIAL_REFERENCE' 'SOURCE_CONTRACT_AUTHENTICATED' '--config' '--stats' 'OFFICIAL_ESPnet_DEFAULT_FRONTEND_THEN_GLOBAL_MVN' 'normalize.mean' 'normalize.std' 'import escape' 'pre-existing espnet module contamination'; do if ! grep -Fq -- "$token" "$path" && ! grep -Fq -- "$token" "$INSPECTOR" && ! grep -Fq -- "$token" "$PREPARER" && ! grep -Fq -- "$token" "$FRONTEND_REFERENCE"; then echo "missing contract $token" >&2; fail=1; fi; done; if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$path" | grep -v 'grep -En' >/dev/null; then fail=1; fi; local source_only_block source_only_line approval_line; source_only_block="$(awk '/^source_only\(\)/{inside=1} /^self_test\(\)/{inside=0} inside' "$path")"; if printf '%s\n' "$source_only_block" | grep -Eq "$CHECKPOINT_RELATIVE|bpe_unigram50000|\.pth"; then echo 'source-only mode references checkpoint/BPE' >&2; fail=1; fi; source_only_line="$(grep -n '^if .*--source-only' "$path" | cut -d: -f1)"; approval_line="$(grep -n '^approval_path=' "$path" | cut -d: -f1)"; if [[ -z "$source_only_line" || -z "$approval_line" || "$source_only_line" -ge "$approval_line" ]]; then echo 'source-only branch is not before approval parsing' >&2; fail=1; fi; if ( source_only --expected-head 0000000000000000000000000000000000000000 ) 2>/dev/null; then echo 'source-only wrong/dirty HEAD accepted' >&2; fail=1; fi; UV_NO_CACHE=1 uv run --no-sync --frozen --offline --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1; UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREPARER" --self-test || fail=1; UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$FRONTEND_REFERENCE" --self-test || fail=1; if ! OWSM_HF_TREE_SELF_TEST=1 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - <<'PY'
 try:
     from huggingface_hub import RepoFile, RepoFolder
 except ModuleNotFoundError:
@@ -121,7 +207,12 @@ JSON
   ln -s "$tmp/parent" "$tmp/link"; if require_absent_directory "$tmp/link/escape" 2>/dev/null; then fail=1; fi
   rm -rf "$tmp"
   ((fail==0)) || return 1; echo 'run-owsm-v4-medium-1b-inspection.sh self-test: OK'; }
-if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
+if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no other arguments'; UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DEPENDENCY_GATE" --self-test; self_test; exit $?; fi
+if [[ "${1:-}" == --source-only ]]; then
+  [[ $# == 3 && "$2" == --expected-head ]] || die 'source-only usage: --source-only --expected-head HEX40'
+  source_only "$3"
+  exit $?
+fi
 approval_path=''; approval_sha=''; expected_head=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -185,6 +276,7 @@ from huggingface_hub import snapshot_download
 snapshot_download(repo_id=sys.argv[1],revision=sys.argv[2],local_dir=sys.argv[3],allow_patterns=["exp/s2t_train_conv2d8_size1024_e18_d18_mel128_raw_bpe50000/valid.total_count.ave_5best.pth","exp/s2t_train_conv2d8_size1024_e18_d18_mel128_raw_bpe50000/config.yaml","exp/s2t_stats_raw_bpe50000/train/feats_stats.npz","data/token_list/bpe_unigram50000/bpe.model","README.md"])
 PY
 git clone --filter=blob:none "$SOURCE_URL" "$work/source/repo" >>"$work/evidence/validation.log" 2>&1; git -C "$work/source/repo" checkout --detach "$SOURCE_REVISION" >>"$work/evidence/validation.log" 2>&1; [[ "$(git -C "$work/source/repo" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die 'source revision mismatch'; [[ "$(git -C "$work/source/repo" remote get-url origin)" == "$SOURCE_URL" ]] || die 'source origin mismatch'
+uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$FRONTEND_REFERENCE" --source "$work/source/repo" --contract "$work/evidence/frontend-source-contract.json" >>"$work/evidence/validation.log" 2>&1 || die 'frontend source contract failed'
 set +e; uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --snapshot "$work/model" --source "$work/source/repo" --server-tree "$work/tree.json" --output "$work/evidence" >>"$work/evidence/validation.log" 2>&1; rc=$?; set -e; [[ "$rc" == 2 ]] || die 'inspector must exit 2'; uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work/evidence/manifest.json" <<'PY'
 import json,sys
 p=json.loads(open(sys.argv[1]).read())

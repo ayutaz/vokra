@@ -1,0 +1,57 @@
+[project]
+name = "vokra-owsm-v4-medium-1b-reference"
+version = "0.1.0"
+description = "Dedicated VAST-only official ESPnet OWSM frontend reference environment."
+requires-python = "==3.12.*"
+dependencies = [
+    "humanfriendly==10.0",
+    "librosa==0.10.2.post1",
+    "numpy==2.2.5",
+    "packaging==24.2",
+    "pyyaml==6.0.3",
+    "torch==2.6.0",
+    "torch-complex==0.4.4",
+    "typeguard==4.6.0",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.vokra.owsm_v4_medium_1b_reference]
+status = "BLOCKED_UNTIL_VAST_DEPENDENCY_AND_LICENSE_GATE"
+source_import_closure = [
+    "espnet2.asr.frontend.default.DefaultFrontend",
+    "espnet2.layers.stft.Stft",
+    "espnet2.layers.log_mel.LogMel",
+    "espnet2.layers.global_mvn.GlobalMVN",
+    "espnet.nets.pytorch_backend.frontends.frontend.Frontend",
+    "espnet2.utils.get_default_kwargs.get_default_kwargs",
+]
+external_import_closure = [
+    "humanfriendly",
+    "librosa",
+    "numpy",
+    "packaging",
+    "torch",
+    "torch_complex",
+    "typeguard",
+    "yaml",
+]
+dependency_license_audit = "PENDING_PRIMARY_SOURCE_AUDIT_FAIL_CLOSED"
+license_audit_required = [
+    "primary-source license evidence for every uv.lock package row and artifact source",
+    "separate review of numpy bundled native notices",
+    "separate review of librosa transitive soxr/scipy/numba native closure",
+    "owner approval before changing dependency_license_audit to AUDITED_ALLOW",
+]
+lock_package_rows = 43
+model_execution = "NO_LOCAL_EXECUTION"
+publication = "NO_UPLOAD"

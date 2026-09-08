@@ -12,7 +12,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, chunks};
+use vokra_core::ir::graph::{PadMode, StftAttrs, Window, WindowSymmetry};
 use vokra_core::{AsrEngine, BackendKind, Result, Transcription, VokraError};
+use vokra_ops::stft;
 
 /// GGUF architecture tag written by the reviewed OWSM converter.
 pub const ARCH: &str = "owsm-v4-medium-1b";
@@ -38,7 +40,7 @@ pub const INSPECTION_LOG_SHA256: &str =
 /// SHA-256 of the fixed BPE sidecar evidence recorded by inspection.
 pub const BPE_SHA256: &str = "7ddb01f03dab493c18ab69391e98744c090f897890d8b529b30cae52a8d9eef4";
 /// SHA-256 of the fixed global-MVN statistics sidecar evidence.
-pub const STATS_SHA256: &str = "00c22dba27594df1d8f74a491b20c6e6e8c17e92159f81dfd634f98c098654";
+pub const STATS_SHA256: &str = "00c22dba27594df8f1d8f74a491b20c6e6e8c17e92159f81dfd634f98c098654";
 /// SHA-256 of the fixed 50,002-entry token-list sidecar evidence.
 pub const TOKEN_LIST_SHA256: &str =
     "e19396ec012b0294a11fe85c35e36a1d903bc83e60ea602ddf6cc59b7c0e92f9";
@@ -68,6 +70,254 @@ const KEY_STATS_SHA256: &str = "vokra.owsm_v4_medium_1b.stats_sha256";
 const KEY_TOKEN_LIST_SHA256: &str = "vokra.owsm_v4_medium_1b.token_list_sha256";
 const KEY_INSPECTION_MANIFEST_SHA256: &str = "vokra.owsm_v4_medium_1b.inspection_manifest_sha256";
 const KEY_INSPECTION_LOG_SHA256: &str = "vokra.owsm_v4_medium_1b.inspection_log_sha256";
+
+/// The fixed source-level log floor in ESPnet's `LogMel` layer.
+///
+/// This is a source contract, not a tolerance or a substitute for a missing
+/// tensor.  The independent source inspector authenticates the clamp/log
+/// expressions before this runtime path is enabled.
+pub const LOG_MEL_FLOOR: f32 = 1.0e-10;
+/// Epsilon used by ESPnet's `GlobalMVN` when deriving standard deviation.
+pub const GLOBAL_MVN_EPS: f32 = 1.0e-20;
+
+const FRONTEND_MELMAT: &str = "frontend.logmel.melmat";
+const NORMALIZE_MEAN: &str = "normalize.mean";
+const NORMALIZE_STD: &str = "normalize.std";
+
+/// The source-authenticated STFT contract for OWSM's default ESPnet frontend.
+///
+/// Values here mirror the fixed `DefaultFrontend`/`Stft` source API and the
+/// OWSM config metadata.  No caller may override padding, centering, window,
+/// normalization, or spectrum side: doing so would be a different frontend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwsmV4Medium1bFrontendConfig {
+    /// FFT size in samples.
+    pub n_fft: usize,
+    /// Window size in samples.
+    pub win_length: usize,
+    /// Frame hop in samples.
+    pub hop_length: usize,
+    /// Mel matrix input/output dimensions.
+    pub n_freqs: usize,
+    pub n_mels: usize,
+}
+
+impl OwsmV4Medium1bFrontendConfig {
+    fn from_model_config(config: &OwsmV4Medium1bConfig) -> Self {
+        Self {
+            n_fft: config.n_fft as usize,
+            win_length: config.win_length as usize,
+            hop_length: config.hop_length as usize,
+            n_freqs: config.n_fft as usize / 2 + 1,
+            n_mels: config.n_mels as usize,
+        }
+    }
+
+    fn stft_attrs(&self) -> StftAttrs {
+        let mut attrs = StftAttrs::new(self.n_fft, self.hop_length);
+        attrs.win_length = self.win_length;
+        attrs.window = Window::Hann;
+        attrs.window_symmetry = WindowSymmetry::Periodic;
+        attrs.center = true;
+        attrs.pad_mode = PadMode::Reflect;
+        attrs.causal = false;
+        attrs.real_input = true;
+        attrs
+    }
+}
+
+/// PCM frontend output in the row-major `[frames, n_mels]` layout expected by
+/// ESPnet's E-Branchformer input projection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwsmV4Medium1bFrontendOutput {
+    /// Global-MVN normalized features, row-major `[frames, n_mels]`.
+    pub features: Vec<f32>,
+    /// Number of valid frames in `features`.
+    pub frames: usize,
+    /// Number of mel channels in each frame.
+    pub n_mels: usize,
+}
+
+/// Strictly bound frontend tensors from the existing GGUF artifact.
+///
+/// The frontend owns no fallback mel construction: `melmat`, `mean`, and
+/// `std` must all be present with the authenticated shapes and F32 payloads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwsmV4Medium1bFrontend {
+    config: OwsmV4Medium1bFrontendConfig,
+    melmat: Vec<f32>,
+    mean: Vec<f32>,
+    std: Vec<f32>,
+}
+
+impl OwsmV4Medium1bFrontend {
+    /// Binds the model's existing frontend and GlobalMVN payloads.
+    pub fn from_gguf(file: &GgufFile, model_config: &OwsmV4Medium1bConfig) -> Result<Self> {
+        let config = OwsmV4Medium1bFrontendConfig::from_model_config(model_config);
+        let melmat = frontend_tensor(file, FRONTEND_MELMAT, &[config.n_freqs, config.n_mels])?;
+        let mean = frontend_tensor(file, NORMALIZE_MEAN, &[config.n_mels])?;
+        let std = frontend_tensor(file, NORMALIZE_STD, &[config.n_mels])?;
+        validate_frontend_values(&melmat, &mean, &std, config.n_freqs, config.n_mels)?;
+        Ok(Self {
+            config,
+            melmat,
+            mean,
+            std,
+        })
+    }
+
+    /// Returns the fixed frontend dimensions.
+    pub fn config(&self) -> &OwsmV4Medium1bFrontendConfig {
+        &self.config
+    }
+
+    /// Computes STFT → power → bound mel matrix → ESPnet LogMel → GlobalMVN.
+    ///
+    /// This method handles one finite mono PCM sequence and returns only its
+    /// valid frames.  It deliberately does not pad a batch, resample audio,
+    /// apply SpecAugment, or run the OWSM encoder/decoder.
+    pub fn extract(&self, pcm: &[f32]) -> Result<OwsmV4Medium1bFrontendOutput> {
+        if pcm.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "OWSM v4 medium 1B frontend: PCM must not be empty".to_owned(),
+            ));
+        }
+        if pcm.len() <= self.config.n_fft / 2 {
+            return Err(VokraError::InvalidArgument(
+                "OWSM v4 medium 1B frontend: centered reflect padding requires PCM longer than n_fft/2"
+                    .to_owned(),
+            ));
+        }
+        if pcm.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "OWSM v4 medium 1B frontend: PCM contains a non-finite sample".to_owned(),
+            ));
+        }
+
+        let spectrum = stft(pcm, &self.config.stft_attrs())?;
+        // The pinned ESPnet `Stft` source adds `2 * (n_fft / 2)` samples when
+        // `center` is enabled, then computes
+        // `(ilens - n_fft) // hop_length + 1`.  Validate the backend result
+        // against that authenticated length contract instead of accepting a
+        // silently different padding/frame convention.
+        let expected_frames = pcm
+            .len()
+            .checked_add(self.config.n_fft)
+            .and_then(|length| length.checked_sub(self.config.n_fft))
+            .and_then(|length| length.checked_div(self.config.hop_length))
+            .and_then(|frames| frames.checked_add(1))
+            .ok_or_else(|| {
+                VokraError::ModelLoad(
+                    "OWSM v4 medium 1B frontend: source frame-length calculation overflowed"
+                        .to_owned(),
+                )
+            })?;
+        if spectrum.frames != expected_frames {
+            return Err(VokraError::ModelLoad(format!(
+                "OWSM v4 medium 1B frontend: STFT produced {} frames, expected {} from the authenticated centered source formula",
+                spectrum.frames, expected_frames
+            )));
+        }
+        let power = spectrum.power();
+        let expected_power = spectrum.frames * self.config.n_freqs;
+        if spectrum.bins != self.config.n_freqs || power.len() != expected_power {
+            return Err(VokraError::ModelLoad(format!(
+                "OWSM v4 medium 1B frontend: STFT produced {} bins and {} values, expected {} bins and {} values",
+                spectrum.bins,
+                power.len(),
+                self.config.n_freqs,
+                expected_power
+            )));
+        }
+
+        let mut features = vec![0.0f32; spectrum.frames * self.config.n_mels];
+        for frame in 0..spectrum.frames {
+            let power_row = &power[frame * self.config.n_freqs..(frame + 1) * self.config.n_freqs];
+            let feature_row =
+                &mut features[frame * self.config.n_mels..(frame + 1) * self.config.n_mels];
+            for mel in 0..self.config.n_mels {
+                let mut energy = 0.0f32;
+                for (frequency, &power_value) in power_row.iter().enumerate() {
+                    energy += power_value * self.melmat[frequency * self.config.n_mels + mel];
+                }
+                // ESPnet LogMel clamps before applying natural logarithm.
+                feature_row[mel] = energy.max(LOG_MEL_FLOOR).ln();
+            }
+            for (mel, value) in feature_row.iter_mut().enumerate() {
+                *value = (*value - self.mean[mel]) / self.std[mel];
+            }
+        }
+
+        Ok(OwsmV4Medium1bFrontendOutput {
+            features,
+            frames: spectrum.frames,
+            n_mels: self.config.n_mels,
+        })
+    }
+}
+
+fn validate_frontend_values(
+    melmat: &[f32],
+    mean: &[f32],
+    std: &[f32],
+    n_freqs: usize,
+    n_mels: usize,
+) -> Result<()> {
+    if melmat
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+        || !melmat.iter().any(|value| *value > 0.0)
+        || mean.iter().any(|value| !value.is_finite())
+        || std.iter().any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return Err(VokraError::ModelLoad(
+            "OWSM v4 medium 1B: frontend mel matrix must be finite, non-negative, and non-zero; GlobalMVN tensors must be finite with positive std"
+                .to_owned(),
+        ));
+    }
+    if n_freqs == 0 || n_mels == 0 || melmat.len() != n_freqs * n_mels {
+        return Err(VokraError::ModelLoad(
+            "OWSM v4 medium 1B: frontend mel matrix dimensions are inconsistent".to_owned(),
+        ));
+    }
+    for mel in 0..n_mels {
+        if !(0..n_freqs).any(|frequency| melmat[frequency * n_mels + mel] > 0.0) {
+            return Err(VokraError::ModelLoad(format!(
+                "OWSM v4 medium 1B: frontend mel column {mel} has no positive filter weight"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn frontend_tensor(file: &GgufFile, name: &str, expected: &[usize]) -> Result<Vec<f32>> {
+    let info = file.tensor_info(name).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "OWSM v4 medium 1B frontend: required tensor `{name}` is missing"
+        ))
+    })?;
+    let shape: Vec<usize> = info
+        .dimensions
+        .iter()
+        .map(|&dimension| dimension as usize)
+        .collect();
+    if shape != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "OWSM v4 medium 1B frontend: tensor `{name}` shape {shape:?}, expected {expected:?}"
+        )));
+    }
+    if info.dtype != GgmlType::F32 {
+        return Err(VokraError::ModelLoad(format!(
+            "OWSM v4 medium 1B frontend: tensor `{name}` is {:?}, expected F32",
+            info.dtype
+        )));
+    }
+    file.tensor_f32(name).map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "OWSM v4 medium 1B frontend: tensor `{name}` decode failed: {error}"
+        ))
+    })
+}
 
 /// Fixed topology read from converter-stamped GGUF metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -411,6 +661,7 @@ impl OwsmV4Medium1bWeights {
 pub struct OwsmV4Medium1b {
     config: OwsmV4Medium1bConfig,
     weights: OwsmV4Medium1bWeights,
+    frontend: OwsmV4Medium1bFrontend,
 }
 
 impl OwsmV4Medium1b {
@@ -430,7 +681,12 @@ impl OwsmV4Medium1b {
         vokra_core::check_weight_license(file, &vokra_core::CompliancePolicy::strict())?;
         let config = OwsmV4Medium1bConfig::from_gguf(file)?;
         let weights = OwsmV4Medium1bWeights::from_gguf(file)?;
-        Ok(Self { config, weights })
+        let frontend = OwsmV4Medium1bFrontend::from_gguf(file, &config)?;
+        Ok(Self {
+            config,
+            weights,
+            frontend,
+        })
     }
 
     /// Returns the immutable, structurally authenticated OWSM configuration.
@@ -441,6 +697,12 @@ impl OwsmV4Medium1b {
     /// Returns the number of structurally authenticated tensor entries.
     pub fn tensor_count(&self) -> usize {
         self.weights.tensor_count()
+    }
+
+    /// Computes the authenticated PCM frontend without entering the model
+    /// encoder/decoder.
+    pub fn frontend(&self, pcm: &[f32]) -> Result<OwsmV4Medium1bFrontendOutput> {
+        self.frontend.extract(pcm)
     }
 
     /// Native PCM-to-text is not enabled by a manifest-only bind.
@@ -490,5 +752,62 @@ mod tests {
         let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
         let error = OwsmV4Medium1bConfig::from_gguf(&file).unwrap_err();
         assert!(error.to_string().contains("refusing misroute"));
+    }
+
+    fn test_frontend() -> OwsmV4Medium1bFrontend {
+        let config = OwsmV4Medium1bFrontendConfig {
+            n_fft: 4,
+            win_length: 4,
+            hop_length: 2,
+            n_freqs: 3,
+            n_mels: 2,
+        };
+        OwsmV4Medium1bFrontend {
+            config,
+            melmat: vec![1.0; 6],
+            mean: vec![10.0, -10.0],
+            std: vec![1.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn frontend_rejects_empty_nonfinite_and_short_reflect_inputs() {
+        let frontend = test_frontend();
+        assert!(frontend.extract(&[]).is_err());
+        assert!(frontend.extract(&[f32::NAN; 8]).is_err());
+        let error = frontend.extract(&[0.0; 2]).unwrap_err();
+        assert!(error.to_string().contains("reflect padding"));
+    }
+
+    #[test]
+    fn frontend_returns_finite_nonzero_shape_and_applies_normalization() {
+        let frontend = test_frontend();
+        let pcm = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut unnormalized = test_frontend();
+        unnormalized.mean = vec![0.0, 0.0];
+        let reference = unnormalized.extract(&pcm).unwrap();
+        let output = frontend.extract(&pcm).unwrap();
+        assert_eq!(output.frames, 5);
+        assert_eq!(output.n_mels, 2);
+        assert_eq!(output.features.len(), output.frames * output.n_mels);
+        assert!(output.features.iter().all(|value| value.is_finite()));
+        assert!((output.features[0] - (reference.features[0] - 10.0)).abs() < 1.0e-5);
+        assert!((output.features[1] - (reference.features[1] + 10.0)).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn frontend_rejects_nonpositive_or_nonfinite_global_mvn_std() {
+        let melmat = [1.0f32; 2];
+        let mean = [0.0f32; 1];
+        assert!(validate_frontend_values(&melmat, &mean, &[0.0], 2, 1).is_err());
+        assert!(validate_frontend_values(&melmat, &mean, &[f32::NAN], 2, 1).is_err());
+        assert!(validate_frontend_values(&melmat, &mean, &[1.0], 2, 1).is_ok());
+        assert!(validate_frontend_values(&[-1.0, 1.0], &mean, &[1.0], 2, 1).is_err());
+        assert!(validate_frontend_values(&[0.0, 0.0], &mean, &[1.0], 2, 1).is_err());
+        assert!(validate_frontend_values(&[1.0, 0.0], &mean, &[1.0], 2, 2).is_err());
+        assert!(
+            validate_frontend_values(&[1.0, 0.0, 0.0, 0.0], &[0.0, 0.0], &[1.0, 1.0], 2, 2)
+                .is_err()
+        );
     }
 }

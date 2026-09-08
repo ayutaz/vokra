@@ -24,9 +24,9 @@ SOURCE_SEMANTIC_FILES={
 SOURCE_SEMANTIC_MARKERS={
  "frontend.default":(
   r"class\s+DefaultFrontend\b", r"Stft\s*\(", r"LogMel\s*\(",
-  r"input\s*=\s*input\.unsqueeze\(1\)", r"self\.stft", r"self\.logmel",
+  r"_compute_stft", r"self\.stft", r"self\.logmel",
  ),
- "frontend.stft":(r"class\s+Stft\b", r"center", r"pad_mode"),
+ "frontend.stft":(r"class\s+Stft\b", r"center", r"torch\.stft"),
  "frontend.log_mel":(r"class\s+LogMel\b", r"n_mels", r"mel"),
  "global_mvn":(
   r"class\s+GlobalMVN\b", r"[\"']count[\"']", r"[\"']sum[\"']",
@@ -35,15 +35,18 @@ SOURCE_SEMANTIC_MARKERS={
 }
 SOURCE_SEMANTIC_CONTRACT={
  "frontend.default":(
-  ("stft_domain_conversion", r"self\.stft\s*\("),
+  ("stft_domain_conversion", r"self\._compute_stft\(input\s*,\s*input_lengths\)"),
   ("complex_to_power", r"input_stft\.real\s*\*\*\s*2\s*\+\s*input_stft\.imag\s*\*\*\s*2"),
   ("log_mel_application", r"self\.logmel\s*\(input_power\s*,\s*feats_lens\)"),
   ("return_feature_lengths", r"return\s+input_feats\s*,\s*feats_lens"),
  ),
  "frontend.stft":(
-  ("torch_stft", r"torch\.stft\s*\("),
+  ("torch_stft", r"output\s*=\s*torch\.stft\(input\.float\(\),\s*\*\*stft_kwargs\)"),
+  ("torch_stft_return_complex", r"stft_kwargs\[\s*[\"']return_complex[\"']\s*\]\s*=\s*True"),
   ("center_binding", r"self\.center\s*=\s*center"),
-  ("reflect_padding", r"pad_mode\s*=\s*[\"']reflect[\"']|pad_mode\s*:\s*[^\n]*reflect"),
+  ("torch_stft_kwargs_without_pad_mode", r"stft_kwargs\s*=\s*dict\(\s*n_fft=self\.n_fft,\s*win_length=self\.win_length,\s*hop_length=self\.hop_length,\s*center=self\.center,\s*window=window,\s*normalized=self\.normalized,\s*onesided=self\.onesided,\s*\)"),
+  ("center_length_pad", r"if\s+self\.center\s*:\s*pad\s*=\s*self\.n_fft\s*//\s*2"),
+  ("frame_length_formula", r"torch\.div\(\s*ilens\s*-\s*self\.n_fft\s*,\s*self\.hop_length,\s*rounding_mode\s*=\s*[\"']trunc[\"']\s*\)"),
  ),
  "frontend.log_mel":(
   ("mel_filterbank", r"MelScale|melmat|mel_filter"),
@@ -58,7 +61,7 @@ SOURCE_SEMANTIC_CONTRACT={
   ("variance_from_second_moment", r"var\s*=\s*sum_square_v\s*/\s*count\s*-\s*mean\s*\*\s*mean"),
   ("epsilon_clamped_std", r"np\.sqrt\s*\(\s*np\.maximum\s*\(\s*var\s*,\s*eps\s*\)\s*\)"),
   ("padding_mask", r"make_pad_mask\s*\(\s*ilens\s*,\s*x\s*,\s*1\s*\)"),
-  ("mean_normalization", r"x\s*=\s*x\s*-\s*self\.mean|x\s*=\s*x\s*-\s*self\.mean"),
+  ("mean_normalization", r"x\s*-\=\s*self\.mean"),
   ("variance_normalization", r"x\s*/=\s*self\.std"),
  ),
 }
@@ -397,7 +400,7 @@ def source_semantic_evidence(root:Path, blockers:list[str])->dict[str,Any]:
  return {
   "status":"SOURCE_SEMANTICS_AUTHENTICATED" if all_matched else "BLOCKED_SOURCE_SEMANTICS",
   "frontend":{
-   "pipeline":["waveform", "channel_unsqueeze", "Stft", "LogMel"],
+   "pipeline":["waveform", "DefaultFrontend._compute_stft", "Stft", "LogMel"],
    "config_binding":{"fs":"16k","n_fft":512,"win_length":400,"hop_length":160,"n_mels":128},
    "source_files":{"default":frontend,"stft":stft,"log_mel":log_mel},
   },
@@ -493,9 +496,8 @@ def self_test()->None:
  def __init__(self):
   self.stft = Stft()
   self.logmel = LogMel()
-  input = input.unsqueeze(1)
  def forward(self, input, input_lengths):
-  input_stft, feats_lens = self.stft(input, input_lengths)
+  input_stft, feats_lens = self._compute_stft(input, input_lengths)
   input_power = input_stft.real ** 2 + input_stft.imag ** 2
   input_feats, _ = self.logmel(input_power, feats_lens)
   return input_feats, feats_lens
@@ -506,7 +508,12 @@ class Stft:
   self.center = center
   pad_mode = 'reflect'
  def forward(self, input):
-  return torch.stft(input, 512, 160, center=self.center)
+  stft_kwargs = dict(n_fft=self.n_fft, win_length=self.win_length, hop_length=self.hop_length, center=self.center, window=window, normalized=self.normalized, onesided=self.onesided,)
+  stft_kwargs['return_complex'] = True
+  output = torch.stft(input.float(), **stft_kwargs)
+ if self.center:
+  pad = self.n_fft // 2
+ olens = torch.div(ilens - self.n_fft, self.hop_length, rounding_mode='trunc') + 1
 """)
   (semantic_root/"espnet2/layers/log_mel.py").write_text("""class LogMel:
  def __init__(self):
@@ -527,7 +534,7 @@ class GlobalMVN:
   std = np.sqrt(np.maximum(var, eps))
  def forward(self, x, ilens):
   mask = make_pad_mask(ilens, x, 1)
-  x = x - self.mean
+ x -= self.mean
   x /= self.std
   return x, ilens
 """)
