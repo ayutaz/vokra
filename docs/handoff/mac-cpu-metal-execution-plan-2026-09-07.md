@@ -603,6 +603,61 @@ weights were downloaded or executed in this verification, and the unresolved
 public denominator therefore remains 63 rows (62 model rows plus the one
 non-artifact row).
 
+## 2026-09-08 final owner-independent hardening replay
+
+The final model-free continuation is committed through exact code head
+`06eb054351681eeb92d62664f56903da68d6c47b`.  The reviewed commits cover the
+remaining MOSS Audio, Irodori, SBV2, ASR replacement, Yue, speaker, FireRed,
+XY-Tokenizer, Zonos, Kyutai STT, OWSM, MMS, CLAP, HT-Demucs, AudioGen and Dia
+source/artifact preparation boundaries.  They preserve fail-closed execution
+and publication; source inspection or evidence publication is not counted as
+a complete native runtime or numerical verdict.
+
+Disposable VAST instance `50262953` received only reviewed git bundles.  No
+model checkpoint or weight was acquired or executed.  The first workspace run
+found that Canary Flash/v2 checkpoint path validation had moved ahead of the
+required tokenizer authentication.  Commit `ff7f8597` restored tokenizer-first
+validation and added both regression tests.  The first strict Clippy pass then
+found three mechanical findings; commit `06eb0543` removed two needless
+borrows, used the equivalent zero-membership check and moved production OOV
+helpers ahead of the test module.
+
+At clean exact head `06eb054351681eeb92d62664f56903da68d6c47b`,
+`cargo test --workspace --all-targets --locked` completed 305 result groups
+with 8,000 passed, zero failed and 100 explicitly ignored tests.  Its log
+SHA-256 is
+`adeceb3d3a1bd9ab9fadf0a8cb59ceef4c8a68388ca652f3fd007d5134ceab61`.
+All-target workspace Clippy with code warnings denied exited zero; its log
+SHA-256 is
+`9e0c48342d0e6239efb2bf733b7ee16739d8b403487555e204663b9b74422c3a`.
+Clippy still prints the existing configuration notice that
+`vokra-backend-cpu` declares MSRV 1.89 while the workspace `clippy.toml` uses
+1.85; this is not a code lint and did not bypass `-D warnings`.
+
+The repeated formatting, locked metadata, diff, zero-dependency,
+forbidden-symbol, fixture-EOL, pipefail-lint, architecture-handshake,
+bound-architecture and zoo-manifest gates all passed.  Their log SHA-256 is
+`d6788a9e281d11eab5250cab2fb488df534f5dbe624ceee2359427a4763b8513`.
+`cargo-deny` 0.20.2 reported advisories, bans, licenses and sources OK, with
+only the existing unmatched `libfuzzer-sys` exception warning;
+`cargo-audit` 0.22.2 loaded 1,242 advisories and exited zero.  The combined
+dependency-gate log SHA-256 is
+`149cb29504484717cc474ce5ce07b0740ce6cba4ebdd57b892f1cd8ea8606186`.
+
+The four recovered text logs total 682,756 bytes and their local SHA-256
+values match the remote values above.  Instance `50262953` and its storage
+were destroyed after recovery; the individual API readback returned
+`instances: null`.  The remaining VAST inventory contained only unrelated
+protected instance `50243461` / `ralomi-m6-int8-net5`, which this campaign did
+not modify.  The owner's pre-existing dirty CosyVoice2 license-gate manifest
+was preserved and was not staged.
+
+This replay closes the current model-free repository-verification batch.  It
+does not decrement the 63-row public denominator: unresolved rows still need
+their immutable owner/legal dispositions and authorized real-weight VAST CPU
+conversion/reference/parity work before the final Scaleway Apple CPU/Metal
+batch.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
