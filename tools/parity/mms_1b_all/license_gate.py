@@ -25,6 +25,8 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from hf_metadata_audit import validate_report as validate_hf_metadata_report
+
 GATE_VERSION = 1
 REPOSITORY = "facebook/mms-1b-all"
 REVISION = "3d33597edbdaaba14a8e858e2c8caa76e3cec0cd"
@@ -85,6 +87,16 @@ REFERENCE_KEYS = {
     "runtime_status", "parity_status", "tolerance",
 }
 PREPARED_KEYS = {"contract", "repository", "revision", "language", "source_files", "composition", "license", "runtime_status", "parity_status"}
+
+# These three roles are the only checkpoint identities that a complete
+# manifest may bind from the model-free Hugging Face audit.  The audit must
+# provide LFS payload SHA-256 values; a Git blob id alone is not a payload
+# identity and must remain fail-closed.
+METADATA_PAYLOAD_ROLES = {
+    "backbone": "backbone",
+    "adapter": "adapter",
+    "vocabulary": "language_vocabulary",
+}
 
 
 def blocked(message: str) -> None:
@@ -526,7 +538,42 @@ def validate_evidence_bindings(identities: dict[str, Any], prepared: dict[str, A
             raise ValueError(f"{source_path} identity differs across closure evidence")
 
 
-def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path: Path | None, dependency_path: Path, api_path: Path, reference_path: Path | None, prepared_path: Path | None, explicit_language: str, expected_head: str) -> None:
+def validate_metadata_bindings(path: Path, identities: dict[str, Any], explicit_language: str, expected_head: str) -> None:
+    """Bind complete-manifest identities to model-free HF metadata.
+
+    This preflight never resolves a file or reads checkpoint bytes.  A
+    regular Git blob has no authenticated payload SHA-256 in the metadata
+    response, so it is rejected instead of being guessed into a complete
+    backbone/adapter/vocabulary contract.
+    """
+    if not regular_file(path):
+        raise ValueError("HF metadata evidence is missing or symlinked")
+    value = load_json(path)
+    try:
+        validate_hf_metadata_report(value, explicit_language, expected_head)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"HF metadata evidence is invalid: {error}") from error
+    roles = value["roles"]
+    for identity_key, metadata_key in METADATA_PAYLOAD_ROLES.items():
+        identity = identities.get(identity_key)
+        role = roles.get(metadata_key)
+        if not isinstance(identity, dict) or not isinstance(role, dict):
+            raise ValueError(f"metadata binding row is missing: {identity_key}")
+        payload_sha = role.get("lfs_payload_sha256")
+        if not isinstance(payload_sha, str) or not HEX64.fullmatch(payload_sha):
+            raise ValueError(f"metadata role lacks an authenticated LFS payload digest: {metadata_key}")
+        if identity["path"] != role["path"] or identity["bytes"] != role["size"] or identity["sha256"] != payload_sha:
+            raise ValueError(f"manifest identity differs from HF metadata role: {identity_key}")
+    expected_paths = {
+        "backbone": "model.safetensors",
+        "adapter": f"adapter.{explicit_language}.safetensors",
+        "vocabulary": f"vocabs/{explicit_language}.txt",
+    }
+    if {key: identities[key]["path"] for key in expected_paths} != expected_paths:
+        raise ValueError("manifest identity paths do not preserve explicit backbone/adapter/vocabulary composition")
+
+
+def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path: Path | None, dependency_path: Path, api_path: Path, metadata_path: Path | None, reference_path: Path | None, prepared_path: Path | None, explicit_language: str, expected_head: str) -> None:
     for path, label in ((lock_path, "dedicated uv.lock"), (project_path, "dedicated pyproject"), (manifest_path, "closure manifest"), (dependency_path, "dependency audit evidence"), (api_path, "model-free API evidence")):
         if not regular_file(path):
             blocked(f"{label} is missing; authenticated MMS closure is not committed")
@@ -613,6 +660,12 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
             blocked(f"{key} identity is malformed")
     if identities["backbone"]["path"] != "model.safetensors" or identities["adapter"]["path"] != f"adapter.{explicit_language}.safetensors" or identities["vocabulary"]["path"] != f"vocabs/{explicit_language}.txt":
         blocked("backbone/adapter/vocabulary paths are not separated")
+    if metadata_path is None:
+        blocked("HF metadata evidence is missing; complete identity binding is not authorized")
+    try:
+        validate_metadata_bindings(metadata_path, identities, explicit_language, expected_head)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        blocked(f"HF metadata identity binding is invalid: {error}")
     licenses = manifest.get("license_rows")
     if not isinstance(licenses, list) or len(licenses) != 3 or [row.get("id") for row in licenses if isinstance(row, dict)] != ["source-license", "weights-license", "python-closure"]:
         blocked("license review rows are missing, duplicated, reordered, or extra")
@@ -727,7 +780,10 @@ def self_test() -> None:
             pass
         else:
             raise SystemExit(f"self-test accepted malformed lock field: {field}")
-    with __import__("tempfile").TemporaryDirectory(dir="/private/tmp") as directory:
+    temp_root = Path(os.environ.get("TMPDIR") or __import__("tempfile").gettempdir()).resolve()
+    if not temp_root.is_dir():
+        raise SystemExit(f"self-test temp root is not a directory: {temp_root}")
+    with __import__("tempfile").TemporaryDirectory(dir=temp_root) as directory:
         root = Path(directory)
         duplicate = root / "duplicate.json"
         duplicate.write_text('{"a":1,"a":2}', encoding="utf-8")
@@ -802,6 +858,46 @@ def self_test() -> None:
             pass
         else:
             raise SystemExit("self-test accepted prepared tensor-row tamper")
+    # The model-free HF report is the only source allowed to bind future
+    # artifact identities. Exercise the exact three payload roles without
+    # creating checkpoint bytes or inventing tensor shapes.
+    from hf_metadata_audit import _synthetic_payload, build_report
+
+    checkout = {"expected_head": source_head, "actual_head": source_head, "clean": True}
+    payload, raw = _synthetic_payload("eng")
+    metadata = build_report(payload, raw, "eng", checkout)
+    with __import__("tempfile").TemporaryDirectory(dir=temp_root) as directory:
+        metadata_path = Path(directory) / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        metadata_identities = {
+            "backbone": {"path": "model.safetensors", "bytes": metadata["roles"]["backbone"]["size"], "sha256": metadata["roles"]["backbone"]["lfs_payload_sha256"]},
+            "adapter": {"path": "adapter.eng.safetensors", "bytes": metadata["roles"]["adapter"]["size"], "sha256": metadata["roles"]["adapter"]["lfs_payload_sha256"]},
+            "vocabulary": {"path": "vocabs/eng.txt", "bytes": metadata["roles"]["language_vocabulary"]["size"], "sha256": metadata["roles"]["language_vocabulary"]["lfs_payload_sha256"]},
+        }
+        validate_metadata_bindings(metadata_path, metadata_identities, "eng", source_head)
+        for key in ("backbone", "adapter", "vocabulary"):
+            tampered = json.loads(json.dumps(metadata_identities))
+            tampered[key]["sha256"] = "f" * 64
+            try:
+                validate_metadata_bindings(metadata_path, tampered, "eng", source_head)
+            except ValueError:
+                pass
+            else:
+                raise SystemExit(f"self-test accepted metadata identity tamper: {key}")
+        regular_metadata = json.loads(json.dumps(metadata))
+        regular_role = regular_metadata["roles"]["backbone"]
+        regular_role["git_blob_sha1"] = "a" * 40
+        regular_role["lfs_pointer_git_blob_sha1"] = None
+        regular_role["lfs_payload_sha256"] = None
+        regular_role["lfs_payload_size"] = None
+        regular_path = Path(directory) / "regular-metadata.json"
+        regular_path.write_text(json.dumps(regular_metadata), encoding="utf-8")
+        try:
+            validate_metadata_bindings(regular_path, metadata_identities, "eng", source_head)
+        except ValueError as error:
+            assert "payload digest" in str(error)
+        else:
+            raise SystemExit("self-test accepted regular Git blob without payload digest")
     print("mms_1b_all license gate self-test: PASS")
 
 
@@ -814,13 +910,14 @@ def main() -> int:
     parser.add_argument("--approval-evidence", type=Path)
     parser.add_argument("--dependency-audit", type=Path)
     parser.add_argument("--api-evidence", type=Path)
+    parser.add_argument("--metadata-evidence", type=Path)
     parser.add_argument("--reference-manifest", type=Path)
     parser.add_argument("--prepared-manifest", type=Path)
     parser.add_argument("--language")
     parser.add_argument("--expected-head")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.lock, args.project, args.manifest, args.approval_evidence, args.dependency_audit, args.api_evidence, args.reference_manifest, args.prepared_manifest, args.language, args.expected_head)):
+        if any(value is not None for value in (args.lock, args.project, args.manifest, args.approval_evidence, args.dependency_audit, args.api_evidence, args.metadata_evidence, args.reference_manifest, args.prepared_manifest, args.language, args.expected_head)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
@@ -828,7 +925,7 @@ def main() -> int:
         parser.error("normal runs require --lock, --project, --manifest, --dependency-audit, and --api-evidence")
     if args.language is None or args.expected_head is None:
         parser.error("normal runs require --language and --expected-head")
-    run(args.lock, args.project, args.manifest, args.approval_evidence, args.dependency_audit, args.api_evidence, args.reference_manifest, args.prepared_manifest, args.language, args.expected_head)
+    run(args.lock, args.project, args.manifest, args.approval_evidence, args.dependency_audit, args.api_evidence, args.metadata_evidence, args.reference_manifest, args.prepared_manifest, args.language, args.expected_head)
     return 0
 
 

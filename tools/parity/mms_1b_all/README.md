@@ -61,6 +61,14 @@ also require the exact clean Vokra HEAD to be supplied and bound into the
 external approval evidence; they do not acquire or execute a checkpoint when
 the closure is absent.
 
+The complete-manifest gate additionally requires the output of the
+model-free metadata audit (`--metadata-evidence`). It binds the manifest's
+backbone, one explicitly selected adapter, and matching language vocabulary to
+the audit's exact LFS payload SHA-256 and byte size. A regular Git blob without
+an authenticated payload digest is rejected; the gate never guesses a digest
+or a tensor shape. This identity preflight is independent of and prior to any
+checkpoint import, runtime binder, or parity claim.
+
 ## No-weight server-metadata audit
 
 `hf_metadata_audit.py` is the smaller model-free route for authenticating the

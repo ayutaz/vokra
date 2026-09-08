@@ -28,7 +28,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF'
-usage: run-mms-1b-all-validation.sh --language <official-code> --expected-head <HEX40> --approval-evidence <file> [--work-dir <absent-dir>]
+usage: run-mms-1b-all-validation.sh --language <official-code> --expected-head <HEX40> --approval-evidence <file> --metadata-evidence <file> [--work-dir <absent-dir>]
        run-mms-1b-all-validation.sh --metadata-only --language <official-code> --expected-head <HEX40> --output <absolute-absent-file>
        run-mms-1b-all-validation.sh --self-test
 
@@ -41,13 +41,13 @@ EOF
 }
 
 license_preflight() {
-  local language="$1" expected_head="$2" approval="$3"
+  local language="$1" expected_head="$2" approval="$3" metadata="$4"
   for required in "$PARITY_PROJECT/pyproject.toml" "$PARITY_PROJECT/uv.lock" "$PREFLIGHT_MANIFEST" "$DEPENDENCY_AUDIT" "$API_INSPECTOR" "$METADATA_AUDIT" "$PREFLIGHT_AUDIT" "$PREFLIGHT_API"; do
     [[ -f "$required" ]] || die "BLOCKED_PENDING_AUTHENTICATED_MANIFEST: missing MMS closure input $required"
   done
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
     --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
-    --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval" --dependency-audit "$PREFLIGHT_AUDIT" --api-evidence "$PREFLIGHT_API" --language "$language" \
+    --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval" --dependency-audit "$PREFLIGHT_AUDIT" --api-evidence "$PREFLIGHT_API" --metadata-evidence "$metadata" --language "$language" \
     --expected-head "$expected_head" \
     || die 'dedicated MMS closure/license/approval gate is unresolved'
 }
@@ -75,10 +75,10 @@ canonical_absent_path() {
 }
 paths_overlap() { [[ "$1" == "$2" || "$1" == "$2"/* || "$2" == "$1"/* ]]; }
 require_absent_work_dir() {
-  local target="$1" approval="$2" candidate protected other
+  local target="$1" approval="$2" metadata="$3" candidate protected other
   [[ ! -e "$target" && ! -L "$target" ]] || { die 'work-dir must be absent and non-symlink'; return 2; }
   candidate="$(canonical_absent_path "$target")" || { die 'work-dir has a symlinked ancestor'; return 2; }
-  for protected in "$VOKRA_ROOT" "$PARITY_PROJECT" "$approval"; do
+  for protected in "$VOKRA_ROOT" "$PARITY_PROJECT" "$approval" "$metadata"; do
     [[ -e "$protected" || -L "$protected" ]] || continue
     [[ ! -L "$protected" ]] || { die 'protected input is symlinked'; return 2; }
     other="$(canonical_absent_path "$protected")" || { die 'protected path cannot be canonicalized'; return 2; }
@@ -100,7 +100,7 @@ self_test() {
     'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' 'no upload' 'MMS_LANGUAGE' 'azj-script_cyrillic' \
     'cac-dialect_sanmateoixtatan' 'vocabs/' 'git status --porcelain' \
     'tools/parity/mms_1b_all/license_gate.py' 'dependency_audit.py' 'api_model_free_inspector.py' 'hf_metadata_audit.py' 'dependency_audit_evidence.json' 'api_model_free_evidence.json' '--prepared-manifest' '--reference-manifest' '--dependency-audit' '--api-evidence' '--expected-head' '--metadata-only' '--output' '--repo-root' '8-role' 'pyproject.toml' 'uv.lock' \
-    '--language "$language"' 'work_disk_root' 'nearest existing canonical ancestor' \
+    '--language "$language"' '--metadata-evidence "$metadata_evidence"' 'work_disk_root' 'nearest existing canonical ancestor' \
     'mms_1b_all_prepare_checkpoint.py --self-test' \
     'mms_1b_all_dump_reference.py --self-test'; do
     if ! grep -Fq -- "$token" "$path"; then
@@ -109,7 +109,7 @@ self_test() {
     fi
   done
   # shellcheck disable=SC2016 # literal source contract token
-  if ! grep -Fq -- 'license_preflight "$language" "$expected_head" "$approval_evidence"' "$path"; then
+  if ! grep -Fq -- 'license_preflight "$language" "$expected_head" "$approval_evidence" "$metadata_evidence"' "$path"; then
     log 'self-test FAIL: approval scope is not bound to selected language'
     fail=1
   fi
@@ -134,7 +134,7 @@ self_test() {
     log 'self-test FAIL: unknown argument accepted'
     fail=1
   fi
-  for bad in '--language' '--language -bad' '--language eng --language spa' '--expected-head' '--expected-head bad' '--expected-head a --expected-head b' '--approval-evidence' '--approval-evidence -bad' '--approval-evidence a --approval-evidence b'; do
+  for bad in '--language' '--language -bad' '--language eng --language spa' '--expected-head' '--expected-head bad' '--expected-head a --expected-head b' '--approval-evidence' '--approval-evidence -bad' '--approval-evidence a --approval-evidence b' '--metadata-evidence' '--metadata-evidence -bad' '--metadata-evidence a --metadata-evidence b'; do
     if eval "\"$path\" $bad" >/dev/null 2>&1; then
       log "self-test FAIL: malformed or duplicate option accepted: $bad"
       fail=1
@@ -158,11 +158,11 @@ self_test() {
   fi
   local gate_line host_line path_line head_line
   # shellcheck disable=SC2016 # match literal source token
-  gate_line="$(grep -n 'license_preflight "\$language" "\$expected_head" "\$approval_evidence"' "$path" | tail -n 1 | cut -d: -f1)"
+  gate_line="$(grep -n 'license_preflight "\$language" "\$expected_head" "\$approval_evidence" "\$metadata_evidence"' "$path" | tail -n 1 | cut -d: -f1)"
   host_line="$(grep -n 'uname -s' "$path" | tail -n 1 | cut -d: -f1)"
   head_line="$(grep -n 'require_clean_expected_head' "$path" | tail -n 1 | cut -d: -f1)"
   # shellcheck disable=SC2016 # match literal source token
-  path_line="$(grep -n 'require_absent_work_dir "\$work_dir"' "$path" | tail -n 1 | cut -d: -f1)"
+  path_line="$(grep -n 'require_absent_work_dir "\$work_dir" "\$approval_evidence" "\$metadata_evidence"' "$path" | tail -n 1 | cut -d: -f1)"
   [[ "$head_line" =~ ^[0-9]+$ && "$gate_line" =~ ^[0-9]+$ && "$path_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$head_line" -lt "$gate_line" && "$gate_line" -lt "$path_line" && "$path_line" -lt "$host_line" ]] || {
     log 'self-test FAIL: closure/path gate is not before host probe'
     fail=1
@@ -218,17 +218,19 @@ work_dir="/workspace/vokra-mms-1b-all-validation"
 language=""
 expected_head=""
 approval_evidence=""
+metadata_evidence=""
 metadata_only=0
 output=""
 self=0
-seen_self=0; seen_language=0; seen_head=0; seen_work=0; seen_approval=0; seen_metadata=0; seen_output=0
+seen_self=0; seen_language=0; seen_head=0; seen_work=0; seen_approval=0; seen_metadata_only=0; seen_metadata_evidence=0; seen_output=0
 while (($#)); do
   case "$1" in
     --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
-    --metadata-only) (( seen_metadata == 0 )) || die 'duplicate --metadata-only'; seen_metadata=1; metadata_only=1; shift ;;
+    --metadata-only) (( seen_metadata_only == 0 )) || die 'duplicate --metadata-only'; seen_metadata_only=1; metadata_only=1; shift ;;
     --language) (( seen_language == 0 )) || die 'duplicate --language'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--language requires a nonempty official adapter code'; seen_language=1; language="$2"; shift 2 ;;
     --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires exactly 40 lowercase hexadecimal characters'; seen_head=1; expected_head="$2"; shift 2 ;;
     --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty path'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
+    --metadata-evidence) (( seen_metadata_evidence == 0 )) || die 'duplicate --metadata-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--metadata-evidence requires a nonempty path'; seen_metadata_evidence=1; metadata_evidence="$2"; shift 2 ;;
     --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--work-dir requires a nonempty path'; seen_work=1; work_dir="$2"; shift 2 ;;
     --output) (( seen_output == 0 )) || die 'duplicate --output'; [[ $# -ge 2 && "$2" == /* && "$2" != -* ]] || die '--output requires an absolute path'; seen_output=1; output="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -236,12 +238,12 @@ while (($#)); do
   esac
 done
 if (( self )); then
-  [[ "$seen_self" == 1 && "$seen_metadata" == 0 && "$seen_output" == 0 && -z "$language$expected_head$approval_evidence" && "$work_dir" == "/workspace/vokra-mms-1b-all-validation" ]] || die '--self-test accepts no other arguments'
+  [[ "$seen_self" == 1 && "$seen_metadata_only" == 0 && "$seen_metadata_evidence" == 0 && "$seen_output" == 0 && -z "$language$expected_head$approval_evidence$metadata_evidence" && "$work_dir" == "/workspace/vokra-mms-1b-all-validation" ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
 fi
 if (( metadata_only )); then
-  [[ "$seen_language" == 1 && "$seen_output" == 1 && "$seen_head" == 1 && "$seen_approval" == 0 && "$seen_work" == 0 ]] || die '--metadata-only requires exactly --language, --expected-head, and --output'
+  [[ "$seen_language" == 1 && "$seen_output" == 1 && "$seen_head" == 1 && "$seen_approval" == 0 && "$seen_work" == 0 && "$seen_metadata_evidence" == 0 ]] || die '--metadata-only requires exactly --language, --expected-head, and --output'
   [[ -n "$language" && "$language" =~ ^[a-z0-9]+([_-][a-z0-9]+)*$ ]] || die '--language is required and must be an official adapter code'
   [[ ! -e "$output" && ! -L "$output" ]] || die '--output must be absent and non-symlink'
   [[ -f "$METADATA_AUDIT" ]] || die 'HF metadata audit is missing'
@@ -261,12 +263,12 @@ if (( metadata_only )); then
   log "metadata-only evidence written to $output; no checkpoint was acquired; NO_UPLOAD"
   exit 2
 fi
-[[ "$seen_approval" == 1 && "$seen_head" == 1 ]] || die '--expected-head and --approval-evidence are required'
+[[ "$seen_approval" == 1 && "$seen_head" == 1 && "$seen_metadata_evidence" == 1 ]] || die '--expected-head, --approval-evidence, and --metadata-evidence are required'
 [[ -n "$language" ]] || die '--language is required; refusing to assume English'
 [[ "$language" =~ ^[a-z0-9]+([_-][a-z0-9]+)*$ ]] || die '--language contains unsafe filename characters'
 require_clean_expected_head
-license_preflight "$language" "$expected_head" "$approval_evidence"
-require_absent_work_dir "$work_dir" "$approval_evidence"
+license_preflight "$language" "$expected_head" "$approval_evidence" "$metadata_evidence"
+require_absent_work_dir "$work_dir" "$approval_evidence" "$metadata_evidence"
 [[ "$(uname -s)" == Linux ]] || die 'inspection is Linux/VAST-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
