@@ -472,7 +472,7 @@ def sha(path):
 candidate = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=pairs)
 if candidate.get("format") != "vokra-cosyvoice2-hift-linux-closure-candidate-v1" or candidate.get("status") != "OWNER_REVIEW_REQUIRED" or candidate.get("license_status") != "PENDING_PACKAGE_AND_NATIVE_PAYLOAD_REVIEW" or candidate.get("publication") != "NO_UPLOAD":
     raise SystemExit("closure candidate status/schema mismatch")
-if sha(Path(sys.argv[1])) != "2f5174af6cff51dc2b71121861e989de793e6121d5ed88c890a45a308daf55f9":
+if sha(Path(sys.argv[1])) != "eaa2c8c1217a272261166c06e1d871b5616374cfc3f4f004b60f29dc635f706b":
     raise SystemExit("closure candidate digest mismatch")
 if candidate.get("project_sha256") != sha(Path(sys.argv[2])) or candidate.get("uv_lock_sha256") != sha(Path(sys.argv[3])):
     raise SystemExit("closure candidate project/lock digest mismatch")
@@ -483,7 +483,7 @@ if not isinstance(wheels, list) or len(wheels) != 12 or not isinstance(rows, lis
 licenses = sum(len(row.get("license_notice", [])) for row in wheels)
 native = sum(len(row.get("native", [])) for row in wheels)
 suspicious = sum(len(row.get("suspicious_markers", [])) for row in wheels)
-if (licenses, native, suspicious, candidate.get("archive_aggregate_sha256")) != (44, 285, 1964, "dd7f26947e07f490e858d6311ba14008db6aa3ef2359de8742ec4093a5cabd3c"):
+if (licenses, native, suspicious, candidate.get("archive_aggregate_sha256")) != (37, 285, 1964, "c142b1b4748699849370a878dc6a3c5c2c1349fc05d7cd44079d8f2120c8ae07"):
     raise SystemExit("closure candidate evidence counts/digest mismatch")
 print("LINUX_CLOSURE_CANDIDATE_VERIFIED")
 PY
