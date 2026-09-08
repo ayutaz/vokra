@@ -892,6 +892,27 @@ approves, real-weight VAST conversion/reference/CPU-parity execution.
 Scaleway is needed only after those gates, for Wave 7's Apple Silicon
 CPU/reference, Metal/reference and Metal/CPU no-fallback verdicts.
 
+## 2026-09-09 MOSS dependency-review follow-up
+
+The first PR run after the final VAST replay found a newly published security
+gate: `accelerate==1.12.0` in the MOSS Audio model-free API-smoke lock is
+affected by `GHSA-4j2p-28q2-5m79`. The advisory currently covers all versions
+through `1.14.0` and provides no patched release. Commit `3ddfc76f` removes the
+package with `uv remove` from the model-free tree, whose authenticated official
+source has no direct `accelerate` import and whose contract never loads a
+checkpoint or dispatches a model. The corresponding fixed project, lock and
+dependency identities were updated in both the smoke and parent preflight.
+`uv lock --check`, both Python self-tests and the VAST runner self-test pass
+without model or network access.
+
+The real-weight reference tree is different: its 4B/8B shard loader uses
+`low_cpu_mem_usage=True`. With no safe Accelerate release available, changing
+that route requires an owner-authorized, high-memory VAST load/parity
+comparison or an owner decision to withhold it. It is therefore an explicit
+non-Scaleway external-input/VAST blocker, not hidden completed work. The old
+worker could not be restarted because its host had no free resources and
+remained stopped/exited; no additional instance was rented.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously

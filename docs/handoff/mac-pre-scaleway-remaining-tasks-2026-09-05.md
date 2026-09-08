@@ -1468,6 +1468,30 @@ parity. Scaleway cannot resolve those decisions. It is required only for the
 final Apple Silicon CPU/reference, Metal/reference and Metal/CPU no-fallback
 verdicts.
 
+PR #79's first post-replay `dependency-review` then reported
+`GHSA-4j2p-28q2-5m79` against `accelerate==1.12.0` in the newly added MOSS
+Audio model-free API-smoke lock. GitHub's advisory marks every released
+version through `1.14.0` vulnerable and lists no patched version. Commit
+`3ddfc76f` therefore removes `accelerate` with `uv remove` from the model-free
+tree, where the pinned official source never imports it and the probe performs
+no model/checkpoint load or device dispatch. The lock consequently also drops
+its otherwise-unused `psutil` dependency. The API-smoke and parent preflight
+fixed project/lock/dependency identities were updated together. Both stdlib
+self-tests, the VAST runner self-test, `uv lock --check` and diff hygiene pass
+without model or network access.
+
+The separate real-weight MOSS Audio reference tree intentionally remains
+fail-closed on `accelerate==1.12.0`: it uses `low_cpu_mem_usage=True` for the
+4B/8B sharded checkpoint load, and removing that dependency without measuring
+the replacement's peak memory and parity would be speculative. This is not a
+Scaleway task. It requires either an owner decision to withhold the path, a
+patched upstream release, or explicit real-weight authorization followed by a
+high-memory VAST comparison before changing the loader and its approval scope.
+An attempt to restart instance `50284673` for the Python-only follow-up found
+its host resources unavailable; provider readback remained
+`actual_status=exited` and `cur_state=stopped`, with storage-only billing. No
+replacement instance was rented.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
