@@ -8,9 +8,11 @@ deterministic greedy code sequence.  The packet contains the offline eSpeak
 symbol IDs and raw conditioner controls; its projected-prefix compatibility
 fields are parsed for integrity but are deliberately never consumed.
 
-The official model also owns the DAC companion.  ``--pcm-output`` therefore
-requires an already available official DAC cache; there is no fallback codec,
-zero-fill output, or locally invented decoder.  A successful reference run is
+The official model also requests the DAC companion.  ``--pcm-output``
+therefore requires a pre-staged offline DAC cache; there is no fallback codec,
+zero-fill output, or locally invented decoder.  The source request and
+topology are recorded, but this runner does not claim an immutable cache
+identity.  A successful reference run is
 ``MEASURED_NOT_GATED`` until an independently reviewed Rust CPU/Metal bound is
 registered.
 """
@@ -34,6 +36,8 @@ UPSTREAM_REVISION = "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e"
 PACKET_MAGIC = b"ZONOSCP1"
 PACKET_VERSION = 1
 CODEBOOKS = 9
+DAC_SOURCE_MODEL_ID = "descript/dac_44khz"
+DAC_SAMPLE_RATE = 44_100
 MASKED = 1025
 MAX_PHONEMES = 1 << 20
 MAX_PREFIX_VALUES = 1 << 24
@@ -307,10 +311,18 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
         from zonos.model import Zonos
 
         # The official constructor/load path is used verbatim.  It may require
-        # the already-authenticated DAC companion cache; no alternate loader
-        # is permitted here.
+        # the pre-staged DAC companion cache; this runner records the source
+        # request and topology only, not an immutable cache revision/digest.
+        # No alternate loader is permitted here.
         model = Zonos.from_local(str(config), str(weights), device="cpu")
         model.eval()
+        if (model.autoencoder.num_codebooks != CODEBOOKS
+                or model.autoencoder.sampling_rate != DAC_SAMPLE_RATE):
+            raise RuntimeError(
+                f"official DAC topology is not compatible with the {DAC_SOURCE_MODEL_ID} "
+                f"source contract ({CODEBOOKS} codebooks, "
+                f"{DAC_SAMPLE_RATE} Hz)"
+            )
         prefix = official_prefix(model, packet, torch)
         import numpy as np
 
@@ -340,6 +352,11 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
             raise RuntimeError("official generation returned empty/non-finite codes")
         output.parent.mkdir(parents=True, exist_ok=True)
         np_codes = codes_cpu.numpy().astype("int64", copy=False)
+        if np_codes.ndim != 3 or np_codes.shape[1] != CODEBOOKS:
+            raise RuntimeError(
+                f"official generation code composition {np_codes.shape!r} is not "
+                f"[batch, {CODEBOOKS}, frames]"
+            )
         if output.suffix == ".u32le":
             if (np_codes < 0).any() or (np_codes > MASKED).any():
                 raise RuntimeError("official generation returned an out-of-range code")
@@ -364,7 +381,13 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
             "codes_sha256": sha256_bytes(output.read_bytes()),
             "pcm_path": pcm_output.name,
             "pcm_sha256": sha256_bytes(pcm_output.read_bytes()),
-            "pcm_sample_rate": 44_100,
+            # The source checkout proves which companion ID is requested;
+            # the cached DAC payload's immutable revision/digest is not
+            # available here, so never label this as an exact identity.
+            "dac_source_model_id": DAC_SOURCE_MODEL_ID,
+            "dac_num_codebooks": CODEBOOKS,
+            "dac_identity_status": "SOURCE_REQUEST_ONLY",
+            "pcm_sample_rate": DAC_SAMPLE_RATE,
             "runtime_status": "REFERENCE_ONLY_NO_NATIVE_VERDICT",
             "publication": "NO_UPLOAD",
         }

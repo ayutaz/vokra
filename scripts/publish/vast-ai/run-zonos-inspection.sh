@@ -18,6 +18,10 @@ SOURCE_LICENSE_SPDX="Apache-2.0"
 SOURCE_LICENSE_BYTES=11357
 SOURCE_LICENSE_GIT_BLOB_SHA1="7a4a3ea2424c09fbe48d455aed1eaa94d9124835"
 SOURCE_LICENSE_SHA256="58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+DAC_SOURCE_MODEL_ID="descript/dac_44khz"
+DAC_NUM_CODEBOOKS=9
+DAC_SAMPLE_RATE=44100
+DAC_IDENTITY_STATUS="SOURCE_REQUEST_ONLY"
 WORK="/dev/shm/vokra-zonos-inspection"
 
 die() { echo "zonos-vast: ERROR: $*" >&2; exit 2; }
@@ -83,6 +87,10 @@ write_transfer_manifest() {
     printf 'manifest_sha256=%s\n' "$(sha256_file "$public_manifest")"
     printf 'gguf_sha256=%s\n' "$(sha256_file "$gguf")"
     printf 'dac_gguf_sha256=%s\n' "$(sha256_file "$dac")"
+    printf 'dac_source_model_id=%s\n' "$DAC_SOURCE_MODEL_ID"
+    printf 'dac_num_codebooks=%s\n' "$DAC_NUM_CODEBOOKS"
+    printf 'dac_sample_rate=%s\n' "$DAC_SAMPLE_RATE"
+    printf 'dac_identity_status=%s\n' "$DAC_IDENTITY_STATUS"
     printf 'conditioning_packet_sha256=%s\n' "$(sha256_file "$packet")"
     printf 'reference_codes_sha256=%s\n' "$(sha256_file "$codes")"
     printf 'reference_pcm_sha256=%s\n' "$(sha256_file "$pcm")"
@@ -115,7 +123,7 @@ self_test() {
     'source_semantic_marker_status' 'expected_transformer_config' 'eos_token_id: int = 1024' 'masked_token_id: int = 1025' \
     'self.required_keys = {c.name for c in self.conditioners if c.uncond_vector is None}' \
     'logits[..., 1025:].fill_(-torch.inf)' 'unknown_token = -1' \
-    'DacModel.from_pretrained("descript/dac_44khz")' 'roll(k + 1)' 'attn_mlp_d_intermediate'; do
+    'DacModel.from_pretrained("descript/dac_44khz")' 'descript/dac_44khz' 'dac_num_codebooks=9' 'dac_sample_rate=44100' 'dac_identity_status=SOURCE_REQUEST_ONLY' 'roll(k + 1)' 'attn_mlp_d_intermediate'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing Zonos contract: $token" >&2; failed=1; }
   done
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-zonos-cpu-log.XXXXXX")"
@@ -211,7 +219,7 @@ set -e
 grep -Fq '"reference_status": "MEASURED_NOT_GATED"' \
   "$WORK/evidence/reference-codes.json" || die 'reference is not marked MEASURED_NOT_GATED'
 
-[[ -n "${ZONOS_DAC_GGUF:-}" && -f "$ZONOS_DAC_GGUF" && ! -L "$ZONOS_DAC_GGUF" ]] || die 'ZONOS_DAC_GGUF must name the authenticated 44.1-kHz DAC GGUF'
+[[ -n "${ZONOS_DAC_GGUF:-}" && -f "$ZONOS_DAC_GGUF" && ! -L "$ZONOS_DAC_GGUF" ]] || die 'ZONOS_DAC_GGUF must name a topology-compatible DAC GGUF; native binding authenticates its own metadata/manifest'
 packet_digest="$(awk -F'"' '/conditioning_packet_content_digest/{print $4; exit}' \
   "$WORK/evidence/reference-codes.json")"
 [[ "$packet_digest" =~ ^[0-9a-f]{64}$ ]] || die 'reference packet content digest is missing'

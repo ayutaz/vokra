@@ -15,6 +15,7 @@ import json
 import math
 import os
 import struct
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -24,17 +25,25 @@ CODEBOOKS = 9
 PREFIX_VALUES = 2048
 
 
-def reject_symlink_ancestors(path: Path) -> None:
-    absolute = Path(os.path.abspath(path))
+def reject_symlink_ancestors(path: Path | str) -> Path:
+    raw = os.fspath(path)
+    if not isinstance(raw, str) or not raw:
+        raise ValueError(f"path must be a non-empty string: {path!r}")
+    # Inspect the original POSIX spelling before Path normalizes `.`/`..`.
+    # CLI paths are local filesystem paths and this worker runs on Linux/macOS.
+    if any(part in (".", "..") for part in raw.split("/")):
+        raise ValueError(f"path contains a lexical dot component: {path}")
+    absolute = Path(os.path.abspath(raw))
     current = Path(absolute.anchor or os.sep)
     for component in absolute.parts[1:]:
         current /= component
         if current.is_symlink():
             raise ValueError(f"path contains a symlink ancestor: {path}")
+    return Path(raw)
 
 
 def require_absent_output(path: Path) -> None:
-    reject_symlink_ancestors(path)
+    path = reject_symlink_ancestors(path)
     if path.exists() or path.is_symlink():
         raise ValueError(f"output already exists or is symlinked: {path}")
     parent = path.parent
@@ -44,6 +53,43 @@ def require_absent_output(path: Path) -> None:
         parent = parent.parent
     if not parent.is_dir() or parent.is_symlink():
         raise ValueError(f"output parent is not a real directory: {parent}")
+
+
+def write_bytes_no_clobber(path: Path | str, value: bytes) -> None:
+    """Publish one packet atomically, without replacing a competing output."""
+    path = reject_symlink_ancestors(path)
+    require_absent_output(path)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    # The mkdir may have raced with a symlink insertion; revalidate all
+    # ancestors immediately before creating the same-directory temporary.
+    reject_symlink_ancestors(path)
+    if not parent.is_dir() or parent.is_symlink():
+        raise ValueError(f"output parent is not a real directory: {parent}")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # hard-link is the final no-clobber claim.  A competing final path
+        # therefore cannot be overwritten after the preflight checks.
+        reject_symlink_ancestors(path)
+        if not parent.is_dir() or parent.is_symlink():
+            raise ValueError(f"output parent is not a real directory: {parent}")
+        os.link(temporary, path)
+    finally:
+        # Once the hard-link claim succeeds, the final inode is authoritative;
+        # temporary-name cleanup is best effort and must not turn success into
+        # an error (or mask an earlier publish error).
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 def load_json(value: str, label: str) -> Any:
@@ -141,7 +187,10 @@ def self_test() -> None:
         directory = str(Path(directory).resolve())
         output_root = Path(directory) / "outputs"
         output_root.mkdir()
-        require_absent_output(output_root / "packet.bin")
+        require_absent_output(str(output_root / "packet.bin"))
+        write_bytes_no_clobber(output_root / "packet.bin", value)
+        assert (output_root / "packet.bin").read_bytes() == value
+        assert not list(output_root.glob(".packet.bin.*.tmp"))
         (output_root / "existing.bin").write_bytes(b"x")
         try:
             require_absent_output(output_root / "existing.bin")
@@ -149,6 +198,13 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("existing output must fail closed")
+        for lexical in ("./dot.bin", "../escape.bin"):
+            try:
+                require_absent_output(str(output_root) + "/" + lexical)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("lexical dot output components must fail closed")
         (output_root / "real").mkdir()
         (output_root / "link").symlink_to(output_root / "real", target_is_directory=True)
         try:
@@ -175,7 +231,10 @@ def main() -> int:
     parser.add_argument("--pitch-std", type=float, default=20.0)
     parser.add_argument("--speaking-rate", type=float, default=15.0)
     parser.add_argument("--language-id", type=int, default=0)
-    parser.add_argument("--output", type=Path)
+    # Keep this as a string until lexical path validation; argparse's Path
+    # conversion would erase `.`/`..` components before the safety gate sees
+    # them.
+    parser.add_argument("--output")
     args = parser.parse_args()
     if args.self_test:
         self_test()
@@ -183,12 +242,11 @@ def main() -> int:
     if not args.phoneme_ids or not args.speaker or not args.emotion or args.output is None:
         parser.error("--phoneme-ids, --speaker, --emotion, and --output are required")
     try:
-        require_absent_output(args.output)
         value, digest = packet(args)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_bytes(value)
+        write_bytes_no_clobber(args.output, value)
+        output = Path(args.output)
         print(json.dumps({
-            "packet": args.output.name,
+            "packet": output.name,
             "packet_sha256": hashlib.sha256(value).hexdigest(),
             "content_digest": digest,
             "projected_prefix": "compatibility_only_zero_filled",

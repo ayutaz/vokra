@@ -117,6 +117,12 @@ pub const ZONOS_SAMPLE_RATE: u32 = 44_100;
 /// same 9 codebook channels as Dia, but Zonos must bind the complete
 /// [`crate::dac::Dac`] rather than its lower-level `DacCodecGguf` container.
 pub const ZONOS_NUM_CODEBOOKS: usize = 9;
+/// Primary-source DAC companion label requested by Zonos's autoencoder.
+///
+/// This is source provenance, not a runtime payload identity: the native DAC
+/// binder authenticates its own GGUF metadata/manifest and this module only
+/// checks topology compatibility with that separately bound artifact.
+const ZONOS_DAC_SOURCE_MODEL_ID: &str = "descript/dac_44khz";
 const ZONOS_HOT_OPS: &[crate::compute::HotOp] = &[
     crate::compute::HotOp::Gemm,
     crate::compute::HotOp::Softmax,
@@ -1367,7 +1373,7 @@ impl ZonosTts {
         if dac.sample_rate() != self.cfg.sample_rate {
             return Err(VokraError::InvalidArgument(format!(
                 "zonos with_dac: dac sample_rate {} Hz != Zonos config sample_rate \
-                 {} Hz (Zonos-v0.1 is bound to descript/dac_44khz)",
+                 {} Hz (Zonos-v0.1 topology is compatible with the {ZONOS_DAC_SOURCE_MODEL_ID} source contract)",
                 dac.sample_rate(),
                 self.cfg.sample_rate,
             )));
@@ -1397,7 +1403,7 @@ impl ZonosTts {
         if dac.sample_rate != self.cfg.sample_rate {
             return Err(VokraError::InvalidArgument(format!(
                 "zonos with_dac: dac sample_rate {} Hz != Zonos config sample_rate {} Hz \
-                 (Zonos-v0.1 is bound to descript/dac_44khz)",
+                 (topology compatibility requires 44.1-kHz DAC)",
                 dac.sample_rate, self.cfg.sample_rate,
             )));
         }
@@ -3213,6 +3219,7 @@ mod tests {
         // Zonos-v0.1 emits nine codebooks, matching the channel count
         // required by the complete DAC binder.
         assert_eq!(ZONOS_NUM_CODEBOOKS, 9);
+        assert_eq!(ZONOS_DAC_SOURCE_MODEL_ID, "descript/dac_44khz");
     }
 
     // -----------------------------------------------------------------------
@@ -3398,8 +3405,9 @@ mod tests {
 
     /// Pins line 824 of [`ZonosTts::with_dac`]:
     /// `dac.sample_rate != cfg.sample_rate` — the 44.1 kHz DAC binding
-    /// guard. Zonos-v0.1 is explicitly bound to descript/dac_44khz
-    /// upstream; a DAC with a different sample rate is a load-time bug
+    /// guard. Zonos-v0.1's source requests descript/dac_44khz upstream, but
+    /// this runtime check only establishes topology compatibility; a DAC with
+    /// a different sample rate is a load-time bug
     /// (FR-EX-08 — never a silent resample).
     #[test]
     fn with_dac_rejects_sample_rate_mismatch() {
@@ -3411,8 +3419,8 @@ mod tests {
         let dac = stub_dac(c.num_codebooks, 24_000);
         match tts.with_dac_fixture(dac) {
             Err(VokraError::InvalidArgument(msg)) => assert!(
-                msg.contains("sample_rate") && msg.contains("dac_44khz"),
-                "must name sample_rate + dac_44khz binding, got: {msg}"
+                msg.contains("sample_rate") && msg.contains("topology"),
+                "must name sample_rate + topology compatibility, got: {msg}"
             ),
             other => panic!("expected InvalidArgument(sample_rate mismatch), got {other:?}"),
         }

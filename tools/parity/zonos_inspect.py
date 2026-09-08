@@ -25,6 +25,9 @@ PUBLIC_GGUF_BYTES = 3_248_843_808
 PUBLIC_GGUF_SHA256 = "12d542bd219f7f31c91b893810d85b0d810285e603029c69fbd19fd3c7da2c5c"
 EXPECTED_TENSOR_COUNT = 246
 EXPECTED_MANIFEST_SHA256 = "6543af3747d3e85bde862c3337744eea31f0105f9df6d8617c1c9afdae805847"
+DAC_SOURCE_MODEL_ID = "descript/dac_44khz"
+DAC_NUM_CODEBOOKS = 9
+DAC_SAMPLE_RATE = 44_100
 FORMAT = "vokra-zonos-inspection-v1"
 SOURCE_REPOSITORY = "https://github.com/Zyphra/Zonos.git"
 SOURCE_REVISION = "bc40d98e1e1ab54fc65c483be127a90e3c7c0645"
@@ -485,7 +488,12 @@ def _evidence_file(root: Path, value: Any, label: str) -> Path:
 
 
 def reference_evidence(path: Path | None, blockers: list[str], evidence_root: Path) -> dict[str, Any]:
-    """Authenticate the output envelope without treating it as a gate."""
+    """Authenticate the output envelope without treating it as a gate.
+
+    DAC identity is intentionally ``SOURCE_REQUEST_ONLY``: the source
+    checkout fixes the requested companion and topology, while no immutable
+    cache revision/digest is available to this model-free inspector.
+    """
     if path is None:
         blockers.append("official Zonos reference generation is required for validation")
         return {"status": "NOT_RUN"}
@@ -496,7 +504,9 @@ def reference_evidence(path: Path | None, blockers: list[str], evidence_root: Pa
             "upstream_repository", "upstream_revision",
             "conditioning_packet_sha256", "conditioning_packet_content_digest",
             "codes_path", "codes_shape", "codes_sha256", "pcm_path", "pcm_sha256",
-            "pcm_sample_rate", "runtime_status", "publication",
+            "dac_source_model_id", "dac_num_codebooks", "dac_identity_status",
+            "pcm_sample_rate",
+            "runtime_status", "publication",
         }
         if not isinstance(record, dict) or not required.issubset(record):
             raise ValueError("reference record is missing required identity/status fields")
@@ -511,13 +521,17 @@ def reference_evidence(path: Path | None, blockers: list[str], evidence_root: Pa
             or record["upstream_revision"] != UPSTREAM_HF_REVISION
             or record["runtime_status"] != "REFERENCE_ONLY_NO_NATIVE_VERDICT"
             or record["publication"] != "NO_UPLOAD"
+            or record["dac_source_model_id"] != DAC_SOURCE_MODEL_ID
+            or record["dac_num_codebooks"] != DAC_NUM_CODEBOOKS
+            or record["dac_identity_status"] != "SOURCE_REQUEST_ONLY"
             or not re.fullmatch(r"[0-9a-f]{64}", record["conditioning_packet_sha256"])
             or not re.fullmatch(r"[0-9a-f]{64}", record["conditioning_packet_content_digest"])
             or not re.fullmatch(r"[0-9a-f]{64}", record["codes_sha256"])
             or not re.fullmatch(r"[0-9a-f]{64}", record["pcm_sha256"])
-            or record["pcm_sample_rate"] != 44_100
+            or record["pcm_sample_rate"] != DAC_SAMPLE_RATE
             or not isinstance(record["codes_shape"], list)
-            or not record["codes_shape"]
+            or len(record["codes_shape"]) != 3
+            or record["codes_shape"][1] != DAC_NUM_CODEBOOKS
             or any(isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0 for dim in record["codes_shape"])
         ):
             raise ValueError("reference record identity/status is not fixed")
@@ -580,6 +594,12 @@ def inspect(snapshot: Path | None, packet: Path | None, manifest: Path | None, u
             "sha256": PUBLIC_GGUF_SHA256,
             "tensor_count": EXPECTED_TENSOR_COUNT,
             "manifest_sha256": EXPECTED_MANIFEST_SHA256,
+        },
+        "dac_companion": {
+            "source_model_id": DAC_SOURCE_MODEL_ID,
+            "num_codebooks": DAC_NUM_CODEBOOKS,
+            "sample_rate": DAC_SAMPLE_RATE,
+            "identity_status": "SOURCE_REQUEST_ONLY",
         },
     }
     evidence_error = True
@@ -813,7 +833,10 @@ def self_test() -> None:
             "upstream_revision": UPSTREAM_HF_REVISION,
             "conditioning_packet_sha256": "0" * 64,
             "conditioning_packet_content_digest": "1" * 64,
-            "codes_path": codes.name, "codes_shape": [1, 1, 1],
+            "dac_source_model_id": DAC_SOURCE_MODEL_ID,
+            "dac_num_codebooks": DAC_NUM_CODEBOOKS,
+            "dac_identity_status": "SOURCE_REQUEST_ONLY",
+            "codes_path": codes.name, "codes_shape": [1, DAC_NUM_CODEBOOKS, 1],
             "codes_sha256": sha256(codes),
             "pcm_path": "reference-pcm.f32le", "pcm_sha256": "",
             "pcm_sample_rate": 44_100,
@@ -828,6 +851,16 @@ def self_test() -> None:
         blockers = []
         assert reference_evidence(reference, blockers, root)["status"] == "MEASURED_NOT_GATED"
         record = json.loads(reference.read_text(encoding="utf-8"))
+        record["dac_identity_status"] = "EXACT"
+        reference.write_text(json.dumps(record), encoding="utf-8")
+        blockers = []
+        assert reference_evidence(reference, blockers, root)["status"] == "BLOCKED_REFERENCE"
+        record["dac_identity_status"] = "SOURCE_REQUEST_ONLY"
+        record["codes_shape"] = [1, DAC_NUM_CODEBOOKS - 1, 1]
+        reference.write_text(json.dumps(record), encoding="utf-8")
+        blockers = []
+        assert reference_evidence(reference, blockers, root)["status"] == "BLOCKED_REFERENCE"
+        record["codes_shape"] = [1, DAC_NUM_CODEBOOKS, 1]
         record["source_repository"] = "https://example.invalid/not-zonos"
         reference.write_text(json.dumps(record), encoding="utf-8")
         blockers = []

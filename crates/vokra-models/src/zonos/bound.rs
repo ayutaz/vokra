@@ -62,6 +62,7 @@ impl ZonosCheckpoint {
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
         require_float_tensor_dtypes(file)?;
+        verify_v0_1_tensor_roles(file, &ZonosConfig::zonos_v0_1_transformer())?;
         require_tensor_shape(file, LABEL, WEIGHT, &[OUTPUT_DIM, INPUT_DIM])?;
         require_tensor_shape(file, LABEL, BIAS, &[OUTPUT_DIM])?;
         Ok(Self { checkpoint })
@@ -319,6 +320,130 @@ impl ZonosCheckpoint {
     }
 }
 
+fn add_role(roles: &mut Vec<(String, Vec<usize>)>, name: impl Into<String>, shape: &[usize]) {
+    roles.push((name.into(), shape.to_vec()));
+}
+
+/// Complete config/native-loader-derived role map for the 246-tensor transformer.
+///
+/// The strict digest authenticates the supplied artifact, while this map
+/// makes the native wiring contract independently auditable: every tensor
+/// consumed by `load_weights` has one named source role and one shape derived
+/// from the pinned v0.1 config and the native loader's explicit wiring.  No
+/// role is inferred from a count or from payload bytes; independent source
+/// semantic markers and the external manifest digest remain separate gates.
+fn expected_v0_1_tensor_roles(config: &ZonosConfig) -> Vec<(String, Vec<usize>)> {
+    let bb = &config.backbone;
+    let mut roles = Vec::with_capacity(SPEC.tensor_count);
+    for codebook in 0..config.num_codebooks {
+        add_role(
+            &mut roles,
+            format!("embeddings.{codebook}.weight"),
+            &[config.codebook_vocab, bb.d_model],
+        );
+        add_role(
+            &mut roles,
+            format!("heads.{codebook}.weight"),
+            &[config.head_vocab, bb.d_model],
+        );
+    }
+    add_role(&mut roles, "backbone.norm_f.weight", &[bb.d_model]);
+    add_role(&mut roles, "backbone.norm_f.bias", &[bb.d_model]);
+    for layer in 0..bb.n_layer {
+        let prefix = format!("backbone.layers.{layer}");
+        add_role(&mut roles, format!("{prefix}.norm.weight"), &[bb.d_model]);
+        add_role(&mut roles, format!("{prefix}.norm.bias"), &[bb.d_model]);
+        add_role(
+            &mut roles,
+            format!("{prefix}.mixer.in_proj.weight"),
+            &[bb.q_hidden() + 2 * bb.kv_hidden(), bb.d_model],
+        );
+        add_role(
+            &mut roles,
+            format!("{prefix}.mixer.out_proj.weight"),
+            &[bb.d_model, bb.q_hidden()],
+        );
+        add_role(&mut roles, format!("{prefix}.norm2.weight"), &[bb.d_model]);
+        add_role(&mut roles, format!("{prefix}.norm2.bias"), &[bb.d_model]);
+        add_role(
+            &mut roles,
+            format!("{prefix}.mlp.fc1.weight"),
+            &[2 * bb.attn_mlp_d_intermediate, bb.d_model],
+        );
+        add_role(
+            &mut roles,
+            format!("{prefix}.mlp.fc2.weight"),
+            &[bb.d_model, bb.attn_mlp_d_intermediate],
+        );
+    }
+    add_role(
+        &mut roles,
+        "prefix_conditioner.conditioners.0.phoneme_embedder.weight",
+        &[189, bb.d_model],
+    );
+    add_role(
+        &mut roles,
+        "prefix_conditioner.conditioners.1.project.weight",
+        &[bb.d_model, 128],
+    );
+    add_role(
+        &mut roles,
+        "prefix_conditioner.conditioners.1.project.bias",
+        &[bb.d_model],
+    );
+    add_role(
+        &mut roles,
+        "prefix_conditioner.conditioners.1.uncond_vector",
+        &[bb.d_model],
+    );
+    for (index, input_dim) in [(2, 8), (3, 1), (4, 1), (5, 1)] {
+        add_role(
+            &mut roles,
+            format!("prefix_conditioner.conditioners.{index}.weight"),
+            &[1024, input_dim],
+        );
+        add_role(
+            &mut roles,
+            format!("prefix_conditioner.conditioners.{index}.uncond_vector"),
+            &[bb.d_model],
+        );
+    }
+    add_role(
+        &mut roles,
+        "prefix_conditioner.conditioners.6.int_embedder.weight",
+        &[128, bb.d_model],
+    );
+    add_role(
+        &mut roles,
+        "prefix_conditioner.conditioners.6.uncond_vector",
+        &[bb.d_model],
+    );
+    add_role(
+        &mut roles,
+        "prefix_conditioner.project.weight",
+        &[bb.d_model, bb.d_model],
+    );
+    add_role(&mut roles, "prefix_conditioner.project.bias", &[bb.d_model]);
+    add_role(&mut roles, "prefix_conditioner.norm.weight", &[bb.d_model]);
+    add_role(&mut roles, "prefix_conditioner.norm.bias", &[bb.d_model]);
+    roles
+}
+
+fn verify_v0_1_tensor_roles(file: &GgufFile, config: &ZonosConfig) -> Result<()> {
+    let roles = expected_v0_1_tensor_roles(config);
+    if roles.len() != SPEC.tensor_count {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: config/native role map has {} entries, expected {}",
+            roles.len(),
+            SPEC.tensor_count
+        )));
+    }
+    for (name, shape) in roles {
+        require_tensor_shape(file, LABEL, &name, &shape)?;
+    }
+    Ok(())
+}
+
 /// Real Zonos speaker-conditioner projection.
 #[derive(Debug, Clone)]
 pub struct ZonosSpeakerProjection {
@@ -407,5 +532,29 @@ mod tests {
             .expect("synthetic bf16 tensor");
         let file = GgufFile::parse(builder.to_bytes().expect("synthetic GGUF")).expect("parse");
         require_float_tensor_dtypes(&file).expect("float tensor contract");
+    }
+
+    #[test]
+    fn v0_1_role_shape_manifest_has_exact_246_unique_entries() {
+        let roles = expected_v0_1_tensor_roles(&ZonosConfig::zonos_v0_1_transformer());
+        assert_eq!(roles.len(), SPEC.tensor_count);
+        let mut names: Vec<&str> = roles.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), SPEC.tensor_count);
+        assert_eq!(
+            roles
+                .iter()
+                .find(|(name, _)| name == "backbone.layers.0.mixer.in_proj.weight")
+                .map(|(_, shape)| shape.as_slice()),
+            Some([3072, 2048].as_slice())
+        );
+        assert_eq!(
+            roles
+                .iter()
+                .find(|(name, _)| name == "prefix_conditioner.conditioners.2.weight")
+                .map(|(_, shape)| shape.as_slice()),
+            Some([1024, 8].as_slice())
+        );
     }
 }
