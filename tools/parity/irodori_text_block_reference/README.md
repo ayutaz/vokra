@@ -35,3 +35,9 @@ uv run --no-project --offline --python 3.12 python \
 
 The actual fixture dumper remains VAST-only and is gated by the same source
 audit before importing the upstream class.
+
+The VAST dependency worker performs a frozen, CPU-only sync of this project,
+records publisher or locked-sdist license bytes and native ELF dependencies,
+then validates the complete report schema and exact lock identities before
+preserving the evidence. A factual pass still has disposition
+`BLOCKED_OWNER_REVIEW`; it never authorizes reference execution or publication.

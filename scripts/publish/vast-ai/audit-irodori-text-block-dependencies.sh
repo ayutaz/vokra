@@ -20,6 +20,7 @@ self_test() {
   grep -Fq 'NO_IRODORI_SOURCE_OR_MODEL_OR_CHECKPOINT_REQUESTS' "$AUDIT"
   grep -Fq 'VOKRA_VAST_AUDIT=1' "$0"
   grep -Fq -- '--validate-contract' "$0"
+  grep -Fq -- '--validate-output' "$0"
   grep -Fq -- '--frozen' "$0"
   grep -Fq -- '--no-dev' "$0"
   if grep -En '(^|[;&|][[:space:]]*)git[[:space:]]+clone([[:space:]]|$)|(^|[;&|][[:space:]]*)curl([[:space:]]|$)|(^|[;&|][[:space:]]*)wget([[:space:]]|$)|(^|[;&|][[:space:]]*)snapshot_download([[:space:]]|$)|(^|[;&|][[:space:]]*)git[[:space:]]+push([[:space:]]|$)|(^|[;&|][[:space:]]*)vokra-cli[[:space:]]+convert([[:space:]]|$)|(^|[;&|][[:space:]]*)cargo([[:space:]]|$)' "$0" >/dev/null; then
@@ -100,7 +101,7 @@ audit_status=$?
 set -e
 [[ $audit_status == 2 ]] || die "dependency audit returned unexpected status: $audit_status"
 [[ -s "$output" ]] || die 'dependency audit report was not written'
-UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$output" <<'PY'
+if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$output" <<'PY'
 import json
 import pathlib
 import sys
@@ -114,7 +115,12 @@ def reject_duplicate_keys(pairs):
     return result
 
 path = pathlib.Path(sys.argv[1])
-data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+try:
+    data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+except (OSError, UnicodeError, TypeError, ValueError) as exc:
+    raise SystemExit(f"malformed dependency audit report: {exc}")
+if not isinstance(data, dict):
+    raise SystemExit("malformed dependency audit report: root must be an object")
 if data.get("schema") != "vokra-irodori-text-block-dependency-audit-v1":
     raise SystemExit("unexpected Irodori dependency audit schema")
 if data.get("status") not in {"BLOCKED_FACTUAL_AUDIT", "BLOCKED_OWNER_REVIEW"}:
@@ -122,9 +128,17 @@ if data.get("status") not in {"BLOCKED_FACTUAL_AUDIT", "BLOCKED_OWNER_REVIEW"}:
 if data.get("review") != "PENDING_OWNER_APPROVAL" or data.get("publication") != "NO_UPLOAD":
     raise SystemExit("dependency audit publication/approval gate drifted")
 env = data.get("environment", {})
+if not isinstance(env, dict):
+    raise SystemExit("malformed dependency audit report: environment must be an object")
 for key in ("irodori_source_fetched", "irodori_source_imported", "model_code_imported", "weights_acquired", "weights_imported", "weights_executed", "cargo_invoked"):
     if env.get(key) is not False:
         raise SystemExit(f"unsafe environment marker: {key}")
 PY
+then
+  die 'dependency audit report envelope validation failed'
+fi
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$AUDIT" \
+  --validate-output --project "$PROJECT" --output "$output" --expected-head "$expected_head" \
+  >/dev/null || die 'dependency audit report schema/identity validation failed'
 echo 'irodori dependency audit: report preserved; owner review required; no source/model/checkpoint/import/construction/upload attempted' >&2
 exit 2

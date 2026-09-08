@@ -63,6 +63,51 @@ EXPECTED_PACKAGES = {
 }
 REFERENCE_PROJECT = Path(__file__).resolve().parent
 EXPECTED_HEAD_PATTERN = re.compile(r"[0-9a-f]{40}")
+REPORT_KEYS = frozenset(
+    {
+        "schema",
+        "status",
+        "review",
+        "project",
+        "closure",
+        "packages",
+        "failures",
+        "environment",
+        "git",
+        "model_acquisition",
+        "publication",
+    }
+)
+PACKAGE_KEYS = frozenset({"lock", "installed"})
+INSTALLED_KEYS = frozenset(
+    {
+        "name",
+        "version",
+        "license",
+        "license_expression",
+        "license_classifiers",
+        "publisher_license_files",
+        "unsafe_license_paths",
+        "locked_sdist_license",
+        "native_payloads",
+        "native_payload_errors",
+    }
+)
+ENVIRONMENT_KEYS = frozenset(
+    {
+        "python",
+        "platform",
+        "machine",
+        "readelf_required",
+        "irodori_source_fetched",
+        "irodori_source_imported",
+        "model_code_imported",
+        "weights_acquired",
+        "weights_imported",
+        "weights_executed",
+        "cargo_invoked",
+    }
+)
 
 
 class AuditError(ValueError):
@@ -95,6 +140,31 @@ def read_bounded(path: Path, maximum: int) -> bytes:
 
 def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def strict_json(data: bytes | str) -> Any:
+    """Decode JSON while rejecting duplicate keys instead of silently merging."""
+
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AuditError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(data, object_pairs_hook=unique)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+        raise AuditError(f"invalid JSON evidence: {exc}") from exc
+
+
+def _canonical_string_list(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise AuditError(f"{label} must be a list of strings")
+    if value != sorted(set(value)):
+        raise AuditError(f"{label} must be sorted and duplicate-free")
+    return value
 
 
 def norm_name(value: str) -> str:
@@ -405,7 +475,7 @@ def audit(project: Path, expected_head: str) -> dict[str, Any]:
                 failures.append(f"native payload inspection incomplete: {key}: {item.get('path', '<unknown>')}")
             if contains_forbidden(item.get("path", "")) or any(contains_forbidden(value) for value in item.get("needed", [])):
                 failures.append(f"forbidden CUDA/NVIDIA/Triton native payload: {key}: {item.get('path', '<unknown>')}")
-        package_reports.append({"lock": row, "installed": {**metadata_fields, "publisher_license_files": publisher, "unsafe_license_paths": unsafe, "locked_sdist_license": source, "native_payloads": native}})
+        package_reports.append({"lock": row, "installed": {**metadata_fields, "publisher_license_files": publisher, "unsafe_license_paths": unsafe, "locked_sdist_license": source, "native_payloads": native, "native_payload_errors": native_errors}})
     status = "BLOCKED_FACTUAL_AUDIT" if failures else "BLOCKED_OWNER_REVIEW"
     return {
         "schema": SCHEMA,
@@ -420,6 +490,246 @@ def audit(project: Path, expected_head: str) -> dict[str, Any]:
         "model_acquisition": {"requested_files": [], "policy": "NO_IRODORI_SOURCE_OR_MODEL_OR_CHECKPOINT_REQUESTS"},
         "publication": "NO_UPLOAD",
     }
+
+
+def _validate_license_entries(value: Any, label: str) -> None:
+    if not isinstance(value, list):
+        raise AuditError(f"{label} must be a list")
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path", "size", "sha256"}
+            or not isinstance(item["path"], str)
+            or not item["path"]
+            or not isinstance(item["size"], int)
+            or isinstance(item["size"], bool)
+            or item["size"] <= 0
+            or item["size"] > MAX_LICENSE_BYTES
+            or not isinstance(item["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+        ):
+            raise AuditError(f"{label} contains malformed evidence")
+        safe_relative(item["path"])
+
+
+def _validate_native_entries(value: Any) -> None:
+    if not isinstance(value, list):
+        raise AuditError("native payload evidence must be a list")
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path", "size", "sha256", "needed", "inspection", "error"}
+            or not isinstance(item["path"], str)
+            or not item["path"]
+            or not isinstance(item["size"], int)
+            or isinstance(item["size"], bool)
+            or item["size"] <= 0
+            or not isinstance(item["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+            or not isinstance(item["needed"], list)
+            or any(not isinstance(value, str) for value in item["needed"])
+            or item["inspection"] not in {"ok", "error"}
+            or (item["inspection"] == "ok" and item["error"] is not None)
+            or (item["inspection"] == "error" and (not isinstance(item["error"], str) or not item["error"]))
+        ):
+            raise AuditError("native payload evidence is malformed or incomplete")
+        safe_relative(item["path"])
+
+
+def _validate_sdist_evidence(value: Any, row: dict[str, Any]) -> None:
+    if not isinstance(value, dict) or not isinstance(value.get("status"), str):
+        raise AuditError("dependency report locked sdist evidence is malformed")
+    status = value["status"]
+    if status == "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES":
+        artifact = row.get("sdist")
+        if (
+            not isinstance(artifact, dict)
+            or set(value) != {"status", "url", "final_url", "size", "sha256", "license_files"}
+            or value["url"] != artifact["url"]
+            or value["final_url"] != artifact["url"]
+            or value["size"] != artifact["size"]
+            or value["sha256"] != artifact["hash"]
+        ):
+            raise AuditError("dependency report locked sdist identity drift")
+        _validate_license_entries(value["license_files"], "locked sdist license files")
+        if not value["license_files"]:
+            raise AuditError("dependency report locked sdist has no license files")
+        return
+    if status == "NOT_APPLICABLE_NON_PYPI_SOURCE":
+        if row.get("source") != {"registry": TORCH_CPU_INDEX} or set(value) != {"status", "license_files"} or value["license_files"] != []:
+            raise AuditError("dependency report non-PyPI sdist disposition is malformed")
+        return
+    if row.get("source") != {"registry": PYPI_REGISTRY} or not isinstance(row.get("sdist"), dict):
+        raise AuditError("dependency report blocked sdist lacks a PyPI lock artifact")
+    if status == "BLOCKED_LOCKED_SDIST_FETCH":
+        expected = {"status", "error", "license_files"}
+    elif status == "BLOCKED_LOCKED_SDIST_IDENTITY":
+        expected = {"status", "observed_size", "observed_sha256", "license_files"}
+    elif status == "BLOCKED_LOCKED_SDIST_LICENSE":
+        expected = {"status", "error", "license_files"}
+    else:
+        raise AuditError("dependency report locked sdist disposition is unknown")
+    if set(value) != expected or value["license_files"] != []:
+        raise AuditError("dependency report blocked sdist evidence is malformed")
+    if "error" in value and not isinstance(value["error"], str):
+        raise AuditError("dependency report sdist error is malformed")
+    if "observed_size" in value and (not isinstance(value["observed_size"], int) or value["observed_size"] < 0):
+        raise AuditError("dependency report observed sdist size is malformed")
+    if "observed_sha256" in value and (not isinstance(value["observed_sha256"], str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value["observed_sha256"]) is None):
+        raise AuditError("dependency report observed sdist hash is malformed")
+
+
+def validate_report(path: Path, project: Path, expected_head: str) -> dict[str, Any]:
+    """Validate the complete factual report before a worker accepts it.
+
+    The report is evidence, not an approval.  Exact keys and lock identities
+    prevent a partial or hand-edited report from being mistaken for a clean
+    audit.  This function never imports torch, resolves packages, or touches
+    an Irodori checkout or model.
+    """
+
+    expected_head = validate_expected_head(expected_head)
+    if not path.is_file() or path.is_symlink():
+        raise AuditError("dependency report must be a regular file")
+    value = strict_json(path.read_bytes())
+    project_data, rows, project_bytes, lock_bytes = validate_project(project)
+    active = active_linux(rows)
+    expected_ids = [identity(row["name"], row["version"]) for row in active]
+    if not isinstance(value, dict) or set(value) != REPORT_KEYS:
+        raise AuditError("dependency report root schema drift")
+    if value["schema"] != SCHEMA or value["status"] not in {"BLOCKED_FACTUAL_AUDIT", "BLOCKED_OWNER_REVIEW"}:
+        raise AuditError("dependency report disposition drift")
+    if value["review"] != "PENDING_OWNER_APPROVAL" or value["publication"] != "NO_UPLOAD":
+        raise AuditError("dependency report approval/publication gate drift")
+    project_value = value["project"]
+    expected_project = {
+        "name": project_data["project"]["name"],
+        "version": project_data["project"]["version"],
+        "pyproject_sha256": sha256_bytes(project_bytes),
+        "uv_lock_sha256": sha256_bytes(lock_bytes),
+    }
+    if project_value != expected_project:
+        raise AuditError("dependency report project identity/hash drift")
+    closure = value["closure"]
+    expected_observed = closure.get("observed") if isinstance(closure, dict) else None
+    expected_expected = closure.get("expected") if isinstance(closure, dict) else None
+    if (
+        not isinstance(closure, dict)
+        or set(closure) != {"lock_rows", "active_linux_rows", "expected", "observed", "exact"}
+        or closure["lock_rows"] != len(rows)
+        or closure["active_linux_rows"] != len(active)
+        or _canonical_string_list(expected_expected, "dependency report expected closure") != expected_ids
+        or _canonical_string_list(expected_observed, "dependency report observed closure") is None
+        or not isinstance(closure["exact"], bool)
+        or closure["exact"] != (expected_observed == expected_ids)
+    ):
+        raise AuditError("dependency report closure drift")
+    failures = _canonical_string_list(value["failures"], "dependency report failures")
+    environment = value["environment"]
+    if not isinstance(environment, dict) or set(environment) != ENVIRONMENT_KEYS:
+        raise AuditError("dependency report environment schema drift")
+    if not isinstance(environment["platform"], str) or not isinstance(environment["machine"], str):
+        raise AuditError("dependency report host identity is malformed")
+    if environment["readelf_required"] is not True or any(
+        environment[key] is not False
+        for key in (
+            "irodori_source_fetched",
+            "irodori_source_imported",
+            "model_code_imported",
+            "weights_acquired",
+            "weights_imported",
+            "weights_executed",
+            "cargo_invoked",
+        )
+    ):
+        raise AuditError("dependency report claims unsafe source/model activity")
+    if not isinstance(environment["python"], str):
+        raise AuditError("dependency report host identity is malformed")
+    if value["git"] != {"expected_head": expected_head}:
+        raise AuditError("dependency report HEAD binding drift")
+    if value["model_acquisition"] != {
+        "requested_files": [],
+        "policy": "NO_IRODORI_SOURCE_OR_MODEL_OR_CHECKPOINT_REQUESTS",
+    }:
+        raise AuditError("dependency report model acquisition drift")
+    packages = value["packages"]
+    if not isinstance(packages, list) or len(packages) != len(active):
+        raise AuditError("dependency report package count drift")
+    expected_failures: set[str] = set()
+    if environment["platform"] != "linux" or environment["machine"].casefold() not in {"x86_64", "amd64"}:
+        expected_failures.add("audit host must be Linux x86_64")
+    if re.fullmatch(r"3\.12\.\d+", environment["python"]) is None:
+        expected_failures.add(f"audit Python must be 3.12, got {environment['python']}")
+    observed = closure["observed"]
+    if observed != expected_ids:
+        expected_failures.add(
+            f"installed closure differs from Linux lock: missing={sorted(set(expected_ids)-set(observed))!r} extra={sorted(set(observed)-set(expected_ids))!r}"
+        )
+    for item, row in zip(packages, active, strict=True):
+        if not isinstance(item, dict) or item.get("lock") != row:
+            raise AuditError("dependency report locked package identity drift")
+        allowed_item_keys = {PACKAGE_KEYS, PACKAGE_KEYS | {"status"}}
+        if set(item) not in allowed_item_keys:
+            raise AuditError("dependency report package schema drift")
+        installed = item.get("installed")
+        if installed is None:
+            if set(item) != PACKAGE_KEYS | {"status"} or item.get("status") != "BLOCKED_INSTALLED_IDENTITY":
+                raise AuditError("dependency report incomplete package disposition drift")
+            expected_failures.add(f"installed distribution count is not one: {identity(row['name'], row['version'])}")
+            continue
+        if set(item) != PACKAGE_KEYS:
+            raise AuditError("dependency report package schema drift")
+        if not isinstance(installed, dict) or set(installed) != INSTALLED_KEYS:
+            raise AuditError("dependency report installed package schema drift")
+        if not isinstance(installed["name"], str) or not isinstance(installed["version"], str):
+            raise AuditError("dependency report installed package identity is malformed")
+        if identity(str(installed["name"]), str(installed["version"])) != identity(row["name"], row["version"]):
+            raise AuditError("dependency report installed package identity drift")
+        for key in ("license", "license_expression"):
+            if installed[key] is not None and not isinstance(installed[key], str):
+                raise AuditError("dependency report license metadata type drift")
+        if not isinstance(installed["license_classifiers"], list) or any(not isinstance(item, str) for item in installed["license_classifiers"]):
+            raise AuditError("dependency report license classifier metadata drift")
+        _validate_license_entries(installed["publisher_license_files"], "publisher license files")
+        if not isinstance(installed["unsafe_license_paths"], list) or any(not isinstance(item, str) or not item for item in installed["unsafe_license_paths"]):
+            raise AuditError("dependency report unsafe publisher license paths are malformed")
+        if installed["unsafe_license_paths"]:
+            expected_failures.add(
+                f"unsafe/oversized publisher license path: {identity(row['name'], row['version'])}"
+            )
+        _validate_native_entries(installed["native_payloads"])
+        if not isinstance(installed["native_payload_errors"], list) or any(not isinstance(item, str) or not item for item in installed["native_payload_errors"]):
+            raise AuditError("dependency report native payload errors are malformed")
+        key = identity(row["name"], row["version"])
+        for error in installed["native_payload_errors"]:
+            expected_failures.add(f"native payload inspection failed: {key}: {error}")
+        for native in installed["native_payloads"]:
+            if native["inspection"] != "ok":
+                expected_failures.add(f"native payload inspection incomplete: {key}: {native['path']}")
+            if native["inspection"] == "ok" and native["error"] is not None:
+                raise AuditError("dependency report successful native inspection carries an error")
+            if contains_forbidden(native["path"]) or any(contains_forbidden(value) for value in native["needed"]):
+                expected_failures.add(f"forbidden CUDA/NVIDIA/Triton native payload: {key}: {native['path']}")
+        publisher = installed["publisher_license_files"]
+        source = installed["locked_sdist_license"]
+        if publisher and source is not None:
+            raise AuditError("dependency report contains both publisher and sdist license evidence")
+        if not publisher and not (isinstance(source, dict) and source.get("license_files")):
+            expected_failures.add(f"primary publisher/source license bytes unavailable: {key}")
+        if source is not None:
+            _validate_sdist_evidence(source, row)
+    expected_failures = set(expected_failures)
+    actual_failures = set(failures)
+    if actual_failures != expected_failures:
+        raise AuditError(
+            f"dependency report failures do not match evidence: expected={sorted(expected_failures)!r} actual={sorted(actual_failures)!r}"
+        )
+    expected_status = "BLOCKED_FACTUAL_AUDIT" if expected_failures else "BLOCKED_OWNER_REVIEW"
+    if value["status"] != expected_status:
+        raise AuditError("dependency report status does not match failures")
+    if closure["exact"] is not True and value["status"] != "BLOCKED_FACTUAL_AUDIT":
+        raise AuditError("inexact dependency closure cannot remain owner-review")
+    return value
 
 
 def validate_output_path(path: Path) -> None:
@@ -455,6 +765,7 @@ def write_no_replace(path: Path, payload: bytes) -> None:
 
 
 def self_test() -> int:
+    global installed_distributions, publisher_files, native_payloads
     _, rows, _, _ = validate_project()
     if len(active_linux(rows)) != 10:
         raise SystemExit("self-test expected 10 Linux active distributions")
@@ -473,6 +784,108 @@ def self_test() -> int:
         raise SystemExit("self-test accelerator rejection is broken")
     if any("cuda" in value.casefold() for value in ["libtorch_cpu.so"]):
         raise SystemExit("self-test falsely rejected CPU payload")
+    try:
+        strict_json('{"status":"BLOCKED","status":"OWNER"}')
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted duplicate report key")
+    for malformed in (b"{", b"\xff", None):
+        try:
+            strict_json(malformed)
+        except AuditError:
+            pass
+        else:
+            raise SystemExit("self-test leaked malformed JSON/UTF-8/type error")
+    sdist_row = {"source": {"registry": PYPI_REGISTRY}, "sdist": {"url": "https://files.pythonhosted.org/pkg-1.0.tar.gz", "hash": "sha256:" + "0" * 64, "size": 1}}
+    _validate_sdist_evidence({"status": "BLOCKED_LOCKED_SDIST_FETCH", "error": "URLError", "license_files": []}, sdist_row)
+    _validate_sdist_evidence({"status": "BLOCKED_LOCKED_SDIST_IDENTITY", "observed_size": 1, "observed_sha256": "sha256:" + "1" * 64, "license_files": []}, sdist_row)
+    _validate_sdist_evidence({"status": "BLOCKED_LOCKED_SDIST_LICENSE", "error": "missing license", "license_files": []}, sdist_row)
+    try:
+        _validate_sdist_evidence({"status": "BLOCKED_LOCKED_SDIST_FETCH", "error": "URLError", "license_files": [{"path": "LICENSE", "size": 1, "sha256": "0" * 64}]}, sdist_row)
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted blocked sdist with license bytes")
+    # Exercise report-level semantics with a synthetic package-only report;
+    # no torch import or dependency synchronization is involved.
+    saved_installed, saved_publisher, saved_native = installed_distributions, publisher_files, native_payloads
+    class _Meta(dict):
+        def get_all(self, key):
+            return []
+    class _Dist:
+        def __init__(self, name, version):
+            self.version = version
+            self.metadata = _Meta({"Name": name, "License": "BSD", "License-Expression": "BSD-3-Clause"})
+    active = active_linux(rows)
+    installed_distributions = lambda: {identity(row["name"], row["version"]): [_Dist(row["name"], row["version"])] for row in active}
+    publisher_files = lambda dist: ([{"path": "LICENSE", "size": 3, "sha256": "0" * 64}], [])
+    native_payloads = lambda dist: ([], [])
+    head = "0123456789abcdef" * 2 + "01234567"
+    try:
+        with tempfile.TemporaryDirectory(prefix="irodori-report-validator-", dir="/private/tmp") as directory:
+            report_path = Path(directory) / "report.json"
+            report = audit(REFERENCE_PROJECT, head)
+            write_no_replace(report_path, (canonical(report) + "\n").encode())
+            validate_report(report_path, REFERENCE_PROJECT, head)
+
+            def expect_rejected(mutated: dict[str, Any], label: str) -> None:
+                candidate = Path(directory) / f"{label}.json"
+                write_no_replace(candidate, (canonical(mutated) + "\n").encode())
+                try:
+                    validate_report(candidate, REFERENCE_PROJECT, head)
+                except AuditError:
+                    return
+                raise SystemExit(f"self-test accepted invalid report: {label}")
+
+            def expect_payload_rejected(payload: bytes, label: str) -> None:
+                candidate = Path(directory) / f"{label}.json"
+                candidate.write_bytes(payload)
+                try:
+                    validate_report(candidate, REFERENCE_PROJECT, head)
+                except AuditError:
+                    return
+                raise SystemExit(f"self-test accepted invalid report payload: {label}")
+
+            expect_payload_rejected(b"{", "malformed-json")
+            expect_payload_rejected(b"\xff", "malformed-utf8")
+            expect_payload_rejected(b"[]", "malformed-root-type")
+
+            bad_status = json.loads(canonical(report))
+            bad_status["status"] = "BLOCKED_OWNER_REVIEW"
+            expect_rejected(bad_status, "bad-status")
+            bad_exact = json.loads(canonical(report))
+            bad_exact["closure"]["exact"] = False
+            expect_rejected(bad_exact, "bad-exact")
+            for observed, label in ((None, "null"), (["z", "a"], "unsorted"), (["a", "a"], "duplicate")):
+                bad_observed = json.loads(canonical(report))
+                bad_observed["closure"]["observed"] = observed
+                expect_rejected(bad_observed, f"bad-observed-{label}")
+            bad_failures = json.loads(canonical(report))
+            bad_failures["failures"] = ["synthetic failure", "synthetic failure"]
+            expect_rejected(bad_failures, "duplicate-failures")
+            missing_failure = json.loads(canonical(report))
+            missing_failure["packages"][0]["installed"]["publisher_license_files"] = []
+            missing_failure["packages"][0]["installed"]["locked_sdist_license"] = None
+            expect_rejected(missing_failure, "missing-critical-failure")
+            honest_incomplete = json.loads(canonical(report))
+            first = honest_incomplete["packages"][0]
+            first["installed"] = None
+            first["status"] = "BLOCKED_INSTALLED_IDENTITY"
+            key = identity(active[0]["name"], active[0]["version"])
+            honest_incomplete["failures"] = sorted(set(honest_incomplete["failures"]) | {f"installed distribution count is not one: {key}"})
+            honest_incomplete["status"] = "BLOCKED_FACTUAL_AUDIT"
+            candidate = Path(directory) / "honest-incomplete.json"
+            write_no_replace(candidate, (canonical(honest_incomplete) + "\n").encode())
+            validate_report(candidate, REFERENCE_PROJECT, head)
+            malformed_incomplete = json.loads(canonical(honest_incomplete))
+            del malformed_incomplete["packages"][0]["status"]
+            expect_rejected(malformed_incomplete, "malformed-incomplete")
+            missing_package_key = json.loads(canonical(report))
+            del missing_package_key["packages"][0]["installed"]
+            expect_rejected(missing_package_key, "missing-package-key")
+    finally:
+        installed_distributions, publisher_files, native_payloads = saved_installed, saved_publisher, saved_native
     with tempfile.TemporaryDirectory(prefix="irodori-dependency-hash-test-", dir="/private/tmp") as directory:
         native = Path(directory) / "large-native.so"
         native.write_bytes((b"native-payload-" * 200_000) + b"\n")
@@ -526,19 +939,30 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--validate-contract", action="store_true")
+    parser.add_argument("--validate-output", action="store_true")
     parser.add_argument("--project", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--expected-head")
     args = parser.parse_args()
     if args.self_test:
-        if args.validate_contract or args.project or args.output or args.expected_head:
+        if args.validate_contract or args.validate_output or args.project or args.output or args.expected_head:
             parser.error("--self-test accepts no other arguments")
         return self_test()
     if args.validate_contract:
-        if args.project or args.output or args.expected_head:
+        if args.validate_output or args.project or args.output or args.expected_head:
             parser.error("--validate-contract accepts no other arguments")
         validate_project()
         print("irodori_text_block dependency contract: OK")
+        return 0
+    if args.validate_output:
+        if args.project is None or args.output is None or args.expected_head is None:
+            parser.error("--validate-output requires --project, --output, and --expected-head")
+        try:
+            validate_report(args.output, args.project, args.expected_head)
+        except (AuditError, OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            print(f"Irodori dependency report rejected: {exc}", file=sys.stderr)
+            return 2
+        print("irodori_text_block dependency report: OK")
         return 0
     if args.project is None or args.output is None or args.expected_head is None:
         parser.error("--project, --output, and --expected-head are required")
