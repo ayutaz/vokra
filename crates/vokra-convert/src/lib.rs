@@ -1018,11 +1018,12 @@ pub enum ModelKind {
     Funcodec,
     /// OpenMOSS **XY_Tokenizer_TTSD_V0** safetensors checkpoint (SoTA
     /// plan Phase 5 codec, 2026-07-25). Category = `codec`. 1 kbps
-    /// RVQ-8 @ 12.5 Hz — the codec half of MOSS-TTSD. BF16 pass-
-    /// through skeleton — every F32 / F16 / BF16 tensor passes
-    /// through verbatim following the qwen3_tts / vibevoice /
-    /// voxcpm2 landed contract. Provenance = **apache-2.0**
-    /// (Permissive).
+    /// RVQ-8 @ 12.5 Hz — the codec half of MOSS-TTSD. The private BF16
+    /// pass-through helper is test-only; the public converter remains
+    /// `INSPECTION_ONLY` until the checkpoint tensor manifest, native
+    /// runtime, and independent parity are authenticated. The source README
+    /// declares **apache-2.0**, but the future exact route remains subject to
+    /// the pending license/owner gate.
     XyTokenizer,
     /// SparkAudio **Spark-TTS BiCodec** safetensors checkpoint (SoTA
     /// plan Phase 5 codec fleet, 2026-07-28). Category = `codec`.

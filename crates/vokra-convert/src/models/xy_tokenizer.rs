@@ -1,17 +1,19 @@
 //! **XY_Tokenizer**: safetensors checkpoint → GGUF conversion.
 //!
 //! - **HF**: `OpenMOSS-Team/XY_Tokenizer_TTSD_V0`
-//! - **License**: `apache-2.0` for the weights; the official source
-//!   `readme.md` explicitly declares Apache-2.0 at the fixed revision, but no
-//!   full `LICENSE`/`COPYING`/`NOTICE`/`COPYRIGHT` file is tracked. The source
-//!   is not copied or derived here.
+//! - **License evidence**: the official source `readme.md` declares
+//!   Apache-2.0 at the fixed revision, but no full
+//!   `LICENSE`/`COPYING`/`NOTICE`/`COPYRIGHT` file is tracked. This is not an
+//!   owner approval; the source/license gate remains pending. The source is
+//!   not copied or derived here.
 //! - **Category**: `codec`
 //! - **Notes**: 1 kbps RVQ-8 @ 12.5 Hz, MOSS-TTSD backend.
 //!
 //! Input: a VAST-prepared safetensors artifact derived from the upstream
 //! `OpenMOSS-Team/XY_Tokenizer_TTSD_V0` `.ckpt`. Output is deliberately
 //! `INSPECTION_ONLY`; no native XY_Tokenizer binder exists yet because the
-//! authenticated evidence still has an unverified topology contract.
+//! fixed source/config axes do not authenticate the checkpoint's complete
+//! tensor names, shapes, roles, or payload identity.
 //!
 //! # BF16 posture
 //!
@@ -146,12 +148,13 @@ pub struct XyTokenizerReport {
 /// Vokra GGUF at `output`.
 ///
 /// The public conversion entry point currently refuses every input with an
-/// explicit `INSPECTION_ONLY` error: although the VAST prepared-artifact SHA
-/// and complete tensor manifest are authenticated, the topology contract,
-/// native runtime path, and independent numerical parity are not. The private
-/// synthetic format helper exists only for converter tests. The only accepted
-/// license for a future conversion is the upstream `apache-2.0` weight
-/// license.
+/// explicit `INSPECTION_ONLY` error: the fixed source/config contract is
+/// recorded, but a VAST checkpoint tensor manifest, native runtime path, and
+/// independent numerical parity are not authenticated. The private synthetic
+/// format helper exists only for converter tests and cannot authorize a
+/// production artifact. The only currently declared candidate is the
+/// upstream README's `apache-2.0` declaration; production conversion still
+/// requires authenticated license bytes and an owner decision.
 ///
 /// # Errors
 ///
