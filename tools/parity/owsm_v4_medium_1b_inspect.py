@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Inspection-only evidence collector for ESPnet OWSM v4 medium 1B."""
 from __future__ import annotations
-import argparse, hashlib, json, os, posixpath, re, struct, subprocess, tempfile, zipfile
+import argparse, hashlib, itertools, json, os, posixpath, re, stat, struct, subprocess, sys, tempfile, zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -71,6 +71,93 @@ def sha256(path:Path)->str:
  with path.open("rb") as f:
   for b in iter(lambda:f.read(1<<20),b""): d.update(b)
  return d.hexdigest()
+_TEMP_COUNTER=itertools.count()
+def reject_raw_path(path:Path,label:str)->None:
+ raw=os.fspath(path)
+ if not raw or "\x00" in raw or any(part in (".","..") for part in raw.split("/")): raise RuntimeError(f"unsafe {label} path")
+def validate_raw_cli_paths(argv:list[str])->None:
+ options={"--snapshot":"snapshot","--source":"source","--server-tree":"server-tree","--output":"output"}
+ index=0
+ while index<len(argv):
+  argument=argv[index]
+  matched=None; raw=None
+  for option,label in options.items():
+   if argument==option:
+    matched=label
+    if index+1<len(argv): raw=argv[index+1]
+    index+=1
+    break
+   if argument.startswith(option+"="):
+    matched=label; raw=argument[len(option)+1:]; break
+  if matched is not None:
+   if raw is None: index+=1; continue
+   if not raw.startswith("/") or raw=="/" or "\x00" in raw or any(part in (".","..") for part in raw.split("/")): raise RuntimeError(f"unsafe {matched} CLI path")
+  index+=1
+def validate_existing_dir(path:Path,label:str)->None:
+ reject_raw_path(path,label)
+ absolute=Path(os.path.abspath(os.fspath(path))); current=Path(absolute.anchor)
+ for part in absolute.parts[1:]:
+  current/=part; info=os.lstat(current)
+  if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode): raise RuntimeError(f"unsafe {label} directory ancestry: {current}")
+def validate_existing_file(path:Path,label:str)->None:
+ reject_raw_path(path,label)
+ absolute=Path(os.path.abspath(os.fspath(path))); current=Path(absolute.anchor)
+ for part in absolute.parts[1:-1]:
+  current/=part; info=os.lstat(current)
+  if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode): raise RuntimeError(f"unsafe {label} directory ancestry: {current}")
+ info=os.lstat(absolute)
+ if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode): raise RuntimeError(f"unsafe {label} input type")
+def validate_dir(path:Path,label:str)->None:
+ absolute=Path(os.path.abspath(os.fspath(path))); current=Path(absolute.anchor)
+ for part in absolute.parts[1:]:
+  current /= part; info=os.lstat(current)
+  if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode): raise RuntimeError(f"unsafe {label} directory ancestry: {current}")
+def ensure_dir(path:Path,label:str)->None:
+ reject_raw_path(path,label)
+ if os.path.lexists(path) and (path.is_symlink() or not path.is_dir()): raise RuntimeError(f"{label} must be a regular directory")
+ path.mkdir(parents=True,exist_ok=True); validate_dir(path,label)
+def write_atomic_no_replace(path:Path,payload:bytes)->None:
+ """Atomically publish one evidence file without clobbering prior output."""
+ reject_raw_path(path,"evidence"); ensure_dir(path.parent,"evidence parent")
+ if os.path.lexists(path): raise FileExistsError(path)
+ flags=os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW",0)|os.O_WRONLY
+ temporary=None; fd=-1
+ for _ in range(128):
+  candidate=path.parent/f".{path.name}.owsm-tmp-{os.getpid()}-{next(_TEMP_COUNTER)}"
+  try:
+   fd=os.open(candidate,flags,0o600); temporary=candidate; break
+  except FileExistsError: continue
+ if temporary is None: raise RuntimeError("unable to allocate unique evidence temporary")
+ info=os.fstat(fd); identity=(info.st_dev,info.st_ino); linked=False
+ try:
+  offset=0
+  while offset<len(payload):
+   written=os.write(fd,payload[offset:])
+   if written<=0: raise OSError("zero-byte evidence write")
+   offset += written
+  os.fsync(fd); os.close(fd); fd=-1
+  validate_dir(path.parent,"evidence parent")
+  verify_fd=os.open(temporary,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0))
+  try:
+   verified=os.fstat(verify_fd)
+   if not stat.S_ISREG(verified.st_mode) or (verified.st_dev,verified.st_ino)!=identity: raise RuntimeError("evidence temporary identity changed")
+   os.fsync(verify_fd)
+  finally: os.close(verify_fd)
+  os.link(temporary,path,follow_symlinks=False); linked=True
+  try:
+   directory_fd=os.open(path.parent,os.O_RDONLY|getattr(os,"O_DIRECTORY",0)|getattr(os,"O_NOFOLLOW",0))
+   try: os.fsync(directory_fd)
+   finally: os.close(directory_fd)
+  except OSError: pass
+ finally:
+  if fd>=0: os.close(fd)
+  try:
+   if linked: temporary.unlink()
+   else:
+    current=os.lstat(temporary)
+    if (current.st_dev,current.st_ino)==identity and stat.S_ISREG(current.st_mode): temporary.unlink()
+  except FileNotFoundError: pass
+  except OSError: pass
 def git_blob_sha1(path:Path)->str:
  data=path.read_bytes(); return hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest()
 def git_blob_sha1_bytes(data:bytes)->str:
@@ -412,6 +499,9 @@ def source_semantic_evidence(root:Path, blockers:list[str])->dict[str,Any]:
   },
  }
 def inspect(snapshot:Path,source:Path,tree:Path,out:Path)->int:
+ validate_existing_dir(snapshot,"snapshot")
+ validate_existing_dir(source,"source")
+ validate_existing_file(tree,"server-tree")
  blockers=[]; local=files(snapshot); tree_packet=server_tree(snapshot,tree,blockers)
  if not {CONFIG,MAIN,BPE,STATS,README}.issubset({p.relative_to(snapshot).as_posix() for p in local}): blockers.append("required OWSM files missing")
  for name,(size,digest) in KNOWN_LFS.items():
@@ -429,10 +519,13 @@ def inspect(snapshot:Path,source:Path,tree:Path,out:Path)->int:
  inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if not blockers else "INSPECTION_ERROR"
  blockers += ["native ESPnet S2T frontend/subsampling/encoder/decoder is not implemented","joint CTC/attention beam search and special-token semantics are not implemented","independent CPU numerical parity is not run","Metal is blocked by CPU runtime","dependency provenance is unreviewed","dataset provenance is unauthenticated"]
  payload={"format":FORMAT,"status":"BLOCKED","inspection_status":inspection_status,"evidence_stage":"INSPECTION_ONLY","runtime_status":RUNTIME_STATUS,"cpu_status":CPU_STATUS,"metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"revision":HF_REVISION,"server_tree":tree_packet,"files":[identity(p,snapshot) for p in local],"config":config,"checkpoint":checkpoint,"bpe":bpe,"readme":readme,"stats":stats},"official_source":source_inventory_packet,"source_semantics":source_semantics,"license_evidence":{"weights":{"status":"AUTHENTICATED_FROM_MODEL_CARD" if readme and readme.get("status")=="AUTHENTICATED_MODEL_CARD" else "BLOCKED_MODEL_CARD","spdx":"cc-by-4.0","card":"README.md"},"espnet_source":"Apache/MIT source declaration requires review","dependencies":"UNREVIEWED_BLOCKER","datasets":"UNAUTHENTICATED_BLOCKER"},"blockers":sorted(set(blockers))}
- out.mkdir(parents=True,exist_ok=True); (out/"manifest.json").write_text(json.dumps(payload,sort_keys=True,indent=2,default=list)+"\n"); return 2
+ ensure_dir(out,"evidence output")
+ write_atomic_no_replace(out/"manifest.json",(json.dumps(payload,sort_keys=True,indent=2,default=list)+"\n").encode("utf-8")); return 2
 def write_error_manifest(out:Path,error:Exception)->None:
  payload={"format":FORMAT,"status":"BLOCKED","inspection_status":"INSPECTION_ERROR","evidence_stage":"INSPECTION_ONLY","runtime_status":RUNTIME_STATUS,"cpu_status":CPU_STATUS,"metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","error":str(error),"blockers":[str(error)]}
- out.mkdir(parents=True,exist_ok=True); (out/"manifest.json").write_text(json.dumps(payload,indent=2)+"\n")
+ ensure_dir(out,"error evidence output")
+ try: write_atomic_no_replace(out/"manifest.json",(json.dumps(payload,indent=2)+"\n").encode("utf-8"))
+ except FileExistsError: pass
 def self_test()->None:
  assert len(HF_REVISION)==len(SOURCE_REVISION)==40 and MAIN.endswith(".pth") and BPE.endswith("bpe.model")
  assert CONFIG.endswith("config.yaml") and STATS.endswith("feats_stats.npz") and BPE.endswith("bpe.model") and README=="README.md"
@@ -541,10 +634,72 @@ class GlobalMVN:
   semantic_bad=[]; semantic=source_semantic_evidence(semantic_root,semantic_bad); assert semantic["status"]=="SOURCE_SEMANTICS_AUTHENTICATED" and not semantic_bad
   (semantic_root/"espnet2/layers/log_mel.py").write_text("class LogMel:\n")
   semantic_bad=[]; semantic=source_semantic_evidence(semantic_root,semantic_bad); assert semantic["status"]=="BLOCKED_SOURCE_SEMANTICS" and semantic_bad
-  error_out=root/"error-evidence"; write_error_manifest(error_out,RuntimeError("self-test failure")); error=json.loads((error_out/"manifest.json").read_text()); assert error["inspection_status"]=="INSPECTION_ERROR" and error["publication"]=="NO_UPLOAD" and error["runtime_status"]==RUNTIME_STATUS and error["cpu_status"]==CPU_STATUS
+ safe_parent=Path("/private/tmp") if Path("/private/tmp").is_dir() else Path(tempfile.gettempdir())
+ with tempfile.TemporaryDirectory(prefix="owsm-error-",dir=safe_parent) as error_tmp:
+  error_out=Path(error_tmp); write_error_manifest(error_out,RuntimeError("self-test failure")); error=json.loads((error_out/"manifest.json").read_text()); assert error["inspection_status"]=="INSPECTION_ERROR" and error["publication"]=="NO_UPLOAD" and error["runtime_status"]==RUNTIME_STATUS and error["cpu_status"]==CPU_STATUS
+ with tempfile.TemporaryDirectory(prefix="owsm-output-",dir=safe_parent) as output_tmp:
+  output_root=Path(output_tmp); evidence_dir=output_root/"evidence"; manifest=evidence_dir/"manifest.json"
+  validate_raw_cli_paths(["--output="+str(manifest)])
+  for unsafe in (("--output="+str(output_root)+"/../unsafe.json",), ("--snapshot","/"), ("--source=relative/input",)):
+   try: validate_raw_cli_paths(list(unsafe))
+   except RuntimeError: pass
+   else: raise AssertionError("unsafe raw CLI path was accepted")
+  write_atomic_no_replace(manifest,b"first\n"); assert manifest.read_bytes()==b"first\n" and not list(evidence_dir.glob(".manifest.json.owsm-tmp-*"))
+  try: write_atomic_no_replace(manifest,b"replacement\n")
+  except FileExistsError: pass
+  else: raise AssertionError("existing evidence was clobbered")
+  assert manifest.read_bytes()==b"first\n"
+  error_manifest=output_root/"error"/"manifest.json"; write_error_manifest(error_manifest.parent,RuntimeError("first error")); before=error_manifest.read_bytes(); write_error_manifest(error_manifest.parent,RuntimeError("second error")); assert error_manifest.read_bytes()==before
+  real=output_root/"real"; real.mkdir(); link=output_root/"link"; link.symlink_to(real,target_is_directory=True)
+  try: write_atomic_no_replace(link/"blocked.json",b"blocked")
+  except RuntimeError: pass
+  else: raise AssertionError("symlink ancestry was accepted")
+  input_root=output_root/"inputs"; input_root.mkdir(); (input_root/"snapshot").mkdir(); (input_root/"source").mkdir(); (input_root/"tree.json").write_text("{}")
+  input_link=output_root/"input-link"; input_link.symlink_to(input_root,target_is_directory=True)
+  for unsafe_input,validator in ((input_link/"snapshot",validate_existing_dir),(input_link/"source",validate_existing_dir),(input_link/"tree.json",validate_existing_file)):
+   try: validator(unsafe_input,"self-test input")
+   except RuntimeError: pass
+   else: raise AssertionError("input symlink ancestry was accepted")
+  try: reject_raw_path(Path(str(output_root)+"/../dot.json"),"self-test")
+  except RuntimeError: pass
+  else: raise AssertionError("lexical dot path was accepted")
+  original_link=os.link
+  def fail_link(*args:Any,**kwargs:Any)->None: raise OSError("injected link failure")
+  os.link=fail_link  # type: ignore[assignment]
+  failed=output_root/"failed.json"
+  try:
+   try: write_atomic_no_replace(failed,b"failed")
+   except OSError: pass
+   else: raise AssertionError("injected publish failure was ignored")
+  finally: os.link=original_link  # type: ignore[assignment]
+  assert not failed.exists() and not list(output_root.glob(".failed.json.owsm-tmp-*"))
+  original_open=os.open; replacement_temp=None
+  def replace_temp(path:Any,flags:int,mode:int=0o777,*,dir_fd:Any=None)->int:
+   nonlocal replacement_temp
+   candidate=Path(path)
+   if replacement_temp is None and candidate.name.startswith(".replacement.json.owsm-tmp-") and not (flags&os.O_CREAT):
+    candidate.unlink(); replacement_temp=candidate; attacker_fd=original_open(candidate,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600); original_write=0
+    while original_write<8:
+     written=os.write(attacker_fd,b"attacker\n"[original_write:])
+     if written<=0: raise OSError("self-test attacker write stalled")
+     original_write+=written
+    os.close(attacker_fd)
+   if dir_fd is None: return original_open(path,flags,mode)
+   return original_open(path,flags,mode,dir_fd=dir_fd)
+  os.open=replace_temp  # type: ignore[assignment]
+  replacement=output_root/"replacement.json"
+  try:
+   try: write_atomic_no_replace(replacement,b"owner\n")
+   except RuntimeError as error: assert "identity changed" in str(error)
+   else: raise AssertionError("replaced evidence temporary was published")
+  finally: os.open=original_open  # type: ignore[assignment]
+  assert not replacement.exists() and replacement_temp is not None and replacement_temp.read_bytes()==b"attacker\n"
+  replacement_temp.unlink()
  print("owsm_v4_medium_1b_inspect self-test: OK")
 def main()->int:
  parser=argparse.ArgumentParser(); parser.add_argument("--self-test",action="store_true"); parser.add_argument("--snapshot",type=Path); parser.add_argument("--source",type=Path); parser.add_argument("--server-tree",type=Path); parser.add_argument("--output",type=Path); args=parser.parse_args()
+ try: validate_raw_cli_paths(sys.argv[1:])
+ except RuntimeError as error: parser.error(str(error))
  if args.self_test:
   if any(x is not None for x in (args.snapshot,args.source,args.server_tree,args.output)): parser.error("--self-test accepts no other arguments")
   self_test(); return 0
