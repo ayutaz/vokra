@@ -24,13 +24,27 @@ KALDI_NATIVE_FBANK_REVISION="f68c6b43f739697d7ab02ff6debacee130e1d541"
 WORK="/dev/shm/vokra-firered-asr-aed-l-inspection"
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_DISK_KIB=$((32 * 1024 * 1024))
+MODEL_FREE_MIN_MEM_KIB=$((4 * 1024 * 1024))
+MODEL_FREE_MIN_DISK_KIB=$((4 * 1024 * 1024))
 UV_CACHE_DIR="${FIRERED_ASR_UV_CACHE_DIR:-/tmp/vokra-firered-asr-uv-cache}"
 APPROVAL_SCHEMA="vokra-firered-asr-aed-l-blocked-approval-v1"
+MODEL_FREE_FORMAT="vokra-firered-asr-aed-l-model-free-audit-v1"
 APPROVAL_SCOPE_JSON='{"cmvn_status":"AUTHENTICATED_CMVN_TXT_BINDING_PARITY_PENDING","config_status":"BLOCKED_EMPTY_CONFIG","dependency_status":"BLOCKED_UNREVIEWED_TRANSITIVE","kaldi_native_fbank_revision":"f68c6b43f739697d7ab02ff6debacee130e1d541","kaldi_native_fbank_url":"https://github.com/csukuangfj/kaldi-native-fbank.git","license_status":"BLOCKED_TRAINING_AND_DEPENDENCY_PROVENANCE","model_repository":"FireRedTeam/FireRedASR-AED-L","model_revision":"e57f5960d03cff1071ff7acbb409314d1e70ed3d","native_status":"SOURCE_IMPLEMENTED_PARITY_PENDING","source_revision":"834635e4cf277ed8ca92049fc375b17c3dc20748","source_status":"AUTHENTICATED_SOURCE_CONTRACT","source_url":"https://github.com/FireRedTeam/FireRedASR.git","tokenizer_status":"AUTHENTICATED_OUTPUT_DICTIONARY_BINDING"}'
 
 log() { printf '[firered-asr-vast] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 2; }
-usage() { echo 'usage: run-firered-asr-aed-l-inspection.sh --expected-head HEX40 --approval-sha256 SHA256 --owner-approval JSON [--work-dir DIR] | --self-test'; }
+usage() {
+  cat <<'EOF'
+usage: run-firered-asr-aed-l-inspection.sh --model-free --expected-head HEX40 [--work-dir DIR]
+       run-firered-asr-aed-l-inspection.sh --expected-head HEX40 --approval-sha256 SHA256 --owner-approval JSON [--work-dir DIR]
+       run-firered-asr-aed-l-inspection.sh --self-test
+
+--model-free collects only the frozen dependency graph and fixed source,
+config, model-card, and training-provenance scope. It never downloads or
+executes a model, accesses an upstream checkout, or uploads anything. The
+normal owner-approval route retains its existing gate-first behavior.
+EOF
+}
 
 sha256_file() { sha256sum "$1" | awk '{print $1}'; }
 require_clean_expected_head() {
@@ -86,9 +100,10 @@ PY
 }
 
 canonical_absent_candidate() {
-  local candidate="$1" parent suffix resolved
+  local candidate="$1" parent suffix resolved ancestor
   [[ "$candidate" == /* ]] || die 'path candidate must be absolute'
-  [[ "$candidate" != *'/../'* && "$candidate" != */.. ]] || die 'path candidate must not contain ..'
+  [[ "$candidate" != *'/../'* && "$candidate" != */.. && "$candidate" != *'/./'* && "$candidate" != */. ]] \
+    || die 'path candidate must not contain lexical dot components'
   [[ ! -e "$candidate" && ! -L "$candidate" ]] || die "path candidate must be absent: $candidate"
   parent="$(dirname "$candidate")"
   suffix="$(basename "$candidate")"
@@ -96,6 +111,11 @@ canonical_absent_candidate() {
     [[ "$parent" != / ]] || die "cannot resolve path parent: $candidate"
     suffix="$(basename "$parent")/$suffix"
     parent="$(dirname "$parent")"
+  done
+  ancestor="$parent"
+  while [[ "$ancestor" != / ]]; do
+    [[ ! -L "$ancestor" ]] || die "path parent has a symlink ancestor: $ancestor"
+    ancestor="$(dirname "$ancestor")"
   done
   [[ -d "$parent" && ! -L "$parent" ]] || die "path parent must be a non-symlink directory: $parent"
   resolved="$(cd "$parent" && pwd -P)" || die "cannot canonicalize path parent: $parent"
@@ -115,16 +135,104 @@ paths_overlap() {
   [[ "$left" == "$right" || "$left" == "$right"/* || "$right" == "$left"/* ]]
 }
 
+model_free_disk_root() {
+  local candidate="$1" parent ancestor
+  parent="$(dirname "$candidate")"
+  while [[ ! -e "$parent" && ! -L "$parent" ]]; do
+    [[ "$parent" != / ]] || die "cannot resolve disk parent: $candidate"
+    parent="$(dirname "$parent")"
+  done
+  ancestor="$parent"
+  while [[ "$ancestor" != / ]]; do
+    [[ ! -L "$ancestor" ]] || die "disk parent has a symlink ancestor: $ancestor"
+    ancestor="$(dirname "$ancestor")"
+  done
+  [[ -d "$parent" && ! -L "$parent" ]] || die "disk parent must be a non-symlink directory: $parent"
+  (cd -P "$parent" && pwd -P)
+}
+
+require_model_free_host() {
+  local work_dir="$1" mem_kib free_kib disk_root
+  [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
+  [[ "$(uname -s)" == Linux ]] || die 'Linux VAST required for model-free audit'
+  [[ "$(uname -m)" == x86_64 ]] || die 'x86_64 VAST required for model-free audit'
+  mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
+  [[ "$mem_kib" =~ ^[0-9]+$ ]] || die 'invalid memory value'
+  (( mem_kib >= MODEL_FREE_MIN_MEM_KIB )) || die '4 GiB model-free memory guard failed'
+  disk_root="$(model_free_disk_root "$work_dir")"
+  free_kib="$(df -Pk "$disk_root" | awk 'NR == 2 {print $4}')"
+  [[ "$free_kib" =~ ^[0-9]+$ ]] || die 'invalid disk value'
+  (( free_kib >= MODEL_FREE_MIN_DISK_KIB )) || die '4 GiB model-free disk guard failed'
+}
+
+run_model_free() {
+  local expected="$1" requested_work_dir="$2" work_dir audit_output audit_rc root_path
+  require_clean_expected_head "$expected"
+  [[ -f "$ROOT/Cargo.toml" && -d "$ROOT/.git" ]] || die 'not a Vokra checkout'
+  [[ -f "$FIRERED_PROJECT/pyproject.toml" && -f "$FIRERED_PROJECT/uv.lock" ]] || die 'dedicated FireRed uv project missing'
+  [[ -f "$AUDITOR" && ! -L "$AUDITOR" ]] || die 'dedicated FireRed model-free auditor missing'
+  command -v uv >/dev/null 2>&1 || die 'uv is required for the model-free audit'
+  command -v git >/dev/null 2>&1 || die 'git is required for the model-free audit'
+  work_dir="${requested_work_dir:-$WORK/model-free}"
+  [[ "$work_dir" == /* ]] || die '--work-dir must be absolute'
+  work_dir="$(canonical_absent_candidate "$work_dir")"
+  root_path="$(cd "$ROOT" && pwd -P)" || die 'cannot canonicalize checkout root'
+  paths_overlap "$work_dir" "$root_path" && die '--work-dir must not overlap the checkout'
+  require_model_free_host "$work_dir"
+  mkdir -p "$(dirname "$work_dir")"
+  mkdir "$work_dir" || die 'model-free work directory candidate was created concurrently'
+  mkdir "$work_dir/evidence"
+  audit_output="$work_dir/evidence/model-free-audit.json"
+  set +e
+  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --offline --project "$FIRERED_PROJECT" --python 3.12 python "$AUDITOR" \
+    --model-free --expected-head "$expected" --lock "$FIRERED_PROJECT/uv.lock" --output "$audit_output" >"$work_dir/evidence/model-free-audit.log" 2>&1
+  audit_rc=$?
+  set -e
+  [[ "$audit_rc" == 2 && -s "$audit_output" ]] || die "model-free audit returned unexpected status: $audit_rc"
+  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --offline --project "$ROOT/tools/parity" --python 3.12 python - "$audit_output" "$expected" "$MODEL_FREE_FORMAT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if manifest.get("format") != sys.argv[3]:
+    raise SystemExit("model-free audit format mismatch")
+if manifest.get("expected_head") != sys.argv[2] or manifest.get("approval_scope", {}).get("scope", {}).get("expected_head") != sys.argv[2]:
+    raise SystemExit("model-free audit expected HEAD binding mismatch")
+if manifest.get("status") != "BLOCKED_OWNER_REVIEW" or manifest.get("publication") != "NO_UPLOAD":
+    raise SystemExit("model-free audit did not remain blocked/no-upload")
+if manifest.get("payload_status") != "NOT_ACQUIRED" or manifest.get("execution_status") != "NOT_PERFORMED":
+    raise SystemExit("model-free audit crossed the payload/execution boundary")
+if manifest.get("model", {}).get("repository") != "FireRedTeam/FireRedASR-AED-L":
+    raise SystemExit("model-free model identity mismatch")
+if manifest.get("active_closure", {}).get("row_count") != 27:
+    raise SystemExit("model-free active dependency closure count mismatch")
+scope = manifest.get("approval_scope", {})
+if scope.get("status") != "PENDING_OWNER_REVIEW" or not isinstance(scope.get("scope_sha256"), str):
+    raise SystemExit("model-free pending approval scope is malformed")
+print(f"FireRed model-free audit: BLOCKED_OWNER_REVIEW expected_head={sys.argv[2]}")
+PY
+  log "model-free evidence: $audit_output"
+  return 2
+}
+
 self_test() {
-  local path="${BASH_SOURCE[0]}" fail=0 token path_test candidate
-  path_test="$(mktemp -d /tmp/firered-path-selftest.XXXXXX)" || { log 'self-test FAIL: mktemp failed'; return 1; }
+  local path="${BASH_SOURCE[0]}" fail=0 token path_test candidate tmp_parent
+  tmp_parent="$(cd -P "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" || { log 'self-test FAIL: temp parent is not canonical'; return 1; }
+  path_test="$(mktemp -d "$tmp_parent/firered-path-selftest.XXXXXX")" || { log 'self-test FAIL: mktemp failed'; return 1; }
   candidate="$(canonical_absent_candidate "$path_test/nested/missing")" || fail=1
   path_test="$(cd "$path_test" && pwd -P)" || fail=1
   [[ "$candidate" == "$path_test/nested/missing" ]] || fail=1
+  [[ "$(model_free_disk_root "$path_test/nested/missing")" == "$path_test" ]] || fail=1
   mkdir "$path_test/existing"
   if (canonical_absent_candidate "$path_test/existing") >/dev/null 2>&1; then fail=1; fi
+  if (canonical_absent_candidate "$path_test/./dot") >/dev/null 2>&1; then fail=1; fi
+  if (canonical_absent_candidate "$path_test/../dot") >/dev/null 2>&1; then fail=1; fi
   ln -s missing "$path_test/dangling"
   if (canonical_absent_candidate "$path_test/dangling") >/dev/null 2>&1; then fail=1; fi
+  mkdir -p "$path_test/real/child"
+  ln -s "$path_test/real" "$path_test/real-link"
+  if (canonical_absent_candidate "$path_test/real-link/child/missing") >/dev/null 2>&1; then fail=1; fi
   paths_overlap "$path_test" "$path_test/nested" || fail=1
   paths_overlap "$path_test/nested" "$path_test" || fail=1
   if paths_overlap "$path_test" "/tmp/another-root"; then fail=1; fi
@@ -150,6 +258,7 @@ self_test() {
     '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' 'LOUD_PARTIAL_FAIL_CLOSED' 'PARTIAL' 'runtime_status_scope' 'full_pcm_transcription_only' \
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
     'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' 'unlock_requirements' 'vast_first_pass' 'expected_artifacts' \
+    '--model-free' 'MODEL_FREE_FORMAT' 'build_model_free_manifest' 'MODEL_FREE_MIN_MEM_KIB' 'MODEL_FREE_MIN_DISK_KIB' 'model_free_disk_root' 'run_model_free' 'NOT_ACQUIRED' 'NOT_PERFORMED' 'PENDING_OWNER_REVIEW' 'model_card_architecture' 'model_card_search' 'training_provenance_status' 'expected_head' \
     'pinned-source frontend' 'SentencePiece/TokenDict' 'transformer_decoder.py' 'batch_beam_search' 'softmax_smoothing' 'length_penalty' 'eos_penalty' 'PREPARED' 'archive_members' \
     'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
     'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' 'firered-asr-aed-l-reference-trace-v1' 'encoder_each_layer' 'decoder_each_layer' 'frontend_fbank_cmvn' 'official_hypotheses' 'normalized_log_score' 'upstream_cost' 'firered-asr-aed-l-official-beam-trace-v1' 'token_topk' 'beam_prune_topk' 'torch.topk' 'torch_git_version' 'environment' \
@@ -223,6 +332,10 @@ from pathlib import Path
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 audit = source.index('dependency-audit.json')
 snapshot = source.index('\nfrom huggingface_hub import snapshot_download')
+model_free = source.index('\nrun_model_free()')
+model_free_audit = source.index('\n    --model-free --expected-head')
+if model_free_audit <= model_free or model_free_audit >= snapshot:
+    raise SystemExit("model-free audit is not isolated before model snapshot")
 approval = source.index('\nrequire_blocked_approval "$owner_approval_path"')
 host = source.index('\n[[ "$(uname -s)" == Linux ]]')
 work = source.index('\nmkdir "$work_dir" || die')
@@ -279,6 +392,26 @@ PY
     log 'self-test FAIL: final reference manifest race sentinel regression'
     fail=1
   fi
+  local test_head
+  test_head="$(printf '0%.0s' {1..40})"
+  if "$path" --model-free >/dev/null 2>&1; then
+    log 'self-test FAIL: model-free route accepted without expected HEAD'; fail=1
+  fi
+  if "$path" --model-free --expected-head 0 >/dev/null 2>&1; then
+    log 'self-test FAIL: model-free route accepted malformed expected HEAD'; fail=1
+  fi
+  if "$path" --model-free --expected-head "$(printf 'g%.0s' {1..40})" >/dev/null 2>&1; then
+    log 'self-test FAIL: model-free route accepted non-hex expected HEAD'; fail=1
+  fi
+  if "$path" --model-free --model-free --expected-head "$test_head" >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate model-free flag accepted'; fail=1
+  fi
+  if "$path" --self-test --model-free >/dev/null 2>&1; then
+    log 'self-test FAIL: self-test/model-free mix accepted'; fail=1
+  fi
+  if "$path" --model-free --expected-head "$test_head" --approval-sha256 "$(printf '0%.0s' {1..64})" >/dev/null 2>&1; then
+    log 'self-test FAIL: model-free approval argument mix accepted'; fail=1
+  fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'; fail=1
   fi
@@ -298,14 +431,18 @@ owner_approval_path=""
 approval_sha256=""
 expected_head=""
 self=0
+model_free=0
 seen_self=0
 seen_approval=0
 seen_sha=0
 seen_head=0
+seen_model_free=0
+seen_work=0
 while (($#)); do
   case "$1" in
     --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
-    --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; shift 2 ;;
+    --model-free) (( seen_model_free == 0 )) || die 'duplicate --model-free'; seen_model_free=1; model_free=1; shift ;;
+    --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; seen_work=1; shift 2 ;;
     --owner-approval) (( seen_approval == 0 && $# >= 2 )) || die 'duplicate or missing --owner-approval'; owner_approval_path="$2"; seen_approval=1; shift 2 ;;
     --approval-sha256) (( seen_sha == 0 && $# >= 2 )) || die 'duplicate or missing --approval-sha256'; approval_sha256="$2"; seen_sha=1; shift 2 ;;
     --expected-head) (( seen_head == 0 && $# >= 2 )) || die 'duplicate or missing --expected-head'; expected_head="$2"; seen_head=1; shift 2 ;;
@@ -313,7 +450,13 @@ while (($#)); do
     *) die "unknown argument: $1" ;;
   esac
 done
-if (( self )); then [[ "$work_dir" == "$WORK" && -z "$owner_approval_path" && -z "$approval_sha256" && -z "$expected_head" ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
+if (( self )); then [[ "$work_dir" == "$WORK" && "$model_free" == 0 && -z "$owner_approval_path" && -z "$approval_sha256" && -z "$expected_head" ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
+if (( model_free )); then
+  [[ "$seen_head" == 1 && "$seen_approval" == 0 && "$seen_sha" == 0 ]] || die '--model-free requires --expected-head and accepts no approval arguments'
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die 'expected HEAD must be exactly 40 lowercase hexadecimal characters'
+  if (( seen_work )); then run_model_free "$expected_head" "$work_dir"; else run_model_free "$expected_head" ''; fi
+  exit $?
+fi
 [[ $seen_approval == 1 && $seen_sha == 1 && $seen_head == 1 ]] || die '--owner-approval, --approval-sha256, and --expected-head are required'
 require_clean_expected_head "$expected_head"
 require_approval_binding "$owner_approval_path" "$approval_sha256"

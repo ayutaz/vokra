@@ -29,12 +29,37 @@ the future), decision `APPROVE`, the exact `exact_digest_gate.scope` plus its
 `APPROVE`, and must repeat the exact row/source and three evidence digests; a
 common license or an absent native payload is not an approval.
 
-## VAST collection
+## Model-free pre-approval collection
 
-Run on a clean, provisioned Linux/x86_64 VAST host:
+The owner-independent route collects only the frozen `uv.lock` graph and the
+fixed FireRed source/model-card/config/training-provenance identity scope. It
+does not inspect installed packages, fetch an upstream checkout, import a
+runtime, acquire a checkpoint, run inference, or upload anything:
 
 ```bash
 VOKRA_PUBLISH_ON_VAST=1 bash scripts/publish/vast-ai/run-firered-asr-aed-l-inspection.sh \
+  --model-free --expected-head <40-lowercase-hex> \
+  --work-dir /dev/shm/vokra-firered-asr-aed-l-model-free
+```
+
+The supplied exact HEAD is stored in both the manifest and its canonical
+approval scope. The command intentionally exits with status 2 and writes
+`evidence/model-free-audit.json` with `BLOCKED_OWNER_REVIEW`,
+`PENDING_OWNER_REVIEW`, and `NO_UPLOAD` markers. A model-free scope is
+evidence for later review, not a license, training-data, model, conversion, or
+parity approval. The normal owner-approval route retains its existing
+gate-first fail-closed boundary.
+
+## VAST collection
+
+The later owner-approved inspection route runs on a clean, provisioned
+Linux/x86_64 VAST host:
+
+```bash
+VOKRA_PUBLISH_ON_VAST=1 bash scripts/publish/vast-ai/run-firered-asr-aed-l-inspection.sh \
+  --expected-head <40-lowercase-hex> \
+  --approval-sha256 <64-lowercase-hex> \
+  --owner-approval /absolute/path/blocked-approval.json \
   --work-dir /dev/shm/vokra-firered-asr-aed-l-inspection
 ```
 

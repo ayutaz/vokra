@@ -25,10 +25,12 @@ from typing import Any
 REPOSITORY = "FireRedTeam/FireRedASR-AED-L"
 MODEL_REVISION = "e57f5960d03cff1071ff7acbb409314d1e70ed3d"
 AUDIT_FORMAT = "vokra-firered-asr-aed-l-dependency-audit-v1"
+MODEL_FREE_FORMAT = "vokra-firered-asr-aed-l-model-free-audit-v1"
 OWNER_APPROVAL_FORMAT = "vokra-firered-asr-aed-l-owner-approval-v1"
 OWNER_APPROVAL_DECISION = "APPROVE"
 OWNER_HANDLE = "yousan"
 EXPECTED_ACTIVE_CLOSURE_ROWS = 27
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
 NATIVE_SOURCE_URL = "https://github.com/csukuangfj/kaldi-native-fbank.git"
 NATIVE_SOURCE_REVISION = "f68c6b43f739697d7ab02ff6debacee130e1d541"
 NATIVE_SOURCE_LICENSE_PATH = "LICENSE"
@@ -585,6 +587,71 @@ def build_manifest(
     }
 
 
+def build_model_free_manifest(lock_path: Path, expected_head: str) -> dict[str, Any]:
+    """Collect only immutable, non-payload facts for pre-approval review.
+
+    This path deliberately does not inspect installed distributions, import a
+    model/runtime package, or access an upstream checkout.  Its blocked scope
+    is useful for owner review, but it never upgrades a dependency, license,
+    training-provenance, or model-readiness decision.
+    """
+    if not HEX40.fullmatch(expected_head):
+        raise ValueError("expected HEAD must be lowercase 40-hex")
+    rows = active_rows(lock_path)
+    row_records = [{**row, "row_sha256": canonical_sha256(row)} for row in rows]
+    closure_digest = canonical_sha256(row_records)
+    scope = {
+        "active_closure_sha256": closure_digest,
+        "active_closure_row_count": len(row_records),
+        "config_status": "BLOCKED_EMPTY_CONFIG",
+        "dependency_status": "BLOCKED_UNREVIEWED_TRANSITIVE",
+        "kaldi_native_fbank_revision": NATIVE_SOURCE_REVISION,
+        "kaldi_native_fbank_url": NATIVE_SOURCE_URL,
+        "license_status": "BLOCKED_OWNER_REVIEW_REQUIRED",
+        "lock_sha256": sha256_regular_file(lock_path),
+        "expected_head": expected_head,
+        "model_repository": REPOSITORY,
+        "model_revision": MODEL_REVISION,
+        "model_card_architecture": "ConformerEncoder + TransformerDecoder + batch_beam_search",
+        "model_card_license": "Apache-2.0",
+        "model_card_search": {
+            "name": "batch_beam_search",
+            "beam_size": 3,
+            "nbest": 1,
+            "decode_max_len": 0,
+            "softmax_smoothing": 1.25,
+            "length_penalty": 0.6,
+            "eos_penalty": 1.0,
+        },
+        "source_status": "PINNED_IDENTITY_NOT_FETCHED",
+        "source_url": "https://github.com/FireRedTeam/FireRedASR.git",
+        "source_revision": "834635e4cf277ed8ca92049fc375b17c3dc20748",
+        "training_provenance_status": "BLOCKED_OWNER_REVIEW_REQUIRED",
+    }
+    return {
+        "format": MODEL_FREE_FORMAT,
+        "status": "BLOCKED_OWNER_REVIEW",
+        "publication": "NO_UPLOAD",
+        "payload_status": "NOT_ACQUIRED",
+        "execution_status": "NOT_PERFORMED",
+        "expected_head": expected_head,
+        "platform": {"system": platform.system(), "machine": platform.machine()},
+        "lock": {"path": str(lock_path), "sha256": scope["lock_sha256"], "active_platform": "Linux/x86_64"},
+        "model": {"repository": REPOSITORY, "revision": MODEL_REVISION},
+        "source": {"repository": scope["source_url"], "revision": scope["source_revision"], "status": scope["source_status"]},
+        "config": {"path": "config.yaml", "bytes": 0, "status": scope["config_status"]},
+        "active_closure": {"row_count": len(row_records), "row_digest": closure_digest, "rows": row_records},
+        "approval_scope": {"scope": scope, "scope_sha256": canonical_sha256(scope), "status": "PENDING_OWNER_REVIEW"},
+        "blockers": [
+            "dependency and native payload license evidence require owner review",
+            "training-data provenance requires owner review",
+            "config.yaml is the authenticated empty release artifact",
+            "model snapshot, conversion, execution, and numerical parity were not performed",
+        ],
+        "unlock_requirements": list(UNLOCK_REQUIREMENTS),
+    }
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="firered-audit-") as directory:
         lock = Path(directory) / "uv.lock"
@@ -660,6 +727,27 @@ source = {{ registry = "https://pypi.org/simple" }}
             "manifest.json",
             "server_tree.json",
         ]
+        model_free = build_model_free_manifest(lock, "0" * 40)
+        assert model_free["format"] == MODEL_FREE_FORMAT
+        assert model_free["status"] == "BLOCKED_OWNER_REVIEW"
+        assert model_free["publication"] == "NO_UPLOAD"
+        assert model_free["payload_status"] == "NOT_ACQUIRED"
+        assert model_free["execution_status"] == "NOT_PERFORMED"
+        assert model_free["expected_head"] == "0" * 40
+        assert model_free["active_closure"]["row_count"] == 27
+        scope = model_free["approval_scope"]["scope"]
+        assert model_free["approval_scope"]["scope_sha256"] == canonical_sha256(scope)
+        assert scope["config_status"] == "BLOCKED_EMPTY_CONFIG"
+        assert scope["training_provenance_status"] == "BLOCKED_OWNER_REVIEW_REQUIRED"
+        assert scope["model_card_architecture"] == "ConformerEncoder + TransformerDecoder + batch_beam_search"
+        assert scope["model_card_search"]["beam_size"] == 3
+        for invalid_head in ("", "0" * 39, "0" * 40 + "0", "g" * 40):
+            try:
+                build_model_free_manifest(lock, invalid_head)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid model-free expected HEAD was accepted")
         root_evidence = next(item for item in manifest["distribution_evidence"] if item["name"] == "firered-asr-aed-l")
         assert root_evidence["installed"] is True
         assert root_evidence["installation_scope"] == "local_project"
@@ -804,14 +892,27 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--project", type=Path)
     parser.add_argument("--owner-approval", type=Path)
+    parser.add_argument("--model-free", action="store_true")
+    parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
+        if args.model_free or args.lock or args.output or args.project or args.owner_approval or args.expected_head:
+            parser.error("--self-test accepts no other arguments")
         self_test()
         print("firered dependency audit self-test PASS")
         return 0
     if not args.lock or not args.output:
         parser.error("--lock and --output are required")
+    if args.model_free:
+        if args.project or args.owner_approval:
+            parser.error("--model-free does not accept --project or --owner-approval")
+        if not args.expected_head or not HEX40.fullmatch(args.expected_head):
+            parser.error("--model-free requires --expected-head with 40 lowercase hex characters")
+        manifest = build_model_free_manifest(args.lock, args.expected_head)
+        publish_json_no_clobber(args.output, manifest)
+        print(f"firered model-free audit: {manifest['status']}")
+        return 2
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise SystemExit("Linux/x86_64 audit is required")
     approval = None
