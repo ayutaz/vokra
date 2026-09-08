@@ -97,8 +97,9 @@ pub struct OwsmV4Medium1bFrontendConfig {
     pub win_length: usize,
     /// Frame hop in samples.
     pub hop_length: usize,
-    /// Mel matrix input/output dimensions.
+    /// Number of one-sided STFT frequency bins in the mel matrix input.
     pub n_freqs: usize,
+    /// Number of mel bands in each frontend output frame.
     pub n_mels: usize,
 }
 
