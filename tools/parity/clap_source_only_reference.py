@@ -114,7 +114,7 @@ def run(snapshot: Path, output_dir: Path) -> None:
         raise RuntimeError("official CLAP processor did not resolve ClapFeatureExtractor")
     pcm = load_deterministic_pcm()
     outputs = processor(
-        audios=[pcm],
+        audio=[pcm],
         text=[FIXED_TEXT],
         sampling_rate=SAMPLE_RATE,
         return_tensors="np",
@@ -211,7 +211,11 @@ def self_test() -> None:
     assert len(REVISION) == 40 and all(char in "0123456789abcdef" for char in REVISION)
     assert SAMPLE_RATE == 48_000
     assert FIXED_TEXT
-    assert "ClapProcessor" in (ROOT / "clap_source_only_reference.py").read_text(encoding="utf-8")
+    source_text = Path(__file__).read_text(encoding="utf-8")
+    assert "ClapProcessor" in source_text
+    assert "audio=[pcm]" in source_text
+    deprecated_keyword = "audio" + "s="
+    assert deprecated_keyword not in source_text
     with tempfile.TemporaryDirectory(prefix="vokra-clap-source-only-") as temporary:
         root = Path(temporary)
         (root / "snapshot").mkdir()
