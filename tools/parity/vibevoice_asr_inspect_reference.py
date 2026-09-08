@@ -46,6 +46,8 @@ UPSTREAM_REPOSITORY = "microsoft/VibeVoice-ASR"
 UPSTREAM_REVISION = "d0c9efdb8d614685062c04425d91e01b6f37d944"
 SOURCE_REPOSITORY = "https://github.com/microsoft/VibeVoice"
 SOURCE_REVISION = "94da20d98b2fa7688e9cbfaf7692ddb4954f7600"
+QWEN_REPOSITORY = "Qwen/Qwen2.5-7B"
+QWEN_REVISION = "d149729398750b98c0af14eb82c78cfe92750796"
 TRANSFORMERS_REPOSITORY = "https://github.com/huggingface/transformers"
 TRANSFORMERS_TAG = "v4.51.3"
 TRANSFORMERS_REVISION = "5f4ecf2d9f867a1255131d2461d75793c0cf1db2"
@@ -664,7 +666,7 @@ def inspect(snapshot: Path, source: Path, transformers_source: Path, server_tree
         "config_topology_contract": "model_type/architectures/dtype and nested tokenizer/connector/decoder fields extracted from config.json; behavioral diarization/timestamp/structured-output markers are validated in official source",
         "config_contract": "acoustic+semantic tokenizers, speech connectors, Qwen decoder, diarization/timestamp/output markers extracted from official config/source",
         "source_license": sources["source"]["license"],
-        "external_dependency": {"repository": "Qwen/Qwen2.5-7B", "revision": "UNSELECTED_BLOCKER", "selection_status": "BLOCKED", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"},
+        "external_dependency": {"repository": QWEN_REPOSITORY, "revision": QWEN_REVISION, "selection_status": "PINNED_METADATA_CANDIDATE_PENDING_AUDIT", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"},
         "packets": packets,
     }
     write_exclusive(output / "manifest.json", json.dumps(manifest, sort_keys=True, indent=2) + "\n")
@@ -675,7 +677,7 @@ def write_blocked(output: Path, error: Exception) -> None:
     if output.is_symlink() or (output.exists() and (not output.is_dir() or any(output.iterdir()))):
         raise RuntimeError("blocked evidence output must be absent or empty")
     output.mkdir(parents=True, exist_ok=True)
-    manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "UNVERIFIED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "external_dependency": {"repository": "Qwen/Qwen2.5-7B", "revision": "UNSELECTED_BLOCKER", "selection_status": "BLOCKED", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"}, "error_type": type(error).__name__, "reason": str(error), "blockers": [str(error)]}
+    manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "UNVERIFIED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "external_dependency": {"repository": QWEN_REPOSITORY, "revision": QWEN_REVISION, "selection_status": "PINNED_METADATA_CANDIDATE_PENDING_AUDIT", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"}, "error_type": type(error).__name__, "reason": str(error), "blockers": [str(error)]}
     write_exclusive(output / "manifest.json", json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     write_exclusive(output / "blocker.txt", f"{type(error).__name__}: {error}\n")
 

@@ -18,6 +18,9 @@ TRANSFORMERS_TAG="v4.51.3"
 TRANSFORMERS_REVISION="5f4ecf2d9f867a1255131d2461d75793c0cf1db2"
 INSPECTOR="tools/parity/vibevoice_asr_inspect_reference.py"
 GATE="tools/parity/vibevoice_asr_gate.py"
+QWEN_METADATA_AUDITOR="tools/parity/vibevoice_asr_reference/qwen_metadata_audit.py"
+QWEN_REPOSITORY="Qwen/Qwen2.5-7B"
+QWEN_REVISION="d149729398750b98c0af14eb82c78cfe92750796"
 UV_CMD=(uv run --frozen --project tools/parity --python 3.12 python)
 MIN_VAST_MEM_KIB=$((128 * 1024 * 1024))
 MIN_FREE_DISK_KIB=$((60 * 1024 * 1024))
@@ -26,6 +29,7 @@ usage() {
   cat <<'EOF'
 Usage:
   run-vibevoice-asr-inspection.sh --approval-evidence <file> --approval-sha256 <hex64> --expected-head <hex40> [--work-dir <tmpfs-dir>]
+  run-vibevoice-asr-inspection.sh --metadata-only --expected-head <hex40> --output <absolute-absent-file>
   run-vibevoice-asr-inspection.sh --self-test
 
 The real path is VAST-only: Linux x86_64, clean checkout, 128 GiB RAM, and
@@ -50,10 +54,10 @@ run_self_test() {
   cases=$((cases + 1))
   for required in \
     "$UPSTREAM_REPOSITORY" "$UPSTREAM_REVISION" "$SOURCE_REPOSITORY" \
-    "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$INSPECTOR" "$GATE" "safe_open" "SHARD_COUNT" \
+    "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$INSPECTOR" "$GATE" "$QWEN_METADATA_AUDITOR" "$QWEN_REPOSITORY" "$QWEN_REVISION" "safe_open" "SHARD_COUNT" \
     "model.safetensors.index.json" "INSPECTION_ONLY" \
     "BLOCKED" "Exception" "--transformers-source" "resident_scope" "allow_patterns=[\"*\"]" "companion-inventory" "source-inventory" "transformers-inventory" "MIN_VAST_MEM_KIB" \
-    "MIN_FREE_DISK_KIB" "tmpfs" "server-tree.json" "local_dir" "requested_revision" "resolved_revision" "recursive_file_only" "RepoFolder" "expand=True" "lfs_pointer_git_blob_sha1" "UNSELECTED_BLOCKER" "NOT_DOWNLOADED" "transport_cache" "snapshot_root_exact_transport_subtree" "NON_IDENTITY_TRANSPORT_METADATA" "connector_topology" "acoustic_connector" "semantic_connector" "symlinks" "120000" "gitlink"; do
+    "MIN_FREE_DISK_KIB" "tmpfs" "server-tree.json" "local_dir" "requested_revision" "resolved_revision" "recursive_file_only" "RepoFolder" "expand=True" "lfs_pointer_git_blob_sha1" "PINNED_METADATA_CANDIDATE_PENDING_AUDIT" "NOT_DOWNLOADED" "transport_cache" "snapshot_root_exact_transport_subtree" "NON_IDENTITY_TRANSPORT_METADATA" "connector_topology" "acoustic_connector" "semantic_connector" "symlinks" "120000" "gitlink"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
       echo "run-vibevoice-asr-inspection: self-test FAIL: missing contract: $required" >&2
       fail=1
@@ -66,7 +70,7 @@ run_self_test() {
     'cargo fmt --all -- --check' 'cargo build --locked --release -p vokra-cli' \
     'uv run --frozen --project tools/parity --python 3.12' \
     'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python' \
-    '--approval-evidence' '--approval-sha256' '--expected-head' 'BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD' \
+    '--approval-evidence' '--approval-sha256' '--expected-head' '--metadata-only' '--output' 'BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD' \
     'snapshot_download' 'git clone --no-tags --filter=blob:none' 'exit 2'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-vibevoice-asr-inspection: self-test FAIL: missing VAST gate: $required" >&2
@@ -131,6 +135,16 @@ run_self_test() {
       fail=1
     fi
   fi
+  if bash "$script_path" --metadata-only --expected-head "$(printf '0%.0s' {1..40})" --approval-evidence /tmp/approval.json --output /private/tmp/qwen-metadata.json >/dev/null 2>&1; then
+    echo "run-vibevoice-asr-inspection: self-test FAIL: metadata/gate mode mixing accepted" >&2
+    fail=1
+  else
+    status=$?
+    if [[ "$status" != 2 ]]; then
+      echo "run-vibevoice-asr-inspection: self-test FAIL: metadata/gate mode mixing exited $status, expected 2" >&2
+      fail=1
+    fi
+  fi
   duplicate_output="$(bash "$script_path" \
     --approval-evidence /tmp/approval-a.json --approval-evidence /tmp/approval-b.json \
     --approval-sha256 "$(printf '0%.0s' {1..64})" --expected-head "$(printf '0%.0s' {1..40})" 2>&1 || true)"
@@ -150,6 +164,9 @@ self_test=0
 approval_evidence=""
 approval_sha256=""
 expected_head=""
+metadata_only_count=0
+metadata_output=""
+metadata_output_count=0
 work_dir_count=0
 approval_evidence_count=0
 approval_sha256_count=0
@@ -173,15 +190,49 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--expected-head requires a commit"
       expected_head_count=$((expected_head_count + 1))
       expected_head="$2"; shift 2 ;;
+    --metadata-only) metadata_only_count=$((metadata_only_count + 1)); shift ;;
+    --output)
+      [[ $# -ge 2 ]] || die "--output requires a path"
+      metadata_output_count=$((metadata_output_count + 1))
+      metadata_output="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if [[ $self_test -eq 1 ]]; then
-  [[ "$self_test" == 1 && "$work_dir_count" == 0 && "$approval_evidence_count" == 0 && "$approval_sha256_count" == 0 && "$expected_head_count" == 0 && "$work_dir" == "/dev/shm/vokra-vibevoice-asr-inspection" && -z "$approval_evidence" && -z "$approval_sha256" && -z "$expected_head" ]] \
+  [[ "$self_test" == 1 && "$work_dir_count" == 0 && "$approval_evidence_count" == 0 && "$approval_sha256_count" == 0 && "$expected_head_count" == 0 && "$metadata_only_count" == 0 && "$metadata_output_count" == 0 && "$work_dir" == "/dev/shm/vokra-vibevoice-asr-inspection" && -z "$approval_evidence" && -z "$approval_sha256" && -z "$expected_head" && -z "$metadata_output" ]] \
     || die "--self-test accepts no other arguments"
   run_self_test
   exit $?
+fi
+
+if [[ "$metadata_only_count" -eq 1 ]]; then
+  [[ "$approval_evidence_count" == 0 && "$approval_sha256_count" == 0 && "$expected_head_count" == 1 && "$metadata_output_count" == 1 && -n "$expected_head" && -n "$metadata_output" && "$self_test" == 0 && "$work_dir_count" == 0 ]] \
+    || die "--metadata-only requires exactly one --expected-head and --output, without approval/work options"
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be lowercase 40-hex"
+  [[ "$metadata_output" == /* && "$metadata_output" != *"//"* && "$metadata_output" != */./* && "$metadata_output" != */../* ]] \
+    || die "--output must be an absolute dot-free path"
+  [[ ! -e "$metadata_output" && ! -L "$metadata_output" ]] || die "--output must be absent before metadata audit"
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+  cd "$repo_root"
+  [[ -f Cargo.toml && -d crates/vokra-convert ]] || die "not a Vokra checkout"
+  actual_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD does not match --expected-head; refusing uv/network"
+  [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "worktree is dirty; refusing uv/network"
+  set +e
+  metadata_output_text="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$QWEN_METADATA_AUDITOR" --expected-head "$expected_head" --repo-root "$repo_root" --output "$metadata_output" 2>&1)"
+  metadata_status=$?
+  set -e
+  [[ "$metadata_status" == 2 ]] || die "Qwen metadata auditor failed without successful BLOCKED evidence: $metadata_output_text"
+  [[ -f "$metadata_output" && ! -L "$metadata_output" ]] || die "Qwen metadata auditor returned exit 2 without evidence output"
+  set +e
+  metadata_validate_text="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$QWEN_METADATA_AUDITOR" --validate-evidence --expected-head "$expected_head" --repo-root "$repo_root" --evidence "$metadata_output" 2>&1)"
+  metadata_validate_status=$?
+  set -e
+  [[ "$metadata_validate_status" == 0 ]] || die "Qwen metadata evidence schema validation failed: $metadata_validate_text"
+  echo "$metadata_output_text" >&2
+  echo "$metadata_validate_text" >&2
+  exit 2
 fi
 
 [[ "$self_test" == 0 && "$work_dir_count" -le 1 && "$approval_evidence_count" == 1 && "$approval_sha256_count" == 1 && "$expected_head_count" == 1 && -n "$approval_evidence" && -n "$approval_sha256" && -n "$expected_head" ]] \
@@ -354,7 +405,7 @@ if manifest.get("status") != "BLOCKED" or manifest.get("evidence_stage") != "INS
 if manifest.get("inspection_status") != "AUTHENTICATED_EVIDENCE_COMPLETE" or manifest.get("collection_status") != "AUTHENTICATED": raise SystemExit("inspection evidence is incomplete")
 if manifest.get("runtime_status") != "NOT_IMPLEMENTED_FAIL_CLOSED" or manifest.get("cpu_status") != "UNSUPPORTED" or manifest.get("metal_status") != "BLOCKED_BY_CPU" or manifest.get("parity_status") != "NOT_RUN" or manifest.get("publication") != "NO_UPLOAD": raise SystemExit("unsafe runtime/publication status")
 dependency = manifest.get("external_dependency", {})
-if dependency != {"repository": "Qwen/Qwen2.5-7B", "revision": "UNSELECTED_BLOCKER", "selection_status": "BLOCKED", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"}: raise SystemExit("Qwen external dependency was not fail-closed")
+if dependency != {"repository": "Qwen/Qwen2.5-7B", "revision": "d149729398750b98c0af14eb82c78cfe92750796", "selection_status": "PINNED_METADATA_CANDIDATE_PENDING_AUDIT", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"}: raise SystemExit("Qwen external dependency was not fail-closed")
 if manifest.get("tensor_count", 0) <= 0 or manifest.get("upstream", {}).get("shard_count") != 8: raise SystemExit("incomplete shard/tensor evidence")
 transport = manifest.get("hf_server_tree", {}).get("transport_cache")
 if not isinstance(transport, dict) or transport.get("path") != ".cache/huggingface" or transport.get("scope") != "snapshot_root_exact_transport_subtree" or transport.get("identity_role") != "NON_IDENTITY_TRANSPORT_METADATA": raise SystemExit("transport cache evidence is missing or has the wrong scope")

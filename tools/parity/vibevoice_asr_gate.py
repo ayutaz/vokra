@@ -21,7 +21,7 @@ from typing import Any
 APPROVAL_SCHEMA = "vokra-vibevoice-asr-blocked-approval-v1"
 SCOPE: dict[str, str] = {
     "dataset_status": "BLOCKED_TRAINING_PROVENANCE_UNAUTHENTICATED",
-    "dependency_status": "BLOCKED_QWEN2_5_EXTERNAL_DEPENDENCY_UNSELECTED",
+    "dependency_status": "BLOCKED_QWEN2_5_EXTERNAL_METADATA_AUDIT_PENDING",
     "dependency_license_status": "BLOCKED_QWEN2_5_EXTERNAL_LICENSE_REVIEW",
     "license_status": "BLOCKED_EXTERNAL_DEPENDENCY_AND_DATASET_REVIEW",
     "model_repository": "microsoft/VibeVoice-ASR",
