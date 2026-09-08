@@ -14,6 +14,7 @@ PREFLIGHT_GATE="$PARITY_PROJECT/license_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
 API_INSPECTOR="$PARITY_PROJECT/api_model_free_inspector.py"
+METADATA_AUDIT="$PARITY_PROJECT/hf_metadata_audit.py"
 PREFLIGHT_AUDIT="$PARITY_PROJECT/dependency_audit_evidence.json"
 PREFLIGHT_API="$PARITY_PROJECT/api_model_free_evidence.json"
 UPSTREAM_REPO="facebook/mms-1b-all"
@@ -28,6 +29,7 @@ die() { log "ERROR: $*"; return 2; }
 usage() {
   cat <<'EOF'
 usage: run-mms-1b-all-validation.sh --language <official-code> --expected-head <HEX40> --approval-evidence <file> [--work-dir <absent-dir>]
+       run-mms-1b-all-validation.sh --metadata-only --language <official-code> --expected-head <HEX40> --output <absolute-absent-file>
        run-mms-1b-all-validation.sh --self-test
 
 The normal path is Linux/VAST-only. It resolves only the full upstream
@@ -40,7 +42,7 @@ EOF
 
 license_preflight() {
   local language="$1" expected_head="$2" approval="$3"
-  for required in "$PARITY_PROJECT/pyproject.toml" "$PARITY_PROJECT/uv.lock" "$PREFLIGHT_MANIFEST" "$DEPENDENCY_AUDIT" "$API_INSPECTOR" "$PREFLIGHT_AUDIT" "$PREFLIGHT_API"; do
+  for required in "$PARITY_PROJECT/pyproject.toml" "$PARITY_PROJECT/uv.lock" "$PREFLIGHT_MANIFEST" "$DEPENDENCY_AUDIT" "$API_INSPECTOR" "$METADATA_AUDIT" "$PREFLIGHT_AUDIT" "$PREFLIGHT_API"; do
     [[ -f "$required" ]] || die "BLOCKED_PENDING_AUTHENTICATED_MANIFEST: missing MMS closure input $required"
   done
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
@@ -97,7 +99,7 @@ self_test() {
     'prepared_manifest.json' 'reference_manifest.json' 'tensor_manifest' \
     'BLOCKED_PENDING_AUTHENTICATED_MANIFEST' 'no upload' 'MMS_LANGUAGE' 'azj-script_cyrillic' \
     'cac-dialect_sanmateoixtatan' 'vocabs/' 'git status --porcelain' \
-    'tools/parity/mms_1b_all/license_gate.py' 'dependency_audit.py' 'api_model_free_inspector.py' 'dependency_audit_evidence.json' 'api_model_free_evidence.json' '--prepared-manifest' '--reference-manifest' '--dependency-audit' '--api-evidence' '--expected-head' 'pyproject.toml' 'uv.lock' \
+    'tools/parity/mms_1b_all/license_gate.py' 'dependency_audit.py' 'api_model_free_inspector.py' 'hf_metadata_audit.py' 'dependency_audit_evidence.json' 'api_model_free_evidence.json' '--prepared-manifest' '--reference-manifest' '--dependency-audit' '--api-evidence' '--expected-head' '--metadata-only' '--output' '--repo-root' '8-role' 'pyproject.toml' 'uv.lock' \
     '--language "$language"' 'work_disk_root' 'nearest existing canonical ancestor' \
     'mms_1b_all_prepare_checkpoint.py --self-test' \
     'mms_1b_all_dump_reference.py --self-test'; do
@@ -113,6 +115,11 @@ self_test() {
   fi
   if grep -Fq 'ignore_mismatched_sizes=True' "$VOKRA_ROOT/$REFERENCE_DUMPER"; then
     log 'self-test FAIL: reference dumper permits silent composition mismatch'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 \
+    python "$METADATA_AUDIT" --self-test >/dev/null; then
+    log 'self-test FAIL: HF metadata audit self-test failed'
     fail=1
   fi
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*publish-one\.sh|.*upload\.sh)([[:space:]]|$)' "$path" >/dev/null; then
@@ -137,6 +144,18 @@ self_test() {
     log 'self-test FAIL: wrong current expected HEAD accepted'
     fail=1
   fi
+  if "$path" --metadata-only --language eng --output /private/tmp/mms-metadata-self-test.json >/dev/null 2>&1; then
+    log 'self-test FAIL: metadata-only route accepted a missing expected HEAD'
+    fail=1
+  fi
+  if "$path" --metadata-only --language eng --expected-head 0000000000000000000000000000000000000000 --output /private/tmp/mms-metadata-self-test.json --approval-evidence "$path" >/dev/null 2>&1; then
+    log 'self-test FAIL: metadata-only route accepted mixed approval mode'
+    fail=1
+  fi
+  if ! paths_overlap /private/tmp/vokra /private/tmp/vokra/metadata.json || paths_overlap /private/tmp/vokra /private/tmp/vokra-sibling/metadata.json; then
+    log 'self-test FAIL: metadata output overlap boundary helper is incorrect'
+    fail=1
+  fi
   local gate_line host_line path_line head_line
   # shellcheck disable=SC2016 # match literal source token
   gate_line="$(grep -n 'license_preflight "\$language" "\$expected_head" "\$approval_evidence"' "$path" | tail -n 1 | cut -d: -f1)"
@@ -146,6 +165,14 @@ self_test() {
   path_line="$(grep -n 'require_absent_work_dir "\$work_dir"' "$path" | tail -n 1 | cut -d: -f1)"
   [[ "$head_line" =~ ^[0-9]+$ && "$gate_line" =~ ^[0-9]+$ && "$path_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$head_line" -lt "$gate_line" && "$gate_line" -lt "$path_line" && "$path_line" -lt "$host_line" ]] || {
     log 'self-test FAIL: closure/path gate is not before host probe'
+    fail=1
+  }
+  local metadata_branch_line metadata_head_line metadata_uv_line
+  metadata_branch_line="$(grep -n '^if (( metadata_only ))' "$path" | head -n 1 | cut -d: -f1)"
+  metadata_head_line="$(grep -n '^  require_clean_expected_head$' "$path" | head -n 1 | cut -d: -f1)"
+  metadata_uv_line="$(grep -n 'uv run --no-cache --no-project --offline --python 3.12 python "\$METADATA_AUDIT" --language' "$path" | head -n 1 | cut -d: -f1)"
+  [[ "$metadata_branch_line" =~ ^[0-9]+$ && "$metadata_head_line" =~ ^[0-9]+$ && "$metadata_uv_line" =~ ^[0-9]+$ && "$metadata_branch_line" -lt "$metadata_head_line" && "$metadata_head_line" -lt "$metadata_uv_line" ]] || {
+    log 'self-test FAIL: metadata clean-head gate is not before uv/network'
     fail=1
   }
   local temporary nested canonical disk_root
@@ -180,36 +207,63 @@ self_test() {
   log 'self-test PASS'
 }
 
+require_clean_expected_head() {
+  [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires exactly 40 lowercase hexadecimal characters'
+  [[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'Vokra checkout must be clean'
+}
+
 work_dir="/workspace/vokra-mms-1b-all-validation"
 language=""
 expected_head=""
 approval_evidence=""
+metadata_only=0
+output=""
 self=0
-seen_self=0; seen_language=0; seen_head=0; seen_work=0; seen_approval=0
+seen_self=0; seen_language=0; seen_head=0; seen_work=0; seen_approval=0; seen_metadata=0; seen_output=0
 while (($#)); do
   case "$1" in
     --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
+    --metadata-only) (( seen_metadata == 0 )) || die 'duplicate --metadata-only'; seen_metadata=1; metadata_only=1; shift ;;
     --language) (( seen_language == 0 )) || die 'duplicate --language'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--language requires a nonempty official adapter code'; seen_language=1; language="$2"; shift 2 ;;
     --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires exactly 40 lowercase hexadecimal characters'; seen_head=1; expected_head="$2"; shift 2 ;;
     --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty path'; seen_approval=1; approval_evidence="$2"; shift 2 ;;
     --work-dir) (( seen_work == 0 )) || die 'duplicate --work-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--work-dir requires a nonempty path'; seen_work=1; work_dir="$2"; shift 2 ;;
+    --output) (( seen_output == 0 )) || die 'duplicate --output'; [[ $# -ge 2 && "$2" == /* && "$2" != -* ]] || die '--output requires an absolute path'; seen_output=1; output="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 if (( self )); then
-  [[ "$seen_self" == 1 && -z "$language$expected_head$approval_evidence" && "$work_dir" == "/workspace/vokra-mms-1b-all-validation" ]] || die '--self-test accepts no other arguments'
+  [[ "$seen_self" == 1 && "$seen_metadata" == 0 && "$seen_output" == 0 && -z "$language$expected_head$approval_evidence" && "$work_dir" == "/workspace/vokra-mms-1b-all-validation" ]] || die '--self-test accepts no other arguments'
   self_test
   exit $?
+fi
+if (( metadata_only )); then
+  [[ "$seen_language" == 1 && "$seen_output" == 1 && "$seen_head" == 1 && "$seen_approval" == 0 && "$seen_work" == 0 ]] || die '--metadata-only requires exactly --language, --expected-head, and --output'
+  [[ -n "$language" && "$language" =~ ^[a-z0-9]+([_-][a-z0-9]+)*$ ]] || die '--language is required and must be an official adapter code'
+  [[ ! -e "$output" && ! -L "$output" ]] || die '--output must be absent and non-symlink'
+  [[ -f "$METADATA_AUDIT" ]] || die 'HF metadata audit is missing'
+  metadata_output_canonical="$(canonical_absent_path "$output")" || die 'metadata output cannot be canonicalized'
+  metadata_root_canonical="$(canonical_absent_path "$VOKRA_ROOT")" || die 'Vokra root cannot be canonicalized'
+  paths_overlap "$metadata_output_canonical" "$metadata_root_canonical" && die 'metadata output overlaps the bound Vokra checkout'
+  require_clean_expected_head
+  [[ "$(uname -s)" == Linux ]] || die 'metadata inspection is Linux/VAST-only'
+  [[ "$(uname -m)" == x86_64 ]] || die 'metadata inspection requires x86_64 VAST'
+  [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
+  command -v uv >/dev/null 2>&1 || die 'missing tool: uv'
+  set +e
+  UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 python "$METADATA_AUDIT" --language "$language" --expected-head "$expected_head" --repo-root "$VOKRA_ROOT" --output "$output"
+  metadata_rc=$?
+  set -e
+  [[ "$metadata_rc" == 2 && -f "$output" ]] || die 'HF metadata audit did not terminate with blocked evidence'
+  log "metadata-only evidence written to $output; no checkpoint was acquired; NO_UPLOAD"
+  exit 2
 fi
 [[ "$seen_approval" == 1 && "$seen_head" == 1 ]] || die '--expected-head and --approval-evidence are required'
 [[ -n "$language" ]] || die '--language is required; refusing to assume English'
 [[ "$language" =~ ^[a-z0-9]+([_-][a-z0-9]+)*$ ]] || die '--language contains unsafe filename characters'
-require_clean_expected_head() {
-  [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
-  [[ "$(git -C "$VOKRA_ROOT" rev-parse --verify HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
-  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
-}
 require_clean_expected_head
 license_preflight "$language" "$expected_head" "$approval_evidence"
 require_absent_work_dir "$work_dir" "$approval_evidence"

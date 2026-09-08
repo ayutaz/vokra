@@ -60,3 +60,53 @@ until separate real evidence is reviewed. The VAST and Apple entry points
 also require the exact clean Vokra HEAD to be supplied and bound into the
 external approval evidence; they do not acquire or execute a checkpoint when
 the closure is absent.
+
+## No-weight server-metadata audit
+
+`hf_metadata_audit.py` is the smaller model-free route for authenticating the
+exact eight-file upstream snapshot closure before the owner-review closure is
+complete: `config.json`, `preprocessor_config.json`, `tokenizer_config.json`,
+`vocab.json`, `special_tokens_map.json`, the full `model.safetensors` backbone,
+exactly `adapter.<language>.safetensors`, and exactly
+`vocabs/<language>.txt`. It uses one bounded standard-library HTTPS request to
+the fixed Hugging Face model-info endpoint with `blobs=true`; the raw response
+is duplicate-key checked and its final URL, content type, byte count, and
+SHA-256 are bound in the report. For Git-LFS files it also checks the server
+LFS-pointer Git blob identity against the reported payload digest. It never
+resolves or downloads a file, imports Transformers, constructs a model, or
+executes inference, and sends no `Authorization` header or ambient token.
+
+The language is intentionally mandatory; no English/default adapter is
+selected:
+
+```bash
+scripts/publish/vast-ai/run-mms-1b-all-validation.sh \
+  --metadata-only --language <official-code> \
+  --expected-head <clean-vokra-40-hex-head> \
+  --output /absolute/path/mms-metadata.json
+```
+
+This VAST-only route verifies the Vokra checkout is clean and exactly at the
+supplied expected head before any metadata network request. The runner invokes
+the stdlib-only auditor with `uv run --no-cache --no-project --offline
+--python 3.12`; it performs no project synchronization at all. It exits 2
+after writing a no-clobber report whose
+`vokra_checkout` object contains the exact `expected_head`, `actual_head`, and
+`clean=true`, together with `status=BLOCKED_PENDING_OWNER_REVIEW` and
+`publication=NO_UPLOAD`. The report is factual server metadata only; it is not
+an owner approval, does not make a non-commercial weight publishable, and does
+not authorize runtime or CPU/Metal parity. `--self-test` exercises a synthetic
+pass, missing/drifted/dirty-head rejection, eight-file sidecar omission and
+tamper rejection, raw duplicate-key rejection, bounded-response rejection,
+and output no-clobber behavior without network access or model artifacts.
+
+The checkout binding has this exact shape (the two values are the supplied
+and observed 40-character commit, not a branch name):
+
+```json
+"vokra_checkout": {
+  "expected_head": "<40-lowercase-hex>",
+  "actual_head": "<same-40-lowercase-hex>",
+  "clean": true
+}
+```
