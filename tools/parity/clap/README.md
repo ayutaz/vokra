@@ -3,9 +3,11 @@
 This directory is a VAST-only, reference-side lock for
 `laion/clap-htsat-fused` at revision
 `365dea6ef167def6676140ed93bbc43f84dabb28`. It does not contain weights and
-does not enable the native CLAP binder. The source/model license remains
-`OWNER_REVIEW_PENDING`; the reported HF `apache-2.0` metadata is evidence, not
-an owner approval. No upload is permitted.
+does not enable the native CLAP binder. The model license has the explicit
+2026-07-30 yousan commercial sign-off recorded for the CLAP row in
+`docs/license-audit.md`; that sign-off is limited to the model license and
+does not approve Python dependencies, native payloads, execution, parity, or
+publication. No upload is permitted.
 
 The pinned environment is Python 3.12 on Linux x86_64 with CPU-only Torch
 (`torch==2.7.1` from the explicit PyTorch CPU index) and
@@ -75,11 +77,34 @@ bounded in-memory archive inspection hashes only safe LICENSE/COPYING/NOTICE
 members and writes no archive payloads. Missing PEP-639
 `License-Expression` is an owner-review flag when legacy metadata, classifiers,
 or license bytes exist; it is not treated as a factual collection failure.
-All SPDX/native-license disposition remains `PENDING_OWNER_REVIEW` and
+Dependency/native-payload disposition remains `PENDING_OWNER_REVIEW` and
 publication remains `NO_UPLOAD`. Its evidence explicitly says
 `weights=NOT_ACQUIRED`, `model_load=NOT_PERFORMED`, and
 `publication=NO_UPLOAD`. The real-weight path remains approval-gated and
 cannot be authorized by model-free evidence.
+
+The exact model-free VAST result is tracked as an owner-review candidate in
+`owner_review_candidate.json`. Its `owner_review_candidate.py` validator uses
+only the Python standard library and binds the three immutable VAST SHA-256
+values (model-free audit, dependency inventory, and summary), the pinned
+upstream revision, and the fail-closed disposition. The candidate's own
+canonical payload digest is checked as well, so schema, evidence hashes, or
+status changes are rejected. It deliberately contains no approval digest:
+`candidate_status=PENDING_OWNER_REVIEW`, `runtime_status=BLOCKED`,
+`weights=NOT_ACQUIRED`, `model_load=NOT_PERFORMED`, and `publication=NO_UPLOAD`
+remain required. Validating this file is evidence packaging only; it does
+not approve a real-weight inspection, native execution, parity, or upload.
+The normal validator invocation prints the pending state and exits 2 by
+design, so a pending candidate cannot be mistaken for approval by a shell
+pipeline.
+
+Run the dependency-free candidate self-test offline with:
+
+```sh
+UV_CACHE_DIR=/private/tmp/vokra-clap-candidate-uv-cache \
+  uv run --no-project --offline --python 3.12 python \
+  tools/parity/clap/owner_review_candidate.py --self-test
+```
 
 The same model-free worker emits `dependency-license-inventory.json`. It
 enumerates every non-virtual package in the single frozen Linux x86_64 uv

@@ -394,6 +394,8 @@ self_test() {
     'card_data_license_status' 'repo_license_file_status' '--remote-identity' '--dependency-inventory' \
     'remote_files' 'local_git_blob_sha1' 'remote_lfs_sha256' 'dependency_audit_status=PENDING_VAST_AUDIT' 'weights=NOT_ACQUIRED' \
     'transformers_clap_model_source_sha256' 'tensor_manifest' \
+    'owner_review_candidate.py' 'owner_review_candidate.json' 'PENDING_OWNER_REVIEW' 'SIGNED_COMMERCIAL' \
+    'row_sha256' 'docs/license-audit.md' 'payload_sha256' \
     'validate_feature_extractor_serializer_contract' 'processor_class' \
     'INSPECTION_ONLY' 'no upload' 'VOKRA_CLAP_REAL_GGUF' 'GGUFReader' \
     'clap_dump_reference.py" --self-test' \
@@ -492,6 +494,11 @@ self_test() {
   if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
     "$DEPENDENCY_LICENSE_AUDIT" --self-test >/dev/null; then
     log 'self-test FAIL: dependency/license audit self-test failed'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$PARITY_PROJECT/owner_review_candidate.py" --self-test >/dev/null; then
+    log 'self-test FAIL: owner-review candidate self-test failed'
     fail=1
   fi
   (( fail == 0 )) || return 1
