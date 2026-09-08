@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -96,16 +98,91 @@ def validate_snapshot_layout(snapshot: Path, language: str) -> None:
 
 def publish_exclusive_directory(temporary: Path, output: Path) -> None:
     """Publish reference files without replacing an existing directory."""
+    temporary_info = os.lstat(temporary)
+    if not stat.S_ISDIR(temporary_info.st_mode):
+        raise OSError(f"staging path is not a regular directory: {temporary}")
+    temporary_identity = (temporary_info.st_dev, temporary_info.st_ino)
     try:
         output.mkdir(mode=0o700)
     except FileExistsError:
         raise FileExistsError(f"output appeared during reference generation: {output}") from None
+    output_info = os.lstat(output)
+    if not stat.S_ISDIR(output_info.st_mode):
+        raise OSError(f"output path is not a regular directory: {output}")
+    output_identity = (output_info.st_dev, output_info.st_ino)
+    children = sorted(temporary.iterdir(), key=lambda path: path.name)
+    staged: dict[str, tuple[int, int]] = {}
+    for child in children:
+        child_info = os.lstat(child)
+        if not stat.S_ISREG(child_info.st_mode):
+            raise OSError(f"staged artifact is not a regular file: {child.name}")
+        staged[child.name] = (child_info.st_dev, child_info.st_ino)
+    moved: list[tuple[Path, tuple[int, int]]] = []
     try:
-        for child in sorted(temporary.iterdir(), key=lambda path: path.name):
-            child.rename(output / child.name)
+        for child in children:
+            current_temporary = os.lstat(temporary)
+            if (current_temporary.st_dev, current_temporary.st_ino) != temporary_identity or not stat.S_ISDIR(current_temporary.st_mode):
+                raise OSError("staging directory identity changed during reference generation")
+            current_output = os.lstat(output)
+            if (current_output.st_dev, current_output.st_ino) != output_identity or not stat.S_ISDIR(current_output.st_mode):
+                raise OSError("output directory identity changed during reference generation")
+            destination = output / child.name
+            source_info = os.lstat(child)
+            if (source_info.st_dev, source_info.st_ino) != staged[child.name] or not stat.S_ISREG(source_info.st_mode):
+                raise OSError(f"staged artifact identity changed: {child.name}")
+            child.rename(destination)
+            destination_info = os.lstat(destination)
+            if (destination_info.st_dev, destination_info.st_ino) != staged[child.name] or not stat.S_ISREG(destination_info.st_mode):
+                raise OSError(f"published artifact identity changed: {child.name}")
+            current_output = os.lstat(output)
+            if (current_output.st_dev, current_output.st_ino) != output_identity or not stat.S_ISDIR(current_output.st_mode):
+                try:
+                    current_destination = os.lstat(destination)
+                    if (current_destination.st_dev, current_destination.st_ino) == staged[child.name] and stat.S_ISREG(current_destination.st_mode):
+                        destination.unlink()
+                except OSError:
+                    pass
+                raise OSError("output directory identity changed during reference generation")
+            moved.append((destination, staged[child.name]))
+        current_output = os.lstat(output)
+        if (current_output.st_dev, current_output.st_ino) != output_identity or not stat.S_ISDIR(current_output.st_mode):
+            raise OSError("output directory identity changed after reference generation")
+    except Exception:
+        for destination, identity in reversed(moved):
+            try:
+                current = os.lstat(destination)
+                if (current.st_dev, current.st_ino) == identity and stat.S_ISREG(current.st_mode):
+                    destination.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        try:
+            current_output = os.lstat(output)
+            if (current_output.st_dev, current_output.st_ino) == output_identity and stat.S_ISDIR(current_output.st_mode):
+                output.rmdir()
+        except OSError:
+            pass
+        raise
     finally:
-        if temporary.exists():
-            shutil.rmtree(temporary, ignore_errors=True)
+        try:
+            current_temporary = os.lstat(temporary)
+            if (current_temporary.st_dev, current_temporary.st_ino) == temporary_identity and stat.S_ISDIR(current_temporary.st_mode):
+                for child in children:
+                    try:
+                        current_child = os.lstat(child)
+                        if (current_child.st_dev, current_child.st_ino) == staged[child.name] and stat.S_ISREG(current_child.st_mode):
+                            child.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        pass
+                try:
+                    temporary.rmdir()
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
 
 def tensor_manifest(state_dict: dict[str, Any]) -> dict[str, dict[str, object]]:
@@ -170,6 +247,85 @@ def self_test() -> None:
             raise SystemExit("self-test replaced an existing output directory")
         assert existing.is_dir() and not (existing / "reference_manifest.json").exists()
         shutil.rmtree(staging, ignore_errors=True)
+        partial_staging = Path(tempfile.mkdtemp(dir=directory))
+        (partial_staging / "a.json").write_bytes(b"a")
+        (partial_staging / "b.json").write_bytes(b"b")
+        partial_output = Path(directory) / "partial-output"
+        original_rename = Path.rename
+        def fail_second(source: Path, target: str | Path) -> Path:
+            if source.name == "b.json":
+                raise OSError("injected staging failure")
+            return original_rename(source, target)
+        Path.rename = fail_second  # type: ignore[assignment]
+        try:
+            try:
+                publish_exclusive_directory(partial_staging, partial_output)
+            except OSError:
+                pass
+            else:
+                raise SystemExit("self-test ignored partial staging failure")
+        finally:
+            Path.rename = original_rename  # type: ignore[assignment]
+        assert not partial_output.exists() and not (partial_staging / "a.json").exists()
+        output_swap_staging = Path(tempfile.mkdtemp(dir=directory))
+        (output_swap_staging / "a.json").write_bytes(b"a")
+        output_swap = Path(directory) / "output-swap"
+        original_rename = Path.rename
+        original_lstat = os.lstat
+        output_swapped = False
+        destination_swapped = False
+        def swap_output(source: Path, target: str | Path) -> Path:
+            nonlocal output_swapped
+            if source.name == "a.json" and not output_swapped:
+                output_swap.rename(Path(directory) / "output-owned")
+                output_swap.mkdir()
+                output_swapped = True
+            return original_rename(source, target)
+        def swap_destination(path: str | Path) -> os.stat_result:
+            nonlocal destination_swapped
+            result = original_lstat(path)
+            if Path(path) == output_swap / "a.json" and not destination_swapped:
+                destination_swapped = True
+                Path(path).unlink()
+                Path(path).write_bytes(b"attacker\n")
+            return result
+        Path.rename = swap_output  # type: ignore[assignment]
+        os.lstat = swap_destination  # type: ignore[assignment]
+        try:
+            try:
+                publish_exclusive_directory(output_swap_staging, output_swap)
+            except OSError:
+                pass
+            else:
+                raise SystemExit("self-test accepted output directory replacement")
+        finally:
+            Path.rename = original_rename  # type: ignore[assignment]
+            os.lstat = original_lstat  # type: ignore[assignment]
+        assert output_swap.is_dir() and (output_swap / "a.json").read_bytes() == b"attacker\n"
+        staging_swap = Path(tempfile.mkdtemp(dir=directory))
+        (staging_swap / "a.json").write_bytes(b"a")
+        (staging_swap / "b.json").write_bytes(b"b")
+        staging_output = Path(directory) / "staging-swap-output"
+        original_rename = Path.rename
+        staging_swapped = False
+        def swap_staging(source: Path, target: str | Path) -> Path:
+            nonlocal staging_swapped
+            if source.name == "b.json" and not staging_swapped:
+                staging_swap.rename(Path(directory) / "staging-owned")
+                staging_swap.mkdir()
+                staging_swapped = True
+            return original_rename(source, target)
+        Path.rename = swap_staging  # type: ignore[assignment]
+        try:
+            try:
+                publish_exclusive_directory(staging_swap, staging_output)
+            except OSError:
+                pass
+            else:
+                raise SystemExit("self-test accepted staging directory replacement")
+        finally:
+            Path.rename = original_rename  # type: ignore[assignment]
+        assert staging_swap.is_dir() and (Path(directory) / "staging-owned" / "b.json").is_file()
 
 
 def dump_reference(snapshot: str | Path, language: str, output: str | Path) -> None:
@@ -315,19 +471,46 @@ def dump_reference(snapshot: str | Path, language: str, output: str | Path) -> N
     if not parent.is_dir() or parent.is_symlink():
         raise ValueError(f"reference output parent must be an existing regular directory: {parent}")
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=parent))
+    temporary_info = os.lstat(temporary)
+    temporary_identity = (temporary_info.st_dev, temporary_info.st_ino)
+    owned_files: list[tuple[Path, tuple[int, int]]] = []
     try:
-        np.save(temporary / "logits.npy", logits[0].cpu().numpy())
-        np.save(temporary / "greedy_token_ids.npy", token_ids.cpu().numpy())
+        logits_path = temporary / "logits.npy"
+        np.save(logits_path, logits[0].cpu().numpy())
+        logits_info = os.lstat(logits_path)
+        owned_files.append((logits_path, (logits_info.st_dev, logits_info.st_ino)))
+        token_ids_path = temporary / "greedy_token_ids.npy"
+        np.save(token_ids_path, token_ids.cpu().numpy())
+        token_ids_info = os.lstat(token_ids_path)
+        owned_files.append((token_ids_path, (token_ids_info.st_dev, token_ids_info.st_ino)))
         evidence["artifacts"] = {
             name: {"sha256": sha256(temporary / name), "bytes": (temporary / name).stat().st_size}
             for name in ("logits.npy", "greedy_token_ids.npy")
         }
-        (temporary / "reference_manifest.json").write_text(
+        manifest_path = temporary / "reference_manifest.json"
+        manifest_path.write_text(
             json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        manifest_info = os.lstat(manifest_path)
+        owned_files.append((manifest_path, (manifest_info.st_dev, manifest_info.st_ino)))
         publish_exclusive_directory(temporary, output)
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        try:
+            current_temporary = os.lstat(temporary)
+            if (current_temporary.st_dev, current_temporary.st_ino) == temporary_identity and stat.S_ISDIR(current_temporary.st_mode):
+                for owned_path, identity in owned_files:
+                    try:
+                        current = os.lstat(owned_path)
+                        if (current.st_dev, current.st_ino) == identity and stat.S_ISREG(current.st_mode):
+                            owned_path.unlink()
+                    except (FileNotFoundError, OSError):
+                        pass
+                try:
+                    temporary.rmdir()
+                except OSError:
+                    pass
+        except OSError:
+            pass
         raise
 
 
