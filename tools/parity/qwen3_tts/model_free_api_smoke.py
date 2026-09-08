@@ -98,8 +98,8 @@ EXPECTED_PACKAGE_VERSIONS = {
     "librosa": "1.0.0",
     "numpy": "2.5.2",
     "soundfile": "0.14.0",
-    "torch": "2.7.1",
-    "torchaudio": "2.7.1",
+    "torch": "2.7.1+cpu",
+    "torchaudio": "2.7.1+cpu",
     "transformers": "5.10.4",
 }
 FORBIDDEN_PACKAGES = {"gradio", "onnxruntime", "protobuf", "setuptools", "sox"}
@@ -938,7 +938,7 @@ def self_test() -> int:
                 "publication": lambda value: value.update(publication="UPLOAD"),
                 "checkpoint": lambda value: value.update(checkpoint_load="PERFORMED"),
                 "api": lambda value: value["api"]["0.6b-base"].update(wrapper_from_pretrained="CALLED"),
-                "package-version": lambda value: value["api"]["0.6b-base"]["package_versions"].update(torch="2.7.2"),
+                "package-version": lambda value: value["api"]["0.6b-base"]["package_versions"].update(torch="2.7.1"),
                 "source": lambda value: value["source"]["files"].pop(SOURCE_FILES[0]),
                 "lock": lambda value: value["project"].update(lock_sha256="0" * 64),
                 "unknown": lambda value: value.update(unexpected=True),
