@@ -484,6 +484,75 @@ The only dependency-policy diagnostic was the existing unmatched
 `libfuzzer-sys` exception warning; advisories, bans, licenses and sources were
 all reported OK. This verification did not download or execute model weights.
 
+## 2026-09-08 source-contract and dependency-evidence follow-up
+
+The next owner-independent batch is committed through exact code head
+`7cc0f2485a71a867f8c3b9b3bbf56cf56a1dc71e`.  Its eight commits register the
+Kyutai tokenizer architecture, bind the MOSS Nano validation contract,
+authenticate the Kyutai streaming source contract, collect locked CLAP sdist
+license evidence, and correct two failures exposed by the first model-free
+VAST replay.  The corrections restore authenticated resolver artifact rows to
+the MOSS dependency audit and distinguish a successfully inspected empty sdist
+from an unavailable sdist in the CLAP owner-review packet.  Kyutai's source
+contract additionally verifies the exact upstream assignment name and the AST
+source order for encode, streaming step, cache transition, token selection and
+delayed output gather.  Runtime observation and numerical/PCM parity remain
+explicitly `BLOCKED_NOT_EXECUTED`.
+
+Disposable VAST instance `50212100` checked out that exact clean head from
+reviewed git bundles.  No checkpoint, GGUF, safetensors, ONNX, PyTorch model or
+audio inference was acquired or executed.  The exact-head workspace run
+produced 322 successful `test result` groups and no failed group; all-target
+workspace Clippy completed successfully.  The workspace-test and Clippy log
+SHA-256 values are
+`78c2d4a067e78c74a34cd6d996df4f7565a737119ed81d2069150a5b2cf93aeb`
+and
+`eea1a2d99c2367318879c26090e8ecbc663c4c5ffee2e7121b112d9fe2c4d3ee`.
+The combined formatting, metadata, architecture, zero-dependency,
+forbidden-symbol, fixture and pipefail-lint gate passed with log SHA-256
+`22e529610464ab7034b4ac181a9e7e992484c45998c60ce95de174e4591ccdbc`.
+`cargo-deny` 0.20.2 reported advisories, bans and licenses OK, with only the
+existing unmatched `libfuzzer-sys` exception warning; `cargo-audit` 0.22.2
+reported no vulnerability.  Their final log SHA-256 values are
+`3cf80bdc410003f3945b935691d26b6bf07dcdf648ce80b242447c564ff1991d`
+and
+`01ed47e312cde79358be1d34373ecce034e5a4250154f6d07f8f0b7da08f4127`.
+
+The final MOSS Nano dependency report SHA-256 is
+`5cc7c9dc22331f081af6b50e80244f2805e4006590c4b2b9c828cc68e5dbc5ac`.
+It recovered the exact locked resolver artifact identities, accepted the
+CPU-only Torch closure and stopped only at the 37 unresolved package-review
+rows; it did not promote any owner decision.  The final CLAP model-free audit,
+dependency inventory and summary SHA-256 values are respectively
+`6270476e34fd53b5d12cbd9cc0cb672a0633e1e72b77ba50db05132b6f17563c`,
+`ada4fb32ab79a9a5ed0385c303afbb23770cc3e0314a8d5dc2e8f4935c755259`
+and
+`d6c449e2d933702c6a516f460b73e91138b039d70de714d423f2703de477b3f6`.
+The inventory is now `PENDING_OWNER_REVIEW` with zero global findings:
+Tokenizers contributes an exact locked-sdist LICENSE candidate, while tqdm's
+successfully inspected empty sdist is retained as a publisher-metadata review
+fact.  The pinned DSM/Moshi Kyutai source contract passed as
+`AUTHENTICATED_SOURCE_CONTRACT`; its evidence SHA-256 is
+`e2333319eb55dbdda12f0eef28182a84c21846defe84e6ff360a36e52237335c`.
+
+The recovered 794-KiB evidence archive SHA-256 is
+`8f40fa1ee93eac043320550f617a2c38a121e6e865de12bb46d5758242ef5994`.
+It contains 56 log/JSON/metadata entries and no model suffix or file larger
+than 100 MiB.  The full eight-commit recovery bundle from remote head
+`37f3e2b6` has SHA-256
+`1ed82bad9a501c4498b9041fce485d1adefb63ebeb12a53382f0f355cad4579d`.
+After local hash and archive-content verification, instance `50212100` and its
+storage were destroyed; the exact readback was `instances: null`.  The only
+remaining VAST instance was the unrelated protected
+`50122020`/`ralomi-m5-robustness`, which this campaign did not modify.
+
+This batch advances authenticated source and dependency evidence only.  It
+does not authorize model execution or publication and does not decrement the
+63-row unresolved public denominator.  MOSS and CLAP still require immutable
+owner dispositions, while Kyutai still requires actual Mimi/tokenizer/streaming
+runtime completion, a reviewed numerical bound, real VAST CPU parity and the
+final Apple run.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
