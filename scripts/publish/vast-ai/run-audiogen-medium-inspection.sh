@@ -125,7 +125,9 @@ self_test(){
   grep -Fq -- '--expected-head' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- '--approval-sha256' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
   grep -Fq -- 'uv run --no-project --offline' "$ROOT/scripts/publish/vast-ai/run-audiogen-medium-inspection.sh"
-  synthetic="$(mktemp -d /private/tmp/audiogen-medium-manifest-self-test.XXXXXX)"
+  synthetic="$(mktemp -d "${TMPDIR:-/tmp}/audiogen-medium-manifest-self-test.XXXXXX")"
+  linux_template="$(TMPDIR=/var/tmp bash -c 'printf "%s" "${TMPDIR:-/tmp}/audiogen-medium-linux-self-test.XXXXXX"')"
+  [[ "$linux_template" == /var/tmp/audiogen-medium-linux-self-test.XXXXXX ]] || die 'Linux TMPDIR synthetic path drifted'
   UV_CACHE_DIR="${AUDIOGEN_UV_CACHE_DIR:-${TMPDIR:-/tmp}/vokra-audiogen-uv-cache}" uv run --no-project --offline --python 3.12 python - "$synthetic" "$PROJECT" <<'PY'
 import json,sys
 from pathlib import Path
