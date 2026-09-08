@@ -24,6 +24,8 @@ FORMAT = "vokra-audiogen-medium-inspection-v2"
 PROJECT = Path(__file__).with_name("audiogen_medium_reference")
 sys.path.insert(0, str(PROJECT))
 from companion_contract import contract as companion_contract
+from companion_contract import canonical_sha256 as companion_contract_sha256
+from dependency_audit import audit as dependency_audit
 from t5_metadata_audit import load_packet as load_t5_metadata_packet
 HF_FILES = {".gitattributes", "README.md", "compression_state_dict.bin", "state_dict.bin"}
 HF_FILE_IDENTITIES = {
@@ -146,16 +148,40 @@ def canonical_json(value: Any) -> bytes:
 
 
 def approval_scope(expected_head: str) -> dict[str, Any]:
+    dependency = dependency_audit(PROJECT)
     return {
+        "schema": "vokra-audiogen-medium-approval-scope-v2",
         "expected_head": expected_head,
         "upstream_repository": HF_REPOSITORY,
         "upstream_revision": HF_REVISION,
         "source_repository": SOURCE_REPOSITORY,
         "source_revision": SOURCE_REVISION,
         "artifact_identity_sha256": hashlib.sha256(canonical_json(HF_FILE_IDENTITIES)).hexdigest(),
+        "companion_contract_sha256": companion_contract_sha256(),
+        "dependency_status": dependency["status"],
+        "dependency_scope_sha256": dependency["scope_sha256"],
+        "compression_weight_build_provenance": "UNRESOLVED_INTERNAL_CHECKPOINT",
         "license": "CC-BY-NC-4.0",
         "license_scope": "RESEARCH_ONLY",
         "publication": "NO_UPLOAD",
+    }
+
+
+def pending_approval_scope(expected_head: str, dependency: dict[str, Any]) -> dict[str, Any]:
+    """Return a canonical, non-authorizing scope for the owner packet."""
+
+    scope = approval_scope(expected_head)
+    if dependency != dependency_audit(PROJECT):
+        raise RuntimeError("dependency scope changed while building approval packet")
+    return {
+        "status": "PENDING_OWNER_APPROVAL",
+        "scope": scope,
+        "scope_sha256": hashlib.sha256(canonical_json(scope)).hexdigest(),
+        "record": None,
+        "signer": None,
+        "decision": None,
+        "publication": "NO_UPLOAD",
+        "signable": False,
     }
 
 
@@ -707,6 +733,7 @@ def main() -> int:
             t5_metadata = load_t5_metadata_packet(args.t5_server_metadata)
             server, files, card = inventory_server_metadata(args.server_tree)
             source = source_inventory(args.source)
+            dependency = dependency_audit(PROJECT)
             blockers = [
                 "checkpoint payloads were intentionally not downloaded or loaded",
                 "canonical external T5 repository/revision/file identity is pinned, but the historical AudioGen checkpoint linkage is not recorded by upstream",
@@ -717,6 +744,7 @@ def main() -> int:
                 "CPU/Metal parity is not run",
                 "source LICENSE_weights is CC-BY-NC-4.0; historical v0.0.2 LICENSE_weights is CC-BY-NC-ND-4.0 (provenance ambiguity)",
                 "owner approval evidence is pending; model-free closure does not authorize real inspection or publication",
+                *dependency["blockers"],
             ] + source["role_blockers"]
             write_manifest(
                 args.output,
@@ -731,6 +759,8 @@ def main() -> int:
                 t5_server_metadata=t5_metadata,
                 official_source=source,
                 license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_METADATA"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"},
+                dependency_closure=dependency,
+                approval_scope=pending_approval_scope(args.expected_head, dependency),
                 blockers=sorted(set(blockers)),
             )
             return 2
@@ -764,6 +794,7 @@ def main() -> int:
                 raise RuntimeError(f"fixed archive size mismatch: {name}")
             archives[name] = inspect_torch_archive(path)
         source = source_inventory(args.source)
+        dependency = dependency_audit(PROJECT)
         t5_metadata = load_t5_metadata_packet(args.t5_server_metadata)
         collection_blockers = source["role_blockers"]
         config_blockers = [f"{name} checkpoint config semantics are not fully authenticated" for name, archive in archives.items() if archive["config_evidence"]["status"] != "AUTHENTICATED"]
@@ -771,7 +802,7 @@ def main() -> int:
         complete = not collection_blockers
         if args.vokra_root is not None:
             validate_clean_head(args.vokra_root, args.expected_head)
-        write_manifest(args.output, inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", collection_status="AUTHENTICATED" if complete else "UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "walk": "recursive_file_only", "server_tree": server, "files": files, "model_card": {"path": "README.md", "license": card["license"], "sha256": digest(readme), "git_blob_sha1": git_blob_sha1(readme)}}, archives=archives, compression_companion={**companion_contract()["compression_companion"], "role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "SOURCE_CONFIG_AUTHENTICATED_PAYLOAD_PRESENT", "codec": "encodec_large_nq4_s320", "payload": "PRESENT"}, external_text_conditioner={**companion_contract()["text_conditioner"], "family": "T5-family", "status": "CANONICAL_PIN_HISTORICAL_LINK_UNVERIFIED", "selection": "t5-large"}, t5_server_metadata=t5_metadata, official_source=source, license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_MODEL_CARD"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"}, blockers=sorted(set(blockers)))
+        write_manifest(args.output, inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE" if complete else "INSPECTION_ERROR", collection_status="AUTHENTICATED" if complete else "UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": HF_REVISION, "walk": "recursive_file_only", "server_tree": server, "files": files, "model_card": {"path": "README.md", "license": card["license"], "sha256": digest(readme), "git_blob_sha1": git_blob_sha1(readme)}}, archives=archives, compression_companion={**companion_contract()["compression_companion"], "role": "release-specific 16-kHz EnCodec/SEANet companion", "status": "SOURCE_CONFIG_AUTHENTICATED_PAYLOAD_PRESENT", "codec": "encodec_large_nq4_s320", "payload": "PRESENT"}, external_text_conditioner={**companion_contract()["text_conditioner"], "family": "T5-family", "status": "CANONICAL_PIN_HISTORICAL_LINK_UNVERIFIED", "selection": "t5-large"}, t5_server_metadata=t5_metadata, official_source=source, license_evidence={"weights": {"hf_model_card": {"license": HF_EXPECTED_LICENSE, "status": "AUTHENTICATED_FROM_MODEL_CARD"}, "source_LICENSE_weights": source["weights_license"], "historical_v0_0_2_LICENSE_weights": {"git_blob_sha1": HISTORICAL_WEIGHTS_LICENSE_BLOB, "license": "CC-BY-NC-ND-4.0", "status": "HISTORICAL_EVIDENCE_NOT_CURRENT_SOURCE"}, "status": "PROVENANCE_AMBIGUITY_BLOCKER"}, "code": source["license"], "training_data": "UNAUTHENTICATED_BLOCKER"}, dependency_closure=dependency, blockers=sorted(set(blockers)))
         return 2
     except Exception as error:
         write_manifest(args.output or Path("."), inspection_status="INSPECTION_ERROR", collection_status="UNVERIFIED", expected_head=args.expected_head, approval_evidence=approval, upstream={"repository": HF_REPOSITORY, "requested_revision": HF_REVISION, "resolved_revision": None}, error_type=type(error).__name__, blockers=[str(error)])
@@ -781,6 +812,15 @@ def main() -> int:
 def self_test() -> None:
     global HF_FILE_IDENTITIES
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40
+    dependency = dependency_audit(PROJECT)
+    assert dependency["status"] == "BLOCKED_MISSING_LOCK_INPUTS"
+    assert dependency["lock_present"] is False
+    pending = pending_approval_scope("a" * 40, dependency)
+    assert pending["status"] == "PENDING_OWNER_APPROVAL"
+    assert pending["record"] is None and pending["signer"] is None and pending["decision"] is None
+    tampered_pending = json.loads(json.dumps(pending))
+    tampered_pending["scope"]["publication"] = "UPLOAD"
+    assert tampered_pending["scope_sha256"] != hashlib.sha256(canonical_json(tampered_pending["scope"])).hexdigest()
     validate_model_free_options(snapshot=None, approval_evidence=None, approval_sha256=None, expected_head="a" * 40, source=Path("source"), server_tree=Path("tree.json"), output=Path("evidence"), vokra_root=Path("."), t5_server_metadata=Path("t5-tree.json"))
     for mixed in (
         {"snapshot": Path("snapshot"), "approval_evidence": None, "approval_sha256": None},
