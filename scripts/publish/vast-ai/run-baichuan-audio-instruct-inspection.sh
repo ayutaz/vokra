@@ -31,7 +31,7 @@ self_test() {
     'snapshot_download' 'list_repo_tree' 'server-tree' 'weights_only' 'safetensors' \
     'header-only' 'overlapping tensor ranges' 'gap in tensor data region' \
     'INSPECTION_ONLY' 'materialized payload size' 'payload_sha256' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'UNSUPPORTED' 'BLOCKED_BY_CPU' 'NOT_RUN' 'NO_UPLOAD' \
-    'UNAUTHENTICATED_BLOCKER' 'UNREVIEWED_BLOCKER' 'AUTHENTICATED_SEPARATE_FILE' 'component license inheritance is not inferred' 'SOURCE_GITMODULES_BLOB' 'ABSENT_NOT_A_SUBMODULE' 'Matcha path exists without an authenticated gitlink/submodule' 'AUTHENTICATED_PUBLIC_GITHUB_SOURCE_ROLES_INCOMPLETE_HF_CUSTOM_CODE' 'UNRESOLVED_SEPARATE_HF_REPOSITORY' 'role_sha256_table_status' 'BLOCKED_VAST_RAW_DIGEST_PENDING' 'CARGO_BUILD_JOBS=1' 'cargo metadata --locked --no-deps --format-version 1' \
+    'UNAUTHENTICATED_BLOCKER' 'UNREVIEWED_BLOCKER' 'AUTHENTICATED_SEPARATE_FILE' 'component license inheritance is not inferred' 'SOURCE_GITMODULES_BLOB' 'ABSENT_NOT_A_SUBMODULE' 'AUTHENTICATED_GIT_BLOB_ONLY_RAW_SHA256_PENDING' 'Matcha path exists without an authenticated gitlink/submodule' 'AUTHENTICATED_PUBLIC_GITHUB_SOURCE_ROLES_INCOMPLETE_HF_CUSTOM_CODE' 'UNRESOLVED_SEPARATE_HF_REPOSITORY' 'hf_custom_code_role_names' 'matcha_revision' 'hift_status' 'role_sha256_table_status' 'BLOCKED_VAST_RAW_DIGEST_PENDING' 'CARGO_BUILD_JOBS=1' 'cargo metadata --locked --no-deps --format-version 1' \
     'dependency-gate' "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_RESOLUTION_MARKERS_SHA256" 'dependency_license_audit' \
     'BLOCKED_UNREVIEWED_TRANSITIVE' 'uv sync --project' '--no-sync' 'exit 2' 'BLOCKED_UNRESOLVED_BAICHUAN_AUDIO_COMPOSITE'; do
     if ! grep -Fq -- "$token" "$script" && ! grep -Fq -- "$token" "$INSPECTOR"; then

@@ -21,7 +21,15 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from baichuan_audio_instruct_gate import require_blocked_gate, self_test as gate_self_test
+from baichuan_audio_instruct_gate import (
+    HF_CUSTOM_CODE_ROLE_NAMES,
+    HF_CUSTOM_CODE_STATUS,
+    HIFT_STATUS,
+    MATCHA_REVISION,
+    MATCHA_STATUS,
+    require_blocked_gate,
+    self_test as gate_self_test,
+)
 
 HF_REPOSITORY = "baichuan-inc/Baichuan-Audio-Instruct"
 HF_REVISION = "1c86512d863376f9ea0c32bb77451b9f428283c8"
@@ -105,7 +113,6 @@ SOURCE_ROLE_SHA256: dict[str, str | None] = {
 # intentionally rejected; no Matcha revision is inferred from NOTICE or from
 # a mutable repository URL.
 SOURCE_GITMODULES_BLOB: str | None = None
-MATCHA_REVISION: str | None = None
 SOURCE_ROLE_STATUS = "AUTHENTICATED_PUBLIC_GITHUB_SOURCE_ROLES_INCOMPLETE_HF_CUSTOM_CODE"
 COMPONENT_COUNT = 5
 FORMAT = "vokra-baichuan-audio-instruct-inspection-v1"
@@ -143,12 +150,7 @@ LICENSE_BLOCKERS = (
     "PyYAML==6.0.3 has a native extension; native distribution notice review is required",
 )
 MAX_HEADER_BYTES = 64 * 1024 * 1024
-CUSTOM_ROLE_FILES = (
-    "audio_modeling_omni.py", "modeling_omni.py", "configuration_omni.py",
-    "flow_matching.py", "matcha_components.py", "matcha_feat.py",
-    "matcha_transformer.py", "processor_omni.py", "generation_utils.py",
-    "vector_quantize.py",
-)
+CUSTOM_ROLE_FILES = tuple(HF_CUSTOM_CODE_ROLE_NAMES)
 
 
 def sha256(path: Path) -> str:
@@ -660,7 +662,7 @@ def source_inventory(source: Path, blockers: list[str]) -> dict[str, Any]:
             blockers.append("fixed .gitmodules Git blob table is unavailable")
         elif actual_gitmodules != SOURCE_GITMODULES_BLOB:
             blockers.append(".gitmodules Git blob mismatch")
-    matcha_evidence: dict[str, Any] = {"path": "third_party/Matcha-TTS", "status": "ABSENT_NOT_A_SUBMODULE", "expected_revision": MATCHA_REVISION}
+    matcha_evidence: dict[str, Any] = {"path": "third_party/Matcha-TTS", "status": MATCHA_STATUS, "expected_revision": MATCHA_REVISION}
     if not has_matcha_declaration:
         if matcha.exists() or matcha.is_symlink():
             blockers.append("Matcha path exists without an authenticated gitlink/submodule (substitution)")
@@ -718,7 +720,18 @@ def source_inventory(source: Path, blockers: list[str]) -> dict[str, Any]:
     blob_table_ok = set(SOURCE_ROLE_BLOBS) == set(SOURCE_ROLE_PATHS) and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) for value in SOURCE_ROLE_BLOBS.values())
     sha_table_ok = set(SOURCE_ROLE_SHA256) == set(SOURCE_ROLE_PATHS) and all(value is None or (isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)) for value in SOURCE_ROLE_SHA256.values())
     sha_table_status = "AUTHENTICATED" if sha_table_ok and all(value is not None for value in SOURCE_ROLE_SHA256.values()) else "BLOCKED_VAST_RAW_DIGEST_PENDING"
-    return {"repository": SOURCE_REPOSITORY, "pinned_revision": SOURCE_REVISION, "resolved_revision": actual, "origin": origin, "clean": not bool(git_status), "files": [identity(path, source) for path in sorted(files)], "role_files": roles, "role_blob_table": SOURCE_ROLE_BLOBS, "role_blob_table_status": SOURCE_ROLE_STATUS if blob_table_ok else "BLOCKED_UNAVAILABLE", "role_sha256_table_status": sha_table_status, "gitmodules": gitmodules_evidence, "matcha": matcha_evidence, "matcha_revision": MATCHA_REVISION, "hf_custom_code": {"status": "UNRESOLVED_SEPARATE_HF_REPOSITORY", "role_names": list(CUSTOM_ROLE_FILES)}, "license": source_license}
+    hift_role = roles.get("third_party/cosy24k_vocoder/hift.pt", {})
+    expected_hift_blob = SOURCE_ROLE_BLOBS.get("third_party/cosy24k_vocoder/hift.pt")
+    if not hift_role:
+        hift_status = "BLOCKED_MISSING"
+    elif expected_hift_blob is None:
+        hift_status = "BLOCKED_GIT_BLOB_EXPECTATION_UNAVAILABLE"
+    elif hift_role.get("git_blob_sha1") != expected_hift_blob:
+        hift_status = "BLOCKED_GIT_BLOB_MISMATCH"
+    else:
+        hift_status = HIFT_STATUS
+    hift_evidence = {"path": "third_party/cosy24k_vocoder/hift.pt", "status": hift_status, "git_blob_sha1": hift_role.get("git_blob_sha1"), "sha256": hift_role.get("sha256"), "expected_sha256": hift_role.get("expected_sha256")}
+    return {"repository": SOURCE_REPOSITORY, "pinned_revision": SOURCE_REVISION, "resolved_revision": actual, "origin": origin, "clean": not bool(git_status), "files": [identity(path, source) for path in sorted(files)], "role_files": roles, "role_blob_table": SOURCE_ROLE_BLOBS, "role_blob_table_status": SOURCE_ROLE_STATUS if blob_table_ok else "BLOCKED_UNAVAILABLE", "role_sha256_table_status": sha_table_status, "gitmodules": gitmodules_evidence, "matcha": matcha_evidence, "matcha_revision": MATCHA_REVISION, "hift": hift_evidence, "hf_custom_code": {"status": HF_CUSTOM_CODE_STATUS, "role_names": list(HF_CUSTOM_CODE_ROLE_NAMES)}, "license": source_license}
 
 
 def validate_tensor_shard_map(weight_map: dict[str, str], packets: list[dict[str, Any]], blockers: list[str]) -> set[str]:
@@ -853,7 +866,7 @@ def self_test() -> None:
         subprocess.run(["git", "-C", str(source_root), "init", "-q"], check=True)
         subprocess.run(["git", "-C", str(source_root), "config", "user.name", "Baichuan source self-test"], check=True)
         subprocess.run(["git", "-C", str(source_root), "config", "user.email", "baichuan-source-self-test@example.invalid"], check=True)
-        fixture_paths = ("web_demo/generation.py", "third_party/cosy24k_vocoder/LICENSE", "NOTICE", "LICENSE")
+        fixture_paths = ("web_demo/generation.py", "third_party/cosy24k_vocoder/LICENSE", "third_party/cosy24k_vocoder/hift.pt", "NOTICE", "LICENSE")
         for relative in fixture_paths:
             path = source_root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -875,7 +888,17 @@ def self_test() -> None:
         assert valid_inventory["license"]["status"] == "SEPARATE_FILES_AUTHENTICATED"
         assert valid_inventory["license"]["root"]["status"] == "AUTHENTICATED_SEPARATE_FILE"
         assert valid_inventory["license"]["components"]["cosy24k_vocoder"]["status"] == "AUTHENTICATED_SEPARATE_FILE"
-        assert valid_inventory["matcha"]["status"] == "ABSENT_NOT_A_SUBMODULE"
+        assert valid_inventory["matcha"]["status"] == MATCHA_STATUS
+        assert valid_inventory["hf_custom_code"]["status"] == HF_CUSTOM_CODE_STATUS
+        assert valid_inventory["hf_custom_code"]["role_names"] == list(HF_CUSTOM_CODE_ROLE_NAMES)
+        assert valid_inventory["hift"]["status"] == HIFT_STATUS
+        hift_path = source_root / "third_party/cosy24k_vocoder/hift.pt"
+        hift_bytes = hift_path.read_bytes()
+        hift_path.write_bytes(b"tampered HiFT payload\n")
+        hift_blockers: list[str] = []
+        tampered_inventory = source_inventory(source_root, hift_blockers)
+        assert tampered_inventory["hift"]["status"] == "BLOCKED_GIT_BLOB_MISMATCH"
+        hift_path.write_bytes(hift_bytes)
         assert any("inheritance is not inferred" in blocker for blocker in valid_blockers)
         SOURCE_ROLE_BLOBS = {}
         empty_blockers: list[str] = []
