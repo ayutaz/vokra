@@ -181,6 +181,35 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _safe_shard_path(src_dir: Path, shard_rel: str) -> Path:
+    """Resolve one index entry without allowing directory escape/symlinks."""
+    if (
+        not isinstance(shard_rel, str)
+        or not shard_rel
+        or "\x00" in shard_rel
+        or "\\" in shard_rel
+    ):
+        raise ValueError(f"invalid shard path: {shard_rel!r}")
+    relative = Path(shard_rel)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"shard path is not safely relative: {shard_rel!r}")
+    root = src_dir.resolve()
+    candidate = src_dir / relative
+    ancestor = src_dir
+    for part in relative.parts:
+        ancestor /= part
+        if ancestor.is_symlink():
+            raise ValueError(f"shard path contains a symlink component: {shard_rel!r}")
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise ValueError(f"shard path is outside or missing: {shard_rel!r}") from exc
+    if not resolved.is_file():
+        raise ValueError(f"shard path is not a regular file: {shard_rel!r}")
+    return resolved
+
+
 def _merge_from_input_dir(src_dir: Path) -> dict:
     """Walk ``model.safetensors.index.json`` (or fall back to a single
     ``model.safetensors``) and return the merged state_dict.
@@ -189,15 +218,20 @@ def _merge_from_input_dir(src_dir: Path) -> dict:
     overlap, or missing declared weights (FR-EX-08).
     """
     index_path = src_dir / "model.safetensors.index.json"
+    if index_path.is_symlink():
+        sys.exit(f"{LOG_PREFIX} index path is symlinked: {index_path}")
     if not index_path.is_file():
         single = src_dir / "model.safetensors"
-        if single.is_file():
+        if single.is_file() and not single.is_symlink():
             print(
                 f"{LOG_PREFIX} no weight-map found; single-shard release "
                 f"detected ({single.name}). Loading directly.",
                 file=sys.stderr,
             )
-            return _load_shard(single)
+            try:
+                return _load_shard(_safe_shard_path(src_dir, single.name))
+            except ValueError as exc:
+                sys.exit(f"{LOG_PREFIX} {exc}")
         sys.exit(
             f"{LOG_PREFIX} neither model.safetensors.index.json nor "
             f"model.safetensors found in {src_dir}"
@@ -216,17 +250,22 @@ def _merge_from_input_dir(src_dir: Path) -> dict:
     seen: dict[str, None] = {}
     for shard_rel in wm.values():
         if not isinstance(shard_rel, str):
-            continue
+            sys.exit(
+                f"{LOG_PREFIX} weight_map shard name is not a string: "
+                f"{shard_rel!r}"
+            )
+        try:
+            _safe_shard_path(src_dir, shard_rel)
+        except ValueError as exc:
+            sys.exit(f"{LOG_PREFIX} {exc}")
         seen.setdefault(shard_rel, None)
 
     merged: dict = {}
     for shard_rel in seen:
-        shard_path = src_dir / shard_rel
-        if not shard_path.is_file():
-            sys.exit(
-                f"{LOG_PREFIX} weight_map references missing shard: "
-                f"{shard_path}"
-            )
+        try:
+            shard_path = _safe_shard_path(src_dir, shard_rel)
+        except ValueError as exc:
+            sys.exit(f"{LOG_PREFIX} {exc}")
         print(
             f"{LOG_PREFIX}   loading {shard_rel} "
             f"({shard_path.stat().st_size:,} bytes)",
@@ -263,6 +302,13 @@ def _run_pipeline(
     from safetensors.torch import save_file
 
     kept, dropped, unknown, shared_pairs = _partition_and_dedup(merged, strict)
+
+    if not kept:
+        print(
+            f"{LOG_PREFIX} refusing to write an empty checkpoint after dtype filtering",
+            file=sys.stderr,
+        )
+        return 3
 
     if unknown and strict:
         first = [(n, d, s) for n, d, s in unknown[:3]]
@@ -456,6 +502,54 @@ def _self_test() -> int:
             return 4
         if not manifest["sha256"]:
             print(f"{LOG_PREFIX} --self-test: sha256 missing", file=sys.stderr)
+            return 4
+
+        # Index paths are untrusted input.  A preparer must not read a
+        # safetensors file outside the snapshot or through a symlink.
+        outside = Path(td) / "outside.safetensors"
+        outside.write_bytes(b"not a shard")
+        for unsafe in ("../outside.safetensors", str(outside)):
+            try:
+                _safe_shard_path(src, unsafe)
+            except ValueError:
+                pass
+            else:
+                print(
+                    f"self-test: unsafe shard path accepted: {unsafe!r}",
+                    file=sys.stderr,
+                )
+                return 4
+        link = src / "linked.safetensors"
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            print(f"self-test: cannot create symlink fixture: {exc}", file=sys.stderr)
+            return 4
+        try:
+            _safe_shard_path(src, link.name)
+        except ValueError:
+            pass
+        else:
+            print("self-test: symlinked shard path accepted", file=sys.stderr)
+            return 4
+        linked_dir_target = Path(td) / "linked-dir-target"
+        linked_dir_target.mkdir()
+        (linked_dir_target / "shard.safetensors").write_bytes(b"not a shard")
+        linked_dir = src / "linked-dir"
+        try:
+            linked_dir.symlink_to(linked_dir_target, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            print(
+                f"self-test: cannot create directory symlink fixture: {exc}",
+                file=sys.stderr,
+            )
+            return 4
+        try:
+            _safe_shard_path(src, "linked-dir/shard.safetensors")
+        except ValueError:
+            pass
+        else:
+            print("self-test: symlink ancestor accepted", file=sys.stderr)
             return 4
 
     print(f"{LOG_PREFIX} self-test: OK")

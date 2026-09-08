@@ -190,6 +190,35 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _safe_shard_path(src_dir: Path, shard_rel: str) -> Path:
+    """Resolve one index entry without allowing directory escape/symlinks."""
+    if (
+        not isinstance(shard_rel, str)
+        or not shard_rel
+        or "\x00" in shard_rel
+        or "\\" in shard_rel
+    ):
+        raise ValueError(f"invalid shard path: {shard_rel!r}")
+    relative = Path(shard_rel)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"shard path is not safely relative: {shard_rel!r}")
+    root = src_dir.resolve()
+    candidate = src_dir / relative
+    ancestor = src_dir
+    for part in relative.parts:
+        ancestor /= part
+        if ancestor.is_symlink():
+            raise ValueError(f"shard path contains a symlink component: {shard_rel!r}")
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise ValueError(f"shard path is outside or missing: {shard_rel!r}") from exc
+    if not resolved.is_file():
+        raise ValueError(f"shard path is not a regular file: {shard_rel!r}")
+    return resolved
+
+
 def _run_pipeline(
     src_dir: Path, output: Path, strict: bool,
 ) -> int:
@@ -206,17 +235,24 @@ def _run_pipeline(
     index_path = src_dir / "model.safetensors.index.json"
     per_shard_stats: list[dict] = []
 
+    if index_path.is_symlink():
+        print(f"{LOG_PREFIX} index path is symlinked: {index_path}", file=sys.stderr)
+        return 3
     if not index_path.is_file():
         # Some releases ship a single un-sharded model.safetensors and
         # omit the index. Fall back to that if present.
         single = src_dir / "model.safetensors"
-        if single.is_file():
+        if single.is_file() and not single.is_symlink():
             print(
                 f"{LOG_PREFIX} no weight-map found; single-shard release detected "
                 f"({single.name}). Loading directly.",
                 file=sys.stderr,
             )
-            merged = _load_shard(single)
+            try:
+                merged = _load_shard(_safe_shard_path(src_dir, single.name))
+            except ValueError as exc:
+                print(f"{LOG_PREFIX} {exc}", file=sys.stderr)
+                return 3
             per_shard_stats.append({
                 "shard": single.name,
                 "bytes": single.stat().st_size,
@@ -245,18 +281,24 @@ def _run_pipeline(
         seen_shards: dict[str, None] = {}
         for shard_rel in wm.values():
             if not isinstance(shard_rel, str):
-                continue
+                print(
+                    f"{LOG_PREFIX} weight_map shard name is not a string: {shard_rel!r}",
+                    file=sys.stderr,
+                )
+                return 3
+            try:
+                _safe_shard_path(src_dir, shard_rel)
+            except ValueError as exc:
+                print(f"{LOG_PREFIX} {exc}", file=sys.stderr)
+                return 3
             seen_shards.setdefault(shard_rel, None)
 
         merged: dict = {}
         for shard_rel in seen_shards:
-            shard_path = src_dir / shard_rel
-            if not shard_path.is_file():
-                print(
-                    f"{LOG_PREFIX} weight_map references missing shard: "
-                    f"{shard_path}",
-                    file=sys.stderr,
-                )
+            try:
+                shard_path = _safe_shard_path(src_dir, shard_rel)
+            except ValueError as exc:
+                print(f"{LOG_PREFIX} {exc}", file=sys.stderr)
                 return 3
             shard_bytes = shard_path.stat().st_size
             print(
@@ -292,6 +334,13 @@ def _run_pipeline(
             return 3
 
     kept, dropped, unknown, shared_pairs = _partition_and_dedup(merged, strict)
+
+    if not kept:
+        print(
+            f"{LOG_PREFIX} refusing to write an empty checkpoint after dtype filtering",
+            file=sys.stderr,
+        )
+        return 3
 
     if unknown and strict:
         first = [(n, d, s) for n, d, s in unknown[:3]]
@@ -497,6 +546,54 @@ def _self_test() -> int:
                 "materialize independent storage",
                 file=sys.stderr,
             )
+            return 4
+
+        # Index paths are untrusted input.  A preparer must not read a
+        # safetensors file outside the snapshot or through a symlink.
+        outside = Path(td) / "outside.safetensors"
+        outside.write_bytes(b"not a shard")
+        for unsafe in ("../outside.safetensors", str(outside)):
+            try:
+                _safe_shard_path(src_dir, unsafe)
+            except ValueError:
+                pass
+            else:
+                print(
+                    f"self-test: unsafe shard path accepted: {unsafe!r}",
+                    file=sys.stderr,
+                )
+                return 4
+        link = src_dir / "linked.safetensors"
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            print(f"self-test: cannot create symlink fixture: {exc}", file=sys.stderr)
+            return 4
+        try:
+            _safe_shard_path(src_dir, link.name)
+        except ValueError:
+            pass
+        else:
+            print("self-test: symlinked shard path accepted", file=sys.stderr)
+            return 4
+        linked_dir_target = Path(td) / "linked-dir-target"
+        linked_dir_target.mkdir()
+        (linked_dir_target / "shard.safetensors").write_bytes(b"not a shard")
+        linked_dir = src_dir / "linked-dir"
+        try:
+            linked_dir.symlink_to(linked_dir_target, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            print(
+                f"self-test: cannot create directory symlink fixture: {exc}",
+                file=sys.stderr,
+            )
+            return 4
+        try:
+            _safe_shard_path(src_dir, "linked-dir/shard.safetensors")
+        except ValueError:
+            pass
+        else:
+            print("self-test: symlink ancestor accepted", file=sys.stderr)
             return 4
 
     print(f"{LOG_PREFIX} self-test: OK")
