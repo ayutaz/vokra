@@ -14,6 +14,232 @@ use crate::compute::{Compute, HotOp};
 
 use super::{DiaConfig, DiaEncoderBlockWeights, DiaGenerationOptions, DiaWeights};
 
+/// Validated frame-major audio codes emitted by Dia's delayed decoder.
+///
+/// The packet is deliberately independent from model execution: callers may
+/// hand it a separately authenticated generation result, while the packet
+/// itself only accepts ordinary DAC indices (`0..audio_eos_value`).  BOS,
+/// EOS, PAD, unknown, and other reserved target-vocabulary values never cross
+/// the DAC boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiaGeneratedCodes {
+    codes: Vec<u32>,
+    frames: usize,
+    channels: usize,
+    sample_rate: u32,
+}
+
+impl DiaGeneratedCodes {
+    /// Validates and adopts frame-major `[frames, channels]` DAC indices.
+    ///
+    /// `frames` is explicit so an empty or ambiguous packet cannot be
+    /// interpreted by a downstream codec.  The channel count, sample rate,
+    /// and terminal code boundary are copied from the supplied authenticated
+    /// Dia configuration; no shape or rate is inferred from the payload.
+    pub fn from_frame_major(config: &DiaConfig, codes: Vec<u32>, frames: usize) -> Result<Self> {
+        config.validate_for_forward()?;
+        let expected = frames.checked_mul(config.channels).ok_or_else(|| {
+            VokraError::InvalidArgument("dia generated code extent overflows usize".to_owned())
+        })?;
+        if frames == 0 || frames > config.audio_length || codes.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia generated codes have len {} for {frames} frames and {} channels; expected 1..={} frames and frame-major extent {expected}",
+                codes.len(),
+                config.channels,
+                config.audio_length
+            )));
+        }
+        if codes.iter().any(|&code| code >= config.audio_eos_value) {
+            return Err(VokraError::InvalidArgument(
+                "dia generated codes contain EOS, PAD, BOS, or another reserved target id"
+                    .to_owned(),
+            ));
+        }
+        Ok(Self {
+            codes,
+            frames,
+            channels: config.channels,
+            sample_rate: config.sample_rate,
+        })
+    }
+
+    /// Validates and flattens time-major `[frames][channels]` DAC indices.
+    pub fn from_frames(config: &DiaConfig, frames: Vec<Vec<u32>>) -> Result<Self> {
+        config.validate_for_forward()?;
+        if frames.is_empty() || frames.iter().any(|frame| frame.len() != config.channels) {
+            return Err(VokraError::InvalidArgument(
+                "dia generated frames must be non-empty and have the configured channel width"
+                    .to_owned(),
+            ));
+        }
+        let frame_count = frames.len();
+        let capacity = frame_count.checked_mul(config.channels).ok_or_else(|| {
+            VokraError::InvalidArgument("dia generated code extent overflows usize".to_owned())
+        })?;
+        let mut flat = Vec::with_capacity(capacity);
+        for frame in frames {
+            flat.extend(frame);
+        }
+        Self::from_frame_major(config, flat, frame_count)
+    }
+
+    /// Number of decoded audio frames.
+    #[must_use]
+    pub const fn frames(&self) -> usize {
+        self.frames
+    }
+
+    /// Number of DAC codebooks in each frame.
+    #[must_use]
+    pub const fn num_codebooks(&self) -> usize {
+        self.channels
+    }
+
+    /// Sample rate identity carried by the originating Dia configuration.
+    #[must_use]
+    pub const fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Borrow the validated frame-major `[frames, channels]` packet.
+    #[must_use]
+    pub fn as_frame_major(&self) -> &[u32] {
+        &self.codes
+    }
+
+    /// Consume the packet and return frame-major DAC indices.
+    #[must_use]
+    pub fn into_frame_major(self) -> Vec<u32> {
+        self.codes
+    }
+
+    /// Borrow one contiguous frame.
+    pub fn frame(&self, frame: usize) -> Result<&[u32]> {
+        if frame >= self.frames {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia generated frame {frame} >= {}",
+                self.frames
+            )));
+        }
+        let start = frame * self.channels;
+        Ok(&self.codes[start..start + self.channels])
+    }
+}
+
+/// Model-free delayed-generation state matching the authenticated Dia source
+/// layout.
+///
+/// This state owns only BOS/prompt/unknown rows and sampled delayed rows. It
+/// does not execute a model, choose a sampler, or decode PCM.  It is useful as
+/// the strict pre/post-generation seam while real-weight parity remains a
+/// separate gate.  `push_sample` accepts one decoder result per delayed step;
+/// terminal EOS/PAD rows are retained for the source-equivalent drain and are
+/// sanitized when `finish` builds the DAC packet.
+#[derive(Debug, Clone)]
+pub struct DiaGenerationState {
+    config: DiaConfig,
+    delayed: Vec<Vec<i32>>,
+    prefill_steps: usize,
+    generated_steps: usize,
+}
+
+impl DiaGenerationState {
+    /// Builds the exact BOS/prompt/delay layout without loading weights.
+    pub fn new(config: &DiaConfig, prompt: Option<&[Vec<u32>]>) -> Result<Self> {
+        config.validate_for_forward()?;
+        let (delayed, prefill_steps) = prepare_audio_prompt(config, prompt)?;
+        Ok(Self {
+            config: config.clone(),
+            delayed,
+            prefill_steps,
+            generated_steps: 0,
+        })
+    }
+
+    /// Number of source rows consumed during decoder prefill.
+    #[must_use]
+    pub const fn prefill_steps(&self) -> usize {
+        self.prefill_steps
+    }
+
+    /// Number of delayed decoder samples recorded so far.
+    #[must_use]
+    pub const fn generated_steps(&self) -> usize {
+        self.generated_steps
+    }
+
+    /// Borrow the delayed state, including source-authentic BOS and unknown
+    /// (`-1`) slots. Unknown slots must never be sent to an embedding lookup.
+    #[must_use]
+    pub fn delayed_frames(&self) -> &[Vec<i32>] {
+        &self.delayed
+    }
+
+    /// Record one sampled delayed frame using source masked-scatter ordering.
+    pub fn push_sample(&mut self, sampled: &[u32]) -> Result<()> {
+        if sampled.len() != self.config.channels
+            || sampled
+                .iter()
+                .any(|&token| token as usize >= self.config.tgt_vocab_size)
+        {
+            return Err(VokraError::InvalidArgument(
+                "dia generation sample has an invalid channel width or target id".to_owned(),
+            ));
+        }
+        let prompt_frames = self.prefill_steps.saturating_sub(1);
+        let within_audio_limit = prompt_frames
+            .checked_add(self.generated_steps)
+            .map_or(false, |frames| frames < self.config.audio_length);
+        if !within_audio_limit {
+            return Err(VokraError::InvalidArgument(
+                "dia generation exceeds the configured audio length".to_owned(),
+            ));
+        }
+        let max_delay = self.config.delay_pattern.iter().copied().max().unwrap_or(0);
+        let index = self
+            .prefill_steps
+            .checked_add(self.generated_steps)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("dia generation index overflow".to_owned())
+            })?;
+        while index >= self.delayed.len() {
+            self.delayed.push(vec![DIA_UNKNOWN; self.config.channels]);
+        }
+        let dec_step = self
+            .prefill_steps
+            .saturating_sub(1)
+            .saturating_add(self.generated_steps);
+        let bos_over = official_bos_over(dec_step, self.prefill_steps, max_delay);
+        write_generated_frame(&mut self.delayed, index, sampled, &self.config, !bos_over)?;
+        self.generated_steps += 1;
+        let required = self
+            .prefill_steps
+            .checked_add(self.generated_steps)
+            .and_then(|value| value.checked_add(max_delay))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("dia generation extent overflow".to_owned())
+            })?;
+        while self.delayed.len() < required {
+            self.delayed.push(vec![DIA_UNKNOWN; self.config.channels]);
+        }
+        Ok(())
+    }
+
+    /// Finish the source-equivalent delayed stream as a strict DAC packet.
+    ///
+    /// EOS/PAD/unknown terminal values follow the upstream sanitization to
+    /// DAC code zero. A zero-length stream is rejected by the packet boundary.
+    pub fn finish(self) -> Result<DiaGeneratedCodes> {
+        let frames = revert_generated_audio(
+            &self.config,
+            &self.delayed,
+            self.prefill_steps,
+            self.generated_steps,
+        )?;
+        DiaGeneratedCodes::from_frames(&self.config, frames)
+    }
+}
+
 #[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 const HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::RmsNorm, HotOp::Softmax];
 

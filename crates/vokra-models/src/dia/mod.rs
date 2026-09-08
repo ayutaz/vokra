@@ -52,8 +52,9 @@
 //!   in `dia::forward`.
 //!
 //! Real-checkpoint parity and public PCM remain deferred until the VAST and
-//! Apple evidence gates pass. The staged route validates source-shaped math
-//! and cache sequencing but remains crate-private and fail-closed.
+//! Apple evidence gates pass. [`DiaGenerationState`] and
+//! [`DiaGeneratedCodes`] expose only the model-free delayed-layout and strict
+//! DAC-packet seams; learned forward/cache execution remains crate-private.
 
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
@@ -64,6 +65,7 @@ mod forward;
 mod tokenizer;
 use crate::codec::DacCodecGguf;
 pub use bound::{DiaCheckpoint, DiaTextEmbedding};
+pub use forward::{DiaGeneratedCodes, DiaGenerationState};
 pub use tokenizer::{
     DIA_SPEAKER_ONE_ID, DIA_SPEAKER_ONE_MARKER, DIA_SPEAKER_TWO_ID, DIA_SPEAKER_TWO_MARKER,
     DIA_TEXT_SOURCE_VOCAB_SIZE, DiaTokenizer,
@@ -401,6 +403,13 @@ impl DiaConfig {
     pub fn revert_delay_pattern(&self, delayed: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
         forward::revert_delay_pattern(self, delayed)
     }
+
+    /// Creates the model-free delayed-generation state for an optional audio
+    /// prompt. The returned state only validates and materializes the official
+    /// BOS/prompt/delay layout; it does not load or execute model weights.
+    pub fn generation_state(&self, prompt: Option<&[Vec<u32>]>) -> Result<DiaGenerationState> {
+        DiaGenerationState::new(self, prompt)
+    }
 }
 
 /// Explicit controls for Dia's delayed autoregressive decoder.
@@ -737,7 +746,10 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// bind ([`DacCodecGguf`] — MIT). [`Self::synthesize`] is the primary text →
 /// PCM entry point; until real weights are bound (see the module docstring)
 /// it returns [`VokraError::NotImplemented`] with a message naming the
-/// blocker (FR-EX-08 — never a silent zero-fill fallback).
+/// blocker (FR-EX-08 — never a silent zero-fill fallback). A separately
+/// authenticated [`crate::dac::Dac`] can decode a validated
+/// [`DiaGeneratedCodes`] packet through [`Self::decode_codes`], but this does
+/// not waive the independent generation-parity gate.
 #[derive(Debug, Clone)]
 pub struct DiaTts {
     cfg: DiaConfig,
@@ -966,6 +978,46 @@ impl DiaTts {
         self.dac.as_ref()
     }
 
+    /// Decodes a validated frame-major Dia packet through the complete,
+    /// independently authenticated 44.1-kHz nine-codebook DAC.
+    ///
+    /// The legacy [`Self::with_dac`] GGUF container is intentionally not
+    /// accepted here: it has no executable decoder identity. Callers must
+    /// bind [`crate::dac::Dac`] through [`Self::with_authenticated_dac`],
+    /// which keeps missing parity/owner evidence fail-closed at the synthesis
+    /// entry point.
+    pub fn decode_codes(&self, codes: &DiaGeneratedCodes) -> Result<Vec<f32>> {
+        if codes.num_codebooks() != self.cfg.channels || codes.sample_rate() != self.cfg.sample_rate
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia decode_codes: packet identity is {} Hz/{} codebooks, expected {} Hz/{}",
+                codes.sample_rate(),
+                codes.num_codebooks(),
+                self.cfg.sample_rate,
+                self.cfg.channels,
+            )));
+        }
+        if codes.frames() > self.cfg.audio_length {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia decode_codes: packet has {} frames, receiver audio length is {}",
+                codes.frames(),
+                self.cfg.audio_length,
+            )));
+        }
+        let Some(dac) = self.production_dac.as_ref() else {
+            return Err(VokraError::NotImplemented(
+                "dia decode_codes: an independently authenticated crate::dac::Dac is required; legacy with_dac(...) is only a metadata container",
+            ));
+        };
+        if dac.sample_rate() != codes.sample_rate() || dac.n_codebooks() != codes.num_codebooks() {
+            return Err(VokraError::InvalidArgument(
+                "dia decode_codes: bound DAC identity does not match the generated packet"
+                    .to_owned(),
+            ));
+        }
+        dac.decode_codes(codes.as_frame_major())
+    }
+
     /// True iff the weight store was built by [`DiaWeights::synthesized`]
     /// (never a real upstream checkpoint).
     #[must_use]
@@ -1101,6 +1153,70 @@ mod tests {
         let codes = vec![vec![1; c.channels], vec![2; c.channels]];
         let delayed = c.apply_delay_pattern(&codes).expect("delay");
         assert_eq!(c.revert_delay_pattern(&delayed).expect("revert"), codes);
+    }
+
+    #[test]
+    fn generation_state_preserves_delayed_channel_order() {
+        let config = DiaConfig::tiny_for_tests();
+        let mut state = config.generation_state(None).expect("generation state");
+        assert_eq!(state.prefill_steps(), 1);
+        assert_eq!(state.generated_steps(), 0);
+        state.push_sample(&[1, 2, 3]).expect("sample 0");
+        state.push_sample(&[4, 5, 6]).expect("sample 1");
+        state.push_sample(&[7, 1, 2]).expect("sample 2");
+        let packet = state.finish().expect("finish");
+        assert_eq!(packet.frames(), 3);
+        assert_eq!(packet.num_codebooks(), config.channels);
+        assert_eq!(packet.sample_rate(), config.sample_rate);
+        assert_eq!(packet.frame(0).expect("frame 0"), &[1, 5, 2]);
+        assert_eq!(packet.frame(1).expect("frame 1"), &[4, 1, 0]);
+        assert_eq!(packet.frame(2).expect("frame 2"), &[7, 0, 0]);
+    }
+
+    #[test]
+    fn generated_codes_reject_reserved_ids_and_decode_requires_real_dac() {
+        let config = DiaConfig::tiny_for_tests();
+        assert!(
+            DiaGeneratedCodes::from_frame_major(
+                &config,
+                vec![config.audio_eos_value; config.channels],
+                1,
+            )
+            .is_err()
+        );
+
+        let packet =
+            DiaGeneratedCodes::from_frame_major(&config, vec![1, 2, 3], 1).expect("valid packet");
+        let weights = DiaWeights::synthesized(&config, 7).expect("weights");
+        let tts = DiaTts::new(config, weights).expect("dia tts");
+        match tts.decode_codes(&packet) {
+            Err(VokraError::NotImplemented(message)) => {
+                assert!(message.contains("crate::dac::Dac"));
+            }
+            other => panic!("expected missing authenticated DAC error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_codes_rechecks_receiver_audio_length() {
+        let mut sender_config = DiaConfig::tiny_for_tests();
+        sender_config.audio_length = 4;
+        let mut receiver_config = DiaConfig::tiny_for_tests();
+        receiver_config.audio_length = 2;
+        let packet = DiaGeneratedCodes::from_frame_major(
+            &sender_config,
+            vec![1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3],
+            4,
+        )
+        .expect("sender packet within sender limit");
+        let weights = DiaWeights::synthesized(&receiver_config, 7).expect("weights");
+        let tts = DiaTts::new(receiver_config, weights).expect("dia tts");
+        match tts.decode_codes(&packet) {
+            Err(VokraError::InvalidArgument(message)) => {
+                assert!(message.contains("receiver audio length"));
+            }
+            other => panic!("expected receiver length rejection, got {other:?}"),
+        }
     }
 
     #[test]
