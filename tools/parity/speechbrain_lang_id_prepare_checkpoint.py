@@ -33,7 +33,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
+import tempfile
 from pathlib import Path
 
 import huggingface_hub
@@ -89,6 +91,196 @@ PINNED_REVISIONS = {
         "70a742bbc513f693efcf73d6d64a5ed14b3a34a4"
     ),
 }
+
+
+def reject_symlink_ancestry(path: Path | str, label: str) -> None:
+    raw = os.fspath(path)
+    if any(component in {".", ".."} for component in raw.split("/")):
+        raise SystemExit(f"{label} must not contain lexical dot components")
+    path = Path(raw)
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    for ancestor in (absolute, *absolute.parents):
+        # macOS exposes /var as the system /private/var alias; it is not
+        # user-controlled output redirection and is safe to traverse.
+        if ancestor.is_symlink() and ancestor != Path("/var"):
+            raise SystemExit(f"{label} has symlink ancestry: {ancestor}")
+
+
+def validate_output_paths(output: Path | str) -> Path:
+    reject_symlink_ancestry(output, "--output")
+    output = Path(output)
+    manifest = output.with_suffix(output.suffix + ".manifest.json")
+    reject_symlink_ancestry(manifest, "output manifest")
+    if output.exists() or output.is_symlink():
+        raise SystemExit(f"refusing to overwrite output: {output}")
+    if manifest.exists() or manifest.is_symlink():
+        raise SystemExit(f"refusing to overwrite output manifest: {manifest}")
+    return manifest
+
+
+def _validate_publish_parent(path: Path, label: str) -> None:
+    reject_symlink_ancestry(path, label)
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise SystemExit(f"{label} parent must be an existing regular non-symlink directory")
+
+
+def cleanup_temp(path: Path | None) -> None:
+    if path is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _prepare_checkpoint_temp(
+    tensors: dict[str, torch.Tensor], output: Path, metadata: dict[str, str]
+) -> Path:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _validate_publish_parent(output, "--output")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=output.parent, prefix=f".{output.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+        save_file(tensors, temporary, metadata=metadata)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+    except BaseException:
+        cleanup_temp(temporary)
+        raise
+    assert temporary is not None
+    return temporary
+
+
+def _prepare_json_temp(value: dict[str, object], output: Path) -> Path:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _validate_publish_parent(output, "output manifest")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        cleanup_temp(temporary)
+        raise
+    assert temporary is not None
+    return temporary
+
+
+def publish_pair(
+    output_temp: Path, output: Path, manifest_temp: Path, manifest: Path
+) -> None:
+    """Claim output+manifest atomically as a pair, rolling back our output claim."""
+    output_claimed = False
+    try:
+        _validate_publish_parent(output, "--output")
+        os.link(output_temp, output)
+        output_claimed = True
+        _validate_publish_parent(manifest, "output manifest")
+        os.link(manifest_temp, manifest)
+    except BaseException:
+        if output_claimed:
+            try:
+                if os.path.samestat(
+                    os.stat(output_temp, follow_symlinks=False),
+                    os.stat(output, follow_symlinks=False),
+                ):
+                    output.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        cleanup_temp(output_temp)
+        cleanup_temp(manifest_temp)
+
+
+def self_test() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="speechbrain-lang-id-prepare-self-test-") as directory:
+        root = Path(directory)
+        input_path = root / "input.ckpt"
+        input_path.write_bytes(b"fixture")
+        output_path = root / "prepared.safetensors"
+        manifest = validate_output_paths(output_path)
+        assert manifest.name == "prepared.safetensors.manifest.json"
+        existing = root / "existing.safetensors"
+        existing.write_bytes(b"keep")
+        try:
+            validate_output_paths(existing)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("existing output was accepted")
+        assert existing.read_bytes() == b"keep"
+        first = root / "first.safetensors"
+        second = root / "second.safetensors"
+        second_manifest = second.with_suffix(second.suffix + ".manifest.json")
+        first_temp = root / ".first.tmp"
+        manifest_temp = root / ".manifest.tmp"
+        first_temp.write_bytes(b"first")
+        manifest_temp.write_bytes(b"manifest")
+        second.write_bytes(b"keep-second")
+        second_manifest.write_bytes(b"keep-manifest")
+        try:
+            publish_pair(first_temp, first, manifest_temp, second_manifest)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("manifest collision was accepted")
+        assert not first.exists()
+        assert not first_temp.exists() and not manifest_temp.exists()
+        assert not list(root.glob(".*.tmp")), "paired publish leaked a temporary link"
+        assert second.read_bytes() == b"keep-second"
+        assert second_manifest.read_bytes() == b"keep-manifest"
+        from unittest.mock import patch
+
+        cleanup_output = root / "cleanup.safetensors"
+        cleanup_manifest = root / "cleanup.manifest.json"
+        cleanup_output_temp = root / ".cleanup-output.tmp"
+        cleanup_manifest_temp = root / ".cleanup-manifest.tmp"
+        cleanup_output_temp.write_bytes(b"complete-output")
+        cleanup_manifest_temp.write_bytes(b"complete-manifest")
+        with patch.object(Path, "unlink", side_effect=PermissionError("test cleanup failure")):
+            publish_pair(
+                cleanup_output_temp,
+                cleanup_output,
+                cleanup_manifest_temp,
+                cleanup_manifest,
+            )
+        assert cleanup_output.read_bytes() == b"complete-output"
+        assert cleanup_manifest.read_bytes() == b"complete-manifest"
+        os.unlink(cleanup_output_temp)
+        os.unlink(cleanup_manifest_temp)
+        for path in (str(root) + "/./prepared.safetensors", str(root) + "/../prepared.safetensors"):
+            try:
+                validate_output_paths(path)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError(f"lexical dot component accepted: {path}")
+        real_parent = root / "real"
+        real_parent.mkdir()
+        symlink_parent = root / "link"
+        symlink_parent.symlink_to(real_parent, target_is_directory=True)
+        try:
+            validate_output_paths(symlink_parent / "prepared.safetensors")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("symlink ancestor accepted")
+    print("speechbrain_lang_id_prepare_checkpoint: self-test PASS")
 
 
 def resolve_revision(source: str, revision: str | None) -> str:
@@ -421,14 +613,24 @@ def leaky_relu_slope(module: torch.nn.Module) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--source", default=DEFAULT_SOURCE, choices=sorted(SUPPORTED_SOURCES))
     parser.add_argument(
         "--revision",
         help="full upstream commit (defaults to the source-specific audited pin)",
     )
-    parser.add_argument("--savedir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--savedir")
+    parser.add_argument("--output")
     args = parser.parse_args()
+    if args.self_test:
+        if args.source != DEFAULT_SOURCE or args.revision or args.savedir is not None or args.output is not None:
+            parser.error("--self-test accepts no model arguments")
+        self_test()
+        return 0
+    if args.savedir is None or args.output is None:
+        parser.error("--savedir and --output are required")
+    output_path = Path(args.output)
+    manifest_path = validate_output_paths(args.output)
     revision = resolve_revision(args.source, args.revision)
 
     torch.manual_seed(1234)
@@ -514,25 +716,28 @@ def main() -> int:
         "vokra.lang_id.python_version": platform.python_version(),
         "vokra.lang_id.machine": platform.machine(),
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    save_file(tensors, args.output, metadata=metadata)
-    manifest = {
-        "contract": contract,
-        "embedding_tensors": len(embedding_state),
-        "classifier_tensors": len(classifier_state),
-        "embedding_counters_removed": embedding_counters,
-        "classifier_counters_removed": classifier_counters,
-        "classifier_canonical_sources": classifier_sources,
-        "tensor_manifest": {
-            name: list(value.shape) for name, value in sorted(tensors.items())
-        },
-        "output": str(args.output),
-        "output_sha256": sha256_file(args.output),
-    }
-    manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    output_temp = _prepare_checkpoint_temp(tensors, output_path, metadata=metadata)
+    manifest_temp: Path | None = None
+    try:
+        manifest = {
+            "contract": contract,
+            "embedding_tensors": len(embedding_state),
+            "classifier_tensors": len(classifier_state),
+            "embedding_counters_removed": embedding_counters,
+            "classifier_counters_removed": classifier_counters,
+            "classifier_canonical_sources": classifier_sources,
+            "tensor_manifest": {
+                name: list(value.shape) for name, value in sorted(tensors.items())
+            },
+            "output": str(output_path),
+            "output_sha256": sha256_file(output_temp),
+        }
+        manifest_temp = _prepare_json_temp(manifest, manifest_path)
+        publish_pair(output_temp, output_path, manifest_temp, manifest_path)
+    finally:
+        cleanup_temp(output_temp)
+        if manifest_temp is not None:
+            cleanup_temp(manifest_temp)
     print(json.dumps(manifest, sort_keys=True))
     return 0
 

@@ -5,7 +5,9 @@
 //! carrying this model can only bind through the dedicated
 //! `voice_gender_classifier` runtime architecture.
 
+use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
@@ -42,6 +44,7 @@ const KEY_CLASS_COUNT: &str = "vokra.voice_gender.class_count";
 const KEY_LABELS: &str = "vokra.voice_gender.labels";
 const KEY_FRONTEND: &str = "vokra.voice_gender.frontend";
 const KEY_LAYOUT: &str = "vokra.voice_gender.artifact_layout";
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 /// Counters emitted by the voice-gender safetensors conversion.
@@ -62,6 +65,7 @@ pub fn convert_voice_gender_classifier_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<VoiceGenderClassifierReport, ConvertError> {
+    validate_io_paths(input, output)?;
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
     validate_manifest(&st)?;
@@ -119,8 +123,151 @@ pub fn convert_voice_gender_classifier_file(
     let output_bytes = builder
         .to_bytes()
         .map_err(|error| ConvertError::Parse(error.to_string()))?;
-    std::fs::write(output, output_bytes)?;
+    write_output_no_clobber(output, &output_bytes)?;
     Ok(report)
+}
+
+/// Validate the converter's file boundary before reading a potentially large
+/// checkpoint. The final same-directory hard-link claim below is still
+/// authoritative: the preflight is diagnostic, while the exclusive claim
+/// closes the TOCTOU window between validation and publication of the GGUF.
+fn validate_io_paths(input: &Path, output: &Path) -> Result<(), ConvertError> {
+    reject_unsafe_path(input, "input")?;
+    reject_unsafe_path(output, "output")?;
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{ARCH}: input must be a regular non-symlink file: {}",
+                input.display()
+            ),
+        )));
+    }
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "{ARCH}: output must be absent and non-symlink: {}",
+                output.display()
+            ),
+        )));
+    }
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output must have a parent directory",
+        ))
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{ARCH}: output parent must be an existing regular non-symlink directory: {}",
+                parent.display()
+            ),
+        )));
+    }
+    Ok(())
+}
+
+fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
+    let raw = path.to_string_lossy();
+    if raw
+        .split('/')
+        .any(|component| matches!(component, "." | ".."))
+    {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{ARCH}: {label} must not contain lexical dot components"),
+        )));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut current = absolute.as_path();
+    loop {
+        if current.is_symlink() && current != Path::new("/var") {
+            return Err(ConvertError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{ARCH}: {label} has symlink ancestry: {}",
+                    current.display()
+                ),
+            )));
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
+}
+
+/// Write only after conversion has succeeded, using a same-directory
+/// temporary file and an atomic hard-link claim for the final destination.
+fn write_output_no_clobber(output: &Path, bytes: &[u8]) -> Result<(), ConvertError> {
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output must have a parent directory",
+        ))
+    })?;
+    let mut temporary = None;
+    for _ in 0..32_u32 {
+        let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("output"),
+            std::process::id(),
+            sequence
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+    }
+    let Some((temporary_path, mut temporary_file)) = temporary else {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique temporary output",
+        )));
+    };
+    let result = (|| {
+        temporary_file.write_all(bytes)?;
+        temporary_file.sync_all()?;
+        std::fs::hard_link(&temporary_path, output)?;
+        Ok::<(), std::io::Error>(())
+    })();
+    drop(temporary_file);
+    match result {
+        Ok(()) => {
+            // Once the hard link claims the final path, publication succeeded.
+            // Temporary cleanup is best-effort so an unlink failure never
+            // reports Err after exposing a valid final artifact.
+            let _ = std::fs::remove_file(&temporary_path);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary_path);
+            Err(ConvertError::Io(error))
+        }
+    }
 }
 
 fn canonical_license(license: Option<&str>) -> Result<&'static str, ConvertError> {
@@ -281,5 +428,55 @@ mod tests {
         assert_eq!(canonical_license(None).unwrap(), "mit");
         assert_eq!(canonical_license(Some("MIT")).unwrap(), "mit");
         assert!(canonical_license(Some("apache-2.0")).is_err());
+    }
+
+    #[test]
+    fn io_preflight_rejects_invalid_input_and_existing_output() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-voice-gender-io-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let input = root.join("input.safetensors");
+        let output = root.join("output.gguf");
+        std::fs::write(&input, b"not-a-checkpoint").unwrap();
+        std::fs::write(&output, b"keep-me").unwrap();
+        let error = validate_io_paths(&input, &output).unwrap_err();
+        assert!(error.to_string().contains("output must be absent"));
+        assert_eq!(std::fs::read(&output).unwrap(), b"keep-me");
+        std::fs::remove_file(&input).unwrap();
+        let error = validate_io_paths(&input, &root.join("new.gguf")).unwrap_err();
+        assert!(error.to_string().contains("input must be a regular"));
+        std::fs::write(&input, b"not-a-checkpoint").unwrap();
+        assert!(
+            validate_io_paths(
+                &input,
+                &Path::new(&format!("{}/./dotted.gguf", root.display()))
+            )
+            .is_err()
+        );
+        assert!(
+            validate_io_paths(
+                &input,
+                &Path::new(&format!("{}/../dotted.gguf", root.display()))
+            )
+            .is_err()
+        );
+        #[cfg(unix)]
+        {
+            let real_parent = root.join("real-parent");
+            std::fs::create_dir(&real_parent).unwrap();
+            let symlink_parent = root.join("symlink-parent");
+            std::os::unix::fs::symlink(&real_parent, &symlink_parent).unwrap();
+            assert!(validate_io_paths(&input, &symlink_parent.join("output.gguf")).is_err());
+        }
+        let malformed_output = root.join("malformed.gguf");
+        let error =
+            convert_voice_gender_classifier_file(&input, &malformed_output, None).unwrap_err();
+        assert!(!malformed_output.exists());
+        assert!(!error.to_string().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

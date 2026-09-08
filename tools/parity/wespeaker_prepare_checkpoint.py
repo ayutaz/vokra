@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -100,6 +101,104 @@ def manifest_sha256(manifest: Mapping[str, Mapping[str, Any]]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _validate_publish_parent(path: Path, label: str) -> None:
+    reject_symlink_ancestry(path, label)
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise SystemExit(f"{label} parent must be an existing regular non-symlink directory")
+
+
+def cleanup_temp(path: Path | None) -> None:
+    if path is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _prepare_checkpoint_temp(
+    tensors: Mapping[str, object], output: Path, save_file: Any
+) -> Path:
+    _validate_publish_parent(output, "output")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=output.parent, prefix=f".{output.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+        save_file(tensors, str(temporary))
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+    except BaseException:
+        cleanup_temp(temporary)
+        raise
+    assert temporary is not None
+    return temporary
+
+
+def _prepare_json_temp(value: Mapping[str, object], output: Path) -> Path:
+    _validate_publish_parent(output, "output manifest")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        cleanup_temp(temporary)
+        raise
+    assert temporary is not None
+    return temporary
+
+
+def publish_pair(
+    output_temp: Path, output: Path, manifest_temp: Path, manifest: Path
+) -> None:
+    """Claim output+manifest atomically as a pair, rolling back our output claim."""
+    output_claimed = False
+    try:
+        _validate_publish_parent(output, "output")
+        os.link(output_temp, output)
+        output_claimed = True
+        _validate_publish_parent(manifest, "output manifest")
+        os.link(manifest_temp, manifest)
+    except BaseException:
+        if output_claimed:
+            try:
+                if os.path.samestat(
+                    os.stat(output_temp, follow_symlinks=False),
+                    os.stat(output, follow_symlinks=False),
+                ):
+                    output.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        cleanup_temp(output_temp)
+        cleanup_temp(manifest_temp)
+
+
+def reject_symlink_ancestry(path: Path | str, label: str) -> None:
+    raw = os.fspath(path)
+    if any(component in {".", ".."} for component in raw.split("/")):
+        raise SystemExit(f"{label} must not contain lexical dot components")
+    path = Path(raw)
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    for ancestor in (absolute, *absolute.parents):
+        # macOS exposes /var as the system /private/var alias; it is not
+        # user-controlled output redirection and is safe to traverse.
+        if ancestor.is_symlink() and ancestor != Path("/var"):
+            raise SystemExit(f"{label} has symlink ancestry: {ancestor}")
+
+
 def unwrap_state_dict(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise SystemExit(f"checkpoint root is not a mapping: {type(value).__name__}")
@@ -119,7 +218,11 @@ def unwrap_state_dict(value: object) -> Mapping[str, object]:
     raise SystemExit("could not find a string-to-tensor state dict under known wrappers")
 
 
-def validate_paths(checkpoint: Path, output: Path) -> Path:
+def validate_paths(checkpoint: Path | str, output: Path | str) -> Path:
+    reject_symlink_ancestry(checkpoint, "checkpoint")
+    reject_symlink_ancestry(output, "output")
+    checkpoint = Path(os.fspath(checkpoint))
+    output = Path(os.fspath(output))
     for candidate in (checkpoint, output.parent):
         current = candidate
         while current != current.parent:
@@ -153,13 +256,68 @@ def self_test() -> int:
     assert CHECKPOINT_BYTES == 45053131 and len(CHECKPOINT_SHA256) == 64
     assert len(CHECKPOINT_GIT_OID) == 40 and len(SOURCE_REVISION) == 40
     source = Path(__file__).read_text(encoding="utf-8")
-    assert "torch.load(str(args.checkpoint), map_location=\"cpu\", weights_only=True)" in source
+    assert "torch.load(str(checkpoint), map_location=\"cpu\", weights_only=True)" in source
     with tempfile.TemporaryDirectory(prefix="wespeaker-prepare-self-test-") as directory:
         root = Path(directory)
         checkpoint = root / CHECKPOINT_FILENAME
         checkpoint.write_bytes(b"fixture")
         output = root / "out.safetensors"
         assert validate_paths(checkpoint, output).name == "out.safetensors.manifest.json"
+        for dotted in (str(root) + "/./out.safetensors", str(root) + "/../out.safetensors"):
+            try:
+                validate_paths(checkpoint, dotted)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError(f"lexical dot component accepted: {dotted}")
+        output.write_bytes(b"keep")
+        try:
+            validate_paths(checkpoint, output)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("existing output was accepted")
+        assert output.read_bytes() == b"keep"
+        output.unlink()
+        first = root / "first.safetensors"
+        second = root / "second.safetensors"
+        second_manifest = second.with_suffix(second.suffix + ".manifest.json")
+        first_temp = root / ".first.tmp"
+        manifest_temp = root / ".manifest.tmp"
+        first_temp.write_bytes(b"first")
+        manifest_temp.write_bytes(b"manifest")
+        second.write_bytes(b"keep-second")
+        second_manifest.write_bytes(b"keep-manifest")
+        try:
+            publish_pair(first_temp, first, manifest_temp, second_manifest)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("manifest collision was accepted")
+        assert not first.exists()
+        assert not first_temp.exists() and not manifest_temp.exists()
+        assert not list(root.glob(".*.tmp")), "paired publish leaked a temporary link"
+        assert second.read_bytes() == b"keep-second"
+        assert second_manifest.read_bytes() == b"keep-manifest"
+        from unittest.mock import patch
+
+        cleanup_output = root / "cleanup.safetensors"
+        cleanup_manifest = root / "cleanup.manifest.json"
+        cleanup_output_temp = root / ".cleanup-output.tmp"
+        cleanup_manifest_temp = root / ".cleanup-manifest.tmp"
+        cleanup_output_temp.write_bytes(b"complete-output")
+        cleanup_manifest_temp.write_bytes(b"complete-manifest")
+        with patch.object(Path, "unlink", side_effect=PermissionError("test cleanup failure")):
+            publish_pair(
+                cleanup_output_temp,
+                cleanup_output,
+                cleanup_manifest_temp,
+                cleanup_manifest,
+            )
+        assert cleanup_output.read_bytes() == b"complete-output"
+        assert cleanup_manifest.read_bytes() == b"complete-manifest"
+        os.unlink(cleanup_output_temp)
+        os.unlink(cleanup_manifest_temp)
         wrong_name = root / "avg_model"
         wrong_name.write_bytes(b"fixture")
         try:
@@ -210,8 +368,8 @@ def self_test() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--output")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -221,16 +379,18 @@ def main() -> int:
     if args.checkpoint is None or args.output is None:
         parser.error("--checkpoint and --output are required")
     sidecar = validate_paths(args.checkpoint, args.output)
-    if args.checkpoint.stat().st_size != CHECKPOINT_BYTES:
+    checkpoint = Path(args.checkpoint)
+    output = Path(args.output)
+    if checkpoint.stat().st_size != CHECKPOINT_BYTES:
         raise SystemExit(f"checkpoint byte size does not match pinned {CHECKPOINT_BYTES}")
-    source_hash = file_sha256(args.checkpoint)
+    source_hash = file_sha256(checkpoint)
     if source_hash != CHECKPOINT_SHA256:
         raise SystemExit(f"checkpoint SHA-256 {source_hash} != pinned {CHECKPOINT_SHA256}")
 
     import torch
     from safetensors.torch import save_file
 
-    loaded = torch.load(str(args.checkpoint), map_location="cpu", weights_only=True)
+    loaded = torch.load(str(checkpoint), map_location="cpu", weights_only=True)
     state = unwrap_state_dict(loaded)
     expected = expected_manifest()
     actual_names = set(state)
@@ -267,27 +427,33 @@ def main() -> int:
     if len(counter_names) != COUNTER_COUNT:
         raise SystemExit(f"expected {COUNTER_COUNT} scalar counters, got {len(counter_names)}")
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    save_file(converted, str(args.output))
-    output_hash = file_sha256(args.output)
-    manifest = {
-        "format": "vokra-wespeaker-prepared-v1",
-        "model_id": UPSTREAM_HF,
-        "model_revision": UPSTREAM_REVISION,
-        "source_revision": SOURCE_REVISION,
-        "checkpoint_filename": CHECKPOINT_FILENAME,
-        "checkpoint_sha256": source_hash,
-        "output_sha256": output_hash,
-        "tensor_count": TENSOR_COUNT,
-        "counter_count": COUNTER_COUNT,
-        "source_manifest_sha256": manifest_sha256(source_manifest),
-        "output_manifest_sha256": manifest_sha256(output_manifest),
-        "source_manifest": source_manifest,
-        "output_manifest": output_manifest,
-    }
+    output_temp = _prepare_checkpoint_temp(converted, output, save_file)
     manifest_path = sidecar
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"wespeaker_prepare_checkpoint: wrote {args.output}")
+    manifest_temp: Path | None = None
+    try:
+        output_hash = file_sha256(output_temp)
+        manifest = {
+            "format": "vokra-wespeaker-prepared-v1",
+            "model_id": UPSTREAM_HF,
+            "model_revision": UPSTREAM_REVISION,
+            "source_revision": SOURCE_REVISION,
+            "checkpoint_filename": CHECKPOINT_FILENAME,
+            "checkpoint_sha256": source_hash,
+            "output_sha256": output_hash,
+            "tensor_count": TENSOR_COUNT,
+            "counter_count": COUNTER_COUNT,
+            "source_manifest_sha256": manifest_sha256(source_manifest),
+            "output_manifest_sha256": manifest_sha256(output_manifest),
+            "source_manifest": source_manifest,
+            "output_manifest": output_manifest,
+        }
+        manifest_temp = _prepare_json_temp(manifest, manifest_path)
+        publish_pair(output_temp, output, manifest_temp, manifest_path)
+    finally:
+        cleanup_temp(output_temp)
+        if manifest_temp is not None:
+            cleanup_temp(manifest_temp)
+    print(f"wespeaker_prepare_checkpoint: wrote {output}")
     print(f"wespeaker_prepare_checkpoint: checkpoint_sha256={source_hash}")
     print(f"wespeaker_prepare_checkpoint: output_sha256={output_hash}")
     print(f"wespeaker_prepare_checkpoint: tensors={TENSOR_COUNT} counters={COUNTER_COUNT}")

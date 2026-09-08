@@ -20,6 +20,7 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,9 @@ def git_output(checkout: Path, *args: str) -> str:
 
 
 def validate_checkout(checkout: Path) -> None:
+    reject_symlink_ancestry(checkout, "upstream source")
+    if checkout.is_symlink() or not checkout.is_dir():
+        raise ValueError(f"upstream source must be a regular non-symlink directory: {checkout}")
     if not (checkout / "model.py").is_file():
         raise ValueError(f"not a JaesungHuh voice-gender checkout: {checkout}")
     if git_output(checkout, "rev-parse", "HEAD") != UPSTREAM_REVISION:
@@ -164,7 +168,84 @@ def import_model(checkout: Path) -> Any:
 
 
 def write_raw(path: Path, values: np.ndarray, dtype: str) -> None:
-    path.write_bytes(np.ascontiguousarray(values, dtype=np.dtype(dtype)).tobytes())
+    write_no_clobber(path, np.ascontiguousarray(values, dtype=np.dtype(dtype)).tobytes())
+
+
+def reject_symlink_ancestry(path: Path | str, label: str) -> None:
+    raw = os.fspath(path)
+    if any(component in {".", ".."} for component in raw.split("/")):
+        raise ValueError(f"{label} must not contain lexical dot components")
+    path = Path(raw)
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    for ancestor in (absolute, *absolute.parents):
+        # macOS exposes /var as the system /private/var alias; it is not
+        # user-controlled output redirection and is safe to traverse.
+        if ancestor.is_symlink() and ancestor != Path("/var"):
+            raise ValueError(f"{label} has symlink ancestry: {ancestor}")
+
+
+def validate_output_dir(path: Path | str) -> None:
+    reject_symlink_ancestry(path, "--out-dir")
+    path = Path(os.fspath(path))
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        raise ValueError("--out-dir must be a non-symlink directory")
+    if path.exists() and any(path.iterdir()):
+        raise ValueError("--out-dir must be empty to prevent fixture clobbering")
+
+
+def write_no_clobber(path: Path, payload: bytes) -> None:
+    publish_fixtures({path: payload})
+
+
+def cleanup_temp(path: Path | None) -> None:
+    if path is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _validate_publish_parent(path: Path) -> None:
+    reject_symlink_ancestry(path, "fixture output")
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise ValueError(f"fixture output parent is not a regular directory: {path.parent}")
+
+
+def publish_fixtures(files: dict[Path, bytes]) -> None:
+    """Publish all fixture files, rolling back only this call's claims."""
+    temporary: list[tuple[Path, Path]] = []
+    claimed: list[tuple[Path, Path]] = []
+    try:
+        for path, payload in files.items():
+            _validate_publish_parent(path)
+            with tempfile.NamedTemporaryFile(
+                dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+            ) as handle:
+                temporary_path = Path(handle.name)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.append((temporary_path, path))
+        for temporary_path, path in temporary:
+            # Re-check immediately before every claim to close a parent
+            # symlink race after temp creation.
+            _validate_publish_parent(path)
+            os.link(temporary_path, path)
+            claimed.append((temporary_path, path))
+    except BaseException:
+        for temporary_path, path in reversed(claimed):
+            try:
+                if os.path.samestat(
+                    os.stat(temporary_path, follow_symlinks=False),
+                    os.stat(path, follow_symlinks=False),
+                ):
+                    path.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        for temporary_path, _ in temporary:
+            cleanup_temp(temporary_path)
 
 
 def self_test() -> None:
@@ -199,18 +280,69 @@ def self_test() -> None:
     forbidden_reimplementation = "nn." + "Linear(192, 2)"
     if forbidden_reimplementation in source:
         raise AssertionError("dumper must not contain a model reimplementation")
+    with tempfile.TemporaryDirectory(prefix="voice-gender-dump-self-test-") as directory:
+        root = Path(directory)
+        valid = root / "output"
+        validate_output_dir(valid)
+        valid.mkdir()
+        existing = valid / "keep.bin"
+        existing.write_bytes(b"keep")
+        try:
+            write_no_clobber(existing, b"replace")
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing fixture was overwritten")
+        assert existing.read_bytes() == b"keep"
+        first = valid / "first.bin"
+        second = valid / "second.bin"
+        second_payload = b"keep-second"
+        second.write_bytes(second_payload)
+        try:
+            publish_fixtures({first: b"first", second: b"replace-second"})
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("second fixture collision was accepted")
+        assert not first.exists()
+        assert second.read_bytes() == second_payload
+        assert not list(valid.glob(".*.tmp")), "rollback leaked fixture temporary"
+        from unittest.mock import patch
+
+        cleanup = valid / "cleanup.bin"
+        with patch.object(Path, "unlink", side_effect=PermissionError("test cleanup failure")):
+            publish_fixtures({cleanup: b"complete"})
+        assert cleanup.read_bytes() == b"complete"
+        for temporary_path in valid.glob(".*.tmp"):
+            os.unlink(temporary_path)
+        try:
+            validate_output_dir(str(root) + "/./dot-output")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("dot component accepted")
+        real = root / "real"
+        real.mkdir()
+        link = root / "link"
+        link.symlink_to(real, target_is_directory=True)
+        try:
+            validate_output_dir(link / "output")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("symlink ancestor accepted")
     print("voice_gender_classifier_dump_reference.py self-test: PASS")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
-    parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--upstream-src", type=Path)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--upstream-src")
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--pcm", type=Path)
+    source.add_argument("--pcm")
     source.add_argument("--canned", action="store_true")
-    parser.add_argument("--out-dir", type=Path)
+    parser.add_argument("--out-dir")
     return parser.parse_args()
 
 
@@ -229,14 +361,24 @@ def main() -> int:
         return 2
     require_vast_context()
     bind_runtime_dependencies()
-    checkpoint = args.checkpoint.expanduser().resolve()
-    checkout = args.upstream_src.expanduser().resolve()
-    out_dir = args.out_dir.expanduser().resolve()
-    if not checkpoint.is_file():
+    validate_output_dir(args.out_dir)
+    reject_symlink_ancestry(args.checkpoint, "checkpoint")
+    reject_symlink_ancestry(args.upstream_src, "upstream source")
+    checkpoint = Path(args.checkpoint).expanduser()
+    checkout = Path(args.upstream_src).expanduser()
+    out_dir = Path(args.out_dir).expanduser()
+    if checkpoint.is_symlink() or not checkpoint.is_file():
         raise ValueError(f"checkpoint does not exist: {checkpoint}")
     validate_checkpoint(checkpoint)
     validate_checkout(checkout)
-    pcm = canned_pcm() if args.canned else read_pcm(args.pcm.expanduser().resolve())
+    if args.canned:
+        pcm = canned_pcm()
+    else:
+        pcm_path = Path(args.pcm).expanduser()
+        reject_symlink_ancestry(pcm_path, "--pcm")
+        if pcm_path.is_symlink() or not pcm_path.is_file():
+            raise ValueError(f"--pcm must be a regular non-symlink file: {pcm_path}")
+        pcm = read_pcm(pcm_path)
     torch.set_num_threads(1)
     torch.use_deterministic_algorithms(True)
     model = import_model(checkout)
@@ -271,16 +413,15 @@ def main() -> int:
         raise RuntimeError("official embedding/logits contain non-finite values")
     argmax = np.asarray([int(np.argmax(probabilities))], dtype=np.uint32)
     out_dir.mkdir(parents=True, exist_ok=True)
-    files = {
-        "pcm.f32": (pcm, "<f4"),
-        "features.f32": (features_np, "<f4"),
-        "embedding.f32": (embedding_np, "<f4"),
-        "logits.f32": (logits_np, "<f4"),
-        "probabilities.f32": (probabilities, "<f4"),
-        "argmax.u32": (argmax, "<u4"),
+    validate_output_dir(out_dir)
+    payloads = {
+        "pcm.f32": np.asarray(pcm, dtype="<f4").tobytes(order="C"),
+        "features.f32": np.asarray(features_np, dtype="<f4").tobytes(order="C"),
+        "embedding.f32": np.asarray(embedding_np, dtype="<f4").tobytes(order="C"),
+        "logits.f32": np.asarray(logits_np, dtype="<f4").tobytes(order="C"),
+        "probabilities.f32": np.asarray(probabilities, dtype="<f4").tobytes(order="C"),
+        "argmax.u32": np.asarray(argmax, dtype="<u4").tobytes(order="C"),
     }
-    for name, (values, dtype) in files.items():
-        write_raw(out_dir / name, values, dtype)
     metadata = {
         "dumper_version": DUMPER_VERSION,
         "upstream_repository": UPSTREAM_REPOSITORY,
@@ -305,11 +446,14 @@ def main() -> int:
         "embedding_dim": int(embedding_np.shape[0]),
         "class_labels": CLASS_LABELS,
         "outputs": {
-            name: {"sha256": sha256_file(out_dir / name), "bytes": (out_dir / name).stat().st_size}
-            for name in files
+            name: {"sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+            for name, payload in payloads.items()
         },
     }
-    (out_dir / "meta.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payloads["meta.json"] = (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    publish_fixtures({out_dir / name: payload for name, payload in payloads.items()})
     print(f"wrote independent voice-gender fixtures to {out_dir}")
     return 0
 

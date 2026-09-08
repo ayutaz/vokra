@@ -38,7 +38,9 @@
 //! converter **never** touches ONNX (FR-LD-05); the pipeline is
 //! re-implemented natively in `crates/vokra-models/src/wespeaker/`.
 
+use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
@@ -102,6 +104,7 @@ const EMBED_DIM: u64 = 256;
 const STATS_DIM: u64 = 5_120;
 const PREFIXED_TENSOR_COUNT: usize = 182;
 const BARE_COMBINED_TENSOR_COUNT: usize = 219;
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArtifactLayout {
@@ -178,10 +181,36 @@ pub fn convert_wespeaker_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<WespeakerReport, ConvertError> {
+    reject_unsafe_path(input, "input")?;
+    reject_unsafe_path(output, "output")?;
     if input.is_symlink() || !input.is_file() {
         return Err(ConvertError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "wespeaker: input must be a regular non-symlink file",
+        )));
+    }
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "wespeaker: output must be absent and non-symlink: {}",
+                output.display()
+            ),
+        )));
+    }
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output must have a parent directory",
+        ))
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "wespeaker: output parent must be an existing regular non-symlink directory: {}",
+                parent.display()
+            ),
         )));
     }
     let bytes = std::fs::read(input)?;
@@ -275,8 +304,109 @@ pub fn convert_wespeaker_file(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    // The initial absence check above is diagnostic only. The final
+    // same-directory hard-link claim is the authoritative no-clobber boundary
+    // if another process claims the path while conversion is in progress.
+    write_output_no_clobber(output, &out_bytes)?;
     Ok(report)
+}
+
+fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
+    let raw = path.to_string_lossy();
+    if raw
+        .split('/')
+        .any(|component| matches!(component, "." | ".."))
+    {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("wespeaker: {label} must not contain lexical dot components"),
+        )));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut current = absolute.as_path();
+    loop {
+        if current.is_symlink() && current != Path::new("/var") {
+            return Err(ConvertError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "wespeaker: {label} has symlink ancestry: {}",
+                    current.display()
+                ),
+            )));
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
+}
+
+fn write_output_no_clobber(output: &Path, bytes: &[u8]) -> Result<(), ConvertError> {
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output must have a parent directory",
+        ))
+    })?;
+    let mut temporary = None;
+    for _ in 0..32_u32 {
+        let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("output"),
+            std::process::id(),
+            sequence
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+    }
+    let Some((temporary_path, mut temporary_file)) = temporary else {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique temporary output",
+        )));
+    };
+    let result = (|| {
+        temporary_file.write_all(bytes)?;
+        temporary_file.sync_all()?;
+        std::fs::hard_link(&temporary_path, output)?;
+        Ok::<(), std::io::Error>(())
+    })();
+    drop(temporary_file);
+    match result {
+        Ok(()) => {
+            // Once the hard link claims the final path, publication succeeded.
+            // Temporary cleanup is best-effort so an unlink failure never
+            // reports Err after exposing a valid final artifact.
+            let _ = std::fs::remove_file(&temporary_path);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary_path);
+            Err(ConvertError::Io(error))
+        }
+    }
 }
 
 fn validate_manifest(st: &SafetensorsFile) -> Result<ArtifactLayout, ConvertError> {
@@ -478,10 +608,9 @@ mod tests {
         out
     }
 
-    /// Writes `bytes` to a fresh temp file and returns its path.
-    /// Nanosecond suffix keeps parallel `cargo test` runs from
-    /// colliding on the same PID.
-    fn write_temp(kind: &str, bytes: &[u8]) -> std::path::PathBuf {
+    /// Returns a fresh temp path.  A converter output must not exist before
+    /// the call so the test exercises its create-new boundary.
+    fn temp_path(kind: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!(
             "vokra-wespeaker-{kind}-{}-{}.bin",
@@ -491,6 +620,15 @@ mod tests {
                 .map(|d| d.subsec_nanos())
                 .unwrap_or(0)
         ));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    /// Writes `bytes` to a fresh temp file and returns its path.
+    /// Nanosecond suffix keeps parallel `cargo test` runs from
+    /// colliding on the same PID.
+    fn write_temp(kind: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = temp_path(kind);
         std::fs::write(&p, bytes).expect("write temp file");
         p
     }
@@ -513,7 +651,7 @@ mod tests {
         let input_bytes =
             safetensors_one_bf16("speaker.resnet.layer1.0.conv1.weight", &[2, 3], &bf16);
         let input_path = write_temp("bf16-in", &input_bytes);
-        let output_path = write_temp("bf16-out", &[]);
+        let output_path = temp_path("bf16-out");
 
         let report = convert_wespeaker_file(&input_path, &output_path, None)
             .expect("convert_wespeaker_file must accept a well-formed BF16 checkpoint");
@@ -580,7 +718,7 @@ mod tests {
             &f16_bytes,
         );
         let input_path = write_temp("mixed-in", &input_bytes);
-        let output_path = write_temp("mixed-out", &[]);
+        let output_path = temp_path("mixed-out");
 
         let report = convert_wespeaker_file(&input_path, &output_path, None)
             .expect("convert_wespeaker_file must accept a mixed F32/F16 checkpoint");
@@ -654,6 +792,50 @@ mod tests {
 
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
+    }
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    #[test]
+    fn existing_output_is_rejected_without_clobbering_it() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-wespeaker-safety-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let input = root.join("input.safetensors");
+        let output = root.join("output.gguf");
+        std::fs::write(&input, b"not-a-checkpoint").expect("write input");
+        std::fs::write(&output, b"keep-me").expect("write output");
+        let error = convert_wespeaker_file(&input, &output, None).unwrap_err();
+        assert!(error.to_string().contains("output must be absent"));
+        assert_eq!(std::fs::read(&output).expect("read output"), b"keep-me");
+        assert!(reject_unsafe_path(&root.join("./input.safetensors"), "input").is_err());
+        assert!(reject_unsafe_path(&root.join("../input.safetensors"), "input").is_err());
+        #[cfg(unix)]
+        {
+            let real_parent = root.join("real-parent");
+            std::fs::create_dir(&real_parent).expect("create real parent");
+            let symlink_parent = root.join("symlink-parent");
+            std::os::unix::fs::symlink(&real_parent, &symlink_parent)
+                .expect("create symlink parent");
+            assert!(
+                reject_unsafe_path(&symlink_parent.join("input.safetensors"), "input").is_err()
+            );
+        }
+        std::fs::remove_file(&output).expect("remove existing output");
+        let malformed_output = root.join("malformed.gguf");
+        let error = convert_wespeaker_file(&input, &malformed_output, None).unwrap_err();
+        assert!(!error.to_string().is_empty());
+        assert!(!malformed_output.exists());
+        std::fs::remove_dir_all(root).expect("remove temp dir");
     }
 }
 
