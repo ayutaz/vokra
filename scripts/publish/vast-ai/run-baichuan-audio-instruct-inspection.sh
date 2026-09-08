@@ -27,11 +27,11 @@ self_test() {
     log 'self-test FAIL: duplicate or mixed --self-test arguments accepted'; fail=1
   fi
   for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" \
-    'resolved_revision' 'git_blob_sha1' 'lfs_pointer_git_blob_sha1' 'lfs_sha256' 'payload_bytes' 'SOURCE_ROLE_PATHS' 'fixed Git blob table' \
+    'resolved_revision' 'git_blob_sha1' 'lfs_pointer_git_blob_sha1' 'lfs_sha256' 'payload_bytes' 'SOURCE_ROLE_PATHS' 'SOURCE_ROLE_SHA256' 'third_party/cosy24k_vocoder/hift.pt' 'web_demo/s2s_gradio_demo_cosy_multiturn.py' 'fixed Git blob table' 'source role SHA-256 mismatch' \
     'snapshot_download' 'list_repo_tree' 'server-tree' 'weights_only' 'safetensors' \
     'header-only' 'overlapping tensor ranges' 'gap in tensor data region' \
     'INSPECTION_ONLY' 'materialized payload size' 'payload_sha256' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'UNSUPPORTED' 'BLOCKED_BY_CPU' 'NOT_RUN' 'NO_UPLOAD' \
-    'UNAUTHENTICATED_BLOCKER' 'UNREVIEWED_BLOCKER' 'CARGO_BUILD_JOBS=1' 'cargo metadata --locked --no-deps --format-version 1' \
+    'UNAUTHENTICATED_BLOCKER' 'UNREVIEWED_BLOCKER' 'AUTHENTICATED_SEPARATE_FILE' 'component license inheritance is not inferred' 'SOURCE_GITMODULES_BLOB' 'ABSENT_NOT_A_SUBMODULE' 'Matcha path exists without an authenticated gitlink/submodule' 'AUTHENTICATED_PUBLIC_GITHUB_SOURCE_ROLES_INCOMPLETE_HF_CUSTOM_CODE' 'UNRESOLVED_SEPARATE_HF_REPOSITORY' 'role_sha256_table_status' 'BLOCKED_VAST_RAW_DIGEST_PENDING' 'CARGO_BUILD_JOBS=1' 'cargo metadata --locked --no-deps --format-version 1' \
     'dependency-gate' "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_RESOLUTION_MARKERS_SHA256" 'dependency_license_audit' \
     'BLOCKED_UNREVIEWED_TRANSITIVE' 'uv sync --project' '--no-sync' 'exit 2' 'BLOCKED_UNRESOLVED_BAICHUAN_AUDIO_COMPOSITE'; do
     if ! grep -Fq -- "$token" "$script" && ! grep -Fq -- "$token" "$INSPECTOR"; then

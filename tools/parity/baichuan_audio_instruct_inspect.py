@@ -27,23 +27,86 @@ HF_REPOSITORY = "baichuan-inc/Baichuan-Audio-Instruct"
 HF_REVISION = "1c86512d863376f9ea0c32bb77451b9f428283c8"
 SOURCE_REPOSITORY = "https://github.com/baichuan-inc/Baichuan-Audio.git"
 SOURCE_REVISION = "805d456433dbf3e0edb2bdd302f733a4bd38ea84"
+# The fixed source commit is a small demo/repository snapshot.  This table
+# covers every public execution, dependency, component, and license role that
+# exists in that tree.  HF custom-code roles are deliberately a separate
+# contract: they live in the model repository and are not relabeled as GitHub
+# source roles here.
 SOURCE_ROLE_PATHS = (
-    "web_demo/generation.py", "baichuan_audio/modeling_baichuan_audio.py",
-    "baichuan_audio/configuration_baichuan_audio.py", "baichuan_audio/processing_baichuan_audio.py",
-    "baichuan_audio/generation_baichuan_audio.py", "baichuan_audio/flow_matching.py",
-    "baichuan_audio/matcha_components.py", "baichuan_audio/vector_quantize.py",
-    "third_party/Matcha-TTS/matcha/models/components/flow_matching.py",
-    "third_party/Matcha-TTS/matcha/models/components/decoder.py",
-    "third_party/cosy24k_vocoder/LICENSE", "NOTICE", "LICENSE",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "README_zh.md",
+    "requirements.txt",
+    "third_party/cosy24k_vocoder/LICENSE",
+    "third_party/cosy24k_vocoder/README.md",
+    "third_party/cosy24k_vocoder/cosy24k_vocoder.py",
+    "third_party/cosy24k_vocoder/hifigan/__init__.py",
+    "third_party/cosy24k_vocoder/hifigan/discriminator.py",
+    "third_party/cosy24k_vocoder/hifigan/f0_predictor.py",
+    "third_party/cosy24k_vocoder/hifigan/generator.py",
+    "third_party/cosy24k_vocoder/hifigan/hifigan.py",
+    "third_party/cosy24k_vocoder/hift.pt",
+    "web_demo/base_asr_demo.py",
+    "web_demo/base_tts_demo.py",
+    "web_demo/constants.py",
+    "web_demo/generation.py",
+    "web_demo/s2s_gradio_demo_cosy_multiturn.py",
 )
-# Values are deliberately empty until the exact upstream source checkout is
-# available for an offline authenticated audit.  Empty rows remain blocked;
-# they are not self-asserted hashes and can never produce MATCHED evidence.
-SOURCE_ROLE_BLOBS: dict[str, str] = {}
-# The Matcha gitlink is deliberately not inferred from a checkout or from
-# .gitmodules.  It must be filled from the authenticated upstream tree before
-# this inspector can ever report a usable source identity.
+SOURCE_ROLE_BLOBS: dict[str, str] = {
+    "LICENSE": "81f3e2374f924916d1f74409600bf8926e6f2017",
+    "NOTICE": "e74aa9245ad2345338be1b1af3c1a8551e51e735",
+    "README.md": "62c4d41a2f8b5104ea97b72d56578645b4b7b086",
+    "README_zh.md": "c9ef351039d43096d053081b4442419f4fd0f84c",
+    "requirements.txt": "5bb7336cabb2ad41fa8fe6701b922600940afce7",
+    "third_party/cosy24k_vocoder/LICENSE": "f49a4e16e68b128803cc2dcea614603632b04eac",
+    "third_party/cosy24k_vocoder/README.md": "8ea3e1fecda8a6bb90d47593ad0b442fd4b5e8e3",
+    "third_party/cosy24k_vocoder/cosy24k_vocoder.py": "8a056032a4866874fe0fb64ada2998190f6b91a4",
+    "third_party/cosy24k_vocoder/hifigan/__init__.py": "c7b96f135bbab3454504128321db28e63915aa6b",
+    "third_party/cosy24k_vocoder/hifigan/discriminator.py": "4a3ecb2eaab3ebda340dc6a52796c3711f4e4c03",
+    "third_party/cosy24k_vocoder/hifigan/f0_predictor.py": "36b85f4ed90c3a412cb179f49ccb471132a86550",
+    "third_party/cosy24k_vocoder/hifigan/generator.py": "0bb8a7f2b152fb1066223c75dad26a6dc3817250",
+    "third_party/cosy24k_vocoder/hifigan/hifigan.py": "d0a8132df9fd67acafde138f48f90d633f671e5f",
+    "third_party/cosy24k_vocoder/hift.pt": "3d5553af7c80ca42f25d844c21ea35e30febaf80",
+    "web_demo/base_asr_demo.py": "485b484c9b24849635a875fbf51d2d7dee13af50",
+    "web_demo/base_tts_demo.py": "b065f75980ffbaad9ff869cd1cb7fb8f83336d3d",
+    "web_demo/constants.py": "317b745907d707d7acff5562bd1e15dd9a4a71da",
+    "web_demo/generation.py": "a665cb0e76b307a6e82269c90961cae7b48754cd",
+    "web_demo/s2s_gradio_demo_cosy_multiturn.py": "eeabea9db7417dd6ef030bd33922f0fc81e9bdbf",
+}
+# SHA-256 is recorded separately from Git's SHA-1 object identity.  The
+# independent digest makes the raw license bytes auditable without relying on
+# Git's object database or on a checkout's index.
+SOURCE_ROLE_SHA256: dict[str, str | None] = {
+    "LICENSE": "d2df8b34314a57f1cacce407e51ffbb7c43648d207990141910148eafc5441cb",
+    "NOTICE": "6448d29160f1d85783da1fcf6b4e5c70bc3cb9b731b04842545562aa0c9dc30b",
+    "README.md": "de005a55c115f56527c8fde12d3bf4df953092944781deba2a2a1856a63e2f92",
+    "README_zh.md": "17d0f54e377f079a9cd96eca3943fa915b472fb3b619556e87ad495e2dffa5ad",
+    "requirements.txt": "4ec80f992808935393bda0f96540a85b9b7498623096462743f505c62086fd32",
+    "third_party/cosy24k_vocoder/LICENSE": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+    "third_party/cosy24k_vocoder/README.md": "f66f048e1be9f3f2cf18aa4bc0f94c698da7c204d7a1e30843a40ea57e832c87",
+    "third_party/cosy24k_vocoder/cosy24k_vocoder.py": "2fc847da1e78238170d37eaa88a14b4e13c9b2f4488036f0cfb745dd2a8a7938",
+    "third_party/cosy24k_vocoder/hifigan/__init__.py": "897cb94e47f76ca4a70888f4bfacb7e0cb5fe4b1fc08f84ddcc77621ade31174",
+    "third_party/cosy24k_vocoder/hifigan/discriminator.py": "f596bba4510e433c9f818f6b38c8cedad3716397d7992c69c82e51721b3c8000",
+    "third_party/cosy24k_vocoder/hifigan/f0_predictor.py": "e137abd569ee49103bc32b7341f12dbbedcfb80f90ae0df2c11e47b3b7ec57be",
+    "third_party/cosy24k_vocoder/hifigan/generator.py": "f0e8a34ae4030ccec3bc5797ba758c65a8b2b994f69c0cab142bc5f8ed4ee386",
+    "third_party/cosy24k_vocoder/hifigan/hifigan.py": "c0c65c7621cb115fdd0974117798ed465c4c7231ac0448fefdf1e42e648f4d98",
+    # The 83 MiB checkpoint is intentionally not fetched on the maintainer
+    # Mac. VAST must calculate and bind its raw SHA-256 before execution.
+    "third_party/cosy24k_vocoder/hift.pt": None,
+    "web_demo/base_asr_demo.py": "9035a3bd0b609c44f09ffbf8dcc9b102ae430cf3c557130ab497c9af18295333",
+    "web_demo/base_tts_demo.py": "a13d34ad63274a1b0bdd230dbbd1a62caea46114f2c07ef688b8cd3ffd6ab80c",
+    "web_demo/constants.py": "d1c49e21f4b7f7b3f1bd70f507d31c5173c6c8d1f8094faf0aa58ce3ff1f7f0e",
+    "web_demo/generation.py": "710e89c5b3c323b8006057289c36c690740c00c80a1a54077d2debebc12d24cb",
+    "web_demo/s2s_gradio_demo_cosy_multiturn.py": "797b630e3d5fcbdd8d1815bfa62c00fae3130f2534424498e65b1905cf589b76",
+}
+# The pinned source tree has neither .gitmodules nor a Matcha gitlink.  A
+# later checkout containing a same-named directory is a substitution and is
+# intentionally rejected; no Matcha revision is inferred from NOTICE or from
+# a mutable repository URL.
+SOURCE_GITMODULES_BLOB: str | None = None
 MATCHA_REVISION: str | None = None
+SOURCE_ROLE_STATUS = "AUTHENTICATED_PUBLIC_GITHUB_SOURCE_ROLES_INCOMPLETE_HF_CUSTOM_CODE"
 COMPONENT_COUNT = 5
 FORMAT = "vokra-baichuan-audio-instruct-inspection-v1"
 REFERENCE_PROJECT = Path(__file__).with_name("baichuan_audio_instruct")
@@ -548,8 +611,10 @@ def source_inventory(source: Path, blockers: list[str]) -> dict[str, Any]:
     if git_status := subprocess.run(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout.strip():
         blockers.append(f"official source checkout is dirty: {git_status}")
     roles: dict[str, dict[str, Any]] = {}
-    if set(SOURCE_ROLE_BLOBS) != set(SOURCE_ROLE_PATHS):
+    if set(SOURCE_ROLE_BLOBS) != set(SOURCE_ROLE_PATHS) or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value) for value in SOURCE_ROLE_BLOBS.values()):
         blockers.append("fixed source role Git blob table is incomplete or has extra roles")
+    if set(SOURCE_ROLE_SHA256) != set(SOURCE_ROLE_PATHS):
+        blockers.append("fixed source role SHA-256 table is incomplete or has extra roles")
     for relative in SOURCE_ROLE_PATHS:
         path = source / relative
         if not path.is_file() or path.is_symlink():
@@ -557,39 +622,103 @@ def source_inventory(source: Path, blockers: list[str]) -> dict[str, Any]:
             continue
         actual_blob = git_blob_sha1(path)
         expected_blob = SOURCE_ROLE_BLOBS.get(relative)
+        actual_sha256 = sha256(path)
+        expected_sha256 = SOURCE_ROLE_SHA256.get(relative)
         if expected_blob is None:
             blockers.append(f"fixed Git blob table is unavailable for source role: {relative}")
         elif actual_blob != expected_blob:
             blockers.append(f"source role Git blob mismatch: {relative}")
-        roles[relative] = {"path": relative, "bytes": path.stat().st_size, "sha256": sha256(path), "git_blob_sha1": actual_blob, "expected_git_blob_sha1": expected_blob}
+        if expected_sha256 is None:
+            blockers.append(f"raw SHA-256 is deferred to VAST for un-fetched source artifact: {relative}")
+        elif not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            blockers.append(f"fixed SHA-256 table is malformed for source role: {relative}")
+        elif actual_sha256 != expected_sha256:
+            blockers.append(f"source role SHA-256 mismatch: {relative}")
+        roles[relative] = {"path": relative, "bytes": path.stat().st_size, "sha256": actual_sha256, "expected_sha256": expected_sha256, "git_blob_sha1": actual_blob, "expected_git_blob_sha1": expected_blob}
     if set(roles) != set(SOURCE_ROLE_PATHS):
         blockers.append("official source role set is incomplete")
-    gitlink = subprocess.run(["git", "-C", str(source), "ls-files", "-s", "third_party/Matcha-TTS"], check=True, capture_output=True, text=True).stdout.strip().split()
-    if len(gitlink) < 4 or gitlink[0] != "160000" or gitlink[2] != "0" or gitlink[3] != "third_party/Matcha-TTS":
-        blockers.append("Matcha gitlink index entry is missing or malformed")
+    # Authenticate .gitmodules and a Matcha gitlink only when the fixed tree
+    # actually declares one.  The pinned commit has neither.  This distinction
+    # is important: a same-named ordinary directory is not evidence of the
+    # upstream component and must be rejected as a substitution.
+    gitmodules = source / ".gitmodules"
+    tracked_gitmodules = subprocess.run(["git", "-C", str(source), "ls-files", "-s", "--", ".gitmodules"], check=True, capture_output=True, text=True).stdout.strip().splitlines()
+    gitlink_lines = subprocess.run(["git", "-C", str(source), "ls-files", "-s", "--", "third_party/Matcha-TTS"], check=True, capture_output=True, text=True).stdout.strip().splitlines()
+    gitlink_parts = gitlink_lines[0].split() if len(gitlink_lines) == 1 else []
+    has_matcha_declaration = gitmodules.exists() or bool(tracked_gitmodules) or bool(gitlink_lines)
     matcha = source / "third_party/Matcha-TTS"
-    if not matcha.is_dir():
-        blockers.append("Matcha submodule checkout is missing")
+    gitmodules_evidence: dict[str, Any]
+    if not has_matcha_declaration:
+        gitmodules_evidence = {"path": ".gitmodules", "status": "ABSENT_NOT_A_SUBMODULE", "expected_git_blob_sha1": SOURCE_GITMODULES_BLOB}
+    elif len(tracked_gitmodules) != 1 or len(tracked_gitmodules[0].split()) < 4 or tracked_gitmodules[0].split()[0] != "100644" or tracked_gitmodules[0].split()[3] != ".gitmodules" or not gitmodules.is_file() or gitmodules.is_symlink():
+        blockers.append(".gitmodules is present but not an authenticated regular tracked file")
+        gitmodules_evidence = {"path": ".gitmodules", "status": "BLOCKED_MALFORMED", "expected_git_blob_sha1": SOURCE_GITMODULES_BLOB}
     else:
-        matcha_head = subprocess.run(["git", "-C", str(matcha), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        matcha_origin = subprocess.run(["git", "-C", str(matcha), "remote", "get-url", "origin"], check=False, capture_output=True, text=True).stdout.strip()
-        if MATCHA_REVISION is None:
+        actual_gitmodules = git_blob_sha1(gitmodules)
+        gitmodules_evidence = {**identity(gitmodules, source), "status": "AUTHENTICATED" if SOURCE_GITMODULES_BLOB and actual_gitmodules == SOURCE_GITMODULES_BLOB else "BLOCKED_UNAUTHENTICATED", "git_blob_sha1": actual_gitmodules, "expected_git_blob_sha1": SOURCE_GITMODULES_BLOB}
+        if SOURCE_GITMODULES_BLOB is None:
+            blockers.append("fixed .gitmodules Git blob table is unavailable")
+        elif actual_gitmodules != SOURCE_GITMODULES_BLOB:
+            blockers.append(".gitmodules Git blob mismatch")
+    matcha_evidence: dict[str, Any] = {"path": "third_party/Matcha-TTS", "status": "ABSENT_NOT_A_SUBMODULE", "expected_revision": MATCHA_REVISION}
+    if not has_matcha_declaration:
+        if matcha.exists() or matcha.is_symlink():
+            blockers.append("Matcha path exists without an authenticated gitlink/submodule (substitution)")
+            matcha_evidence["status"] = "BLOCKED_SUBSTITUTION"
+    else:
+        if len(gitlink_lines) != 1 or len(gitlink_parts) < 4 or gitlink_parts[0] != "160000" or gitlink_parts[2] != "0" or gitlink_parts[3] != "third_party/Matcha-TTS":
+            blockers.append("Matcha gitlink index entry is missing or malformed")
+            matcha_evidence["status"] = "BLOCKED_GITLINK"
+        elif MATCHA_REVISION is None:
             blockers.append("fixed Matcha gitlink revision table is unavailable")
-        elif len(gitlink) < 2 or matcha_head != MATCHA_REVISION or gitlink[1] != MATCHA_REVISION:
-            blockers.append("Matcha gitlink/checkout revision is not authenticated")
-        if not matcha_origin:
-            blockers.append("Matcha submodule origin is unavailable")
-        if subprocess.run(["git", "-C", str(matcha), "status", "--porcelain", "--untracked-files=all"], check=False, capture_output=True, text=True).stdout.strip():
-            blockers.append("Matcha submodule checkout is dirty")
+            matcha_evidence.update({"status": "BLOCKED_UNAVAILABLE", "gitlink_revision": gitlink_parts[1]})
+        else:
+            matcha_evidence["gitlink_revision"] = gitlink_parts[1]
+            if gitlink_parts[1] != MATCHA_REVISION:
+                blockers.append("Matcha gitlink revision is not authenticated")
+                matcha_evidence["status"] = "BLOCKED_REVISION"
+            if not matcha.is_dir() or matcha.is_symlink():
+                blockers.append("Matcha submodule checkout is missing or non-regular")
+                matcha_evidence["status"] = "BLOCKED_CHECKOUT"
+            else:
+                try:
+                    matcha_head = subprocess.run(["git", "-C", str(matcha), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+                    matcha_origin = subprocess.run(["git", "-C", str(matcha), "remote", "get-url", "origin"], check=False, capture_output=True, text=True).stdout.strip()
+                    matcha_dirty = subprocess.run(["git", "-C", str(matcha), "status", "--porcelain", "--untracked-files=all"], check=False, capture_output=True, text=True).stdout.strip()
+                except (OSError, subprocess.CalledProcessError) as error:
+                    blockers.append(f"Matcha submodule identity failed: {error}")
+                    matcha_head, matcha_origin, matcha_dirty = "", "", ""
+                matcha_evidence.update({"checkout_revision": matcha_head, "origin": matcha_origin, "clean": not bool(matcha_dirty)})
+                if matcha_head != MATCHA_REVISION:
+                    blockers.append("Matcha checkout revision is not authenticated")
+                if not matcha_origin:
+                    blockers.append("Matcha submodule origin is unavailable")
+                if matcha_dirty:
+                    blockers.append("Matcha submodule checkout is dirty")
     source_license_path = source / "LICENSE"
     if not source_license_path.is_file():
         blockers.append("official source LICENSE is missing")
-        source_license = {"status": "UNKNOWN"}
+        root_license = {"path": "LICENSE", "status": "BLOCKED_MISSING"}
     else:
-        license_text = source_license_path.read_text(encoding="utf-8", errors="replace")
-        source_license = {**identity(source_license_path, source), "status": "DECLARATION_REQUIRES_SEPARATE_AUDIT", "declared_components": {"custom_code": "UNAUTHENTICATED", "matcha": "UNAUTHENTICATED", "cosy24k_vocoder": "UNAUTHENTICATED", "qwen": "UNAUTHENTICATED", "whisper": "UNAUTHENTICATED", "dataset": "UNAUTHENTICATED"}}
-        blockers.append("component license inheritance is not inferred from the root LICENSE")
-    return {"repository": SOURCE_REPOSITORY, "pinned_revision": SOURCE_REVISION, "resolved_revision": actual, "origin": origin, "clean": not bool(git_status), "files": [identity(path, source) for path in sorted(files)], "role_files": roles, "role_blob_table": SOURCE_ROLE_BLOBS, "role_blob_table_status": "AUTHENTICATED" if set(SOURCE_ROLE_BLOBS) == set(SOURCE_ROLE_PATHS) else "BLOCKED_UNAVAILABLE", "gitlinks": [identity(path, source) for path in files if path.name == ".gitmodules"], "matcha_revision": MATCHA_REVISION, "license": source_license}
+        root_license = {**roles.get("LICENSE", identity(source_license_path, source)), "status": "AUTHENTICATED_SEPARATE_FILE" if roles.get("LICENSE", {}).get("git_blob_sha1") == SOURCE_ROLE_BLOBS.get("LICENSE") and roles.get("LICENSE", {}).get("sha256") == SOURCE_ROLE_SHA256.get("LICENSE") else "BLOCKED_MISMATCH"}
+        if root_license["status"] != "AUTHENTICATED_SEPARATE_FILE":
+            blockers.append("official source root LICENSE identity mismatch")
+    component_path = source / "third_party/cosy24k_vocoder/LICENSE"
+    if not component_path.is_file() or component_path.is_symlink():
+        blockers.append("cosy24k_vocoder component LICENSE is missing/non-regular")
+        component_license = {"path": "third_party/cosy24k_vocoder/LICENSE", "status": "BLOCKED_MISSING"}
+    else:
+        component_license = {**roles.get("third_party/cosy24k_vocoder/LICENSE", identity(component_path, source)), "status": "AUTHENTICATED_SEPARATE_FILE" if roles.get("third_party/cosy24k_vocoder/LICENSE", {}).get("git_blob_sha1") == SOURCE_ROLE_BLOBS.get("third_party/cosy24k_vocoder/LICENSE") and roles.get("third_party/cosy24k_vocoder/LICENSE", {}).get("sha256") == SOURCE_ROLE_SHA256.get("third_party/cosy24k_vocoder/LICENSE") else "BLOCKED_MISMATCH"}
+        if component_license["status"] != "AUTHENTICATED_SEPARATE_FILE":
+            blockers.append("cosy24k_vocoder component LICENSE identity mismatch")
+    source_license = {"status": "SEPARATE_FILES_AUTHENTICATED" if root_license["status"] == component_license["status"] == "AUTHENTICATED_SEPARATE_FILE" else "BLOCKED", "inheritance": "NOT_INFERRED", "root": root_license, "components": {"cosy24k_vocoder": component_license, "matcha": {"status": "UNAUTHENTICATED_NOT_PRESENT_AS_SUBMODULE"}}, "notice": roles.get("NOTICE", {"path": "NOTICE", "status": "BLOCKED_MISSING"})}
+    if source_license["status"] != "SEPARATE_FILES_AUTHENTICATED":
+        blockers.append("root and component license files must be authenticated separately")
+    blockers.append("component license inheritance is not inferred from the root LICENSE")
+    blob_table_ok = set(SOURCE_ROLE_BLOBS) == set(SOURCE_ROLE_PATHS) and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) for value in SOURCE_ROLE_BLOBS.values())
+    sha_table_ok = set(SOURCE_ROLE_SHA256) == set(SOURCE_ROLE_PATHS) and all(value is None or (isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)) for value in SOURCE_ROLE_SHA256.values())
+    sha_table_status = "AUTHENTICATED" if sha_table_ok and all(value is not None for value in SOURCE_ROLE_SHA256.values()) else "BLOCKED_VAST_RAW_DIGEST_PENDING"
+    return {"repository": SOURCE_REPOSITORY, "pinned_revision": SOURCE_REVISION, "resolved_revision": actual, "origin": origin, "clean": not bool(git_status), "files": [identity(path, source) for path in sorted(files)], "role_files": roles, "role_blob_table": SOURCE_ROLE_BLOBS, "role_blob_table_status": SOURCE_ROLE_STATUS if blob_table_ok else "BLOCKED_UNAVAILABLE", "role_sha256_table_status": sha_table_status, "gitmodules": gitmodules_evidence, "matcha": matcha_evidence, "matcha_revision": MATCHA_REVISION, "hf_custom_code": {"status": "UNRESOLVED_SEPARATE_HF_REPOSITORY", "role_names": list(CUSTOM_ROLE_FILES)}, "license": source_license}
 
 
 def validate_tensor_shard_map(weight_map: dict[str, str], packets: list[dict[str, Any]], blockers: list[str]) -> set[str]:
@@ -689,6 +818,7 @@ def write_blocked(output: Path, error: Exception, tree: Path | None) -> None:
 
 
 def self_test() -> None:
+    global SOURCE_GITMODULES_BLOB, SOURCE_REPOSITORY, SOURCE_REVISION, SOURCE_ROLE_BLOBS, SOURCE_ROLE_PATHS, SOURCE_ROLE_SHA256
     gate_self_test(Path(__file__), ["--snapshot", "/missing-snapshot", "--source", "/missing-source", "--server-tree", "/missing-tree", "--output", "/missing-output"], "if any(value is None for value in (args." + "snapshot")
     source = Path(__file__).read_text(encoding="utf-8")
     assert len(HF_REVISION) == len(SOURCE_REVISION) == 40
@@ -713,6 +843,86 @@ def self_test() -> None:
     ):
         candidate = canonical_lock_rows(copy.deepcopy(altered))
         assert len(candidate) != REFERENCE_PACKAGE_COUNT or lock_rows_sha256(candidate) != REFERENCE_PACKAGE_ROWS_SHA256, label
+    # Exercise source identity independently of the real checkout.  The
+    # fixture uses its own temporary commit and authenticated role table so
+    # each negative case proves that the inspector, rather than GitHub or a
+    # network clone, enforces the source contract.
+    original_source_values = (SOURCE_GITMODULES_BLOB, SOURCE_REPOSITORY, SOURCE_REVISION, SOURCE_ROLE_BLOBS, SOURCE_ROLE_PATHS, SOURCE_ROLE_SHA256)
+    with tempfile.TemporaryDirectory(prefix="baichuan-source-") as directory:
+        source_root = Path(directory)
+        subprocess.run(["git", "-C", str(source_root), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(source_root), "config", "user.name", "Baichuan source self-test"], check=True)
+        subprocess.run(["git", "-C", str(source_root), "config", "user.email", "baichuan-source-self-test@example.invalid"], check=True)
+        fixture_paths = ("web_demo/generation.py", "third_party/cosy24k_vocoder/LICENSE", "NOTICE", "LICENSE")
+        for relative in fixture_paths:
+            path = source_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((relative + "\n").encode())
+        subprocess.run(["git", "-C", str(source_root), "add", "--", *fixture_paths], check=True)
+        subprocess.run(["git", "-C", str(source_root), "commit", "-qm", "source fixture"], check=True)
+        fixture_head = subprocess.check_output(["git", "-C", str(source_root), "rev-parse", "HEAD"], text=True).strip()
+        subprocess.run(["git", "-C", str(source_root), "remote", "add", "origin", "https://github.com/baichuan-inc/Baichuan-Audio.git"], check=True)
+        SOURCE_GITMODULES_BLOB = None
+        SOURCE_REPOSITORY = "https://github.com/baichuan-inc/Baichuan-Audio.git"
+        SOURCE_REVISION = fixture_head
+        SOURCE_ROLE_PATHS = fixture_paths
+        SOURCE_ROLE_BLOBS = {relative: git_blob_sha1(source_root / relative) for relative in fixture_paths}
+        SOURCE_ROLE_SHA256 = {relative: sha256(source_root / relative) for relative in fixture_paths}
+        valid_blockers: list[str] = []
+        valid_inventory = source_inventory(source_root, valid_blockers)
+        assert valid_inventory["role_blob_table_status"] == SOURCE_ROLE_STATUS
+        assert valid_inventory["role_sha256_table_status"] == "AUTHENTICATED"
+        assert valid_inventory["license"]["status"] == "SEPARATE_FILES_AUTHENTICATED"
+        assert valid_inventory["license"]["root"]["status"] == "AUTHENTICATED_SEPARATE_FILE"
+        assert valid_inventory["license"]["components"]["cosy24k_vocoder"]["status"] == "AUTHENTICATED_SEPARATE_FILE"
+        assert valid_inventory["matcha"]["status"] == "ABSENT_NOT_A_SUBMODULE"
+        assert any("inheritance is not inferred" in blocker for blocker in valid_blockers)
+        SOURCE_ROLE_BLOBS = {}
+        empty_blockers: list[str] = []
+        source_inventory(source_root, empty_blockers)
+        assert any("blob table is incomplete" in blocker or "blob table is unavailable" in blocker for blocker in empty_blockers)
+        SOURCE_ROLE_BLOBS = {**original_source_values[3], **{relative: git_blob_sha1(source_root / relative) for relative in fixture_paths}}
+        SOURCE_ROLE_BLOBS["LICENSE"] = "0" * 40
+        drift_blockers: list[str] = []
+        source_inventory(source_root, drift_blockers)
+        assert any("source role Git blob mismatch: LICENSE" in blocker for blocker in drift_blockers)
+        SOURCE_ROLE_BLOBS = {relative: git_blob_sha1(source_root / relative) for relative in fixture_paths}
+        SOURCE_ROLE_SHA256["web_demo/generation.py"] = "0" * 64
+        sha_drift_blockers: list[str] = []
+        source_inventory(source_root, sha_drift_blockers)
+        assert any("source role SHA-256 mismatch: web_demo/generation.py" in blocker for blocker in sha_drift_blockers)
+        SOURCE_ROLE_SHA256 = {relative: sha256(source_root / relative) for relative in fixture_paths}
+        matcha = source_root / "third_party/Matcha-TTS"
+        matcha.mkdir(parents=True)
+        (matcha / "README.md").write_text("substitution\n", encoding="utf-8")
+        substitution_blockers: list[str] = []
+        source_inventory(source_root, substitution_blockers)
+        assert any("Matcha path exists without an authenticated gitlink/submodule" in blocker for blocker in substitution_blockers)
+        missing_component = source_root / "third_party/cosy24k_vocoder/LICENSE"
+        missing_component.unlink()
+        missing_license_blockers: list[str] = []
+        source_inventory(source_root, missing_license_blockers)
+        assert any("component LICENSE is missing" in blocker for blocker in missing_license_blockers)
+        wrong_revision = SOURCE_REVISION
+        SOURCE_REVISION = "0" * 40
+        revision_blockers: list[str] = []
+        source_inventory(source_root, revision_blockers)
+        assert any("source revision" in blocker for blocker in revision_blockers)
+        SOURCE_REVISION = wrong_revision
+        subprocess.run(["git", "-C", str(source_root), "remote", "set-url", "origin", "https://example.invalid/Baichuan-Audio.git"], check=True)
+        remote_blockers: list[str] = []
+        source_inventory(source_root, remote_blockers)
+        assert any("source origin" in blocker for blocker in remote_blockers)
+        executable = source_root / "web_demo/generation.py"
+        executable.write_text("tampered execution role\n", encoding="utf-8")
+        executable_blockers: list[str] = []
+        source_inventory(source_root, executable_blockers)
+        assert any("source role Git blob mismatch: web_demo/generation.py" in blocker for blocker in executable_blockers)
+        executable.unlink()
+        missing_executable_blockers: list[str] = []
+        source_inventory(source_root, missing_executable_blockers)
+        assert any("required role missing/non-regular: web_demo/generation.py" in blocker for blocker in missing_executable_blockers)
+    SOURCE_GITMODULES_BLOB, SOURCE_REPOSITORY, SOURCE_REVISION, SOURCE_ROLE_BLOBS, SOURCE_ROLE_PATHS, SOURCE_ROLE_SHA256 = original_source_values
     with tempfile.TemporaryDirectory(prefix="baichuan-inspect-") as directory:
         root = Path(directory)
         shard = root / "a.safetensors"

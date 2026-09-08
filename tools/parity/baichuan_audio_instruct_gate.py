@@ -15,6 +15,7 @@ MODEL_REPOSITORY = "baichuan-inc/Baichuan-Audio-Instruct"
 MODEL_REVISION = "1c86512d863376f9ea0c32bb77451b9f428283c8"
 SOURCE_REPOSITORY = "https://github.com/baichuan-inc/Baichuan-Audio.git"
 SOURCE_REVISION = "805d456433dbf3e0edb2bdd302f733a4bd38ea84"
+SOURCE_ROLE_STATUS = "AUTHENTICATED_PUBLIC_GITHUB_SOURCE_ROLES_INCOMPLETE_HF_CUSTOM_CODE"
 BLOCKED_MARKER = "BLOCKED_UNRESOLVED_BAICHUAN_AUDIO_COMPOSITE"
 
 
@@ -42,7 +43,7 @@ def _approval_fixture(expected_head: str) -> dict[str, Any]:
         "model_revision": MODEL_REVISION,
         "source_repository": SOURCE_REPOSITORY,
         "source_revision": SOURCE_REVISION,
-        "source_role_status": "UNAUTHENTICATED_EMPTY_BLOB_TABLE",
+        "source_role_status": SOURCE_ROLE_STATUS,
         "dependency_status": "BLOCKED_UNREVIEWED_TRANSITIVE",
         "component_status": "UNRESOLVED",
         "dataset_status": "UNAUTHENTICATED",
@@ -124,7 +125,7 @@ def require_blocked_gate(expected_head: str, approval: str, approval_sha256: str
         raise RuntimeError(f"checkout HEAD verification failed: {error}") from error
     if actual != expected_head:
         raise RuntimeError(f"checkout HEAD {actual} differs from --expected-head {expected_head}")
-    raise RuntimeError(f"{BLOCKED_MARKER}: dependency/source roles/dataset/native composite remain unresolved")
+    raise RuntimeError(f"{BLOCKED_MARKER}: dependency/HF custom-code roles/dataset/native composite remain unresolved; public GitHub source roles are authenticated")
 
 
 def self_test(source: Path, input_args: list[str], input_marker: str) -> None:
