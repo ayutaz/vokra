@@ -236,13 +236,13 @@ impl OwsmV4Medium1bFrontend {
             let power_row = &power[frame * self.config.n_freqs..(frame + 1) * self.config.n_freqs];
             let feature_row =
                 &mut features[frame * self.config.n_mels..(frame + 1) * self.config.n_mels];
-            for mel in 0..self.config.n_mels {
+            for (mel, value) in feature_row.iter_mut().enumerate() {
                 let mut energy = 0.0f32;
                 for (frequency, &power_value) in power_row.iter().enumerate() {
                     energy += power_value * self.melmat[frequency * self.config.n_mels + mel];
                 }
                 // ESPnet LogMel clamps before applying natural logarithm.
-                feature_row[mel] = energy.max(LOG_MEL_FLOOR).ln();
+                *value = energy.max(LOG_MEL_FLOOR).ln();
             }
             for (mel, value) in feature_row.iter_mut().enumerate() {
                 *value = (*value - self.mean[mel]) / self.std[mel];
