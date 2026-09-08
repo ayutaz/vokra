@@ -778,7 +778,11 @@ def _expect_failure(label: str, operation: Any) -> None:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="sbv2-jp-extra-self-test-", dir="/private/tmp") as temporary:
+    # ``/var`` is a symlink on macOS, while Linux VAST commonly exposes
+    # ``/tmp`` directly.  Resolve the platform temp root so the synthetic
+    # checkout itself satisfies the same no-symlink ancestor contract.
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    with tempfile.TemporaryDirectory(prefix="sbv2-jp-extra-self-test-", dir=temporary_root) as temporary:
         root = Path(temporary)
         expected, source = _fake_git_source(root)
         evidence = verify_source_tree(source, expected)

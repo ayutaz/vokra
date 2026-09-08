@@ -116,7 +116,7 @@ require_expected_head() {
 }
 
 run_self_test() {
-  local failed=0 token fixture guard_body
+  local failed=0 token fixture fixture_root guard_body
   UV_CACHE_DIR="${UV_CACHE_DIR:-$VOKRA_ROOT/.cache/uv-sbv2-jp-extra}" \
     uv run --no-project --offline --python 3.12 python "$GENERATOR" --self-test \
     || failed=1
@@ -186,7 +186,11 @@ run_self_test() {
     log 'self-test accepted duplicate --self-test'
     failed=1
   fi
-  fixture="$(mktemp -d /private/tmp/vokra-sbv2-exec-guard.XXXXXX)"
+  fixture_root="$(cd -P "${TMPDIR:-/tmp}" && pwd -P)" || {
+    log 'self-test temporary directory root is unavailable'
+    return 1
+  }
+  fixture="$(mktemp -d "$fixture_root/vokra-sbv2-exec-guard.XXXXXX")"
   guard_body="$(awk '/^require_exec_mount_parent\(\) \{/{capture=1} capture {print} capture && /^\}/{exit}' "${BASH_SOURCE[0]}")"
   if ! bash -c '
     set -euo pipefail
@@ -251,7 +255,7 @@ run_self_test() {
     log 'self-test rejected an overlay mount without noexec'
     failed=1
   fi
-  if [[ "$fixture" == /private/tmp/vokra-sbv2-exec-guard.* && -d "$fixture" ]]; then
+  if [[ "$fixture" == "$fixture_root"/vokra-sbv2-exec-guard.* && -d "$fixture" && ! -L "$fixture" ]]; then
     rmdir "$fixture"
   else
     log 'self-test fixture cleanup guard failed; preserving fixture'

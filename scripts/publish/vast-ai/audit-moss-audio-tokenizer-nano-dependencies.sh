@@ -76,7 +76,7 @@ check_environment() {
 }
 
 self_test() {
-  local temp
+  local temp temp_root
   for token in VOKRA_PUBLISH_ON_VAST --no-sync --frozen --project --expected-head readelf dependency_audit.py CPU CUDA NVIDIA Triton '2.7.1+cpu' 'download.pytorch.org/whl/cpu' weights Cargo; do
     grep -Fq -- "$token" "$0" || { die "wrapper contract missing: $token"; return 1; }
   done
@@ -84,7 +84,8 @@ self_test() {
     die 'bare Python/pip invocation found'; return 1
   fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$AUDIT" --self-test
-  temp="$(mktemp -d "/private/tmp/moss-nano-audit.XXXXXXXX")"
+  temp_root="$(cd -P "${TMPDIR:-/tmp}" && pwd -P)" || { die 'temporary directory root is unavailable'; return 1; }
+  temp="$(mktemp -d "$temp_root/moss-nano-audit.XXXXXXXX")"
   trap 'if [[ -n "${temp:-}" ]]; then rm -rf "$temp"; fi' RETURN
   mkdir -p "$temp/real"
   require_absent_output "$temp/new/deeper/report.json" || return 1

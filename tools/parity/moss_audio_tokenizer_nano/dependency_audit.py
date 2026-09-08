@@ -839,7 +839,7 @@ def self_test() -> int:
         pass
     else:
         raise SystemExit("self-test accepted unsafe sdist redirect")
-    temporary = Path(tempfile.mkdtemp(prefix="moss-nano-audit-self-test-", dir="/private/tmp"))
+    temporary = Path(tempfile.mkdtemp(prefix="moss-nano-audit-self-test-"))
     try:
         existing = temporary / "existing.json"
         existing.write_bytes(b"owner-created")
