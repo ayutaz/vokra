@@ -1,6 +1,6 @@
 # Mac CPU / Metal owner disposition packet (2026-09-07)
 
-Updated with owner-independent evidence on 2026-09-08.
+Updated with owner-independent evidence on 2026-09-09.
 
 The closing model-free batch was verified on a clean VAST checkout at exact
 head `80c17e290cc163d639d88550ffaca2187f2870fb`. Workspace tests, all-target and
@@ -44,6 +44,8 @@ record.
 | Ultravox + Meta Llama companion | `tools/parity/ultravox/license_gate_manifest.json` | `35e73acdfdffa729464400a11cdc2f890b216dc59476a79acebd24bfe8ae555b` | Decide whether to accept the gated Meta conditional-license companion after its payload hash and Python closure are complete. |
 | WeSpeaker corrected replacement | `tools/parity/wespeaker/license_gate_manifest.json` | `0133cb13d4869903f89d6bbcaee9e784a69cf158804ae76bf4a52c7a0ca3efd0` | Review all five pending source/checkpoint/replacement rows and approve replacement or withholding. |
 | YuE XCodec Mini | `tools/parity/yue_xcodec_mini/license_gate_manifest.json` | `6f8378213db1ef19924c42cb76a194ed013093c048aba910808eb14e2dcef262` | Resolve the missing source license, mixed MIT/CC-BY-NC RepCodec scope, public-artifact/weight rows and package review. |
+| Parler-TTS English / Multilingual | model-free audit at `1cb33f19` | `18876e4d8198e76da3bd220e44033ca6754cca93dfd226a6b44c5551c9af329e` | The exact 35-package closure and four source/model/DAC review rows are bound and the dependency audit passes. Review those rows and record an operator decision; real model execution and publication remain unauthorized. |
+| BigVGAN four variants | `tools/parity/bigvgan/license_gate_manifest.json` | `73f8b60a0f71be420dfbaf1fc7213743701816a301303ff98ba46bbf2d09bce4` | Review the hash-bound Linux/Darwin package, license and native-payload rows and decide whether real-weight validation may run. The manifest remains `OWNER_SIGNOFF_REQUIRED` / `NO_UPLOAD`. |
 
 The presence of a scope hash means only that the proposed decision is
 immutable. None of these rows is owner-approved by this document.
@@ -52,17 +54,15 @@ immutable. None of these rows is owner-approved by this document.
 
 | Family or issue | Missing evidence before a scope can be signed |
 |---|---|
-| Parler-TTS English / Multilingual | Approval-scope hash and remaining package review. Fixed source/model/DAC/GGUF identities alone are insufficient. |
-| BigVGAN | One combined approval-scope hash over the fixed source/model/checkpoint/config, Linux and Darwin package/native-payload closures and license payload evidence. |
 | MOSS Audio Tokenizer Nano | The final CPU-only 37-row locked closure and exact AutoConfig/meta-device source/API/tap route are now hash-bound. All 37 package rows still require owner review, the approval digest is absent, and no real-weight runtime or parity was executed. |
-| MOSS-TTS Local | Dependency-license review, complete composite PCM execution boundary and a scope hash over the 438-tensor identity and companion. |
-| SpeechBrain Lang-ID | Source, weight, Python closure and fixture-license review plus a scope hash. |
+| MOSS-TTS Local | The 438-tensor model plus exact v2 companion scope is bound at `8ca95ea8b8bb7e9b9c9c76afb6a8adff3aa94ced152b52868c0fb916eda90ad3`, but it is explicitly `PENDING_REVIEW_NOT_OWNER_SIGNABLE`. Complete package/native review and the official composite PCM boundary before sign-off. |
+| SpeechBrain Lang-ID | The source, weight, Python closure and fixed fixture scope is bound at `13978840f3d8e113a89fec75033d7e98c3ea7115ae6492744d4b392a27f79076`, but remains `PENDING_REVIEW_NOT_OWNER_SIGNABLE`. Complete package/native and source/model/fixture license review before any real-weight run. |
 | Conv-TasNet Libri1Mix | A legal disposition for the CC-BY-SA-3.0/4.0 and WHAM CC-BY-NC-4.0 conflict; publication remains `NO_UPLOAD`. |
 | HT-Demucs Multi | Weight redistribution terms, the MUSDB18/extra-training-data disposition and owner disposition for the exact Linux dependency evidence. The repaired Python 3.12 reference closure is reproducible, but its NumPy wheel bundles GPL-with-GCC-exception `libgfortran` and LGPL `libquadmath`, which the current fail-closed policy does not approve. |
 | CLAP HTSAT fused | The exact model-free audit, dependency inventory and summary are bound to candidate payload `91a8a82f8c420ac5f456f12f021bd385c43b50f947e9e05e547272ae3cec85aa`. The existing model-license row is commercial, but dependency review and explicit runtime owner approval remain pending; no checkpoint was acquired or executed. |
 | FireRedASR-AED-L | CMVN, output-dictionary and native source seams are authenticated/source-implemented, but the empty config, dependency/training provenance review, complete transcription route and real CPU parity remain blocked. No approval scope is inferred from the source-ready labels. |
-| AudioGen Medium | Exact external T5 revision/weight identity, compression checkpoint build provenance, dependency closure, real execution/parity and an approval-scope hash. The checked-in model-free evidence is deliberately `signable=false`. |
-| XY-Tokenizer | Complete dependency/license evidence, exact reviewed tensor manifest and scope hash. Current SciPy/SymPy, setuptools, soxr, tokenizers and tqdm evidence is incomplete. |
+| AudioGen Medium | Model-free scope `ffa2cbe2de355229a5cb616410174aeaac9922e96a48b090c390c30feb32b50c` is deliberately `signable=false`: the dedicated lock is absent, historical T5 linkage and compression build provenance are unresolved, and the native codec/LM composite and real parity do not exist. |
+| XY-Tokenizer | Source/checkpoint/lock review scope `fc72e1c2ef76dbc77b53ea7076ebffc49a4df4430b12bfcbd949bf5c53a36d2e` is bound but not signable. Of 57 dependency rows, 51 were authenticated and six remain blocked by SciPy/SymPy legacy declarations, setuptools/soxr LGPL terms or missing unambiguous tokenizers/tqdm license bytes; an exact reviewed tensor manifest and native route are also absent. |
 | CosyVoice2 HiFT | Packet completeness is deliberately unassessed here because the owner manifest is dirty and outside this campaign's staging scope. |
 | BiCodec | A research-only/non-commercial execution and publication disposition. Decode evidence does not approve the missing PCM encode route or upload. |
 | NSNet2 / RMVPE / corrected SpeechBrain and WeSpeaker artifacts | Exact replacement-versus-withdrawal decision and missing provenance/license sign-off. RMVPE's absent exact-source license may not be inferred as permissive. |
