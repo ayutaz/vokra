@@ -30,6 +30,7 @@ self_test() {
     return 1
   fi
   UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" tools/parity/irodori_inspect.py --self-test
+  UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" tools/parity/irodori_text_block_dump_reference.py --self-test
   echo 'irodori worker self-test: ok'
 }
 

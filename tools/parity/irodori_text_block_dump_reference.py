@@ -23,19 +23,70 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Any
+
+from irodori_text_block_source_audit import audit_source, validate_reference_project
 
 UPSTREAM_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
+REFERENCE_BLOCKED_PENDING_DEPENDENCY_LICENSE_AUDIT = (
+    "REFERENCE_BLOCKED_PENDING_DEPENDENCY_LICENSE_AUDIT"
+)
+
+
+def self_test() -> None:
+    """Exercise only the source/lock contract; never import torch or a model."""
+
+    assert validate_reference_project()["status"] == "PASS_ISOLATED_LOCK_STRUCTURAL_ONLY"
+    allowed, reason = execution_preflight(
+        {"dependency_audit_status": "PENDING_DEPENDENCY_LICENSE_AUDIT"}
+    )
+    assert not allowed and reason == REFERENCE_BLOCKED_PENDING_DEPENDENCY_LICENSE_AUDIT
+    allowed, reason = execution_preflight({"dependency_audit_status": "APPROVED"})
+    assert not allowed and reason == "REFERENCE_BLOCKED_NO_APPROVAL_SCHEMA"
+    assert UPSTREAM_REVISION == "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert "audit_source(args.upstream)" in source
+    assert "irodori_tts.model.TextBlock" in source
+    audit_at = source.index("\n    source_evidence = audit_source(args.upstream)\n")
+    torch_at = source.index("\n    import torch\n")
+    path_at = source.index("\n    sys.path.insert(0, str(args.upstream))\n")
+    assert audit_at < torch_at and audit_at < path_at
+    assert source.index("\n    if not allowed:\n") < torch_at
+    print("irodori_text_block_dump_reference.py self-test: OK")
 
 
 def flat(tensor):
     return tensor.detach().cpu().float().contiguous().view(-1).tolist()
 
 
-def main() -> None:
+def execution_preflight(source_evidence: dict[str, Any]) -> tuple[bool, str]:
+    """Block before Torch import until an owner approval schema exists.
+
+    The structural source/lock audit is useful evidence, but it is not a
+    dependency-license approval.  There is currently no authenticated owner
+    approval schema for this route, so no input—including an invented
+    ``APPROVED`` marker—can authorize execution.
+    """
+
+    if source_evidence.get("dependency_audit_status") == "PENDING_DEPENDENCY_LICENSE_AUDIT":
+        return False, REFERENCE_BLOCKED_PENDING_DEPENDENCY_LICENSE_AUDIT
+    return False, "REFERENCE_BLOCKED_NO_APPROVAL_SCHEMA"
+
+
+def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--upstream", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--upstream", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+
+    if args.self_test:
+        if args.upstream is not None or args.output is not None:
+            parser.error("--self-test is not compatible with --upstream/--output")
+        self_test()
+        return 0
+    if args.upstream is None or args.output is None:
+        parser.error("--upstream and --output are required unless --self-test is used")
 
     revision = subprocess.check_output(
         ["git", "-C", str(args.upstream), "rev-parse", "HEAD"], text=True
@@ -44,6 +95,11 @@ def main() -> None:
         raise SystemExit(
             f"Irodori-TTS checkout revision {revision} != pinned {UPSTREAM_REVISION}"
         )
+    source_evidence = audit_source(args.upstream)
+    allowed, reason = execution_preflight(source_evidence)
+    if not allowed:
+        print(f"Irodori TextBlock reference blocked: {reason}", file=sys.stderr)
+        return 2
 
     sys.path.insert(0, str(args.upstream))
     # Import the official module without executing its package __init__, which
@@ -108,7 +164,8 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {args.output} ({args.output.stat().st_size} bytes)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

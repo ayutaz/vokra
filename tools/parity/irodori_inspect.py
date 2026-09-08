@@ -30,6 +30,9 @@ SOURCE_REPOSITORY = "https://github.com/Aratako/Irodori-TTS.git"
 SOURCE_REVISION = "8224dafb46d0aba89209a8f905f1cb7e3299d9c1"
 SOURCE_PYPROJECT_SHA256 = "a67e3494530cd9c29817507c67a496bb299a9a81e2edd4df6ffb80cf330dae71"
 SOURCE_LOCK_SHA256 = "8175adbb9ad7ae77d1f048344343a63876e57c333b659314bcc054230b5b3e6c"
+SOURCE_LICENSE_DISPOSITION = "MIT"
+SOURCE_LICENSE_BYTES = 1064
+SOURCE_LICENSE_SHA256 = "dfd47cc99fd79cced8e0cab04ed81f70b3d4f2f475a75746b341671bd3991c00"
 DACVAE_REVISION = "414c20785fc3a28373073ea8ef7a1316eeeaca6e"
 CODEC_REPOSITORY = "Aratako/Semantic-DACVAE-Japanese-32dim"
 CODEC_REVISION = "47376ee24834d7a05a48ebabfe3cde29b3c5e214"
@@ -775,9 +778,9 @@ def inspect_source(path: Path) -> dict[str, Any]:
     tracked = set(git("ls-files").splitlines())
     if not required <= tracked:
         raise ValueError(f"source: required roles missing: {sorted(required-tracked)}")
-    license_text = (path / "LICENSE").read_text(encoding="utf-8")
-    if not license_text.strip() or "MIT" not in license_text.upper():
-        raise ValueError("source: primary MIT license text missing")
+    license_bytes = (path / "LICENSE").read_bytes()
+    if len(license_bytes) != SOURCE_LICENSE_BYTES or hashlib.sha256(license_bytes).hexdigest() != SOURCE_LICENSE_SHA256:
+        raise ValueError("source: primary LICENSE bytes do not match authenticated evidence")
     role_hashes = {name: hashlib.sha256((path / name).read_bytes()).hexdigest() for name in sorted(required)}
     if sha256_file(path / "pyproject.toml") != SOURCE_PYPROJECT_SHA256:
         raise ValueError("source: pyproject.toml SHA-256 mismatch")
@@ -863,7 +866,8 @@ def inspect_source(path: Path) -> dict[str, Any]:
     if origins.removesuffix(".git") != SOURCE_REPOSITORY.removesuffix(".git"):
         raise ValueError("source: origin mismatch")
     return {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION,
-            "license": "separate source license evidence", "role_sha256": role_hashes,
+            "license": SOURCE_LICENSE_DISPOSITION, "license_sha256": SOURCE_LICENSE_SHA256,
+            "role_sha256": role_hashes,
             "authenticated_axes": axes | duration_axes,
             "implementation_roles": source_markers,
             "tokenizer": {"repository": TOKENIZER_REPOSITORY,

@@ -41,6 +41,7 @@ self_test() {
     return 1
   fi
   UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" "$ROOT_DIR/tools/parity/irodori_500m_v3_dump_reference.py" --self-test >/dev/null
+  UV_NO_CACHE=1 "${UV_GATE_CMD[@]}" "$ROOT_DIR/tools/parity/irodori_text_block_dump_reference.py" --self-test >/dev/null
   echo 'irodori validation worker self-test: OK'
 }
 

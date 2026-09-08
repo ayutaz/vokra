@@ -1,0 +1,30 @@
+[project]
+name = "vokra-irodori-text-block-reference"
+version = "0.1.0"
+description = "Pinned upstream Irodori TextBlock oracle; isolated model-free source route"
+requires-python = "==3.12.*"
+dependencies = [
+    "safetensors==0.8.0",
+    "torch==2.13.0",
+]
+
+[tool.uv]
+package = false
+# The upstream TextBlock import never uses setuptools.  Keep its optional
+# Torch metadata edge impossible so the isolated route does not acquire an
+# unrelated vendored payload.
+override-dependencies = ["setuptools ; python_version < '0'"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
+
+[tool.vokra.irodori_text_block_reference]
+status = "PENDING_DEPENDENCY_LICENSE_AUDIT"
+dependency_license_status = "PENDING_OWNER_REVIEW"
+execution = "NOT_AUTHORIZED"
+publication = "NO_UPLOAD"
