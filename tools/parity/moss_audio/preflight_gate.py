@@ -184,8 +184,8 @@ IDENTITY_EVIDENCE_BINDING = {
 # only after this bridge; model compatibility/parity remains a VAST gate.
 API_SMOKE_FORMAT = "vokra-moss-audio-transformers-api-smoke-v1"
 API_SMOKE_SOURCE_REPO = "https://github.com/OpenMOSS/MOSS-Audio.git"
-API_SMOKE_PROJECT_SHA256 = "88e75db26222b51082795736cca686504dc10f00fec69ff20b056e84dda8e396"
-API_SMOKE_LOCK_SHA256 = "12d4e35ffed35574d9ee5392d2a309761a4767c59b7fbdf926501fd7a7ba1fb3"
+API_SMOKE_PROJECT_SHA256 = "af7486c52182a23cc64185e6ad95c42b8863673dc4e032fda79637a9ca0d427e"
+API_SMOKE_LOCK_SHA256 = "fd8c1f2342da9512d1fb1e97ed0e7640ffa4a83db279aeaba655ce6cf89c1085"
 API_SMOKE_SOURCE_FILES = {
     "src/configuration_moss_audio.py": SOURCE_IDENTITY["files"]["src/configuration_moss_audio.py"],
     "src/modeling_moss_audio.py": SOURCE_IDENTITY["files"]["src/modeling_moss_audio.py"],
@@ -201,7 +201,7 @@ API_SMOKE_METADATA_FILES = {
     "generation_config.json": {variant: COMMON_ASSETS["generation_config.json"] for variant in VARIANTS},
 }
 API_SMOKE_REQUIRED_DEPENDENCIES = {
-    "accelerate==1.12.0", "einops==0.8.1", "numpy==2.3.5", "safetensors==0.7.0",
+    "einops==0.8.1", "numpy==2.3.5", "safetensors==0.7.0",
     "scipy==1.16.3", "soundfile==0.13.1", "tiktoken==0.12.0", "torch==2.9.1",
     "torchaudio==2.9.1", "transformers==5.10.4",
 }
