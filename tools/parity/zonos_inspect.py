@@ -25,6 +25,7 @@ PUBLIC_GGUF_BYTES = 3_248_843_808
 PUBLIC_GGUF_SHA256 = "12d542bd219f7f31c91b893810d85b0d810285e603029c69fbd19fd3c7da2c5c"
 EXPECTED_TENSOR_COUNT = 246
 EXPECTED_MANIFEST_SHA256 = "6543af3747d3e85bde862c3337744eea31f0105f9df6d8617c1c9afdae805847"
+FLOAT_DTYPES = frozenset({"F32", "F16", "BF16"})
 DAC_SOURCE_MODEL_ID = "descript/dac_44khz"
 DAC_NUM_CODEBOOKS = 9
 DAC_SAMPLE_RATE = 44_100
@@ -138,6 +139,61 @@ def manifest_sha256(rows: list[dict[str, Any]]) -> str:
         for dimension in shape:
             canonical.extend(struct.pack("<Q", dimension))
     return hashlib.sha256(canonical).hexdigest()
+
+
+def expected_tensor_roles() -> list[dict[str, Any]]:
+    """Return the native binder's exact 246 role/shape contract.
+
+    The role names and dimensions are derived from the fixed transformer
+    config below and intentionally exclude payload values.  Dtype is checked
+    separately against the native dense-float contract because the manifest
+    digest authenticates names/shapes, not a guessed per-tensor dtype.
+    """
+    config = expected_transformer_config()
+    backbone = config["backbone"]
+    d_model = backbone["d_model"]
+    q_heads = backbone["attn_cfg"]["num_heads"]
+    kv_heads = backbone["attn_cfg"]["num_heads_kv"]
+    head_dim = backbone["attn_cfg"]["rotary_emb_dim"]
+    q_hidden = q_heads * head_dim
+    kv_hidden = kv_heads * head_dim
+    mlp = 2 * backbone["attn_mlp_d_intermediate"]
+    roles: list[dict[str, Any]] = []
+
+    def add(name: str, shape: list[int]) -> None:
+        roles.append({"name": name, "shape": shape})
+
+    for codebook in range(9):
+        add(f"embeddings.{codebook}.weight", [1026, d_model])
+        add(f"heads.{codebook}.weight", [1025, d_model])
+    add("backbone.norm_f.weight", [d_model])
+    add("backbone.norm_f.bias", [d_model])
+    for layer in range(backbone["n_layer"]):
+        prefix = f"backbone.layers.{layer}"
+        add(f"{prefix}.norm.weight", [d_model])
+        add(f"{prefix}.norm.bias", [d_model])
+        add(f"{prefix}.mixer.in_proj.weight", [q_hidden + 2 * kv_hidden, d_model])
+        add(f"{prefix}.mixer.out_proj.weight", [d_model, q_hidden])
+        add(f"{prefix}.norm2.weight", [d_model])
+        add(f"{prefix}.norm2.bias", [d_model])
+        add(f"{prefix}.mlp.fc1.weight", [mlp, d_model])
+        add(f"{prefix}.mlp.fc2.weight", [d_model, backbone["attn_mlp_d_intermediate"]])
+    add("prefix_conditioner.conditioners.0.phoneme_embedder.weight", [189, d_model])
+    add("prefix_conditioner.conditioners.1.project.weight", [d_model, 128])
+    add("prefix_conditioner.conditioners.1.project.bias", [d_model])
+    add("prefix_conditioner.conditioners.1.uncond_vector", [d_model])
+    for index, input_dim in ((2, 8), (3, 1), (4, 1), (5, 1)):
+        add(f"prefix_conditioner.conditioners.{index}.weight", [1024, input_dim])
+        add(f"prefix_conditioner.conditioners.{index}.uncond_vector", [d_model])
+    add("prefix_conditioner.conditioners.6.int_embedder.weight", [128, d_model])
+    add("prefix_conditioner.conditioners.6.uncond_vector", [d_model])
+    add("prefix_conditioner.project.weight", [d_model, d_model])
+    add("prefix_conditioner.project.bias", [d_model])
+    add("prefix_conditioner.norm.weight", [d_model])
+    add("prefix_conditioner.norm.bias", [d_model])
+    if len(roles) != EXPECTED_TENSOR_COUNT:
+        raise AssertionError(f"native Zonos role contract has {len(roles)} entries")
+    return roles
 
 
 def git_blob_sha1(path: Path) -> str:
@@ -360,7 +416,7 @@ def tensor_manifest(path: Path, blockers: list[str], expected_revision: str = HF
             name, shape, dtype = item["name"], item["shape"], item["dtype"]
             if (not safe_path(name) or name in names or not isinstance(shape, list)
                     or not shape or any(isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0 for dim in shape)
-                    or not isinstance(dtype, str) or not dtype):
+                    or not isinstance(dtype, str) or dtype not in FLOAT_DTYPES):
                 raise ValueError("manifest contains an unsafe or malformed tensor")
             names.add(name)
             normalized.append({"name": name, "shape": shape, "dtype": dtype})
@@ -368,6 +424,11 @@ def tensor_manifest(path: Path, blockers: list[str], expected_revision: str = HF
         derived = manifest_sha256(normalized)
         if digest != derived or digest != EXPECTED_MANIFEST_SHA256:
             raise ValueError("fixed 246 manifest hash mismatch")
+        expected = expected_tensor_roles()
+        if [(row["name"], row["shape"]) for row in normalized] != [
+            (row["name"], row["shape"]) for row in sorted(expected, key=lambda item: item["name"])
+        ]:
+            raise ValueError("manifest roles/shapes do not match the fixed native 246-tensor contract")
         return {"status": "MANIFEST_PACKET", "tensor_count": len(normalized), "manifest_sha256": derived, "tensors": normalized}
     except Exception as error:
         blockers.append(f"Zonos tensor manifest blocked: {error}")
@@ -809,13 +870,19 @@ def self_test() -> None:
         manifest.write_text(json.dumps({"revision": HF_REVISION, "tensors": [{}] * EXPECTED_TENSOR_COUNT, "manifest_sha256": EXPECTED_MANIFEST_SHA256}), encoding="utf-8")
         blockers = []
         assert tensor_manifest(manifest, blockers)["status"] == "BLOCKED_MANIFEST"
-        rows = [{"name": f"tensor.{index}", "shape": [1], "dtype": "F32"} for index in range(EXPECTED_TENSOR_COUNT)]
+        rows = [dict(row, dtype="F32") for row in expected_tensor_roles()]
         derived = manifest_sha256(rows)
         old_manifest = EXPECTED_MANIFEST_SHA256
+        assert derived == old_manifest, "fixed native role map must match the reviewed manifest digest"
         globals()["EXPECTED_MANIFEST_SHA256"] = derived
         manifest.write_text(json.dumps({"revision": HF_REVISION, "tensors": rows, "manifest_sha256": derived}), encoding="utf-8")
         blockers = []
         assert tensor_manifest(manifest, blockers)["status"] == "MANIFEST_PACKET" and not blockers
+        rows[0]["dtype"] = "I32"
+        manifest.write_text(json.dumps({"revision": HF_REVISION, "tensors": rows, "manifest_sha256": derived}), encoding="utf-8")
+        blockers = []
+        assert tensor_manifest(manifest, blockers)["status"] == "BLOCKED_MANIFEST"
+        rows[0]["dtype"] = "F32"
         rows[0]["shape"] = [2]
         manifest.write_text(json.dumps({"revision": HF_REVISION, "tensors": rows, "manifest_sha256": derived}), encoding="utf-8")
         blockers = []

@@ -25,6 +25,7 @@ UPSTREAM_REPOSITORY = "Zyphra/Zonos-v0.1-transformer"
 UPSTREAM_REVISION = "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e"
 MANIFEST_SHA256 = "6543af3747d3e85bde862c3337744eea31f0105f9df6d8617c1c9afdae805847"
 DTYPE_BYTES = {"F32": 4, "BF16": 2, "F16": 2, "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1}
+FLOAT_DTYPES = frozenset({"F32", "F16", "BF16"})
 PROJECT_PATH = Path(__file__).with_name("pyproject.toml")
 LOCK_PATH = Path(__file__).with_name("uv.lock")
 SOURCE_LICENSE_PATH = "LICENSE"
@@ -381,6 +382,65 @@ def manifest_sha256(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def expected_tensor_roles() -> list[dict[str, Any]]:
+    """Return the fixed native Zonos transformer role/shape contract.
+
+    This is deliberately duplicated from the converter-side contract: the
+    VAST staging worker must reject a manifest before any artifact is handed
+    to the runtime, and importing workspace Rust here would violate the
+    model-free staging boundary.
+    """
+    d_model = 2048
+    roles: list[dict[str, Any]] = []
+
+    def add(name: str, shape: list[int]) -> None:
+        roles.append({"name": name, "shape": shape})
+
+    for codebook in range(9):
+        add(f"embeddings.{codebook}.weight", [1026, d_model])
+        add(f"heads.{codebook}.weight", [1025, d_model])
+    add("backbone.norm_f.weight", [d_model])
+    add("backbone.norm_f.bias", [d_model])
+    for layer in range(26):
+        prefix = f"backbone.layers.{layer}"
+        add(f"{prefix}.norm.weight", [d_model])
+        add(f"{prefix}.norm.bias", [d_model])
+        add(f"{prefix}.mixer.in_proj.weight", [3072, d_model])
+        add(f"{prefix}.mixer.out_proj.weight", [d_model, d_model])
+        add(f"{prefix}.norm2.weight", [d_model])
+        add(f"{prefix}.norm2.bias", [d_model])
+        add(f"{prefix}.mlp.fc1.weight", [16384, d_model])
+        add(f"{prefix}.mlp.fc2.weight", [d_model, 8192])
+    add("prefix_conditioner.conditioners.0.phoneme_embedder.weight", [189, d_model])
+    add("prefix_conditioner.conditioners.1.project.weight", [d_model, 128])
+    add("prefix_conditioner.conditioners.1.project.bias", [d_model])
+    add("prefix_conditioner.conditioners.1.uncond_vector", [d_model])
+    for index, input_dim in ((2, 8), (3, 1), (4, 1), (5, 1)):
+        add(f"prefix_conditioner.conditioners.{index}.weight", [1024, input_dim])
+        add(f"prefix_conditioner.conditioners.{index}.uncond_vector", [d_model])
+    add("prefix_conditioner.conditioners.6.int_embedder.weight", [128, d_model])
+    add("prefix_conditioner.conditioners.6.uncond_vector", [d_model])
+    add("prefix_conditioner.project.weight", [d_model, d_model])
+    add("prefix_conditioner.project.bias", [d_model])
+    add("prefix_conditioner.norm.weight", [d_model])
+    add("prefix_conditioner.norm.bias", [d_model])
+    if len(roles) != 246:
+        raise AssertionError(f"native Zonos role contract has {len(roles)} entries")
+    return roles
+
+
+def validate_tensor_rows(rows: list[dict[str, Any]], label: str) -> None:
+    expected = sorted(expected_tensor_roles(), key=lambda row: row["name"])
+    actual = sorted(
+        ({"name": row["name"], "shape": row["shape"]} for row in rows),
+        key=lambda row: row["name"],
+    )
+    if actual != expected:
+        raise RuntimeError(f"{label} manifest roles/shapes do not match the fixed native 246-tensor contract")
+    if any(row.get("dtype") not in FLOAT_DTYPES for row in rows):
+        raise RuntimeError(f"{label} manifest contains a non-dense-float tensor dtype")
+
+
 def server_file_row(item: Any) -> dict[str, Any]:
     """Normalize an expanded huggingface_hub ``RepoFile`` row."""
     if getattr(item, "type", None) != "file":
@@ -516,6 +576,7 @@ def safetensors_manifest(path: Path, output: Path, revision: str) -> None:
         if current[0] != previous[1]:
             raise RuntimeError(f"non-contiguous descriptor ranges: {previous[2]}, {current[2]}")
     rows.sort(key=lambda row: row["name"])
+    validate_tensor_rows(rows, "upstream safetensors")
     digest = manifest_sha256(rows)
     if len(rows) != 246 or digest != MANIFEST_SHA256:
         raise RuntimeError(f"upstream safetensors manifest mismatch: {digest}")
@@ -536,6 +597,7 @@ def gguf_manifest(path: Path, output: Path, revision: str) -> None:
          for tensor in reader.tensors],
         key=lambda row: row["name"],
     )
+    validate_tensor_rows(rows, "public GGUF")
     digest = manifest_sha256(rows)
     if len(rows) != 246 or digest != MANIFEST_SHA256:
         raise RuntimeError(f"public GGUF manifest mismatch: {digest}")
@@ -569,6 +631,25 @@ def main() -> int:
             parser.error("--self-test accepts no other arguments")
         assert len(PUBLIC_REVISION) == len(UPSTREAM_REVISION) == 40
         assert len(MANIFEST_SHA256) == 64
+        role_rows = [dict(row, dtype="F32") for row in expected_tensor_roles()]
+        assert len(role_rows) == 246
+        assert manifest_sha256(role_rows) == MANIFEST_SHA256
+        validate_tensor_rows(role_rows, "self-test")
+        role_rows[0]["dtype"] = "I32"
+        try:
+            validate_tensor_rows(role_rows, "self-test")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("integer tensor dtype must fail the native dense-float contract")
+        role_rows[0]["dtype"] = "F32"
+        role_rows[0]["shape"] = [1]
+        try:
+            validate_tensor_rows(role_rows, "self-test")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("role/shape drift must fail closed")
         validate_license_identity_contract()
         from types import SimpleNamespace
         valid_info = SimpleNamespace(
