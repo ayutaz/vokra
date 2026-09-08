@@ -9,6 +9,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 REFERENCE="$ROOT/tools/parity/xy_tokenizer_dump_reference.py"
 DEPENDENCY_PROJECT="$ROOT/tools/parity/xy_tokenizer_reference"
+xy_uv_cache_dir() { printf '%s\n' "${XY_UV_CACHE_DIR:-${TMPDIR:-/tmp}/vokra-xy-uv-cache}"; }
+export UV_CACHE_DIR="$(xy_uv_cache_dir)"
 
 die() { echo "xy-tokenizer-reference: ERROR: $*" >&2; exit 2; }
 
@@ -44,6 +46,8 @@ self_test() {
   done
   grep -Fq -- 'after every model-free gate' "${BASH_SOURCE[0]}" \
     || die "worker output-creation gate comment is missing"
+  (unset TMPDIR XY_UV_CACHE_DIR; [[ "$(xy_uv_cache_dir)" == "/tmp/vokra-xy-uv-cache" ]]) \
+    || die "Linux /tmp uv cache fallback is broken when TMPDIR is unset"
   grep -Fq -- "mkdir -p \"\$output\"" "${BASH_SOURCE[0]}" \
     || die "worker output creation is missing"
   if grep -Eq '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$REFERENCE"; then
@@ -128,7 +132,7 @@ done
   || die "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER: no exact reviewed closure; no source/model execution"
 
 # Validate the complete audit before creating an absent output directory.
-UV_CACHE_DIR="${XY_UV_CACHE_DIR:-/private/tmp/vokra-xy-uv-cache}" \
+UV_CACHE_DIR="$(xy_uv_cache_dir)" \
   uv run --no-project --python 3.12 python "$REFERENCE" \
   --dependency-audit --dependency-project "$DEPENDENCY_PROJECT" \
   || die "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER: dependency audit failed"

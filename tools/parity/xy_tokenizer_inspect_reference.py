@@ -68,6 +68,11 @@ TENSOR_MANIFEST_BLOCKER = "BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST"
 TENSOR_INVENTORY_SCHEMA = "vokra-xy-tokenizer-tensor-inventory-v1"
 EVIDENCE_FILENAME = "manifest.json"
 
+
+def self_test_temp_root() -> str:
+    """Resolve a platform-native temporary root without a macOS-only path."""
+    return str(Path(os.environ.get("TMPDIR") or tempfile.gettempdir()).resolve())
+
 # These are selected structural axes from the authenticated source config at
 # SOURCE_REVISION. They are deliberately not a guessed full tensor manifest:
 # checkpoint tensor names/shapes remain evidence-bound to a later VAST load.
@@ -1293,7 +1298,13 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("invalid generator checkpoint envelope was accepted")
-    self_test_tmp_root = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
+    saved_tmpdir = os.environ.pop("TMPDIR", None)
+    try:
+        assert self_test_temp_root() == str(Path(tempfile.gettempdir()).resolve())
+    finally:
+        if saved_tmpdir is not None:
+            os.environ["TMPDIR"] = saved_tmpdir
+    self_test_tmp_root = self_test_temp_root()
     with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-error-", dir=self_test_tmp_root) as directory:
         error_dir = Path(directory)
         write_error_manifest(error_dir, RuntimeError("self-test error"))

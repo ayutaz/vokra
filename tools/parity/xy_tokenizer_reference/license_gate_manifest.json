@@ -3,6 +3,49 @@
   "status": "BLOCKED",
   "publication": "NO_UPLOAD",
   "owner_signoff": "REQUIRED",
+  "approval_scope": {
+    "schema": "vokra-xy-tokenizer-approval-scope-v1",
+    "decision": "OWNER_SIGNOFF_REQUIRED",
+    "publication": "NO_UPLOAD",
+    "upstream": {
+      "repository": "OpenMOSS-Team/XY_Tokenizer_TTSD_V0",
+      "revision": "c83433728e698ed0698e88cb5096bc221fb8f8c5",
+      "checkpoint": {
+        "filename": "xy_tokenizer.ckpt",
+        "bytes": 2137328977,
+        "sha256": "37c7ac18d0a48f5a1d0687e31af7c0264861232c500206718c98acd8e37d1671"
+      }
+    },
+    "source": {
+      "repository": "https://github.com/gyt1145028706/XY-Tokenizer",
+      "revision": "5df5609c5883e555bd39a2d0b1005ca8f1a8f12e",
+      "config": {
+        "path": "config/xy_tokenizer_config.yaml",
+        "sha256": "e7d48677e34f77e5b9fd7dc7a3e0eef7f2d2dd9be9a245d5c1d56489dc748938"
+      },
+      "license_readme": {
+        "heading": "## License 📜",
+        "declaration": "XY-Tokenizer is released under the Apache 2.0 license.",
+        "git_blob_sha1": "cfe231b384040a2162a516c400fbd9282b3317b7",
+        "sha256": "c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7"
+      },
+      "full_license_file": "NOT_PRESENT_IN_AUTHENTICATED_SOURCE_TREE"
+    },
+    "dependency_project": {
+      "name": "vokra-xy-tokenizer-reference",
+      "pyproject_sha256": "167c19066e8c9debd08468d2ba556a9a4cf05f5cb1838a2c1f8664a0eb968640",
+      "uv_lock_sha256": "ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049",
+      "active_package_count": 57
+    },
+    "pending_reviews": [
+      "DEPENDENCY_LICENSE_BYTES",
+      "NATIVE_PAYLOAD_LICENSES",
+      "TENSOR_MANIFEST_AND_TOPOLOGY",
+      "NATIVE_RUNTIME_AND_NUMERICAL_PARITY",
+      "OWNER_SIGNOFF"
+    ]
+  },
+  "approval_scope_sha256": "fc72e1c2ef76dbc77b53ea7076ebffc49a4df4430b12bfcbd949bf5c53a36d2e",
   "blockers": [
     "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER",
     "LICENSE_BYTES_AND_NATIVE_PAYLOAD_EVIDENCE_REQUIRED",

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import tarfile
 import tempfile
 import urllib.request
@@ -65,6 +66,11 @@ BSD_SOURCE_RETENTION_CLAUSE = "Redistributions of source code must retain the ab
 BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution."
 BSD_AS_IS_CLAUSE = 'THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES'
 BSD_NON_ENDORSE_CLAUSE = "nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission."
+
+
+def self_test_temp_root() -> str:
+    """Resolve a platform-native temporary root without a macOS-only path."""
+    return str(Path(os.environ.get("TMPDIR") or tempfile.gettempdir()).resolve())
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -451,7 +457,14 @@ def collect(project: Path, output: Path) -> dict[str, Any]:
 
 def self_test() -> None:
     global _collect_package, _download, active_closure, lock_rows, repository_license
-    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+    saved_tmpdir = os.environ.pop("TMPDIR", None)
+    try:
+        assert self_test_temp_root() == str(Path(tempfile.gettempdir()).resolve())
+    finally:
+        if saved_tmpdir is not None:
+            os.environ["TMPDIR"] = saved_tmpdir
+    temporary_root = self_test_temp_root()
+    with tempfile.TemporaryDirectory(dir=temporary_root) as directory:
         root = Path(directory)
         wheel = root / "demo.whl"
         with zipfile.ZipFile(wheel, "w") as archive:

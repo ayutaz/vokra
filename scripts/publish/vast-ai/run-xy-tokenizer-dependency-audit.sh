@@ -11,6 +11,7 @@ COLLECTOR="$PROJECT/collect_evidence.py"
 LOCK_SHA256="ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049"
 
 die() { echo "xy-tokenizer-dependency-audit: ERROR: $*" >&2; exit 2; }
+uv_cache_dir() { printf '%s\n' "${XY_UV_CACHE_DIR:-${TMPDIR:-/tmp}/vokra-xy-uv-cache}"; }
 
 usage() {
   cat >&2 <<'EOF'
@@ -31,9 +32,9 @@ self_test() {
   command -v uv >/dev/null 2>&1 || die "uv is required"
   [[ -f "$AUDIT" && ! -L "$AUDIT" ]] || die "audit.py is missing or symlinked"
   [[ -f "$COLLECTOR" && ! -L "$COLLECTOR" ]] || die "collector is missing or symlinked"
-  UV_CACHE_DIR="${XY_UV_CACHE_DIR:-/private/tmp/vokra-xy-uv-cache}" \
+  UV_CACHE_DIR="$(uv_cache_dir)" \
     uv run --offline --no-project --python 3.12 python "$AUDIT" --self-test
-  UV_CACHE_DIR="${XY_UV_CACHE_DIR:-/private/tmp/vokra-xy-uv-cache}" \
+  UV_CACHE_DIR="$(uv_cache_dir)" \
     uv run --offline --no-project --python 3.12 python "$COLLECTOR" --self-test
   grep -Fq -- "$LOCK_SHA256" "$PROJECT/dependency_audit.json" \
     || die "tracked lock digest contract is missing"
@@ -50,6 +51,12 @@ self_test() {
     || die "partial collection status contract is missing"
   grep -Fq -- 'final_report' "${BASH_SOURCE[0]}" \
     || die "partial final-audit contract is missing"
+  grep -Fq -- 'approval_scope_sha256' "$AUDIT" \
+    || die "canonical owner approval scope contract is missing"
+  grep -Fq -- 'OWNER_SIGNOFF_REQUIRED' "$AUDIT" \
+    || die "owner sign-off blocker contract is missing"
+  (unset TMPDIR XY_UV_CACHE_DIR; [[ "$(uv_cache_dir)" == "/tmp/vokra-xy-uv-cache" ]]) \
+    || die "Linux /tmp uv cache fallback is broken when TMPDIR is unset"
   [[ "$(grep -Fc -- 'uv run --offline' "${BASH_SOURCE[0]}")" -ge 5 ]] \
     || die "all local uv launches must be offline"
   grep -Fq -- 'VOKRA_PUBLISH_ON_VAST=1' "${BASH_SOURCE[0]}" \
@@ -115,14 +122,14 @@ evidence_real="$output_parent_real/$(basename "$evidence_output")"
 preflight_parent="$(mktemp -d /tmp/vokra-xy-dependency-preflight.XXXXXX)"
 cleanup() { rm -rf -- "$preflight_parent"; }
 trap cleanup EXIT
-  UV_CACHE_DIR="${XY_UV_CACHE_DIR:-/private/tmp/vokra-xy-uv-cache}" \
+  UV_CACHE_DIR="$(uv_cache_dir)" \
   uv run --offline --no-project --python 3.12 python "$AUDIT" \
   --project "$PROJECT" --output "$preflight_parent/report" >/dev/null
 
 # The collector creates the absent output only after every model-free gate.
 # It tries all 57 rows and exits 2 when the report is partial/BLOCKED.
 set +e
-UV_CACHE_DIR="${XY_UV_CACHE_DIR:-/private/tmp/vokra-xy-uv-cache}" \
+UV_CACHE_DIR="$(uv_cache_dir)" \
   uv run --offline --no-project --python 3.12 python "$COLLECTOR" \
   --project "$PROJECT" --output "$evidence_output"
 collector_status=$?
@@ -132,7 +139,7 @@ if [[ "$collector_status" -ne 0 ]]; then
 fi
 
 final_report="$output_parent_real/$(basename "$evidence_output")-report"
-UV_CACHE_DIR="${XY_UV_CACHE_DIR:-/private/tmp/vokra-xy-uv-cache}" \
+UV_CACHE_DIR="$(uv_cache_dir)" \
   uv run --offline --no-project --python 3.12 python "$AUDIT" \
   --project "$PROJECT" --output "$final_report" \
   --license-evidence "$evidence_output/license_evidence.json" >/dev/null

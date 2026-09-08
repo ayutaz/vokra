@@ -18,6 +18,8 @@ SOURCE_REVISION="5df5609c5883e555bd39a2d0b1005ca8f1a8f12e"
 CONFIG_RELATIVE="config/xy_tokenizer_config.yaml"
 CONFIG_SHA256="e7d48677e34f77e5b9fd7dc7a3e0eef7f2d2dd9be9a245d5c1d56489dc748938"
 INSPECTOR="tools/parity/xy_tokenizer_inspect_reference.py"
+xy_uv_cache_dir() { printf '%s\n' "${XY_UV_CACHE_DIR:-${TMPDIR:-/tmp}/vokra-xy-uv-cache}"; }
+export UV_CACHE_DIR="$(xy_uv_cache_dir)"
 UV_CMD=(uv run --frozen --project tools/parity --python 3.12 python)
 MIN_VAST_MEM_KIB=$((128 * 1024 * 1024))
 MIN_FREE_DISK_KIB=$((30 * 1024 * 1024))
@@ -113,6 +115,11 @@ run_self_test() {
     fail=1
   fi
   rm -f -- "$python_source"
+
+  if ! (unset TMPDIR XY_UV_CACHE_DIR; [[ "$(xy_uv_cache_dir)" == "/tmp/vokra-xy-uv-cache" ]]); then
+    echo "run-xy-tokenizer-inspection: self-test FAIL: Linux /tmp uv cache fallback" >&2
+    fail=1
+  fi
 
   cases=$((cases + 1))
   if "$script_path" --self-test --work-dir /tmp/xy-tokenizer-self-test >/dev/null 2>&1; then

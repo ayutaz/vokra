@@ -21,6 +21,11 @@ When an artifact contains additional component LICENSE/COPYING files, the
 collector preserves their bounded path/hash/size records as artifact-bound
 `bundled_licenses`; NOTICE/COPYRIGHT files are not promoted to the primary
 license.
+The native-payload gate includes `cffi`, `llvmlite`, `numba`, `numpy`, `scipy`,
+`soundfile`, `soxr`, `torch`, and `torchaudio`; all 57 lock identities remain
+pending until their exact artifact license bytes and native payload evidence
+are collected and independently reviewed.  In particular, SciPy, SymPy,
+setuptools, soxr, tokenizers, and tqdm are not treated as implicitly cleared.
 Run `scripts/publish/vast-ai/run-xy-tokenizer-dependency-audit.sh` on a clean
 Linux/x86_64 VAST checkout to collect exact lock artifact bytes into a separate
 evidence directory; the tracked template remains untouched and the final audit
@@ -36,6 +41,10 @@ digest, signatory, decision, and reviewed evidence digest. Only that recorded
 decision may permit a separate Luna implementation/review to materialize a
 dumper-compatible `dependency_audit.json` with `AUDITED_ALLOW`; this is not
 automatic functionality, and the generator never creates that status itself.
+The tracked gate also binds the owner scope as
+`approval_scope_sha256` over the fixed upstream/source identities, exact
+`pyproject.toml`/`uv.lock` digests, active-row count, and explicit pending
+review set.  The scope is useful for review but cannot authorize execution.
 
 The fixed source/config contract now authenticates the 16 kHz frontend, the
 semantic/acoustic encoder and adapter axes, 8×1024 RVQ (3072/512 dimensions),

@@ -22,6 +22,17 @@ from typing import Any
 
 SOURCE_REVISION = "5df5609c5883e555bd39a2d0b1005ca8f1a8f12e"
 SOURCE_REPOSITORY = "https://github.com/gyt1145028706/XY-Tokenizer"
+UPSTREAM_REPOSITORY = "OpenMOSS-Team/XY_Tokenizer_TTSD_V0"
+UPSTREAM_REVISION = "c83433728e698ed0698e88cb5096bc221fb8f8c5"
+CHECKPOINT_FILENAME = "xy_tokenizer.ckpt"
+CHECKPOINT_BYTES = 2_137_328_977
+CHECKPOINT_SHA256 = "37c7ac18d0a48f5a1d0687e31af7c0264861232c500206718c98acd8e37d1671"
+CONFIG_RELATIVE = "config/xy_tokenizer_config.yaml"
+CONFIG_SHA256 = "e7d48677e34f77e5b9fd7dc7a3e0eef7f2d2dd9be9a245d5c1d56489dc748938"
+SOURCE_README_BLOB_SHA1 = "cfe231b384040a2162a516c400fbd9282b3317b7"
+SOURCE_README_SHA256 = "c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7"
+SOURCE_LICENSE_HEADING = "## License 📜"
+SOURCE_LICENSE_DECLARATION = "XY-Tokenizer is released under the Apache 2.0 license."
 SOURCE_ROLE_BLOBS = {
     "config/xy_tokenizer_config.yaml": "83c50a60b3c0db62ce30b9cd65e0b0f5cd290f89",
     "inference.py": "9bb00a176f878d872f8eb7ed7a98501d3abb7e70",
@@ -34,7 +45,7 @@ SOURCE_ROLE_BLOBS = {
     "xy_tokenizer/nn/quantizer.py": "a7d28b963e98ea4f62f2a6e06b419cf0da0c2cc4",
 }
 EXPECTED_IMPORTS = {"einops", "librosa", "numpy", "scipy", "torch", "torchaudio", "transformers", "yaml"}
-NATIVE_PACKAGES = {"cffi", "llvmlite", "numba", "numpy", "scipy", "soundfile", "torch", "torchaudio"}
+NATIVE_PACKAGES = {"cffi", "llvmlite", "numba", "numpy", "scipy", "soundfile", "soxr", "torch", "torchaudio"}
 STDLIB_IMPORTS = {"copy", "dataclasses", "logging", "math", "typing"}
 MARKER = "sys_platform == 'linux' and platform_machine == 'x86_64'"
 MARKER_ALIASES = {MARKER, "platform_machine == 'x86_64' and sys_platform == 'linux'"}
@@ -42,6 +53,7 @@ PYPI_INDEX = "https://pypi.org/simple"
 CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 CPU_ARTIFACT_PREFIXES = (f"{CPU_INDEX}/", "https://download-r2.pytorch.org/whl/cpu/")
 SCHEMA = "vokra-xy-tokenizer-dependency-audit-v1"
+APPROVAL_SCOPE_SCHEMA = "vokra-xy-tokenizer-approval-scope-v1"
 BLOCKER = "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER"
 DIRECT_DEPENDENCIES = {
     "numpy": "numpy",
@@ -104,6 +116,12 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def canonical_json_digest(value: Any) -> str:
+    """Hash the exact JSON value supplied to the independent owner reviewer."""
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def json_unique(path: Path) -> Any:
@@ -530,6 +548,58 @@ def compatible_projection(package_evidence: list[dict[str, Any]]) -> list[dict[s
     ]
 
 
+def build_approval_scope(project: Path, lock_rows_active: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the review boundary without asserting any license conclusion.
+
+    The scope is intentionally derived from the exact lock identities and the
+    already authenticated upstream pins.  It is safe to commit while the
+    license/native rows and owner decision are still pending: no package is
+    marked allowed, and no checkpoint bytes are read here.
+    """
+    return {
+        "schema": APPROVAL_SCOPE_SCHEMA,
+        "decision": "OWNER_SIGNOFF_REQUIRED",
+        "publication": "NO_UPLOAD",
+        "upstream": {
+            "repository": UPSTREAM_REPOSITORY,
+            "revision": UPSTREAM_REVISION,
+            "checkpoint": {
+                "filename": CHECKPOINT_FILENAME,
+                "bytes": CHECKPOINT_BYTES,
+                "sha256": CHECKPOINT_SHA256,
+            },
+        },
+        "source": {
+            "repository": SOURCE_REPOSITORY,
+            "revision": SOURCE_REVISION,
+            "config": {"path": CONFIG_RELATIVE, "sha256": CONFIG_SHA256},
+            "license_readme": {
+                "heading": SOURCE_LICENSE_HEADING,
+                "declaration": SOURCE_LICENSE_DECLARATION,
+                "git_blob_sha1": SOURCE_README_BLOB_SHA1,
+                "sha256": SOURCE_README_SHA256,
+            },
+            "full_license_file": "NOT_PRESENT_IN_AUTHENTICATED_SOURCE_TREE",
+        },
+        "dependency_project": {
+            "name": VIRTUAL_PROJECT_NAME,
+            "pyproject_sha256": sha256(project / "pyproject.toml"),
+            "uv_lock_sha256": sha256(project / "uv.lock"),
+            # The lock digest binds every exact name/version/source/artifact
+            # row.  Keep the scope compact and require the reviewer to use
+            # that immutable lock rather than duplicating a second ledger.
+            "active_package_count": len(lock_rows_active),
+        },
+        "pending_reviews": [
+            "DEPENDENCY_LICENSE_BYTES",
+            "NATIVE_PAYLOAD_LICENSES",
+            "TENSOR_MANIFEST_AND_TOPOLOGY",
+            "NATIVE_RUNTIME_AND_NUMERICAL_PARITY",
+            "OWNER_SIGNOFF",
+        ],
+    }
+
+
 def audit(project: Path, source: Path | None, output: Path, license_evidence: Path | None = None) -> dict[str, Any]:
     project = canonical_existing(project, "project", directory=True)
     if source is not None:
@@ -571,6 +641,7 @@ def audit(project: Path, source: Path | None, output: Path, license_evidence: Pa
             package_evidence = validate_license_rows(active, json_unique(evidence_path), pyproject, repository_license_path)
         except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
             blockers.append(f"{BLOCKER}:{error}")
+            blockers.append("LICENSE_BYTES_AND_NATIVE_PAYLOAD_EVIDENCE_REQUIRED")
     source_packet: dict[str, Any] | None = None
     if source is not None:
         try:
@@ -578,13 +649,15 @@ def audit(project: Path, source: Path | None, output: Path, license_evidence: Pa
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             blockers.append(f"SOURCE_AUTHENTICATION_BLOCKER:{error}")
     blockers.append("OWNER_SIGNOFF_REQUIRED")
+    approval_scope = build_approval_scope(project, active)
+    approval_scope_sha256 = canonical_json_digest(approval_scope)
     # Keep the dumper-facing projection deliberately small and compatible;
     # richer artifact/native evidence stays in the human review manifest.
     projection = compatible_projection(package_evidence)
     manifest = {"schema": SCHEMA, "status": "BLOCKED", "lock_sha256": sha256(lock), "pyproject_sha256": sha256(pyproject), "packages": projection}
     output.mkdir()
     (output / "dependency_audit.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (output / "license_gate_manifest.json").write_text(json.dumps({"schema": "vokra-xy-tokenizer-license-gate-v1", "status": "BLOCKED", "publication": "NO_UPLOAD", "owner_signoff": "REQUIRED", "blockers": blockers, "project": {"pyproject_sha256": manifest["pyproject_sha256"], "uv_lock_sha256": manifest["lock_sha256"], "active_package_count": len(active)}, "source": source_packet, "packages": package_evidence}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output / "license_gate_manifest.json").write_text(json.dumps({"schema": "vokra-xy-tokenizer-license-gate-v1", "status": "BLOCKED", "publication": "NO_UPLOAD", "owner_signoff": "REQUIRED", "blockers": blockers, "project": {"pyproject_sha256": manifest["pyproject_sha256"], "uv_lock_sha256": manifest["lock_sha256"], "active_package_count": len(active)}, "approval_scope": approval_scope, "approval_scope_sha256": approval_scope_sha256, "source": source_packet, "packages": package_evidence}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
 
 
@@ -606,6 +679,28 @@ def self_test() -> None:
         tracked_data, tracked_rows = lock_rows(tracked_lock)
         assert len(tracked_rows) == 57
         assert len(active_closure(tracked_data, tracked_rows)) == 57
+        tracked_scope = build_approval_scope(Path(__file__).parent, active_closure(tracked_data, tracked_rows))
+        assert tracked_scope["schema"] == APPROVAL_SCOPE_SCHEMA
+        assert tracked_scope["decision"] == "OWNER_SIGNOFF_REQUIRED"
+        assert tracked_scope["publication"] == "NO_UPLOAD"
+        assert tracked_scope["dependency_project"]["active_package_count"] == 57
+        assert "TENSOR_MANIFEST_AND_TOPOLOGY" in tracked_scope["pending_reviews"]
+        tracked_gate = json_unique(Path(__file__).parent / "license_gate_manifest.json")
+        assert tracked_gate["approval_scope"] == tracked_scope
+        assert tracked_gate["approval_scope_sha256"] == canonical_json_digest(tracked_gate["approval_scope"])
+        assert tracked_gate["status"] == "BLOCKED"
+        assert tracked_gate["publication"] == "NO_UPLOAD"
+        for path, value in (
+            (("publication",), "UPLOAD"),
+            (("upstream", "revision"), "0" * 40),
+            (("dependency_project", "uv_lock_sha256"), "0" * 64),
+        ):
+            tampered_scope = json.loads(json.dumps(tracked_scope))
+            target = tampered_scope
+            for component in path[:-1]:
+                target = target[component]
+            target[path[-1]] = value
+            assert canonical_json_digest(tampered_scope) != tracked_gate["approval_scope_sha256"]
     unknown_project_data = {**project_data, "project": {**project_data["project"], "unexpected": True}}
     try:
         validate_pyproject(unknown_project_data)
