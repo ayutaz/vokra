@@ -853,6 +853,45 @@ enumerated in the remaining-task ledger. Real checkpoint acquisition and
 execution remain prohibited until the corresponding hash-bound owner scope is
 approved; publication remains separately unauthorized.
 
+## 2026-09-09 final owner-independent VAST replay complete
+
+The source sweep and HiFT closure refresh are finalized at implementation head
+`7a428beb9b5551ad698b4faeae769254d1449626`. On disposable VAST instance
+`50284673`, the exact-head workspace run completed 305 suites with 8,007
+passing tests, zero failures and 100 ignored tests. Workspace Clippy with all
+targets/features and warnings denied, format, locked metadata, zero-deps,
+forbidden-symbol, fixture-EOL, pipefail, architecture, model-zoo, HiFT
+self-test, cargo-deny and cargo-audit gates all passed. The only dependency
+message was the known unused `libfuzzer-sys` deny exception; the vulnerability
+count was zero.
+
+Every currently identified owner-independent model-free worker was replayed.
+The nine-worker batch passed without model acquisition; Qwen3-TTS, CLAP and
+SpeechT5 passed their applicable model-free gates; FireRed AED-L, Parler and
+MOSS Nano stopped at their intended factual blockers; BigVGAN and HiFT
+produced verified no-upload owner-review candidates. The batch and most
+standalone model-free jobs ran at parent head
+`8c917b4f9f8fb57b013774a6325d39f34a0120aa`; the sole delta to the final head
+was the reviewed HiFT closure fact refresh, whose final-head rerun passed.
+
+The recovered bounded archive is
+`/private/tmp/vokra-final-evidence-7a428beb.tar.gz`, SHA-256
+`62f0503a20e7fb1a15bfe825045e7af3403abaff165dd9616cff1464ec110d9a`.
+Its internal and transfer hashes passed. It contains no model/checkpoint
+payload. No Hugging Face token, model weight or upload was involved, and no
+model execution occurred on the maintainer Mac.
+
+Instance `50284673` was stopped after recovery; provider control-state fields
+all read `stopped`. It awaits exact-id destruction authorization, so storage
+charges remain in the meantime. Unrelated instance `50293364` was untouched.
+
+Wave 1 is now complete for all known owner-independent work. The remaining
+non-Scaleway path is not additional unblocked implementation: it requires
+immutable owner/legal or missing-fact decisions and, for scopes the owner then
+approves, real-weight VAST conversion/reference/CPU-parity execution.
+Scaleway is needed only after those gates, for Wave 7's Apple Silicon
+CPU/reference, Metal/reference and Metal/CPU no-fallback verdicts.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously

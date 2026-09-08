@@ -1416,6 +1416,58 @@ scopes, authenticated real-weight VAST conversion, independent-reference and
 CPU-parity runs. Scaleway is required only for the final Apple Silicon CPU,
 Metal and no-fallback verdicts.
 
+### 2026-09-09 final owner-independent pre-Scaleway replay
+
+The source sweep was finalized at clean implementation head
+`7a428beb9b5551ad698b4faeae769254d1449626`. Disposable VAST instance
+`50284673` completed the full workspace and static replay at that exact head:
+`cargo test --workspace --all-targets --locked` reported **305 suites, 8,007
+passed, zero failed and 100 ignored**. Workspace/all-target/all-feature Clippy
+with warnings denied, format, locked metadata, zero-deps, forbidden-symbol,
+fixture-EOL, pipefail, architecture-handshake, bound-architecture,
+zoo-manifest and HiFT self-test gates all exited zero. `cargo-deny` reported
+advisories, bans, licenses and sources OK apart from the pre-existing unused
+`libfuzzer-sys` exception warning, and `cargo-audit` found zero
+vulnerabilities.
+
+The nine-worker model-free batch ran at parent head
+`8c917b4f9f8fb57b013774a6325d39f34a0120aa` and passed all nine factual
+audits without model acquisition or upload. FireRed AED-L stopped at its
+expected `BLOCKED_OWNER_REVIEW`; all four Qwen3-TTS variants and CLAP passed
+their model-free API/audit checks; SpeechT5's dependency audit passed; Parler
+correctly blocked on missing publisher `LICENSE`/`NOTICE` evidence for
+`tokenizers==0.22.2`; BigVGAN produced its no-upload owner-review closure
+candidate; and MOSS Nano stopped after its authenticated source/metadata probe
+without loading or executing weights. The only change from that parent to the
+final head was the reviewed HiFT closure-verifier fact refresh. Its final-head
+rerun returned `LINUX_CLOSURE_CANDIDATE_VERIFIED` while preserving
+`OWNER_REVIEW_REQUIRED` and `NO_UPLOAD`.
+
+The bounded evidence archive is
+`/private/tmp/vokra-final-evidence-7a428beb.tar.gz`, SHA-256
+`62f0503a20e7fb1a15bfe825045e7af3403abaff165dd9616cff1464ec110d9a`.
+Its internal file checksums passed before transfer, the archive hash matched
+after transfer, and an extension boundary check found no model or checkpoint
+payload. No Hugging Face token was transferred, no model weight was acquired
+or executed in this replay, no upload occurred, and no model was run on the
+maintainer Mac.
+
+After evidence recovery, instance `50284673` was stopped. The provider
+readback showed `cur_state`, `intended_status` and `next_state` all `stopped`.
+It has not been destroyed, so its storage charge remains until the owner gives
+exact-id destruction permission. Unrelated instance `50293364`
+(`ralomi-m4r-reazonspeech`) was not modified.
+
+This completes every currently identified **owner-independent** non-Scaleway
+source, model-free and repository-verification task. It does not close the 63
+public rows. The remaining non-Scaleway work is gated by external input:
+immutable owner/legal dispositions, missing upstream license/source facts or
+native-composite decisions and, only after those scopes are approved,
+authenticated real-weight VAST conversion, independent-reference and CPU
+parity. Scaleway cannot resolve those decisions. It is required only for the
+final Apple Silicon CPU/reference, Metal/reference and Metal/CPU no-fallback
+verdicts.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
