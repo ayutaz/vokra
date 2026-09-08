@@ -1,5 +1,5 @@
 {
-  "approval_scope_sha256": "08eeab246dac53187c683cfed54e07f4a64a15abd119f3c4cc186bd23b88e69e",
+  "approval_scope_sha256": "cdda6be3a60e4b703c0d26d249a21703b69c2024f10bfabedf4896e2d7bb2b9a",
   "component_reviews": [
     {
       "approval_digest": null,
@@ -247,19 +247,6 @@
     }
   ],
   "dependency_reviews": [
-    {
-      "bundled_review": null,
-      "id": "accelerate@1.12.0",
-      "license": null,
-      "name": "accelerate",
-      "native_review": null,
-      "payload_sha256": null,
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "status": "PENDING_REVIEW",
-      "version": "1.12.0"
-    },
     {
       "bundled_review": null,
       "id": "annotated-doc@0.0.5",
@@ -898,7 +885,7 @@
       "version": "0.1.0"
     }
   ],
-  "dependency_reviews_sha256": "7a5c52c6a9cfb3e8173e1e9a0db7f7c0e3a033e7cf1629cfcfbc13b6cde6f9a5",
+  "dependency_reviews_sha256": "52e78bdc20d8b480850bda206c723377f923861ded6542436f95b9d8d2d6743d",
   "fixed_identities": {
     "common_assets": {
       "chat_template.jinja": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
@@ -1144,13 +1131,13 @@
     }
   },
   "gate_version": 2,
-  "lock_sha256": "f26e7504e980c5a62fdcb1bd2ed1d9726da09c839cb9f251412b4d4145fbd59f",
+  "lock_sha256": "2e0b2af61d754edd0c7211193f5a68f07cf57455666ed5912c992560bdf55d3c",
   "no_upload": "NO_UPLOAD",
   "operator_approval": {
     "decision": "PENDING_REVIEW",
     "digest": null,
     "signer": null
   },
-  "package_rows_sha256": "91a9293c167cb9204b81ced5d67d2c221a7b577efbad7404d2171952f90038ea",
-  "pyproject_sha256": "d321bfae5af886eb9ef0fc2fd3696c425c77c5c247353957e05317ab1efb43d0"
+  "package_rows_sha256": "2cef0e549b75bfa966213d09e0a55d9b09bf2c4f49dae0df759fbb4f97d068da",
+  "pyproject_sha256": "00dbde83ac503f0ce91d74b3da9fb2f6010d827efedd62831b276e3abeb28687"
 }

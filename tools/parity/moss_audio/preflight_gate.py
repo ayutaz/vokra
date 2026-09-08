@@ -25,8 +25,8 @@ GATE_VERSION = 2
 # separate patched project only after the owner-approved API smoke bridge.
 UNVERIFIED_TRANSFORMERS_PIN = "transformers==5.5.0"
 PATCHED_TRANSFORMERS_MINIMUM = (5, 10, 0)
-LOCK_SHA256 = "f26e7504e980c5a62fdcb1bd2ed1d9726da09c839cb9f251412b4d4145fbd59f"
-PYPROJECT_SHA256 = "d321bfae5af886eb9ef0fc2fd3696c425c77c5c247353957e05317ab1efb43d0"
+LOCK_SHA256 = "2e0b2af61d754edd0c7211193f5a68f07cf57455666ed5912c992560bdf55d3c"
+PYPROJECT_SHA256 = "00dbde83ac503f0ce91d74b3da9fb2f6010d827efedd62831b276e3abeb28687"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 REVIEW_SENTINELS = {

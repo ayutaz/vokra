@@ -11,6 +11,12 @@ decode call the official model and processor entry points.
 Both checkpoints exceed the repository's local artifact threshold. Run only
 through ``scripts/publish/vast-ai/run-moss-audio-validation.sh``. The script
 never downloads, uploads or publishes and refuses network fallback.
+
+The official model is intentionally loaded with the ordinary CPU
+`from_pretrained` path and explicitly sets `low_cpu_mem_usage=False`. This
+disables Transformers' optional Accelerate-backed path, but requires a
+128-GB-class Linux x86_64 VAST host because the full FP32 weights and
+temporary allocations are resident during loading.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ PROCESSING_SOURCE_SHA256 = (
 REFERENCE_AUDIO_SHA256 = (
     "241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
 )
+MIN_REFERENCE_MEMORY_KIB = 120_000_000
 SAMPLE_RATE = 16_000
 SCHEMA = "vokra-moss-audio-reference-v1"
 DEFAULT_PROMPT = "Describe this audio."
@@ -180,6 +187,35 @@ def cpu_flags() -> str:
             if re.match(r"^(flags|features)\s*:", line, flags=re.IGNORECASE):
                 return line.split(":", 1)[1].strip()
     return "unknown"
+
+
+def require_high_memory_vast_host() -> None:
+    """Refuse ordinary FP32 loading outside the explicitly sized VAST host."""
+    if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
+        die("ordinary FP32 model loading requires VOKRA_PUBLISH_ON_VAST=1")
+    if platform.system() != "Linux":
+        die("ordinary FP32 model loading requires a Linux VAST host")
+    if platform.machine() != "x86_64":
+        die("ordinary FP32 model loading requires an x86_64 VAST host")
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.is_file():
+        die("ordinary FP32 model loading requires /proc/meminfo")
+    total_kib = None
+    for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0] == "MemTotal:":
+            try:
+                total_kib = int(fields[1])
+            except ValueError:
+                pass
+            break
+    if total_kib is None:
+        die("could not read MemTotal for ordinary FP32 loading")
+    if total_kib < MIN_REFERENCE_MEMORY_KIB:
+        die(
+            f"MemTotal={total_kib} KiB is below the 128-GB-class guard required "
+            "for ordinary FP32 loading"
+        )
 
 
 def require_empty_output(path: Path) -> None:
@@ -374,6 +410,7 @@ def main(argv: list[str] | None = None) -> None:
         die(f"missing reference audio: {audio_path}")
     if sha256_file(audio_path) != REFERENCE_AUDIO_SHA256:
         die(f"reference audio SHA-256 drift: {sha256_file(audio_path)}")
+    require_high_memory_vast_host()
     require_empty_output(output)
     source_inventory = require_source_identity(source_dir)
     config_json = require_model_identity(model_dir, variant)
@@ -459,7 +496,7 @@ def main(argv: list[str] | None = None) -> None:
         str(model_dir),
         local_files_only=True,
         dtype=torch.float32,
-        low_cpu_mem_usage=True,
+        low_cpu_mem_usage=False,
         attn_implementation="eager",
     )
     model.eval()

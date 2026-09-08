@@ -167,6 +167,8 @@ require_vast_host() {
     || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
   [[ "$(uname -s)" == "Linux" ]] \
     || die "MOSS-Audio checkpoint work is VAST/Linux-only; refusing $(uname -s)"
+  [[ "$(uname -m)" == "x86_64" ]] \
+    || die "MOSS-Audio checkpoint work requires Linux x86_64; refusing $(uname -m)"
   [[ -r /proc/meminfo ]] || die "/proc/meminfo is unavailable"
   mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
   [[ "$mem_kib" =~ ^[0-9]+$ ]] || die "could not read MemTotal"
@@ -545,10 +547,10 @@ run_self_test() {
   if require_exact_cpu_sentinel "$log" moss-audio-4b-instruct >/dev/null 2>&1; then failed=1; fi
 
   local fake_root="$temporary/fake-checkout" fake_home="$temporary/fake-home"
-  local fake_bin="$fake_home/.local/bin" trace="$temporary/trace.log"
+  local fake_bin="$fake_home/.local/bin" fake_host_bin="$temporary/fake-host-bin" trace="$temporary/trace.log"
   local fake_scratch="$temporary/scratch" fake_work="$fake_root/work" rc real_uv
   real_uv="$(command -v uv)"
-  mkdir -p "$fake_root/tools/parity/moss_audio" "$fake_bin"
+  mkdir -p "$fake_root/tools/parity/moss_audio" "$fake_bin" "$fake_host_bin"
   cp "$PARITY_PROJECT/uv.lock" "$fake_root/tools/parity/moss_audio/uv.lock"
   cp "$PARITY_PROJECT/pyproject.toml" "$fake_root/tools/parity/moss_audio/pyproject.toml"
   cp "$PREFLIGHT_GATE" "$fake_root/tools/parity/moss_audio/preflight_gate.py"
@@ -561,6 +563,15 @@ printf 'uv %s\n' "$*" >> "${MOSS_AUDIO_TRACE:?}"
 exec "${MOSS_AUDIO_REAL_UV:?}" "$@"
 EOF
   chmod +x "$fake_bin/uv"
+  cat > "$fake_host_bin/uname" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -s) printf 'Linux\n' ;;
+  -m) printf 'aarch64\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$fake_host_bin/uname"
   git -C "$fake_root" init -q
   git -C "$fake_root" config user.email self-test@example.invalid
   git -C "$fake_root" config user.name self-test
@@ -568,7 +579,7 @@ EOF
   git -C "$fake_root" commit -qm baseline
   printf 'dirty checkout must not outrank the gate\n' > "$fake_root/dirty.txt"
   set +e
-  HOME="$fake_home" PATH="$fake_bin:$PATH" MOSS_AUDIO_TRACE="$trace" \
+  HOME="$fake_home" PATH="$fake_host_bin:$fake_bin:$PATH" MOSS_AUDIO_TRACE="$trace" \
     MOSS_AUDIO_REAL_UV="$real_uv" VOKRA_ROOT="$fake_root" \
     VOKRA_SCRATCH="$fake_scratch" VOKRA_PUBLISH_ON_VAST=1 \
     bash "$fake_root/run-worker.sh" --variant 4b --work-dir "$fake_work" \

@@ -23,6 +23,12 @@ are all hashed. A missing import, source path outside the official checkout,
 revision/shape drift, non-FP32 CPU reference, or modified sidecar aborts
 loudly.
 
+The reference dumper uses ordinary CPU `from_pretrained` with
+`low_cpu_mem_usage=False`, so it disables Transformers' optional Accelerate
+path and has no Accelerate dependency. This is deliberately a high-memory
+route: both the dumper and VAST worker require Linux x86_64 and refuse hosts
+below 120,000,000 KiB (128-GB class) before any model loading.
+
 The VAST worker runs the dependency-free `preflight_gate.py` against the exact
 project/lock bytes before checking host capacity, checkout cleanliness, tokens,
 scratch paths, synchronization, or downloads. The checked-in manifest is
