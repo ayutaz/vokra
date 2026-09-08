@@ -16,6 +16,7 @@ TRANSFORMERS_REPOSITORY="https://github.com/huggingface/transformers"
 TRANSFORMERS_TAG="v4.45.0"
 TRANSFORMERS_REVISION="2ef31dec1676249d26044a8aa8abe33dbecf0d10"
 INSPECTOR="tools/parity/qwen2_audio_7b_instruct_inspect.py"
+SOURCE_LICENSE_AUDITOR="tools/parity/qwen2_audio_source_license_audit.py"
 UV_CMD=(uv run --frozen --project tools/parity --python 3.12 python)
 MIN_VAST_MEM_KIB=$((128 * 1024 * 1024))
 MIN_FREE_DISK_KIB=$((60 * 1024 * 1024))
@@ -24,12 +25,15 @@ usage() {
   cat <<'EOF'
 Usage:
   run-qwen2-audio-7b-instruct-inspection.sh --expected-head HEX40 --approval-evidence ABSOLUTE_FILE --approval-sha256 HEX64 [--work-dir <tmpfs-dir>]
+  run-qwen2-audio-7b-instruct-inspection.sh --source-license-audit --expected-head HEX40 [--work-dir <tmpfs-dir>]
   run-qwen2-audio-7b-instruct-inspection.sh --self-test
 
 The real path is VAST-only: Linux x86_64, clean checkout, 128 GiB RAM, and
 tmpfs storage are required. It snapshots the exact five-shard Qwen2-Audio
 release, official Qwen source, and Transformers v4.45.0 commit. The result is
 always fail-closed: no conversion, runtime, parity, upload, or publication.
+The source-license-audit path uses only official GitHub API metadata and exits
+with SOURCE_LICENSE_UNKNOWN_BLOCKER before any source or model acquisition.
 EOF
 }
 
@@ -54,17 +58,38 @@ canonicalize_github_remote() {
   printf 'https://github.com/%s\n' "$path"
 }
 
+validate_work_dir_path() {
+  local checkout_root="$1" candidate="$2" parent cursor canonical_parent
+  [[ "$candidate" == /* && "$candidate" != *"//"* && "$candidate" != */./* && "$candidate" != */../* && "$candidate" != */. && "$candidate" != */.. ]] || return 1
+  [[ ! -e "$candidate" && ! -L "$candidate" ]] || return 1
+  parent="$(dirname "$candidate")"
+  [[ -d "$parent" && ! -L "$parent" ]] || return 1
+  cursor="$parent"
+  while [[ "$cursor" != "/" ]]; do
+    [[ ! -L "$cursor" ]] || return 1
+    cursor="$(dirname "$cursor")"
+  done
+  canonical_parent="$(cd "$parent" && pwd -P)" || return 1
+  [[ "$canonical_parent/$(basename "$candidate")" == "$candidate" ]] || return 1
+  case "$candidate/" in
+    "$checkout_root/"*) return 1 ;;
+  esac
+  case "$checkout_root/" in
+    "$candidate/"*) return 1 ;;
+  esac
+}
+
 run_self_test() {
   local script_path="${BASH_SOURCE[0]}" repo_root fail=0 cases=0 required status
   repo_root="$(cd "$(dirname "$script_path")/../../.." && pwd)"
-  [[ -f "$repo_root/$INSPECTOR" ]] || die "inspection oracle is missing"
+  [[ -f "$repo_root/$INSPECTOR" && -f "$repo_root/$SOURCE_LICENSE_AUDITOR" ]] || die "inspection oracle/source-license auditor is missing"
   cases=$((cases + 1))
   for required in \
     "$UPSTREAM_REPOSITORY" "$UPSTREAM_REVISION" "$SOURCE_REPOSITORY" \
     "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" \
-    "$TRANSFORMERS_REVISION" "$INSPECTOR" "SHARD_COUNT" "safe_open" \
+    "$TRANSFORMERS_REVISION" "$INSPECTOR" "$SOURCE_LICENSE_AUDITOR" "SHARD_COUNT" "safe_open" \
     "server-tree" "resolved_revision" "RepoFile" "model_info" "demo/web_demo_audio.py" "audio_frontend" "decoder_configuration" "SOURCE_LICENSE_UNKNOWN_BLOCKER" "MAX_HEADER_BYTES" "evidence_stage" "INSPECTION_ONLY" "weights_only=True" "NOT_IMPLEMENTED_FAIL_CLOSED" \
-    "UNSUPPORTED" "BLOCKED_BY_CPU" "NO_UPLOAD" "MIN_VAST_MEM_KIB" "gate-self-test" "BLOCKED_INSPECTION_ONLY" \
+    "UNSUPPORTED" "BLOCKED_BY_CPU" "NO_UPLOAD" "MIN_VAST_MEM_KIB" "gate-self-test" "BLOCKED_INSPECTION_ONLY" "source-license-audit" "SOURCE_LICENSE_UNKNOWN_BLOCKER" \
     "MIN_FREE_DISK_KIB"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
       echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: missing contract: $required" >&2
@@ -85,7 +110,8 @@ run_self_test() {
     'cargo fmt --all -- --check' 'cargo build --locked --release -p vokra-cli' \
     'uv run --frozen --project tools/parity --python 3.12' \
     'snapshot_download' 'allow_patterns=["*"]' 'list_repo_tree' \
-    'git clone --no-tags --filter=blob:none' 'CARGO_BUILD_JOBS'; do
+    'git clone --no-tags --filter=blob:none' 'CARGO_BUILD_JOBS' 'GitHub API metadata' 'validate_work_dir_path' \
+    '--expected-head' '--validate-evidence' 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: missing VAST gate: $required" >&2
       fail=1
@@ -108,6 +134,14 @@ run_self_test() {
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: stdlib approval gate" >&2
     fail=1
   fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$SOURCE_LICENSE_AUDITOR" --self-test >/dev/null; then
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: source-license auditor" >&2
+    fail=1
+  fi
+  if grep -En 'GH_TOKEN|GITHUB_TOKEN|Authorization' "$repo_root/$SOURCE_LICENSE_AUDITOR" >/dev/null; then
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: ambient GitHub credential use found" >&2
+    fail=1
+  fi
   local gate_line uname_line work_line snapshot_line
   gate_line="$(grep -n '^marker=' "$script_path" | cut -d: -f1)"
   uname_line="$(grep -n 'uname -s' "$script_path" | tail -n1 | cut -d: -f1)"
@@ -120,6 +154,31 @@ run_self_test() {
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: terminal gate ordering drift" >&2
     fail=1
   fi
+  local audit_line clone_line
+  audit_line="$(grep -n '\$SOURCE_LICENSE_AUDITOR.*--output' "$script_path" | tail -n1 | cut -d: -f1)"
+  clone_line="$(grep -n 'git clone --no-tags --filter=blob:none' "$script_path" | tail -n1 | cut -d: -f1)"
+  if [[ ! "$audit_line" =~ ^[0-9]+$ || ! "$clone_line" =~ ^[0-9]+$ || "$audit_line" -ge "$clone_line" ]]; then
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: source-license audit must precede source clone" >&2
+    fail=1
+  fi
+  local fixture_parent fixture_target
+  fixture_parent="$(mktemp -d /private/tmp/vokra-qwen2-audio-audit-self-test.XXXXXX)"
+  fixture_target="$fixture_parent/target"
+  if ! validate_work_dir_path "$repo_root" "$fixture_target"; then
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: valid work-dir rejected" >&2
+    fail=1
+  fi
+  if validate_work_dir_path "$repo_root" "$fixture_parent/../target" || validate_work_dir_path "$repo_root" "$fixture_parent/./target"; then
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: unsafe work-dir accepted" >&2
+    fail=1
+  fi
+  ln -s /private/tmp "$fixture_parent/symlink-parent"
+  if validate_work_dir_path "$repo_root" "$fixture_parent/symlink-parent/target"; then
+    echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: symlink work-dir accepted" >&2
+    fail=1
+  fi
+  unlink "$fixture_parent/symlink-parent"
+  rmdir "$fixture_parent"
   cases=$((cases + 1))
   local remote canonical
   for remote in \
@@ -188,6 +247,7 @@ run_self_test() {
 
 work_dir="/dev/shm/vokra-qwen2-audio-7b-inspection"
 self_test=0
+source_license_audit=0
 expected_head=''
 approval_evidence=''
 approval_sha256=''
@@ -199,6 +259,9 @@ while [[ $# -gt 0 ]]; do
     --self-test)
       (( self_test == 0 )) || die "duplicate --self-test"
       self_test=1; shift ;;
+    --source-license-audit)
+      (( source_license_audit == 0 )) || die "duplicate --source-license-audit"
+      source_license_audit=1; shift ;;
     --expected-head)
       (( seen_expected == 0 )) || die "duplicate --expected-head"
       [[ $# -ge 2 ]] || die "--expected-head requires HEX40"
@@ -219,10 +282,48 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ $self_test -eq 1 ]]; then
-  [[ "$work_dir" == "/dev/shm/vokra-qwen2-audio-7b-inspection" && $seen_expected -eq 0 && $seen_approval -eq 0 && $seen_sha -eq 0 ]] \
+  [[ "$work_dir" == "/dev/shm/vokra-qwen2-audio-7b-inspection" && $source_license_audit -eq 0 && $seen_expected -eq 0 && $seen_approval -eq 0 && $seen_sha -eq 0 ]] \
     || die "--self-test accepts no other arguments"
   run_self_test
   exit $?
+fi
+
+if [[ $source_license_audit -eq 1 ]]; then
+  (( seen_expected == 1 && seen_approval == 0 && seen_sha == 0 )) || die "--source-license-audit requires --expected-head and accepts no approval arguments"
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be lowercase HEX40"
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+  cd "$repo_root"
+  [[ -f Cargo.toml && -d crates/vokra-convert ]] || die "not a Vokra checkout"
+  actual_head="$(git rev-parse HEAD)" || die "could not inspect checkout HEAD"
+  [[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD does not match --expected-head"
+  [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "worktree is not clean"
+  [[ "$(uname -s)" == "Linux" ]] || die "source-license audit requires Linux/VAST"
+  [[ "$(uname -m)" == "x86_64" ]] || die "source-license audit requires Linux x86_64"
+  [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
+  validate_work_dir_path "$repo_root" "$work_dir" || die "work-dir must be absent, canonical, real, and disjoint from checkout"
+  work_parent="$(dirname "$work_dir")"
+  [[ "$(findmnt -T "$work_parent" -no FSTYPE 2>/dev/null || true)" == "tmpfs" ]] || die "work-dir parent must be tmpfs/RAM-disk"
+  mkdir "$work_dir"
+  work_dir="$(cd "$work_dir" && pwd)"
+  audit_output="$work_dir/source-license-history.json"
+  set +e
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$SOURCE_LICENSE_AUDITOR" --output "$audit_output" --expected-head "$expected_head" 2>&1 | tee "$work_dir/source-license-audit.log"
+  audit_status="${PIPESTATUS[0]}"
+  set -e
+  [[ "$audit_status" == "2" ]] || die "source-license auditor returned unexpected exit $audit_status"
+  [[ -f "$audit_output" ]] || die "source-license auditor did not write evidence"
+  set +e
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$SOURCE_LICENSE_AUDITOR" --validate-evidence "$audit_output" --expected-head "$expected_head" 2>&1 | tee -a "$work_dir/source-license-audit.log"
+  evidence_status="${PIPESTATUS[0]}"
+  set -e
+  [[ "$evidence_status" == "0" ]] || die "source-license evidence is incomplete or invalid"
+  grep -Fq '"status": "SOURCE_LICENSE_UNKNOWN_BLOCKER"' "$audit_output" || die "factual source-license blocker missing"
+  grep -Fq '"history_scope": "complete_public_branch_history_from_fixed_tip"' "$audit_output" || die "complete history evidence missing"
+  grep -Fq '"default_branch_tip_matches_fixed": true' "$audit_output" || die "current default branch evidence missing"
+  grep -Fq '"source_license": "UNKNOWN"' "$audit_output" || die "factual source-license decision missing"
+  grep -Fq '"publication": "NO_UPLOAD"' "$audit_output" || die "NO_UPLOAD disposition missing"
+  echo "Qwen2-Audio source-license audit BLOCKED; evidence=$audit_output" >&2
+  exit 2
 fi
 
 (( seen_expected == 1 && seen_approval == 1 && seen_sha == 1 )) || die "expected-head, approval-evidence and approval-sha256 are required"
