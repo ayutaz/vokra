@@ -1102,6 +1102,75 @@ authorization, and publication remains a separate repository-scoped action.
 VAST instance `50122020` (`ralomi-m5-robustness`) is outside this validation
 wave and must not be reused, stopped or destroyed by this plan.
 
+#### 2026-09-08 exact-head VAST execution result
+
+Disposable VAST instance `50225437` completed the approved model-free wave.
+The first allocation, `50224998`, never started because of a provider GPU
+error and was destroyed before the replacement was rented. The implementation
+head advanced through five separately reviewed corrective commits discovered
+by the real gates: `67ddd289` documents the OWSM frontend dimensions,
+`89a7ea2b` distinguishes the locked `2.7.1` distribution from the
+`2.7.1+cpu` Qwen3-TTS runtime evidence, `3432d3b9` satisfies strict OWSM
+Clippy without changing its calculation, `d7076a1b` uses the supported
+Transformers 5.10.4 CLAP processor keyword, and `1f381cbd` authenticates the
+three legitimate zero-byte Python package markers in that exact Transformers
+wheel while rejecting every empty-set or digest drift.
+
+The complete workspace/all-target/all-feature test at Rust implementation
+head `d7076a1bc96f5238f272006c37ccb0e2080a0000` completed **305 suites,
+8,053 passed, zero failed and 100 ignored**. Its recovered log is
+`/private/tmp/vokra-vast-evidence-1f381cbd/workspace/full-test/workspace-test.log`
+with SHA-256
+`cf2b7c1ff870aadd9c8a193fe5bae43345942c1ca98291335a6ba9ce5f4f747a`.
+The final implementation commit `1f381cbd37ec66c6bc62b632b924e76ca5eccbf6`
+changes only `tools/parity/clap/clap_model_free_audit.py` after that run; the
+recorded Rust/Cargo tree-equivalence proof has SHA-256
+`87f6bbe592413d3804edff0352a82919e6de2103263e89d59ab2d2f58040a549`.
+At the final implementation head, workspace/all-target/all-feature Clippy with
+warnings denied, `cargo deny check licenses advisories bans`, `cargo audit`,
+the zero-dependency gate and format check all passed. Their principal log
+SHA-256 values are respectively
+`b449c24b55ab19ca62970851425252bbacc40958048517f9a10637e0ebb9b336`,
+`3cf80bdc410003f3945b935691d26b6bf07dcdf648ce80b242447c564ff1991d`,
+`01ed47e312cde79358be1d34373ecce034e5a4250154f6d07f8f0b7da08f4127`
+and `2427e36fecf960b1eaf88be6bb50b9bad42626db3c75eb839edac76a33af7332`.
+Cargo-deny emitted only the pre-existing unmatched `libfuzzer-sys` exception
+warning.
+
+All final model-free evidence is bound to clean implementation head
+`1f381cbd37ec66c6bc62b632b924e76ca5eccbf6`:
+
+- Qwen3-TTS all four variants passed config/processor/API evidence validation
+  without checkpoint files. Evidence SHA-256:
+  `6dd10154b96982f6260426d07f23f1887f9c96633b3a0480cd6db0021a8e4215`.
+- MOSS-Audio 4B and 8B both passed the official model-free API route without
+  checkpoint loading. Evidence SHA-256:
+  `64f2dcb500e63497525f4453ce65fa8d5db725125a9ead7689f60cc8b266cd72`.
+- CLAP passed the locked-wheel binding, source-only processor route,
+  source-derived expected manifest and full model-free audit. Its dependency
+  inventory remains `PENDING_OWNER_REVIEW`; no checkpoint, model forward or
+  parity was claimed. Evidence SHA-256:
+  `57d9c84b1963acf9f12f8a179c37ccc9edfa6f1bd6666ae0dd7e15cc8c12386b`.
+- Dia completed its authenticated official-source-only contract. Evidence
+  SHA-256:
+  `8e1480522fb650f679963d5805923514609feb8f8fd050a87a93d19faa60ff43`.
+- MOSS Audio Tokenizer Nano authenticated the non-weight file identities,
+  server-only weight identity and meta-device shape route, then honestly
+  remained `BLOCKED`/`INSPECTION_ONLY` for unresolved dependency, approval and
+  real-runtime parity. Evidence SHA-256:
+  `50a383853b4f7ca7bf26341c742fb6b415f3c0da36888f39e6f8b1508f2abd7d`.
+- OWSM stopped before source or checkpoint acquisition at the intended
+  `BLOCKED_UNREVIEWED_TRANSITIVE` dependency/license gate. Evidence SHA-256:
+  `797cc1565ac7d1d8a6c9045538dfedcd549cc578a0e2ba9c9482b7209d945ef2`.
+
+No checkpoint weight was acquired, loaded or executed in this wave, no model
+ran on the maintainer Mac, and no upload occurred. Instance `50225437` and its
+storage were destroyed after evidence recovery; a follow-up instance query
+returned null identity, status and cost fields. These results close the named
+model-free actions but do not decrement the 63 unresolved public rows: the
+remaining real-weight, dependency/license, native-runtime, publication and
+Apple-hardware gates remain explicit below.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
@@ -1154,15 +1223,15 @@ authorization.
 | `vokra/mms-1b-all-base` | Define a dedicated CC-BY-NC backbone-plus-language-adapter contract and vocabulary; the 8.9-MB adapter is not the 1B model. |
 | `vokra/moss-audio-4b-instruct` | Authenticate its distinct topology and add a strict binder; the broad `moss_tts` tag is insufficient. |
 | `vokra/moss-audio-8b-instruct` | Authenticate its distinct topology and add a strict binder; the broad `moss_tts` tag is insufficient. |
-| `vokra/moss-audio-tokenizer-nano` | The source converter/runtime distinguish the canonical Nano identity and 374-tensor manifest and reject Full/v2 restamping at `24be04a8`; the VAST and Apple workers now share the authenticated nine-value contract at `735ce172`. Complete dependency/license approval, the first real VAST measurement, reviewed bounds, artifact regeneration and the final Apple run. |
+| `vokra/moss-audio-tokenizer-nano` | The source converter/runtime distinguish the canonical Nano identity and 374-tensor manifest and reject Full/v2 restamping at `24be04a8`; the VAST and Apple workers share the authenticated nine-value contract at `735ce172`. The exact-head model-free VAST inspection now authenticates the non-weight bytes, server-only weight identity and meta-device shapes at `1f381cbd`, while remaining intentionally blocked. Complete dependency/license approval, the first real-weight VAST measurement, reviewed bounds, artifact regeneration and the final Apple run. |
 | `vokra/moss-tts-local-transformer-v1.5` | The source runtime already requires the exact 48-kHz stereo, 32-codebook tokenizer-v2 companion and rejects Full/Nano. Run real GGUF CPU/reference parity on VAST, then Apple evidence. |
 | `vokra/nsnet2` | Resolve live MIT provenance against the audited upstream CC-BY-4.0 identity before replacement. |
 | `vokra/qwen3-asr-0.6b` | The converter/runtime source already binds the three execution metadata keys and all five authenticated tokenizer/chat/generation sidecars. Regenerate the public GGUF on VAST and rerun independent CPU plus Apple evidence. |
 | `vokra/qwen3-asr-1.7b` | The converter/runtime source already binds the three execution metadata keys and all five authenticated tokenizer/chat/generation sidecars. Regenerate the public GGUF on VAST and rerun independent CPU plus Apple evidence. |
-| `vokra/qwen3-tts-12hz-0.6b-base` | The exact four-variant topology/sidecar/companion contract and strict model-free API-evidence handoff are complete through `a6b12556`. Run the all-variant model-free smoke on VAST; real conversion/parity still requires the separate license/operator authorization, then artifact regeneration and Apple evidence. |
-| `vokra/qwen3-tts-12hz-0.6b-customvoice` | The exact four-variant topology/sidecar/companion contract and strict model-free API-evidence handoff are complete through `a6b12556`. Run the all-variant model-free smoke on VAST; real conversion/parity still requires the separate license/operator authorization, then artifact regeneration and Apple evidence. |
-| `vokra/qwen3-tts-12hz-1.7b-base` | The exact four-variant topology/sidecar/companion contract and strict model-free API-evidence handoff are complete through `a6b12556`. Run the all-variant model-free smoke on VAST; real conversion/parity still requires the separate license/operator authorization, then artifact regeneration and Apple evidence. |
-| `vokra/qwen3-tts-12hz-1.7b-customvoice` | The exact four-variant topology/sidecar/companion contract and strict model-free API-evidence handoff are complete through `a6b12556`. Run the all-variant model-free smoke on VAST; real conversion/parity still requires the separate license/operator authorization, then artifact regeneration and Apple evidence. |
+| `vokra/qwen3-tts-12hz-0.6b-base` | The exact four-variant topology/sidecar/companion contract and strict API-evidence handoff are complete, and the all-variant model-free VAST smoke is green at `1f381cbd`. Real conversion/parity still requires separate license/operator authorization, then artifact regeneration and Apple evidence. |
+| `vokra/qwen3-tts-12hz-0.6b-customvoice` | The exact four-variant topology/sidecar/companion contract and strict API-evidence handoff are complete, and the all-variant model-free VAST smoke is green at `1f381cbd`. Real conversion/parity still requires separate license/operator authorization, then artifact regeneration and Apple evidence. |
+| `vokra/qwen3-tts-12hz-1.7b-base` | The exact four-variant topology/sidecar/companion contract and strict API-evidence handoff are complete, and the all-variant model-free VAST smoke is green at `1f381cbd`. Real conversion/parity still requires separate license/operator authorization, then artifact regeneration and Apple evidence. |
+| `vokra/qwen3-tts-12hz-1.7b-customvoice` | The exact four-variant topology/sidecar/companion contract and strict API-evidence handoff are complete, and the all-variant model-free VAST smoke is green at `1f381cbd`. Real conversion/parity still requires separate license/operator authorization, then artifact regeneration and Apple evidence. |
 | `vokra/reazonspeech-nemo-v2` | The source converter/runtime already bind the exact 965-tensor checkpoint, embedded 3,000-piece vocabulary and runtime axes. Regenerate the stale public artifact and repeat exact-head VAST plus Apple evidence. |
 | `vokra/rmvpe` | Resolve the absence of an upstream license for the exact source repository; the live MIT stamp cannot be accepted by inference. |
 | `vokra/sbv2-v2-jp-extra-base` | Exact JP-Extra model/repository/AGPL identity and retired-label rejection are landed at `0ee8359c`; strict tensor renames already exist and active parity/helper filenames are canonical at `ef6bf10a`. Close production Japanese G2P, then regenerate and verify the artifact on VAST before the Apple run. |
@@ -1188,14 +1257,14 @@ portable no-fallback Apple worker for the final Scaleway batch.
 | `vokra/chatterbox-nano-v1` | Full generation, conditioning, watermark and PCM-output path. |
 | `vokra/chatterbox-turbo-v1` | Full generation, conditioning, watermark and PCM-output path. |
 | `vokra/chattts` | Fixed DVAE/GFSQ/decoder/Vocos axes are exact at `d2cca9f5`, but no tensor binder is implied. Complete the native GPT+Embed+DVAE+decoder+Vocos composite plus AGPL/source, CC-BY-NC weight, dependency and personality/voice policy closure. |
-| `vokra/clap-htsat-fused` | The fixed Transformers 5.10.4 source tree, source-only processor preprocessing and meta expected manifest are authenticated at `7b77fa4b`. Complete owner review of the dedicated dependency/license closure, authenticate the real state-dict role/shape manifest, implement the fused binder/forward and run real parity. |
+| `vokra/clap-htsat-fused` | The fixed Transformers 5.10.4 wheel/tree, source-only processor preprocessing, source-derived expected manifest and model-free audit are green at `1f381cbd`. Complete owner review of the dedicated dependency/license closure, authenticate the real state-dict role/shape manifest, implement the fused binder/forward and run real parity. |
 | `vokra/cosyvoice2-0.5b` | HiFT checkpoint/source/config, strict converter/binder and guarded VAST CPU-parity runner are complete at source level. Run the model-free closure phase, obtain explicit owner approval before any HiFT model/reference execution, then obtain exact-head VAST CPU parity. LLM/Flow are component-bound but the full flow/codec/vocoder composition remains incomplete; the official broad closure still imports forbidden `soxr`. |
-| `vokra/dia-1.6b` | The strict 343-tensor binder, exact 44.1-kHz/nine-codebook DAC connection and authenticated model-free official-source contract are complete through `fd8d782f`. Finish the real main-model/DAC bind and same-execution delayed-AR/DAC parity plus dependency review. |
+| `vokra/dia-1.6b` | The strict 343-tensor binder, exact 44.1-kHz/nine-codebook DAC connection and authenticated model-free official-source contract are complete; the source-only VAST contract is green at `1f381cbd`. Finish the real main-model/DAC bind and same-execution delayed-AR/DAC parity plus dependency review. |
 | `vokra/firered-asr-aed-l` | The PCM/fbank/CMVN/encoder/token seam, exact external CMVN/dictionary authentication, token rendering and artifact/worker sidecar binding are complete through `d9bcd5a6`. Finish released-weight AED decoding/beam execution, dependency/config closure and independent real parity. |
 | `vokra/fun-cosyvoice3-0.5b-2512` | Find an exact allowed route around the current `soxr` closure, then finish the full composite. |
 | `vokra/irodori-tts-500m-v3` | Find an authenticated Python-3.12 reference route that avoids the current `librosa -> soxr` dependency; more RAM or Scaleway cannot solve this. |
 | `vokra/kyutai-stt-2.6b-en` | The dedicated `dep_q=0` text decoder and strict 323-BF16-tensor binder already exist. Complete Mimi/tokenizer/streaming ASR, review and register a fixed parity bound from the first VAST measurement, then run Apple CPU/Metal. |
-| `vokra/owsm-v4-medium-1b` | The strict mel/GlobalMVN tensors and native source-authenticated PCM frontend are complete at `ebb93ee1`, with a dedicated frozen ESPnet reference project. Complete the pending transitive dependency/license review, generate independent VAST frontend evidence, then finish the writer, subsampling/E-Branchformer/decoder, joint CTC-attention search and token semantics. |
+| `vokra/owsm-v4-medium-1b` | The strict mel/GlobalMVN tensors and native source-authenticated PCM frontend are complete through `3432d3b9`, with a dedicated frozen ESPnet reference project. The exact-head VAST source-only worker correctly stops before source/checkpoint acquisition at `BLOCKED_UNREVIEWED_TRANSITIVE`. Complete that transitive dependency/license review, generate independent VAST frontend evidence, then finish the writer, subsampling/E-Branchformer/decoder, joint CTC-attention search and token semantics. |
 | `vokra/sortformer-diar-4spk-v1` | The inspection gate correctly records CC-BY-NC-4.0 research-only at `1f31deda`. Resolve mutable NeMo build provenance, bind the real archive/config and complete native FastConformer/Transformer/arrival-order diarization plus independent parity. |
 | `vokra/vibevoice-1.5b` | Close dependency approvals, complete native runtime and execute the real workers. |
 | `vokra/voxcpm-0.5b` | Add the missing AudioVAE/tokenizer companions and full native composite. |
