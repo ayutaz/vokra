@@ -158,9 +158,47 @@ must explicitly review pyopenjtalk, loguru, and the authenticated upstream
 AGPL execution before treating a generated contract as releasable. Publication
 remains `NO_UPLOAD`.
 
-The Rust production route is intentionally not present until this sidecar has
-an independently reviewed complete hash. The existing generic
-`from_piper_g2p` route is not an authentication boundary for JP-Extra.
+The Rust runtime now exposes the narrow production seam
+`SbV2JapaneseG2pProvider` + `SbV2JapaneseG2pContract`. The caller must supply
+an isolated, first-party native provider and the exact symbol vector from an
+independently reviewed sidecar; the runtime validates the source identities
+and the `112`-symbol digest, then performs only structural checks on provider
+output (non-empty normalized text, tone range/length, and `word2ph` coverage)
+before mapping phones to SBV2 ids. Provider algorithm semantics and parity
+remain unproven. It does not embed or recreate the upstream table, execute
+Python/eSpeak/pyopenjtalk, or accept the generic
+`from_piper_g2p` id mapping as a JP-Extra authentication boundary.
+
+This is deliberately a fail-closed integration boundary: until a separately
+audited native provider is wired by the integration layer, end-to-end Japanese
+production G2P remains unavailable. The contract API itself is model-free and
+safe to exercise with test providers.
+
+The existing `integrations/vokra-piper-g2p` bridge cannot be used as that
+provider. The pinned `piper-plus-g2p` Japanese source exposes
+`phonemize_with_prosody` as `(Vec<String>, Vec<Option<ProsodyInfo>>)` and its
+implementation inserts Piper framing/prosody tokens (`^`, `$`, `?`, `_`, `[`,
+`]`, `#`) and PUA encodings. Its `ProsodyInfo` fields are A1/A2/A3 accent-label
+values, not SBV2's binary raw tone vector, and the API has no `word2ph` output.
+The bridge consequently exposes Piper voice ids/prosody/language ids only.
+Converting those values into SBV2 phones, tones, or boundaries would be an
+unverified semantic guess, so no adapter is provided.
+
+The direct MIT `jpreprocess 0.9.1` route was checked as well. Its public
+`JPreprocess::extract_fullcontext()` returns `Vec<jlabel::Label>`; the labels
+carry the current phone and A/F accent context, but not the original symbol
+kind/count needed by JP-Extra. The upstream SBV2 maintainer documents this
+boundary explicitly: full-context extraction loses punctuation/symbol
+distinctions, while the production algorithm combines an accent-aware
+phoneme path with a separate frontend path that preserves those symbols. The
+official explanation also defines SBV2 tones as a separate low/high `0/1`
+value per emitted phone. Therefore `jpreprocess` labels alone cannot prove
+the authenticated `phones + raw_tones + word2ph` tuple; deriving it would be
+an unverified clean-room guess. `jpreprocess::run_frontend()` exposes only
+serialized NJD features and its own API documents that original strings are
+dropped, so it does not supply the missing production tuple either.
+
+Primary source: the [immutable upstream Japanese-processing explanation](https://github.com/litagin02/Style-Bert-VITS2/blob/ef93f388fc1ddf0dc0f598126c1964923f1df94f/docs/Style-Bert-VITS2_en.md#japanese-language-processing).
 
 The fixed upstream `text/symbols.py` contract authenticates the exact schema
 values required by `validate_contract.py`: `language_id_map` is
@@ -177,6 +215,16 @@ mapper from `text/__init__.py` to convert raw JP tones into the global `6..7` ba
 no English frontend is loaded. These source dimensions do not establish
 real-weight compatibility: the strict GGUF weight binder and numerical parity
 gate remain separate.
+
+The runtime's ordered-symbol digest is
+`7e1f4566310f17b6196d4b51300c7e760d5c5fe60ef4dd49e0b7e1d477740960`. It is the
+SHA-256 of the exact `phoneme_symbols` array in the exact-head VAST evidence
+recorded in `docs/handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md`,
+using the canonical byte stream `UTF-8(symbol) || 0x00` for every symbol in
+source order. The archive
+`/private/tmp/vokra-pre-scaleway-final-evidence-86efd5cf.tar.gz` is retained
+only as the recovered path from that maintainer session. This digest
+authenticates the table without copying the AGPL source table into the runtime.
 
 ## Primary-source identity checks
 
@@ -205,6 +253,5 @@ G2P tones. Therefore JP raw tones `0/1` become global SBV2 tone ids `6/7`
 The official implementation is AGPL-3.0. It may be executed only as an
 independent reference in the VAST parity worker; no AGPL source may be copied
 into Apache-licensed runtime, converter, or integration code. No model weights
-are acquired or executed locally. Until the VAST-generated contract and
-committed fixtures exist, `sbv2-v2-jp-extra-base` Japanese production G2P is
-intentionally unavailable and callers must receive an explicit failure.
+are acquired or executed locally. Callers without the audited sidecar and a
+wired native provider must receive an explicit failure.

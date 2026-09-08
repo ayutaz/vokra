@@ -40,8 +40,46 @@
 use vokra_core::VokraError;
 use vokra_models::sbv2::{
     Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SBV2_EN_TONE_START, SBV2_JA_TONE_START,
-    SbV2Phonemizer,
+    SBV2_JP_EXTRA_N_VOCAB, SbV2JapaneseG2pContract, SbV2JapaneseG2pSource, SbV2Phonemizer,
 };
+
+fn jp_extra_symbols() -> Vec<String> {
+    (0..SBV2_JP_EXTRA_N_VOCAB)
+        .map(|id| {
+            if id == 0 {
+                "_".to_owned()
+            } else {
+                format!("symbol-{id}")
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn authenticated_native_contract_rejects_unverified_symbol_table() {
+    let error =
+        SbV2JapaneseG2pContract::new(SbV2JapaneseG2pSource::authenticated(), jp_extra_symbols())
+            .expect_err("synthetic symbol table must not pass authentication");
+    match error {
+        VokraError::InvalidArgument(message) => assert!(message.contains("digest mismatch")),
+        other => panic!("unverified symbol table must fail as an argument error: {other:?}"),
+    }
+}
+
+#[test]
+fn authenticated_native_contract_rejects_identity_dimensions_and_duplicates() {
+    let mut source = SbV2JapaneseG2pSource::authenticated();
+    source.hf_revision = "stale".to_owned();
+    assert!(SbV2JapaneseG2pContract::new(source, jp_extra_symbols()).is_err());
+
+    let mut symbols = jp_extra_symbols();
+    symbols.pop();
+    assert!(SbV2JapaneseG2pContract::new(SbV2JapaneseG2pSource::authenticated(), symbols).is_err());
+
+    let mut symbols = jp_extra_symbols();
+    symbols[2] = symbols[1].clone();
+    assert!(SbV2JapaneseG2pContract::new(SbV2JapaneseG2pSource::authenticated(), symbols).is_err());
+}
 
 #[test]
 fn ja_phonemize_produces_ids() {

@@ -54,8 +54,28 @@ projection that consumes the `(A1, A2, A3)` triples is parity-checked against
 onnxruntime with a non-zero prosody buffer
 (`tests/parity/piper_plus_v7_prosody/`).
 
-Japanese and English are exact; `zh` currently falls back to a passthrough
-phonemizer (no bundled loanword dict here).
+Japanese and English are exact for the piper-plus voice contract; this does
+not imply compatibility with SBV2 JP-Extra. The SBV2 contract requires its own
+phone vocabulary, binary raw tones, and `word2ph`, none of which this bridge
+exposes. `zh` currently falls back to a passthrough phonemizer (no bundled
+loanword dict here).
+
+### SBV2 JP-Extra boundary
+
+This bridge is intentionally not an SBV2 Japanese provider. The pinned
+`piper-plus-g2p` Japanese API returns IPA-like tokens plus A1/A2/A3
+`ProsodyInfo`; it does not return SBV2's `word2ph`, and its inserted framing and
+accent markers have different semantics. Do not infer SBV2 tones or boundaries
+from those values. SBV2 production G2P requires a separately audited native
+implementation that satisfies `SbV2JapaneseG2pProvider` in the runtime crate.
+
+Using the pinned `jpreprocess 0.9.1` dependency directly does not close this
+gap either: `extract_fullcontext()` exposes OpenJTalk labels and A/F context,
+but the upstream SBV2 specification requires combining that accent path with
+a separate symbol-preserving frontend to produce `phones`, binary tones, and
+`word2ph`. `jpreprocess::run_frontend()` returns serialized NJD features and
+documents that original strings are dropped. No conversion from these labels
+to SBV2 fields is therefore implemented or inferred here.
 
 **SBV2 v2 ZH G2P route (2026-08-09 owner decision, WP-21 doc sweep 2026-08-10)**:
 `vokra-models/src/sbv2` now has the `with_zh_g2p` seam for reusing this bridge
