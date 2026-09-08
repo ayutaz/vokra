@@ -22,6 +22,7 @@ import math
 import os
 import platform
 import sys
+import stat
 import tempfile
 import tomllib
 import zipfile
@@ -102,6 +103,22 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def cli_path(raw: str, label: str) -> Path:
+    """Preserve and validate raw CLI spelling before Path normalization."""
+
+    if not isinstance(raw, str) or not raw.startswith("/") or raw == "/" or "\x00" in raw:
+        raise RuntimeError(f"{label} path must be absolute, non-root, and NUL-free")
+    parts = raw.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        raise RuntimeError(f"{label} path contains unsafe lexical components")
+    current = Path("/")
+    for part in parts[1:]:
+        current /= part
+        if current.is_symlink() and current != Path("/var"):
+            raise RuntimeError(f"{label} path has symlink ancestry: {current}")
+    return Path(raw)
+
+
 def git_blob_sha1(data: bytes) -> str:
     header = f"blob {len(data)}\0".encode("ascii")
     return hashlib.sha1(header + data).hexdigest()
@@ -169,10 +186,11 @@ def validate_dependency_inventory(path: Path) -> dict[str, Any]:
 def write_atomic_no_replace(path: Path, text: str) -> None:
     """Create a regular output file without ever replacing an existing path."""
 
+    require_output_parent(path)
     if path.exists() or path.is_symlink():
         raise RuntimeError(f"output already exists: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
+    temporary_identity: tuple[int, int] | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -182,16 +200,66 @@ def write_atomic_no_replace(path: Path, text: str) -> None:
             delete=False,
         ) as stream:
             temporary = Path(stream.name)
+            temporary_stat = os.stat(temporary, follow_symlinks=False)
+            if not stat.S_ISREG(temporary_stat.st_mode):
+                raise RuntimeError(f"temporary output is not regular: {temporary}")
+            temporary_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
+        verify_temporary_identity(temporary, temporary_identity)
         try:
             os.link(temporary, path)
         except FileExistsError as exc:
             raise RuntimeError(f"output already exists: {path}") from exc
+        verify_file_identity(path, temporary_identity, "published output")
     finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        cleanup_temporary(temporary, temporary_identity)
+
+
+def verify_temporary_identity(path: Path, expected: tuple[int, int] | None) -> None:
+    verify_file_identity(path, expected, "temporary output")
+
+
+def verify_file_identity(path: Path, expected: tuple[int, int] | None, label: str) -> None:
+    if expected is None or not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError(f"{label} identity cannot be verified safely")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        current = os.fstat(fd)
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != expected:
+            raise RuntimeError(f"{label} was replaced or is not regular: {path}")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def cleanup_temporary(path: Path | None, expected: tuple[int, int] | None) -> None:
+    if path is None or expected is None:
+        return
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == expected:
+            path.unlink()
+    except OSError:
+        pass
+
+
+def require_output_parent(path: Path) -> None:
+    """Require an existing, regular, symlink-free output ancestry."""
+
+    if not path.is_absolute() or path.parent == Path("/") or any(part in {"", ".", ".."} for part in path.parts[1:]):
+        raise RuntimeError(f"output path must be absolute and dot-free: {path}")
+    current = path.parent
+    while True:
+        if current.is_symlink() and current != Path("/var"):
+            raise RuntimeError(f"output path has symlink ancestry: {current}")
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    if not path.parent.is_dir() or path.parent.is_symlink():
+        raise RuntimeError(f"output parent must be an existing regular directory: {path.parent}")
 
 
 def require_no_weights(directory: Path) -> None:
@@ -1642,6 +1710,51 @@ def self_test() -> None:
         else:
             raise AssertionError("output replacement was accepted")
         assert output.read_text(encoding="utf-8") == '{"status":"first"}\n'
+        for raw in ("relative", "/", "/tmp/./audit.json", "/tmp/../audit.json", "/tmp/audit\x00.json"):
+            try:
+                cli_path(raw, "output")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unsafe raw output path was accepted")
+        owned_temp = root / "owned.tmp"
+        owned_temp.write_text("owner", encoding="utf-8")
+        owned_stat = os.stat(owned_temp, follow_symlinks=False)
+        owned_temp.unlink()
+        owned_temp.write_text("replacement", encoding="utf-8")
+        try:
+            verify_temporary_identity(owned_temp, (owned_stat.st_dev, owned_stat.st_ino))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("replacement temporary was accepted")
+        cleanup_temporary(owned_temp, (owned_stat.st_dev, owned_stat.st_ino))
+        assert owned_temp.exists(), "cleanup removed a replacement temporary"
+        published = root / "published.json"
+        published.write_text("owner", encoding="utf-8")
+        published_stat = os.stat(published, follow_symlinks=False)
+        published.unlink()
+        published.write_text("replacement", encoding="utf-8")
+        try:
+            verify_file_identity(
+                published,
+                (published_stat.st_dev, published_stat.st_ino),
+                "published output",
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("replacement published output was accepted")
+        real_output_dir = root / "real-output"
+        real_output_dir.mkdir()
+        linked_output_dir = root / "linked-output"
+        linked_output_dir.symlink_to(real_output_dir, target_is_directory=True)
+        try:
+            write_atomic_no_replace(linked_output_dir / "unsafe.json", "{}\n")
+        except RuntimeError as exc:
+            assert "symlink ancestry" in str(exc)
+        else:
+            raise AssertionError("symlinked output ancestry was accepted")
 
         config = root / "config.json"
         preprocessor = root / "preprocessor_config.json"
@@ -1698,16 +1811,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--wheel-binding-only", action="store_true")
-    parser.add_argument("--project", type=Path)
-    parser.add_argument("--lock", type=Path)
-    parser.add_argument("--config", type=Path)
-    parser.add_argument("--preprocessor", type=Path)
-    parser.add_argument("--remote-identity", type=Path)
-    parser.add_argument("--transformers-wheel", type=Path)
-    parser.add_argument("--source-reference", type=Path)
-    parser.add_argument("--expected-manifest", type=Path)
-    parser.add_argument("--dependency-inventory", type=Path)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--project")
+    parser.add_argument("--lock")
+    parser.add_argument("--config")
+    parser.add_argument("--preprocessor")
+    parser.add_argument("--remote-identity")
+    parser.add_argument("--transformers-wheel")
+    parser.add_argument("--source-reference")
+    parser.add_argument("--expected-manifest")
+    parser.add_argument("--dependency-inventory")
+    parser.add_argument("--output")
     args = parser.parse_args()
     if args.self_test:
         if args.wheel_binding_only or any(value is not None for value in (args.project, args.lock, args.config, args.preprocessor, args.remote_identity, args.transformers_wheel, args.source_reference, args.expected_manifest, args.dependency_inventory, args.output)):
@@ -1718,8 +1831,11 @@ def main() -> int:
     if args.wheel_binding_only:
         if args.project is None or args.lock is None or args.transformers_wheel is None or any(value is not None for value in (args.config, args.preprocessor, args.remote_identity, args.source_reference, args.expected_manifest, args.dependency_inventory, args.output)):
             parser.error("--wheel-binding-only requires --project, --lock, and --transformers-wheel only")
-        dependencies = audit_dependencies(args.project, args.lock)
-        binding = validate_transformers_wheel(args.transformers_wheel, dependencies["transformers_wheel_artifact"])
+        project = cli_path(args.project, "project")
+        lock = cli_path(args.lock, "lock")
+        wheel = cli_path(args.transformers_wheel, "transformers wheel")
+        dependencies = audit_dependencies(project, lock)
+        binding = validate_transformers_wheel(wheel, dependencies["transformers_wheel_artifact"])
         tree = binding["python_source_tree"]
         print(f"CLAP_WHEEL_BINDING {binding['status']}: count={tree['member_count']} digest={tree['canonical_tree_sha256']}")
         return 0
@@ -1731,20 +1847,30 @@ def main() -> int:
     assert args.transformers_wheel is not None
     assert args.source_reference is not None
     assert args.expected_manifest is not None
+    project = cli_path(args.project, "project")
+    lock = cli_path(args.lock, "lock")
+    config = cli_path(args.config, "config")
+    preprocessor = cli_path(args.preprocessor, "preprocessor")
+    remote_identity = cli_path(args.remote_identity, "remote identity")
+    wheel = cli_path(args.transformers_wheel, "transformers wheel")
+    source_reference = cli_path(args.source_reference, "source reference")
+    expected_manifest = cli_path(args.expected_manifest, "expected manifest")
+    output = cli_path(args.output, "output")
+    dependency_inventory = cli_path(args.dependency_inventory, "dependency inventory") if args.dependency_inventory else None
     evidence = audit(
-        project_path=args.project,
-        lock_path=args.lock,
-        config_path=args.config,
-        preprocessor_path=args.preprocessor,
-        remote_identity_path=args.remote_identity,
-        transformers_wheel_path=args.transformers_wheel,
-        source_reference_path=args.source_reference,
-        expected_manifest_path=args.expected_manifest,
-        dependency_inventory_path=args.dependency_inventory,
+        project_path=project,
+        lock_path=lock,
+        config_path=config,
+        preprocessor_path=preprocessor,
+        remote_identity_path=remote_identity,
+        transformers_wheel_path=wheel,
+        source_reference_path=source_reference,
+        expected_manifest_path=expected_manifest,
+        dependency_inventory_path=dependency_inventory,
     )
     try:
         write_atomic_no_replace(
-            args.output, json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+            output, json.dumps(evidence, indent=2, sort_keys=True) + "\n"
         )
     except RuntimeError as exc:
         parser.error(str(exc))

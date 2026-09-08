@@ -33,7 +33,9 @@
 //! HTSAT + text encoder forward will land behind
 //! `VokraError::UnsupportedOp`).
 
-use std::path::Path;
+use std::io::Write;
+use std::path::{Component, Path};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
@@ -57,6 +59,7 @@ pub const UPSTREAM_HF: &str = "laion/clap-htsat-fused";
 /// change while the repository slug remains stable.
 pub const UPSTREAM_REVISION: &str = "365dea6ef167def6676140ed93bbc43f84dabb28";
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
@@ -75,6 +78,7 @@ pub fn convert_clap_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<ClapReport, ConvertError> {
+    validate_conversion_paths(input, output)?;
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -126,8 +130,198 @@ pub fn convert_clap_file(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    write_no_clobber(output, &out_bytes)?;
     Ok(report)
+}
+
+fn validate_conversion_paths(input: &Path, output: &Path) -> Result<(), ConvertError> {
+    for (path, label) in [(input, "input"), (output, "output")] {
+        reject_unsafe_path(path, label)?;
+    }
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "CLAP input must be a regular non-symlink file: {}",
+            input.display()
+        )));
+    }
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "CLAP output already exists or is symlinked: {}",
+            output.display()
+        )));
+    }
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Usage("CLAP output must have a parent directory".to_owned())
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "CLAP output parent must be an existing regular non-symlink directory: {}",
+            parent.display()
+        )));
+    }
+    Ok(())
+}
+
+fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
+    if path
+        .to_string_lossy()
+        .split('/')
+        .any(|part| matches!(part, "." | ".."))
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(ConvertError::Usage(format!(
+            "CLAP {label} must not contain lexical dot components"
+        )));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(ConvertError::Io)?
+            .join(path)
+    };
+    let mut current = absolute.as_path();
+    loop {
+        if current.is_symlink() && current != Path::new("/var") {
+            return Err(ConvertError::Usage(format!(
+                "CLAP {label} has symlink ancestry: {}",
+                current.display()
+            )));
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
+}
+
+fn write_no_clobber(destination: &Path, payload: &[u8]) -> Result<(), ConvertError> {
+    validate_publish_path(destination)?;
+    ensure_file_identity_support()?;
+    let parent = destination.parent().expect("validated output parent");
+    let name = destination
+        .file_name()
+        .ok_or_else(|| ConvertError::Usage("CLAP output must name a file".to_owned()))?;
+    for _ in 0..32 {
+        let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".{}.tmp-{}-{}",
+            name.to_string_lossy(),
+            std::process::id(),
+            sequence
+        ));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(ConvertError::Io(error)),
+        };
+        if let Err(error) = file.write_all(payload).and_then(|_| file.sync_all()) {
+            remove_owned_temp(&file, &temporary);
+            return Err(ConvertError::Io(error));
+        }
+        if let Err(error) = validate_publish_path(destination) {
+            remove_owned_temp(&file, &temporary);
+            return Err(error);
+        }
+        if !same_file_identity(&file, &temporary) {
+            remove_owned_temp(&file, &temporary);
+            return Err(ConvertError::Usage(
+                "CLAP temporary output was replaced before publication".to_owned(),
+            ));
+        }
+        if let Err(error) = std::fs::hard_link(&temporary, destination) {
+            remove_owned_temp(&file, &temporary);
+            return Err(ConvertError::Io(error));
+        }
+        if !same_file_identity(&file, destination) {
+            // Do not remove the destination: it may be an unowned file
+            // linked by a replacement race in the verify→link window.
+            remove_owned_temp(&file, &temporary);
+            return Err(ConvertError::Usage(
+                "CLAP published output failed regular-file identity verification".to_owned(),
+            ));
+        }
+        // The final link is already published.  Cleanup is best-effort and
+        // identity-guarded so a replacement temp is never unlinked and a
+        // cleanup failure cannot turn a successful publication into Err.
+        remove_owned_temp(&file, &temporary);
+        return Ok(());
+    }
+    Err(ConvertError::Usage(
+        "CLAP exhausted temporary output candidates".to_owned(),
+    ))
+}
+
+fn ensure_file_identity_support() -> Result<(), ConvertError> {
+    #[cfg(unix)]
+    {
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        Err(ConvertError::Usage(
+            "CLAP atomic publication requires a supported file identity API on this platform"
+                .to_owned(),
+        ))
+    }
+}
+
+fn same_file_identity(file: &std::fs::File, path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let Ok(expected) = file.metadata() else {
+            return false;
+        };
+        let Ok(actual) = std::fs::symlink_metadata(path) else {
+            return false;
+        };
+        actual.file_type().is_file()
+            && expected.dev() == actual.dev()
+            && expected.ino() == actual.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, path);
+        false
+    }
+}
+
+fn remove_owned_temp(file: &std::fs::File, path: &Path) {
+    if same_file_identity(file, path) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn validate_publish_path(destination: &Path) -> Result<(), ConvertError> {
+    reject_unsafe_path(destination, "output")?;
+    let parent = destination.parent().ok_or_else(|| {
+        ConvertError::Usage("CLAP output must have a parent directory".to_owned())
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "CLAP output parent must be an existing regular non-symlink directory: {}",
+            parent.display()
+        )));
+    }
+    if destination.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "CLAP output must not be a symlink: {}",
+            destination.display()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -237,5 +431,77 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some(DEFAULT_LICENSE_SPDX)
         );
+    }
+
+    #[test]
+    fn output_publication_is_no_clobber_and_path_bounded() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-clap-output-boundary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("root");
+        let output = root.join("artifact.gguf");
+        write_no_clobber(&output, b"first").expect("first publication");
+        let second = write_no_clobber(&output, b"second").expect_err("clobber accepted");
+        assert!(matches!(
+            second,
+            ConvertError::Io(ref error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(
+            std::fs::read(&output).expect("published artifact"),
+            b"first"
+        );
+        let dotted = root.join(".").join("dotted.gguf");
+        assert!(validate_conversion_paths(&output, &dotted).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let real = root.join("real");
+            let linked = root.join("linked");
+            std::fs::create_dir(&real).expect("real");
+            symlink(&real, &linked).expect("symlink");
+            assert!(validate_publish_path(&linked.join("artifact.gguf")).is_err());
+        }
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_temp_is_not_removed_by_owned_cleanup() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-clap-temp-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("root");
+        let temporary = root.join("artifact.tmp");
+        std::fs::write(&temporary, b"owned").expect("temporary");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&temporary)
+            .expect("open owned temp");
+        let destination = root.join("destination");
+        std::fs::hard_link(&temporary, &destination).expect("publish owned temp");
+        assert!(same_file_identity(&file, &destination));
+        std::fs::remove_file(&destination).expect("remove destination");
+        std::fs::write(&destination, b"destination replacement").expect("destination replacement");
+        assert!(!same_file_identity(&file, &destination));
+        std::fs::remove_file(&temporary).expect("remove owned path");
+        std::fs::write(&temporary, b"replacement").expect("replacement");
+        assert!(!same_file_identity(&file, &temporary));
+        remove_owned_temp(&file, &temporary);
+        assert_eq!(
+            std::fs::read(&temporary).expect("replacement remains"),
+            b"replacement"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 }

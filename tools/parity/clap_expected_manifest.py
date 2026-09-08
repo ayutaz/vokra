@@ -15,6 +15,7 @@ import importlib.util
 import inspect
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -28,24 +29,91 @@ REVISION = "365dea6ef167def6676140ed93bbc43f84dabb28"
 SCHEMA = "vokra-clap-htsat-fused-source-derived-expected-manifest-v1"
 
 
+def cli_path(raw: str, label: str) -> Path:
+    """Preserve and validate raw CLI spelling before Path normalization."""
+
+    if not isinstance(raw, str) or not raw.startswith("/") or raw == "/" or "\x00" in raw:
+        raise RuntimeError(f"{label} path must be absolute, non-root, and NUL-free")
+    parts = raw.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        raise RuntimeError(f"{label} path contains unsafe lexical components")
+    current = Path("/")
+    for part in parts[1:]:
+        current /= part
+        if current.is_symlink() and current != Path("/var"):
+            raise RuntimeError(f"{label} path has symlink ancestry: {current}")
+    return Path(raw)
+
+
 def write_atomic_no_replace(path: Path, text: str) -> None:
+    require_output_parent(path)
     if path.exists() or path.is_symlink():
         raise RuntimeError(f"output already exists: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
+    temporary_identity: tuple[int, int] | None = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
             temporary = Path(stream.name)
+            temporary_stat = os.stat(temporary, follow_symlinks=False)
+            if not stat.S_ISREG(temporary_stat.st_mode):
+                raise RuntimeError(f"temporary output is not regular: {temporary}")
+            temporary_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
+        verify_temporary_identity(temporary, temporary_identity)
         try:
             os.link(temporary, path)
         except FileExistsError as exc:
             raise RuntimeError(f"output already exists: {path}") from exc
+        verify_file_identity(path, temporary_identity, "published output")
     finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        cleanup_temporary(temporary, temporary_identity)
+
+
+def verify_temporary_identity(path: Path, expected: tuple[int, int] | None) -> None:
+    verify_file_identity(path, expected, "temporary output")
+
+
+def verify_file_identity(path: Path, expected: tuple[int, int] | None, label: str) -> None:
+    if expected is None or not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError(f"{label} identity cannot be verified safely")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        current = os.fstat(fd)
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != expected:
+            raise RuntimeError(f"{label} was replaced or is not regular: {path}")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def cleanup_temporary(path: Path | None, expected: tuple[int, int] | None) -> None:
+    if path is None or expected is None:
+        return
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == expected:
+            path.unlink()
+    except OSError:
+        pass
+
+
+def require_output_parent(path: Path) -> None:
+    """Require an existing, regular, symlink-free output ancestry."""
+
+    if not path.is_absolute() or path.parent == Path("/") or any(part in {"", ".", ".."} for part in path.parts[1:]):
+        raise RuntimeError(f"output path must be absolute and dot-free: {path}")
+    current = path.parent
+    while True:
+        if current.is_symlink() and current != Path("/var"):
+            raise RuntimeError(f"output path has symlink ancestry: {current}")
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    if not path.parent.is_dir() or path.parent.is_symlink():
+        raise RuntimeError(f"output parent must be an existing regular directory: {path.parent}")
 
 
 def load_manifest_helpers() -> tuple[Any, Any]:
@@ -134,6 +202,26 @@ def self_test() -> None:
         assert token in source
     assert "model." + "forward(" not in source
     with tempfile.TemporaryDirectory(prefix="vokra-clap-manifest-") as temporary:
+        for raw in ("relative", "/", "/tmp/./manifest.json", "/tmp/../manifest.json", "/tmp/manifest\x00.json"):
+            try:
+                cli_path(raw, "output")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unsafe raw output path was accepted")
+        owned_temp = Path(temporary) / "owned.tmp"
+        owned_temp.write_text("owner", encoding="utf-8")
+        owned_stat = os.stat(owned_temp, follow_symlinks=False)
+        owned_temp.unlink()
+        owned_temp.write_text("replacement", encoding="utf-8")
+        try:
+            verify_temporary_identity(owned_temp, (owned_stat.st_dev, owned_stat.st_ino))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("replacement temporary was accepted")
+        cleanup_temporary(owned_temp, (owned_stat.st_dev, owned_stat.st_ino))
+        assert owned_temp.exists(), "cleanup removed a replacement temporary"
         output = Path(temporary) / "manifest.json"
         write_atomic_no_replace(output, "{}\n")
         try:
@@ -142,13 +230,23 @@ def self_test() -> None:
             assert "already exists" in str(exc)
         else:
             raise AssertionError("expected manifest replacement was accepted")
+        real_output_dir = Path(temporary) / "real-output"
+        real_output_dir.mkdir()
+        linked_output_dir = Path(temporary) / "linked-output"
+        linked_output_dir.symlink_to(real_output_dir, target_is_directory=True)
+        try:
+            write_atomic_no_replace(linked_output_dir / "unsafe.json", "{}\n")
+        except RuntimeError as exc:
+            assert "symlink ancestry" in str(exc)
+        else:
+            raise AssertionError("symlinked output ancestry was accepted")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
-    parser.add_argument("--config", type=Path)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--config")
+    parser.add_argument("--output")
     args = parser.parse_args()
     if args.self_test:
         if args.config is not None or args.output is not None:
@@ -158,8 +256,10 @@ def main() -> int:
         return 0
     if args.config is None or args.output is None:
         parser.error("normal runs require --config and --output")
-    run(args.config, args.output)
-    print(f"CLAP_SOURCE_DERIVED_EXPECTED_MANIFEST: {args.output}")
+    config = cli_path(args.config, "config")
+    output = cli_path(args.output, "output")
+    run(config, output)
+    print(f"CLAP_SOURCE_DERIVED_EXPECTED_MANIFEST: {output}")
     return 0
 
 
