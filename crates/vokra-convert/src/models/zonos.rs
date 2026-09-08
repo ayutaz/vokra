@@ -18,8 +18,11 @@ pub(crate) const ARCH: &str = "zonos";
 /// Product model name retained for shared dispatch.
 #[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub(crate) const NAME: &str = "zonos-v0.1";
+/// Explicit refusal shared by the public dispatchers and this converter.
+pub(crate) const INSPECTION_ONLY_REASON: &str = "Zonos-v0.1 conversion is INSPECTION_ONLY: VAST must authenticate the fixed upstream revision, complete 246-tensor manifest, official transformer topology, 44.1-kHz nine-codebook DAC composition, and authenticated conditioning packet before a GGUF may be emitted";
 
 /// Compatibility report retained by the dispatcher's formatting path.
+#[allow(dead_code)] // Retained for the future authenticated conversion path.
 #[derive(Debug, Default)]
 pub(crate) struct ZonosReport {
     /// Always zero while Zonos conversion is inspection-only.
@@ -37,10 +40,9 @@ pub(crate) struct ZonosReport {
 /// the pinned artifact contains the complete transformer contract and the
 /// separately distributed 44.1-kHz, nine-codebook DAC/conditioning
 /// composition.
+#[allow(dead_code)] // Called only by the defensive unreachable dispatch arm.
 pub(crate) fn convert(_bytes: Vec<u8>) -> Result<(GgufBuilder, ZonosReport), ConvertError> {
-    Err(ConvertError::Usage(
-        "Zonos-v0.1 conversion is INSPECTION_ONLY: VAST must authenticate the fixed upstream revision, complete 246-tensor manifest, official transformer topology, 44.1-kHz nine-codebook DAC composition, and authenticated conditioning packet before a GGUF may be emitted".to_owned(),
-    ))
+    Err(ConvertError::Usage(INSPECTION_ONLY_REASON.to_owned()))
 }
 
 #[cfg(test)]

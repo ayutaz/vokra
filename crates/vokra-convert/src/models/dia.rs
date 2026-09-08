@@ -17,8 +17,11 @@ pub(crate) const ARCH: &str = "dia";
 /// Product model name retained for the existing dispatch contract.
 #[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub(crate) const NAME: &str = "dia-1.6b";
+/// Explicit refusal shared by the public dispatchers and this converter.
+pub(crate) const INSPECTION_ONLY_REASON: &str = "Dia-1.6B conversion is INSPECTION_ONLY: VAST must authenticate the fixed six-file HF tree, the 343-tensor safetensors contract, the safe PTH inventory and PTH↔safetensors mapping, and the separate DAC composition before a runtime GGUF can be emitted";
 
 /// Compatibility report retained by the shared dispatcher's formatting path.
+#[allow(dead_code)] // Retained for the future authenticated conversion path.
 #[derive(Debug, Default)]
 pub(crate) struct DiaReport {
     /// Always zero while conversion is inspection-only.
@@ -36,10 +39,9 @@ pub(crate) struct DiaReport {
 ///
 /// The API remains compatible with the shared converter, but no provenance,
 /// axes, license, or output bytes are fabricated here.
+#[allow(dead_code)] // Called only by the defensive unreachable dispatch arm.
 pub(crate) fn convert(_bytes: Vec<u8>) -> Result<(GgufBuilder, DiaReport), ConvertError> {
-    Err(ConvertError::Usage(
-        "Dia-1.6B conversion is INSPECTION_ONLY: VAST must authenticate the fixed six-file HF tree, the 343-tensor safetensors contract, the safe PTH inventory and PTH↔safetensors mapping, and the separate DAC composition before a runtime GGUF can be emitted".to_owned(),
-    ))
+    Err(ConvertError::Usage(INSPECTION_ONLY_REASON.to_owned()))
 }
 
 #[cfg(test)]

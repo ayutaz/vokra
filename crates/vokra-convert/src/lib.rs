@@ -6995,6 +6995,16 @@ pub fn convert_file_licensed(
             models::clap::INSPECTION_ONLY_REASON.to_owned(),
         ));
     }
+    if matches!(model, ModelKind::Dia) {
+        return Err(ConvertError::Usage(
+            models::dia::INSPECTION_ONLY_REASON.to_owned(),
+        ));
+    }
+    if matches!(model, ModelKind::Zonos) {
+        return Err(ConvertError::Usage(
+            models::zonos::INSPECTION_ONLY_REASON.to_owned(),
+        ));
+    }
     if matches!(model, ModelKind::CosyVoice2Hift) {
         return Err(ConvertError::Usage(
             "cosyvoice2-hift requires the exact cosyvoice2.yaml sidecar; use the CLI --config path"
@@ -7392,29 +7402,14 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::Dia => {
-            // SoTA plan Phase 1-4: pass every F32/F16 tensor through verbatim
-            // and stamp the `vokra.dia.*` chunk group from the primary-source
-            // constants transcribed in `models::dia`.
-            let (builder, report) = models::dia::convert(bytes)?;
-            let mut notes = vec![format!(
-                "dia: {} float weights written verbatim, {} non-float skipped",
-                report.written, report.skipped_non_float,
-            )];
-            notes.extend(report.notes.iter().map(|n| format!("dia warning: {n}")));
-            (builder, notes)
+            // Rejected before the shared checkpoint read above. Keep this
+            // arm as a defensive proof against accidental pass-through.
+            unreachable!("Dia routes through the inspection-only guard")
         }
         ModelKind::Zonos => {
-            // SoTA plan Phase 1-5: pass every F32/F16 tensor through verbatim
-            // and stamp the `vokra.zonos.*` chunk group (backbone hparams +
-            // vocab + delay pattern + 7 typed prefix-conditioner descriptors)
-            // from the primary-source constants transcribed in `models::zonos`.
-            let (builder, report) = models::zonos::convert(bytes)?;
-            let mut notes = vec![format!(
-                "zonos: {} float weights written verbatim, {} non-float skipped",
-                report.written, report.skipped_non_float,
-            )];
-            notes.extend(report.notes.iter().map(|n| format!("zonos warning: {n}")));
-            (builder, notes)
+            // Rejected before the shared checkpoint read above. Keep this
+            // arm as a defensive proof against accidental pass-through.
+            unreachable!("Zonos routes through the inspection-only guard")
         }
         ModelKind::KyutaiStt => {
             // Strict decoder-component conversion: accept exactly the pinned
@@ -12072,6 +12067,16 @@ pub fn convert_file_quantized(
             models::clap::INSPECTION_ONLY_REASON.to_owned(),
         ));
     }
+    if matches!(model, ModelKind::Dia) {
+        return Err(ConvertError::Usage(
+            models::dia::INSPECTION_ONLY_REASON.to_owned(),
+        ));
+    }
+    if matches!(model, ModelKind::Zonos) {
+        return Err(ConvertError::Usage(
+            models::zonos::INSPECTION_ONLY_REASON.to_owned(),
+        ));
+    }
     let bytes = std::fs::read(input)?;
 
     let builder = match model {
@@ -13804,7 +13809,10 @@ pub fn convert_voxtral_file_with_adapter_config_quantized(
 /// TTS / codec models.
 ///
 /// The upstream Dia release ships torch `.pth`; run a prepare-checkpoint
-/// script (CSM / DAC pattern) to flatten it to safetensors first.
+/// script (CSM / DAC pattern) to flatten it to safetensors first. The entry
+/// remains a compatibility surface but currently returns `INSPECTION_ONLY`
+/// before reading that input because the authenticated PTH mapping, complete
+/// tensor manifest, and separate DAC composition are still unavailable.
 pub fn convert_dia_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Dia, input, output)
 }
@@ -14370,7 +14378,10 @@ pub fn convert_styletts2_file(input: &Path, output: &Path) -> Result<ConvertSumm
 /// models.
 ///
 /// The upstream Zonos-v0.1-transformer release ships safetensors directly;
-/// no `.pth` prepare step is required (unlike Dia).
+/// no `.pth` prepare step is required (unlike Dia). The entry remains a
+/// compatibility surface but currently returns `INSPECTION_ONLY` before
+/// reading the input because the complete transformer manifest, DAC
+/// composition, and conditioning packet are still unavailable.
 pub fn convert_zonos_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Zonos, input, output)
 }
@@ -15106,6 +15117,76 @@ pub fn restamp_provenance(
             class.as_str()
         )],
     })
+}
+
+#[cfg(test)]
+mod dia_zonos_inspection_only_tests {
+    use super::{ModelKind, convert_file, convert_file_quantized};
+    use std::path::PathBuf;
+
+    fn absent_output(model: &str, suffix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "vokra-{model}-inspection-only-{suffix}-{}-{}.gguf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn dia_and_zonos_dispatch_before_checkpoint_read() {
+        for (model, name) in [(ModelKind::Dia, "dia"), (ModelKind::Zonos, "zonos")] {
+            let input = PathBuf::from(format!(
+                "/private/tmp/vokra-{name}-missing-{}.safetensors",
+                std::process::id()
+            ));
+            let output = absent_output(name, "plain");
+            assert!(!input.exists(), "test input unexpectedly exists: {input:?}");
+            assert!(
+                !output.exists(),
+                "test output unexpectedly exists: {output:?}"
+            );
+
+            let error = convert_file(model, &input, &output)
+                .expect_err("inspection-only model must refuse before reading input")
+                .to_string();
+            assert!(
+                error.contains("INSPECTION_ONLY"),
+                "unexpected error: {error}"
+            );
+            assert!(
+                !error.contains("I/O error"),
+                "guard ran after read: {error}"
+            );
+            assert!(!output.exists(), "inspection-only dispatch created output");
+        }
+    }
+
+    #[test]
+    fn dia_and_zonos_quantized_dispatch_is_also_fail_closed() {
+        for (model, name) in [(ModelKind::Dia, "dia"), (ModelKind::Zonos, "zonos")] {
+            let input = PathBuf::from(format!(
+                "/private/tmp/vokra-{name}-missing-quantized-{}.safetensors",
+                std::process::id()
+            ));
+            let output = absent_output(name, "quantized");
+            let error =
+                convert_file_quantized(model, &input, &output, vokra_core::gguf::GgmlType::Q4K)
+                    .expect_err("quantized inspection-only model must refuse before reading input")
+                    .to_string();
+            assert!(
+                error.contains("INSPECTION_ONLY"),
+                "unexpected error: {error}"
+            );
+            assert!(
+                !error.contains("I/O error"),
+                "guard ran after read: {error}"
+            );
+            assert!(!output.exists(), "inspection-only dispatch created output");
+        }
+    }
 }
 
 #[cfg(test)]
