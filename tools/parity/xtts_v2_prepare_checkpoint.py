@@ -63,15 +63,14 @@ object is a ``{str: Tensor | non_tensor_metadata}`` dict; the
 non-tensor metadata (training statistics, optimizer state) can carry
 arbitrary pickled objects that ``torch.load(weights_only=True)`` refuses.
 
-**Safety posture**: this script attempts ``weights_only=True`` first; if
-the loader raises ``UnpicklingError`` (or any subclass of ``Exception``
-tied to a class-blocklist), it falls back to ``weights_only=False`` with
-a visible warning. The upstream primary source is Coqui's CPML-licensed
-official XTTS-v2 release at ``huggingface.co/coqui/XTTS-v2``; per memory
-``[[feedback-license-signoff-primary-source]]`` the pickle-trust
-boundary is acknowledged at the point of running this offline sidecar
-(the runtime tree never touches pickle — FR-LD-05). Do not run this
-script against unverified .pth files from unknown sources.
+**Safety posture**: this script permits only ``weights_only=True``. If the
+safe loader refuses a bundle (for example because it contains arbitrary
+pickled objects), the bundle is explicitly blocked and no unsafe fallback is
+available. The upstream primary source is Coqui's CPML-licensed official
+XTTS-v2 release at ``huggingface.co/coqui/XTTS-v2``; source approval does not
+turn an unsafe pickle into an accepted input. The runtime tree never touches
+pickle — FR-LD-05. Do not run this script against unverified .pth files from
+unknown sources.
 
 # Redistribution
 
@@ -193,28 +192,22 @@ def _extract_state_dict(raw: Any, sub_name: str) -> dict:
 
 
 def _load_pth(path: Path, sub_name: str) -> Any:
-    """Load a .pth with safe-first strategy.
+    """Load a .pth with the safe tensor-only unpickler.
 
-    Attempts ``weights_only=True`` first (torch >=2.0 safe-unpickler).
-    Coqui's model.pth is a trainer artifact that may embed non-tensor
-    metadata (optimizer state, training step counters) — if the safe
-    loader refuses, fall back to ``weights_only=False`` with a visible
-    warning. The pickle-trust boundary is acknowledged in the module
-    docstring; callers should have verified the upstream source
-    (``coqui/XTTS-v2`` HF repo per §3.1 sign-off) before running.
+    ``weights_only=True`` is mandatory. Coqui trainer artifacts may contain
+    non-tensor metadata that the safe loader refuses; that is a deliberate
+    fail-closed result, not permission to execute arbitrary pickle globals.
     """
     import torch
 
     try:
         return torch.load(str(path), map_location="cpu", weights_only=True)
-    except Exception as safe_err:  # noqa: BLE001 — any refusal triggers fallback
-        print(
-            f"  {sub_name}: weights_only=True refused ({type(safe_err).__name__}: "
-            f"{str(safe_err)[:80]}); falling back to weights_only=False "
-            f"(pickle-trust: upstream = coqui/XTTS-v2, §3.1 sign-off required)",
-            file=sys.stderr,
-        )
-        return torch.load(str(path), map_location="cpu", weights_only=False)
+    except Exception as safe_err:  # noqa: BLE001 — fail closed on any refusal
+        raise RuntimeError(
+            f"{sub_name}: weights_only=True refused ({type(safe_err).__name__}: "
+            f"{str(safe_err)[:160]}); XTTS-v2 bundle is BLOCKED because "
+            "unsafe pickle deserialization is not permitted"
+        ) from safe_err
 
 
 def _partition_and_dedup(sd: dict, seen: dict[int, str], strict: bool):
@@ -359,9 +352,29 @@ def _self_test() -> int:
     creates in-memory dicts that mimic the model/dvae/speakers layouts
     and confirms the merge + prefix + dedup + write path all succeed.
     """
+    import ast
     import tempfile
 
     source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    torch_load_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "load"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+    ]
+    assert torch_load_calls, "safe loader contract has no torch.load call"
+    for call in torch_load_calls:
+        weights_only = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "weights_only"),
+            None,
+        )
+        assert isinstance(weights_only, ast.Constant) and weights_only.value is True, (
+            "every torch.load call must explicitly set weights_only=True"
+        )
     main_source = source[source.index("def main") :]
     assert main_source.index("require_blocked_gate(args.expected_head") < main_source.index("if not input_dir.is_dir()")
     pipeline_source = source[source.index("def _run_pipeline") :]
