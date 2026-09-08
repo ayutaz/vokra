@@ -7,8 +7,8 @@ parity environment and contains a resolver-generated 37-lock-row closure for
 Linux/x86_64 Python 3.12: Torch 2.7.1+cpu from the official PyTorch CPU
 index and the isolated security pin Transformers 5.10.4 from PyPI. CUDA,
 NVIDIA, and Triton distributions are explicitly rejected. The prior
-5.5.0 pin is previous isolated-reference provenance only; no upstream API
-compatibility is claimed.
+5.5.0 pin is previous isolated-reference provenance only; real-weight/API
+runtime compatibility is not claimed.
 The 37 lock rows comprise 36 active installed distributions plus one virtual
 project row; the virtual row is not an installed package.
 Every non-virtual lock row carries resolver URL and SHA-256 metadata. The
@@ -25,13 +25,15 @@ complete tree. The authenticated HF model card reports `cardData.license` as
 `apache-2.0`; this is recorded separately from the absent license file. The
 2026-08-01 owner sign-off by yousan in `docs/license-audit.md:671` records
 Apache-2.0 / Commercial for source and weights; it does not approve the Python
-closure, API route, or parity. The manifest binds authenticated non-weight
+closure or parity. The manifest binds authenticated non-weight
 byte/SHA-256 and canonical Git-blob SHA-1 identities, while the shard remains
 server-identity-only with `content_not_downloaded=true`, server size 87922568,
 LFS payload SHA-256, and LFS pointer Git-blob SHA-1. Transformers 5.10.4 is above the GHSA-xrqw-3rrv-vx5w
-patched minimum of 5.10.0, but no authenticated API smoke has been run. The
-meta-device inspection authenticated quantizer shape `1x768x2` and nine
-decoder taps through `decoder_8`; real-weight/API compatibility and numerical
+patched minimum of 5.10.0. The VAST evidence binds an authenticated
+model-free API/meta-device route using `AutoConfig.from_pretrained` and
+`AutoModel.from_config`; no weight was loaded or executed. The meta-device
+inspection authenticated quantizer shape `1x768x2` and nine decoder taps
+through `decoder_8`; real-weight/API runtime compatibility and numerical
 parity remain unresolved and blocked.
 The fixed source `config.json` also binds the official Transformers mapping
 `AutoConfig -> MossAudioTokenizerConfig` and `AutoModel ->
@@ -75,8 +77,9 @@ plus meta-device
 `AutoModel.from_config` route. Decoder and audio shapes are observed by
 meta-device shape propagation; no safetensors tensor is loaded or executed.
 The output remains `BLOCKED` with source/weight `REVIEWED` (owner sign-off
-`docs/license-audit.md:671`) but unresolved Python closure, API/runtime
-approval, and `NOT_RUN` numerical parity; publication remains `NO_UPLOAD`. The
+`docs/license-audit.md:671`) but unresolved Python closure, real-weight/API
+runtime approval, and `NOT_RUN` numerical parity; publication remains
+`NO_UPLOAD`. The
 evidence also binds the exact clean Vokra checkout `{expected_head, head,
 clean}`. A complete inspection intentionally exits 2 so its evidence must be
 recovered and reviewed before any conversion or parity worker is started.
@@ -87,8 +90,9 @@ including a prior evidence directory, and all blocked/error outcomes remain
 exit status 2.
 
 The owner approval path is `MOSS_AUDIO_TOKENIZER_NANO_LICENSE_APPROVAL`; the
-tracked manifest still cannot be self-approved because Python closure, API,
-runtime, and parity gates remain unresolved.
+tracked manifest still cannot be self-approved because the 37 package-review
+rows, real-weight runtime, and parity gates remain unresolved. The authenticated
+model-free route is evidence only and does not grant execution approval.
 
 The dependency/native-payload audit is a separate no-model VAST phase.  After
 the exact project has been synced on the disposable Linux/x86_64 host, run:
@@ -104,7 +108,7 @@ package license/EULA bytes, and hashes plus ELF `NEEDED` facts for native
 payloads. CUDA/NVIDIA and Triton distributions are explicitly rejected.
 It never requests model files, imports model code, invokes Cargo, converts, or
 publishes.  A blocked report is expected until the owner reviews the package
-and native-payload rows; it is not a Python/API/runtime/parity approval.  The
+and native-payload rows; it is not a real-weight/API runtime/parity approval.  The
 required `--expected-head` is checked against a clean Vokra checkout and is
 bound into the report.  Report creation is atomic and no-replace; a concurrent
 creator cannot be overwritten.

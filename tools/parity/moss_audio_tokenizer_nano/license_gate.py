@@ -42,14 +42,78 @@ MODEL_INFO = {
     "cardData_license": "apache-2.0",
 }
 ROUTE = {
-    "status": "UNRESOLVED",
+    # The VAST source-contract probe authenticated the official config/meta
+    # construction path without acquiring or executing a weight.  This is a
+    # model-free route binding only; the real-weight/API runtime remains
+    # fail-closed below.
+    "status": "AUTHENTICATED_META_SHAPE_PROBE",
     "transformers_version": "5.10.4",
     "previous_isolated_transformers_pin": "5.5.0",
     "isolated_transformers_pin": "transformers==5.10.4",
     "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
     "transformers_security_patched_minimum": "5.10.0",
-    "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
-    "reason": "official Nano dataclass compatibility and API smoke remain unauthenticated; 5.5.0 is retained only as a previous isolated reference pin",
+    "transformers_compatibility_status": "AUTHENTICATED_MODEL_FREE_META_ROUTE",
+    "reason": "official AutoConfig plus meta-device AutoModel route and callable API surface are authenticated; real-weight/API runtime, numerical parity, and owner approval remain blocked",
+    "api_path": {
+        "config": "transformers.AutoConfig.from_pretrained",
+        "model": "transformers.AutoModel.from_config",
+        "trust_remote_code": True,
+        "local_files_only": True,
+    },
+    "api_methods": ["encode", "decode", "forward", "create_decode_session"],
+    "model_type": "moss-audio-tokenizer",
+    "architectures": ["MossAudioTokenizerModel"],
+    "auto_map": {
+        "AutoConfig": "configuration_moss_audio_tokenizer.MossAudioTokenizerConfig",
+        "AutoModel": "modeling_moss_audio_tokenizer.MossAudioTokenizerModel",
+    },
+    "source_files": {
+        "configuration": {
+            "path": "transformers_modules/hf/1f68fe91b6890e3e/configuration_moss_audio_tokenizer.py",
+            "filename": "configuration_moss_audio_tokenizer.py",
+            "sha256": "b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa",
+            "bytes": 19249,
+            "status": "AUTHENTICATED",
+        },
+        "modeling": {
+            "path": "transformers_modules/hf/cfb29bb1bac555fe/modeling_moss_audio_tokenizer.py",
+            "filename": "modeling_moss_audio_tokenizer.py",
+            "sha256": "b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930",
+            "bytes": 138814,
+            "status": "AUTHENTICATED",
+        },
+    },
+    "frames": 2,
+    "quantizers": 16,
+    "taps": [
+        {"name": "quantizer", "shape": "1x768x2"},
+        {"name": "decoder_0", "shape": "1x192x8"},
+        {"name": "decoder_1", "shape": "1x768x8"},
+        {"name": "decoder_2", "shape": "1x384x16"},
+        {"name": "decoder_3", "shape": "1x768x16"},
+        {"name": "decoder_4", "shape": "1x384x32"},
+        {"name": "decoder_5", "shape": "1x768x32"},
+        {"name": "decoder_6", "shape": "1x384x64"},
+        {"name": "decoder_7", "shape": "1x240x64"},
+        {"name": "decoder_8", "shape": "1x1x15360"},
+    ],
+    "audio_shape": "1x2x7680",
+    "weights_loaded": False,
+    "weights_executed": False,
+    "evidence_binding": {
+        "inspection_manifest_sha256": "33c00a78d6e9fecd350feeb760ee36bc17960427bdd7807c598c2f4c325c157b",
+        "inspection_vokra_head": "aaace7e51cb42a2b4ea90319e7dd195d3952ae7b",
+        "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
+        "collection_status": "AUTHENTICATED",
+        "dependency_audit_report_sha256": "5cc7c9dc22331f081af6b50e80244f2805e4006590c4b2b9c828cc68e5dbc5ac",
+        "dependency_audit_status": "BLOCKED",
+        "dependency_audit_package_review_rows": 37,
+        "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+        "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
+        "metal_status": "BLOCKED_BY_CPU",
+        "parity_status": "NOT_RUN",
+        "publication": "NO_UPLOAD",
+    },
 }
 REFERENCE_CONTRACT = {
     "frames": 2, "quantizers": 16, "codebook_size": 1024,
@@ -389,8 +453,8 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path
         blocked("lock/project bytes differ from code-bound closure")
     if manifest.get("lock_sha256") != LOCK_SHA256 or manifest.get("project_sha256") != PROJECT_SHA256:
         blocked("manifest lock/project hashes differ from code-bound closure")
-    if manifest.get("reference_route") != ROUTE or ROUTE["status"] != "REVIEWED":
-        blocked("official Transformers compatibility route is not authenticated")
+    if manifest.get("reference_route") != ROUTE or ROUTE["status"] != "AUTHENTICATED_META_SHAPE_PROBE":
+        blocked("official Transformers model-free route evidence is not authenticated")
     if manifest.get("package_rows") != rows or manifest.get("package_rows_sha256") != canon(rows):
         blocked("canonical lock rows drifted")
 
@@ -511,7 +575,26 @@ def self_test() -> None:
             "demo": {"path": "demo", "role": "upstream", "bytes": 3, "sha256": sha(b"abc"), "status": "AUTHENTICATED", "materialized": True, "content_not_downloaded": False, "server_size": 3, "canonical_git_blob_sha1": "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f", "git_blob_sha1": "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f", "lfs_payload_sha256": None, "lfs_pointer_git_blob_sha1": None},
             "weights": {"path": "weights", "role": "weights", "bytes": None, "sha256": None, "status": "AUTHENTICATED_SERVER_IDENTITY_ONLY", "materialized": False, "content_not_downloaded": True, "server_bytes": 6, "lfs_payload_sha256": "0844df8fee9eeadaa344bc7e1a7ae769602eba35e773c2093c8fb9c3e5ead14e", "canonical_git_blob_sha1": None, "git_blob_sha1": None, "lfs_pointer_git_blob_sha1": "ffffffffffffffffffffffffffffffffffffffff"},
         }
-        ROUTE = {"status": "REVIEWED", "transformers_version": "5.10.4", "reason": "owner evidence"}
+        ROUTE = {
+            "status": "AUTHENTICATED_META_SHAPE_PROBE",
+            "transformers_version": "5.10.4",
+            "weights_loaded": False,
+            "weights_executed": False,
+            "evidence_binding": {
+                "inspection_manifest_sha256": "a" * 64,
+                "inspection_vokra_head": "b" * 40,
+                "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
+                "collection_status": "AUTHENTICATED",
+                "dependency_audit_report_sha256": "c" * 64,
+                "dependency_audit_status": "BLOCKED",
+                "dependency_audit_package_review_rows": 37,
+                "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+                "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
+                "metal_status": "BLOCKED_BY_CPU",
+                "parity_status": "NOT_RUN",
+                "publication": "NO_UPLOAD",
+            },
+        }
         LOCK_SHA256, PROJECT_SHA256 = sha(lock_path.read_bytes()), sha(project_path.read_bytes())
         rows = lock_rows(tomllib.loads(lock_path.read_text()))
         review = [{"name": "demo", "version": "1", "source": {"registry": "https://pypi.org/simple"}, "license": "MIT", "status": "REVIEWED", "native_bundled_review": "reviewed"}, {"name": "demo", "version": "0.1.0", "source": {"virtual": "."}, "license": "project", "status": "REVIEWED", "native_bundled_review": "reviewed"}]
@@ -602,7 +685,7 @@ def self_test() -> None:
             else:
                 raise SystemExit(f"self-test accepted symlink {label}")
             input_path.unlink(); input_path.write_bytes(original)
-        for label, mutate in (("artifact", None), ("scope", lambda m: m["reference_contract"].update(frames=1)), ("model", lambda m: m["model_rows"][0].update(status="UNRESOLVED")), ("model-shard-materialized", lambda m: m["model_rows"][-1].update(materialized=True)), ("model-info", lambda m: m["model_info"].update(sha="a" * 40)), ("license-file", lambda m: m.update(license_file_present=True)), ("license", lambda m: m["license_rows"][0].update(conclusion="TODO")), ("publication", lambda m: m.update(publication_decision="UPLOAD")), ("arbitrary", lambda m: m["approval"].update(digest="a" * 64)), ("package-schema", lambda m: m["package_review_rows"][0].update(extra="drift")), ("manifest-schema", lambda m: m.update(extra=True)), ("approval-schema", lambda m: m["approval"].update(extra=True))):
+        for label, mutate in (("artifact", None), ("scope", lambda m: m["reference_contract"].update(frames=1)), ("route-status", lambda m: m["reference_route"].update(status="UNRESOLVED")), ("route-evidence-hash", lambda m: m["reference_route"]["evidence_binding"].update(inspection_manifest_sha256="a" * 64)), ("route-execution", lambda m: m["reference_route"].update(weights_loaded=True)), ("model", lambda m: m["model_rows"][0].update(status="UNRESOLVED")), ("model-shard-materialized", lambda m: m["model_rows"][-1].update(materialized=True)), ("model-info", lambda m: m["model_info"].update(sha="a" * 40)), ("license-file", lambda m: m.update(license_file_present=True)), ("license", lambda m: m["license_rows"][0].update(conclusion="TODO")), ("publication", lambda m: m.update(publication_decision="UPLOAD")), ("arbitrary", lambda m: m["approval"].update(digest="a" * 64)), ("package-schema", lambda m: m["package_review_rows"][0].update(extra="drift")), ("manifest-schema", lambda m: m.update(extra=True)), ("approval-schema", lambda m: m["approval"].update(extra=True))):
             if label == "artifact":
                 lock_path.write_text('version=1\n[[package]]\nname="demo"\nversion="1"\nsource={registry="https://pypi.org/simple"}\nsdist={url="https://files.pythonhosted.org/demo.tar.gz",hash="sha256:' + "a" * 64 + '"}\n' + virtual, encoding="utf-8")
                 try:

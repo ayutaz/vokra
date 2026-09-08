@@ -440,8 +440,20 @@ run_self_test() {
   fi
   cases=$((cases + 1))
   if grep -Eq '^EXPECTED_(MODEL_SOURCE_PATH|CONFIG_SOURCE_PATH|MODEL_SOURCE_SHA256|CONFIG_SOURCE_SHA256|TORCH_VERSION|TRANSFORMERS_VERSION|QUANTIZER_SHAPE|DECODER_TAP_COUNT|DECODER_TAP_SHAPES)="UNRESOLVED"$' "$script_path" \
-    || ! grep -Fq '"status": "UNRESOLVED"' "$NANO_PROJECT/license_gate.py"; then
-    log 'self-test FAIL: stale identity sentinel or owner/API approval gate drifted'; fail=1
+    || ! grep -Fq '"status": "AUTHENTICATED_META_SHAPE_PROBE"' "$NANO_PROJECT/license_gate.py"; then
+    log 'self-test FAIL: stale identity sentinel or model-free route evidence drifted'; fail=1
+  fi
+  for required in 'AUTHENTICATED_MODEL_FREE_META_ROUTE' 'inspection_manifest_sha256' 'dependency_audit_report_sha256' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY' 'NO_UPLOAD'; do
+    cases=$((cases + 1))
+    if ! grep -Fq -- "$required" "$NANO_PROJECT/license_gate.py"; then
+      log "self-test FAIL: authenticated route/blocked disposition token is missing: $required"
+      fail=1
+    fi
+  done
+  cases=$((cases + 1))
+  if ! grep -Fq '"status": "OWNER_SIGNOFF_REQUIRED"' "$LICENSE_MANIFEST"; then
+    log 'self-test FAIL: owner signoff requirement was weakened in the tracked manifest'
+    fail=1
   fi
   for required in \
     'EXPECTED_MODEL_SOURCE_PATH="transformers_modules/hf/cfb29bb1bac555fe/modeling_moss_audio_tokenizer.py"' \

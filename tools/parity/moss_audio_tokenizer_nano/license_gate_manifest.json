@@ -1099,14 +1099,111 @@
   },
   "license_file_present": false,
   "reference_route": {
-    "status": "UNRESOLVED",
+    "status": "AUTHENTICATED_META_SHAPE_PROBE",
     "transformers_version": "5.10.4",
     "previous_isolated_transformers_pin": "5.5.0",
     "isolated_transformers_pin": "transformers==5.10.4",
     "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
     "transformers_security_patched_minimum": "5.10.0",
-    "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
-    "reason": "official Nano dataclass compatibility and API smoke remain unauthenticated; 5.5.0 is retained only as a previous isolated reference pin"
+    "transformers_compatibility_status": "AUTHENTICATED_MODEL_FREE_META_ROUTE",
+    "reason": "official AutoConfig plus meta-device AutoModel route and callable API surface are authenticated; real-weight/API runtime, numerical parity, and owner approval remain blocked",
+    "api_path": {
+      "config": "transformers.AutoConfig.from_pretrained",
+      "model": "transformers.AutoModel.from_config",
+      "trust_remote_code": true,
+      "local_files_only": true
+    },
+    "api_methods": [
+      "encode",
+      "decode",
+      "forward",
+      "create_decode_session"
+    ],
+    "model_type": "moss-audio-tokenizer",
+    "architectures": [
+      "MossAudioTokenizerModel"
+    ],
+    "auto_map": {
+      "AutoConfig": "configuration_moss_audio_tokenizer.MossAudioTokenizerConfig",
+      "AutoModel": "modeling_moss_audio_tokenizer.MossAudioTokenizerModel"
+    },
+    "source_files": {
+      "configuration": {
+        "path": "transformers_modules/hf/1f68fe91b6890e3e/configuration_moss_audio_tokenizer.py",
+        "filename": "configuration_moss_audio_tokenizer.py",
+        "sha256": "b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa",
+        "bytes": 19249,
+        "status": "AUTHENTICATED"
+      },
+      "modeling": {
+        "path": "transformers_modules/hf/cfb29bb1bac555fe/modeling_moss_audio_tokenizer.py",
+        "filename": "modeling_moss_audio_tokenizer.py",
+        "sha256": "b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930",
+        "bytes": 138814,
+        "status": "AUTHENTICATED"
+      }
+    },
+    "frames": 2,
+    "quantizers": 16,
+    "taps": [
+      {
+        "name": "quantizer",
+        "shape": "1x768x2"
+      },
+      {
+        "name": "decoder_0",
+        "shape": "1x192x8"
+      },
+      {
+        "name": "decoder_1",
+        "shape": "1x768x8"
+      },
+      {
+        "name": "decoder_2",
+        "shape": "1x384x16"
+      },
+      {
+        "name": "decoder_3",
+        "shape": "1x768x16"
+      },
+      {
+        "name": "decoder_4",
+        "shape": "1x384x32"
+      },
+      {
+        "name": "decoder_5",
+        "shape": "1x768x32"
+      },
+      {
+        "name": "decoder_6",
+        "shape": "1x384x64"
+      },
+      {
+        "name": "decoder_7",
+        "shape": "1x240x64"
+      },
+      {
+        "name": "decoder_8",
+        "shape": "1x1x15360"
+      }
+    ],
+    "audio_shape": "1x2x7680",
+    "weights_loaded": false,
+    "weights_executed": false,
+    "evidence_binding": {
+      "inspection_manifest_sha256": "33c00a78d6e9fecd350feeb760ee36bc17960427bdd7807c598c2f4c325c157b",
+      "inspection_vokra_head": "aaace7e51cb42a2b4ea90319e7dd195d3952ae7b",
+      "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
+      "collection_status": "AUTHENTICATED",
+      "dependency_audit_report_sha256": "5cc7c9dc22331f081af6b50e80244f2805e4006590c4b2b9c828cc68e5dbc5ac",
+      "dependency_audit_status": "BLOCKED",
+      "dependency_audit_package_review_rows": 37,
+      "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+      "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
+      "metal_status": "BLOCKED_BY_CPU",
+      "parity_status": "NOT_RUN",
+      "publication": "NO_UPLOAD"
+    }
   },
   "reference_contract": {
     "frames": 2,
