@@ -775,6 +775,63 @@ inventory row was the unrelated protected instance `50243461` /
 `ralomi-m6-int8-net5`, which this campaign did not modify.  The owner's
 pre-existing dirty CosyVoice2 license-gate manifest remained unstaged.
 
+## 2026-09-09 PR gate repair exact-head VAST replay
+
+GitHub Actions exposed two further model-free PR failures.  Commit `44ef5654`
+makes the forced-no-BF16 branch return immediately after its explicit error,
+so an Apple host that actually reports BF16 cannot turn the negative self-test
+into success.  Commit `837a1692` excludes only the exact Tennessee General
+Assembly bill-information URL that refused the link checker's connection; the
+existing separate Tennessee Governor exclusion remains intact.
+
+The focused local no-model checks passed: the BF16 verifier syntax and
+`--self-test`, all 52 Apple worker syntax/self-test contracts, workflow hygiene
+and its self-test, workflow advisory-suffix checks and diff hygiene.  No model
+weight was downloaded or executed, and no workspace Cargo command ran on the
+maintainer Mac.
+
+Disposable VAST instance `50278746` received the two unpushed commits through
+a git bundle whose local and remote SHA-256 was
+`e89acdd553b5f744ec8a4e2117bcada53b09f6d746067195bb4b75b280e5b8f8`.
+The remote checkout was clean and matched exact head
+`837a16922e475fc9922badd558f9488fb610f52e`.  No model checkpoint, weight or
+Hugging Face token was acquired, transferred or executed.
+
+`cargo test --workspace --all-targets --locked` completed 305 result groups
+with 8,001 passed, zero failed and 100 explicitly ignored tests.  Its
+678,916-byte log SHA-256 is
+`a5036863d4963f4dce3c064598ed4ee86d08d0f7592c37d57eaa06a74fd91392`.
+All-target, all-feature workspace Clippy with code warnings denied exited zero;
+its 3,144-byte log SHA-256 is
+`1a48e373e6c089fa224e89d879477c37e2ac9ac6210e8de7f564ad56bfb558fb`.
+The existing `clippy.toml`/crate MSRV configuration notice remained the only
+warning class and did not bypass `-D warnings`.
+
+Formatting, locked metadata, exact-commit diff, zero-dependency,
+forbidden-symbol, fixture-EOL, pipefail-lint, architecture-handshake,
+bound-architecture and zoo-manifest gates all passed.  Their 2,151-byte log
+SHA-256 is
+`f0e1d12b0d1e14ae2f9c7f666b232b0a4e003ea717ef04a5943dbd02815619b0`.
+`cargo-deny` 0.20.2 reported advisories, bans, licenses and sources OK, with
+only the existing unmatched `libfuzzer-sys` exception warning;
+`cargo-audit` 0.22.2 loaded 1,242 advisories and exited zero.  The 572-byte
+dependency-gate log SHA-256 is
+`67164119f2553af005caf5f71b578c72c276bdada9c94681427379fceb98fa5a`.
+
+All four recovered text logs matched their remote hashes and total 684,783
+bytes.  Instance `50278746` and its storage were destroyed after recovery; the
+individual API readback returned `instances: null`, and the complete VAST
+inventory returned `[]`.  The owner's pre-existing dirty CosyVoice2
+license-gate manifest remained unstaged.
+
+This replay repairs PR gates only.  It neither decrements the 63-row public
+denominator nor authorizes model execution or publication.  The remaining
+pre-Scaleway work still consists of exact source/runtime closure where facts
+remain incomplete, immutable owner/legal dispositions and authorized
+real-weight VAST conversion, independent-reference and CPU-parity packets.
+Scaleway remains reserved for the final Apple CPU/Metal execution after those
+non-Apple gates are complete or explicitly withheld/withdrawn by the owner.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
