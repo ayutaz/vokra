@@ -337,21 +337,103 @@ def verify_source(source: Path) -> dict[str, Any]:
 def expected_language_config(variant: str) -> dict[str, Any]:
     identity = VARIANTS[variant]
     return {
+        "architectures": ["Qwen3ForCausalLM"],
+        "attention_dropout": 0.0,
         "hidden_size": identity["hidden_size"],
+        "hidden_act": "silu",
         "intermediate_size": identity["intermediate_size"],
         "num_hidden_layers": 36,
         "num_attention_heads": 32,
         "num_key_value_heads": 8,
         "head_dim": 128,
+        "initializer_range": 0.02,
+        "layer_types": ["full_attention"] * 36,
         "vocab_size": 151936,
         "max_position_embeddings": 40960,
+        "max_window_layers": 36,
+        "model_type": "qwen3",
         "rope_theta": 1000000.0,
         "rms_norm_eps": 1.0e-6,
         "attention_bias": False,
+        "rope_scaling": None,
+        "sliding_window": None,
+        "use_cache": True,
+        "use_sliding_window": False,
+        "bos_token_id": 151643,
+        "eos_token_id": 151645,
+    }
+
+
+def expected_audio_config() -> dict[str, Any]:
+    return {
+        "_attn_implementation": "eager",
+        "activation_dropout": 0.0,
+        "activation_function": "gelu",
+        "attention_dropout": 0.1,
+        "d_model": 1280,
+        "deepstack_encoder_layer_indexes": [8, 16, 24],
+        "downsample_hidden_size": 480,
+        "downsample_rate": 8,
+        "dropout": 0.1,
+        "encoder_attention_heads": 20,
+        "encoder_attention_window_size": 100,
+        "encoder_ffn_dim": 5120,
+        "encoder_layers": 32,
+        "layer_norm_eps": 1.0e-5,
+        "max_source_positions": 1500,
+        "num_mel_bins": 128,
+        "output_dim": 1280,
+        "pretrained_path": "",
+    }
+
+
+def expected_processor_config() -> dict[str, Any]:
+    return {
+        "processor_class": "MossAudioProcessor",
+        "auto_map": {"AutoProcessor": "processing_moss_audio.MossAudioProcessor"},
+        "mel_config": {
+            "mel_sr": 16000,
+            "mel_dim": 128,
+            "mel_n_fft": 400,
+            "mel_hop_length": 160,
+            "mel_dtype": "bfloat16",
+            "use_whisper_feature_extractor": True,
+        },
+        "enable_time_marker": True,
+        "audio_token_id": 151654,
+        "audio_start_id": 151669,
+        "audio_end_id": 151670,
     }
 
 
 def validate_config_topology(config: dict[str, Any], variant: str) -> None:
+    expected_root = {
+        "adapter_hidden_size": 8192,
+        "architectures": ["MossAudioModel"],
+        "auto_map": {
+            "AutoConfig": "configuration_moss_audio.MossAudioConfig",
+            "AutoProcessor": "processing_moss_audio.MossAudioProcessor",
+        },
+        "bos_token_id": 151643,
+        "deepstack_num_inject_layers": 3,
+        "dtype": "bfloat16",
+        "eos_token_id": 151645,
+        "ignore_index": -100,
+        "model_type": "moss_audio",
+        "num_hidden_layers": 36,
+        "tie_word_embeddings": False,
+        "transformers_version": "4.57.1",
+        "vocab_size": 151936,
+    }
+    for key, expected in expected_root.items():
+        if config.get(key) != expected:
+            raise ValueError(f"{variant} root config.{key} topology metadata drifted")
+    audio_config = config.get("audio_config")
+    if not isinstance(audio_config, dict):
+        raise ValueError("MOSS-Audio audio_config is not an object")
+    for key, expected in expected_audio_config().items():
+        if audio_config.get(key) != expected:
+            raise ValueError(f"{variant} audio_config.{key} topology metadata drifted")
     if config.get("model_type") != "moss_audio" or config.get("architectures") != ["MossAudioModel"]:
         raise ValueError("MOSS-Audio config model identity is not exact")
     language_config = config.get("language_config")
@@ -362,6 +444,11 @@ def validate_config_topology(config: dict[str, Any], variant: str) -> None:
             raise ValueError(f"{variant} language_config.{key} topology metadata drifted")
     if "hidden_size" in config or "intermediate_size" in config:
         raise ValueError("MOSS-Audio topology must be nested under language_config")
+
+
+def validate_processor_config(processor_config: dict[str, Any], variant: str) -> None:
+    if processor_config != expected_processor_config():
+        raise ValueError(f"{variant} processor topology metadata drifted")
 
 
 def is_checkpoint_path(path: Path) -> bool:
@@ -398,10 +485,14 @@ def verify_snapshot(snapshot: Path, variant: str) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError("MOSS-Audio config is not an object")
     validate_config_topology(config, variant)
+    processor_config = strict_json(snapshot / "processor_config.json")
+    if not isinstance(processor_config, dict):
+        raise ValueError("MOSS-Audio processor_config is not an object")
+    validate_processor_config(processor_config, variant)
     return {"repo": identity["repo"], "revision": identity["revision"], "files": files, "model_type": config["model_type"]}
 
 
-def api_probe(source: Path, snapshot: Path, *, model_free: bool = False) -> dict[str, Any]:
+def api_probe(source: Path, snapshot: Path, variant: str, *, model_free: bool = False) -> dict[str, Any]:
     sys.path.insert(0, str(source))
     input_refusal: NonInteractiveInputRefusal | None = None
     try:
@@ -419,6 +510,10 @@ def api_probe(source: Path, snapshot: Path, *, model_free: bool = False) -> dict
         input_context = install_noninteractive_input_refusal() if model_free else nullcontext(None)
         with input_context as input_refusal:
             config = config_class.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=True)
+            config_dict = config.to_dict() if hasattr(config, "to_dict") else None
+            if not isinstance(config_dict, dict):
+                raise TypeError("official MOSS-Audio config did not expose a JSON object")
+            validate_config_topology(config_dict, variant)
             config_signature = str(inspect.signature(config_class.__init__))
             model_signature = str(inspect.signature(model_class.__init__))
             processor_signature = str(inspect.signature(processor_class.__init__))
@@ -476,7 +571,7 @@ def run(args: argparse.Namespace) -> int:
     api_records: dict[str, Any] = {}
     for variant in selected:
         try:
-            api_records[variant] = api_probe(source, Path(args.snapshot_root) / variant)
+            api_records[variant] = api_probe(source, Path(args.snapshot_root) / variant, variant)
         except Exception as exc:  # noqa: BLE001 - failure evidence is part of the contract
             evidence = {
                 "format": FORMAT,
@@ -598,7 +693,7 @@ def run_model_free(args: argparse.Namespace) -> int:
     api_records: dict[str, Any] = {}
     try:
         for variant in selected:
-            api_records[variant] = api_probe(source, snapshot_root / variant, model_free=True)
+            api_records[variant] = api_probe(source, snapshot_root / variant, variant, model_free=True)
     except Exception as exc:  # noqa: BLE001 - blocked evidence is part of the contract
         return blocked_model_free(
             args,
@@ -652,12 +747,40 @@ def self_test() -> int:
             valid_topology = {
                 "model_type": "moss_audio",
                 "architectures": ["MossAudioModel"],
+                "adapter_hidden_size": 8192,
+                "auto_map": {
+                    "AutoConfig": "configuration_moss_audio.MossAudioConfig",
+                    "AutoProcessor": "processing_moss_audio.MossAudioProcessor",
+                },
+                "bos_token_id": 151643,
+                "deepstack_num_inject_layers": 3,
+                "dtype": "bfloat16",
+                "eos_token_id": 151645,
+                "ignore_index": -100,
+                "num_hidden_layers": 36,
+                "tie_word_embeddings": False,
+                "transformers_version": "4.57.1",
+                "vocab_size": 151936,
+                "audio_config": expected_audio_config(),
                 "language_config": {
                     **expected_language_config("4b"),
-                    "attention_dropout": 0.0,
                 },
             }
             validate_config_topology(valid_topology, "4b")
+            validate_processor_config(expected_processor_config(), "4b")
+            valid_8b = dict(valid_topology)
+            valid_8b["language_config"] = expected_language_config("8b")
+            validate_config_topology(valid_8b, "8b")
+            for mismatched_config, target_variant, label in (
+                (valid_topology, "8b", "4B config accepted as 8B"),
+                (valid_8b, "4b", "8B config accepted as 4B"),
+            ):
+                try:
+                    validate_config_topology(mismatched_config, target_variant)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(label)
             tampered_topology = dict(valid_topology)
             tampered_topology["language_config"] = dict(valid_topology["language_config"])
             tampered_topology["language_config"]["hidden_size"] = 4096
@@ -667,6 +790,33 @@ def self_test() -> int:
                 pass
             else:
                 raise AssertionError("tampered nested language topology accepted")
+            tampered_audio = dict(valid_topology)
+            tampered_audio["audio_config"] = dict(valid_topology["audio_config"])
+            tampered_audio["audio_config"]["downsample_rate"] = 4
+            try:
+                validate_config_topology(tampered_audio, "4b")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("tampered audio topology accepted")
+            tampered_processor = dict(expected_processor_config())
+            tampered_processor["mel_config"] = dict(expected_processor_config()["mel_config"])
+            tampered_processor["mel_config"]["mel_hop_length"] = 80
+            try:
+                validate_processor_config(tampered_processor, "4b")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("tampered processor topology accepted")
+            tampered_layer_types = dict(valid_topology)
+            tampered_layer_types["language_config"] = dict(valid_topology["language_config"])
+            tampered_layer_types["language_config"]["layer_types"] = ["sliding_attention"] * 36
+            try:
+                validate_config_topology(tampered_layer_types, "4b")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("tampered language layer topology accepted")
             root_topology = dict(valid_topology)
             root_topology["hidden_size"] = 2560
             try:

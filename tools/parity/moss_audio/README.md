@@ -30,6 +30,17 @@ intentionally pending review and therefore exits 2; no model or source
 acquisition is reachable until dependency, source-license-file absence,
 model-license, and exact checkpoint-file evidence is authenticated by a later
 owner review.
+
+The model-free API gate also validates the complete non-weight topology from
+each fixed `config.json`: the custom `moss_audio` root/`auto_map`, the
+Whisper-style `audio_config` (including its 32-layer/20-head tower, 12.5-Hz
+downsampling and DeepStack indexes `[8, 16, 24]`), and the nested Qwen3
+`language_config` (36 full-attention layers, 32 query heads/8 KV heads,
+40,960 positions). The two accepted releases are deliberately distinct at
+the language width axis: 4B uses hidden/FFN widths `2560/9728`, while 8B uses
+`4096/12288`; a drift in either nested topology or a root-level alias is a
+fail-closed error. This check is model-free and does not construct a model or
+touch a checkpoint shard.
 The historical main project lock remains pinned to Transformers 5.5.0 and is
 retained for its existing license and closure gates. The VAST worker now
 requires an owner-approved model-free API-smoke evidence path and SHA-256
