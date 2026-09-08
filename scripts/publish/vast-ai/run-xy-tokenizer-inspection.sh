@@ -69,6 +69,8 @@ run_self_test() {
     "SOURCE_LICENSE_DECLARATION" \
     "SELECTED_MODEL_FILES" "source_config" "prepared_config" "AUTHENTICATED_OFFICIAL_SOURCE" \
     "all_tracked_regular_files" "inference.py" "xy_tokenizer/model.py" "vokra_head" \
+    "TENSOR_INVENTORY_SCHEMA" "write_bytes_no_replace" "rollback_created" "validate_raw_cli_paths" "O_EXCL" "O_NOFOLLOW" "os.link" \
+    "AUTHENTICATED_ARTIFACT_BOUND_PENDING_INDEPENDENT_REVIEW" \
     "MIN_VAST_MEM_KIB" "MIN_FREE_DISK_KIB" "tmpfs"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
       echo "run-xy-tokenizer-inspection: self-test FAIL: missing contract: $required" >&2

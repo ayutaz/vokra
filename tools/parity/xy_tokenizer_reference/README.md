@@ -41,9 +41,13 @@ The fixed source/config contract now authenticates the 16 kHz frontend, the
 semantic/acoustic encoder and adapter axes, 8×1024 RVQ (3072/512 dimensions),
 12.5 Hz downsample path, and the public `XY_Tokenizer` tokenize/detokenize,
 encode/decode, and checkpoint-loader API. This is not production approval:
-even a successful disposable reference
-run is reported as `REFERENCE_INSPECTION_COMPLETE`, while exact tensor names,
-shapes, and raw payload identities remain
+the inspection worker emits a deterministic
+`vokra-xy-tokenizer-tensor-inventory-v1` artifact containing exact observed
+tensor names, roles, shapes, dtypes, element/byte counts, and raw-payload
+digests, and binds its canonical JSON digest into `manifest.json`. The
+validator rejects unknown/duplicate/cross-role rows and accounting drift.
+This authenticates the observed fixed checkpoint artifact, not an expected
+shape list: exact tensor names, shapes, and raw payload identities remain
 `BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST` until the collected manifest is
 independently reviewed and authenticated. Native runtime and numerical parity
 remain blocked. No model, checkpoint, dependency sync, or network operation is

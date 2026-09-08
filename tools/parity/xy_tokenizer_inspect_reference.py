@@ -14,10 +14,13 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import re
+import secrets
 import subprocess
 import stat
 import tempfile
+import threading
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -62,6 +65,7 @@ SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE = "SOURCE_LICENSE_README_DECLARAT
 SOURCE_LICENSE_EVIDENCE_UNAVAILABLE = "SOURCE_LICENSE_EVIDENCE_UNAVAILABLE"
 TOPOLOGY_CONTRACT = "vokra-xy-tokenizer-topology-v1"
 TENSOR_MANIFEST_BLOCKER = "BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST"
+TENSOR_INVENTORY_SCHEMA = "vokra-xy-tokenizer-tensor-inventory-v1"
 EVIDENCE_FILENAME = "manifest.json"
 
 # These are selected structural axes from the authenticated source config at
@@ -329,6 +333,295 @@ def classify_tensor_roles(state: Mapping[str, torch.Tensor]) -> dict[str, Any]:
             f"authenticated tensor role manifest is incomplete: unknown={unknown[:8]}, missing={missing}"
         )
     return {"schema": "vokra-xy-tokenizer-tensor-roles-v1", "roles": roles}
+
+
+_TENSOR_ITEM_BYTES = {
+    "bool": 1,
+    "uint8": 1,
+    "int8": 1,
+    "int16": 2,
+    "int32": 4,
+    "int64": 8,
+    "float16": 2,
+    "bfloat16": 2,
+    "float32": 4,
+    "float64": 8,
+}
+
+
+def canonical_json_digest(value: Any) -> str:
+    """Digest JSON evidence without depending on pretty-printing details."""
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+_TEMP_COUNTER = 0
+_TEMP_COUNTER_LOCK = threading.Lock()
+
+
+def reject_raw_path_components(raw: str, label: str) -> None:
+    """Reject lexical dot components before Path normalisation erases them."""
+    if not raw or "\x00" in raw:
+        raise ValueError(f"{label} path is empty or contains NUL")
+    if any(component in {".", ".."} for component in raw.split("/")):
+        raise ValueError(f"{label} path contains a lexical '.' or '..' component")
+
+
+def validate_directory_ancestry(directory: Path, label: str = "output") -> None:
+    """Require every existing component to be a regular directory, not symlink."""
+    absolute = Path(os.path.abspath(os.fspath(directory)))
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(f"{label} directory ancestry is not regular: {current}")
+
+
+def ensure_output_directory(directory: Path, label: str = "output") -> None:
+    """Create a missing directory, then revalidate its full ancestry."""
+    reject_raw_path_components(os.fspath(directory), label)
+    if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
+        raise RuntimeError(f"{label} must be a regular directory")
+    directory.mkdir(parents=True, exist_ok=True)
+    validate_directory_ancestry(directory, label)
+
+
+def _next_temp_path(final: Path) -> Path:
+    global _TEMP_COUNTER
+    with _TEMP_COUNTER_LOCK:
+        _TEMP_COUNTER += 1
+        counter = _TEMP_COUNTER
+    nonce = secrets.token_hex(8)
+    return final.parent / f".{final.name}.vokra-tmp-{os.getpid()}-{threading.get_ident()}-{counter}-{nonce}"
+
+
+def _reserve_temp(final: Path) -> tuple[Path, int]:
+    """Reserve a same-directory private temp using O_EXCL/O_NOFOLLOW."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    for _attempt in range(32):
+        temporary = _next_temp_path(final)
+        try:
+            descriptor = os.open(temporary, flags, 0o600)
+        except FileExistsError:
+            continue
+        return temporary, descriptor
+    raise RuntimeError(f"unable to reserve a unique temporary for {final}")
+
+
+def _unlink_if_identity(path: Path, identity: tuple[int, int]) -> None:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if (info.st_dev, info.st_ino) == identity and stat.S_ISREG(info.st_mode):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def rollback_created(created: list[tuple[Path, int, int]]) -> None:
+    """Remove only finals whose inode identity was returned by this invocation."""
+    for path, device, inode in reversed(created):
+        _unlink_if_identity(path, (device, inode))
+
+
+def _publish_temp_no_replace(
+    temporary: Path,
+    final: Path,
+    expected_identity: tuple[int, int] | None = None,
+) -> tuple[Path, int, int]:
+    """Publish a same-directory temp with a no-clobber hardlink claim."""
+    reject_raw_path_components(os.fspath(final), "final")
+    validate_directory_ancestry(final.parent, "final")
+    descriptor = os.open(temporary, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    published = False
+    try:
+        info = os.fstat(descriptor)
+        identity = (info.st_dev, info.st_ino)
+        if not stat.S_ISREG(info.st_mode) or (expected_identity is not None and identity != expected_identity):
+            raise RuntimeError(f"temporary identity changed before publish: {temporary}")
+        os.fsync(descriptor)
+        # Revalidate after fsync, immediately before the no-clobber claim.
+        validate_directory_ancestry(final.parent, "final")
+        os.link(temporary, final, follow_symlinks=False)
+        published = True
+        # The hardlink is the no-clobber claim.  Directory fsync is best
+        # effort after that claim: an fsync error must not report Err while
+        # leaving a published final with no ownership record for rollback.
+        try:
+            directory_descriptor = os.open(final.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            pass
+        return final, identity[0], identity[1]
+    finally:
+        os.close(descriptor)
+        if published:
+            try:
+                temporary.unlink()
+            except OSError:
+                # The final hardlink is already durable enough to report
+                # success; cleanup failure must not turn success into Err.
+                pass
+        else:
+            _unlink_if_identity(temporary, identity if "identity" in locals() else (-1, -1))
+
+
+def write_bytes_no_replace(final: Path, payload: bytes) -> tuple[Path, int, int]:
+    """Write/fsync/publish bytes atomically without replacing an existing path."""
+    ensure_output_directory(final.parent, "final")
+    temporary, descriptor = _reserve_temp(final)
+    info = os.fstat(descriptor)
+    identity: tuple[int, int] = (info.st_dev, info.st_ino)
+    try:
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(descriptor, payload[offset:])
+        os.fsync(descriptor)
+    except BaseException:
+        _unlink_if_identity(temporary, identity)
+        raise
+    finally:
+        os.close(descriptor)
+    try:
+        return _publish_temp_no_replace(temporary, final, identity)
+    except BaseException:
+        _unlink_if_identity(temporary, identity)
+        raise
+
+
+def write_safetensors_no_replace(final: Path, tensors: Mapping[str, torch.Tensor]) -> tuple[Path, int, int, int, str]:
+    """Stage safetensors in a reserved temp, then publish via the same claim path.
+
+    ``safetensors.save_file`` accepts a pathname rather than an open file
+    descriptor, so the reservation descriptor is necessarily closed while
+    that library writes.  This worker's threat boundary is a private VAST
+    output directory; nevertheless, a replacement during that window is
+    detected by comparing the reserved inode before and after the call, and
+    is rejected without unlinking the replacement path.
+    """
+    ensure_output_directory(final.parent, "prepared")
+    temporary, reservation_descriptor = _reserve_temp(final)
+    reservation_info = os.fstat(reservation_descriptor)
+    reservation_identity = (reservation_info.st_dev, reservation_info.st_ino)
+    os.close(reservation_descriptor)
+    try:
+        save_file(dict(tensors), str(temporary))
+        verification_descriptor = os.open(temporary, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            verification_info = os.fstat(verification_descriptor)
+            if (verification_info.st_dev, verification_info.st_ino) != reservation_identity:
+                raise RuntimeError(f"temporary identity changed during safetensors save: {temporary}")
+            os.fsync(verification_descriptor)
+        finally:
+            os.close(verification_descriptor)
+        size = temporary.stat().st_size
+        digest = sha256(temporary)
+        published = _publish_temp_no_replace(temporary, final, reservation_identity)
+        return (*published, size, digest)
+    except BaseException:
+        _unlink_if_identity(temporary, reservation_identity)
+        raise
+
+
+def validate_tensor_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a complete, self-consistent checkpoint tensor inventory.
+
+    This authenticates the observed checkpoint bytes and role/name accounting;
+    it intentionally does not invent an expected shape list.  Independent
+    review of this artifact is still required before a native binder can use
+    it as a production contract.
+    """
+    expected_keys = {"schema", "tensor_count", "dtype_counts", "role_manifest", "tensors"}
+    if not isinstance(inventory, Mapping) or set(inventory) != expected_keys:
+        raise ValueError("tensor inventory schema is not canonical")
+    if inventory["schema"] != TENSOR_INVENTORY_SCHEMA:
+        raise ValueError("tensor inventory schema version mismatch")
+    tensor_count = inventory["tensor_count"]
+    if isinstance(tensor_count, bool) or not isinstance(tensor_count, int) or tensor_count < 1:
+        raise ValueError("tensor inventory count is invalid")
+    dtype_counts = inventory["dtype_counts"]
+    if not isinstance(dtype_counts, Mapping) or not dtype_counts:
+        raise ValueError("tensor inventory dtype counts are invalid")
+    for dtype, count in dtype_counts.items():
+        if dtype not in _TENSOR_ITEM_BYTES or isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("tensor inventory dtype count is invalid")
+    roles = inventory["role_manifest"]
+    if not isinstance(roles, Mapping) or set(roles) != {"schema", "roles"} or roles.get("schema") != "vokra-xy-tokenizer-tensor-roles-v1":
+        raise ValueError("tensor inventory role manifest is invalid")
+    role_mapping = roles.get("roles")
+    if not isinstance(role_mapping, Mapping) or set(role_mapping) != set(MODEL_MODULES):
+        raise ValueError("tensor inventory role rows are invalid")
+    role_rows = {role: role_mapping[role] for role in MODEL_MODULES}
+    for names_for_role in role_rows.values():
+        if not isinstance(names_for_role, list) or any(not isinstance(name, str) or not name for name in names_for_role):
+            raise ValueError("tensor inventory role row contains an invalid name")
+    tensors = inventory["tensors"]
+    if not isinstance(tensors, list) or len(tensors) != tensor_count:
+        raise ValueError("tensor inventory tensor count does not match rows")
+    names: list[str] = []
+    observed_dtype_counts: dict[str, int] = {}
+    expected_fields = {"name", "role", "shape", "dtype", "elements", "bytes", "sha256"}
+    for row in tensors:
+        if not isinstance(row, Mapping) or set(row) != expected_fields:
+            raise ValueError("tensor inventory row schema is not canonical")
+        name, role, shape, dtype = row["name"], row["role"], row["shape"], row["dtype"]
+        if not isinstance(name, str) or not name or tensor_role(name) != role:
+            raise ValueError("tensor inventory tensor name/role mismatch")
+        if not isinstance(shape, list) or any(isinstance(dim, bool) or not isinstance(dim, int) or dim < 0 for dim in shape):
+            raise ValueError("tensor inventory shape is invalid")
+        if dtype not in _TENSOR_ITEM_BYTES:
+            raise ValueError("tensor inventory dtype is invalid")
+        elements = 1
+        for dim in shape:
+            elements *= dim
+        if isinstance(row["elements"], bool) or not isinstance(row["elements"], int) or row["elements"] != elements:
+            raise ValueError("tensor inventory element count is invalid")
+        if isinstance(row["bytes"], bool) or not isinstance(row["bytes"], int) or row["bytes"] != elements * _TENSOR_ITEM_BYTES[dtype]:
+            raise ValueError("tensor inventory byte count is invalid")
+        digest = row["sha256"]
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("tensor inventory payload digest is invalid")
+        names.append(name)
+        observed_dtype_counts[dtype] = observed_dtype_counts.get(dtype, 0) + 1
+    if names != sorted(names) or len(set(names)) != len(names):
+        raise ValueError("tensor inventory names are not unique and sorted")
+    if dict(dtype_counts) != observed_dtype_counts:
+        raise ValueError("tensor inventory dtype counts do not match rows")
+    if any(names_for_role != sorted(names_for_role) or not names_for_role for names_for_role in role_rows.values()):
+        raise ValueError("tensor inventory role rows are not sorted/non-empty")
+    if any(len(set(names_for_role)) != len(names_for_role) for names_for_role in role_rows.values()):
+        raise ValueError("tensor inventory role rows contain duplicates")
+    if any(
+        tensor_role(name) != role
+        for role, names_for_role in role_rows.items()
+        for name in names_for_role
+    ):
+        raise ValueError("tensor inventory role rows contain a cross-role name")
+    if {name for names_for_role in role_rows.values() for name in names_for_role} != set(names):
+        raise ValueError("tensor inventory role rows do not cover tensor rows")
+    return dict(inventory)
+
+
+def build_tensor_inventory(state: Mapping[str, torch.Tensor]) -> dict[str, Any]:
+    """Build and validate deterministic shape/role/payload evidence."""
+    validate_state_dict(state)
+    role_manifest = classify_tensor_roles(state)
+    tensors: list[dict[str, Any]] = []
+    dtype_counts: dict[str, int] = {}
+    for name in sorted(state):
+        tensor = state[name].detach().cpu().contiguous()
+        raw = raw_tensor_bytes(tensor)
+        dtype = str(tensor.dtype).removeprefix("torch.")
+        tensors.append({"name": name, "role": tensor_role(name), "shape": [int(dim) for dim in tensor.shape], "dtype": dtype, "elements": int(tensor.numel()), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        dtype_counts[dtype] = dtype_counts.get(dtype, 0) + 1
+    inventory = {"schema": TENSOR_INVENTORY_SCHEMA, "tensor_count": len(tensors), "dtype_counts": dtype_counts, "role_manifest": role_manifest, "tensors": tensors}
+    return validate_tensor_inventory(inventory)
 
 
 def regular_files(root: Path) -> list[Path]:
@@ -664,72 +957,103 @@ def inspect(
     # fatal; there is intentionally no unrestricted pickle fallback.
     checkpoint_value = torch.load(str(checkpoint), map_location="cpu", weights_only=True)
     state = state_dict_from_checkpoint(checkpoint_value)
-    validate_state_dict(state)
-    tensor_roles = classify_tensor_roles(state)
-    prepared.parent.mkdir(parents=True, exist_ok=True)
-    save_file({name: tensor.detach().cpu().contiguous() for name, tensor in state.items()}, str(prepared))
-
-    tensors: list[dict[str, Any]] = []
-    dtype_counts: dict[str, int] = {}
-    for name in sorted(state):
-        tensor = state[name].detach().cpu().contiguous()
-        raw = raw_tensor_bytes(tensor)
-        dtype = str(tensor.dtype).removeprefix("torch.")
-        tensors.append({"name": name, "role": tensor_role(name), "shape": [int(dim) for dim in tensor.shape], "dtype": dtype, "elements": int(tensor.numel()), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
-        dtype_counts[dtype] = dtype_counts.get(dtype, 0) + 1
-    output.mkdir(parents=True, exist_ok=True)
-    tensor_manifest = {"tensor_count": len(tensors), "dtype_counts": dtype_counts, "role_manifest": tensor_roles, "tensors": tensors}
-    (output / "tensor-inventory.json").write_text(json.dumps(tensor_manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "config.json").write_text(json.dumps(config_data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "source-inventory.json").write_text(json.dumps(source_data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    (output / "server-packet.json").write_bytes(server_packet.read_bytes())
-    manifest = {
-        "format": FORMAT,
-        "vokra_head": expected_head.lower(),
-        "status": "BLOCKED",
-        "evidence_stage": "INSPECTION_ONLY",
-        "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
-        "collection_status": "AUTHENTICATED",
-        "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
-        "cpu_status": "UNSUPPORTED",
-        "metal_status": "BLOCKED_BY_CPU",
-        "parity_status": "NOT_RUN",
-        "publication": "NO_UPLOAD",
-        "upstream": {"repository": UPSTREAM_REPOSITORY, "revision": UPSTREAM_REVISION, "checkpoint_sha256": CHECKPOINT_SHA256, "checkpoint_bytes": CHECKPOINT_BYTES},
-        "repository": UPSTREAM_REPOSITORY,
-        "revision": UPSTREAM_REVISION,
-        "checkpoint_sha256": CHECKPOINT_SHA256,
-        "configuration": {
-            "repository": SOURCE_REPOSITORY,
-            "path": CONFIG_RELATIVE.as_posix(),
-            "sha256": CONFIG_SHA256,
-            "provenance": "AUTHENTICATED_OFFICIAL_SOURCE",
-        },
-        "official_source": source_data,
-        "server_tree": server,
-        "source_revision": SOURCE_REVISION,
-        "config_sha256": CONFIG_SHA256,
-        "prepared": {"path": prepared.name, "bytes": prepared.stat().st_size, "sha256": sha256(prepared)},
-        "tensor_count": len(tensors),
-        "dtype_counts": dtype_counts,
-        "weight_license": weight_license,
-        "blockers": known_blockers + ["native/runtime implementation is not available", "numerical parity is NOT_RUN", "publication is NO_UPLOAD"],
-        "packets": {
-            name: {"bytes": (output / name).stat().st_size, "sha256": sha256(output / name)}
-            for name in ("tensor-inventory.json", "config.json", "source-inventory.json", "server-packet.json")
-        },
-    }
-    (output / EVIDENCE_FILENAME).write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    tensor_inventory = build_tensor_inventory(state)
+    ensure_output_directory(prepared.parent, "prepared")
+    ensure_output_directory(output, "evidence")
+    created: list[tuple[Path, int, int]] = []
+    try:
+        prepared_record = write_safetensors_no_replace(
+            prepared,
+            {name: tensor.detach().cpu().contiguous() for name, tensor in state.items()},
+        )
+        created.append(prepared_record[:3])
+        tensor_inventory_bytes = (json.dumps(tensor_inventory, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        config_bytes = (json.dumps(config_data, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        source_bytes = (json.dumps(source_data, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        server_bytes = server_packet.read_bytes()
+        manifest = {
+            "format": FORMAT,
+            "vokra_head": expected_head.lower(),
+            "status": "BLOCKED",
+            "evidence_stage": "INSPECTION_ONLY",
+            "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
+            "collection_status": "AUTHENTICATED",
+            "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+            "cpu_status": "UNSUPPORTED",
+            "metal_status": "BLOCKED_BY_CPU",
+            "parity_status": "NOT_RUN",
+            "publication": "NO_UPLOAD",
+            "upstream": {"repository": UPSTREAM_REPOSITORY, "revision": UPSTREAM_REVISION, "checkpoint_sha256": CHECKPOINT_SHA256, "checkpoint_bytes": CHECKPOINT_BYTES},
+            "repository": UPSTREAM_REPOSITORY,
+            "revision": UPSTREAM_REVISION,
+            "checkpoint_sha256": CHECKPOINT_SHA256,
+            "configuration": {
+                "repository": SOURCE_REPOSITORY,
+                "path": CONFIG_RELATIVE.as_posix(),
+                "sha256": CONFIG_SHA256,
+                "provenance": "AUTHENTICATED_OFFICIAL_SOURCE",
+            },
+            "official_source": source_data,
+            "server_tree": server,
+            "source_revision": SOURCE_REVISION,
+            "config_sha256": CONFIG_SHA256,
+            "prepared": {"path": prepared.name, "bytes": prepared_record[3], "sha256": prepared_record[4]},
+            "tensor_count": tensor_inventory["tensor_count"],
+            "dtype_counts": tensor_inventory["dtype_counts"],
+            "tensor_manifest": {
+                "schema": TENSOR_INVENTORY_SCHEMA,
+                "sha256": canonical_json_digest(tensor_inventory),
+                "path": "tensor-inventory.json",
+                "status": "AUTHENTICATED_ARTIFACT_BOUND_PENDING_INDEPENDENT_REVIEW",
+            },
+            "weight_license": weight_license,
+            "blockers": known_blockers + ["native/runtime implementation is not available", "numerical parity is NOT_RUN", "publication is NO_UPLOAD"],
+            "packets": {
+                "tensor-inventory.json": {"bytes": len(tensor_inventory_bytes), "sha256": hashlib.sha256(tensor_inventory_bytes).hexdigest()},
+                "config.json": {"bytes": len(config_bytes), "sha256": hashlib.sha256(config_bytes).hexdigest()},
+                "source-inventory.json": {"bytes": len(source_bytes), "sha256": hashlib.sha256(source_bytes).hexdigest()},
+                "server-packet.json": {"bytes": len(server_bytes), "sha256": hashlib.sha256(server_bytes).hexdigest()},
+            },
+        }
+        for name, payload in (
+            ("tensor-inventory.json", tensor_inventory_bytes),
+            ("config.json", config_bytes),
+            ("source-inventory.json", source_bytes),
+            ("server-packet.json", server_bytes),
+            (EVIDENCE_FILENAME, (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")),
+        ):
+            created.append(write_bytes_no_replace(output / name, payload))
+    except BaseException:
+        rollback_created(created)
+        raise
 
 
 def write_error_manifest(output: Path, error: Exception) -> None:
-    output.mkdir(parents=True, exist_ok=True)
-    for name in ("tensor-inventory.json", "config.json", "source-inventory.json", "server-packet.json", EVIDENCE_FILENAME):
-        path = output / name
-        if path.exists() and path.is_file():
-            path.unlink()
+    ensure_output_directory(output, "error evidence")
     manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "FAILED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "error": str(error), "blockers": ["authenticated collection unavailable", SOURCE_LICENSE_EVIDENCE_UNAVAILABLE, TENSOR_MANIFEST_BLOCKER]}
-    (output / EVIDENCE_FILENAME).write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    try:
+        write_bytes_no_replace(
+            output / EVIDENCE_FILENAME,
+            (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+        )
+    except FileExistsError:
+        # Never remove or replace evidence from an earlier invocation.
+        return
+
+
+def validate_raw_cli_paths(argv: list[str]) -> None:
+    path_options = {"--checkpoint", "--config", "--source", "--prepared", "--output", "--server-packet"}
+    for index, argument in enumerate(argv):
+        if argument in path_options:
+            if index + 1 >= len(argv):
+                raise ValueError(f"{argument} requires a path")
+            reject_raw_path_components(argv[index + 1], argument)
+        else:
+            for option in path_options:
+                prefix = option + "="
+                if argument.startswith(prefix):
+                    reject_raw_path_components(argument[len(prefix):], option)
+                    break
 
 
 def self_test() -> None:
@@ -749,6 +1073,7 @@ def self_test() -> None:
     assert SOURCE_LICENSE_EVIDENCE_UNAVAILABLE in source
     assert TOPOLOGY_CONTRACT in source
     assert TENSOR_MANIFEST_BLOCKER in source
+    assert TENSOR_INVENTORY_SCHEMA == "vokra-xy-tokenizer-tensor-inventory-v1"
     assert parse_source_license_readme(
         "# XY-Tokenizer\n\n## License 📜\n\n"
         "XY-Tokenizer is released under the Apache 2.0 license.\n\n"
@@ -873,6 +1198,48 @@ def self_test() -> None:
     role_manifest = classify_tensor_roles(role_state)
     assert role_manifest["schema"] == "vokra-xy-tokenizer-tensor-roles-v1"
     assert set(role_manifest["roles"]) == set(MODEL_MODULES)
+    role_inventory = build_tensor_inventory(role_state)
+    assert role_inventory["schema"] == TENSOR_INVENTORY_SCHEMA
+    assert role_inventory["tensor_count"] == len(MODEL_MODULES)
+    assert canonical_json_digest(role_inventory) == canonical_json_digest(json.loads(json.dumps(role_inventory)))
+    tampered_inventory = json.loads(json.dumps(role_inventory))
+    tampered_inventory["tensors"][0]["shape"] = [2]
+    try:
+        validate_tensor_inventory(tampered_inventory)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("tampered tensor shape was accepted")
+    tampered_inventory = json.loads(json.dumps(role_inventory))
+    tampered_inventory["tensors"][0]["role"] = "vocos"
+    try:
+        validate_tensor_inventory(tampered_inventory)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("tampered tensor role was accepted")
+    tampered_inventory = json.loads(json.dumps(role_inventory))
+    semantic_name = tampered_inventory["role_manifest"]["roles"]["semantic_encoder"][0]
+    tampered_inventory["role_manifest"]["roles"]["vocos"][0] = semantic_name
+    tampered_inventory["role_manifest"]["roles"]["vocos"].sort()
+    try:
+        validate_tensor_inventory(tampered_inventory)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("cross-role tensor row was accepted")
+    for role_edit in ("extra", "missing"):
+        tampered_inventory = json.loads(json.dumps(role_inventory))
+        if role_edit == "extra":
+            tampered_inventory["role_manifest"]["roles"]["untrusted"] = ["untrusted.weight"]
+        else:
+            del tampered_inventory["role_manifest"]["roles"][MODEL_MODULES[0]]
+        try:
+            validate_tensor_inventory(tampered_inventory)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"tensor role {role_edit} was accepted")
     for invalid_roles in (
         {**role_state, "untrusted.weight": torch.ones(1)},
         {key: value for key, value in role_state.items() if not key.startswith("vocos.")},
@@ -926,7 +1293,8 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("invalid generator checkpoint envelope was accepted")
-    with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-error-") as directory:
+    self_test_tmp_root = "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-error-", dir=self_test_tmp_root) as directory:
         error_dir = Path(directory)
         write_error_manifest(error_dir, RuntimeError("self-test error"))
         error_manifest = json_load_unique(error_dir / EVIDENCE_FILENAME)
@@ -942,6 +1310,122 @@ def self_test() -> None:
         }
         assert normal_contract["inspection_status"] != error_manifest["inspection_status"]
         assert normal_contract["collection_status"] != error_manifest["collection_status"]
+        existing_manifest = (error_dir / EVIDENCE_FILENAME).read_bytes()
+        marker = error_dir / "preserve-me.txt"
+        marker.write_bytes(b"existing evidence")
+        write_error_manifest(error_dir, RuntimeError("later error"))
+        assert (error_dir / EVIDENCE_FILENAME).read_bytes() == existing_manifest
+        assert marker.read_bytes() == b"existing evidence"
+    with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-publish-", dir=self_test_tmp_root) as directory:
+        publish_dir = Path(directory)
+        try:
+            reject_raw_path_components("evidence/../manifest.json", "self-test")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("lexical parent path was accepted")
+        try:
+            validate_raw_cli_paths(["--checkpoint=assets/../checkpoint.ckpt"])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("lexical parent path in --option=value was accepted")
+        symlink_parent = publish_dir / "real-parent"
+        symlink_parent.mkdir()
+        (publish_dir / "link").symlink_to(symlink_parent, target_is_directory=True)
+        try:
+            write_bytes_no_replace(publish_dir / "link" / "manifest.json", b"unsafe")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlink ancestry was accepted")
+
+        concurrent_final = publish_dir / "concurrent.bin"
+        concurrent_results: list[bytes] = []
+        concurrent_errors: list[Exception] = []
+
+        def publish_concurrently(payload: bytes) -> None:
+            try:
+                write_bytes_no_replace(concurrent_final, payload)
+                concurrent_results.append(payload)
+            except Exception as error:  # expected for all but one no-clobber claim
+                concurrent_errors.append(error)
+
+        threads = [threading.Thread(target=publish_concurrently, args=(bytes([value]),)) for value in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(concurrent_results) == 1
+        assert len(concurrent_errors) == 7 and all(isinstance(error, FileExistsError) for error in concurrent_errors)
+        assert concurrent_final.read_bytes() == concurrent_results[0]
+        assert not list(publish_dir.glob(".*.vokra-tmp-*"))
+
+        existing = publish_dir / "existing.bin"
+        existing.write_bytes(b"original")
+        try:
+            write_bytes_no_replace(existing, b"replacement")
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing output was replaced")
+        assert existing.read_bytes() == b"original"
+
+        first = publish_dir / "first.bin"
+        created_outputs: list[tuple[Path, int, int]] = []
+        try:
+            created_outputs.append(write_bytes_no_replace(first, b"first"))
+            write_bytes_no_replace(existing, b"collision")
+        except FileExistsError:
+            rollback_created(created_outputs)
+        else:
+            raise AssertionError("partial publish collision was not rejected")
+        assert not first.exists()
+        assert existing.read_bytes() == b"original"
+
+        owned = publish_dir / "owned.bin"
+        ownership = write_bytes_no_replace(owned, b"owned")
+        owned.unlink()
+        owned.write_bytes(b"replacement inode")
+        rollback_created([ownership])
+        assert owned.read_bytes() == b"replacement inode"
+
+        cleanup_final = publish_dir / "cleanup.bin"
+        original_unlink = Path.unlink
+        simulated_failure = True
+
+        def fail_temp_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
+            nonlocal simulated_failure
+            if simulated_failure and ".vokra-tmp-" in path.name:
+                simulated_failure = False
+                raise OSError("simulated temp cleanup failure")
+            original_unlink(path, *args, **kwargs)
+
+        Path.unlink = fail_temp_cleanup  # type: ignore[method-assign]
+        try:
+            write_bytes_no_replace(cleanup_final, b"published")
+        finally:
+            Path.unlink = original_unlink  # type: ignore[method-assign]
+        assert cleanup_final.read_bytes() == b"published"
+        for temporary in publish_dir.glob(".*.vokra-tmp-*"):
+            original_unlink(temporary)
+        assert not list(publish_dir.glob(".*.vokra-tmp-*"))
+
+        fsync_final = publish_dir / "fsync-best-effort.bin"
+        original_open = os.open
+
+        def fail_directory_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+            if flags & getattr(os, "O_DIRECTORY", 0):
+                raise OSError("simulated directory fsync open failure")
+            return original_open(path, flags, *args, **kwargs)
+
+        os.open = fail_directory_open  # type: ignore[assignment]
+        try:
+            write_bytes_no_replace(fsync_final, b"link is the claim")
+        finally:
+            os.open = original_open  # type: ignore[assignment]
+        assert fsync_final.read_bytes() == b"link is the claim"
+        assert not list(publish_dir.glob(".*.vokra-tmp-*"))
     with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-packet-") as directory:
         model = Path(directory)
         for relative in sorted(SELECTED_MODEL_FILES):
@@ -978,6 +1462,7 @@ def main() -> int:
     parser.add_argument("--server-packet", type=Path)
     parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
+    validate_raw_cli_paths(sys.argv[1:])
     args = parser.parse_args()
     if args.self_test:
         if any(value is not None for value in (args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet, args.expected_head)):
