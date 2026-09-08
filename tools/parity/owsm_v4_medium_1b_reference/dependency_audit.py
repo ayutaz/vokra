@@ -59,6 +59,13 @@ DIRECT = {
     "torch-complex": "0.4.4",
     "typeguard": "4.6.0",
 }
+LINUX_MARKER_VALUES = {
+    "sys_platform != 'darwin'": True,
+    "sys_platform == 'darwin'": False,
+    "sys_platform == 'win32'": False,
+    "implementation_name != 'PyPy'": True,
+}
+EXPECTED_FACTUAL_FAILURE = "primary license bytes unavailable: torch-complex==0.4.4"
 
 
 class AuditError(ValueError):
@@ -124,7 +131,7 @@ def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
             "resolution-markers": raw.get("resolution-markers", []),
             "dependencies": raw.get("dependencies", []),
         }
-        key = (row["name"], row["version"], canonical(source))
+        key = (norm_name(row["name"]), row["version"], canonical(source))
         if key in identities:
             raise AuditError(f"duplicate lock identity: {key[:2]}")
         identities.add(key)
@@ -157,19 +164,97 @@ def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def linux_marker(marker: Any) -> bool:
+    if not isinstance(marker, str) or marker not in LINUX_MARKER_VALUES:
+        raise AuditError(f"unsupported Linux marker: {marker!r}")
+    return LINUX_MARKER_VALUES[marker]
+
+
+def row_active_linux(row: dict[str, Any]) -> bool:
+    markers = row["resolution-markers"]
+    if not isinstance(markers, list) or any(not isinstance(item, str) for item in markers):
+        raise AuditError(f"invalid resolution marker for {row['name']}")
+    return not markers or any(linux_marker(item) for item in markers)
+
+
+def dependency_edges(row: dict[str, Any]) -> list[dict[str, Any]]:
+    dependencies = row["dependencies"]
+    if not isinstance(dependencies, list):
+        raise AuditError(f"invalid dependency table for {row['name']}")
+    result = []
+    for edge in dependencies:
+        if not isinstance(edge, dict) or not isinstance(edge.get("name"), str):
+            raise AuditError(f"malformed dependency edge in {row['name']}")
+        if set(edge) - {"name", "version", "source", "marker"}:
+            raise AuditError(f"unexpected dependency edge fields in {row['name']}")
+        if "version" in edge and not isinstance(edge["version"], str):
+            raise AuditError(f"malformed dependency version in {row['name']}")
+        if "source" in edge:
+            source = edge["source"]
+            if not isinstance(source, dict) or len(source) != 1:
+                raise AuditError(f"malformed dependency source in {row['name']}")
+            if source not in ({"registry": PYPI_REGISTRY}, {"registry": TORCH_CPU_INDEX}):
+                raise AuditError(f"unapproved dependency source in {row['name']}")
+        if "marker" in edge:
+            linux_marker(edge["marker"])
+        result.append(edge)
+    return result
+
+
 def active_linux(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    active = []
+    """Resolve the Linux CPython graph from the lock's virtual root.
+
+    uv can retain rows for another platform in one lock.  Therefore a row is
+    active only when reached through a true dependency edge; row-level markers
+    alone are not a closure.  Every edge and every non-root row is still
+    checked so malformed or orphaned lock data fails closed.
+    """
+    virtual = [row for row in rows if row["source"] == {"virtual": "."}]
+    if len(virtual) != 1:
+        raise AuditError("uv.lock must contain exactly one virtual root")
+    by_name: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         if row["source"] == {"virtual": "."}:
             continue
-        markers = row["resolution-markers"]
-        if not isinstance(markers, list) or any(not isinstance(item, str) for item in markers):
-            raise AuditError(f"invalid resolution marker for {row['name']}")
-        if not markers or "sys_platform != 'darwin'" in markers:
-            active.append(row)
-        elif markers != ["sys_platform == 'darwin'"]:
-            raise AuditError(f"unsupported Linux resolution marker for {row['name']}: {markers!r}")
-    return sorted(active, key=lambda row: (norm_name(row["name"]), row["version"]))
+        row_active_linux(row)
+        dependency_edges(row)
+        by_name.setdefault(norm_name(row["name"]), []).append(row)
+    dependency_edges(virtual[0])
+    reachable: dict[tuple[str, str, str], dict[str, Any]] = {}
+    false_edge_targets: set[tuple[str, str, str]] = set()
+    queue = [virtual[0]]
+    seen = {id(virtual[0])}
+    while queue:
+        parent = queue.pop(0)
+        for edge in dependency_edges(parent):
+            marker = edge.get("marker")
+            candidates = by_name.get(norm_name(edge["name"]), [])
+            if "version" in edge:
+                candidates = [item for item in candidates if item["version"] == edge["version"]]
+            if "source" in edge:
+                candidates = [item for item in candidates if item["source"] == edge["source"]]
+            if len(candidates) == 0:
+                raise AuditError(f"dependency target missing from lock: {edge!r}")
+            if len(candidates) != 1:
+                raise AuditError(f"dependency target is ambiguous: {edge!r}")
+            target = candidates[0]
+            if marker is not None and not linux_marker(marker):
+                false_edge_targets.add((norm_name(target["name"]), target["version"], canonical(target["source"])))
+                continue
+            if not row_active_linux(target):
+                raise AuditError(f"Linux dependency target has inactive row markers: {edge!r}")
+            key = (norm_name(target["name"]), target["version"], canonical(target["source"]))
+            reachable[key] = target
+            if id(target) not in seen:
+                seen.add(id(target)); queue.append(target)
+    all_rows = {
+        (norm_name(row["name"]), row["version"], canonical(row["source"])): row
+        for row in rows if row["source"] != {"virtual": "."}
+    }
+    unreachable = set(all_rows) - set(reachable)
+    if unreachable - false_edge_targets:
+        raise AuditError(f"Linux lock rows are unreachable: {sorted(unreachable - false_edge_targets)!r}")
+    return sorted(reachable.values(), key=lambda row: (norm_name(row["name"]), row["version"], canonical(row["source"])))
 
 
 def validate_contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bytes, bytes]:
@@ -346,11 +431,12 @@ def locked_sdist_license(row: dict[str, Any]) -> dict[str, Any]:
     observed = sha256_bytes(body)
     if len(body) != artifact["size"] or "sha256:" + observed != artifact["hash"]:
         return {"status": "BLOCKED_LOCKED_SDIST_IDENTITY", "observed_size": len(body), "observed_sha256": "sha256:" + observed, "license_files": []}
+    verified_identity = {"url": url, "final_url": final, "size": len(body), "sha256": "sha256:" + observed}
     try:
         files = archive_license_files(final, body)
     except AuditError as exc:
-        return {"status": "BLOCKED_LOCKED_SDIST_LICENSE", "error": str(exc), "license_files": []}
-    return {"status": "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES", "url": url, "final_url": final, "size": len(body), "sha256": "sha256:" + observed, "license_files": files}
+        return {"status": "BLOCKED_LOCKED_SDIST_LICENSE", **verified_identity, "error": str(exc), "license_files": []}
+    return {"status": "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES", **verified_identity, "license_files": files}
 
 
 def audit(project: Path, expected_head: str | None) -> dict[str, Any]:
@@ -405,6 +491,158 @@ def audit(project: Path, expected_head: str | None) -> dict[str, Any]:
     }
 
 
+def strict_json(path: Path) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise AuditError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+    value = json.loads(path.read_bytes(), object_pairs_hook=unique)
+    if not isinstance(value, dict):
+        raise AuditError("evidence root must be an object")
+    return value
+
+
+def validate_license_file_entries(files: Any, field: str) -> None:
+    if not isinstance(files, list):
+        raise AuditError(f"dependency evidence {field} must be a list")
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {"path", "size", "sha256"} or not isinstance(item["path"], str) or not item["path"] or not isinstance(item["size"], int) or isinstance(item["size"], bool) or item["size"] <= 0 or item["size"] > MAX_LICENSE_BYTES or not isinstance(item["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
+            raise AuditError(f"dependency evidence {field} entry is malformed")
+        try:
+            safe_relative(item["path"])
+        except AuditError as exc:
+            raise AuditError(f"dependency evidence {field} path is unsafe") from exc
+
+
+def validate_native_entries(files: Any) -> None:
+    if not isinstance(files, list):
+        raise AuditError("dependency evidence native payloads must be a list")
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {"path", "size", "sha256", "needed", "inspection"} or not isinstance(item["path"], str) or not item["path"] or not isinstance(item["size"], int) or isinstance(item["size"], bool) or item["size"] <= 0 or not isinstance(item["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) or not isinstance(item["needed"], list) or any(not isinstance(value, str) for value in item["needed"]) or item["inspection"] != "ok":
+            raise AuditError("dependency evidence native payload entry is malformed or incomplete")
+        try:
+            safe_relative(item["path"])
+        except AuditError as exc:
+            raise AuditError("dependency evidence native payload path is unsafe") from exc
+
+
+def make_self_test_evidence(project: Path, expected_head: str) -> dict[str, Any]:
+    """Build an in-memory report fixture shared by validator self-tests."""
+    project_data, lock_data, rows, project_bytes, lock_bytes = validate_contract(project)
+    active = active_linux(rows)
+    expected_ids = [identity(row["name"], row["version"]) for row in active]
+    package_reports = []
+    for row in active:
+        installed = {"name": row["name"], "version": row["version"], "license": None, "license_expression": None, "license_classifiers": [], "publisher_license_files": [], "unsafe_license_paths": [], "locked_sdist_license": None, "native_payloads": []}
+        if identity(row["name"], row["version"]) == "torch-complex==0.4.4":
+            artifact = row["sdist"]
+            installed["locked_sdist_license"] = {"status": "BLOCKED_LOCKED_SDIST_LICENSE", "url": artifact["url"], "final_url": artifact["url"], "size": artifact["size"], "sha256": artifact["hash"], "license_files": [], "error": "locked sdist has no license candidate"}
+        else:
+            artifact = row.get("sdist")
+            if artifact is not None:
+                installed["locked_sdist_license"] = {"status": "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES", "url": artifact["url"], "final_url": artifact["url"], "size": artifact["size"], "sha256": artifact["hash"], "license_files": [{"path": "LICENSE", "size": 1, "sha256": "0" * 64}]}
+            else:
+                installed["publisher_license_files"] = [{"path": "LICENSE", "size": 1, "sha256": "0" * 64}]
+        if not package_reports:
+            installed["native_payloads"] = [{"path": "pkg/native.so", "size": 1, "sha256": "0" * 64, "needed": [], "inspection": "ok"}]
+        package_reports.append({"lock": row, "installed": installed})
+    return {"schema": SCHEMA, "status": "BLOCKED_FACTUAL_AUDIT", "review": "PENDING_OWNER_APPROVAL", "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"], "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes), "lock_sha256_scope": sha256_bytes(canonical(rows).encode())}, "closure": {"lock_rows": len(rows), "active_linux_rows": len(active), "expected": expected_ids, "observed": expected_ids, "exact": True}, "packages": package_reports, "failures": [EXPECTED_FACTUAL_FAILURE], "environment": {"python": "3.12.0", "platform": "linux", "machine": "x86_64", "readelf_required": True, "model_code_imported": False, "weights_acquired": False, "weights_imported": False, "weights_executed": False, "cargo_invoked": False}, "git": {"expected_head": expected_head, "head_unverified": False}, "model_acquisition": {"requested_files": [], "policy": "NO_MODEL_OR_CHECKPOINT_REQUESTS"}, "publication": "NO_UPLOAD"}
+
+
+def validate_evidence(path: Path, expected_head: str, project: Path) -> dict[str, Any]:
+    """Validate the one known factual OWSM blocker before accepting it in batch."""
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise AuditError("expected HEAD must be lowercase 40-hex")
+    value = strict_json(path)
+    project_data, lock_data, rows, project_bytes, lock_bytes = validate_contract(project)
+    active = active_linux(rows)
+    expected_ids = [identity(row["name"], row["version"]) for row in active]
+    root_keys = {"schema", "status", "review", "project", "closure", "packages", "failures", "environment", "git", "model_acquisition", "publication"}
+    if set(value) != root_keys:
+        raise AuditError("dependency evidence root schema drift")
+    if value["schema"] != SCHEMA or value["status"] != "BLOCKED_FACTUAL_AUDIT" or value["review"] != "PENDING_OWNER_APPROVAL" or value["publication"] != "NO_UPLOAD":
+        raise AuditError("dependency evidence disposition drift")
+    project_value = value["project"]
+    if not isinstance(project_value, dict) or set(project_value) != {"name", "version", "pyproject_sha256", "uv_lock_sha256", "lock_sha256_scope"}:
+        raise AuditError("dependency evidence project identity drift")
+    expected_project = {
+        "name": project_data["project"]["name"], "version": project_data["project"]["version"],
+        "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes),
+        "lock_sha256_scope": sha256_bytes(canonical(rows).encode()),
+    }
+    if project_value != expected_project:
+        raise AuditError("dependency evidence project hash drift")
+    closure = value["closure"]
+    if not isinstance(closure, dict) or set(closure) != {"lock_rows", "active_linux_rows", "expected", "observed", "exact"}:
+        raise AuditError("dependency evidence closure schema drift")
+    if closure != {"lock_rows": 43, "active_linux_rows": 40, "expected": expected_ids, "observed": expected_ids, "exact": True}:
+        raise AuditError("dependency evidence closure is not the exact Linux graph")
+    if value["failures"] != [EXPECTED_FACTUAL_FAILURE]:
+        raise AuditError("dependency evidence factual failures are not the exact known blocker")
+    environment = value["environment"]
+    expected_environment = {"python", "platform", "machine", "readelf_required", "model_code_imported", "weights_acquired", "weights_imported", "weights_executed", "cargo_invoked"}
+    if not isinstance(environment, dict) or set(environment) != expected_environment or not isinstance(environment.get("python"), str) or not re.fullmatch(r"3\.12\.\d+", environment["python"]) or environment.get("platform") != "linux" or environment.get("machine") != "x86_64" or any(environment[key] is not False for key in ("model_code_imported", "weights_acquired", "weights_imported", "weights_executed", "cargo_invoked")) or environment["readelf_required"] is not True:
+        raise AuditError("dependency evidence model-free environment contract drift")
+    git_value = value["git"]
+    if not isinstance(git_value, dict) or set(git_value) != {"expected_head", "head_unverified"} or git_value != {"expected_head": expected_head, "head_unverified": False}:
+        raise AuditError("dependency evidence HEAD binding drift")
+    if value["model_acquisition"] != {"requested_files": [], "policy": "NO_MODEL_OR_CHECKPOINT_REQUESTS"}:
+        raise AuditError("dependency evidence model acquisition drift")
+    packages = value["packages"]
+    if not isinstance(packages, list):
+        raise AuditError("dependency evidence package identity/order drift")
+    package_ids = []
+    for item in packages:
+        if not isinstance(item, dict) or not isinstance(item.get("lock"), dict):
+            raise AuditError("dependency evidence package identity/order drift")
+        package_ids.append(identity(str(item["lock"].get("name", "")), str(item["lock"].get("version", ""))))
+    if package_ids != expected_ids:
+        raise AuditError("dependency evidence package identity/order drift")
+    expected_rows = {identity(row["name"], row["version"]): row for row in active}
+    for item in packages:
+        if not isinstance(item, dict) or set(item) != {"lock", "installed"}:
+            raise AuditError("dependency evidence package report schema drift")
+        lock = item["lock"]
+        key = identity(lock.get("name", ""), lock.get("version", "")) if isinstance(lock, dict) else ""
+        if key not in expected_rows or lock != expected_rows[key]:
+            raise AuditError("dependency evidence locked package identity drift")
+        installed = item["installed"]
+        if not isinstance(installed, dict) or set(installed) != {"name", "version", "license", "license_expression", "license_classifiers", "publisher_license_files", "unsafe_license_paths", "locked_sdist_license", "native_payloads"}:
+            raise AuditError("dependency evidence installed package schema drift")
+        if identity(str(installed.get("name", "")), str(installed.get("version", ""))) != key:
+            raise AuditError("dependency evidence installed package identity drift")
+        if any(installed[field] is not None and not isinstance(installed[field], str) for field in ("license", "license_expression")):
+            raise AuditError("dependency evidence license metadata type drift")
+        if not isinstance(installed["license_classifiers"], list) or any(not isinstance(item, str) for item in installed["license_classifiers"]):
+            raise AuditError("dependency evidence license classifier metadata drift")
+        validate_license_file_entries(installed["publisher_license_files"], "publisher license files")
+        if installed["unsafe_license_paths"] != [] or not isinstance(installed["unsafe_license_paths"], list) or any(not isinstance(item, str) for item in installed["unsafe_license_paths"]):
+            raise AuditError("dependency evidence contains unsafe publisher license paths")
+        validate_native_entries(installed["native_payloads"])
+        if not installed["publisher_license_files"] and key != "torch-complex==0.4.4":
+            artifact = lock.get("sdist")
+            locked = installed["locked_sdist_license"]
+            if not isinstance(artifact, dict) or not isinstance(locked, dict) or locked.get("status") != "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES" or set(locked) != {"status", "url", "final_url", "size", "sha256", "license_files"} or locked["url"] != artifact["url"] or locked["final_url"] != artifact["url"] or locked["size"] != artifact["size"] or locked["sha256"] != artifact["hash"]:
+                raise AuditError(f"dependency evidence lacks verified locked sdist license bytes: {key}")
+            validate_license_file_entries(locked["license_files"], "locked sdist license files")
+            if not locked["license_files"]:
+                raise AuditError(f"dependency evidence lacks locked sdist license files: {key}")
+    complex_item = next(item for item in packages if identity(item["lock"]["name"], item["lock"]["version"]) == "torch-complex==0.4.4")
+    complex_installed = complex_item["installed"]
+    if complex_installed["publisher_license_files"] != [] or complex_installed["unsafe_license_paths"] != [] or complex_installed["native_payloads"] != []:
+        raise AuditError("torch-complex factual blocker evidence was supplemented or changed")
+    artifact = expected_rows["torch-complex==0.4.4"]["sdist"]
+    locked = complex_installed["locked_sdist_license"]
+    if not isinstance(locked, dict) or set(locked) != {"status", "url", "final_url", "size", "sha256", "license_files", "error"}:
+        raise AuditError("torch-complex locked sdist evidence schema drift")
+    if locked != {"status": "BLOCKED_LOCKED_SDIST_LICENSE", "url": artifact["url"], "final_url": artifact["url"], "size": artifact["size"], "sha256": artifact["hash"], "license_files": [], "error": "locked sdist has no license candidate"}:
+        raise AuditError("torch-complex locked sdist identity or license evidence drift")
+    return value
+
+
 def write_no_replace(path: Path, payload: bytes) -> None:
     if not path.is_absolute() or path.exists() or path.is_symlink():
         raise AuditError("output must be an absent absolute path")
@@ -417,8 +655,42 @@ def write_no_replace(path: Path, payload: bytes) -> None:
 def self_test() -> int:
     project = Path(__file__).resolve().parent
     _, lock, rows, _, _ = validate_contract(project)
-    if len(active_linux(rows)) != 41:
-        raise SystemExit("self-test expected 41 Linux active distributions")
+    active = active_linux(rows)
+    if len(active) != 40:
+        raise SystemExit("self-test expected 40 Linux active distributions")
+    active_ids = {identity(row["name"], row["version"]) for row in active}
+    if "pyreadline3==3.5.6" in active_ids or "torch==2.6.0" in active_ids or "torch==2.6.0+cpu" not in active_ids:
+        raise SystemExit("self-test selected a non-Linux dependency row")
+    for marker, expected in LINUX_MARKER_VALUES.items():
+        if linux_marker(marker) is not expected:
+            raise SystemExit(f"self-test marker evaluation drift: {marker}")
+    for bad in ("sys_platform == 'linux'", "sys_platform != 'win32'", "sys_platform == 'darwin' or True", 1):
+        try: linux_marker(bad)
+        except AuditError: pass
+        else: raise SystemExit(f"self-test accepted unknown marker: {bad!r}")
+    synthetic_root = {"name": "root", "version": "1", "source": {"virtual": "."}, "resolution-markers": [], "dependencies": []}
+    synthetic = [synthetic_root, {"name": "a", "version": "1", "source": {"registry": PYPI_REGISTRY}, "resolution-markers": [], "dependencies": []}]
+    def expect_active_error(mutated: list[dict[str, Any]], label: str) -> None:
+        try: active_linux(mutated)
+        except AuditError: return
+        raise SystemExit(f"self-test accepted {label} lock tamper")
+    synthetic[0]["dependencies"] = [{"name": "a", "marker": "sys_platform == 'linux'"}]
+    expect_active_error(synthetic, "unknown edge marker")
+    synthetic[0]["dependencies"] = [{"name": "missing"}]
+    expect_active_error(synthetic, "missing dependency target")
+    synthetic[0]["dependencies"] = [{"name": "missing", "marker": "sys_platform == 'win32'"}]
+    expect_active_error(synthetic, "missing platform dependency target")
+    synthetic = [synthetic_root, {"name": "a", "version": "1", "source": {"registry": PYPI_REGISTRY}, "resolution-markers": [], "dependencies": []}, {"name": "a", "version": "1", "source": {"registry": TORCH_CPU_INDEX}, "resolution-markers": [], "dependencies": []}]
+    synthetic[0]["dependencies"] = [{"name": "a"}]
+    expect_active_error(synthetic, "ambiguous dependency target")
+    synthetic[0]["dependencies"] = [{"name": "a", "marker": "sys_platform == 'win32'"}]
+    expect_active_error(synthetic, "ambiguous platform dependency target")
+    synthetic = [synthetic_root, {"name": "a", "version": "1", "source": {"registry": PYPI_REGISTRY}, "resolution-markers": [], "dependencies": []}]
+    synthetic[0]["dependencies"] = [{"name": "a", "source": {"registry": TORCH_CPU_INDEX}}]
+    expect_active_error(synthetic, "wrong dependency source")
+    synthetic = [synthetic_root, {"name": "a", "version": "1", "source": {"registry": PYPI_REGISTRY}, "resolution-markers": [], "dependencies": []}, {"name": "orphan", "version": "1", "source": {"registry": PYPI_REGISTRY}, "resolution-markers": [], "dependencies": []}]
+    synthetic[0]["dependencies"] = [{"name": "a"}]
+    expect_active_error(synthetic, "unreachable row")
     if any(norm_name(row["name"]).startswith("nvidia-") or norm_name(row["name"]) == "triton" for row in rows):
         raise SystemExit("self-test found accelerator row")
     body = io.BytesIO()
@@ -427,6 +699,33 @@ def self_test() -> int:
     files = archive_license_files("https://files.pythonhosted.org/pkg-1.0.tar.gz", body.getvalue())
     if files[0]["sha256"] != sha256_bytes(b"Apache-2.0\n"):
         raise SystemExit("self-test lost exact license bytes")
+    class FakeResponse:
+        def __init__(self, value: bytes, url: str): self.value, self.url = value, url
+        def __enter__(self): return self
+        def __exit__(self, *_args: Any) -> None: return None
+        def geturl(self) -> str: return self.url
+        def read(self, _limit: int) -> bytes: return self.value
+    original_urlopen = urllib.request.urlopen
+    try:
+        license_body = body.getvalue()
+        license_url = "https://files.pythonhosted.org/pkg-1.0.tar.gz"
+        license_row = {"source": {"registry": PYPI_REGISTRY}, "sdist": {"url": license_url, "size": len(license_body), "hash": "sha256:" + sha256_bytes(license_body)}}
+        urllib.request.urlopen = lambda _request, timeout: FakeResponse(license_body, license_url)  # type: ignore[method-assign]
+        licensed = locked_sdist_license(license_row)
+        if licensed["status"] != "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES" or not licensed["license_files"] or licensed["sha256"] != license_row["sdist"]["hash"]:
+            raise SystemExit("self-test lost verified locked sdist license identity")
+        blocked_stream = io.BytesIO()
+        with tarfile.open(fileobj=blocked_stream, mode="w:gz"):
+            pass
+        blocked_body = blocked_stream.getvalue()
+        blocked_url = "https://files.pythonhosted.org/pkg-2.0.tar.gz"
+        blocked_row = {"source": {"registry": PYPI_REGISTRY}, "sdist": {"url": blocked_url, "size": len(blocked_body), "hash": "sha256:" + sha256_bytes(blocked_body)}}
+        urllib.request.urlopen = lambda _request, timeout: FakeResponse(blocked_body, blocked_url)  # type: ignore[method-assign]
+        blocked = locked_sdist_license(blocked_row)
+        if set(blocked) != {"status", "url", "final_url", "size", "sha256", "error", "license_files"} or blocked["status"] != "BLOCKED_LOCKED_SDIST_LICENSE" or blocked["sha256"] != blocked_row["sdist"]["hash"]:
+            raise SystemExit("self-test lost blocked locked sdist identity")
+    finally:
+        urllib.request.urlopen = original_urlopen  # type: ignore[method-assign]
     if native_inspection_failures("demo==1", [{"path": "demo.so", "inspection": "error"}]) != [
         "native payload inspection incomplete: demo==1: demo.so"
     ]:
@@ -442,6 +741,32 @@ def self_test() -> int:
         try: write_no_replace(output, b"clobber")
         except AuditError: pass
         else: raise SystemExit("self-test allowed report clobber")
+    expected_head = "a" * 40
+    report = make_self_test_evidence(project, expected_head)
+    with tempfile.TemporaryDirectory(prefix="owsm-evidence-test-", dir="/private/tmp") as directory:
+        evidence_path = Path(directory) / "report.json"
+        evidence_path.write_text(canonical(report), encoding="utf-8")
+        validate_evidence(evidence_path, expected_head, project)
+        def blank_other_license(item: dict[str, Any]) -> None:
+            for package in item["packages"]:
+                if identity(package["lock"]["name"], package["lock"]["version"]) != "torch-complex==0.4.4" and package["installed"]["publisher_license_files"]:
+                    package["installed"]["publisher_license_files"] = []
+                    return
+            raise AssertionError("self-test fixture has no publisher license row")
+        def traversal_license(item: dict[str, Any]) -> None:
+            for package in item["packages"]:
+                files = package["installed"]["locked_sdist_license"]
+                if files and files.get("license_files"):
+                    files["license_files"][0]["path"] = "../LICENSE"
+                    return
+            raise AssertionError("self-test fixture has no locked sdist license row")
+        def traversal_native(item: dict[str, Any]) -> None:
+            item["packages"][0]["installed"]["native_payloads"][0]["path"] = "../native.so"
+        for label, mutate in (("failure", lambda item: item.__setitem__("failures", ["unexpected"])), ("closure", lambda item: item["closure"].__setitem__("active_linux_rows", 41)), ("head", lambda item: item["git"].__setitem__("expected_head", "b" * 40)), ("publication", lambda item: item.__setitem__("publication", "UPLOAD")), ("platform", lambda item: item["environment"].__setitem__("platform", "darwin")), ("machine", lambda item: item["environment"].__setitem__("machine", "amd64")), ("python", lambda item: item["environment"].__setitem__("python", "3.13.0")), ("other-license", blank_other_license), ("license-path-traversal", traversal_license), ("native-path-traversal", traversal_native)):
+            tampered = json.loads(json.dumps(report)); mutate(tampered); evidence_path.write_text(canonical(tampered), encoding="utf-8")
+            try: validate_evidence(evidence_path, expected_head, project)
+            except AuditError: pass
+            else: raise SystemExit(f"self-test accepted evidence {label} tamper")
     print("owsm_v4_medium_1b dependency_audit self-test: OK")
     return 0
 
@@ -452,10 +777,20 @@ def main() -> int:
     parser.add_argument("--project", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--expected-head")
+    parser.add_argument("--validate-evidence", type=Path)
     args = parser.parse_args()
     if args.self_test:
-        if args.project or args.output or args.expected_head: parser.error("--self-test accepts no other arguments")
+        if args.project or args.output or args.expected_head or args.validate_evidence: parser.error("--self-test accepts no other arguments")
         return self_test()
+    if args.validate_evidence is not None:
+        if args.output is not None or args.expected_head is None: parser.error("--validate-evidence requires --expected-head and accepts no --output")
+        try:
+            validate_evidence(args.validate_evidence, args.expected_head, args.project or Path(__file__).resolve().parent)
+        except (AuditError, OSError, UnicodeError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+            print(f"OWSM dependency evidence validator: REJECTED ({exc})", file=sys.stderr)
+            return 2
+        print(f"OWSM dependency evidence validator: ACCEPTED_KNOWN_FACTUAL_BLOCKER ({args.validate_evidence})", file=sys.stderr)
+        return 0
     if args.project is None or args.output is None:
         parser.error("--project and --output are required")
     try:

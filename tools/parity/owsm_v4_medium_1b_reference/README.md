@@ -20,7 +20,10 @@ maintainer workstation. This project does not authorize checkpoint/BPE
 retrieval, upload, or model execution.
 
 `dependency_audit.py` is the model-free VAST audit for the same 43 lock rows
-(41 Linux distributions, one Darwin-only row, and the virtual project row).
+(40 Linux distributions, two platform-selected rows, and the virtual project
+row). It follows dependency edges from the virtual root using the Linux
+CPython marker set; the Windows-only `pyreadline3` edge is therefore excluded
+from the Linux closure.
 It records exact installed distribution metadata, publisher license-file
 hashes, locked PyPI-sdist license bytes when a wheel has no license file, and
 ELF `NEEDED` facts for native payloads. The audit is intentionally
@@ -29,7 +32,12 @@ it never changes the pending gate to `AUDITED_ALLOW`, and it does not import
 ESPnet/model code or request a checkpoint. The VAST source-only worker syncs
 this frozen project on the disposable host, writes the no-replace audit report,
 then stops before source, BPE, or model acquisition so the evidence can be
-reviewed independently.
+reviewed independently. For the pinned `torch-complex==0.4.4`, the official
+PyPI sdist/wheel and the official v0.4.4 source tag contain no license bytes;
+the report consequently remains the exact factual blocker
+`primary license bytes unavailable: torch-complex==0.4.4`. A metadata
+classifier or `setup.py` declaration is not substituted for license bytes, and
+this blocker must not be removed by inference.
 
 Run only the dependency-free self-test locally:
 

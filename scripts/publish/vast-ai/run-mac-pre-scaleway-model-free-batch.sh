@@ -126,8 +126,13 @@ validate_evidence() {
   [[ -f "$path" && ! -L "$path" ]] || die "$label did not produce regular evidence"
   size="$(wc -c < "$path" | tr -d ' ')"
   safe_evidence_path "$path" "$size" || die "$label evidence is oversized, unsafe, or payload-like"
-  json_status "$path" "$schema" "$status" "$publication" || die "$label evidence disposition is not the documented factual result"
+  if [[ "$label" != owsm ]]; then
+    json_status "$path" "$schema" "$status" "$publication" || die "$label evidence disposition is not the documented factual result"
+  fi
   case "$label" in
+    owsm)
+      [[ "$schema" == vokra-owsm-v4-medium-1b-dependency-audit-v1 && "$status" == BLOCKED_FACTUAL_AUDIT && "$publication" == NO_UPLOAD ]] || die 'OWSM batch status contract drift'
+      UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/owsm_v4_medium_1b_reference/dependency_audit.py" --validate-evidence "$path" --project "$ROOT/tools/parity/owsm_v4_medium_1b_reference" --expected-head "$ACTIVE_HEAD" >/dev/null || die 'OWSM factual dependency validator rejected the report' ;;
     qwen2-audio)
       UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/qwen2_audio_source_license_audit.py" --validate-evidence "$path" --expected-head "$ACTIVE_HEAD" >/dev/null || die 'Qwen2-Audio deep evidence validator rejected the report' ;;
     mms)
@@ -281,7 +286,7 @@ PY
 self_test() {
   [[ "$#" == 1 ]] || die '--self-test accepts no arguments'
   local fail=0 token
-  for token in '--expected-head' '--mms-language' '--output-dir' 'NOT_ACQUIRED' 'NO_UPLOAD' 'PIPESTATUS' 'object_pairs_hook' 'MAX_FILE' 'MAX_TOTAL' 'batch-manifest.json' 'run-audiogen-medium-inspection.sh' 'audit-cosyvoice3-source.sh' 'audit-irodori-text-block-dependencies.sh' 'run-moss-audio-api-smoke.sh' 'run-owsm-v4-medium-1b-inspection.sh' 'run-sbv2-jp-extra-g2p-contract.sh' 'run-mms-1b-all-validation.sh' 'run-qwen2-audio-7b-instruct-inspection.sh' 'run-vibevoice-asr-inspection.sh'; do
+  for token in '--expected-head' '--mms-language' '--output-dir' 'NOT_ACQUIRED' 'NO_UPLOAD' 'PIPESTATUS' 'object_pairs_hook' 'MAX_FILE' 'MAX_TOTAL' 'batch-manifest.json' 'run-audiogen-medium-inspection.sh' 'audit-cosyvoice3-source.sh' 'audit-irodori-text-block-dependencies.sh' 'run-moss-audio-api-smoke.sh' 'run-owsm-v4-medium-1b-inspection.sh' 'run-sbv2-jp-extra-g2p-contract.sh' 'run-mms-1b-all-validation.sh' 'run-qwen2-audio-7b-instruct-inspection.sh' 'run-vibevoice-asr-inspection.sh' 'BLOCKED_FACTUAL_AUDIT' '--validate-evidence' 'owsm factual dependency validator'; do
     grep -Fq -- "$token" "$SELF" || { echo "self-test missing token: $token" >&2; fail=1; }
   done
   if safe_evidence_path /private/tmp/illegal.safetensors 1 || safe_evidence_path /private/tmp/illegal.json "$((MAX_FILE + 1))"; then
@@ -348,6 +353,25 @@ PY
   for mutation in path-escape hash-tamper size-tamper total-tamper exit-tamper name-tamper status-tamper role-tamper work-root-tamper; do
     if validate_batch_manifest "$fixture/$mutation.json" "$head" jpn >/dev/null 2>&1; then echo "self-test accepted $mutation manifest tamper" >&2; fail=1; fi
   done
+  ACTIVE_HEAD="$head"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$ROOT/tools/parity/owsm_v4_medium_1b_reference" "$fixture/owsm-valid.json" "$head" <<'PY'
+import importlib.util, pathlib, sys
+project, output, head = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("owsm_dependency_audit", project / "dependency_audit.py")
+if spec is None or spec.loader is None: raise SystemExit("OWSM dependency audit import failed")
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+pathlib.Path(output).write_text(module.canonical(module.make_self_test_evidence(project, str(head))), encoding="utf-8")
+PY
+  if ! (validate_evidence owsm "$fixture/owsm-valid.json" vokra-owsm-v4-medium-1b-dependency-audit-v1 BLOCKED_FACTUAL_AUDIT NO_UPLOAD 2>/dev/null); then
+    echo 'self-test rejected valid OWSM factual report through batch path' >&2; fail=1
+  fi
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$fixture/owsm-valid.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]); value = json.loads(path.read_text(encoding="utf-8")); value["closure"]["active_linux_rows"] = 41; path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+PY
+  if (validate_evidence owsm "$fixture/owsm-valid.json" vokra-owsm-v4-medium-1b-dependency-audit-v1 BLOCKED_FACTUAL_AUDIT NO_UPLOAD 2>/dev/null); then
+    echo 'self-test accepted tampered OWSM factual report through batch path' >&2; fail=1
+  fi
   if [[ "$fixture" == /private/tmp/vokra-mac-batch-self-test.* && "$fixture" != /private/tmp/vokra-mac-batch-self-test. && -d "$fixture" ]]; then
     rm -rf -- "$fixture"
   else
@@ -401,7 +425,7 @@ main() {
   run_audit cosyvoice3 2 "$work/cosyvoice3/evidence/source-dependency-audit.json" vokra-cosyvoice3-source-dependency-audit-v1 BLOCKED_UNRESOLVED_COSYVOICE3_COMPOSITE NO_UPLOAD "$work/logs/cosyvoice3.log" env VOKRA_PUBLISH_ON_VAST=1 COSYVOICE3_SOURCE_AUDIT_WORK_DIR="$work/cosyvoice3" bash "$ROOT/scripts/publish/vast-ai/audit-cosyvoice3-source.sh" >> "$rows"
   run_audit irodori 2 "$work/irodori/dependency-audit.json" vokra-irodori-text-block-dependency-audit-v1 BLOCKED_OWNER_REVIEW NO_UPLOAD "$work/logs/irodori.log" env VOKRA_PUBLISH_ON_VAST=1 VOKRA_VAST_AUDIT=1 bash "$ROOT/scripts/publish/vast-ai/audit-irodori-text-block-dependencies.sh" --expected-head "$expected_head" --output "$work/irodori/dependency-audit.json" >> "$rows"
   run_audit moss-audio 0 "$work/moss/model-free-api-smoke-evidence.json" vokra-moss-audio-model-free-api-smoke-v1 PASS_MODEL_FREE NO_UPLOAD "$work/logs/moss-audio.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-moss-audio-api-smoke.sh" --model-free --variant all --expected-head "$expected_head" --work-dir "$work/moss" >> "$rows"
-  run_audit owsm 2 "/dev/shm/vokra-owsm-v4-medium-1b-source-only/evidence/dependency-audit.json" vokra-owsm-v4-medium-1b-dependency-audit-v1 BLOCKED_OWNER_REVIEW NO_UPLOAD "$work/logs/owsm.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-owsm-v4-medium-1b-inspection.sh" --source-only --expected-head "$expected_head" >> "$rows"
+  run_audit owsm 2 "/dev/shm/vokra-owsm-v4-medium-1b-source-only/evidence/dependency-audit.json" vokra-owsm-v4-medium-1b-dependency-audit-v1 BLOCKED_FACTUAL_AUDIT NO_UPLOAD "$work/logs/owsm.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-owsm-v4-medium-1b-inspection.sh" --source-only --expected-head "$expected_head" >> "$rows"
   run_audit sbv2 0 "$work/sbv2/contract.json" vokra-sbv2-jp-extra-g2p-v1 SBV2_CONTRACT NO_UPLOAD "$work/logs/sbv2.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-sbv2-jp-extra-g2p-contract.sh" --expected-head "$expected_head" --work-dir "$work/sbv2-work" --output "$work/sbv2/contract.json" >> "$rows"
   run_audit mms 2 "$work/mms/metadata.json" vokra-mms-1b-all-hf-metadata-evidence-v2 BLOCKED_PENDING_OWNER_REVIEW NO_UPLOAD "$work/logs/mms.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-mms-1b-all-validation.sh" --metadata-only --language "$mms_language" --expected-head "$expected_head" --output "$work/mms/metadata.json" >> "$rows"
   run_audit qwen2-audio 2 "$work/qwen2-audio/source-license-history.json" vokra-qwen2-audio-source-license-history-v1 SOURCE_LICENSE_UNKNOWN_BLOCKER NO_UPLOAD "$work/logs/qwen2-audio.log" env VOKRA_PUBLISH_ON_VAST=1 bash "$ROOT/scripts/publish/vast-ai/run-qwen2-audio-7b-instruct-inspection.sh" --source-license-audit --expected-head "$expected_head" --work-dir "$work/qwen2-audio" >> "$rows"
