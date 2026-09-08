@@ -68,7 +68,7 @@ are a pre-documentation-refresh snapshot from PR #79 at `d8a93bc3`, reviewed
 against `origin/main` `41ce9ffd`; that snapshot recorded 109 passes and 13
 expected skips. The live public audit currently reports 194 repositories (193
 GGUF repositories, 198 GGUF files). CPU coverage is
-`full=131`, `partial=42`, `no-runtime-binder=20`, `not-artifact=1`; Metal is
+`full=131`, `partial=45`, `no-runtime-binder=17`, `not-artifact=1`; Metal is
 `full=131`, `blocked-by-cpu=62`, `not-artifact=1`; source-level CPU-only
 coverage is 0.
 There are currently 0 release tags and 0 GitHub Releases.

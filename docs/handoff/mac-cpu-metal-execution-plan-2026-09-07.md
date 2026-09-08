@@ -23,6 +23,17 @@ historical evidence.  This document is the execution order and completion
 matrix.  When the live audit changes, update both documents in the same
 management commit.
 
+## Current live coverage snapshot (2026-09-09)
+
+The read-only Hugging Face inventory is 194 public repositories, 193
+GGUF-bearing repositories and 198 GGUF files. CPU classification is
+`full=131`, `partial=45`, `no-runtime-binder=17`, `not-artifact=1`; Metal is
+`full=131`, `blocked-by-cpu=62`, `not-artifact=1`, with zero source-level
+CPU-only rows. The two MOSS-Audio public artifacts are partial: their exact
+901-tensor legacy token-level binder exists, but old metadata/sidecar absence
+still blocks CLI string generation and real-weight VAST/Apple parity remains
+pending. Historical starting-point counts below are retained unchanged.
+
 ## Non-negotiable execution boundary
 
 - Never download or execute model weights on the maintainer Mac.

@@ -147,8 +147,8 @@ evidence は引き続き pending である。現行 0.3.0 系列では GigaAM v3
 Multilingual は conservative な Metal code route が complete だが、Apple
 hardware の verdict はまだ未取得である。OmniASR も認証済み Scaleway 実機 run
 待ちであり、source-level route の complete を Apple device 結果とはみなさない。
-live public coverage の現行値は CPU `full=131`、`partial=42`、
-`no-runtime-binder=20`、`not-artifact=1`、Metal `full=131`、
+live public coverage の現行値は CPU `full=131`、`partial=45`、
+`no-runtime-binder=17`、`not-artifact=1`、Metal `full=131`、
 `blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
 現時点の release tag は 0、GitHub Release も 0 である。
 

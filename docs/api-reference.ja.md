@@ -64,8 +64,8 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 snapshot であり、PR #79 の `d8a93bc3` を `origin/main` の `41ce9ffd` と照合して
 109 pass、13 expected skip を記録した時点のものである。live public audit の現行値は
 194 repository（GGUF repository 193、GGUF file 198）。CPU coverage は `full=131`、
-`partial=42`、
-`no-runtime-binder=20`、`not-artifact=1`、Metal は `full=131`、
+`partial=45`、
+`no-runtime-binder=17`、`not-artifact=1`、Metal は `full=131`、
 `blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
 現時点の release tag は 0、GitHub Release も 0 である。
 
