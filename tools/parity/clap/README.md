@@ -49,6 +49,12 @@ UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
 UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
   uv run --no-sync --project tools/parity/clap \
   python tools/parity/clap/license_gate.py --self-test
+UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
+  uv run --no-project --offline --python 3.12 python \
+  tools/parity/clap_source_only_reference.py --self-test
+UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
+  uv run --no-project --offline --python 3.12 python \
+  tools/parity/clap_expected_manifest.py --self-test
 ```
 
 Before any owner-approved real-weight inspection, the VAST worker supports an
@@ -125,6 +131,22 @@ The raw release preprocessor JSON is validated against the complete
 round-trip contract intentionally excludes only that key; the raw
 `processor_class=ClapProcessor` is separately bound to the official
 `ClapProcessor` source fact in the evidence.
+
+The model-free audit emits an independent `source_contract`, but it remains
+`PENDING_VAST_WHEEL_BINDING` until the exact locked Transformers 5.10.4 wheel
+(`8c5b...`) is downloaded and its archive members, `RECORD`, and installed
+files agree. Only then may it become `AUTHENTICATED_LOCKED_WHEEL_SOURCE`.
+The bound surface includes the official `ClapFeatureExtractor` entrypoints,
+`ClapProcessor`/`ProcessorMixin`, and the `RobertaTokenizer` path; model HF
+repository/revision and Transformers wheel identity are separate fields.
+
+The model-free worker then runs a source-only reference stage against the
+materialized config/preprocessor/tokenizer files. It uses deterministic PCM
+and fixed text and emits F32 audio features plus IDs/masks atomically. It never
+loads `ClapModel` weights or runs a forward. A separate meta-device stage
+constructs `ClapModel(config)` only to emit
+`SOURCE_DERIVED_EXPECTED_MANIFEST`; this must never be confused with an
+observed checkpoint state-dict manifest. Both stages fail closed.
 
 Only after owner approval and a clean disposable VAST checkout may the normal
 reference command be run with a pinned local snapshot and an output directory.

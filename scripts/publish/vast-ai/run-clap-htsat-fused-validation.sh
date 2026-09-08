@@ -10,6 +10,8 @@ PARITY_PROJECT="$VOKRA_ROOT/tools/parity/clap"
 REFERENCE_DUMPER="tools/parity/clap_dump_reference.py"
 MODEL_FREE_AUDIT="$PARITY_PROJECT/clap_model_free_audit.py"
 DEPENDENCY_LICENSE_AUDIT="$PARITY_PROJECT/clap_dependency_license_audit.py"
+SOURCE_ONLY_REFERENCE="$VOKRA_ROOT/tools/parity/clap_source_only_reference.py"
+EXPECTED_MANIFEST="$VOKRA_ROOT/tools/parity/clap_expected_manifest.py"
 UPSTREAM_REPO="laion/clap-htsat-fused"
 UPSTREAM_REVISION="365dea6ef167def6676140ed93bbc43f84dabb28"
 MIN_VAST_MEM_KIB=$((64 * 1024 * 1024))
@@ -113,7 +115,7 @@ validate_absent_work() {
   [[ -d "$parent" && ! -L "$parent" ]] || return 2
   candidate="$(cd -P "$parent" && pwd)"
   for (( item = ${#suffix[@]} - 1; item >= 0; item-- )); do candidate="$candidate/${suffix[item]}"; done
-  local root_real project_parent project_real
+  local root_real project_real
   root_real="$(cd -P "$VOKRA_ROOT" 2>/dev/null && pwd)" || return 2
   [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && "$root_real/" != "$candidate/"* ]] || return 2
   project_real="$(cd -P "$PARITY_PROJECT" 2>/dev/null && pwd)" || return 2
@@ -128,9 +130,11 @@ usage: run-clap-htsat-fused-validation.sh --approval-evidence <file> --approval-
 
 The --model-free path is Linux/VAST-only. It resolves only the exact
 Hugging Face config/preprocessor metadata with the frozen CLAP project,
-authenticates the official Transformers config and preprocessing API, and
-records dependency/license facts. It never acquires or loads checkpoint
-weights. The approval path remains a separate real-weight inspection gate.
+binds the exact Transformers wheel/RECORD source identity, runs a
+model-free audio/text source-only reference, and derives a separate expected
+state-dict manifest on the meta device. It never acquires checkpoint weights
+or runs a model forward. The approval path remains a separate real-weight
+inspection gate.
 EOF
 }
 
@@ -158,11 +162,13 @@ require_model_free_tooling() {
   [[ -f "$MODEL_FREE_AUDIT" && ! -L "$MODEL_FREE_AUDIT" ]] || { die 'CLAP model-free audit is missing or symlinked'; return 2; }
   [[ -f "$DEPENDENCY_LICENSE_AUDIT" && ! -L "$DEPENDENCY_LICENSE_AUDIT" ]] || { die 'CLAP dependency/license audit is missing or symlinked'; return 2; }
   [[ -f "$VOKRA_ROOT/$REFERENCE_DUMPER" && ! -L "$VOKRA_ROOT/$REFERENCE_DUMPER" ]] || { die 'CLAP reference dumper is missing or symlinked'; return 2; }
+  [[ -f "$SOURCE_ONLY_REFERENCE" && ! -L "$SOURCE_ONLY_REFERENCE" ]] || { die 'CLAP source-only reference is missing or symlinked'; return 2; }
+  [[ -f "$EXPECTED_MANIFEST" && ! -L "$EXPECTED_MANIFEST" ]] || { die 'CLAP expected manifest route is missing or symlinked'; return 2; }
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
 }
 
 run_model_free() {
-  local expected="$1" work="$2" metadata_dir metadata_snapshot evidence dependency_inventory dependency_inventory_rc
+  local expected="$1" work="$2" metadata_dir metadata_snapshot evidence dependency_inventory dependency_inventory_rc transformers_wheel source_reference expected_manifest
   [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { die '--expected-head must be exactly 40 lowercase hex'; return 2; }
   require_model_free_tooling
   require_model_free_host
@@ -231,8 +237,9 @@ path = Path(snapshot_download(
 ))
 if path.name != revision:
     raise SystemExit(f"pinned CLAP metadata snapshot drifted: {path.name!r} != {revision!r}")
-if not (path / "config.json").is_file() or not (path / "preprocessor_config.json").is_file():
-    raise SystemExit("pinned CLAP metadata snapshot is missing config or preprocessor")
+metadata_files = ("config.json", "preprocessor_config.json", "tokenizer_config.json", "vocab.json", "merges.txt")
+if any(not (path / filename).is_file() for filename in metadata_files):
+    raise SystemExit("pinned CLAP metadata snapshot is missing required tokenizer/config files")
 for item in path.rglob("*"):
     if item.is_file() and item.suffix.lower() in {".bin", ".ckpt", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"}:
         raise SystemExit(f"model-free metadata snapshot contains weights: {item.name}")
@@ -276,10 +283,10 @@ tree_by_path = {}
 for entry in tree_entries:
     value = entry_mapping(entry)
     path_name = value.get("path")
-    if path_name in {"config.json", "preprocessor_config.json"}:
+    if path_name in metadata_files:
         tree_by_path[path_name] = value
 remote_files = {}
-for filename in ("config.json", "preprocessor_config.json"):
+for filename in metadata_files:
     source = path / filename
     destination = output_path / "materialized" / filename
     if not source.is_file() or source.is_symlink() and not source.resolve().is_file():
@@ -344,6 +351,50 @@ PY
   [[ -d "$metadata_snapshot" && ! -L "$metadata_snapshot" ]] || die 'materialized CLAP metadata directory is missing'
   [[ -f "$metadata_dir/remote-identity.json" && ! -L "$metadata_dir/remote-identity.json" ]] || die 'remote identity evidence is missing'
 
+  transformers_wheel="$work/transformers-5.10.4-py3-none-any.whl"
+  UV_CACHE_DIR="$CLAP_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python - \
+    "$transformers_wheel" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+destination = Path(sys.argv[1])
+url = "https://files.pythonhosted.org/packages/d7/f1/d66881f28d3e64002a21d043c7c8db306c0ad5a711c85337ff551bfbc040/transformers-5.10.4-py3-none-any.whl"
+expected_hash = "8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"
+expected_size = 11004075
+with urlopen(Request(url, headers={"Accept": "application/octet-stream"}), timeout=60) as response:
+    chunks = []
+    remaining = expected_size + 1
+    while remaining:
+        chunk = response.read(min(1024 * 1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    payload = b"".join(chunks)
+if len(payload) != expected_size or hashlib.sha256(payload).hexdigest() != expected_hash:
+    raise SystemExit("locked Transformers wheel bytes failed exact size/SHA-256 binding")
+with destination.open("xb") as stream:
+    stream.write(payload)
+PY
+
+  UV_CACHE_DIR="$CLAP_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python \
+    "$MODEL_FREE_AUDIT" --wheel-binding-only \
+    --project "$PARITY_PROJECT/pyproject.toml" \
+    --lock "$PARITY_PROJECT/uv.lock" \
+    --transformers-wheel "$transformers_wheel" \
+    || die 'CLAP exact Transformers installed-tree binding failed; source stages remain blocked'
+
+  source_reference="$work/source-only"
+  UV_CACHE_DIR="$CLAP_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python \
+    "$SOURCE_ONLY_REFERENCE" --snapshot "$metadata_snapshot" --output-dir "$source_reference" \
+    || die 'CLAP source-only processor stage failed or is blocked'
+  expected_manifest="$work/source-derived-expected-manifest.json"
+  UV_CACHE_DIR="$CLAP_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python \
+    "$EXPECTED_MANIFEST" --config "$metadata_snapshot/config.json" --output "$expected_manifest" \
+    || die 'CLAP source-derived meta manifest stage failed or is blocked'
+
   set +e
   UV_CACHE_DIR="$CLAP_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python \
     "$DEPENDENCY_LICENSE_AUDIT" \
@@ -364,6 +415,9 @@ PY
     --config "$metadata_snapshot/config.json" \
     --preprocessor "$metadata_snapshot/preprocessor_config.json" \
     --remote-identity "$metadata_dir/remote-identity.json" \
+    --transformers-wheel "$transformers_wheel" \
+    --source-reference "$source_reference/meta.json" \
+    --expected-manifest "$expected_manifest" \
     --dependency-inventory "$dependency_inventory" \
     --output "$evidence" || die 'CLAP model-free audit failed'
   printf '%s\n' \
@@ -372,6 +426,10 @@ PY
     "expected_head=$expected" \
     "evidence_sha256=$(sha256_file "$evidence")" \
     "dependency_inventory_sha256=$(sha256_file "$dependency_inventory")" \
+    "source_reference_sha256=$(sha256_file "$source_reference/meta.json")" \
+    "expected_manifest_sha256=$(sha256_file "$expected_manifest")" \
+    'source_status=PASS_SOURCE_ONLY' \
+    'expected_manifest_status=SOURCE_DERIVED_EXPECTED_MANIFEST' \
     'dependency_audit_status=PENDING_VAST_AUDIT' \
     'weights=NOT_ACQUIRED' \
     'model_load=NOT_PERFORMED' \
@@ -393,7 +451,12 @@ self_test() {
     'HfApi' 'list_repo_tree' 'resolved_revision' 'card_data_source' \
     'card_data_license_status' 'repo_license_file_status' '--remote-identity' '--dependency-inventory' \
     'remote_files' 'local_git_blob_sha1' 'remote_lfs_sha256' 'dependency_audit_status=PENDING_VAST_AUDIT' 'weights=NOT_ACQUIRED' \
-    'transformers_clap_model_source_sha256' 'tensor_manifest' \
+    'transformers_clap_model_source_sha256' 'tensor_manifest' 'source_contract' \
+    'PENDING_VAST_WHEEL_BINDING' 'source_contract_status' 'AUTHENTICATED_LOCKED_WHEEL_SOURCE' 'PASS_LOCKED_WHEEL_BINDING' \
+    'SOURCE_ONLY_REFERENCE_EXECUTED' 'BLOCKED_SOURCE_ONLY' 'BLOCKED_META_CONSTRUCTION' 'SOURCE_DERIVED_EXPECTED_MANIFEST' 'transformers-wheel' 'wheel-binding-only' \
+    'archive_members' 'installed_members' 'python_source_tree' 'canonical_tree_sha256' 'RECORD' 'byte_length' 'itemsize' 'endianness' 'ClapFeatureExtractor' '_get_input_mel' \
+    '_np_extract_fbank_features' 'ProcessorMixin' 'RobertaTokenizer' 'clap_source_only_reference.py' \
+    'clap_expected_manifest.py' 'transformers_sources' '--source-reference' '--expected-manifest' '--transformers-wheel' \
     'owner_review_candidate.py' 'owner_review_candidate.json' 'PENDING_OWNER_REVIEW' 'SIGNED_COMMERCIAL' \
     'row_sha256' 'docs/license-audit.md' 'payload_sha256' \
     'validate_feature_extractor_serializer_contract' 'processor_class' \
@@ -489,6 +552,16 @@ self_test() {
   if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
     "$MODEL_FREE_AUDIT" --self-test >/dev/null; then
     log 'self-test FAIL: model-free audit self-test failed'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$SOURCE_ONLY_REFERENCE" --self-test >/dev/null; then
+    log 'self-test FAIL: source-only reference self-test failed'
+    fail=1
+  fi
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$EXPECTED_MANIFEST" --self-test >/dev/null; then
+    log 'self-test FAIL: expected manifest self-test failed'
     fail=1
   fi
   if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \

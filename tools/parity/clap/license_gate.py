@@ -35,6 +35,7 @@ def self_test() -> None:
     assert values["transformers_wheel_sha256"] == TRANSFORMERS_WHEEL_SHA256
     assert values["license_status"] == "OWNER_REVIEW_PENDING"
     assert values["dependency_audit_status"] == "PENDING_VAST_AUDIT"
+    assert values["source_contract_status"] == "PENDING_VAST_WHEEL_BINDING"
     assert values["publication"] == "NO_UPLOAD"
     assert project["project"]["dependencies"] == DEPENDENCIES
     assert project["tool"]["uv"]["environments"] == [

@@ -32,4 +32,5 @@ transformers_wheel_sha256 = "8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0
 license_status = "OWNER_REVIEW_PENDING"
 license_evidence = "HF cardData reports apache-2.0 at the pinned revision; no owner approval is inferred here."
 dependency_audit_status = "PENDING_VAST_AUDIT"
+source_contract_status = "PENDING_VAST_WHEEL_BINDING"
 publication = "NO_UPLOAD"
