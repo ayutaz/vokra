@@ -1679,6 +1679,59 @@ fingerprint and run all named CPU/Metal workers with explicit no-fallback
 verdicts. Hardware failures return to an implementation/VAST wave and mean the
 campaign is not complete.
 
+## 2026-09-09 Accelerate advisory closure and exact-head replay
+
+PR #79's dependency review identified `GHSA-4j2p-28q2-5m79` in additional
+new Python lock trees. The advisory covers every published Accelerate release
+through `1.14.0` and has no patched release. Commits `97023524` and
+`dbf56e3f` remove the unused package through `uv remove` from MOSS Audio
+Tokenizer v2 and from the Qwen3-TTS model-free environment. MOSS Audio
+Tokenizer Nano and the Qwen3-TTS real-weight route now stop with
+`BLOCKED_SECURITY_ADVISORY` before source or checkpoint acquisition where a
+safe replacement for Accelerate-backed loading has not yet been proved. The
+MOSS Audio 4B/8B real-weight reference tree remains a separate explicit
+security blocker because its official loader uses `low_cpu_mem_usage=True`;
+changing that path requires an owner-authorized high-memory VAST load/parity
+comparison or an owner decision to withhold it.
+
+All 39 lock files added or changed by this PR were rescanned at exact clean
+implementation head `dbf56e3fbf3afc5f2e6263bef4955c0ef82f4370`; none contains
+an `accelerate` package row. On VAST instance `50284673`, the exact-head
+workspace replay again completed 305 suites with 8,007 passing tests, zero
+failures and 100 ignored tests. Workspace/all-target/all-feature Clippy exited
+zero. Format, locked metadata, zero-deps, forbidden-symbol, fixture-EOL,
+pipefail, architecture-handshake, bound-architecture, zoo-manifest and HiFT
+self-test gates passed. `cargo-deny` passed advisories, bans, licenses and
+sources with only the existing unused `libfuzzer-sys` exception warning, and
+`cargo-audit` exited zero after loading 1,242 advisories.
+
+The corrected Qwen3-TTS four-variant model-free API smoke passed without a
+checkpoint load; its evidence SHA-256 is
+`c5c81b0fb0fceb426b0ef2f1196ec712e82080091d06fef77afb1aa898569f70`.
+The corrected MOSS Audio model-free smoke also passed; its evidence SHA-256 is
+`19a2522b3168114f51c6d4bc4be344124d6f5729ea8bb079c1867bf0bc4e9e69`.
+The Qwen3-TTS, MOSS Nano and MOSS Tokenizer v2 dependency audits produced
+review candidates and stopped at their intended unresolved owner/package
+review gates. MOSS Nano inspection stopped at the new advisory gate before
+source or weight access. No model weight or Hugging Face token was acquired,
+no upload occurred and no model was executed on the maintainer Mac.
+
+The recovered bounded archive is
+`/private/tmp/vokra-security-evidence-dbf56e3f.tar.gz`, SHA-256
+`ac43dfcb9165b2c9d3ff9e5fc46afd03d973a0e5165e220987ad0109fcebcc62`.
+Every internal checksum passed after transfer and the archive contains no
+model/checkpoint payload. Instance `50284673` was then stopped; provider
+readback showed `cur_state`, `intended_status` and `next_state` all
+`stopped`. It still incurs storage charges until exact-id destruction is
+authorized. Unrelated instance `50293364` was not modified.
+
+This closes the newly discovered owner-independent security follow-up. The
+remaining non-Scaleway work is external-input work: immutable owner/legal or
+missing-source decisions and, only for approved scopes, real-weight VAST
+conversion, independent-reference and CPU-parity execution. Scaleway is still
+needed only for the final Apple Silicon CPU/reference, Metal/reference and
+Metal/CPU no-fallback verdicts.
+
 ## Work that necessarily follows the Scaleway compute run
 
 Scaleway can be the final compute service, but it cannot safely be the literal

@@ -913,6 +913,42 @@ non-Scaleway external-input/VAST blocker, not hidden completed work. The old
 worker could not be restarted because its host had no free resources and
 remained stopped/exited; no additional instance was rented.
 
+## 2026-09-09 Accelerate follow-up completed
+
+The retained worker later became available and was used only for the bounded
+security replay. Commits `97023524` and `dbf56e3f` remove vulnerable
+Accelerate rows from MOSS Tokenizer v2, MOSS Tokenizer Nano and Qwen3-TTS;
+routes whose safe real-weight replacement is unproved now fail closed with
+`BLOCKED_SECURITY_ADVISORY`. A scan of all 39 lock files added or changed by
+PR #79 found no remaining `accelerate` package row.
+
+At exact clean implementation head
+`dbf56e3fbf3afc5f2e6263bef4955c0ef82f4370`, VAST instance `50284673`
+repeated 305 workspace suites: 8,007 passed, zero failed and 100 were ignored.
+Workspace/all-target/all-feature Clippy, format, locked metadata, zero-deps,
+forbidden-symbol, fixture-EOL, pipefail, architecture, model-zoo, HiFT,
+`cargo-deny` and `cargo-audit` gates all passed. The Qwen3-TTS all-variant and
+MOSS Audio model-free API smokes passed with evidence SHA-256 values
+`c5c81b0fb0fceb426b0ef2f1196ec712e82080091d06fef77afb1aa898569f70` and
+`19a2522b3168114f51c6d4bc4be344124d6f5729ea8bb079c1867bf0bc4e9e69`
+respectively. The remaining dependency/inspection workers stopped at their
+intended owner-review or security gates before weight access.
+
+The recovered archive is
+`/private/tmp/vokra-security-evidence-dbf56e3f.tar.gz`, SHA-256
+`ac43dfcb9165b2c9d3ff9e5fc46afd03d973a0e5165e220987ad0109fcebcc62`.
+Its internal hashes passed and it contains no model/checkpoint payload. No HF
+token, upload or maintainer-Mac model execution was involved. Instance
+`50284673` was stopped after recovery, with all three provider control-state
+fields reading `stopped`; storage remains until exact-id destruction is
+authorized. Instance `50293364` was not touched.
+
+All currently known owner-independent non-Scaleway work is therefore complete.
+The remaining non-Scaleway actions require owner/legal/source decisions and,
+where approved, authenticated real-weight VAST conversion/reference/CPU
+parity. Scaleway remains limited to the final Apple Silicon CPU and Metal
+no-fallback evidence.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously
