@@ -1339,7 +1339,7 @@ def self_test() -> int:
     manifest = load_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
     proof = dac_provenance.validate_proof(DAC_PROOF_PATH)
     assert proof["status"] == "PASS" and proof["tensor_count"] == 301
-    with tempfile.TemporaryDirectory(prefix="parler-dac-proof-self-test-", dir="/private/tmp") as proof_directory:
+    with tempfile.TemporaryDirectory(prefix="parler-dac-proof-self-test-", dir=preflight_gate.secure_temp_parent()) as proof_directory:
         proof_root = Path(proof_directory)
         try:
             dac_provenance.validate_proof(proof_root / "missing.json")

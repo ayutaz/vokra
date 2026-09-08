@@ -251,8 +251,11 @@ record_environment() {
 }
 
 run_self_test() (
-  local temporary script_path required manifest_digest api_line license_line
-  temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-parler-tts-apple.XXXXXX")"
+  local temporary temp_parent script_path required manifest_digest api_line license_line
+  temp_parent="${TMPDIR:-/tmp}"
+  [[ -d "$temp_parent" && ! -L "$temp_parent" ]] || temp_parent=/tmp
+  temp_parent="$(cd -P "$temp_parent" && pwd)"
+  temporary="$(mktemp -d "$temp_parent/vokra-parler-tts-apple.XXXXXX")"
   trap 'rm -rf "$temporary"' EXIT
   [[ -f "$DUMPER" && ! -L "$DUMPER" ]] || die 'Parler dumper is missing'
   grep -Fq -- 'BLOCKED_UNVERIFIED_API_SMOKE' "$DUMPER" || die 'Parler dumper lost API smoke blocker'

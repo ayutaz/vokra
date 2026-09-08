@@ -763,7 +763,7 @@ def self_test() -> int:
             pass
         else:
             raise AssertionError("missing model was accepted")
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory() as temporary:
             checkout = Path(temporary) / "checkout"
             checkout.mkdir()
             subprocess.run(["git", "init", "-q", str(checkout)], check=True, capture_output=True)
@@ -777,7 +777,7 @@ def self_test() -> int:
                 pass
             else:
                 raise AssertionError("dirty checkout was accepted")
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output_parent = root / "output"
             output_parent.mkdir()

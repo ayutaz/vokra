@@ -169,11 +169,7 @@ canonical_absent_path() {
     [[ "$component" != ".." ]] || { die 'work-dir path contains ..'; return 2; }
     current="${current%/}/$component"
     if [[ -L "$current" ]]; then
-      real="$(cd -P "$current" 2>/dev/null && pwd)" || { die 'work-dir path contains an inaccessible component'; return 2; }
-      case "$current:$real" in
-        /var:/private/var|/tmp:/private/tmp) current="$real" ;;
-        *) die 'work-dir path contains a symlinked component'; return 2 ;;
-      esac
+      die 'work-dir path contains a symlinked component'; return 2
     fi
   done
   current="$target"; suffix=""
@@ -231,7 +227,7 @@ record_environment() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0 api_line gate_line host_line sync_line deleted_script audit_token original_transformers_status
+  local tmp tmp_parent payload actual script_path cases=0 fail=0 api_line gate_line host_line sync_line deleted_script audit_token original_transformers_status
   check_dependency_audit_order() {
     local candidate="$1" candidate_sync candidate_audit candidate_download
     candidate_sync="$(grep -nF "  uv sync --project \"\$PARITY_PROJECT\" --frozen --python 3.12" "$candidate" | tail -1 | cut -d: -f1)"
@@ -240,7 +236,10 @@ run_self_test() {
     [[ "$candidate_sync" =~ ^[0-9]+$ && "$candidate_audit" =~ ^[0-9]+$ && "$candidate_download" =~ ^[0-9]+$ ]] \
       && (( candidate_sync < candidate_audit && candidate_audit < candidate_download ))
   }
-  tmp="$(mktemp -d)"
+  tmp_parent="${TMPDIR:-/tmp}"
+  [[ -d "$tmp_parent" && ! -L "$tmp_parent" ]] || tmp_parent=/tmp
+  tmp_parent="$(cd -P "$tmp_parent" && pwd)"
+  tmp="$(mktemp -d "$tmp_parent/parler-validation-self-test.XXXXXX")"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
   [[ -f "$DUMPER" && ! -L "$DUMPER" ]] || { log 'self-test FAIL: Parler dumper is missing'; fail=1; }

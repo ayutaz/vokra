@@ -123,6 +123,14 @@ PROOF_BINDING = {
     "hf_revision": HF_REVISION,
 }
 
+
+def secure_temp_parent() -> str:
+    """Use the OS temp directory after resolving macOS's /var alias."""
+    parent = Path(tempfile.gettempdir()).resolve()
+    if not parent.is_dir() or parent.is_symlink():
+        raise RuntimeError(f"temporary parent is not a regular directory: {parent}")
+    return str(parent)
+
 PROOF_SCHEMA_KEYS = {
     "dac_derived", "dac_kwargs", "environment", "hf", "inference_parity",
     "inference_run", "key_mapping", "model_artifacts_read", "model_code_imported",
@@ -618,7 +626,7 @@ def self_test() -> int:
     torch, safe_open = load_torch_and_safetensors()
     from safetensors.torch import save_file
 
-    with tempfile.TemporaryDirectory(prefix="parler-dac-provenance-", dir="/private/tmp") as directory:
+    with tempfile.TemporaryDirectory(prefix="parler-dac-provenance-", dir=secure_temp_parent()) as directory:
         root = Path(directory)
         repo_root = root / "repo"
         repo_root.mkdir()

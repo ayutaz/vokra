@@ -69,6 +69,14 @@ PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE = {
     ),
 }
 PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE = set(PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE.values())
+
+
+def secure_temp_parent() -> str:
+    """Use the OS temp directory after resolving macOS's /var alias."""
+    parent = Path(tempfile.gettempdir()).resolve()
+    if not parent.is_dir() or parent.is_symlink():
+        raise RuntimeError(f"temporary parent is not a regular directory: {parent}")
+    return str(parent)
 REGISTRY_PACKAGE_SCHEMAS = {
     frozenset({"name", "version", "source", "sdist", "wheels"}),
     frozenset({"name", "version", "source", "dependencies", "sdist", "wheels"}),
@@ -593,7 +601,7 @@ def self_test() -> int:
         else:
             print("parler artifact accepted under the wrong package identity", file=sys.stderr)
             return 1
-    with tempfile.TemporaryDirectory(prefix="parler-gate-", dir="/private/tmp") as directory:
+    with tempfile.TemporaryDirectory(prefix="parler-gate-", dir=secure_temp_parent()) as directory:
         root = Path(directory)
         test_project = root / "project"
         test_project.mkdir()

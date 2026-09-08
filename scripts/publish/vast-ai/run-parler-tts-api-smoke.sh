@@ -60,10 +60,7 @@ canonical_candidate() {
   parent="$value"
   while [[ "$parent" != / ]]; do
     if [[ -L "$parent" ]]; then
-      case "$parent:$(cd -P "$parent" 2>/dev/null && pwd)" in
-        /var:/private/var|/tmp:/private/tmp) ;;
-        *) die "path contains symlink ancestor: $parent"; return 2 ;;
-      esac
+      die "path contains symlink ancestor: $parent"; return 2
     fi
     parent="$(dirname "$parent")"
   done
@@ -84,10 +81,7 @@ canonical_existing_path() {
   parent="$value"
   while [[ "$parent" != / ]]; do
     if [[ -L "$parent" ]]; then
-      case "$parent:$(cd -P "$parent" 2>/dev/null && pwd)" in
-        /var:/private/var|/tmp:/private/tmp) ;;
-        *) die "path contains symlink ancestor: $parent"; return 2 ;;
-      esac
+      die "path contains symlink ancestor: $parent"; return 2
     fi
     parent="$(dirname "$parent")"
   done
@@ -155,8 +149,11 @@ download_hf_file() {
 }
 
 run_self_test() (
-  local self="${BASH_SOURCE[0]}" tmp fail=0 fake_root fake_uv
-  tmp="$(mktemp -d)"
+  local self="${BASH_SOURCE[0]}" tmp tmp_parent fail=0 fake_root fake_uv
+  tmp_parent="${TMPDIR:-/tmp}"
+  [[ -d "$tmp_parent" && ! -L "$tmp_parent" ]] || tmp_parent=/tmp
+  tmp_parent="$(cd -P "$tmp_parent" && pwd)"
+  tmp="$(mktemp -d "$tmp_parent/parler-api-smoke-self-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   [[ -f "$API_SMOKE" && ! -L "$API_SMOKE" ]] || { log 'self-test FAIL: API smoke Python worker missing'; fail=1; }
   for required in "$SOURCE_REPOSITORY" "$SOURCE_REVISION" "$TRANSFORMERS_VERSION" \

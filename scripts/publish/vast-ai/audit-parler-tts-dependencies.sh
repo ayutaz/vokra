@@ -160,8 +160,10 @@ run_audit() {
 }
 
 self_test() {
-  local failed=0 probe_root blocked_output probe_parent=/tmp
-  [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
+  local failed=0 probe_root blocked_output probe_parent="${TMPDIR:-/tmp}"
+  [[ -d "$probe_parent" && ! -L "$probe_parent" ]] || probe_parent=/tmp
+  probe_parent="${probe_parent%/}"
+  probe_parent="$(cd -P "$probe_parent" && pwd)" || return 1
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- '--model-free' "$0" || failed=1
   grep -Fq -- 'MODEL_FREE_DEPENDENCY_ONLY' "$AUDIT" || failed=1
@@ -172,9 +174,9 @@ self_test() {
   grep -Fq -- 'uv run --no-cache --no-project --offline --python 3.12' "$0" || failed=1
   if "$0" --model-free --self-test >/dev/null 2>&1; then failed=1; fi
   if "$0" --self-test --model-free >/dev/null 2>&1; then failed=1; fi
-  if "$0" --self-test --output /private/tmp/unused.json >/dev/null 2>&1; then failed=1; fi
+  if "$0" --self-test --output "$probe_parent/unused.json" >/dev/null 2>&1; then failed=1; fi
   if "$0" --model-free >/dev/null 2>&1; then failed=1; fi
-  if "$0" --model-free --model-free --output /private/tmp/unused.json >/dev/null 2>&1; then failed=1; fi
+  if "$0" --model-free --model-free --output "$probe_parent/unused.json" >/dev/null 2>&1; then failed=1; fi
   if "$0" --unknown-option >/dev/null 2>&1; then failed=1; fi
   probe_root="$(mktemp -d "$probe_parent/parler-dependency-audit-wrapper.XXXXXX")"
   blocked_output="$probe_root/blocked.json"
