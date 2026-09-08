@@ -84,8 +84,27 @@ def unique(pairs:list[tuple[str,Any]])->dict[str,Any]:
 def safe(name:str)->None:
  p=PurePosixPath(name)
  if not name or "\x00" in name or "\\" in name or p.is_absolute() or ".." in p.parts: raise ValueError(f"unsafe path {name!r}")
+def real_directory(path:Path,label:str)->Path:
+ if not path.is_absolute() or any(part in ("", ".", "..") for part in path.parts[1:]): raise ValueError(f"{label} path must be absolute and dot-free")
+ current=Path(path.anchor)
+ for part in path.parts[1:]:
+  current/=part
+  if current.is_symlink(): raise ValueError(f"{label} path contains a symlink ancestor")
+ if not path.is_dir() or path.is_symlink(): raise ValueError(f"{label} must be an existing regular directory")
+ return path
+def raw_path(raw:str,label:str)->Path:
+ if not isinstance(raw,str) or not raw.startswith("/") or raw=="/" or "\x00" in raw or "//" in raw or "/./" in raw or "/../" in raw or raw.endswith(("/.","/..")):
+  raise ValueError(f"{label} path must be absolute and dot-free")
+ return Path(raw)
+def real_directory_arg(raw:str,label:str)->Path:
+ return real_directory(raw_path(raw,label),label)
+def real_file_arg(raw:str,label:str)->Path:
+ path=raw_path(raw,label); parent=path.parent
+ real_directory(parent,f"{label} parent")
+ if not path.is_file() or path.is_symlink(): raise ValueError(f"{label} must be an existing regular file")
+ return path
 def files(root:Path)->dict[str,Path]:
- root=root.resolve(); out={}
+ root=real_directory(root,"snapshot"); out={}
  for p in root.rglob("*"):
   rel=p.relative_to(root).as_posix()
   if rel==".cache" or rel.startswith(".cache/"): continue
@@ -193,7 +212,7 @@ def require_vast()->None:
  if platform.system()!="Linux" or platform.machine()!="x86_64": raise RuntimeError("inspection requires Linux x86_64 VAST")
  if os.environ.get("VOKRA_PUBLISH_ON_VAST")!="1": raise RuntimeError("VOKRA_PUBLISH_ON_VAST=1 is absent")
 def write_manifest_no_replace(evidence:Path, manifest:dict[str,Any])->None:
- if evidence.is_symlink() or not evidence.is_dir(): raise ValueError("evidence directory must be an existing regular directory")
+ evidence=real_directory(evidence,"evidence")
  output=evidence/"manifest.json"
  if output.exists() or output.is_symlink(): raise ValueError("manifest output already exists")
  fd, temporary=tempfile.mkstemp(prefix=".manifest.",suffix=".tmp",dir=evidence)
@@ -225,7 +244,9 @@ def inspect(a:argparse.Namespace)->int:
   approval=getattr(a,"approval_data",None)
   if approval is None: approval=validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256,Path(__file__).resolve().parents[2])
   m["approval_decision"]=approval["decision"]; m["approval_scope"]=approval["scope"]
-  snap=Path(a.snapshot); m["server_tree"]=server_tree(json.loads(Path(a.server_tree).read_text(encoding="utf-8"),object_pairs_hook=unique),snap); fs=files(snap)
+  snap=real_directory_arg(a.snapshot,"snapshot")
+  server_tree_path=real_file_arg(a.server_tree,"server-tree")
+  m["server_tree"]=server_tree(json.loads(server_tree_path.read_text(encoding="utf-8"),object_pairs_hook=unique),snap); fs=files(snap)
   require_fixed_model_files(set(fs))
   if sum(p.stat().st_size for p in fs.values())!=TOTAL: raise ValueError("fixed six-file tree/total mismatch")
   readme=fs["README.md"].read_text(encoding="utf-8").lower()
@@ -243,12 +264,14 @@ def inspect(a:argparse.Namespace)->int:
    sp=spm.SentencePieceProcessor(model_file=str(fs[TOKENIZER_NAME])); m["tokenizer"]={"name":TOKENIZER_NAME,"piece_count":sp.get_piece_size(),"first": [sp.id_to_piece(i) for i in range(min(20,sp.get_piece_size()))],"last":[sp.id_to_piece(i) for i in range(max(0,sp.get_piece_size()-10),sp.get_piece_size())],"unk_id":sp.unk_id(),"bos_id":sp.bos_id(),"eos_id":sp.eos_id(),"pad_id":sp.pad_id()}
    if sp.get_piece_size()!=4000: raise ValueError("tokenizer text_card mismatch")
   except Exception as e: raise ValueError(f"SentencePiece inspection failed: {e}") from e
-  m["official_source"]=source(Path(a.source),SOURCE_URL,SOURCE_REV,ROLES) if a.source else (_ for _ in ()).throw(ValueError("source required"))
-  m["moshi_source"]=source(Path(a.moshi_source),MOSHI_URL,MOSHI_REV,MOSHI_ROLES) if a.moshi_source else (_ for _ in ()).throw(ValueError("Moshi source required"))
+  source_root=real_directory_arg(a.source,"source") if a.source else (_ for _ in ()).throw(ValueError("source required"))
+  moshi_root=real_directory_arg(a.moshi_source,"Moshi source") if a.moshi_source else (_ for _ in ()).throw(ValueError("Moshi source required"))
+  m["official_source"]=source(source_root,SOURCE_URL,SOURCE_REV,ROLES)
+  m["moshi_source"]=source(moshi_root,MOSHI_URL,MOSHI_REV,MOSHI_ROLES)
   m["inspection_status"]="AUTHENTICATED_EVIDENCE_COMPLETE"
  except Exception as e:
   m["inspection_status"]="INSPECTION_ERROR"; m["blockers"].append(f"inspection error: {type(e).__name__}: {e}")
- try: write_manifest_no_replace(Path(a.evidence),m)
+ try: write_manifest_no_replace(real_directory_arg(a.evidence,"evidence"),m)
  except Exception as e:
   print(f"failed to write inspection evidence: {type(e).__name__}: {e}",file=sys.stderr)
   return 2
@@ -277,6 +300,21 @@ def self_test()->None:
   else:raise AssertionError("unsafe path accepted")
  with tempfile.TemporaryDirectory(prefix=".kyutai-stt-",dir=Path.cwd()) as d:
   root=Path(d)/"s";root.mkdir(); p=root/"x";p.write_text("x")
+  for bad in ("relative", "/", "/tmp/./snapshot", "/tmp/../snapshot", "/tmp//snapshot", "/tmp/snapshot\x00"):
+   try: real_directory_arg(bad,"snapshot")
+   except ValueError: pass
+   else: raise AssertionError("raw dotted/relative snapshot path accepted")
+  linked_root=Path(d)/"linked-root"; linked_root.symlink_to(root,target_is_directory=True)
+  try: real_directory_arg(str(linked_root),"source")
+  except ValueError: pass
+  else: raise AssertionError("symlinked source root accepted")
+  linked_file=Path(d)/"linked-file"; linked_file.symlink_to(p)
+  try: real_file_arg(str(linked_file),"server-tree")
+  except ValueError: pass
+  else: raise AssertionError("symlinked server-tree accepted")
+  try: real_file_arg(str(linked_root/"x"),"server-tree")
+  except ValueError: pass
+  else: raise AssertionError("server-tree symlink ancestry accepted")
   head="a"*40
   approval_data={"schema":APPROVAL_SCHEMA,"status":"APPROVED","decision":"APPROVED_FOR_NO_UPLOAD_INSPECTION","expected_head":head,"model_repository":REPO,"model_revision":REV,"source_repository":SOURCE_URL,"source_revision":SOURCE_REV,"moshi_repository":MOSHI_URL,"moshi_revision":MOSHI_REV,"no_upload":True,"scope":APPROVAL_SCOPE}
   approval=Path(d)/"approval.json"; approval.write_text(json.dumps(approval_data,sort_keys=True,separators=(",",":"))+"\n")
@@ -368,6 +406,10 @@ def self_test()->None:
   assert inspect(argparse.Namespace(snapshot=str(root/"missing"),server_tree=str(root/"missing.json"),source=None,moshi_source=None,evidence=str(out),expected_head="0"*40,approval_evidence=str(root/"missing-approval.json"),approval_sha256="0"*64))==2
   assert preserved.read_bytes()==before
   assert not list(out.glob(".manifest.*"))
+  linked_evidence=Path(d)/"linked-evidence"; linked_evidence.symlink_to(out,target_is_directory=True)
+  try: write_manifest_no_replace(linked_evidence,{"status":"BLOCKED"})
+  except ValueError: pass
+  else: raise AssertionError("symlinked evidence directory accepted")
   fd_failure=Path(d)/"fd-failure"; fd_failure.mkdir()
   original_fdopen,original_close=os.fdopen,os.close; closed=[]
   def fail_fdopen(raw_fd,*args,**kwargs): raise OSError("synthetic fdopen failure")
