@@ -170,10 +170,14 @@ def checkout_binding(expected_head: str) -> dict[str, Any]:
     return binding
 
 
-def validate_output_path(path: Path) -> Path:
-    """Return a safe absent output path; never create its parent."""
-    if not isinstance(path, Path) or not path.is_absolute() or path.parts[0] != "/" or any(part in {"", ".", ".."} for part in path.parts[1:]):
+def validate_output_path(raw_path: str) -> Path:
+    """Return a safe absent output path; reject unsafe spelling before normalization."""
+    if not isinstance(raw_path, str):
+        raise RuntimeError("output must be supplied as a raw path string")
+    raw_parts = raw_path.split("/")
+    if not raw_path.startswith("/") or raw_parts[0] != "" or any(part in {"", ".", ".."} for part in raw_parts[1:]):
         raise RuntimeError("output must be an absolute dot-free path")
+    path = Path(raw_path)
     if path.exists() or path.is_symlink():
         raise RuntimeError("output target must be absent")
     current = Path("/")
@@ -726,7 +730,7 @@ def audit(binding: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_exclusive(path: Path, payload: dict[str, Any], binding: dict[str, Any]) -> None:
-    validate_output_path(path)
+    validate_output_path(str(path))
     validate_report(payload, binding)
     with path.open("x", encoding="utf-8") as stream:
         json.dump(payload, stream, ensure_ascii=False, sort_keys=True, indent=2)
@@ -774,7 +778,7 @@ def blocked_payload(error: Exception, binding: dict[str, Any]) -> dict[str, Any]
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, action=_UniqueValue)
+    parser.add_argument("--output", action=_UniqueValue)
     parser.add_argument("--expected-head", action=_UniqueValue)
     parser.add_argument("--validate-evidence", type=Path, action=_UniqueValue)
     parser.add_argument("--self-test", action=_UniqueFlag, nargs=0)
@@ -821,7 +825,7 @@ def self_test() -> None:
     readme_fixture = lambda _sha: readme_content
     globals()["read_blob"] = readme_fixture
     try:
-        with tempfile.TemporaryDirectory(prefix="vokra-qwen2-audio-audit-") as directory:
+        with tempfile.TemporaryDirectory(prefix="vokra-qwen2-audio-audit-", dir="/private/tmp") as directory:
             fixture_root = Path(directory)
             git_state = {"head": "a" * 40, "dirty": ""}
             globals()["repo_root"] = lambda: fixture_root
@@ -852,17 +856,19 @@ def self_test() -> None:
             else:
                 raise AssertionError("dirty checkout accepted")
             git_state["dirty"] = ""
-            for unsafe in (Path("relative.json"), Path("/tmp/../unsafe.json"), Path("/tmp/./unsafe.json")):
+            for unsafe in ("relative.json", "/tmp/../unsafe.json", "/tmp/./unsafe.json", "/tmp//unsafe.json", "/tmp/unsafe/"):
                 try:
                     validate_output_path(unsafe)
                 except RuntimeError:
                     pass
                 else:
                     raise AssertionError("unsafe output path accepted")
+            valid_output = fixture_root.parent / f"{fixture_root.name}-valid.json"
+            assert validate_output_path(str(valid_output)) == valid_output
             existing = fixture_root / "existing.json"
             existing.write_text("x", encoding="utf-8")
             try:
-                validate_output_path(existing)
+                validate_output_path(str(existing))
             except RuntimeError:
                 pass
             else:
@@ -870,7 +876,7 @@ def self_test() -> None:
             linked_parent = fixture_root / "linked-parent"
             linked_parent.symlink_to(Path("/private/tmp"), target_is_directory=True)
             try:
-                validate_output_path(linked_parent / "new.json")
+                validate_output_path(str(linked_parent / "new.json"))
             except RuntimeError:
                 pass
             else:
