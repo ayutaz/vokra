@@ -17,6 +17,7 @@ self_test(){
   grep -Fq -- '--expected-head' "$0" || die 'expected HEAD gate missing'
   grep -Fq -- '--approval-sha256' "$0" || die 'approval SHA gate missing'
   grep -Fq 'REFERENCE_COMPLETE' "$ROOT/tools/parity/dia_1_6b_dump_reference.py" || die 'reference completion marker missing'
+  grep -Fq 'O_NOFOLLOW' "$ROOT/tools/parity/dia_1_6b_dump_reference.py" || die 'reference artifact no-follow publication gate missing'
   grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$SOURCE_CONTRACT" || die 'source-only contract marker missing'
   grep -Fq 'uv.lock' "$ROOT/tools/parity/dia_1_6b_dump_reference.py" || die 'lock contract missing'
   check_project_identity

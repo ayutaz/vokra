@@ -7,7 +7,7 @@ its expected result is an evidence manifest plus exit 2.  These are workflow
 markers, not a permission to download or convert locally.
 """
 from __future__ import annotations
-import argparse,base64,hashlib,json,re,struct,subprocess,tempfile,zipfile,zlib
+import argparse,base64,hashlib,json,os,re,stat,struct,subprocess,tempfile,zipfile,zlib
 from pathlib import Path
 from typing import Any
 HF_REPOSITORY="nari-labs/Dia-1.6B"
@@ -95,6 +95,61 @@ def canonical_manifest_hash(items):
   buf.extend(x["name"].encode()); buf.append(0); buf.extend(struct.pack("<Q",len(x["shape"])))
   for dim in x["shape"]: buf.extend(struct.pack("<Q",dim))
  return hashlib.sha256(buf).hexdigest()
+
+def publish_create_new(path, payload):
+ """Publish one complete UTF-8 artifact without replacing an existing path."""
+ if path.exists() or path.is_symlink(): raise RuntimeError(f"inspection artifact already exists or is a symlink: {path}")
+ if not path.parent.is_dir() or path.parent.is_symlink(): raise RuntimeError(f"inspection artifact parent must be a regular directory: {path.parent}")
+ descriptor,temporary_name=tempfile.mkstemp(prefix=f".{path.name}.",dir=path.parent)
+ temporary_identity=os.fstat(descriptor)
+ if not stat.S_ISREG(temporary_identity.st_mode):
+  os.close(descriptor); raise RuntimeError("inspection temporary artifact is not regular")
+ owned=(temporary_identity.st_dev,temporary_identity.st_ino)
+ def unlink_owned(candidate):
+  try:
+   current=os.stat(candidate,follow_symlinks=False)
+   if (current.st_dev,current.st_ino)==owned and stat.S_ISREG(current.st_mode): os.unlink(candidate)
+  except OSError: pass
+ try:
+  with os.fdopen(descriptor,"wb") as stream:
+   descriptor=-1; stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+  verify_fd=os.open(temporary_name,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0))
+  try: current=os.fstat(verify_fd)
+  finally: os.close(verify_fd)
+  if (current.st_dev,current.st_ino)!=owned or not stat.S_ISREG(current.st_mode): raise RuntimeError("inspection temporary artifact identity changed")
+  try: os.link(temporary_name,path)
+  except FileExistsError as error: raise RuntimeError(f"inspection artifact appeared during publication: {path}") from error
+  try:
+   final_fd=os.open(path,os.O_RDONLY|getattr(os,"O_NOFOLLOW",0))
+   try: final=os.fstat(final_fd)
+   finally: os.close(final_fd)
+  except Exception:
+   unlink_owned(path); raise
+  path_stat=os.stat(path,follow_symlinks=False)
+  if (path_stat.st_dev,path_stat.st_ino)!=(final.st_dev,final.st_ino) or not stat.S_ISREG(path_stat.st_mode):
+   unlink_owned(path); raise RuntimeError("inspection artifact path changed after claim")
+  if (final.st_dev,final.st_ino)!=owned:
+   unlink_owned(path); raise RuntimeError("inspection artifact claim identity changed")
+ finally:
+  if descriptor!=-1: os.close(descriptor)
+  unlink_owned(temporary_name)
+
+def validate_output_directory(path):
+ if not path.is_absolute() or path == Path(path.anchor) or any(part in {".",".."} for part in path.parts): raise RuntimeError("output directory must be absolute and free of dot components")
+ cursor=Path(path.anchor)
+ for part in path.parts[1:]:
+  cursor/=part
+  if cursor.is_symlink(): raise RuntimeError("output directory has symlink ancestry")
+  if cursor != path and not cursor.is_dir(): raise RuntimeError("output directory parent must already be a regular directory")
+ if path.exists() and (path.is_symlink() or not path.is_dir()): raise RuntimeError("output path must be a regular directory")
+
+def cli_path(raw, label):
+ if not isinstance(raw,str) or not raw.startswith("/"): raise RuntimeError(f"{label} must be an absolute path")
+ components=raw.split("/")
+ if any(component in {"",".",".."} for component in components[1:]): raise RuntimeError(f"{label} must be free of dot, empty, and trailing components")
+ path=Path(raw)
+ if path == Path(path.anchor) or any(part in {".",".."} for part in path.parts): raise RuntimeError(f"{label} must be free of dot components and root")
+ return path
 
 def server_tree(snapshot,packet,blockers):
  remote=json.loads(packet.read_text(encoding="utf-8"),object_pairs_hook=no_dupes)
@@ -303,7 +358,7 @@ def inspect(snapshot,source,tree,output,public=None,expected_head=None,approval_
  else: blockers.append("historical GGUF not supplied; VAST must inspect public composite-partial artifact")
  blockers.extend(["native Dia encoder/decoder delayed-AR math is staged but unauthenticated and uncompared","full PCM requires crate::dac::Dac plus accepted same-execution Dia AR evidence","DAC/tokenizer/generation parity is not run","CPU_UNSUPPORTED_FULL_TTS","Metal_BLOCKED_BY_CPU"])
  payload={"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","expected_head":expected_head,"approval_sha256":approval_sha256,"inspection_status":"AUTHENTICATED_EVIDENCE_COMPLETE" if not any(x.startswith(("HF server","server/local","fixed HF","HF total","safe header","PTH safe","PTH↔safetensors","Dia source","source role","config","README license","preprocessor config","historical GGUF")) for x in blockers) else "INSPECTION_ERROR","runtime_status":"PARTIAL_RUNTIME_FAIL_CLOSED","cpu_status":"UNSUPPORTED_FULL_TTS","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":HF_REPOSITORY,"revision":HF_REVISION,"expected_files":EXPECTED_FILES,"server_tree":packet,"files":[identity(p,snapshot) for p in local],"config":config_packet,"preprocessor_config":preprocessor_evidence,"readme_license":readme_evidence,"safetensors":st,"pth":pth,"checkpoint_mapping":mapping},"public_partial_artifact":public_evidence,"official_source":src,"blockers":sorted(set(blockers))}
- output.mkdir(parents=True,exist_ok=True); (output/"manifest.json").write_text(json.dumps(payload,sort_keys=True,indent=2)+"\n",encoding="utf-8"); return 2
+ output.mkdir(parents=True,exist_ok=True); publish_create_new(output/"manifest.json",(json.dumps(payload,sort_keys=True,indent=2)+"\n").encode("utf-8")); return 2
 
 def self_test():
  assert len(HF_REVISION)==len(SOURCE_REVISION)==len(PUBLIC_REVISION)==40
@@ -315,6 +370,14 @@ def self_test():
  temp_root="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp"
  with tempfile.TemporaryDirectory(prefix="dia-inspect-",dir=temp_root) as d:
   root=Path(d); h=json.dumps({"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}).encode(); good=root/"x.safetensors"; good.write_bytes(struct.pack("<Q",len(h))+h+b"\0"*4); b=[]; assert safe_header(good,root,b,expected=False)["status"]=="HEADER_ONLY" and not b
+  for unsafe in ("relative", "/private/tmp/../tmp/dia-output", "/private/tmp/./dia-output", "//", "/"):
+   try: cli_path(unsafe,"output")
+   except RuntimeError: pass
+   else: raise AssertionError("unsafe CLI path accepted")
+  link=root/"link"; link.mkdir(); symlink=root/"link-output"; symlink.symlink_to(link, target_is_directory=True)
+  try: validate_output_directory(symlink/"evidence")
+  except RuntimeError: pass
+  else: raise AssertionError("symlink output ancestry accepted")
   dup=root/"dup.safetensors"; raw=b'{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}'; dup.write_bytes(struct.pack("<Q",len(raw))+raw+b"\0"*4); b=[]; safe_header(dup,root,b,expected=False); assert any("blocked" in x for x in b)
   huge=root/"huge"; huge.write_bytes(struct.pack("<Q",65*1024*1024)+b"{}"); b=[]; safe_header(huge,root,b,expected=False); assert b
   snap=root/"snap"; snap.mkdir(); small=snap/"x"; small.write_bytes(b"abcd"); tree=root/"tree.json"; tree.write_text(json.dumps({"repository":HF_REPOSITORY,"revision":HF_REVISION,"resolved_revision":HF_REVISION,"walk":"recursive_file_only","files":[{"type":"file","path":"x","size":4,"git_blob_sha1":git_blob(small),"lfs_sha256":None}]})); b=[]; assert server_tree(snap,tree,b)["status"]=="MATCHED" and not b
@@ -340,13 +403,27 @@ def self_test():
   try: validate_approval(approval,"0"*40,sha256(approval))
   except RuntimeError: pass
   else: raise AssertionError("placeholder owner phrase accepted")
+  claimed=root/"claimed.json"; publish_create_new(claimed,b'{"status":"complete"}'); assert claimed.read_bytes()==b'{"status":"complete"}'
+  existing=root/"existing.json"; existing.write_bytes(b"keep")
+  try: publish_create_new(existing,b"clobber")
+  except RuntimeError: pass
+  else: raise AssertionError("inspection publish clobbered an existing artifact")
+  original_unlink=os.unlink; os.unlink=lambda _path: (_ for _ in ()).throw(PermissionError("synthetic cleanup failure"))
+  try: publish_create_new(root/"cleanup-failure.json",b"complete")
+  finally: os.unlink=original_unlink
+  assert (root/"cleanup-failure.json").read_bytes()==b"complete"
  print("dia_1_6b_inspect self-test: OK")
 
 def main():
- ap=argparse.ArgumentParser(); ap.add_argument("--self-test",action="store_true"); ap.add_argument("--validate-approval",action="store_true"); ap.add_argument("--snapshot",type=Path); ap.add_argument("--source",type=Path); ap.add_argument("--server-tree",type=Path); ap.add_argument("--public-gguf",type=Path); ap.add_argument("--output",type=Path); ap.add_argument("--approval-evidence",type=Path); ap.add_argument("--approval-sha256"); ap.add_argument("--expected-head"); a=ap.parse_args()
+ ap=argparse.ArgumentParser(); ap.add_argument("--self-test",action="store_true"); ap.add_argument("--validate-approval",action="store_true"); ap.add_argument("--snapshot"); ap.add_argument("--source"); ap.add_argument("--server-tree"); ap.add_argument("--public-gguf"); ap.add_argument("--output"); ap.add_argument("--approval-evidence"); ap.add_argument("--approval-sha256"); ap.add_argument("--expected-head"); a=ap.parse_args()
  if a.self_test:
   if a.validate_approval or any(x is not None for x in (a.snapshot,a.source,a.server_tree,a.public_gguf,a.output,a.approval_evidence,a.approval_sha256,a.expected_head)): ap.error("--self-test accepts no other arguments")
   self_test(); return 0
+ try:
+  for name in ("snapshot","source","server_tree","public_gguf","output","approval_evidence"):
+   raw=getattr(a,name)
+   if raw is not None: setattr(a,name,cli_path(raw,name.replace("_","-")))
+ except RuntimeError as error: ap.error(str(error))
  if a.validate_approval:
   if any(x is not None for x in (a.snapshot,a.source,a.server_tree,a.public_gguf,a.output)) or any(x is None for x in (a.approval_evidence,a.approval_sha256,a.expected_head)):
    ap.error("--validate-approval requires only approval evidence, approval SHA, and expected HEAD")
@@ -357,10 +434,15 @@ def main():
   print("Dia approval evidence validation: OK")
   return 0
  if any(x is None for x in (a.snapshot,a.source,a.server_tree,a.output,a.approval_evidence,a.approval_sha256,a.expected_head)): ap.error("normal run requires snapshot, source, server-tree, output, approval evidence, approval SHA, expected HEAD")
+ try: validate_output_directory(a.output)
+ except RuntimeError as error: ap.error(str(error))
  if a.output.exists() and any(a.output.iterdir()): ap.error("output directory must be absent or empty; stale evidence is rejected")
  try:
   validate_approval(a.approval_evidence,a.expected_head,a.approval_sha256)
   return inspect(a.snapshot,a.source,a.server_tree,a.output,a.public_gguf,a.expected_head,a.approval_sha256)
  except Exception as error:
-  a.output.mkdir(parents=True,exist_ok=True); (a.output/"manifest.json").write_text(json.dumps({"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"INSPECTION_ERROR","runtime_status":"PARTIAL_RUNTIME_FAIL_CLOSED","cpu_status":"UNSUPPORTED_FULL_TTS","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","upstream":{"repository":HF_REPOSITORY,"revision":HF_REVISION},"error":str(error),"blockers":[str(error)]},indent=2)+"\n"); return 2
+  a.output.mkdir(parents=True,exist_ok=True)
+  try: publish_create_new(a.output/"manifest.json",(json.dumps({"format":FORMAT,"status":"BLOCKED","evidence_stage":"INSPECTION_ONLY","inspection_status":"INSPECTION_ERROR","runtime_status":"PARTIAL_RUNTIME_FAIL_CLOSED","cpu_status":"UNSUPPORTED_FULL_TTS","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","upstream":{"repository":HF_REPOSITORY,"revision":HF_REVISION},"error":str(error),"blockers":[str(error)]},indent=2)+"\n").encode("utf-8"))
+  except Exception: pass
+  return 2
 if __name__=="__main__": raise SystemExit(main())

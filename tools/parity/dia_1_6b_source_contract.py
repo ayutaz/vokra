@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -149,25 +150,84 @@ def write_json_create_new_atomic(path: Path, packet: dict[str, Any]) -> None:
     """Publish JSON atomically without replacing an existing user path."""
     if path.exists() or path.is_symlink():
         raise RuntimeError(f"source-contract output already exists or is a symlink: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.parent.is_dir() or path.parent.is_symlink():
+        raise RuntimeError(f"source-contract output parent must be an existing regular directory: {path.parent}")
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_identity = os.fstat(descriptor)
+    if not stat.S_ISREG(temporary_identity.st_mode):
+        os.close(descriptor)
+        raise RuntimeError("source-contract temporary output is not regular")
+    owned = (temporary_identity.st_dev, temporary_identity.st_ino)
+
+    def unlink_owned(candidate: str) -> None:
+        try:
+            current = os.stat(candidate, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) == owned and stat.S_ISREG(current.st_mode):
+                os.unlink(candidate)
+        except OSError:
+            pass
+
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             descriptor = -1
             stream.write(json.dumps(packet, sort_keys=True, indent=2) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+        verify_fd = os.open(temporary_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            current = os.fstat(verify_fd)
+        finally:
+            os.close(verify_fd)
+        if (current.st_dev, current.st_ino) != owned or not stat.S_ISREG(current.st_mode):
+            raise RuntimeError("source-contract temporary output identity changed")
         try:
             os.link(temporary_name, path)
         except FileExistsError as error:
             raise RuntimeError(f"source-contract output appeared during publication: {path}") from error
+        try:
+            final_fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                final = os.fstat(final_fd)
+            finally:
+                os.close(final_fd)
+            if (final.st_dev, final.st_ino) != owned or not stat.S_ISREG(final.st_mode):
+                raise RuntimeError("source-contract output claim identity changed")
+            path_stat = os.stat(path, follow_symlinks=False)
+            if (path_stat.st_dev, path_stat.st_ino) != owned or not stat.S_ISREG(path_stat.st_mode):
+                raise RuntimeError("source-contract output path changed after claim")
+        except Exception:
+            unlink_owned(path)
+            raise
     finally:
         if descriptor != -1:
             os.close(descriptor)
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
+        unlink_owned(temporary_name)
+
+
+def validate_output_file(path: Path) -> None:
+    if not path.is_absolute() or path == Path(path.anchor) or any(part in {".", ".."} for part in path.parts):
+        raise RuntimeError("output path must be absolute and free of dot components")
+    cursor = Path(path.anchor)
+    for part in path.parts[1:-1]:
+        cursor /= part
+        if cursor.is_symlink() or not cursor.is_dir():
+            raise RuntimeError("output path has unsafe or missing parent ancestry")
+    if path.exists() or path.is_symlink():
+        raise RuntimeError("output path must be absent and must not be a symlink")
+    if not path.parent.is_dir() or path.parent.is_symlink():
+        raise RuntimeError("output parent must be an existing regular directory")
+
+
+def cli_path(raw: str, label: str) -> Path:
+    if not isinstance(raw, str) or not raw.startswith("/"):
+        raise RuntimeError(f"{label} must be an absolute path")
+    components = raw.split("/")
+    if any(component in {"", ".", ".."} for component in components[1:]):
+        raise RuntimeError(f"{label} must be free of dot, empty, and trailing components")
+    path = Path(raw)
+    if path == Path(path.anchor) or any(part in {".", ".."} for part in path.parts):
+        raise RuntimeError(f"{label} must be free of dot components and root")
+    return path
 
 
 def load_official_audio_module(source: Path) -> Any:
@@ -570,6 +630,21 @@ def self_test() -> None:
     assert len(SOURCE_ROLE_BLOBS) == 7
     with tempfile.TemporaryDirectory(prefix="dia-source-contract-self-test-") as directory:
         path = Path(directory) / "packet.json"
+        for unsafe in ("relative", "/private/tmp/../tmp/dia-output", "/private/tmp/./dia-output", "//", "/"):
+            try:
+                cli_path(unsafe, "output")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unsafe CLI path accepted")
+        link = Path(directory) / "link"
+        link.mkdir()
+        try:
+            validate_output_file(link / "../packet.json")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("dot component output path accepted")
         write_json_create_new_atomic(path, {"status": "ok"})
         assert json.loads(path.read_text(encoding="utf-8"))["status"] == "ok"
         try:
@@ -578,6 +653,14 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("existing source-contract output was overwritten")
+        completed = Path(directory) / "cleanup-failure.json"
+        original_unlink = os.unlink
+        os.unlink = lambda _path: (_ for _ in ()).throw(PermissionError("synthetic cleanup failure"))
+        try:
+            write_json_create_new_atomic(completed, {"status": "complete"})
+        finally:
+            os.unlink = original_unlink
+        assert json.loads(completed.read_text(encoding="utf-8"))["status"] == "complete"
     tree = ast.parse("def generate(self):\n  self._decoder_step()\n\ndef _decoder_step(self):\n  self._sample_next_token()")
     # The synthetic AST check is intentionally limited to parser behavior; it
     # never stands in for official source execution.
@@ -594,9 +677,9 @@ def self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
-    parser.add_argument("--source", type=Path)
-    parser.add_argument("--rust-root", type=Path)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--source")
+    parser.add_argument("--rust-root")
+    parser.add_argument("--output")
     args = parser.parse_args()
     if args.self_test:
         if any(value is not None for value in (args.source, args.rust_root, args.output)):
@@ -605,8 +688,16 @@ def main() -> int:
         return 0
     if args.source is None or args.rust_root is None or args.output is None:
         parser.error("--source, --rust-root and --output are required")
-    if args.output.exists() or args.output.is_symlink():
-        parser.error("--output must be absent and must not be a symlink")
+    try:
+        args.source = cli_path(args.source, "source")
+        args.rust_root = cli_path(args.rust_root, "rust-root")
+        args.output = cli_path(args.output, "output")
+    except RuntimeError as error:
+        parser.error(str(error))
+    try:
+        validate_output_file(args.output)
+    except RuntimeError as error:
+        parser.error(str(error))
     run(args.source, args.rust_root, args.output)
     print(f"Dia source contract written: {args.output}")
     return 0

@@ -22,6 +22,7 @@ self_test(){
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing contract $token" >&2; fail=1; }
  done
  grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$SOURCE_CONTRACT" || { echo 'missing source-only contract marker' >&2; fail=1; }
+ grep -Fq 'O_NOFOLLOW' "$INSPECTOR" "$SOURCE_CONTRACT" || { echo 'missing no-follow artifact publication gate' >&2; fail=1; }
  grep -Fq -- '--source-only' "$0" || { echo 'missing source-only worker mode' >&2; fail=1; }
  grep -Fq -- '--expected-head' "$0"; grep -Fq -- '--approval-sha256' "$0"; grep -Fq -- '--validate-approval' "$INSPECTOR"
  grep -Fq 'canonical_existing_path' "$0"; grep -Fq 'canonical_absent_path' "$0"; grep -Fq 'inspection WORK path has invalid' "$0"

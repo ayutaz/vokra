@@ -15,7 +15,9 @@ import hashlib
 import importlib
 import json
 import math
+import os
 import re
+import stat
 import tempfile
 import tomllib
 import types
@@ -241,6 +243,92 @@ def finite_tensor(value: Any, role: str) -> dict[str, Any]:
     return {"shape": list(value.shape), "dtype": str(value.dtype), "finite": True}
 
 
+def publish_create_new(path: Path, writer: Any) -> None:
+    """Write one complete artifact and claim its final name without clobbering."""
+    if path.exists() or path.is_symlink():
+        raise RuntimeError(f"reference artifact already exists or is a symlink: {path}")
+    if not path.parent.is_dir() or path.parent.is_symlink():
+        raise RuntimeError(f"reference artifact parent must be a regular directory: {path.parent}")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_identity = os.fstat(descriptor)
+    if not stat.S_ISREG(temporary_identity.st_mode):
+        os.close(descriptor)
+        raise RuntimeError("reference temporary artifact is not regular")
+    owned = (temporary_identity.st_dev, temporary_identity.st_ino)
+
+    def unlink_owned(candidate: str) -> None:
+        try:
+            current = os.stat(candidate, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) == owned and stat.S_ISREG(current.st_mode):
+                os.unlink(candidate)
+        except OSError:
+            pass
+
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            writer(stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        verify_fd = os.open(temporary_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            current = os.fstat(verify_fd)
+        finally:
+            os.close(verify_fd)
+        if (current.st_dev, current.st_ino) != owned or not stat.S_ISREG(current.st_mode):
+            raise RuntimeError("reference temporary artifact identity changed")
+        try:
+            os.link(temporary_name, path)
+        except FileExistsError as error:
+            raise RuntimeError(f"reference artifact appeared during publication: {path}") from error
+        try:
+            final_fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                final = os.fstat(final_fd)
+            finally:
+                os.close(final_fd)
+        except Exception:
+            unlink_owned(str(path))
+            raise
+        if (final.st_dev, final.st_ino) != owned:
+            unlink_owned(str(path))
+            raise RuntimeError("reference artifact claim identity changed")
+        path_stat = os.stat(path, follow_symlinks=False)
+        if (path_stat.st_dev, path_stat.st_ino) != owned or not stat.S_ISREG(path_stat.st_mode):
+            unlink_owned(str(path))
+            raise RuntimeError("reference artifact path changed after claim")
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+        unlink_owned(temporary_name)
+
+
+def validate_output_directory(path: Path) -> None:
+    if not path.is_absolute() or path == Path(path.anchor) or any(part in {".", ".."} for part in path.parts):
+        raise RuntimeError("output directory must be absolute and free of dot components")
+    cursor = Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor /= part
+        if cursor.is_symlink():
+            raise RuntimeError("output directory has symlink ancestry")
+        if cursor != path and not cursor.is_dir():
+            raise RuntimeError("output directory parent must already be a regular directory")
+    if path.exists() and (path.is_symlink() or not path.is_dir()):
+        raise RuntimeError("output path must be a regular directory")
+
+
+def cli_path(raw: str, label: str) -> Path:
+    if not isinstance(raw, str) or not raw.startswith("/"):
+        raise RuntimeError(f"{label} must be an absolute path")
+    components = raw.split("/")
+    if any(component in {"", ".", ".."} for component in components[1:]):
+        raise RuntimeError(f"{label} must be free of dot, empty, and trailing components")
+    path = Path(raw)
+    if path == Path(path.anchor) or any(part in {".", ".."} for part in path.parts):
+        raise RuntimeError(f"{label} must be free of dot components and root")
+    return path
+
+
 def save_tensor(value: Any, role: str, output: Path, records: dict[str, Any]) -> None:
     import numpy as np
     import torch
@@ -255,7 +343,7 @@ def save_tensor(value: Any, role: str, output: Path, records: dict[str, Any]) ->
     previous = records.get(role, [])
     index = len(previous)
     file = output / f"{role}-{index:04d}.npy"
-    np.save(file, array, allow_pickle=False)
+    publish_create_new(file, lambda stream: np.save(stream, array, allow_pickle=False))
     previous.append({**meta, "path": file.name, "bytes": file.stat().st_size, "sha256": sha256(file)})
     records[role] = previous
 
@@ -523,7 +611,8 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
             "publication": "NO_UPLOAD",
             "comparison_status": COMPARISON_STATUS,
         }
-        (output / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        payload = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        publish_create_new(output / "manifest.json", lambda stream: stream.write(payload))
     finally:
         dia_model._sample_next_token = original_sample
         torch.multinomial = original_multinomial
@@ -562,19 +651,57 @@ def self_test() -> None:
         "selected_ids", "delayed_codes", "reverted_codes", "dac_latent", "pcm",
     }
     assert all(math.isfinite(float(x)) for x in (0.0, 1.0))
+    with tempfile.TemporaryDirectory(prefix="dia-reference-publish-") as directory:
+        root = Path(directory)
+        assert cli_path(str(root / "valid"), "output") == root / "valid"
+        for unsafe in ("relative", "/private/tmp/../tmp/dia-output", "/private/tmp/./dia-output", "//", "/"):
+            try:
+                cli_path(unsafe, "output")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unsafe CLI path accepted")
+        link = root / "link"
+        link.mkdir()
+        symlink = root / "link-output"
+        symlink.symlink_to(link, target_is_directory=True)
+        try:
+            validate_output_directory(symlink / "evidence")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlink output ancestry accepted")
+        claimed = root / "artifact.bin"
+        publish_create_new(claimed, lambda stream: stream.write(b"complete"))
+        assert claimed.read_bytes() == b"complete"
+        existing = root / "existing.bin"
+        existing.write_bytes(b"keep")
+        try:
+            publish_create_new(existing, lambda stream: stream.write(b"clobber"))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("reference publish clobbered an existing artifact")
+        original_unlink = os.unlink
+        os.unlink = lambda _path: (_ for _ in ()).throw(PermissionError("synthetic cleanup failure"))
+        try:
+            publish_create_new(root / "cleanup-failure.bin", lambda stream: stream.write(b"complete"))
+        finally:
+            os.unlink = original_unlink
+        assert (root / "cleanup-failure.bin").read_bytes() == b"complete"
     print("dia reference self-test: OK")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
-    parser.add_argument("--source", type=Path)
-    parser.add_argument("--model", type=Path)
-    parser.add_argument("--public", type=Path)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--dac-evidence", type=Path)
-    parser.add_argument("--dac-checkpoint", type=Path)
-    parser.add_argument("--dac-source", type=Path)
+    parser.add_argument("--source")
+    parser.add_argument("--model")
+    parser.add_argument("--public")
+    parser.add_argument("--output")
+    parser.add_argument("--dac-evidence")
+    parser.add_argument("--dac-checkpoint")
+    parser.add_argument("--dac-source")
     parser.add_argument("--text", default=DEFAULT_TEXT)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--expected-head")
@@ -585,11 +712,22 @@ def main() -> int:
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
+    try:
+        for name in ("source", "model", "public", "output", "dac_evidence", "dac_checkpoint", "dac_source"):
+            raw = getattr(args, name)
+            if raw is not None:
+                setattr(args, name, cli_path(raw, name.replace("_", "-")))
+    except RuntimeError as error:
+        parser.error(str(error))
     if None in (args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.expected_head, args.approval_sha256):
         parser.error("--source, --model, --public, --dac-evidence, --dac-checkpoint, --dac-source, and --output are required")
     try:
         validate_binding(args.expected_head, args.approval_sha256)
     except ValueError as error:
+        parser.error(str(error))
+    try:
+        validate_output_directory(args.output)
+    except RuntimeError as error:
         parser.error(str(error))
     if args.output.exists() and any(args.output.iterdir()):
         parser.error("output directory must be absent or empty; stale evidence is rejected")
@@ -598,7 +736,10 @@ def main() -> int:
             parser.error(f"--text must be the fixed two-speaker evidence input: {DEFAULT_TEXT!r}")
         run(args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.text, args.seed, args.expected_head, args.approval_sha256)
     except Exception as error:
-        (args.output / "INSPECTION_ERROR").write_text(str(error) + "\n", encoding="utf-8")
+        try:
+            publish_create_new(args.output / "INSPECTION_ERROR", lambda stream: stream.write((str(error) + "\n").encode("utf-8")))
+        except Exception:
+            pass
         raise
     return 0
 
