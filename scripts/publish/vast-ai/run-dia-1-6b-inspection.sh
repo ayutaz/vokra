@@ -8,6 +8,7 @@ PUBLIC_REVISION="dd1df2a129fed7d15c365caeabaae227ccfe8537"
 SOURCE_URL="https://github.com/nari-labs/dia.git"
 SOURCE_REVISION="2811af1c5f476b1f49f4744fabf56cf352be21e5"
 INSPECTOR="$ROOT/tools/parity/dia_1_6b_inspect.py"
+SOURCE_CONTRACT="$ROOT/tools/parity/dia_1_6b_source_contract.py"
 REFERENCE_PROJECT="$ROOT/tools/parity/dia_1_6b_reference"
 REFERENCE_LOCK_SHA256="ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
 REFERENCE_PYPROJECT_SHA256="56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
@@ -20,6 +21,8 @@ self_test(){
  for token in "$HF_REPOSITORY" "$HF_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PYPROJECT_SHA256"   'list_repo_tree' 'recursive_file_only' 'git_blob_sha1' 'lfs_sha256'   'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'PARTIAL_RUNTIME_FAIL_CLOSED'   'CPU_UNSUPPORTED_FULL_TTS' 'BLOCKED_BY_CPU' 'NO_UPLOAD' 'weights_only=True'   'lfs_pointer_sha1' 'PTH↔safetensors mapping evidence unavailable' '40 * 1024 * 1024' 'cargo metadata --locked --no-deps --format-version 1' 'uv.lock' 'dependency_license_audit' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'AUDITED_ALLOW' 'sha256sum' '--no-project' 'dedicated locked-reference project' '--validate-approval' 'exit 2'; do
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing contract $token" >&2; fail=1; }
  done
+ grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$SOURCE_CONTRACT" || { echo 'missing source-only contract marker' >&2; fail=1; }
+ grep -Fq -- '--source-only' "$0" || { echo 'missing source-only worker mode' >&2; fail=1; }
  grep -Fq -- '--expected-head' "$0"; grep -Fq -- '--approval-sha256' "$0"; grep -Fq -- '--validate-approval' "$INSPECTOR"
  grep -Fq 'canonical_existing_path' "$0"; grep -Fq 'canonical_absent_path' "$0"; grep -Fq 'inspection WORK path has invalid' "$0"
  if "$0" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1; then echo 'duplicate expected-head accepted' >&2; fail=1; fi
@@ -35,9 +38,41 @@ self_test(){
  grep -Fq 'dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"' "$REFERENCE_PROJECT/pyproject.toml" || { echo 'dependency audit gate missing' >&2; fail=1; }
  if grep -Eq 'librosa|soxr|gradio|triton|nvidia-|descript-audio-codec' "$REFERENCE_PROJECT/uv.lock"; then echo 'forbidden/UI/GPL/CUDA reference dependency in lock' >&2; fail=1; fi
  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test || fail=1
+ UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SOURCE_CONTRACT" --self-test || fail=1
  (( fail == 0 )) || return 1
  echo 'run-dia-1-6b-inspection.sh self-test: OK'
 }
+
+source_only(){
+ local expected_head='' seen_head=0
+ while (($#)); do case "$1" in
+  --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen_head=1; shift 2 ;;
+  *) die "unexpected source-only argument: $1" ;;
+ esac; done
+ (( seen_head == 1 )) || die 'source-only mode requires --expected-head'
+ [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
+ [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'source-only worker requires Linux x86_64'
+ [[ -f "$REFERENCE_PROJECT/uv.lock" ]] || die 'dedicated Dia reference uv.lock is absent; refuse source-only execution'
+ [[ "$(sha256sum "$REFERENCE_PROJECT/uv.lock" | awk '{print $1}')" == "$REFERENCE_LOCK_SHA256" ]] || die 'Dia uv.lock identity mismatch'
+ [[ "$(sha256sum "$REFERENCE_PROJECT/pyproject.toml" | awk '{print $1}')" == "$REFERENCE_PYPROJECT_SHA256" ]] || die 'Dia pyproject identity mismatch'
+ local work="/dev/shm/vokra-dia-1-6b-source-contract"
+ [[ ! -e "$work" && ! -L "$work" ]] || die 'source-only work path already exists'
+ mkdir "$work" "$work/evidence"
+ git clone --filter=blob:none "$SOURCE_URL" "$work/source" >>"$work/evidence/validation.log" 2>&1
+ git -C "$work/source" checkout --detach "$SOURCE_REVISION" >>"$work/evidence/validation.log" 2>&1
+ [[ "$(git -C "$work/source" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die 'source revision mismatch'
+ [[ "$(git -C "$work/source" remote get-url origin)" == "$SOURCE_URL" ]] || die 'source origin mismatch'
+ UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$SOURCE_CONTRACT" --source "$work/source" --rust-root "$ROOT" --output "$work/evidence/source-contract.json" >>"$work/evidence/validation.log" 2>&1
+ grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$work/evidence/source-contract.json" || die 'source-only contract did not complete'
+ grep -Fq 'NO_UPLOAD' "$work/evidence/source-contract.json" || die 'source-only contract lost NO_UPLOAD marker'
+ echo "Dia source-only contract is complete; evidence preserved at $work/evidence" >&2
+}
+
+if [[ "${1:-}" == --source-only ]]; then
+ shift
+ source_only "$@"
+ exit 0
+fi
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
 usage(){ echo 'usage: run-dia-1-6b-inspection.sh --expected-head <40-hex> --approval-evidence <file> --approval-sha256 <64-hex>' >&2; }
 expected_head=''; approval_evidence=''; approval_sha256=''; seen_head=0; seen_approval=0; seen_approval_sha=0

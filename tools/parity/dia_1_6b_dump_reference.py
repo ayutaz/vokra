@@ -16,6 +16,7 @@ import importlib
 import json
 import math
 import re
+import tempfile
 import tomllib
 import types
 from pathlib import Path
@@ -351,6 +352,20 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
     if project_evidence["dependency_license_audit"] != "AUDITED_ALLOW":
         raise RuntimeError("Dia reference dependency license/provenance audit is blocked")
     source_evidence = authenticate_source(source)
+    # Execute the official source-only contract before touching any checkpoint.
+    # This imports only the fixed source helpers and is deliberately separate
+    # from the real-weight/DAC proof gate below.
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    source_contract = importlib.import_module("dia_1_6b_source_contract")
+    # Keep the source-only packet in a private temporary directory.  Never
+    # reuse or unlink a caller-owned path beside the evidence output.
+    with tempfile.TemporaryDirectory(prefix=".dia-source-contract-", dir=output.parent) as contract_directory:
+        source_contract_evidence = source_contract.run(
+            source,
+            Path(__file__).resolve().parents[2],
+            Path(contract_directory) / "source-contract.json",
+        )
     model_evidence = authenticate_model(model)
     public_evidence = authenticate_public(public)
     dac_evidence_packet = authenticate_dac(dac_evidence, dac_checkpoint, dac_source)
@@ -496,6 +511,7 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
             "status": "REFERENCE_COMPLETE",
             "reference_project": project_evidence,
             "source": source_evidence,
+            "source_contract": source_contract_evidence,
             "hf": model_evidence,
             "public": public_evidence,
             "dac": dac_evidence_packet,

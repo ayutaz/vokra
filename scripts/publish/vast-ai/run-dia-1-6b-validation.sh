@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/dia_1_6b_reference"
+SOURCE_CONTRACT="$ROOT/tools/parity/dia_1_6b_source_contract.py"
 LOCK_SHA256="ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
 PYPROJECT_SHA256="56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
 die(){ echo "dia-validation: ERROR: $*" >&2; exit 2; }
@@ -16,6 +17,7 @@ self_test(){
   grep -Fq -- '--expected-head' "$0" || die 'expected HEAD gate missing'
   grep -Fq -- '--approval-sha256' "$0" || die 'approval SHA gate missing'
   grep -Fq 'REFERENCE_COMPLETE' "$ROOT/tools/parity/dia_1_6b_dump_reference.py" || die 'reference completion marker missing'
+  grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$SOURCE_CONTRACT" || die 'source-only contract marker missing'
   grep -Fq 'uv.lock' "$ROOT/tools/parity/dia_1_6b_dump_reference.py" || die 'lock contract missing'
   check_project_identity
   grep -Fq 'dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"' "$PROJECT/pyproject.toml" || die 'dependency audit gate missing'
@@ -30,6 +32,7 @@ self_test(){
   if grep -Eq 'librosa|soxr|gradio|triton|nvidia-|descript-audio-codec' "$PROJECT/uv.lock"; then die 'forbidden/UI/GPL/CUDA reference dependency in lock'; fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --self-test
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" --self-test
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SOURCE_CONTRACT" --self-test
   echo 'run-dia-1-6b-validation.sh self-test: OK'
 }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi

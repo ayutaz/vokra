@@ -59,6 +59,12 @@ DEPENDENCY_LICENSE_CONCLUSIONS = {
     "typing-inspection": "MIT_REVIEWED", "urllib3": "MIT_REVIEWED",
     "vokra-dia-1-6b-reference": "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE",
 }
+SOURCE_CONTRACT_FORMAT = "vokra-dia-1-6b-source-contract-v1"
+SOURCE_CONTRACT_RUST_FILES = {
+    "crates/vokra-models/src/dia/tokenizer.rs",
+    "crates/vokra-models/src/dia/forward.rs",
+    "crates/vokra-models/src/dia/mod.rs",
+}
 
 
 def unique_pairs(pairs):
@@ -149,6 +155,42 @@ def require_sampling_cardinality(sampling: dict, logits: list, probability: list
         raise ValueError("decoder logits/probability/selected call alignment mismatch")
 
 
+def require_source_contract(contract: dict) -> None:
+    if not isinstance(contract, dict) or contract.get("format") != SOURCE_CONTRACT_FORMAT or contract.get("status") != "SOURCE_CONTRACT_COMPLETE_MODEL_FREE":
+        raise ValueError("official Dia source-only contract is missing or incomplete")
+    if contract.get("model_payload_access") != "NONE" or contract.get("checkpoint_loaded") is not False or contract.get("dac_loaded") is not False or contract.get("pcm_generated") is not False or contract.get("parity_status") != "NOT_RUN_SOURCE_CONTRACT_ONLY" or contract.get("publication") != "NO_UPLOAD":
+        raise ValueError("source-only contract claims model execution or parity")
+    source = contract.get("source")
+    if not isinstance(source, dict) or source.get("repository") != "https://github.com/nari-labs/dia.git" or source.get("revision") != "2811af1c5f476b1f49f4744fabf56cf352be21e5" or source.get("resolved_revision") != source.get("revision") or source.get("clean") is not True or set(source.get("files", {})) != set(SOURCE_ROLE_BLOBS):
+        raise ValueError("source-only contract source identity is incomplete")
+    for name, blob in SOURCE_ROLE_BLOBS.items():
+        row = source["files"].get(name)
+        if not isinstance(row, dict) or row.get("git_blob_sha1") != blob or not isinstance(row.get("sha256"), str) or len(row["sha256"]) != 64:
+            raise ValueError(f"source-only contract role identity mismatch: {name}")
+    rust = contract.get("rust")
+    if not isinstance(rust, dict) or rust.get("status") != "RUST_SOURCE_CONTRACT_MATCHED" or rust.get("delay_pattern") != [0, 8, 9, 10, 11, 12, 13, 14, 15] or rust.get("speaker_markers") != {"[S1]": 1, "[S2]": 2} or rust.get("staggered_eos_drain") != {"max_delay": 15, "apply_generation_drain": True, "generate_codes": True} or set(rust.get("files", {})) != SOURCE_CONTRACT_RUST_FILES:
+        raise ValueError("Rust Dia source contract comparison is missing")
+    tokenizer = contract.get("tokenizer")
+    if not isinstance(tokenizer, dict) or tokenizer.get("implementation") not in {"official Dia._encode_text", "official Dia._prepare_text_input"} or tokenizer.get("markers") != {"[S1]": 1, "[S2]": 2} or tokenizer.get("ids") != [65, 1, 195, 169, 2] or tokenizer.get("truncation_probe") != [1, 120]:
+        raise ValueError("official tokenizer source contract mismatch")
+    audio = contract.get("audio_delay_revert")
+    if not isinstance(audio, dict) or audio.get("delay_pattern") != [0, 8, 9, 10, 11, 12, 13, 14, 15] or audio.get("shape") != [1, 32, 9] or audio.get("bos_value") != 1026 or audio.get("pad_value") != 1025 or audio.get("valid_prefix_frames") != 17 or audio.get("bos_count") != 92 or audio.get("reverted_pad_count") != 0 or audio.get("revert_index_clamp") is not True or audio.get("revert_out_of_bounds_count") != 0:
+        raise ValueError("official delay/revert source contract mismatch")
+    sampler = contract.get("sampler")
+    calls = sampler.get("multinomial_calls", []) if isinstance(sampler, dict) else []
+    branches = sampler.get("branch_results", {}) if isinstance(sampler, dict) else {}
+    eos_not_highest = branches.get("eos_not_highest") if isinstance(branches, dict) else None
+    eos_highest = branches.get("eos_highest") if isinstance(branches, dict) else None
+    calls_are_valid = isinstance(calls, list) and len(calls) == 2 and all(isinstance(call, dict) for call in calls)
+    branches_are_valid = isinstance(eos_not_highest, dict) and isinstance(eos_highest, dict)
+    if not isinstance(sampler, dict) or sampler.get("implementation") != "official _sample_next_token" or sampler.get("input_shape") != [9, 1025] or sampler.get("top_k") is not None or sampler.get("audio_eos_value") != 1024 or sampler.get("eos_not_highest_probe") is not True or sampler.get("eos_highest_probe") is not True or sampler.get("call_order") != ["temperature scaling", "EOS-not-highest mask", "top-k (disabled)", "top-p (disabled)", "softmax", "torch.multinomial", "selected channel ids"] or not calls_are_valid or not branches_are_valid or calls[0].get("branch") != "eos_not_highest" or calls[1].get("branch") != "eos_highest" or any(call.get("shape") != [9, 1025] or call.get("num_samples") != 1 for call in calls) or any(value != 0.0 for value in calls[0].get("eos_probability", [])) or not calls[1].get("eos_probability") or calls[1]["eos_probability"][0] <= 0.0 or sampler.get("selected") != [0] * 9 or eos_not_highest.get("selected") != [0] * 9 or not isinstance(eos_highest.get("selected"), list) or eos_highest["selected"][0:1] != [1024] or eos_highest["selected"][1:] != [0] * 8:
+        raise ValueError("official sampler source contract mismatch")
+    generation = contract.get("generation")
+    stop = generation.get("stop", {}) if isinstance(generation, dict) else {}
+    if not isinstance(generation, dict) or generation.get("delay_pattern") != [0, 8, 9, 10, 11, 12, 13, 14, 15] or generation.get("sampler_call_sites") != 0 or generation.get("sampler_call_sites_generate") != 0 or generation.get("sampler_call_sites_decoder_step") != 1 or generation.get("decoder_step_method") != "official Dia._decoder_step" or stop.get("eos_detected_variable") != "eos_detected_Bx" or stop.get("countdown_variable") != "eos_countdown_Bx" or stop.get("initial_countdown") != -1 or stop.get("countdown_start") != "eos_countdown_Bx[start_countdown_mask_Bx] = max_delay_pattern" or stop.get("max_delay_pattern") != 15 or stop.get("drain_steps") != 15 or stop.get("staggered_eos_pad") is not True or stop.get("source_checks") != {"eos_mask": "step_after_eos_Bx_ == delay_pattern_Cx_", "pad_mask": "step_after_eos_Bx_ > delay_pattern_Cx_", "countdown_decrement": "eos_countdown_Bx[padding_mask_Bx] -= 1"} or "extra_steps_after_eos" in stop:
+        raise ValueError("official generation schedule/stop source contract mismatch")
+
+
 def validate(root: Path, expected_head: str | None = None, approval_sha256: str | None = None) -> None:
     import numpy as np
     require_canonical_existing_path(root)
@@ -166,6 +208,7 @@ def validate(root: Path, expected_head: str | None = None, approval_sha256: str 
     if manifest.get("comparison_status") != "NOT_RUN_OFFICIAL_ONLY":
         raise ValueError("reference-only packet must say native comparison was not run")
     require_reference_project(manifest.get("reference_project"))
+    require_source_contract(manifest.get("source_contract"))
     source = manifest.get("source")
     hf = manifest.get("hf")
     public = manifest.get("public")
@@ -289,6 +332,11 @@ def main() -> int:
         try:
             require_dac_proof({"status": "EXACT_TO_VOKRA_DAC_KHZ44", "sample_rate": 44100, "n_codebooks": 9, "hop_length": 512})
             raise AssertionError("self-asserted DAC mapping accepted")
+        except ValueError:
+            pass
+        try:
+            require_source_contract({"format": SOURCE_CONTRACT_FORMAT, "status": "SOURCE_CONTRACT_COMPLETE_MODEL_FREE"})
+            raise AssertionError("incomplete source-only contract accepted")
         except ValueError:
             pass
         try:
