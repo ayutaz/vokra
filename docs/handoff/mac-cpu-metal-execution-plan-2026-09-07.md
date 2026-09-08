@@ -832,6 +832,27 @@ real-weight VAST conversion, independent-reference and CPU-parity packets.
 Scaleway remains reserved for the final Apple CPU/Metal execution after those
 non-Apple gates are complete or explicitly withheld/withdrawn by the owner.
 
+## 2026-09-09 final source sweep awaiting VAST replay
+
+The owner-independent source sweep through `b954b82a` is committed as eleven
+family-sized changes after the green PR #79 remote head `d7d32c63`. It closes
+concrete model-free gaps in Baichuan Audio, FireRed AED-L, MMS, Zonos, Dia,
+VoxCPM, Voice Gender, MOSS Nano, SBV2 and HiFTNet, and corrects the Kyutai STT
+ledger. The owner's CosyVoice2 LLM license manifest remains unstaged.
+
+The remaining source rows were re-audited rather than promoted speculatively.
+Their blockers are now classified as one or more of: missing immutable source
+or tensor facts, incomplete first-party native composite, owner/legal decision,
+authenticated real checkpoint and independent VAST CPU parity. None of those
+is an Apple-host requirement. Only the final CPU/reference, Metal/reference and
+Metal/CPU no-fallback measurements require Scaleway.
+
+The next gate is one clean exact-head VAST replay: full workspace and static
+verification, followed by every owner-independent model-free/source worker
+enumerated in the remaining-task ledger. Real checkpoint acquisition and
+execution remain prohibited until the corresponding hash-bound owner scope is
+approved; publication remains separately unauthorized.
+
 ## Completion proof
 
 The campaign is complete only when all of the following are simultaneously

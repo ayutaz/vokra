@@ -1359,6 +1359,63 @@ the explicit owner/legal dispositions, missing strict binders or native
 composites, authenticated real-weight VAST conversion/reference/CPU parity,
 and authorized public-artifact replacement or withdrawal described below.
 
+### 2026-09-09 source/runtime closure before the current exact-head replay
+
+Eleven reviewed commits after PR #79's remote head `d7d32c63` complete the
+remaining owner-independent source audit that was possible without an Apple
+host or real checkpoint execution:
+
+- `a1e39907` refreshes the immutable owner-decision scopes without treating a
+  scope digest as an approval.
+- `583fd61f` corrects Baichuan Audio's Matcha, HiFT and Hugging Face custom-code
+  source dispositions and keeps every unauthenticated role fail-closed.
+- `01c78790` adds FireRedASR-AED-L's exact 27-row model-free approval audit.
+- `2d0a8ee7` corrects Kyutai STT's stale binder blocker; its strict binder and
+  text decoder already exist, while Mimi, streaming, full ASR and real parity
+  remain open.
+- `8bb5d054` requires MMS-1B-All metadata evidence to bind the 1B backbone,
+  explicit language adapter and vocabulary to exact LFS identities. It never
+  defaults the adapter language.
+- `dab24fd7` binds Zonos' 246 floating tensor names, shapes and roles to the
+  native runtime while leaving the independently licensed DAC payload outside
+  that claim.
+- `0d512d0c` adds Dia's validated delayed-generation packet seam and preserves
+  authenticated nine-codebook DAC composition as a separate requirement.
+- `2ec1b2af` adds bounded VoxCPM tokenizer-id and continuous AudioVAE latent
+  packet seams. It does not claim tokenizer authentication, a complete native
+  composite or real-weight parity.
+- `00667861` makes Voice Gender checkpoint preparation self-testable without a
+  Torch import while retaining the full synthetic safetensors round trip when
+  the dependency environment is present.
+- `f2dbabe5` removes macOS-only temporary-root assumptions from the MOSS Nano
+  and SBV2 source/model-free self-tests.
+- `b954b82a` authenticates HiFTNet's current lock manifest and the single
+  size-less, exact URL/hash/upload-time PyTorch CPU wheel against its previously
+  verified byte size. The earlier closure candidate must be regenerated.
+
+Focused no-model checks passed for all changed families. Read-only audits also
+confirmed that BiCodec, Canary Flash/v2, VoxLingua107, MOSS TTS Local, NSNet2,
+both Qwen3-ASR variants, all four Qwen3-TTS variants, ReazonSpeech,
+SpeechBrain Lang-ID, WeSpeaker, BF16 and BigVGAN already have the appropriate
+fail-closed source or worker boundaries. No speculative shim was added where
+an owner decision, authenticated checkpoint, source/license fact, native
+composite or independent reference is still absent.
+
+This source sweep is not a CPU or Metal completion verdict. Before a Scaleway
+allocation, the final clean documentation head must be replayed on VAST. The
+owner-independent replay consists of the full workspace/Clippy/deny/audit and
+static gates plus the existing nine-worker model-free batch, FireRed AED-L
+model-free audit, Qwen3-TTS four-variant model-free API smoke, CLAP model-free
+audit, Parler and SpeechT5 dependency audits, BigVGAN dependency preflight,
+HiFTNet closure regeneration, MOSS Nano inspection and the SBV2 JP-Extra G2P
+source contract. None of these jobs authorizes checkpoint execution or upload.
+
+After that replay, the remaining non-Scaleway work is external input rather
+than Apple hardware: immutable owner/legal dispositions and, only for approved
+scopes, authenticated real-weight VAST conversion, independent-reference and
+CPU-parity runs. Scaleway is required only for the final Apple Silicon CPU,
+Metal and no-fallback verdicts.
+
 ## Cross-cutting implementation before the final Apple run
 
 These tasks affect multiple model rows and must not be mistaken for Scaleway
