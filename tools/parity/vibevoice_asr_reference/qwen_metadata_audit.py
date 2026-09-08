@@ -36,13 +36,16 @@ SOURCE_REVISION = "94da20d98b2fa7688e9cbfaf7692ddb4954f7600"
 SOURCE_COMMIT_DATE = "2026-07-24"
 SOURCE_DECLARATION_PATH = "demo/vibevoice_asr_inference_from_file.py"
 SOURCE_DECLARATION_BLOB = "bf4f75df74c7299c6596bb09d77e8c67400ff1ac"
+# The GitHub commit API returns this tree identity for SOURCE_REVISION.  The
+# tree endpoint must be addressed by this tree SHA, not by the commit SHA.
+SOURCE_TREE_SHA = "07fa109475159ba87d4d1e3fd9b2727a8453c47b"
 SOURCE_DECLARATION_MARKER = 'language_model_pretrained_name="Qwen/Qwen2.5-7B"'
 MODEL_INFO_URL = f"https://huggingface.co/api/models/{REPOSITORY}?revision={REVISION}&blobs=true"
 CURRENT_MODEL_INFO_URL = f"https://huggingface.co/api/models/{REPOSITORY}"
 HISTORY_URL = f"https://huggingface.co/api/models/{REPOSITORY}/commits/main"
 LICENSE_URL = f"https://huggingface.co/{REPOSITORY}/raw/{REVISION}/LICENSE"
 GITHUB_SOURCE_COMMIT_URL = f"https://api.github.com/repos/microsoft/VibeVoice/commits/{SOURCE_REVISION}"
-GITHUB_SOURCE_TREE_URL = f"https://api.github.com/repos/microsoft/VibeVoice/git/trees/{SOURCE_REVISION}?recursive=1"
+GITHUB_SOURCE_TREE_URL = f"https://api.github.com/repos/microsoft/VibeVoice/git/trees/{SOURCE_TREE_SHA}?recursive=1"
 GITHUB_SOURCE_BLOB_URL = f"https://api.github.com/repos/microsoft/VibeVoice/git/blobs/{SOURCE_DECLARATION_BLOB}"
 EXPECTED_FILES = frozenset(
     {
@@ -440,9 +443,9 @@ def validate_source_evidence(
     if not source_date.startswith(SOURCE_COMMIT_DATE):
         raise AuditError("source commit date drifted from the recorded source date")
     tree_sha = commit_data.get("tree", {}).get("sha") if isinstance(commit_data.get("tree"), dict) else None
-    if not isinstance(tree_sha, str) or not HEX40.fullmatch(tree_sha):
-        raise AuditError("source commit tree SHA is missing")
-    if not isinstance(tree, dict) or tree.get("sha") != tree_sha or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
+    if tree_sha != SOURCE_TREE_SHA:
+        raise AuditError("source commit tree SHA drifted from the fixed tree identity")
+    if not isinstance(tree, dict) or tree.get("sha") != SOURCE_TREE_SHA or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
         raise AuditError("source tree evidence is malformed")
     paths: set[str] = set()
     for item in tree["tree"]:
@@ -631,7 +634,7 @@ def _fixture() -> tuple[Any, Any, Any, Any, Any, bytes, bytes, bytes, bytes, byt
     current = {"sha": REVISION}
     source_content = SOURCE_DECLARATION_MARKER.encode()
     source_blob_sha = _git_blob_sha1(source_content)
-    tree_sha = _git_blob_sha1(b"tree fixture")
+    tree_sha = SOURCE_TREE_SHA
     commit = {"sha": SOURCE_REVISION, "commit": {"committer": {"date": "2026-07-24T00:00:00Z"}, "tree": {"sha": tree_sha}}}
     tree = {"sha": tree_sha, "truncated": False, "tree": [{"path": SOURCE_DECLARATION_PATH, "type": "blob", "mode": "100644", "sha": source_blob_sha, "size": len(source_content)}]}
     blob = {"sha": source_blob_sha, "encoding": "base64", "size": len(source_content), "content": base64.b64encode(source_content).decode()}
@@ -649,6 +652,8 @@ def _fixture() -> tuple[Any, Any, Any, Any, Any, bytes, bytes, bytes, bytes, byt
 def self_test() -> None:
     root = Path.cwd()
     head = "a" * 40
+    if GITHUB_SOURCE_TREE_URL != f"https://api.github.com/repos/microsoft/VibeVoice/git/trees/{SOURCE_TREE_SHA}?recursive=1":
+        raise AssertionError("source tree endpoint is not bound to the fixed tree SHA")
     checkout = verify_checkout(root, head, runner=_fake_runner(root, head))
     fixed, current, history, commit, tree, blob, license_raw, license_headers, raw_fixed, raw_current, raw_history, raw_commit, raw_tree, raw_blob = _fixture()
     source_blob_sha = _git_blob_sha1(SOURCE_DECLARATION_MARKER.encode())
@@ -661,6 +666,13 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError(f"source tree {field} tamper was accepted")
+    broken_commit = json.loads(json.dumps(commit)); broken_commit["commit"]["tree"]["sha"] = "0" * 40
+    try:
+        validate_source_evidence(broken_commit, tree, blob, expected_blob=source_blob_sha)
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("source commit/tree SHA binding tamper was accepted")
     broken_tree = json.loads(json.dumps(tree)); broken_tree["tree"][0]["size"] += 1
     try:
         validate_source_evidence(commit, broken_tree, blob, expected_blob=source_blob_sha)

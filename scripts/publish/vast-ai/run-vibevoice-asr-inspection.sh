@@ -71,7 +71,8 @@ run_self_test() {
     'uv run --frozen --project tools/parity --python 3.12' \
     'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python' \
     '--approval-evidence' '--approval-sha256' '--expected-head' '--metadata-only' '--output' 'BLOCKED_APPROVAL/INSPECTION_ONLY/NO_UPLOAD' \
-    'snapshot_download' 'git clone --no-tags --filter=blob:none' 'exit 2'; do
+    'snapshot_download' 'git clone --no-tags --filter=blob:none' 'exit 2' \
+    'metadata auditor returned exit 2 without evidence output:'; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-vibevoice-asr-inspection: self-test FAIL: missing VAST gate: $required" >&2
       fail=1
@@ -224,7 +225,10 @@ if [[ "$metadata_only_count" -eq 1 ]]; then
   metadata_status=$?
   set -e
   [[ "$metadata_status" == 2 ]] || die "Qwen metadata auditor failed without successful BLOCKED evidence: $metadata_output_text"
-  [[ -f "$metadata_output" && ! -L "$metadata_output" ]] || die "Qwen metadata auditor returned exit 2 without evidence output"
+  [[ -f "$metadata_output" && ! -L "$metadata_output" ]] || {
+    metadata_diagnostic="${metadata_output_text:-<no diagnostic output>}"
+    die "Qwen metadata auditor returned exit 2 without evidence output: $metadata_diagnostic"
+  }
   set +e
   metadata_validate_text="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$repo_root/$QWEN_METADATA_AUDITOR" --validate-evidence --expected-head "$expected_head" --repo-root "$repo_root" --evidence "$metadata_output" 2>&1)"
   metadata_validate_status=$?
