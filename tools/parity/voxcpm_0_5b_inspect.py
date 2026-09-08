@@ -193,6 +193,16 @@ def check_model_card(snapshot: Path) -> dict[str, Any]:
     return {"license": match.group(1), "sha256": digest(snapshot / "README.md")}
 
 
+def validate_fixed_tree_paths(paths: set[str]) -> None:
+    """Require the complete authenticated 0.5B companion tree, no extras."""
+    missing = REQUIRED - paths
+    extra = paths - REQUIRED
+    if missing or extra:
+        raise RuntimeError(
+            f"fixed VoxCPM tree mismatch: missing={sorted(missing)}, extra={sorted(extra)}"
+        )
+
+
 def inspect_tree(snapshot: Path, packet: Path) -> dict[str, Any]:
     envelope = load_json(packet)
     if not isinstance(envelope, dict) or envelope.get("repository") != HF_REPOSITORY or envelope.get("revision") != HF_REVISION or envelope.get("resolved_revision") != HF_REVISION:
@@ -216,8 +226,7 @@ def inspect_tree(snapshot: Path, packet: Path) -> dict[str, Any]:
         if lfs is not None and row["lfs_size"] != row["size"]:
             raise RuntimeError(f"LFS size mismatch {path}")
         by_path[path] = row
-    if not REQUIRED.issubset(by_path):
-        raise RuntimeError(f"required HF files missing: {sorted(REQUIRED - set(by_path))}")
+    validate_fixed_tree_paths(set(by_path))
     actual: set[str] = set()
     for path in snapshot.rglob("*"):
         relative = path.relative_to(snapshot)
@@ -381,6 +390,13 @@ def self_test() -> None:
     assert AUDIOVAE_CONTRACT["sample_rate_hz"] == 16_000
     assert AUDIOVAE_CONTRACT["encoder_rates"] == [2, 5, 8, 8]
     assert AUDIOVAE_CONTRACT["decoder_rates"] == [8, 8, 5, 2]
+    validate_fixed_tree_paths(set(REQUIRED))
+    try:
+        validate_fixed_tree_paths(set(REQUIRED) | {"unexpected-companion.bin"})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("unexpected VoxCPM companion was accepted")
     assert TOKENIZER_MODEL_TYPE == "BPE"
     assert TOKENIZER_VOCAB_SIZE == 73_448
     try:
