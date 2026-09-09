@@ -14,6 +14,13 @@
 > with zero source-level CPU-only rows. Do not infer current completion, Apple
 > parity, or publication status from this older ledger.
 
+> **2026-09-09 audit-start snapshot:** Before this documentation refresh, PR
+> #79 was `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional
+> skip / 0 fail), exact VAST implementation evidence was `caf70eb1` (305 suites
+> / 8,010 passed / 0 failed / 100 ignored), and VAST `50320338` plus 150-GB
+> storage were destroyed. Scaleway had not started. Current inventory is 63
+> unresolved rows; use the canonical pre-Scaleway ledger for current status.
+
 > **2026-08-27 Qwen3-TTS mapped-generation wave:** all five official Base,
 > CustomVoice and VoiceDesign main checkpoints now have strict fixed-revision
 > conversion contracts with authenticated Qwen2 BPE/prompt assets and exact

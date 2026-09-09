@@ -7,6 +7,14 @@
 > current handoff; repository operating rules come from `AGENTS.md` and the
 > applicable skill documents.
 
+> **2026-09-09 audit-start snapshot:** Before this documentation refresh, PR
+> #79 was at `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional
+> skip / 0 fail). Exact VAST implementation evidence was `caf70eb1` (305 suites
+> / 8,010 passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB
+> storage were destroyed, and Scaleway had not started. This historical
+> checklist's M3 owner gates and dated measurements remain unchanged; use the
+> canonical pre-Scaleway ledger for current counts and remaining work.
+
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・法務判断・鍵/秘密情報の provision を担当。
 **CC-side status**（2026-07-12 更新、**PR #4 (merge commit `1f934da`) merged 2026-07-11T15:54 UTC = feat/m3-plan-and-wave1 → main + Wave 14 (5 grouped commits: `8843814` / `3d79833` / `d0b1aea` / `c2abfcb` / `ba33bd0`) follow-up land**、Wave 1〜Wave 14 の CC 実装分完了 = 19 WP 中 16 コミット済 + partial WP を Wave 7/8/9/10/11/12/13/14 で追撃、**M3-11 (T01-T18) + M3-15 = 100% 完成 / M3-16 = Wave 14 で CC-side 100% 完成 (`d0b1aea`)**）:
 

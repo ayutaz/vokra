@@ -25,6 +25,14 @@ The current M5 ledger is
 `docs/platform-support/v1.0-rc-support-matrix.md`; all 2026-08-18 values in
 this M4-era checklist remain history-only.
 
+**2026-09-09 audit-start snapshot:** Before this documentation refresh, PR #79
+was at `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional skip /
+0 fail). Exact VAST implementation replay was `caf70eb1` (305 suites / 8,010
+passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB storage were
+destroyed. Scaleway had not started. This M4 checklist remains a historical
+owner ledger; current 63-row status and the distinction between external-input/
+VAST work and final Apple validation are in the canonical pre-Scaleway ledger.
+
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・実 weight sourcing・法務 sign-off・外部契約 / インフラ provisioning・ADR 判断を担当。
 **CC-side status**: **M4 CC 実装 terminal 到達（2026-07-15、全 20 WP = M4-01〜M4-20）**。investigation 3 round のうち round 2 / round 3 = **2 連続 0 CC ticket** で terminal 判定（M3 と同じ規律）。terminal 時 verify = default 2340 / all-features 2364 passed。**その後 2026-07-16 に依頼者指示で post-terminal CC-gap 追加実装 campaign を実施**（terminal 後の追加洗い出し = ultracode 32 候補中 17 land、既存 WP 内の完成度向上 = P0 wasm ビルド破損修正・converter alignment_heads/word-timestamp・vokra-server 本番 startup 配線・CSM/Mimi from_gguf・実 M1 Metal parity + Llama MSL kernel 4種・RingKVCache・agc/hpf streaming 等）。**merge 状況（2026-07-19 更新）**: **M4 は PR #8 として main に merge 済**（merge commit `ff12104`、2026-07-19、branch `feat/m4-plan-and-wave1` → main）。本チェックリスト起草時点の「PR 未作成」前提は失効しており、**「default branch に workflow ファイルが無いので workflow_dispatch できない」というブロッカーも解消済**（§4.5）。以降 main は `13a2a6e` まで進んでいる。
 
@@ -89,6 +97,13 @@ CC 側は各モデルの **flip-the-switch parity harness**（実 checkpoint 到
   <!-- claim-evidence: tests/parity/utmos/score.json -->
   <!-- claim-evidence: crates/vokra-convert/src/models/utmos.rs -->
 - **(d)**: M5-15 側で `parity-utmos` 初回 workflow_dispatch 完走（初回起動は owner）+ DNSMOS 判定記録。**dispatch の残ブロッカーは 1 点に特定済** = `tests/parity/utmos/source.env`（weight URL + sha256）が未 commit で、これは §3.1 の UTMOS license sign-off 待ち。checkpoint 自体は永久に非 commit（Vokra は weight を配布しない）ゆえ、source.env が入るまで workflow は明示 annotation 付きで clean skip する（捏造 pass しない）。**§5.3 の G2（UTMOS defer 中の暫定判定方針）は un-defer により前提が変わった** — 追認対象は「defer 継続の是非」ではなく「M5-15 着地までの暫定 posture」になる。
+
+> **2026-09-09 audit-start correction:** The historical UTMOS completion and
+> `score.json` parity claims in this M4 checklist must not be treated as the
+> current workflow result. The restricted loader now rejects the legacy pickle
+> checkpoint with `weights_only=True`; the current `parity-utmos` boundary is
+> `BLOCKED_UNSAFE_PICKLE` / `NO_PARITY`, pending an owner-approved safe
+> state-dict route. No UTMOS parity success is claimed.
 
 ### 1.6 Mimi / DAC real-checkpoint parity（M4-04 / M4-05）
 

@@ -2,6 +2,19 @@
 
 Updated with owner-independent evidence on 2026-09-09.
 
+> **2026-09-09 audit-start snapshot:** PR #79 was at `9efcd16e`
+> (`CLEAN` / `MERGEABLE`), with 110 successful CI checks, 13 intentional skips
+> and 0 failures. The exact implementation VAST replay is `caf70eb1` (305
+> suites / 8,010 passed / 0 failed / 100 ignored). VAST `50320338` and its
+> 150-GB storage were destroyed. Scaleway has not started. This packet records
+> owner/legal decisions only; it does not authorize model execution, upload or
+> Scaleway allocation. HF upload remains unapproved.
+
+The earlier `80c17e...` and `504858...` VAST checkpoints in this packet are
+historical intermediate owner-review evidence. The final exact implementation
+replay is `caf70eb1` with 305 suites / 8,010 passed / 0 failed / 100 ignored;
+its disposable VAST instance `50320338` and 150-GB storage were destroyed.
+
 The closing model-free batch was verified on a clean VAST checkout at exact
 head `80c17e290cc163d639d88550ffaca2187f2870fb`. Workspace tests, all-target and
 all-feature Clippy with warnings denied, deny and audit were green; the

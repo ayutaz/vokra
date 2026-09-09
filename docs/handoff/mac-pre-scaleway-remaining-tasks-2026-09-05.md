@@ -1,5 +1,21 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-09-09 audit-start snapshot (canonical status before this refresh):** PR #79 was at
+> `9efcd16e` (`CLEAN` / `MERGEABLE`), with 110 successful CI checks, 13
+> intentional skips and 0 failures. The exact implementation VAST replay is
+> `caf70eb1` (305 suites / 8,010 passed / 0 failed / 100 ignored). VAST
+> instance `50320338` and its 150-GB storage were destroyed; no VAST storage
+> charge remains from that replay. Scaleway has not started. The live inventory
+> remains 63 unresolved public rows. All currently identified unblocked
+> owner-independent source, model-free, security and repository-verification
+> work is complete. Remaining non-Scaleway work requires external owner/legal/
+> upstream facts and, after approval, real-weight VAST conversion/reference/
+> CPU parity. Scaleway is reserved for final Apple CPU/reference, Metal/reference
+> and Metal/CPU no-fallback validation. UTMOS legacy-pickle parity is blocked by
+> the safe `weights_only=True` boundary; no UTMOS parity success is claimed.
+> Hugging Face upload remains unapproved. This note supersedes earlier live
+> status prose in this dated ledger; historical evidence below is retained.
+
 ## Scope and current truth
 
 This is the execution ledger for finishing the public Mac CPU / Apple Metal
@@ -1458,6 +1474,10 @@ It has not been destroyed, so its storage charge remains until the owner gives
 exact-id destruction permission. Unrelated instance `50293364`
 (`ralomi-m4r-reazonspeech`) was not modified.
 
+**2026-09-09 audit-start correction:** This `50284673` stop/storage statement
+is historical. The instance and its storage were later destroyed; no storage
+charge remains and it is not a restart or transfer target.
+
 This completes every currently identified **owner-independent** non-Scaleway
 source, model-free and repository-verification task. It does not close the 63
 public rows. The remaining non-Scaleway work is gated by external input:
@@ -1815,6 +1835,10 @@ model/checkpoint payload. Instance `50284673` was then stopped; provider
 readback showed `cur_state`, `intended_status` and `next_state` all
 `stopped`. It still incurs storage charges until exact-id destruction is
 authorized. Unrelated instance `50293364` was not modified.
+
+**2026-09-09 audit-start correction:** This `50284673` stop/storage statement
+is historical. The instance and its storage were later destroyed; no storage
+charge remains and it is not a restart or transfer target.
 
 This closes the newly discovered owner-independent security follow-up. The
 remaining non-Scaleway work is external-input work: immutable owner/legal or

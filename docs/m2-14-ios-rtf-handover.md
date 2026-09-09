@@ -1,5 +1,13 @@
 # M2-14 iPhone RTF Measurement — Handover
 
+> **2026-09-09 audit-start snapshot:** This is a dated iOS owner handover.
+> Before this documentation refresh, PR #79 was `9efcd16e` (`CLEAN` /
+> `MERGEABLE`; 110 CI success / 13 intentional skip / 0 fail). Current Mac
+> CPU/Metal counts and cloud lifecycle are in the canonical pre-Scaleway
+> ledger; Scaleway had not started and VAST `50320338` plus its 150-GB storage
+> were destroyed. Historical measurements below are not current Mac/Metal
+> completion evidence.
+
 **Owner**: 依頼者 (physical iPhone required; CC cannot execute this WP).
 **Predecessor**: M2-02 (iOS build scaffold) produces `Vokra.xcframework` + `Package.swift`.
 **Requirement under measurement**: NFR-PF-03 (Whisper base RTF < 0.5 on target device).

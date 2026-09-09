@@ -35,6 +35,13 @@ Current model, VAST and Scaleway status is authoritative only in
 `docs/m5-owner-verification-checklist.md`; the dated baseline and all later
 history in this file are not current-state claims.
 
+**2026-09-09 audit-start snapshot:** Before this documentation refresh, PR #79
+was at `9efcd16e` (`CLEAN` / `MERGEABLE`) with 110 successful checks, 13
+intentional skips and 0 failures. The exact implementation VAST replay was
+`caf70eb1` (305 suites / 8,010 passed / 0 failed / 100 ignored); VAST `50320338`
+and its 150-GB storage were destroyed. Scaleway had not started. Current
+Mac/Metal and 63-row status is maintained in the canonical pre-Scaleway ledger.
+
 ## Mainline history used for the reconciliation
 
 | PR | Main commit | Result relevant to this handoff |

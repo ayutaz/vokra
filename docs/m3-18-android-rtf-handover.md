@@ -1,5 +1,12 @@
 # M3-18 Android Whisper base RTF Measurement — Handover
 
+> **2026-09-09 audit-start snapshot:** This is an Android owner handover and
+> remains independent of the Mac/Scaleway campaign. Before this documentation
+> refresh, PR #79 was `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13
+> intentional skip / 0 fail). Scaleway had not started; VAST `50320338` and its
+> 150-GB storage were destroyed. Historical Android instructions and
+> measurements below do not change the current 63-row Mac/Metal ledger.
+
 **Owner**: 依頼者 (physical Android arm64-v8a device required; CC cannot execute this WP).
 **Predecessors**:
 - M3-02 (Vulkan バックエンド新規実装 + Android arm64-v8a cross-build clean、~28% 残 = 実 kernel `.spv` 生成 + eval.rs 他 op arm) — 現時点 Copy/Add 以外の SPIR-V dispatch は `UnsupportedOp`。Whisper base full graph を Vulkan で走らせるには残 kernel の glslc 生成が必要。CPU fallback を認める場合は M2-06 (Whisper base) の CPU 経路をそのまま Android arm64-v8a build で動作させることも可能。

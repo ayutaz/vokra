@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-09-09 audit-start snapshot:** PR #79 was at `9efcd16e`
+> (`CLEAN` / `MERGEABLE`), with 110 successful checks, 13 intentional skips
+> and 0 failures. Exact implementation VAST replay is `caf70eb1` (305 suites /
+> 8,010 passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB
+> storage were destroyed. Scaleway has not started. The live inventory is 63
+> unresolved public rows. Unblocked owner-independent work is complete;
+> remaining non-Scaleway work is external owner/legal/upstream facts and
+> authorized VAST real-weight conversion/reference/CPU parity. Scaleway is
+> limited to final Apple CPU/reference, Metal/reference and no-fallback
+> verdicts. UTMOS legacy-pickle parity remains blocked by `weights_only=True`.
+
 ## Objective and authoritative inputs
 
 Finish Mac CPU and Apple Metal support for every public Vokra model row.  This
@@ -7,7 +18,8 @@ plan preserves the full 63-row scope recorded in
 `mac-pre-scaleway-remaining-tasks-2026-09-05.md`; a green build, an inspection
 manifest, or a device-less Metal compile does not count as completion.
 
-The starting point is PR #79 at `43188b948daa6de7a76d93e2d003d9b2f66da19c`:
+The historical starting point was PR #79 at
+`43188b948daa6de7a76d93e2d003d9b2f66da19c`:
 
 - 194 public repositories, 193 GGUF-bearing repositories and 198 GGUF files;
 - Mac CPU complete for 131 repositories;
@@ -900,6 +912,12 @@ Instance `50284673` was stopped after recovery; provider control-state fields
 all read `stopped`. It awaits exact-id destruction authorization, so storage
 charges remain in the meantime. Unrelated instance `50293364` was untouched.
 
+**2026-09-09 audit-start correction:** The preceding stop/storage statement is
+historical. `50284673` and its storage were subsequently destroyed; no storage
+charge remains and it is not a restart or transfer target. `50293364` was an
+unrelated untouched resource, not part of the current Vokra campaign inventory;
+the current Vokra retained-resource count is zero.
+
 Wave 1 is now complete for all known owner-independent work. The remaining
 non-Scaleway path is not additional unblocked implementation: it requires
 immutable owner/legal or missing-fact decisions and, for scopes the owner then
@@ -959,6 +977,12 @@ token, upload or maintainer-Mac model execution was involved. Instance
 `50284673` was stopped after recovery, with all three provider control-state
 fields reading `stopped`; storage remains until exact-id destruction is
 authorized. Instance `50293364` was not touched.
+
+**2026-09-09 audit-start correction:** The preceding stop/storage statement is
+historical. `50284673` and its storage were subsequently destroyed; no storage
+charge remains and it is not a restart or transfer target. `50293364` was an
+unrelated untouched resource, not part of the current Vokra campaign inventory;
+the current Vokra retained-resource count is zero.
 
 The security replay completed the then-current fail-closed baseline. Three
 later implementation commits prepare Accelerate-free candidates without

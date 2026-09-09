@@ -190,10 +190,11 @@ retained handoff（別環境への転送待ちなど）に限り、外部 backup
 および [Vast Storage types](https://docs.vast.ai/guides/instances/storage/types)
 を参照。
 
-**2026-08-31 の retained handoff**: instance `49168183`（500 GB storage）と
-`49261078`（200 GB storage）はいずれも `cur_state=stopped`、
-`intended_status=stopped`、`actual_status=exited` であり、compute は動いて
-いない。storage 課金は継続する。前者は
+**2026-08-31 の retained handoff（歴史）**: instance `49168183`（500 GB
+storage）と `49261078`（200 GB storage）は、当時は stopped/exited として
+Scaleway 転送用に保持されていた。後段の destruction supplement が現在状態を
+訂正するため、以下の旧料金・packet path を現行手順として使用してはならない。
+前者は
 `/root/scratchpad/apple-transfer-bc9d1db2`（manifest SHA-256
 `c96eee3c61ec85b589a488deff21668097ed4e94f96b4654b990706098f6f606`）と
 `/root/scratchpad/apple-transfer-reazon-a59c48c8`（
@@ -203,7 +204,9 @@ retained handoff（別環境への転送待ちなど）に限り、外部 backup
 Scaleway へ直接転送するためだけに保持する。再開はその転送に限定し、
 Scaleway 上で manifest を検証して証拠を回収した後に両方を destroy する。
 
-**2026-09-01 live status supplement**: 上記2件は引き続き
+**2026-09-01 live status supplement（歴史）**: 上記2件の当時の API status と
+storage-only cost を記録したもの。現在は後段の destruction supplement の
+とおり両方とも destroy 済みで、課金はない。上記2件は引き続き
 `cur_state=stopped`、`intended_status=stopped`、`actual_status=exited` で、
 compute は停止している。live API の storage-only cost は `49168183` が
 `$0.074074/h`、`49261078` が `$0.022222/h`、合計約 `$0.096296/h`
@@ -222,6 +225,11 @@ destroy 済みであり、両方の個別 API 読み戻しは `instances: null` 
 revision、artefact hash、manifest contract から新しい disposable VAST
 instance 上で変換・reference・packet を再生成し、Scaleway へ直接転送して
 destroy する。別作業の `49466383` (`cutetts-s1-train`) は変更していない。
+
+**2026-09-09 audit-start current correction:** 上記の instance IDs、packet
+paths、料金は歴史的な証跡である。現在の campaign では VAST `50320338` と
+150-GB storage も destroy 済みで、Scaleway は未開始、保存ストレージ課金は
+残っていない。HF upload は未承認である。
 
 ## 3. int tensor 対応 (parakeet 系で発生した pattern)
 

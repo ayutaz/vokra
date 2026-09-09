@@ -1,5 +1,17 @@
 # Mac CPU / Metal completion plan (2026-08-30)
 
+> **2026-09-09 audit-start snapshot:** The canonical status before this
+> documentation refresh is in `mac-pre-scaleway-remaining-tasks-2026-09-05.md`.
+> PR #79 was at `9efcd16e`
+> (`CLEAN` / `MERGEABLE`) with 110 successful checks, 13 intentional skips and
+> 0 failures. Exact implementation VAST evidence is `caf70eb1` (305 suites /
+> 8,010 passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB
+> storage were destroyed. Scaleway has not started. The 63 unresolved public
+> rows are not all Scaleway work: remaining non-Scaleway work is external
+> owner/legal/upstream facts plus authorized VAST real-weight work. Scaleway is
+> only the final Apple CPU/Metal/no-fallback stage. Earlier heads, packets,
+> storage charges and instance IDs in this dated plan are historical records.
+
 The 2026-09-05 live-audit reconciliation and exact pre-Scaleway backlog are in
 `docs/handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md`. Use that ledger
 for current counts and execution ordering; this file retains the earlier
@@ -9,7 +21,7 @@ checkpoint evidence and completion contract.
 
 The objective is full Mac CPU and Apple Metal coverage for every public Vokra
 model repository, with real-artifact and independent-reference evidence.  This
-plan does not narrow completion to the currently staged five-model Apple set
+plan does not narrow completion to the currently staged six-model Apple set
 across three packets. The authoritative implementation ledger remains
 `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`; this document fixes
 the execution order and cloud boundary for the remaining work.
@@ -40,15 +52,12 @@ transfer directly to Scaleway and destroy the instances. Do not try to restart
 either historical instance. This ends their combined `$0.096296/h` storage
 charge. Unrelated active instance `49466383` was not touched.
 
-## Audited baseline (reconciled 2026-09-01)
+## Historical audited baseline (reconciled 2026-09-01; superseded 2026-09-09)
 
-The active branch is workspace `0.3.0`; immediately before this documentation
-refresh its remote head was
-`d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109 passing
-checks, 13 expected skips, and no failures or pending checks. The authenticated
-runtime/VAST checkpoint `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and
-evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`
-remain historical workspace `0.2.0` evidence.
+The active branch and PR state in this section are historical. The current PR
+head, CI result and VAST replay are stated in the reconciliation note above;
+the authenticated runtime/VAST checkpoint and packet identities below remain
+historical evidence and must not be used as current transfer targets.
 
 The latest live read-only Hugging Face audit was repeated at clean local branch
 commit `8b63dea72350a45a4c831d661ad707a9c664b565` on 2026-09-01. It returned
@@ -126,8 +135,8 @@ must not be destroyed until the packet and small evidence are copied to and
 verified on Scaleway.
 
 This Wave A packet can decide only its three Apple CPU/Metal rows. The later
-ReazonSpeech and BiCodec packets expand the current Apple-ready set to five
-models, but Scaleway still cannot close the 63 CPU-open public rows,
+ReazonSpeech and BiCodec packets expand the current Apple-ready set to six
+models (including Voice Gender Classifier), but Scaleway still cannot close the 63 CPU-open public rows,
 publication/replacement gates, RMVPE license decision or SeamlessM4T
 non-artifact decision described below. Those remain separate
 VAST/source/license/publication waves.
@@ -249,14 +258,15 @@ strict Clippy, `cargo deny` and `cargo audit` also passed with log SHA-256 value
 `373ce57e806cb33ec0a7b16e49174ffcf0b274b38cfbb8d02bb7813b976aa33c`,
 `43ba882d8949aa5a6145e86a1bdf66d602057591b4d462390aa8c4519c0e9666`
 and `82e60f15564fdf549048e5f14a0d6a8e97a09b05fc875a389efe7da180d60c36`.
-No VAST restart or additional Linux run is required before the prepared Apple
-stage.
+At that historical checkpoint no VAST restart or additional Linux run was
+required before the prepared Apple stage. The packets were later destroyed;
+the current six-row Apple set requires a fresh disposable VAST regeneration
+before transfer.
 
-Read-only status confirmation shows retained instances `49168183` and
-`49261078` with `cur_state=stopped`, `intended_status=stopped` and
-`actual_status=exited`. They consume no compute; their 500 GB and 200 GB
-retained storage continues to incur charges. Historical instance `49242592` is
-not an active restart target. The two retained instances hold three verified
+Historical read-only status confirmation showed instances `49168183` and
+`49261078` stopped with retained storage. They were subsequently destroyed
+with their saved data; no current transfer or storage charge remains. Historical
+instance `49242592` is not an active restart target. The former instances held three verified
 packets:
 
 1. `/root/scratchpad/apple-transfer-bc9d1db2` for GigaAM v3, GigaAM
@@ -270,16 +280,16 @@ packets:
    12 regular files, no symlinks, manifest SHA-256
    `0a80edb51e88d17ce8f243ee58523551baf7d9fc5a848a17dc9c3fdecaf8d18f`.
 
-The next stage is Scaleway Apple Silicon. No Scaleway instance or SSH access
+The next stage remains Scaleway Apple Silicon, but no Scaleway instance or SSH access
 has been supplied and no Apple run has started. Provision an official M4-M
 with 32 GiB RAM, 1.02 TB storage, macOS/Scaleway Dev OS and Xcode; an M4 Pro XL
 with 64 GiB is optional. Do not use Asahi Linux or FileVault. Share only the
 resulting SSH command, never a private key or API token. Resume the retained
 VAST instances only for direct packet transfer, verify each manifest on
-Scaleway, execute the five model-specific CPU/Metal workers, recover the small
+Scaleway, execute the six model-specific CPU/Metal workers, recover the small
 signed evidence and then destroy both VAST instances.
 
-At the 2026-08-31 checkpoint this Apple stage could decide only those five
+At the 2026-08-31 checkpoint this Apple stage could decide only those six
 prepared rows. It could not close the remaining 62 CPU-blocked repositories,
 the six XY dependency blockers, the HT-Demucs Python 3.12 contradiction,
 MOSS/Ultravox/NeuTTS remote reruns, publication/replacement gates or
@@ -374,6 +384,11 @@ Multilingual, OmniASR-CTC-1B, ReazonSpeech-NeMo-v2, BiCodec and Voice Gender
 Classifier. This does not change the live Hugging Face audit count before a
 separately authorized public replacement, and it does not make FireRed or the
 three blocked dependency families Apple-ready.
+
+**2026-09-09 audit-start correction:** The six-model set is source/readiness
+only. Its historical transfer packets no longer exist and must be regenerated
+on disposable VAST before any Scaleway run; none is an immediately executable
+packet today.
 
 ## 2026-09-01 exact-head continuation checkpoint
 

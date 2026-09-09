@@ -2,6 +2,16 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
+**2026-09-09 audit-start snapshot:** Before this documentation refresh, PR #79
+was at `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional skip /
+0 fail). Exact VAST implementation evidence was `caf70eb1` (305 suites / 8,010
+passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB storage were
+destroyed. Scaleway had not started. The 63 unresolved public rows and current
+external owner/legal/upstream versus VAST versus Scaleway boundaries are
+authoritative in [`mac-pre-scaleway-remaining-tasks-2026-09-05.md`](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md).
+This checklist is not a GA or ABI-freeze declaration; HF upload remains
+unapproved.
+
 **Pre-documentation implementation/code baseline (reconciled 2026-08-31)**:
 the branch observed before the documentation commits was
 `feat/mac-cpu-metal-full-coverage-2026-08-28` at
@@ -70,7 +80,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| Mac CPU/Metal model closure | Five Apple-ready model contracts have strict native CPU routes and independent official VAST evidence: GigaAM v3, GigaAM Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2 and BiCodec. Their three authenticated transfer packets were intentionally deleted with VAST instances `49168183` and `49261078` on 2026-09-01 because the Scaleway run is long-horizon; both ids read back `instances: null`, so no storage billing or restart target remains. Live inventory is CPU `full=131`, `partial=45`, `no-runtime-binder=17`, `not-artifact=1`; Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`, with zero source-level CPU-only rows. GigaAM v3 and Multilingual have complete conservative Metal code routes, but all five rows still lack authenticated Apple-hardware verdicts. | When the Apple stage resumes, regenerate all three packets from the recorded fixed revisions/hashes on new disposable VAST workers, provision the 32 GiB-or-larger Scaleway Apple host, transfer and verify them, run the five Apple CPU/Metal workers, preserve evidence and destroy the new VAST instances. This closes only the prepared rows; it does not close the other 62 CPU-blocked repositories. |
+| Mac CPU/Metal model closure | Six Apple-ready model contracts have strict native CPU routes and independent official VAST evidence: GigaAM v3, GigaAM Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec and Voice Gender Classifier. Their transfer packets were intentionally deleted with VAST instances `49168183` and `49261078` on 2026-09-01 because the Scaleway run is long-horizon; both ids read back `instances: null`, so no storage billing or restart target remains. Live inventory is CPU `full=131`, `partial=45`, `no-runtime-binder=17`, `not-artifact=1`; Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`, with zero source-level CPU-only rows. GigaAM v3 and Multilingual have complete conservative Metal code routes, but all six rows still lack authenticated Apple-hardware verdicts. | When the Apple stage resumes, regenerate all required packets from the recorded fixed revisions/hashes on new disposable VAST workers, provision the 32 GiB-or-larger Scaleway Apple host, transfer and verify them, run the six Apple CPU/Metal workers, preserve evidence and destroy the new VAST instances. This closes only the prepared rows; it does not close the other 62 CPU-blocked repositories. |
 | SoTA / parity / publish | Converters and many structural proofs landed | The 33 literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab
@@ -470,6 +480,12 @@ destination-gated publish remain**:
   Full evidence/runbook: `docs/handoff/vast-ai-publish-voxcpm2-2b.md`.
 
 **Deferred by RAM constraint (implemented + signed, host infrastructure blocked)**:
+
+> **2026-09-09 audit-start correction:** The stopped `47955178` reference in
+> the historical Voxtral row is not a current restart or transfer target. Its
+> retained artifact/storage state is historical; any future authorized upload
+> must regenerate or verify on a new disposable VAST instance after credential
+> rotation. HF upload remains unapproved.
 
 - [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. **Adapter-aware 48-GB conversion, publish dry-run, and real ASR/runtime parity completed on vast.ai 2026-08-18** from pinned upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` (11 shards only; duplicate `consolidated.safetensors` excluded). The first provenance-only dry-run artifact (`52f860…`) lacked active adapter metadata and was deliberately not uploaded. The corrected streaming conversion uses the tracked Small-24B side-car and produced 852 tensors / 54 metadata keys / 851 exact BF16 passthrough / 0 skipped / tokenizer embedded / `adapter=frame_stack_mlp` / 48,542,409,248 bytes / SHA-256 `91f2733492dd49b8e8f810192c77538d7d6d2f4c1c568098e11c3ad91f752c87`; peak RSS was 1,780.18 MiB with a 1,280 MiB largest tensor. Header, §3.1, model-card, LICENSE, NOTICE, SOURCE and all no-credential publish gates pass. Independent upstream fixtures are committed under `tests/parity/voxtral-small-24b-2507/`: mandatory two-layer orchestration self-check was bitwise; Vokra tower parity measured mel `1.311e-5` (atol `5e-5`), encoder `2.956e-5` (atol `1.5e-3`), projector `1.812e-5` (atol `6e-5`); decoder logits measured `6.356e-4` (unchanged atol `1e-2`), and all 27 greedy ids matched exactly with EOS in 5,292.21 s. Reference peak was 130.43 GiB; the cgroup peak was 139,312,283,648 bytes, entirely on VAST. Commit `7640a02` was fast-forwarded back to VAST and its bounded fixture smoke passed 4/4. The existing live HF artifact at `vokra/voxtral-small-24b-2507` remains invalid for completion because it carries stale false Mini-3B provenance. Instance `47955178` is stopped (`exited`) with the corrected staged artifact retained pending explicit authorization to transfer the HF credential and run `publish-one.sh --push`; never move the 48-GB artifact or upload work to the M1 iMac. The only remaining literal done-condition is corrected-artifact upload/live verification, so this box remains open and the action-ledger total remains 36.
 

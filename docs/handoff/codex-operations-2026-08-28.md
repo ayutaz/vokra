@@ -15,6 +15,13 @@
 > The historical baseline and session narrative below are intentionally not
 > rewritten into present tense.
 
+> **2026-09-09 audit-start snapshot:** Before this documentation refresh, PR
+> #79 was at `9efcd16e` (`CLEAN` / `MERGEABLE`) with 110 successful checks, 13
+> intentional skips and 0 failures. Exact implementation VAST replay was
+> `caf70eb1` (305 suites / 8,010 passed / 0 failed / 100 ignored); VAST
+> `50320338` and its 150-GB storage were destroyed. Scaleway had not started.
+> Use the canonical pre-Scaleway ledger for current status.
+
 ## Current baseline
 
 - Repository: `ayutaz/vokra`

@@ -16,6 +16,13 @@
 > ABI is 57 functions / 15 typedefs and M5 is 49 checked / 33 unchecked. The
 > GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
 
+> **2026-09-09 audit-start snapshot:** Before this documentation refresh, PR
+> #79 was at `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional
+> skip / 0 fail). Exact VAST implementation evidence was `caf70eb1` (305 suites
+> / 8,010 passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB
+> storage were destroyed. Scaleway had not started. The current 63-row status
+> and final Apple-only boundary are in the canonical pre-Scaleway ledger.
+
 > 2026-08-21 refinement: the runtime portion of Phase C is superseded by
 > `docs/handoff/runtime-gap-execution-plan-2026-08-21.md`. The newer audit
 > corrects the stale DeBERTa-v2 mapping item, records the public RNNoise
@@ -202,11 +209,12 @@ bound, or diagnosing a parity failure. All model artifacts totaling at least
    separate experimental repository or are rejected from public distribution.
 2. Complete license/provenance/destination records before any upload.
 3. Correct the live Voxtral-Small-24B repository using only
-   `publish-one.sh`; the stopped VAST instance `47955178` is the retained
-   artifact source as of this plan. Rotate the exposed VAST API credential
-   before reuse, live-verify the corrected repo, then destroy the retained
-   instance/volume. If publication is declined, record withholding and destroy
-   it instead of paying indefinitely for retained storage.
+   `publish-one.sh`; the stopped VAST instance `47955178` was the retained
+   artifact source when this plan was written. It is historical and must not be
+   resumed as a current target. Rotate the exposed VAST API credential before
+   any future reuse, live-verify the corrected repo, then destroy the new
+   disposable instance/volume. If publication is declined, record withholding
+   and destroy it instead of retaining storage.
 4. Verify LICENSE, NOTICE where required, SOURCE.md, and GGUF producer/schema
    provenance for every uploaded repository.
 

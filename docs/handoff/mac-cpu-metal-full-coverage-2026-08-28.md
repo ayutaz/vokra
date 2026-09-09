@@ -19,36 +19,29 @@
 
 ## Authoritative current snapshot (2026-09-09)
 
-The authoritative runtime implementation/code snapshot is
-`9f69277d8a0d5df574c1ee95563bd1f005de91d0` on
-`feat/mac-cpu-metal-full-coverage-2026-08-28`, historically workspace version
-`0.2.0`; the
-pre-refresh evidence/package checkpoint was
-`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. The active branch is now
-workspace `0.3.0`; immediately before this documentation refresh its remote
-head was `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, which was
-mergeable and non-draft with 109 passing checks, 13 expected skips, and no
-failures or pending checks. GitHub `main` remains
-`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. The source-level Metal inventory
-correction is `8f0d8572d46fe9972bfdd88241efa937e17e63ac`. The repeated live
-public-artifact audit associated with implementation head `969b61e3` reports
-194 repositories, 193
+At the 2026-09-09 audit start, the campaign head was PR #79 at `9efcd16e`
+(`CLEAN` / `MERGEABLE`), with
+110 successful CI checks, 13 intentional skips and 0 failures. The exact
+implementation VAST replay is `caf70eb1` (305 suites / 8,010 passed / 0 failed /
+100 ignored). The live public-artifact inventory remains 194 repositories, 193
 GGUF-bearing repositories and 198 GGUF files: CPU `full=131`, `partial=45`,
 `no-runtime-binder=17`, `not-artifact=1`; Metal `full=131`,
-`blocked-by-cpu=62`, `not-artifact=1`. There are zero source-level
-CPU-complete/Metal-unsupported rows. GigaAM v3 and GigaAM Multilingual now have
-complete conservative Metal code routes, but both still require authenticated
-Apple CPU/Metal evidence and therefore remain in the prepared Scaleway set.
-The OWSM structural binder and the MOSS-Audio strict legacy token-level binder
-account for the three-row shift from no-binder to partial; all 62 CPU-blocked
-GGUF repositories remain open. The current remote branch head is `d6d2083e`;
-the working tree is dirty with pending documentation and implementation
-changes, so this paragraph does not claim a clean commit. Exact-head
-full-workspace VAST closure remains required before push.
+`blocked-by-cpu=62`, `not-artifact=1`, for 63 unresolved public rows. VAST
+instance `50320338` and its 150-GB storage were destroyed after evidence
+recovery. Scaleway has not started. The unblocked owner-independent source,
+model-free, security and repository-verification work is complete; external
+owner/legal/upstream facts and authorized VAST real-weight work remain. Apple
+CPU/reference, Metal/reference and Metal/CPU no-fallback are the only
+Scaleway-stage verdicts. UTMOS remains blocked at the safe
+`weights_only=True` legacy-checkpoint boundary; no UTMOS parity success is
+claimed. Historical packet identities and prior heads below are retained for
+provenance only and are not current operational targets.
 
-Six models are ready for authenticated Apple execution: GigaAM v3, GigaAM
-Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec and Voice Gender
-Classifier. Their immutable inputs are:
+Six models are source/readiness-ready for authenticated Apple execution:
+GigaAM v3, GigaAM Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec
+and Voice Gender Classifier. Their former immutable packet inputs were deleted
+with the VAST storage; they are **not immediately executable** and must be
+regenerated on a new disposable VAST worker before Scaleway transfer:
 
 - Wave A at exact code `bc9d1db2bbf230f09ce4f3f68003a1c11f80e0e1`:
   `/root/scratchpad/apple-transfer-bc9d1db2`, 4.9 GB, 30 regular files, no
@@ -362,6 +355,12 @@ partial until a separately authorized replacement is published through the
 gated workflow. No model artifact was copied to or executed on the maintainer
 Mac, and no Hugging Face upload occurred.
 
+**2026-09-09 audit-start correction:** The preceding `49168183` status and
+storage-charge statement is historical. That instance and storage were later
+destroyed with saved data; no charge remains and it is not a restart or
+transfer target. The ReazonSpeech packet must be regenerated on a new
+disposable VAST worker before Scaleway.
+
 ### 2026-08-30 model-free dependency evidence lock
 
 The Qwen3-ASR, Bark and Parler-TTS dependency audits then ran on temporary VAST
@@ -484,6 +483,10 @@ and requires GitHub `main` base
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. VAST `49261078` and `49168183`
 are both stopped/exited and retained only for direct Scaleway transfer; their
 storage billing continues until destruction.
+
+**2026-09-09 audit-start correction:** The preceding retained-storage statement
+is historical. `49261078` and `49168183` were destroyed with their saved data;
+no storage billing remains and neither is a restart or transfer target.
 
 ### Branch preparation status
 

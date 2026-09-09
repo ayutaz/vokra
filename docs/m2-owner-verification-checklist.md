@@ -1,5 +1,14 @@
 # M2 (v0.5) Owner Verification Checklist
 
+> **2026-09-09 audit-start snapshot:** This M2 checklist is historical. Before
+> this documentation refresh, PR #79 was at `9efcd16e` (`CLEAN` / `MERGEABLE`;
+> 110 CI success / 13 intentional skip / 0 fail), and exact VAST implementation
+> head `caf70eb1` recorded 305 suites / 8,010 passed / 0 failed / 100 ignored.
+> VAST `50320338` plus 150-GB storage are destroyed; Scaleway has not started.
+> Current remaining work is the 63-row canonical ledger. Historical UTMOS/Kokoro
+> parity prose below is not current success; UTMOS legacy-pickle parity is
+> blocked by `weights_only=True`.
+
 > **⚠️ 2026-07-19 — この文書は M2 当時の記録です。以降の実測で覆った点が 1 つあります。**
 >
 > 本文中に何度も出てくる **`PROSODY_F0_ATOL = 0.05`（Kokoro の per-tensor atol
