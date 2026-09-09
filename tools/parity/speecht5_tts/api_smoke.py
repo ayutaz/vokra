@@ -36,6 +36,13 @@ SOURCE_WEIGHT_BYTES = 585_476_837
 SOURCE_WEIGHT_SHA256 = "d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190"
 SAFE_TENSOR_WEIGHT = "model.safetensors"
 SAFE_TENSOR_WEIGHT_SHA256 = "87d96b215548dfba6251e15ad0b861e9d01d640d4715767759d6b12a12c62582"
+SAFE_TENSOR_LOAD_CONTRACT = {
+    "file": SAFE_TENSOR_WEIGHT,
+    "format": "safetensors",
+    "pickle_fallback": "DISABLED",
+    "sha256": SAFE_TENSOR_WEIGHT_SHA256,
+    "use_safetensors": True,
+}
 TOKENIZER_SHA256 = "7fcc48f3e225f627b1641db410ceb0c8649bd2b0c982e150b03f8be3728ab560"
 EXPECTED_TRANSFORMERS = "5.10.4"
 APPROVAL_SCHEMA = "vokra-speecht5-owner-approval-v1"
@@ -60,6 +67,7 @@ PASS_EVIDENCE_KEYS = {
     "vokra_clean", "approval_evidence_sha256", "approval_scope_sha256", "approval_signer", "project_dir",
     "preflight_gate", "preflight_gate_sha256", "preflight_manifest_sha256",
     "float8_import_compat",
+    "conversion_source_sha256",
     "weight_loading",
 }
 FAIL_EVIDENCE_KEYS = {
@@ -329,13 +337,19 @@ def validate_evidence_document(path: Path, status: str) -> dict[str, Any]:
                 raise RuntimeError(f"API smoke evidence has invalid {key}")
         if value.get("float8_import_compat") not in {"native", "shimmed"}:
             raise RuntimeError("API smoke evidence has invalid float8_import_compat")
-        if value.get("weight_loading") != {
-            "file": SAFE_TENSOR_WEIGHT,
-            "format": "safetensors",
-            "pickle_fallback": "DISABLED",
-            "use_safetensors": True,
-        }:
+        if value.get("conversion_source_sha256") != SOURCE_WEIGHT_SHA256:
+            raise RuntimeError("API smoke evidence lacks the original conversion source hash")
+        if value.get("weight_loading") != SAFE_TENSOR_LOAD_CONTRACT:
             raise RuntimeError("API smoke evidence does not require safe-tensor loading")
+        call = value.get("call")
+        if not isinstance(call, dict):
+            raise RuntimeError("API smoke evidence lacks its call record")
+        if call.get("checkpoint_sha256") != SAFE_TENSOR_WEIGHT_SHA256:
+            raise RuntimeError("API smoke call record does not bind loaded safe-tensor bytes")
+        if call.get("conversion_source_sha256") != SOURCE_WEIGHT_SHA256:
+            raise RuntimeError("API smoke call record lacks the conversion source hash")
+        if call.get("weight_loading") != SAFE_TENSOR_LOAD_CONTRACT:
+            raise RuntimeError("API smoke call record does not require safe-tensor loading")
     else:
         if not isinstance(value.get("stage"), str) or not value["stage"] or not isinstance(value.get("error_type"), str) or not value["error_type"] or not isinstance(value.get("error"), str) or "\n" in value["error"]:
             raise RuntimeError("API smoke failure evidence lacks stage/error type")
@@ -513,13 +527,9 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
                 "float8_import_compat": float8_import_compat,
             },
             "input_sha256": input_sha,
-            "checkpoint_sha256": SOURCE_WEIGHT_SHA256,
-            "weight_loading": {
-                "file": SAFE_TENSOR_WEIGHT,
-                "format": "safetensors",
-                "pickle_fallback": "DISABLED",
-                "use_safetensors": True,
-            },
+            "checkpoint_sha256": SAFE_TENSOR_WEIGHT_SHA256,
+            "conversion_source_sha256": SOURCE_WEIGHT_SHA256,
+            "weight_loading": SAFE_TENSOR_LOAD_CONTRACT,
         }
         call_checkpoint_sha = sha256_bytes(canonical(call_record))
         with torch.inference_mode():
@@ -567,6 +577,7 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
             "call_checkpoint_sha256": call_checkpoint_sha,
             "call": call_record,
             "float8_import_compat": float8_import_compat,
+            "conversion_source_sha256": SOURCE_WEIGHT_SHA256,
             "weight_loading": call_record["weight_loading"],
             "environment": {"python": platform.python_version(), "torch": torch.__version__, "transformers": transformers.__version__, "platform": platform.platform()},
             **context,
@@ -761,7 +772,7 @@ def self_test() -> int:
         else:
             raise AssertionError("unknown extra approval field was accepted")
         pass_doc: dict[str, Any] = {key: None for key in PASS_EVIDENCE_KEYS}
-        pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64, "float8_import_compat": "shimmed", "weight_loading": {"file": SAFE_TENSOR_WEIGHT, "format": "safetensors", "pickle_fallback": "DISABLED", "use_safetensors": True}})
+        pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64, "float8_import_compat": "shimmed", "conversion_source_sha256": SOURCE_WEIGHT_SHA256, "weight_loading": SAFE_TENSOR_LOAD_CONTRACT, "call": {"checkpoint_sha256": SAFE_TENSOR_WEIGHT_SHA256, "conversion_source_sha256": SOURCE_WEIGHT_SHA256, "weight_loading": SAFE_TENSOR_LOAD_CONTRACT}})
         pass_dir = root / "pass"
         pass_dir.mkdir()
         pass_path = pass_dir / "evidence.json"
