@@ -88,6 +88,11 @@ Python 3.12 project, the exact SpeechT5 checkpoint above, and the official
 input. It emits only hashed API evidence and `NO_UPLOAD`; it does not run
 Vokra or upload/publish any artifact. Keep the status
 `BLOCKED_UNVERIFIED_API_SMOKE` until that evidence is reviewed.
+The original upstream `pytorch_model.bin` remains hash-verified as conversion
+provenance, but model loading requires the derived `model.safetensors` with
+SHA-256 `87d96b215548dfba6251e15ad0b861e9d01d640d4715767759d6b12a12c62582`;
+`use_safetensors=True` disables pickle fallback to satisfy the pinned
+Transformers security gate.
 
 The approval file is the authenticated evidence consumed by the existing
 `preflight_gate.py` against `license_gate_manifest.json`. It must match that
