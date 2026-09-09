@@ -21,6 +21,8 @@ import sysconfig
 import tempfile
 from pathlib import Path
 
+from torch_compat import install_float8_import_compat
+
 
 COMPACT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
 FULL_AUDIT_SHA256 = "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
@@ -161,7 +163,32 @@ def unreviewed_needed(relative: str, needed: list[str]) -> list[str]:
     return sorted(set(needed) - needed_allowlist(relative))
 
 
+def require_import_shim_order(source: str) -> None:
+    """Keep the torch compatibility shim before every Transformers import."""
+    if "def run(" in source:
+        source = source.split("def run(", 1)[1]
+    markers = (
+        'torch = importlib.import_module("torch")',
+        "float8_import_compat = install_float8_import_compat(torch)",
+        'transformers = importlib.import_module("transformers")',
+    )
+    positions = [source.find(marker) for marker in markers]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        fail("post-sync audit must apply the torch compatibility shim before Transformers import")
+
+
 def self_test() -> int:
+    require_import_shim_order(Path(__file__).read_text(encoding="utf-8"))
+    try:
+        require_import_shim_order(
+            'torch = importlib.import_module("torch")\n'
+            'transformers = importlib.import_module("transformers")\n'
+            'float8_import_compat = install_float8_import_compat(torch)\n'
+        )
+    except RuntimeError:
+        pass
+    else:
+        fail("out-of-order Transformers import was accepted by the self-test")
     functorch_path = "functorch/_C.cpython-312-x86_64-linux-gnu.so"
     if "functorch" not in NATIVE_TOP_LEVELS:
         fail("functorch native namespace is not allowlisted")
@@ -220,11 +247,14 @@ def run(compact_path: Path, output_path: Path) -> int:
         fail("torch bundled libgomp identity drifted")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    for module in ("numpy", "torch", "transformers"):
-        importlib.import_module(module)
+    importlib.import_module("numpy")
+    torch = importlib.import_module("torch")
+    float8_import_compat = install_float8_import_compat(torch)
     transformers = importlib.import_module("transformers")
     if not hasattr(transformers, "SpeechT5ForTextToSpeech"):
         fail("locked Transformers package does not expose SpeechT5ForTextToSpeech")
+    if float8_import_compat not in {"native", "shimmed"}:
+        fail(f"unexpected torch compatibility status: {float8_import_compat}")
     result = {
         "schema": "vokra-speecht5-post-sync-audit-v1",
         "full_audit_sha256": compact["full_audit_sha256"],
@@ -234,11 +264,16 @@ def run(compact_path: Path, output_path: Path) -> int:
         "native_files": observed_native,
         "numpy_source_build": {"numpy_libs_entries": 0, "forbidden_bundled_libraries": [], "setup_args": ["-Dblas=none", "-Dlapack=none"]},
         "torch_gomp": {"path": TORCH_GOMP, "sha256": TORCH_GOMP_SHA256},
+        "float8_import_compat": float8_import_compat,
         "verdict": "PASS",
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    print(f"SPEECHT5_POST_SYNC_AUDIT packages={len(installed)} native_files={len(observed_native)} verdict=PASS")
+    print(
+        f"SPEECHT5_POST_SYNC_AUDIT packages={len(installed)} "
+        f"native_files={len(observed_native)} "
+        f"float8_import_compat={float8_import_compat} verdict=PASS"
+    )
     return 0
 
 
