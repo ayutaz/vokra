@@ -36,6 +36,7 @@ SOURCE_WEIGHT_BYTES = 585_476_837
 SOURCE_WEIGHT_SHA256 = "d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190"
 TOKENIZER_SHA256 = "7fcc48f3e225f627b1641db410ceb0c8649bd2b0c982e150b03f8be3728ab560"
 EXPECTED_TRANSFORMERS = "5.10.4"
+APPROVAL_SCHEMA = "vokra-speecht5-owner-approval-v1"
 PREVIOUS_TRANSFORMERS = "transformers==5.5.0"
 SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
 SECURITY_FLOOR = "5.10.0"
@@ -238,9 +239,11 @@ def validate_approval_file(project_dir: Path, path: Path) -> dict[str, str]:
         raise RuntimeError(f"approval evidence is not strict JSON: {error}") from error
     if not isinstance(approval, dict) or not isinstance(manifest, dict):
         raise RuntimeError("preflight approval or manifest is not an object")
-    required = {"decision", "scope_sha256", "manifest_sha256", "signer", "digest"}
+    required = {"decision", "digest", "manifest_sha256", "scope_sha256", "schema", "signer"}
     if set(approval) != required:
         raise RuntimeError("authenticated preflight approval schema is not exact")
+    if approval.get("schema") != APPROVAL_SCHEMA:
+        raise RuntimeError("authenticated preflight approval schema value is not exact")
     if approval.get("decision") != "APPROVED":
         raise RuntimeError("preflight approval decision is not APPROVED")
     signer = approval.get("signer")
@@ -612,7 +615,7 @@ def self_test() -> int:
         approval_path = root / "approval.json"
         manifest_digest = sha256_file(manifest_path)
         scope = strict_json_loads(manifest_path.read_text(encoding="utf-8"))["approval_scope_sha256"]
-        valid_approval = {"decision": "APPROVED", "scope_sha256": scope, "manifest_sha256": manifest_digest, "signer": "self-test", "digest": scope}
+        valid_approval = {"decision": "APPROVED", "digest": scope, "manifest_sha256": manifest_digest, "scope_sha256": scope, "schema": APPROVAL_SCHEMA, "signer": "self-test"}
         approval_path.write_text(json.dumps(valid_approval), encoding="utf-8")
         approval = validate_approval_file(manifest_path.parent, approval_path)
         if approval["approval_scope_sha256"] != scope:
@@ -633,15 +636,33 @@ def self_test() -> int:
             pass
         else:
             raise AssertionError("tampered preflight approval was accepted")
+        missing_schema = dict(valid_approval)
+        del missing_schema["schema"]
+        approval_path.write_text(json.dumps(missing_schema), encoding="utf-8")
+        try:
+            validate_approval_file(manifest_path.parent, approval_path)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("approval missing schema was accepted")
         unknown = dict(valid_approval)
-        unknown["unknown"] = True
+        unknown["schema"] = "vokra-speecht5-owner-approval-unknown"
         approval_path.write_text(json.dumps(unknown), encoding="utf-8")
         try:
             validate_approval_file(manifest_path.parent, approval_path)
         except RuntimeError:
             pass
         else:
-            raise AssertionError("unknown preflight approval field was accepted")
+            raise AssertionError("unknown approval schema was accepted")
+        extra = dict(valid_approval)
+        extra["unknown"] = True
+        approval_path.write_text(json.dumps(extra), encoding="utf-8")
+        try:
+            validate_approval_file(manifest_path.parent, approval_path)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("unknown extra approval field was accepted")
         pass_doc: dict[str, Any] = {key: None for key in PASS_EVIDENCE_KEYS}
         pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64, "float8_import_compat": "shimmed"})
         pass_dir = root / "pass"
