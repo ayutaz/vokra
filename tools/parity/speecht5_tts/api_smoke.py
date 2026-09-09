@@ -396,6 +396,7 @@ def authenticate_api_smoke_evidence(
         "approval_evidence_sha256": approval["approval_evidence_sha256"],
         "approval_scope_sha256": approval["approval_scope_sha256"],
         "approval_signer": approval["approval_signer"],
+        "preflight_gate_sha256": sha256_file(project_dir / "preflight_gate.py"),
         "preflight_manifest_sha256": sha256_file(project_dir / "license_gate_manifest.json"),
     }
     for key, actual in expected_approval.items():

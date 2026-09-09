@@ -21,6 +21,7 @@ import math
 import os
 import platform
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -28,7 +29,14 @@ SPEECHT5_PARITY_DIR = Path(__file__).resolve().parent / "speecht5_tts"
 if str(SPEECHT5_PARITY_DIR) not in sys.path:
     sys.path.insert(0, str(SPEECHT5_PARITY_DIR))
 from torch_compat import install_float8_import_compat, require_non_quantized_config, self_test as torch_compat_self_test
-from api_smoke import authenticate_api_smoke_evidence
+from api_smoke import (
+    SAFE_TENSOR_LOAD_CONTRACT,
+    SAFE_TENSOR_WEIGHT,
+    SAFE_TENSOR_WEIGHT_SHA256,
+    SOURCE_WEIGHT,
+    SOURCE_WEIGHT_SHA256,
+    authenticate_api_smoke_evidence,
+)
 
 
 UPSTREAM_HF = "microsoft/speecht5_tts"
@@ -110,7 +118,24 @@ def verify_checkpoint(checkpoint: Path) -> dict[str, str]:
                 f"pinned {expected_sha256}"
             )
         verified[name] = actual_sha256
+    verify_safe_tensor(checkpoint)
+    verified[SAFE_TENSOR_WEIGHT] = SAFE_TENSOR_WEIGHT_SHA256
     return verified
+
+
+def verify_safe_tensor(checkpoint: Path) -> None:
+    path = checkpoint / SAFE_TENSOR_WEIGHT
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(
+            f"SpeechT5 parity: derived {SAFE_TENSOR_WEIGHT} is missing, "
+            "non-regular, or symlinked"
+        )
+    actual_sha256 = digest_file(path)
+    if actual_sha256 != SAFE_TENSOR_WEIGHT_SHA256:
+        raise SystemExit(
+            f"SpeechT5 parity: {SAFE_TENSOR_WEIGHT} SHA-256 {actual_sha256} != "
+            f"derived pinned {SAFE_TENSOR_WEIGHT_SHA256}"
+        )
 
 
 def require_vast() -> None:
@@ -209,6 +234,10 @@ class OfficialPrenetDropout:
 
 def self_test() -> None:
     torch_compat_self_test()
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert "use_safetensors=" + "False" not in source
+    assert "use_safetensors=True" in source
+    assert SAFE_TENSOR_LOAD_CONTRACT["pickle_fallback"] == "DISABLED"
     global TRANSFORMERS_COMPATIBILITY_STATUS
     assert PREVIOUS_ISOLATED_TRANSFORMERS_PIN == "transformers==5.5.0"
     assert REFERENCE_PACKAGE == "transformers==5.10.4"
@@ -248,6 +277,29 @@ def self_test() -> None:
     assert all(math.isfinite(value) for value in speaker)
     assert any(value < 0.0 for value in speaker)
     assert any(value > 0.0 for value in speaker)
+    with tempfile.TemporaryDirectory(prefix="speecht5-reference-safe-tensor-") as directory:
+        checkpoint = Path(directory)
+        try:
+            verify_safe_tensor(checkpoint)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("missing derived safe tensor was accepted")
+        (checkpoint / SAFE_TENSOR_WEIGHT).write_bytes(b"drift")
+        try:
+            verify_safe_tensor(checkpoint)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("drifted derived safe tensor was accepted")
+        (checkpoint / SAFE_TENSOR_WEIGHT).unlink()
+        (checkpoint / SAFE_TENSOR_WEIGHT).symlink_to(checkpoint / "missing")
+        try:
+            verify_safe_tensor(checkpoint)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("symlinked derived safe tensor was accepted")
     print("speecht5_tts_dump_reference: self-test PASS")
 
 
@@ -346,7 +398,7 @@ def main() -> int:
     model = SpeechT5ForTextToSpeech.from_pretrained(
         checkpoint,
         local_files_only=True,
-        use_safetensors=False,
+        use_safetensors=True,
     ).eval().to(device="cpu", dtype=torch.float32)
     config_contract = {
         "hidden_size": 768,
@@ -457,6 +509,11 @@ def main() -> int:
         "quantization_policy": {
             "mode": "non-quantized",
             "finegrained_fp8": "not_used",
+        },
+        "weight_loading": SAFE_TENSOR_LOAD_CONTRACT,
+        "provenance": {
+            "conversion_source": {"file": SOURCE_WEIGHT, "sha256": SOURCE_WEIGHT_SHA256},
+            "loaded_weight": {"file": SAFE_TENSOR_WEIGHT, "sha256": SAFE_TENSOR_WEIGHT_SHA256},
         },
         "transformers_version": transformers.__version__,
         "torch_version": torch.__version__,

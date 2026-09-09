@@ -142,6 +142,7 @@ require_tooling() {
 
 pre_sync_gate() {
   local approval="$1"
+  require_canonical_approval "$approval"
   [[ -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" && \
     -f "$PARITY_PROJECT/pyproject.toml" && ! -L "$PARITY_PROJECT/pyproject.toml" && \
     -f "$PREFLIGHT_GATE" && ! -L "$PREFLIGHT_GATE" && \
@@ -153,6 +154,14 @@ pre_sync_gate() {
     uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
       --project "$PARITY_PROJECT" --manifest "$PREFLIGHT_MANIFEST" \
       --evidence "$approval"
+}
+
+require_canonical_approval() {
+  local approval="$1" expected="$PARITY_PROJECT/license_gate_evidence.json"
+  [[ "$approval" == "$expected" ]] \
+    || die "--approval-evidence must be the canonical project evidence: $expected"
+  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] \
+    || die "canonical approval evidence must be a non-empty regular non-symlink file"
 }
 
 api_smoke_gate() {
@@ -329,6 +338,7 @@ run_self_test() {
   cp "$PARITY_PROJECT/pyproject.toml" "$fake_root/tools/parity/speecht5_tts/pyproject.toml"
   cp "$API_SMOKE_VALIDATOR" "$fake_root/tools/parity/speecht5_tts/api_smoke.py"
   cp "$PARITY_PROJECT/torch_compat.py" "$fake_root/tools/parity/speecht5_tts/torch_compat.py"
+  cp "$PARITY_PROJECT/license_gate_evidence.json" "$fake_root/tools/parity/speecht5_tts/license_gate_evidence.json"
   printf '{}\n' > "$fake_root/approval.json"
   cp "$PREFLIGHT_GATE" "$fake_root/tools/parity/speecht5_tts/preflight_gate.py"
   cp "$PREFLIGHT_MANIFEST" "$fake_root/tools/parity/speecht5_tts/license_gate_manifest.json"
@@ -372,7 +382,7 @@ EOF
   HOME="$fake_home" PATH="$fake_bin:$PATH" SPEECHT5_TRACE="$trace" SPEECHT5_REAL_UV="$(command -v uv)" \
     VOKRA_ROOT="$fake_root" VOKRA_SCRATCH="$fake_scratch" \
     VOKRA_PUBLISH_ON_VAST=1 bash "$fake_root/run-worker.sh" \
-    --approval-evidence "$fake_root/approval.json" \
+    --approval-evidence "$fake_root/tools/parity/speecht5_tts/license_gate_evidence.json" \
     --api-smoke-evidence "$fake_root/missing-api-evidence.json" \
     --api-smoke-sha256 "$(printf '%064d' 1)" \
     --expected-head "$(printf '%040d' 1)" --work-dir "$fake_work" \
@@ -471,6 +481,7 @@ main() {
   fi
 
   [[ -n "$approval_evidence" && -n "$api_smoke_evidence" && -n "$api_smoke_sha256" && -n "$expected_head" ]] || { usage; die "--approval-evidence, --api-smoke-evidence, --api-smoke-sha256, and --expected-head are required"; return 2; }
+  require_canonical_approval "$approval_evidence"
   api_smoke_gate "$api_smoke_evidence" "$api_smoke_sha256" "$expected_head"
   pre_sync_gate "$approval_evidence"
   require_vast_host
