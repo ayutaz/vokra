@@ -30,10 +30,12 @@ the flattened prefix (dot-separated).
 
 ## Regeneration
 
-Idempotent — the checkpoint is public + versioned by SHA:
+This is a VAST-only checkpoint inspection. The checkpoint is public and
+versioned by SHA, but the maintainer Mac policy forbids local model
+acquisition/loading; return only the small manifest and its hash:
 
 ```
-tools/parity/parity-venv/bin/python -c "
+uv run --project tools/parity --frozen --python 3.12 python -c "
 import torch
 from huggingface_hub import hf_hub_download
 p = hf_hub_download(repo_id='hexgrad/Kokoro-82M', filename='kokoro-v1_0.pth')

@@ -58,17 +58,23 @@ storage 課金は継続し、再開時の GPU 確保は保証されません。D
 削除して課金を停止します。詳細は [Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
 と [Storage types](https://docs.vast.ai/guides/instances/storage/types) を参照してください。
 
-**retained handoff の現状 (2026-09-01)**: owner は Scaleway 実行までの待機が
-長期化するため、instance `49168183` (`vokra-mac-coverage-771970dc`,
-500 GB storage) と `49261078` (`vokra-htdemucs-inspection-20260830`,
-200 GB storage) を保存データごと destroy する方針へ変更した。両方とも
-`vastai-safe.sh destroy instance <id> -y` の後、個別 API が
-`instances: null` を返した。`apple-transfer-bc9d1db2`、
-`apple-transfer-reazon-a59c48c8`、`apple-transfer-bicodec-5cd97d12` は
-VAST 上に存在しない。現在 Vokra 用の retained handoff はない。Apple 実機
-検証を再開するときは、固定 revision/hash 契約から VAST で artefact と
-reference packet を再生成し、新しい disposable instance から直接転送する。
-旧2件を restart target として扱わない。
+**retained handoff の現状 (2026-09-09)**: Scaleway 実行までの待機長期化に
+伴い、instance `49168183` (`vokra-mac-coverage-771970dc`, 500 GB) と
+`49261078` (`vokra-htdemucs-inspection-20260830`, 200 GB) は保存データを
+含めて destroy 済みである。両方とも個別 API が `instances: null` を返した。
+`apple-transfer-bc9d1db2`、`apple-transfer-reazon-a59c48c8`、
+`apple-transfer-bicodec-5cd97d12` も VAST 上に存在しない。現在 Vokra 用の
+retained handoff はなく、storage 課金も継続していない。Apple 実機検証を
+再開するときは、固定 revision/hash 契約から新しい disposable VAST instance
+で artefact と reference packet を再生成し、完了後に destroy する。
+
+**最終 replay の現状 (2026-09-09)**: implementation head `caf70eb1` の exact
+VAST replay に使った disposable instance `50320338`（150 GB storage）は、
+evidence transfer/verification 後に保存データを含めて destroy 済みである。
+現在 Vokra 用の retained handoff はなく、storage 課金もない。Apple 検証を
+再開するときは固定 revision/hash 契約から新しい disposable instance で
+artefact と reference packet を再生成する。履歴 instance ID は再起動先や
+転送元として扱わない。
 
 ## 2. Rent phase（vast.ai 側）
 
@@ -83,13 +89,13 @@ scripts/publish/vast-ai/vastai-safe.sh create instance <offer-id> \
   --ssh
 ```
 
+**image 選定注意**: `nvidia/cuda:13.0.0` の stock image は 4 個の gotcha を含む（下記 §3）→ `12.4.1-devel-ubuntu22.04` が実績 stable。H100 bakeoff で 13.0.0 が必要な場合も `provision.sh` の `harden_vast_docker_image` が pre-handle する。
+
 ローカルから Vast CLI を呼ぶときは、必ず
 `scripts/publish/vast-ai/vastai-safe.sh` を経由する。ラッパーは stdout と
 stderr の URL クエリに含まれる `api_key` 等の資格情報値を
 `[REDACTED]` に置換し、CLI 本来の終了コードを返す。`VASTAI_BIN` を設定すれば
 固定した CLI パスやオフラインのテストコマンドを指定できる。
-
-**image 選定注意**: `nvidia/cuda:13.0.0` の stock image は 4 個の gotcha を含む（下記 §3）→ `12.4.1-devel-ubuntu22.04` が実績 stable。H100 bakeoff で 13.0.0 が必要な場合も `provision.sh` の `harden_vast_docker_image` が pre-handle する。
 
 ## 3. Provision phase — 4 gotcha を pre-handle
 

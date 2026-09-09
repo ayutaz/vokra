@@ -11,7 +11,7 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 
 - **外部 crate を足さない**（NFR-DS-02）。runtime / C ABI / models は **first-party `vokra-*` crate のみ**。まず std / 自前実装で解決できないか検討。
 - どうしても必要なら設計レッドライン判断として escalate（`bash scripts/check-zero-deps.sh` が Cargo.lock を検査し、`vokra-*` 以外があれば fail）。
-- **`cargo add` は Claude hook でブロック**される（`.claude/settings.json`）。
+- **`cargo add` は Codex hook でブロック**される（`.codex/hooks.json`）。
 - ライセンス許可域: **Apache-2.0 / MIT / BSD 系のみ**。GPL/LGPL は全面禁止。MPL-2.0（例: symphonia）は file-level copyleft を case-by-case 評価。
 - **protobuf / prost / onnx / onnxruntime / ort / tract-onnx は deny.toml で ban**（FR-LD-05: runtime は ONNX を絶対にロードしない）。新種が現れたら deny.toml に追記。
 

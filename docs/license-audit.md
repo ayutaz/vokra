@@ -1,5 +1,22 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
+**Audit-start snapshot (2026-09-09, PR #79 / implementation head `9efcd16e`)**:
+This records the state reviewed before the documentation refresh; later
+documentation-only commits do not change the implementation head. The audit below is
+the license and publication source of truth, while runtime reachability,
+real-weight parity, and Apple CPU/Metal verdicts remain separate gates. The
+owner-independent pre-Scaleway security work is complete: direct checkpoint
+loads are explicit restricted loads (`weights_only=True`), unsafe pickle
+fallbacks are refused, and incomplete Dia/Zonos/CLAP routes remain
+fail-closed. UTMOS's historical upstream parity numbers are retained as
+non-rerunnable evidence only; its current legacy Lightning checkpoint route is
+`BLOCKED_UNSAFE_PICKLE` until owner-approved safe state-dict wiring exists.
+Reference-only VAST evidence is `NO_UPLOAD`; the disposable final replay
+instance and its storage were destroyed, and no retained VAST resource should
+be treated as an Apple/Scaleway transfer source. Apple CPU/reference and
+Metal/reference/no-fallback are still pending Scaleway and are not implied by
+license sign-off or CI.
+
 **履歴状態レビュー（2026-08-22、superseded）**: `main` `42af7a90`。§3 の実装表を
 converter / runtime / parity / publication の別に再照合し、
 `scripts/publish/check-catalog-reality.sh` は `★ 公式 zoo` 20 行・既知 gap
@@ -177,7 +194,7 @@ The intended boundary is reference-only and `NO_UPLOAD`.
 | **cbindgen** | MPL-2.0 | C ABI ヘッダ生成 | ○ (build-only) | ビルド時のみ、成果物には含まれない |
 | **pathspec** (Hatchling 推移依存) | **MPL-2.0** | Python wheel の file selection | ○ (build-only、2026-08-20 個別評価) | Hatchling 1.32.0 の build 環境でのみ使用。Vokra は pathspec を改変せず、pathspec の source/file は wheel に含まれないため larger work への copyleft 波及なし。`bindings/python/NOTICE` に明記し、Python CI は package-scoped 例外だけを許可（global MPL allow 禁止）。一次資料: https://github.com/cpburnz/python-pathspec/blob/master/LICENSE-MPL-2.0 |
 | **libfuzzer-sys** | **(MIT OR Apache-2.0) AND NCSA** | `fuzz/` の GGUF / safetensors / JSON parser fuzz harness | ○ (CI-only) | upstream `rust-fuzz/libfuzzer`: wrapper は MIT / Apache-2.0 dual、同梱 LLVM libFuzzer C++ は permissive BSD-family の NCSA。`deny.toml` はこの crate だけ NCSA を例外許可。root workspace から `exclude` した独立 workspaceで、release artifact・runtime・root `Cargo.lock` には入らず、GitHub Actions の fuzzing でのみ使用 |
-| **SBOM generator（first-party、`scripts/sbom/generate_spdx.py`）** | Apache 2.0（Vokra 本体） | SBOM (SPDX 2.3) 生成 | ○ (build-only) | M4-15。第三者 SBOM crate（cargo-sbom / cargo-cyclonedx 等）は不採用 — `cargo tree` + python3 標準ライブラリのみで生成し root Cargo.lock 不変（NFR-DS-02、ADR M4-15 §(b)）。成果物に入るのは生成された SPDX JSON のみ |
+| **SBOM generator（first-party、`scripts/sbom/generate_spdx.py`）** | Apache 2.0（Vokra 本体） | SBOM (SPDX 2.3) 生成 | ○ (build-only) | M4-15。第三者 SBOM crate（cargo-sbom / cargo-cyclonedx 等）は不採用 — `cargo tree` + uv-managed Python 3.12 標準ライブラリのみで生成し root Cargo.lock 不変（NFR-DS-02、ADR M4-15 §(b)）。成果物に入るのは生成された SPDX JSON のみ |
 | **coremltools 9.0 / NumPy 2.3.2 / gguf 0.17.1** | BSD-3-Clause / BSD-3-Clause family / MIT | `tools/coreml` の Whisper GGUF → `.mlpackage` 開発者向け offline 変換 | ○ (developer-only) | Apple `coremltools` と NumPy は一次 LICENSE が BSD-3-Clause、`gguf` は ggml-org/llama.cpp の MIT。`uv.lock` + Python 3.12 で pin。生成・検証時だけ使用し、runtime / root Cargo.lock / 配布 binary / `.mlmodelc` に Python package code は入らない。coremltools の protobuf 推移依存も offline converter 内だけで、FR-LD-05 runtime 禁止には非到達。Vokra は package を再配布しないため NOTICE 追記は不要。 |
 
 ### microWakeWord LiteRT reference-only closure (2026-09-01)

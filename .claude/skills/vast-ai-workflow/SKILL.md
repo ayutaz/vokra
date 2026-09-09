@@ -30,7 +30,7 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 - シェルゲート全般（`scripts/check-*.sh`）、`cargo fmt`、`cargo metadata`
 - **restamp_provenance 経路**: **8.7 GB Voxtral を peak 6.4 MB で publish 実績あり**（mmap 読取のみ、tensor コピーなし。→ skill `publish-model-to-hf` §7）。**tensor を触らず provenance だけ差し替えるなら 2 GB 閾値の例外**
 
-**強制されている**: `scripts/claude-hooks/guard-local-memory.sh` が PreToolUse フックとして上記を**ブロック**する（`.claude/settings.json` に登録済み、`--self-test` 43 ケース）。`.githooks/pre-push` も maintainer Mac の deep Cargo path を開始前に拒否する。意図的に通す場合は、その1回を依頼者が明示承認したときだけ `VOKRA_ALLOW_LOCAL_HEAVY=1` を前置する。
+**強制されている**: `.codex/hooks/guard-local-memory.sh` が PreToolUse フックとして上記を**ブロック**する（`.codex/hooks.json` に登録済み、`--self-test` 43 ケース）。`.githooks/pre-push` も maintainer Mac の deep Cargo path を開始前に拒否する。意図的に通す場合は、その1回を依頼者が明示承認したときだけ `VOKRA_ALLOW_LOCAL_HEAVY=1` を前置する。
 
 [[feedback-large-models-on-vast-ai]] / [[feedback-no-local-workspace-cargo]]。
 
@@ -39,7 +39,7 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 1. **rent**: vast.ai 上で GPU instance を借りる（cheapest でも RAM ≥64 GB / disk ≥200 GB は必須、convert 用途なら GPU は 4090 で十分、H100 は FA v3 bench 用）
 2. **provision**: `scripts/publish/vast-ai/provision.sh` を SSH 上で実行（4 gotcha を pre-handle）
 3. **work**: `run-one.sh` per model or 直接 cargo コマンド
-4. **destroy**: **必ず `scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>` で auto-destroy**（走らせっぱなしは $/h で課金継続、ADR §D6）。ただし、直近に再開することが明示された retained handoff（たとえば別環境への転送待ち）に限り、一時的な `stop` を許可できる。Stop は compute 課金を止めてデータを保持するが storage 課金は継続し、再開時の GPU 確保は保証されない。重要データは外部にも backup し、handoff 完了後は必ず destroy する。
+4. **destroy**: **必ず `vastai-safe.sh destroy instance <instance-id>` で auto-destroy**（走らせっぱなしは $/h で課金継続、ADR §D6）。ただし、直近に再開することが明示された retained handoff（たとえば別環境への転送待ち）に限り、一時的な `stop` を許可できる。Stop は compute 課金を止めてデータを保持するが storage 課金は継続し、再開時の GPU 確保は保証されない。重要データは外部にも backup し、handoff 完了後は必ず destroy する。
 
 ### 一時停止の限定例外（retained handoff のみ）
 
@@ -58,10 +58,23 @@ storage 課金は継続し、再開時の GPU 確保は保証されません。D
 削除して課金を停止します。詳細は [Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
 と [Storage types](https://docs.vast.ai/guides/instances/storage/types) を参照してください。
 
-**現在の retained handoff (2026-08-30)**: instance `49168183`
-(`vokra-mac-coverage-771970dc`, RTX 3060, 500 GB storage, `$0.3074/h`) は
-Scaleway 転送 packet を保持する目的でのみ稼働中である。転送完了後に destroy
-し、今回の文書更新では stop/destroy 操作自体は行わない。
+**retained handoff の現状 (2026-09-09)**: Scaleway 実行までの待機長期化に
+伴い、instance `49168183` (`vokra-mac-coverage-771970dc`, 500 GB) と
+`49261078` (`vokra-htdemucs-inspection-20260830`, 200 GB) は保存データを
+含めて destroy 済みである。両方とも個別 API が `instances: null` を返した。
+`apple-transfer-bc9d1db2`、`apple-transfer-reazon-a59c48c8`、
+`apple-transfer-bicodec-5cd97d12` も VAST 上に存在しない。現在 Vokra 用の
+retained handoff はなく、storage 課金も継続していない。Apple 実機検証を
+再開するときは、固定 revision/hash 契約から新しい disposable VAST instance
+で artefact と reference packet を再生成し、完了後に destroy する。
+
+**最終 replay の現状 (2026-09-09)**: implementation head `caf70eb1` の exact
+VAST replay に使った disposable instance `50320338`（150 GB storage）は、
+evidence transfer/verification 後に保存データを含めて destroy 済みである。
+現在 Vokra 用の retained handoff はなく、storage 課金もない。Apple 検証を
+再開するときは固定 revision/hash 契約から新しい disposable instance で
+artefact と reference packet を再生成する。履歴 instance ID は再起動先や
+転送元として扱わない。
 
 ## 2. Rent phase（vast.ai 側）
 

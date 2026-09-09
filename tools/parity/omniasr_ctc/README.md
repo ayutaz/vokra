@@ -32,7 +32,7 @@ VAST and transfer it directly to an authenticated Apple/Scaleway worker (or
 another explicitly authorized remote path); never pull the bundle to the
 maintainer Mac.  Only small logs and JSON manifests may be returned locally.
 
-## 2026-08-30 authenticated CPU lock
+## 2026-08-30 authenticated CPU lock (historical evidence)
 
 The pinned official implementation completed the real-weight CPU parity gate
 on VAST. The prepared checkpoint SHA-256 is
@@ -47,20 +47,27 @@ five emitted token IDs matched exactly. These are independent official VAST
 CPU results, not a self-authored mirror result.
 
 Apple CPU repetition and Metal execution remain pending and must run on the
-authenticated Apple/Scaleway worker. The packet remains remote-only at
-`/root/scratchpad/apple-transfer-bc9d1db2` on stopped/exited VAST instance
-`49168183` (4.9 GB / 30 regular files, no symlinks). Its manifest SHA-256 is
+authenticated Apple/Scaleway worker. At the time of this historical lock, the
+packet was remote-only at
+`/root/scratchpad/apple-transfer-bc9d1db2` on VAST instance `49168183`
+(4.9 GB / 30 regular files, no symlinks); its manifest SHA-256 was
 `c96eee3c61ec85b589a488deff21668097ed4e94f96b4654b990706098f6f606`.
-Transfer it directly VAST-to-Scaleway, verify the manifest there, preserve the
-small Apple evidence and then destroy the retained VAST instance. Storage
-billing continues while stopped. No Scaleway run or Hugging Face upload has
-occurred.
+
+**Current resource state (audited 2026-09-09):** instance `49168183` and its
+storage have since been destroyed. There is no retained VAST transfer source,
+and therefore no storage billing for it. When Apple verification resumes,
+recreate the packet from the pinned source/checkpoint contract on a new
+disposable VAST instance, transfer it directly to the authenticated
+Apple/Scaleway worker, verify the manifest there, retain only small evidence,
+and destroy the VAST instance afterward. No Scaleway run or Hugging Face upload
+has occurred.
 
 ## Current 0.3.0 release status
 
-The current workspace release line is `0.3.0`. The parity figures below are a
-pre-documentation-refresh snapshot from PR #79 at `d8a93bc3`, against
-`origin/main` `41ce9ffd`. The independent CPU
+The current workspace release line is `0.3.0`. The parity figures below remain
+a historical pre-documentation-refresh snapshot from PR #79 at `d8a93bc3`,
+against `origin/main` `41ce9ffd`; they are not refreshed by this README update.
+The independent CPU
 packet and source-level Metal route are not an Apple-device verdict: OmniASR
 CPU repetition and Metal execution remain explicitly blocked on the
 authenticated Scaleway run. That snapshot's parity summary is 109 passes and
@@ -68,3 +75,12 @@ authenticated Scaleway run. That snapshot's parity summary is 109 passes and
 `full=131/partial=42/no-runtime-binder=20/not-artifact=1` and Metal
 `full=131/blocked-by-cpu=62/not-artifact=1`.
 There are currently 0 release tags and 0 GitHub Releases.
+
+**Audit-start CI snapshot (2026-09-09):** PR #79 was open, non-draft,
+`CLEAN`/`MERGEABLE`, at implementation head `9efcd16e` with base
+`41ce9ffd`; its completed checks were 110 successful, 13 intentionally skipped,
+and 0 failed or pending. The historical coverage counts above are not replaced
+by that PR summary. They remain a dated audit record, while Apple CPU
+repetition and Metal execution are still pending the authenticated Scaleway
+run. Later documentation-only commits do not change the implementation head
+recorded here.
