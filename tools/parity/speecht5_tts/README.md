@@ -10,6 +10,13 @@ The lock and project bytes, all canonical dependency rows, fixed TTS and
 HiFi-GAN revisions/artifact hashes, and the historical public GGUF identity
 are bound by `license_gate_manifest.json`.
 
+The exact PyPI closure supports `torch>=2.4`; the pinned Transformers 5.10.4
+optional FP8 integration nevertheless names a newer dtype at import time. A
+narrow, identity-checked alias is therefore installed only for this exact
+closure and only to unlock that import. The pinned SpeechT5 configuration
+rejects every quantization or fine-grained FP8 route, and the model-free VAST
+compatibility smoke must pass before any checkpoint is acquired.
+
 `preflight_gate.py` is standard-library-only and runs with
 `uv run --no-project --offline` before scratch creation, synchronization,
 source/model download, conversion, or Cargo. It binds the exact Linux lock,

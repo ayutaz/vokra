@@ -24,6 +24,11 @@ import sys
 import types
 from pathlib import Path
 
+SPEECHT5_PARITY_DIR = Path(__file__).resolve().parent / "speecht5_tts"
+if str(SPEECHT5_PARITY_DIR) not in sys.path:
+    sys.path.insert(0, str(SPEECHT5_PARITY_DIR))
+from torch_compat import install_float8_import_compat, require_non_quantized_config, self_test as torch_compat_self_test
+
 
 UPSTREAM_HF = "microsoft/speecht5_tts"
 UPSTREAM_REVISION = "30fcde30f19b87502b8435427b5f5068e401d5f6"
@@ -202,6 +207,7 @@ class OfficialPrenetDropout:
 
 
 def self_test() -> None:
+    torch_compat_self_test()
     global TRANSFORMERS_COMPATIBILITY_STATUS
     assert PREVIOUS_ISOLATED_TRANSFORMERS_PIN == "transformers==5.5.0"
     assert REFERENCE_PACKAGE == "transformers==5.10.4"
@@ -279,6 +285,7 @@ def main() -> int:
     if not checkpoint.is_dir():
         parser.error(f"checkpoint is not a directory: {checkpoint}")
     verified_files = verify_checkpoint(checkpoint)
+    require_non_quantized_config(checkpoint)
     output_dir = args.output_dir.resolve()
     if output_dir.exists() and any(output_dir.iterdir()):
         parser.error(f"--output-dir must be absent or empty: {output_dir}")
@@ -287,6 +294,7 @@ def main() -> int:
     try:
         import numpy as np
         import torch
+        float8_import_compat = install_float8_import_compat(torch)
         import transformers
         from transformers import SpeechT5ForTextToSpeech, SpeechT5Tokenizer
     except ImportError as error:
@@ -430,8 +438,13 @@ def main() -> int:
         "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
         "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
         "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+        "quantization_policy": {
+            "mode": "non-quantized",
+            "finegrained_fp8": "not_used",
+        },
         "transformers_version": transformers.__version__,
         "torch_version": torch.__version__,
+        "float8_import_compat": float8_import_compat,
         "platform": platform.platform(),
         "machine": platform.machine(),
         "upstream_hf": UPSTREAM_HF,

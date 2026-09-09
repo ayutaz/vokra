@@ -17,8 +17,8 @@ TTS_REVISION="30fcde30f19b87502b8435427b5f5068e401d5f6"
 TTS_SOURCE_SHA256="d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190"
 VOCODER_REVISION="bb6f429406e86a9992357a972c0698b22043307d"
 VOCODER_SOURCE_SHA256="b171e9bcd8a2b50dc9780040478dfa26783a9ee4be012cf5776914f091d6887b"
-LOCK_SHA256="418fb6b6516e0284b503ed20872e2dc6dd375aff918e253f3e7f9d27b62f904c"
-PYPROJECT_SHA256="1e61ad26749c1ad5ba05fe139ef8bfcf4698e3b030cad6182e18309789779346"
+LOCK_SHA256="3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075"
+PYPROJECT_SHA256="b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=30000000
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
@@ -29,6 +29,14 @@ die() { log "ERROR: $*"; return 2; }
 
 sha256_file() {
   sha256sum "$1" | awk '{print $1}'
+}
+
+require_project_hashes() {
+  local lock_digest project_digest
+  lock_digest="$(sha256_file "$PARITY_PROJECT/uv.lock")"
+  project_digest="$(sha256_file "$PARITY_PROJECT/pyproject.toml")"
+  [[ "$lock_digest" == "$LOCK_SHA256" ]] || { die "uv.lock SHA-256 drifted: $lock_digest"; return 2; }
+  [[ "$project_digest" == "$PYPROJECT_SHA256" ]] || { die "pyproject SHA-256 drifted: $project_digest"; return 2; }
 }
 
 paths_overlap() {
@@ -140,10 +148,11 @@ run_self_test() {
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/speecht5-api-smoke-self-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   UV_NO_CACHE=1 UV_CACHE_DIR="$tmp/cache" uv run --no-cache --no-project --offline --python 3.12 python "$API_SMOKE" --self-test >/dev/null || fail=1
+  require_project_hashes || fail=1
   for required in "$TTS_REVISION" "$TTS_SOURCE_SHA256" "$VOCODER_REVISION" "$VOCODER_SOURCE_SHA256" \
     "$LOCK_SHA256" "$PYPROJECT_SHA256" 'VOKRA_PUBLISH_ON_VAST=1' 'clean' 'Linux x86_64' \
     'preflight_gate.py' 'run_preflight_gate' '--manifest' '--evidence' '--approval-evidence' '--vokra-root' 'NO_UPLOAD' 'uv sync --project' '--frozen --python 3.12' \
-    'post_sync_audit.py' 'SPEECHT5_API_SMOKE status=PASS' 'SPEECHT5_API_SMOKE status=FAIL' 'require_absent_dir' 'require_disjoint_paths'; do
+    'post_sync_audit.py' 'SPEECHT5_API_SMOKE status=PASS' 'SPEECHT5_API_SMOKE status=FAIL' 'require_absent_dir' 'require_disjoint_paths' 'require_project_hashes'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract token: $required"; fail=1; }
   done
   local preflight_call mkdir_line sync_line
@@ -206,6 +215,7 @@ EOF
   require_absent_dir "$work" work-dir
   require_absent_dir "$evidence" evidence-dir
   require_disjoint_paths "$work" "$evidence" "$approval"
+  require_project_hashes
   require_vast_host "$(dirname "$work")"
   require_clean_checkout
   require_tooling

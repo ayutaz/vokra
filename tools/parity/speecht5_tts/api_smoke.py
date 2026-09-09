@@ -26,6 +26,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from torch_compat import install_float8_import_compat, require_non_quantized_config, self_test as torch_compat_self_test
+
 
 UPSTREAM_HF = "microsoft/speecht5_tts"
 UPSTREAM_REVISION = "30fcde30f19b87502b8435427b5f5068e401d5f6"
@@ -54,6 +56,7 @@ PASS_EVIDENCE_KEYS = {
     "upstream_hf", "upstream_revision", "upload", "vocoder", "vokra_head", "vokra_root",
     "vokra_clean", "approval_evidence_sha256", "approval_scope_sha256", "approval_signer", "project_dir",
     "preflight_gate", "preflight_gate_sha256", "preflight_manifest_sha256",
+    "float8_import_compat",
 }
 FAIL_EVIDENCE_KEYS = {
     "approval_evidence_sha256", "approval_scope_sha256", "approval_signer", "error",
@@ -305,6 +308,8 @@ def validate_evidence_document(path: Path, status: str) -> dict[str, Any]:
         for key in ("input_sha256", "output_sha256", "call_checkpoint_sha256", "project_sha256", "lock_sha256", "package_rows_sha256", "package_sha256"):
             if not HEX64.fullmatch(str(value.get(key))):
                 raise RuntimeError(f"API smoke evidence has invalid {key}")
+        if value.get("float8_import_compat") not in {"native", "shimmed"}:
+            raise RuntimeError("API smoke evidence has invalid float8_import_compat")
     else:
         if not isinstance(value.get("stage"), str) or not value["stage"] or not isinstance(value.get("error_type"), str) or not value["error_type"] or not isinstance(value.get("error"), str) or "\n" in value["error"]:
             raise RuntimeError("API smoke failure evidence lacks stage/error type")
@@ -412,10 +417,12 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
     try:
         project_sha, lock_sha, package_rows_sha = verify_project(project_dir)
         checkpoint_files = verify_checkpoint(checkpoint)
+        require_non_quantized_config(checkpoint)
         stage = "third_party_import"
         # Imports are intentionally kept inside the post-preflight block.
         import numpy as np
         import torch
+        float8_import_compat = install_float8_import_compat(torch)
         import transformers
         from transformers import SpeechT5ForTextToSpeech, SpeechT5Tokenizer
         stage = "model_load"
@@ -463,6 +470,9 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
                 "speaker_embeddings": "input_speaker_embeddings",
                 "threshold": 0.5,
                 "vocoder": None,
+                "quantization": "disabled",
+                "finegrained_fp8": "not_used",
+                "float8_import_compat": float8_import_compat,
             },
             "input_sha256": input_sha,
             "checkpoint_sha256": SOURCE_WEIGHT_SHA256,
@@ -512,6 +522,7 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
             "mel_bins": int(generated.shape[-1]),
             "call_checkpoint_sha256": call_checkpoint_sha,
             "call": call_record,
+            "float8_import_compat": float8_import_compat,
             "environment": {"python": platform.python_version(), "torch": torch.__version__, "transformers": transformers.__version__, "platform": platform.platform()},
             **context,
         }
@@ -532,6 +543,7 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
 
 
 def self_test() -> int:
+    torch_compat_self_test()
     assert PREVIOUS_TRANSFORMERS == "transformers==5.5.0"
     assert EXPECTED_TRANSFORMERS == "5.10.4"
     assert SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
@@ -631,7 +643,7 @@ def self_test() -> int:
         else:
             raise AssertionError("unknown preflight approval field was accepted")
         pass_doc: dict[str, Any] = {key: None for key in PASS_EVIDENCE_KEYS}
-        pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64})
+        pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64, "float8_import_compat": "shimmed"})
         pass_dir = root / "pass"
         pass_dir.mkdir()
         pass_path = pass_dir / "evidence.json"
