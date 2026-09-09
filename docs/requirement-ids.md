@@ -29,7 +29,7 @@ guessing.
 
 ## Keeping this page current
 
-**Last verified: 2026-08-30 — 110 IDs cited across the public documents and 33
+**Last verified: 2026-09-09 — 110 IDs cited across the public documents and 33
 architecture anchors (the mechanically derived current sets).**
 
 The set this page must cover is mechanically derived, not curated by hand.

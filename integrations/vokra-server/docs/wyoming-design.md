@@ -1,6 +1,6 @@
 # Wyoming Protocol — Server Design (M2-09 T14)
 
-**Current-status note (2026-08-30):** This design record keeps the historical
+**Current-status note (2026-09-09):** This design record keeps the historical
 wire and safety decisions, while the implementation is no longer a planned
 accept-loop follow-up: the service-aware accept loop invokes
 `run_wyoming_connection` for configured services, covering discovery, ASR, TTS,

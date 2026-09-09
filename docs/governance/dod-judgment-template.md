@@ -1,6 +1,6 @@
 # GA Definition-of-Done judgment record — v1.0 GA (M5-12)
 
-> **Current state (2026-08-30):** `release-cadence.yml` and
+> **Current state (2026-09-09):** `release-cadence.yml` and
 > `tools/release/test_cadence.py` are landed. There are currently **0 git tags,
 > 0 GitHub releases, and 0 quarterly review records**, so the cadence item is
 > not established. The fields below remain blank for the owner to judge; these

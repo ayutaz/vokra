@@ -6,29 +6,29 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
 
 - 対象範囲: `.github/workflows/*.yml` 全件（**実数 46 file**。旧記載「2026-07-23 時点で 20 file」は
   その後の parity workflow 増設で陳腐化していたため実測値に更新）
-- **2026-08-30 網羅確認**: 46 workflow file の全てを本 index に収録済み。
+- **2026-09-09 網羅確認**: 46 workflow file の全てを本 index に収録済み。
   required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
   明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
   を primary source として取得し、本 file の §1 に転記。現行は **16 contexts、strict=true**。
-- Actions policy の実態: `sha_pinning_required=true`（2026-08-30確認）。
+- Actions policy の実態: `sha_pinning_required=true`（2026-09-09確認）。
 - cron 時刻の実態: 各 workflow file 内の `schedule: - cron: '...'` 実定義から抽出。
   各 workflow の comment 側は本 file を参照する形に段階的に集約予定
 - 変更禁止事項: 本 file の書式や見出し名の変更は required check job id の追跡性を
   壊すことがあるため、**§1 の table 構造は変更しない** こと（job id / check name / 定義 file
   の列は追加・削除禁止、値の差替のみ許可）
 
-**Current 0.3.0 Apple/CI status**: the parity figures below are a
-pre-documentation-refresh snapshot from PR #79 head `d8a93bc3`, evaluated
-against `origin/main` `41ce9ffd`; that snapshot recorded 109 passes and 13
-expected skips. The live public audit currently is 194 repositories (193 GGUF
-repositories, 198 GGUF files), with CPU `full=131`, `partial=42`,
-`no-runtime-binder=20`, `not-artifact=1`, Metal `full=131`,
+**Audit-start 0.3.0 Apple/CI status**: at the 2026-09-09 documentation audit
+start, PR #79 head was `9efcd16e`, with 110 successful checks, 13 expected
+skips, and 0 failures. The read-only public inventory was 194 repositories
+(193 GGUF repositories, 198 GGUF files), with CPU `full=131`, `partial=45`,
+`no-runtime-binder=17`, `not-artifact=1`, Metal `full=131`,
 `blocked-by-cpu=62`, `not-artifact=1`, and source-level CPU-only coverage 0.
 GigaAM v3/Multilingual have complete conservative Metal code routes but no
-Apple-hardware verdict; OmniASR awaits the authenticated Scaleway run. Both
-`hf-mac-coverage-unit` and the live advisory coverage check are green on the
-latest PR. These are CI/audit facts, not Apple-device sign-off.
+Apple-hardware verdict; Scaleway has not started. These are CI/audit facts,
+not Apple-device sign-off. UTMOS numeric parity is not claimed because its
+legacy Lightning checkpoint is intentionally refused by the restricted
+`weights_only=True` loader.
 There are currently 0 release tags and 0 GitHub Releases.
 
 ---

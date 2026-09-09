@@ -101,7 +101,7 @@ evidence.
 
 ## Keeping this page current
 
-**Documentation reviewed: 2026-08-30; latest recorded runtime evidence remains
+**Documentation reviewed: 2026-09-09; latest recorded runtime evidence remains
 2026-08-22 — official Godot 4.7.1 headless, real Silero VAD GGUF + raw-f32 PCM
 stream.** No new model execution is claimed for this documentation review.
 

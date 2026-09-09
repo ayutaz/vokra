@@ -7,11 +7,9 @@ keeps third-party Python runtime dependencies at zero.
 
 ## Status: source implementation current, package unpublished
 
-**Reviewed:** 2026-08-31 against the pre-documentation-refresh PR #79 snapshot
-at `d8a93bc3` (109 pass / 13 expected skip), with GitHub `main` at
-`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`, the pre-documentation code
-baseline branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
-`9f69277d8a0d5df574c1ee95563bd1f005de91d0`, and the generated C header.
+**Reviewed:** 2026-09-09 against the audit-start PR #79 head
+`9efcd16eb63b857f48fc00d0b83d1113defd578b` (110 successful checks / 13
+expected skips / 0 failures) and the generated C header.
 
 The workspace is `0.3.0` development with no Git tag or published release;
 the package metadata remains `0.1.0.dev0` for unpublished source wheels. This

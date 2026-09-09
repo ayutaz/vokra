@@ -1,6 +1,6 @@
 # Wyoming ↔ Home Assistant — local Docker smoke (M2-15 pre-check)
 
-## Current status (2026-08-30)
+## Current status (2026-09-09)
 
 The implementation gaps described by the July capture below have since been
 superseded: `run_with_config` now waits for shutdown, the accept loop routes

@@ -1,6 +1,6 @@
 # Go / No-go review record — v0.5 (M2)
 
-> **Current state (2026-08-30):** This remains a blank v0.5 template. There
+> **Current state (2026-09-09):** This remains a blank v0.5 template. There
 > are **0 git tags, 0 GitHub releases, and 0 quarterly review records**. The
 > X-07 cadence mechanism (`release-cadence.yml` +
 > `tools/release/test_cadence.py`) is landed, but no release cadence is

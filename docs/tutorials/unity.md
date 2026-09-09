@@ -46,13 +46,13 @@ unpublished tree.
 }
 ```
 
-Clone the publicly fetchable GitHub `main` baseline verified on 2026-08-30,
+Clone the audit-start PR #79 head verified on 2026-09-09,
 then build and stage the native library for the platform you will test:
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
-git checkout --detach 41ce9ffdd4b0959497f55afa5016822f77a8a7b6
+git checkout --detach 9efcd16eb63b857f48fc00d0b83d1113defd578b
 
 # Host desktop (macOS, Linux, or Windows).
 scripts/build-unity-plugin.sh

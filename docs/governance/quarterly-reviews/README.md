@@ -1,6 +1,6 @@
 # Quarterly review records
 
-> **Current state (2026-08-30):** `release-cadence.yml` and
+> **Current state (2026-09-09):** `release-cadence.yml` and
 > `tools/release/test_cadence.py` are landed, but there are **0 git tags, 0
 > GitHub releases, and 0 review records**. Release cadence is therefore not
 > established; do not infer a Go verdict from the landed mechanism alone.

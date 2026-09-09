@@ -1,6 +1,6 @@
 # vokra-godot — Godot 4.x GDExtension binding for Vokra
 
-**State (2026-08-30 audit)**: the original **T01-T18 scope landed**. All
+**State (2026-09-09 audit)**: the original **T01-T18 scope landed**. All
 data-bearing trampolines now use real Variant dispatch, including
 `session_vad_open_stream` returning a live `VokraStream` Object. The official
 Godot 4.7.1 headless gate loads the committed Silero VAD GGUF, pushes real

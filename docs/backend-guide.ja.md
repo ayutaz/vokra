@@ -140,14 +140,18 @@ post-bakeoff の `IF-01` 決定までは Rust surface（`with_backend`）が唯�
 現行の CPU / Metal compute seam は、汎用の dilated Conv1d、
 ConvTranspose1d、Conv2d、ConvTranspose2d kernel も公開する。モデル経路は Metal
 選択前に learned-op inventory 全体を preflight しなければならず、これらの seam
-は silent CPU fallback を許可しない。source-level contract は
-`9f69277d8a0d5df574c1ee95563bd1f005de91d0` で確認済みだが、準備済みの
-GigaAM、OmniASR、ReazonSpeech、BiCodec packet に対する実 Apple CPU/Metal
-evidence は引き続き pending である。現行 0.3.0 系列では GigaAM v3 と
+は silent CPU fallback を許可しない。source-level contract は監査開始時点の
+PR #79 head `9efcd16eb63b857f48fc00d0b83d1113defd578b` で確認済みである。
+Apple 実行向けの source/readiness-ready な packet contract は、次の 6 件である。
+GigaAM v3、GigaAM Multilingual、OmniASR CTC 1B、ReazonSpeech NeMo v2、BiCodec、
+Voice Gender Classifier。
+旧 immutable packet input は VAST storage とともに全て破棄済みで、保持も直ちに実行可能な
+状態でもない。Scaleway へ転送する直前に、新しい disposable VAST worker 上で各 packet
+再生成する。現行 0.3.0 系列では GigaAM v3 と
 Multilingual は conservative な Metal code route が complete だが、Apple
 hardware の verdict はまだ未取得である。OmniASR も認証済み Scaleway 実機 run
 待ちであり、source-level route の complete を Apple device 結果とはみなさない。
-live public coverage の現行値は CPU `full=131`、`partial=45`、
+監査開始時点の live public coverage は CPU `full=131`、`partial=45`、
 `no-runtime-binder=17`、`not-artifact=1`、Metal `full=131`、
 `blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
 現時点の release tag は 0、GitHub Release も 0 である。
@@ -159,7 +163,8 @@ Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak �
 
 ## Keeping this page current
 
-**最終確認日: 2026-08-31 — 実装済みの 5 計算バックエンド、上記の汎用
+**最終確認日: 2026-09-09 — 監査開始時点の PR #79 head
+`9efcd16eb63b857f48fc00d0b83d1113defd578b`、実装済みの 5 計算バックエンド、上記の汎用
 convolution seam、CoreML whole-submodel delegate 経路、SDK gate 下の QNN
 delegate scaffold に対して確認。**
 

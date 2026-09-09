@@ -1,6 +1,6 @@
 # vokra-server — Scope Boundary (M2-09-T01 kickoff)
 
-**Current-status note (2026-08-30):** This is the T01 kickoff boundary and its
+**Current-status note (2026-09-09):** This is the T01 kickoff boundary and its
 M2 target language is retained as historical context. Current behavior is
 authoritatively described by [`../README.md`](../README.md) and the source:
 the service-aware accept loop routes configured connections through the full

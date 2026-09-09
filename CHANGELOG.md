@@ -25,20 +25,19 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   refreshed with the prescribed script and remains aligned with this release
   line. The C ABI remains covered by its separate pre-1.0 policy.
 
-- **Current 0.3.0 Apple/CI status**: the parity figures below are a
-  pre-documentation-refresh snapshot from PR #79 (head `d8a93bc3`, against
-  `origin/main` `41ce9ffd`) and record 109 passes and 13 expected skips. The
-  live public audit currently reports 194 repositories, including
-  193 GGUF repositories and 198 GGUF files; its CPU classification is
-  `full=131`, `partial=42`, `no-runtime-binder=20`, `not-artifact=1`, and its
-  Metal classification is `full=131`, `blocked-by-cpu=62`, `not-artifact=1`.
-  Source-level CPU-only coverage is 0. GigaAM v3 and Multilingual now have
+- **Audit-start 0.3.0 Apple/CI status**: PR #79 was at head `9efcd16e` on
+  2026-09-09, with 110 successful checks, 13 expected skips, and 0 failures.
+  The read-only public audit reports 194 repositories, including 193 GGUF
+  repositories and 198 GGUF files; its CPU classification is `full=131`,
+  `partial=45`, `no-runtime-binder=17`, `not-artifact=1`, and its Metal
+  classification is `full=131`, `blocked-by-cpu=62`, `not-artifact=1`.
+  Source-level CPU-only coverage is 0. GigaAM v3 and Multilingual have
   complete conservative Metal code routes, but no Apple-hardware verdict is
-  claimed; OmniASR remains gated on the authenticated Scaleway run. The CI
-  Quality `hf-mac-coverage-unit` and live advisory checks are green on the
-  latest PR. No hardware result or publication eligibility is inferred from
-  these code/audit results. There are currently 0 release tags and 0 GitHub
-  Releases.
+  claimed; Scaleway has not started. No hardware result or publication
+  eligibility is inferred from these code/audit results. UTMOS numeric parity
+  is not claimed because its legacy Lightning checkpoint is refused by the
+  restricted `weights_only=True` loader. There are currently 0 release tags
+  and 0 GitHub Releases.
 
 - **2026-08-31 authenticated CPU/remote lock**: GigaAM v3, GigaAM Multilingual and
   OmniASR CTC 1B now have strict native CPU routes and independent official

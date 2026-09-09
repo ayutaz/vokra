@@ -44,14 +44,14 @@ https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 }
 ```
 
-2026-08-30 に検証した、公開取得可能な GitHub `main` baseline を clone し、
+2026-09-09 の監査開始時点で確認した PR #79 head を clone し、
 検証する platform の native library を build・stage してから Unity project を
 開きます:
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
-git checkout --detach 41ce9ffdd4b0959497f55afa5016822f77a8a7b6
+git checkout --detach 9efcd16eb63b857f48fc00d0b83d1113defd578b
 
 # host desktop（macOS / Linux / Windows）
 scripts/build-unity-plugin.sh

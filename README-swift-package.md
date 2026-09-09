@@ -1,8 +1,11 @@
 # Vokra Swift Package
 
-The workspace is `0.3.0` development as of 2026-08-31. No Git tag or GitHub
-Release is available yet; the package is consumed from repository source or a
-locally built XCFramework until an authorized release is published.
+The workspace is `0.3.0` development. At the 2026-09-09 audit start, PR #79
+was at head `9efcd16e`. No Git tag or GitHub Release is available yet; the
+package is consumed from repository source or a locally built XCFramework
+until an authorized release is published. Apple Silicon CPU/Metal hardware
+evidence is not implied by this source-package guide and remains a separate
+Scaleway gate.
 
 Consumer instructions for integrating Vokra into an iOS/macOS app via Swift Package Manager.
 
@@ -18,13 +21,13 @@ There is no tagged release or release asset yet. The repository's
 from a clean clone. Use the local flow below until an authorized CD release
 publishes the XCFramework.
 
-1. Clone the repository and check out the publicly fetchable GitHub `main`
-   baseline verified on 2026-08-31:
+1. Clone the repository and check out the audit-start PR #79 head verified on
+   2026-09-09:
 
    ```sh
    git clone https://github.com/ayutaz/vokra.git
    cd vokra
-   git checkout --detach 41ce9ffdd4b0959497f55afa5016822f77a8a7b6
+   git checkout --detach 9efcd16eb63b857f48fc00d0b83d1113defd578b
    scripts/build-ios.sh
    ```
 

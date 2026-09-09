@@ -25,7 +25,7 @@ in `docs/requirement-ids.md` and its Japanese twin.
 
 ## 2. CI required checks
 
-As re-verified through the GitHub branch-protection API on 2026-08-30, every
+As re-verified through the GitHub branch-protection API on 2026-09-09, every
 PR must pass **16 required status contexts**:
 
 | Check | What it runs |
@@ -71,6 +71,14 @@ parity, and nightly audio-quality jobs already run as advisory checks. They are
 not branch-protection contexts today; promotion requires an owner decision
 after stable green runs. The exact required/advisory split is maintained in
 `.github/workflows/README.md`.
+
+The audit-start PR #79 documentation/security baseline was `9efcd16e`. It records
+owner-independent source work only: Apple Silicon CPU/reference and
+Metal/reference/no-fallback evidence still require the separate Scaleway gate,
+while approved real-weight conversion/reference work belongs on disposable
+VAST capacity. The restricted checkpoint contract is fail-closed
+`weights_only=True`; contributors must not reintroduce unrestricted pickle
+loading to make a parity job pass.
 
 ## 3. Dependency license policy
 

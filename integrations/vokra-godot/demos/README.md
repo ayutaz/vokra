@@ -1,6 +1,6 @@
 # Vokra Godot demo projects
 
-**Current status (2026-08-30):** the parent binding's native dispatch and
+**Current status (2026-09-09):** the parent binding's native dispatch and
 headless CI path are implemented; these files remain small source demos whose
 interactive Editor run is owner verification. See [`../README.md`](../README.md)
 for the current binding status and release boundary.

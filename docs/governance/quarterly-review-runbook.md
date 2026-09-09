@@ -1,7 +1,7 @@
 # 四半期 Go/No-go review 運用手順 runbook
 
 **文書 ID**: VOKRA-GOV-002
-**最終更新**: 2026-08-30（現行文書体系・release cadence実装・履歴参照を再照合）
+**最終更新**: 2026-09-09（現行文書体系・release cadence実装・履歴参照を再照合）
 **位置付け**: 本runbookのKill switch表（撤退条件 A〜L）と
 system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review をリリース
 プロセスに組み込む）の**手動 review 運用手順**。判定そのものは依頼者（`ayutaz`）が
@@ -90,7 +90,7 @@ Kill switch/DoDの「Claude Codeを除く」表記は、ownerが定めた**規�
 
 **カレンダー登録は依頼者責任**（本 runbook は自動 CI に載せない = 2026-07-04
 依頼者決定の遵守）。v0.1 MVP / v0.5 の release tag を実際に発行した日を起点に
-登録する。**2026-08-30現在はgit tagもGitHub releaseも0件のため、起点日は未確定**。
+登録する。**2026-09-09現在はgit tagもGitHub releaseも0件のため、起点日は未確定**。
 旧文書にある `v0.1.0` / `v0.5.0` は予定上の名前であり、発行済みtagとして扱わない。
 
 ---

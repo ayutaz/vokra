@@ -148,13 +148,19 @@ The current CPU and Metal compute seams also expose generic dilated Conv1d,
 ConvTranspose1d, Conv2d and ConvTranspose2d kernels. Model routes must preflight
 their complete learned-op inventory before selecting Metal; these seams do not
 authorize a silent CPU fallback. Their source-level contracts were verified at
-`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; real Apple CPU/Metal evidence for
-the staged GigaAM, OmniASR, ReazonSpeech and BiCodec packets remains pending.
+the audit-start PR #79 head
+`9efcd16eb63b857f48fc00d0b83d1113defd578b`; the six
+source/readiness-ready packet contracts are GigaAM v3, GigaAM Multilingual,
+OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec, and Voice Gender Classifier.
+All former immutable packet inputs were destroyed with their VAST storage;
+none is retained or immediately executable. Each packet must be regenerated
+on a new disposable VAST worker immediately before transfer to Scaleway.
 In the current 0.3.0 line, GigaAM v3 and GigaAM Multilingual have complete
 conservative Metal code routes, but their Apple-hardware verdict is still
 unmeasured. OmniASR likewise remains pending the authenticated Scaleway run;
 source-level route completeness is not an Apple-device result. The live public
-coverage snapshot is CPU `full=131`, `partial=45`, `no-runtime-binder=17`,
+audit-start coverage snapshot is CPU `full=131`, `partial=45`,
+`no-runtime-binder=17`,
 `not-artifact=1`, and Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`,
 with source-level CPU-only coverage at 0.
 There are currently 0 release tags and 0 GitHub Releases.
@@ -167,7 +173,8 @@ metal and signs off.
 
 ## Keeping this page current
 
-**Last verified: 2026-08-31 — against the five implemented compute backends,
+**Last verified: 2026-09-09 — against the audit-start PR #79 head
+`9efcd16eb63b857f48fc00d0b83d1113defd578b` and the five implemented compute backends,
 the generic convolution seams above, the CoreML whole-submodel delegate path,
 and the SDK-gated QNN delegate scaffold.**
 

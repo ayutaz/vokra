@@ -60,9 +60,9 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 ## 5. 現行 0.3.0 release と Apple 検証 status
 
-現行の workspace release line は `0.3.0` である。以下の parity 数値は文書更新前の
-snapshot であり、PR #79 の `d8a93bc3` を `origin/main` の `41ce9ffd` と照合して
-109 pass、13 expected skip を記録した時点のものである。live public audit の現行値は
+現行の workspace release line は `0.3.0` で、2026-09-09 の監査開始時点の PR #79 head は
+`9efcd16eb63b857f48fc00d0b83d1113defd578b` である。最新 remote check は成功 110、
+想定 skip 13、失敗 0 である。監査開始時点の live public audit は
 194 repository（GGUF repository 193、GGUF file 198）。CPU coverage は `full=131`、
 `partial=45`、
 `no-runtime-binder=17`、`not-artifact=1`、Metal は `full=131`、
@@ -70,16 +70,15 @@ snapshot であり、PR #79 の `d8a93bc3` を `origin/main` の `41ce9ffd` と�
 現時点の release tag は 0、GitHub Release も 0 である。
 
 GigaAM v3 / Multilingual は conservative な Metal code route が complete だが、
-Apple hardware verdict は未取得。OmniASR も認証済み Scaleway run 待ちである。
-CI Quality の `hf-mac-coverage-unit` と live advisory は最新 PR で green だが、
-CI/audit 結果を Apple 実機 evidence の代用とはしない。
+Apple hardware verdict は未取得。未解決の public row 63 件は complete と主張しない。
+Scaleway は未開始であり、CI/audit 結果を Apple 実機 evidence の代用とはしない。
+UTMOS の legacy Lightning checkpoint は制限付き `weights_only=True` loader が意図的に
+拒否するため、numeric parity は主張しない。
 
 ## Keeping this page current
 
-**最終確認日: 2026-08-31 — GitHub `main`
-`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`、文書更新前に照合したコード
-baseline branch `feat/mac-cpu-metal-full-coverage-2026-08-28` の
-`9f69277d8a0d5df574c1ee95563bd1f005de91d0`、および `include/vokra.h` に対して
+**最終確認日: 2026-09-09 — 監査開始時点の PR #79 head
+`9efcd16eb63b857f48fc00d0b83d1113defd578b` および `include/vokra.h` に対して
 確認。** pre-alpha の Python generator と checked-in `ctypes` table は、生成 C
 の全 57 function と完全に一致する。header は 15 typedef、4 enum、2 concrete
 struct、9 opaque handle を持つ。高水準 Python package は、全 C handle に wrapper

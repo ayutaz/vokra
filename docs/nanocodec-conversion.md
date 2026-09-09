@@ -1,6 +1,6 @@
 # NanoCodec conversion contract
 
-> **2026-08-30 current-state boundary:** The conversion contract and the
+> **2026-09-09 current-state boundary:** The conversion contract and the
 > checkpoint inventory below are dated audit records (the inventory is
 > explicitly 2026-08-22). They preserve the source revisions, validation
 > rules, and license posture established at that audit; they do not by

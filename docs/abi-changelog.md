@@ -5,9 +5,10 @@ IF-01 freeze point, owned by **M5-13** — see the historical reassignment note
 below). It is **narrower and machine-checkable** than the human-readable
 `CHANGELOG.md`: only symbols that cross the ABI boundary belong here.
 
-> **Current state (2026-08-31):** The authoritative workspace version is
+> **Audit-start state (2026-09-09):** The authoritative workspace version is
 > **`0.3.0`** (`Cargo.toml`). The pre-documentation-refresh PR #79 snapshot
-> was `d8a93bc3` (109 pass / 13 expected skip), against GitHub `main` at
+> was `9efcd16e` (110 successful checks / 13 expected skips / 0 failures),
+> against GitHub `main` at
 > `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. The 2026-08-31 documentation refresh
 > cross-checked the pre-documentation implementation/code baseline at
 > `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh

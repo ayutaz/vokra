@@ -5,7 +5,7 @@
 - **Scope**: `integrations/vokra-server/` only. Does not affect any
   `crates/vokra-*` runtime crate or the root workspace `Cargo.lock`.
 
-**Current-status note (2026-08-30):** This ADR records the historical M2
+**Current-status note (2026-09-09):** This ADR records the historical M2
 stack decision; current implementation and public behavior are documented by
 [`../README.md`](../README.md), [`AGENTS.md`](../../../AGENTS.md),
 [`CONTRIBUTING.md`](../../../CONTRIBUTING.md), and

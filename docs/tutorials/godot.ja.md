@@ -99,7 +99,7 @@ editor で対話的に開く確認は manual release 項目のままであり、
 
 ## Keeping this page current
 
-**文書確認日: 2026-08-30。最新の記録済み runtime evidence は 2026-08-22 —
+**文書確認日: 2026-09-09。最新の記録済み runtime evidence は 2026-08-22 —
 公式 Godot 4.7.1 headless、実 Silero VAD GGUF + raw-f32 PCM stream。** この文書確認で
 新たな model 実行を行ったとは主張しない。
 

@@ -5,6 +5,14 @@
 
 **重要な注意**: 本書は法的助言ではなく、Vokra が法令・ストア規約を満たすことを表明するものでもない。適用範囲、役割（provider/deployer）、地域、例外、契約、実際の音声出力を弁護士または各プラットフォームで確認すること。以下の「要法務確認」は未確定事項として扱う。
 
+**Implementation snapshot (2026-09-09):** The legal-source verification dates in
+the sections below are intentionally retained as dated checks. The current
+implementation remains fail-closed for unsupported model/license paths;
+publication is not implied by a conversion or parity result, and no Apple
+hardware verdict or UTMOS numeric parity is claimed in the pre-Scaleway PR #79
+snapshot (`9efcd16e`). Re-check applicable law, policy, role, jurisdiction,
+consent, disclosure, and model rights before release or deployment.
+
 **責任分界**:
 - **Vokra provider (依頼者)**: SDK の基本機能提供、ドキュメント整備、default 設定の適切性
 - **Vokra deployer (ゲーム開発者、SaaS 事業者等)**: 具体的なデプロイ環境での compliance 実装、user consent 取得、地域別対応

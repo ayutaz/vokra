@@ -11,8 +11,8 @@ authorized CD; they are not present in the tracked UPM tree.
 
 ## Status
 
-The workspace is `0.3.0` development; no Git tag or GitHub release exists as
-of 2026-08-31. The Unity package source metadata remains `0.1.0` in
+The workspace is `0.3.0` development. At the 2026-09-09 audit start, PR #79
+was at head `9efcd16e`; no Git tag or GitHub release exists. The Unity package source metadata remains `0.1.0` in
 `package.json`, but that package version is unpublished. Native binaries are
 not bundled in this checkout: the tracked `Plugins/` tree contains only
 `.gitkeep`/`.meta` placeholders. They are assembled by CD when an authorized
@@ -81,14 +81,14 @@ runnable because the native libraries are not included yet.
 }
 ```
 
-Before opening the Unity project, clone the publicly fetchable GitHub `main`
-baseline verified on 2026-08-30 and stage the native library for the target
-platform:
+Before opening the Unity project, clone the repository, check out the
+audit-start PR #79 head verified on 2026-09-09, and stage the native library
+for the target platform:
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
-git checkout --detach 41ce9ffdd4b0959497f55afa5016822f77a8a7b6
+git checkout --detach 9efcd16eb63b857f48fc00d0b83d1113defd578b
 
 # Host desktop (macOS, Linux, or Windows): stages the current host library.
 scripts/build-unity-plugin.sh

@@ -1,6 +1,6 @@
 # vokra-server — Security & Operations (M2-09 T20)
 
-**Current-status note (2026-08-30):** This document retains the M2-09 security
+**Current-status note (2026-09-09):** This document retains the M2-09 security
 and operations decision record. Current implementation status is the source
 and [`../README.md`](../README.md): Wyoming full ASR/TTS handling and its
 connection-scoped barge-in path are wired; HTTP `stream=true` and word-level

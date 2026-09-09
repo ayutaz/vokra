@@ -1,6 +1,6 @@
 # Vokra documentation
 
-**Current-state review:** 2026-08-31
+**Current-state review:** 2026-09-09
 
 **Reviewed implementation baseline:** GitHub `main` at
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`; the pre-documentation code
@@ -9,11 +9,14 @@ baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 documentation/evidence checkpoint was
 `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
 
-The current checkout is workspace `0.3.0`. The pre-documentation-refresh PR
-#79 snapshot was `d8a93bc3` with 109 pass / 13 expected skip, against
-`origin/main` at `41ce9ffd`; the repository has 0 Git tags and 0 published
-releases. The `9f69277d` and
-`5cd97d12` hashes above are historical 0.2.0 records, not the current version.
+The current checkout is workspace `0.3.0`. At the 2026-09-09 audit start, PR
+#79 was at head `9efcd16e`, with 110 successful, 13 intentionally skipped, and
+0 failed remote checks; the repository has 0 Git tags and 0 published releases.
+The hashes above are dated historical records, not the current version. The
+audit-start campaign inventory recorded 131 Mac-CPU-complete and
+131 Apple-Metal-source-complete repositories, with 63 public rows unresolved.
+Scaleway has not started; Apple hardware verdicts and
+UTMOS numeric parity are not claimed.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -38,7 +41,7 @@ environment they name.
 | Deployment policy and legal notes | [Legal compliance](legal-compliance.md) |
 | C ABI changes | [ABI changelog](abi-changelog.md) |
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
-| Current Mac CPU/Metal campaign | [Completion plan](handoff/mac-cpu-metal-completion-plan-2026-08-30.md) |
+| Current Mac CPU/Metal campaign | [Pre-Scaleway remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (audit-start snapshot: PR #79 head `9efcd16e`; use the dated ledger for live status) |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).
