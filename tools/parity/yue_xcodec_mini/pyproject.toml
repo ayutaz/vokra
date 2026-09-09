@@ -9,7 +9,7 @@ dependencies = [
     "omegaconf==2.3.0",
     "pyyaml==6.0.3",
     "tensorboard==2.20.0",
-    "torch==2.7.1",
+    "torch==2.13.0",
     "vocos==0.1.0",
 ]
 
