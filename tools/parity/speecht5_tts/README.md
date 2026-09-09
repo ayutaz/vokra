@@ -100,3 +100,9 @@ manifest's reviewed scope and operator signer. This worker does not introduce
 a parallel approval schema; the current manifest remains blocked while its
 existing dependency/model/operator reviews are unresolved. The Python worker
 also invokes this same gate in-process, so direct invocation cannot bypass it.
+The real-weight validation worker additionally requires
+`--api-smoke-evidence`, its explicit `--api-smoke-sha256`, and
+`--expected-head` before synchronization, source/checkpoint access, or Cargo.
+The validator rechecks the evidence against the current clean checkout and
+canonical approval bytes; the checked-in compatibility status remains blocked
+until this authenticated hand-off succeeds.

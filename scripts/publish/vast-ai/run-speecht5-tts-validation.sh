@@ -12,6 +12,7 @@ PARITY_PROJECT="$VOKRA_ROOT/tools/parity/speecht5_tts"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 POST_SYNC_AUDIT="$PARITY_PROJECT/post_sync_audit.py"
+API_SMOKE_VALIDATOR="$PARITY_PROJECT/api_smoke.py"
 COMPACT_AUDIT="$PARITY_PROJECT/dependency_audit_evidence.json"
 PARITY_DUMPER="$VOKRA_ROOT/tools/parity/speecht5_tts_dump_reference.py"
 TTS_PREP="$VOKRA_ROOT/tools/parity/speecht5_tts_prepare_checkpoint.py"
@@ -72,7 +73,7 @@ require_absent_work_dir() {
 
 usage() {
   cat <<'EOF' >&2
-usage: run-speecht5-tts-validation.sh --approval-evidence <json> [--work-dir <absent-dir>]
+usage: run-speecht5-tts-validation.sh --approval-evidence <json> --api-smoke-evidence <json> --api-smoke-sha256 <64-lowercase-hex> --expected-head <40-lowercase-hex> [--work-dir <absent-dir>]
        run-speecht5-tts-validation.sh --self-test
 
 VAST-only SpeechT5 TTS validation worker. It downloads immutable Microsoft
@@ -132,7 +133,7 @@ require_tooling() {
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "dedicated parity uv.lock is missing"
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PREFLIGHT_GATE" && \
     -f "$PREFLIGHT_MANIFEST" ]] || die "SpeechT5 preflight gate inputs are missing"
-  for path in "$PARITY_DUMPER" "$TTS_PREP" "$VOCODER_PREP" "$POST_SYNC_AUDIT" "$COMPACT_AUDIT"; do
+  for path in "$PARITY_DUMPER" "$TTS_PREP" "$VOCODER_PREP" "$POST_SYNC_AUDIT" "$API_SMOKE_VALIDATOR" "$COMPACT_AUDIT"; do
     [[ -f "$path" ]] || die "required SpeechT5 tool is missing: $path"
   done
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
@@ -152,6 +153,17 @@ pre_sync_gate() {
     uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
       --project "$PARITY_PROJECT" --manifest "$PREFLIGHT_MANIFEST" \
       --evidence "$approval"
+}
+
+api_smoke_gate() {
+  local evidence="$1" evidence_sha="$2" expected_head="$3"
+  step "Authenticate immutable SpeechT5 API smoke evidence before any source, checkpoint, sync, or build"
+  UV_NO_CACHE=1 UV_CACHE_DIR="${SPEECHT5_UV_CACHE_DIR:-/private/tmp/vokra-speecht5-uv-cache}" \
+    uv run --no-cache --no-project --offline --python 3.12 python "$API_SMOKE_VALIDATOR" \
+      --project-dir "$PARITY_PROJECT" \
+      --api-smoke-evidence "$evidence" \
+      --api-smoke-sha256 "$evidence_sha" \
+      --expected-head "$expected_head"
 }
 
 write_apple_invocation() {
@@ -224,7 +236,8 @@ run_self_test() {
     "SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu" \
     "--vocoder" "--speaker-embedding" "--frozen --python 3.12" \
     "post_sync_audit.py" "SPEECHT5_POST_SYNC_AUDIT" "build-only" \
-    "write_apple_invocation" "--reference-sha256" "<APPLE_SPEECHT5_REFERENCE>" "--approval-evidence"; do
+    "write_apple_invocation" "--reference-sha256" "<APPLE_SPEECHT5_REFERENCE>" "--approval-evidence" \
+    "api_smoke_gate" "--api-smoke-evidence" "--api-smoke-sha256" "--expected-head" "AUTHENTICATED_API_SMOKE"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
@@ -292,13 +305,14 @@ run_self_test() {
   grep -F -- "--reference-sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" "$apple_args" >/dev/null || fail=1
   grep -F -- "--approval-evidence '<APPLE_SPEECHT5_APPROVAL_EVIDENCE>'" "$apple_args" >/dev/null || fail=1
   grep -F -- "--evidence-dir '<APPLE_SPEECHT5_EVIDENCE_DIR>'" "$apple_args" >/dev/null || fail=1
-  local gate_line sync_line audit_line build_line pre_gate_block
+  local api_gate_line gate_line sync_line audit_line build_line pre_gate_block
+  api_gate_line="$(grep -n '^  api_smoke_gate ' "$script_path" | head -1 | cut -d: -f1)"
   gate_line="$(grep -n '^  pre_sync_gate ' "$script_path" | head -1 | cut -d: -f1)"
   sync_line="$(grep -n '^  uv sync --project' "$script_path" | tail -1 | cut -d: -f1)"
   audit_line="$(grep -n "^    \\\"\$POST_SYNC_AUDIT\\\" --compact-evidence" "$script_path" | tail -1 | cut -d: -f1)"
   build_line="$(grep -n '^  cargo build --manifest-path' "$script_path" | tail -1 | cut -d: -f1)"
-  [[ "$gate_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || fail=1
-  (( gate_line < sync_line && sync_line < audit_line && audit_line < build_line )) || fail=1
+  [[ "$api_gate_line" =~ ^[0-9]+$ && "$gate_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || fail=1
+  (( api_gate_line < gate_line && gate_line < sync_line && sync_line < audit_line && audit_line < build_line )) || fail=1
   pre_gate_block="$(awk '/^main\(\)/,/^  pre_sync_gate / {print}' "$script_path")"
   [[ "$pre_gate_block" != *"uv sync"* && "$pre_gate_block" != *"cargo build"* && "$pre_gate_block" != *"download_checkpoint"* ]] || fail=1
 
@@ -313,6 +327,8 @@ run_self_test() {
   mkdir -p "$fake_root/tools/parity/speecht5_tts" "$fake_bin"
   cp "$PARITY_PROJECT/uv.lock" "$fake_root/tools/parity/speecht5_tts/uv.lock"
   cp "$PARITY_PROJECT/pyproject.toml" "$fake_root/tools/parity/speecht5_tts/pyproject.toml"
+  cp "$API_SMOKE_VALIDATOR" "$fake_root/tools/parity/speecht5_tts/api_smoke.py"
+  cp "$PARITY_PROJECT/torch_compat.py" "$fake_root/tools/parity/speecht5_tts/torch_compat.py"
   printf '{}\n' > "$fake_root/approval.json"
   cp "$PREFLIGHT_GATE" "$fake_root/tools/parity/speecht5_tts/preflight_gate.py"
   cp "$PREFLIGHT_MANIFEST" "$fake_root/tools/parity/speecht5_tts/license_gate_manifest.json"
@@ -339,10 +355,27 @@ EOF
   git -C "$fake_root" add .
   git -C "$fake_root" commit -qm baseline
   printf 'dirty checkout must not outrank the gate\n' > "$fake_root/dirty.txt"
+  if bash "$script_path" \
+    --approval-evidence "$tmp/approval.json" \
+    --api-smoke-evidence "$tmp/missing-api.json" \
+    --api-smoke-evidence "$tmp/duplicate-api.json" \
+    --api-smoke-sha256 "$(printf '%064d' 1)" \
+    --expected-head "$(printf '%040d' 1)" >/dev/null 2>&1; then
+    log "self-test FAIL: duplicate --api-smoke-evidence accepted"
+    fail=1
+  fi
+  if bash "$script_path" --approval-evidence "$tmp/approval.json" >/dev/null 2>&1; then
+    log "self-test FAIL: missing authenticated API evidence arguments accepted"
+    fail=1
+  fi
   set +e
   HOME="$fake_home" PATH="$fake_bin:$PATH" SPEECHT5_TRACE="$trace" SPEECHT5_REAL_UV="$(command -v uv)" \
     VOKRA_ROOT="$fake_root" VOKRA_SCRATCH="$fake_scratch" \
-    VOKRA_PUBLISH_ON_VAST=1 bash "$fake_root/run-worker.sh" --approval-evidence "$fake_root/approval.json" --work-dir "$fake_work" \
+    VOKRA_PUBLISH_ON_VAST=1 bash "$fake_root/run-worker.sh" \
+    --approval-evidence "$fake_root/approval.json" \
+    --api-smoke-evidence "$fake_root/missing-api-evidence.json" \
+    --api-smoke-sha256 "$(printf '%064d' 1)" \
+    --expected-head "$(printf '%040d' 1)" --work-dir "$fake_work" \
     >/dev/null 2>&1
   rc=$?
   set -e
@@ -394,7 +427,7 @@ record_environment() {
 }
 
 main() {
-  local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir source_dir logs_dir reference_dir
+  local self_test=0 requested_work_dir="" approval_evidence="" api_smoke_evidence="" api_smoke_sha256="" expected_head="" run_stamp work_dir source_dir logs_dir reference_dir
   local tts_source vocoder_source tts_gguf public_tts_gguf vocoder_gguf output_wav
   local public_output_wav parity_text public_url public_bytes
   local run_log env_log compile_log parity_log public_parity_log cli_log public_cli_log
@@ -411,18 +444,34 @@ main() {
         approval_evidence="$2"
         shift 2
         ;;
+      --api-smoke-evidence)
+        [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$api_smoke_evidence" ]] || { die "--api-smoke-evidence requires one non-option value"; return 2; }
+        api_smoke_evidence="$2"
+        shift 2
+        ;;
+      --api-smoke-sha256)
+        [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$api_smoke_sha256" ]] || { die "--api-smoke-sha256 requires one non-option value"; return 2; }
+        api_smoke_sha256="$2"
+        shift 2
+        ;;
+      --expected-head)
+        [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$expected_head" ]] || { die "--expected-head requires one non-option value"; return 2; }
+        expected_head="$2"
+        shift 2
+        ;;
       --self-test) self_test=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) die "unknown argument: $1"; usage; return 2 ;;
     esac
   done
   if [[ $self_test -eq 1 ]]; then
-    [[ -z "$requested_work_dir$approval_evidence" ]] || { die "--self-test accepts no other arguments"; return 2; }
+    [[ -z "$requested_work_dir$approval_evidence$api_smoke_evidence$api_smoke_sha256$expected_head" ]] || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test
     return $?
   fi
 
-  [[ -n "$approval_evidence" ]] || { usage; die "--approval-evidence is required"; return 2; }
+  [[ -n "$approval_evidence" && -n "$api_smoke_evidence" && -n "$api_smoke_sha256" && -n "$expected_head" ]] || { usage; die "--approval-evidence, --api-smoke-evidence, --api-smoke-sha256, and --expected-head are required"; return 2; }
+  api_smoke_gate "$api_smoke_evidence" "$api_smoke_sha256" "$expected_head"
   pre_sync_gate "$approval_evidence"
   require_vast_host
   require_tooling
@@ -510,7 +559,9 @@ main() {
 
   step "Generate independent official Transformers reference"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python \
-    "$PARITY_DUMPER" --checkpoint "$tts_source" --output-dir "$reference_dir"
+    "$PARITY_DUMPER" --checkpoint "$tts_source" --output-dir "$reference_dir" \
+    --project-dir "$PARITY_PROJECT" --api-smoke-evidence "$api_smoke_evidence" \
+    --api-smoke-sha256 "$api_smoke_sha256" --expected-head "$expected_head"
   cp "$reference_dir/reference.json" "$logs_dir/reference-manifest.json"
   reference_manifest_sha256="$(sha256_file "$reference_dir/reference.json")"
   {

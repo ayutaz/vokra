@@ -28,6 +28,7 @@ SPEECHT5_PARITY_DIR = Path(__file__).resolve().parent / "speecht5_tts"
 if str(SPEECHT5_PARITY_DIR) not in sys.path:
     sys.path.insert(0, str(SPEECHT5_PARITY_DIR))
 from torch_compat import install_float8_import_compat, require_non_quantized_config, self_test as torch_compat_self_test
+from api_smoke import authenticate_api_smoke_evidence
 
 
 UPSTREAM_HF = "microsoft/speecht5_tts"
@@ -263,22 +264,37 @@ def write_u32(path: Path, values: list[int], numpy_module) -> tuple[int, str]:
 
 
 def main() -> int:
+    global TRANSFORMERS_COMPATIBILITY_STATUS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--project-dir", type=Path)
+    parser.add_argument("--api-smoke-evidence", type=Path)
+    parser.add_argument("--api-smoke-sha256")
+    parser.add_argument("--expected-head")
     parser.add_argument("--text", default=DEFAULT_TEXT)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.project_dir, args.api_smoke_evidence, args.api_smoke_sha256, args.expected_head)):
+            parser.error("--self-test accepts no authentication arguments")
         self_test()
         return 0
-    if args.checkpoint is None or args.output_dir is None:
+    if args.checkpoint is None or args.output_dir is None or args.project_dir is None or args.api_smoke_evidence is None or args.api_smoke_sha256 is None or args.expected_head is None:
         parser.error(
-            "--checkpoint and --output-dir are required unless --self-test is used"
+            "--checkpoint, --output-dir, --project-dir, --api-smoke-evidence, "
+            "--api-smoke-sha256, and --expected-head are required unless --self-test is used"
         )
     if not args.text or args.text != args.text.strip():
         parser.error("--text must be non-empty and have no leading/trailing space")
 
+    authenticate_api_smoke_evidence(
+        args.api_smoke_evidence,
+        args.api_smoke_sha256,
+        args.expected_head,
+        args.project_dir,
+    )
+    TRANSFORMERS_COMPATIBILITY_STATUS = "AUTHENTICATED_API_SMOKE"
     require_vast()
     require_transformers_api_smoke()
     checkpoint = args.checkpoint.resolve()

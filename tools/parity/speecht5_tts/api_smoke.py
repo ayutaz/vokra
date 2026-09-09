@@ -356,6 +356,89 @@ def validate_evidence_document(path: Path, status: str) -> dict[str, Any]:
     return value
 
 
+def authenticate_api_smoke_evidence(
+    evidence_path: Path,
+    supplied_sha256: str,
+    expected_head: str,
+    project_dir: Path,
+) -> dict[str, Any]:
+    """Authenticate one PASS packet against this clean checkout and approval."""
+    if not HEX64.fullmatch(supplied_sha256):
+        raise RuntimeError("API smoke evidence SHA-256 must be lowercase 64-hex")
+    if not HEX40.fullmatch(expected_head):
+        raise RuntimeError("expected Vokra HEAD must be lowercase 40-hex")
+    require_absolute_no_symlink_path(project_dir, "parity project", exists=True)
+    require_regular(evidence_path, "API smoke evidence")
+    if sha256_file(evidence_path) != supplied_sha256:
+        raise RuntimeError("API smoke evidence SHA-256 differs from supplied binding")
+    evidence = validate_evidence_document(evidence_path, "PASS")
+    if evidence["vokra_head"] != expected_head:
+        raise RuntimeError("API smoke evidence Vokra HEAD differs from expected HEAD")
+    checkout = git_checkout_context(Path(evidence["vokra_root"]))
+    if checkout["vokra_head"] != expected_head or checkout["vokra_clean"] is not True:
+        raise RuntimeError("current Vokra checkout is not the authenticated clean expected HEAD")
+    if Path(evidence["project_dir"]).resolve() != project_dir.resolve():
+        raise RuntimeError("API smoke evidence parity project differs from current project")
+    project_sha, lock_sha, package_rows_sha = verify_project(project_dir)
+    for key, actual in (
+        ("project_sha256", project_sha),
+        ("lock_sha256", lock_sha),
+        ("package_rows_sha256", package_rows_sha),
+    ):
+        if evidence[key] != actual:
+            raise RuntimeError(f"API smoke evidence {key} differs from current project")
+
+    approval_path = require_canonical_approval_path(
+        project_dir, project_dir / "license_gate_evidence.json"
+    )
+    approval = validate_approval_file(project_dir, approval_path)
+    expected_approval = {
+        "approval_evidence_sha256": approval["approval_evidence_sha256"],
+        "approval_scope_sha256": approval["approval_scope_sha256"],
+        "approval_signer": approval["approval_signer"],
+        "preflight_manifest_sha256": sha256_file(project_dir / "license_gate_manifest.json"),
+    }
+    for key, actual in expected_approval.items():
+        if evidence[key] != actual:
+            raise RuntimeError(f"API smoke evidence {key} differs from current approval")
+
+    checkpoint_files = evidence.get("checkpoint_files")
+    expected_files = {
+        SOURCE_WEIGHT,
+        "spm_char.model",
+        "config.json",
+        "tokenizer_config.json",
+        "added_tokens.json",
+        "special_tokens_map.json",
+        SAFE_TENSOR_WEIGHT,
+    }
+    if not isinstance(checkpoint_files, dict) or set(checkpoint_files) != expected_files:
+        raise RuntimeError("API smoke checkpoint file inventory is not exact")
+    if checkpoint_files[SOURCE_WEIGHT].get("sha256") != SOURCE_WEIGHT_SHA256:
+        raise RuntimeError("API smoke evidence lost original checkpoint provenance")
+    if checkpoint_files[SAFE_TENSOR_WEIGHT] != {"sha256": SAFE_TENSOR_WEIGHT_SHA256}:
+        raise RuntimeError("API smoke evidence safe-tensor identity drifted")
+    if evidence["upstream_hf"] != UPSTREAM_HF or evidence["upstream_revision"] != UPSTREAM_REVISION:
+        raise RuntimeError("API smoke official upstream identity drifted")
+    if evidence["revision_sha256"] != sha256_bytes(UPSTREAM_REVISION.encode()):
+        raise RuntimeError("API smoke upstream revision digest drifted")
+    if evidence["reference_implementation"] != "transformers.models.speecht5.modeling_speecht5.SpeechT5ForTextToSpeech.generate_speech":
+        raise RuntimeError("API smoke reference implementation drifted")
+    if evidence["reference_package"] != f"transformers=={EXPECTED_TRANSFORMERS}":
+        raise RuntimeError("API smoke Transformers package identity drifted")
+    environment = evidence.get("environment")
+    if not isinstance(environment, dict) or environment.get("torch") != "2.4.1+cpu" or environment.get("transformers") != EXPECTED_TRANSFORMERS:
+        raise RuntimeError("API smoke torch/Transformers runtime identity drifted")
+    call = evidence.get("call")
+    if not isinstance(call, dict) or evidence["call_checkpoint_sha256"] != sha256_bytes(canonical(call)):
+        raise RuntimeError("API smoke call record hash is not internally consistent")
+    if call.get("checkpoint_sha256") != SAFE_TENSOR_WEIGHT_SHA256 or call.get("conversion_source_sha256") != SOURCE_WEIGHT_SHA256:
+        raise RuntimeError("API smoke call record load/source hashes drifted")
+    if call.get("weight_loading") != SAFE_TENSOR_LOAD_CONTRACT or evidence["weight_loading"] != SAFE_TENSOR_LOAD_CONTRACT:
+        raise RuntimeError("API smoke safe-tensor load contract drifted")
+    return evidence
+
+
 def validate_evidence_output(output_dir: Path, status: str) -> dict[str, Any]:
     """Validate the evidence.json stored in a shell-provided output directory."""
     require_absolute_no_symlink_path(output_dir, "evidence directory", exists=True)
@@ -784,6 +867,36 @@ def self_test() -> int:
                 raise AssertionError("PASS evidence directory CLI validation failed")
         finally:
             sys.argv = original_argv
+        pass_sha256 = sha256_file(pass_path)
+        try:
+            authenticate_api_smoke_evidence(
+                root / "missing-api-evidence.json", pass_sha256, "a" * 40, manifest_path.parent
+            )
+        except (OSError, RuntimeError):
+            pass
+        else:
+            raise AssertionError("missing authenticated API evidence was accepted")
+        try:
+            authenticate_api_smoke_evidence(pass_path, "0" * 64, "a" * 40, manifest_path.parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong API evidence SHA was accepted")
+        try:
+            authenticate_api_smoke_evidence(pass_path, pass_sha256, "b" * 40, manifest_path.parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong API evidence HEAD was accepted")
+        tampered_auth = dict(pass_doc)
+        tampered_auth["weight_loading"] = {"format": "pickle"}
+        pass_path.write_text(json.dumps(tampered_auth), encoding="utf-8")
+        try:
+            authenticate_api_smoke_evidence(pass_path, sha256_file(pass_path), "a" * 40, manifest_path.parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("tampered API evidence was accepted")
         pass_doc["unknown"] = True
         pass_path.write_text(json.dumps(pass_doc), encoding="utf-8")
         try:
@@ -844,18 +957,32 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--approval-evidence", type=Path)
     parser.add_argument("--vokra-root", type=Path)
+    parser.add_argument("--api-smoke-evidence", type=Path)
+    parser.add_argument("--api-smoke-sha256")
+    parser.add_argument("--expected-head")
     parser.add_argument("--validate-approval", action="store_true")
     parser.add_argument("--validate-evidence", action="store_true")
     parser.add_argument("--status", choices=("PASS", "FAIL"))
     parser.add_argument("--text", default=SMOKE_TEXT)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    auth_args = (args.api_smoke_evidence, args.api_smoke_sha256, args.expected_head)
     if args.self_test:
-        if any(value is not None for value in (args.checkpoint, args.project_dir, args.output_dir, args.approval_evidence, args.vokra_root, args.status)) or args.validate_approval or args.validate_evidence or args.text != SMOKE_TEXT:
+        if any(value is not None for value in (args.checkpoint, args.project_dir, args.output_dir, args.approval_evidence, args.vokra_root, args.status, *auth_args)) or args.validate_approval or args.validate_evidence or args.text != SMOKE_TEXT:
             parser.error("--self-test accepts no production arguments")
         return self_test()
+    if any(value is not None for value in auth_args):
+        if any(value is None for value in auth_args) or args.project_dir is None or any(value is not None for value in (args.checkpoint, args.output_dir, args.approval_evidence, args.vokra_root, args.status)) or args.validate_approval or args.validate_evidence or args.text != SMOKE_TEXT:
+            parser.error("API smoke authentication requires --project-dir, --api-smoke-evidence, --api-smoke-sha256, and --expected-head only")
+        try:
+            authenticate_api_smoke_evidence(args.api_smoke_evidence, args.api_smoke_sha256, args.expected_head, args.project_dir)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"speecht5 API smoke authentication: BLOCKED: {error}", file=sys.stderr)
+            return 2
+        print("SPEECHT5_API_SMOKE_AUTHENTICATION status=PASS publication=NO_UPLOAD")
+        return 0
     if args.validate_evidence:
-        if args.output_dir is None or args.status is None or any(value is not None for value in (args.checkpoint, args.project_dir, args.approval_evidence, args.vokra_root)) or args.validate_approval:
+        if args.output_dir is None or args.status is None or any(value is not None for value in (args.checkpoint, args.project_dir, args.approval_evidence, args.vokra_root, *auth_args)) or args.validate_approval:
             parser.error("--validate-evidence requires only --output-dir and --status")
         try:
             validate_evidence_output(args.output_dir, args.status)
@@ -865,7 +992,7 @@ def main() -> int:
         print(f"SPEECHT5_API_SMOKE_EVIDENCE status={args.status} verdict=PASS")
         return 0
     if args.validate_approval:
-        if args.project_dir is None or args.approval_evidence is None or args.vokra_root is None or any(value is not None for value in (args.checkpoint, args.output_dir, args.status)) or args.validate_evidence:
+        if args.project_dir is None or args.approval_evidence is None or args.vokra_root is None or any(value is not None for value in (args.checkpoint, args.output_dir, args.status, *auth_args)) or args.validate_evidence:
             parser.error("--validate-approval requires --vokra-root, --project-dir, and --approval-evidence")
         try:
             git_checkout_context(args.vokra_root)
