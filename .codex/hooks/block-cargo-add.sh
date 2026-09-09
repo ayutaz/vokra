@@ -8,6 +8,53 @@
 
 set -uo pipefail
 
+if [ "${1:-}" = --self-test ]; then
+    fails=0
+    json_payload() {
+        local command="$1"
+        if command -v jq >/dev/null 2>&1; then
+            jq -cn --arg command "$command" '{tool_input:{command:$command}}'
+        elif command -v uv >/dev/null 2>&1; then
+            printf '%s' "$command" \
+                | UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" \
+                  uv run --no-project --python 3.12 python -c \
+                  'import json,sys; print(json.dumps({"tool_input":{"command":sys.stdin.read()}}))'
+        else
+            return 1
+        fi
+    }
+    check() {
+        local name="$1" expected="$2" command="$3" rc got
+        json_payload "$command" \
+            | bash "$0" >/dev/null 2>&1
+        rc=$?
+        case "$rc" in
+            0) got=allow ;;
+            2) got=block ;;
+            *) got="error($rc)" ;;
+        esac
+        if [ "$got" = "$expected" ]; then
+            printf '  ok    %-46s %s\n' "$name" "$got"
+        else
+            printf '  FAIL  %-46s expected %s, got %s\n' "$name" "$expected" "$got"
+            fails=$((fails + 1))
+        fi
+    }
+    echo 'block-cargo-add --self-test'
+    check 'direct cargo add' block 'cargo add serde'
+    check 'chained cargo add' block 'git status --short && cargo add serde'
+    check 'cargo add after assignment' block 'CARGO_TERM_COLOR=never cargo add serde'
+    check 'cargo subcommand prose' allow 'echo "cargo add is forbidden"'
+    check 'cargo build' allow 'cargo build -p vokra-cli'
+    check 'path-like cargo add prose' allow 'echo scripts/cargo add helper'
+    if [ "$fails" -eq 0 ]; then
+        echo 'block-cargo-add --self-test: OK'
+        exit 0
+    fi
+    echo "block-cargo-add --self-test: FAIL ($fails)"
+    exit 1
+fi
+
 payload="$(cat)"
 
 cmd=""
