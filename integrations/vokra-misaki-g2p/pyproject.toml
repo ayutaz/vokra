@@ -22,8 +22,8 @@ dependencies = [
 parity = [
     # True-upstream Kokoro parity stack. Keep these pins aligned with
     # parity-kokoro-real.yml; the lock, not inline CI installs, is the SoT.
-    "click==8.4.2",
-    "huggingface-hub==1.27.0",
+    "click==8.5.0",
+    "huggingface-hub==1.29.0",
     "kokoro==0.9.4",
     "numpy==2.5.2",
     "safetensors==0.8.0",
