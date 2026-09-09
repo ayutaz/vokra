@@ -136,6 +136,19 @@ def require_disjoint_paths(named_paths: dict[str, Path]) -> None:
                 raise RuntimeError(f"{left_name} overlaps {right_name}")
 
 
+def require_canonical_approval_path(project_dir: Path, approval_path: Path) -> Path:
+    """Accept only the committed approval evidence beside the project manifest."""
+    expected = project_dir / "license_gate_evidence.json"
+    if approval_path != expected:
+        raise RuntimeError(
+            "approval evidence must be the committed project path: "
+            f"{expected}"
+        )
+    require_absolute_no_symlink_path(approval_path, "approval evidence", exists=True)
+    require_regular(approval_path, "approval evidence")
+    return approval_path
+
+
 def git_checkout_context(vokra_root: Path) -> dict[str, Any]:
     require_absolute_no_symlink_path(vokra_root, "--vokra-root", exists=True)
     if not (vokra_root / ".git").is_dir() or not (vokra_root / "Cargo.toml").is_file():
@@ -374,17 +387,16 @@ def validate_preflight(
         project_dir.relative_to(vokra_root)
     except ValueError as error:
         raise RuntimeError("parity project is outside --vokra-root") from error
-    require_absolute_no_symlink_path(approval_path, "approval evidence", exists=True)
-    require_regular(approval_path, "approval evidence")
+    require_canonical_approval_path(project_dir, approval_path)
     gate_context = run_preflight_gate(project_dir, approval_path)
     approval = validate_approval_file(project_dir, approval_path)
     require_absolute_no_symlink_path(checkpoint, "checkpoint", exists=True)
     require_absolute_no_symlink_path(output_dir, "output directory", exists=False)
     require_disjoint_paths({"checkpoint": checkpoint, "output": output_dir, "approval": approval_path})
-    if paths_overlap(vokra_root, checkpoint) or paths_overlap(vokra_root, output_dir) or paths_overlap(vokra_root, approval_path):
-        raise RuntimeError("checkpoint/output/approval overlaps --vokra-root")
-    if paths_overlap(project_dir, checkpoint) or paths_overlap(project_dir, output_dir) or paths_overlap(project_dir, approval_path):
-        raise RuntimeError("checkpoint/output/approval overlaps parity project")
+    if paths_overlap(vokra_root, checkpoint) or paths_overlap(vokra_root, output_dir):
+        raise RuntimeError("checkpoint/output overlaps --vokra-root")
+    if paths_overlap(project_dir, checkpoint) or paths_overlap(project_dir, output_dir):
+        raise RuntimeError("checkpoint/output overlaps parity project")
     return {**root_context, **gate_context, **approval, "project_dir": str(project_dir)}
 
 
@@ -612,6 +624,38 @@ def self_test() -> int:
         if not paths_overlap(root / "work", root / "work" / "approval.json"):
             raise AssertionError("approval path overlap was not detected")
         manifest_path = Path(__file__).resolve().parent / "license_gate_manifest.json"
+        committed_approval_path = manifest_path.parent / "license_gate_evidence.json"
+        if require_canonical_approval_path(manifest_path.parent, committed_approval_path) != committed_approval_path:
+            raise AssertionError("committed approval path was not accepted")
+        approval_copy = root / "approval-copy.json"
+        approval_copy.write_bytes(committed_approval_path.read_bytes())
+        try:
+            require_canonical_approval_path(manifest_path.parent, approval_copy)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("external approval copy was accepted")
+        other_project = root / "other-project"
+        other_project.mkdir()
+        other_approval = other_project / "license_gate_evidence.json"
+        other_approval.write_bytes(committed_approval_path.read_bytes())
+        try:
+            require_canonical_approval_path(manifest_path.parent, other_approval)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("approval from another project was accepted")
+        symlink_project = root / "symlink-project"
+        symlink_project.mkdir()
+        (symlink_project / "license_gate_evidence.json").symlink_to(committed_approval_path)
+        try:
+            require_canonical_approval_path(
+                symlink_project, symlink_project / "license_gate_evidence.json"
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlinked canonical approval was accepted")
         approval_path = root / "approval.json"
         manifest_digest = sha256_file(manifest_path)
         scope = strict_json_loads(manifest_path.read_text(encoding="utf-8"))["approval_scope_sha256"]
@@ -766,8 +810,7 @@ def main() -> int:
                 args.project_dir.relative_to(args.vokra_root)
             except ValueError as error:
                 raise RuntimeError("parity project is outside --vokra-root") from error
-            require_absolute_no_symlink_path(args.approval_evidence, "approval evidence", exists=True)
-            require_regular(args.approval_evidence, "approval evidence")
+            require_canonical_approval_path(args.project_dir, args.approval_evidence)
             gate = run_preflight_gate(args.project_dir, args.approval_evidence)
             scope = validate_approval_file(args.project_dir, args.approval_evidence)
         except (OSError, RuntimeError, ValueError) as error:
