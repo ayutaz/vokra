@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import sysconfig
+import tempfile
 from pathlib import Path
 
 
@@ -56,7 +57,7 @@ EXPECTED = {
     "typer": "0.9.0",
     "typing-extensions": "4.16.0",
 }
-NATIVE_TOP_LEVELS = {"hf_xet", "markupsafe", "numpy", "yaml", "regex", "safetensors", "sentencepiece", "tokenizers", "torch"}
+NATIVE_TOP_LEVELS = {"hf_xet", "functorch", "markupsafe", "numpy", "yaml", "regex", "safetensors", "sentencepiece", "tokenizers", "torch"}
 SYSTEM_NEEDED = {
     "linux-vdso.so.1",
     "libc.so.6",
@@ -151,6 +152,48 @@ def elf_needed(path: Path) -> list[str]:
     return sorted(set(NEEDED_RE.findall(result.stdout)))
 
 
+def needed_allowlist(relative: str) -> set[str]:
+    """Return the reviewed ELF dependency set for an installed native path."""
+    return TORCH_NEEDED if relative.startswith(("torch/", "functorch/")) else SYSTEM_NEEDED
+
+
+def unreviewed_needed(relative: str, needed: list[str]) -> list[str]:
+    return sorted(set(needed) - needed_allowlist(relative))
+
+
+def self_test() -> int:
+    functorch_path = "functorch/_C.cpython-312-x86_64-linux-gnu.so"
+    if "functorch" not in NATIVE_TOP_LEVELS:
+        fail("functorch native namespace is not allowlisted")
+    if needed_allowlist(functorch_path) is not TORCH_NEEDED:
+        fail("functorch native files do not use the torch NEEDED allowlist")
+    if "libtorch_cpu.so" not in needed_allowlist(functorch_path):
+        fail("torch NEEDED allowlist is incomplete for functorch")
+    if unreviewed_needed(functorch_path, ["libc.so.6", "libtorch.so"]):
+        fail("self-test fixture did not exercise the reviewed functorch dependencies")
+    if not unreviewed_needed(functorch_path, ["libunknown.so"]):
+        fail("unknown NEEDED entry was accidentally allowed")
+    with tempfile.TemporaryDirectory(prefix="speecht5-post-sync-audit-") as directory:
+        root = Path(directory)
+        fixture = root / functorch_path
+        fixture.parent.mkdir(parents=True)
+        fixture.write_bytes(b"fixture")
+        if native_files(root) != [fixture]:
+            fail("functorch native fixture was not discovered")
+        unknown = root / "unknown_namespace" / "_C.so"
+        unknown.parent.mkdir()
+        unknown.write_bytes(b"fixture")
+        try:
+            native_files(root)
+        except RuntimeError as exc:
+            if "unexpected native artifact" not in str(exc):
+                raise
+        else:
+            fail("unknown native top-level namespace was accepted")
+    print("speecht5 post-sync audit self-test: PASS")
+    return 0
+
+
 def run(compact_path: Path, output_path: Path) -> int:
     compact = audit_compact(compact_path)
     if sys.platform != "linux" or sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 12):
@@ -161,8 +204,7 @@ def run(compact_path: Path, output_path: Path) -> int:
     for path in native_files(site_packages):
         relative = path.relative_to(site_packages).as_posix()
         needed = elf_needed(path)
-        allowed = TORCH_NEEDED if relative.startswith("torch/") else SYSTEM_NEEDED
-        unknown = sorted(set(needed) - allowed)
+        unknown = unreviewed_needed(relative, needed)
         if unknown:
             fail(f"unreviewed ELF NEEDED entries in {relative}: {unknown}")
         observed_native.append({"path": relative, "sha256": sha256(path), "needed": needed})
@@ -202,9 +244,16 @@ def run(compact_path: Path, output_path: Path) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--compact-evidence", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--compact-evidence", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.self_test:
+        if args.compact_evidence is not None or args.output is not None:
+            parser.error("--self-test accepts no audit paths")
+        raise SystemExit(self_test())
+    if args.compact_evidence is None or args.output is None:
+        parser.error("--compact-evidence and --output are required")
     try:
         raise SystemExit(run(args.compact_evidence, args.output))
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
