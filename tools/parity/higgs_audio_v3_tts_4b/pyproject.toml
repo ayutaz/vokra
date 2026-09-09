@@ -1,8 +1,11 @@
+# Deliberately lockless: the upstream custom Research-and-Non-Commercial
+# license and the exact SGLang/codec source closure are unresolved.  The
+# VAST worker is terminally blocked before any uv sync or acquisition.
 [project]
 name = "higgs-audio-v3-tts-4b-prep"
 version = "0.1.0"
 description = "Offline sidecar: bosonai/higgs-audio-v3-tts-4b sharded safetensors → flat safetensors (dedup + int/f64/bool strip). Bridges the upstream sharded HF release to the Rust converter (crates/vokra-convert/src/models/higgs_audio_v3_tts_4b.rs), which consumes safetensors only. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 dependencies = [
     # torch: unwraps the sharded safetensors state dict via `safetensors.torch.load_file`
     #        (or the plain `.load` low-level reader), plus data-pointer tracking for

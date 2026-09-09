@@ -201,3 +201,18 @@ convnet = "convnet"
 # 意味は "architecture"。docstring re-wrap で消せる場合は消す方が良いが、
 # false-positive 対策として whitelist に追加。
 architec = "architec"
+
+# Upstream/API spellings and negative-test blobs are intentionally preserved
+# in parity fixtures. Keep these overrides scoped to the source-language
+# scanners that contain the contracts; do not disable the words globally.
+[type.py.extend-words]
+abd = "abd"              # v1.48.0: negative blob, not "and"/"bad"
+normlize = "normlize"     # v1.48.0: upstream metadata key
+ND = "ND"                # v1.48.0: SPDX NoDerivatives acronym
+PeNdInG_ReViEw = "PeNdInG_ReViEw" # v1.48.0: case-preserving gate fixture
+# Upstream NCSN++ uses NIN (Network-in-Network) projection module names
+# (`NIN_0`..`NIN_3`); typos v1.48.0 flags this source identifier falsely.
+NIN = "NIN"
+
+[type.sh.extend-words]
+arange = "arange"        # v1.48.0: NumPy API identifier in shell fixture

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
 """Prepare the pinned NVIDIA Canary-1B-v2 main checkpoint on VAST.
 
 The public `.nemo` carries both a timestamp auxiliary checkpoint and the
@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 UPSTREAM_HF = "nvidia/canary-1b-v2"
@@ -27,12 +28,19 @@ ARCHIVE_SIZE = 6_358_958_080
 ARCHIVE_SHA256 = "ae5ef1bf06812a95a1594a8f5f0ee9c51f35418e5ba96939fa6b98ab00431094"
 MAIN_CHECKPOINT_MEMBER = "./model_weights.ckpt"
 MAIN_CHECKPOINT_SIZE = 3_853_798_427
+MAIN_TOKENIZER_MEMBER = "./801fe64cd0ff4903a06b74cd771645c0_tokenizer.vocab"
 CONFIG_SHA256 = "202542a45eb4ad656a47044c5db8c02926259d7232b436d77ca6af21dc84deae"
 VOCAB_SHA256 = "4d10723a8bef5b8b186c3d2bb1449c849cc25c6b811969a7d170261b0ceed178"
 FLOAT_TENSOR_COUNT = 1_478
 COUNTER_COUNT = 32
 COUNTER = re.compile(
     r"^encoder\.layers\.(\d+)\.conv\.batch_norm\.num_batches_tracked$"
+)
+EXPECTED_SHARED_PAIRS = (
+    (
+        "transf_decoder._embedding.token_embedding.weight",
+        "log_softmax.mlp.layer0.weight",
+    ),
 )
 
 
@@ -46,6 +54,16 @@ def digest_file(path: Path) -> str:
         while chunk := stream.read(8 * 1024 * 1024):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def write_bytes_exclusive(path: Path, payload: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(payload)
+
+
+def write_text_exclusive(path: Path, payload: str) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(payload)
 
 
 def require_vast() -> None:
@@ -72,8 +90,15 @@ def validate_stripped_manifest(manifest: dict[str, object]) -> list[int]:
         )
     if manifest.get("unknown_stripped"):
         raise ValueError("unknown tensor dtypes were stripped")
-    if manifest.get("shared_pairs"):
-        raise ValueError("released Canary checkpoint unexpectedly contains shared storages")
+    expected_shared_pairs = [
+        {"canonical": canonical, "cloned": cloned}
+        for canonical, cloned in EXPECTED_SHARED_PAIRS
+    ]
+    if manifest.get("shared_pairs") != expected_shared_pairs:
+        raise ValueError(
+            "Canary-1B-v2 shared_pairs must contain exactly the pinned pair "
+            f"{expected_shared_pairs}, got {manifest.get('shared_pairs')}"
+        )
     if manifest.get("nemo_checkpoint_member") != MAIN_CHECKPOINT_MEMBER:
         raise ValueError(
             "preparation selected the wrong NeMo checkpoint member: "
@@ -103,6 +128,34 @@ def validate_stripped_manifest(manifest: dict[str, object]) -> list[int]:
     return layers
 
 
+def select_main_tokenizer_member(members: list[tarfile.TarInfo]) -> tarfile.TarInfo:
+    """Select the one tokenizer member referenced by the pinned main config."""
+    matches = [member for member in members if member.name == MAIN_TOKENIZER_MEMBER]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one main tokenizer member {MAIN_TOKENIZER_MEMBER!r}, "
+            f"found {len(matches)}"
+        )
+    if not matches[0].isfile():
+        raise ValueError(
+            f"main tokenizer member is not a regular file: {MAIN_TOKENIZER_MEMBER!r}"
+        )
+    return matches[0]
+
+
+def validate_tokenizer_vocab(
+    payload: bytes, expected_sha256: str = VOCAB_SHA256
+) -> None:
+    """Validate the exact released tokenizer bytes and line count."""
+    actual_sha256 = digest_bytes(payload)
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"tokenizer vocabulary SHA-256 {actual_sha256} != pinned {expected_sha256}"
+        )
+    if len(payload.splitlines()) != 16_384:
+        raise ValueError("released aggregate tokenizer must contain 16,384 lines")
+
+
 def extract_small_assets(archive: Path, output_dir: Path) -> tuple[Path, Path, str]:
     with tarfile.open(archive, "r:") as bundle:
         members = bundle.getmembers()
@@ -129,38 +182,39 @@ def extract_small_assets(archive: Path, output_dir: Path) -> tuple[Path, Path, s
         if digest_bytes(config) != CONFIG_SHA256:
             raise ValueError("model_config.yaml does not match the pinned SHA-256")
 
-        vocab_matches: list[tuple[str, bytes]] = []
-        for member in members:
-            if not member.isfile() or not member.name.endswith(".vocab"):
-                continue
-            stream = bundle.extractfile(member)
-            if stream is None:
-                raise ValueError(f"could not read tokenizer member {member.name}")
-            payload = stream.read()
-            if digest_bytes(payload) == VOCAB_SHA256:
-                vocab_matches.append((member.name, payload))
-        if len(vocab_matches) != 1:
-            raise ValueError(
-                "expected one tokenizer vocabulary matching the pinned SHA-256; "
-                f"found {[name for name, _ in vocab_matches]}"
-            )
-        vocab_member, vocab = vocab_matches[0]
-        if len(vocab.splitlines()) != 16_384:
-            raise ValueError("released aggregate tokenizer must contain 16,384 lines")
+        vocab_info = select_main_tokenizer_member(members)
+        stream = bundle.extractfile(vocab_info)
+        if stream is None:
+            raise ValueError(f"could not read tokenizer member {vocab_info.name}")
+        vocab = stream.read()
+        validate_tokenizer_vocab(vocab)
+        vocab_member = vocab_info.name
 
     config_path = output_dir / "model_config.yaml"
     vocab_path = output_dir / "tokenizer.vocab"
-    config_path.write_bytes(config)
-    vocab_path.write_bytes(vocab)
+    write_bytes_exclusive(config_path, config)
+    write_bytes_exclusive(vocab_path, vocab)
     return config_path, vocab_path, vocab_member
 
 
 def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="canary-v2-prepare-") as directory:
+        path = Path(directory) / "sentinel"
+        write_bytes_exclusive(path, b"one")
+        try:
+            write_bytes_exclusive(path, b"two")
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("pre-existing output was clobbered")
     manifest: dict[str, object] = {
         "kept_count": FLOAT_TENSOR_COUNT,
         "dropped_count": COUNTER_COUNT,
         "unknown_stripped": [],
-        "shared_pairs": [],
+        "shared_pairs": [
+            {"canonical": canonical, "cloned": cloned}
+            for canonical, cloned in EXPECTED_SHARED_PAIRS
+        ],
         "nemo_checkpoint_member": MAIN_CHECKPOINT_MEMBER,
         "dropped_tensors": [
             {
@@ -172,6 +226,67 @@ def self_test() -> None:
         ],
     }
     assert validate_stripped_manifest(manifest) == list(range(COUNTER_COUNT))
+
+    exact = tarfile.TarInfo(MAIN_TOKENIZER_MEMBER)
+    exact.type = tarfile.REGTYPE
+    assert select_main_tokenizer_member([exact]) is exact
+    try:
+        select_main_tokenizer_member([])
+    except ValueError as error:
+        assert "exactly one main tokenizer member" in str(error)
+    else:
+        raise AssertionError("missing main tokenizer member must fail")
+    try:
+        select_main_tokenizer_member([exact, tarfile.TarInfo(MAIN_TOKENIZER_MEMBER)])
+    except ValueError as error:
+        assert "exactly one main tokenizer member" in str(error)
+    else:
+        raise AssertionError("duplicate main tokenizer member must fail")
+    try:
+        validate_tokenizer_vocab(b"wrong", expected_sha256=digest_bytes(b"expected"))
+    except ValueError as error:
+        assert "SHA-256" in str(error)
+    else:
+        raise AssertionError("wrong tokenizer digest must fail")
+
+    for invalid_pairs, label in (
+        ([], "missing shared pair"),
+        (
+            [
+                {
+                    "canonical": EXPECTED_SHARED_PAIRS[0][1],
+                    "cloned": EXPECTED_SHARED_PAIRS[0][0],
+                }
+            ],
+            "reversed shared pair",
+        ),
+        (
+            [
+                {
+                    "canonical": "transf_decoder.embedding.token_embedding.weight",
+                    "cloned": EXPECTED_SHARED_PAIRS[0][1],
+                }
+            ],
+            "aliased shared pair",
+        ),
+        (
+            [
+                {"canonical": canonical, "cloned": cloned}
+                for canonical, cloned in EXPECTED_SHARED_PAIRS
+            ]
+            + [{"canonical": "unexpected", "cloned": "unexpected"}],
+            "additional shared pair",
+        ),
+    ):
+        invalid_manifest = dict(manifest)
+        invalid_manifest["shared_pairs"] = invalid_pairs
+        try:
+            validate_stripped_manifest(invalid_manifest)
+        except ValueError as error:
+            assert "shared_pairs" in str(error), label
+        else:
+            raise AssertionError(f"{label} must fail")
+
     wrong = dict(manifest)
     wrong["nemo_checkpoint_member"] = "./timestamps_asr_model_weights.ckpt"
     try:
@@ -196,6 +311,8 @@ def main() -> int:
         parser.error("--input and --output-dir are required unless --self-test is used")
 
     require_vast()
+    if args.input.is_symlink():
+        parser.error(f"input must not be a symlink: {args.input}")
     archive = args.input.resolve()
     if not archive.is_file():
         parser.error(f"input is not a regular file: {archive}")
@@ -209,7 +326,11 @@ def main() -> int:
             f"archive SHA-256 {archive_sha256} != pinned {ARCHIVE_SHA256}"
         )
 
+    if args.output_dir.exists() and (args.output_dir.is_symlink() or not args.output_dir.is_dir()):
+        parser.error(f"output directory must be a non-symlink directory: {args.output_dir}")
     output_dir = args.output_dir.resolve()
+    if output_dir.exists() and any(output_dir.iterdir()):
+        parser.error(f"output directory must be empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     prepared = output_dir / "canary-1b-v2.prepared.safetensors"
     helper = Path(__file__).resolve().with_name("nemo_pt_to_safetensors.py")
@@ -253,8 +374,8 @@ def main() -> int:
         "tokenizer_vocab_member": vocab_member,
         "tokenizer_vocab_sha256": digest_file(vocab_path),
     }
-    (output_dir / "prepare-audit.json").write_text(
-        json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    write_text_exclusive(
+        output_dir / "prepare-audit.json", json.dumps(audit, indent=2, sort_keys=True) + "\n"
     )
     print(json.dumps(audit, sort_keys=True))
     return 0

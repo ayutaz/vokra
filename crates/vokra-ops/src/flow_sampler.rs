@@ -43,11 +43,11 @@
 //! - [`Schedule::Sway`] — F5-TTS sway sampling
 //!   (Chen et al. 2024, arxiv 2410.06885, Eq. 5) with `s = -1.0` bias
 //!   toward the noise side.
+//! - [`Schedule::Cosine`] — CosyVoice2's pinned schedule
+//!   `t_i = 1 - cos((i/nfe) * pi/2)`.
 //! - [`Schedule::EpsS`] — **stub** placeholder (`t_i = 1 - (1 - i/nfe)²`);
-//!   the exact formulation is pinned when M3-09 CosyVoice2 lands and the
-//!   real-model schedule is known. The API surface (name + `Schedule::EpsS`
-//!   arm) is stable now so that consumer code compiles against the final
-//!   surface.
+//!   its model-specific formulation remains separately unspecified. The API
+//!   surface (name + `Schedule::EpsS` arm) is stable for existing consumers.
 //!
 //! # ODE solvers ([`OdeSolver`])
 //!
@@ -166,7 +166,9 @@ pub enum Schedule {
     Linear,
     /// F5-TTS sway schedule (Chen et al. 2024, arxiv 2410.06885, Eq. 5).
     Sway,
-    /// ε-schedule stub — pinned when M3-09 CosyVoice2 lands.
+    /// CosyVoice2 schedule: `t_i = 1 - cos((i / nfe) * π / 2)`.
+    Cosine,
+    /// ε-schedule stub — retained for legacy consumers.
     EpsS,
 }
 
@@ -343,12 +345,26 @@ impl Schedule {
                     .collect();
                 Ok(out)
             }
+            Self::Cosine => {
+                let out = base
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        if i == 0 {
+                            0.0
+                        } else if i == nfe {
+                            1.0
+                        } else {
+                            1.0 - (t * std::f32::consts::PI / 2.0).cos()
+                        }
+                    })
+                    .collect();
+                Ok(out)
+            }
             // EpsS is a STUB (see crate rustdoc and ADR M3-05 §D3). The
-            // formula below is a quadratic placeholder; the exact schedule
-            // will be pinned during M3-09 CosyVoice2 integration once the
-            // real-model schedule is known. Kept as a distinct arm so
-            // consumer code selecting `Schedule::EpsS` compiles against the
-            // final surface today.
+            // formula below remains a quadratic placeholder. Kept as a
+            // distinct arm so consumer code selecting `Schedule::EpsS`
+            // remains source-compatible.
             Self::EpsS => {
                 let out = base
                     .into_iter()
@@ -791,7 +807,12 @@ mod tests {
 
     #[test]
     fn schedules_start_at_zero_and_end_at_one() {
-        for sched in [Schedule::Linear, Schedule::Sway, Schedule::EpsS] {
+        for sched in [
+            Schedule::Linear,
+            Schedule::Sway,
+            Schedule::Cosine,
+            Schedule::EpsS,
+        ] {
             let ts = sched.timesteps(7).unwrap();
             assert_eq!(ts.len(), 8);
             assert!((ts[0] - 0.0).abs() < 1e-6, "{sched:?} start = {}", ts[0]);
@@ -805,7 +826,12 @@ mod tests {
 
     #[test]
     fn schedules_reject_zero_nfe() {
-        for sched in [Schedule::Linear, Schedule::Sway, Schedule::EpsS] {
+        for sched in [
+            Schedule::Linear,
+            Schedule::Sway,
+            Schedule::Cosine,
+            Schedule::EpsS,
+        ] {
             let e = sched.timesteps(0).unwrap_err();
             assert!(
                 matches!(e, VokraError::InvalidArgument(_)),
@@ -821,6 +847,17 @@ mod tests {
         // linear schedule), sway should return a value smaller than 0.5.
         let ts = Schedule::Sway.timesteps(10).unwrap();
         assert!(ts[5] < 0.5, "sway midpoint {} should be < 0.5", ts[5]);
+    }
+
+    #[test]
+    fn cosine_schedule_matches_cosyvoice2_formula_and_endpoints() {
+        let ts = Schedule::Cosine.timesteps(4).unwrap();
+        let expected = [0.0_f32, 0.07612047, 0.29289323, 0.61731654, 1.0];
+        assert_eq!(ts[0], 0.0);
+        assert_eq!(ts[ts.len() - 1], 1.0);
+        for (i, (got, want)) in ts.iter().zip(expected).enumerate() {
+            assert!((got - want).abs() < 1e-6, "ts[{i}] = {got}, want {want}");
+        }
     }
 
     #[test]

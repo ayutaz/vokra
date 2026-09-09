@@ -5,7 +5,7 @@
 //! well-formed-but-empty `main` GGUF fails loudly (FR-EX-08) instead of
 //! panicking. The third is real-fixture gated (`#[ignore]`) — it exercises
 //! the loader against the repo-root
-//! `tests/fixtures/sbv2/{sbv2-v2-multilingual-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
+//! `tests/fixtures/sbv2/{sbv2-v2-jp-extra-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
 //! trio (matching `reference_dump.manifest.json`'s `checkpoint` block and
 //! the committed `.sha256` sidecars), which land with Task 25 (converter)
 //! and Task 28 (real fixture); until then this test only proves the call
@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 
 use vokra_core::VokraError;
 use vokra_core::gguf::{GgufBuilder, GgufFile};
-use vokra_models::sbv2::{EXPECTED_ARCH as SBV2_ARCH, SbV2Model};
+use vokra_models::sbv2::{
+    EXPECTED_ARCH as SBV2_ARCH, EXPECTED_MODEL_NAME as SBV2_MODEL_NAME,
+    EXPECTED_UPSTREAM_HF as SBV2_UPSTREAM_HF, SbV2Model,
+};
 
 /// Repo-root-relative real-fixture directory for SBV2 loader smoke tests
 /// (`tests/fixtures/sbv2/`, sibling of the existing `tests/fixtures/audio/`
@@ -90,9 +93,53 @@ fn from_gguf_on_empty_main_file_fails_loudly_naming_first_missing_key() {
         Ok(_) => panic!("an empty main GGUF must fail to load, not succeed"),
         Err(VokraError::ModelLoad(msg)) => {
             assert!(
-                msg.contains("vokra.sbv2.d_model"),
-                "error message should name the first missing metadata key, got: {msg}"
+                msg.contains("vokra.model.name"),
+                "error message should name the first missing identity key, got: {msg}"
             );
+        }
+        Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    }
+}
+
+/// A generic `sbv2` arch stamp is insufficient: the loader must reject the
+/// retired multilingual placeholder and mismatched upstream provenance before
+/// it reaches the strict topology binder.
+#[test]
+fn from_gguf_rejects_non_jp_extra_identity() {
+    let mut b = GgufBuilder::new();
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_MODEL_NAME,
+        "sbv2-v2-multilingual-base",
+    );
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID,
+        "sbv2-v2-multilingual-base",
+    );
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_SOURCE,
+        "litagin02/style_bert_vits2",
+    );
+    b.add_string(vokra_core::gguf::chunks::KEY_PROVENANCE_LICENSE, "agpl-3.0");
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        vokra_core::LicenseClass::Copyleft.as_str(),
+    );
+    let main = GgufFile::parse(b.to_bytes().expect("build identity fixture"))
+        .expect("parse identity fixture");
+    let empty = GgufFile::parse(
+        GgufBuilder::new()
+            .to_bytes()
+            .expect("build empty gguf bytes"),
+    )
+    .expect("parse empty gguf");
+
+    match SbV2Model::from_gguf(&main, &empty, &empty) {
+        Ok(_) => panic!("a retired multilingual identity must not load"),
+        Err(VokraError::ModelLoad(message)) => {
+            assert!(message.contains(SBV2_MODEL_NAME));
+            assert!(message.contains("sbv2-v2-multilingual-base"));
+            assert!(!message.contains(SBV2_UPSTREAM_HF));
         }
         Err(other) => panic!("expected VokraError::ModelLoad, got {other:?}"),
     }
@@ -191,6 +238,24 @@ fn from_gguf_with_zh_bert_rejects_foreign_main_arch() {
     }
 }
 
+fn add_canonical_jp_extra_identity(b: &mut GgufBuilder) {
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, SBV2_MODEL_NAME);
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID,
+        SBV2_MODEL_NAME,
+    );
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_SOURCE,
+        SBV2_UPSTREAM_HF,
+    );
+    b.add_string(vokra_core::gguf::chunks::KEY_PROVENANCE_LICENSE, "agpl-3.0");
+    b.add_string(
+        vokra_core::gguf::chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        vokra_core::LicenseClass::Copyleft.as_str(),
+    );
+}
+
 /// Builds a `main` GGUF with every required `vokra.sbv2.*` **scalar dim** key
 /// present but no tensors or decoder-array metadata. Used by WP-13 unit
 /// tests that assert loud-fail on a specific missing scalar hparam key
@@ -205,10 +270,10 @@ fn from_gguf_with_zh_bert_rejects_foreign_main_arch() {
 /// metadata read stage.
 fn scalar_dims_only_main() -> GgufBuilder {
     let mut b = GgufBuilder::new();
-    // The loader gates `vokra.model.arch` before any metadata read
-    // (FR-EX-08), so every `main` fixture that expects to reach a
-    // *metadata* assertion must carry the stamp.
-    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    // Every fixture that expects to reach a downstream metadata assertion
+    // must carry the complete authenticated JP-Extra identity. The loader
+    // verifies model name/provenance immediately after the arch gate.
+    add_canonical_jp_extra_identity(&mut b);
     b.add_u32("vokra.sbv2.d_model", 8);
     b.add_u32("vokra.sbv2.d_bert", 8);
     b.add_u32("vokra.sbv2.d_speaker", 8);
@@ -557,7 +622,7 @@ fn from_gguf_positive_n_flow_layers_missing_flow_mean_only_fails_loudly() {
 }
 
 /// Real-fixture gated: requires the repo-root
-/// `tests/fixtures/sbv2/{sbv2-v2-multilingual-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
+/// `tests/fixtures/sbv2/{sbv2-v2-jp-extra-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
 /// trio (matching `reference_dump.manifest.json`'s `checkpoint` block and
 /// the committed `.sha256` sidecars), produced by Task 25's converter from
 /// real Style-Bert-VITS2 v2 safetensors checkpoints and landed by Task 28.
@@ -573,7 +638,7 @@ fn from_gguf_loads_real_sbv2_weights() {
     // the resolution is invocation-cwd-independent, matching every other
     // parity/loader test in this workspace.
     let dir = fixtures_dir();
-    let main_path = dir.join("sbv2-v2-multilingual-base.gguf");
+    let main_path = dir.join("sbv2-v2-jp-extra-base.gguf");
     let bert_ja_path = dir.join("deberta-v2-large-japanese-char-wwm.gguf");
     let bert_en_path = dir.join("deberta-v3-large.gguf");
 
@@ -605,7 +670,7 @@ fn from_gguf_loads_real_sbv2_weights() {
 #[ignore = "Task 28 real fixture"]
 fn sbv2_model_from_gguf_dispatches_both_bert_tokenizers() {
     let dir = fixtures_dir();
-    let main_path = dir.join("sbv2-v2-multilingual-base.gguf");
+    let main_path = dir.join("sbv2-v2-jp-extra-base.gguf");
     let bert_ja_path = dir.join("deberta-v2-large-japanese-char-wwm.gguf");
     let bert_en_path = dir.join("deberta-v3-large.gguf");
 
@@ -676,9 +741,10 @@ fn sbv2_model_from_gguf_dispatches_both_bert_tokenizers() {
 fn from_gguf_rejects_anomalous_sdp_flows_even_index_tensor() {
     use vokra_core::gguf::GgmlType;
     let mut b = GgufBuilder::new();
-    // Arch stamp — the loader gates it ahead of the format-anomaly walk
-    // (FR-EX-08), so this fixture must carry it to reach the walk at all.
-    b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, SBV2_ARCH);
+    // The loader verifies the complete JP-Extra identity before the
+    // format-anomaly walk, so this downstream-negative fixture must carry
+    // the canonical identity as well.
+    add_canonical_jp_extra_identity(&mut b);
     // A 4-byte F32 tensor is enough to trip the check — the loader's
     // format-anomaly walk runs on tensor NAMES, not shapes.
     b.add_tensor(

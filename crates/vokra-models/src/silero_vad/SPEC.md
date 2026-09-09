@@ -1,5 +1,12 @@
 # Silero VAD v5 — implementation spec (M0-05)
 
+> **2026-08-30 current-state boundary:** This specification combines the
+> implementation contract with dated upstream and real-weight evaluation
+> evidence. The Rust modules in this directory are authoritative for live
+> behavior; the dated evaluation results below remain evidence snapshots and
+> are not a new device or model-coverage claim. Consult the current M5 ledger
+> and handoff for remaining verification gates.
+
 Single source for the 1:1-preserved Silero VAD v5 subgraph: architecture, the
 GGUF weight map, the exact numeric details pinned against the onnxruntime oracle,
 and the parity methodology. Source of truth for the code in this directory.

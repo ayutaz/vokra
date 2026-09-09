@@ -71,6 +71,20 @@ pub const UPSTREAM_HF_COMMONLANGUAGE: &str = "speechbrain/lang-id-commonlanguage
 
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
+fn authenticated_license(license: Option<&str>) -> Result<(String, LicenseClass), ConvertError> {
+    match license {
+        Some(s) if !s.is_empty() => {
+            if s != DEFAULT_LICENSE_SPDX {
+                return Err(ConvertError::Parse(format!(
+                    "lang_id_ecapa: only the authenticated `{DEFAULT_LICENSE_SPDX}` provenance is accepted, got `{s}`"
+                )));
+            }
+            Ok((s.to_owned(), LicenseClass::Permissive))
+        }
+        _ => Ok((DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive)),
+    }
+}
+
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const PREPARED_CONTRACT_KEY: &str = "vokra.lang_id.contract";
@@ -167,6 +181,7 @@ impl PreparedContract {
         }
         let root = json::parse(&bytes[8..header_end as usize])
             .map_err(|error| ConvertError::Parse(format!("lang_id_ecapa header: {error}")))?;
+        ensure_unique_object(&root, "safetensors header")?;
         let metadata = root
             .get("__metadata__")
             .and_then(JsonValue::as_object)
@@ -177,6 +192,7 @@ impl PreparedContract {
                         + "instead of converting the embedding checkpoint directly",
                 )
             })?;
+        unique_entries(metadata, "safetensors __metadata__")?;
         let contract_text = metadata
             .iter()
             .find(|(key, _)| key == PREPARED_CONTRACT_KEY)
@@ -191,6 +207,7 @@ impl PreparedContract {
                 "lang_id_ecapa `{PREPARED_CONTRACT_KEY}` JSON: {error}"
             ))
         })?;
+        ensure_unique_object(&contract, PREPARED_CONTRACT_KEY)?;
         require_json_string(&contract, "format", PREPARED_FORMAT)?;
         require_json_string(&contract, "model_name", variant.name())?;
         require_json_string(&contract, "source", variant.upstream_hf())?;
@@ -454,6 +471,25 @@ fn json_string<'a>(root: &'a JsonValue, key: &str) -> Result<&'a str, ConvertErr
     })
 }
 
+fn ensure_unique_object(value: &JsonValue, context: &str) -> Result<(), ConvertError> {
+    let entries = value.as_object().ok_or_else(|| {
+        ConvertError::Parse(format!("lang_id_ecapa: {context} must be a JSON object"))
+    })?;
+    unique_entries(entries, context)
+}
+
+fn unique_entries(entries: &[(String, JsonValue)], context: &str) -> Result<(), ConvertError> {
+    let mut keys = HashSet::with_capacity(entries.len());
+    for (key, _) in entries {
+        if !keys.insert(key) {
+            return Err(ConvertError::Parse(format!(
+                "lang_id_ecapa: {context} contains duplicate key `{key}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn require_json_string(root: &JsonValue, key: &str, expected: &str) -> Result<(), ConvertError> {
     let actual = json_string(root, key)?;
     if actual != expected {
@@ -560,6 +596,24 @@ pub fn convert_speechbrain_lang_id_variant(
     license: Option<&str>,
     variant: Variant,
 ) -> Result<SpeechbrainLangIdReport, ConvertError> {
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "lang_id_ecapa: input must be a regular non-symlink file: {}",
+                input.display()
+            ),
+        )));
+    }
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "lang_id_ecapa: output must be absent and non-symlink: {}",
+                output.display()
+            ),
+        )));
+    }
     let bytes = std::fs::read(input)?;
     let contract = PreparedContract::parse(&bytes, variant)?;
     let st = SafetensorsFile::parse(bytes)?;
@@ -570,10 +624,7 @@ pub fn convert_speechbrain_lang_id_variant(
     b.add_string(chunks::KEY_MODEL_NAME, variant.name());
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
 
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
-    };
+    let (spdx, class) = authenticated_license(license)?;
     let source_note = match variant {
         Variant::VoxLingua107 => {
             "speechbrain/lang-id-voxlingua107-ecapa (ECAPA-TDNN + 107-class lang-id, apache-2.0)"
@@ -618,7 +669,15 @@ pub fn convert_speechbrain_lang_id_variant(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    // `create_new` is the authoritative no-clobber boundary.  The initial
+    // absence check above is diagnostic only; a concurrent creator must win
+    // rather than have its artifact overwritten.
+    let mut output_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    std::io::Write::write_all(&mut output_file, &out_bytes)?;
+    output_file.sync_all()?;
     Ok(report)
 }
 
@@ -628,7 +687,14 @@ fn validate_prepared_tensors(
 ) -> Result<(), ConvertError> {
     let mut embedding_count = 0_usize;
     let mut classifier_count = 0_usize;
+    let mut tensor_names = HashSet::with_capacity(st.tensors().len());
     for tensor in st.tensors() {
+        if !tensor_names.insert(tensor.name.as_str()) {
+            return Err(ConvertError::Parse(format!(
+                "lang_id_ecapa: prepared checkpoint contains duplicate tensor `{}`",
+                tensor.name
+            )));
+        }
         if !matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) {
             return Err(ConvertError::Parse(format!(
                 "lang_id_ecapa: prepared tensor `{}` has non-floating dtype {:?}",
@@ -905,6 +971,25 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_contract_keys_fail_closed() {
+        let duplicate = contract_json(Variant::VoxLingua107).replacen(
+            &format!(r#""format":"{PREPARED_FORMAT}","#),
+            &format!(r#""format":"{PREPARED_FORMAT}","format":"{PREPARED_FORMAT}","#),
+            1,
+        );
+        let header = format!(
+            r#"{{"__metadata__":{{"{PREPARED_CONTRACT_KEY}":"{}"}},"embedding_model.test":{{"dtype":"BF16","shape":[1],"data_offsets":[0,2]}}}}"#,
+            escape_json_string(&duplicate)
+        );
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&[0, 0]);
+        let error = PreparedContract::parse(&bytes, Variant::VoxLingua107).unwrap_err();
+        assert!(error.to_string().contains("duplicate key `format`"));
+    }
+
+    #[test]
     fn contract_stamps_runtime_axes_and_ordered_labels() {
         let contract = PreparedContract::parse(
             &prepared_header(Variant::VoxLingua107, true),
@@ -954,5 +1039,61 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn license_override_must_match_authenticated_apache_contract() {
+        let error = authenticated_license(Some("mit")).unwrap_err();
+        assert!(error.to_string().contains("apache-2.0"));
+        assert_eq!(authenticated_license(None).unwrap().0, DEFAULT_LICENSE_SPDX);
+    }
+
+    #[test]
+    fn converter_rejects_preexisting_and_symlink_outputs_before_reading_input() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-speechbrain-lang-id-no-clobber-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temporary directory");
+        let input = root.join("prepared.safetensors");
+        std::fs::write(&input, b"not a prepared checkpoint").expect("input");
+
+        let existing = root.join("existing.gguf");
+        std::fs::write(&existing, b"keep me").expect("existing output");
+        let error = convert_speechbrain_lang_id_file(&input, &existing, None)
+            .expect_err("pre-existing output must be rejected before parsing");
+        assert!(error.to_string().contains("output must be absent"));
+        assert_eq!(
+            std::fs::read(&existing).expect("existing bytes"),
+            b"keep me"
+        );
+
+        #[cfg(unix)]
+        {
+            let target = root.join("target.gguf");
+            std::fs::write(&target, b"keep target").expect("symlink target");
+            let symlink = root.join("symlink.gguf");
+            std::os::unix::fs::symlink(&target, &symlink).expect("symlink output");
+            let error = convert_speechbrain_lang_id_file(&input, &symlink, None)
+                .expect_err("symlink output must be rejected before parsing");
+            assert!(error.to_string().contains("output must be absent"));
+            assert_eq!(
+                std::fs::read(&target).expect("target bytes"),
+                b"keep target"
+            );
+
+            let dangling = root.join("dangling.gguf");
+            std::os::unix::fs::symlink(root.join("missing.gguf"), &dangling)
+                .expect("dangling symlink output");
+            let error = convert_speechbrain_lang_id_file(&input, &dangling, None)
+                .expect_err("dangling symlink output must be rejected");
+            assert!(error.to_string().contains("output must be absent"));
+        }
+
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 }

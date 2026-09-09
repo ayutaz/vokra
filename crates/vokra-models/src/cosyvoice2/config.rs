@@ -1,26 +1,25 @@
 //! CosyVoice2 hyper-parameters read from the `vokra.cosyvoice2.*` metadata
 //! chunk group (M3-09-T04 chunk design).
 //!
-//! Every runtime parameter (sample rate, vocab size, LLM backbone shape,
-//! flow / mimi / streaming hparams) is read from the GGUF metadata the
-//! converter wrote — never hard-coded, never given a silent default. A
+//! Every runtime parameter represented by this compatibility config (sample
+//! rate, legacy LLM shape, flow and streaming hparams) is read from the GGUF
+//! metadata the converter wrote — never hard-coded, never given a silent
+//! default. A
 //! missing key raises [`VokraError::InvalidArgument`] with the offending
 //! key name (FR-EX-08). The upstream CosyVoice2 is Apache 2.0 code + weight
 //! (docs/license-audit.md), so the resulting GGUF is公式 zoo eligible; a
 //! non-commercial provenance tag is rejected by the shared
 //! [`vokra_core::check_weight_license`] gate (M2-13), not here.
 //!
-//! # Zero-placeholder hparams (scaffold policy, T02 / T04)
+//! # Legacy compatibility fields
 //!
-//! The M3-09 T02 upstream inspection is still open (the checkpoint is not
-//! bound to this scaffold), so the numeric hparams (`n_layer`, `n_head`,
-//! `hidden_dim`, `ffn_dim`, `flow.nfe`, mimi shapes …) are accepted with
-//! a `0` placeholder — the pattern Whisper and Kokoro established for
-//! shape-driven fields whose upstream values are not yet pinned. The
-//! runtime forward-path lands with T07/T08/T10/T13 and will enforce
-//! `!= 0` at that point (per-field, not here) so a `0`-placeholder GGUF
-//! fails loudly at the first missing shape rather than silently in the
-//! middle of a forward.
+//! The older metadata-only scaffold carried `mimi.*` keys.  CosyVoice2 does
+//! not use Mimi: the fixed upstream pipeline is Qwen2LM → causal flow/CFM →
+//! HiFTNet.  Those fields remain only so historical inspection fixtures and
+//! the quarantined legacy chunk API can be read; they are never consumed by
+//! the native route or a production loader.  New artifacts must use the
+//! source-shaped fields in [`super::native`] and an authenticated composite
+//! manifest.
 
 use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 use vokra_core::{Result, VokraError};
@@ -39,6 +38,8 @@ pub(crate) const KEY_N_HEAD: &str = "vokra.cosyvoice2.arch.n_head";
 pub(crate) const KEY_FFN_DIM: &str = "vokra.cosyvoice2.arch.ffn_dim";
 pub(crate) const KEY_FLOW_NFE: &str = "vokra.cosyvoice2.flow.nfe";
 pub(crate) const KEY_FLOW_SCHEDULE: &str = "vokra.cosyvoice2.flow.schedule";
+/// Historical compatibility keys.  They are not part of CosyVoice2's real
+/// component graph; see the module documentation.
 pub(crate) const KEY_MIMI_N_CODEBOOKS: &str = "vokra.cosyvoice2.mimi.n_codebooks";
 pub(crate) const KEY_MIMI_CODEBOOK_SIZE: &str = "vokra.cosyvoice2.mimi.codebook_size";
 pub(crate) const KEY_MIMI_D_MODEL: &str = "vokra.cosyvoice2.mimi.d_model";
@@ -76,11 +77,11 @@ pub struct CosyVoice2Config {
     /// `vokra_ops::Schedule` variants; the mapping lives in
     /// `flow_matching::FlowMatchingRuntimeParams::schedule_from_tag`).
     pub flow_schedule_tag: String,
-    /// Mimi codec: number of RVQ codebooks (base + residuals).
+    /// Legacy inspection-only field; CosyVoice2 does not use a Mimi codec.
     pub mimi_n_codebooks: u32,
-    /// Mimi codec: entries per codebook.
+    /// Legacy inspection-only field; CosyVoice2 does not use a Mimi codec.
     pub mimi_codebook_size: u32,
-    /// Mimi codec: feature dim per codebook entry.
+    /// Legacy inspection-only field; CosyVoice2 does not use a Mimi codec.
     pub mimi_d_model: u32,
     /// Chunk-aware streaming chunk size (frames per chunk boundary).
     pub streaming_chunk_size: u32,

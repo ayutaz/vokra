@@ -1,0 +1,127 @@
+{
+  "format": "vokra-cosyvoice2-flow-source-closure-v1",
+  "repository": "https://github.com/FunAudioLLM/CosyVoice.git",
+  "revision": "8555549e882236e6541748b1042d95693caa82ba",
+  "status": "COSYVOICE_MATCHA_REPO_SOURCE_CLOSURE_COMPLETE_EXTERNAL_RUNTIME_DEPENDENCIES_PENDING",
+  "scope": "CausalMaskedDiffWithXvec -> UpsampleConformerEncoder -> CausalConditionalCFM -> estimator inference forward",
+  "license": {"path":"LICENSE","bytes":11357,"sha256":"c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4","git_blob_sha1":"261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64","declared":"Apache-2.0"},
+  "roots": [
+    "cosyvoice/cli/cosyvoice.py",
+    "cosyvoice/flow/flow.py",
+    "cosyvoice/flow/flow_matching.py",
+    "cosyvoice/flow/decoder.py",
+    "cosyvoice/transformer/upsample_encoder.py"
+  ],
+  "nodes": [
+    {"path":"cosyvoice/cli/cosyvoice.py","bytes":12051,"sha256":"8e44f0f0144378561a00ebc065fdb15a843bc4650e68683bebb6624827731859","git_blob_sha1":"cc443bed44c651a47492fc7e2142e3a88fb47627","role":"entrypoint/orchestration"},
+    {"path":"cosyvoice/flow/decoder.py","bytes":19866,"sha256":"ef5eceb9db7f63ddda1d5bca6bfa6b28b8ea11656c4b1f9c109d28f656cbbf29","git_blob_sha1":"97768a459fbb89a2c99f98de302628d8ccafda67","role":"CausalConditionalDecoder and estimator blocks"},
+    {"path":"cosyvoice/flow/flow.py","bytes":12156,"sha256":"a8497feb58336e7566b1f085d11acff9cb4f1a24949abd2c244fbf97c76f9b6d","git_blob_sha1":"a068288f889aff4079b0c54c612897d31d08882a","role":"CausalMaskedDiffWithXvec"},
+    {"path":"cosyvoice/flow/flow_matching.py","bytes":10499,"sha256":"b1ad671fe37f872c034bde8f75cc19c1b88758d54e375fa2b54e14a088addfe6","git_blob_sha1":"7f92df5d24690fe89fc548ab60f37483f91b03a6","role":"CausalConditionalCFM and Euler schedule"},
+    {"path":"cosyvoice/transformer/activation.py","bytes":3089,"sha256":"a4a96caea9f7b05111286de5ea760bdfdf9c4e53448f53420857dc04a50440c2","git_blob_sha1":"8cea54816385d3b6585ccc2417bc71630d578177","role":"selected activation registry implementation"},
+    {"path":"cosyvoice/transformer/attention.py","bytes":14389,"sha256":"41d269b2d5e3a3952c0a538f46480aff8570767eb88e80452f367436cef628b1","git_blob_sha1":"8c0c0983a833a6a91cae306a8198ebb2ca82696f","role":"selected attention registry implementation"},
+    {"path":"cosyvoice/transformer/convolution.py","bytes":5230,"sha256":"eb5f41f324a97225c73b9c430af8bb231bd77386ef18450bb0fd329f469ab4e1","git_blob_sha1":"4d5d96149154776000991a681a666fbe55e562fe","role":"Conformer convolution implementation"},
+    {"path":"cosyvoice/transformer/embedding.py","bytes":11777,"sha256":"b50c30be5c66c39c95e0db1015814c545fcd062a936c0ea7ad4c01508b2595dc","git_blob_sha1":"ba20d71bec11baa7081bed522399cf3a2046ef56","role":"selected positional embedding implementation"},
+    {"path":"cosyvoice/transformer/encoder_layer.py","bytes":9602,"sha256":"1920582be2c9b7cf7835e7b539118ec1eb9da8f2c711c6257f8598b3792951b9","git_blob_sha1":"efbb12dd365770bebe8bca75276fe63be260a08f","role":"Conformer encoder layer"},
+    {"path":"cosyvoice/transformer/positionwise_feed_forward.py","bytes":4219,"sha256":"6e8038e3bcc8ca086ddca508fb9b9d40bf3ab98bebabcf5c94935d032329d0f8","git_blob_sha1":"b7a2cf6e7315e3a5ed2794423daff0a59cc5b208","role":"positionwise feed-forward implementation"},
+    {"path":"cosyvoice/transformer/subsampling.py","bytes":12666,"sha256":"31fc0347a851abc1205dfd4cf68099c0c416589c3e99a07b250e8630cece19d0","git_blob_sha1":"e17c2e324e3afb24e1b619effe29cef07c9c5b3a","role":"selected subsampling registry implementation"},
+    {"path":"cosyvoice/transformer/upsample_encoder.py","bytes":14149,"sha256":"a8003c212ce64697ce43001f776902ee60696a3b7e373935479029dccaf7d569","git_blob_sha1":"6ffda6acad25cc0cfcf1bc07b9211c326ca8d49f","role":"UpsampleConformerEncoder"},
+    {"path":"cosyvoice/utils/class_utils.py","bytes":3321,"sha256":"75d6977f7574304f8464cdb50c889564ca557a99a112419918b2981f0e8dcfc2","git_blob_sha1":"c49de00c873340e6c45dd05299b684d81f19c5a4","role":"dynamic class registry"},
+    {"path":"cosyvoice/utils/common.py","bytes":6792,"sha256":"6161a8d90d7beb0766f6d2de67ccce35a754af43930c28af37c4d19b65eef897","git_blob_sha1":"6f5a3dd8b7ae99601783c3a4ed91b3b64270fab3","role":"mask/bias and deterministic utility calls"},
+    {"path":"cosyvoice/utils/mask.py","bytes":9728,"sha256":"852c6e4b14201a238ab076396db599c157b2ee5a5a2aacf0f277ddce8c648976","git_blob_sha1":"5d3dfd6ca6cd84e95f237a9aef4467cb7d2d4c33","role":"padding/chunk masks"}
+  ],
+  "edges": [
+    {"from":"cosyvoice/cli/cosyvoice.py","to":"cosyvoice/utils/class_utils.py","reason":"model-type dispatch"},
+    {"from":"cosyvoice/flow/flow.py","to":"cosyvoice/utils/mask.py","reason":"token and mel padding masks"},
+    {"from":"cosyvoice/flow/flow_matching.py","to":"cosyvoice/utils/common.py","reason":"seed utility imported by CFM"},
+    {"from":"cosyvoice/flow/decoder.py","to":"cosyvoice/utils/common.py","reason":"mask-to-bias conversion"},
+    {"from":"cosyvoice/flow/decoder.py","to":"cosyvoice/utils/mask.py","reason":"chunk mask helper"},
+    {"from":"cosyvoice/transformer/upsample_encoder.py","to":"cosyvoice/transformer/convolution.py","reason":"Conformer convolution"},
+    {"from":"cosyvoice/transformer/upsample_encoder.py","to":"cosyvoice/transformer/encoder_layer.py","reason":"Conformer layers"},
+    {"from":"cosyvoice/transformer/upsample_encoder.py","to":"cosyvoice/transformer/positionwise_feed_forward.py","reason":"feed-forward blocks"},
+    {"from":"cosyvoice/transformer/upsample_encoder.py","to":"cosyvoice/utils/class_utils.py","reason":"config-driven class registry"},
+    {"from":"cosyvoice/transformer/upsample_encoder.py","to":"cosyvoice/utils/mask.py","reason":"streaming/chunk masks"},
+    {"from":"cosyvoice/utils/class_utils.py","to":"cosyvoice/transformer/activation.py","reason":"selected activation registry"},
+    {"from":"cosyvoice/utils/class_utils.py","to":"cosyvoice/transformer/attention.py","reason":"selected attention registry"},
+    {"from":"cosyvoice/utils/class_utils.py","to":"cosyvoice/transformer/embedding.py","reason":"selected positional embedding registry"},
+    {"from":"cosyvoice/utils/class_utils.py","to":"cosyvoice/transformer/subsampling.py","reason":"selected subsampling registry"},
+    {"from":"cosyvoice/utils/class_utils.py","to":"cosyvoice/flow/flow.py","reason":"CosyVoice2 model-type dispatch"}
+  ],
+  "config_bindings": [
+    {"config_path":"flow","implementation":"cosyvoice.flow.flow.CausalMaskedDiffWithXvec","reason":"fixed CosyVoice2 causal flow root"},
+    {"config_path":"flow.encoder","implementation":"cosyvoice.transformer.upsample_encoder.UpsampleConformerEncoder","reason":"fixed causal encoder"},
+    {"config_path":"flow.decoder","implementation":"cosyvoice.flow.decoder.CausalConditionalDecoder","reason":"fixed causal decoder"},
+    {"config_path":"flow.decoder.cfm","implementation":"cosyvoice.flow.flow_matching.CausalConditionalCFM","reason":"fixed cosine Euler CFM"}
+  ],
+  "external_dependencies": [
+    {"import":"einops","reason":"decoder reshape helpers; third-party runtime"},
+    {"import":"hyperpyyaml","reason":"fixed config loader; third-party runtime"},
+    {"import":"logging","reason":"standard logging runtime"},
+    {"import":"math","reason":"standard math runtime"},
+    {"import":"modelscope","reason":"CLI acquisition import; not executed by Flow closure"},
+    {"import":"numpy","reason":"mask utility array conversion; third-party runtime"},
+    {"import":"omegaconf","reason":"config container; third-party runtime"},
+    {"import":"os","reason":"standard operating-system runtime"},
+    {"import":"queue","reason":"standard queue runtime"},
+    {"import":"random","reason":"standard deterministic-seed runtime"},
+    {"import":"time","reason":"CLI orchestration runtime"},
+    {"import":"torch","reason":"tensor/module runtime; third-party runtime"},
+    {"import":"torch.nn","reason":"neural-network module runtime; third-party runtime"},
+    {"import":"torch.nn.functional","reason":"tensor functional runtime; third-party runtime"},
+    {"import":"tqdm","reason":"CLI progress runtime; not executed by Flow closure"},
+    {"import":"typing","reason":"standard typing runtime"}
+  ],
+  "matcha": {
+    "repository":"https://github.com/shivammehta25/Matcha-TTS.git",
+    "revision":"dd9105b34bf2be2230f4aa1e4769fb586a3c824e",
+    "status":"MATCHA_GITLINK_AUTHENTICATED",
+    "license":{"path":"LICENSE","bytes":1069,"sha256":"874d84104bdc7b301f369b2f2e66b31f07826a67495af909655f3699c857620d","git_blob_sha1":"858018e750da7be7b271bb7307e68d159ed67ef6","declared":"MIT"},
+    "roots":["matcha/models/components/decoder.py","matcha/models/components/flow_matching.py","matcha/models/components/transformer.py"],
+    "nodes":[
+      {"path":"matcha/models/components/decoder.py","bytes":14459,"sha256":"7ea94a61cd3c96703aa107fdcd1b82de2f2f6ade20a3c5f434b6005318176a6b","git_blob_sha1":"1137cd7008e9d07b4f306926a82e44c2b2cddbdf","role":"decoder estimator blocks"},
+      {"path":"matcha/models/components/flow_matching.py","bytes":4657,"sha256":"a6f2b2eeca2600749d575dda8624d864d904227e2a9f764a6cb2b89290445e6c","git_blob_sha1":"5cad7431ef66a8d11da32a77c1af7f6e31d6b774","role":"BASECFM and Euler solver"},
+      {"path":"matcha/models/components/transformer.py","bytes":13237,"sha256":"66ff2092d974a99b251b9d8e5c08bbcecceaedfaf41e2bd8af2b4bc7a56dcbea","git_blob_sha1":"dd1afa3aff5383912209e508676c6885e13ef4ee","role":"BasicTransformerBlock"},
+      {"path":"matcha/utils/pylogger.py","bytes":720,"sha256":"61b0bc626e4766b25c0c122c40eea34a7bb263908b650475dc4fe8012f526194","git_blob_sha1":"61600678029362e110f655edb91d5f3bc5b1cd1c","role":"logger helper imported by flow matching"}
+    ],
+    "edges":[
+      {"from":"matcha/models/components/decoder.py","to":"matcha/models/components/transformer.py","reason":"BasicTransformerBlock"},
+      {"from":"matcha/models/components/flow_matching.py","to":"matcha/models/components/decoder.py","reason":"Decoder base class"},
+      {"from":"matcha/models/components/flow_matching.py","to":"matcha/utils/pylogger.py","reason":"logger helper"}
+    ],
+    "external_dependencies":[
+      {"import":"abc","reason":"standard abstract base classes"},
+      {"import":"conformer","reason":"third-party conformer block"},
+      {"import":"diffusers.models.activations","reason":"third-party activation registry"},
+      {"import":"diffusers.models.attention","reason":"third-party attention implementation"},
+      {"import":"diffusers.models.attention_processor","reason":"third-party attention processor"},
+      {"import":"diffusers.models.lora","reason":"third-party LoRA-compatible linear"},
+      {"import":"diffusers.utils.torch_utils","reason":"third-party graph utility"},
+      {"import":"einops","reason":"third-party tensor reshape helpers"},
+      {"import":"lightning.pytorch.utilities","reason":"third-party rank-zero logger helper"},
+      {"import":"logging","reason":"standard logging runtime"},
+      {"import":"math","reason":"standard math runtime"},
+      {"import":"torch","reason":"tensor/module runtime; third-party runtime"},
+      {"import":"torch.nn","reason":"neural-network module runtime; third-party runtime"},
+      {"import":"torch.nn.functional","reason":"tensor functional runtime; third-party runtime"},
+      {"import":"typing","reason":"standard typing runtime"}
+    ]
+  },
+  "excluded_repo_imports": [
+    {"path":"cosyvoice/flow/length_regulator.py","reason":"legacy non-causal flow path; not called by fixed CausalMaskedDiffWithXvec config"},
+    {"path":"cosyvoice/transformer/encoder.py","reason":"generic encoder path; fixed config selects UpsampleConformerEncoder"},
+    {"path":"cosyvoice/cli/frontend.py","reason":"text/audio frontend feeds inputs but is outside the fixed Flow forward graph"},
+    {"path":"cosyvoice/cli/model.py","reason":"outer orchestration calls flow but is outside the fixed Flow implementation graph"},
+    {"path":"cosyvoice/utils/file_utils.py","reason":"CLI/bootstrap utility is outside the fixed Flow implementation graph"},
+    {"path":"cosyvoice/llm/llm.py","reason":"class registry import branch; LLM is a separate component and not called by Flow forward"},
+    {"path":"cosyvoice/hifigan/generator.py","reason":"class registry import branch; HiFT is a separate component and not called by Flow forward"}
+  ],
+  "blockers": [
+    "Reachable Matcha code delegates execution to external diffusers, conformer, lightning, einops, and torch packages whose implementations are not in this repo-local closure; no complete full-forward claim is made."
+  ],
+  "execution_contract": {
+    "model_download": "NOT_RUN",
+    "model_execution": "NOT_RUN",
+    "cpu": "NOT_RUN",
+    "metal": "NOT_RUN",
+    "publication": "NO_UPLOAD"
+  }
+}

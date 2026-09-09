@@ -9,7 +9,12 @@ captures its 384-feature input and a model hook captures the already-sigmoid
 
 Run only on VAST with Python 3.12 through this directory's uv project. The
 upstream ``.pt`` is a pickle and must come from a trusted, digest-recorded
-source. No upstream code or checkpoint enters the Vokra runtime.
+source. Because the fixed upstream constructor calls ``torch.load`` without
+an explicit safety mode, predictor construction is wrapped temporarily so
+every load is forced to ``weights_only=True``; a contradictory request is
+rejected and the wrapper is restored in ``finally``. The clean upstream
+checkout is never modified and there is no unrestricted fallback. No upstream
+code or checkpoint enters the Vokra runtime.
 
 Outputs are raw little-endian buffers without numpy headers:
 
@@ -32,11 +37,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import soundfile as sf
-import torch
-
-
 UPSTREAM_REPOSITORY = "https://github.com/yxlllc/RMVPE"
 UPSTREAM_REVISION = "0aabafba18289ca938a73af0b0297686abf4922d"
 SAMPLE_RATE = 16_000
@@ -44,8 +44,79 @@ HOP_LENGTH = 160
 FEATURE_DIM = 384
 N_CLASS = 360
 DEFAULT_THRESHOLD = 0.03
-UNVOICED_CLASS = np.uint32(0xFFFF_FFFF)
-DUMPER_VERSION = 2
+UNVOICED_CLASS_VALUE = 0xFFFF_FFFF
+DUMPER_VERSION = 3
+_ORIGINAL_TORCH_LOAD: Any = None
+
+
+def _weights_only_torch_load(*args: Any, **kwargs: Any) -> Any:
+    """Call the original loader while refusing unsafe pickle deserialization."""
+
+    requested = kwargs.get("weights_only")
+    if requested is not None and requested is not True:
+        raise RuntimeError(
+            "RMVPE reference loader requested weights_only=False; refusing "
+            "unrestricted pickle"
+        )
+    kwargs["weights_only"] = True
+    return _ORIGINAL_TORCH_LOAD(*args, **kwargs)
+
+
+def _instantiate_with_weights_only(
+    predictor_type: Any, pt_path: Path, torch_module: Any = None
+) -> Any:
+    """Instantiate upstream RMVPE with a temporary fail-closed load wrapper."""
+
+    global _ORIGINAL_TORCH_LOAD
+    if torch_module is None:
+        import torch as torch_module
+    previous_torch_load = torch_module.load
+    previous_original = _ORIGINAL_TORCH_LOAD
+    _ORIGINAL_TORCH_LOAD = previous_torch_load
+    torch_module.load = _weights_only_torch_load
+    try:
+        return predictor_type(str(pt_path), hop_length=HOP_LENGTH)
+    finally:
+        torch_module.load = previous_torch_load
+        _ORIGINAL_TORCH_LOAD = previous_original
+
+
+def self_test_safe_loader() -> None:
+    """Prove forcing, rejection, and restoration without touching a checkpoint."""
+
+    from types import SimpleNamespace
+
+    original_loader = _ORIGINAL_TORCH_LOAD
+    calls: list[dict[str, Any]] = []
+
+    def fake_loader(*_args: Any, **kwargs: Any) -> dict[str, bool]:
+        calls.append(kwargs)
+        return {"ok": True}
+
+    fake_torch = SimpleNamespace(load=fake_loader)
+
+    def fake_predictor(_path: str, **_kwargs: Any) -> object:
+        # Match the fixed upstream ``torch.load(model_path)`` call exactly;
+        # this must dispatch through the temporary monkeypatch.
+        if _weights_only_torch_load("fixture") != {"ok": True}:
+            raise AssertionError("safe wrapper did not call the original loader")
+        try:
+            _weights_only_torch_load("fixture", weights_only=False)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("contradictory unsafe load request was accepted")
+        return object()
+
+    try:
+        _instantiate_with_weights_only(fake_predictor, Path("fixture.pt"), fake_torch)
+    finally:
+        if fake_torch.load is not fake_loader:
+            raise AssertionError("torch.load wrapper was not restored")
+        if _ORIGINAL_TORCH_LOAD is not original_loader:
+            raise AssertionError("original torch.load binding was not restored")
+    if not calls or calls[0].get("weights_only") is not True:
+        raise AssertionError("safe wrapper did not force weights_only=True")
 
 
 def sha256_file(path: Path) -> str:
@@ -123,7 +194,7 @@ def import_upstream_predictor(checkout: Path, pt_path: Path) -> Any:
     try:
         module = importlib.import_module("src.inference")
         predictor_type = getattr(module, "RMVPE")
-        return predictor_type(str(pt_path), hop_length=HOP_LENGTH)
+        return _instantiate_with_weights_only(predictor_type, pt_path)
     finally:
         sys.path.pop(0)
 
@@ -211,22 +282,40 @@ def write_raw(path: Path, values: np.ndarray, dtype: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pt-path", type=Path, required=True)
-    parser.add_argument("--upstream-src", type=Path, required=True)
-    source = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--pt-path", type=Path)
+    parser.add_argument("--upstream-src", type=Path)
+    source = parser.add_mutually_exclusive_group()
     source.add_argument("--pcm", type=Path, help="exact 16-kHz WAV input")
     source.add_argument("--canned", action="store_true")
-    parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
     return parser.parse_args()
 
 
 def main() -> int:
+    global np, sf, torch
     args = parse_args()
+    if args.self_test:
+        if any(
+            value is not None
+            for value in (args.pt_path, args.upstream_src, args.pcm, args.out_dir)
+        ) or args.canned or args.threshold != DEFAULT_THRESHOLD:
+            raise ValueError("--self-test accepts no fixture or threshold arguments")
+        self_test_safe_loader()
+        print("dump_reference.py self-test: PASS")
+        return 0
+    import numpy as np
+    import soundfile as sf
+    import torch
+    if args.pt_path is None or args.upstream_src is None or args.out_dir is None:
+        raise ValueError("--pt-path, --upstream-src, and --out-dir are required")
+    if (args.pcm is None) == (not args.canned):
+        raise ValueError("exactly one of --pcm or --canned is required")
     pt_path = args.pt_path.expanduser().resolve()
     checkout = args.upstream_src.expanduser().resolve()
     out_dir = args.out_dir.expanduser().resolve()
-    if not pt_path.is_file():
+    if not pt_path.is_file() or pt_path.is_symlink():
         raise ValueError(f"checkpoint does not exist: {pt_path}")
     if not 0.0 <= args.threshold <= 1.0:
         raise ValueError("--threshold must be within [0, 1]")
@@ -240,9 +329,11 @@ def main() -> int:
 
     voiced = probabilities.max(axis=1) >= args.threshold
     argmax = probabilities.argmax(axis=1).astype(np.uint32)
-    argmax = np.where(voiced, argmax, UNVOICED_CLASS).astype(np.uint32)
+    argmax = np.where(voiced, argmax, np.uint32(UNVOICED_CLASS_VALUE)).astype(np.uint32)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if out_dir.exists() or out_dir.is_symlink():
+        raise ValueError(f"reference output directory must be absent: {out_dir}")
+    out_dir.mkdir(parents=True)
     pcm_path = out_dir / "pcm.f32"
     hidden_path = out_dir / "hidden.f32"
     probabilities_path = out_dir / "probabilities.f32"
@@ -256,6 +347,7 @@ def main() -> int:
 
     meta = {
         "dumper_version": DUMPER_VERSION,
+        "checkpoint_load": "torch.load(weights_only=True) enforced by temporary wrapper",
         "upstream_repository": UPSTREAM_REPOSITORY,
         "upstream_revision": UPSTREAM_REVISION,
         "upstream_class": "src.inference.RMVPE / src.model.E2E0",
@@ -268,7 +360,7 @@ def main() -> int:
         "feature_dim": int(hidden.shape[1]),
         "n_class": int(probabilities.shape[1]),
         "threshold": float(args.threshold),
-        "unvoiced_argmax_sentinel": int(UNVOICED_CLASS),
+        "unvoiced_argmax_sentinel": UNVOICED_CLASS_VALUE,
         "decode": "src.utils.to_local_average_f0(use_viterbi=False)",
         "pcm_sha256": sha256_bytes(pcm.astype("<f4", copy=False).tobytes()),
         "outputs": {

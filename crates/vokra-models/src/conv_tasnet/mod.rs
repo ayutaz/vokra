@@ -8,7 +8,7 @@
 
 use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, chunks};
-use vokra_core::{LicenseClass, Result, VokraError};
+use vokra_core::{CompliancePolicy, LicenseClass, Result, VokraError, check_weight_license};
 
 use crate::compute::{Compute, HotOp};
 
@@ -433,25 +433,45 @@ pub struct ConvTasnet {
 }
 
 impl ConvTasnet {
-    /// Strictly binds a corrected official checkpoint GGUF.
+    /// Opens a corrected official checkpoint GGUF under the default strict
+    /// compliance policy.
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::from_path_with_policy(path, &CompliancePolicy::strict())
+    }
+
+    /// Opens a corrected official checkpoint GGUF under an explicit policy.
+    /// The research opt-in is required for the audited upstream license (and
+    /// also for an unknown license class); it is never inferred from the
+    /// model's metadata.
+    pub fn from_path_with_policy(
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        let file = GgufFile::open(path)?;
+        Self::from_gguf_with_policy(&file, policy)
+    }
+
+    /// Strictly binds a corrected official checkpoint GGUF under the default
+    /// fail-closed compliance policy.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        Self::from_gguf_with_policy(file, &CompliancePolicy::strict())
+    }
+
+    /// Strictly binds under an explicit compliance policy.
+    pub fn from_gguf_with_policy(file: &GgufFile, policy: &CompliancePolicy) -> Result<Self> {
         require_string(file, chunks::KEY_MODEL_ARCH, ARCH)?;
         require_string(file, chunks::KEY_MODEL_NAME, NAME)?;
         require_string(file, KEY_MODEL_CATEGORY, CATEGORY)?;
         require_string(file, KEY_MODEL_ID, NAME)?;
         require_string(file, KEY_UPSTREAM_HF, UPSTREAM_HF)?;
         require_string(file, KEY_UPSTREAM_REVISION, UPSTREAM_REVISION)?;
+        let license = check_weight_license(file, policy)?;
         let config = ConvTasnetConfig::from_gguf(file)?;
         let weights = ConvTasnetWeights::from_gguf(file)?;
-        let weight_license = file
-            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-            .and_then(|value| value.as_str())
-            .and_then(LicenseClass::from_class_str)
-            .unwrap_or(LicenseClass::Unknown);
         Ok(Self {
             config,
             weights,
-            weight_license,
+            weight_license: license.class,
             backend: BackendKind::Cpu,
         })
     }

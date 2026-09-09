@@ -7,26 +7,28 @@
 //! 復活 = v1.0.x patch or M5-06, owner judgement — 2026-07-14 見送り確定).
 //! The config is default **ON** (opt-out surface preserved) and
 //! `backend_status()` says `Deferred` honestly — no fake marker is ever
-//! attached. **Deployer-side visible disclosure stays a MUST**
-//! (docs/legal-compliance.md §1.4) for EU AI Act Article 50
-//! detectability during the deferral.
+//! attached. Project policy keeps **deployer-side visible disclosure as a
+//! required technical control** (docs/legal-compliance.md §1.4) for
+//! detectability during the deferral. This test does not determine whether
+//! Article 50 applies or whether disclosure or watermarking is legally
+//! sufficient; deployers must perform a deployment-specific review, using
+//! `docs/legal-compliance.md` as the project's guidance.
 //!
 //! # Compliance gate (M2-13)
 //!
 //! `sesame-csm` / `csm-1b` are registered `Permissive` (Apache 2.0 /
 //! Apache 2.0 — docs/license-audit.md); the tests pin: a provenance-
-//! stamped CSM GGUF loads without a research flag, a registry id resolves
-//! permissive, and a GGUF with no weight-license information is refused
-//! fail-closed.
-
-use std::sync::Arc;
+//! stamped CSM GGUFs pass the standalone license gate, while the production
+//! engine remains explicitly `INSPECTION_ONLY` until the complete composite
+//! binder exists. A GGUF with no weight-license information is refused
+//! fail-closed by the license gate before that runtime boundary.
 
 use vokra_core::gguf::{GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType};
 use vokra_core::{
     CompliancePolicy, LicenseClass, VokraError, WatermarkBackendStatus, WatermarkConfig,
     check_weight_license, registry_lookup, stamp_provenance,
 };
-use vokra_models::csm::{CsmConfig, CsmEngine, FixtureByteTokenizer};
+use vokra_models::csm::{CsmConfig, CsmEngine};
 use vokra_models::mimi::MimiNeuralConfig;
 
 fn fixture_gguf(with_provenance: bool) -> Vec<u8> {
@@ -104,20 +106,23 @@ fn registry_knows_the_csm_ids_as_permissive() {
 }
 
 #[test]
-fn provenance_stamped_csm_gguf_passes_the_strict_gate() {
+fn provenance_stamped_csm_gguf_passes_license_gate_but_engine_is_inspection_only() {
     let bytes = fixture_gguf(true);
     let file = vokra_core::gguf::GgufFile::parse(bytes.clone()).unwrap();
     let res = check_weight_license(&file, &CompliancePolicy::strict()).expect("gate passes");
     assert_eq!(res.class, LicenseClass::Permissive);
-    // And the full engine load path agrees (T04 provenance → T26 gate).
-    let engine = CsmEngine::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-        .expect("stock CSM GGUF loads without a research flag");
-    // The GGUF tokenizer is the honest T29 stub; swapping in the explicit
-    // fixture tokenizer keeps the engine usable for smoke flows.
-    let vocab = engine.config().text_vocab_size;
-    engine
-        .with_tokenizer(Arc::new(FixtureByteTokenizer::new(vocab).unwrap()))
-        .expect("fixture tokenizer vocab matches");
+    // Compliance and runtime support are deliberately separate. Even a
+    // permissively licensed artifact cannot bypass the current authenticated
+    // CSM + Mimi + tokenizer composite boundary.
+    let err = CsmEngine::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+        .expect_err("production CSM loading remains fail-closed");
+    match err {
+        VokraError::NotImplemented(message) => {
+            assert!(message.contains("INSPECTION_ONLY"), "message: {message}");
+            assert!(message.contains("Mimi"), "message: {message}");
+        }
+        other => panic!("expected explicit inspection refusal, got {other:?}"),
+    }
 }
 
 #[test]

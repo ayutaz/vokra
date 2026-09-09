@@ -1,0 +1,30 @@
+[project]
+name = "vokra-xy-tokenizer-reference"
+version = "0.1.0"
+description = "VAST-only official XY-Tokenizer reference; never shipped in vokra runtime."
+requires-python = "==3.12.*"
+dependencies = [
+    # These names mirror the pinned source's unversioned requirements and
+    # model.py import closure. Exact versions belong in the VAST-generated lock.
+    "numpy",
+    "torch>=2.0",
+    "torchaudio",
+    "einops",
+    "librosa",
+    "pyyaml",
+    "transformers",
+    "scipy",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

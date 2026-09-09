@@ -1,0 +1,837 @@
+#!/usr/bin/env -S uv run --frozen --project tools/parity/htdemucs_multi --python 3.12 python
+"""VAST-only official HT-Demucs reference report generator.
+
+The script intentionally emits a JSON tap manifest plus selected raw
+little-endian f32 tap files, not model or audio artifacts.  It
+loads the authenticated package with ``weights_only=True`` and then
+instantiates only the pinned upstream ``HTDemucs`` class.  There is no pickle
+fallback and no import before all identities have passed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import hashlib
+import importlib
+import io
+import json
+import os
+import re
+import stat
+import struct
+import sys
+import tempfile
+import wave
+from types import ModuleType
+from pathlib import Path
+from typing import Any
+
+
+SOURCE_REVISION = "e976d93ecc3865e5757426930257e200846a520a"
+WEIGHT_ORDER = ("f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d", "5c90dfd2")
+FT_IDS = WEIGHT_ORDER[:4]
+SIX_IDS = WEIGHT_ORDER[4:]
+MAX_INTERMEDIATE_TAP_ELEMENTS = 1 << 20
+CONFIGS = {
+    "htdemucs_ft": {"ids": FT_IDS, "sources": 4, "config": "htdemucs_ft.yaml"},
+    "htdemucs_6s": {"ids": SIX_IDS, "sources": 6, "config": "htdemucs_6s.yaml"},
+}
+
+
+class _ForbiddenModule(ModuleType):
+    """Module shell whose non-metadata attributes are all fail-closed."""
+
+    _METADATA = frozenset({"__name__", "__class__", "__dict__", "__doc__", "__loader__", "__package__", "__spec__", "__path__"})
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in _ForbiddenModule._METADATA:
+            return ModuleType.__getattribute__(self, name)
+        raise RuntimeError(f"forbidden dependency functionality is unavailable: {ModuleType.__getattribute__(self, '__name__')}.{name}")
+
+
+def install_forbidden_stub(name: str) -> ModuleType:
+    """Install a process-local module stub with no callable dependency API."""
+    stub = _ForbiddenModule(name)
+    sys.modules[name] = stub
+    return stub
+
+
+def install_lameenc_stub() -> ModuleType:
+    """Install the fail-closed GPL codec stub for official ``demucs.audio``."""
+    return install_forbidden_stub("lameenc")
+
+
+def install_torchaudio_stub() -> ModuleType:
+    """Install the fail-closed unused upstream audio-loader stub."""
+    stub = _ForbiddenModule("torchaudio")
+    sys.modules["torchaudio"] = stub
+    return stub
+
+
+def install_openunmix_stub() -> tuple[ModuleType, ModuleType, Any, list[int]]:
+    """Install only the official import seam for ``openunmix.filtering``.
+
+    Pinned HT-Demucs imports ``wiener`` at module import time.  The fixed
+    checkpoint contract uses ``cac=True`` with zero Wiener/end iterations, so
+    this sentinel must never be called; a call is a hard failure rather than a
+    fallback implementation.
+    """
+    calls: list[int] = []
+
+    def wiener_sentinel(*_args: Any, **_kwargs: Any) -> Any:
+        calls.append(1)
+        raise RuntimeError("openunmix Wiener filtering is forbidden on this reference route")
+
+    filtering = ModuleType("openunmix.filtering")
+    filtering.__path__ = []  # type: ignore[attr-defined]
+    filtering.wiener = wiener_sentinel  # type: ignore[attr-defined]
+
+    def blocked_attribute(name: str) -> Any:
+        raise RuntimeError(f"openunmix functionality is unavailable: {name}")
+
+    filtering.__getattr__ = blocked_attribute  # type: ignore[attr-defined]
+    package = ModuleType("openunmix")
+    package.__path__ = []  # type: ignore[attr-defined]
+    package.filtering = filtering  # type: ignore[attr-defined]
+    package.__getattr__ = blocked_attribute  # type: ignore[attr-defined]
+    sys.modules["openunmix"] = package
+    sys.modules["openunmix.filtering"] = filtering
+    return package, filtering, wiener_sentinel, calls
+
+
+def decode_pinned_wav_bytes(payload: bytes) -> tuple[list[list[float]], int]:
+    """Decode only RIFF/WAVE PCM16 mono 16 kHz little-endian fixture bytes.
+
+    The returned samples are shaped ``[channels, time]`` (one channel) and
+    normalized with the exact signed-PCM16 denominator 32768.  No third-party
+    audio package, resampler, or codec is involved in this reader.
+    """
+    if len(payload) < 12 or payload[:4] != b"RIFF" or payload[8:12] != b"WAVE":
+        raise ValueError("audio fixture must be a RIFF/WAVE file")
+    try:
+        with wave.open(io.BytesIO(payload), "rb") as reader:
+            if reader.getcomptype() != "NONE":
+                raise ValueError("audio fixture must use uncompressed PCM")
+            if reader.getnchannels() != 1:
+                raise ValueError("audio fixture must be mono")
+            if reader.getsampwidth() != 2:
+                raise ValueError("audio fixture must use 16-bit samples")
+            sample_rate = reader.getframerate()
+            if sample_rate != 16000:
+                raise ValueError("audio fixture must use a 16000 Hz sample rate")
+            frame_count = reader.getnframes()
+            frames = reader.readframes(frame_count)
+    except (EOFError, wave.Error) as error:
+        raise ValueError(f"audio fixture is not a valid PCM WAV: {error}") from error
+    if len(frames) != frame_count * 2:
+        raise ValueError("audio fixture PCM frame payload is truncated")
+    values = struct.unpack("<" + "h" * frame_count, frames)
+    return [[sample / 32768.0 for sample in values]], sample_rate
+
+
+def read_pinned_wav(path: Path) -> tuple[list[list[float]], int]:
+    return decode_pinned_wav_bytes(path.read_bytes())
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    def reject(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain an object")
+    return value
+
+
+def cli_path(raw: str | os.PathLike[str], label: str) -> Path:
+    """Parse a CLI path without losing lexical dot components."""
+    raw_text = os.fspath(raw)
+    if not isinstance(raw_text, str) or not raw_text.startswith("/") or raw_text in {"", "/"}:
+        raise ValueError(f"{label} must be an absolute non-root path")
+    components = raw_text.split("/")
+    if raw_text.endswith("/") or any(component in {"", ".", ".."} for component in components[1:]):
+        raise ValueError(f"{label} contains an unsafe lexical path component")
+    current = Path("/")
+    for component in components[1:-1]:
+        current /= component
+        if current.exists():
+            if current.is_symlink() or not current.is_dir():
+                raise ValueError(f"{label} has an unsafe symlink or non-directory ancestor")
+    return Path(raw_text)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def existing_path(path: Path, label: str) -> Path:
+    if not path.is_absolute() or path.is_symlink() or not path.exists():
+        raise ValueError(f"{label} must be an existing absolute non-symlink path")
+    resolved = path.resolve(strict=True)
+    if resolved != path:
+        raise ValueError(f"{label} must not contain symlink or relative path components")
+    return resolved
+
+
+def absent_path(path: Path, label: str) -> Path:
+    if not path.is_absolute() or path.exists() or path.is_symlink():
+        raise ValueError(f"{label} must be an absent absolute non-symlink path")
+    parent = path.parent
+    if parent.is_symlink() or not parent.is_dir() or parent.resolve(strict=True) != parent:
+        raise ValueError(f"{label} parent must be an existing non-symlink directory")
+    if path.resolve(strict=False) != path:
+        raise ValueError(f"{label} must not contain symlink or relative path components")
+    return path
+
+
+def reject_overlap(candidate: Path, protected: list[tuple[str, Path]]) -> None:
+    candidate_text = str(candidate)
+    for label, path in protected:
+        path_text = str(path)
+        if candidate_text == path_text or candidate_text.startswith(path_text + os.sep) or path_text.startswith(candidate_text + os.sep):
+            raise ValueError(f"output path overlaps {label}")
+
+
+def _owned_regular_identity(path: Path, expected: tuple[int, int] | None = None) -> tuple[int, int]:
+    """Verify a regular file through an O_NOFOLLOW descriptor and return its inode."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        descriptor_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_stat.st_mode):
+            raise ValueError("temporary output is not a regular file")
+        identity = (descriptor_stat.st_dev, descriptor_stat.st_ino)
+        if expected is not None and identity != expected:
+            raise RuntimeError("file identity changed during output publication")
+        return identity
+    finally:
+        os.close(descriptor)
+
+
+def _unlink_owned(path: Path, expected: tuple[int, int]) -> None:
+    try:
+        if _owned_regular_identity(path, expected) == expected:
+            path.unlink()
+    except (FileNotFoundError, OSError, ValueError, RuntimeError):
+        # Never remove a path whose current inode is not ours.
+        pass
+
+
+def write_bytes_no_clobber(path: Path, data: bytes) -> None:
+    """Publish a complete file with an atomic same-directory no-clobber claim."""
+    parent = path.parent
+    resolved_parent = parent.resolve(strict=True)
+    macos_var_alias = (
+        str(parent).startswith("/var/")
+        and resolved_parent == Path("/private") / parent.relative_to("/")
+    )
+    if parent.is_symlink() or not parent.is_dir() or (resolved_parent != parent and not macos_var_alias):
+        raise ValueError("output parent must be an existing canonical directory")
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=parent)
+    temporary = Path(temporary_name)
+    temporary_identity: tuple[int, int] | None = None
+    try:
+        temporary_identity = _owned_regular_identity(temporary)
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        identity = _owned_regular_identity(temporary, temporary_identity)
+        os.link(temporary, path, follow_symlinks=False)
+        try:
+            _owned_regular_identity(path, identity)
+        except (OSError, ValueError, RuntimeError):
+            _unlink_owned(path, identity)
+            raise
+        try:
+            directory_fd = os.open(parent, os.O_RDONLY)
+        except OSError:
+            pass
+        else:
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if temporary_identity is not None:
+            _unlink_owned(temporary, temporary_identity)
+
+
+def write_json_no_clobber(path: Path, payload: dict[str, Any]) -> None:
+    write_bytes_no_clobber(path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+
+
+def verify_inputs(source: Path, weights: Path, variant: str, gate: dict[str, Any]) -> dict[str, Any]:
+    if gate.get("status") != "APPROVED_FOR_VAST_REFERENCE" or gate.get("publication") != "NO_UPLOAD" or gate.get("blockers"):
+        raise ValueError("license/provenance gate is not approved for reference execution")
+    if variant not in CONFIGS:
+        raise ValueError(f"unsupported variant: {variant}")
+    upstream = gate.get("upstream")
+    if not isinstance(upstream, dict) or upstream.get("revision") != SOURCE_REVISION:
+        raise ValueError("upstream revision gate mismatch")
+    source = existing_path(source, "source-dir")
+    weights = existing_path(weights, "weights-dir")
+    if not (source / ".git").is_dir():
+        raise ValueError("source checkout must be a real git directory")
+    import subprocess
+
+    head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    if head != SOURCE_REVISION:
+        raise ValueError("source HEAD does not match the gate")
+    if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"], text=True):
+        raise ValueError("source checkout is dirty")
+    rows = gate.get("weights")
+    if not isinstance(rows, list):
+        raise ValueError("weight gate rows are missing")
+    if len(rows) != len(WEIGHT_ORDER) or [row.get("model_id") for row in rows] != list(WEIGHT_ORDER):
+        raise ValueError("weight gate member order drifted")
+    by_id = {row.get("model_id"): row for row in rows if isinstance(row, dict)}
+    for model_id in CONFIGS[variant]["ids"]:
+        row = by_id.get(model_id)
+        if not isinstance(row, dict):
+            raise ValueError(f"weight gate row missing: {model_id}")
+        filename = row.get("filename")
+        if not isinstance(filename, str) or not filename or Path(filename).name != filename:
+            raise ValueError(f"weight filename is not a plain basename: {model_id}")
+        path = weights / filename
+        if path.resolve(strict=False) != path:
+            raise ValueError(f"weight path contains a symlink or relative component: {filename}")
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"weight is missing or symlinked: {path}")
+        if sha256(path) != row["sha256"]:
+            raise ValueError(f"weight SHA-256 mismatch: {path.name}")
+    config_path = source / "demucs" / "remote" / CONFIGS[variant]["config"]
+    expected_config = upstream["config_sha256"][CONFIGS[variant]["config"]]
+    if not config_path.is_file() or sha256(config_path) != expected_config:
+        raise ValueError("variant config identity mismatch")
+    import subprocess
+    origin = subprocess.check_output(["git", "-C", str(source), "remote", "get-url", "origin"], text=True).strip().removesuffix("/").removesuffix(".git")
+    if origin != "https://github.com/facebookresearch/demucs":
+        raise ValueError("source origin does not match the gate")
+    if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"], text=True):
+        raise ValueError("source checkout is dirty")
+    role_blobs: dict[str, str] = {}
+    for role, expected_blob in upstream.get("roles", {}).items():
+        role_path = source / role
+        if not role_path.is_file() or role_path.is_symlink() or role_path.resolve(strict=True) != role_path:
+            raise ValueError(f"source role is missing or symlinked: {role}")
+        actual_blob = subprocess.check_output(["git", "-C", str(source), "rev-parse", f"HEAD:{role}"], text=True).strip()
+        if actual_blob != expected_blob:
+            raise ValueError(f"source role drifted: {role}")
+        role_blobs[role] = actual_blob
+    return {"repository": origin, "revision": SOURCE_REVISION, "origin": origin, "dirty": False, "role_blobs": role_blobs}
+
+
+def f32_tap(value: Any, name: str, raw_dir: Path, selected: set[str]) -> dict[str, Any] | None:
+    import torch
+
+    if not isinstance(value, torch.Tensor):
+        return None
+    data = value.detach().to(device="cpu", dtype=torch.float32).contiguous()
+    if sys.byteorder != "little":
+        raise ValueError("reference raw-f32 contract requires a little-endian VAST host")
+    full_count = int(data.numel())
+    truncated = not name.endswith(".stems") and full_count > MAX_INTERMEDIATE_TAP_ELEMENTS
+    raw_data = data.reshape(-1)[:MAX_INTERMEDIATE_TAP_ELEMENTS] if truncated else data.reshape(-1)
+    raw = raw_data.numpy().astype("<f4", copy=False).tobytes(order="C")
+    digest = hashlib.sha256(raw).hexdigest()
+    filename = f"{len(selected):04d}-{re.sub(r'[^A-Za-z0-9_.-]+', '_', name)}.f32"
+    raw_path = raw_dir / filename
+    if raw_path.exists() or raw_path.is_symlink():
+        raise ValueError(f"raw tap filename collision: {filename}")
+    write_bytes_no_clobber(raw_path, raw)
+    selected.add(name)
+    return {"name": name, "shape": [int(axis) for axis in data.shape], "count": full_count, "raw_count": int(raw_data.numel()), "bytes": len(raw), "sha256": digest, "raw_file": filename, "raw_offset": 0, "truncated": truncated}
+
+
+def tensor_taps(value: Any, name: str, raw_dir: Path, selected: set[str]) -> list[dict[str, Any]]:
+    if name in selected:
+        return []
+    if (tap := f32_tap(value, name, raw_dir, selected)) is not None:
+        return [tap]
+    if isinstance(value, (tuple, list)):
+        taps: list[dict[str, Any]] = []
+        for index, child in enumerate(value):
+            taps.extend(tensor_taps(child, f"{name}[{index}]", raw_dir, selected))
+        return taps
+    if isinstance(value, dict):
+        taps = []
+        for key in sorted(value):
+            taps.extend(tensor_taps(value[key], f"{name}.{key}", raw_dir, selected))
+        return taps
+    return []
+
+
+def load_official_model(source: Path, checkpoint: Path, model_class: Any, model_id: str) -> Any:
+    import numpy as np
+    import torch
+    from fractions import Fraction
+
+    expected = {"demucs.htdemucs.HTDemucs", "fractions.Fraction"}
+    if model_id != "5c90dfd2":
+        expected |= {"numpy.core.multiarray.scalar", "numpy.dtype"}
+    scanner = getattr(torch.serialization, "get_unsafe_globals_in_checkpoint", None)
+    if scanner is None or set(scanner(str(checkpoint))) != expected:
+        raise ValueError(f"static-global set mismatch for {checkpoint.name}")
+    safe: list[Any] = [(model_class, "demucs.htdemucs.HTDemucs"), Fraction]
+    if "numpy.core.multiarray.scalar" in expected:
+        numpy_core = getattr(np, "_core", None)
+        if numpy_core is None:
+            raise ValueError("NumPy _core implementation is unavailable")
+        safe.extend([(numpy_core.multiarray.scalar, "numpy.core.multiarray.scalar"), np.dtype, type(np.dtype(np.float64))])
+    with torch.serialization.safe_globals(safe):
+        package = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    if type(package) is not dict or tuple(package) != ("klass", "args", "kwargs", "state", "training_args", "metrics"):
+        raise ValueError(f"package schema mismatch: {checkpoint.name}")
+    if package["klass"] is not model_class:
+        raise ValueError(f"package class mismatch: {checkpoint.name}")
+    if type(package["args"]) is not tuple or type(package["kwargs"]) is not dict or type(package["state"]) is not dict:
+        raise ValueError(f"package field types mismatch: {checkpoint.name}")
+    model = model_class(*package["args"], **package["kwargs"])
+    model.load_state_dict(package["state"], strict=True)
+    model.eval()
+    if model.cac is not True or model.wiener_iters != 0 or model.end_iters != 0:
+        raise ValueError(
+            f"fixed reference route requires cac=True, wiener_iters=0, end_iters=0: {checkpoint.name}"
+        )
+    return model
+
+
+def run(source: Path, weights: Path, fixture: Path, fixture_sha: str, variant: str, output: Path, raw_dir: Path, gate_path: Path) -> None:
+    gate_path = existing_path(gate_path, "gate")
+    source = existing_path(source, "source-dir")
+    weights = existing_path(weights, "weights-dir")
+    fixture = existing_path(fixture, "audio-fixture")
+    output = absent_path(output, "output")
+    raw_dir = absent_path(raw_dir, "raw-dir")
+    reject_overlap(output, [("source-dir", source), ("weights-dir", weights), ("fixture", fixture), ("gate", gate_path)])
+    reject_overlap(raw_dir, [("source-dir", source), ("weights-dir", weights), ("fixture", fixture), ("gate", gate_path), ("output", output)])
+    gate = load_json(gate_path)
+    source_evidence = verify_inputs(source, weights, variant, gate)
+    if sha256(fixture) != fixture_sha:
+        raise ValueError("audio fixture SHA-256 mismatched")
+    if len(fixture_sha) != 64 or any(char not in "0123456789abcdef" for char in fixture_sha):
+        raise ValueError("audio fixture SHA-256 must be lowercase 64-hex")
+
+    dependency_path = existing_path(Path(__file__).with_name("dependency_audit.json"), "dependency-audit")
+    pyproject_path = existing_path(Path(__file__).with_name("pyproject.toml"), "pyproject")
+    lock_path = existing_path(Path(__file__).with_name("uv.lock"), "uv.lock")
+    dependency = load_json(dependency_path)
+    dependency_gate = gate.get("dependency_audit")
+    if (dependency.get("status") != "APPROVED" or dependency.get("blockers")
+            or not isinstance(dependency_gate, dict)
+            or dependency_gate.get("status") != "APPROVED"
+            or dependency_gate.get("lock_sha256") != sha256(lock_path)
+            or dependency_gate.get("package_rows_sha256") != dependency.get("package_rows_sha256")
+            or dependency_gate.get("license_rows_sha256") != dependency.get("license_rows_sha256")):
+        raise ValueError("dependency audit is not approved")
+    if dependency_gate.get("pyproject_sha256") != sha256(pyproject_path):
+        raise ValueError("pyproject digest is not bound to gate")
+
+    openunmix_stub, filtering_stub, wiener_sentinel, wiener_calls = install_openunmix_stub()
+    sys.path.insert(0, str(source))
+    htdemucs = importlib.import_module("demucs.htdemucs")
+    hdemucs = importlib.import_module("demucs.hdemucs")
+    if (sys.modules.get("openunmix") is not openunmix_stub
+            or sys.modules.get("openunmix.filtering") is not filtering_stub
+            or getattr(htdemucs, "wiener", None) is not wiener_sentinel
+            or getattr(hdemucs, "wiener", None) is not wiener_sentinel):
+        raise RuntimeError("official HT-Demucs/HDemucs modules did not retain the fail-closed Wiener sentinel")
+    apply = importlib.import_module("demucs.apply")
+    waveform_rows, sample_rate = read_pinned_wav(fixture)
+    import torch
+    lameenc_stub = install_lameenc_stub()
+    torchaudio_stub = install_torchaudio_stub()
+    audio = importlib.import_module("demucs.audio")
+    if sys.modules.get("lameenc") is not lameenc_stub or sys.modules.get("torchaudio") is not torchaudio_stub:
+        raise RuntimeError("official audio helper did not retain the fail-closed dependency stubs")
+    waveform = torch.tensor(waveform_rows, dtype=torch.float32)
+    waveform = audio.convert_audio(waveform, sample_rate, 44100, 2)
+    waveform = waveform.unsqueeze(0)
+    config_path = source / "demucs" / "remote" / CONFIGS[variant]["config"]
+    yaml = importlib.import_module("yaml")
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict) or config.get("models") != list(CONFIGS[variant]["ids"]):
+        raise ValueError("official model config member order drifted")
+    if variant == "htdemucs_ft":
+        config_weights = config.get("weights")
+        expected_weights = [[1.0 if i == j else 0.0 for j in range(len(FT_IDS))] for i in range(len(FT_IDS))]
+        if config_weights != expected_weights:
+            raise ValueError("official FT BagOfModels weights drifted")
+    elif "weights" in config:
+        raise ValueError("6s config unexpectedly defines bag weights")
+    bag_weights = config.get("weights") if variant == "htdemucs_ft" else None
+    model_rows = {row["model_id"]: row for row in gate["weights"]}
+    raw_dir.mkdir()
+    taps: list[dict[str, Any]] = []
+    models: list[Any] = []
+    hook_contracts: list[dict[str, Any]] = []
+    member_wiener_guards: list[dict[str, Any]] = []
+    for model_id in CONFIGS[variant]["ids"]:
+        model = load_official_model(source, weights / model_rows[model_id]["filename"], htdemucs.HTDemucs, model_id)
+        models.append(model)
+        member_wiener_guards.append({"model_id": model_id, "cac": model.cac, "wiener_iters": model.wiener_iters, "end_iters": model.end_iters})
+        hooks = []
+        selected: set[str] = set()
+        hook_seen: set[str] = set()
+        hook_labels: set[str] = set()
+        hook_calls: dict[str, int] = {}
+
+        def capture_hook(label: str):
+            hook_labels.add(label)
+            def capture(_module: Any, _inputs: Any, value: Any) -> None:
+                hook_calls[label] = hook_calls.get(label, 0) + 1
+                if label in hook_seen:
+                    return
+                hook_seen.add(label)
+                taps.extend(tensor_taps(value, f"{model_id}.{label}", raw_dir, selected))
+            return capture
+
+        for prefix, module_list in (("encoder", model.encoder), ("tencoder", model.tencoder), ("decoder", model.decoder), ("tdecoder", model.tdecoder)):
+            selected_indices = {0, len(module_list) - 1} if module_list else set()
+            for index in sorted(selected_indices):
+                module = module_list[index]
+                hooks.append(module.register_forward_hook(capture_hook(f"{prefix}.{index}")))
+        if model.crosstransformer is not None:
+            hooks.append(model.crosstransformer.register_forward_hook(capture_hook("crosstransformer")))
+        with torch.no_grad():
+            spec = model._spec(waveform)
+            taps.extend(tensor_taps(spec.real, f"{model_id}.stft.re", raw_dir, selected))
+            taps.extend(tensor_taps(spec.imag, f"{model_id}.stft.im", raw_dir, selected))
+            stems = apply.apply_model(
+                model, waveform, shifts=0, split=True, overlap=0.25,
+                transition_power=1.0, progress=False, device="cpu", num_workers=0,
+                segment=None,
+            )
+        if hook_seen != hook_labels or any(hook_calls.get(label, 0) < 1 for label in hook_labels):
+            raise ValueError(f"selected hook did not run: {model_id}")
+        taps.extend(tensor_taps(stems, f"{model_id}.stems", raw_dir, selected))
+        for hook in hooks:
+            hook.remove()
+        hook_contracts.append({"model_id": model_id, "first_invocation_only": True, "calls": hook_calls, "selected": sorted(hook_seen)})
+        del model, stems
+    bag = apply.BagOfModels(models, bag_weights)
+    effective_bag_weights = [list(map(float, row)) for row in bag.weights]
+    with torch.no_grad():
+        bag_stems = apply.apply_model(
+            bag, waveform, shifts=0, split=True, overlap=0.25,
+            transition_power=1.0, progress=False, device="cpu", num_workers=0,
+            segment=None,
+        )
+    bag_taps: set[str] = set()
+    taps.extend(tensor_taps(bag_stems, "bag.stems", raw_dir, bag_taps))
+    expected_terminals = {f"{model_id}.stems" for model_id in CONFIGS[variant]["ids"]} | {"bag.stems"}
+    if not expected_terminals.issubset({tap["name"] for tap in taps}):
+        raise ValueError("terminal stem taps are incomplete")
+    del bag, bag_stems, models
+    if wiener_calls:
+        raise RuntimeError("openunmix Wiener sentinel was called; reference route is invalid")
+    report = {
+        "format": "vokra-htdemucs-multi-reference-report-v1",
+        "status": "REPORT_ONLY",
+        "publication": "NO_UPLOAD",
+        "source_revision": SOURCE_REVISION,
+        "variant": variant,
+        "source_count": CONFIGS[variant]["sources"],
+        "audio_fixture": {"path": str(fixture), "sha256": fixture_sha, "resampled_rate": 44100, "channels": 2},
+        "raw_f32": {"directory": str(raw_dir), "dtype": "f32", "endianness": "little"},
+        "gate": {"path": str(gate_path), "sha256": sha256(gate_path), "status": gate["status"], "publication": gate["publication"]},
+        "dependency_audit": {"path": str(dependency_path), "sha256": sha256(dependency_path), "status": dependency["status"], "package_rows_sha256": dependency["package_rows_sha256"], "license_rows_sha256": dependency["license_rows_sha256"]},
+        "pyproject": {"path": str(pyproject_path), "sha256": sha256(pyproject_path), "status": "PINNED"},
+        "uv_lock": {"path": str(lock_path), "sha256": sha256(lock_path), "status": "LOCK_IDENTITY_OK", "gate_sha256": gate["dependency_audit"]["lock_sha256"]},
+        "provenance": {
+            "source": source_evidence,
+            "config": {
+                "path": str(config_path.relative_to(source)),
+                "sha256": gate["upstream"]["config_sha256"][CONFIGS[variant]["config"]],
+                "models": list(CONFIGS[variant]["ids"]),
+            },
+            "checkpoints": [
+                {
+                    "model_id": model_id,
+                    "filename": model_rows[model_id]["filename"],
+                    "sha256": model_rows[model_id]["sha256"],
+                    "tensor_count": model_rows[model_id]["tensor_count"],
+                    "parameter_count": model_rows[model_id]["parameter_count"],
+                }
+                for model_id in CONFIGS[variant]["ids"]
+            ],
+        },
+        "contracts": {
+            "members": [{"model_id": model_id, "terminal_tap": f"{model_id}.stems"} for model_id in CONFIGS[variant]["ids"]],
+            "wiener_guard": {
+                "stub_package": "openunmix",
+                "stub_module": "openunmix.filtering",
+                "symbol": "wiener",
+                "sentinel_identity_bound": True,
+                "bindings": [
+                    {"module": "demucs.htdemucs", "identity": getattr(htdemucs, "wiener", None) is wiener_sentinel},
+                    {"module": "demucs.hdemucs", "identity": getattr(hdemucs, "wiener", None) is wiener_sentinel},
+                ],
+                "sentinel_calls": len(wiener_calls),
+                "output_numeric_path": "UNREACHABLE_SENTINEL; cac=True with zero wiener_iters/end_iters",
+                "members": member_wiener_guards,
+            },
+            "intermediate_tap_selection": {"hook_first_invocation_only": True, "max_elements": MAX_INTERMEDIATE_TAP_ELEMENTS, "members": hook_contracts},
+            "bag": {
+                "terminal_tap": "bag.stems",
+                "models": list(CONFIGS[variant]["ids"]),
+                "weights": effective_bag_weights,
+                "apply_model": {"shifts": 0, "split": True, "overlap": 0.25, "transition_power": 1.0, "segment": None},
+            },
+        },
+        "taps": taps,
+    }
+    write_json_no_clobber(output, report)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--source-dir")
+    parser.add_argument("--weights-dir")
+    parser.add_argument("--audio-fixture")
+    parser.add_argument("--audio-sha256")
+    parser.add_argument("--variant", choices=sorted(CONFIGS))
+    parser.add_argument("--output")
+    parser.add_argument("--raw-dir")
+    parser.add_argument("--gate", default=str(Path(__file__).with_name("license_gate_manifest.json")))
+    args = parser.parse_args()
+    if args.self_test:
+        if any(value is not None for value in (args.source_dir, args.weights_dir, args.audio_fixture, args.audio_sha256, args.variant, args.output, args.raw_dir)):
+            parser.error("--self-test accepts no execution options")
+        assert tuple(CONFIGS["htdemucs_ft"]["ids"]) == FT_IDS
+        assert tuple(CONFIGS["htdemucs_6s"]["ids"]) == SIX_IDS
+        assert CONFIGS["htdemucs_ft"]["sources"] == 4 and CONFIGS["htdemucs_6s"]["sources"] == 6
+        assert MAX_INTERMEDIATE_TAP_ELEMENTS == 1 << 20
+        assert "truncated" in f32_tap.__code__.co_varnames
+        wav = io.BytesIO()
+        with wave.open(wav, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(16000)
+            writer.writeframes(struct.pack("<hhh", -32768, 0, 32767))
+        decoded, rate = decode_pinned_wav_bytes(wav.getvalue())
+        assert rate == 16000 and decoded == [[-1.0, 0.0, 32767 / 32768.0]]
+        with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-taps-") as directory:
+            raw_dir = Path(directory).resolve(strict=True)
+            raw_path = raw_dir / "0000-fixture.stems.f32"
+            write_bytes_no_clobber(raw_path, b"\x00\x00\x80?\x00\x00\x00\xc0")
+            original_raw = raw_path.read_bytes()
+            try:
+                write_bytes_no_clobber(raw_path, b"replacement")
+            except FileExistsError:
+                pass
+            else:
+                raise AssertionError("existing raw tap was overwritten")
+            assert raw_path.read_bytes() == original_raw
+            assert not list(raw_dir.glob(f".{raw_path.name}.*.tmp"))
+            report_path = raw_dir / "report.json"
+            write_json_no_clobber(report_path, {"status": "REPORT_ONLY"})
+            original_report = report_path.read_bytes()
+            try:
+                write_json_no_clobber(report_path, {"status": "replacement"})
+            except FileExistsError:
+                pass
+            else:
+                raise AssertionError("existing report was overwritten")
+            assert report_path.read_bytes() == original_report
+            assert not list(raw_dir.glob(f".{report_path.name}.*.tmp"))
+            original_identity = _owned_regular_identity
+            race_path = raw_dir / "race.json"
+            replaced = False
+
+            def replace_competing_final(path: Path, expected: tuple[int, int] | None = None) -> tuple[int, int]:
+                nonlocal replaced
+                if path == race_path and expected is not None and not replaced:
+                    path.unlink()
+                    path.write_bytes(b"competitor")
+                    replaced = True
+                return original_identity(path, expected)
+
+            globals()["_owned_regular_identity"] = replace_competing_final
+            try:
+                write_json_no_clobber(race_path, {"status": "replacement"})
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("replacement final was accepted")
+            finally:
+                globals()["_owned_regular_identity"] = original_identity
+            assert race_path.read_bytes() == b"competitor"
+            assert not list(raw_dir.glob(f".{race_path.name}.*.tmp"))
+            cleanup_path = raw_dir / "cleanup.json"
+            original_unlink = Path.unlink
+
+            def deny_cleanup(self: Path, *args: Any, **kwargs: Any) -> None:
+                raise PermissionError("self-test cleanup failure")
+
+            Path.unlink = deny_cleanup  # type: ignore[method-assign]
+            try:
+                write_json_no_clobber(cleanup_path, {"complete": True})
+            finally:
+                Path.unlink = original_unlink  # type: ignore[method-assign]
+            assert cleanup_path.read_bytes() == b'{\n  "complete": true\n}\n'
+            for temporary in raw_dir.glob(f".{cleanup_path.name}.*.tmp"):
+                temporary.unlink()
+        with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-cli-") as directory:
+            root = Path(directory).resolve(strict=True)
+            for raw in (str(root / ".." / "output"), "relative/output", "/"):
+                try:
+                    cli_path(raw, "output")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("unsafe CLI path was accepted")
+            real = root / "real"
+            real.mkdir()
+            (root / "link").symlink_to(real, target_is_directory=True)
+            try:
+                cli_path(str(root / "link" / "output"), "output")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("symlink-ancestor CLI path was accepted")
+        for malformed in (b"RIFX" + wav.getvalue()[4:], wav.getvalue()[:8] + b"NOPE" + wav.getvalue()[12:]):
+            try:
+                decode_pinned_wav_bytes(malformed)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("malformed WAV was accepted")
+        for channels, width, sample_rate, frames in (
+            (2, 2, 16000, b"\x00\x00\x00\x00"),
+            (1, 1, 16000, b"\x00"),
+            (1, 2, 8000, b"\x00\x00"),
+        ):
+            malformed_wav = io.BytesIO()
+            with wave.open(malformed_wav, "wb") as writer:
+                writer.setnchannels(channels)
+                writer.setsampwidth(width)
+                writer.setframerate(sample_rate)
+                writer.writeframes(frames)
+            try:
+                decode_pinned_wav_bytes(malformed_wav.getvalue())
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("WAV contract violation was accepted")
+        stub = install_lameenc_stub()
+        torchaudio_stub = install_torchaudio_stub()
+        openunmix_stub, filtering_stub, wiener_sentinel, wiener_calls = install_openunmix_stub()
+        assert (sys.modules["lameenc"] is stub and sys.modules["torchaudio"] is torchaudio_stub
+                and sys.modules["openunmix"] is openunmix_stub
+                and sys.modules["openunmix.filtering"] is filtering_stub
+                and filtering_stub.wiener is wiener_sentinel)
+        imported_wiener: dict[str, Any] = {}
+        exec("from openunmix.filtering import wiener", imported_wiener)
+        assert imported_wiener["wiener"] is wiener_sentinel
+        try:
+            stub.Encoder
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("lameenc encoder attribute was exposed")
+        try:
+            torchaudio_stub.load
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("torchaudio loader attribute was exposed")
+        try:
+            wiener_sentinel(None)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("openunmix Wiener sentinel did not fail closed")
+        assert wiener_calls == [1]
+        try:
+            filtering_stub.resample
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("openunmix filtering exposed an unreviewed symbol")
+        source = Path(__file__).read_text(encoding="utf-8")
+        assert source.index("dependency_path =") < source.index("sys.path.insert")
+        assert source.index("openunmix_stub, filtering_stub, wiener_sentinel, wiener_calls = install_openunmix_stub()") < source.index('htdemucs = importlib.import_module("demucs.htdemucs")') < source.index('hdemucs = importlib.import_module("demucs.hdemucs")')
+        assert source.index("lameenc_stub = install_lameenc_stub()") < source.index("torchaudio_stub = install_torchaudio_stub()") < source.index('audio = importlib.import_module("demucs.audio")') < source.index("audio.convert_audio")
+        assert "effective_bag_weights" in source
+        assert '"gate_sha256"' in source
+        for token in ("RIFF/WAVE", "PCM16", "32768", "[channels, time]", "read_pinned_wav", "wiener_iters", "end_iters", "cac=True", "demucs.hdemucs", "sentinel_identity_bound", "bindings", "temporary_identity", "O_NOFOLLOW", "unlink_owned"):
+            assert token in source
+        tree = ast.parse(source)
+        forbidden_imports = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+        }
+        assert "demucs.audio" not in forbidden_imports
+        assert "lameenc" not in forbidden_imports
+        assert sum(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "import_module"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "demucs.audio"
+            for node in ast.walk(tree)
+        ) == 1
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "import_module"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "lameenc"
+            for node in ast.walk(tree)
+        )
+        assert "install_lameenc_stub" in source and "install_torchaudio_stub" in source and "install_openunmix_stub" in source
+        print("htdemucs multi reference dumper self-test: PASS")
+        return 0
+    required = {
+        "--source-dir": args.source_dir,
+        "--weights-dir": args.weights_dir,
+        "--audio-fixture": args.audio_fixture,
+        "--audio-sha256": args.audio_sha256,
+        "--variant": args.variant,
+        "--output": args.output,
+        "--raw-dir": args.raw_dir,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        parser.error("missing required options: " + ", ".join(missing))
+    try:
+        source_dir = cli_path(args.source_dir, "source-dir")
+        weights_dir = cli_path(args.weights_dir, "weights-dir")
+        audio_fixture = cli_path(args.audio_fixture, "audio-fixture")
+        output = cli_path(args.output, "output")
+        raw_dir = cli_path(args.raw_dir, "raw-dir")
+        gate = cli_path(args.gate, "gate")
+    except ValueError as error:
+        parser.error(str(error))
+    try:
+        run(source_dir, weights_dir, audio_fixture, args.audio_sha256, args.variant, output, raw_dir, gate)
+    except (AssertionError, KeyError, OSError, RuntimeError, TypeError, ValueError, ImportError) as error:
+        print(f"htdemucs reference report BLOCKED: {error}", file=sys.stderr)
+        return 2
+    print(f"wrote report-only evidence: {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

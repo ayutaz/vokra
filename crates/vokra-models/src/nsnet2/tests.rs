@@ -12,7 +12,7 @@
 use super::*;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile, chunks};
+use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile, GgufMetadataValue, chunks};
 
 /// A tiny NSNet2-shaped config: `n_fft=8`, `hop=4`, `win=8`, `n_bins=5`,
 /// `hidden=3`, `fc1=fc2=4`, `sample_rate=8000`. Small enough that the
@@ -40,11 +40,17 @@ where
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, DEFAULT_NAME);
-    b.add_string(chunks::KEY_PROVENANCE_LICENSE, "mit");
+    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    b.add_string(chunks::KEY_PROVENANCE_LICENSE, "cc-by-4.0");
     b.add_string(
         chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
-        LicenseClass::Permissive.as_str(),
+        LicenseClass::AttributionRequired.as_str(),
     );
+    b.add_string(chunks::KEY_PROVENANCE_MODEL_ID, DEFAULT_NAME);
+    b.add_string(chunks::KEY_PROVENANCE_SOURCE, PROVENANCE_SOURCE);
+    b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
+    b.add_string(KEY_SOURCE_REVISION, UPSTREAM_REVISION);
+    b.add_string(KEY_SOURCE_SHA256, UPSTREAM_SHA256);
     b.add_u32(KEY_N_BINS, cfg.n_bins as u32);
     b.add_u32(KEY_HIDDEN_DIM, cfg.hidden_dim as u32);
     b.add_u32(KEY_FC1_DIM, cfg.fc1_dim as u32);
@@ -254,19 +260,33 @@ fn from_gguf_rejects_missing_hparam() {
 }
 
 #[test]
-fn exact_historical_public_contract_binds_to_canonical_weights() {
-    let gguf = legacy_public_gguf();
-    let model = Nsnet2V1::from_gguf(&gguf).expect("bind exact historical public contract");
-    assert_eq!(model.config(), &Nsnet2Config::upstream_default());
+fn from_gguf_rejects_unexpected_model_metadata() {
+    let cfg = tiny_config();
+    let gguf = build_gguf(&cfg, |b| {
+        b.add_string("vokra.model.unexpected", "drift");
+        add_all_zero_tensors(b, &cfg);
+    });
+    let err = Nsnet2V1::from_gguf(&gguf).unwrap_err();
+    assert!(format!("{err}").contains("unexpected canonical metadata key"));
+}
 
-    // The old artifact stores MatMul matrices as [in, out]. The runtime must
-    // transpose every one of them into the canonical [out, in] layout,
-    // including the square fc_2 matrix where a shape-only check cannot expose
-    // a missing transpose.
-    assert_eq!(model.weights.fc_in_weight[23 * 161 + 7], 1.25);
-    assert_eq!(model.weights.fc_1_weight[17 * 400 + 5], -2.5);
-    assert_eq!(model.weights.fc_2_weight[11 * 600 + 3], 3.75);
-    assert_eq!(model.weights.mask_weight[13 * 600 + 9], -4.5);
+#[test]
+fn from_gguf_rejects_wrong_canonical_hparam_type() {
+    let cfg = tiny_config();
+    let gguf = build_gguf(&cfg, |b| {
+        b.add_metadata(KEY_N_FFT, GgufMetadataValue::U64(cfg.n_fft as u64));
+        add_all_zero_tensors(b, &cfg);
+    });
+    let err = Nsnet2V1::from_gguf(&gguf).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains(KEY_N_FFT) && msg.contains("exact UINT32"));
+}
+
+#[test]
+fn historical_public_contract_is_rejected_for_provenance_mismatch() {
+    let gguf = legacy_public_gguf();
+    let error = Nsnet2V1::from_gguf(&gguf).expect_err("legacy mismatched provenance must fail");
+    assert!(error.to_string().contains("provenance mismatch"));
 }
 
 #[test]

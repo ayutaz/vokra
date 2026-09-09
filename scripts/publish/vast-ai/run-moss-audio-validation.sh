@@ -8,7 +8,10 @@ DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/moss_audio"
+REFERENCE_PROJECT="$PARITY_PROJECT/api_smoke"
 REFERENCE_DUMPER="$PARITY_PROJECT/dump_reference.py"
+PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
+PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 REFERENCE_AUDIO="$VOKRA_ROOT/tests/parity/utmos/ref-clip.wav"
 SOURCE_REPO="https://github.com/OpenMOSS/MOSS-Audio.git"
 SOURCE_REVISION="5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883"
@@ -19,6 +22,9 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 MIN_VAST_MEM_KIB=120000000
 MIN_FREE_DISK_KIB=150000000
 REFERENCE_AUDIO_SHA256="241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
+REFERENCE_FILES=(manifest.txt pcm.f32le prompt_ids.u32le primary_audio.f32le \
+  deepstack_audio_0.f32le deepstack_audio_1.f32le deepstack_audio_2.f32le \
+  generated_ids.u32le prompt.txt result_text.txt environment.json source_files.json)
 
 log() { printf '[moss-audio-vast] %s\n' "$*" >&2; }
 step() { printf '\n[moss-audio-vast] ==== %s ====\n' "$*" >&2; }
@@ -26,7 +32,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-moss-audio-validation.sh --variant <4b|8b|all> [--work-dir <empty-dir>]
+usage: run-moss-audio-validation.sh --variant <4b|8b|all> --approval-evidence <file> --api-smoke-evidence <file> --api-smoke-sha256 <64-hex> --expected-head <40-hex> [--work-dir <absent-dir>]
        run-moss-audio-validation.sh --self-test
 
 VAST-only, non-publishing gate for the two pinned MOSS-Audio Instruct
@@ -36,9 +42,11 @@ reference through the official OpenMOSS model and processor, and compares
 Vokra CPU audio projections, prompt ids, greedy ids and decoded text. It then
 runs workspace and Apple Metal cross-build verification once.
 
-There is no publishing option or artifact-upload path. Pull only the small
-evidence directory, never the snapshots, merged checkpoints or GGUFs. Destroy
-the VAST instance after the evidence is recovered; do not merely stop it.
+There is no publishing option or artifact-upload path. Transfer the large
+GGUF/reference packets and approval evidence directly from VAST to the
+disposable Apple host; recover only the small logs and summaries locally.
+Destroy the VAST instance after those small logs are recovered; do not merely
+stop it.
 EOF
 }
 
@@ -62,6 +70,14 @@ variant_model_kind() {
   case "$1" in
     4b) printf '%s\n' 'moss-audio-4b-instruct' ;;
     8b) printf '%s\n' 'moss-audio-8b-instruct' ;;
+    *) die "unknown variant $1" ;;
+  esac
+}
+
+variant_config_sha256() {
+  case "$1" in
+    4b) printf '%s\n' 'e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa' ;;
+    8b) printf '%s\n' '535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536' ;;
     *) die "unknown variant $1" ;;
   esac
 }
@@ -109,12 +125,50 @@ sha256_file() {
   fi
 }
 
+reference_packet_sha256() {
+  local directory="$1" listing file relative digest invalid=0
+  directory="${directory%/}"
+  [[ -d "$directory" && ! -L "$directory" ]] || die "reference packet is missing or symlinked: $directory"
+  listing="$(mktemp "${TMPDIR:-/tmp}/moss-audio-packet.XXXXXX")"
+  while IFS= read -r -d '' file; do
+    if [[ -f "$file" && ! -L "$file" ]]; then
+      relative="${file#"$directory"/}"
+      printf '%s  %s\n' "$(sha256_file "$file")" "$relative" >> "$listing"
+    else
+      invalid=1
+    fi
+  done < <(find -P "$directory" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  if (( invalid != 0 )); then
+    rm -f "$listing"
+    die "reference packet contains a directory or symlink"
+    return 2
+  fi
+  digest="$(shasum -a 256 "$listing" | awk '{print $1}')"
+  rm -f "$listing"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "reference packet digest is malformed"
+  printf '%s\n' "$digest"
+}
+
+require_reference_packet() {
+  local directory="$1" expected_files actual_files name
+  [[ -d "$directory" && ! -L "$directory" ]] || die "reference packet root is missing or symlinked"
+  expected_files="$(printf '%s\n' "${REFERENCE_FILES[@]}" | sort)"
+  actual_files="$(find -P "$directory" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort)"
+  [[ "$actual_files" == "$expected_files" ]] || die "reference packet file closure is not exact"
+  for name in "${REFERENCE_FILES[@]}"; do
+    [[ -f "$directory/$name" && ! -L "$directory/$name" && -s "$directory/$name" ]] \
+      || die "reference packet entry is missing, symlinked, or empty: $name"
+  done
+}
+
 require_vast_host() {
   local mem_kib free_kib
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
     || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
   [[ "$(uname -s)" == "Linux" ]] \
     || die "MOSS-Audio checkpoint work is VAST/Linux-only; refusing $(uname -s)"
+  [[ "$(uname -m)" == "x86_64" ]] \
+    || die "MOSS-Audio checkpoint work requires Linux x86_64; refusing $(uname -m)"
   [[ -r /proc/meminfo ]] || die "/proc/meminfo is unavailable"
   mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
   [[ "$mem_kib" =~ ^[0-9]+$ ]] || die "could not read MemTotal"
@@ -131,11 +185,13 @@ require_vast_host() {
 
 require_tooling() {
   local tool preparer
-  for tool in uv cargo rustc rustup git awk find tee grep wc df; do
+  for tool in uv cargo cargo-deny cargo-audit rustc rustup git awk find tee grep wc df; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "MOSS-Audio parity uv.lock is missing"
+  [[ -f "$REFERENCE_PROJECT/pyproject.toml" && -f "$REFERENCE_PROJECT/uv.lock" && -f "$REFERENCE_PROJECT/api_smoke.py" ]] \
+    || die "patched MOSS-Audio API/reference project is missing"
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
   [[ -f "$REFERENCE_AUDIO" ]] || die "reference audio is missing"
   for preparer in "$(variant_preparer 4b)" "$(variant_preparer 8b)"; do
@@ -148,6 +204,94 @@ require_tooling() {
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
     die "VAST checkout must be clean so evidence names one exact commit"
   fi
+}
+
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be exactly 40 lowercase hex"
+  [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD 2>/dev/null)" || die "could not read checkout HEAD"
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual does not match --expected-head $expected"
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die "VAST checkout must be clean before any model work"
+}
+
+pre_sync_gate() {
+  local approval="$1" api_smoke_evidence="$2" api_smoke_sha256="$3" expected_head="$4" selection="$5"
+  command -v uv >/dev/null 2>&1 || die "uv is required before the MOSS-Audio gate"
+  [[ -f "$PARITY_PROJECT/uv.lock" && -f "$PARITY_PROJECT/pyproject.toml" && \
+    -f "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" ]] \
+    || die "MOSS-Audio pre-sync gate inputs are missing"
+  step "Validate exact MOSS-Audio closure before host/tooling/scratch/network work"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+      --project "$PARITY_PROJECT" --manifest "$PREFLIGHT_MANIFEST" \
+      --evidence "$approval" --api-smoke-evidence "$api_smoke_evidence" \
+      --api-smoke-sha256 "$api_smoke_sha256" --expected-head "$expected_head" \
+      --selected-variants "$selection" --api-smoke-project "$REFERENCE_PROJECT"
+}
+
+require_disjoint_work_dir() {
+  local work="$1" approval="$2" candidate root_real approval_parent approval_real
+  candidate="$(canonical_absent_path "$work")" || return 2
+  root_real="$(cd -P "$VOKRA_ROOT" 2>/dev/null && pwd)" || die "Vokra checkout is inaccessible"
+  approval_parent="$(cd -P "$(dirname "$approval")" 2>/dev/null && pwd)" || die "approval parent is inaccessible"
+  approval_real="$approval_parent/$(basename "$approval")"
+  [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && "$root_real/" != "$candidate/"* ]] || die "work-dir overlaps the checkout"
+  [[ "$candidate" != "$approval_real" && "$candidate/" != "$approval_real/"* && "$approval_real/" != "$candidate/"* ]] || die "work-dir overlaps approval evidence"
+}
+
+canonical_absent_path() {
+  local target="$1" current suffix component real lexical
+  [[ "$target" = /* ]] || target="$PWD/$target"
+  lexical="${target#/}"; current="/"
+  while [[ -n "$lexical" ]]; do
+    component="${lexical%%/*}"
+    if [[ "$lexical" == "$component" ]]; then lexical=""; else lexical="${lexical#*/}"; fi
+    [[ "$component" == "." || -z "$component" ]] && continue
+    [[ "$component" != ".." ]] || { die "work-dir path contains .."; return 2; }
+    current="${current%/}/$component"
+    if [[ -L "$current" ]]; then
+      real="$(cd -P "$current" 2>/dev/null && pwd)" || { die "work-dir path contains an inaccessible component"; return 2; }
+      case "$current:$real" in
+        /var:/private/var|/tmp:/private/tmp) current="$real" ;;
+        *) die "work-dir path contains a symlinked component"; return 2 ;;
+      esac
+    fi
+  done
+  current="$target"; suffix=""
+  while [[ ! -e "$current" && ! -L "$current" ]]; do
+    component="$(basename "$current")"; suffix="/$component$suffix"; current="$(dirname "$current")"
+  done
+  [[ -d "$current" && ! -L "$current" ]] || { die "work-dir has an inaccessible or symlinked existing parent"; return 2; }
+  real="$(cd -P "$current" 2>/dev/null && pwd)" || { die "work-dir parent is inaccessible"; return 2; }
+  printf '%s%s\n' "$real" "$suffix"
+}
+
+require_absent_work_dir() {
+  local work="$1" approval="$2"
+  require_disjoint_work_dir "$work" "$approval" || return 2
+  [[ ! -e "$work" && ! -L "$work" ]] || { die "--work-dir must be absent before validation: $work"; return 2; }
+}
+
+require_one_named_test_passed() {
+  local log_path="$1" test_name="$2" test_count named_count total_test_count result_count total_result_count
+  test_count="$(grep -Ec "^test ${test_name} \.\.\. ok$" "$log_path" || true)"
+  named_count="$(grep -Ec "^test ${test_name} \.\.\." "$log_path" || true)"
+  total_test_count="$(grep -Ec '^test [^ ]+ \.\.\.' "$log_path" || true)"
+  result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$log_path" || true)"
+  total_result_count="$(grep -Ec '^test result:' "$log_path" || true)"
+  [[ "$test_count" == 1 ]] || { die "expected exactly one passing $test_name"; return 2; }
+  [[ "$named_count" == 1 ]] || { die "expected exactly one total $test_name line"; return 2; }
+  [[ "$total_test_count" == 1 ]] || { die "expected exactly one total Cargo test line"; return 2; }
+  [[ "$result_count" == 1 ]] || { die "expected one standard Cargo result for $test_name"; return 2; }
+  [[ "$total_result_count" == 1 ]] || { die "expected exactly one total Cargo result line"; return 2; }
+}
+
+require_exact_cpu_sentinel() {
+  local log_path="$1" model_kind="$2" count family_count
+  family_count="$(grep -Ec "^MOSS_AUDIO_PARITY ${model_kind} CPU_vs_official " "$log_path" || true)"
+  count="$(grep -Ec "^MOSS_AUDIO_PARITY ${model_kind} CPU_vs_official token_ids=exact text=exact PASS$" "$log_path" || true)"
+  [[ "$family_count" == 1 && "$count" == 1 ]] || { die "expected exactly one complete CPU sentinel family for $model_kind"; return 2; }
 }
 
 record_environment() {
@@ -186,23 +330,22 @@ download_snapshot() {
   local repo="$1" revision="$2" output="$3"
   mkdir -p "$output"
   (
-    export HF_HUB_ENABLE_HF_TRANSFER=1
-    uv run --no-project --python 3.12 \
-      --with 'huggingface_hub<0.30' --with hf-transfer python -c \
+    VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4 \
+    UV_NO_CACHE=1 uv run --no-cache --project "$REFERENCE_PROJECT" --frozen --python 3.12 python -c \
       'import os,sys
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id=sys.argv[1],
     revision=sys.argv[2],
     local_dir=sys.argv[3],
-    allow_patterns=["LICENSE", "README.md", "config.json", "*.safetensors", "model.safetensors.index.json", "vocab.json", "merges.txt", "tokenizer_config.json", "chat_template.jinja", "generation_config.json", "processor_config.json"],
+    allow_patterns=["LICENSE", "config.json", "*.safetensors", "model.safetensors.index.json", "vocab.json", "merges.txt", "tokenizer_config.json", "chat_template.jinja", "generation_config.json", "processor_config.json"],
     token=os.environ.get("HF_TOKEN") or os.environ.get("HF"),
 )' "$repo" "$revision" "$output"
   )
 }
 
 run_variant() {
-  local variant="$1" work_dir="$2" evidence_dir="$3" source_dir="$4"
+  local variant="$1" work_dir="$2" evidence_dir="$3" source_dir="$4" expected_head="$5"
   local repo revision model_kind preparer snapshot merged gguf reference_dir
   local test_name gguf_env reference_env reference_threads parity_log
   repo="$(variant_repo "$variant")"
@@ -212,7 +355,7 @@ run_variant() {
   snapshot="$work_dir/source-$variant"
   merged="$snapshot/model.merged.safetensors"
   gguf="$work_dir/$model_kind.gguf"
-  reference_dir="$evidence_dir/reference-$variant"
+  reference_dir="$work_dir/reference-$variant"
   test_name="$(variant_test "$variant")"
   gguf_env="$(variant_gguf_env "$variant")"
   reference_env="$(variant_reference_env "$variant")"
@@ -221,25 +364,33 @@ run_variant() {
 
   step "Download $repo@$revision"
   download_snapshot "$repo" "$revision" "$snapshot"
+  step "Verify the exact downloaded $variant snapshot before any import or conversion"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+      --verify-snapshot --snapshot "$snapshot" --variant "$variant"
 
   step "Merge the pinned $variant sharded checkpoint"
-  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python \
+  VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4 \
+  UV_NO_CACHE=1 uv run --no-cache --project "$REFERENCE_PROJECT" --frozen --python 3.12 python \
     "$preparer" --input-dir "$snapshot" --output "$merged" --strict \
     2>&1 | tee "$evidence_dir/prepare-$variant.log"
   [[ -s "$merged" ]] || die "checkpoint merger emitted no file: $merged"
 
   step "Convert $model_kind without quantization or publication"
+  local license_spdx
+  license_spdx="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" --license-spdx --variant "$variant")" \
+    || die "fixed model license SPDX is unresolved for $variant"
   "$VOKRA_ROOT/target/release/vokra-cli" convert \
     --model "$model_kind" \
     --input "$merged" \
     --output "$gguf" \
-    --license apache-2.0 \
+    --license "$license_spdx" \
     2>&1 | tee "$evidence_dir/convert-$variant.log"
   [[ -s "$gguf" ]] || die "converter emitted no GGUF: $gguf"
 
   step "Generate independent official FP32 CPU reference for $variant"
   VOKRA_REFERENCE_TORCH_THREADS="$reference_threads" \
-    uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python \
+    VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4 \
+    UV_NO_CACHE=1 uv run --no-cache --project "$REFERENCE_PROJECT" --frozen --python 3.12 python \
       "$REFERENCE_DUMPER" \
       --variant "$variant" \
       --model-dir "$snapshot" \
@@ -248,15 +399,15 @@ run_variant() {
       --output "$reference_dir" \
       --max-new-tokens 4 \
       2>&1 | tee "$evidence_dir/reference-$variant.log"
+  require_reference_packet "$reference_dir"
 
   step "Compare Vokra CPU with official reference for $variant"
   env "$gguf_env=$gguf" "$reference_env=$reference_dir" RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
-      -p vokra-models --test moss_audio_real "$test_name" -- --exact --nocapture \
+  CARGO_NET_OFFLINE=true cargo test --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+      -p vokra-models --test moss_audio_real "$test_name" -- --ignored --exact --nocapture --test-threads=1 \
       2>&1 | tee "$parity_log"
-  grep -F "MOSS_AUDIO_PARITY $model_kind CPU_vs_official token_ids=exact text=exact PASS" \
-    "$parity_log" >/dev/null \
-    || die "expected exact-token parity marker is absent for $variant"
+  require_one_named_test_passed "$parity_log" "$test_name"
+  require_exact_cpu_sentinel "$parity_log" "$model_kind"
 
   {
     echo "variant=$variant"
@@ -264,25 +415,219 @@ run_variant() {
     echo "upstream_revision=$revision"
     echo "source_repo=$SOURCE_REPO"
     echo "source_revision=$SOURCE_REVISION"
+    echo "config_sha256=$(variant_config_sha256 "$variant")"
+    echo "checkpoint_file_identity=UNRESOLVED_REVIEW"
     echo "gguf_sha256=$(sha256_file "$gguf")"
     echo "reference_manifest_sha256=$(sha256_file "$reference_dir/manifest.txt")"
+    echo "reference_packet_sha256=$(reference_packet_sha256 "$reference_dir")"
     echo "numeric_bound=0.01"
     echo "greedy_ids=exact"
     echo "text=exact"
-    echo "verdict=PASS"
+    echo "cpu_vs_official=PASS"
+    echo "metal_vs_official=NOT_RUN"
+    echo "metal_vs_cpu=NOT_RUN"
+    echo "verdict=CPU_PASS_METAL_NOT_RUN"
+    echo "expected_head=$expected_head"
+    echo "transfer=GGUF_AND_REFERENCE_PACKET_DIRECT_TO_APPLE;SMALL_LOGS_RECOVERED_LOCALLY"
   } > "$evidence_dir/summary-$variant.txt"
 }
 
+write_apple_args() {
+  local output="$1" gguf_4b_sha="$2" reference_4b_sha="$3" gguf_8b_sha="$4" reference_8b_sha="$5" expected_head="$6"
+  {
+    printf '# Generated for the separate no-upload Apple validation step.\n'
+    printf '%q \\\n' 'scripts/verify/apple-silicon-moss-audio.sh'
+    printf "  --gguf-4b '%s' \\\n" '<APPLE_GGUF_4B_PATH>'
+    printf '  --gguf-4b-sha256 %q \\\n' "$gguf_4b_sha"
+    printf "  --reference-4b '%s' \\\n" '<APPLE_REFERENCE_4B_DIR>'
+    printf '  --reference-4b-sha256 %q \\\n' "$reference_4b_sha"
+    printf "  --gguf-8b '%s' \\\n" '<APPLE_GGUF_8B_PATH>'
+    printf '  --gguf-8b-sha256 %q \\\n' "$gguf_8b_sha"
+    printf "  --reference-8b '%s' \\\n" '<APPLE_REFERENCE_8B_DIR>'
+    printf '  --reference-8b-sha256 %q \\\n' "$reference_8b_sha"
+    printf '  --expected-head %q \\\n' "$expected_head"
+    printf "  --approval-evidence '<APPLE_APPROVAL_EVIDENCE>' \\\n"
+    printf "  --evidence-dir '<APPLE_EVIDENCE_DIR>'\n"
+  } > "$output"
+}
+
 run_self_test() {
-  local failed=0
+  local failed=0 temporary script_path="${BASH_SOURCE[0]}"
+  temporary="$(mktemp -d)"
+  trap 'rm -rf "$temporary"' EXIT
+  printf '{}\n' > "$temporary/path-approval.json"
+  mkdir -p "$temporary/nested-parent"
+  require_absent_work_dir "$temporary/nested-parent/model/work" "$temporary/path-approval.json" || failed=1
+  mkdir -p "$temporary/intermediate"
+  ln -s "$VOKRA_ROOT" "$temporary/intermediate/checkout-link"
+  if require_absent_work_dir "$temporary/intermediate/checkout-link/work" "$temporary/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  mkdir -p "$temporary/real/existing"
+  ln -s "$temporary/real" "$temporary/ancestor-link"
+  if require_absent_work_dir "$temporary/ancestor-link/existing/nested/new" "$temporary/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  ln -s "$temporary/missing-target" "$temporary/dangling-work"
+  if require_absent_work_dir "$temporary/dangling-work" "$temporary/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  if require_absent_work_dir "$VOKRA_ROOT/tools" "$temporary/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  if require_absent_work_dir "$temporary/path-approval.json/child" "$temporary/path-approval.json" >/dev/null 2>&1; then failed=1; fi
+  mkdir "$temporary/existing-empty"
+  if require_absent_work_dir "$temporary/existing-empty" "$temporary/path-approval.json" >/dev/null 2>&1; then failed=1; fi
   [[ "$(variant_repo 4b)" == "OpenMOSS-Team/MOSS-Audio-4B-Instruct" ]] || failed=1
   [[ "$(variant_revision 8b)" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$(variant_model_kind 8b)" == "moss-audio-8b-instruct" ]] || failed=1
+  [[ "$(variant_config_sha256 4b)" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$(variant_test 4b)" == "moss_audio_4b_cpu_matches_official_reference" ]] || failed=1
   [[ "$(variant_gguf_env 8b)" == "VOKRA_MOSS_AUDIO_8B_GGUF" ]] || failed=1
+  local packet="$temporary/reference-packet" packet_digest
+  mkdir "$packet"
+  printf 'a' > "$packet/a"
+  printf 'b' > "$packet/b"
+  packet_digest="$(reference_packet_sha256 "$packet")"
+  [[ "$packet_digest" =~ ^[0-9a-f]{64}$ ]] || failed=1
+  printf 'extra' > "$packet/extra"
+  [[ "$(reference_packet_sha256 "$packet")" != "$packet_digest" ]] || failed=1
+  rm -f "$packet/extra"
+  ln -s a "$packet/symlink"
+  if reference_packet_sha256 "$packet" >/dev/null 2>&1; then failed=1; fi
+  rm -f "$packet/symlink"
   if variant_repo bad >/dev/null 2>&1; then
     failed=1
   fi
+  for required in pre_sync_gate PREFLIGHT_MANIFEST "--api-smoke-evidence" "--api-smoke-sha256" \
+    "REFERENCE_PROJECT" "--api-smoke-project" "VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4" \
+    "--gguf-4b-sha256" \
+    "--reference-4b-sha256" "--gguf-8b-sha256" "--reference-8b-sha256" \
+    "--expected-head" \
+    "<APPLE_GGUF_4B_PATH>" "<APPLE_REFERENCE_4B_DIR>" "<APPLE_GGUF_8B_PATH>" \
+    "<APPLE_REFERENCE_8B_DIR>" "<APPLE_APPROVAL_EVIDENCE>" "<APPLE_EVIDENCE_DIR>" "--approval-evidence" "--verify-source" "--verify-snapshot" \
+    "--no-cache"; do
+    grep -F -- "$required" "$script_path" >/dev/null || failed=1
+  done
+  # shellcheck disable=SC2016 # Match the literal variable reference in the script.
+  if grep -Eq 'uv (run|sync).*--project "\$PARITY_PROJECT"' "$script_path"; then
+    log "self-test found a normal-path command still using the historical 5.5.0 project"
+    failed=1
+  fi
+  local log="$temporary/cargo.log"
+  printf '%s\n%s\n' \
+    'test moss_audio_4b_cpu_matches_official_reference ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' > "$log"
+  require_one_named_test_passed "$log" moss_audio_4b_cpu_matches_official_reference
+  printf '%s\n%s\n' \
+    'test moss_audio_4b_cpu_matches_official_reference ... FAILED' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' > "$log"
+  if require_one_named_test_passed "$log" moss_audio_4b_cpu_matches_official_reference >/dev/null 2>&1; then failed=1; fi
+  printf '%s\n%s\n%s\n' \
+    'test moss_audio_4b_cpu_matches_official_reference ... ok' \
+    'test moss_audio_8b_cpu_matches_official_reference ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' > "$log"
+  if require_one_named_test_passed "$log" moss_audio_4b_cpu_matches_official_reference >/dev/null 2>&1; then failed=1; fi
+  printf '%s\n%s\n%s\n' \
+    'test moss_audio_4b_cpu_matches_official_reference ... ok' \
+    'test moss_audio_4b_cpu_matches_official_reference ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' > "$log"
+  if require_one_named_test_passed "$log" moss_audio_4b_cpu_matches_official_reference >/dev/null 2>&1; then failed=1; fi
+  printf '%s\n%s\n%s\n' \
+    'test moss_audio_4b_cpu_matches_official_reference ... ok' \
+    'test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' > "$log"
+  if require_one_named_test_passed "$log" moss_audio_4b_cpu_matches_official_reference >/dev/null 2>&1; then failed=1; fi
+  printf '%s\n%s\n' \
+    'test moss_audio_4b_cpu_matches_official_reference ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.2x' > "$log"
+  if require_one_named_test_passed "$log" moss_audio_4b_cpu_matches_official_reference >/dev/null 2>&1; then failed=1; fi
+  local sentinel="MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS"
+  printf '%s\n' "$sentinel" > "$log"
+  require_exact_cpu_sentinel "$log" moss-audio-4b-instruct
+  printf '%s\n%s\n' "$sentinel" "$sentinel" > "$log"
+  if require_exact_cpu_sentinel "$log" moss-audio-4b-instruct >/dev/null 2>&1; then failed=1; fi
+  printf 'prefix%s\n' "$sentinel" > "$log"
+  if require_exact_cpu_sentinel "$log" moss-audio-4b-instruct >/dev/null 2>&1; then failed=1; fi
+  printf '%s suffix\n' "$sentinel" > "$log"
+  if require_exact_cpu_sentinel "$log" moss-audio-4b-instruct >/dev/null 2>&1; then failed=1; fi
+  printf '%s\n%s\n' "$sentinel" "${sentinel/PASS/FAIL}" > "$log"
+  if require_exact_cpu_sentinel "$log" moss-audio-4b-instruct >/dev/null 2>&1; then failed=1; fi
+
+  local fake_root="$temporary/fake-checkout" fake_home="$temporary/fake-home"
+  local fake_bin="$fake_home/.local/bin" fake_host_bin="$temporary/fake-host-bin" trace="$temporary/trace.log"
+  local fake_scratch="$temporary/scratch" fake_work="$fake_root/work" rc real_uv
+  real_uv="$(command -v uv)"
+  mkdir -p "$fake_root/tools/parity/moss_audio" "$fake_bin" "$fake_host_bin"
+  cp "$PARITY_PROJECT/uv.lock" "$fake_root/tools/parity/moss_audio/uv.lock"
+  cp "$PARITY_PROJECT/pyproject.toml" "$fake_root/tools/parity/moss_audio/pyproject.toml"
+  cp "$PREFLIGHT_GATE" "$fake_root/tools/parity/moss_audio/preflight_gate.py"
+  cp "$PREFLIGHT_MANIFEST" "$fake_root/tools/parity/moss_audio/license_gate_manifest.json"
+  printf 'invalid approval\n' > "$fake_root/approval.json"
+  cp "$script_path" "$fake_root/run-worker.sh"
+  cat > "$fake_bin/uv" <<'EOF'
+#!/usr/bin/env bash
+printf 'uv %s\n' "$*" >> "${MOSS_AUDIO_TRACE:?}"
+exec "${MOSS_AUDIO_REAL_UV:?}" "$@"
+EOF
+  chmod +x "$fake_bin/uv"
+  cat > "$fake_host_bin/uname" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -s) printf 'Linux\n' ;;
+  -m) printf 'aarch64\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$fake_host_bin/uname"
+  git -C "$fake_root" init -q
+  git -C "$fake_root" config user.email self-test@example.invalid
+  git -C "$fake_root" config user.name self-test
+  git -C "$fake_root" add .
+  git -C "$fake_root" commit -qm baseline
+  printf 'dirty checkout must not outrank the gate\n' > "$fake_root/dirty.txt"
+  set +e
+  HOME="$fake_home" PATH="$fake_host_bin:$fake_bin:$PATH" MOSS_AUDIO_TRACE="$trace" \
+    MOSS_AUDIO_REAL_UV="$real_uv" VOKRA_ROOT="$fake_root" \
+    VOKRA_SCRATCH="$fake_scratch" VOKRA_PUBLISH_ON_VAST=1 \
+    bash "$fake_root/run-worker.sh" --variant 4b --work-dir "$fake_work" \
+      --approval-evidence "$fake_root/approval.json" --expected-head "$(git -C "$fake_root" rev-parse HEAD)" >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" == 2 && ! -e "$fake_work" && ! -e "$fake_scratch" ]] || failed=1
+  [[ ! -e "$trace" || ! -s "$trace" ]] || failed=1
+  if [[ -e "$trace" ]] && grep -Eq 'uv sync|git clone|snapshot_download|cargo |cuda' "$trace"; then failed=1; fi
+  local args_file="$temporary/apple.args"
+  local hash_4b hash_ref_4b hash_8b hash_ref_8b
+  hash_4b="$(printf 'a%.0s' {1..64})"
+  hash_ref_4b="$(printf 'b%.0s' {1..64})"
+  hash_8b="$(printf 'c%.0s' {1..64})"
+  hash_ref_8b="$(printf 'd%.0s' {1..64})"
+  local fake_head
+  fake_head="$(git -C "$fake_root" rev-parse HEAD)"
+  write_apple_args "$args_file" "$hash_4b" "$hash_ref_4b" "$hash_8b" "$hash_ref_8b" "$fake_head"
+  grep -F '<APPLE_GGUF_4B_PATH>' "$args_file" >/dev/null || failed=1
+  grep -F '<APPLE_REFERENCE_4B_DIR>' "$args_file" >/dev/null || failed=1
+  grep -F '<APPLE_GGUF_8B_PATH>' "$args_file" >/dev/null || failed=1
+  grep -F '<APPLE_REFERENCE_8B_DIR>' "$args_file" >/dev/null || failed=1
+  grep -F -- "--gguf-4b '<APPLE_GGUF_4B_PATH>'" "$args_file" >/dev/null || failed=1
+  grep -F -- "--reference-4b '<APPLE_REFERENCE_4B_DIR>'" "$args_file" >/dev/null || failed=1
+  grep -F -- "--gguf-8b '<APPLE_GGUF_8B_PATH>'" "$args_file" >/dev/null || failed=1
+  grep -F -- "--reference-8b '<APPLE_REFERENCE_8B_DIR>'" "$args_file" >/dev/null || failed=1
+  bash -n "$args_file" || failed=1
+  grep -F -- "$hash_4b" "$args_file" >/dev/null || failed=1
+  grep -F -- "$hash_ref_4b" "$args_file" >/dev/null || failed=1
+  grep -F -- "$hash_8b" "$args_file" >/dev/null || failed=1
+  grep -F -- "$hash_ref_8b" "$args_file" >/dev/null || failed=1
+  grep -F -- "$fake_head" "$args_file" >/dev/null || failed=1
+  if grep -F "$fake_root" "$args_file" >/dev/null || grep -F "$temporary" "$args_file" >/dev/null; then failed=1; fi
+  # shellcheck disable=SC2086 # Each case intentionally models argv tokenization.
+  for bad_args in \
+    "--self-test --approval-evidence x" \
+    "--self-test --self-test" \
+    "--variant 4b --variant 8b" \
+    "--expected-head 0000000000000000000000000000000000000000 --expected-head 0000000000000000000000000000000000000000" \
+    "--api-smoke-evidence x --api-smoke-evidence y" \
+    "--api-smoke-sha256 $hash_4b --api-smoke-sha256 $hash_4b" \
+    "--approval-evidence" \
+    "--approval-evidence --work-dir x" \
+    "--unknown x"; do
+    if bash "$script_path" $bad_args >/dev/null 2>&1; then failed=1; fi
+  done
+  rm -rf "$temporary"
+  trap - EXIT
   if (( failed != 0 )); then
     log "self-test FAIL"
     return 1
@@ -291,20 +636,55 @@ run_self_test() {
 }
 
 main() {
-  local selection='' work_dir='' self_test=0
+  local selection='' work_dir='' approval_evidence='' api_smoke_evidence='' api_smoke_sha256='' expected_head='' self_test=0
+  local seen_variant=0 seen_work_dir=0 seen_approval=0 seen_api_smoke=0 seen_api_sha=0 seen_expected_head=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --variant)
-        [[ $# -ge 2 ]] || { usage; return 2; }
+        (( seen_variant == 0 )) || die "duplicate --variant"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--variant requires a nonempty value"; }
+        seen_variant=1
         selection="$2"
         shift 2
         ;;
       --work-dir)
-        [[ $# -ge 2 ]] || { usage; return 2; }
+        (( seen_work_dir == 0 )) || die "duplicate --work-dir"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--work-dir requires a nonempty value"; }
+        seen_work_dir=1
         work_dir="$2"
         shift 2
         ;;
+      --approval-evidence)
+        (( seen_approval == 0 )) || die "duplicate --approval-evidence"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--approval-evidence requires a nonempty value"; }
+        seen_approval=1
+        approval_evidence="$2"
+        shift 2
+        ;;
+      --api-smoke-evidence)
+        (( seen_api_smoke == 0 )) || die "duplicate --api-smoke-evidence"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--api-smoke-evidence requires a nonempty value"; }
+        seen_api_smoke=1
+        api_smoke_evidence="$2"
+        shift 2
+        ;;
+      --api-smoke-sha256)
+        (( seen_api_sha == 0 )) || die "duplicate --api-smoke-sha256"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--api-smoke-sha256 requires a nonempty value"; }
+        seen_api_sha=1
+        api_smoke_sha256="$2"
+        shift 2
+        ;;
+      --expected-head)
+        (( seen_expected_head == 0 )) || die "duplicate --expected-head"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { usage; die "--expected-head requires a nonempty value"; }
+        seen_expected_head=1
+        expected_head="$2"
+        shift 2
+        ;;
       --self-test)
+        (( seen_self_test == 0 )) || die "duplicate --self-test"
+        seen_self_test=1
         self_test=1
         shift
         ;;
@@ -319,48 +699,67 @@ main() {
     esac
   done
   if (( self_test == 1 )); then
-    [[ -z "$selection" && -z "$work_dir" ]] || die "--self-test accepts no other arguments"
+    [[ -z "$selection$work_dir$approval_evidence$api_smoke_evidence$api_smoke_sha256$expected_head" ]] || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
+  [[ -n "$approval_evidence" ]] || { usage; die "--approval-evidence is required"; }
+  [[ -n "$api_smoke_evidence" ]] || { usage; die "--api-smoke-evidence is required"; }
+  [[ -n "$api_smoke_sha256" ]] || { usage; die "--api-smoke-sha256 is required"; }
+  [[ -n "$expected_head" ]] || { usage; die "--expected-head is required"; }
+  [[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die "approval evidence must be a nonempty regular file"
   case "$selection" in
     4b|8b|all) ;;
     *) usage; die "--variant must be 4b, 8b, or all" ;;
   esac
 
+  require_expected_head "$expected_head"
+  local selected_variants="$selection"
+  [[ "$selected_variants" == all ]] && selected_variants='4b,8b'
+  pre_sync_gate "$approval_evidence" "$api_smoke_evidence" "$api_smoke_sha256" "$expected_head" "$selected_variants"
   require_vast_host
   require_tooling
   if [[ -z "$work_dir" ]]; then
     work_dir="$VOKRA_SCRATCH/moss-audio-validation-$(git -C "$VOKRA_ROOT" rev-parse --short=12 HEAD)"
   fi
-  if [[ -e "$work_dir" ]]; then
-    [[ -d "$work_dir" && -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
-      || die "--work-dir must not exist or must be empty: $work_dir"
-  else
-    mkdir -p "$work_dir"
-  fi
+  require_absent_work_dir "$work_dir" "$approval_evidence"
+  mkdir -p "$work_dir"
   local evidence_dir="$work_dir/evidence"
   local source_dir="$work_dir/official-source"
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
 
   step "Install the locked official reference environment"
-  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
+  VOKRA_MOSS_AUDIO_TRANSFORMERS_VERSION=5.10.4 \
+  UV_NO_CACHE=1 uv sync --no-cache --project "$REFERENCE_PROJECT" --frozen --python 3.12 \
     2>&1 | tee "$evidence_dir/uv-sync.log"
 
   step "Checkout the immutable official OpenMOSS source"
   checkout_official_source "$source_dir" \
     2>&1 | tee "$evidence_dir/source-checkout.log"
+  step "Verify the exact checked-out official source before imports"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+    --verify-source --source "$source_dir"
 
   step "Build the current Vokra CLI on VAST"
-  cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli \
+  CARGO_NET_OFFLINE=true cargo build --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli \
     2>&1 | tee "$evidence_dir/build-cli.log"
 
   if [[ "$selection" == "4b" || "$selection" == "all" ]]; then
-    run_variant 4b "$work_dir" "$evidence_dir" "$source_dir"
+    run_variant 4b "$work_dir" "$evidence_dir" "$source_dir" "$expected_head"
   fi
   if [[ "$selection" == "8b" || "$selection" == "all" ]]; then
-    run_variant 8b "$work_dir" "$evidence_dir" "$source_dir"
+    run_variant 8b "$work_dir" "$evidence_dir" "$source_dir" "$expected_head"
+  fi
+
+  if [[ "$selection" == "all" ]]; then
+    local apple_args="$evidence_dir/apple-silicon-moss-audio.args.sh"
+    write_apple_args "$apple_args" \
+      "$(sha256_file "$work_dir/moss-audio-4b-instruct.gguf")" \
+      "$(reference_packet_sha256 "$work_dir/reference-4b")" \
+      "$(sha256_file "$work_dir/moss-audio-8b-instruct.gguf")" \
+      "$(reference_packet_sha256 "$work_dir/reference-8b")" \
+      "$expected_head"
   fi
 
   step "Run repository gates and full workspace verification on VAST"
@@ -369,28 +768,35 @@ main() {
   bash "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh"
   bash "$VOKRA_ROOT/scripts/check-bound-arch-coverage.sh"
   bash "$VOKRA_ROOT/scripts/check-arch-handshake.sh"
-  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace \
+  cargo deny --locked --offline check
+  cargo audit --no-fetch
+  CARGO_NET_OFFLINE=true cargo test --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace \
     2>&1 | tee "$evidence_dir/workspace-test.log"
-  cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace \
+  CARGO_NET_OFFLINE=true cargo clippy --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace \
     --all-targets -- -D warnings 2>&1 | tee "$evidence_dir/workspace-clippy.log"
 
   step "Cross-check Apple Metal feature compilation"
   rustup target add aarch64-apple-darwin
-  cargo check --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked \
+  CARGO_NET_OFFLINE=true cargo check --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked \
     -p vokra-models --features metal --target aarch64-apple-darwin \
     2>&1 | tee "$evidence_dir/apple-metal-cross-check.log"
 
   {
-    echo "verdict=PASS"
+    echo "verdict=CPU_PASS_METAL_NOT_RUN"
     echo "selection=$selection"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "workspace_test=PASS"
     echo "workspace_clippy=PASS"
     echo "apple_metal_cross_compile=PASS"
     echo "apple_real_weight_runtime=PENDING_SEPARATE_APPLE_SILICON_RUN"
+    echo "cpu_vs_official=PASS"
+    echo "metal_vs_official=NOT_RUN"
+    echo "metal_vs_cpu=NOT_RUN"
+    echo "expected_head=$expected_head"
+    echo "transfer=GGUF_AND_REFERENCE_PACKET_DIRECT_TO_APPLE;SMALL_LOGS_RECOVERED_LOCALLY"
     echo "upload=NOT_PERFORMED"
   } > "$evidence_dir/summary.txt"
-  log "PASS: pull only $evidence_dir (including reference-*), never source-* or *.gguf"
+  log "CPU PASS: transfer GGUF/reference packets directly VAST->Apple; recover only small logs from $evidence_dir, never source-* or *.gguf locally"
   log "After evidence is pulled, destroy the VAST instance; do not merely stop it"
 }
 

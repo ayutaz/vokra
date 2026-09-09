@@ -10,13 +10,9 @@
 //! Turbo variant swaps the backbone family and reshapes the token axes
 //! for low-latency serving:
 //!
-//! - **Backbone family**: `gpt2-medium` (30 layers × 16 heads × 1024
-//!   hidden — same as base) — the upstream Turbo config
-//!   (`t3_turbo_v1.yaml`) sets `gpt_transformer_type: gpt2-medium` and
-//!   `legacy_gpt_hidden_size: 1024`. This is **not** the Llama_520M
-//!   backbone the base Chatterbox uses; the Turbo release chose the GPT-2
-//!   family for smaller footprint and faster inference. The layer /
-//!   head / hidden shape stays at (30, 16, 1024), matching the base.
+//! - **Backbone family**: effective inference code uses GPT-2-medium
+//!   (24 layers × 16 heads × 1024 hidden, context/positions 8196). The
+//!   historical training YAML's 30-layer values are not authoritative.
 //! - **Sample rate**: `32_000` Hz — the Turbo config sets
 //!   `sample_rate: 32000`, distinct from the base's 24 kHz
 //!   (`s3gen/const.py::S3GEN_SR`).
@@ -29,9 +25,8 @@
 //!   inline paralinguistic annotation.
 //! - **Speech-token vocabulary**: 6563 — the base ships 8194; Turbo
 //!   shrinks the codebook via distillation.
-//! - **Max text / speech tokens**: 402 / 604 — much shorter than the
-//!   base's 2048 / 4096, matching the low-latency serving profile
-//!   (sub-200 ms latency per the release notes).
+//! - **Max text / speech tokens**: effective inference limits are 2048 /
+//!   4096; stale YAML short-context values are not runtime facts.
 //! - **Distilled decoder**: the speech-token-to-mel decoder has been
 //!   distilled from 10 sampling steps to a single step (per the
 //!   release notes on the model card). The vocoder terminal is still
@@ -64,8 +59,8 @@
 //! # What lands in this Phase 3 slice
 //!
 //! - [`ChatterboxTurboConfig`] — every architectural hparam
-//!   **transcribed verbatim** from the primary source
-//!   (`t3_turbo_v1.yaml` — Resemble AI, fetched 2026-07-24) plus the
+//!   recorded from effective upstream inference code (the YAML is a stale
+//!   training record) plus the
 //!   fixed vocoder sample rate and predicates that pin the axes
 //!   distinguishing Turbo from base ([`ChatterboxTurboConfig::is_turbo`],
 //!   [`ChatterboxTurboConfig::has_paralinguistic_tags`]).
@@ -92,6 +87,11 @@ use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
+pub use crate::chatterbox_family::{
+    ChatterboxVariant, CompositeBinderEvidence, GenerationTopology, Gpt2T3Contract, Gpt2Tokenizer,
+    RandomDraws, SOURCE_REVISION, SOURCE_URL, SamplingConfig, T3Architecture, apply_processors,
+    generation_topology, processor_order, punc_norm_gpt2, remove_terminal_eos, sample_with_draw,
+};
 pub use bound::{ChatterboxTurboCheckpoint, ChatterboxTurboSpeakerProjection};
 
 // ---------------------------------------------------------------------------
@@ -140,9 +140,8 @@ pub const PARALINGUISTIC_TAG_COUNT: u32 = 19;
 
 /// Chatterbox-Turbo T3 architectural hparams.
 ///
-/// Every field is transcribed **verbatim** from the primary source
-/// (`t3_turbo_v1.yaml` at `huggingface.co/ResembleAI/chatterbox-turbo`,
-/// fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). The
+/// Effective inference values are recorded from upstream source code;
+/// the YAML sidecar is a stale training record and is not runtime authority.
 /// [`ChatterboxTurboConfig::chatterbox_turbo_v1`] constructor is the
 /// canonical Turbo config.
 #[derive(Debug, Clone, PartialEq)]
@@ -156,13 +155,9 @@ pub struct ChatterboxTurboConfig {
     /// T3 speech-token vocabulary size (`t3_turbo_v1.yaml::speech_tokens_dict_size`).
     /// `6563` — smaller than base Chatterbox's 8194 (distilled).
     pub speech_vocab_size: u32,
-    /// Max text-token positions the backbone can attend over
-    /// (`t3_turbo_v1.yaml::max_text_tokens`). `402` — much shorter
-    /// than base's 2048 for low-latency serving.
+    /// Max text-token positions from effective Turbo inference. `2048`.
     pub max_text_tokens: u32,
-    /// Max speech-token positions the backbone can attend over
-    /// (`t3_turbo_v1.yaml::max_speech_tokens`). `604` — much shorter
-    /// than base's 4096.
+    /// Max speech-token positions from effective Turbo inference. `4096`.
     pub max_speech_tokens: u32,
     /// Speaker-embedding dimension (`t3_turbo_v1.yaml::speaker_embed_size`).
     /// `256`.
@@ -175,9 +170,7 @@ pub struct ChatterboxTurboConfig {
     /// (`t3_turbo_v1.yaml::legacy_gpt_hidden_size` == `n_gpt_channels`).
     /// `1024`.
     pub hidden_dim: u32,
-    /// GPT-2-medium backbone transformer block count
-    /// (`t3_turbo_v1.yaml::n_transformer_layers`). `30` — same as
-    /// base Chatterbox.
+    /// GPT-2-medium effective inference transformer block count. `24`.
     pub n_layer: u32,
     /// GPT-2-medium backbone attention head count
     /// (`t3_turbo_v1.yaml::n_transformer_heads`). `16` — GPT-2 uses
@@ -193,9 +186,7 @@ pub struct ChatterboxTurboConfig {
     pub win_size: u32,
     /// Number of mel bins (`t3_turbo_v1.yaml::num_mels`). `256`.
     pub num_mels: u32,
-    /// Length of the speech-conditioning prompt in tokens
-    /// (`t3_turbo_v1.yaml::speech_cond_prompt_len`). `250` — longer
-    /// than base's 150 to compensate for the shorter overall context.
+    /// Effective inference speech-conditioning prompt length. `375`.
     pub speech_cond_prompt_len: u32,
     /// Number of native paralinguistic tags in `added_tokens.json`
     /// (`[angry]`, `[fear]`, `[surprised]`, `[whispering]`, `[cough]`,
@@ -215,27 +206,26 @@ impl ChatterboxTurboConfig {
     /// Canonical Chatterbox-Turbo T3 config
     /// (`ResembleAI/chatterbox-turbo`, `t3_turbo_v1.safetensors`).
     ///
-    /// Every value is transcribed verbatim from the primary source
-    /// `t3_turbo_v1.yaml` (fetched 2026-07-24 — CLAUDE.md
-    /// 「ハルシネーション厳禁」).
+    /// Effective inference values are recorded from upstream source code;
+    /// the YAML sidecar is not runtime authority.
     #[must_use]
     pub fn chatterbox_turbo_v1() -> Self {
         Self {
             sample_rate: CHATTERBOX_TURBO_SAMPLE_RATE,
             text_vocab_size: TEXT_VOCAB_TURBO,
             speech_vocab_size: 6563,
-            max_text_tokens: 402,
-            max_speech_tokens: 604,
+            max_text_tokens: 2048,
+            max_speech_tokens: 4096,
             speaker_embed_size: 256,
             ve_hidden_size: 768,
             hidden_dim: 1024,
-            n_layer: 30,
+            n_layer: 24,
             n_head: 16,
             head_dim: 64,
             hop_size: 320,
             win_size: 2048,
             num_mels: 256,
-            speech_cond_prompt_len: 250,
+            speech_cond_prompt_len: 375,
             paralinguistic_tag_count: PARALINGUISTIC_TAG_COUNT,
             start_text_token: 255,
             stop_text_token: 0,
@@ -833,26 +823,25 @@ mod tests {
         assert_eq!(PARALINGUISTIC_TAG_COUNT, 19);
     }
 
-    /// Every architectural axis carries its primary-source value verbatim,
-    /// and the Turbo predicate fires.
+    /// Effective architectural axes are stable and the Turbo predicate fires.
     #[test]
     fn turbo_v1_config_matches_primary_source() {
         let c = ChatterboxTurboConfig::chatterbox_turbo_v1();
         assert_eq!(c.sample_rate, 32_000);
         assert_eq!(c.text_vocab_size, 50_276);
         assert_eq!(c.speech_vocab_size, 6_563);
-        assert_eq!(c.max_text_tokens, 402);
-        assert_eq!(c.max_speech_tokens, 604);
+        assert_eq!(c.max_text_tokens, 2048);
+        assert_eq!(c.max_speech_tokens, 4096);
         assert_eq!(c.speaker_embed_size, 256);
         assert_eq!(c.ve_hidden_size, 768);
         assert_eq!(c.hidden_dim, 1024);
-        assert_eq!(c.n_layer, 30);
+        assert_eq!(c.n_layer, 24);
         assert_eq!(c.n_head, 16);
         assert_eq!(c.head_dim, 64);
         assert_eq!(c.hop_size, 320);
         assert_eq!(c.win_size, 2048);
         assert_eq!(c.num_mels, 256);
-        assert_eq!(c.speech_cond_prompt_len, 250);
+        assert_eq!(c.speech_cond_prompt_len, 375);
         assert_eq!(c.paralinguistic_tag_count, 19);
         assert_eq!(c.start_text_token, 255);
         assert_eq!(c.stop_text_token, 0);

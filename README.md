@@ -15,9 +15,16 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Release status:** `0.1.0` is prepared as the first tagged release. Rust
-> APIs, the C ABI, GGUF metadata, and model coverage remain pre-1.0 and may
-> change. Pin an exact release when evaluating Vokra in another project.
+> **Development status (2026-09-09):** the workspace is `0.3.0` development.
+> At the 2026-09-09 audit start, PR #79 pointed at `9efcd16e` (110 successful
+> checks / 13 expected skips / 0 failures); there are no Git tags or published
+> releases yet. The branch's read-only inventory records 131 Mac-CPU-complete
+> and 131 Apple-Metal-source-complete repositories, with 63 public rows still
+> unresolved. This is a pre-1.0, pre-Scaleway snapshot: Apple Silicon
+> CPU/reference and Metal/reference/no-fallback evidence has not been claimed.
+> Rust APIs, the C ABI, GGUF metadata, and model coverage may change. Pin an
+> exact commit when evaluating Vokra in another project; switch to an exact
+> tag or release after one is published.
 
 ## Why Vokra
 
@@ -84,8 +91,16 @@ Use these sources instead of a copied model list:
   runtime routing and deferred-operation registry for developers.
 
 CPU is the default backend. Metal, CUDA, Vulkan, and WebGPU are opt-in and have
-operation-specific coverage; CoreML and QNN are experimental delegates. See
-the [backend guide](docs/backend-guide.md) before selecting an accelerator.
+operation-specific coverage. CoreML has an experimental whole-submodel
+delegate path for the Whisper encoder; QNN remains an SDK-gated experimental
+delegate scaffold. See the [backend guide](docs/backend-guide.md) before
+selecting an accelerator.
+
+The current coverage snapshot separates source/runtime readiness from numerical
+evidence and publication. Incomplete routes fail closed; unsupported operations
+never fall back silently to CPU. The UTMOS legacy Lightning checkpoint is also
+intentionally refused by the restricted `weights_only=True` loader, so no
+UTMOS numeric parity result is claimed.
 
 ## Library integration
 

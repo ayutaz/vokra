@@ -1,4 +1,7 @@
-//! Strict binding for the official Chatterbox Turbo v1 T3 checkpoint.
+//! Strict binding for the authenticated Chatterbox Turbo v1 T3 slice.
+//!
+//! The historical public artifact contains T3-only tensors. PCM remains
+//! fail-closed until the full composite pipeline is authenticated.
 
 use vokra_core::gguf::GgufFile;
 use vokra_core::{LicenseClass, Result, VokraError};
@@ -30,7 +33,7 @@ pub struct ChatterboxTurboCheckpoint {
 }
 
 impl ChatterboxTurboCheckpoint {
-    /// Validates identity and all 299 upstream tensor names and shapes.
+    /// Validates identity and all 299 authenticated T3 tensor names/shapes.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
         require_tensor_shape(
@@ -72,7 +75,7 @@ impl ChatterboxTurboCheckpoint {
     }
 
     #[must_use]
-    /// Returns the number of tensors checked by the complete manifest gate.
+    /// Returns the number of T3 tensors checked by the manifest gate.
     pub const fn tensor_count(&self) -> usize {
         self.checkpoint.tensor_count()
     }
@@ -85,7 +88,7 @@ impl ChatterboxTurboCheckpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "chatterbox_turbo synthesize: the complete official Turbo v1 checkpoint is bound and the real speaker projection runs natively, but GPT-2 speech-token sampling, one-step S3Gen and HiFTNet PCM generation remain pending.",
+            "chatterbox_turbo synthesize: authenticated Turbo T3-only checkpoint is bound and the real speaker projection runs natively, but the composite voice encoder/S3 tokenizer/one-step S3Gen/HiFT/watermark pipeline remains unavailable.",
         ))
     }
 }

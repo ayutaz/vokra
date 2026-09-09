@@ -1,5 +1,13 @@
 # tools/parity/higgs_audio_v3_tts_4b
 
+# Current status (2026-08-29): BLOCKED
+
+The upstream weight/code release is governed by the custom Boson Higgs TTS 3
+Research-and-Non-Commercial license, and its exact SGLang/codec source closure
+has not been authenticated. There is intentionally no `uv.lock`; do not sync,
+download, or convert. The VAST worker exits at the stdlib-only gate:
+`scripts/publish/vast-ai/run-higgs-audio-v3-tts-4b-validation.sh`.
+
 > ## ⛔ DO NOT RENT A BOX FOR THIS MODEL — publish is refused
 >
 > **This model cannot be published, and the walkthrough below will not

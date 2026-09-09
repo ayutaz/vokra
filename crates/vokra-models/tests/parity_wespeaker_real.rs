@@ -85,13 +85,10 @@ fn committed_reference_has_pinned_shapes_and_provenance() {
 }
 
 #[test]
+#[ignore = "requires an authenticated real public GGUF artifact"]
 fn public_pyannote_artifact_matches_upstream_wespeaker() {
-    let Some(path) = std::env::var_os("VOKRA_WESPEAKER_GGUF") else {
-        eprintln!(
-            "[parity_wespeaker_real] SKIP: set VOKRA_WESPEAKER_GGUF to the public pyannote WeSpeaker GGUF"
-        );
-        return;
-    };
+    let path = std::env::var("VOKRA_WESPEAKER_GGUF")
+        .expect("VOKRA_WESPEAKER_GGUF is required; refusing an env-missing skip");
     let model = WeSpeaker::from_path(&path).expect("strict public WeSpeaker bind");
     assert_eq!(
         model.artifact_layout(),
@@ -129,7 +126,6 @@ fn public_pyannote_artifact_matches_upstream_wespeaker() {
     assert!(end_to_end_metrics.max_abs <= 3.0e-6);
     assert!(end_to_end_metrics.relative_l1 <= 2.0e-5);
     assert!(end_to_end_metrics.cosine >= 0.999_999);
-
     #[cfg(all(feature = "metal", target_os = "macos"))]
     {
         use vokra_core::BackendKind;
@@ -147,13 +143,89 @@ fn public_pyannote_artifact_matches_upstream_wespeaker() {
 }
 
 #[test]
-fn mislicensed_public_canonical_artifact_is_rejected() {
-    let Some(path) = std::env::var_os("VOKRA_WESPEAKER_MISLICENSED_GGUF") else {
-        eprintln!(
-            "[parity_wespeaker_real] SKIP: set VOKRA_WESPEAKER_MISLICENSED_GGUF to audit the old canonical public file"
+#[ignore = "requires an authenticated real official combined GGUF artifact"]
+fn official_combined_artifact_matches_upstream_wespeaker() {
+    let path = std::env::var("VOKRA_WESPEAKER_OFFICIAL_GGUF")
+        .expect("VOKRA_WESPEAKER_OFFICIAL_GGUF is required; refusing an env-missing skip");
+    let model = WeSpeaker::from_path(&path).expect("strict official combined WeSpeaker bind");
+    assert_eq!(
+        model.artifact_layout(),
+        WeSpeakerArtifactLayout::OfficialCombinedBare
+    );
+    let pcm = f32s(PCM);
+    let expected_features = f32s(FEATURES);
+    let expected_embedding = f32s(EMBEDDING);
+    let (features, frames) = model
+        .frontend_features(&pcm, 16_000)
+        .expect("CPU WeSpeaker fbank for official combined artifact");
+    assert_eq!(frames, 198);
+    let feature_metrics = measure(
+        "official combined CPU frontend vs upstream",
+        &features,
+        &expected_features,
+    );
+    let embedding = model
+        .embed_features(&features, frames)
+        .expect("CPU WeSpeaker network for official combined artifact");
+    let embedding_metrics = measure(
+        "official combined CPU embedding vs upstream",
+        &embedding,
+        &expected_embedding,
+    );
+    let end_to_end = model
+        .embed_pcm(&pcm, 16_000)
+        .expect("CPU WeSpeaker end-to-end for official combined artifact");
+    let end_to_end_metrics = measure(
+        "official combined CPU end-to-end vs upstream",
+        &end_to_end,
+        &expected_embedding,
+    );
+    assert!(feature_metrics.max_abs <= 3.5e-4);
+    assert!(feature_metrics.relative_l1 <= 8.0e-6);
+    assert!(feature_metrics.cosine >= 0.999_999_5);
+    assert!(embedding_metrics.max_abs <= 3.0e-6);
+    assert!(embedding_metrics.relative_l1 <= 2.0e-5);
+    assert!(embedding_metrics.cosine >= 0.999_999);
+    assert!(end_to_end_metrics.max_abs <= 3.0e-6);
+    assert!(end_to_end_metrics.relative_l1 <= 2.0e-5);
+    assert!(end_to_end_metrics.cosine >= 0.999_999);
+    eprintln!("WESPEAKER_OFFICIAL_COMBINED_CPU_VS_UPSTREAM PASS");
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    {
+        use vokra_core::BackendKind;
+
+        let metal = WeSpeaker::from_path(&path)
+            .expect("strict official combined WeSpeaker bind for Metal")
+            .with_backend(BackendKind::Metal);
+        let metal_embedding = metal
+            .embed_features(&features, frames)
+            .expect("Metal official combined WeSpeaker network");
+        let metal_metrics = measure(
+            "official combined Metal embedding vs CPU",
+            &metal_embedding,
+            &embedding,
         );
-        return;
-    };
+        let metal_upstream_metrics = measure(
+            "official combined Metal embedding vs upstream",
+            &metal_embedding,
+            &expected_embedding,
+        );
+        assert!(metal_upstream_metrics.max_abs <= 3.0e-6);
+        assert!(metal_upstream_metrics.relative_l1 <= 2.0e-5);
+        assert!(metal_upstream_metrics.cosine >= 0.999_999);
+        assert!(metal_metrics.relative_l1 <= 1.0e-3);
+        assert!(metal_metrics.cosine >= 0.999);
+        eprintln!("WESPEAKER_OFFICIAL_COMBINED_METAL_VS_UPSTREAM PASS");
+        eprintln!("WESPEAKER_OFFICIAL_COMBINED_METAL_VS_CPU PASS");
+    }
+}
+
+#[test]
+#[ignore = "requires the authenticated historical mislicensed artifact"]
+fn mislicensed_public_canonical_artifact_is_rejected() {
+    let path = std::env::var("VOKRA_WESPEAKER_MISLICENSED_GGUF")
+        .expect("VOKRA_WESPEAKER_MISLICENSED_GGUF is required; refusing an env-missing skip");
     let error = WeSpeaker::from_path(path).expect_err("Apache-stamped CC-BY checkpoint must fail");
     assert!(error.to_string().contains("vokra.provenance.license"));
     assert!(error.to_string().contains("cc-by-4.0"));

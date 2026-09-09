@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# VAST-only Kyutai STT dep_q=0 decoder-component measurement orchestrator.
+# It downloads only the pinned local inputs on VAST, converts the exact
+# decoder artifact, and records a first measurement without a PASS claim.
+set -euo pipefail
+
+ROOT="${VOKRA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+DUMPER="$ROOT/tools/parity/kyutai_stt_decoder_dump_reference.py"
+MODEL_REPO="kyutai/stt-2.6b-en"
+MODEL_REVISION="a07aec56d22be5589cd0bc8709c75b6cf3e3039d"
+MODEL_SHA256="2471add7da1fdb2d5dc4561e88a9069376333d992760d55d29d1db46c52849b2"
+MIMI_SHA256="09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50"
+DSM_REVISION="4c4f65e147df056adf3346290d64c7b9649b18c9"
+MOSHI_REVISION="e6a55d2722a65870ef52a6c9f6ecfc0e90f38362"
+WORK="/workspace/vokra-kyutai-stt-decoder-parity"
+
+log() { printf '[kyutai-stt-decoder-vast] %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 2; }
+usage() { printf '%s\n' "usage: run-kyutai-stt-decoder-parity.sh --expected-head HEX40 --approval-evidence FILE --approval-sha256 HEX64 [--work-dir DIR] | --self-test"; }
+
+validate_measurement_log() {
+  local path="$1"
+  [[ "$(grep -Ec '^test [^r].* \.\.\. ok$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^test parity_kyutai_stt_decoder_real_cpu \.\.\. ok$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu .* verdict=MEASUREMENT_ONLY$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec 'verdict=MEASUREMENT_ONLY' "$path")" == 1 ]] || return 1
+  ! grep -Fq 'verdict=PASS' "$path"
+}
+
+validate_composite_log() {
+  local path="$1"
+  [[ "$(grep -Ec '^test [^r].* \.\.\. ok$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^test parity_kyutai_stt_composite_bind_real \.\.\. ok$' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' "$path")" == 1 ]] || return 1
+  [[ "$(grep -Ec '^KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=IDENTITY_SCHEMA_GATE pcm_streaming_parity=BLOCKED$' "$path")" == 1 ]] || return 1
+  ! grep -Fq 'verdict=PASS' "$path"
+}
+
+self_test() {
+  local self="${BASH_SOURCE[0]}" token fail=0
+  for token in "$MODEL_REPO" "$MODEL_REVISION" "$MODEL_SHA256" "$DSM_REVISION" "$MOSHI_REVISION" \
+    'NO_UPLOAD' 'uv run' 'official Moshi' 'dep_q=0' '323' 'CARGO_BUILD_JOBS=1' \
+    'MEASUREMENT_ONLY' 'MEASUREMENT_ONLY_NOT_APPLE_READY' 'vokra-convert' 'model.safetensors' 'sentencepiece-decode-v1' 'tokenizer_en_audio_4000.model' 'kyutai-stt-tokenizer' 'tokenizer.gguf' 'tokenizer_sha256' 'tokenizer_table_sha256' 'parity_kyutai_stt_composite_bind_real' 'KYUTAI_STT_COMPOSITE_BIND' 'IDENTITY_SCHEMA_GATE' 'VOKRA_KYUTAI_STT_MIMI_FILE' 'MIMI_SHA256' 'composite-bind.log' 'composite_bind_log_sha256' 'AUTHENTICATED_SOURCE_CONTRACT' 'BLOCKED_NOT_EXECUTED' 'vokra-kyutai-stt-streaming-source-contract-v1' 'sampling.py' 'transformer.py' 'validate-source-contract' 'FAIL_CLOSED' '--expected-head' '--approval-evidence' '--approval-sha256' 'validate-approval' 'test result' '0 failed' 'vokra-kyutai-stt-decoder-transfer-v3' 'no PCM/streaming parity claim'; do
+    grep -Fq -- "$token" "$self" || { log "self-test missing contract token: $token"; fail=1; }
+  done
+  grep -Eq '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[[:space:]]' "$self" && fail=1 || true
+  contract_line="$(grep -n -- 'validate-source-contract' "$self" | tail -n 1 | cut -d: -f1)"
+  download_line="$(grep -n -- 'download_hf_file' "$self" | tail -n 1 | cut -d: -f1)"
+  [[ "$contract_line" =~ ^[0-9]+$ && "$download_line" =~ ^[0-9]+$ && "$contract_line" -lt "$download_line" ]] || { log 'source contract preflight must precede model download'; fail=1; }
+  synthetic="$(mktemp)"
+  printf '%s\n' 'test parity_kyutai_stt_decoder_real_cpu ... ok' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' 'KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu max_abs=0 verdict=MEASUREMENT_ONLY' > "$synthetic"
+  validate_measurement_log "$synthetic" || fail=1
+  printf '%s\n' 'KYUTAI_STT_DECODER_MEASUREMENT backend=Cpu max_abs=0 verdict=MEASUREMENT_ONLY' >> "$synthetic"
+  validate_measurement_log "$synthetic" && fail=1 || true
+  rm -f "$synthetic"
+  composite_synthetic="$(mktemp)"
+  printf '%s\n' 'test parity_kyutai_stt_composite_bind_real ... ok' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' 'KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=IDENTITY_SCHEMA_GATE pcm_streaming_parity=BLOCKED' > "$composite_synthetic"
+  validate_composite_log "$composite_synthetic" || fail=1
+  printf '%s\n' 'test unexpected_extra ... ok' >> "$composite_synthetic"
+  validate_composite_log "$composite_synthetic" && fail=1 || true
+  printf '%s\n' 'test parity_kyutai_stt_composite_bind_real ... ok' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' 'KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=IDENTITY_SCHEMA_GATE pcm_streaming_parity=BLOCKED' 'KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=IDENTITY_SCHEMA_GATE pcm_streaming_parity=BLOCKED' > "$composite_synthetic"
+  validate_composite_log "$composite_synthetic" && fail=1 || true
+  printf '%s\n' 'KYUTAI_STT_COMPOSITE_BIND backend=metadata mmap verdict=PASS pcm_streaming_parity=BLOCKED' >> "$composite_synthetic"
+  validate_composite_log "$composite_synthetic" && fail=1 || true
+  rm -f "$composite_synthetic"
+  UV_NO_CACHE=1 uv run --no-project --offline --python 3.12 python "$DUMPER" self-test || fail=1
+  (( fail == 0 )) || return 1
+  log 'self-test PASS'
+}
+
+work_dir="$WORK"
+expected_head=""
+approval_evidence=""
+approval_sha256=""
+work_dir_seen=0
+approval_seen=0
+approval_sha_seen=0
+if [[ "${1:-}" == --self-test ]]; then
+  [[ $# == 1 ]] || die '--self-test accepts no other arguments'
+  self_test
+  exit $?
+fi
+while (($#)); do
+  case "$1" in
+    --expected-head) (($# >= 2)) || die '--expected-head requires HEX40'; [[ -z "$expected_head" ]] || die 'duplicate --expected-head'; expected_head="$2"; shift 2;;
+    --approval-evidence) (($# >= 2)) || die '--approval-evidence requires FILE'; [[ -z "$approval_evidence" ]] || die 'duplicate --approval-evidence'; [[ "$2" == /* ]] || die '--approval-evidence must be absolute'; approval_evidence="$2"; approval_seen=1; shift 2;;
+    --approval-sha256) (($# >= 2)) || die '--approval-sha256 requires HEX64'; [[ -z "$approval_sha256" ]] || die 'duplicate --approval-sha256'; [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase HEX64'; approval_sha256="$2"; approval_sha_seen=1; shift 2;;
+    --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; (( work_dir_seen == 0 )) || die 'duplicate --work-dir'; work_dir="$2"; work_dir_seen=1; shift 2;;
+    -h|--help) usage; exit 0;;
+    *) usage; die "unknown argument: $1";;
+  esac
+done
+[[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head must be lowercase HEX40'
+[[ "$approval_seen$approval_sha_seen" == 11 ]] || die '--approval-evidence and --approval-sha256 are required'
+[[ "$approval_evidence" != *'/./'* && "$approval_evidence" != *'/../'* && "$approval_evidence" != *'//' && "$approval_evidence" != */. && "$approval_evidence" != */.. ]] || die 'approval path contains dot or empty component'
+[[ -f "$approval_evidence" && ! -L "$approval_evidence" ]] || die 'approval evidence must be a regular file'
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DUMPER" validate-approval \
+  --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" >/dev/null || die 'external decoder approval is invalid'
+
+[[ "$(uname -s)" == Linux ]] || die 'decoder parity requires Linux VAST'
+[[ "$(uname -m)" == x86_64 ]] || die 'decoder parity requires x86_64 VAST'
+[[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
+[[ -f "$ROOT/Cargo.toml" && -d "$ROOT/.git" ]] || die 'not a Vokra checkout'
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
+actual_head="$(git -C "$ROOT" rev-parse HEAD)"
+[[ "$actual_head" == "$expected_head" ]] || die "checkout HEAD $actual_head does not match --expected-head $expected_head"
+[[ -f "$DUMPER" ]] || die 'decoder reference dumper is missing'
+mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
+[[ "$mem_kib" =~ ^[0-9]+$ && "$mem_kib" -ge $((64 * 1024 * 1024)) ]] || die '64 GiB memory guard failed'
+[[ "$work_dir" != *'/./'* && "$work_dir" != *'/../'* && "$work_dir" != *'//' && "$work_dir" != */. && "$work_dir" != */.. ]] || die 'work directory contains dot or empty component'
+work_parent="$(dirname "$work_dir")"
+[[ -d "$work_parent" ]] || die 'work directory parent must already exist'
+work_parent_probe="$work_parent"
+while [[ "$work_parent_probe" != / && -n "$work_parent_probe" ]]; do
+  [[ ! -L "$work_parent_probe" ]] || die 'work directory parent contains a symlink'
+  work_parent_probe="$(dirname "$work_parent_probe")"
+done
+[[ ! -e "$work_dir" ]] || die 'work directory must be absent before atomic claim'
+mkdir -m 700 "$work_dir"
+[[ -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die 'work directory must be empty'
+mkdir -m 700 "$work_dir/evidence" "$work_dir/model"
+work_dir="$(cd "$work_dir" && pwd)"
+export CARGO_BUILD_JOBS=1
+export CARGO_NET_OFFLINE=true
+validation_log="$work_dir/evidence/validation.log"
+[[ ! -e "$validation_log" ]] || die 'validation log already exists'
+set -o noclobber
+download_hf_file() {
+  local filename="$1" destination="$2"
+  UV_NO_CACHE=1 uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$MODEL_REPO" "$MODEL_REVISION" "$filename" "$(dirname "$destination")" <<'PY'
+import sys
+from pathlib import Path
+from huggingface_hub import hf_hub_download
+
+repo, revision, filename, destination = sys.argv[1:]
+path = Path(hf_hub_download(repo_id=repo, revision=revision, filename=filename, local_dir=destination))
+expected = Path(destination) / filename
+if path != expected or not expected.is_file() or expected.is_symlink():
+    raise SystemExit(f"unexpected downloaded path: {path} != {expected}")
+PY
+}
+{
+  echo 'status=BLOCKED'
+  echo 'scope=dep_q=0 decoder component numerical measurement plus exact SentencePiece tokenizer/Mimi/composite identity-schema gate; no PCM/streaming parity claim'
+  echo "model=$MODEL_REPO@$MODEL_REVISION"
+  echo "model_sha256=$MODEL_SHA256"
+  echo "dsm_revision=$DSM_REVISION"
+  echo "moshi_revision=$MOSHI_REVISION"
+  echo "expected_head=$expected_head"
+  echo "approval_sha256=$approval_sha256"
+  echo "actual_head=$actual_head"
+  echo 'publication=NO_UPLOAD'
+  echo 'phase=VAST_MEASUREMENT_ONLY; no PASS claim or fixed tolerance'
+  git clone --no-checkout "https://github.com/kyutai-labs/delayed-streams-modeling.git" "$work_dir/dsm"
+  git -C "$work_dir/dsm" checkout --detach "$DSM_REVISION"
+  git clone --no-checkout "https://github.com/kyutai-labs/moshi.git" "$work_dir/moshi"
+  git -C "$work_dir/moshi" checkout --detach "$MOSHI_REVISION"
+  source_contract_path="$work_dir/evidence/source-contract.json"
+  [[ ! -e "$source_contract_path" ]] || die 'source contract evidence already exists'
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DUMPER" validate-source-contract \
+    --dsm-source "$work_dir/dsm" --moshi-source "$work_dir/moshi" > "$source_contract_path"
+  [[ -s "$source_contract_path" ]] || die 'source contract evidence is empty'
+  for file in model.safetensors config.json mimi-pytorch-e351c8d8@125.safetensors tokenizer_en_audio_4000.model; do
+    download_hf_file "$file" "$work_dir/model/$file"
+  done
+  UV_NO_CACHE=1 uv run --no-project --offline --python 3.12 python - "$work_dir/model" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+cache = root / ".cache"
+if cache.exists() or cache.is_symlink():
+    if cache.is_symlink():
+        raise SystemExit("model .cache symlink is not accepted")
+    shutil.rmtree(cache)
+expected = {
+    "model.safetensors",
+    "config.json",
+    "mimi-pytorch-e351c8d8@125.safetensors",
+    "tokenizer_en_audio_4000.model",
+}
+if {item.name for item in root.iterdir()} != expected:
+    raise SystemExit("model snapshot does not contain exactly the four authenticated files")
+if any(item.is_symlink() or not item.is_file() for item in root.iterdir()):
+    raise SystemExit("model snapshot contains a non-regular or symlink entry")
+PY
+  cargo build --locked --offline --release -p vokra-convert
+  "$ROOT/target/release/vokra-convert" --model kyutai-stt --input "$work_dir/model/model.safetensors" --output "$work_dir/decoder.gguf"
+  "$ROOT/target/release/vokra-convert" --model kyutai-stt-tokenizer --input "$work_dir/model/tokenizer_en_audio_4000.model" --output "$work_dir/tokenizer.gguf"
+  UV_NO_CACHE=1 uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$DUMPER" real \
+    --model "$work_dir/model" --dsm-source "$work_dir/dsm" --moshi-source "$work_dir/moshi" --out "$work_dir/reference" \
+    --expected-head "$expected_head" --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256"
+  cargo fmt --all -- --check
+  cargo metadata --locked --no-deps --format-version 1 >/dev/null
+  gguf_sha="$(sha256sum "$work_dir/decoder.gguf" | awk '{print $1}')"
+  tokenizer_sha="$(sha256sum "$work_dir/tokenizer.gguf" | awk '{print $1}')"
+  reference_sha="$(sha256sum "$work_dir/reference/manifest.json" | awk '{print $1}')"
+  packet_sha="$(sha256sum "$work_dir/reference/input.json" | awk '{print $1}')"
+  logits_sha="$(sha256sum "$work_dir/reference/logits.f32" | awk '{print $1}')"
+  tokenizer_table_sha="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/reference/manifest.json" <<'PY'
+import json, sys
+manifest = json.loads(open(sys.argv[1], encoding="utf-8").read())
+value = manifest["model"]["tokenizer_structure"]["table_sha256"]
+if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+    raise SystemExit("invalid tokenizer table SHA-256 in reference manifest")
+print(value)
+PY
+)"
+  grep -Fq "table_sha256=$tokenizer_table_sha" "$validation_log" || die 'CLI/readback tokenizer table digest differs from Python evidence'
+  reference_packet_sha="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/reference" <<'PY'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+expected = {"input.json", "hidden.f32", "logits.f32", "manifest.json"}
+rows = []
+for path in root.iterdir():
+    if path.is_symlink() or not path.is_file() or path.name not in expected:
+        raise SystemExit("reference packet has an unexpected or unsafe entry")
+    rows.append((path.name, hashlib.sha256(path.read_bytes()).hexdigest()))
+if {name for name, _ in rows} != expected:
+    raise SystemExit("reference packet closure is incomplete")
+canonical = b"".join(name.encode() + b"\0" + digest.encode() + b"\n" for name, digest in sorted(rows))
+print(hashlib.sha256(canonical).hexdigest())
+PY
+)"
+  source_contract_sha="$(sha256sum "$source_contract_path" | awk '{print $1}')"
+  echo "gguf_sha256=$gguf_sha"
+  echo "tokenizer_sha256=$tokenizer_sha"
+  echo "tokenizer_table_sha256=$tokenizer_table_sha"
+  echo "streaming_source_contract_sha256=$source_contract_sha"
+  echo "reference_manifest_sha256=$reference_sha"
+  echo "packet_sha256=$packet_sha"
+  echo "reference_logits_sha256=$logits_sha"
+  echo "reference_packet_sha256=$reference_packet_sha"
+  final_head="$(git -C "$ROOT" rev-parse HEAD)"
+  [[ "$final_head" == "$expected_head" ]] || die 'checkout HEAD changed before parity test'
+  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty before parity test'
+  VOKRA_KYUTAI_STT_DECODER_GGUF="$work_dir/decoder.gguf" \
+  VOKRA_KYUTAI_STT_DECODER_GGUF_SHA256="$gguf_sha" \
+  VOKRA_KYUTAI_STT_DECODER_REFERENCE="$work_dir/reference" \
+  VOKRA_KYUTAI_STT_DECODER_REFERENCE_MANIFEST_SHA256="$reference_sha" \
+  VOKRA_KYUTAI_STT_DECODER_MEASUREMENT_ONLY=1 \
+    cargo test --locked --offline --test parity_kyutai_stt_decoder_real -p vokra-models -- \
+      --ignored --exact parity_kyutai_stt_decoder_real_cpu --nocapture
+} > "$validation_log" 2>&1 || die 'VAST decoder measurement failed; evidence log preserved'
+set +o noclobber
+validate_measurement_log "$validation_log" || die 'measurement log singleton/result validation failed'
+log_sha="$(sha256sum "$validation_log" | awk '{print $1}')"
+composite_validation_log="$work_dir/evidence/composite-bind.log"
+[[ ! -e "$composite_validation_log" ]] || die 'composite bind log already exists'
+VOKRA_KYUTAI_STT_DECODER_GGUF="$work_dir/decoder.gguf" \
+VOKRA_KYUTAI_STT_TOKENIZER_GGUF="$work_dir/tokenizer.gguf" \
+VOKRA_KYUTAI_STT_MIMI_FILE="$work_dir/model/mimi-pytorch-e351c8d8@125.safetensors" \
+VOKRA_KYUTAI_STT_DECODER_GGUF_SHA256="$gguf_sha" \
+VOKRA_KYUTAI_STT_TOKENIZER_GGUF_SHA256="$tokenizer_sha" \
+VOKRA_KYUTAI_STT_MIMI_SHA256="$MIMI_SHA256" \
+  cargo test --locked --offline --test parity_kyutai_stt_composite_bind_real -p vokra-models -- \
+    --ignored --exact parity_kyutai_stt_composite_bind_real --nocapture > "$composite_validation_log" 2>&1 \
+  || die 'VAST composite bind gate failed; evidence log preserved'
+validate_composite_log "$composite_validation_log" || die 'composite bind log validation failed'
+composite_log_sha="$(sha256sum "$composite_validation_log" | awk '{print $1}')"
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$work_dir/evidence/transfer-manifest.json" "$expected_head" "$approval_sha256" "$gguf_sha" "$tokenizer_sha" "$tokenizer_table_sha" "$MIMI_SHA256" "$reference_sha" "$reference_packet_sha" "$source_contract_sha" "$log_sha" "$composite_log_sha" <<'PY'
+import json, os, sys
+out, head, approval_sha, gguf_sha, tokenizer_sha, tokenizer_table_sha, mimi_sha, ref_sha, packet_sha, source_contract_sha, cpu_log_sha, composite_log_sha = sys.argv[1:]
+payload = {"format": "vokra-kyutai-stt-decoder-transfer-v3", "status": "MEASUREMENT_ONLY_NOT_APPLE_READY", "expected_head": head, "approval_sha256": approval_sha, "gguf_name": "decoder.gguf", "gguf_sha256": gguf_sha, "tokenizer_gguf_name": "tokenizer.gguf", "tokenizer_sha256": tokenizer_sha, "tokenizer_table_sha256": tokenizer_table_sha, "mimi_name": "mimi-pytorch-e351c8d8@125.safetensors", "mimi_sha256": mimi_sha, "reference_manifest_sha256": ref_sha, "reference_packet_sha256": packet_sha, "streaming_source_contract_name": "source-contract.json", "streaming_source_contract_sha256": source_contract_sha, "streaming_status": "AUTHENTICATED_SOURCE_CONTRACT", "streaming_runtime_status": "BLOCKED_NOT_EXECUTED", "streaming_blockers": ["per-step feedback/state transition is not independently observed", "temperature-zero tie behavior is not independently observed", "context/window truncation and output ordering are not independently observed"], "cpu_log_name": "validation.log", "cpu_log_sha256": cpu_log_sha, "cpu_test_name": "parity_kyutai_stt_decoder_real_cpu", "composite_bind_log_name": "composite-bind.log", "composite_bind_log_sha256": composite_log_sha, "composite_bind_test_name": "parity_kyutai_stt_composite_bind_real", "composite_bind_verdict": "IDENTITY_SCHEMA_GATE_ONLY", "reference_files": ["hidden.f32", "input.json", "logits.f32", "manifest.json"], "no_upload": True}
+data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.write(fd, data); os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+transfer_manifest_sha="$(sha256sum "$work_dir/evidence/transfer-manifest.json" | awk '{print $1}')"
+[[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD changed before transfer handoff'
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty before transfer handoff'
+log "MEASUREMENT_ONLY complete; log_sha256=$log_sha; transfer_manifest_sha256=$transfer_manifest_sha; review a fixed bound before enabling parity"
+exit 0

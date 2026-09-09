@@ -27,9 +27,10 @@
 //! Dia decodes to PCM via **DAC 44.1 kHz** (`descript-audio-codec` — Descript's
 //! open MIT codec) fetched by upstream `dia/model.py::_load_dac_model` through
 //! `dac.utils.download()`. The `data.channels=9` shape lines up 1:1 with DAC's
-//! 9-codebook RVQ frames at 44.1 kHz. In Vokra, DAC lives in
-//! `vokra-ops::dac_rvq` + `vokra-models::codec::DacCodecGguf` — a caller with a
-//! DAC GGUF injects it via [`DiaTts::with_dac`]. Until then
+//! 9-codebook RVQ frames at 44.1 kHz. In Vokra, the complete token-to-PCM
+//! path is [`crate::dac::Dac`]; the lower-level
+//! [`crate::codec::DacCodecGguf`] is only a GGUF weight container, not itself
+//! a PCM decoder. Until then
 //! [`DiaTts::synthesize`] returns [`VokraError::NotImplemented`] naming the
 //! blocker (FR-EX-08 — never a silent zero-fill).
 //!
@@ -38,27 +39,37 @@
 //! - [`DiaConfig`] — every hparam transcribed from the primary source (no
 //!   hardcoded fabrication; sample-rate is inherited from DAC 44.1 kHz per
 //!   upstream `_load_dac_model`, documented on the field).
-//! - [`DiaWeights`] — a text-encoder + decoder weight store with a
-//!   deterministic [`DiaWeights::synthesized`] fixture (SplitMix64 + Xavier)
-//!   so shape / dtype / size flow can be exercised without the real HF
-//!   checkpoint.
-//! - [`DiaTts`] — engine handle carrying config + weights + optional DAC bind.
+//! - [`DiaWeights`] — a text-encoder + decoder weight store with a strict
+//!   343-tensor GGUF loader and a deterministic
+//!   [`DiaWeights::synthesized`] fixture for shape-only tests.
+//! - [`DiaTts`] — shape-test engine handle carrying config + weights and an
+//!   optional low-level DAC GGUF bind; it is not a complete TTS runtime.
 //!   [`DiaTts::synthesize`] returns [`VokraError::NotImplemented`] until real
 //!   weights are bound (the real forward — encoder embed → per-layer prenorm
 //!   attn/FFN → decoder channel-embed sum → delayed AR sampling per channel →
-//!   DAC decode → PCM — is a follow-up wave gated on the real-checkpoint
-//!   tensor manifest).
+//!   DAC decode → PCM — remains gated on the real-checkpoint tensor manifest
+//!   and separate DAC/tokenizer provenance; the crate-private staged route is
+//!   in `dia::forward`.
 //!
-//! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29:
-//! this scaffold sets the seam so the follow-up lands drop-in.
+//! Real-checkpoint parity and public PCM remain deferred until the VAST and
+//! Apple evidence gates pass. [`DiaGenerationState`] and
+//! [`DiaGeneratedCodes`] expose only the model-free delayed-layout and strict
+//! DAC-packet seams; learned forward/cache execution remains crate-private.
 
+use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
-pub use bound::{DiaCheckpoint, DiaTextEmbedding};
-
+mod forward;
+mod tokenizer;
 use crate::codec::DacCodecGguf;
+pub use bound::{DiaCheckpoint, DiaTextEmbedding};
+pub use forward::{DiaGeneratedCodes, DiaGenerationState};
+pub use tokenizer::{
+    DIA_SPEAKER_ONE_ID, DIA_SPEAKER_ONE_MARKER, DIA_SPEAKER_TWO_ID, DIA_SPEAKER_TWO_MARKER,
+    DIA_TEXT_SOURCE_VOCAB_SIZE, DiaTokenizer,
+};
 
 /// `vokra.model.arch` a Dia GGUF must carry. Written by
 /// `vokra-convert::models::dia::ARCH`; the compliance registry
@@ -368,6 +379,87 @@ impl DiaConfig {
         }
         Ok(())
     }
+
+    /// Binds the exact UTF-8 byte tokenizer used by the pinned Dia source.
+    pub fn tokenizer(&self) -> Result<DiaTokenizer> {
+        DiaTokenizer::from_config(self)
+    }
+
+    /// Encodes text through the authenticated Dia byte/speaker-marker
+    /// boundary.  This does not run model inference.
+    pub fn encode_text(&self, text: &str) -> Result<Vec<u32>> {
+        self.tokenizer()?.encode(text)
+    }
+
+    /// Applies Dia's per-channel delayed-AR layout to frame-major codes.
+    ///
+    /// The returned shape is `[frames + max(delay_pattern), channels]`; this
+    /// is a code composition helper, not a PCM decoder.
+    pub fn apply_delay_pattern(&self, codes: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
+        forward::apply_delay_pattern(self, codes)
+    }
+
+    /// Reverts a strict delayed-AR frame-major code layout.
+    pub fn revert_delay_pattern(&self, delayed: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
+        forward::revert_delay_pattern(self, delayed)
+    }
+
+    /// Creates the model-free delayed-generation state for an optional audio
+    /// prompt. The returned state only validates and materializes the official
+    /// BOS/prompt/delay layout; it does not load or execute model weights.
+    pub fn generation_state(&self, prompt: Option<&[Vec<u32>]>) -> Result<DiaGenerationState> {
+        DiaGenerationState::new(self, prompt)
+    }
+}
+
+/// Explicit controls for Dia's delayed autoregressive decoder.
+///
+/// Dia's source sampler takes temperature, top-p, top-k, classifier-free
+/// guidance scale, and a maximum token count.  No defaults are supplied here:
+/// the caller must choose them, and the native route rejects values outside
+/// the authenticated target-vocabulary and audio-length contract.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiaGenerationOptions {
+    /// Maximum delayed-AR steps, bounded by `data.audio_length` and the
+    /// largest per-channel delay.
+    pub max_tokens: usize,
+    /// Classifier-free guidance scale.
+    pub cfg_scale: f32,
+    /// Official sampler temperature; zero selects greedy argmax.
+    pub temperature: f32,
+    /// Official sampler nucleus probability in `[0, 1]`.
+    pub top_p: f32,
+    /// Official sampler top-k candidate count.
+    pub top_k: usize,
+}
+
+impl DiaGenerationOptions {
+    /// Validates decoder controls without touching weights or executing a
+    /// model.  Sampling draws remain caller-owned and are checked by the
+    /// staged route when stochastic sampling is requested.
+    pub fn validate_for(&self, config: &DiaConfig) -> Result<()> {
+        config.validate_for_forward()?;
+        let max_delay = config.delay_pattern.iter().copied().max().unwrap_or(0);
+        if self.max_tokens <= max_delay || self.max_tokens > config.audio_length {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia generation: max_tokens={} must be in ({max_delay}, {}]",
+                self.max_tokens, config.audio_length
+            )));
+        }
+        if !self.cfg_scale.is_finite()
+            || !self.temperature.is_finite()
+            || self.temperature < 0.0
+            || !self.top_p.is_finite()
+            || !(0.0..=1.0).contains(&self.top_p)
+            || self.top_k == 0
+            || self.top_k > config.tgt_vocab_size
+        {
+            return Err(VokraError::InvalidArgument(
+                "dia generation: invalid cfg scale, temperature, top-p, or top-k".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -451,9 +543,9 @@ pub struct DiaDecoderBlockWeights {
 /// Dia weight store: text encoder + decoder + per-channel logits heads.
 ///
 /// [`Self::synthesized`] builds a deterministic fixture (SplitMix64 + Xavier)
-/// against `config` so shape / dtype / size can be exercised without the
-/// real HF checkpoint. Real-checkpoint binding is a follow-up
-/// (T29-equivalent — tensor-name manifest fetch from the upstream release).
+/// against `config` so shape / dtype / size can be exercised without loading
+/// real weights. [`DiaCheckpoint::load_weights`] is the only authenticated
+/// production binding; synthesized values never enter that path.
 #[derive(Debug, Clone)]
 pub struct DiaWeights {
     /// Text-encoder input embedding, shape `[src_vocab_size, enc_n_embd]`.
@@ -654,18 +746,36 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// bind ([`DacCodecGguf`] — MIT). [`Self::synthesize`] is the primary text →
 /// PCM entry point; until real weights are bound (see the module docstring)
 /// it returns [`VokraError::NotImplemented`] with a message naming the
-/// blocker (FR-EX-08 — never a silent zero-fill fallback).
+/// blocker (FR-EX-08 — never a silent zero-fill fallback). A separately
+/// authenticated [`crate::dac::Dac`] can decode a validated
+/// [`DiaGeneratedCodes`] packet through [`Self::decode_codes`], but this does
+/// not waive the independent generation-parity gate.
 #[derive(Debug, Clone)]
 pub struct DiaTts {
     cfg: DiaConfig,
     weights: DiaWeights,
-    /// Optional DAC codec bind. Injected via [`Self::with_dac`]; the real
-    /// synth path consumes the RVQ decode + DAC neural chain to produce
-    /// 44.1 kHz PCM.
+    /// Optional low-level DAC GGUF weight container. Injected via
+    /// [`Self::with_dac`]; this field alone is not the complete
+    /// [`crate::dac::Dac`] token-to-PCM decoder.
     dac: Option<DacCodecGguf>,
+    /// Independently authenticated complete DAC route, retained separately
+    /// from the legacy low-level container until parity gates are accepted.
+    production_dac: Option<crate::dac::Dac>,
 }
 
 impl DiaTts {
+    /// Opens an authenticated full Dia-1.6B main-model GGUF.
+    ///
+    /// This binds all 343 tensors through [`DiaCheckpoint`] before constructing
+    /// the engine. It deliberately does not open or infer a DAC: the separate
+    /// 44.1-kHz nine-codebook [`crate::dac::Dac`] artifact and same-execution
+    /// parity evidence are independent gates for PCM production.
+    pub fn from_gguf(file: &GgufFile, cfg: DiaConfig) -> Result<Self> {
+        let checkpoint = DiaCheckpoint::from_gguf(file)?;
+        let weights = checkpoint.load_weights(file, &cfg)?;
+        Self::new(cfg, weights)
+    }
+
     /// Assembles an engine from `cfg` and `weights`. Cross-checks the
     /// weight-store shapes against `cfg` (`n_layer` counts, channel table
     /// counts, per-tensor sizes) so a mismatched pair fails loudly here
@@ -801,26 +911,31 @@ impl DiaTts {
             cfg,
             weights,
             dac: None,
+            production_dac: None,
         })
     }
 
-    /// Injects a [`DacCodecGguf`] — the terminal RVQ codes → PCM decoder.
+    /// Injects the low-level [`DacCodecGguf`] GGUF weight container.
     ///
-    /// Dia's decoder outputs `channels` (9) RVQ codes per step; the DAC codec
-    /// reduces them to a 44.1 kHz PCM waveform. Without a DAC bind
+    /// Dia's decoder outputs `channels` (9) RVQ codes per step. The complete
+    /// [`crate::dac::Dac`] route reduces them to 44.1 kHz PCM; this lower-level
+    /// bind is only a compatibility seam and does not complete that route.
+    /// Without a DAC bind
     /// [`Self::synthesize`] cannot honestly return audio (FR-EX-08).
     ///
-    /// Cross-checks that the DAC codec has at least as many codebooks as
-    /// Dia emits channels — a mismatch would misroute channel indices at
-    /// decode time.
+    /// Cross-checks that the DAC codec has exactly as many codebooks as Dia
+    /// emits channels — a mismatch would misroute channel indices at decode
+    /// time. Dia's authenticated 44.1-kHz DAC variant is a nine-codebook
+    /// codec; accepting a larger codec would silently leave its extra
+    /// codebooks outside the Dia contract.
     ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] on a codebook / sample-rate mismatch.
     pub fn with_dac(mut self, dac: DacCodecGguf) -> Result<Self> {
-        if dac.attrs.n_codebooks < self.cfg.channels {
+        if dac.attrs.n_codebooks != self.cfg.channels {
             return Err(VokraError::InvalidArgument(format!(
-                "dia with_dac: dac has {} codebooks but Dia emits {} channels",
+                "dia with_dac: dac has {} codebooks but Dia requires exactly {} channels",
                 dac.attrs.n_codebooks, self.cfg.channels,
             )));
         }
@@ -834,6 +949,23 @@ impl DiaTts {
         Ok(self)
     }
 
+    /// Binds the complete independently authenticated 44.1-kHz nine-codebook
+    /// DAC. This is only composition staging; PCM remains fail-closed until
+    /// official same-execution parity and Apple evidence are accepted.
+    pub fn with_authenticated_dac(mut self, dac: crate::dac::Dac) -> Result<Self> {
+        if dac.sample_rate() != self.cfg.sample_rate || dac.n_codebooks() != self.cfg.channels {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia with_authenticated_dac: expected {} Hz/{} codebooks, got {} Hz/{}",
+                self.cfg.sample_rate,
+                self.cfg.channels,
+                dac.sample_rate(),
+                dac.n_codebooks(),
+            )));
+        }
+        self.production_dac = Some(dac);
+        Ok(self)
+    }
+
     /// The resolved configuration.
     #[must_use]
     pub fn config(&self) -> &DiaConfig {
@@ -844,6 +976,46 @@ impl DiaTts {
     #[must_use]
     pub fn dac(&self) -> Option<&DacCodecGguf> {
         self.dac.as_ref()
+    }
+
+    /// Decodes a validated frame-major Dia packet through the complete,
+    /// independently authenticated 44.1-kHz nine-codebook DAC.
+    ///
+    /// The legacy [`Self::with_dac`] GGUF container is intentionally not
+    /// accepted here: it has no executable decoder identity. Callers must
+    /// bind [`crate::dac::Dac`] through [`Self::with_authenticated_dac`],
+    /// which keeps missing parity/owner evidence fail-closed at the synthesis
+    /// entry point.
+    pub fn decode_codes(&self, codes: &DiaGeneratedCodes) -> Result<Vec<f32>> {
+        if codes.num_codebooks() != self.cfg.channels || codes.sample_rate() != self.cfg.sample_rate
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia decode_codes: packet identity is {} Hz/{} codebooks, expected {} Hz/{}",
+                codes.sample_rate(),
+                codes.num_codebooks(),
+                self.cfg.sample_rate,
+                self.cfg.channels,
+            )));
+        }
+        if codes.frames() > self.cfg.audio_length {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia decode_codes: packet has {} frames, receiver audio length is {}",
+                codes.frames(),
+                self.cfg.audio_length,
+            )));
+        }
+        let Some(dac) = self.production_dac.as_ref() else {
+            return Err(VokraError::NotImplemented(
+                "dia decode_codes: an independently authenticated crate::dac::Dac is required; legacy with_dac(...) is only a metadata container",
+            ));
+        };
+        if dac.sample_rate() != codes.sample_rate() || dac.n_codebooks() != codes.num_codebooks() {
+            return Err(VokraError::InvalidArgument(
+                "dia decode_codes: bound DAC identity does not match the generated packet"
+                    .to_owned(),
+            ));
+        }
+        dac.decode_codes(codes.as_frame_major())
     }
 
     /// True iff the weight store was built by [`DiaWeights::synthesized`]
@@ -864,15 +1036,16 @@ impl DiaTts {
     /// noise or a hallucinated "silence"), so this returns
     /// [`VokraError::NotImplemented`] naming the blocker. Callers verify the
     /// shape flow through [`DiaTts::new`] + [`DiaWeights::synthesized`]
-    /// today; a follow-up wave binds the real HF checkpoint tensor names and
-    /// wires the forward.
+    /// today; [`DiaCheckpoint::load_weights`] binds the complete main-model
+    /// tensor set, while the separately authenticated [`crate::dac::Dac`]
+    /// and execution evidence remain required for PCM.
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] on `text_ids` length or an id ≥
     ///   `src_vocab_size`.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
+    /// - [`VokraError::NotImplemented`] otherwise (the public handle still
+    ///   lacks the complete authenticated checkpoint/DAC contract — FR-EX-08).
     pub fn synthesize(&self, text_ids: &[i64]) -> Result<Vec<f32>> {
         if text_ids.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -901,25 +1074,23 @@ impl DiaTts {
                  be noise, not speech. Bind real Dia-1.6B weights (Apache 2.0, \
                  nari-labs/Dia-1.6B) before invoking synthesize. The shape flow \
                  (config validation, weight-store construction) is exercised through \
-                 DiaTts::new; the real-checkpoint tensor-name manifest lands in a \
-                 follow-up wave (T29-equivalent).",
+                 DiaTts::new; use DiaCheckpoint::load_weights for the authenticated \
+                 343-tensor main-model payload.",
             ));
         }
-        if self.dac.is_none() {
+        if self.production_dac.is_none() && self.dac.is_none() {
             return Err(VokraError::NotImplemented(
-                "dia synthesize: no DAC codec has been bound — call `.with_dac(\
-                 DacCodecGguf::from_gguf(&dac_gguf)?)?` first. Dia's decoder emits \
-                 9 RVQ codebook channels per step which the DAC 44.1 kHz codec \
-                 reduces to PCM; without it there is nothing honest to return \
-                 (FR-EX-08).",
+                "dia synthesize: no low-level DAC GGUF has been bound — the complete \
+                 crate::dac::Dac token-to-PCM decoder must be composed with Dia. Dia's \
+                 decoder emits 9 RVQ codebook channels per step; call with_dac(...) \
+                 with an authenticated codec before invoking synthesize — without a \
+                 complete codec route there is nothing honest to return (FR-EX-08).",
             ));
         }
         Err(VokraError::NotImplemented(
-            "dia synthesize: real weights are bound and a DAC codec is present, but \
-             the encoder + delayed-AR decoder forward path has not landed yet. \
-             Follow-up wave: transcribe the upstream tensor manifest and wire the \
-             pre-norm MHA + GQA + cross-attn + SwiGLU forward through the \
-             `Compute` seam (CosyVoice2 T07/T08 pattern).",
+            "dia synthesize: main model and DAC composition are staged, but the \
+             official same-execution delayed-AR/sampling parity and Apple evidence \
+             gates remain unaccepted (FR-EX-08).",
         ))
     }
 }
@@ -970,6 +1141,97 @@ mod tests {
         assert_eq!(c.sample_rate, 44_100);
         // Everything above adds up to a well-formed config.
         c.validate_for_forward().expect("dia-1.6b is well-formed");
+    }
+
+    #[test]
+    fn public_text_and_delay_contracts_are_strict() {
+        let c = DiaConfig::dia_1_6b();
+        assert_eq!(
+            c.encode_text("A[S1]é[S2]").expect("tokenizer"),
+            vec![65, 1, 195, 169, 2]
+        );
+        let codes = vec![vec![1; c.channels], vec![2; c.channels]];
+        let delayed = c.apply_delay_pattern(&codes).expect("delay");
+        assert_eq!(c.revert_delay_pattern(&delayed).expect("revert"), codes);
+    }
+
+    #[test]
+    fn generation_state_preserves_delayed_channel_order() {
+        let config = DiaConfig::tiny_for_tests();
+        let mut state = config.generation_state(None).expect("generation state");
+        assert_eq!(state.prefill_steps(), 1);
+        assert_eq!(state.generated_steps(), 0);
+        state.push_sample(&[1, 2, 3]).expect("sample 0");
+        state.push_sample(&[4, 5, 6]).expect("sample 1");
+        state.push_sample(&[7, 1, 2]).expect("sample 2");
+        let packet = state.finish().expect("finish");
+        assert_eq!(packet.frames(), 3);
+        assert_eq!(packet.num_codebooks(), config.channels);
+        assert_eq!(packet.sample_rate(), config.sample_rate);
+        assert_eq!(packet.frame(0).expect("frame 0"), &[1, 5, 2]);
+        assert_eq!(packet.frame(1).expect("frame 1"), &[4, 1, 0]);
+        assert_eq!(packet.frame(2).expect("frame 2"), &[7, 0, 0]);
+    }
+
+    #[test]
+    fn generated_codes_reject_reserved_ids_and_decode_requires_real_dac() {
+        let config = DiaConfig::tiny_for_tests();
+        assert!(
+            DiaGeneratedCodes::from_frame_major(
+                &config,
+                vec![config.audio_eos_value; config.channels],
+                1,
+            )
+            .is_err()
+        );
+
+        let packet =
+            DiaGeneratedCodes::from_frame_major(&config, vec![1, 2, 3], 1).expect("valid packet");
+        let weights = DiaWeights::synthesized(&config, 7).expect("weights");
+        let tts = DiaTts::new(config, weights).expect("dia tts");
+        match tts.decode_codes(&packet) {
+            Err(VokraError::NotImplemented(message)) => {
+                assert!(message.contains("crate::dac::Dac"));
+            }
+            other => panic!("expected missing authenticated DAC error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_codes_rechecks_receiver_audio_length() {
+        let mut sender_config = DiaConfig::tiny_for_tests();
+        sender_config.audio_length = 4;
+        let mut receiver_config = DiaConfig::tiny_for_tests();
+        receiver_config.audio_length = 2;
+        let packet = DiaGeneratedCodes::from_frame_major(
+            &sender_config,
+            vec![1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3],
+            4,
+        )
+        .expect("sender packet within sender limit");
+        let weights = DiaWeights::synthesized(&receiver_config, 7).expect("weights");
+        let tts = DiaTts::new(receiver_config, weights).expect("dia tts");
+        match tts.decode_codes(&packet) {
+            Err(VokraError::InvalidArgument(message)) => {
+                assert!(message.contains("receiver audio length"));
+            }
+            other => panic!("expected receiver length rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generation_options_reject_unauthenticated_bounds() {
+        let c = DiaConfig::dia_1_6b();
+        let mut options = DiaGenerationOptions {
+            max_tokens: c.audio_length,
+            cfg_scale: 1.0,
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: c.tgt_vocab_size,
+        };
+        options.validate_for(&c).expect("valid options");
+        options.top_k = c.tgt_vocab_size + 1;
+        assert!(options.validate_for(&c).is_err());
     }
 
     #[test]
@@ -1470,6 +1732,23 @@ mod tests {
             Err(VokraError::InvalidArgument(msg)) => assert!(
                 msg.contains("codebooks") && msg.contains("channels"),
                 "message must name codebook / channel mismatch: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// A codec with extra codebooks is not an authenticated Dia composition:
+    /// silently ignoring them would make the bound artifact non-exact.
+    #[test]
+    fn with_dac_rejects_extra_codebooks() {
+        let c = DiaConfig::tiny_for_tests();
+        let w = DiaWeights::synthesized(&c, 7).expect("weights");
+        let tts = DiaTts::new(c.clone(), w).expect("dia tts");
+        let dac = stub_dac(c.channels + 1, c.sample_rate);
+        match tts.with_dac(dac) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("exactly") && msg.contains("codebooks"),
+                "message must name exact codebook contract: {msg}"
             ),
             other => panic!("expected InvalidArgument, got {other:?}"),
         }

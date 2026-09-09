@@ -1,6 +1,6 @@
 [package]
 name = "vokra-backend-cpu"
-description = "Vokra CPU backend (x86-64 AVX2 / ARM64 NEON kernels with runtime ISA dispatch; kernels land in M0-08)"
+description = "Vokra CPU backend with x86-64 AVX2 and ARM64 NEON kernels plus runtime ISA dispatch"
 version.workspace = true
 edition.workspace = true
 # M4-17: the AVX-512 server-tier intrinsics (`_mm512_*`, vpdpbusd, vdpbf16ps)

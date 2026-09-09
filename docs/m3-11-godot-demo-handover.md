@@ -1,5 +1,12 @@
 # M3-11 Godot Demo Runtime Verification — Handover
 
+> **2026-09-09 audit-start snapshot:** This is a dated Godot owner handover,
+> not the live Mac/Metal ledger. Before this documentation refresh, PR #79 was
+> `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional skip /
+> 0 fail). Scaleway had not started; VAST `50320338` and its 150-GB storage
+> were destroyed. Use the canonical pre-Scaleway ledger for current
+> remaining-row and Apple-validation status.
+
 **Owner**: 依頼者 (Godot 4.3+ Editor での実 runtime dispatch verify は本質的に依頼者ボトルネック; CC cannot execute Godot Editor GUI operations).
 **Predecessor**: M3-11 T01-T18 = 100% CC 完成 (Wave 3.5 + Wave 11 + Wave 13、`docs/tickets/m3/M3-11-godot-gdextension.md` §改訂記録)。
 **Requirement under verification**: FR-API-05 (Godot GDExtension) + `docs/milestones.md` §7.3 Exit criteria 3 (Godot デモ動作)。

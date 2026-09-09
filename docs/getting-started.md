@@ -14,6 +14,8 @@ on CPU. For GPU backends (Metal / CUDA) and distribution artefacts
   the AVX-512 intrinsics stabilized there, and that crate is in every build.
   CI verifies this in the `msrv` job.
 - **git**: for cloning the repository
+- **curl or wget**: for downloading the checkpoint files used by the sample
+  conversion recipes
 - **uv + Python 3.12**: only needed to prepare checkpoints consumed by the
   converter. Run every Python command through uv; the Vokra runtime itself
   has no Python dependency (`FR-LD-05`).
@@ -142,8 +144,13 @@ cargo build --release -p vokra-cli --features cuda    # Linux with system CUDA
   --input speech30s.wav --backend cuda
 ```
 
-RTF < 1.0 means real-time. Targets: Whisper base on CPU is RTF < 0.3;
-Whisper large-v3 on CUDA is RTF < 0.15 (measured 0.081–0.115 on RTX 4090).
+RTF < 1.0 means real-time. The values below are acceptance targets, not a
+guaranteed result on every machine. The RTX 4090 range 0.081–0.115 is a dated,
+single-shot VAST reference from 2026-07-07, retained in
+[`docs/perf/cuda-large-v3-baseline.json`](perf/cuda-large-v3-baseline.json) and
+the [variance report](m2-cuda-rtf-variance-2026-07-08.md); it is not a current
+CPU or Metal benchmark. Re-run `bench` on the target hardware before making a
+performance claim.
 
 ## 5 min: Call from C ABI
 

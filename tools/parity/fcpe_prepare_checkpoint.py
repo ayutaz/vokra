@@ -120,24 +120,23 @@ Then:
     vokra-cli convert --model fcpe --input fcpe.safetensors --output fcpe.gguf
 """
 
+from __future__ import annotations
+
 import argparse
+import ast
 import hashlib
 import json
+from pathlib import Path
 import struct
 import sys
 from collections import OrderedDict
-
-import torch  # type: ignore[import-not-found]
 
 # Upstream torchfcpe FCPE_v001 reference layout. A checkpoint with a
 # different layer count reveals itself here (loudly) rather than silently
 # succeeding with truncated weights.
 DEFAULT_N_LAYERS = 6
 
-DTYPE_MAP = {
-    torch.float32: "F32",
-    torch.float16: "F16",
-}
+DTYPE_MAP = {"torch.float32": "F32", "torch.float16": "F16"}
 
 
 def write_safetensors(path: str, tensors: "OrderedDict[str, torch.Tensor]") -> None:
@@ -149,11 +148,12 @@ def write_safetensors(path: str, tensors: "OrderedDict[str, torch.Tensor]") -> N
     blobs: list[bytes] = []
     offset = 0
     for name, t in tensors.items():
-        if t.dtype not in DTYPE_MAP:
+        dtype_name = str(t.dtype)
+        if dtype_name not in DTYPE_MAP:
             raise SystemExit(f"unsupported dtype {t.dtype} for tensor {name!r}")
         data = t.detach().contiguous().cpu().numpy().tobytes()
         header[name] = {
-            "dtype": DTYPE_MAP[t.dtype],
+            "dtype": DTYPE_MAP[dtype_name],
             "shape": list(t.shape),
             "data_offsets": [offset, offset + len(data)],
         }
@@ -257,10 +257,36 @@ UPSTREAM_BUFFERS_TO_DROP: set[str] = {
 }
 
 
+def self_test() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "load"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+    ]
+    assert calls, "safe loader contract has no torch.load call"
+    for call in calls:
+        weights_only = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "weights_only"),
+            None,
+        )
+        assert isinstance(weights_only, ast.Constant) and weights_only.value is True, (
+            "every torch.load call must explicitly set weights_only=True"
+        )
+    assert build_expected_names(DEFAULT_N_LAYERS)
+    print("fcpe_prepare_checkpoint: safe-loader self-test PASS")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--ckpt", required=True, help="upstream FCPE checkpoint (.pt / torch pickle)")
-    ap.add_argument("--output", required=True, help="output .safetensors path")
+    ap.add_argument("--ckpt", help="upstream FCPE checkpoint (.pt / torch pickle)")
+    ap.add_argument("--output", help="output .safetensors path")
+    ap.add_argument("--self-test", action="store_true")
     ap.add_argument(
         "--n-layers",
         type=int,
@@ -269,10 +295,25 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    # weights_only=False required because the released checkpoint uses the
-    # torch pickle format (torchfcpe wraps the state dict in a plain dict).
-    # The file is downloaded from a fixed HF/GitHub release, not user input.
-    state = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    if args.self_test:
+        if args.ckpt is not None or args.output is not None:
+            ap.error("--self-test accepts no checkpoint or output arguments")
+        self_test()
+        return 0
+    if args.ckpt is None or args.output is None:
+        ap.error("--ckpt and --output are required unless --self-test is used")
+
+    import torch  # type: ignore[import-not-found]
+
+    # A fixed source identity is not permission to execute arbitrary pickle
+    # globals. Refuse checkpoint variants the safe loader cannot represent.
+    try:
+        state = torch.load(args.ckpt, map_location="cpu", weights_only=True)
+    except Exception as error:  # noqa: BLE001 — safe refusal is terminal
+        raise SystemExit(
+            f"fcpe_prepare_checkpoint: BLOCKED; weights_only=True refused "
+            f"{args.ckpt}: {error}"
+        ) from error
     if isinstance(state, dict) and "model" in state and isinstance(state["model"], (dict, OrderedDict)):
         state = state["model"]
     if not isinstance(state, (dict, OrderedDict)):

@@ -1,13 +1,22 @@
 # `vokra.*` GGUF chunk 命名仕様書
 
+> **2026-08-30 current-state boundary:** This file preserves the dated M0-03
+> chunk design and its later additions; it is not an exhaustive inventory of
+> every model-specific key now present. Current key names, types, and
+> read/write behavior are authoritative in the referenced Rust converter/core
+> and model code (especially `crates/vokra-core/src/gguf/chunks.rs` and each
+> model module). Do not treat the historical M0/M1 scope statements below as
+> a current model-coverage or publication-status claim; use the current M5
+> checklist and handoff for live status.
+
 - **チケット**: M0-03-T08（WP 主成果物「`vokra.*` chunk 仕様」）
 - **日付**: 2026-07-02（初版、M0-03-T08）／ 2026-07-06 追記（M0-06 `vokra.whisper.*`・M0-08 `vokra.campplus.*`・M2-06 `vokra.tokenizer.model`・M2-13 `vokra.provenance.*` を §6〜§9 に追加）／ 2026-07-06 追記（§6 `vokra.whisper.decoder_start_ids` の anchoring 機構を現物コメントから明示化。Phase 5 follow-on と decoder-step Phase 1〜3b は GGUF chunk 変更なし＝カーネル / 型抽象のみの変更のため他 § は現状維持）
-- **正**: `vokra.model.*` / `vokra.frontend.*` / `vokra.provenance.*` のキー定数は `crates/vokra-core/src/gguf/chunks.rs`、frontend の typed read/write は `crates/vokra-core/src/gguf/frontend_spec.rs`。モデル固有 chunk のキー定数は各コンバータ／モデル実装に定義（`vokra.whisper.*` = `crates/vokra-convert/src/models/whisper.rs`、`vokra.campplus.*` = `crates/vokra-convert/src/models/campplus.rs`、`vokra.tokenizer.model` = 同 whisper.rs ＋ `crates/vokra-models/src/whisper/tokenizer.rs`）。本書とコードが乖離した場合はコードを修正して本書に合わせる（キー名は保存済みモデルとの互換契約のため、コード側の勝手な改名は破壊的変更）。
-- **出典区分**: 「転記」= CLAUDE.md / SRS からの転記（変更不可）、「(提案)」= 本チケットで設計した提案値（M1 以降で変更余地あり）。
+- **正**: `vokra.model.*` / `vokra.frontend.*` / `vokra.provenance.*` のキー定数は `crates/vokra-core/src/gguf/chunks.rs`、frontend の typed read/write は `crates/vokra-core/src/gguf/frontend_spec.rs`。モデル固有 chunk のキー定数は各コンバータ／モデル実装に定義（`vokra.whisper.*` = `crates/vokra-convert/src/models/whisper.rs`、`vokra.campplus.*` = `crates/vokra-convert/src/models/campplus.rs`、`vokra.tokenizer.model` = 同 whisper.rs ＋ `crates/vokra-models/src/whisper/tokenizer.rs`）。保存済み schema contract は互換性を維持する原則で扱うが、歴史的な本書の inventory に合わせて現行コードを戻してはならない。乖離時は現行コード、ABI changelog、fixtures を突合し、意図的な schema 変更は互換性手続きと証跡を経て判断する。
+- **出典区分**: 「転記」= 当時の CLAUDE.md / SRS からの転記（歴史記録）、「(提案)」= 本チケットで設計した提案値（M1 以降で変更余地あり）。現行の値・互換性判断はコード、ABI changelog、fixturesを正とし、歴史記録を現行実装へ強制しない。
 
 ## 1. prefix 規約（転記 + 仕様書根拠）
 
-音声固有 metadata は **`vokra.` prefix の独自 GGUF chunk** とし、llama.cpp 本体との命名衝突を回避する（FR-LD-02、IF-07、CLAUDE.md 設計判断 3「音声固有 metadata は `vokra.*` prefix の独自 chunk として追加」）。
+音声固有 metadata は **`vokra.` prefix の独自 GGUF chunk** とし、llama.cpp 本体との命名衝突を回避する（FR-LD-02、IF-07。旧設計判断 3 の要旨を保持）。現行のキー名・型・読み書きは `crates/vokra-core/src/gguf/chunks.rs` と各実装を正とする。
 
 GGUF 仕様書（ggml-org/ggml `docs/gguf.md` @ `eced84c86f8b`）はコミュニティ独自キーについて「should be namespaced with the relevant community name to avoid collisions」と定めており、`general.*` / `<arch>.*` / `tokenizer.*` の標準 namespace と `vokra.*` は構造的に排他。
 
@@ -22,7 +31,7 @@ GGUF 仕様書（ggml-org/ggml `docs/gguf.md` @ `eced84c86f8b`）はコミュニ
 
 ## 2. `vokra.frontend.*` — 13 キーと型対応
 
-キー名の 13 フィールドは CLAUDE.md / FR-LD-03 からの**転記**: `{n_fft, hop, win_length, window_type, mel_norm, htk_mode, fmin, fmax, n_mels, pad_mode, dc_offset_removal, pre_emphasis, sample_rate}`。**GGUF value type の対応は本チケットの (提案)**:
+キー名の 13 フィールドは当時の CLAUDE.md / FR-LD-03 からの**歴史的転記**: `{n_fft, hop, win_length, window_type, mel_norm, htk_mode, fmin, fmax, n_mels, pad_mode, dc_offset_removal, pre_emphasis, sample_rate}`。**GGUF value type の対応は本チケットの (提案)**。現行の typed read/write は `crates/vokra-core/src/gguf/frontend_spec.rs` と fixtures を確認する。
 
 | キー | GGUF value type | 意味 |
 |------|-----------------|------|

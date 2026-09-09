@@ -537,6 +537,14 @@ fn parity_rmvpe_metal_matches_cpu_when_real_gguf_is_supplied() {
             (actual.confidence - expected.confidence).abs()
         );
     }
+    assert!(
+        !cpu.is_empty(),
+        "RMVPE Metal/CPU parity fixture must produce nonzero frames"
+    );
+    eprintln!(
+        "RMVPE_METAL_VS_CPU PASS frames={} confidence_bound=0.01",
+        cpu.len()
+    );
 }
 
 /// GATED (Path B): opens the real RMVPE GGUF, feeds the dumped

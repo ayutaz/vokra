@@ -13,6 +13,8 @@
 //!
 //! - schedule tag ↔ [`vokra_ops::Schedule`] mapping (T04 metadata read at
 //!   load time; per-invocation override reserved for CLI `--flow-schedule`);
+//!   the authenticated `cosine` tag selects CosyVoice2's causal CFG defaults
+//!   (`SplitBatch`, scale `1.7`) as well as its pinned timestep schedule;
 //! - chunk-aware velocity closure — one chunk's velocity is estimated by the
 //!   LLM backbone + Flow Matching sub-network; between-chunk continuity is
 //!   carried by [`ChunkAwareCfm::run_chunks`] via a
@@ -36,7 +38,12 @@
 //!   oracle tests use an injected velocity closure to exercise the
 //!   plumbing without inventing upstream tensor names.
 //!
-//! No parity claim is made against the real CosyVoice2 checkpoint — that is
+//! For generic [`vokra_ops::CfgMode::SplitBatch`], the velocity closure must
+//! return `[uncond; cond]`; the upstream CosyVoice2 estimator presents
+//! `[cond; uncond]`, so the future estimator adapter must reorder those rows
+//! before calling the generic sampler.
+//!
+//! No parity claim is made against the real CosyVoice2 checkpoint. That remains
 //! the follow-up owner ticket (T21 fixture generation + T22 parity CI).
 
 use vokra_core::{Result, VokraError};
@@ -69,11 +76,13 @@ pub struct FlowMatchingRuntimeParams {
 impl FlowMatchingRuntimeParams {
     /// Derives runtime params from a CosyVoice2 config's default axes.
     ///
-    /// Currently maps the schedule tag (`vokra.cosyvoice2.flow.schedule`)
-    /// via [`Self::schedule_from_tag`]; every other axis takes the
-    /// `euler_defaults` starting point from M3-05. A caller who wants
-    /// e.g. `CfgMode::SplitBatch + cfg_scale=3.0` overrides after
-    /// [`Self::from_config`].
+    /// Maps the schedule tag (`vokra.cosyvoice2.flow.schedule`) via
+    /// [`Self::schedule_from_tag`]. The authenticated CosyVoice2 `cosine`
+    /// route additionally selects `CfgMode::SplitBatch` and constant CFG
+    /// scale `1.7`, matching `1.7 * cond - 0.7 * uncond` from upstream's
+    /// `inference_cfg_rate=0.7`. Other tags preserve the legacy
+    /// `euler_defaults` axes. A caller may still override these runtime axes
+    /// after [`Self::from_config`].
     ///
     /// # Errors
     ///
@@ -81,9 +90,18 @@ impl FlowMatchingRuntimeParams {
     /// schedule tag (FR-EX-08 — no silent fallback to linear).
     pub fn from_config(config: &CosyVoice2Config) -> Result<Self> {
         let schedule = Self::schedule_from_tag(&config.flow_schedule_tag)?;
+        let cosyvoice2_cosine = schedule == Schedule::Cosine;
         Ok(Self {
-            cfg_mode: CfgMode::None,
-            cfg_scale: CfgScaleProfile::Constant(1.0),
+            cfg_mode: if cosyvoice2_cosine {
+                CfgMode::SplitBatch
+            } else {
+                CfgMode::None
+            },
+            cfg_scale: if cosyvoice2_cosine {
+                CfgScaleProfile::Constant(1.7)
+            } else {
+                CfgScaleProfile::Constant(1.0)
+            },
             nfe: config.flow_nfe as usize,
             schedule,
             solver: OdeSolver::Euler,
@@ -96,11 +114,12 @@ impl FlowMatchingRuntimeParams {
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] on any tag other than
-    /// `"linear"` / `"sway"` / `"epss"`.
+    /// `"linear"` / `"sway"` / `"epss"` / `"cosine"`.
     pub fn schedule_from_tag(tag: &str) -> Result<Schedule> {
         match tag {
             "linear" => Ok(Schedule::Linear),
             "sway" => Ok(Schedule::Sway),
+            "cosine" => Ok(Schedule::Cosine),
             // `epss` maps to Schedule::EpsS (M3-05 documents this variant
             // as a stub pending M3-09's real schedule spec). Wiring the
             // tag is stable even while the schedule itself is under
@@ -108,7 +127,7 @@ impl FlowMatchingRuntimeParams {
             "epss" => Ok(Schedule::EpsS),
             other => Err(VokraError::InvalidArgument(format!(
                 "cosyvoice2 flow schedule tag `{other}` is not one of \
-                 `linear` / `sway` / `epss`"
+                 `linear` / `sway` / `epss` / `cosine`"
             ))),
         }
     }
@@ -394,14 +413,53 @@ mod tests {
             FlowMatchingRuntimeParams::schedule_from_tag("epss").unwrap(),
             Schedule::EpsS
         ));
+        assert!(matches!(
+            FlowMatchingRuntimeParams::schedule_from_tag("cosine").unwrap(),
+            Schedule::Cosine
+        ));
     }
 
     #[test]
     fn unknown_schedule_tag_fails_loudly() {
         // FR-EX-08: no silent fallback to Schedule::Linear.
-        let err = FlowMatchingRuntimeParams::schedule_from_tag("cosine")
+        let err = FlowMatchingRuntimeParams::schedule_from_tag("unknown")
             .expect_err("unknown tag must fail");
         assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn cosine_config_selects_split_batch_and_upstream_cfg_scale() {
+        let cfg = stub_config_with_schedule("cosine", 10);
+        let params = FlowMatchingRuntimeParams::from_config(&cfg).unwrap();
+        assert_eq!(params.schedule, Schedule::Cosine);
+        assert_eq!(params.cfg_mode, CfgMode::SplitBatch);
+        assert_eq!(params.cfg_scale, CfgScaleProfile::Constant(1.7));
+        assert_eq!(params.nfe, 10);
+        assert_eq!(params.solver, OdeSolver::Euler);
+    }
+
+    #[test]
+    fn cosine_split_batch_mixes_constant_velocity_over_full_interval() {
+        let cfg = stub_config_with_schedule("cosine", 4);
+        let cfm = ChunkAwareCfm::new(cfg).expect("build");
+        let x0 = FlowSamplerState::new(vec![1], vec![0.0]).unwrap();
+        let out = cfm
+            .step_with_velocity(&x0, |state, _t, pass| {
+                assert_eq!(pass, ForwardPass::SplitBatched);
+                // Generic SplitBatch is [uncond; cond]. Upstream's future
+                // adapter must reorder its [cond; uncond] estimator output
+                // before returning this layout to the sampler.
+                Ok(FlowSamplerState {
+                    shape: vec![2],
+                    data: vec![2.0; state.len()]
+                        .into_iter()
+                        .chain(vec![5.0; state.len()])
+                        .collect(),
+                })
+            })
+            .expect("constant split-batch velocity");
+        // 2 + 1.7 * (5 - 2) = 7.1, and the cosine schedule spans [0, 1].
+        assert!((out.data[0] - 7.1).abs() < 1e-5, "got {}", out.data[0]);
     }
 
     #[test]

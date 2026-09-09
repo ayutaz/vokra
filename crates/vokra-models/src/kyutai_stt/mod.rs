@@ -35,14 +35,19 @@
 //!   (**24 kHz / 12.5 Hz** — the Mimi sample-rate / frame-rate live in
 //!   `vokra.mimi.*`, ADR M4-06 §D3; the STT chunk group deliberately does
 //!   *not* duplicate them).
-//! - **Tokenizer side-car**: `tokenizer_name="tokenizer_en_audio_4000.model"`
-//!   (raw SentencePiece; the T29-equivalent owner hand-off embeds it into
-//!   `vokra.tokenizer.model` — the Moshi / CSM pattern).
-//! - **Weight license**: **CC-BY 4.0** (`AttributionRequired`) — the
-//!   converter stamps the FR-MD-09 attribution text; the compliance
-//!   registry maps `kyutai-stt` / `kyutai-stt-2.6b-en` to
-//!   [`vokra_core::LicenseClass::AttributionRequired`] so the M2-13 gate
-//!   passes commercially *and* the FR-MD-09 attribution surface activates.
+//! - **Tokenizer side-car**: the authenticated inspector contract requires
+//!   `tokenizer_en_audio_4000.model` (59,339 bytes with pinned blob/LFS
+//!   identities). The legacy `tokenizer_spm_4k_en.model` name is explicitly
+//!   rejected; conversion emits a separately-bound decode-only component.
+//! - **Weight license**: **CC-BY 4.0** (`AttributionRequired`) in the
+//!   upstream card. Publication and runtime binding remain blocked pending
+//!   authenticated composite evidence and owner review.
+//! - **Streaming input contract**: the pinned Kyutai MLX example
+//!   `kyutai-labs/moshi/moshi_mlx/moshi_mlx/run_inference.py` at commit
+//!   `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362` reads 24 kHz PCM, pads
+//!   `audio_silence_prefix_seconds` on the left and
+//!   `audio_delay_seconds + 1.0` on the right, then consumes 1,920-sample
+//!   chunks. It suppresses text ids `0` and `3` before SentencePiece.
 //!
 //! # Boundary — Mimi consumed, never re-implemented
 //!
@@ -63,18 +68,31 @@
 //!   shape / dtype / size flow can be exercised without the real HF
 //!   checkpoint.
 //! - [`KyutaiSttAsr`] — engine handle carrying config + weights.
-//!   [`KyutaiSttAsr::transcribe`] returns [`VokraError::NotImplemented`]
-//!   until real weights are bound (the real forward — audio-token embedding
-//!   sum → per-layer prenorm MHA + gating FFN → sliding-window causal
-//!   attention → text logits → sampling → SentencePiece detokenize — is a
-//!   follow-up wave gated on the real-checkpoint tensor manifest).
+//!   [`KyutaiSttAsr::forward_text_logits`] is the dedicated `dep_q=0` main
+//!   decoder component seam: explicit text-token + row-major Mimi-code
+//!   frames → summed embeddings → causal/sliding-window transformer → final
+//!   RMSNorm → text logits through `Compute` (CPU/Metal). Its synthesized
+//!   fixture output is self-consistency only, not upstream parity or ASR.
+//!   [`KyutaiSttAsr::transcribe`] returns [`VokraError::NotImplemented`]: the
+//!   component logits seam, decoder manifest binder, and standalone tokenizer
+//!   decoder exist, but Mimi neural PCM encoding, streaming state/delay,
+//!   sampling, and full transcription remain follow-up gates.
 //!
 //! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29
-//! / Moshi T29: this scaffold sets the seam so the follow-up lands drop-in.
+//! / Moshi T29: this component binder sets the seam so a future parity run
+//! can consume authenticated decoder weights without claiming full ASR.
 
-use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
+#[cfg(test)]
+use vokra_core::check_weight_license;
+use vokra_core::gguf::chunks;
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{CompliancePolicy, Result, VokraError, check_weight_license};
+use vokra_core::{BackendKind, CompliancePolicy, LicenseClass, Result, VokraError};
+
+use crate::compute::{Compute, HotOp};
+use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
+use crate::mimi::MimiNeuralConfig;
+use crate::strict_checkpoint::sha256_bytes;
 
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
@@ -90,13 +108,77 @@ pub const EXPECTED_ARCH: &str = "kyutai-stt";
 /// the shared Mimi module docs, ADR M4-06 §D3).
 pub const KYUTAI_STT_SAMPLE_RATE: u32 = 24_000;
 
-/// Deterministic seed [`KyutaiSttAsr::from_gguf_with_policy`] threads into
-/// [`KyutaiSttWeights::synthesized`] until the real-checkpoint tensor-name
-/// manifest lands (T29-equivalent — the CSM
-/// [`CSM_FROM_GGUF_DEFAULT_SEED`](super::csm::CSM_FROM_GGUF_DEFAULT_SEED)
-/// pattern). Fixed so every `from_gguf` build against the same shape
-/// config produces bit-identical weight bytes → reproducible bug reports.
+/// The authenticated Mimi frame rate named by
+/// `mimi-pytorch-e351c8d8@125.safetensors` in the pinned STT `config.json`.
+/// The value is expressed in milli-Hz to avoid a floating-point contract.
+pub const KYUTAI_STT_MIMI_FRAME_RATE_MHZ: u32 = 12_500;
+
+/// Exact Mimi sidecar identity from the authenticated Kyutai STT model tree.
+pub const KYUTAI_STT_MIMI_FILE: &str = "mimi-pytorch-e351c8d8@125.safetensors";
+/// Byte length of [`KYUTAI_STT_MIMI_FILE`] in the authenticated model tree.
+pub const KYUTAI_STT_MIMI_BYTES: usize = 384_644_900;
+/// SHA-256 digest of [`KYUTAI_STT_MIMI_FILE`] in the authenticated model tree.
+pub const KYUTAI_STT_MIMI_SHA256: &str =
+    "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50";
+
+/// PCM samples in one Mimi frame (`24_000 / 12.5`).  This is the fixed
+/// `1920`-sample chunk used by the pinned upstream streaming example.
+pub const KYUTAI_STT_MIMI_FRAME_HOP_SAMPLES: usize = 1_920;
+
+/// The exact tokenizer sidecar named by the authenticated STT model card.
+/// These identities are a sidecar gate for the decoder component; the
+/// dedicated tokenizer companion stores the parsed table and repeats the
+/// identities without embedding Mimi bytes.
+pub const KYUTAI_STT_TOKENIZER_FILE: &str = "tokenizer_en_audio_4000.model";
+/// Byte length of [`KYUTAI_STT_TOKENIZER_FILE`] in the authenticated model tree.
+pub const KYUTAI_STT_TOKENIZER_BYTES: usize = 59_339;
+/// Git blob SHA-1 of [`KYUTAI_STT_TOKENIZER_FILE`] in the authenticated model tree.
+pub const KYUTAI_STT_TOKENIZER_GIT_BLOB_SHA1: &str = "1820a7cbb15efc6a33dd365113c07e3df9d28d80";
+/// SHA-256 digest of [`KYUTAI_STT_TOKENIZER_FILE`] in the authenticated model tree.
+pub const KYUTAI_STT_TOKENIZER_SHA256: &str =
+    "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6";
+/// `vokra.model.arch` for the separately-bound decode-only tokenizer GGUF.
+pub const ARCH_TOKENIZER: &str = "kyutai-stt-tokenizer";
+/// Dedicated tokenizer metadata schema version.
+pub const KYUTAI_STT_TOKENIZER_SCHEMA: &str = "sentencepiece-decode-v1";
+/// Model-name metadata stamped on the separately-bound tokenizer GGUF.
+pub const KYUTAI_STT_TOKENIZER_COMPONENT_NAME: &str = "kyutai-stt-2.6b-en-tokenizer";
+const KEY_TOKENIZER_SCHEMA: &str = "vokra.kyutai_stt.tokenizer.schema";
+const KEY_TOKENIZER_CARD: &str = "vokra.kyutai_stt.tokenizer.card";
+const KEY_TOKENIZER_PIECES: &str = "vokra.kyutai_stt.tokenizer.pieces";
+const KEY_TOKENIZER_TYPES: &str = "vokra.kyutai_stt.tokenizer.types";
+const KEY_TOKENIZER_UNK_ID: &str = "vokra.kyutai_stt.tokenizer.unk_id";
+const KEY_TOKENIZER_BOS_ID: &str = "vokra.kyutai_stt.tokenizer.bos_id";
+const KEY_TOKENIZER_EOS_ID: &str = "vokra.kyutai_stt.tokenizer.eos_id";
+const KEY_TOKENIZER_PAD_ID: &str = "vokra.kyutai_stt.tokenizer.pad_id";
+const KEY_TOKENIZER_BYTES: &str = "vokra.kyutai_stt.tokenizer.bytes";
+const KEY_TOKENIZER_SHA256: &str = "vokra.kyutai_stt.tokenizer.sha256";
+const KEY_TOKENIZER_TABLE_SHA256: &str = "vokra.kyutai_stt.tokenizer.table_sha256";
+const KEY_TOKENIZER_GIT_BLOB_SHA1: &str = "vokra.kyutai_stt.tokenizer.git_blob_sha1";
+const KEY_TOKENIZER_MIMI_FILE: &str = "vokra.kyutai_stt.tokenizer.mimi.file";
+const KEY_TOKENIZER_MIMI_BYTES: &str = "vokra.kyutai_stt.tokenizer.mimi.bytes";
+const KEY_TOKENIZER_MIMI_SHA256: &str = "vokra.kyutai_stt.tokenizer.mimi.sha256";
+const KEY_TOKENIZER_ADD_DUMMY_PREFIX: &str =
+    "vokra.kyutai_stt.tokenizer.normalizer.add_dummy_prefix";
+const KEY_TOKENIZER_REMOVE_EXTRA_WHITESPACES: &str =
+    "vokra.kyutai_stt.tokenizer.normalizer.remove_extra_whitespaces";
+const KEY_TOKENIZER_DENORMALIZER_PRESENT: &str = "vokra.kyutai_stt.tokenizer.denormalizer_present";
+
+/// Upstream DSM's output filtering for the STT text stream.  `0` is the
+/// initial/empty stream value and `3` is `existing_text_padding_id` from the
+/// fixed STT config.  The pinned `moshi_mlx/run_inference.py` drops both
+/// before converting ids to SentencePiece pieces.
+pub const KYUTAI_STT_SUPPRESSED_TEXT_TOKENS: [u32; 2] = [0, 3];
+
+/// Deterministic seed retained for the explicit in-module fixture constructor.
+/// It is never used by the public GGUF/path loaders.
 pub const KYUTAI_STT_FROM_GGUF_DEFAULT_SEED: u64 = 0x0C57_0C57_0C57_0C57;
+
+/// Compute-seam operations used by the dep_q=0 main decoder.  The
+/// dispatcher validates this complete set before any forward work starts, so
+/// a backend missing one primitive fails explicitly instead of falling back
+/// to CPU for that operation.
+const KYUTAI_STT_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Softmax, HotOp::RmsNorm, HotOp::Silu];
 
 // ---------------------------------------------------------------------------
 // `vokra.kyutai_stt.*` metadata keys
@@ -117,10 +199,10 @@ const KEY_BB_N_HEAD: &str = "vokra.kyutai_stt.arch.backbone.n_head";
 const KEY_BB_HIDDEN_SCALE: &str = "vokra.kyutai_stt.arch.backbone.hidden_scale";
 // Deliberately NOT read back: the converter stamps the resolved width as an
 // informational record of what it computed, but the runtime re-derives it from
-// `hidden_scale * d_model` (see `BackboneConfig::ffn_hidden`) so a hand-edited
-// or stale stamp can never silently disagree with the weight shapes. The
-// constant is kept because it documents the wire contract — deleting it would
-// lose the only in-tree record that the converter emits this key.
+// the Moshi `dim_feedforward` intermediate (see `BackboneConfig::ffn_hidden`)
+// so a hand-edited or stale stamp can never silently disagree with the weight
+// shapes. The constant is kept because it documents the wire contract —
+// deleting it would lose the only in-tree record that the converter emits.
 #[allow(dead_code)]
 const KEY_BB_FFN_HIDDEN: &str = "vokra.kyutai_stt.arch.backbone.ffn_hidden";
 const KEY_BB_CONTEXT: &str = "vokra.kyutai_stt.arch.backbone.context";
@@ -166,10 +248,9 @@ pub struct KyutaiSttBackboneConfig {
     pub d_model: usize,
     /// `num_heads` — MHA (query = key = value heads), 32.
     pub n_head: usize,
-    /// `hidden_scale` — the gating FFN inner-width multiplier (4.125).
-    /// The runtime derives `ffn_hidden` from this + `d_model`; the
-    /// converter mirrors the derivation so the GGUF carries the resolved
-    /// value directly.
+    /// `hidden_scale` — the Moshi `dim_feedforward` multiplier (4.125).
+    /// The runtime first computes `int(hidden_scale * d_model)` and then
+    /// mirrors `ActivationGating`'s branch-specific projection width.
     pub hidden_scale: f32,
     /// `context` — sliding attention window in frame positions (375).
     pub context: usize,
@@ -191,23 +272,33 @@ impl KyutaiSttBackboneConfig {
         self.n_head != 0 && self.d_model != 0 && self.d_model % self.n_head == 0
     }
 
-    /// Gating FFN hidden width — `round(hidden_scale * d_model)`.
+    /// Gating projection hidden width from pinned Moshi `gating.py`.
     ///
-    /// The upstream Kyutai `config.json` records the multiplier
-    /// (`hidden_scale`), not the resolved width. For STT-2.6B-EN this is
-    /// `round(4.125 * 2048) = 8448`. Real-weight binding cross-checks the
-    /// resolved value against the checkpoint's `linear_in` / `linear_out`
-    /// tensor shapes and fails loudly on a mismatch (FR-EX-08).
+    /// `lm.py` passes `int(hidden_scale * dim)` as `dim_feedforward`.
+    /// `ActivationGating` then uses `(21 * dim) // 8` when that value equals
+    /// `4 * dim`, otherwise `(2 * dim_feedforward) // 3`. Thus STT-2.6B-EN
+    /// resolves to `5632` (`dim_feedforward=8448`), while the tiny fixture
+    /// resolves to `42` (`dim_feedforward=64`). Checked arithmetic returns
+    /// zero for malformed/overflowing configurations; validation rejects it.
     #[must_use]
     pub fn ffn_hidden(&self) -> usize {
-        // `.round()` matches Python's default rounding for the STT-2.6B
-        // case; a checkpoint whose shapes disagree with the derivation
-        // surfaces at the `KyutaiSttAsr::new` shape gate.
         let scaled = self.hidden_scale * self.d_model as f32;
-        if scaled.is_finite() && scaled >= 0.0 {
-            scaled.round() as usize
+        let dim_feedforward = if scaled.is_finite() && scaled >= 0.0 {
+            scaled.trunc() as usize
         } else {
-            0
+            return 0;
+        };
+        let four_dim = self.d_model.checked_mul(4);
+        if four_dim == Some(dim_feedforward) {
+            self.d_model
+                .checked_mul(21)
+                .and_then(|value| value.checked_div(8))
+                .unwrap_or(0)
+        } else {
+            dim_feedforward
+                .checked_mul(2)
+                .and_then(|value| value.checked_div(3))
+                .unwrap_or(0)
         }
     }
 }
@@ -357,7 +448,7 @@ impl KyutaiSttConfig {
     /// n_q_audio`).
     #[must_use]
     pub fn n_channels(&self) -> usize {
-        self.n_q + 1
+        self.n_q.saturating_add(1)
     }
 
     /// The largest per-channel delay (STT is all-zero — kept for parity
@@ -400,6 +491,23 @@ impl KyutaiSttConfig {
                 self.backbone.hidden_scale, self.backbone.d_model,
             )));
         }
+        if !self.backbone.rope_max_period.is_finite() || self.backbone.rope_max_period <= 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt config: rope_max_period={} must be finite and > 0",
+                self.backbone.rope_max_period
+            )));
+        }
+        if !self.causal {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt config: causal must be true for the streaming decoder".to_owned(),
+            ));
+        }
+        if !self.rms_norm_eps.is_finite() || self.rms_norm_eps <= 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt config: rms_norm_eps={} must be finite and > 0",
+                self.rms_norm_eps
+            )));
+        }
         if self.backbone.context == 0 {
             return Err(VokraError::InvalidArgument(
                 "kyutai-stt config: backbone.context must be > 0 (no forward \
@@ -425,13 +533,49 @@ impl KyutaiSttConfig {
                 self.audio_card, self.text_card,
             )));
         }
-        if self.delays.len() != self.n_channels() {
+        if self.sample_rate != KYUTAI_STT_SAMPLE_RATE {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt config: sample_rate={} must match the authenticated Mimi boundary {}",
+                self.sample_rate, KYUTAI_STT_SAMPLE_RATE
+            )));
+        }
+        if !self.audio_delay_seconds.is_finite()
+            || self.audio_delay_seconds < 0.0
+            || !self.audio_silence_prefix_seconds.is_finite()
+            || self.audio_silence_prefix_seconds < 0.0
+        {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt config: streaming delay/prefix seconds must be finite and non-negative"
+                    .to_owned(),
+            ));
+        }
+        if self.depformer.n_layer == 0
+            || self.depformer.d_model == 0
+            || self.depformer.n_head == 0
+            || self.depformer.d_model % self.depformer.n_head != 0
+            || !self.depformer.multi_linear
+            || !self.depformer.weights_per_step
+        {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt config: depformer structure is not the authenticated streaming contract"
+                    .to_owned(),
+            ));
+        }
+        let n_channels = self.n_q.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt channel count overflows usize".to_owned())
+        })?;
+        if self.delays.len() != n_channels {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt config: {} delays for {} channels (text + n_q — \
                  `_lm_kwargs[\"delays\"]` is per-channel)",
                 self.delays.len(),
-                self.n_channels(),
+                n_channels,
             )));
+        }
+        if self.delays.iter().any(|delay| *delay != 0) {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt config: authenticated dep_q=0 delays must be all zero".to_owned(),
+            ));
         }
         if (self.text_pad_id as usize) >= self.text_card {
             return Err(VokraError::InvalidArgument(format!(
@@ -505,6 +649,928 @@ impl KyutaiSttConfig {
     }
 }
 
+/// The fixed, upstream-verified input contract at the STT/Mimi/streaming
+/// boundary.
+///
+/// This type deliberately contains no model state and performs no inference.
+/// It records only the arithmetic that the pinned Kyutai streaming example
+/// applies before each decoder step:
+///
+/// - PCM is 24 kHz mono at the Mimi boundary;
+/// - Mimi emits one `[n_q]` code row per 1,920 PCM samples (12.5 Hz);
+/// - `audio_silence_prefix_seconds` is prepended on the left;
+/// - the right side receives `audio_delay_seconds + 1.0` seconds of padding;
+/// - text ids `0` and `existing_text_padding_id` are not emitted as pieces.
+///
+/// The right-side extra second is an upstream input-preparation rule, not a
+/// claim that the decoder's learned delay is one whole-second longer.  The
+/// contract therefore keeps the values in samples and never rounds a
+/// fractional number of model frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KyutaiSttStreamingContract {
+    sample_rate: u32,
+    frame_hop_samples: usize,
+    n_q: usize,
+    audio_card: usize,
+    text_card: usize,
+    text_pad_id: u32,
+    silence_prefix_samples: usize,
+    right_padding_samples: usize,
+}
+
+impl KyutaiSttStreamingContract {
+    /// Resolves the contract only for the authenticated STT-2.6B-EN config.
+    ///
+    /// The Mimi model is a separate GGUF component.  Its full learned
+    /// weights are not accepted here; callers must pass its independently
+    /// authenticated [`MimiNeuralConfig`] to [`Self::validate_mimi_config`].
+    pub fn from_config(config: &KyutaiSttConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        if config != &KyutaiSttConfig::stt_2_6b_en() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt streaming contract: only the authenticated stt-2.6b-en config is supported".to_owned(),
+            ));
+        }
+        let sample_rate = KYUTAI_STT_SAMPLE_RATE as usize;
+        // The upstream values are 1.0 s silence prefix and 2.5 s model
+        // delay plus 1.0 s trailing margin.  Keep the half-second as exact
+        // integer arithmetic instead of rounding a float-derived frame.
+        let right_padding_seconds_half = 7usize;
+        Ok(Self {
+            sample_rate: KYUTAI_STT_SAMPLE_RATE,
+            frame_hop_samples: KYUTAI_STT_MIMI_FRAME_HOP_SAMPLES,
+            n_q: config.n_q,
+            audio_card: config.audio_card,
+            text_card: config.text_card,
+            text_pad_id: config.text_pad_id,
+            silence_prefix_samples: sample_rate,
+            right_padding_samples: sample_rate
+                .checked_mul(right_padding_seconds_half)
+                .and_then(|value| value.checked_div(2))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "kyutai-stt streaming contract: right padding samples overflow".to_owned(),
+                    )
+                })?,
+        })
+    }
+
+    /// PCM sample rate required before Mimi encoding.
+    #[must_use]
+    pub const fn sample_rate(self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Number of PCM samples consumed by one Mimi frame.
+    #[must_use]
+    pub const fn frame_hop_samples(self) -> usize {
+        self.frame_hop_samples
+    }
+
+    /// Number of Mimi codebooks carried by each row-major audio frame.
+    #[must_use]
+    pub const fn n_q(self) -> usize {
+        self.n_q
+    }
+
+    /// Number of entries in each Mimi codebook, excluding the decoder's
+    /// initial-token row.
+    #[must_use]
+    pub const fn audio_card(self) -> usize {
+        self.audio_card
+    }
+
+    /// Number of SentencePiece text vocabulary entries.
+    #[must_use]
+    pub const fn text_card(self) -> usize {
+        self.text_card
+    }
+
+    /// Number of left-padding PCM samples prescribed by upstream.
+    #[must_use]
+    pub const fn silence_prefix_samples(self) -> usize {
+        self.silence_prefix_samples
+    }
+
+    /// Number of right-padding PCM samples prescribed by upstream.
+    #[must_use]
+    pub const fn right_padding_samples(self) -> usize {
+        self.right_padding_samples
+    }
+
+    /// Returns `(left, right)` PCM padding in samples.
+    #[must_use]
+    pub const fn pcm_padding_samples(self) -> (usize, usize) {
+        (self.silence_prefix_samples, self.right_padding_samples)
+    }
+
+    /// Computes the number of full Mimi frames after applying the upstream
+    /// left/right padding.  This mirrors `steps = padded_samples // 1920` in
+    /// the pinned streaming example; a partial trailing frame is not invented.
+    pub fn padded_frame_count(self, input_samples: usize) -> Result<usize> {
+        let padded = input_samples
+            .checked_add(self.silence_prefix_samples)
+            .and_then(|value| value.checked_add(self.right_padding_samples))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "kyutai-stt streaming contract: padded PCM sample count overflows usize"
+                        .to_owned(),
+                )
+            })?;
+        Ok(padded / self.frame_hop_samples)
+    }
+
+    /// Checks a row-major `[frames, n_q]` Mimi code packet without executing
+    /// the decoder.  The initial-token row (`audio_card`) is not a valid
+    /// encoded Mimi code and is therefore rejected for an input packet.
+    pub fn validate_mimi_codes(self, mimi_codes: &[u32]) -> Result<usize> {
+        if mimi_codes.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt streaming contract: Mimi code packet is empty".to_owned(),
+            ));
+        }
+        if mimi_codes.len() % self.n_q != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt streaming contract: Mimi code packet length {} is not a multiple of n_q={}",
+                mimi_codes.len(),
+                self.n_q,
+            )));
+        }
+        if let Some((index, value)) = mimi_codes
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| (*value as usize) >= self.audio_card)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt streaming contract: Mimi code packet[{index}]={value} is outside [0, {})",
+                self.audio_card,
+            )));
+        }
+        Ok(mimi_codes.len() / self.n_q)
+    }
+
+    /// Reports whether a text token is forwarded to SentencePiece decoding by
+    /// the pinned upstream streaming path.
+    #[must_use]
+    pub const fn emits_text_token(self, token: u32) -> bool {
+        token != KYUTAI_STT_SUPPRESSED_TEXT_TOKENS[0] && token != self.text_pad_id
+    }
+
+    /// Checks the independently authenticated Mimi neural-chain metadata
+    /// needed by STT.  This does not bind or execute Mimi weights.
+    pub fn validate_mimi_config(&self, mimi: &MimiNeuralConfig) -> Result<()> {
+        mimi.validate()?;
+        if mimi.sample_rate != self.sample_rate
+            || mimi.frame_rate_mhz != KYUTAI_STT_MIMI_FRAME_RATE_MHZ
+            || mimi.quantizer.n_q != self.n_q
+            || mimi.quantizer.bins != self.audio_card
+            || mimi.frame_hop_samples()? != self.frame_hop_samples
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt streaming contract: Mimi metadata does not match {} Hz / {} mHz / {} codebooks / {} bins / {} samples per frame: {mimi:?}",
+                self.sample_rate,
+                KYUTAI_STT_MIMI_FRAME_RATE_MHZ,
+                self.n_q,
+                self.audio_card,
+                self.frame_hop_samples,
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Authenticated side-car pair for the fixed STT-2.6B-EN release.
+///
+/// The decoder GGUF intentionally does not embed Mimi or SentencePiece
+/// weights.  This binding therefore checks the model-variant configuration,
+/// the two upstream filenames, and the complete raw-byte identities before a
+/// caller composes the three artifacts.  It does not parse or execute either
+/// side-car; Mimi neural metadata is checked separately by
+/// [`KyutaiSttStreamingContract::validate_mimi_config`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KyutaiSttAuthenticatedSidecars;
+
+impl KyutaiSttAuthenticatedSidecars {
+    /// Authenticates the exact Mimi and tokenizer files named by the fixed
+    /// Kyutai STT-2.6B-EN config.
+    ///
+    /// The filenames are passed explicitly so a same-content file under a
+    /// stale or legacy name cannot silently satisfy the composition gate.
+    /// This method is an identity/binding gate only; it does not claim that
+    /// either side-car can be decoded by the runtime.
+    pub fn bind(
+        config: &KyutaiSttConfig,
+        mimi_file: &str,
+        mimi_bytes: &[u8],
+        tokenizer_file: &str,
+        tokenizer_bytes: &[u8],
+    ) -> Result<Self> {
+        config.validate_for_forward()?;
+        if config != &KyutaiSttConfig::stt_2_6b_en() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt sidecars: only the authenticated stt-2.6b-en config is supported"
+                    .to_owned(),
+            ));
+        }
+        if mimi_file != KYUTAI_STT_MIMI_FILE {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt Mimi: expected authenticated sidecar `{KYUTAI_STT_MIMI_FILE}`, got `{mimi_file}`"
+            )));
+        }
+        if tokenizer_file != KYUTAI_STT_TOKENIZER_FILE {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt tokenizer: expected authenticated sidecar `{KYUTAI_STT_TOKENIZER_FILE}`, got `{tokenizer_file}`"
+            )));
+        }
+        validate_mimi_bytes(mimi_bytes)?;
+        validate_tokenizer_bytes(tokenizer_bytes)?;
+        Ok(Self)
+    }
+}
+
+/// Decode-only SentencePiece table carried by the dedicated Kyutai tokenizer
+/// component.  It intentionally has no encode or PCM path: Mimi binding and
+/// decoder inference remain separate authenticated components.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KyutaiSttTokenizer {
+    pieces: Vec<String>,
+    piece_types: Vec<u32>,
+}
+
+impl KyutaiSttTokenizer {
+    /// Load and validate the dedicated `kyutai-stt-tokenizer` GGUF schema.
+    /// Every vocabulary entry and the fixed Mimi companion identity are
+    /// required; a generic `vokra.tokenizer.model` blob is not accepted. The
+    /// Mimi fields in this artifact are an expected-companion declaration;
+    /// [`KyutaiSttCompositeBinding`] authenticates the separately presented
+    /// Mimi bytes before composition.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let allowed = [
+            KEY_TOKENIZER_SCHEMA,
+            KEY_TOKENIZER_CARD,
+            KEY_TOKENIZER_PIECES,
+            KEY_TOKENIZER_TYPES,
+            KEY_TOKENIZER_UNK_ID,
+            KEY_TOKENIZER_BOS_ID,
+            KEY_TOKENIZER_EOS_ID,
+            KEY_TOKENIZER_PAD_ID,
+            KEY_TOKENIZER_BYTES,
+            KEY_TOKENIZER_SHA256,
+            KEY_TOKENIZER_TABLE_SHA256,
+            KEY_TOKENIZER_GIT_BLOB_SHA1,
+            KEY_TOKENIZER_MIMI_FILE,
+            KEY_TOKENIZER_MIMI_BYTES,
+            KEY_TOKENIZER_MIMI_SHA256,
+            KEY_TOKENIZER_ADD_DUMMY_PREFIX,
+            KEY_TOKENIZER_REMOVE_EXTRA_WHITESPACES,
+            KEY_TOKENIZER_DENORMALIZER_PRESENT,
+        ];
+        for (key, _) in file.metadata() {
+            if key.starts_with("vokra.kyutai_stt.tokenizer.") && !allowed.contains(&key.as_str()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "kyutai-stt tokenizer: unexpected metadata `{key}`"
+                )));
+            }
+        }
+        for key in [
+            chunks::KEY_MODEL_ARCH,
+            chunks::KEY_MODEL_NAME,
+            KEY_TOKENIZER_SCHEMA,
+            KEY_TOKENIZER_CARD,
+            KEY_TOKENIZER_PIECES,
+            KEY_TOKENIZER_TYPES,
+            KEY_TOKENIZER_UNK_ID,
+            KEY_TOKENIZER_BOS_ID,
+            KEY_TOKENIZER_EOS_ID,
+            KEY_TOKENIZER_PAD_ID,
+            KEY_TOKENIZER_BYTES,
+            KEY_TOKENIZER_SHA256,
+            KEY_TOKENIZER_TABLE_SHA256,
+            KEY_TOKENIZER_GIT_BLOB_SHA1,
+            KEY_TOKENIZER_MIMI_FILE,
+            KEY_TOKENIZER_MIMI_BYTES,
+            KEY_TOKENIZER_MIMI_SHA256,
+            KEY_TOKENIZER_ADD_DUMMY_PREFIX,
+            KEY_TOKENIZER_REMOVE_EXTRA_WHITESPACES,
+            KEY_TOKENIZER_DENORMALIZER_PRESENT,
+        ] {
+            require_tokenizer_occurrence(file, key)?;
+        }
+        let arch = require_tokenizer_string(file, chunks::KEY_MODEL_ARCH)?;
+        if arch != ARCH_TOKENIZER {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt tokenizer: expected dedicated arch `{ARCH_TOKENIZER}`, got `{arch}`"
+            )));
+        }
+        require_tokenizer_string_value(file, KEY_TOKENIZER_SCHEMA, KYUTAI_STT_TOKENIZER_SCHEMA)?;
+        require_tokenizer_string_value(
+            file,
+            chunks::KEY_MODEL_NAME,
+            KYUTAI_STT_TOKENIZER_COMPONENT_NAME,
+        )?;
+        require_tokenizer_u32(file, KEY_TOKENIZER_CARD, 4_000)?;
+        require_tokenizer_u32(file, KEY_TOKENIZER_UNK_ID, 0)?;
+        require_tokenizer_u32(file, KEY_TOKENIZER_BOS_ID, 1)?;
+        require_tokenizer_u32(file, KEY_TOKENIZER_EOS_ID, 2)?;
+        require_tokenizer_u32(file, KEY_TOKENIZER_PAD_ID, 3)?;
+        require_tokenizer_u32(file, KEY_TOKENIZER_BYTES, KYUTAI_STT_TOKENIZER_BYTES as u32)?;
+        require_tokenizer_string_value(file, KEY_TOKENIZER_SHA256, KYUTAI_STT_TOKENIZER_SHA256)?;
+        require_tokenizer_string_value(
+            file,
+            KEY_TOKENIZER_GIT_BLOB_SHA1,
+            KYUTAI_STT_TOKENIZER_GIT_BLOB_SHA1,
+        )?;
+        require_tokenizer_string_value(file, KEY_TOKENIZER_MIMI_FILE, KYUTAI_STT_MIMI_FILE)?;
+        require_tokenizer_u32(file, KEY_TOKENIZER_MIMI_BYTES, KYUTAI_STT_MIMI_BYTES as u32)?;
+        require_tokenizer_string_value(file, KEY_TOKENIZER_MIMI_SHA256, KYUTAI_STT_MIMI_SHA256)?;
+        require_tokenizer_bool(file, KEY_TOKENIZER_ADD_DUMMY_PREFIX, true)?;
+        require_tokenizer_bool(file, KEY_TOKENIZER_REMOVE_EXTRA_WHITESPACES, true)?;
+        require_tokenizer_bool(file, KEY_TOKENIZER_DENORMALIZER_PRESENT, false)?;
+
+        let pieces = tokenizer_string_array(file, KEY_TOKENIZER_PIECES)?;
+        let piece_types = tokenizer_u32_array(file, KEY_TOKENIZER_TYPES)?;
+        if pieces.len() != 4_000 || piece_types.len() != pieces.len() {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt tokenizer: vocabulary/type cardinality is {}/{}; expected 4000/4000",
+                pieces.len(),
+                piece_types.len()
+            )));
+        }
+        let expected_table_sha256 = require_tokenizer_string(file, KEY_TOKENIZER_TABLE_SHA256)?;
+        let actual_table_sha256 = tokenizer_table_sha256(&pieces, &piece_types);
+        if expected_table_sha256 != actual_table_sha256 {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt tokenizer: table SHA-256 {actual_table_sha256} does not match metadata"
+            )));
+        }
+        let specials = [
+            (0, "<unk>", 2),
+            (1, "<s>", 3),
+            (2, "</s>", 3),
+            (3, "<pad>", 3),
+        ];
+        for (id, expected, kind) in specials {
+            if pieces[id] != expected || piece_types[id] != kind {
+                return Err(VokraError::ModelLoad(format!(
+                    "kyutai-stt tokenizer: special id {id} is {:?}/{:?}; expected {expected:?}/{kind}",
+                    pieces[id], piece_types[id]
+                )));
+            }
+        }
+        for (id, piece) in pieces.iter().enumerate() {
+            if piece.is_empty() {
+                return Err(VokraError::ModelLoad(format!(
+                    "kyutai-stt tokenizer: piece {id} is empty"
+                )));
+            }
+            if !(1..=6).contains(&piece_types[id]) {
+                return Err(VokraError::ModelLoad(format!(
+                    "kyutai-stt tokenizer: piece {id} has invalid/unsupported type {}",
+                    piece_types[id]
+                )));
+            }
+        }
+        Ok(Self {
+            pieces,
+            piece_types,
+        })
+    }
+
+    /// Number of exact SentencePiece entries.
+    #[must_use]
+    pub fn vocab_size(&self) -> usize {
+        self.pieces.len()
+    }
+
+    /// Render the live streaming display path. DSM suppresses only IDs 0 and
+    /// 3 and then performs `id_to_piece(id).replace("▁", " ")`; byte pieces
+    /// are deliberately not aggregated here.
+    pub fn render_live_pieces(&self, ids: &[u32]) -> Result<String> {
+        let mut output = String::new();
+        for &id in ids {
+            if KYUTAI_STT_SUPPRESSED_TEXT_TOKENS.contains(&id) {
+                continue;
+            }
+            let index = usize::try_from(id).map_err(|_| {
+                VokraError::InvalidArgument(format!(
+                    "kyutai-stt tokenizer: token id {id} overflows usize"
+                ))
+            })?;
+            let Some(piece) = self.pieces.get(index) else {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kyutai-stt tokenizer: token id {id} >= vocab {}",
+                    self.pieces.len()
+                )));
+            };
+            output.push_str(&piece.replace('\u{2581}', " "));
+        }
+        Ok(output)
+    }
+
+    /// Backward-compatible name for the exact live display renderer.
+    pub fn decode(&self, ids: &[u32]) -> Result<String> {
+        self.render_live_pieces(ids)
+    }
+
+    /// Decode the accumulated DSM timestamp stream using SentencePiece
+    /// semantics: only IDs greater than padding ID 3 are considered, all
+    /// CONTROL pieces are skipped, the initial dummy `▁` is removed, later
+    /// boundaries become spaces, and invalid byte fallback is U+FFFD.
+    pub fn decode_text_tokens(&self, ids: &[u32]) -> Result<String> {
+        let mut output = String::new();
+        let mut pending_bytes = Vec::new();
+        let mut first_piece = true;
+        for &id in ids {
+            if id <= 3 {
+                continue;
+            }
+            let index = usize::try_from(id).map_err(|_| {
+                VokraError::InvalidArgument(format!(
+                    "kyutai-stt tokenizer: token id {id} overflows usize"
+                ))
+            })?;
+            let Some(piece) = self.pieces.get(index) else {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kyutai-stt tokenizer: token id {id} >= vocab {}",
+                    self.pieces.len()
+                )));
+            };
+            // SentencePiece DecodeOptimized skips every CONTROL piece. The
+            // DSM accumulated route first removes IDs <= padding (0..=3),
+            // but this second check is required for any later CONTROL IDs.
+            if self.piece_types[index] == 3 {
+                continue;
+            }
+            // Official SentencePiece ModelProto defines UNUSED=5 and
+            // BYTE=6. Only BYTE=6 receives byte-fallback decoding; UNUSED=5
+            // remains an inert piece and is rendered literally.
+            if self.piece_types[index] == 6 {
+                if let Some(byte) = parse_byte_piece(piece) {
+                    pending_bytes.push(byte);
+                    first_piece = false;
+                    continue;
+                }
+                return Err(VokraError::ModelLoad(format!(
+                    "kyutai-stt tokenizer: byte piece {id} has invalid spelling {piece:?}"
+                )));
+            }
+            flush_tokenizer_bytes(&mut output, &mut pending_bytes);
+            let piece = if first_piece && piece.starts_with('\u{2581}') {
+                &piece['▁'.len_utf8()..]
+            } else {
+                piece.as_str()
+            };
+            output.push_str(&piece.replace('\u{2581}', " "));
+            first_piece = false;
+        }
+        flush_tokenizer_bytes(&mut output, &mut pending_bytes);
+        Ok(output)
+    }
+}
+
+fn require_tokenizer_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
+    match file.get(key) {
+        Some(GgufMetadataValue::String(value)) => Ok(value),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` has type {:?}, expected STRING",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn require_tokenizer_occurrence(file: &GgufFile, key: &str) -> Result<()> {
+    let occurrences = file
+        .metadata()
+        .iter()
+        .filter(|(name, _)| name == key)
+        .count();
+    if occurrences != 1 {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` must occur exactly once (found {occurrences})"
+        )));
+    }
+    Ok(())
+}
+
+fn require_tokenizer_string_value(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    let actual = require_tokenizer_string(file, key)?;
+    if actual != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}`={actual:?}, expected {expected:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn require_tokenizer_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::U32(value)) if *value == expected => Ok(()),
+        Some(GgufMetadataValue::U32(value)) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}`={value}, expected {expected}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` has type {:?}, expected UINT32",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn require_tokenizer_bool(file: &GgufFile, key: &str, expected: bool) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::Bool(value)) if *value == expected => Ok(()),
+        Some(GgufMetadataValue::Bool(value)) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}`={value}, expected {expected}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` has type {:?}, expected BOOL",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn tokenizer_string_array(file: &GgufFile, key: &str) -> Result<Vec<String>> {
+    let Some(GgufMetadataValue::Array(array)) = file.get(key) else {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` must be an Array<String>"
+        )));
+    };
+    if array.element_type != vokra_core::gguf::GgufValueType::String {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` declares {:?}, expected STRING",
+            array.element_type
+        )));
+    }
+    array
+        .values
+        .iter()
+        .enumerate()
+        .map(|(id, value)| match value {
+            GgufMetadataValue::String(piece) => Ok(piece.clone()),
+            other => Err(VokraError::ModelLoad(format!(
+                "kyutai-stt tokenizer: metadata `{key}` entry {id} has type {:?}",
+                other.value_type()
+            ))),
+        })
+        .collect()
+}
+
+fn tokenizer_u32_array(file: &GgufFile, key: &str) -> Result<Vec<u32>> {
+    let Some(GgufMetadataValue::Array(array)) = file.get(key) else {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` must be an Array<UINT32>"
+        )));
+    };
+    if array.element_type != vokra_core::gguf::GgufValueType::U32 {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: metadata `{key}` declares {:?}, expected UINT32",
+            array.element_type
+        )));
+    }
+    array
+        .values
+        .iter()
+        .enumerate()
+        .map(|(id, value)| match value {
+            GgufMetadataValue::U32(value) => Ok(*value),
+            other => Err(VokraError::ModelLoad(format!(
+                "kyutai-stt tokenizer: metadata `{key}` entry {id} has type {:?}",
+                other.value_type()
+            ))),
+        })
+        .collect()
+}
+
+fn parse_byte_piece(piece: &str) -> Option<u8> {
+    let bytes = piece.as_bytes();
+    if bytes.len() != 6
+        || bytes[0] != b'<'
+        || bytes[1] != b'0'
+        || bytes[2] != b'x'
+        || bytes[5] != b'>'
+    {
+        return None;
+    }
+    let high = (bytes[3] as char).to_digit(16)? as u8;
+    let low = (bytes[4] as char).to_digit(16)? as u8;
+    Some((high << 4) | low)
+}
+
+/// Recompute the ordered table digest stamped by the offline converter.
+/// Length-prefixing each UTF-8 piece and including its ID/type gives a
+/// collision-free deterministic encoding. This is an internal GGUF-table
+/// integrity check, not a replacement for the external whole-file SHA-256.
+fn tokenizer_table_sha256(pieces: &[String], piece_types: &[u32]) -> String {
+    let mut canonical = Vec::new();
+    canonical.extend_from_slice(b"vokra.kyutai_stt.tokenizer.table.v1\0");
+    for (id, (piece, piece_type)) in pieces.iter().zip(piece_types).enumerate() {
+        canonical.extend_from_slice(&(id as u32).to_le_bytes());
+        canonical.extend_from_slice(&(piece.len() as u32).to_le_bytes());
+        canonical.extend_from_slice(piece.as_bytes());
+        canonical.extend_from_slice(&piece_type.to_le_bytes());
+    }
+    sha256_bytes(&canonical)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn flush_tokenizer_bytes(output: &mut String, pending: &mut Vec<u8>) {
+    if pending.is_empty() {
+        return;
+    }
+    let bytes = std::mem::take(pending);
+    output.push_str(&String::from_utf8_lossy(&bytes));
+}
+
+/// Explicit three-artifact composition gate for decoder + tokenizer + Mimi.
+/// The decoder is checked against its exact metadata/tensor-name manifest, the
+/// tokenizer against its schema and canonical table digest, and Mimi against
+/// the externally presented raw filename/bytes digest. It is a binding record
+/// only; no inference or PCM encoding is performed and streaming remains
+/// fail-closed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KyutaiSttCompositeBinding {
+    config: KyutaiSttConfig,
+}
+
+impl KyutaiSttCompositeBinding {
+    /// Validate all three independently supplied component identities. The
+    /// Mimi filename is checked separately so same-content data under a stale
+    /// name cannot satisfy the composition gate.
+    pub fn bind(
+        decoder: &GgufFile,
+        tokenizer: &GgufFile,
+        mimi_file: &str,
+        mimi_bytes: &[u8],
+    ) -> Result<Self> {
+        require_component_metadata(decoder)?;
+        let config = KyutaiSttConfig::from_gguf(decoder).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "kyutai-stt composite: decoder config is not authenticated: {error}"
+            ))
+        })?;
+        require_component_string(decoder, chunks::KEY_MODEL_ARCH, EXPECTED_ARCH)?;
+        if config != KyutaiSttConfig::stt_2_6b_en() {
+            return Err(VokraError::ModelLoad(
+                "kyutai-stt composite: only stt-2.6b-en is supported".into(),
+            ));
+        }
+        validate_component_tensor_set(decoder, &config)?;
+        KyutaiSttTokenizer::from_gguf(tokenizer)?;
+        if mimi_file != KYUTAI_STT_MIMI_FILE {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt composite: expected Mimi `{KYUTAI_STT_MIMI_FILE}`, got `{mimi_file}`"
+            )));
+        }
+        validate_mimi_bytes(mimi_bytes)?;
+        Ok(Self { config })
+    }
+
+    /// Authenticated decoder configuration shared by the three components.
+    #[must_use]
+    pub fn config(&self) -> &KyutaiSttConfig {
+        &self.config
+    }
+}
+
+/// Source-level text/second-stream demux for the `dep_q=0` STT input.
+///
+/// Upstream delayed-streams input has one text channel followed by the
+/// `n_q` Mimi channels.  For STT the depformer owns no audio channels
+/// (`dep_q=0`), so all remaining channels belong to the Mimi second stream.
+/// This type only separates and validates the row-major token packet; it does
+/// not run the decoder, sample text, or perform SentencePiece decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KyutaiSttInputPacket {
+    text_tokens: Vec<u32>,
+    mimi_codes: Vec<u32>,
+}
+
+impl KyutaiSttInputPacket {
+    /// Demultiplexes `[frames, text + n_q audio]` into the decoder seam's two
+    /// explicit inputs.
+    pub fn from_interleaved(config: &KyutaiSttConfig, tokens: &[u32]) -> Result<Self> {
+        config.validate_for_forward()?;
+        if config.dep_q != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt input demux requires dep_q=0, got {}",
+                config.dep_q
+            )));
+        }
+        if tokens.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt input demux: token packet is empty".to_owned(),
+            ));
+        }
+        let channels = config.n_channels();
+        if tokens.len() % channels != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt input demux: token packet length {} is not a multiple of {} channels",
+                tokens.len(),
+                channels
+            )));
+        }
+        let frames = tokens.len() / channels;
+        let text_rows = config.text_card.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt input demux: text rows overflow".to_owned())
+        })?;
+        let audio_rows = config.audio_card.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt input demux: audio rows overflow".to_owned())
+        })?;
+        let mut text_tokens = Vec::with_capacity(frames);
+        let mimi_capacity = frames.checked_mul(config.n_q).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt input demux: Mimi packet overflows".to_owned())
+        })?;
+        let mut mimi_codes = Vec::with_capacity(mimi_capacity);
+        for frame in tokens.chunks_exact(channels) {
+            let text = frame[0];
+            if text as usize >= text_rows {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kyutai-stt input demux: text token {text} exceeds embedding rows {text_rows}"
+                )));
+            }
+            text_tokens.push(text);
+            for (channel, &code) in frame[1..].iter().enumerate() {
+                if code as usize >= audio_rows {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "kyutai-stt input demux: audio token at channel {channel} value {code} exceeds embedding rows {audio_rows}"
+                    )));
+                }
+                mimi_codes.push(code);
+            }
+        }
+        Ok(Self {
+            text_tokens,
+            mimi_codes,
+        })
+    }
+
+    /// Number of synchronized text/audio frames in the packet.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.text_tokens.len()
+    }
+
+    /// Text stream, one token per frame.
+    #[must_use]
+    pub fn text_tokens(&self) -> &[u32] {
+        &self.text_tokens
+    }
+
+    /// Row-major Mimi stream, `[frames, n_q]`.
+    #[must_use]
+    pub fn mimi_codes(&self) -> &[u32] {
+        &self.mimi_codes
+    }
+
+    /// Splits the packet into owned decoder inputs.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<u32>, Vec<u32>) {
+        (self.text_tokens, self.mimi_codes)
+    }
+}
+
+/// Explicit streaming wire-state for validated Mimi frames and emitted text.
+///
+/// This is deliberately not the transformer's KV cache or a generation
+/// engine.  It captures only the source-level input/output contract that can
+/// be proven without model execution: each accepted frame has exactly `n_q`
+/// Mimi codes, and text ids `0`/`text_pad_id` are suppressed before the
+/// SentencePiece boundary.  Native ASR remains fail-closed until the real
+/// stateful decoder and tokenizer are independently bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KyutaiSttStreamingState {
+    contract: KyutaiSttStreamingContract,
+    frames_seen: usize,
+    emitted_text_tokens: Vec<u32>,
+}
+
+impl KyutaiSttStreamingState {
+    /// Starts an empty state for the authenticated STT streaming contract.
+    #[must_use]
+    pub fn new(contract: KyutaiSttStreamingContract) -> Self {
+        Self {
+            contract,
+            frames_seen: 0,
+            emitted_text_tokens: Vec::new(),
+        }
+    }
+
+    /// Validates and accepts one complete row of Mimi codes.
+    pub fn push_mimi_frame(&mut self, frame: &[u32]) -> Result<()> {
+        if self.contract.validate_mimi_codes(frame)? != 1 {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt streaming state: expected exactly one Mimi frame".to_owned(),
+            ));
+        }
+        self.frames_seen = self.frames_seen.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "kyutai-stt streaming state: frame count overflow".to_owned(),
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Applies the upstream text-output suppression rule.
+    ///
+    /// Returns `Some(token)` only for a token that would be forwarded to the
+    /// SentencePiece boundary.  Decoder output is restricted to
+    /// `[0, text_card)`; the extra `text_card` row is an input-embedding
+    /// initial-token row accepted only by [`KyutaiSttInputPacket`].  No
+    /// detokenization is performed here.
+    pub fn push_text_token(&mut self, token: u32) -> Result<Option<u32>> {
+        if token as usize >= self.contract.text_card {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt streaming state: decoder output token {token} is outside [0, text_card={}) (input-only initial row is not output)",
+                self.contract.text_card
+            )));
+        }
+        if self.contract.emits_text_token(token) {
+            self.emitted_text_tokens.push(token);
+            Ok(Some(token))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Number of validated Mimi frames accepted so far.
+    #[must_use]
+    pub fn frames_seen(&self) -> usize {
+        self.frames_seen
+    }
+
+    /// Text tokens that passed the upstream suppression boundary.
+    #[must_use]
+    pub fn emitted_text_tokens(&self) -> &[u32] {
+        &self.emitted_text_tokens
+    }
+
+    /// Consumes the state and returns filtered text tokens.
+    #[must_use]
+    pub fn into_text_tokens(self) -> Vec<u32> {
+        self.emitted_text_tokens
+    }
+}
+
+/// Verifies the exact raw SentencePiece sidecar identity authenticated by
+/// the Kyutai STT inspector.  Parsing/decoding the protobuf is intentionally
+/// left to the composite tokenizer gate; this helper prevents an unauthored
+/// or same-size replacement from being accepted as that sidecar.
+pub fn validate_tokenizer_bytes(bytes: &[u8]) -> Result<()> {
+    if bytes.len() != KYUTAI_STT_TOKENIZER_BYTES {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: `{KYUTAI_STT_TOKENIZER_FILE}` has {} bytes; expected {}",
+            bytes.len(),
+            KYUTAI_STT_TOKENIZER_BYTES,
+        )));
+    }
+    let digest = sha256_bytes(bytes);
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual != KYUTAI_STT_TOKENIZER_SHA256 {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt tokenizer: `{KYUTAI_STT_TOKENIZER_FILE}` SHA-256 {actual} does not match authenticated sidecar"
+        )));
+    }
+    Ok(())
+}
+
+/// Verifies the exact raw Mimi sidecar identity authenticated by the Kyutai
+/// STT model tree.  The neural codec binder remains a separate component and
+/// is not invoked by this check.
+pub fn validate_mimi_bytes(bytes: &[u8]) -> Result<()> {
+    if bytes.len() != KYUTAI_STT_MIMI_BYTES {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt Mimi: `{KYUTAI_STT_MIMI_FILE}` has {} bytes; expected {}",
+            bytes.len(),
+            KYUTAI_STT_MIMI_BYTES,
+        )));
+    }
+    let digest = sha256_bytes(bytes);
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual != KYUTAI_STT_MIMI_SHA256 {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt Mimi: `{KYUTAI_STT_MIMI_FILE}` SHA-256 {actual} does not match authenticated sidecar"
+        )));
+    }
+    Ok(())
+}
+
 // Missing numeric keys read as `0` placeholders (a shape-only converter
 // path decays gracefully to `validate_for_forward`'s loud gate); wrong-
 // typed keys are loud `VokraError::InvalidArgument` (FR-EX-08 — never a
@@ -529,6 +1595,92 @@ fn read_f32_or(file: &GgufFile, key: &str, default: f32) -> Result<f32> {
             other.value_type()
         ))),
     }
+}
+
+fn checked_product(label: &str, factors: &[usize]) -> Result<usize> {
+    factors.iter().try_fold(1usize, |product, &factor| {
+        product.checked_mul(factor).ok_or_else(|| {
+            VokraError::InvalidArgument(format!("kyutai-stt {label} shape overflows usize"))
+        })
+    })
+}
+
+fn checked_add(label: &str, lhs: usize, rhs: usize) -> Result<usize> {
+    lhs.checked_add(rhs).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("kyutai-stt {label} shape overflows usize"))
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KyutaiWeightShapes {
+    d: usize,
+    ffn: usize,
+    text_rows: usize,
+    audio_rows: usize,
+    three_d: usize,
+    two_ffn: usize,
+    text_embedding: usize,
+    audio_embedding: usize,
+    qkv_proj: usize,
+    out_proj: usize,
+    linear_in: usize,
+    linear_out: usize,
+    text_head: usize,
+}
+
+fn checked_weight_shapes(config: &KyutaiSttConfig) -> Result<KyutaiWeightShapes> {
+    config.validate_for_forward()?;
+    let d = config.backbone.d_model;
+    let ffn = config.backbone.ffn_hidden();
+    let text_rows = config.text_card.checked_add(1).ok_or_else(|| {
+        VokraError::InvalidArgument("kyutai-stt text rows shape overflows usize".to_owned())
+    })?;
+    let audio_rows = config.audio_card.checked_add(1).ok_or_else(|| {
+        VokraError::InvalidArgument("kyutai-stt audio rows shape overflows usize".to_owned())
+    })?;
+    let three_d = checked_product("3*d_model", &[3, d])?;
+    let two_ffn = checked_product("2*ffn_hidden", &[2, ffn])?;
+    let qkv_proj = checked_product("qkv projection", &[d, three_d])?;
+    let out_proj = checked_product("output projection", &[d, d])?;
+    let linear_in = checked_product("gating linear-in", &[d, two_ffn])?;
+    let linear_out = checked_product("gating linear-out", &[ffn, d])?;
+    let text_embedding = checked_product("text embedding", &[text_rows, d])?;
+    let audio_embedding = checked_product("audio embedding", &[audio_rows, d])?;
+    let text_head = checked_product("text head", &[d, config.text_card])?;
+    // xavier's fan-in + fan-out must be checked before it is used in a
+    // denominator, even though the subsequent vector length checks are also
+    // guarded.
+    let _ = checked_add("qkv fan", d, three_d)?;
+    let _ = checked_add("FFN fan", d, two_ffn)?;
+    let _ = checked_add("text embedding fan", text_rows, d)?;
+    let _ = checked_add("audio embedding fan", audio_rows, d)?;
+    let _ = checked_add("output projection fan", d, d)?;
+    let _ = checked_add("gating output fan", ffn, d)?;
+    let _ = checked_add("text head fan", d, config.text_card)?;
+    Ok(KyutaiWeightShapes {
+        d,
+        ffn,
+        text_rows,
+        audio_rows,
+        three_d,
+        two_ffn,
+        text_embedding,
+        audio_embedding,
+        qkv_proj,
+        out_proj,
+        linear_in,
+        linear_out,
+        text_head,
+    })
+}
+
+fn ensure_finite_weights(name: &str, values: &[f32]) -> Result<()> {
+    if let Some(index) = values.iter().position(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(format!(
+            "kyutai-stt weights: `{name}` contains non-finite value at {index}"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -565,8 +1717,10 @@ pub struct KyutaiSttBlockWeights {
 ///
 /// [`Self::synthesized`] builds a deterministic fixture (SplitMix64 +
 /// Xavier) against `config` so shape / dtype / size can be exercised
-/// without the real HF checkpoint. Real-checkpoint binding is a follow-up
-/// (T29-equivalent — tensor-name manifest fetch from the upstream release).
+/// without the real HF checkpoint. Decoder-component binding is available via
+/// [`Self::from_component_gguf`]; full PCM ASR runtime support remains a
+/// follow-up (Mimi neural encoding, tokenizer/streaming/transcription gates
+/// are still closed).
 ///
 /// Depformer weights are **absent** from the scaffold: with `dep_q=0` the
 /// depformer per-step count is zero and no audio-prediction weights ride
@@ -605,33 +1759,35 @@ impl KyutaiSttWeights {
     /// [`VokraError::InvalidArgument`] if `config.validate_for_forward`
     /// fails.
     pub fn synthesized(config: &KyutaiSttConfig, seed: u64) -> Result<Self> {
-        config.validate_for_forward()?;
+        let shapes = checked_weight_shapes(config)?;
         let mut rng = SplitMix64::new(seed);
-        let bb = &config.backbone;
-        let d = bb.d_model;
-        let ffn = bb.ffn_hidden();
-        let text_rows = config.text_card + 1;
-        let audio_rows = config.audio_card + 1;
+        let d = shapes.d;
+        let ffn = shapes.ffn;
 
-        let text_embedding = xavier(&mut rng, text_rows * d, text_rows, d);
+        let text_embedding = xavier(&mut rng, shapes.text_embedding, shapes.text_rows, d);
         let mut audio_embeddings = Vec::with_capacity(config.n_q);
         for _ in 0..config.n_q {
-            audio_embeddings.push(xavier(&mut rng, audio_rows * d, audio_rows, d));
+            audio_embeddings.push(xavier(
+                &mut rng,
+                shapes.audio_embedding,
+                shapes.audio_rows,
+                d,
+            ));
         }
 
-        let mut blocks = Vec::with_capacity(bb.n_layer);
-        for _ in 0..bb.n_layer {
+        let mut blocks = Vec::with_capacity(config.backbone.n_layer);
+        for _ in 0..config.backbone.n_layer {
             blocks.push(KyutaiSttBlockWeights {
                 attn_norm: vec![1.0; d],
-                qkv_proj: xavier(&mut rng, d * 3 * d, d, 3 * d),
-                out_proj: xavier(&mut rng, d * d, d, d),
+                qkv_proj: xavier(&mut rng, shapes.qkv_proj, d, shapes.three_d),
+                out_proj: xavier(&mut rng, shapes.out_proj, d, d),
                 ffn_norm: vec![1.0; d],
-                linear_in: xavier(&mut rng, d * 2 * ffn, d, 2 * ffn),
-                linear_out: xavier(&mut rng, ffn * d, ffn, d),
+                linear_in: xavier(&mut rng, shapes.linear_in, d, shapes.two_ffn),
+                linear_out: xavier(&mut rng, shapes.linear_out, ffn, d),
             });
         }
         let final_norm = vec![1.0; d];
-        let text_head = xavier(&mut rng, d * config.text_card, d, config.text_card);
+        let text_head = xavier(&mut rng, shapes.text_head, d, config.text_card);
 
         Ok(Self {
             text_embedding,
@@ -642,6 +1798,398 @@ impl KyutaiSttWeights {
             is_synthesized: true,
         })
     }
+
+    /// Binds only the authenticated **decoder-component** tensors from the
+    /// official STT-2.6B-EN GGUF release. This does not bind Mimi, the
+    /// tokenizer, or streaming state, and therefore is not a public ASR
+    /// loader. The exact-release gate requires the stamped `kyutai-stt`
+    /// architecture and the complete 323-tensor BF16 manifest before any
+    /// payload is decoded.
+    ///
+    /// The upstream torch linear tensors are `[out, in]`; this store keeps
+    /// Compute-seam weights as `[in, out]`, so the four learned projections
+    /// are transposed during binding. No synthesized defaults are used.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] if the release metadata, exact tensor set,
+    /// dtype, shape, or finite-value contract is not satisfied. Whole-file
+    /// identity remains the authenticated runner's responsibility; this API
+    /// receives no expected digest.
+    pub fn from_component_gguf(file: &GgufFile) -> Result<Self> {
+        require_component_metadata(file)?;
+        let config = KyutaiSttConfig::from_gguf(file).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "kyutai-stt component binder: config is not authenticated: {error}"
+            ))
+        })?;
+        let arch = match file.get(chunks::KEY_MODEL_ARCH) {
+            Some(GgufMetadataValue::String(value)) => value.as_str(),
+            _ => {
+                return Err(VokraError::ModelLoad(
+                    "kyutai-stt component binder: missing authenticated model arch".to_owned(),
+                ));
+            }
+        };
+        if arch != EXPECTED_ARCH || config != KyutaiSttConfig::stt_2_6b_en() {
+            return Err(VokraError::ModelLoad(
+                "kyutai-stt component binder: only the authenticated stt-2.6b-en release is accepted".to_owned(),
+            ));
+        }
+        bind_component_gguf(file, &config)
+    }
+}
+
+fn require_component_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::U32(value)) if *value == expected => Ok(()),
+        Some(GgufMetadataValue::U32(value)) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}`={value}, expected {expected}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}` has type {:?}, expected UINT32",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: required metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn require_component_f32(file: &GgufFile, key: &str, expected: f32) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::F32(value)) if *value == expected => Ok(()),
+        Some(GgufMetadataValue::F32(value)) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}`={value}, expected {expected}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}` has type {:?}, expected FLOAT32",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: required metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn require_component_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::String(value)) if value.as_str() == expected => Ok(()),
+        Some(GgufMetadataValue::String(value)) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}`={value:?}, expected {expected:?}"
+        ))),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}` has type {:?}, expected STRING",
+            other.value_type()
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: required metadata `{key}` is missing"
+        ))),
+    }
+}
+
+fn component_metadata_contract_keys() -> Vec<String> {
+    let mut keys = vec![
+        KEY_SAMPLE_RATE,
+        KEY_BB_N_LAYER,
+        KEY_BB_D_MODEL,
+        KEY_BB_N_HEAD,
+        KEY_BB_HIDDEN_SCALE,
+        KEY_BB_FFN_HIDDEN,
+        KEY_BB_CONTEXT,
+        KEY_BB_ROPE_MAX_PERIOD,
+        KEY_BB_CAUSAL,
+        KEY_BB_RMS_NORM_EPS,
+        KEY_DEP_N_LAYER,
+        KEY_DEP_D_MODEL,
+        KEY_DEP_N_HEAD,
+        KEY_DEP_MULTI_LINEAR,
+        KEY_DEP_WEIGHTS_PER_STEP,
+        KEY_N_Q,
+        KEY_DEP_Q,
+        KEY_AUDIO_CARD,
+        KEY_TEXT_CARD,
+        KEY_TEXT_PAD_ID,
+        KEY_AUDIO_DELAY_SECS,
+        KEY_AUDIO_SILENCE_PREFIX_SECS,
+        KEY_N_DELAYS,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    for index in 0..33 {
+        keys.push(format!("{PREFIX_DELAY}{index}"));
+    }
+    keys
+}
+
+fn require_component_occurrence(metadata: &[(String, GgufMetadataValue)], key: &str) -> Result<()> {
+    let occurrences = metadata.iter().filter(|(name, _)| name == key).count();
+    if occurrences != 1 {
+        let state = if occurrences == 0 {
+            "missing"
+        } else {
+            "duplicated"
+        };
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: metadata `{key}` is {state}"
+        )));
+    }
+    Ok(())
+}
+
+fn require_component_metadata(file: &GgufFile) -> Result<()> {
+    // Exact authenticated metadata: 23 Kyutai scalar keys + 33 indexed
+    // delays, plus `vokra.model.arch` and four provenance keys below = 61
+    // keys. Unrelated schema/general metadata remains allowed.
+    let contract_keys = component_metadata_contract_keys();
+    for (key, _) in file.metadata() {
+        if key.starts_with("vokra.kyutai_stt.")
+            && !contract_keys.iter().any(|expected| expected == key)
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "kyutai-stt component binder: unexpected metadata `{key}`"
+            )));
+        }
+    }
+    for key in &contract_keys {
+        require_component_occurrence(file.metadata(), key)?;
+    }
+    for key in [
+        chunks::KEY_MODEL_ARCH,
+        chunks::KEY_PROVENANCE_MODEL_ID,
+        chunks::KEY_PROVENANCE_LICENSE,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        chunks::KEY_PROVENANCE_SOURCE,
+    ] {
+        require_component_occurrence(file.metadata(), key)?;
+    }
+    require_component_u32(file, KEY_BB_N_LAYER, 48)?;
+    require_component_u32(file, KEY_BB_D_MODEL, 2048)?;
+    require_component_u32(file, KEY_BB_N_HEAD, 32)?;
+    require_component_f32(file, KEY_BB_HIDDEN_SCALE, 4.125)?;
+    require_component_u32(file, KEY_BB_FFN_HIDDEN, 5632)?;
+    require_component_u32(file, KEY_BB_CONTEXT, 375)?;
+    require_component_f32(file, KEY_BB_ROPE_MAX_PERIOD, 100_000.0)?;
+    require_component_u32(file, KEY_BB_CAUSAL, 1)?;
+    require_component_f32(file, KEY_BB_RMS_NORM_EPS, 1e-8)?;
+    require_component_u32(file, KEY_DEP_N_LAYER, 6)?;
+    require_component_u32(file, KEY_DEP_D_MODEL, 1024)?;
+    require_component_u32(file, KEY_DEP_N_HEAD, 16)?;
+    require_component_u32(file, KEY_DEP_MULTI_LINEAR, 1)?;
+    require_component_u32(file, KEY_DEP_WEIGHTS_PER_STEP, 1)?;
+    require_component_u32(file, KEY_N_Q, 32)?;
+    require_component_u32(file, KEY_DEP_Q, 0)?;
+    require_component_u32(file, KEY_AUDIO_CARD, 2048)?;
+    require_component_u32(file, KEY_TEXT_CARD, 4000)?;
+    require_component_u32(file, KEY_TEXT_PAD_ID, 3)?;
+    require_component_f32(file, KEY_AUDIO_DELAY_SECS, 2.5)?;
+    require_component_f32(file, KEY_AUDIO_SILENCE_PREFIX_SECS, 1.0)?;
+    require_component_u32(file, KEY_SAMPLE_RATE, 24_000)?;
+    require_component_u32(file, KEY_N_DELAYS, 33)?;
+    for index in 0..33 {
+        require_component_u32(file, &format!("{PREFIX_DELAY}{index}"), 0)?;
+    }
+    require_component_string(file, chunks::KEY_PROVENANCE_MODEL_ID, "kyutai/stt-2.6b-en")?;
+    // The live Kyutai artifact contract records the SPDX-like license spelling
+    // in lowercase; this is intentionally exact rather than normalized.
+    require_component_string(file, chunks::KEY_PROVENANCE_LICENSE, "cc-by-4.0")?;
+    require_component_string(
+        file,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::AttributionRequired.as_str(),
+    )?;
+    require_component_string(
+        file,
+        chunks::KEY_PROVENANCE_SOURCE,
+        "https://huggingface.co/kyutai/stt-2.6b-en",
+    )?;
+    Ok(())
+}
+
+fn component_tensor_names(config: &KyutaiSttConfig) -> Result<Vec<String>> {
+    let block_tensor_count = checked_product(
+        "component block tensor count",
+        &[config.backbone.n_layer, 6],
+    )?;
+    let tensor_count = checked_add(
+        "component tensor count",
+        checked_add("component base tensor count", config.n_q, 3)?,
+        block_tensor_count,
+    )?;
+    let mut names = Vec::with_capacity(tensor_count);
+    names.push("text_emb.weight".to_owned());
+    for channel in 0..config.n_q {
+        names.push(format!("emb.{channel}.weight"));
+    }
+    for layer in 0..config.backbone.n_layer {
+        let prefix = format!("transformer.layers.{layer}");
+        names.push(format!("{prefix}.self_attn.in_proj_weight"));
+        names.push(format!("{prefix}.self_attn.out_proj.weight"));
+        names.push(format!("{prefix}.gating.linear_in.weight"));
+        names.push(format!("{prefix}.gating.linear_out.weight"));
+        names.push(format!("{prefix}.norm1.alpha"));
+        names.push(format!("{prefix}.norm2.alpha"));
+    }
+    names.push("out_norm.alpha".to_owned());
+    names.push("text_linear.weight".to_owned());
+    Ok(names)
+}
+
+fn validate_component_tensor_set(file: &GgufFile, config: &KyutaiSttConfig) -> Result<()> {
+    let mut expected = component_tensor_names(config)?;
+    let mut actual: Vec<String> = file
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.clone())
+        .collect();
+    expected.sort_unstable();
+    actual.sort_unstable();
+    if actual != expected {
+        let missing: Vec<&str> = expected
+            .iter()
+            .filter(|name| actual.binary_search(*name).is_err())
+            .map(String::as_str)
+            .collect();
+        let extra: Vec<&str> = actual
+            .iter()
+            .filter(|name| expected.binary_search(*name).is_err())
+            .map(String::as_str)
+            .collect();
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: exact tensor manifest mismatch (expected {}, found {}); missing={missing:?}, extra={extra:?}",
+            expected.len(),
+            actual.len(),
+        )));
+    }
+    Ok(())
+}
+
+fn component_tensor(file: &GgufFile, name: &str, expected: &[usize]) -> Result<Vec<f32>> {
+    let info = file.tensor_info(name).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: required tensor `{name}` is missing"
+        ))
+    })?;
+    if info.dtype != GgmlType::BF16 {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` dtype {:?}, expected BF16",
+            info.dtype
+        )));
+    }
+    let actual: Vec<usize> = info
+        .dimensions
+        .iter()
+        .map(|&dimension| usize::try_from(dimension))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| {
+            VokraError::ModelLoad(format!(
+                "kyutai-stt component binder: tensor `{name}` dimension overflows usize"
+            ))
+        })?;
+    if actual != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` shape {actual:?}, expected {expected:?}"
+        )));
+    }
+    let values = file.tensor_f32(name).map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` BF16 decode failed: {error}"
+        ))
+    })?;
+    if let Some(index) = values.iter().position(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` contains non-finite value at {index}"
+        )));
+    }
+    Ok(values)
+}
+
+fn transpose_component(values: Vec<f32>, rows: usize, cols: usize, name: &str) -> Result<Vec<f32>> {
+    let expected = checked_product("component transpose", &[rows, cols])?;
+    if values.len() != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: tensor `{name}` has {} values, expected {expected}",
+            values.len()
+        )));
+    }
+    let mut transposed = vec![0.0f32; expected];
+    for row in 0..rows {
+        for column in 0..cols {
+            transposed[column * rows + row] = values[row * cols + column];
+        }
+    }
+    Ok(transposed)
+}
+
+fn bind_component_gguf(file: &GgufFile, config: &KyutaiSttConfig) -> Result<KyutaiSttWeights> {
+    let shapes = checked_weight_shapes(config).map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "kyutai-stt component binder: invalid config: {error}"
+        ))
+    })?;
+    validate_component_tensor_set(file, config)?;
+    let text_embedding = component_tensor(file, "text_emb.weight", &[shapes.text_rows, shapes.d])?;
+    let mut audio_embeddings = Vec::with_capacity(config.n_q);
+    for channel in 0..config.n_q {
+        audio_embeddings.push(component_tensor(
+            file,
+            &format!("emb.{channel}.weight"),
+            &[shapes.audio_rows, shapes.d],
+        )?);
+    }
+    let mut blocks = Vec::with_capacity(config.backbone.n_layer);
+    for layer in 0..config.backbone.n_layer {
+        let prefix = format!("transformer.layers.{layer}");
+        let in_proj = component_tensor(
+            file,
+            &format!("{prefix}.self_attn.in_proj_weight"),
+            &[shapes.three_d, shapes.d],
+        )?;
+        let out_proj = component_tensor(
+            file,
+            &format!("{prefix}.self_attn.out_proj.weight"),
+            &[shapes.d, shapes.d],
+        )?;
+        let linear_in = component_tensor(
+            file,
+            &format!("{prefix}.gating.linear_in.weight"),
+            &[shapes.two_ffn, shapes.d],
+        )?;
+        let linear_out = component_tensor(
+            file,
+            &format!("{prefix}.gating.linear_out.weight"),
+            &[shapes.d, shapes.ffn],
+        )?;
+        blocks.push(KyutaiSttBlockWeights {
+            attn_norm: component_tensor(file, &format!("{prefix}.norm1.alpha"), &[shapes.d])?,
+            qkv_proj: transpose_component(in_proj, shapes.three_d, shapes.d, "in_proj_weight")?,
+            out_proj: transpose_component(out_proj, shapes.d, shapes.d, "out_proj.weight")?,
+            ffn_norm: component_tensor(file, &format!("{prefix}.norm2.alpha"), &[shapes.d])?,
+            linear_in: transpose_component(
+                linear_in,
+                shapes.two_ffn,
+                shapes.d,
+                "linear_in.weight",
+            )?,
+            linear_out: transpose_component(linear_out, shapes.d, shapes.ffn, "linear_out.weight")?,
+        });
+    }
+    let final_norm = component_tensor(file, "out_norm.alpha", &[shapes.d])?;
+    let text_head = transpose_component(
+        component_tensor(file, "text_linear.weight", &[config.text_card, shapes.d])?,
+        config.text_card,
+        shapes.d,
+        "text_linear.weight",
+    )?;
+    Ok(KyutaiSttWeights {
+        text_embedding,
+        audio_embeddings,
+        blocks,
+        final_norm,
+        text_head,
+        is_synthesized: false,
+    })
 }
 
 /// Xavier-uniform draw of `count` `f32`s in `[-a, +a]` where
@@ -656,6 +2204,104 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
         out.push((u01 * 2.0 - 1.0) * a);
     }
     out
+}
+
+fn apply_rope_heads(
+    values: &mut [f32],
+    frames: usize,
+    d_model: usize,
+    n_head: usize,
+    head_dim: usize,
+    inv_freqs: &[f32],
+) -> Result<()> {
+    let expected = frames.checked_mul(d_model).ok_or_else(|| {
+        VokraError::InvalidArgument("kyutai-stt RoPE shape overflows usize".to_owned())
+    })?;
+    if values.len() != expected || n_head.checked_mul(head_dim) != Some(d_model) {
+        return Err(VokraError::InvalidArgument(
+            "kyutai-stt RoPE shape is inconsistent with d_model".to_owned(),
+        ));
+    }
+    let head_len = frames.checked_mul(head_dim).ok_or_else(|| {
+        VokraError::InvalidArgument("kyutai-stt RoPE head shape overflows usize".to_owned())
+    })?;
+    let mut head = vec![0.0f32; head_len];
+    for index in 0..n_head {
+        for frame in 0..frames {
+            head[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(
+                &values
+                    [frame * d_model + index * head_dim..frame * d_model + (index + 1) * head_dim],
+            );
+        }
+        rope_apply_adjacent(&mut head, frames, head_dim, inv_freqs, 0)?;
+        for frame in 0..frames {
+            values[frame * d_model + index * head_dim..frame * d_model + (index + 1) * head_dim]
+                .copy_from_slice(&head[frame * head_dim..(frame + 1) * head_dim]);
+        }
+    }
+    Ok(())
+}
+
+/// Text-logit output from the dedicated dep_q=0 decoder seam.
+///
+/// `values` is row-major `[frames, vocab]`; retaining both dimensions beside
+/// the payload makes the shape part of the authenticated hand-off to the
+/// future parity/reference consumer.  This is a structural/self-consistency
+/// result, not an ASR transcript or an upstream numerical-parity claim.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KyutaiSttTextLogits {
+    frames: usize,
+    vocab: usize,
+    values: Vec<f32>,
+}
+
+impl KyutaiSttTextLogits {
+    fn new(frames: usize, vocab: usize, values: Vec<f32>) -> Result<Self> {
+        let expected = frames.checked_mul(vocab).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt logits shape overflows usize".to_owned())
+        })?;
+        if values.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt logits payload len {} != frames*vocab {}",
+                values.len(),
+                expected
+            )));
+        }
+        if !values.iter().all(|value| value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt logits contain non-finite values".to_owned(),
+            ));
+        }
+        Ok(Self {
+            frames,
+            vocab,
+            values,
+        })
+    }
+
+    /// Number of Mimi/text steps represented by the logits.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.frames
+    }
+
+    /// Text vocabulary width (`config.text_card`).
+    #[must_use]
+    pub fn vocab(&self) -> usize {
+        self.vocab
+    }
+
+    /// Row-major logits `[frames, vocab]`.
+    #[must_use]
+    pub fn as_slice(&self) -> &[f32] {
+        &self.values
+    }
+
+    /// Consumes the authenticated-shape wrapper and returns row-major values.
+    #[must_use]
+    pub fn into_values(self) -> Vec<f32> {
+        self.values
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -687,18 +2333,14 @@ impl KyutaiSttAsr {
     /// - [`VokraError::InvalidArgument`] naming the first shape
     ///   mismatch.
     pub fn new(cfg: KyutaiSttConfig, weights: KyutaiSttWeights) -> Result<Self> {
-        cfg.validate_for_forward()?;
-        let bb = &cfg.backbone;
-        let d = bb.d_model;
-        let ffn = bb.ffn_hidden();
-        let text_rows = cfg.text_card + 1;
-        let audio_rows = cfg.audio_card + 1;
+        let shapes = checked_weight_shapes(&cfg)?;
+        let d = shapes.d;
 
-        if weights.text_embedding.len() != text_rows * d {
+        if weights.text_embedding.len() != shapes.text_embedding {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt weights: text_embedding.len()={} != (text_card+1)*d_model={}",
                 weights.text_embedding.len(),
-                text_rows * d,
+                shapes.text_embedding,
             )));
         }
         if weights.audio_embeddings.len() != cfg.n_q {
@@ -709,7 +2351,7 @@ impl KyutaiSttAsr {
             )));
         }
         for (i, tbl) in weights.audio_embeddings.iter().enumerate() {
-            let expected = audio_rows * d;
+            let expected = shapes.audio_embedding;
             if tbl.len() != expected {
                 return Err(VokraError::InvalidArgument(format!(
                     "kyutai-stt weights: audio_embeddings[{i}].len()={} != {expected}",
@@ -717,21 +2359,21 @@ impl KyutaiSttAsr {
                 )));
             }
         }
-        if weights.blocks.len() != bb.n_layer {
+        if weights.blocks.len() != cfg.backbone.n_layer {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt weights: blocks.len()={} != backbone.n_layer={}",
                 weights.blocks.len(),
-                bb.n_layer,
+                cfg.backbone.n_layer,
             )));
         }
         for (i, blk) in weights.blocks.iter().enumerate() {
             for (name, len, expected) in [
                 ("attn_norm", blk.attn_norm.len(), d),
-                ("qkv_proj", blk.qkv_proj.len(), d * 3 * d),
-                ("out_proj", blk.out_proj.len(), d * d),
+                ("qkv_proj", blk.qkv_proj.len(), shapes.qkv_proj),
+                ("out_proj", blk.out_proj.len(), shapes.out_proj),
                 ("ffn_norm", blk.ffn_norm.len(), d),
-                ("linear_in", blk.linear_in.len(), d * 2 * ffn),
-                ("linear_out", blk.linear_out.len(), ffn * d),
+                ("linear_in", blk.linear_in.len(), shapes.linear_in),
+                ("linear_out", blk.linear_out.len(), shapes.linear_out),
             ] {
                 if len != expected {
                     return Err(VokraError::InvalidArgument(format!(
@@ -747,13 +2389,27 @@ impl KyutaiSttAsr {
                 d,
             )));
         }
-        if weights.text_head.len() != d * cfg.text_card {
+        if weights.text_head.len() != shapes.text_head {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt weights: text_head.len()={} != d_model * text_card = {}",
                 weights.text_head.len(),
-                d * cfg.text_card,
+                shapes.text_head,
             )));
         }
+        ensure_finite_weights("text_embedding", &weights.text_embedding)?;
+        for (index, table) in weights.audio_embeddings.iter().enumerate() {
+            ensure_finite_weights(&format!("audio_embeddings[{index}]"), table)?;
+        }
+        for (index, block) in weights.blocks.iter().enumerate() {
+            ensure_finite_weights(&format!("blocks[{index}].attn_norm"), &block.attn_norm)?;
+            ensure_finite_weights(&format!("blocks[{index}].qkv_proj"), &block.qkv_proj)?;
+            ensure_finite_weights(&format!("blocks[{index}].out_proj"), &block.out_proj)?;
+            ensure_finite_weights(&format!("blocks[{index}].ffn_norm"), &block.ffn_norm)?;
+            ensure_finite_weights(&format!("blocks[{index}].linear_in"), &block.linear_in)?;
+            ensure_finite_weights(&format!("blocks[{index}].linear_out"), &block.linear_out)?;
+        }
+        ensure_finite_weights("final_norm", &weights.final_norm)?;
+        ensure_finite_weights("text_head", &weights.text_head)?;
         Ok(Self { cfg, weights })
     }
 
@@ -771,6 +2427,289 @@ impl KyutaiSttAsr {
         self.weights.is_synthesized
     }
 
+    /// Runs the authenticated-shape **main decoder component** for the
+    /// upstream `dep_q=0` STT variant.
+    ///
+    /// `text_tokens` is one explicit text-token id per frame and
+    /// `mimi_codes` is row-major `[frames, n_q]` Mimi codes.  The component
+    /// sums the text embedding with all 32 audio embeddings, applies the
+    /// causal/sliding-window Helium transformer, final RMSNorm, and text
+    /// linear head.  No depformer or audio logits are produced because this
+    /// seam requires `dep_q == 0`.
+    ///
+    /// This deliberately does not perform streaming delay, sampling,
+    /// tokenizer decoding, or real-checkpoint binding.  Synthesized weights
+    /// are accepted only for deterministic structural/self-consistency tests;
+    /// callers must not treat their logits as an ASR result.  Backend
+    /// selection is explicit and validated against the complete Compute hot
+    /// op set before the first embedding is read.  Unsupported backends or
+    /// operations return an error; no CPU fallback is attempted.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] for an invalid token matrix or a
+    /// nonzero `dep_q`; backend and Compute-seam errors are returned
+    /// verbatim. Inputs may be longer than `context`; that value is the
+    /// causal attention window, not a component-input limit.
+    pub fn forward_text_logits(
+        &self,
+        backend: BackendKind,
+        text_tokens: &[u32],
+        mimi_codes: &[u32],
+    ) -> Result<KyutaiSttTextLogits> {
+        if self.cfg.dep_q != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt dep_q=0 decoder requires dep_q=0, got {}",
+                self.cfg.dep_q
+            )));
+        }
+        let frames = text_tokens.len();
+        if frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kyutai-stt decoder: text_tokens is empty".to_owned(),
+            ));
+        }
+        let expected_codes = frames.checked_mul(self.cfg.n_q).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt decoder code shape overflows usize".to_owned())
+        })?;
+        if mimi_codes.len() != expected_codes {
+            return Err(VokraError::InvalidArgument(format!(
+                "kyutai-stt decoder: mimi_codes.len()={} != frames*n_q={expected_codes}",
+                mimi_codes.len()
+            )));
+        }
+        let text_rows = self.cfg.text_card.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt text rows shape overflows usize".to_owned())
+        })?;
+        for (frame, &token) in text_tokens.iter().enumerate() {
+            if token as usize >= text_rows {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kyutai-stt decoder: text_tokens[{frame}]={token} >= text rows {text_rows}"
+                )));
+            }
+        }
+        let audio_rows = self.cfg.audio_card.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument("kyutai-stt audio rows shape overflows usize".to_owned())
+        })?;
+        for (index, &code) in mimi_codes.iter().enumerate() {
+            if code as usize >= audio_rows {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kyutai-stt decoder: mimi_codes[{index}]={code} >= audio rows {audio_rows}"
+                )));
+            }
+        }
+
+        let compute = Compute::for_backend(backend, KYUTAI_STT_HOT_OPS)?;
+        let d = self.cfg.backbone.d_model;
+        let heads = self.cfg.backbone.n_head;
+        let head_dim = self.cfg.backbone.head_dim();
+        let ffn = self.cfg.backbone.ffn_hidden();
+        let frame_d = checked_product("frames*d_model", &[frames, d])?;
+        let frame_qkv = checked_product("frames*3*d_model", &[frames, 3, d])?;
+        let frame_scores = checked_product("frames*frames", &[frames, frames])?;
+        let frame_ffn = checked_product("frames*ffn_hidden", &[frames, ffn])?;
+        let frame_ffn_in = checked_product("frames*2*ffn_hidden", &[frames, 2, ffn])?;
+        let head_matrix = checked_product("frames*head_dim", &[frames, head_dim])?;
+        let head_transposed = checked_product("head_dim*frames", &[head_dim, frames])?;
+        let inv_freqs = llama3_inv_freqs(head_dim, self.cfg.backbone.rope_max_period, None)?;
+        let mut hidden = vec![0.0f32; frame_d];
+        for frame in 0..frames {
+            let dst = &mut hidden[frame * d..(frame + 1) * d];
+            let text_row = &self.weights.text_embedding
+                [text_tokens[frame] as usize * d..(text_tokens[frame] as usize + 1) * d];
+            for (out, &value) in dst.iter_mut().zip(text_row) {
+                *out += value;
+            }
+            for channel in 0..self.cfg.n_q {
+                let code = mimi_codes[frame * self.cfg.n_q + channel] as usize;
+                let table = &self.weights.audio_embeddings[channel];
+                let row = &table[code * d..(code + 1) * d];
+                for (out, &value) in dst.iter_mut().zip(row) {
+                    *out += value;
+                }
+            }
+        }
+
+        let mut norm = vec![0.0f32; frame_d];
+        let mut qkv = vec![0.0f32; frame_qkv];
+        let mut q = vec![0.0f32; frame_d];
+        let mut k = vec![0.0f32; frame_d];
+        let mut v = vec![0.0f32; frame_d];
+        let mut attn_input = vec![0.0f32; frame_d];
+        let mut attn_output = vec![0.0f32; frame_d];
+        let mut scores = vec![0.0f32; frame_scores];
+        let mut probs = vec![0.0f32; frame_scores];
+        let mut ffn_in = vec![0.0f32; frame_ffn_in];
+        let mut ffn_gate = vec![0.0f32; frame_ffn];
+        let mut ffn_up = vec![0.0f32; frame_ffn];
+        let mut ffn_activated = vec![0.0f32; frame_ffn];
+        let mut ffn_output = vec![0.0f32; frame_d];
+        let mut head_q = vec![0.0f32; head_matrix];
+        let mut head_k_transposed = vec![0.0f32; head_transposed];
+        let mut head_v = vec![0.0f32; head_matrix];
+        let mut head_weighted = vec![0.0f32; head_matrix];
+        for block in &self.weights.blocks {
+            compute.rms_norm_f32(
+                &hidden,
+                &mut norm,
+                frames,
+                d,
+                &block.attn_norm,
+                self.cfg.rms_norm_eps,
+            )?;
+            compute.gemm_f32(
+                frames,
+                checked_product("qkv width", &[3, d])?,
+                d,
+                &norm,
+                &block.qkv_proj,
+                None,
+                &mut qkv,
+            )?;
+            // This is the pinned Moshi `Transformer` layout: fused QKV is
+            // split into contiguous Q/K/V widths, standard adjacent-pair
+            // RoPE is applied to Q and K, and `ActivationGating` computes
+            // SiLU(gate) * up below. This is a source-aligned structural
+            // seam, not an independent upstream parity claim.
+            for frame in 0..frames {
+                q[frame * d..(frame + 1) * d]
+                    .copy_from_slice(&qkv[frame * 3 * d..frame * 3 * d + d]);
+                k[frame * d..(frame + 1) * d]
+                    .copy_from_slice(&qkv[frame * 3 * d + d..frame * 3 * d + 2 * d]);
+                v[frame * d..(frame + 1) * d]
+                    .copy_from_slice(&qkv[frame * 3 * d + 2 * d..(frame + 1) * 3 * d]);
+            }
+            apply_rope_heads(&mut q, frames, d, heads, head_dim, &inv_freqs)?;
+            apply_rope_heads(&mut k, frames, d, heads, head_dim, &inv_freqs)?;
+            attn_input.fill(0.0);
+            let scale = 1.0f32 / (head_dim as f32).sqrt();
+            for head in 0..heads {
+                for frame in 0..frames {
+                    let source = &q[frame * d + head * head_dim..frame * d + (head + 1) * head_dim];
+                    head_q[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(source);
+                    let source = &v[frame * d + head * head_dim..frame * d + (head + 1) * head_dim];
+                    head_v[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(source);
+                    for column in 0..head_dim {
+                        head_k_transposed[column * frames + frame] =
+                            k[frame * d + head * head_dim + column];
+                    }
+                }
+                // QK^T is a learned projection product and must remain on
+                // the selected backend. The transposes above are scalar
+                // layout glue only; there is no CPU fallback here.
+                compute.gemm_f32(
+                    frames,
+                    frames,
+                    head_dim,
+                    &head_q,
+                    &head_k_transposed,
+                    None,
+                    &mut scores,
+                )?;
+                for query in 0..frames {
+                    for key in 0..frames {
+                        let visible = key <= query && query - key < self.cfg.backbone.context;
+                        scores[query * frames + key] = if visible {
+                            scores[query * frames + key] * scale
+                        } else {
+                            f32::NEG_INFINITY
+                        };
+                    }
+                }
+                compute.softmax_f32(&scores, &mut probs, frames, frames)?;
+                // The probability×V product is likewise dispatched as a
+                // learned matmul. Copying the per-head result back into the
+                // fused residual layout is scalar layout glue.
+                compute.gemm_f32(
+                    frames,
+                    head_dim,
+                    frames,
+                    &probs,
+                    &head_v,
+                    None,
+                    &mut head_weighted,
+                )?;
+                for frame in 0..frames {
+                    attn_input[frame * d + head * head_dim..frame * d + (head + 1) * head_dim]
+                        .copy_from_slice(&head_weighted[frame * head_dim..(frame + 1) * head_dim]);
+                }
+            }
+            compute.gemm_f32(
+                frames,
+                d,
+                d,
+                &attn_input,
+                &block.out_proj,
+                None,
+                &mut attn_output,
+            )?;
+            for (dst, &value) in hidden.iter_mut().zip(&attn_output) {
+                *dst += value;
+            }
+
+            compute.rms_norm_f32(
+                &hidden,
+                &mut norm,
+                frames,
+                d,
+                &block.ffn_norm,
+                self.cfg.rms_norm_eps,
+            )?;
+            compute.gemm_f32(
+                frames,
+                checked_product("gating width", &[2, ffn])?,
+                d,
+                &norm,
+                &block.linear_in,
+                None,
+                &mut ffn_in,
+            )?;
+            for frame in 0..frames {
+                ffn_gate[frame * ffn..(frame + 1) * ffn]
+                    .copy_from_slice(&ffn_in[frame * 2 * ffn..frame * 2 * ffn + ffn]);
+                ffn_up[frame * ffn..(frame + 1) * ffn]
+                    .copy_from_slice(&ffn_in[frame * 2 * ffn + ffn..(frame + 1) * 2 * ffn]);
+            }
+            compute.silu_f32(&ffn_gate, &mut ffn_activated)?;
+            for (gate, &up) in ffn_activated.iter_mut().zip(&ffn_up) {
+                *gate *= up;
+            }
+            compute.gemm_f32(
+                frames,
+                d,
+                ffn,
+                &ffn_activated,
+                &block.linear_out,
+                None,
+                &mut ffn_output,
+            )?;
+            for (dst, &value) in hidden.iter_mut().zip(&ffn_output) {
+                *dst += value;
+            }
+        }
+
+        compute.rms_norm_f32(
+            &hidden,
+            &mut norm,
+            frames,
+            d,
+            &self.weights.final_norm,
+            self.cfg.rms_norm_eps,
+        )?;
+        let logits_len = checked_product("frames*text_card", &[frames, self.cfg.text_card])?;
+        let mut logits = vec![0.0f32; logits_len];
+        compute.gemm_f32(
+            frames,
+            self.cfg.text_card,
+            d,
+            &norm,
+            &self.weights.text_head,
+            None,
+            &mut logits,
+        )?;
+        KyutaiSttTextLogits::new(frames, self.cfg.text_card, logits)
+    }
+
     /// Transcribes a sequence of Mimi codes into text tokens.
     ///
     /// `mimi_codes` is a **row-major `[T, n_q]`** matrix of audio codes:
@@ -784,16 +2723,18 @@ impl KyutaiSttAsr {
     /// sequence), so this returns [`VokraError::NotImplemented`] naming
     /// the blocker. Callers verify the shape flow through
     /// [`KyutaiSttAsr::new`] + [`KyutaiSttWeights::synthesized`] today;
-    /// a follow-up wave binds the real HF checkpoint tensor names and
-    /// wires the forward.
+    /// the component logits seam and decoder-component manifest binder exist,
+    /// but Mimi neural PCM encoding, streaming state/delay, sampling, and
+    /// full SentencePiece transcription remain follow-up gates.
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] if `mimi_codes.len()` is not a
     ///   multiple of `n_q`, is empty, or contains an id outside
     ///   `[0, audio_card)`.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
+    /// - [`VokraError::NotImplemented`] otherwise (Mimi neural PCM encoding,
+    ///   streaming state/delay, sampling, and full SentencePiece
+    ///   transcription remain — FR-EX-08).
     pub fn transcribe(&self, mimi_codes: &[u32]) -> Result<Vec<u32>> {
         if mimi_codes.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -825,19 +2766,22 @@ impl KyutaiSttAsr {
                  (CC-BY 4.0, kyutai/stt-2.6b-en) before invoking transcribe. \
                  The shape flow (config validation, weight-store construction, \
                  code-frame shape check) is exercised through KyutaiSttAsr::new; \
-                 the real-checkpoint tensor-name manifest lands in a follow-up \
-                 wave (T29-equivalent — the Moshi / CSM pattern). \
+                 the decoder-component tensor manifest and standalone \
+                 tokenizer/Mimi identity-schema binding are present; full \
+                 Mimi neural PCM encoding, streaming state/delay, sampling, \
+                 and transcription remain a follow-up wave. \
                  Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
                  https://github.com/kyutai-labs/delayed-streams-modeling",
             ));
         }
         Err(VokraError::NotImplemented(
-            "kyutai-stt transcribe: real weights are bound but the \
-             audio-embedding sum + prenorm MHA + gating FFN + text-head \
-             sampling + SentencePiece detokenize forward path has not landed \
-             yet. Follow-up wave: transcribe the upstream tensor manifest and \
-             wire the sliding-window causal attention (context=375) forward \
-             through the `Compute` seam (Moshi T29 pattern). \
+            "kyutai-stt transcribe: the component logits seam exists, but \
+             Mimi neural PCM encoding, streaming state/delay, sampling, and \
+             full SentencePiece transcription remain blocked. The decoder \
+             component manifest binder and standalone tokenizer/Mimi \
+             identity-schema binding are present. Follow-up wave: expose the \
+             already-seamed sliding-window causal component through a real \
+             streaming decoder. \
              Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
              https://github.com/kyutai-labs/delayed-streams-modeling",
         ))
@@ -846,86 +2790,46 @@ impl KyutaiSttAsr {
     /// Loads a Kyutai STT GGUF from raw bytes under `policy` (M2-13 gate —
     /// a non-commercial provenance without a research flag is refused).
     ///
-    /// Weight posture: **synthesized bridge** until the real-checkpoint
-    /// tensor-name manifest lands (T29-equivalent — the CSM
-    /// [`from_gguf_with_policy`](super::csm::CsmEngine::from_gguf_with_policy)
-    /// precedent). The engine binds
-    /// [`KyutaiSttWeights::synthesized`] against the GGUF's shape
-    /// config using [`KYUTAI_STT_FROM_GGUF_DEFAULT_SEED`] so shape /
-    /// dtype / size flow can be exercised without the real HF
-    /// checkpoint; a `transcribe` call fires the synthesized-weight
-    /// loud-partial arm and names the primary source URL.
+    /// Public GGUF loading is fail-closed until the fixed composite release
+    /// has Mimi neural PCM encoding, streaming transcription, and independent
+    /// native parity. Decoder component manifest binding and standalone
+    /// tokenizer/Mimi identity-schema binding are already present.
+    /// Deterministic synthesized weights remain available only through the
+    /// explicit test fixture constructor and are never a public fallback.
     ///
-    /// The Kyutai STT weight license is **CC-BY 4.0** (`AttributionRequired`) —
-    /// the converter's registry mapping and provenance stamps make the
-    /// M2-13 gate pass commercially, and the FR-MD-09 attribution
-    /// surface activates. `docs/license-audit.md` row 272 records the
-    /// commercial sign-off (2026-07-28 yousan).
+    /// The upstream card identifies the weight as **CC-BY 4.0**
+    /// (`AttributionRequired`), but this inspection-only wave does not stamp
+    /// or publish provenance and therefore does not activate a runtime load.
     ///
     /// # Errors
     ///
-    /// - [`VokraError::ModelLoad`] on parse failure / wrong or missing
-    ///   `vokra.model.arch` — the message names the expected arch tag
-    ///   (`kyutai-stt`), sibling arch tags (`csm` / `moshi` / `kyutai-tts`)
-    ///   so a mis-routed GGUF fails specifically here, and the primary
-    ///   source URL.
-    /// - [`VokraError::ResearchLicenseRequired`] (from the M2-13 gate)
-    ///   when the weight class is gated and `policy` grants no research
-    ///   opt-in (never a silent skip / substitution).
-    /// - [`VokraError::InvalidArgument`] on a `0`-placeholder shape
-    ///   config (a scaffold converter path that never wrote the real
-    ///   hparams) from the downstream
-    ///   [`KyutaiSttConfig::validate_for_forward`] gate.
+    /// - [`VokraError::ModelLoad`] because Mimi neural PCM encoding,
+    ///   streaming transcription, and native full-ASR parity are not
+    ///   implemented yet.
     pub fn from_gguf_with_policy(bytes: &[u8], policy: &CompliancePolicy) -> Result<Self> {
-        let file = GgufFile::parse(bytes.to_vec())
-            .map_err(|e| VokraError::ModelLoad(format!("kyutai-stt GGUF: {e}")))?;
-        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
-            Some(a) if a == EXPECTED_ARCH => {}
-            Some(other) => {
-                return Err(VokraError::ModelLoad(format!(
-                    "kyutai-stt: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}` \
-                     (was this GGUF produced by `vokra-cli convert --model kyutai-stt`? \
-                     Sibling Kyutai / Moshi-family arches — `csm` (Sesame CSM-1B \
-                     S2S), `moshi` (Kyutai Helium + Mimi full-duplex), `kyutai-tts` \
-                     (Kyutai text-to-speech) — are different topologies). \
-                     Primary source: https://huggingface.co/kyutai/stt-2.6b-en / \
-                     https://github.com/kyutai-labs/delayed-streams-modeling"
-                )));
-            }
-            None => {
-                return Err(VokraError::ModelLoad(format!(
-                    "kyutai-stt: GGUF is missing `vokra.model.arch` (converter did \
-                     not stamp it — this is not a Vokra-native `{EXPECTED_ARCH}` \
-                     GGUF). Primary source: \
-                     https://huggingface.co/kyutai/stt-2.6b-en / \
-                     https://github.com/kyutai-labs/delayed-streams-modeling"
-                )));
-            }
-        }
-        check_weight_license(&file, policy)?;
-        let cfg = KyutaiSttConfig::from_gguf(&file)?;
-        // `synthesized` runs `validate_for_forward` internally; keep the
-        // explicit call here so a validate failure surfaces with the config
-        // context intact (same posture as CSM `from_gguf_with_policy`).
-        cfg.validate_for_forward()?;
-        let weights = KyutaiSttWeights::synthesized(&cfg, KYUTAI_STT_FROM_GGUF_DEFAULT_SEED)?;
-        Self::new(cfg, weights)
+        let _ = (bytes, policy);
+        Err(VokraError::ModelLoad(
+            "kyutai-stt public GGUF loading is blocked: decoder component manifest binding and standalone tokenizer/Mimi identity-schema binding are present, but Mimi neural PCM encoding, streaming state/sampling, transcription, and native parity remain blocked; synthesized fixtures are test-only and never a public load fallback".to_owned(),
+        ))
     }
 
     /// Loads a Kyutai STT GGUF from a file path with the fail-closed
     /// strict policy ([`CompliancePolicy::strict`]).
     ///
-    /// The Kyutai STT weight license is **CC-BY 4.0**
-    /// (`AttributionRequired`), which is commercially permitted — the
-    /// M2-13 gate passes under `strict` without a research opt-in.
+    /// The upstream card identifies the weight as **CC-BY 4.0**. That
+    /// license fact does not waive the missing Mimi/streaming/transcription
+    /// runtime gates.
     ///
     /// # Errors
     ///
     /// - [`VokraError::Io`] on read failure.
     /// - See [`Self::from_gguf_with_policy`].
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let bytes = std::fs::read(path.as_ref()).map_err(VokraError::Io)?;
-        Self::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+        // Probe existence without materializing the multi-gigabyte composite.
+        std::fs::metadata(path.as_ref()).map_err(VokraError::Io)?;
+        Err(VokraError::ModelLoad(
+            "kyutai-stt public GGUF loading is blocked: decoder component manifest binding and standalone tokenizer/Mimi identity-schema binding are present, but Mimi neural PCM encoding, streaming state/sampling, transcription, and native parity remain blocked; synthesized fixtures are test-only and never a public load fallback".to_owned(),
+        ))
     }
 }
 
@@ -938,6 +2842,14 @@ mod tests {
     use super::*;
     use vokra_core::LicenseClass;
     use vokra_core::gguf::GgufBuilder;
+
+    #[test]
+    fn public_gguf_load_is_fail_closed_without_full_composite_runtime() {
+        let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
+        let error = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("public load must reject synthesized fallback");
+        assert_public_load_blocked(error);
+    }
 
     /// Every hparam matches the primary source
     /// (`huggingface.co/kyutai/stt-2.6b-en/raw/main/config.json`) verbatim.
@@ -973,7 +2885,7 @@ mod tests {
         assert_eq!(c.sample_rate, 24_000);
         // Derived values.
         assert_eq!(c.backbone.head_dim(), 64);
-        assert_eq!(c.backbone.ffn_hidden(), 8448);
+        assert_eq!(c.backbone.ffn_hidden(), 5632);
         assert_eq!(c.n_channels(), 33);
         assert_eq!(c.max_delay(), 0);
         // Everything above adds up to a well-formed config.
@@ -983,7 +2895,9 @@ mod tests {
 
     #[test]
     fn tiny_config_is_well_formed() {
-        KyutaiSttConfig::tiny_for_tests()
+        let config = KyutaiSttConfig::tiny_for_tests();
+        assert_eq!(config.backbone.ffn_hidden(), 42);
+        config
             .validate_for_forward()
             .expect("tiny config is well-formed");
     }
@@ -1109,6 +3023,44 @@ mod tests {
     }
 
     #[test]
+    fn config_streaming_axes_are_fail_closed() {
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.causal = false;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.sample_rate = 16_000;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.audio_delay_seconds = f32::NAN;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.delays[0] = 1;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut c = KyutaiSttConfig::tiny_for_tests();
+        c.depformer.multi_linear = false;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
     fn synthesized_weights_are_deterministic_and_shape_correct() {
         let c = KyutaiSttConfig::tiny_for_tests();
         let w1 = KyutaiSttWeights::synthesized(&c, 0x42).expect("build 1");
@@ -1158,6 +3110,178 @@ mod tests {
         assert!(matches!(
             KyutaiSttWeights::synthesized(&c, 7),
             Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn component_manifest_is_exact_and_bf16_shape_is_strict() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        let names = component_tensor_names(&config).expect("manifest names");
+        assert_eq!(
+            names.len(),
+            1 + config.n_q + config.backbone.n_layer * 6 + 2
+        );
+
+        let mut missing = names.clone();
+        missing.pop();
+        let missing_file = manifest_fixture(&missing, GgmlType::F32);
+        assert!(matches!(
+            validate_component_tensor_set(&missing_file, &config),
+            Err(VokraError::ModelLoad(message)) if message.contains("missing")
+        ));
+
+        let mut extra = names;
+        extra.push("unexpected.weight".to_owned());
+        let extra_file = manifest_fixture(&extra, GgmlType::F32);
+        assert!(matches!(
+            validate_component_tensor_set(&extra_file, &config),
+            Err(VokraError::ModelLoad(message)) if message.contains("extra")
+        ));
+
+        let shape_file = one_tensor_fixture("sample", GgmlType::BF16, &[2, 2]);
+        assert!(matches!(
+            component_tensor(&shape_file, "sample", &[2, 3]),
+            Err(VokraError::ModelLoad(message)) if message.contains("shape")
+        ));
+        let dtype_file = one_tensor_fixture("sample", GgmlType::F32, &[2, 2]);
+        assert!(matches!(
+            component_tensor(&dtype_file, "sample", &[2, 2]),
+            Err(VokraError::ModelLoad(message)) if message.contains("dtype")
+        ));
+        let nan_file = one_bf16_nan_fixture();
+        assert!(matches!(
+            component_tensor(&nan_file, "sample", &[1]),
+            Err(VokraError::ModelLoad(message)) if message.contains("non-finite")
+        ));
+    }
+
+    #[test]
+    fn component_binder_transposes_torch_linear_layout() {
+        let transposed = transpose_component(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3, "fixture")
+            .expect("transpose");
+        assert_eq!(transposed, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn component_public_binder_keeps_exact_release_gate() {
+        let file = GgufFile::parse(build_tiny_gguf(Some(EXPECTED_ARCH))).expect("fixture");
+        let error = KyutaiSttWeights::from_component_gguf(&file)
+            .expect_err("tiny metadata fixture must not pass the exact release gate");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains("metadata") || message.contains("authenticated")
+        ));
+    }
+
+    #[test]
+    fn component_metadata_contract_accepts_canonical_provenance_before_manifest_gate() {
+        let file = strict_component_metadata_fixture(false, 5632, 1, None, false, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&file)
+            .expect_err("metadata-only fixture must stop at the exact tensor manifest");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains("manifest")
+        ));
+    }
+
+    #[test]
+    fn component_binder_requires_non_defaulted_metadata_and_provenance() {
+        let missing_default =
+            strict_component_metadata_fixture(true, 5632, 1, None, false, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&missing_default)
+            .expect_err("missing RMS epsilon must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(KEY_BB_RMS_NORM_EPS)
+        ));
+
+        let stale_width =
+            strict_component_metadata_fixture(false, 8448, 1, None, false, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&stale_width)
+            .expect_err("stale ffn_hidden must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(KEY_BB_FFN_HIDDEN)
+        ));
+
+        let noncanonical_bool =
+            strict_component_metadata_fixture(false, 5632, 2, None, false, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&noncanonical_bool)
+            .expect_err("boolean value 2 must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(KEY_BB_CAUSAL)
+        ));
+
+        let wrong_license = strict_component_metadata_fixture(
+            false,
+            5632,
+            1,
+            Some("CC-BY-NC-4.0"),
+            false,
+            false,
+            false,
+        );
+        let error = KyutaiSttWeights::from_component_gguf(&wrong_license)
+            .expect_err("wrong provenance license must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(chunks::KEY_PROVENANCE_LICENSE)
+        ));
+
+        let missing_model_id =
+            strict_component_metadata_fixture(false, 5632, 1, None, true, false, false);
+        let error = KyutaiSttWeights::from_component_gguf(&missing_model_id)
+            .expect_err("missing model id must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(chunks::KEY_PROVENANCE_MODEL_ID)
+        ));
+
+        let missing_weight_license =
+            strict_component_metadata_fixture(false, 5632, 1, None, false, true, false);
+        let error = KyutaiSttWeights::from_component_gguf(&missing_weight_license)
+            .expect_err("missing weight license must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+        ));
+
+        let extra_key = strict_component_metadata_fixture(false, 5632, 1, None, false, false, true);
+        let error = KyutaiSttWeights::from_component_gguf(&extra_key)
+            .expect_err("unexpected Kyutai metadata must fail before payload decode");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains("unexpected metadata")
+        ));
+
+        let duplicate_arch = vec![
+            (
+                chunks::KEY_MODEL_ARCH.to_owned(),
+                GgufMetadataValue::String(EXPECTED_ARCH.to_owned()),
+            ),
+            (
+                chunks::KEY_MODEL_ARCH.to_owned(),
+                GgufMetadataValue::String(EXPECTED_ARCH.to_owned()),
+            ),
+        ];
+        assert!(matches!(
+            require_component_occurrence(&duplicate_arch, chunks::KEY_MODEL_ARCH),
+            Err(VokraError::ModelLoad(message)) if message.contains("duplicated")
+        ));
+        let duplicate_provenance = vec![
+            (
+                chunks::KEY_PROVENANCE_SOURCE.to_owned(),
+                GgufMetadataValue::String("https://huggingface.co/kyutai/stt-2.6b-en".to_owned()),
+            ),
+            (
+                chunks::KEY_PROVENANCE_SOURCE.to_owned(),
+                GgufMetadataValue::String("https://huggingface.co/kyutai/stt-2.6b-en".to_owned()),
+            ),
+        ];
+        assert!(matches!(
+            require_component_occurrence(&duplicate_provenance, chunks::KEY_PROVENANCE_SOURCE),
+            Err(VokraError::ModelLoad(message)) if message.contains("duplicated")
         ));
     }
 
@@ -1248,6 +3372,18 @@ mod tests {
     }
 
     #[test]
+    fn asr_new_rejects_non_finite_supplied_weight() {
+        let c = KyutaiSttConfig::tiny_for_tests();
+        let mut w = KyutaiSttWeights::synthesized(&c, 7).expect("weights");
+        w.blocks[0].linear_out[0] = f32::NAN;
+        let error = KyutaiSttAsr::new(c, w).expect_err("NaN must not enter execution");
+        assert!(matches!(
+            error,
+            VokraError::InvalidArgument(message) if message.contains("non-finite")
+        ));
+    }
+
+    #[test]
     fn transcribe_rejects_empty_codes() {
         let c = KyutaiSttConfig::tiny_for_tests();
         let w = KyutaiSttWeights::synthesized(&c, 7).expect("weights");
@@ -1310,6 +3446,112 @@ mod tests {
     }
 
     #[test]
+    fn dep_q0_decoder_returns_deterministic_authenticated_shape() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        let width = config.n_q;
+        let asr = KyutaiSttAsr::new(
+            config.clone(),
+            KyutaiSttWeights::synthesized(&config, 0xD3C0_DEC0).expect("weights"),
+        )
+        .expect("asr");
+        let text = [0, 1, 2];
+        let codes = vec![0u32; text.len() * width];
+        let first = asr
+            .forward_text_logits(BackendKind::Cpu, &text, &codes)
+            .expect("tiny dep_q=0 forward");
+        let second = asr
+            .forward_text_logits(BackendKind::Cpu, &text, &codes)
+            .expect("repeat tiny dep_q=0 forward");
+        assert_eq!(
+            first, second,
+            "self-consistency fixture must be deterministic"
+        );
+        assert_eq!(first.frames(), text.len());
+        assert_eq!(first.vocab(), config.text_card);
+        assert_eq!(first.as_slice().len(), text.len() * config.text_card);
+        assert!(first.as_slice().iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn dep_q0_decoder_accepts_longer_sequences_and_rejects_input_shape_drift() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        let asr = KyutaiSttAsr::new(
+            config.clone(),
+            KyutaiSttWeights::synthesized(&config, 7).expect("weights"),
+        )
+        .expect("asr");
+        let valid_codes = vec![0u32; config.n_q];
+        assert!(matches!(
+            asr.forward_text_logits(BackendKind::Cpu, &[0], &valid_codes[..config.n_q - 1]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let too_many = vec![0u32; (config.backbone.context + 1) * config.n_q];
+        let too_many_text = vec![0u32; config.backbone.context + 1];
+        let logits = asr
+            .forward_text_logits(BackendKind::Cpu, &too_many_text, &too_many)
+            .expect("context is an attention window, not an input limit");
+        assert_eq!(logits.frames(), config.backbone.context + 1);
+    }
+
+    #[test]
+    fn dep_q0_decoder_window_excludes_preceding_frame_in_one_layer_fixture() {
+        let mut config = KyutaiSttConfig::tiny_for_tests();
+        config.backbone.n_layer = 1;
+        config.backbone.context = 2;
+        let weights = KyutaiSttWeights::synthesized(&config, 7).expect("weights");
+        let asr = KyutaiSttAsr::new(config.clone(), weights).expect("asr");
+        let first_text = [0, 1, 2];
+        let second_text = [3, 1, 2];
+        let codes = vec![0u32; first_text.len() * config.n_q];
+        let first = asr
+            .forward_text_logits(BackendKind::Cpu, &first_text, &codes)
+            .expect("first sequence");
+        let second = asr
+            .forward_text_logits(BackendKind::Cpu, &second_text, &codes)
+            .expect("second sequence");
+        let final_row = config.text_card * (first_text.len() - 1);
+        assert_eq!(
+            &first.as_slice()[final_row..],
+            &second.as_slice()[final_row..],
+            "the one-layer final row only sees the causal context window"
+        );
+    }
+
+    #[test]
+    fn dep_q0_decoder_rejects_nonzero_dep_q_without_downgrade() {
+        let mut config = KyutaiSttConfig::tiny_for_tests();
+        config.dep_q = 1;
+        let asr = KyutaiSttAsr::new(
+            config.clone(),
+            KyutaiSttWeights::synthesized(&config, 7).expect("weights"),
+        )
+        .expect("shape-compatible fixture");
+        let error = asr
+            .forward_text_logits(BackendKind::Cpu, &[0], &vec![0u32; config.n_q])
+            .expect_err("dep_q>0 must not enter the dep_q=0 seam");
+        assert!(
+            matches!(error, VokraError::InvalidArgument(message) if message.contains("dep_q=0"))
+        );
+    }
+
+    #[test]
+    fn dep_q0_decoder_does_not_fallback_on_uncovered_backend() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        let asr = KyutaiSttAsr::new(
+            config.clone(),
+            KyutaiSttWeights::synthesized(&config, 7).expect("weights"),
+        )
+        .expect("asr");
+        let error = asr
+            .forward_text_logits(BackendKind::Vulkan, &[0], &vec![0u32; config.n_q])
+            .expect_err("unavailable backend must fail before CPU fallback");
+        assert!(matches!(
+            error,
+            VokraError::BackendUnavailable(_) | VokraError::UnsupportedOp(_)
+        ));
+    }
+
+    #[test]
     fn expected_arch_is_kyutai_stt() {
         assert_eq!(EXPECTED_ARCH, "kyutai-stt");
     }
@@ -1323,13 +3565,395 @@ mod tests {
         assert_eq!(KYUTAI_STT_SAMPLE_RATE, 24_000);
     }
 
+    #[test]
+    fn streaming_contract_matches_pinned_upstream_input_preparation() {
+        let contract = KyutaiSttStreamingContract::from_config(&KyutaiSttConfig::stt_2_6b_en())
+            .expect("fixed STT streaming contract");
+        assert_eq!(contract.sample_rate(), 24_000);
+        assert_eq!(contract.frame_hop_samples(), 1_920);
+        assert_eq!(contract.n_q(), 32);
+        assert_eq!(contract.audio_card(), 2_048);
+        assert_eq!(contract.pcm_padding_samples(), (24_000, 84_000));
+        assert_eq!(contract.padded_frame_count(0).unwrap(), 56);
+        assert_eq!(contract.padded_frame_count(24_000).unwrap(), 68);
+        assert!(!contract.emits_text_token(0));
+        assert!(!contract.emits_text_token(3));
+        assert!(contract.emits_text_token(1));
+    }
+
+    #[test]
+    fn streaming_contract_rejects_wrong_config_and_code_packets() {
+        let mut wrong = KyutaiSttConfig::stt_2_6b_en();
+        wrong.audio_delay_seconds = 2.0;
+        assert!(matches!(
+            KyutaiSttStreamingContract::from_config(&wrong),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let contract = KyutaiSttStreamingContract::from_config(&KyutaiSttConfig::stt_2_6b_en())
+            .expect("fixed STT streaming contract");
+        assert!(matches!(
+            contract.validate_mimi_codes(&[]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            contract.validate_mimi_codes(&[0; 31]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut out_of_range = vec![0u32; 32];
+        out_of_range[31] = 2_048;
+        assert!(matches!(
+            contract.validate_mimi_codes(&out_of_range),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert_eq!(contract.validate_mimi_codes(&[0; 32]).unwrap(), 1);
+    }
+
+    #[test]
+    fn sidecar_binding_rejects_legacy_or_unverified_identity() {
+        let config = KyutaiSttConfig::stt_2_6b_en();
+        assert!(matches!(
+            KyutaiSttAuthenticatedSidecars::bind(
+                &config,
+                "mimi-pytorch-e351c8d8@125.safetensors",
+                &[],
+                "tokenizer_spm_4k_en.model",
+                &[],
+            ),
+            Err(VokraError::ModelLoad(message)) if message.contains("tokenizer_en_audio_4000.model")
+        ));
+        assert!(matches!(
+            KyutaiSttAuthenticatedSidecars::bind(
+                &config,
+                "mimi-pytorch-e351c8d8@125.safetensors",
+                &[],
+                "tokenizer_en_audio_4000.model",
+                &[],
+            ),
+            Err(VokraError::ModelLoad(message)) if message.contains("Mimi")
+        ));
+    }
+
+    #[test]
+    fn dep_q0_input_demux_splits_text_and_mimi_streams() {
+        let config = KyutaiSttConfig::tiny_for_tests();
+        // Each row is [text, audio_0, audio_1, audio_2, audio_3].
+        let packet =
+            KyutaiSttInputPacket::from_interleaved(&config, &[1, 2, 3, 4, 5, 6, 7, 0, 1, 2])
+                .expect("two dep_q=0 input frames");
+        assert_eq!(packet.frames(), 2);
+        assert_eq!(packet.text_tokens(), &[1, 6]);
+        assert_eq!(packet.mimi_codes(), &[2, 3, 4, 5, 7, 0, 1, 2]);
+        assert!(matches!(
+            KyutaiSttInputPacket::from_interleaved(&config, &[0; 4]),
+            Err(VokraError::InvalidArgument(message)) if message.contains("multiple of 5")
+        ));
+    }
+
+    #[test]
+    fn streaming_state_validates_frames_and_suppresses_text_markers() {
+        let contract = KyutaiSttStreamingContract::from_config(&KyutaiSttConfig::stt_2_6b_en())
+            .expect("fixed STT streaming contract");
+        let mut state = KyutaiSttStreamingState::new(contract);
+        state
+            .push_mimi_frame(&[0; 32])
+            .expect("one complete Mimi frame");
+        assert_eq!(state.frames_seen(), 1);
+        assert_eq!(state.push_text_token(0).unwrap(), None);
+        assert_eq!(state.push_text_token(3).unwrap(), None);
+        assert_eq!(state.push_text_token(17).unwrap(), Some(17));
+        assert_eq!(
+            state
+                .push_text_token(contract.text_card() as u32 - 1)
+                .unwrap(),
+            Some(3999)
+        );
+        assert!(matches!(
+            state.push_text_token(contract.text_card() as u32),
+            Err(VokraError::InvalidArgument(message)) if message.contains("input-only initial row")
+        ));
+        assert_eq!(state.emitted_text_tokens(), &[17, 3999]);
+        assert!(matches!(
+            state.push_mimi_frame(&[0; 31]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn streaming_contract_accepts_only_the_authenticated_mimi_metadata() {
+        let contract = KyutaiSttStreamingContract::from_config(&KyutaiSttConfig::stt_2_6b_en())
+            .expect("fixed STT streaming contract");
+        let mimi = MimiNeuralConfig {
+            sample_rate: 24_000,
+            frame_rate_mhz: 12_500,
+            seanet: crate::mimi::config::MimiSeanetConfig {
+                dimension: 512,
+                n_filters: 64,
+                n_residual_layers: 1,
+                kernel_size: 7,
+                residual_kernel_size: 3,
+                last_kernel_size: 3,
+                compress: 2,
+                dilation_base: 2,
+                ratios: vec![8, 6, 5, 4],
+            },
+            transformer: crate::mimi::config::MimiTransformerConfig {
+                d_model: 512,
+                n_head: 8,
+                n_layer: 8,
+                ff_dim: 2_048,
+                context: 250,
+                max_period: 10_000,
+                layer_scale: 0.01,
+            },
+            quantizer: crate::mimi::config::MimiQuantizerConfig {
+                dimension: 256,
+                n_q: 32,
+                bins: 2_048,
+                input_dimension: 512,
+                output_dimension: 512,
+            },
+        };
+        contract
+            .validate_mimi_config(&mimi)
+            .expect("authenticated Mimi metadata contract");
+        let mut wrong = mimi.clone();
+        wrong.frame_rate_mhz = 25_000;
+        assert!(matches!(
+            contract.validate_mimi_config(&wrong),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn tokenizer_identity_gate_rejects_same_size_unverified_bytes() {
+        let bytes = vec![0u8; KYUTAI_STT_TOKENIZER_BYTES];
+        assert!(matches!(
+            validate_tokenizer_bytes(&bytes),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            validate_tokenizer_bytes(&bytes[..bytes.len() - 1]),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    fn tokenizer_fixture(include_mimi: bool) -> GgufFile {
+        tokenizer_fixture_with_table_digest(include_mimi, None)
+    }
+
+    fn tokenizer_fixture_with_table_digest(
+        include_mimi: bool,
+        table_digest_override: Option<&str>,
+    ) -> GgufFile {
+        tokenizer_fixture_with_options(include_mimi, table_digest_override, None)
+    }
+
+    fn tokenizer_fixture_with_type(include_mimi: bool, type_override: (usize, u32)) -> GgufFile {
+        tokenizer_fixture_with_options(include_mimi, None, Some(type_override))
+    }
+
+    fn tokenizer_fixture_with_options(
+        include_mimi: bool,
+        table_digest_override: Option<&str>,
+        type_override: Option<(usize, u32)>,
+    ) -> GgufFile {
+        let mut pieces: Vec<GgufMetadataValue> = vec![
+            GgufMetadataValue::String("<unk>".into()),
+            GgufMetadataValue::String("<s>".into()),
+            GgufMetadataValue::String("</s>".into()),
+            GgufMetadataValue::String("<pad>".into()),
+            GgufMetadataValue::String("\u{2581}hello".into()),
+            GgufMetadataValue::String("\u{2581}world".into()),
+            GgufMetadataValue::String("<0xE2>".into()),
+            GgufMetadataValue::String("<0x82>".into()),
+            GgufMetadataValue::String("<0xAC>".into()),
+            GgufMetadataValue::String("<0x00>".into()),
+            GgufMetadataValue::String("<control>".into()),
+            GgufMetadataValue::String("<0xFF>".into()),
+        ];
+        pieces.resize_with(4_000, || GgufMetadataValue::String("x".into()));
+        let mut types: Vec<GgufMetadataValue> = vec![
+            GgufMetadataValue::U32(2),
+            GgufMetadataValue::U32(3),
+            GgufMetadataValue::U32(3),
+            GgufMetadataValue::U32(3),
+            GgufMetadataValue::U32(1),
+            GgufMetadataValue::U32(1),
+            GgufMetadataValue::U32(6),
+            GgufMetadataValue::U32(6),
+            GgufMetadataValue::U32(6),
+            GgufMetadataValue::U32(5),
+            GgufMetadataValue::U32(3),
+            GgufMetadataValue::U32(6),
+        ];
+        types.resize_with(4_000, || GgufMetadataValue::U32(1));
+        if let Some((id, piece_type)) = type_override {
+            types[id] = GgufMetadataValue::U32(piece_type);
+        }
+        let table_pieces = pieces
+            .iter()
+            .map(|value| match value {
+                GgufMetadataValue::String(piece) => piece.clone(),
+                other => panic!("fixture piece has unexpected type: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        let table_types = types
+            .iter()
+            .map(|value| match value {
+                GgufMetadataValue::U32(piece_type) => *piece_type,
+                other => panic!("fixture type has unexpected type: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        let table_digest = table_digest_override
+            .map(str::to_owned)
+            .unwrap_or_else(|| tokenizer_table_sha256(&table_pieces, &table_types));
+        if table_digest_override.is_some() {
+            pieces[4] = GgufMetadataValue::String("tampered".into());
+            types[4] = GgufMetadataValue::U32(4);
+        }
+        let mut builder = GgufBuilder::new();
+        builder.add_string(chunks::KEY_MODEL_ARCH, ARCH_TOKENIZER);
+        builder.add_string(chunks::KEY_MODEL_NAME, KYUTAI_STT_TOKENIZER_COMPONENT_NAME);
+        builder.add_string(KEY_TOKENIZER_SCHEMA, KYUTAI_STT_TOKENIZER_SCHEMA);
+        builder.add_u32(KEY_TOKENIZER_CARD, 4_000);
+        builder.add_metadata(
+            KEY_TOKENIZER_PIECES,
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::String,
+                values: pieces,
+            }),
+        );
+        builder.add_metadata(
+            KEY_TOKENIZER_TYPES,
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::U32,
+                values: types,
+            }),
+        );
+        builder.add_u32(KEY_TOKENIZER_UNK_ID, 0);
+        builder.add_u32(KEY_TOKENIZER_BOS_ID, 1);
+        builder.add_u32(KEY_TOKENIZER_EOS_ID, 2);
+        builder.add_u32(KEY_TOKENIZER_PAD_ID, 3);
+        builder.add_u32(KEY_TOKENIZER_BYTES, KYUTAI_STT_TOKENIZER_BYTES as u32);
+        builder.add_string(KEY_TOKENIZER_SHA256, KYUTAI_STT_TOKENIZER_SHA256);
+        builder.add_string(KEY_TOKENIZER_TABLE_SHA256, &table_digest);
+        builder.add_string(
+            KEY_TOKENIZER_GIT_BLOB_SHA1,
+            KYUTAI_STT_TOKENIZER_GIT_BLOB_SHA1,
+        );
+        builder.add_bool(KEY_TOKENIZER_ADD_DUMMY_PREFIX, true);
+        builder.add_bool(KEY_TOKENIZER_REMOVE_EXTRA_WHITESPACES, true);
+        builder.add_bool(KEY_TOKENIZER_DENORMALIZER_PRESENT, false);
+        if include_mimi {
+            builder.add_string(KEY_TOKENIZER_MIMI_FILE, KYUTAI_STT_MIMI_FILE);
+            builder.add_u32(KEY_TOKENIZER_MIMI_BYTES, KYUTAI_STT_MIMI_BYTES as u32);
+            builder.add_string(KEY_TOKENIZER_MIMI_SHA256, KYUTAI_STT_MIMI_SHA256);
+        }
+        GgufFile::parse(builder.to_bytes().expect("tokenizer fixture"))
+            .expect("tokenizer fixture parse")
+    }
+
+    #[test]
+    fn dedicated_tokenizer_decodes_boundaries_bytes_and_suppressed_ids() {
+        let tokenizer = KyutaiSttTokenizer::from_gguf(&tokenizer_fixture(true)).expect("schema");
+        assert_eq!(tokenizer.vocab_size(), 4_000);
+        assert_eq!(
+            tokenizer
+                .decode(&[0, 4, 3, 5, 6, 7, 8])
+                .expect("live tokenizer decode"),
+            " hello world<0xE2><0x82><0xAC>",
+            "live route renders pieces literally and does not aggregate byte fallback"
+        );
+        assert_eq!(
+            tokenizer.decode(&[10]).expect("live control decode"),
+            "<control>",
+            "live route only suppresses 0/3"
+        );
+        assert_eq!(
+            tokenizer.decode(&[9]).expect("live unused decode"),
+            "<0x00>",
+            "UNUSED=5 is not byte fallback"
+        );
+        assert_eq!(
+            tokenizer
+                .decode_text_tokens(&[0, 4, 3, 5, 6, 7, 8, 10])
+                .expect("accumulated tokenizer decode"),
+            "hello world€",
+            "accumulated route strips only the first dummy boundary and skips controls"
+        );
+        assert_eq!(
+            tokenizer
+                .decode_text_tokens(&[9])
+                .expect("accumulated unused decode"),
+            "<0x00>",
+            "UNUSED=5 remains a literal piece"
+        );
+        assert_eq!(
+            tokenizer
+                .decode_text_tokens(&[11])
+                .expect("accumulated invalid byte decode"),
+            "\u{FFFD}",
+            "invalid byte fallback is replacement text"
+        );
+        assert!(matches!(
+            tokenizer.decode(&[4_000]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn dedicated_tokenizer_rejects_tampered_table_with_stale_digest() {
+        let error = KyutaiSttTokenizer::from_gguf(&tokenizer_fixture_with_table_digest(
+            true,
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+        ))
+        .expect_err("tampered table with stale canonical digest must fail closed");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("table SHA-256"))
+        );
+    }
+
+    #[test]
+    fn dedicated_tokenizer_rejects_explicit_zero_piece_type() {
+        let error = KyutaiSttTokenizer::from_gguf(&tokenizer_fixture_with_type(true, (4, 0)))
+            .expect_err("explicit zero piece type must fail closed");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("invalid/unsupported type 0"))
+        );
+    }
+
+    #[test]
+    fn dedicated_tokenizer_requires_fixed_mimi_companion_identity() {
+        let error = KyutaiSttTokenizer::from_gguf(&tokenizer_fixture(false))
+            .expect_err("incomplete composite metadata must fail closed");
+        assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("mimi")));
+    }
+
+    #[test]
+    fn mimi_sidecar_identity_gate_is_explicit_and_fail_closed() {
+        assert_eq!(
+            KYUTAI_STT_MIMI_FILE,
+            "mimi-pytorch-e351c8d8@125.safetensors"
+        );
+        assert_eq!(KYUTAI_STT_MIMI_BYTES, 384_644_900);
+        assert_eq!(
+            KYUTAI_STT_MIMI_SHA256,
+            "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50"
+        );
+        assert!(matches!(
+            validate_mimi_bytes(&[]),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
     // -----------------------------------------------------------------------
     // GGUF-loader (`from_gguf` / `from_gguf_with_policy` / `from_path`) tests
     //
-    // These pin the loud-partial scaffold the M2-13 gate + arch check +
-    // config round-trip + license read + synthesized-weight `transcribe`
-    // arm depend on. Every path fails loudly (FR-EX-08) — never a silent
-    // zero-fill / substitution / mis-typed cast.
+    // These pin the public loader's unconditional composite-runtime blocker,
+    // config round-trip/type validation, license read, and synthesized-weight
+    // `transcribe` arm. Every path fails loudly (FR-EX-08) — never a silent
+    // zero-fill / substitution / mis-typed cast. Decoder-component arch and
+    // manifest behavior is covered by `from_component_gguf` tests above.
     // -----------------------------------------------------------------------
 
     /// Builds a metadata-only GGUF whose `vokra.model.arch` is `arch`
@@ -1366,6 +3990,133 @@ mod tests {
     /// `stt_2_6b_en` and stays fast.
     fn build_tiny_gguf(arch: Option<&str>) -> Vec<u8> {
         build_gguf_for_config(arch, &KyutaiSttConfig::tiny_for_tests())
+    }
+
+    fn assert_public_load_blocked(error: VokraError) {
+        assert!(
+            matches!(&error, VokraError::ModelLoad(message)
+                if message.contains("blocked")
+                    && message.contains("decoder component manifest binding")
+                    && message.contains("Mimi")
+                    && message.contains("native parity")
+                    && message.contains("synthesized")),
+            "expected stable full-composite blocker, got {error:?}"
+        );
+    }
+
+    fn manifest_fixture(names: &[String], dtype: GgmlType) -> GgufFile {
+        let mut builder = GgufBuilder::new();
+        for name in names {
+            builder
+                .add_tensor(name, dtype, vec![1], tensor_bytes(dtype, 1))
+                .expect("manifest fixture tensor");
+        }
+        GgufFile::parse(builder.to_bytes().expect("manifest fixture bytes")).expect("parse")
+    }
+
+    fn one_tensor_fixture(name: &str, dtype: GgmlType, dimensions: &[usize]) -> GgufFile {
+        let elements = dimensions
+            .iter()
+            .copied()
+            .try_fold(1usize, usize::checked_mul)
+            .expect("fixture dimensions");
+        let mut builder = GgufBuilder::new();
+        builder
+            .add_tensor(
+                name,
+                dtype,
+                dimensions.iter().map(|&value| value as u64).collect(),
+                tensor_bytes(dtype, elements),
+            )
+            .expect("single tensor fixture");
+        GgufFile::parse(builder.to_bytes().expect("single tensor bytes")).expect("parse")
+    }
+
+    fn one_bf16_nan_fixture() -> GgufFile {
+        let mut builder = GgufBuilder::new();
+        builder
+            .add_tensor(
+                "sample",
+                GgmlType::BF16,
+                vec![1],
+                0x7fc0u16.to_le_bytes().to_vec(),
+            )
+            .expect("BF16 NaN fixture");
+        GgufFile::parse(builder.to_bytes().expect("BF16 NaN bytes")).expect("parse")
+    }
+
+    fn tensor_bytes(dtype: GgmlType, elements: usize) -> Vec<u8> {
+        match dtype {
+            GgmlType::F32 => vec![0; elements * std::mem::size_of::<f32>()],
+            GgmlType::BF16 => vec![0; elements * std::mem::size_of::<u16>()],
+            other => panic!("unsupported fixture dtype {other:?}"),
+        }
+    }
+
+    fn strict_component_metadata_fixture(
+        omit_rms_norm_eps: bool,
+        ffn_hidden: u32,
+        causal: u32,
+        license_override: Option<&str>,
+        omit_model_id: bool,
+        omit_weight_license: bool,
+        extra_prefixed_key: bool,
+    ) -> GgufFile {
+        let cfg = KyutaiSttConfig::stt_2_6b_en();
+        let mut builder = GgufBuilder::new();
+        builder.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        builder.add_u32(KEY_BB_N_LAYER, cfg.backbone.n_layer as u32);
+        builder.add_u32(KEY_BB_D_MODEL, cfg.backbone.d_model as u32);
+        builder.add_u32(KEY_BB_N_HEAD, cfg.backbone.n_head as u32);
+        builder.add_f32(KEY_BB_HIDDEN_SCALE, cfg.backbone.hidden_scale);
+        builder.add_u32(KEY_BB_FFN_HIDDEN, ffn_hidden);
+        builder.add_u32(KEY_BB_CONTEXT, cfg.backbone.context as u32);
+        builder.add_f32(KEY_BB_ROPE_MAX_PERIOD, cfg.backbone.rope_max_period);
+        builder.add_u32(KEY_BB_CAUSAL, causal);
+        if !omit_rms_norm_eps {
+            builder.add_f32(KEY_BB_RMS_NORM_EPS, cfg.rms_norm_eps);
+        }
+        builder.add_u32(KEY_DEP_N_LAYER, cfg.depformer.n_layer as u32);
+        builder.add_u32(KEY_DEP_D_MODEL, cfg.depformer.d_model as u32);
+        builder.add_u32(KEY_DEP_N_HEAD, cfg.depformer.n_head as u32);
+        builder.add_u32(KEY_DEP_MULTI_LINEAR, 1);
+        builder.add_u32(KEY_DEP_WEIGHTS_PER_STEP, 1);
+        builder.add_u32(KEY_N_Q, cfg.n_q as u32);
+        builder.add_u32(KEY_DEP_Q, 0);
+        builder.add_u32(KEY_AUDIO_CARD, cfg.audio_card as u32);
+        builder.add_u32(KEY_TEXT_CARD, cfg.text_card as u32);
+        builder.add_u32(KEY_TEXT_PAD_ID, cfg.text_pad_id);
+        builder.add_f32(KEY_AUDIO_DELAY_SECS, cfg.audio_delay_seconds);
+        builder.add_f32(
+            KEY_AUDIO_SILENCE_PREFIX_SECS,
+            cfg.audio_silence_prefix_seconds,
+        );
+        builder.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
+        builder.add_u32(KEY_N_DELAYS, 33);
+        for index in 0..33 {
+            builder.add_u32(&format!("{PREFIX_DELAY}{index}"), 0);
+        }
+        if extra_prefixed_key {
+            builder.add_u32("vokra.kyutai_stt.delay.33", 0);
+        }
+        if !omit_model_id {
+            builder.add_string(chunks::KEY_PROVENANCE_MODEL_ID, "kyutai/stt-2.6b-en");
+        }
+        builder.add_string(
+            chunks::KEY_PROVENANCE_LICENSE,
+            license_override.unwrap_or("cc-by-4.0"),
+        );
+        if !omit_weight_license {
+            builder.add_string(
+                chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+                LicenseClass::AttributionRequired.as_str(),
+            );
+        }
+        builder.add_string(
+            chunks::KEY_PROVENANCE_SOURCE,
+            "https://huggingface.co/kyutai/stt-2.6b-en",
+        );
+        GgufFile::parse(builder.to_bytes().expect("strict metadata fixture")).expect("parse")
     }
 
     fn build_gguf_for_config(arch: Option<&str>, cfg: &KyutaiSttConfig) -> Vec<u8> {
@@ -1416,60 +4167,21 @@ mod tests {
             chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
             LicenseClass::AttributionRequired.as_str(),
         );
-        b.add_string(chunks::KEY_PROVENANCE_LICENSE, "CC-BY-4.0");
+        b.add_string(chunks::KEY_PROVENANCE_LICENSE, "cc-by-4.0");
         b.add_string(chunks::KEY_PROVENANCE_MODEL_ID, "kyutai/stt-2.6b-en");
         b.to_bytes().expect("serialize kyutai-stt fixture GGUF")
     }
 
-    /// A GGUF with no `vokra.model.arch` fails
-    /// [`KyutaiSttAsr::from_gguf_with_policy`] with a message that names
-    /// the expected arch tag + the primary source URL. Never a silent
-    /// substitution (FR-EX-08).
+    /// The public loader deliberately does not inspect decoder metadata: it
+    /// remains unconditionally blocked until full Mimi/streaming/native ASR
+    /// support exists. Decoder-component arch validation is tested by the
+    /// strict component binder, not this public gate.
     #[test]
-    fn from_gguf_rejects_missing_arch() {
+    fn public_loader_blocks_before_arch_inspection() {
         let bytes = build_gguf_with_hparams(None);
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect_err("missing arch must be rejected");
-        match err {
-            VokraError::ModelLoad(msg) => {
-                assert!(
-                    msg.contains(EXPECTED_ARCH),
-                    "message must name expected arch `{EXPECTED_ARCH}`: {msg}"
-                );
-                assert!(
-                    msg.contains("huggingface.co/kyutai/stt-2.6b-en"),
-                    "message must name the primary source URL: {msg}"
-                );
-            }
-            other => panic!("expected ModelLoad, got {other:?}"),
-        }
-    }
-
-    /// A GGUF whose arch is a sibling (`csm`) fails with a message that
-    /// names both `kyutai-stt` and the offending tag so the caller can
-    /// diagnose the mis-routed conversion.
-    #[test]
-    fn from_gguf_rejects_wrong_arch() {
-        let bytes = build_gguf_with_hparams(Some("csm"));
-        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect_err("wrong arch must be rejected");
-        match err {
-            VokraError::ModelLoad(msg) => {
-                assert!(
-                    msg.contains(EXPECTED_ARCH),
-                    "message must name expected arch `{EXPECTED_ARCH}`: {msg}"
-                );
-                assert!(
-                    msg.contains("csm"),
-                    "message must name the offending arch tag `csm`: {msg}"
-                );
-                assert!(
-                    msg.contains("huggingface.co/kyutai/stt-2.6b-en"),
-                    "message must name the primary source URL: {msg}"
-                );
-            }
-            other => panic!("expected ModelLoad, got {other:?}"),
-        }
+            .expect_err("public loader must remain blocked");
+        assert_public_load_blocked(err);
     }
 
     /// The `vokra.kyutai_stt.*` chunk group round-trips through the
@@ -1488,16 +4200,10 @@ mod tests {
         assert_eq!(cfg, want);
     }
 
-    /// A GGUF whose provenance advertises `AttributionRequired` (CC-BY
-    /// 4.0) passes the M2-13 gate under [`CompliancePolicy::strict`]
-    /// (no research opt-in needed — the license is commercially
-    /// permitted) and the resolution surfaces the attribution-required
-    /// class + `is_research_only == false`. This is what makes Kyutai
-    /// STT loadable in the default posture.
+    /// Correct CC-BY-4.0 provenance does not bypass the missing Mimi neural
+    /// PCM/streaming/transcription runtime.
     #[test]
-    fn from_gguf_reads_attribution_required_license() {
-        // Tiny scale: this test constructs an engine, and what it asserts
-        // is the licence gate, not the model's dimensions.
+    fn from_gguf_with_valid_license_still_fails_closed() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let file = GgufFile::parse(bytes).expect("parse fixture");
         let resolution =
@@ -1507,76 +4213,46 @@ mod tests {
             !resolution.is_research_only(),
             "CC-BY 4.0 is commercial-permitted; must NOT be marked research-only"
         );
-        // The M2-13 gate + arch check + config load all pass together.
-        let asr = KyutaiSttAsr::from_gguf_with_policy(
+        let err = KyutaiSttAsr::from_gguf_with_policy(
             &build_tiny_gguf(Some(EXPECTED_ARCH)),
             &CompliancePolicy::strict(),
         )
-        .expect("kyutai-stt from_gguf under strict policy");
-        assert!(asr.is_synthesized(), "from_gguf binds synthesized bridge");
-        assert_eq!(asr.config(), &KyutaiSttConfig::tiny_for_tests());
+        .expect_err("valid provenance must not synthesize public weights");
+        assert_public_load_blocked(err);
     }
 
-    /// The loud-partial transcribe gate names the primary source URL so a
-    /// downstream caller / user can look up the real forward's status
-    /// (Wave 4 loud-partial contract — never a silent noise transcript).
+    /// A public load is rejected before a transcribe call can reach the
+    /// synthesized fixture's loud-partial path.
     #[test]
-    fn transcribe_loud_partial_names_primary_source_url() {
-        // Tiny scale: constructs an engine, and asserts only the message.
+    fn public_loader_rejects_before_transcribe() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
-        let asr = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("kyutai-stt from_gguf");
-        // Build a legal one-frame code slice against the resolved config.
-        let n_q = asr.config().n_q;
-        let codes = vec![0u32; n_q];
-        let err = asr.transcribe(&codes).unwrap_err();
-        match err {
-            VokraError::NotImplemented(msg) => {
-                assert!(
-                    msg.contains("https://huggingface.co/kyutai/stt-2.6b-en"),
-                    "message must name the HF primary source URL: {msg}"
-                );
-                assert!(
-                    msg.contains("github.com/kyutai-labs/delayed-streams-modeling"),
-                    "message must name the GitHub primary source URL: {msg}"
-                );
-                assert!(
-                    msg.contains("synthesized"),
-                    "message must name the synthesized-weight blocker: {msg}"
-                );
-            }
-            other => panic!("expected NotImplemented, got {other:?}"),
-        }
+        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("public loader must fail before transcribe");
+        assert_public_load_blocked(err);
     }
 
-    /// A GGUF with `n_layer = 0` (a scaffold converter path that never
-    /// wrote the real hparams) fails at the downstream
-    /// [`KyutaiSttConfig::validate_for_forward`] gate — the loud FR-EX-08
-    /// surface, not deep inside a GEMM.
+    /// A zero-placeholder GGUF is still rejected by the public composite
+    /// gate before metadata parsing or synthesized construction.
     #[test]
-    fn from_gguf_rejects_zero_placeholder_config() {
+    fn public_loader_ignores_zero_placeholder_metadata() {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         b.add_string(
             chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
             LicenseClass::AttributionRequired.as_str(),
         );
-        // Deliberately omit every `vokra.kyutai_stt.*` chunk — every
-        // read decays to the `0` placeholder branch.
+        // Deliberately omit every `vokra.kyutai_stt.*` chunk. The public
+        // loader must not claim to validate this metadata path.
         let bytes = b.to_bytes().expect("serialize");
         let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
             .expect_err("0-placeholder config must be rejected");
-        assert!(
-            matches!(err, VokraError::InvalidArgument(_)),
-            "expected InvalidArgument, got {err:?}"
-        );
+        assert_public_load_blocked(err);
     }
 
     /// A GGUF that mis-types `sample_rate` (F32 instead of U32 — a
-    /// hypothetical bad converter path) fails with a loud
-    /// [`VokraError::InvalidArgument`] naming the offending key
-    /// (FR-EX-08 — never a silent type coercion). This pins the
-    /// [`read_u32_or_zero`] helper's type check.
+    /// hypothetical bad converter path) is checked through the config
+    /// reader directly. The public loader intentionally ignores bytes and
+    /// therefore cannot be used to test metadata type validation.
     #[test]
     fn from_gguf_rejects_wrong_typed_key() {
         let mut b = GgufBuilder::new();
@@ -1588,58 +4264,31 @@ mod tests {
         // sample_rate riding as F32 instead of U32.
         b.add_f32(KEY_SAMPLE_RATE, 24_000.0);
         let bytes = b.to_bytes().expect("serialize");
-        let err = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect_err("wrong-typed key must be rejected");
-        match err {
-            VokraError::InvalidArgument(msg) => {
-                assert!(
-                    msg.contains(KEY_SAMPLE_RATE),
-                    "message must name the offending key `{KEY_SAMPLE_RATE}`: {msg}"
-                );
-                assert!(
-                    msg.contains("UINT32"),
-                    "message must name the expected type UINT32: {msg}"
-                );
-            }
-            other => panic!("expected InvalidArgument, got {other:?}"),
-        }
+        let file = GgufFile::parse(bytes).expect("parse wrong-typed fixture");
+        let err = KyutaiSttConfig::from_gguf(&file)
+            .expect_err("wrong-typed key must be rejected by config reader");
+        assert!(
+            matches!(&err, VokraError::InvalidArgument(msg) if msg.contains(KEY_SAMPLE_RATE)),
+            "expected InvalidArgument naming sample_rate, got {err:?}"
+        );
     }
 
-    /// `KyutaiSttAsr::from_path` reads the file bytes and threads them
-    /// through [`KyutaiSttAsr::from_gguf_with_policy`] with
-    /// [`CompliancePolicy::strict`] — the resulting engines are
-    /// equivalent (same config, same synthesized-weight bridge, same
-    /// loud-partial arm).
+    /// `from_path` propagates the same stable fail-closed composite blocker
+    /// as the raw-byte public loader and never constructs synthesized
+    /// weights.
     #[test]
-    fn from_path_round_trip() {
-        // Tiny scale: constructs two engines, and asserts they agree.
+    fn from_path_is_fail_closed() {
         let bytes = build_tiny_gguf(Some(EXPECTED_ARCH));
         let path = std::env::temp_dir().join(format!(
             "vokra-kyutai-stt-scout-{}.gguf",
             std::process::id()
         ));
         std::fs::write(&path, &bytes).expect("write fixture");
-        let via_path = KyutaiSttAsr::from_path(&path).expect("from_path");
-        let via_bytes = KyutaiSttAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("from_gguf_with_policy");
+        let via_path = KyutaiSttAsr::from_path(&path).expect_err("from_path must be blocked");
         // Best-effort cleanup — never a panic on cleanup failure (test
         // determinism must not depend on tmp cleanup).
         let _ = std::fs::remove_file(&path);
-        assert_eq!(via_path.config(), via_bytes.config());
-        assert_eq!(via_path.is_synthesized(), via_bytes.is_synthesized());
-        // Both engines refuse to synthesise real text (synthesized-weight
-        // loud-partial arm) — pin the message parity so downstream
-        // callers see identical behaviour whichever loader they use.
-        let n_q = via_path.config().n_q;
-        let codes = vec![0u32; n_q];
-        let e1 = via_path.transcribe(&codes).unwrap_err();
-        let e2 = via_bytes.transcribe(&codes).unwrap_err();
-        match (e1, e2) {
-            (VokraError::NotImplemented(m1), VokraError::NotImplemented(m2)) => {
-                assert_eq!(m1, m2, "from_path and from_gguf must yield identical arms");
-            }
-            (a, b) => panic!("expected two NotImplemented, got {a:?} / {b:?}"),
-        }
+        assert_public_load_blocked(via_path);
     }
 
     /// `from_path` on a non-existent file surfaces

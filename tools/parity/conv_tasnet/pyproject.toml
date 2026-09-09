@@ -1,12 +1,24 @@
 [project]
 name = "vokra-conv-tasnet-parity"
 version = "0.1.0"
-description = "Isolated Asteroid 0.7.0 oracle for Conv-TasNet parity; never shipped in the runtime."
-requires-python = ">=3.12,<3.13"
+description = "Pinned CPU-only Asteroid 0.7.0 oracle for Conv-TasNet parity; VAST only."
+requires-python = "==3.12.*"
 dependencies = [
     "asteroid==0.7.0",
-    "numpy>=1.26",
-    "requests>=2.32.0",
-    "safetensors>=0.8.0",
-    "torch>=2.0",
+    "huggingface-hub==1.28.0",
+    "numpy==2.3.5",
+    "safetensors==0.7.0",
+    "torch==2.9.1",
 ]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

@@ -1,28 +1,29 @@
 [project]
 name = "vokra-parler-tts-parity"
 version = "0.1.0"
-description = "Pinned independent official Parler-TTS reference; VAST only"
+description = "Pinned independent official Parler-TTS reference closure; VAST only"
 requires-python = "==3.12.*"
 dependencies = [
     "numpy==1.26.4",
-    "parler-tts @ git+https://github.com/huggingface/parler-tts.git@d108732cd57788ec86bc857d99a6cabd66663d68",
-    "torch==2.13.0",
-    # parler-tts pulls torchaudio transitively. Without an explicit pin and
-    # source it resolves from PyPI while torch comes from the pytorch-cpu
-    # index, and the two builds cannot load each other's extension module.
+    # The official source is loaded from the separately authenticated checkout
+    # via PARLER_TTS_SOURCE_DIR; its setup metadata declares audiotools/protobuf,
+    # but this fixed inference path never imports those modules.
+    "torch==2.11.0",
     "torchaudio==2.11.0",
-    "transformers==4.46.1",
+    "transformers==5.10.4",
 ]
 
 [tool.uv]
-# protobuf 4.25.9 arrives transitively and carries GHSA-8qvm-5x2c-j2w7.
-# Its upstream declares an incompatible ceiling, so override rather than
-# constrain; nothing on the Parler numeric path imports protobuf.
-override-dependencies = ["protobuf>=7.35.1"]
 package = false
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+# The fixed inference route never imports setuptools.  Keep the transitive
+# build-tool requirement impossible so uv omits setuptools, including its
+# forbidden LGPLv3 vendored autocommand payload, from the frozen runtime
+# closure.  Do not replace this with a newer setuptools pin: the payload is
+# still bundled there.
+override-dependencies = ["setuptools ; python_version < '0'"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }

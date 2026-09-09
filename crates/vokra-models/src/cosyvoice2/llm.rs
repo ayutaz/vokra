@@ -5,10 +5,9 @@
 //! `Qwen2-0.5B` backbone in the `iic/CosyVoice2-0.5B` release) whose output
 //! token stream drives the Flow Matching CFM (T10). This file lands the
 //! **module + primitive surface + full Mistral-style forward body**
-//! (T07 embedding + T08 transformer blocks) driven from **synthesized,
-//! seed-deterministic weights**. Real HF-checkpoint parity (T02 tensor
-//! manifest) is wired but the harness only runs when the checkpoint arrives
-//! — no fabricated pass.
+//! (T07 embedding + T08 transformer blocks) driven from explicitly named
+//! synthetic fixtures for numerical tests. Production GGUF loading requires
+//! real tensors; metadata-only inputs fail closed and are never synthesized.
 //!
 //! # What lands in this session (M3-09 Wave 8 follow-on)
 //!
@@ -120,12 +119,8 @@ pub const DEFAULT_ROPE_BASE_QWEN2: f32 = 1_000_000.0;
 /// (`rms_norm_eps`).
 pub const DEFAULT_RMS_NORM_EPS: f32 = 1e-5;
 
-/// Seed for the synthesized weight fixture built by
-/// [`LlmBackbone::from_gguf`] on the **metadata-only** GGUF path (test
-/// fixtures without weight tensors; a tensor-carrying GGUF binds real
-/// weights instead). Arbitrary but stable so callers can reproduce
-/// byte-for-byte; the constant reads as ASCII `"cosyv0.9\0"` mixed with
-/// `0xC0DE_C0DE` to make it distinct from the Voxtral / Kokoro fixtures.
+/// Seed reserved for the explicitly named [`LlmBackbone::synthesized`]
+/// numerical fixture path. Production `from_gguf` never uses it.
 pub const FROM_GGUF_DEFAULT_SEED: u64 = 0xC0DE_C0DE_C0DE_C0DE;
 
 /// LLM-side hparam snapshot resolved from the CosyVoice2 GGUF metadata.
@@ -682,8 +677,15 @@ fn bound_tensor(file: &GgufFile, name: &str, want: &[usize]) -> Result<Vec<f32>>
             "cosyvoice2 LLM from_gguf: `{name}` shape {got:?} != expected {want:?}"
         )));
     }
-    file.tensor_f32(name)
-        .map_err(|e| VokraError::ModelLoad(format!("cosyvoice2 LLM from_gguf: `{name}`: {e}")))
+    let values = file
+        .tensor_f32(name)
+        .map_err(|e| VokraError::ModelLoad(format!("cosyvoice2 LLM from_gguf: `{name}`: {e}")))?;
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(format!(
+            "cosyvoice2 LLM from_gguf: `{name}` contains non-finite values"
+        )));
+    }
+    Ok(values)
 }
 
 /// Binds a `[out, in]` projection weight (safetensors convention) and
@@ -757,6 +759,35 @@ pub struct LlmBackbone {
     backend: BackendKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LlmStateShape {
+    vocab_size: usize,
+    hidden_dim: usize,
+    n_layer: usize,
+    n_head_q: usize,
+    n_head_kv: usize,
+    ffn_dim: usize,
+    n_ctx: usize,
+    rope_base_bits: u32,
+    rms_norm_eps_bits: u32,
+}
+
+impl LlmStateShape {
+    fn from_config(config: &LlmBackboneConfig) -> Self {
+        Self {
+            vocab_size: config.vocab_size,
+            hidden_dim: config.hidden_dim,
+            n_layer: config.n_layer,
+            n_head_q: config.n_head_q,
+            n_head_kv: config.n_head_kv,
+            ffn_dim: config.ffn_dim,
+            n_ctx: config.n_ctx,
+            rope_base_bits: config.rope_base.to_bits(),
+            rms_norm_eps_bits: config.rms_norm_eps.to_bits(),
+        }
+    }
+}
+
 impl std::fmt::Debug for LlmBackbone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Weights are large; log only the shape summary + backend so a
@@ -825,29 +856,16 @@ impl LlmBackbone {
         Self::new(config, weights)
     }
 
-    /// Loads the LLM backbone from a CosyVoice2 GGUF file.
-    ///
-    /// Reads the shape config verbatim from the GGUF metadata, then:
-    ///
-    /// - **Backbone tensors present** ([`LlmWeights::has_backbone_tensors`],
-    ///   i.e. a real converter output) → binds the **real weights** via
-    ///   [`LlmWeights::from_gguf`]; any tensor problem is a loud
-    ///   [`VokraError::ModelLoad`] — never a fall-back to the synthesized
-    ///   fixture (FR-EX-08).
-    /// - **Metadata-only GGUF** (synthetic test fixtures) → builds the
-    ///   seed-deterministic **synthesized** store against the metadata
-    ///   shape, the numerical-stability bridge the T09 harness uses.
+    /// Loads the LLM backbone from a CosyVoice2 GGUF file only when the
+    /// complete real backbone tensor set is present. Metadata-only GGUFs are
+    /// rejected; numerical tests must call the explicitly named
+    /// [`LlmBackbone::synthesized`] constructor instead.
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] on any GGUF metadata key with a
     ///   wrong type.
-    /// - [`VokraError::InvalidArgument`] if the config carries a
-    ///   0-placeholder sentinel — for a tensor-carrying GGUF that means a
-    ///   pre-hparam-fix conversion (re-convert with `--config`); for a
-    ///   metadata-only GGUF no synthesized fixture is meaningful at zero
-    ///   dims. (`CosyVoice2Tts::from_gguf_with_policy` maps this variant
-    ///   to a `None` LLM handle so scaffold GGUFs still load.)
+    /// - [`VokraError::ModelLoad`] when no real backbone tensors are present.
     /// - [`VokraError::ModelLoad`] from the real tensor binding.
     pub fn from_gguf(file: &GgufFile, cfg: &CosyVoice2Config) -> Result<Self> {
         let llm_cfg = LlmBackboneConfig::from_gguf(file, cfg)?;
@@ -875,27 +893,12 @@ impl LlmBackbone {
             let weights = LlmWeights::from_gguf(file, &llm_cfg)?;
             return Self::new(llm_cfg, weights);
         }
-        // Reject the 0-placeholder path — a converter without dims cannot
-        // host a fixture (FR-EX-08, no silent zero-fill fallback).
-        if zero_shape {
-            return Err(VokraError::InvalidArgument(format!(
-                "cosyvoice2 LLM backbone: GGUF carries a 0-placeholder shape config \
-                 (vocab={}, n_layer={}, n_head_q={}, n_head_kv={}, hidden={}, ffn={}) — \
-                 the shape-only converter path cannot host a synthesized fixture. \
-                 Re-convert with real hparams (T04) or bind against a fixture-shaped \
-                 config via LlmBackbone::synthesized directly.",
-                llm_cfg.vocab_size,
-                llm_cfg.n_layer,
-                llm_cfg.n_head_q,
-                llm_cfg.n_head_kv,
-                llm_cfg.hidden_dim,
-                llm_cfg.ffn_dim,
-            )));
-        }
-        // Default seed for the metadata-only path: arbitrary but stable
-        // 64-bit constant, documented so callers can reproduce the
-        // synthesized fixture bit-for-bit.
-        Self::synthesized(llm_cfg, FROM_GGUF_DEFAULT_SEED)
+        // Metadata-only GGUFs must never become a production backbone.  The
+        // deterministic fixture remains available only through the explicit
+        // `LlmBackbone::synthesized` constructor used by numerical tests.
+        Err(VokraError::ModelLoad(
+            "cosyvoice2 LLM from_gguf: no real backbone tensors are present; metadata-only and synthesized GGUFs are inspection-only".to_owned(),
+        ))
     }
 
     /// Loads the LLM backbone from a CosyVoice2 GGUF **with real weights**
@@ -947,27 +950,280 @@ impl LlmBackbone {
         }
     }
 
+    fn validate_runtime_config(&self) -> Result<()> {
+        if !self.config.is_gqa_well_formed()
+            || self.config.vocab_size == 0
+            || self.config.hidden_dim == 0
+            || self.config.n_layer == 0
+            || self.config.ffn_dim == 0
+            || self.config.n_ctx == 0
+            || !self.config.rope_base.is_finite()
+            || self.config.rope_base <= 0.0
+            || !self.config.rms_norm_eps.is_finite()
+            || self.config.rms_norm_eps <= 0.0
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "cosyvoice2 LLM backbone: invalid runtime config (vocab={}, hidden={}, n_layer={}, n_head_q={}, n_head_kv={}, ffn={}, n_ctx={})",
+                self.config.vocab_size,
+                self.config.hidden_dim,
+                self.config.n_layer,
+                self.config.n_head_q,
+                self.config.n_head_kv,
+                self.config.ffn_dim,
+                self.config.n_ctx,
+            )));
+        }
+        Ok(())
+    }
+
+    /// Converts text token IDs to row-major embedding rows `[rows, hidden]`.
+    /// The lookup is strict: empty input, out-of-range IDs, and non-finite
+    /// stored rows fail closed rather than producing a partial prompt.
+    pub fn embed_text_tokens(&self, token_ids: &[u32]) -> Result<Vec<f32>> {
+        self.validate_runtime_config()?;
+        if token_ids.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM embed_text_tokens: token_ids must be non-empty".to_owned(),
+            ));
+        }
+        let d = self.config.hidden_dim;
+        let mut embeddings =
+            Vec::with_capacity(token_ids.len().checked_mul(d).ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "cosyvoice2 LLM embed_text_tokens: output shape overflow".to_owned(),
+                )
+            })?);
+        for &token_id in token_ids {
+            let token = token_id as usize;
+            if token >= self.config.vocab_size {
+                return Err(VokraError::InvalidArgument(format!(
+                    "cosyvoice2 LLM embed_text_tokens: token id {token} >= vocab {}",
+                    self.config.vocab_size
+                )));
+            }
+            let row = &self.weights.token_emb[token * d..(token + 1) * d];
+            if row.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "cosyvoice2 LLM embed_text_tokens: token id {token} row is non-finite"
+                )));
+            }
+            embeddings.extend_from_slice(row);
+        }
+        Ok(embeddings)
+    }
+
+    /// Projects final-RMSNorm hidden rows through the tied text embedding
+    /// matrix. `hidden` is row-major `[rows, hidden]` and the result is
+    /// row-major `[rows, vocab]`.
+    pub fn project_tied_text_head(&self, hidden: &[f32], rows: usize) -> Result<Vec<f32>> {
+        self.validate_runtime_config()?;
+        if rows == 0 {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_tied_text_head: rows must be > 0".to_owned(),
+            ));
+        }
+        let expected = rows.checked_mul(self.config.hidden_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_tied_text_head: hidden shape overflow".to_owned(),
+            )
+        })?;
+        if hidden.len() != expected || hidden.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_tied_text_head: hidden rows are misaligned or non-finite"
+                    .to_owned(),
+            ));
+        }
+        let compute = self.compute()?;
+        project_tied_text_head_impl(&compute, &self.config, &self.weights, hidden, rows)
+    }
+
+    /// Projects final hidden rows through a caller-owned untied linear head.
+    /// The weight is row-major `[out_dim, hidden]`; an optional bias has
+    /// exactly `out_dim` values. This is crate-visible for the authenticated
+    /// Qwen wrapper, and uses the selected [`Compute`] seam just like the
+    /// tied text head.
+    pub(crate) fn project_linear_head(
+        &self,
+        hidden: &[f32],
+        rows: usize,
+        out_dim: usize,
+        weight: &[f32],
+        bias: Option<&[f32]>,
+    ) -> Result<Vec<f32>> {
+        self.validate_runtime_config()?;
+        if rows == 0 || out_dim == 0 {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_linear_head: rows and out_dim must be > 0".to_owned(),
+            ));
+        }
+        let hidden_len = rows.checked_mul(self.config.hidden_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_linear_head: hidden shape overflow".to_owned(),
+            )
+        })?;
+        let weight_len = out_dim.checked_mul(self.config.hidden_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_linear_head: weight shape overflow".to_owned(),
+            )
+        })?;
+        let output_len = rows.checked_mul(out_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_linear_head: output shape overflow".to_owned(),
+            )
+        })?;
+        if hidden.len() != hidden_len || weight.len() != weight_len {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_linear_head: hidden or weight shape mismatch".to_owned(),
+            ));
+        }
+        if let Some(bias) = bias {
+            if bias.len() != out_dim {
+                return Err(VokraError::InvalidArgument(
+                    "cosyvoice2 LLM project_linear_head: bias shape mismatch".to_owned(),
+                ));
+            }
+        }
+        if hidden.iter().chain(weight).any(|value| !value.is_finite())
+            || bias.is_some_and(|values| values.iter().any(|value| !value.is_finite()))
+        {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_linear_head: inputs contain non-finite values".to_owned(),
+            ));
+        }
+        let compute = self.compute()?;
+        let mut output = vec![0.0f32; output_len];
+        for row in 0..rows {
+            compute.gemv_f32(
+                out_dim,
+                self.config.hidden_dim,
+                weight,
+                &hidden[row * self.config.hidden_dim..(row + 1) * self.config.hidden_dim],
+                bias,
+                &mut output[row * out_dim..(row + 1) * out_dim],
+            )?;
+        }
+        if output.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM project_linear_head: projection produced non-finite values"
+                    .to_owned(),
+            ));
+        }
+        Ok(output)
+    }
+
+    /// Appends caller-supplied embedding rows to a decode state and returns
+    /// the final-RMSNorm hidden rows `[rows, hidden]`. Any positive row count
+    /// is accepted on every call; this preserves the official Qwen2LM
+    /// control-input behavior, where an unchanged multi-row `lm_input` may be
+    /// appended again after a control decision.
+    pub fn step_embeddings(
+        &self,
+        state: &mut LlmBackboneStep,
+        embeddings: &[f32],
+        rows: usize,
+    ) -> Result<Vec<f32>> {
+        let (hidden, _) = self.append_embeddings(state, embeddings, rows)?;
+        Ok(hidden)
+    }
+
+    fn append_embeddings(
+        &self,
+        state: &mut LlmBackboneStep,
+        embeddings: &[f32],
+        rows: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
+        self.validate_runtime_config()?;
+        if rows == 0 {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM step_embeddings: rows must be > 0".to_owned(),
+            ));
+        }
+        if let Some(kv) = state.kv_cache.as_ref() {
+            if kv.positions() != state.seq_len {
+                return Err(VokraError::InvalidArgument(format!(
+                    "cosyvoice2 LLM step_embeddings: state seq_len {} != KV positions {}",
+                    state.seq_len,
+                    kv.positions()
+                )));
+            }
+        }
+        let expected = rows.checked_mul(self.config.hidden_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "cosyvoice2 LLM step_embeddings: embedding shape overflow".to_owned(),
+            )
+        })?;
+        if embeddings.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "cosyvoice2 LLM step_embeddings: embedding length {} != rows * hidden = {expected}",
+                embeddings.len()
+            )));
+        }
+        if embeddings.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM step_embeddings: embeddings contain non-finite values".to_owned(),
+            ));
+        }
+        let end = state.seq_len.checked_add(rows).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "cosyvoice2 LLM step_embeddings: context position overflow".to_owned(),
+            )
+        })?;
+        if end > self.config.n_ctx {
+            return Err(VokraError::InvalidArgument(format!(
+                "cosyvoice2 LLM step_embeddings: position {end} exceeds n_ctx {}",
+                self.config.n_ctx
+            )));
+        }
+        state.bind_shape(LlmStateShape::from_config(&self.config))?;
+        if state.kv_cache.is_none() {
+            state.kv_cache = Some(KvCache::with_reserve(
+                self.config.n_layer,
+                self.config.kv_hidden_dim(),
+                self.config.n_ctx,
+            ));
+        }
+        let compute = self.compute()?;
+        let kv = state
+            .kv_cache
+            .as_mut()
+            .expect("KvCache just allocated above");
+        let hidden = forward_impl_embeddings(
+            &compute,
+            &self.config,
+            &self.weights,
+            kv,
+            embeddings,
+            rows,
+            state.seq_len,
+        )?;
+        state.seq_len = end;
+        let logits =
+            project_tied_text_head_impl(&compute, &self.config, &self.weights, &hidden, rows)?;
+        Ok((hidden, logits))
+    }
+
     /// Runs the LLM backbone forward once over `token_ids` and produces the
     /// per-token logits (`[t, vocab_size]` row-major).
     ///
     /// This is the **bulk forward** used by the parity harness and the
     /// initial prefix pass of a greedy decode. Every step recomputes from
     /// scratch (no KV cache is carried across invocations); use
-    /// [`Self::step`] for the autoregressive path that appends to a KV
-    /// cache.
+    /// [`Self::step`] or [`Self::step_embeddings`] for the autoregressive
+    /// path that carries prior context in a KV cache.
     ///
     /// # Arguments
     ///
     /// - `token_ids` — the input token ids (`t` positions).
-    /// - `position_offset` — absolute position of `token_ids[0]` in the
-    ///   full decode. Used by RoPE and the causal mask. Callers building a
-    ///   bulk forward from scratch pass `0`.
+    /// - `position_offset` — must be `0`. This bulk API allocates an empty
+    ///   cache, so a non-zero offset cannot represent the prior context;
+    ///   callers carrying prior context must use [`Self::step`] or
+    ///   [`Self::step_embeddings`].
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] if the config is not
-    ///   GQA-well-formed, if any token id is out of range, or if
-    ///   `position_offset + t > config.n_ctx` (when `n_ctx != 0`).
+    ///   GQA-well-formed, `position_offset != 0`, any token id is out of
+    ///   range, or if `position_offset + t > config.n_ctx` (when `n_ctx != 0`).
     pub fn forward(&self, token_ids: &[u32], position_offset: usize) -> Result<Vec<f32>> {
         if !self.config.is_gqa_well_formed() {
             return Err(VokraError::InvalidArgument(format!(
@@ -978,15 +1234,25 @@ impl LlmBackbone {
                 self.config.n_head_q, self.config.n_head_kv, self.config.hidden_dim,
             )));
         }
+        if position_offset != 0 {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM backbone forward: non-zero position_offset requires a KV-carrying step state"
+                    .to_owned(),
+            ));
+        }
         if token_ids.is_empty() {
             return Ok(Vec::new());
         }
         let t = token_ids.len();
-        if self.config.n_ctx != 0 && position_offset + t > self.config.n_ctx {
+        let end = position_offset.checked_add(t).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "cosyvoice2 LLM backbone forward: position overflow".to_owned(),
+            )
+        })?;
+        if self.config.n_ctx != 0 && end > self.config.n_ctx {
             return Err(VokraError::InvalidArgument(format!(
                 "cosyvoice2 LLM backbone forward: position_offset + t = {} > n_ctx {}",
-                position_offset + t,
-                self.config.n_ctx
+                end, self.config.n_ctx
             )));
         }
         // Bulk forward: build a fresh KV cache sized to `t` and run one step
@@ -1022,45 +1288,8 @@ impl LlmBackbone {
     /// - [`VokraError::InvalidArgument`] if `state.seq_len >= config.n_ctx`
     ///   (`n_ctx != 0` case) or if `token_id >= vocab_size`.
     pub fn step(&self, state: &mut LlmBackboneStep, token_id: u32) -> Result<Vec<f32>> {
-        if self.config.n_ctx != 0 && state.seq_len >= self.config.n_ctx {
-            return Err(VokraError::InvalidArgument(format!(
-                "cosyvoice2 LLM backbone: seq_len {} would exceed n_ctx {} \
-                 (FR-EX-08 — no silent wrap-around)",
-                state.seq_len, self.config.n_ctx
-            )));
-        }
-        if !self.config.is_gqa_well_formed() {
-            return Err(VokraError::InvalidArgument(format!(
-                "cosyvoice2 LLM backbone step: config not GQA well-formed \
-                 (n_head_q={}, n_head_kv={}, hidden_dim={})",
-                self.config.n_head_q, self.config.n_head_kv, self.config.hidden_dim,
-            )));
-        }
-        if state.kv_cache.is_none() {
-            state.kv_cache = Some(KvCache::with_reserve(
-                self.config.n_layer,
-                self.config.kv_hidden_dim(),
-                self.config.n_ctx.max(64),
-            ));
-        }
-        let compute = self.compute()?;
-        let kv = state
-            .kv_cache
-            .as_mut()
-            .expect("KvCache just allocated above");
-        // Run a single-token forward with the current position offset.
-        let logits = forward_impl(
-            &compute,
-            &self.config,
-            &self.weights,
-            kv,
-            &[token_id],
-            state.seq_len,
-        )?;
-        // The returned logits are `[1, vocab]`; the last (only) row is the
-        // new position's logits. Advance the state clock.
-        state.seq_len += 1;
-        // Trim to just the new position's logits row.
+        let embeddings = self.embed_text_tokens(&[token_id])?;
+        let (_, logits) = self.append_embeddings(state, &embeddings, 1)?;
         Ok(logits)
     }
 
@@ -1156,6 +1385,7 @@ pub struct LlmBackboneStep {
     /// Owned per-layer KV cache. `None` before the first step; allocated
     /// on the first [`LlmBackbone::step`] call against the config's dims.
     pub kv_cache: Option<KvCache>,
+    shape: Option<LlmStateShape>,
 }
 
 impl std::fmt::Debug for LlmBackboneStep {
@@ -1177,6 +1407,7 @@ impl LlmBackboneStep {
         Self {
             seq_len: 0,
             kv_cache: None,
+            shape: None,
         }
     }
 
@@ -1186,6 +1417,23 @@ impl LlmBackboneStep {
     /// non-forward passes (e.g. counter-based structural tests).
     pub fn advance(&mut self) {
         self.seq_len += 1;
+    }
+
+    fn bind_shape(&mut self, expected: LlmStateShape) -> Result<()> {
+        if self.shape.is_none() {
+            if self.seq_len != 0 || self.kv_cache.is_some() {
+                return Err(VokraError::InvalidArgument(
+                    "cosyvoice2 LLM step: pre-populated state has no backbone shape identity"
+                        .to_owned(),
+                ));
+            }
+            self.shape = Some(expected);
+        } else if self.shape != Some(expected) {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM step: state shape identity does not match this backbone".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// Rewinds the state for a fresh decode of the same model. The KV
@@ -1287,7 +1535,63 @@ fn forward_impl(
     tokens: &[u32],
     position_offset: usize,
 ) -> Result<Vec<f32>> {
-    let t = tokens.len();
+    let h = token_embeddings(weights, config, tokens)?;
+    let hidden = forward_impl_embeddings(
+        compute,
+        config,
+        weights,
+        kv_cache,
+        &h,
+        tokens.len(),
+        position_offset,
+    )?;
+    project_tied_text_head_impl(compute, config, weights, &hidden, tokens.len())
+}
+
+fn token_embeddings(
+    weights: &LlmWeights,
+    config: &LlmBackboneConfig,
+    tokens: &[u32],
+) -> Result<Vec<f32>> {
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let d = config.hidden_dim;
+    let capacity = tokens.len().checked_mul(d).ok_or_else(|| {
+        VokraError::InvalidArgument("cosyvoice2 LLM forward: embedding shape overflow".to_owned())
+    })?;
+    let mut embeddings = Vec::with_capacity(capacity);
+    for &token_id in tokens {
+        let token = token_id as usize;
+        if token >= config.vocab_size {
+            return Err(VokraError::InvalidArgument(format!(
+                "cosyvoice2 LLM forward: token id {token} >= vocab {}",
+                config.vocab_size
+            )));
+        }
+        let row = &weights.token_emb[token * d..(token + 1) * d];
+        if row.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::ModelLoad(format!(
+                "cosyvoice2 LLM forward: token id {token} row is non-finite"
+            )));
+        }
+        embeddings.extend_from_slice(row);
+    }
+    Ok(embeddings)
+}
+
+/// Runs the transformer over caller-supplied embedding rows and returns the
+/// final-RMSNorm hidden rows. KV cache positions are appended in place; text
+/// head projection is deliberately kept outside this function.
+fn forward_impl_embeddings(
+    compute: &Compute,
+    config: &LlmBackboneConfig,
+    weights: &LlmWeights,
+    kv_cache: &mut KvCache,
+    embeddings: &[f32],
+    t: usize,
+    position_offset: usize,
+) -> Result<Vec<f32>> {
     if t == 0 {
         return Ok(Vec::new());
     }
@@ -1297,25 +1601,20 @@ fn forward_impl(
     let head_dim = config.head_dim();
     let kv_hidden = config.kv_hidden_dim();
     let ffn = config.ffn_dim;
-    let vocab = config.vocab_size;
     let n_kv_groups = n_head_q / n_head_kv;
     let scale = 1.0f32 / (head_dim as f32).sqrt();
     let eps = config.rms_norm_eps;
     let rope_base = config.rope_base;
 
-    // Token embedding lookup → h `[t, d]`.
-    let mut h = vec![0.0f32; t * d];
-    for (i, &tok) in tokens.iter().enumerate() {
-        let tok = tok as usize;
-        if tok >= vocab {
-            return Err(VokraError::InvalidArgument(format!(
-                "cosyvoice2 LLM forward: token id {tok} >= vocab {vocab}"
-            )));
-        }
-        let src = &weights.token_emb[tok * d..(tok + 1) * d];
-        let dst = &mut h[i * d..(i + 1) * d];
-        dst.copy_from_slice(src);
+    let rows_len = t.checked_mul(d).ok_or_else(|| {
+        VokraError::InvalidArgument("cosyvoice2 LLM embedding forward: shape overflow".to_owned())
+    })?;
+    if embeddings.len() != rows_len || embeddings.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "cosyvoice2 LLM embedding forward: rows are misaligned or non-finite".to_owned(),
+        ));
     }
+    let mut h = embeddings.to_vec();
 
     // Per-block scratch (reused across layers; sized once).
     let mut norm = vec![0.0f32; t * d];
@@ -1410,7 +1709,11 @@ fn forward_impl(
             &k_proj[..t * kv_hidden],
             &v_proj[..t * kv_hidden],
         );
-        let t_kv = position_offset + t;
+        let t_kv = position_offset.checked_add(t).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "cosyvoice2 LLM embedding forward: position overflow".to_owned(),
+            )
+        })?;
         let k_cache = kv_cache.k(layer_idx);
         let v_cache = kv_cache.v(layer_idx);
 
@@ -1433,9 +1736,15 @@ fn forward_impl(
                 }
                 // Causal mask: row i's absolute position is position_offset + i,
                 // so keys at j > position_offset + i are masked out.
-                let cur_pos = position_offset + i;
-                for j in (cur_pos + 1)..t_kv {
-                    scores[row_start + j] = f32::NEG_INFINITY;
+                let cur_pos = position_offset.checked_add(i).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "cosyvoice2 LLM embedding forward: position overflow".to_owned(),
+                    )
+                })?;
+                if let Some(mask_start) = cur_pos.checked_add(1) {
+                    for j in mask_start..t_kv {
+                        scores[row_start + j] = f32::NEG_INFINITY;
+                    }
                 }
             }
             // Row-wise softmax.
@@ -1491,14 +1800,58 @@ fn forward_impl(
 
     // Final RMSNorm.
     rms_norm(&h, &weights.final_norm_gamma, eps, t, &mut norm)?;
+    if norm.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(
+            "cosyvoice2 LLM embedding forward: transformer produced non-finite hidden values"
+                .to_owned(),
+        ));
+    }
 
-    // Tied logits head: logits[t, vocab] = norm[t, d] × token_emb.T[d, vocab].
-    // token_emb is stored as [vocab, d] row-major; use gemv per row.
-    let mut logits = vec![0.0f32; t * vocab];
-    for i in 0..t {
-        let x = &norm[i * d..(i + 1) * d];
-        let out = &mut logits[i * vocab..(i + 1) * vocab];
-        compute.gemv_f32(vocab, d, &weights.token_emb, x, None, out)?;
+    Ok(norm)
+}
+
+fn project_tied_text_head_impl(
+    compute: &Compute,
+    config: &LlmBackboneConfig,
+    weights: &LlmWeights,
+    hidden: &[f32],
+    rows: usize,
+) -> Result<Vec<f32>> {
+    let d = config.hidden_dim;
+    let vocab = config.vocab_size;
+    let hidden_len = rows.checked_mul(d).ok_or_else(|| {
+        VokraError::InvalidArgument(
+            "cosyvoice2 LLM tied text head: hidden shape overflow".to_owned(),
+        )
+    })?;
+    let logits_len = rows.checked_mul(vocab).ok_or_else(|| {
+        VokraError::InvalidArgument(
+            "cosyvoice2 LLM tied text head: logits shape overflow".to_owned(),
+        )
+    })?;
+    if rows == 0 || hidden.len() != hidden_len || hidden.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "cosyvoice2 LLM tied text head: hidden rows are misaligned or non-finite".to_owned(),
+        ));
+    }
+    let mut logits = vec![0.0f32; logits_len];
+    for row in 0..rows {
+        compute.gemv_f32(
+            vocab,
+            d,
+            &weights.token_emb,
+            &hidden[row * d..(row + 1) * d],
+            None,
+            &mut logits[row * vocab..(row + 1) * vocab],
+        )?;
+        if logits[row * vocab..(row + 1) * vocab]
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(VokraError::ModelLoad(
+                "cosyvoice2 LLM tied text head: projection produced non-finite logits".to_owned(),
+            ));
+        }
     }
     Ok(logits)
 }
@@ -1874,7 +2227,7 @@ mod tests {
         b.add_u32(super::super::config::KEY_STREAMING_CHUNK_HOP, 0);
         let (file, cfg) = parse_config(b.to_bytes().unwrap());
         let err = LlmBackbone::from_gguf(&file, &cfg).expect_err("0-placeholder must be rejected");
-        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        assert!(matches!(err, VokraError::ModelLoad(_)));
     }
 
     #[test]
@@ -1897,13 +2250,15 @@ mod tests {
     }
 
     #[test]
-    fn from_gguf_produces_working_synthesized_backbone() {
+    fn synthesized_constructor_produces_working_fixture() {
         let mut b = GgufBuilder::new();
         seed_config(&mut b);
         b.add_u32(KEY_LLM_N_HEAD_KV, 2);
         b.add_u32(KEY_LLM_N_CTX, 8);
         let (file, cfg) = parse_config(b.to_bytes().unwrap());
-        let backbone = LlmBackbone::from_gguf(&file, &cfg).expect("synthesized build");
+        let llm_cfg = LlmBackboneConfig::from_gguf(&file, &cfg).expect("read LLM config");
+        let backbone = LlmBackbone::synthesized(llm_cfg, FROM_GGUF_DEFAULT_SEED)
+            .expect("explicit synthesized build");
         assert!(backbone.weights().is_synthesized);
         // A trivial forward runs.
         let logits = backbone.forward(&[0, 1, 2], 0).expect("forward runs");
@@ -2215,6 +2570,15 @@ mod tests {
     }
 
     #[test]
+    fn forward_rejects_nonzero_position_offset_without_panicking() {
+        let backbone = LlmBackbone::synthesized(test_config(), 1).unwrap();
+        let err = backbone
+            .forward(&[0], usize::MAX)
+            .expect_err("fresh bulk cache cannot represent a non-zero offset");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
     fn forward_is_deterministic() {
         let cfg = test_config();
         let backbone = LlmBackbone::synthesized(cfg, 42).unwrap();
@@ -2274,6 +2638,200 @@ mod tests {
         assert_eq!(positions_after_one, 1);
         let _ = backbone.step(&mut state, 1).unwrap();
         assert_eq!(state.kv_cache.as_ref().unwrap().positions(), 2);
+    }
+
+    #[test]
+    fn embedding_rows_match_token_lookup_and_tied_head() {
+        let backbone = LlmBackbone::synthesized(test_config(), 7).unwrap();
+        let tokens = [0u32, 2, 1];
+        let token_logits = backbone.forward(&tokens, 0).unwrap();
+        let embeddings = backbone.embed_text_tokens(&tokens).unwrap();
+        let mut state = LlmBackboneStep::new();
+        let hidden = backbone
+            .step_embeddings(&mut state, &embeddings, tokens.len())
+            .unwrap();
+        let embedding_logits = backbone
+            .project_tied_text_head(&hidden, tokens.len())
+            .unwrap();
+        assert_eq!(hidden.len(), tokens.len() * backbone.config().hidden_dim);
+        assert_eq!(token_logits.len(), embedding_logits.len());
+        assert_eq!(token_logits, embedding_logits);
+    }
+
+    #[test]
+    fn embedding_bulk_prefix_matches_sequential_last_hidden_and_positions() {
+        let backbone = LlmBackbone::synthesized(test_config(), 11).unwrap();
+        let tokens = [1u32, 3, 0];
+        let embeddings = backbone.embed_text_tokens(&tokens).unwrap();
+
+        let mut bulk = LlmBackboneStep::new();
+        let bulk_hidden = backbone
+            .step_embeddings(&mut bulk, &embeddings, tokens.len())
+            .unwrap();
+        assert_eq!(bulk.seq_len, tokens.len());
+        assert_eq!(bulk.kv_cache.as_ref().unwrap().positions(), tokens.len());
+
+        let mut sequential = LlmBackboneStep::new();
+        let mut last_hidden = Vec::new();
+        let d = backbone.config().hidden_dim;
+        for row in embeddings.chunks_exact(d) {
+            last_hidden = backbone.step_embeddings(&mut sequential, row, 1).unwrap();
+        }
+        assert_eq!(sequential.seq_len, tokens.len());
+        assert_eq!(
+            sequential.kv_cache.as_ref().unwrap().positions(),
+            tokens.len()
+        );
+        let bulk_last = &bulk_hidden[(tokens.len() - 1) * d..tokens.len() * d];
+        assert_eq!(last_hidden.len(), d);
+        for (bulk_value, sequential_value) in bulk_last.iter().zip(&last_hidden) {
+            assert!(
+                (bulk_value - sequential_value).abs() <= 1e-5,
+                "{bulk_value} != {sequential_value}"
+            );
+        }
+    }
+
+    #[test]
+    fn untied_linear_head_uses_compute_seam_with_optional_bias() {
+        let backbone = LlmBackbone::synthesized(test_config(), 7).unwrap();
+        let d = backbone.config().hidden_dim;
+        let hidden: Vec<f32> = (0..d).map(|value| value as f32 + 2.0).collect();
+        let mut weight = vec![0.0f32; 2 * d];
+        weight[0] = 1.0;
+        weight[d + 1] = 1.0;
+        let bias = [0.5f32, -0.25];
+        assert_eq!(
+            backbone
+                .project_linear_head(&hidden, 1, 2, &weight, Some(&bias))
+                .unwrap(),
+            vec![2.5, 2.75]
+        );
+        assert_eq!(
+            backbone
+                .project_linear_head(&hidden, 1, 2, &weight, None)
+                .unwrap(),
+            vec![2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn untied_linear_head_rejects_shape_and_nonfinite_inputs() {
+        let backbone = LlmBackbone::synthesized(test_config(), 7).unwrap();
+        let d = backbone.config().hidden_dim;
+        let hidden = vec![1.0f32; d];
+        let weight = vec![1.0f32; d];
+        assert!(matches!(
+            backbone.project_linear_head(&hidden, 0, 1, &weight, None),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            backbone.project_linear_head(&hidden, 1, 1, &[], None),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            backbone.project_linear_head(&hidden, 1, 1, &weight, Some(&[])),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut nonfinite_hidden = hidden;
+        nonfinite_hidden[0] = f32::NAN;
+        assert!(matches!(
+            backbone.project_linear_head(&nonfinite_hidden, 1, 1, &weight, None),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn embedding_seam_rejects_empty_misaligned_nonfinite_and_mixed_state() {
+        let backbone = LlmBackbone::synthesized(test_config(), 7).unwrap();
+        assert!(matches!(
+            backbone.embed_text_tokens(&[]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            backbone.embed_text_tokens(&[backbone.config().vocab_size as u32]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut state = LlmBackboneStep::new();
+        assert!(matches!(
+            backbone.step_embeddings(&mut state, &[0.0; 3], 1),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            backbone.step_embeddings(&mut state, &[f32::NAN; 8], 1),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut nonfinite_weights = LlmWeights::synthesized(&test_config(), 7).unwrap();
+        nonfinite_weights.token_emb[0] = f32::INFINITY;
+        let nonfinite_backbone = LlmBackbone::new(test_config(), nonfinite_weights).unwrap();
+        assert!(matches!(
+            nonfinite_backbone.embed_text_tokens(&[0]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            backbone.step_embeddings(&mut state, &[], 0),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let embeddings = backbone.embed_text_tokens(&[0, 1]).unwrap();
+        backbone
+            .step_embeddings(&mut state, &embeddings, 2)
+            .unwrap();
+        backbone
+            .step_embeddings(&mut state, &embeddings, 2)
+            .unwrap();
+        assert_eq!(state.seq_len, 4);
+        assert_eq!(state.kv_cache.as_ref().unwrap().positions(), 4);
+
+        let mut other_config = test_config();
+        other_config.n_ctx += 1;
+        let other = LlmBackbone::synthesized(other_config, 7).unwrap();
+        assert!(matches!(
+            other.step_embeddings(&mut state, &[0.0; 8], 1),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn embedding_seam_rejects_invalid_context_and_prepopulated_state() {
+        let mut invalid_config = test_config();
+        invalid_config.n_ctx = 0;
+        let invalid = LlmBackbone::synthesized(invalid_config, 7).unwrap();
+        assert!(matches!(
+            invalid.embed_text_tokens(&[0]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut bad_rope_config = test_config();
+        bad_rope_config.rope_base = f32::NAN;
+        let bad_rope = LlmBackbone::synthesized(bad_rope_config, 7).unwrap();
+        assert!(matches!(
+            bad_rope.embed_text_tokens(&[0]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut bad_eps_config = test_config();
+        bad_eps_config.rms_norm_eps = 0.0;
+        let bad_eps = LlmBackbone::synthesized(bad_eps_config, 7).unwrap();
+        assert!(matches!(
+            bad_eps.embed_text_tokens(&[0]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut short_config = test_config();
+        short_config.n_ctx = 2;
+        let short = LlmBackbone::synthesized(short_config, 7).unwrap();
+        let embeddings = short.embed_text_tokens(&[0, 1, 2]).unwrap();
+        let mut state = LlmBackboneStep::new();
+        assert!(matches!(
+            short.step_embeddings(&mut state, &embeddings, 3),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut prepopulated = LlmBackboneStep::new();
+        prepopulated.advance();
+        assert!(matches!(
+            short.step_embeddings(&mut prepopulated, &[0.0; 8], 1),
+            Err(VokraError::InvalidArgument(_))
+        ));
     }
 
     #[test]

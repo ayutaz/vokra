@@ -5,6 +5,13 @@ Tracked / public. Honest summary of what actually landed vs what the
 to land. Branch `feat/model-publish-and-m5-gap-2026-07-29`, tip = post-
 consolidation state after CC-side integrity review.
 
+> **2026-08-30 supersession boundary:** This handoff is a dated wave-3
+> history. Current implementation, resource, and legal decisions are governed
+> by `AGENTS.md`, the M5 checklist, `docs/license-audit.md`, and
+> `docs/legal-compliance.md`; references to the legacy `CLAUDE.md` are historical
+> evidence only. Model artefacts whose model-plus-shard total is >=2 GB require
+> VAST conversion/validation, and unknown size is not `local-safe`.
+
 > **Integrity correction (2026-07-30 post-workflow review)** — the
 > original handoff commit `c7c36f6` listed 17 physical commits as landed
 > including 7 that never actually reached the integration branch tip
@@ -19,7 +26,7 @@ consolidation state after CC-side integrity review.
   `aa9df4e` (wave 2 tip).
 * **Actual landed items**: 11 (see the "Landed" table).
 * **Deliberately NOT landed**: 1 (Wave A BF16 fleet CLI-wire — reversed
-  CLAUDE.md 設計判断 8, safety classifier caught it correctly, worktree
+  旧 `CLAUDE.md` 設計判断 8（2026-07当時の履歴）, safety classifier caught it correctly, worktree
   branch retained for reference but never cherry-picked to main).
 * **Blocked by safety classifier**: 4 items (Wave B Bark / Wave B
   WavTokenizer / Wave C AudioSeal 0.2 / Wave C IndexTTS-2) — none reached
@@ -84,8 +91,9 @@ deleted a pre-existing `voice_clone_vc_slugs_are_owner_blocked_from_modelkind_di
 pin and replaced it with a positive `voice_clone_vc_slugs_resolve_through_modelkind_dispatch`
 test.
 
-**CC-side judgment**: CLAUDE.md 設計判断 8 mandates that voice-cloning
-converters live in a separate `vokra-voiceclone-experimental` repo —
+**CC-side historical judgment**: The current voice-cloning separation boundary
+is `docs/legal-compliance.md` §§3–4 and `docs/system-requirements.md` FR-CP-04;
+the old `CLAUDE.md` 設計判断 8 mandated that voice-cloning converters live in a separate `vokra-voiceclone-experimental` repo —
 "完全分離" is strong wording. The user's "license judgment delegated"
 in this session's prompt covers license *class* decisions, not the
 ELVIS Act / NO FAKES Act tool-distributor liability policy that
@@ -221,7 +229,8 @@ C ABI freeze prep (M5-13) baseline is unaffected.
 
 ### 4. `vokra-voiceclone-experimental` separate-repo publish
 
-- **What**: create the separate repository per `CLAUDE.md` 設計判断 8
+- **What**: create the separate repository per `docs/legal-compliance.md` §§3–4
+  and `docs/system-requirements.md` FR-CP-04
   and prepare the 4 voice-clone converter modules (openvoice_v2,
   knn_vc, freevc, meanvc) for that repo. **Do NOT wire them into the
   main `ayutaz/vokra` ModelKind dispatch** — see "NOT landed §1"
@@ -254,7 +263,8 @@ C ABI freeze prep (M5-13) baseline is unaffected.
   ratification of M5-05 T04 (see "NOT landed §4").
 - Do **not** wire voice-clone converters (openvoice_v2 / knn_vc /
   freevc / meanvc) into the main `ayutaz/vokra` ModelKind dispatch —
-  CLAUDE.md 設計判断 8 stands; separation to `vokra-voiceclone-experimental`
+  The current separation boundary in `docs/legal-compliance.md` §§3–4 and
+  `docs/system-requirements.md` FR-CP-04 stands; separation to `vokra-voiceclone-experimental`
   is the correct destination (see "NOT landed §1" + Owner path §4).
 
 ## References
@@ -268,7 +278,8 @@ C ABI freeze prep (M5-13) baseline is unaffected.
   activation pattern.
 - `docs/license-audit.md` §3.1 — licensing sign-off SoT.
 - `docs/m5-owner-verification-checklist.md` — full owner critical path.
-- `CLAUDE.md` § 設計判断 8 — voice-cloning separation policy (canonical).
+- `docs/legal-compliance.md` §§3–4 + `docs/system-requirements.md` FR-CP-04 —
+  current voice-cloning/legal scope boundary.
 
 ## Change log
 

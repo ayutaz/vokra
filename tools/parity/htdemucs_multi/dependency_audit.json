@@ -1,0 +1,42 @@
+{
+  "schema": "vokra-htdemucs-multi-dependency-audit-v1",
+  "status": "BLOCKED_PENDING_PRIMARY_BYTES",
+  "python": "==3.12.*",
+  "platform": "linux-x86_64",
+  "direct_requirements_source": {
+    "path": "upstream_requirements_minimal.snapshot",
+    "sha256": "397981fba141898fe727a6a7a3bd44b49265be37cf0e984bd4936eb7a46ffc29"
+  },
+  "active_import_closure": {
+    "path": "pyproject.toml",
+    "sha256": "a9bfbe64287e02644eec3135ad445cf1584807b9d7c904e9101332fcb79909cc",
+    "packages": ["einops", "julius", "numpy", "pyyaml", "torch", "tqdm"],
+    "excluded_upstream_packages": [
+      {"name": "dora-search", "reason": "the report route manually loads the authenticated source and never uses dora-search"},
+      {"name": "lameenc", "reason": "GPL codec is not imported or allowed in the report-only route"},
+      {"name": "openunmix", "reason": "official HTDemucs imports openunmix.filtering.wiener, but fixed cac=True members have wiener_iters=end_iters=0; the fail-closed sentinel is never executed"},
+      {"name": "torchaudio", "reason": "upstream audio loader is replaced by the strict pinned WAV reader; no torchaudio import is allowed"}
+    ]
+  },
+  "compatibility": {
+    "status": "REFERENCE_ROUTE_EXCLUDES_UNUSED_AUDIO_PACKAGES",
+    "constraint": "torchaudio>=0.8,<2.1",
+    "reason": "The authenticated upstream constraint remains byte-for-byte evidence only. The report manually loads the authenticated source and excludes unused dora-search, GPL lameenc, openunmix, and torchaudio: a strict stdlib RIFF/WAVE PCM16 mono 16000 Hz reader replaces torchaudio.load, and fail-closed process-local stubs provide only the import seams. Official demucs.htdemucs imports openunmix.filtering.wiener, but fixed cac=True members are asserted with wiener_iters=end_iters=0 before execution, so the wiener sentinel cannot affect output numerics. No upstream constraint was loosened."
+  },
+  "package_rows": [],
+  "license_rows": [],
+  "inactive_package_rows": [],
+  "inactive_license_rows": [],
+  "package_rows_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "license_rows_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "forbidden_license_policy": {
+    "status": "FAIL_CLOSED",
+    "reject": ["GPL", "LGPL", "UNKNOWN", "UNREVIEWED"]
+  },
+  "blockers": [
+    "exact package artifact bytes and primary license rows are not audited",
+    "the authenticated upstream requirements snapshot includes GPL lameenc, openunmix, and torchaudio; all three are excluded from active imports with explicit route reasons",
+    "the fixed reference route binds the official HTDemucs import seam to a fail-closed openunmix.filtering.wiener sentinel and asserts the sentinel is unreachable for cac=True, wiener_iters=end_iters=0 members",
+    "the active closure remains blocked until primary package/license audit and owner approval are completed"
+  ]
+}

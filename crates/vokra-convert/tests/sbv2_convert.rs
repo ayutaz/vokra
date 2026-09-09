@@ -43,6 +43,14 @@ fn fixtures_dir() -> PathBuf {
 fn sbv2_variant_exists() {
     let _ = ModelKind::SbV2;
     assert_eq!(ModelKind::from_arg("sbv2"), Some(ModelKind::SbV2));
+    assert_eq!(
+        ModelKind::from_arg("sbv2-v2-jp-extra-base"),
+        Some(ModelKind::SbV2)
+    );
+    assert_eq!(
+        ModelKind::from_arg("sbv2-v2-multilingual-base"),
+        Some(ModelKind::SbV2)
+    );
     assert_eq!(ModelKind::SbV2.as_arg(), "sbv2");
 }
 
@@ -71,8 +79,8 @@ fn convert_report_fields_exist() {
 #[ignore = "requires real SBV2 v2 safetensors fixture (Task 28)"]
 fn convert_sbv2_real_checkpoint() {
     let dir = fixtures_dir();
-    let input = dir.join("sbv2-v2-multilingual-base.safetensors");
-    let config = dir.join("sbv2-v2-multilingual-base.config.json");
+    let input = dir.join("sbv2-v2-jp-extra-base.safetensors");
+    let config = dir.join("sbv2-v2-jp-extra-base.config.json");
     let output = std::env::temp_dir().join("vokra-sbv2-real-checkpoint-smoke.gguf");
 
     let report = convert_sbv2_file(&input, &output, Some(&config), None)

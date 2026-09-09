@@ -1,0 +1,1499 @@
+#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+"""Safely inventory the official XY-Tokenizer checkpoint.
+
+The upstream artifact is a large PyTorch ``.ckpt``.  This tool is VAST-only:
+it accepts only ``torch.load(..., weights_only=True)``, emits a safetensors
+replacement for the Rust converter, and records an inspection-only manifest.
+It never imports or copies the source implementation and never claims a
+runtime or numerical result.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import hashlib
+import json
+import os
+import re
+import secrets
+import subprocess
+import stat
+import tempfile
+import threading
+import sys
+from pathlib import Path
+from typing import Any, Mapping
+
+import torch
+import yaml
+from safetensors.torch import save_file
+
+UPSTREAM_REPOSITORY = "OpenMOSS-Team/XY_Tokenizer_TTSD_V0"
+UPSTREAM_REVISION = "c83433728e698ed0698e88cb5096bc221fb8f8c5"
+CHECKPOINT_BYTES = 2_137_328_977
+CHECKPOINT_SHA256 = "37c7ac18d0a48f5a1d0687e31af7c0264861232c500206718c98acd8e37d1671"
+CONFIG_RELATIVE = Path("config/xy_tokenizer_config.yaml")
+CHECKPOINT_RELATIVE = Path("xy_tokenizer.ckpt")
+CONFIG_SHA256 = "e7d48677e34f77e5b9fd7dc7a3e0eef7f2d2dd9be9a245d5c1d56489dc748938"
+SOURCE_REPOSITORY = "https://github.com/gyt1145028706/XY-Tokenizer"
+SOURCE_REVISION = "5df5609c5883e555bd39a2d0b1005ca8f1a8f12e"
+FORMAT = "vokra-xy-tokenizer-prepared-v1"
+
+# These are the independently reviewed Git blob identities for the fixed
+# implementation checkout.  The source_inventory() checks these against the
+# index, HEAD, and streamed working-tree blobs; a source-created manifest is
+# never accepted as evidence of implementation identity.
+SOURCE_ROLE_BLOBS: dict[str, str] = {
+    "config/xy_tokenizer_config.yaml": "83c50a60b3c0db62ce30b9cd65e0b0f5cd290f89",
+    "inference.py": "9bb00a176f878d872f8eb7ed7a98501d3abb7e70",
+    "inference_for_codec_evaluation.py": "4a98524ac90506a21b6155b31e945163c5d35d5b",
+    "requirements.txt": "46b7b2d2aabb074ce87433eba2f55b31eee2363b",
+    "utils/helpers.py": "9b144a4ce5ca6fd57b1a2903d940c4b4ffec4d97",
+    "xy_tokenizer/model.py": "188f1b607d3e9a5953b3015ea9d262008ef535c0",
+    "xy_tokenizer/nn/feature_extractor.py": "4d397b012ffe756fa9dfadc771f81e0afddd3963",
+    "xy_tokenizer/nn/modules.py": "cc186d9dadd674172837d527fef0f0de183feb4c",
+    "xy_tokenizer/nn/quantizer.py": "a7d28b963e98ea4f62f2a6e06b419cf0da0c2cc4",
+}
+SELECTED_MODEL_FILES = {".gitattributes", "README.md", CHECKPOINT_RELATIVE.as_posix()}
+SOURCE_README_PATH = "readme.md"
+SOURCE_README_BLOB_SHA1 = "cfe231b384040a2162a516c400fbd9282b3317b7"
+SOURCE_README_SHA256 = "c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7"
+SOURCE_LICENSE_HEADING = "## License 📜"
+SOURCE_LICENSE_DECLARATION = "XY-Tokenizer is released under the Apache 2.0 license."
+SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE = "SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE"
+SOURCE_LICENSE_EVIDENCE_UNAVAILABLE = "SOURCE_LICENSE_EVIDENCE_UNAVAILABLE"
+TOPOLOGY_CONTRACT = "vokra-xy-tokenizer-topology-v1"
+TENSOR_MANIFEST_BLOCKER = "BLOCKED_PENDING_AUTHENTICATED_TENSOR_MANIFEST"
+TENSOR_INVENTORY_SCHEMA = "vokra-xy-tokenizer-tensor-inventory-v1"
+EVIDENCE_FILENAME = "manifest.json"
+
+
+def self_test_temp_root() -> str:
+    """Resolve a platform-native temporary root without a macOS-only path."""
+    return str(Path(os.environ.get("TMPDIR") or tempfile.gettempdir()).resolve())
+
+# These are selected structural axes from the authenticated source config at
+# SOURCE_REVISION. They are deliberately not a guessed full tensor manifest:
+# checkpoint tensor names/shapes remain evidence-bound to a later VAST load.
+TOPOLOGY_AXES: dict[str, Any] = {
+    "feature_extractor_kwargs": {
+        "chunk_length": 30,
+        "feature_size": 80,
+        "hop_length": 160,
+        "n_fft": 400,
+        "n_samples": 480_000,
+        "nb_max_frames": 3000,
+        "padding_side": "right",
+        "padding_value": 0.0,
+        "return_attention_mask": False,
+        "sampling_rate": 16_000,
+    },
+    "semantic_encoder_kwargs": {
+        "num_mel_bins": 80,
+        "sampling_rate": 16_000,
+        "hop_length": 160,
+        "stride_size": 2,
+        "kernel_size": 3,
+        "d_model": 768,
+        "scale_embedding": False,
+        "max_audio_seconds": 30,
+        "encoder_layers": 12,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+        "activation_function": "gelu",
+    },
+    "semantic_encoder_adapter_kwargs": {
+        "input_dim": 768,
+        "output_dim": 768,
+        "d_model": 768,
+        "max_source_positions": 1500,
+        "encoder_layers": 4,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+    },
+    "acoustic_encoder_kwargs": {
+        "num_mel_bins": 80,
+        "sampling_rate": 16_000,
+        "hop_length": 160,
+        "stride_size": 2,
+        "kernel_size": 3,
+        "d_model": 768,
+        "scale_embedding": False,
+        "max_audio_seconds": 30,
+        "encoder_layers": 12,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+        "activation_function": "gelu",
+    },
+    "pre_rvq_adapter_kwargs": {
+        "input_dim": 1536,
+        "output_dim": 768,
+        "d_model": 768,
+        "max_source_positions": 1500,
+        "encoder_layers": 4,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+    },
+    "downsample_kwargs": {"d_model": 768, "avg_pooler": 4},
+    "quantizer_kwargs": {
+        "input_dim": 3072,
+        "rvq_dim": 512,
+        "output_dim": 3072,
+        "num_quantizers": 8,
+        "codebook_size": 1024,
+        "codebook_dim": 512,
+        "quantizer_dropout": 0.0,
+        "commitment": 1,
+    },
+    "post_rvq_adapter_kwargs": {
+        "input_dim": 3072,
+        "output_dim": 3072,
+        "d_model": 768,
+        "max_source_positions": 375,
+        "encoder_layers": 4,
+        "encoder_attention_heads": 12,
+        "encoder_ffn_dim": 3072,
+    },
+    "upsample_kwargs": {"d_model": 768, "stride": 4},
+    "acoustic_decoder_kwargs": {
+        "num_mel_bins": 80,
+        "sampling_rate": 16_000,
+        "hop_length": 160,
+        "stride_size": 2,
+        "kernel_size": 3,
+        "d_model": 768,
+        "scale_embedding": False,
+        "max_audio_seconds": 30,
+        "decoder_layers": 12,
+        "decoder_attention_heads": 12,
+        "decoder_ffn_dim": 3072,
+        "activation_function": "gelu",
+    },
+    "vocos_kwargs": {
+        "input_channels": 80,
+        "dim": 512,
+        "intermediate_dim": 4096,
+        "num_layers": 30,
+        "n_fft": 640,
+        "hop_size": 160,
+        "padding": "same",
+    },
+}
+MODEL_MODULES = (
+    "semantic_encoder",
+    "semantic_encoder_adapter",
+    "acoustic_encoder",
+    "pre_rvq_adapter",
+    "downsample",
+    "quantizer",
+    "post_rvq_adapter",
+    "upsample",
+    "acoustic_decoder",
+    "vocos",
+)
+MODEL_METHODS = (
+    "inference_tokenize",
+    "inference_detokenize",
+    "encode",
+    "decode",
+    "load_from_checkpoint",
+)
+GENERATOR_PARAM_KEYS = ("sample_rate", *TOPOLOGY_AXES.keys())
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def git(source: Path, *args: str) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(source), *args], text=True, stderr=subprocess.STDOUT
+    ).strip()
+
+
+def git_blob_sha1(path: Path) -> str:
+    size = path.stat().st_size
+    digest = hashlib.sha1(f"blob {size}\0".encode("ascii"))
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def json_load_unique(path: Path) -> Any:
+    def reject(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
+
+
+def _exact_value(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(
+            _exact_value(actual[key], expected[key]) for key in expected
+        )
+    return actual == expected
+
+
+def validate_topology(config: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(config, Mapping) or set(config) != {"sample_rate", "generator_params"}:
+        raise ValueError("config schema is not canonical")
+    generator = config["generator_params"]
+    if not isinstance(generator, Mapping):
+        raise ValueError("generator_params is not a mapping")
+    if set(generator) != set(GENERATOR_PARAM_KEYS):
+        raise ValueError("authenticated generator_params key set drifted")
+    if type(generator["sample_rate"]) is not int or generator["sample_rate"] != 16_000:
+        raise ValueError("authenticated generator_params.sample_rate drifted")
+    selected = {
+        "sample_rate": config["sample_rate"],
+        "generator_params.sample_rate": generator["sample_rate"],
+        "downsample_rate": 1280,
+    }
+    for name, expected in TOPOLOGY_AXES.items():
+        actual = generator.get(name)
+        if not isinstance(actual, Mapping) or not _exact_value(actual, expected):
+            raise ValueError(f"authenticated topology axis drifted: {name}")
+        selected[name] = dict(actual)
+    if type(config["sample_rate"]) is not int or config["sample_rate"] != 16_000:
+        raise ValueError("authenticated sample_rate drifted")
+    return {"schema": TOPOLOGY_CONTRACT, "axes": selected}
+
+
+def validate_model_api(source: Path) -> dict[str, Any]:
+    model_path = source / "xy_tokenizer/model.py"
+    tree = ast.parse(model_path.read_text(encoding="utf-8"), filename=str(model_path))
+    model_classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "XY_Tokenizer"]
+    if len(model_classes) != 1:
+        raise RuntimeError("official XY_Tokenizer class contract is not unique")
+    class_node = model_classes[0]
+    methods = {
+        node.name
+        for node in class_node.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    if not set(MODEL_METHODS) <= methods or "__init__" not in methods:
+        raise RuntimeError("official XY_Tokenizer API methods drifted")
+    load_method = next(
+        node for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == "load_from_checkpoint"
+    )
+    if not any(
+        isinstance(decorator, ast.Name) and decorator.id == "classmethod"
+        for decorator in load_method.decorator_list
+    ):
+        raise RuntimeError("official load_from_checkpoint classmethod contract drifted")
+    assigned = {
+        node.targets[0].attr
+        for node in ast.walk(class_node)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Attribute)
+        and isinstance(node.targets[0].value, ast.Name)
+        and node.targets[0].value.id == "self"
+    }
+    missing = sorted((set(MODEL_MODULES) | {"feature_extractor"}) - assigned)
+    if missing:
+        raise RuntimeError(f"official XY_Tokenizer module roles drifted: {missing}")
+    return {
+        "schema": "vokra-xy-tokenizer-api-v1",
+        "class": "XY_Tokenizer",
+        "modules": list(MODEL_MODULES),
+        "methods": list(MODEL_METHODS),
+        "frontend": "MelFeatureExtractor",
+    }
+
+
+def tensor_role(name: str) -> str | None:
+    for module in MODEL_MODULES:
+        if name == module or name.startswith(module + "."):
+            return module
+    return None
+
+
+def classify_tensor_roles(state: Mapping[str, torch.Tensor]) -> dict[str, Any]:
+    roles: dict[str, list[str]] = {module: [] for module in MODEL_MODULES}
+    unknown: list[str] = []
+    for name in sorted(state):
+        role = tensor_role(name)
+        if role is None:
+            unknown.append(name)
+        else:
+            roles[role].append(name)
+    missing = [module for module in MODEL_MODULES if not roles[module]]
+    if unknown or missing:
+        raise RuntimeError(
+            f"authenticated tensor role manifest is incomplete: unknown={unknown[:8]}, missing={missing}"
+        )
+    return {"schema": "vokra-xy-tokenizer-tensor-roles-v1", "roles": roles}
+
+
+_TENSOR_ITEM_BYTES = {
+    "bool": 1,
+    "uint8": 1,
+    "int8": 1,
+    "int16": 2,
+    "int32": 4,
+    "int64": 8,
+    "float16": 2,
+    "bfloat16": 2,
+    "float32": 4,
+    "float64": 8,
+}
+
+
+def canonical_json_digest(value: Any) -> str:
+    """Digest JSON evidence without depending on pretty-printing details."""
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+_TEMP_COUNTER = 0
+_TEMP_COUNTER_LOCK = threading.Lock()
+
+
+def reject_raw_path_components(raw: str, label: str) -> None:
+    """Reject lexical dot components before Path normalisation erases them."""
+    if not raw or "\x00" in raw:
+        raise ValueError(f"{label} path is empty or contains NUL")
+    if any(component in {".", ".."} for component in raw.split("/")):
+        raise ValueError(f"{label} path contains a lexical '.' or '..' component")
+
+
+def validate_directory_ancestry(directory: Path, label: str = "output") -> None:
+    """Require every existing component to be a regular directory, not symlink."""
+    absolute = Path(os.path.abspath(os.fspath(directory)))
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(f"{label} directory ancestry is not regular: {current}")
+
+
+def ensure_output_directory(directory: Path, label: str = "output") -> None:
+    """Create a missing directory, then revalidate its full ancestry."""
+    reject_raw_path_components(os.fspath(directory), label)
+    if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
+        raise RuntimeError(f"{label} must be a regular directory")
+    directory.mkdir(parents=True, exist_ok=True)
+    validate_directory_ancestry(directory, label)
+
+
+def _next_temp_path(final: Path) -> Path:
+    global _TEMP_COUNTER
+    with _TEMP_COUNTER_LOCK:
+        _TEMP_COUNTER += 1
+        counter = _TEMP_COUNTER
+    nonce = secrets.token_hex(8)
+    return final.parent / f".{final.name}.vokra-tmp-{os.getpid()}-{threading.get_ident()}-{counter}-{nonce}"
+
+
+def _reserve_temp(final: Path) -> tuple[Path, int]:
+    """Reserve a same-directory private temp using O_EXCL/O_NOFOLLOW."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    for _attempt in range(32):
+        temporary = _next_temp_path(final)
+        try:
+            descriptor = os.open(temporary, flags, 0o600)
+        except FileExistsError:
+            continue
+        return temporary, descriptor
+    raise RuntimeError(f"unable to reserve a unique temporary for {final}")
+
+
+def _unlink_if_identity(path: Path, identity: tuple[int, int]) -> None:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if (info.st_dev, info.st_ino) == identity and stat.S_ISREG(info.st_mode):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def rollback_created(created: list[tuple[Path, int, int]]) -> None:
+    """Remove only finals whose inode identity was returned by this invocation."""
+    for path, device, inode in reversed(created):
+        _unlink_if_identity(path, (device, inode))
+
+
+def _publish_temp_no_replace(
+    temporary: Path,
+    final: Path,
+    expected_identity: tuple[int, int] | None = None,
+) -> tuple[Path, int, int]:
+    """Publish a same-directory temp with a no-clobber hardlink claim."""
+    reject_raw_path_components(os.fspath(final), "final")
+    validate_directory_ancestry(final.parent, "final")
+    descriptor = os.open(temporary, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    published = False
+    try:
+        info = os.fstat(descriptor)
+        identity = (info.st_dev, info.st_ino)
+        if not stat.S_ISREG(info.st_mode) or (expected_identity is not None and identity != expected_identity):
+            raise RuntimeError(f"temporary identity changed before publish: {temporary}")
+        os.fsync(descriptor)
+        # Revalidate after fsync, immediately before the no-clobber claim.
+        validate_directory_ancestry(final.parent, "final")
+        os.link(temporary, final, follow_symlinks=False)
+        published = True
+        # The hardlink is the no-clobber claim.  Directory fsync is best
+        # effort after that claim: an fsync error must not report Err while
+        # leaving a published final with no ownership record for rollback.
+        try:
+            directory_descriptor = os.open(final.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            pass
+        return final, identity[0], identity[1]
+    finally:
+        os.close(descriptor)
+        if published:
+            try:
+                temporary.unlink()
+            except OSError:
+                # The final hardlink is already durable enough to report
+                # success; cleanup failure must not turn success into Err.
+                pass
+        else:
+            _unlink_if_identity(temporary, identity if "identity" in locals() else (-1, -1))
+
+
+def write_bytes_no_replace(final: Path, payload: bytes) -> tuple[Path, int, int]:
+    """Write/fsync/publish bytes atomically without replacing an existing path."""
+    ensure_output_directory(final.parent, "final")
+    temporary, descriptor = _reserve_temp(final)
+    info = os.fstat(descriptor)
+    identity: tuple[int, int] = (info.st_dev, info.st_ino)
+    try:
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(descriptor, payload[offset:])
+        os.fsync(descriptor)
+    except BaseException:
+        _unlink_if_identity(temporary, identity)
+        raise
+    finally:
+        os.close(descriptor)
+    try:
+        return _publish_temp_no_replace(temporary, final, identity)
+    except BaseException:
+        _unlink_if_identity(temporary, identity)
+        raise
+
+
+def write_safetensors_no_replace(final: Path, tensors: Mapping[str, torch.Tensor]) -> tuple[Path, int, int, int, str]:
+    """Stage safetensors in a reserved temp, then publish via the same claim path.
+
+    ``safetensors.save_file`` accepts a pathname rather than an open file
+    descriptor, so the reservation descriptor is necessarily closed while
+    that library writes.  This worker's threat boundary is a private VAST
+    output directory; nevertheless, a replacement during that window is
+    detected by comparing the reserved inode before and after the call, and
+    is rejected without unlinking the replacement path.
+    """
+    ensure_output_directory(final.parent, "prepared")
+    temporary, reservation_descriptor = _reserve_temp(final)
+    reservation_info = os.fstat(reservation_descriptor)
+    reservation_identity = (reservation_info.st_dev, reservation_info.st_ino)
+    os.close(reservation_descriptor)
+    try:
+        save_file(dict(tensors), str(temporary))
+        verification_descriptor = os.open(temporary, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            verification_info = os.fstat(verification_descriptor)
+            if (verification_info.st_dev, verification_info.st_ino) != reservation_identity:
+                raise RuntimeError(f"temporary identity changed during safetensors save: {temporary}")
+            os.fsync(verification_descriptor)
+        finally:
+            os.close(verification_descriptor)
+        size = temporary.stat().st_size
+        digest = sha256(temporary)
+        published = _publish_temp_no_replace(temporary, final, reservation_identity)
+        return (*published, size, digest)
+    except BaseException:
+        _unlink_if_identity(temporary, reservation_identity)
+        raise
+
+
+def validate_tensor_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a complete, self-consistent checkpoint tensor inventory.
+
+    This authenticates the observed checkpoint bytes and role/name accounting;
+    it intentionally does not invent an expected shape list.  Independent
+    review of this artifact is still required before a native binder can use
+    it as a production contract.
+    """
+    expected_keys = {"schema", "tensor_count", "dtype_counts", "role_manifest", "tensors"}
+    if not isinstance(inventory, Mapping) or set(inventory) != expected_keys:
+        raise ValueError("tensor inventory schema is not canonical")
+    if inventory["schema"] != TENSOR_INVENTORY_SCHEMA:
+        raise ValueError("tensor inventory schema version mismatch")
+    tensor_count = inventory["tensor_count"]
+    if isinstance(tensor_count, bool) or not isinstance(tensor_count, int) or tensor_count < 1:
+        raise ValueError("tensor inventory count is invalid")
+    dtype_counts = inventory["dtype_counts"]
+    if not isinstance(dtype_counts, Mapping) or not dtype_counts:
+        raise ValueError("tensor inventory dtype counts are invalid")
+    for dtype, count in dtype_counts.items():
+        if dtype not in _TENSOR_ITEM_BYTES or isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("tensor inventory dtype count is invalid")
+    roles = inventory["role_manifest"]
+    if not isinstance(roles, Mapping) or set(roles) != {"schema", "roles"} or roles.get("schema") != "vokra-xy-tokenizer-tensor-roles-v1":
+        raise ValueError("tensor inventory role manifest is invalid")
+    role_mapping = roles.get("roles")
+    if not isinstance(role_mapping, Mapping) or set(role_mapping) != set(MODEL_MODULES):
+        raise ValueError("tensor inventory role rows are invalid")
+    role_rows = {role: role_mapping[role] for role in MODEL_MODULES}
+    for names_for_role in role_rows.values():
+        if not isinstance(names_for_role, list) or any(not isinstance(name, str) or not name for name in names_for_role):
+            raise ValueError("tensor inventory role row contains an invalid name")
+    tensors = inventory["tensors"]
+    if not isinstance(tensors, list) or len(tensors) != tensor_count:
+        raise ValueError("tensor inventory tensor count does not match rows")
+    names: list[str] = []
+    observed_dtype_counts: dict[str, int] = {}
+    expected_fields = {"name", "role", "shape", "dtype", "elements", "bytes", "sha256"}
+    for row in tensors:
+        if not isinstance(row, Mapping) or set(row) != expected_fields:
+            raise ValueError("tensor inventory row schema is not canonical")
+        name, role, shape, dtype = row["name"], row["role"], row["shape"], row["dtype"]
+        if not isinstance(name, str) or not name or tensor_role(name) != role:
+            raise ValueError("tensor inventory tensor name/role mismatch")
+        if not isinstance(shape, list) or any(isinstance(dim, bool) or not isinstance(dim, int) or dim < 0 for dim in shape):
+            raise ValueError("tensor inventory shape is invalid")
+        if dtype not in _TENSOR_ITEM_BYTES:
+            raise ValueError("tensor inventory dtype is invalid")
+        elements = 1
+        for dim in shape:
+            elements *= dim
+        if isinstance(row["elements"], bool) or not isinstance(row["elements"], int) or row["elements"] != elements:
+            raise ValueError("tensor inventory element count is invalid")
+        if isinstance(row["bytes"], bool) or not isinstance(row["bytes"], int) or row["bytes"] != elements * _TENSOR_ITEM_BYTES[dtype]:
+            raise ValueError("tensor inventory byte count is invalid")
+        digest = row["sha256"]
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("tensor inventory payload digest is invalid")
+        names.append(name)
+        observed_dtype_counts[dtype] = observed_dtype_counts.get(dtype, 0) + 1
+    if names != sorted(names) or len(set(names)) != len(names):
+        raise ValueError("tensor inventory names are not unique and sorted")
+    if dict(dtype_counts) != observed_dtype_counts:
+        raise ValueError("tensor inventory dtype counts do not match rows")
+    if any(names_for_role != sorted(names_for_role) or not names_for_role for names_for_role in role_rows.values()):
+        raise ValueError("tensor inventory role rows are not sorted/non-empty")
+    if any(len(set(names_for_role)) != len(names_for_role) for names_for_role in role_rows.values()):
+        raise ValueError("tensor inventory role rows contain duplicates")
+    if any(
+        tensor_role(name) != role
+        for role, names_for_role in role_rows.items()
+        for name in names_for_role
+    ):
+        raise ValueError("tensor inventory role rows contain a cross-role name")
+    if {name for names_for_role in role_rows.values() for name in names_for_role} != set(names):
+        raise ValueError("tensor inventory role rows do not cover tensor rows")
+    return dict(inventory)
+
+
+def build_tensor_inventory(state: Mapping[str, torch.Tensor]) -> dict[str, Any]:
+    """Build and validate deterministic shape/role/payload evidence."""
+    validate_state_dict(state)
+    role_manifest = classify_tensor_roles(state)
+    tensors: list[dict[str, Any]] = []
+    dtype_counts: dict[str, int] = {}
+    for name in sorted(state):
+        tensor = state[name].detach().cpu().contiguous()
+        raw = raw_tensor_bytes(tensor)
+        dtype = str(tensor.dtype).removeprefix("torch.")
+        tensors.append({"name": name, "role": tensor_role(name), "shape": [int(dim) for dim in tensor.shape], "dtype": dtype, "elements": int(tensor.numel()), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        dtype_counts[dtype] = dtype_counts.get(dtype, 0) + 1
+    inventory = {"schema": TENSOR_INVENTORY_SCHEMA, "tensor_count": len(tensors), "dtype_counts": dtype_counts, "role_manifest": role_manifest, "tensors": tensors}
+    return validate_tensor_inventory(inventory)
+
+
+def regular_files(root: Path) -> list[Path]:
+    files = []
+    for path in sorted(root.rglob("*")):
+        parts = path.relative_to(root).parts
+        if parts == (".cache",) or len(parts) >= 2 and parts[:2] == (".cache", "huggingface"):
+            continue
+        if any(part in {".cache", ".git"} for part in parts):
+            raise RuntimeError(f"unauthenticated metadata path: {path}")
+        if path.is_dir() and not path.is_symlink():
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"payload member is not a regular file: {path}")
+        files.append(path)
+    return files
+
+
+def validate_server_packet(snapshot: Path, packet_path: Path) -> dict[str, Any]:
+    packet = json_load_unique(packet_path)
+    if not isinstance(packet, dict) or set(packet) != {"repository", "requested_revision", "resolved_revision", "files"}:
+        raise RuntimeError("HF server packet schema mismatch")
+    if packet["repository"] != UPSTREAM_REPOSITORY or packet["requested_revision"] != UPSTREAM_REVISION or packet["resolved_revision"] != UPSTREAM_REVISION:
+        raise RuntimeError("HF revision/repository mismatch")
+    rows = packet["files"]
+    if not isinstance(rows, list) or [row.get("path") for row in rows if isinstance(row, dict)] != sorted(row.get("path") for row in rows if isinstance(row, dict)):
+        raise RuntimeError("HF server packet file ordering/schema mismatch")
+    by_path: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("type") != "file":
+            raise RuntimeError("HF recursive tree contains an invalid entry")
+        path = row.get("path")
+        if not isinstance(path, str) or not path or Path(path).is_absolute() or "\\" in path or "\x00" in path or ".." in Path(path).parts or path in by_path:
+            raise RuntimeError("HF server path is unsafe or duplicated")
+        keys = set(row)
+        base = {"path", "type", "size", "git_blob_sha1"}
+        lfs = base | {"lfs_sha256", "lfs_size", "lfs_pointer_sha1"}
+        if keys != base and keys != lfs:
+            raise RuntimeError("HF server row has incomplete/extra identity keys")
+        if isinstance(row["size"], bool) or not isinstance(row["size"], int) or row["size"] < 0:
+            raise RuntimeError("HF server row size is invalid")
+        if not isinstance(row["git_blob_sha1"], str) or len(row["git_blob_sha1"]) != 40 or any(c not in "0123456789abcdef" for c in row["git_blob_sha1"]):
+            raise RuntimeError("HF server Git identity is invalid")
+        if keys == lfs:
+            if not isinstance(row["lfs_sha256"], str) or len(row["lfs_sha256"]) != 64 or any(c not in "0123456789abcdef" for c in row["lfs_sha256"]):
+                raise RuntimeError("HF server LFS identity is invalid")
+            if isinstance(row["lfs_size"], bool) or not isinstance(row["lfs_size"], int) or row["lfs_size"] != row["size"]:
+                raise RuntimeError("HF server LFS size is invalid")
+            if not isinstance(row["lfs_pointer_sha1"], str) or len(row["lfs_pointer_sha1"]) != 40:
+                raise RuntimeError("HF server LFS pointer identity is invalid")
+        by_path[path] = row
+    if set(by_path) != SELECTED_MODEL_FILES:
+        raise RuntimeError(f"HF server selected-file set mismatch: {sorted(by_path)!r}")
+    local = {path.relative_to(snapshot).as_posix(): path for path in regular_files(snapshot)}
+    for relative in SELECTED_MODEL_FILES:
+        if relative not in by_path or relative not in local:
+            raise RuntimeError(f"selected HF file missing: {relative}")
+        row, path = by_path[relative], local[relative]
+        if row["size"] != path.stat().st_size:
+            raise RuntimeError(f"HF file size mismatch: {relative}")
+        if set(row) == {"path", "type", "size", "git_blob_sha1"}:
+            if row["git_blob_sha1"] != git_blob_sha1(path):
+                raise RuntimeError(f"HF Git blob mismatch: {relative}")
+        else:
+            observed = sha256(path)
+            pointer = f"version https://git-lfs.github.com/spec/v1\noid sha256:{observed}\nsize {path.stat().st_size}\n".encode()
+            pointer_sha = hashlib.sha1(f"blob {len(pointer)}\0".encode() + pointer).hexdigest()
+            if row["lfs_sha256"] != observed or row["lfs_pointer_sha1"] != pointer_sha or row["git_blob_sha1"] != pointer_sha:
+                raise RuntimeError(f"HF LFS identity mismatch: {relative}")
+    return {"repository": packet["repository"], "requested_revision": packet["requested_revision"], "resolved_revision": packet["resolved_revision"], "server_file_count": len(by_path), "selected_files": sorted(SELECTED_MODEL_FILES)}
+
+
+class StrictYamlLoader(yaml.SafeLoader):
+    pass
+
+
+def _mapping(loader: StrictYamlLoader, node: yaml.MappingNode, deep: bool = False) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key_node, item_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, str) or key in value:
+            raise ValueError(f"duplicate/invalid YAML key: {key!r}")
+        value[key] = loader.construct_object(item_node, deep=deep)
+    return value
+
+
+StrictYamlLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
+
+
+def _validate_scalar_aliases(text: str) -> None:
+    """Allow only non-tagged scalar anchors and aliases in the fixed config."""
+    anchors: set[str] = set()
+    try:
+        events = list(yaml.parse(text))
+    except yaml.YAMLError as error:
+        raise ValueError(f"strict YAML parse failed: {error}") from error
+    for event in events:
+        tag = getattr(event, "tag", None)
+        if tag is not None:
+            raise ValueError("YAML tags are not accepted")
+        if isinstance(event, yaml.events.ScalarEvent):
+            if event.value == "<<":
+                raise ValueError("YAML merge keys are not accepted")
+            if event.anchor is not None:
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", event.anchor):
+                    raise ValueError("YAML anchor name is invalid")
+                if event.anchor in anchors:
+                    raise ValueError("duplicate YAML anchor")
+                anchors.add(event.anchor)
+        elif isinstance(event, (yaml.events.MappingStartEvent, yaml.events.SequenceStartEvent)):
+            if event.anchor is not None:
+                raise ValueError("only scalar YAML anchors are accepted")
+        elif isinstance(event, yaml.events.AliasEvent) and event.anchor not in anchors:
+            raise ValueError("undefined YAML alias")
+
+
+def parse_config(text: str) -> dict[str, Any]:
+    _validate_scalar_aliases(text)
+    try:
+        value = yaml.load(text, Loader=StrictYamlLoader)
+    except yaml.YAMLError as error:
+        raise ValueError(f"strict YAML parse failed: {error}") from error
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"sample_rate", "generator_params"}
+        or isinstance(value.get("sample_rate"), bool)
+        or not isinstance(value.get("sample_rate"), int)
+        or not isinstance(value.get("generator_params"), dict)
+    ):
+        raise ValueError("config sample_rate/generator_params envelope is not canonical")
+    topology = validate_topology(value)
+    return {"raw": value, "topology_status": "AUTHENTICATED", "topology": topology}
+
+
+def parse_weight_license(readme: Path) -> dict[str, str]:
+    text = readme.read_text(encoding="utf-8")
+    if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+        raise RuntimeError("HF README lacks authenticated top-level frontmatter")
+    end = text.find("\n---\n", 4)
+    try:
+        frontmatter = yaml.load(text[4:end], Loader=StrictYamlLoader)
+    except yaml.YAMLError as error:
+        raise RuntimeError(f"HF README frontmatter invalid: {error}") from error
+    if not isinstance(frontmatter, dict) or set(frontmatter) != {"license"} or frontmatter["license"] != "apache-2.0":
+        raise RuntimeError("HF weight license declaration is not exact apache-2.0")
+    return {
+        "spdx": "Apache-2.0",
+        "basis": "authenticated HF README top-level frontmatter at fixed weight revision",
+        "policy": "WEIGHT_LICENSE_SEPARATE_FROM_SOURCE_README",
+    }
+
+
+def parse_source_license_readme(text: str) -> dict[str, str]:
+    """Authenticate the exact license declaration in the source README.
+
+    This is source-code evidence, not a replacement LICENSE file.  Keep the
+    section intentionally narrow so an unrelated README mention cannot be
+    promoted to a license declaration.
+    """
+    readme_lines = text.splitlines()
+    heading_indices = [index for index, line in enumerate(readme_lines) if line == SOURCE_LICENSE_HEADING]
+    if len(heading_indices) != 1:
+        raise RuntimeError("official source README lacks the unique exact ## License 📜 section")
+    body_lines: list[str] = []
+    for line in readme_lines[heading_indices[0] + 1 :]:
+        if line.startswith("## "):
+            break
+        body_lines.append(line)
+    lines = [line.strip() for line in body_lines if line.strip()]
+    if lines != [SOURCE_LICENSE_DECLARATION]:
+        raise RuntimeError("official source README license declaration is not exact Apache-2.0")
+    return {
+        "path": SOURCE_README_PATH,
+        "heading": SOURCE_LICENSE_HEADING,
+        "declaration": SOURCE_LICENSE_DECLARATION,
+        "status": SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE,
+    }
+
+
+def require_file(path: Path, expected_sha256: str, label: str, expected_bytes: int | None = None) -> None:
+    if not path.is_file():
+        raise RuntimeError(f"missing {label}: {path}")
+    actual_sha256 = sha256(path)
+    actual_bytes = path.stat().st_size
+    if actual_sha256 != expected_sha256 or (expected_bytes is not None and actual_bytes != expected_bytes):
+        raise RuntimeError(f"{label} identity mismatch: bytes={actual_bytes} sha256={actual_sha256}")
+
+
+def state_dict_from_checkpoint(value: Any) -> Mapping[str, torch.Tensor]:
+    if isinstance(value, Mapping) and all(isinstance(key, str) and isinstance(tensor, torch.Tensor) for key, tensor in value.items()):
+        return value
+    if isinstance(value, Mapping):
+        for key in ("state_dict", "model", "module", "generator"):
+            nested = value.get(key)
+            if isinstance(nested, Mapping) and all(isinstance(name, str) and isinstance(tensor, torch.Tensor) for name, tensor in nested.items()):
+                if set(value) != {key}:
+                    raise RuntimeError("safe checkpoint contains untrusted metadata beside tensor state")
+                return nested
+    raise RuntimeError("safe checkpoint did not contain a tensor state dict")
+
+
+def validate_state_dict(state: Mapping[str, torch.Tensor]) -> None:
+    if not state:
+        raise RuntimeError("safe checkpoint state dict is empty")
+    for name, tensor in state.items():
+        if (not isinstance(name, str) or not name or "\x00" in name
+                or any(part in {"", ".", ".."} for part in name.split("."))):
+            raise RuntimeError(f"unsafe state-dict tensor key: {name!r}")
+        allowed_dtypes = {torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64, torch.float16, torch.bfloat16, torch.float32, torch.float64}
+        if (not isinstance(tensor, torch.Tensor) or tensor.layout != torch.strided
+                or tensor.is_quantized or tensor.dtype not in allowed_dtypes):
+            raise RuntimeError(f"unsupported tensor layout at {name}")
+        if any(isinstance(axis, bool) or not isinstance(axis, int) or axis < 0 for axis in tensor.shape):
+            raise RuntimeError(f"invalid tensor shape at {name}")
+        if (tensor.is_floating_point() or tensor.is_complex()) and not bool(torch.isfinite(tensor).all().item()):
+            raise RuntimeError(f"non-finite tensor at {name}")
+
+
+def raw_tensor_bytes(tensor: torch.Tensor) -> bytes:
+    """Return the exact dense storage bytes, including for scalar tensors."""
+    if tensor.layout != torch.strided or tensor.is_quantized:
+        raise RuntimeError(f"unsupported tensor layout/dtype: layout={tensor.layout} dtype={tensor.dtype}")
+    try:
+        dense = tensor.detach().cpu().contiguous()
+        return dense.reshape(-1).view(torch.uint8).numpy().tobytes()
+    except (RuntimeError, TypeError, ValueError) as error:
+        raise RuntimeError(f"cannot obtain raw bytes for dtype={tensor.dtype} shape={tuple(tensor.shape)}") from error
+
+
+def tracked_full_license_files(entries: Mapping[str, tuple[str, str]]) -> list[str]:
+    full_license_names = {"license", "copying", "notice", "copyright"}
+    return sorted(
+        relative
+        for relative in entries
+        if Path(relative).stem.casefold() in full_license_names
+    )
+
+
+def source_license_evidence(source: Path, entries: Mapping[str, tuple[str, str]]) -> dict[str, Any]:
+    """Bind the official source README and prove that no full license file is tracked."""
+    mode_object = entries.get(SOURCE_README_PATH)
+    if mode_object != ("100644", SOURCE_README_BLOB_SHA1):
+        raise RuntimeError("source README license-evidence object mismatch")
+    readme = source / SOURCE_README_PATH
+    if readme.is_symlink() or not readme.is_file() or stat.S_IMODE(readme.stat().st_mode) != 0o644:
+        raise RuntimeError("source README license-evidence file/mode mismatch")
+    if git_blob_sha1(readme) != SOURCE_README_BLOB_SHA1 or sha256(readme) != SOURCE_README_SHA256:
+        raise RuntimeError("source README license-evidence hash mismatch")
+    declaration = parse_source_license_readme(readme.read_text(encoding="utf-8"))
+    full_license_files = tracked_full_license_files(entries)
+    if full_license_files:
+        raise RuntimeError(f"unexpected full source license files: {full_license_files}")
+    return {
+        **declaration,
+        "git_blob_sha1": SOURCE_README_BLOB_SHA1,
+        "sha256": SOURCE_README_SHA256,
+        "full_license_files": full_license_files,
+        "basis": "authenticated official source README at fixed Git revision",
+    }
+
+
+def source_inventory(source: Path) -> dict[str, Any]:
+    if not (source / ".git").exists():
+        raise RuntimeError("source checkout lacks .git metadata")
+    head = git(source, "rev-parse", "HEAD")
+    origin = git(source, "remote", "get-url", "origin").removesuffix("/").removesuffix(".git")
+    if head != SOURCE_REVISION or origin != SOURCE_REPOSITORY:
+        raise RuntimeError("source HEAD/origin identity mismatch")
+    if git(source, "status", "--porcelain", "--untracked-files=all"):
+        raise RuntimeError("source checkout is dirty")
+    entries: dict[str, tuple[str, str]] = {}
+    for record in git(source, "ls-files", "-s", "-z").split("\0"):
+        if not record:
+            continue
+        metadata, relative = record.split("\t", 1)
+        mode, object_id, stage = metadata.split()
+        if mode not in {"100644", "100755"} or stage != "0" or relative in entries:
+            raise RuntimeError(f"source tracked mode/stage/path mismatch: {relative}")
+        path = source / relative
+        if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != {"100644": 0o644, "100755": 0o755}[mode]:
+            raise RuntimeError(f"source tracked file/mode mismatch: {relative}")
+        head_object = git(source, "rev-parse", f"HEAD:{relative}")
+        working_object = git_blob_sha1(path)
+        if object_id != head_object or object_id != working_object:
+            raise RuntimeError(f"source tracked object mismatch: {relative}")
+        entries[relative] = (mode, object_id)
+    roles = []
+    role_status = "AUTHENTICATED"
+    if not SOURCE_ROLE_BLOBS:
+        role_status = "SOURCE_ROLE_BLOBS_UNVERIFIED_BLOCKER"
+    else:
+        for relative, expected in SOURCE_ROLE_BLOBS.items():
+            mode_object = entries.get(relative)
+            if mode_object is None or mode_object[0] != "100644" or mode_object[1] != expected:
+                raise RuntimeError(f"source fixed role mismatch: {relative}")
+            roles.append({"path": relative, "mode": mode_object[0], "git_blob_sha1": expected})
+    license_evidence = source_license_evidence(source, entries)
+    api_contract = validate_model_api(source)
+    return {
+        "repository": SOURCE_REPOSITORY,
+        "revision": SOURCE_REVISION,
+        "worktree_status": "CLEAN",
+        "roles": roles,
+        "role_status": role_status,
+        "license_status": license_evidence["status"],
+        "license_evidence": license_evidence,
+        "api_contract": api_contract,
+    }
+
+
+def inspect(
+    checkpoint: Path,
+    config: Path,
+    source: Path,
+    prepared: Path,
+    output: Path,
+    server_packet: Path,
+    expected_head: str,
+) -> None:
+    if re.fullmatch(r"[0-9a-fA-F]{40}", expected_head) is None:
+        raise ValueError("expected Vokra checkout head must be exactly 40 hexadecimal characters")
+    server = validate_server_packet(checkpoint.parent, server_packet)
+    require_file(checkpoint, CHECKPOINT_SHA256, "XY-Tokenizer checkpoint", CHECKPOINT_BYTES)
+    require_file(config, CONFIG_SHA256, "XY-Tokenizer config")
+    weight_license = parse_weight_license(checkpoint.parent / "README.md")
+    source_data = source_inventory(source)
+    if source_data["role_status"] != "AUTHENTICATED":
+        raise RuntimeError(source_data["role_status"])
+    config_data = parse_config(config.read_text(encoding="utf-8"))
+    known_blockers: list[str] = [TENSOR_MANIFEST_BLOCKER]
+
+    # The only checkpoint load permitted by this inspection path. A failure is
+    # fatal; there is intentionally no unrestricted pickle fallback.
+    checkpoint_value = torch.load(str(checkpoint), map_location="cpu", weights_only=True)
+    state = state_dict_from_checkpoint(checkpoint_value)
+    tensor_inventory = build_tensor_inventory(state)
+    ensure_output_directory(prepared.parent, "prepared")
+    ensure_output_directory(output, "evidence")
+    created: list[tuple[Path, int, int]] = []
+    try:
+        prepared_record = write_safetensors_no_replace(
+            prepared,
+            {name: tensor.detach().cpu().contiguous() for name, tensor in state.items()},
+        )
+        created.append(prepared_record[:3])
+        tensor_inventory_bytes = (json.dumps(tensor_inventory, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        config_bytes = (json.dumps(config_data, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        source_bytes = (json.dumps(source_data, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        server_bytes = server_packet.read_bytes()
+        manifest = {
+            "format": FORMAT,
+            "vokra_head": expected_head.lower(),
+            "status": "BLOCKED",
+            "evidence_stage": "INSPECTION_ONLY",
+            "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
+            "collection_status": "AUTHENTICATED",
+            "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+            "cpu_status": "UNSUPPORTED",
+            "metal_status": "BLOCKED_BY_CPU",
+            "parity_status": "NOT_RUN",
+            "publication": "NO_UPLOAD",
+            "upstream": {"repository": UPSTREAM_REPOSITORY, "revision": UPSTREAM_REVISION, "checkpoint_sha256": CHECKPOINT_SHA256, "checkpoint_bytes": CHECKPOINT_BYTES},
+            "repository": UPSTREAM_REPOSITORY,
+            "revision": UPSTREAM_REVISION,
+            "checkpoint_sha256": CHECKPOINT_SHA256,
+            "configuration": {
+                "repository": SOURCE_REPOSITORY,
+                "path": CONFIG_RELATIVE.as_posix(),
+                "sha256": CONFIG_SHA256,
+                "provenance": "AUTHENTICATED_OFFICIAL_SOURCE",
+            },
+            "official_source": source_data,
+            "server_tree": server,
+            "source_revision": SOURCE_REVISION,
+            "config_sha256": CONFIG_SHA256,
+            "prepared": {"path": prepared.name, "bytes": prepared_record[3], "sha256": prepared_record[4]},
+            "tensor_count": tensor_inventory["tensor_count"],
+            "dtype_counts": tensor_inventory["dtype_counts"],
+            "tensor_manifest": {
+                "schema": TENSOR_INVENTORY_SCHEMA,
+                "sha256": canonical_json_digest(tensor_inventory),
+                "path": "tensor-inventory.json",
+                "status": "AUTHENTICATED_ARTIFACT_BOUND_PENDING_INDEPENDENT_REVIEW",
+            },
+            "weight_license": weight_license,
+            "blockers": known_blockers + ["native/runtime implementation is not available", "numerical parity is NOT_RUN", "publication is NO_UPLOAD"],
+            "packets": {
+                "tensor-inventory.json": {"bytes": len(tensor_inventory_bytes), "sha256": hashlib.sha256(tensor_inventory_bytes).hexdigest()},
+                "config.json": {"bytes": len(config_bytes), "sha256": hashlib.sha256(config_bytes).hexdigest()},
+                "source-inventory.json": {"bytes": len(source_bytes), "sha256": hashlib.sha256(source_bytes).hexdigest()},
+                "server-packet.json": {"bytes": len(server_bytes), "sha256": hashlib.sha256(server_bytes).hexdigest()},
+            },
+        }
+        for name, payload in (
+            ("tensor-inventory.json", tensor_inventory_bytes),
+            ("config.json", config_bytes),
+            ("source-inventory.json", source_bytes),
+            ("server-packet.json", server_bytes),
+            (EVIDENCE_FILENAME, (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")),
+        ):
+            created.append(write_bytes_no_replace(output / name, payload))
+    except BaseException:
+        rollback_created(created)
+        raise
+
+
+def write_error_manifest(output: Path, error: Exception) -> None:
+    ensure_output_directory(output, "error evidence")
+    manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "FAILED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "error": str(error), "blockers": ["authenticated collection unavailable", SOURCE_LICENSE_EVIDENCE_UNAVAILABLE, TENSOR_MANIFEST_BLOCKER]}
+    try:
+        write_bytes_no_replace(
+            output / EVIDENCE_FILENAME,
+            (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+        )
+    except FileExistsError:
+        # Never remove or replace evidence from an earlier invocation.
+        return
+
+
+def validate_raw_cli_paths(argv: list[str]) -> None:
+    path_options = {"--checkpoint", "--config", "--source", "--prepared", "--output", "--server-packet"}
+    for index, argument in enumerate(argv):
+        if argument in path_options:
+            if index + 1 >= len(argv):
+                raise ValueError(f"{argument} requires a path")
+            reject_raw_path_components(argv[index + 1], argument)
+        else:
+            for option in path_options:
+                prefix = option + "="
+                if argument.startswith(prefix):
+                    reject_raw_path_components(argument[len(prefix):], option)
+                    break
+
+
+def self_test() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert hashlib.sha256(b"abc").hexdigest() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    assert FORMAT == "vokra-xy-tokenizer-prepared-v1"
+    assert "vokra_head" in source
+    assert re.fullmatch(r"[0-9a-fA-F]{40}", "a" * 40)
+    assert "weights_only=True" in source
+    assert "safetensors.torch" in source
+    assert SOURCE_README_PATH == "readme.md"
+    assert SOURCE_README_BLOB_SHA1 == "cfe231b384040a2162a516c400fbd9282b3317b7"
+    assert SOURCE_README_SHA256 == "c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7"
+    assert SOURCE_LICENSE_HEADING == "## License 📜"
+    assert SOURCE_LICENSE_DECLARATION == "XY-Tokenizer is released under the Apache 2.0 license."
+    assert SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE in source
+    assert SOURCE_LICENSE_EVIDENCE_UNAVAILABLE in source
+    assert TOPOLOGY_CONTRACT in source
+    assert TENSOR_MANIFEST_BLOCKER in source
+    assert TENSOR_INVENTORY_SCHEMA == "vokra-xy-tokenizer-tensor-inventory-v1"
+    assert parse_source_license_readme(
+        "# XY-Tokenizer\n\n## License 📜\n\n"
+        "XY-Tokenizer is released under the Apache 2.0 license.\n\n"
+        "## Usage\n"
+    ) == {
+        "path": SOURCE_README_PATH,
+        "heading": SOURCE_LICENSE_HEADING,
+        "declaration": SOURCE_LICENSE_DECLARATION,
+        "status": SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE,
+    }
+    for invalid_readme in (
+        "## License\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
+        "## License 📄\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
+        "## License 📜 extra\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
+        "## License 📜\n\nMIT License\n",
+        "## License 📜\n\nXY-Tokenizer is released under the Apache 2.0 license.\nAdditional terms\n",
+        "## License 📜\n",
+        "### License\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
+    ):
+        try:
+            parse_source_license_readme(invalid_readme)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("malformed source README license evidence was accepted")
+    assert tracked_full_license_files({"readme.md": ("100644", SOURCE_README_BLOB_SHA1)}) == []
+    assert tracked_full_license_files(
+        {
+            "LICENSE": ("100644", "0" * 40),
+            "docs/COPYING.md": ("100644", "1" * 40),
+            "NOTICE.txt": ("100644", "2" * 40),
+            "third_party/COPYRIGHT": ("100644", "3" * 40),
+            "readme.md": ("100644", SOURCE_README_BLOB_SHA1),
+        }
+    ) == ["LICENSE", "NOTICE.txt", "docs/COPYING.md", "third_party/COPYRIGHT"]
+    scalar_int64 = torch.tensor(0x0102030405060708, dtype=torch.int64)
+    assert raw_tensor_bytes(scalar_int64) == bytes.fromhex("0807060504030201")
+    scalar_float = torch.tensor(-2.5, dtype=torch.float32)
+    assert raw_tensor_bytes(scalar_float) == bytes.fromhex("000020c0")
+    scalar_bf16 = torch.tensor(-16352, dtype=torch.int16).view(torch.bfloat16)
+    assert raw_tensor_bytes(scalar_bf16) == bytes.fromhex("20c0")
+    for tensor, expected in (
+        (scalar_int64, "380b980886b7a3e726b5c2776160d7842b8f139eaea1e6acf7442cdf890e6287"),
+        (scalar_float, "2f90de89a933bd8118953f22550293198c812014b434e29d79bcdea4cb34c56a"),
+        (scalar_bf16, "97ee14790cbe8239c38f70bb097ca6f6de1794c846d28376c2de6625c8ad6e53"),
+    ):
+        assert hashlib.sha256(raw_tensor_bytes(tensor)).hexdigest() == expected
+    assert SOURCE_ROLE_BLOBS == {
+        "config/xy_tokenizer_config.yaml": "83c50a60b3c0db62ce30b9cd65e0b0f5cd290f89",
+        "inference.py": "9bb00a176f878d872f8eb7ed7a98501d3abb7e70",
+        "inference_for_codec_evaluation.py": "4a98524ac90506a21b6155b31e945163c5d35d5b",
+        "requirements.txt": "46b7b2d2aabb074ce87433eba2f55b31eee2363b",
+        "utils/helpers.py": "9b144a4ce5ca6fd57b1a2903d940c4b4ffec4d97",
+        "xy_tokenizer/model.py": "188f1b607d3e9a5953b3015ea9d262008ef535c0",
+        "xy_tokenizer/nn/feature_extractor.py": "4d397b012ffe756fa9dfadc771f81e0afddd3963",
+        "xy_tokenizer/nn/modules.py": "cc186d9dadd674172837d527fef0f0de183feb4c",
+        "xy_tokenizer/nn/quantizer.py": "a7d28b963e98ea4f62f2a6e06b419cf0da0c2cc4",
+    }
+    assert SELECTED_MODEL_FILES == {".gitattributes", "README.md", "xy_tokenizer.ckpt"}
+    assert CONFIG_RELATIVE.as_posix() not in SELECTED_MODEL_FILES
+    generator_fixture = {
+        name: value for name, value in TOPOLOGY_AXES.items()
+        if name not in {"sample_rate", "downsample_rate"}
+    }
+    generator_fixture["sample_rate"] = 16_000
+    config_text = yaml.safe_dump(
+        {"sample_rate": 16_000, "generator_params": generator_fixture},
+        sort_keys=False,
+    )
+    config_data = parse_config(config_text)
+    assert config_data["topology_status"] == "AUTHENTICATED"
+    assert config_data["topology"]["schema"] == TOPOLOGY_CONTRACT
+    tampered_fixture = json.loads(json.dumps(generator_fixture))
+    tampered_fixture["quantizer_kwargs"]["num_quantizers"] = 7
+    try:
+        parse_config(yaml.safe_dump({"sample_rate": 16_000, "generator_params": tampered_fixture}, sort_keys=False))
+    except ValueError as error:
+        assert "topology" in str(error)
+    else:
+        raise AssertionError("tampered topology was accepted")
+    anchored = parse_config(
+        "sample_rate: &sample_rate 16000\n" + yaml.safe_dump({"generator_params": generator_fixture}, sort_keys=False)
+    )
+    assert anchored["topology_status"] == "AUTHENTICATED"
+    try:
+        parse_config("sample_rate: 16000\nsample_rate: 16000\ngenerator_params: {}\n")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate YAML key was accepted")
+    for invalid_schema in (
+        "audio_tokenizer: {}\n",
+        "sample_rate: 16000\n",
+        "sample_rate: 16000\ngenerator_params: []\n",
+        "sample_rate: 8000\ngenerator_params: {}\n",
+        "sample_rate: 16000\ngenerator_params: {}\nextra: false\n",
+    ):
+        try:
+            parse_config(invalid_schema)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("non-canonical XY-Tokenizer config schema was accepted")
+    for unsafe_yaml in (
+        "sample_rate: &alias {}\ngenerator_params: {}\n",
+        "audio_tokenizer: !custom {}\n",
+        "sample_rate: 16000\ngenerator_params:\n  first: &value 1\n  second: &value 2\n",
+        "sample_rate: 16000\ngenerator_params:\n  second: *missing\n",
+        "sample_rate: 16000\ngenerator_params:\n  first: &value {nested: 1}\n  second: *value\n",
+        "sample_rate: 16000\ngenerator_params:\n  first: &value [*value]\n",
+        "<<: {audio_tokenizer: {}}\n",
+    ):
+        try:
+            parse_config(unsafe_yaml)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsafe YAML anchor/alias construct was accepted")
+    role_state = {
+        f"{module}.weight": torch.ones(1) for module in MODEL_MODULES
+    }
+    role_manifest = classify_tensor_roles(role_state)
+    assert role_manifest["schema"] == "vokra-xy-tokenizer-tensor-roles-v1"
+    assert set(role_manifest["roles"]) == set(MODEL_MODULES)
+    role_inventory = build_tensor_inventory(role_state)
+    assert role_inventory["schema"] == TENSOR_INVENTORY_SCHEMA
+    assert role_inventory["tensor_count"] == len(MODEL_MODULES)
+    assert canonical_json_digest(role_inventory) == canonical_json_digest(json.loads(json.dumps(role_inventory)))
+    tampered_inventory = json.loads(json.dumps(role_inventory))
+    tampered_inventory["tensors"][0]["shape"] = [2]
+    try:
+        validate_tensor_inventory(tampered_inventory)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("tampered tensor shape was accepted")
+    tampered_inventory = json.loads(json.dumps(role_inventory))
+    tampered_inventory["tensors"][0]["role"] = "vocos"
+    try:
+        validate_tensor_inventory(tampered_inventory)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("tampered tensor role was accepted")
+    tampered_inventory = json.loads(json.dumps(role_inventory))
+    semantic_name = tampered_inventory["role_manifest"]["roles"]["semantic_encoder"][0]
+    tampered_inventory["role_manifest"]["roles"]["vocos"][0] = semantic_name
+    tampered_inventory["role_manifest"]["roles"]["vocos"].sort()
+    try:
+        validate_tensor_inventory(tampered_inventory)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("cross-role tensor row was accepted")
+    for role_edit in ("extra", "missing"):
+        tampered_inventory = json.loads(json.dumps(role_inventory))
+        if role_edit == "extra":
+            tampered_inventory["role_manifest"]["roles"]["untrusted"] = ["untrusted.weight"]
+        else:
+            del tampered_inventory["role_manifest"]["roles"][MODEL_MODULES[0]]
+        try:
+            validate_tensor_inventory(tampered_inventory)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"tensor role {role_edit} was accepted")
+    for invalid_roles in (
+        {**role_state, "untrusted.weight": torch.ones(1)},
+        {key: value for key, value in role_state.items() if not key.startswith("vocos.")},
+    ):
+        try:
+            classify_tensor_roles(invalid_roles)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("invalid tensor role manifest was accepted")
+    with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-api-") as directory:
+        fake_source = Path(directory)
+        model_file = fake_source / "xy_tokenizer/model.py"
+        model_file.parent.mkdir(parents=True)
+        assignments = "\n".join(f"        self.{name} = None" for name in (*MODEL_MODULES, "feature_extractor"))
+        model_file.write_text(
+            "class XY_Tokenizer:\n"
+            "    def __init__(self, generator_params):\n"
+            f"{assignments}\n"
+            "    def inference_tokenize(self, x, input_lengths): pass\n"
+            "    def inference_detokenize(self, codes, codes_lengths): pass\n"
+            "    def encode(self, wav_list, overlap_seconds=10, device=None): pass\n"
+            "    def decode(self, codes_list, overlap_seconds=10, device=None): pass\n"
+            "    @classmethod\n"
+            "    def load_from_checkpoint(cls, config_path, ckpt_path): pass\n",
+            encoding="utf-8",
+        )
+        assert validate_model_api(fake_source)["class"] == "XY_Tokenizer"
+    bad_state = {"layer..weight": torch.ones(1)}
+    try:
+        validate_state_dict(bad_state)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("unsafe state-dict key was accepted")
+    try:
+        state_dict_from_checkpoint({"state_dict": {"layer.weight": torch.ones(1)}, "epoch": 1})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("checkpoint metadata beside state dict was accepted")
+    generator_state = {"layer.weight": torch.ones(1)}
+    assert state_dict_from_checkpoint({"generator": generator_state}) is generator_state
+    for invalid_generator in (
+        {"generator": generator_state, "epoch": 1},
+        {"generator": {"layer.weight": torch.ones(1), "metadata": "unsafe"}},
+    ):
+        try:
+            state_dict_from_checkpoint(invalid_generator)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("invalid generator checkpoint envelope was accepted")
+    saved_tmpdir = os.environ.pop("TMPDIR", None)
+    try:
+        assert self_test_temp_root() == str(Path(tempfile.gettempdir()).resolve())
+    finally:
+        if saved_tmpdir is not None:
+            os.environ["TMPDIR"] = saved_tmpdir
+    self_test_tmp_root = self_test_temp_root()
+    with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-error-", dir=self_test_tmp_root) as directory:
+        error_dir = Path(directory)
+        write_error_manifest(error_dir, RuntimeError("self-test error"))
+        error_manifest = json_load_unique(error_dir / EVIDENCE_FILENAME)
+        assert error_manifest["status"] == "BLOCKED"
+        assert error_manifest["inspection_status"] == "INSPECTION_ERROR"
+        assert error_manifest["collection_status"] == "FAILED"
+        normal_contract = {
+            "status": "BLOCKED",
+            "evidence_stage": "INSPECTION_ONLY",
+            "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
+            "collection_status": "AUTHENTICATED",
+            "publication": "NO_UPLOAD",
+        }
+        assert normal_contract["inspection_status"] != error_manifest["inspection_status"]
+        assert normal_contract["collection_status"] != error_manifest["collection_status"]
+        existing_manifest = (error_dir / EVIDENCE_FILENAME).read_bytes()
+        marker = error_dir / "preserve-me.txt"
+        marker.write_bytes(b"existing evidence")
+        write_error_manifest(error_dir, RuntimeError("later error"))
+        assert (error_dir / EVIDENCE_FILENAME).read_bytes() == existing_manifest
+        assert marker.read_bytes() == b"existing evidence"
+    with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-publish-", dir=self_test_tmp_root) as directory:
+        publish_dir = Path(directory)
+        try:
+            reject_raw_path_components("evidence/../manifest.json", "self-test")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("lexical parent path was accepted")
+        try:
+            validate_raw_cli_paths(["--checkpoint=assets/../checkpoint.ckpt"])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("lexical parent path in --option=value was accepted")
+        symlink_parent = publish_dir / "real-parent"
+        symlink_parent.mkdir()
+        (publish_dir / "link").symlink_to(symlink_parent, target_is_directory=True)
+        try:
+            write_bytes_no_replace(publish_dir / "link" / "manifest.json", b"unsafe")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlink ancestry was accepted")
+
+        concurrent_final = publish_dir / "concurrent.bin"
+        concurrent_results: list[bytes] = []
+        concurrent_errors: list[Exception] = []
+
+        def publish_concurrently(payload: bytes) -> None:
+            try:
+                write_bytes_no_replace(concurrent_final, payload)
+                concurrent_results.append(payload)
+            except Exception as error:  # expected for all but one no-clobber claim
+                concurrent_errors.append(error)
+
+        threads = [threading.Thread(target=publish_concurrently, args=(bytes([value]),)) for value in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(concurrent_results) == 1
+        assert len(concurrent_errors) == 7 and all(isinstance(error, FileExistsError) for error in concurrent_errors)
+        assert concurrent_final.read_bytes() == concurrent_results[0]
+        assert not list(publish_dir.glob(".*.vokra-tmp-*"))
+
+        existing = publish_dir / "existing.bin"
+        existing.write_bytes(b"original")
+        try:
+            write_bytes_no_replace(existing, b"replacement")
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing output was replaced")
+        assert existing.read_bytes() == b"original"
+
+        first = publish_dir / "first.bin"
+        created_outputs: list[tuple[Path, int, int]] = []
+        try:
+            created_outputs.append(write_bytes_no_replace(first, b"first"))
+            write_bytes_no_replace(existing, b"collision")
+        except FileExistsError:
+            rollback_created(created_outputs)
+        else:
+            raise AssertionError("partial publish collision was not rejected")
+        assert not first.exists()
+        assert existing.read_bytes() == b"original"
+
+        owned = publish_dir / "owned.bin"
+        ownership = write_bytes_no_replace(owned, b"owned")
+        owned.unlink()
+        owned.write_bytes(b"replacement inode")
+        rollback_created([ownership])
+        assert owned.read_bytes() == b"replacement inode"
+
+        cleanup_final = publish_dir / "cleanup.bin"
+        original_unlink = Path.unlink
+        simulated_failure = True
+
+        def fail_temp_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
+            nonlocal simulated_failure
+            if simulated_failure and ".vokra-tmp-" in path.name:
+                simulated_failure = False
+                raise OSError("simulated temp cleanup failure")
+            original_unlink(path, *args, **kwargs)
+
+        Path.unlink = fail_temp_cleanup  # type: ignore[method-assign]
+        try:
+            write_bytes_no_replace(cleanup_final, b"published")
+        finally:
+            Path.unlink = original_unlink  # type: ignore[method-assign]
+        assert cleanup_final.read_bytes() == b"published"
+        for temporary in publish_dir.glob(".*.vokra-tmp-*"):
+            original_unlink(temporary)
+        assert not list(publish_dir.glob(".*.vokra-tmp-*"))
+
+        fsync_final = publish_dir / "fsync-best-effort.bin"
+        original_open = os.open
+
+        def fail_directory_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+            if flags & getattr(os, "O_DIRECTORY", 0):
+                raise OSError("simulated directory fsync open failure")
+            return original_open(path, flags, *args, **kwargs)
+
+        os.open = fail_directory_open  # type: ignore[assignment]
+        try:
+            write_bytes_no_replace(fsync_final, b"link is the claim")
+        finally:
+            os.open = original_open  # type: ignore[assignment]
+        assert fsync_final.read_bytes() == b"link is the claim"
+        assert not list(publish_dir.glob(".*.vokra-tmp-*"))
+    with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-packet-") as directory:
+        model = Path(directory)
+        for relative in sorted(SELECTED_MODEL_FILES):
+            target = model / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(relative.encode())
+        rows = []
+        for relative in sorted(SELECTED_MODEL_FILES):
+            target = model / relative
+            rows.append({"path": relative, "type": "file", "size": target.stat().st_size, "git_blob_sha1": git_blob_sha1(target)})
+        rows.sort(key=lambda row: row["path"])
+        packet = model / "packet.json"
+        packet.write_text(json.dumps({"repository": UPSTREAM_REPOSITORY, "requested_revision": UPSTREAM_REVISION, "resolved_revision": UPSTREAM_REVISION, "files": rows}), encoding="utf-8")
+        assert validate_server_packet(model, packet)["server_file_count"] == 3
+        rows.append({"path": "config/xy_tokenizer_config.yaml", "type": "file", "size": 1, "git_blob_sha1": "0" * 40})
+        rows.sort(key=lambda row: row["path"])
+        packet.write_text(json.dumps({"repository": UPSTREAM_REPOSITORY, "requested_revision": UPSTREAM_REVISION, "resolved_revision": UPSTREAM_REVISION, "files": rows}), encoding="utf-8")
+        try:
+            validate_server_packet(model, packet)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("source config was accepted as an HF model file")
+    print("xy_tokenizer_inspect_reference.py self-test: OK (safe-load/source/hash contracts)")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--source", type=Path)
+    parser.add_argument("--prepared", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--server-packet", type=Path)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--self-test", action="store_true")
+    validate_raw_cli_paths(sys.argv[1:])
+    args = parser.parse_args()
+    if args.self_test:
+        if any(value is not None for value in (args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet, args.expected_head)):
+            parser.error("--self-test accepts no other arguments")
+        self_test()
+        return 0
+    if any(value is None for value in (args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet, args.expected_head)):
+        parser.error("--checkpoint, --config, --source, --prepared, --output, --server-packet, and --expected-head are required")
+    try:
+        inspect(args.checkpoint, args.config, args.source, args.prepared, args.output, args.server_packet, args.expected_head)
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+        write_error_manifest(args.output, error)
+        print(f"XY-Tokenizer inspection: {error}", file=sys.stderr)
+        return 2
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"XY-Tokenizer inspection: {error}", file=sys.stderr)
+        raise SystemExit(2)

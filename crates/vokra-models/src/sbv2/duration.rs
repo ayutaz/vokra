@@ -1663,6 +1663,45 @@ mod tests {
     }
 
     #[test]
+    fn dds_compute_matches_scalar_with_conditioning_and_asymmetric_weights() {
+        let channels = 2;
+        let time = 5;
+        let dds = DDSConv::from_weights(
+            channels,
+            1,
+            3,
+            vec![vec![0.2, -0.4, 0.7, -0.3, 0.5, 0.9]],
+            vec![vec![0.11, -0.23]],
+            vec![vec![0.6, -0.8, 0.25, 0.45]],
+            vec![vec![-0.07, 0.19]],
+            vec![SdpLayerNorm {
+                gamma: vec![1.2, -0.6],
+                beta: vec![0.13, -0.17],
+            }],
+            vec![SdpLayerNorm {
+                gamma: vec![0.8, 1.4],
+                beta: vec![-0.05, 0.09],
+            }],
+        );
+        let input: Vec<f32> = (0..channels * time)
+            .map(|i| (i as f32 * 0.31) - 0.9)
+            .collect();
+        let conditioning: Vec<f32> = (0..channels * time)
+            .map(|i| 0.4 - i as f32 * 0.13)
+            .collect();
+        let expected = dds.forward(&input, time, Some(&conditioning));
+        let actual = dds
+            .forward_with_compute(&Compute::cpu(), &input, time, Some(&conditioning))
+            .expect("CPU Compute DDS");
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() <= 2e-6,
+                "DDS mismatch at {index}: {actual} != {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn element_wise_affine_reverse_matches_hand_computed() {
         // m = [1.0, -2.0], logs = [ln 2, 0.0].
         // reverse: z0 = (x0 - 1.0) * exp(-ln 2) = (x0 - 1.0) / 2

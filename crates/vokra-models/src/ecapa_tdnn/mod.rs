@@ -75,7 +75,7 @@ impl EcapaBackboneConfig {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         for (name, value) in [
             ("input_dim", self.input_dim),
             ("tdnn_channels", self.tdnn_channels),
@@ -177,13 +177,13 @@ const CONTRACT_KEYS: [&str; 15] = [
 ];
 
 #[derive(Debug)]
-struct FoldedBatchNorm {
+pub(crate) struct FoldedBatchNorm {
     scale: Vec<f32>,
     shift: Vec<f32>,
 }
 
 impl FoldedBatchNorm {
-    fn bind(file: &GgufFile, prefix: &str, channels: usize, eps: f32) -> Result<Self> {
+    pub(crate) fn bind(file: &GgufFile, prefix: &str, channels: usize, eps: f32) -> Result<Self> {
         let gamma = tensor(file, &format!("{prefix}.weight"), &[channels])?;
         let beta = tensor(file, &format!("{prefix}.bias"), &[channels])?;
         let mean = tensor(file, &format!("{prefix}.running_mean"), &[channels])?;
@@ -197,7 +197,7 @@ impl FoldedBatchNorm {
         Ok(Self { scale, shift })
     }
 
-    fn apply(&self, values: &mut [f32], frames: usize) {
+    pub(crate) fn apply(&self, values: &mut [f32], frames: usize) {
         debug_assert_eq!(values.len(), self.scale.len() * frames);
         for channel in 0..self.scale.len() {
             let scale = self.scale[channel];
@@ -210,7 +210,7 @@ impl FoldedBatchNorm {
 }
 
 #[derive(Debug)]
-struct Conv1d {
+pub(crate) struct Conv1d {
     weight: Vec<f32>,
     bias: Vec<f32>,
     input_channels: usize,
@@ -220,7 +220,7 @@ struct Conv1d {
 }
 
 impl Conv1d {
-    fn bind(
+    pub(crate) fn bind(
         file: &GgufFile,
         prefix: &str,
         input_channels: usize,
@@ -242,7 +242,12 @@ impl Conv1d {
         })
     }
 
-    fn forward(&self, input: &[f32], frames: usize, compute: &Compute) -> Result<Vec<f32>> {
+    pub(crate) fn forward(
+        &self,
+        input: &[f32],
+        frames: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
         if input.len() != self.input_channels * frames {
             return Err(VokraError::InvalidArgument(format!(
                 "ecapa_tdnn: conv input has {} values, expected {} x {frames}",
@@ -278,13 +283,13 @@ impl Conv1d {
 }
 
 #[derive(Debug)]
-struct TdnnBlock {
+pub(crate) struct TdnnBlock {
     conv: Conv1d,
     norm: FoldedBatchNorm,
 }
 
 impl TdnnBlock {
-    fn bind(
+    pub(crate) fn bind(
         file: &GgufFile,
         prefix: &str,
         input_channels: usize,
@@ -311,7 +316,12 @@ impl TdnnBlock {
         })
     }
 
-    fn forward(&self, input: &[f32], frames: usize, compute: &Compute) -> Result<Vec<f32>> {
+    pub(crate) fn forward(
+        &self,
+        input: &[f32],
+        frames: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
         let mut output = self.conv.forward(input, frames, compute)?;
         for value in &mut output {
             *value = value.max(0.0);
@@ -322,7 +332,7 @@ impl TdnnBlock {
 }
 
 #[derive(Debug)]
-struct SeRes2NetBlock {
+pub(crate) struct SeRes2NetBlock {
     tdnn1: TdnnBlock,
     res2net: Vec<TdnnBlock>,
     tdnn2: TdnnBlock,
@@ -331,14 +341,29 @@ struct SeRes2NetBlock {
 }
 
 impl SeRes2NetBlock {
-    fn bind(
+    pub(crate) fn bind(
         file: &GgufFile,
         config: &EcapaBackboneConfig,
         block: usize,
         kernel: usize,
         dilation: usize,
     ) -> Result<Self> {
-        let prefix = config.tensor_name(&format!("blocks.{block}"));
+        Self::bind_at(
+            file,
+            config,
+            &config.tensor_name(&format!("blocks.{block}")),
+            kernel,
+            dilation,
+        )
+    }
+
+    pub(crate) fn bind_at(
+        file: &GgufFile,
+        config: &EcapaBackboneConfig,
+        prefix: &str,
+        kernel: usize,
+        dilation: usize,
+    ) -> Result<Self> {
         let res2net_channels = config.tdnn_channels / config.res2net_scale;
         let res2net = (0..config.res2net_scale - 1)
             .map(|inner| {
@@ -392,7 +417,7 @@ impl SeRes2NetBlock {
         })
     }
 
-    fn forward(
+    pub(crate) fn forward(
         &self,
         input: &[f32],
         frames: usize,

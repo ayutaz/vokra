@@ -45,7 +45,7 @@ crate であり、それが zero-dependency 不変条件（`NFR-DS-02`）を成�
 | `vokra-cli` <!-- anchor: crates/vokra-cli/src/main.rs --> | 総合コマンドラインツール（`FR-TL-02`）。`run` / `convert` / `bench` / `f0` と、release-only の parity/performance gate `npu-bakeoff`。**binary crate** であり、`src/lib.rs` を持たない唯一の crate。引数パースは手書き。`f0` が `run --task` ではなく独立 subcommand なのは、YIN / PyIN が weight を持たず、呼び出し側が渡せる `--model` が存在しないため。 |
 | `vokra-eval` <!-- anchor: crates/vokra-eval/src/lib.rs --> | 評価メトリクス（`FR-OP-93`、`FR-TL-03`）。mel loss / WER / CER / UTMOS に加え、分離・明瞭度メトリクスの SI-SNR / SI-SDR / SDR / STOI を再利用可能なライブラリ + CLI として提供。PESQ は意図的に不在: ITU-T P.862 の再配布条件が Apache-2.0 と両立しないため、その理由を実装済みメトリクスの隣に記録している。 |
 | `vokra-vad-micro` <!-- anchor: crates/vokra-vad-micro/src/lib.rs --> | IoT Tier 3（Cortex-M55 / thumbv8m、`NFR-PT-03`、M5-03）向け Silero VAD v5 forward の `#![no_std] + alloc` サブセット。`vokra-models::silero_vad` と同じソースからコンパイルされるため、両者は **構築上ビット完全一致**（std 版はこの crate を re-export）。MCU 組み込み側が安定した crate 名を参照できるよう `publish = true`。 |
-| `vokra-kws-micro` <!-- anchor: crates/vokra-kws-micro/src/lib.rs --> | `vokra-vad-micro` の姉妹 crate。同じ M5-03 トポロジーで `#![no_std] + alloc` の KWS（`FR-OP-51`、microWakeWord 型）。forward は **real** — 40-band log-mel 特徴 → INT8 量子化 → INT8 chain → キーワード別しきい値 — で、呼び出し側が attach した chain に対して実際に動作する。欠けているのは checkpoint 側で、GGUF から chain を構築する経路がまだ無いため `publish = false`。chain 未 attach の状態では `detect()` は `KwsEvent::Idle` ではなく `ModelLoad` で拒否する。`Idle` は「このフレームでは何も起きなかった」という正当な結果であり、未設定時にそれを返すと設定ミスをもっともらしい null 結果の裏に隠すことになるため（`FR-EX-08`）。 |
+| `vokra-kws-micro` <!-- anchor: crates/vokra-kws-micro/src/lib.rs --> | `vokra-vad-micro` の姉妹 crate。同じ M5-03 トポロジーで `#![no_std] + alloc` の KWS（`FR-OP-51`、microWakeWord 型）。forward は **real** — 40-band log-mel 特徴 → INT8 量子化 → INT8 chain → キーワード別しきい値 — で、呼び出し側が attach した chain に対して実際に動作する。固定 reviewed `hey_jarvis` GGUF は fail-closed な stateful `Model::bind_authenticated_streaming()` API で、厳密な provenance・topology・tensor fingerprint を検証して bind できる。ただし 512 invocation の stage-trace parity は VAST gate のため `publish = false` は維持する。`KwsMicro` の convenience API は明示的に attach された `ChainConfig` を使い、model state を暗黙には組み込まない。chain 未 attach の状態では `detect()` は `KwsEvent::Idle` ではなく `ModelLoad` で拒否する。`Idle` は「このフレームでは何も起きなかった」という正当な結果であり、未設定時にそれを返すと設定ミスをもっともらしい null 結果の裏に隠すことになるため（`FR-EX-08`）。 |
 
 さらに 2 つの workspace member はテスト専用です:
 
@@ -86,7 +86,7 @@ vokra-math            （依存なし = 純粋な `core` 演算、WP-07）
 
 ### 1.3 `integrations/` — 意図的に不変条件の外側
 
-`integrations/` は root workspace から **除外**されています。現在 5 crate:
+`integrations/` は root workspace から **除外**されています。現在 7 crate:
 
 | パス | 用途 |
 |---|---|
@@ -94,7 +94,9 @@ vokra-math            （依存なし = 純粋な `core` 演算、WP-07）
 | `integrations/vokra-piper-g2p` <!-- anchor: integrations/vokra-piper-g2p --> | 実 8 言語 G2P ブリッジ |
 | `integrations/vokra-godot` <!-- anchor: integrations/vokra-godot --> | Godot GDExtension |
 | `integrations/vokra-server-bench` <!-- anchor: integrations/vokra-server-bench --> | サーバレイテンシ計測ハーネス |
-| `integrations/vokra-cli-bench-server` <!-- anchor: integrations/vokra-cli-bench-server --> | CLI 側ベンチマークサーバ |
+| `integrations/vokra-cli-bench-server` <!-- anchor: integrations/vokra-cli-bench-server --> | pure-std HTTP 境界 TTS レイテンシ計測クライアント |
+| `integrations/vokra-android` | Vokra C ABI 上の opt-in Android JNI binding |
+| `integrations/vokra-misaki-g2p` | native Kokoro TTS を駆動する opt-in misaki (Python) G2P bridge |
 
 **なぜここでは外部 crate を使ってよいか。** zero-dependency 不変条件は
 *特定の 1 ファイル* についての主張です — root の `Cargo.lock` が `vokra-*`

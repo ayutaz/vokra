@@ -6,11 +6,21 @@
 //! network. The complete 965-tensor public Vokra GGUF manifest is pinned below;
 //! no shape, source revision, or decoder convention is inferred at runtime.
 //!
+//! The released NeMo 3.0.0 ``model_config.yaml`` selects alignment-length
+//! synchronous decoding (ALSD): beam size 4, target-length multiplier 1.0,
+//! score normalization enabled, and temperature 1.0. The native decoder below
+//! follows NVIDIA NeMo 3.0.0's ``BeamRNNTInfer.align_length_sync_decoding``
+//! (source: <https://github.com/NVIDIA-NeMo/Speech/blob/v3.0.0/nemo/collections/asr/parts/submodules/rnnt_beam_decoding.py>).
+//! A legacy greedy path is deliberately not retained as a fallback: artifacts
+//! without the authenticated ALSD metadata are rejected before any tensor is
+//! loaded.
+//!
 //! CPU and Metal share the imperative [`Compute`] seam. Unsupported backends
 //! fail through `Compute::for_backend`; there is no silent CPU fallback.
 
-use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{AsrEngine, BackendKind, LicenseClass, Result, Transcription, VokraError};
+use vokra_ops::conformer::ConformerCompute;
 
 use crate::compute::{Compute, HotOp};
 use crate::parakeet::{
@@ -35,10 +45,30 @@ pub const MODEL_CONFIG_SHA256: &str =
 /// SHA-256 of the official 3,000-line plaintext SentencePiece vocabulary.
 pub const TOKENIZER_VOCAB_SHA256: &str =
     "989e4950cf53c0fee66f632cdd966bdd840b851a9e0e812322fd667e4b1c07bb";
-/// Optional embedded decode-only tokenizer. The existing public GGUF predates
-/// this key and therefore binds for token-level APIs but fails text decoding
-/// explicitly until it is replaced through the gated publishing workflow.
+/// Required embedded decode-only tokenizer for the authenticated release.
+/// Older public GGUFs that predate this key are rejected before tensor loading.
 pub const KEY_TOKENIZER_VOCAB: &str = "vokra.reazonspeech_nemo_v2.tokenizer.vocab";
+
+/// Decoder strategy selected by the released NeMo configuration.
+pub const KEY_DECODING_STRATEGY: &str = "vokra.reazonspeech_nemo_v2.decoding.strategy";
+/// ALSD beam width selected by the released NeMo configuration.
+pub const KEY_DECODING_BEAM_SIZE: &str = "vokra.reazonspeech_nemo_v2.decoding.beam_size";
+/// ALSD target-length multiplier selected by the released NeMo configuration.
+pub const KEY_DECODING_ALSD_MAX_TARGET_LEN: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.alsd_max_target_len";
+/// Whether released ALSD scores are normalized by output sequence length.
+pub const KEY_DECODING_SCORE_NORM: &str = "vokra.reazonspeech_nemo_v2.decoding.score_norm";
+/// Beam search type used by the NeMo default decoder constructor.
+pub const KEY_DECODING_BEAM_MODE: &str = "vokra.reazonspeech_nemo_v2.decoding.search_type";
+/// Joint-logit softmax temperature selected by the released configuration.
+pub const KEY_DECODING_SOFTMAX_TEMPERATURE: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.softmax_temperature";
+/// Whether NeMo returns the single best ALSD hypothesis.
+pub const KEY_DECODING_RETURN_BEST: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.return_best_hypothesis";
+/// Whether NeMo preserves alignments for the released decode.
+pub const KEY_DECODING_PRESERVE_ALIGNMENTS: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.preserve_alignments";
 
 const LABEL: &str = "ReazonSpeech-NeMo-v2";
 const TENSOR_COUNT: usize = 965;
@@ -56,7 +86,13 @@ const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
 };
 
 const KEY_SOURCE_REVISION: &str = "vokra.reazonspeech_nemo_v2.source_revision";
+const KEY_SOURCE_NEMO_SHA256: &str = "vokra.reazonspeech_nemo_v2.source_nemo_sha256";
+const KEY_SOURCE_TAR_MANIFEST_SHA256: &str =
+    "vokra.reazonspeech_nemo_v2.source_tar_manifest_sha256";
 const KEY_MODEL_CONFIG_SHA256: &str = "vokra.reazonspeech_nemo_v2.model_config_sha256";
+const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.reazonspeech_nemo_v2.tensor_manifest_sha256";
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const KEY_SAMPLE_RATE: &str = "vokra.reazonspeech_nemo_v2.sample_rate";
 const KEY_ENC_N_LAYER: &str = "vokra.reazonspeech_nemo_v2.encoder.n_layer";
 const KEY_ENC_D_MODEL: &str = "vokra.reazonspeech_nemo_v2.encoder.d_model";
@@ -77,10 +113,41 @@ const KEY_JOINT_VOCAB_SIZE: &str = "vokra.reazonspeech_nemo_v2.joint.vocab_size"
 const KEY_JOINT_BLANK_ID: &str = "vokra.reazonspeech_nemo_v2.joint.blank_token_id";
 const KEY_JOINT_MAX_SYMBOLS: &str = "vokra.reazonspeech_nemo_v2.joint.max_symbols_per_step";
 const KEY_TOKENIZER_VOCAB_SHA256: &str = "vokra.reazonspeech_nemo_v2.tokenizer.vocab_sha256";
+const KEY_FRONTEND_N_FFT: &str = "vokra.frontend.n_fft";
+const KEY_FRONTEND_HOP: &str = "vokra.frontend.hop_length";
+const KEY_FRONTEND_WIN: &str = "vokra.frontend.win_length";
+const KEY_FRONTEND_WINDOW: &str = "vokra.frontend.window_type";
+const KEY_FRONTEND_N_MELS: &str = "vokra.frontend.n_mels";
+const KEY_FRONTEND_NORMALIZE: &str = "vokra.frontend.normalize";
+const KEY_FRONTEND_DITHER: &str = "vokra.frontend.dither";
+
+const SOURCE_NEMO_SHA256: &str = "d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae";
+const SOURCE_TAR_MANIFEST_SHA256: &str =
+    "7f5268f676ab1496ef6202bd3a031a0fce5a434c6f2bd568efa2e7f14d7c4cb1";
+const TENSOR_MANIFEST_SHA256: &str =
+    "0663932975fb2157d11fa8ce9d7183c69c00a3d3f3f0e916aff1cab0550401ab";
+const UPSTREAM_HF: &str = "reazon-research/reazonspeech-nemo-v2";
+const UPSTREAM_SOURCE: &str = "https://huggingface.co/reazon-research/reazonspeech-nemo-v2";
+
+const DECODING_STRATEGY: &str = "alsd";
+const DECODING_BEAM_SIZE: u32 = 4;
+const DECODING_ALSD_MAX_TARGET_LEN: f32 = 1.0;
+const DECODING_SCORE_NORM: bool = true;
+const DECODING_SEARCH_TYPE: &str = "default";
+const DECODING_SOFTMAX_TEMPERATURE: f32 = 1.0;
+const DECODING_RETURN_BEST: bool = true;
+const DECODING_PRESERVE_ALIGNMENTS: bool = false;
 
 const RUNTIME_KEYS: &[&str] = &[
+    chunks::KEY_MODEL_ARCH,
+    chunks::KEY_MODEL_NAME,
+    KEY_MODEL_CATEGORY,
     KEY_SOURCE_REVISION,
+    KEY_SOURCE_NEMO_SHA256,
+    KEY_SOURCE_TAR_MANIFEST_SHA256,
     KEY_MODEL_CONFIG_SHA256,
+    KEY_TENSOR_MANIFEST_SHA256,
+    KEY_UPSTREAM_HF,
     KEY_SAMPLE_RATE,
     KEY_ENC_N_LAYER,
     KEY_ENC_D_MODEL,
@@ -100,6 +167,27 @@ const RUNTIME_KEYS: &[&str] = &[
     KEY_JOINT_VOCAB_SIZE,
     KEY_JOINT_BLANK_ID,
     KEY_JOINT_MAX_SYMBOLS,
+    KEY_TOKENIZER_VOCAB,
+    KEY_TOKENIZER_VOCAB_SHA256,
+    KEY_FRONTEND_N_FFT,
+    KEY_FRONTEND_HOP,
+    KEY_FRONTEND_WIN,
+    KEY_FRONTEND_WINDOW,
+    KEY_FRONTEND_N_MELS,
+    KEY_FRONTEND_NORMALIZE,
+    KEY_FRONTEND_DITHER,
+    KEY_DECODING_STRATEGY,
+    KEY_DECODING_BEAM_SIZE,
+    KEY_DECODING_ALSD_MAX_TARGET_LEN,
+    KEY_DECODING_SCORE_NORM,
+    KEY_DECODING_BEAM_MODE,
+    KEY_DECODING_SOFTMAX_TEMPERATURE,
+    KEY_DECODING_RETURN_BEST,
+    KEY_DECODING_PRESERVE_ALIGNMENTS,
+    chunks::KEY_PROVENANCE_LICENSE,
+    chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+    chunks::KEY_PROVENANCE_MODEL_ID,
+    chunks::KEY_PROVENANCE_SOURCE,
 ];
 
 /// Every learned hot operation used by the native encoder and RNN-T decoder.
@@ -134,6 +222,23 @@ pub struct ReazonSpeechConfig {
     pub blank_id: u32,
     /// Maximum non-blank symbols emitted for one encoder frame.
     pub max_symbols_per_step: usize,
+    /// Released NeMo decoder strategy. This is fixed to ALSD; it is not a
+    /// runtime-selectable greedy substitute.
+    pub decoding_strategy: &'static str,
+    /// Beam width of the released ALSD decoder.
+    pub decoding_beam_size: usize,
+    /// Target-length multiplier used by released ALSD.
+    pub decoding_alsd_max_target_len: f32,
+    /// Whether released ALSD ranks hypotheses by normalized score.
+    pub decoding_score_norm: bool,
+    /// Constructor search type recorded by the released decoder contract.
+    pub decoding_search_type: &'static str,
+    /// Released joint-logit softmax temperature.
+    pub decoding_softmax_temperature: f32,
+    /// Released NeMo returns one best hypothesis rather than an N-best list.
+    pub decoding_return_best: bool,
+    /// Released NeMo does not retain alignment tensors.
+    pub decoding_preserve_alignments: bool,
     /// Required input waveform sample rate.
     pub sample_rate: u32,
 }
@@ -169,6 +274,14 @@ impl ReazonSpeechConfig {
             vocab_size: 3_001,
             blank_id: 3_000,
             max_symbols_per_step: 10,
+            decoding_strategy: DECODING_STRATEGY,
+            decoding_beam_size: DECODING_BEAM_SIZE as usize,
+            decoding_alsd_max_target_len: DECODING_ALSD_MAX_TARGET_LEN,
+            decoding_score_norm: DECODING_SCORE_NORM,
+            decoding_search_type: DECODING_SEARCH_TYPE,
+            decoding_softmax_temperature: DECODING_SOFTMAX_TEMPERATURE,
+            decoding_return_best: DECODING_RETURN_BEST,
+            decoding_preserve_alignments: DECODING_PRESERVE_ALIGNMENTS,
             sample_rate: SAMPLE_RATE,
         }
     }
@@ -190,6 +303,15 @@ impl ReazonSpeechConfig {
             || self.vocab_size == 0
             || self.blank_id as usize + 1 != self.vocab_size
             || self.max_symbols_per_step == 0
+            || self.decoding_strategy != DECODING_STRATEGY
+            || self.decoding_beam_size != DECODING_BEAM_SIZE as usize
+            || !self.decoding_alsd_max_target_len.is_finite()
+            || self.decoding_alsd_max_target_len.to_bits() != DECODING_ALSD_MAX_TARGET_LEN.to_bits()
+            || self.decoding_score_norm != DECODING_SCORE_NORM
+            || self.decoding_search_type != DECODING_SEARCH_TYPE
+            || self.decoding_softmax_temperature.to_bits() != DECODING_SOFTMAX_TEMPERATURE.to_bits()
+            || self.decoding_return_best != DECODING_RETURN_BEST
+            || self.decoding_preserve_alignments != DECODING_PRESERVE_ALIGNMENTS
             || self.sample_rate == 0
         {
             return Err(VokraError::InvalidArgument(format!(
@@ -225,15 +347,17 @@ pub struct ReazonSpeechNemoV2 {
 }
 
 impl ReazonSpeechNemoV2 {
-    /// Strictly binds the one audited 965-tensor public release. Legacy public
-    /// GGUFs without model-specific axis chunks are accepted only because the
-    /// complete name/shape manifest already authenticates the exact topology.
-    /// If any new axis chunk is present, all must be present and canonical.
+    /// Strictly binds the one audited 965-tensor public release and its
+    /// authenticated ALSD decoder contract. Legacy public GGUFs without the
+    /// decoder metadata are rejected before tensor loading and must be
+    /// replaced through the gated publishing workflow.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        validate_metadata_contract(file)?;
         let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
         let config = ReazonSpeechConfig::official();
         config.validate()?;
         validate_runtime_metadata(file, &config)?;
+        validate_tensor_dtypes(file)?;
         let tokenizer = load_tokenizer(file, &config)?;
         let weights = Box::new(load_weights(file, &config)?);
         Ok(Self {
@@ -331,8 +455,11 @@ impl ReazonSpeechNemoV2 {
         Ok((hidden, encoded_frames))
     }
 
-    /// Native greedy RNN-T decoding. Repeated tokens are retained and only the
-    /// tail blank advances the encoder frame.
+    /// Native implementation of the released NeMo ALSD RNN-T decoder.
+    ///
+    /// This is alignment-length synchronous beam search, not frame-local
+    /// greedy decoding. The release pins beam size 4 and `U_max = 1.0 * T`;
+    /// these values are authenticated by [`validate_runtime_metadata`].
     pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -354,46 +481,14 @@ impl ReazonSpeechNemoV2 {
             )?;
         }
 
-        let mut state = DecoderState::new(self.config.decoder_layers, hidden);
-        decoder_step(
-            &compute,
-            self.config.blank_id,
-            &self.weights,
-            hidden,
-            &mut state,
-        )?;
-        let mut tokens = Vec::new();
-        for frame in 0..frames {
-            for _ in 0..self.config.max_symbols_per_step {
-                let mut joint = vec![0.0f32; hidden];
-                for index in 0..hidden {
-                    joint[index] =
-                        (projected[frame * hidden + index] + state.projected[index]).max(0.0);
-                }
-                let mut logits = vec![0.0f32; self.config.vocab_size];
-                linear_into(
-                    &compute,
-                    &joint,
-                    &self.weights.joint_head_w,
-                    &self.weights.joint_head_b,
-                    &mut logits,
-                )?;
-                let token = argmax_finite(&logits)? as u32;
-                if token == self.config.blank_id {
-                    break;
-                }
-                tokens.push(token);
-                decoder_step(&compute, token, &self.weights, hidden, &mut state)?;
-            }
-        }
-        Ok(tokens)
+        alsd_decode(&compute, &projected, frames, &self.config, &self.weights)
     }
 
     /// Transcribes mono PCM and decodes emitted tokens to text.
     pub fn transcribe_text(&self, pcm: &[f32]) -> Result<String> {
         let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
             VokraError::ModelLoad(format!(
-                "{LABEL}: `{KEY_TOKENIZER_VOCAB}` is absent from the legacy public GGUF; token-level inference is available through `transcribe_tokens`, but text decoding requires a gated replacement converted with the pinned official tokenizer vocabulary"
+                "{LABEL}: authenticated GGUF is missing `{KEY_TOKENIZER_VOCAB}`; text decoding requires the exact pinned official tokenizer vocabulary"
             ))
         })?;
         let tokens = self.transcribe_tokens(pcm)?;
@@ -412,13 +507,22 @@ impl AsrEngine for ReazonSpeechNemoV2 {
 }
 
 fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Result<()> {
+    for &key in RUNTIME_KEYS {
+        let occurrences = file
+            .metadata()
+            .iter()
+            .filter(|(name, _)| name == key)
+            .count();
+        if occurrences != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: authenticated metadata `{key}` occurs {occurrences} times; expected exactly once"
+            )));
+        }
+    }
     let present = RUNTIME_KEYS
         .iter()
         .filter(|&&key| file.get(key).is_some())
         .count();
-    if present == 0 {
-        return Ok(());
-    }
     if present != RUNTIME_KEYS.len() {
         let missing = RUNTIME_KEYS
             .iter()
@@ -431,7 +535,57 @@ fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Re
         )));
     }
     required_string(file, KEY_SOURCE_REVISION, SOURCE_REVISION)?;
+    required_string(file, KEY_SOURCE_NEMO_SHA256, SOURCE_NEMO_SHA256)?;
+    required_string(
+        file,
+        KEY_SOURCE_TAR_MANIFEST_SHA256,
+        SOURCE_TAR_MANIFEST_SHA256,
+    )?;
     required_string(file, KEY_MODEL_CONFIG_SHA256, MODEL_CONFIG_SHA256)?;
+    required_string(file, KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256)?;
+    required_string(file, KEY_UPSTREAM_HF, UPSTREAM_HF)?;
+    required_string(file, chunks::KEY_MODEL_ARCH, EXPECTED_ARCH)?;
+    required_string(file, chunks::KEY_MODEL_NAME, MODEL_NAME)?;
+    required_string(file, KEY_MODEL_CATEGORY, "asr")?;
+    required_string(file, chunks::KEY_PROVENANCE_LICENSE, "apache-2.0")?;
+    required_string(
+        file,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::Permissive.as_str(),
+    )?;
+    required_string(file, chunks::KEY_PROVENANCE_MODEL_ID, MODEL_NAME)?;
+    required_string(file, chunks::KEY_PROVENANCE_SOURCE, UPSTREAM_SOURCE)?;
+    required_u32(file, KEY_FRONTEND_N_FFT, 512)?;
+    required_u32(file, KEY_FRONTEND_HOP, 160)?;
+    required_u32(file, KEY_FRONTEND_WIN, 400)?;
+    required_string(file, KEY_FRONTEND_WINDOW, "hann")?;
+    required_u32(file, KEY_FRONTEND_N_MELS, 80)?;
+    required_string(file, KEY_FRONTEND_NORMALIZE, "per_feature")?;
+    required_f32(file, KEY_FRONTEND_DITHER, 1.0e-5)?;
+    required_string(file, KEY_DECODING_STRATEGY, config.decoding_strategy)?;
+    required_string(file, KEY_DECODING_BEAM_MODE, config.decoding_search_type)?;
+    required_f32(
+        file,
+        KEY_DECODING_ALSD_MAX_TARGET_LEN,
+        config.decoding_alsd_max_target_len,
+    )?;
+    required_f32(
+        file,
+        KEY_DECODING_SOFTMAX_TEMPERATURE,
+        config.decoding_softmax_temperature,
+    )?;
+    required_bool(file, KEY_DECODING_SCORE_NORM, config.decoding_score_norm)?;
+    required_bool(file, KEY_DECODING_RETURN_BEST, config.decoding_return_best)?;
+    required_bool(
+        file,
+        KEY_DECODING_PRESERVE_ALIGNMENTS,
+        config.decoding_preserve_alignments,
+    )?;
+    required_u32(
+        file,
+        KEY_DECODING_BEAM_SIZE,
+        config.decoding_beam_size as u32,
+    )?;
     for (key, expected) in [
         (KEY_SAMPLE_RATE, config.sample_rate),
         (KEY_ENC_N_LAYER, config.encoder.n_layer as u32),
@@ -462,6 +616,48 @@ fn validate_runtime_metadata(file: &GgufFile, config: &ReazonSpeechConfig) -> Re
         required_u32(file, key, expected)?;
     }
     Ok(())
+}
+
+/// Validate metadata keys whose values are consumed by a last-wins GGUF lookup.
+/// This gate runs before [`StrictCheckpoint::bind`] so duplicate or unowned
+/// Reazon/frontend keys cannot shadow an authenticated value.
+fn validate_metadata_contract(file: &GgufFile) -> Result<()> {
+    for &key in RUNTIME_KEYS {
+        let occurrences = metadata_occurrences(file.metadata(), key);
+        if occurrences != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: authenticated metadata `{key}` occurs {occurrences} times; expected exactly once"
+            )));
+        }
+    }
+    for (key, _) in file.metadata() {
+        if is_owned_metadata_key(key) && !RUNTIME_KEYS.contains(&key.as_str()) {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: unexpected authenticated metadata key `{key}`"
+            )));
+        }
+    }
+    required_string(file, chunks::KEY_MODEL_ARCH, EXPECTED_ARCH)?;
+    required_string(file, chunks::KEY_MODEL_NAME, MODEL_NAME)?;
+    required_string(file, KEY_MODEL_CATEGORY, "asr")?;
+    required_string(file, KEY_UPSTREAM_HF, UPSTREAM_HF)?;
+    required_string(file, chunks::KEY_PROVENANCE_LICENSE, "apache-2.0")?;
+    required_string(
+        file,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::Permissive.as_str(),
+    )?;
+    required_string(file, chunks::KEY_PROVENANCE_MODEL_ID, MODEL_NAME)?;
+    required_string(file, chunks::KEY_PROVENANCE_SOURCE, UPSTREAM_SOURCE)?;
+    Ok(())
+}
+
+fn metadata_occurrences(metadata: &[(String, GgufMetadataValue)], key: &str) -> usize {
+    metadata.iter().filter(|(name, _)| name == key).count()
+}
+
+fn is_owned_metadata_key(key: &str) -> bool {
+    key.starts_with("vokra.reazonspeech_nemo_v2.") || key.starts_with("vokra.frontend.")
 }
 
 fn required_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
@@ -497,18 +693,67 @@ fn required_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
     Ok(())
 }
 
+fn required_f32(file: &GgufFile, key: &str, expected: f32) -> Result<()> {
+    let actual = match file.get(key) {
+        Some(GgufMetadataValue::F32(value)) => *value,
+        Some(other) => {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: `{key}` must be FLOAT32, found {other:?}"
+            )));
+        }
+        None => return Err(VokraError::ModelLoad(format!("{LABEL}: missing `{key}`"))),
+    };
+    if actual.to_bits() != expected.to_bits() {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: `{key}`={actual}, expected {expected}"
+        )));
+    }
+    Ok(())
+}
+
+fn required_bool(file: &GgufFile, key: &str, expected: bool) -> Result<()> {
+    let actual = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_bool)
+        .ok_or_else(|| VokraError::ModelLoad(format!("{LABEL}: missing/non-bool `{key}`")))?;
+    if actual != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: `{key}`={actual}, expected {expected}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_tensor_dtypes(file: &GgufFile) -> Result<()> {
+    for tensor in file.tensors() {
+        if tensor.dtype != vokra_core::gguf::GgmlType::F32 {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: tensor `{}` has dtype {:?}; the authenticated NeMo v2 release is F32",
+                tensor.name, tensor.dtype
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn load_tokenizer(
     file: &GgufFile,
     config: &ReazonSpeechConfig,
 ) -> Result<Option<ParakeetTokenizer>> {
-    let Some(value) = file.get(KEY_TOKENIZER_VOCAB) else {
-        return Ok(None);
-    };
+    let value = file.get(KEY_TOKENIZER_VOCAB).ok_or_else(|| {
+        VokraError::ModelLoad(format!("{LABEL}: missing `{KEY_TOKENIZER_VOCAB}`"))
+    })?;
     let GgufMetadataValue::Array(array) = value else {
         return Err(VokraError::ModelLoad(format!(
             "{LABEL}: `{KEY_TOKENIZER_VOCAB}` must be a u8 array"
         )));
     };
+    if array.element_type != GgufValueType::U8 {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: `{KEY_TOKENIZER_VOCAB}` must declare U8 elements, found {:?}",
+            array.element_type
+        )));
+    }
     let bytes = array
         .values
         .iter()
@@ -742,11 +987,227 @@ fn load_weights(file: &GgufFile, config: &ReazonSpeechConfig) -> Result<ReazonSp
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DecoderState {
     hidden: Vec<Vec<f32>>,
     cell: Vec<Vec<f32>>,
     projected: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+struct AlsdHypothesis {
+    /// Emitted non-blank labels. NeMo stores the initial blank in
+    /// `y_sequence`; keeping it implicit makes the lattice coordinates
+    /// (`u = len(labels)`) explicit.
+    labels: Vec<u32>,
+    score: f64,
+    state: DecoderState,
+}
+
+/// Alignment-length synchronous decoding from NVIDIA NeMo's
+/// `BeamRNNTInfer.align_length_sync_decoding`.
+///
+/// At lattice step `i`, a hypothesis with `u` emitted labels reads encoder
+/// frame `t = i - u`. Both blank and non-blank expansions are retained, then
+/// the top four paths are pruned and duplicate label sequences are recombined.
+/// The loop is bounded by `T + U_max`, exactly as in the upstream decoder.
+fn alsd_decode(
+    compute: &Compute,
+    projected: &[f32],
+    frames: usize,
+    config: &ReazonSpeechConfig,
+    weights: &ReazonSpeechWeights,
+) -> Result<Vec<u32>> {
+    if config.decoding_strategy != DECODING_STRATEGY
+        || config.decoding_beam_size != DECODING_BEAM_SIZE as usize
+        || config.decoding_search_type != DECODING_SEARCH_TYPE
+        || config.decoding_score_norm != DECODING_SCORE_NORM
+        || config.decoding_return_best != DECODING_RETURN_BEST
+        || config.decoding_preserve_alignments != DECODING_PRESERVE_ALIGNMENTS
+        || config.decoding_softmax_temperature.to_bits() != DECODING_SOFTMAX_TEMPERATURE.to_bits()
+        || config.decoding_alsd_max_target_len.to_bits() != DECODING_ALSD_MAX_TARGET_LEN.to_bits()
+    {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: only the authenticated released ALSD decoder contract is supported"
+        )));
+    }
+    if frames == 0 || projected.len() != frames * config.decoder_dim {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: projected encoder shape is invalid for ALSD (frames={frames}, values={})",
+            projected.len()
+        )));
+    }
+    let beam = config
+        .decoding_beam_size
+        .min(config.vocab_size)
+        .min(config.vocab_size.saturating_sub(1).max(1));
+    let u_max = (config.decoding_alsd_max_target_len * frames as f32) as usize;
+    let mut initial_state = DecoderState::new(config.decoder_layers, config.decoder_dim);
+    decoder_step(
+        compute,
+        config.blank_id,
+        weights,
+        config.decoder_dim,
+        &mut initial_state,
+    )?;
+    let mut active = vec![AlsdHypothesis {
+        labels: Vec::new(),
+        score: 0.0,
+        state: initial_state,
+    }];
+    let mut final_hypotheses = Vec::new();
+
+    for step in 0..frames.saturating_add(u_max) {
+        let mut candidates = Vec::new();
+        for hypothesis in active.drain(..) {
+            let u = hypothesis.labels.len();
+            let Some(frame) = step.checked_sub(u) else {
+                continue;
+            };
+            if frame >= frames {
+                continue;
+            }
+            let log_probs = joint_log_probs(
+                compute,
+                &projected[frame * config.decoder_dim..(frame + 1) * config.decoder_dim],
+                &hypothesis.state,
+                config,
+                weights,
+            )?;
+            let blank = AlsdHypothesis {
+                labels: hypothesis.labels.clone(),
+                score: hypothesis.score + f64::from(log_probs[config.blank_id as usize]),
+                state: hypothesis.state.clone(),
+            };
+            if frame + 1 == frames {
+                final_hypotheses.push(blank.clone());
+            }
+            candidates.push(blank);
+
+            for token in top_nonblank(&log_probs, config.blank_id as usize, beam) {
+                let mut state = hypothesis.state.clone();
+                decoder_step(
+                    compute,
+                    token as u32,
+                    weights,
+                    config.decoder_dim,
+                    &mut state,
+                )?;
+                let mut labels = hypothesis.labels.clone();
+                labels.push(token as u32);
+                candidates.push(AlsdHypothesis {
+                    labels,
+                    score: hypothesis.score + f64::from(log_probs[token]),
+                    state,
+                });
+            }
+        }
+        if candidates.is_empty() {
+            break;
+        }
+        candidates.sort_by(|left, right| right.score.total_cmp(&left.score));
+        candidates.truncate(beam);
+        active = recombine_alsd(candidates);
+    }
+    let ranked = if final_hypotheses.is_empty() {
+        active
+    } else {
+        final_hypotheses
+    };
+    select_best_alsd(ranked)
+        .map(|hypothesis| hypothesis.labels)
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{LABEL}: ALSD emitted no hypothesis")))
+}
+
+/// Selects the first hypothesis on an equal normalized score, matching
+/// Python's stable `sorted(..., reverse=True)` in NeMo's `sort_nbest`.
+fn select_best_alsd(mut hypotheses: Vec<AlsdHypothesis>) -> Option<AlsdHypothesis> {
+    let mut iter = hypotheses.drain(..);
+    let mut best = iter.next()?;
+    for candidate in iter {
+        let candidate_score = candidate.score / (candidate.labels.len() + 1) as f64;
+        let best_score = best.score / (best.labels.len() + 1) as f64;
+        if candidate_score > best_score {
+            best = candidate;
+        }
+    }
+    Some(best)
+}
+
+fn joint_log_probs(
+    compute: &Compute,
+    encoder: &[f32],
+    state: &DecoderState,
+    config: &ReazonSpeechConfig,
+    weights: &ReazonSpeechWeights,
+) -> Result<Vec<f32>> {
+    let mut joint = vec![0.0f32; config.decoder_dim];
+    for (index, value) in joint.iter_mut().enumerate() {
+        *value = (encoder[index] + state.projected[index]).max(0.0);
+    }
+    let mut logits = vec![0.0f32; config.vocab_size];
+    linear_into(
+        compute,
+        &joint,
+        &weights.joint_head_w,
+        &weights.joint_head_b,
+        &mut logits,
+    )?;
+    for value in &mut logits {
+        *value /= config.decoding_softmax_temperature;
+    }
+    if logits.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: ALSD joint logits contain a non-finite value"
+        )));
+    }
+    let mut log_probs = vec![0.0f32; logits.len()];
+    compute.log_softmax(&logits, &mut log_probs, 1, logits.len())?;
+    if log_probs.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: ALSD log-softmax produced a non-finite value"
+        )));
+    }
+    Ok(log_probs)
+}
+
+fn top_nonblank(log_probs: &[f32], blank: usize, count: usize) -> Vec<usize> {
+    let mut indices = (0..log_probs.len())
+        .filter(|&index| index != blank)
+        .collect::<Vec<_>>();
+    indices.sort_by(|&left, &right| {
+        log_probs[right]
+            .total_cmp(&log_probs[left])
+            .then_with(|| left.cmp(&right))
+    });
+    indices.truncate(count);
+    indices
+}
+
+fn recombine_alsd(hypotheses: Vec<AlsdHypothesis>) -> Vec<AlsdHypothesis> {
+    let mut result = Vec::with_capacity(hypotheses.len());
+    for hypothesis in hypotheses {
+        if let Some(existing) = result
+            .iter_mut()
+            .find(|candidate: &&mut AlsdHypothesis| candidate.labels == hypothesis.labels)
+        {
+            existing.score = log_add_exp(existing.score, hypothesis.score);
+        } else {
+            result.push(hypothesis);
+        }
+    }
+    result
+}
+
+fn log_add_exp(left: f64, right: f64) -> f64 {
+    if !left.is_finite() {
+        return right;
+    }
+    if !right.is_finite() {
+        return left;
+    }
+    let max = left.max(right);
+    max + ((left - max).exp() + (right - max).exp()).ln()
 }
 
 impl DecoderState {
@@ -830,23 +1291,6 @@ fn linear_into(
     compute.gemv_f32(output.len(), input.len(), weight, input, Some(bias), output)
 }
 
-fn argmax_finite(values: &[f32]) -> Result<usize> {
-    let mut best: Option<(usize, f32)> = None;
-    for (index, &value) in values.iter().enumerate() {
-        if !value.is_finite() {
-            return Err(VokraError::InvalidArgument(format!(
-                "ReazonSpeech RNN-T logits contain non-finite value at index {index}: {value}"
-            )));
-        }
-        if best.is_none_or(|(_, current)| value > current) {
-            best = Some((index, value));
-        }
-    }
-    best.map(|(index, _)| index).ok_or_else(|| {
-        VokraError::InvalidArgument("ReazonSpeech RNN-T logits are empty".to_owned())
-    })
-}
-
 #[inline]
 fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
@@ -865,6 +1309,7 @@ fn hex(bytes: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vokra_core::gguf::GgufBuilder;
 
     #[test]
     fn official_config_matches_pinned_nemo_yaml() {
@@ -883,11 +1328,98 @@ mod tests {
         assert_eq!((config.global_tokens, config.global_tokens_spacing), (1, 1));
         assert_eq!((config.decoder_layers, config.decoder_dim), (2, 640));
         assert_eq!((config.vocab_size, config.blank_id), (3_001, 3_000));
+        assert_eq!(config.decoding_strategy, "alsd");
+        assert_eq!(config.decoding_beam_size, 4);
+        assert_eq!(config.decoding_alsd_max_target_len, 1.0);
+        assert!(config.decoding_score_norm);
+        assert_eq!(config.decoding_search_type, "default");
+        assert_eq!(config.decoding_softmax_temperature, 1.0);
+        assert!(config.decoding_return_best);
+        assert!(!config.decoding_preserve_alignments);
+    }
+
+    #[test]
+    fn config_rejects_non_normalized_released_decoder() {
+        let mut config = ReazonSpeechConfig::official();
+        config.decoding_score_norm = false;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn runtime_f32_metadata_rejects_widened_f64() {
+        let mut builder = GgufBuilder::new();
+        builder.add_metadata("decoder.temperature", GgufMetadataValue::F64(1.0));
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert!(required_f32(&file, "decoder.temperature", 1.0).is_err());
+    }
+
+    #[test]
+    fn metadata_contract_rejects_duplicate_and_unowned_keys() {
+        let metadata = vec![
+            (
+                chunks::KEY_MODEL_ARCH.to_owned(),
+                GgufMetadataValue::String(EXPECTED_ARCH.to_owned()),
+            ),
+            (
+                chunks::KEY_MODEL_ARCH.to_owned(),
+                GgufMetadataValue::String(EXPECTED_ARCH.to_owned()),
+            ),
+        ];
+        assert_eq!(metadata_occurrences(&metadata, chunks::KEY_MODEL_ARCH), 2);
+        assert!(is_owned_metadata_key("vokra.frontend.unexpected"));
+        assert!(is_owned_metadata_key(
+            "vokra.reazonspeech_nemo_v2.delay.999"
+        ));
+        assert!(!is_owned_metadata_key("vokra.provenance.unrelated"));
+    }
+
+    #[test]
+    fn alsd_candidate_order_excludes_blank_and_is_deterministic() {
+        assert_eq!(top_nonblank(&[0.1, 0.9, 0.9, 0.2], 1, 3), vec![2, 3, 0]);
+    }
+
+    #[test]
+    fn alsd_recombination_uses_log_add_exp() {
+        let state = DecoderState::new(1, 1);
+        let merged = recombine_alsd(vec![
+            AlsdHypothesis {
+                labels: vec![1],
+                score: 0.0,
+                state: state.clone(),
+            },
+            AlsdHypothesis {
+                labels: vec![1],
+                score: 0.0,
+                state,
+            },
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert!((merged[0].score - 2.0_f64.ln()).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn alsd_normalized_score_ties_keep_first_hypothesis() {
+        let state = DecoderState::new(1, 1);
+        let first = AlsdHypothesis {
+            labels: vec![11],
+            score: 2.0,
+            state: state.clone(),
+        };
+        let second = AlsdHypothesis {
+            labels: vec![22],
+            score: 2.0,
+            state,
+        };
+        assert_eq!(
+            select_best_alsd(vec![first, second]).unwrap().labels,
+            vec![11]
+        );
     }
 
     #[test]
     fn public_manifest_identity_is_pinned() {
         assert_eq!(TENSOR_COUNT, 965);
+        assert_eq!(TENSOR_MANIFEST_SHA256, hex(&MANIFEST_SHA256));
         assert_eq!(
             hex(&MANIFEST_SHA256),
             "0663932975fb2157d11fa8ce9d7183c69c00a3d3f3f0e916aff1cab0550401ab"

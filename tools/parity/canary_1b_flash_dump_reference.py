@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
 """Dump an independent NVIDIA NeMo reference for Canary-1B-Flash.
 
 The oracle is the official ``EncDecMultiTaskModel`` imported from
@@ -56,6 +56,16 @@ def digest_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def write_text_exclusive(path: Path, payload: str) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(payload)
+
+
+def write_bytes_exclusive(path: Path, payload: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(payload)
+
+
 def require_vast() -> None:
     if platform.system() != "Linux":
         raise SystemExit(
@@ -108,6 +118,23 @@ def hypothesis_tokens(hypothesis: object) -> list[int]:
 
 
 def self_test() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert 'torch.device("cpu")' in source
+    assert "torch." + "cuda" not in source
+    assert '"cuda_device": None' in source
+    production = source[source.index("def main") :]
+    lines = production.splitlines()
+    cpu_env_line = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == 'os.environ["CUDA_VISIBLE_DEVICES"] = ""'
+    )
+    nemo_import_line = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == "import " + "nemo"
+    )
+    assert cpu_env_line < nemo_import_line
     for language in LANGUAGES:
         assert validate_language(language) == language
     try:
@@ -137,6 +164,10 @@ def main() -> int:
     require_vast()
     source = validate_language(args.source_language)
     target = validate_language(args.target_language or source)
+    if args.nemo.is_symlink() or args.audio.is_symlink():
+        parser.error("--nemo and --audio must not be symlinks")
+    if args.output.is_symlink() or args.output.exists():
+        parser.error(f"--output must be absent and non-symlink: {args.output}")
     nemo_path = args.nemo.resolve()
     audio_path = args.audio.resolve()
     if not nemo_path.is_file() or nemo_path.stat().st_size != ARCHIVE_SIZE:
@@ -156,6 +187,10 @@ def main() -> int:
             f"committed JFK fixture SHA-256 {audio_sha256} != pinned {JFK_SHA256}"
         )
 
+    # NeMo's ModelPT constructor probes CUDA during import/restore. This
+    # worker is a CPU oracle, so suppress that internal probe before imports;
+    # do not honor a caller-provided GPU visibility setting.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
     try:
         import nemo
         import numpy as np
@@ -176,7 +211,10 @@ def main() -> int:
             f"reference audio must be 16 kHz mono, got rate={sample_rate}, shape={pcm.shape}"
         )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Numerical-parity policy: the official NeMo run is a CPU oracle. Do not
+    # probe CUDA or fall back to it, since a visible GPU is not part of this
+    # worker's reproducibility contract.
+    device = torch.device("cpu")
     cpu_capability = getattr(torch.backends.cpu, "get_cpu_capability", None)
     environment = {
         "platform": platform.platform(),
@@ -187,9 +225,8 @@ def main() -> int:
             cpu_capability() if callable(cpu_capability) else "unavailable"
         ),
         "device": str(device),
-        "cuda_device": (
-            torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
-        ),
+        "cuda_device": None,
+        "cuda_visible_devices": "",
     }
     # Numerical-parity policy: record the execution environment before the
     # model emits values, so a later platform-specific discrepancy is
@@ -219,7 +256,7 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="vokra-canary-reference-") as temp_dir:
         manifest_path = Path(temp_dir) / "manifest.jsonl"
-        manifest_path.write_text(json.dumps(manifest_row) + "\n", encoding="utf-8")
+        write_text_exclusive(manifest_path, json.dumps(manifest_row) + "\n")
         with torch.inference_mode():
             hypotheses = model.transcribe(
                 str(manifest_path), batch_size=1, return_hypotheses=True
@@ -258,16 +295,10 @@ def main() -> int:
         "text": text,
         "tokens": tokens,
     }
-    args.output.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    args.output.with_suffix(".tokens.txt").write_text(
-        " ".join(str(token) for token in tokens) + "\n", encoding="utf-8"
-    )
-    args.output.with_suffix(".text.txt").write_text(text + "\n", encoding="utf-8")
-    args.output.with_suffix(".pcm.f32").write_bytes(
-        np.asarray(pcm[:, 0], dtype="<f4").tobytes(order="C")
-    )
+    write_text_exclusive(args.output, json.dumps(report, indent=2, sort_keys=True) + "\n")
+    write_text_exclusive(args.output.with_suffix(".tokens.txt"), " ".join(str(token) for token in tokens) + "\n")
+    write_text_exclusive(args.output.with_suffix(".text.txt"), text + "\n")
+    write_bytes_exclusive(args.output.with_suffix(".pcm.f32"), np.asarray(pcm[:, 0], dtype="<f4").tobytes(order="C"))
     print(json.dumps(report, sort_keys=True))
     return 0
 

@@ -1,0 +1,933 @@
+#!/usr/bin/env python3
+"""Fail-closed MMS-1B-All staging closure gate.
+
+This module deliberately contains no model/runtime imports.  The committed
+tree has a dedicated Linux x86_64 CPU-only resolver lock and a VAST-produced
+dependency inventory, but package/native owner review and full model evidence
+remain pending.  A pending manifest therefore stops before a cache, host
+probe, or model acquisition.  Once an owner supplies complete model evidence
+and approval, this gate verifies exact schemas, artifact provenance,
+package/native review rows, and approval scope.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import Counter
+import hashlib
+import json
+import os
+import re
+import sys
+import tomllib
+from pathlib import Path
+from pathlib import PurePosixPath
+from typing import Any
+from urllib.parse import urlsplit
+
+from hf_metadata_audit import validate_report as validate_hf_metadata_report
+
+GATE_VERSION = 1
+REPOSITORY = "facebook/mms-1b-all"
+REVISION = "3d33597edbdaaba14a8e858e2c8caa76e3cec0cd"
+MODEL = "mms-1b-all"
+LICENSE = "cc-by-nc-4.0"
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+LANGUAGE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$")
+PLACEHOLDERS = {
+    "", "null", "none", "pending", "pending_review", "unresolved", "todo",
+    "owner_signoff_required", "owner_review_required", "review_required",
+    "owner_review_pending", "pending_owner_approval", "pending_vast_audit",
+}
+REGISTRIES = {"https://pypi.org/simple", "https://download.pytorch.org/whl/cpu"}
+MANIFEST_KEYS = {
+    "gate_version", "lock_sha256", "project_sha256", "package_rows",
+    "package_rows_sha256", "package_review_rows", "package_review_rows_sha256",
+    "identities", "license_rows", "license_rows_sha256", "publication_decision",
+    "evidence_source_head",
+}
+PENDING_MANIFEST_KEYS = {
+    "schema", "status", "publication", "project_sha256", "lock_sha256",
+    "evidence_source_head",
+    "dependency_audit_sha256", "dependency_audit_status", "api_model_free_evidence_sha256",
+    "api_model_free_evidence_status", "model_evidence_status",
+    "owner_review", "blockers",
+}
+AUDIT_KEYS = {
+    "schema", "status", "publication", "owner_review", "project_sha256",
+    "lock_sha256", "expected_head", "head", "clean", "audit_script_sha256",
+    "package_rows", "package_rows_sha256", "package_facts", "distribution_inventory",
+    "package_facts_sha256", "environment", "blockers",
+}
+AUDIT_FACT_KEYS = {
+    "name", "version", "source", "artifacts", "artifact_identity_sha256",
+    "archive_evidence", "artifact_status", "publisher_license",
+    "license_classifiers", "license_files", "license_files_sha256",
+    "native_files", "native_files_sha256", "external_record_paths",
+    "external_record_paths_sha256", "file_inventory_errors",
+    "file_inventory_status", "license_review", "native_bundled_review",
+    "fact_sha256",
+}
+API_EVIDENCE_KEYS = {
+    "schema", "status", "publication", "upstream", "project_sha256", "lock_sha256",
+    "expected_head", "head", "clean", "generator_sha256", "runtime", "api", "execution", "owner_review",
+}
+REVIEW_KEYS = {"name", "version", "source", "status", "license", "native_bundled_review"}
+LICENSE_ROW_KEYS = {"id", "status", "license", "conclusion", "evidence"}
+APPROVAL_KEYS = {
+    "schema", "model", "upstream_repo", "upstream_revision", "language",
+    "license_spdx", "project_sha256", "lock_sha256", "manifest_sha256",
+    "expected_head", "no_upload", "decision", "signer", "scope_sha256",
+}
+REFERENCE_KEYS = {
+    "contract", "repository", "revision", "resolved_snapshot", "language",
+    "composition", "selected_vocabulary", "source_files", "transformers_source",
+    "runtime", "state_dict_tensor_manifest", "logits_shape", "logits_finite",
+    "state_dict_tensor_manifest_sha256", "artifacts", "logits_nonzero", "logits_dtype", "greedy_token_ids_sha256", "decoded_text", "license",
+    "runtime_status", "parity_status", "tolerance",
+}
+PREPARED_KEYS = {"contract", "repository", "revision", "language", "source_files", "composition", "license", "runtime_status", "parity_status"}
+
+# These three roles are the only checkpoint identities that a complete
+# manifest may bind from the model-free Hugging Face audit.  The audit must
+# provide LFS payload SHA-256 values; a Git blob id alone is not a payload
+# identity and must remain fail-closed.
+METADATA_PAYLOAD_ROLES = {
+    "backbone": "backbone",
+    "adapter": "adapter",
+    "vocabulary": "language_vocabulary",
+}
+
+
+def blocked(message: str) -> None:
+    print(f"mms-1b-all license gate: BLOCKED: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canon(value: Any) -> str:
+    return sha(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def regular_file(path: Path) -> bool:
+    absolute = Path(os.path.abspath(path))
+    try:
+        return path.is_file() and not path.is_symlink() and all(not p.is_symlink() for p in absolute.parents)
+    except OSError:
+        return False
+
+
+def load_json(path: Path) -> Any:
+    return load_json_bytes(path.read_bytes())
+
+
+def load_json_bytes(data: bytes) -> Any:
+    def reject(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    return json.loads(data.decode("utf-8"), object_pairs_hook=reject)
+
+
+def resolved(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return value.strip().casefold() not in PLACEHOLDERS
+
+
+def validate_expected_head(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise ValueError("expected Vokra HEAD must be exactly 40 lowercase hexadecimal characters")
+    return value
+
+
+def artifact(value: Any, label: str, registry: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} artifact schema is not exact")
+    # The PyTorch CPU simple index currently omits ``size`` from its wheel
+    # records.  Keep that artifact unresolved rather than inventing a byte
+    # count; dependency_audit.py must bind the downloaded archive bytes before
+    # an owner can approve the closure.
+    required = {"url", "hash", "size", "upload-time"}
+    pytorch_missing_size = registry == "https://download.pytorch.org/whl/cpu" and set(value) == {"url", "hash", "upload-time"}
+    if set(value) != required and not pytorch_missing_size:
+        raise ValueError(f"{label} artifact schema is not exact")
+    url = value["url"] if isinstance(value["url"], str) else ""
+    parsed = urlsplit(url)
+    expected_hosts = {"download.pytorch.org", "download-r2.pytorch.org"} if registry == "https://download.pytorch.org/whl/cpu" else {"files.pythonhosted.org"}
+    if parsed.scheme != "https" or parsed.netloc not in expected_hosts or not parsed.path or parsed.query or parsed.fragment:
+        raise ValueError(f"{label} registry host is not authenticated")
+    if not isinstance(value["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["hash"]):
+        raise ValueError(f"{label} artifact hash is malformed")
+    if not pytorch_missing_size and (isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0):
+        raise ValueError(f"{label} artifact size is malformed")
+    if not isinstance(value["upload-time"], str) or not value["upload-time"].strip():
+        raise ValueError(f"{label} artifact upload-time is missing")
+
+
+def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
+    if set(lock) != {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}:
+        raise ValueError("lock top-level schema is not exact")
+    if type(lock["version"]) is not int or type(lock["revision"]) is not int or lock["version"] != 1 or lock["revision"] != 3 or lock["requires-python"] != "==3.12.*":
+        raise ValueError("lock version/python contract is not exact")
+    if any(not isinstance(lock[key], list) or any(not isinstance(x, str) or not x.strip() for x in lock[key]) for key in ("resolution-markers", "supported-markers")):
+        raise ValueError("lock marker schema is malformed")
+    packages = lock["package"]
+    if not isinstance(packages, list) or not packages:
+        raise ValueError("dedicated lock package table is missing or empty")
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    virtual = 0
+    allowed = {"name", "version", "source", "resolution-markers", "dependencies", "optional-dependencies", "sdist", "wheels", "metadata"}
+    for package in packages:
+        if not isinstance(package, dict) or set(package) - allowed:
+            raise ValueError("lock package row contains unknown fields")
+        name, version, source = package.get("name"), package.get("version"), package.get("source")
+        if not isinstance(name, str) or not name.strip() or not isinstance(version, str) or not version.strip():
+            raise ValueError("lock package identity is malformed")
+        if re.search(r"cuda|nvidia|triton", name, re.I):
+            raise ValueError("CUDA/NVIDIA/Triton package is forbidden")
+        key = (name, version)
+        if key in seen:
+            raise ValueError(f"duplicate lock package identity: {key!r}")
+        seen.add(key)
+        if not isinstance(source, dict) or len(source) != 1 or set(source) not in ({"registry"}, {"virtual"}):
+            raise ValueError("lock package source is malformed")
+        if "registry" in source and source["registry"] not in REGISTRIES:
+            raise ValueError("lock registry is not approved")
+        if "virtual" in source:
+            virtual += 1
+            if source["virtual"] != "." or set(package) != {"name", "version", "source", "dependencies", "metadata"}:
+                raise ValueError("virtual project package schema is not exact")
+            if not isinstance(package["metadata"], dict) or set(package["metadata"]) != {"requires-dist"} or not isinstance(package["metadata"]["requires-dist"], list):
+                raise ValueError("virtual project metadata schema is not exact")
+            for requirement in package["metadata"]["requires-dist"]:
+                if not isinstance(requirement, dict) or set(requirement) not in ({"name", "specifier"}, {"name", "specifier", "index"}) or not isinstance(requirement.get("name"), str) or not requirement["name"].strip() or not isinstance(requirement.get("specifier"), str) or not requirement["specifier"].strip():
+                    raise ValueError("virtual project requirement schema is not exact")
+                if "index" in requirement and requirement["index"] not in REGISTRIES:
+                    raise ValueError("virtual requirement index is not an approved CPU registry")
+        markers = package.get("resolution-markers", [])
+        if not isinstance(markers, list) or any(not isinstance(x, str) or not x.strip() for x in markers):
+            raise ValueError("package resolution-markers are malformed")
+        dependencies = package.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise ValueError("package dependencies are malformed")
+        for dep in dependencies:
+            if not isinstance(dep, dict) or set(dep) - {"name", "marker", "extra"} or not isinstance(dep.get("name"), str) or not dep["name"].strip() or ("marker" in dep and (not isinstance(dep["marker"], str) or not dep["marker"].strip())) or ("extra" in dep and (not isinstance(dep["extra"], list) or any(not isinstance(x, str) or not x.strip() for x in dep["extra"]))):
+                raise ValueError("package dependency row is malformed")
+            if re.search(r"cuda|nvidia|triton", dep["name"], re.I):
+                raise ValueError("CUDA/NVIDIA/Triton dependency is forbidden")
+        for kind in ("sdist", "wheels"):
+            if kind not in package:
+                continue
+            values = package[kind] if kind == "wheels" else [package[kind]]
+            if kind == "wheels" and (not isinstance(values, list) or not values):
+                raise ValueError("wheel artifact table is malformed")
+            if kind == "sdist" and not isinstance(package[kind], dict):
+                raise ValueError("sdist artifact is malformed")
+            for item in values:
+                artifact(item, f"{name} {kind}", source.get("registry", ""))
+        if "optional-dependencies" in package:
+            optional = package["optional-dependencies"]
+            if not isinstance(optional, dict) or any(not isinstance(group, str) or not group.strip() or not isinstance(values, list) or any(not isinstance(dep, dict) or set(dep) != {"name", "marker"} or not isinstance(dep["name"], str) or not dep["name"].strip() or not isinstance(dep["marker"], str) or not dep["marker"].strip() for dep in values) for group, values in optional.items()):
+                raise ValueError("optional dependency schema is malformed")
+        if "virtual" not in source and not package.get("sdist") and not package.get("wheels"):
+            raise ValueError(f"package {key!r} has no authenticated artifact")
+        rows.append(package)
+    if virtual != 1:
+        raise ValueError("dedicated lock must contain exactly one virtual project")
+    return sorted(rows, key=lambda row: (row["name"], row["version"]))
+
+
+def validate_file_facts(value: Any, label: str) -> None:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} is not a list")
+    seen: set[str] = set()
+    for row in value:
+        if not isinstance(row, dict) or set(row) - {"path", "bytes", "sha256", "too_large"}:
+            raise ValueError(f"{label} row schema is malformed")
+        path = row.get("path")
+        if not isinstance(path, str) or not path or path.startswith("/") or path in seen or "\\" in path or any(part == "" for part in path.replace("\\", "/").split("/")):
+            raise ValueError(f"{label} path is malformed")
+        seen.add(path)
+        if isinstance(row.get("bytes"), bool) or not isinstance(row.get("bytes"), int) or row["bytes"] < 0 or not HEX64.fullmatch(str(row.get("sha256"))):
+            raise ValueError(f"{label} byte identity is malformed")
+        if "too_large" in row and row["too_large"] is not True:
+            raise ValueError(f"{label} too_large marker is malformed")
+
+
+def validate_distribution_inventory(value: Any, rows: list[dict[str, Any]]) -> None:
+    if not isinstance(value, dict) or set(value) != {"expected", "installed", "missing", "unexpected", "duplicates", "exact"}:
+        raise ValueError("installed distribution inventory schema is malformed")
+    normalize = lambda name: re.sub(r"[-_.]+", "-", name).casefold()
+    expected = sorted(f"{normalize(str(row['name']))}=={row['version']}" for row in rows if row["source"] != {"virtual": "."})
+    installed = value.get("installed")
+    def valid_identity(identity: Any) -> bool:
+        if not isinstance(identity, str) or identity.count("==") != 1:
+            return False
+        name, version = identity.split("==", 1)
+        return bool(name and version and normalize(name) == name)
+    if not isinstance(installed, list) or any(not valid_identity(identity) for identity in installed) or installed != sorted(installed):
+        raise ValueError("installed distribution inventory is not normalized/sorted")
+    if value.get("expected") != expected:
+        raise ValueError("installed distribution inventory expected set drifted")
+    expected_counts = Counter(expected)
+    installed_counts = Counter(installed)
+    missing = sorted((expected_counts - installed_counts).elements())
+    unexpected = sorted((installed_counts - expected_counts).elements())
+    duplicates = sorted(name for name, count in installed_counts.items() if count > 1)
+    if value.get("missing") != missing or value.get("unexpected") != unexpected or value.get("duplicates") != duplicates or value.get("missing") or value.get("unexpected") or value.get("duplicates") or value.get("exact") is not True:
+        raise ValueError("installed distribution inventory is not exact")
+
+
+def validate_dependency_audit(path: Path, rows: list[dict[str, Any]], project_digest: str, lock_digest: str, expected_head: str | None = None) -> None:
+    if not regular_file(path):
+        raise ValueError("dependency audit evidence is missing or symlinked")
+    value = load_json(path)
+    if not isinstance(value, dict) or set(value) != AUDIT_KEYS or value.get("schema") != "vokra-mms-1b-all-dependency-audit-v1":
+        raise ValueError("dependency audit evidence schema is not exact")
+    if value.get("status") != "BLOCKED" or value.get("publication") != "NO_UPLOAD" or value.get("owner_review") != "PENDING_OWNER_APPROVAL":
+        raise ValueError("dependency audit must remain blocked pending owner review")
+    evidence_head = value.get("expected_head")
+    if not isinstance(evidence_head, str) or not re.fullmatch(r"[0-9a-f]{40}", evidence_head) or value.get("head") != evidence_head or (expected_head is not None and evidence_head != expected_head) or value.get("clean") is not True or not HEX64.fullmatch(str(value.get("audit_script_sha256"))):
+        raise ValueError("dependency audit checkout provenance is malformed")
+    audit_script = path.parent / "dependency_audit.py"
+    if not regular_file(audit_script) or sha_file(audit_script) != value.get("audit_script_sha256"):
+        raise ValueError("dependency audit script hash is not bound")
+    if value.get("project_sha256") != project_digest or value.get("lock_sha256") != lock_digest:
+        raise ValueError("dependency audit does not bind exact project/lock bytes")
+    validate_distribution_inventory(value.get("distribution_inventory"), rows)
+    if value.get("package_rows") != rows or value.get("package_rows_sha256") != canon(rows):
+        raise ValueError("dependency audit package rows drifted from uv.lock")
+    facts = value.get("package_facts")
+    if not isinstance(facts, list) or value.get("package_facts_sha256") != canon(facts):
+        raise ValueError("dependency audit package facts digest is malformed")
+    expected = {(row["name"], row["version"]): row for row in rows if row["source"] != {"virtual": "."}}
+    if len(facts) != len(expected):
+        raise ValueError("dependency audit does not cover every non-virtual lock package")
+    seen: set[tuple[str, str]] = set()
+    for fact in facts:
+        if not isinstance(fact, dict) or set(fact) != AUDIT_FACT_KEYS:
+            raise ValueError("dependency audit package fact schema is not exact")
+        key = (fact.get("name"), fact.get("version"))
+        if key in seen or key not in expected:
+            raise ValueError(f"dependency audit package identity is unbound: {key!r}")
+        row = expected[key]
+        artifact_projection = {name: row[name] for name in ("sdist", "wheels") if name in row}
+        if fact.get("source") != row["source"] or fact.get("artifacts") != artifact_projection or fact.get("artifact_identity_sha256") != canon(artifact_projection):
+            raise ValueError(f"dependency audit artifact identity drifted: {key!r}")
+        archives = fact.get("archive_evidence")
+        if not isinstance(archives, list):
+            raise ValueError(f"dependency audit archive evidence is malformed: {key!r}")
+        missing_artifacts = []
+        for kind in ("sdist", "wheels"):
+            values = row.get(kind, [])
+            if kind == "sdist":
+                values = [values] if values else []
+            missing_artifacts.extend((kind, item) for item in values if "size" not in item)
+        if len(archives) != len(missing_artifacts):
+            raise ValueError(f"dependency audit missing archive byte evidence: {key!r}")
+        for (kind, item), archive in zip(missing_artifacts, archives):
+            if not isinstance(archive, dict) or set(archive) != {"kind", "url", "path", "bytes", "sha256", "lock_size"} or archive["kind"] != kind or archive["url"] != item["url"] or archive["lock_size"] is not None or isinstance(archive["bytes"], bool) or not isinstance(archive["bytes"], int) or archive["bytes"] <= 0 or archive["sha256"] != item["hash"].removeprefix("sha256:") or not HEX64.fullmatch(str(archive["sha256"])):
+                raise ValueError(f"dependency audit archive evidence is unbound: {key!r}")
+        if fact.get("artifact_status") not in {"LOCK_ARTIFACT_EXACT", "LOCK_SIZE_RECOVERED"} or (missing_artifacts and fact["artifact_status"] != "LOCK_SIZE_RECOVERED") or (not missing_artifacts and fact["artifact_status"] != "LOCK_ARTIFACT_EXACT"):
+            raise ValueError(f"dependency audit artifact status is malformed: {key!r}")
+        validate_file_facts(fact.get("license_files"), f"{key} license files")
+        validate_file_facts(fact.get("native_files"), f"{key} native files")
+        if not isinstance(fact.get("publisher_license"), str) or not isinstance(fact.get("license_classifiers"), list) or any(not isinstance(item, str) for item in fact["license_classifiers"]):
+            raise ValueError(f"dependency audit publisher license facts are malformed: {key!r}")
+        for field, value_field in (("license_files", "license_files_sha256"), ("native_files", "native_files_sha256"), ("external_record_paths", "external_record_paths_sha256")):
+            if field == "external_record_paths":
+                if not isinstance(fact.get(field), list) or any(not isinstance(item, str) for item in fact[field]):
+                    raise ValueError(f"dependency audit external RECORD paths are malformed: {key!r}")
+            if fact.get(value_field) != canon(fact[field]):
+                raise ValueError(f"dependency audit {field} digest is malformed: {key!r}")
+        if fact.get("file_inventory_status") != "EXACT" or fact.get("file_inventory_errors") != []:
+            raise ValueError(f"dependency audit file inventory is not exact: {key!r}")
+        if fact.get("license_review") != "PENDING_OWNER_APPROVAL" or fact.get("native_bundled_review") != "PENDING_OWNER_APPROVAL":
+            raise ValueError(f"dependency audit owner review is not fail-closed: {key!r}")
+        fact_without_digest = {name: fact[name] for name in fact if name != "fact_sha256"}
+        if fact.get("fact_sha256") != canon(fact_without_digest):
+            raise ValueError(f"dependency audit fact digest is malformed: {key!r}")
+        seen.add(key)
+    environment = value.get("environment")
+    if not isinstance(environment, dict) or set(environment) != {"platform", "machine", "python", "weights_acquired", "model_imported", "model_executed", "upload"} or environment.get("machine") != "x86_64" or environment.get("weights_acquired") is not False or environment.get("model_imported") is not False or environment.get("model_executed") is not False or environment.get("upload") != "NO_UPLOAD":
+        raise ValueError("dependency audit execution environment is not model-free")
+
+
+def validate_api_evidence(path: Path, project_digest: str, lock_digest: str, expected_head: str | None = None) -> None:
+    if not regular_file(path):
+        raise ValueError("model-free API evidence is missing or symlinked")
+    value = load_json(path)
+    if not isinstance(value, dict) or set(value) != API_EVIDENCE_KEYS or value.get("schema") != "vokra-mms-1b-all-api-model-free-evidence-v2" or value.get("status") != "MODEL_FREE_API_VALIDATED" or value.get("publication") != "NO_UPLOAD" or value.get("project_sha256") != project_digest or value.get("lock_sha256") != lock_digest or value.get("owner_review") != "PENDING_OWNER_APPROVAL":
+        raise ValueError("model-free API evidence schema/status is not exact")
+    evidence_head = value.get("expected_head")
+    if not isinstance(evidence_head, str) or not re.fullmatch(r"[0-9a-f]{40}", evidence_head) or value.get("head") != evidence_head or (expected_head is not None and evidence_head != expected_head) or value.get("clean") is not True or not HEX64.fullmatch(str(value.get("generator_sha256"))):
+        raise ValueError("model-free API checkout provenance is malformed")
+    generator = path.parent / "api_model_free_inspector.py"
+    if not regular_file(generator) or sha_file(generator) != value.get("generator_sha256"):
+        raise ValueError("model-free API generator hash is not bound")
+    upstream = value.get("upstream")
+    if not isinstance(upstream, dict) or set(upstream) != {"repository", "revision"} or upstream.get("repository") != REPOSITORY or upstream.get("revision") != REVISION:
+        raise ValueError("model-free API upstream identity drifted")
+    runtime = value.get("runtime")
+    if not isinstance(runtime, dict) or set(runtime) != {"platform", "python", "transformers", "torch", "weights_acquired", "model_class_imported", "model_instantiated", "model_weights_loaded", "model_executed"} or not str(runtime.get("platform", "")).startswith("Linux-") or runtime.get("transformers") != "5.16.1" or runtime.get("torch") != "2.7.1+cpu" or runtime.get("weights_acquired") is not False or runtime.get("model_class_imported") is not True or runtime.get("model_instantiated") is not False or runtime.get("model_weights_loaded") is not False or runtime.get("model_executed") is not False:
+        raise ValueError("model-free API runtime is not CPU-only/model-free")
+    api = value.get("api")
+    if not isinstance(api, dict) or set(api) != {"auto_processor_from_pretrained_signature", "auto_processor_source", "wav2vec2_for_ctc_from_pretrained_signature", "wav2vec2_for_ctc_load_adapter_signature", "wav2vec2_for_ctc_load_adapter_source", "target_lang_adapter_surface"} or api.get("auto_processor_from_pretrained_signature") != "(pretrained_model_name_or_path, **kwargs)" or "**kwargs" not in str(api.get("wav2vec2_for_ctc_from_pretrained_signature")) or api.get("wav2vec2_for_ctc_load_adapter_signature") != "(self, target_lang: str, force_load=True, **kwargs)" or api.get("target_lang_adapter_surface") != "Wav2Vec2ForCTC.load_adapter(target_lang=language)":
+        raise ValueError("model-free API adapter surface is not exact")
+    for key in ("auto_processor_source", "wav2vec2_for_ctc_load_adapter_source"):
+        source = api.get(key)
+        if not isinstance(source, dict) or set(source) != ({"path", "sha256"} if key == "auto_processor_source" else {"path", "sha256", "load_adapter_source_sha256"}) or not isinstance(source.get("path"), str) or not source["path"] or not source["path"].startswith("transformers/") or "//" in source["path"] or source["path"].startswith("/") or "\\" in source["path"] or any(part in {"", ".", ".."} for part in PurePosixPath(source["path"]).parts) or not HEX64.fullmatch(str(source.get("sha256"))):
+            raise ValueError("model-free API source identity is malformed")
+        if key != "auto_processor_source" and not HEX64.fullmatch(str(source.get("load_adapter_source_sha256"))):
+            raise ValueError("model-free API adapter source hash is malformed")
+    execution = value.get("execution")
+    if not isinstance(execution, dict) or set(execution) != {"api_import_only", "checkpoint_download", "checkpoint_load", "forward", "parity"} or execution.get("api_import_only") is not True or execution.get("checkpoint_download") is not False or execution.get("checkpoint_load") is not False or execution.get("forward") is not False or execution.get("parity") != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST":
+        raise ValueError("model-free API evidence records prohibited execution")
+
+
+def validate_pending_source_head(dependency: dict[str, Any], api: dict[str, Any], source_head: Any) -> None:
+    if not isinstance(source_head, str) or not re.fullmatch(r"[0-9a-f]{40}", source_head):
+        raise ValueError("pending evidence source HEAD is malformed")
+    for label, report in (("dependency", dependency), ("API", api)):
+        if not isinstance(report, dict) or report.get("expected_head") != source_head or report.get("head") != source_head or report.get("clean") is not True:
+            raise ValueError(f"pending {label} evidence source HEAD binding is not exact")
+
+
+def project_schema(project: dict[str, Any]) -> None:
+    if set(project) != {"project", "tool"} or not isinstance(project["project"], dict) or not isinstance(project["tool"], dict):
+        raise ValueError("dedicated pyproject schema is not exact")
+    metadata = project["project"]
+    expected = {"name", "version", "description", "requires-python", "dependencies"}
+    if set(metadata) != expected or metadata["name"] != "vokra-mms-1b-all-parity" or metadata["version"] != "0.1.0" or metadata["requires-python"] != "==3.12.*" or not isinstance(metadata.get("description"), str) or not metadata["description"].strip() or not isinstance(metadata["dependencies"], list) or not metadata["dependencies"] or any(not isinstance(item, str) or not item.strip() for item in metadata["dependencies"]):
+        raise ValueError("dedicated pyproject identity/dependencies are unresolved")
+    uv = project["tool"].get("uv")
+    if not isinstance(uv, dict) or set(uv) != {"package", "environments", "sources", "index"} or uv.get("package") is not False or uv.get("environments") != ["sys_platform == 'linux' and platform_machine == 'x86_64'"] or not isinstance(uv.get("sources"), dict) or not isinstance(uv.get("index"), list) or not uv["index"]:
+        raise ValueError("dedicated project is not Linux x86_64 CPU-only")
+    index_names = set()
+    for index in uv["index"]:
+        if not isinstance(index, dict) or set(index) != {"name", "url", "explicit"} or index["url"] not in REGISTRIES or index["explicit"] is not True:
+            raise ValueError("dedicated project registry schema is not exact")
+        if not isinstance(index["name"], str) or not index["name"].strip() or index["name"] in index_names:
+            raise ValueError("dedicated project registry name is malformed")
+        index_names.add(index["name"])
+    if any(not isinstance(name, str) or not name.strip() or not isinstance(source, dict) or set(source) != {"index"} or source["index"] not in index_names for name, source in uv["sources"].items()):
+        raise ValueError("dedicated project source mapping is not exact")
+    if re.search(r"cuda|nvidia|triton", json.dumps(project, sort_keys=True), re.I):
+        raise ValueError("CUDA/NVIDIA/Triton dependency is forbidden")
+
+
+def validate_tensor_manifest(value: Any, label: str) -> None:
+    if not isinstance(value, dict) or not value:
+        raise ValueError(f"{label} tensor manifest is missing")
+    for name, row in value.items():
+        if not isinstance(name, str) or not name or not isinstance(row, dict) or set(row) != {"shape", "dtype"} or not isinstance(row["shape"], list) or any(isinstance(dim, bool) or not isinstance(dim, int) or dim < 0 for dim in row["shape"]) or not isinstance(row["dtype"], str) or not re.fullmatch(r"torch\.(?:float16|float32|bfloat16|int8|int16|int32|int64|bool)", row["dtype"]):
+            raise ValueError(f"{label} tensor row is malformed: {name!r}")
+
+
+def validate_reference(path: Path) -> None:
+    if not regular_file(path):
+        raise ValueError("reference manifest is missing or symlinked")
+    value = load_json(path)
+    if not isinstance(value, dict) or set(value) != REFERENCE_KEYS:
+        raise ValueError("reference manifest schema is not exact")
+    if value["contract"] != "vokra-mms-1b-all-backbone-adapter-v1" or value["repository"] != REPOSITORY or value["revision"] != REVISION or value["composition"] != "AutoProcessor.from_pretrained(target_lang=language) + Wav2Vec2ForCTC.from_pretrained(target_lang=language)":
+        raise ValueError("reference identity drifted")
+    language = value["language"]
+    if not isinstance(language, str) or not LANGUAGE.fullmatch(language):
+        raise ValueError("reference language is malformed")
+    if not isinstance(value["resolved_snapshot"], str):
+        raise ValueError("reference snapshot is not a string")
+    snapshot = Path(value["resolved_snapshot"])
+    if not snapshot.is_absolute() or snapshot.name != REVISION or any(part in {".", ".."} for part in snapshot.parts) or not snapshot.is_dir() or any(part.is_symlink() for part in (snapshot, *snapshot.parents)):
+        raise ValueError("reference snapshot is not an absolute pinned symlink-free directory")
+    if value["license"] != LICENSE or value["runtime_status"] != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or value["parity_status"] != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or value["tolerance"] is not None:
+        raise ValueError("reference is not blocked pending authenticated manifest")
+    selected = value["selected_vocabulary"]
+    if not isinstance(selected, dict) or set(selected) != {"path", "sha256", "sidecar_path", "sidecar_sha256", "labels"} or selected["path"] != f"vocab.json[{language}]" or selected["sidecar_path"] != f"vocabs/{language}.txt" or not HEX64.fullmatch(str(selected["sha256"])) or not HEX64.fullmatch(str(selected["sidecar_sha256"])) or isinstance(selected["labels"], bool) or not isinstance(selected["labels"], int) or selected["labels"] <= 0:
+        raise ValueError("reference vocabulary identity is malformed")
+    if not isinstance(value["source_files"], dict) or set(value["source_files"]) != {"config.json", "preprocessor_config.json", "tokenizer_config.json", "special_tokens_map.json", "model.safetensors", "vocab.json", f"adapter.{language}.safetensors", f"vocabs/{language}.txt"}:
+        raise ValueError("reference source file set is not exact")
+    for label, row in value["source_files"].items():
+        if not isinstance(row, dict) or set(row) != {"sha256", "bytes"} or not HEX64.fullmatch(str(row["sha256"])) or isinstance(row["bytes"], bool) or not isinstance(row["bytes"], int) or row["bytes"] <= 0:
+            raise ValueError(f"reference source file row is malformed: {label}")
+        source_path = snapshot / label
+        if not regular_file(source_path) or source_path.stat().st_size != row["bytes"] or sha_file(source_path) != row["sha256"]:
+            raise ValueError(f"reference source file bytes do not match authenticated row: {label}")
+    source = value["transformers_source"]
+    source_path = Path(source["path"]) if isinstance(source, dict) and isinstance(source.get("path"), str) else Path(".")
+    if not isinstance(source, dict) or set(source) != {"path", "sha256"} or not source_path.is_absolute() or not source_path.is_file() or source_path.is_symlink() or any(parent.is_symlink() for parent in source_path.parents) or not isinstance(source["sha256"], str) or not HEX64.fullmatch(source["sha256"]):
+        raise ValueError("reference Transformers source identity is malformed")
+    runtime = value["runtime"]
+    if not isinstance(runtime, dict) or set(runtime) != {"python", "platform", "torch", "transformers"} or any(not isinstance(runtime[key], str) or not runtime[key].strip() for key in runtime):
+        raise ValueError("reference runtime schema is malformed")
+    validate_tensor_manifest(value["state_dict_tensor_manifest"], "reference")
+    if not HEX64.fullmatch(str(value["state_dict_tensor_manifest_sha256"])) or value["state_dict_tensor_manifest_sha256"] != canon(value["state_dict_tensor_manifest"]):
+        raise ValueError("reference tensor manifest digest is malformed")
+    artifacts = value["artifacts"]
+    if not isinstance(artifacts, dict) or set(artifacts) != {"logits.npy", "greedy_token_ids.npy"}:
+        raise ValueError("reference artifact set is not exact")
+    for name, row in artifacts.items():
+        if not isinstance(row, dict) or set(row) != {"sha256", "bytes"} or not HEX64.fullmatch(str(row["sha256"])) or isinstance(row["bytes"], bool) or not isinstance(row["bytes"], int) or row["bytes"] <= 0:
+            raise ValueError(f"reference artifact row is malformed: {name}")
+        artifact_path = path.parent / name
+        if not regular_file(artifact_path) or artifact_path.stat().st_size != row["bytes"] or sha_file(artifact_path) != row["sha256"]:
+            raise ValueError(f"reference artifact bytes do not match authenticated row: {name}")
+    if not isinstance(value["logits_shape"], list) or len(value["logits_shape"]) != 3 or any(isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0 for dim in value["logits_shape"]) or not isinstance(value["logits_finite"], bool) or not isinstance(value["logits_nonzero"], bool) or not value["logits_finite"] or not value["logits_nonzero"] or value["logits_dtype"] != "torch.float32" or not HEX64.fullmatch(str(value["greedy_token_ids_sha256"])) or not isinstance(value["decoded_text"], str):
+        raise ValueError("reference output schema is malformed")
+
+
+def validate_prepared(path: Path) -> None:
+    if not regular_file(path):
+        raise ValueError("prepared manifest is missing or symlinked")
+    value = load_json(path)
+    if not isinstance(value, dict) or set(value) != PREPARED_KEYS:
+        raise ValueError("prepared manifest schema is not exact")
+    if value["contract"] != "vokra-mms-1b-all-backbone-adapter-v1" or value["repository"] != REPOSITORY or value["revision"] != REVISION or value["composition"] != "UNAUTHENTICATED; compare official Transformers composed state_dict before conversion" or value["license"] != LICENSE or value["runtime_status"] != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or value["parity_status"] != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST":
+        raise ValueError("prepared manifest identity/status drifted")
+    language = value["language"]
+    if not isinstance(language, str) or not LANGUAGE.fullmatch(language):
+        raise ValueError("prepared language is malformed")
+    expected = {"model.safetensors", f"adapter.{language}.safetensors", f"vocabs/{language}.txt", "vocab.json"}
+    files = value["source_files"]
+    if not isinstance(files, dict) or set(files) != expected:
+        raise ValueError("prepared source file set is not exact")
+    for label, row in files.items():
+        expected_keys = {"sha256", "bytes", "tensor_manifest"} if label in {"model.safetensors", f"adapter.{language}.safetensors"} else {"sha256", "bytes"} if label == f"vocabs/{language}.txt" else {"sha256", "selected_labels"}
+        if not isinstance(row, dict) or set(row) != expected_keys or not isinstance(row.get("sha256"), str) or not HEX64.fullmatch(row["sha256"]):
+            raise ValueError(f"prepared source hash is malformed: {label}")
+        if label in {"model.safetensors", f"adapter.{language}.safetensors"}:
+            if isinstance(row["bytes"], bool) or not isinstance(row["bytes"], int) or row["bytes"] <= 0:
+                raise ValueError(f"prepared source size is malformed: {label}")
+            validate_tensor_manifest(row["tensor_manifest"], f"prepared {label}")
+        else:
+            if label == f"vocabs/{language}.txt" and (isinstance(row.get("bytes"), bool) or not isinstance(row.get("bytes"), int) or row["bytes"] <= 0):
+                raise ValueError(f"prepared source size is malformed: {label}")
+            if label == "vocab.json" and (isinstance(row.get("selected_labels"), bool) or not isinstance(row.get("selected_labels"), int) or row["selected_labels"] <= 0):
+                raise ValueError(f"prepared vocabulary label count is malformed: {label}")
+
+
+def approval_scope(value: dict[str, Any]) -> str:
+    return canon({key: value[key] for key in ("schema", "model", "upstream_repo", "upstream_revision", "language", "license_spdx", "project_sha256", "lock_sha256", "manifest_sha256", "expected_head", "no_upload", "decision")})
+
+
+def validate_evidence_bindings(identities: dict[str, Any], prepared: dict[str, Any], reference: dict[str, Any], explicit_language: str) -> None:
+    if prepared["language"] != explicit_language or reference["language"] != explicit_language:
+        raise ValueError("evidence language does not match explicit language")
+    for key, source_path in (("backbone", "model.safetensors"), ("adapter", f"adapter.{explicit_language}.safetensors"), ("vocabulary", f"vocabs/{explicit_language}.txt")):
+        identity = identities[key]
+        prepared_row = prepared["source_files"][source_path]
+        reference_row = reference["source_files"][source_path]
+        if any(row["sha256"] != identity["sha256"] or row["bytes"] != identity["bytes"] for row in (prepared_row, reference_row)):
+            raise ValueError(f"{source_path} identity differs across closure evidence")
+
+
+def validate_metadata_bindings(path: Path, identities: dict[str, Any], explicit_language: str, expected_head: str) -> None:
+    """Bind complete-manifest identities to model-free HF metadata.
+
+    This preflight never resolves a file or reads checkpoint bytes.  A
+    regular Git blob has no authenticated payload SHA-256 in the metadata
+    response, so it is rejected instead of being guessed into a complete
+    backbone/adapter/vocabulary contract.
+    """
+    if not regular_file(path):
+        raise ValueError("HF metadata evidence is missing or symlinked")
+    value = load_json(path)
+    try:
+        validate_hf_metadata_report(value, explicit_language, expected_head)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"HF metadata evidence is invalid: {error}") from error
+    roles = value["roles"]
+    for identity_key, metadata_key in METADATA_PAYLOAD_ROLES.items():
+        identity = identities.get(identity_key)
+        role = roles.get(metadata_key)
+        if not isinstance(identity, dict) or not isinstance(role, dict):
+            raise ValueError(f"metadata binding row is missing: {identity_key}")
+        payload_sha = role.get("lfs_payload_sha256")
+        if not isinstance(payload_sha, str) or not HEX64.fullmatch(payload_sha):
+            raise ValueError(f"metadata role lacks an authenticated LFS payload digest: {metadata_key}")
+        if identity["path"] != role["path"] or identity["bytes"] != role["size"] or identity["sha256"] != payload_sha:
+            raise ValueError(f"manifest identity differs from HF metadata role: {identity_key}")
+    expected_paths = {
+        "backbone": "model.safetensors",
+        "adapter": f"adapter.{explicit_language}.safetensors",
+        "vocabulary": f"vocabs/{explicit_language}.txt",
+    }
+    if {key: identities[key]["path"] for key in expected_paths} != expected_paths:
+        raise ValueError("manifest identity paths do not preserve explicit backbone/adapter/vocabulary composition")
+
+
+def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path: Path | None, dependency_path: Path, api_path: Path, metadata_path: Path | None, reference_path: Path | None, prepared_path: Path | None, explicit_language: str, expected_head: str) -> None:
+    for path, label in ((lock_path, "dedicated uv.lock"), (project_path, "dedicated pyproject"), (manifest_path, "closure manifest"), (dependency_path, "dependency audit evidence"), (api_path, "model-free API evidence")):
+        if not regular_file(path):
+            blocked(f"{label} is missing; authenticated MMS closure is not committed")
+    try:
+        lock_bytes = lock_path.read_bytes()
+        project_bytes = project_path.read_bytes()
+        lock = tomllib.loads(lock_bytes.decode("utf-8"))
+        project = tomllib.loads(project_bytes.decode("utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = load_json_bytes(manifest_bytes)
+        dependency = load_json(dependency_path)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, json.JSONDecodeError, ValueError) as error:
+        blocked(f"closure input is unreadable: {error}")
+    try:
+        project_schema(project)
+        rows = lock_rows(lock)
+    except (KeyError, TypeError, ValueError) as error:
+        blocked(str(error))
+    lock_digest, project_digest = sha(lock_bytes), sha(project_bytes)
+    try:
+        validate_expected_head(expected_head)
+    except ValueError as error:
+        blocked(str(error))
+    if isinstance(manifest, dict) and set(manifest) == PENDING_MANIFEST_KEYS:
+        try:
+            source_head = manifest.get("evidence_source_head")
+            if not isinstance(source_head, str) or not re.fullmatch(r"[0-9a-f]{40}", source_head) or manifest.get("schema") != "vokra-mms-1b-all-license-gate-pending-v1" or manifest.get("status") != "BLOCKED_PENDING_OWNER_REVIEW" or manifest.get("publication") != "NO_UPLOAD" or manifest.get("project_sha256") != project_digest or manifest.get("lock_sha256") != lock_digest or manifest.get("dependency_audit_sha256") != sha_file(dependency_path) or manifest.get("dependency_audit_status") != "BLOCKED_PENDING_OWNER_REVIEW" or manifest.get("api_model_free_evidence_sha256") != sha_file(api_path) or manifest.get("api_model_free_evidence_status") != "MODEL_FREE_API_VALIDATED" or manifest.get("model_evidence_status") != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or manifest.get("owner_review") != "PENDING_OWNER_APPROVAL" or not isinstance(manifest.get("blockers"), list) or not manifest["blockers"]:
+                raise ValueError("pending closure manifest is not exact")
+            validate_dependency_audit(dependency_path, rows, project_digest, lock_digest)
+            validate_api_evidence(api_path, project_digest, lock_digest)
+            dependency_evidence = load_json(dependency_path)
+            api_evidence = load_json(api_path)
+            validate_pending_source_head(dependency_evidence, api_evidence, source_head)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+            blocked(f"pending dependency closure is invalid: {error}")
+        blocked("dependency/native package review and owner approval are pending; no model evidence may be acquired")
+    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS or manifest.get("gate_version") != GATE_VERSION:
+        blocked("closure manifest schema is not exact")
+    if not isinstance(dependency, dict):
+        blocked("dependency audit evidence schema is not exact")
+    if approval_path is None or not regular_file(approval_path):
+        blocked("approval evidence is missing; authenticated MMS closure is not committed")
+    try:
+        approval_bytes = approval_path.read_bytes()
+        approval = load_json_bytes(approval_bytes)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        blocked(f"approval evidence is unreadable: {error}")
+    try:
+        source_head = manifest.get("evidence_source_head")
+        validate_expected_head(source_head)
+        validate_dependency_audit(dependency_path, rows, project_digest, lock_digest)
+        validate_api_evidence(api_path, project_digest, lock_digest)
+        validate_pending_source_head(load_json(dependency_path), load_json(api_path), source_head)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        blocked(f"dependency audit evidence is invalid: {error}")
+    if not isinstance(approval, dict) or set(approval) != APPROVAL_KEYS:
+        blocked("approval evidence schema is not exact")
+    if not LANGUAGE.fullmatch(explicit_language):
+        blocked("explicit language adapter is malformed")
+    if manifest.get("lock_sha256") != lock_digest or manifest.get("project_sha256") != project_digest or not HEX64.fullmatch(lock_digest) or not HEX64.fullmatch(project_digest):
+        blocked("manifest does not bind exact project/lock bytes")
+    if manifest.get("package_rows") != rows or manifest.get("package_rows_sha256") != canon(rows):
+        blocked("canonical package rows drifted")
+    reviews = manifest.get("package_review_rows")
+    if not isinstance(reviews, list) or len(reviews) != len(rows) or manifest.get("package_review_rows_sha256") != canon(reviews):
+        blocked("every locked package needs an exact review row")
+    actual = {(row["name"], row["version"]): row for row in rows}
+    seen: set[tuple[str, str]] = set()
+    for review in reviews:
+        if not isinstance(review, dict) or set(review) != REVIEW_KEYS:
+            blocked("package review row schema is not exact")
+        key = (review.get("name"), review.get("version"))
+        if key in seen or key not in actual or review.get("source") != actual[key]["source"] or review.get("status") != "REVIEWED" or not resolved(review.get("license")) or not resolved(review.get("native_bundled_review")):
+            blocked(f"package/native review is unresolved or unbound: {key!r}")
+        seen.add(key)
+    if seen != set(actual):
+        blocked("package review rows do not cover exact closure")
+    identities = manifest.get("identities")
+    if not isinstance(identities, dict) or set(identities) != {"repository", "revision", "language", "backbone", "adapter", "vocabulary"} or identities["repository"] != REPOSITORY or identities["revision"] != REVISION or identities["language"] != explicit_language or identities["language"] != approval.get("language"):
+        blocked("backbone/one-adapter identity schema is not exact")
+    for key in ("backbone", "adapter", "vocabulary"):
+        row = identities[key]
+        if not isinstance(row, dict) or set(row) != {"path", "bytes", "sha256"} or not isinstance(row["path"], str) or not row["path"] or isinstance(row["bytes"], bool) or not isinstance(row["bytes"], int) or row["bytes"] <= 0 or not HEX64.fullmatch(str(row["sha256"])):
+            blocked(f"{key} identity is malformed")
+    if identities["backbone"]["path"] != "model.safetensors" or identities["adapter"]["path"] != f"adapter.{explicit_language}.safetensors" or identities["vocabulary"]["path"] != f"vocabs/{explicit_language}.txt":
+        blocked("backbone/adapter/vocabulary paths are not separated")
+    if metadata_path is None:
+        blocked("HF metadata evidence is missing; complete identity binding is not authorized")
+    try:
+        validate_metadata_bindings(metadata_path, identities, explicit_language, expected_head)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        blocked(f"HF metadata identity binding is invalid: {error}")
+    licenses = manifest.get("license_rows")
+    if not isinstance(licenses, list) or len(licenses) != 3 or [row.get("id") for row in licenses if isinstance(row, dict)] != ["source-license", "weights-license", "python-closure"]:
+        blocked("license review rows are missing, duplicated, reordered, or extra")
+    if any(not isinstance(row, dict) or set(row) != LICENSE_ROW_KEYS or row.get("status") != "REVIEWED" or not resolved(row.get("license")) or not resolved(row.get("conclusion")) or not resolved(row.get("evidence")) for row in licenses) or manifest.get("license_rows_sha256") != canon(licenses):
+        blocked("license/native bundled review is unresolved")
+    if manifest.get("publication_decision") != "NO_UPLOAD":
+        blocked("publication decision is not NO_UPLOAD")
+    if approval.get("schema") != "vokra-mms-1b-all-approval-v1" or approval.get("model") != MODEL or approval.get("upstream_repo") != REPOSITORY or approval.get("upstream_revision") != REVISION or approval.get("license_spdx") != LICENSE or approval.get("project_sha256") != project_digest or approval.get("lock_sha256") != lock_digest or approval.get("expected_head") != expected_head or approval.get("no_upload") is not True or approval.get("decision") != "APPROVED" or not isinstance(approval.get("language"), str) or not LANGUAGE.fullmatch(approval["language"]) or not isinstance(approval.get("manifest_sha256"), str) or not HEX64.fullmatch(approval["manifest_sha256"]) or approval["manifest_sha256"] != sha(manifest_bytes) or not isinstance(approval.get("signer"), str) or not approval["signer"].strip() or approval["signer"].strip().casefold() in PLACEHOLDERS or approval.get("scope_sha256") != approval_scope(approval):
+        blocked("owner approval does not bind exact noncommercial NO_UPLOAD scope")
+    prepared = None
+    reference = None
+    if prepared_path is not None:
+        try:
+            validate_prepared(prepared_path)
+            prepared = load_json(prepared_path)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            blocked(f"prepared manifest is invalid: {error}")
+        if prepared["language"] != explicit_language:
+            blocked("prepared language does not match explicit language")
+    if reference_path is not None:
+        try:
+            validate_reference(reference_path)
+            reference = load_json(reference_path)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            blocked(f"reference manifest is invalid: {error}")
+        if reference["language"] != explicit_language:
+            blocked("reference language does not match explicit language")
+    if prepared is not None and reference is not None:
+        try:
+            validate_evidence_bindings(identities, prepared, reference, explicit_language)
+        except (KeyError, TypeError, ValueError) as error:
+            blocked(str(error))
+    print("mms-1b-all license gate: PASS")
+
+
+def self_test() -> None:
+    assert load_json.__name__ == "load_json"
+    assert validate_expected_head("a" * 40) == "a" * 40
+    for malformed_head in ("", "a" * 39, "A" * 40, "not-a-head"):
+        try:
+            validate_expected_head(malformed_head)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted malformed current expected HEAD")
+    for value in (None, "", "TODO", "OWNER_SIGNOFF_REQUIRED", "pending_review"):
+        assert not resolved(value)
+    assert resolved("owner signoff recorded in external evidence")
+    assert LANGUAGE.fullmatch("eng") and LANGUAGE.fullmatch("azj-script_cyrillic")
+    assert not LANGUAGE.fullmatch("eng/../x")
+    source_head = "c" * 40
+    dependency_provenance = {"expected_head": source_head, "head": source_head, "clean": True}
+    api_provenance = {"expected_head": source_head, "head": source_head, "clean": True}
+    validate_pending_source_head(dependency_provenance, api_provenance, source_head)
+    for source, dep, api in (
+        ("bad", dependency_provenance, api_provenance),
+        (source_head, {**dependency_provenance, "head": "d" * 40}, api_provenance),
+        (source_head, dependency_provenance, {**api_provenance, "clean": False}),
+        (source_head, dependency_provenance, {**api_provenance, "expected_head": "e" * 40}),
+    ):
+        try:
+            validate_pending_source_head(dep, api, source)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted pending evidence source-head tamper")
+    inventory_rows = [
+        {"name": "Demo-Pkg", "version": "1.0", "source": {"registry": "https://pypi.org/simple"}},
+        {"name": "second_pkg", "version": "2.0+cpu", "source": {"registry": "https://pypi.org/simple"}},
+    ]
+    inventory_exact = {"expected": ["demo-pkg==1.0", "second-pkg==2.0+cpu"], "installed": ["demo-pkg==1.0", "second-pkg==2.0+cpu"], "missing": [], "unexpected": [], "duplicates": [], "exact": True}
+    validate_distribution_inventory(inventory_exact, inventory_rows)
+    for installed, missing, unexpected, duplicates in (
+        (["demo-pkg==1.1", "second-pkg==2.0+cpu"], ["demo-pkg==1.0"], ["demo-pkg==1.1"], []),
+        (["demo-pkg==1.0"], ["second-pkg==2.0+cpu"], [], []),
+        (["demo-pkg==1.0", "extra==9", "second-pkg==2.0+cpu"], [], ["extra==9"], []),
+        (["demo-pkg==1.0", "second-pkg==2.0+cpu", "second-pkg==2.0+cpu"], [], [], ["second-pkg==2.0+cpu"]),
+    ):
+        candidate = dict(inventory_exact)
+        candidate.update({"installed": installed, "missing": missing, "unexpected": unexpected, "duplicates": duplicates, "exact": False})
+        try:
+            validate_distribution_inventory(candidate, inventory_rows)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted non-exact installed distribution inventory")
+        candidate["exact"] = True
+        try:
+            validate_distribution_inventory(candidate, inventory_rows)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted inconsistent exact inventory")
+    valid_artifact = {"url": "https://files.pythonhosted.org/packages/x.whl", "hash": "sha256:" + "a" * 64, "size": 1, "upload-time": "2026-01-01T00:00:00Z"}
+    artifact(valid_artifact, "self-test", "https://pypi.org/simple")
+    for suffix in ("?query=1", "#fragment"):
+        candidate = dict(valid_artifact); candidate["url"] += suffix
+        try:
+            artifact(candidate, "self-test", "https://pypi.org/simple")
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted artifact URL query/fragment")
+    virtual = {"name": "demo", "version": "0.1.0", "source": {"virtual": "."}, "dependencies": [], "metadata": {"requires-dist": []}}
+    lock_shape = {"version": 1, "revision": 3, "requires-python": "==3.12.*", "resolution-markers": [], "supported-markers": [], "package": [virtual]}
+    lock_rows(lock_shape)
+    for field, bad in (("version", True), ("resolution-markers", "not-a-list")):
+        candidate = dict(lock_shape); candidate[field] = bad
+        try:
+            lock_rows(candidate)
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise SystemExit(f"self-test accepted malformed lock field: {field}")
+    temp_root = Path(os.environ.get("TMPDIR") or __import__("tempfile").gettempdir()).resolve()
+    if not temp_root.is_dir():
+        raise SystemExit(f"self-test temp root is not a directory: {temp_root}")
+    with __import__("tempfile").TemporaryDirectory(dir=temp_root) as directory:
+        root = Path(directory)
+        duplicate = root / "duplicate.json"
+        duplicate.write_text('{"a":1,"a":2}', encoding="utf-8")
+        try:
+            load_json(duplicate)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted duplicate JSON key")
+        target = root / "manifest.json"
+        target.write_text("[]", encoding="utf-8")
+        try:
+            value = load_json(target)
+        except Exception as error:  # pragma: no cover - parser must not crash gate
+            raise SystemExit(f"self-test parser crashed: {error}") from error
+        if isinstance(value, dict):
+            raise SystemExit("self-test accepted non-object as a generic manifest")
+        link_parent = root / "link-parent"
+        link_parent.mkdir()
+        link = root / "link"
+        link.symlink_to(link_parent, target_is_directory=True)
+        if regular_file(link / "missing.json"):
+            raise SystemExit("self-test accepted symlinked ancestry")
+        snapshot = root / REVISION
+        snapshot.mkdir()
+        digest = sha(b"x")
+        source_files = {name: {"sha256": digest, "bytes": 1} for name in ("config.json", "preprocessor_config.json", "tokenizer_config.json", "special_tokens_map.json", "model.safetensors", "vocab.json", "adapter.eng.safetensors", "vocabs/eng.txt")}
+        (snapshot / "vocabs").mkdir()
+        for name in source_files:
+            source_path = snapshot / name
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_bytes(b"x")
+        source_file = root / "Wav2Vec2ForCTC.py"; source_file.write_bytes(b"x")
+        reference_tensor_manifest = {"weight": {"shape": [1], "dtype": "torch.float32"}}
+        reference = {"contract": "vokra-mms-1b-all-backbone-adapter-v1", "repository": REPOSITORY, "revision": REVISION, "resolved_snapshot": str(snapshot), "language": "eng", "composition": "AutoProcessor.from_pretrained(target_lang=language) + Wav2Vec2ForCTC.from_pretrained(target_lang=language)", "selected_vocabulary": {"path": "vocab.json[eng]", "sha256": digest, "sidecar_path": "vocabs/eng.txt", "sidecar_sha256": digest, "labels": 1}, "source_files": source_files, "transformers_source": {"path": str(source_file), "sha256": digest}, "runtime": {"python": "3.12.0", "platform": "Linux", "torch": "2.0", "transformers": "5.0"}, "state_dict_tensor_manifest": reference_tensor_manifest, "state_dict_tensor_manifest_sha256": canon(reference_tensor_manifest), "artifacts": {"logits.npy": {"sha256": digest, "bytes": 1}, "greedy_token_ids.npy": {"sha256": digest, "bytes": 1}}, "logits_shape": [1, 2, 3], "logits_finite": True, "logits_nonzero": True, "logits_dtype": "torch.float32", "greedy_token_ids_sha256": digest, "decoded_text": "", "license": LICENSE, "runtime_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST", "parity_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST", "tolerance": None}
+        reference_path = root / "reference.json"
+        reference_path.write_text(json.dumps(reference), encoding="utf-8")
+        for name in ("logits.npy", "greedy_token_ids.npy"):
+            (root / name).write_bytes(b"x")
+        validate_reference(reference_path)
+        for field, bad in (("composition", "unverified"), ("transformers_source", {"path": "x", "sha256": "bad"}), ("logits_shape", [1, 2, 3, 4])):
+            candidate = json.loads(json.dumps(reference)); candidate[field] = bad; reference_path.write_text(json.dumps(candidate), encoding="utf-8")
+            try:
+                validate_reference(reference_path)
+            except ValueError:
+                pass
+            else:
+                raise SystemExit(f"self-test accepted reference tamper: {field}")
+        reference_path.write_text(json.dumps(reference), encoding="utf-8")
+        prepared = {"contract": "vokra-mms-1b-all-backbone-adapter-v1", "repository": REPOSITORY, "revision": REVISION, "language": "eng", "source_files": {"model.safetensors": {"sha256": digest, "bytes": 1, "tensor_manifest": {"weight": {"shape": [1], "dtype": "torch.float32"}}}, "adapter.eng.safetensors": {"sha256": digest, "bytes": 1, "tensor_manifest": {"weight": {"shape": [1], "dtype": "torch.float32"}}}, "vocabs/eng.txt": {"sha256": digest, "bytes": 1}, "vocab.json": {"sha256": digest, "selected_labels": 1}}, "composition": "UNAUTHENTICATED; compare official Transformers composed state_dict before conversion", "license": LICENSE, "runtime_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST", "parity_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST"}
+        prepared_path = root / "prepared.json"; prepared_path.write_text(json.dumps(prepared), encoding="utf-8"); validate_prepared(prepared_path)
+        identities = {"backbone": {"path": "model.safetensors", "bytes": 1, "sha256": digest}, "adapter": {"path": "adapter.eng.safetensors", "bytes": 1, "sha256": digest}, "vocabulary": {"path": "vocabs/eng.txt", "bytes": 1, "sha256": digest}}
+        validate_evidence_bindings(identities, prepared, reference, "eng")
+        mismatched = json.loads(json.dumps(reference)); mismatched["source_files"]["model.safetensors"]["sha256"] = "b" * 64
+        try:
+            validate_evidence_bindings(identities, prepared, mismatched, "eng")
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted cross-evidence hash replacement")
+        mismatched = json.loads(json.dumps(prepared)); mismatched["language"] = "spa"
+        try:
+            validate_evidence_bindings(identities, mismatched, reference, "eng")
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted cross-evidence language replacement")
+        candidate = json.loads(json.dumps(prepared)); candidate["source_files"]["adapter.eng.safetensors"]["tensor_manifest"]["weight"] = {"shape": [1]}; prepared_path.write_text(json.dumps(candidate), encoding="utf-8")
+        try:
+            validate_prepared(prepared_path)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted prepared tensor-row tamper")
+    # The model-free HF report is the only source allowed to bind future
+    # artifact identities. Exercise the exact three payload roles without
+    # creating checkpoint bytes or inventing tensor shapes.
+    from hf_metadata_audit import _synthetic_payload, build_report
+
+    checkout = {"expected_head": source_head, "actual_head": source_head, "clean": True}
+    payload, raw = _synthetic_payload("eng")
+    metadata = build_report(payload, raw, "eng", checkout)
+    with __import__("tempfile").TemporaryDirectory(dir=temp_root) as directory:
+        metadata_path = Path(directory) / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        metadata_identities = {
+            "backbone": {"path": "model.safetensors", "bytes": metadata["roles"]["backbone"]["size"], "sha256": metadata["roles"]["backbone"]["lfs_payload_sha256"]},
+            "adapter": {"path": "adapter.eng.safetensors", "bytes": metadata["roles"]["adapter"]["size"], "sha256": metadata["roles"]["adapter"]["lfs_payload_sha256"]},
+            "vocabulary": {"path": "vocabs/eng.txt", "bytes": metadata["roles"]["language_vocabulary"]["size"], "sha256": metadata["roles"]["language_vocabulary"]["lfs_payload_sha256"]},
+        }
+        validate_metadata_bindings(metadata_path, metadata_identities, "eng", source_head)
+        for key in ("backbone", "adapter", "vocabulary"):
+            tampered = json.loads(json.dumps(metadata_identities))
+            tampered[key]["sha256"] = "f" * 64
+            try:
+                validate_metadata_bindings(metadata_path, tampered, "eng", source_head)
+            except ValueError:
+                pass
+            else:
+                raise SystemExit(f"self-test accepted metadata identity tamper: {key}")
+        regular_metadata = json.loads(json.dumps(metadata))
+        regular_role = regular_metadata["roles"]["backbone"]
+        regular_role["git_blob_sha1"] = "a" * 40
+        regular_role["lfs_pointer_git_blob_sha1"] = None
+        regular_role["lfs_payload_sha256"] = None
+        regular_role["lfs_payload_size"] = None
+        regular_path = Path(directory) / "regular-metadata.json"
+        regular_path.write_text(json.dumps(regular_metadata), encoding="utf-8")
+        try:
+            validate_metadata_bindings(regular_path, metadata_identities, "eng", source_head)
+        except ValueError as error:
+            assert "payload digest" in str(error)
+        else:
+            raise SystemExit("self-test accepted regular Git blob without payload digest")
+    print("mms_1b_all license gate self-test: PASS")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--lock", type=Path)
+    parser.add_argument("--project", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--approval-evidence", type=Path)
+    parser.add_argument("--dependency-audit", type=Path)
+    parser.add_argument("--api-evidence", type=Path)
+    parser.add_argument("--metadata-evidence", type=Path)
+    parser.add_argument("--reference-manifest", type=Path)
+    parser.add_argument("--prepared-manifest", type=Path)
+    parser.add_argument("--language")
+    parser.add_argument("--expected-head")
+    args = parser.parse_args()
+    if args.self_test:
+        if any(value is not None for value in (args.lock, args.project, args.manifest, args.approval_evidence, args.dependency_audit, args.api_evidence, args.metadata_evidence, args.reference_manifest, args.prepared_manifest, args.language, args.expected_head)):
+            parser.error("--self-test accepts no other arguments")
+        self_test()
+        return 0
+    if any(value is None for value in (args.lock, args.project, args.manifest, args.dependency_audit, args.api_evidence)):
+        parser.error("normal runs require --lock, --project, --manifest, --dependency-audit, and --api-evidence")
+    if args.language is None or args.expected_head is None:
+        parser.error("normal runs require --language and --expected-head")
+    run(args.lock, args.project, args.manifest, args.approval_evidence, args.dependency_audit, args.api_evidence, args.metadata_evidence, args.reference_manifest, args.prepared_manifest, args.language, args.expected_head)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

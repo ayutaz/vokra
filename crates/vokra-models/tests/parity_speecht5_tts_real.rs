@@ -1,4 +1,4 @@
-//! Gated real-checkpoint SpeechT5 TTS parity against Transformers 4.45.2.
+//! Gated real-checkpoint SpeechT5 TTS parity against Transformers 5.5.0.
 //!
 //! The reference directory is produced only by the official
 //! `SpeechT5ForTextToSpeech.generate_speech` path. The Python oracle injects

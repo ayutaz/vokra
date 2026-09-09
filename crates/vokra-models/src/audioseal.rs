@@ -110,7 +110,7 @@ const CONTRACT_KEYS: &[&str] = &[
     KEY_NORMALIZER,
 ];
 
-const LEGACY_SOURCE: &str = "facebook/audioseal (paired Generator + Detector 16-bit-message audio watermark for EU AI Act Article 50 compliance, San Roman et al. 2024 ICML arXiv:2401.17264, MIT — runtime binder gated on M5-05 T04 ADR ratification)";
+const LEGACY_SOURCE: &str = "facebook/audioseal (paired Generator + Detector 16-bit-message audio watermark; marking candidate / technical-control candidate only, with no legal compliance claim; San Roman et al. 2024 ICML arXiv:2401.17264, MIT — runtime binder gated on M5-05 T04 ADR ratification)";
 
 /// Complete learned-op registry for both generator and detector variants.
 pub const AUDIOSEAL_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::Gemm, HotOp::Gemv, HotOp::Softmax];

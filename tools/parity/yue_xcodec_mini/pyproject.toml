@@ -1,0 +1,26 @@
+[project]
+name = "vokra-yue-xcodec-mini-parity"
+version = "0.1.0"
+description = "Pinned YuE xcodec-mini RVQ/Vocos reference oracle"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy==2.3.5",
+    "matplotlib==3.11.1",
+    "omegaconf==2.3.0",
+    "pyyaml==6.0.3",
+    "tensorboard==2.20.0",
+    "torch==2.7.1",
+    "vocos==0.1.0",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

@@ -1,5 +1,11 @@
 # Kokoro-82M upstream tensor manifest
 
+> **2026-08-30 current-state boundary:** This manifest is a dated
+> 2026-07-07 upstream inspection artifact. It is the tensor-schema evidence
+> for the follow-up implementation, not a current claim that Kokoro conversion
+> or end-to-end parity is complete. Treat the TSV and the current Rust loader
+> as separate evidence surfaces; consult the M5 ledger for live status.
+
 `upstream_tensors_v1_0.tsv` is the flat tensor manifest of the upstream
 [hexgrad/Kokoro-82M `kokoro-v1_0.pth`](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/kokoro-v1_0.pth)
 checkpoint. It was captured on **2026-07-07** by CC while closing out
@@ -24,10 +30,12 @@ the flattened prefix (dot-separated).
 
 ## Regeneration
 
-Idempotent — the checkpoint is public + versioned by SHA:
+This is a VAST-only checkpoint inspection. The checkpoint is public and
+versioned by SHA, but the maintainer Mac policy forbids local model
+acquisition/loading; return only the small manifest and its hash:
 
 ```
-tools/parity/parity-venv/bin/python -c "
+uv run --project tools/parity --frozen --python 3.12 python -c "
 import torch
 from huggingface_hub import hf_hub_download
 p = hf_hub_download(repo_id='hexgrad/Kokoro-82M', filename='kokoro-v1_0.pth')

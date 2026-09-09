@@ -1,0 +1,30 @@
+[project]
+name = "vokra-gigaam-v3-parity"
+version = "0.1.0"
+description = "Dedicated VAST-only GigaAM v3 reference/parity environment."
+requires-python = ">=3.12,<3.13"
+
+# This is the narrow closure for the fixed official GigaAM v3 remote-code
+# reference and the safetensors preparer.  The fixed short-PCM AutoModel route
+# does not use the optional longform pyannote.audio/torchcodec stack; keeping
+# them out also keeps Lightning's checkpoint loader out of this environment.
+# ONNX/onnxruntime are deliberately excluded: neither the reference dumper nor
+# the preparer imports them.
+# The exact resolved versions are recorded in the sibling uv.lock; this project
+# must remain fail-closed until that lock is reviewed on the approved VAST host.
+dependencies = [
+    "hydra-core==1.3.*",
+    "numpy==2.*",
+    "omegaconf==2.3.*",
+    "safetensors",
+    "sentencepiece",
+    "soundfile",
+    "torch==2.10.*",
+    "torchaudio==2.10.*",
+    "tqdm",
+    "transformers==5.*",
+]
+
+[tool.uv]
+package = false
+environments = ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"]

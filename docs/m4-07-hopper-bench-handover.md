@@ -1,5 +1,12 @@
 # M4-07 owner handover — FA v3 Hopper 有効化確認（T17）+ FA v2 比計測 & ダッシュボード登録（T18）
 
+> **2026-09-09 audit-start snapshot:** This is a dated Hopper/CUDA owner
+> handover. Its H100 evidence and lifecycle commands are historical. Before
+> this documentation refresh, PR #79 was `9efcd16e` (`CLEAN` / `MERGEABLE`; 110
+> CI success / 13 intentional skip / 0 fail), VAST `50320338` plus 150-GB
+> storage were destroyed, and Scaleway had not started. Current Mac/Metal truth
+> is in the canonical pre-Scaleway ledger.
+
 **WP**: M4-07（FlashAttention v3、Hopper WGMMA、CUDA）
 **CC 到達分**: kernel + 3-way dispatch + gated tests + `--fa-mode` harness + 本 scaffold（compile-only 検証も CC 機体では未発火 = NVRTC 不在の clean skip。**実行・parity・計測はすべて本書の手順で初めて発火**）
 **WP close の発火条件**: T18 のダッシュボード登録（milestones §8 M4-07 行の完了条件後半）

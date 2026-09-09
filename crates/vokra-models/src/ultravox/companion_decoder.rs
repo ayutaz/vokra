@@ -1,14 +1,18 @@
 //! Bounded-memory Llama 3.2 decoder for the separately acquired companion.
 //!
 //! The tied embedding table stays mmap-backed and doubles as the vocabulary
-//! head. One decoder layer is widened into reusable scratch at a time. The
-//! caller supplies an exact pre-tokenized prompt plus the consecutive span
-//! whose ordinary token embeddings are replaced by projected Ultravox audio.
+//! head. CPU and Metal routes consume mapped BF16 linear weights through
+//! bounded transposed panels; only the two norm vectors are widened per layer.
+//! Other GPU routes retain their established dense-F32 path. The caller
+//! supplies an exact pre-tokenized prompt plus the
+//! consecutive span whose ordinary token embeddings are replaced by projected
+//! Ultravox audio.
 
 use std::sync::Mutex;
 
+use vokra_backend_cpu::kernels::GemmF32Bf16BitsScratch;
 use vokra_core::backend::BackendKind;
-use vokra_core::gguf::GgufTensorInfo;
+use vokra_core::gguf::{GgmlType, GgufTensorInfo};
 use vokra_core::{KvCache, Result, VokraError};
 
 use crate::compute::Compute;
@@ -22,6 +26,7 @@ use super::projector::UltravoxAudioEmbeddings;
 
 const PREFILL_CHUNK_ROWS: usize = 8;
 const HEAD_CHUNK_ROWS: usize = 512;
+const BF16_CPU_PANEL_COLUMNS: usize = 8;
 const LABEL: &str = "ultravox_llama_companion";
 
 #[derive(Default)]
@@ -46,7 +51,18 @@ struct DecoderBlock {
 #[derive(Default)]
 struct HeadScratch {
     weights: Vec<f32>,
+    mixed: MixedLinearScratch,
     logits: Vec<f32>,
+}
+
+#[derive(Default)]
+struct MixedLinearScratch {
+    /// Transposed raw BF16 `[input, panel_columns]` payload. CPU keeps this at
+    /// at most 8 columns; Metal reuses it for one complete logical linear.
+    panel: Vec<u16>,
+    /// Reusable CPU kernel scratch for the widened panel and SIMD output tile.
+    /// Metal leaves this scratch untouched and writes directly to its output.
+    kernel: GemmF32Bf16BitsScratch,
 }
 
 #[derive(Default)]
@@ -69,6 +85,7 @@ struct StepScratch {
     ffn_activated: Vec<f32>,
     ffn_up: Vec<f32>,
     ffn_down: Vec<f32>,
+    mixed: MixedLinearScratch,
 }
 
 #[derive(Clone, Copy)]
@@ -228,7 +245,18 @@ fn forward_chunk(
 
     let mut block = lock_scratch(&runtime.block, mapped.mapped_model())?;
     for layer in 0..config.n_layer as usize {
-        materialize_layer(mapped, layer, &mut block)?;
+        let descriptors = mapped.layer(layer);
+        if compute.supports_mixed_bf16() {
+            // Norm vectors are small and remain exact f32 widened values. Dense
+            // linear weights stay mapped as BF16 bits on CPU and Metal. CPU
+            // copies bounded <=8-column panels; Metal reuses one complete raw
+            // panel per linear to avoid synchronous per-tile submissions.
+            widen_tensor(mapped, descriptors.input_norm, &mut block.input_norm)?;
+            widen_tensor(mapped, descriptors.ffn_norm, &mut block.ffn_norm)?;
+        } else {
+            // GPU routes retain the established full-f32 layer scratch path.
+            materialize_layer(mapped, layer, &mut block)?;
+        }
         compute.rms_norm_f32(
             &scratch.hidden,
             &mut scratch.norm,
@@ -237,32 +265,41 @@ fn forward_chunk(
             &block.input_norm,
             config.rms_norm_eps,
         )?;
-        compute.gemm_f32(
+        linear_dispatch(
+            compute,
+            mapped,
+            descriptors.q_weight,
             rows,
             q_width,
             hidden,
             &scratch.norm,
             &block.q_w_t,
-            None,
             &mut scratch.q,
+            &mut scratch.mixed,
         )?;
-        compute.gemm_f32(
+        linear_dispatch(
+            compute,
+            mapped,
+            descriptors.k_weight,
             rows,
             kv_width,
             hidden,
             &scratch.norm,
             &block.k_w_t,
-            None,
             &mut scratch.k,
+            &mut scratch.mixed,
         )?;
-        compute.gemm_f32(
+        linear_dispatch(
+            compute,
+            mapped,
+            descriptors.v_weight,
             rows,
             kv_width,
             hidden,
             &scratch.norm,
             &block.v_w_t,
-            None,
             &mut scratch.v,
+            &mut scratch.mixed,
         )?;
         apply_half_split_rope(
             &mut scratch.q,
@@ -291,14 +328,17 @@ fn forward_chunk(
             position_offset,
             config,
         )?;
-        compute.gemm_f32(
+        linear_dispatch(
+            compute,
+            mapped,
+            descriptors.o_weight,
             rows,
             hidden,
             q_width,
             &scratch.attention,
             &block.o_w_t,
-            None,
             &mut scratch.attention_out,
+            &mut scratch.mixed,
         )?;
         for (value, residual) in scratch.hidden.iter_mut().zip(&scratch.attention_out) {
             *value += residual;
@@ -312,36 +352,45 @@ fn forward_chunk(
             &block.ffn_norm,
             config.rms_norm_eps,
         )?;
-        compute.gemm_f32(
+        linear_dispatch(
+            compute,
+            mapped,
+            descriptors.gate,
             rows,
             ffn,
             hidden,
             &scratch.norm,
             &block.gate_w_t,
-            None,
             &mut scratch.ffn_gate,
+            &mut scratch.mixed,
         )?;
-        compute.gemm_f32(
+        linear_dispatch(
+            compute,
+            mapped,
+            descriptors.up,
             rows,
             ffn,
             hidden,
             &scratch.norm,
             &block.up_w_t,
-            None,
             &mut scratch.ffn_up,
+            &mut scratch.mixed,
         )?;
         compute.silu_f32(&scratch.ffn_gate, &mut scratch.ffn_activated)?;
         for (activated, up) in scratch.ffn_activated.iter_mut().zip(&scratch.ffn_up) {
             *activated *= up;
         }
-        compute.gemm_f32(
+        linear_dispatch(
+            compute,
+            mapped,
+            descriptors.down,
             rows,
             hidden,
             ffn,
             &scratch.ffn_activated,
             &block.down_w_t,
-            None,
             &mut scratch.ffn_down,
+            &mut scratch.mixed,
         )?;
         for (value, residual) in scratch.hidden.iter_mut().zip(&scratch.ffn_down) {
             *value += residual;
@@ -649,6 +698,262 @@ fn materialize_layer(
     transpose_tensor(mapped, descriptors.down, hidden, ffn, &mut block.down_w_t)
 }
 
+/// Dispatches a dense Llama linear through the established F32 route on
+/// CUDA/WebGPU, or through the mapped-BF16 seam on CPU/Metal. `dense_weight`
+/// is only read on the dense backends; CPU transposes bounded output-row
+/// panels and Metal uploads one raw-BF16 logical panel directly from the
+/// validated little-endian payload.
+#[allow(clippy::too_many_arguments)]
+fn linear_dispatch(
+    compute: &Compute,
+    mapped: &UltravoxLlamaMappedDescriptors,
+    info: &GgufTensorInfo,
+    rows: usize,
+    output_width: usize,
+    input_width: usize,
+    input: &[f32],
+    dense_weight: &[f32],
+    output: &mut [f32],
+    mixed_scratch: &mut MixedLinearScratch,
+) -> Result<()> {
+    if compute.supports_mixed_bf16() {
+        mixed_linear(
+            compute,
+            mapped,
+            info,
+            output_width,
+            input_width,
+            0,
+            output_width,
+            rows,
+            input,
+            output,
+            mixed_scratch,
+        )
+    } else {
+        compute.gemm_f32(
+            rows,
+            output_width,
+            input_width,
+            input,
+            dense_weight,
+            None,
+            output,
+        )
+    }
+}
+
+/// Computes a contiguous output-column chunk from a GGUF `[output, input]`
+/// BF16 matrix. CPU transposes only `BF16_CPU_PANEL_COLUMNS` output rows into the
+/// mixed GEMM's `[input, columns]` layout at once. Metal transposes the full
+/// requested logical matrix as raw `u16` and issues one device submission;
+/// this keeps the large panel bounded in raw storage without creating an F32
+/// weight mirror or thousands of synchronous GPU round trips.
+#[allow(clippy::too_many_arguments)]
+fn mixed_linear(
+    compute: &Compute,
+    mapped: &UltravoxLlamaMappedDescriptors,
+    info: &GgufTensorInfo,
+    source_rows: usize,
+    source_columns: usize,
+    first_output: usize,
+    output_width: usize,
+    rows: usize,
+    input: &[f32],
+    output: &mut [f32],
+    mixed_scratch: &mut MixedLinearScratch,
+) -> Result<()> {
+    let expected_input = rows.checked_mul(source_columns).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: mixed linear input shape overflow"))
+    })?;
+    let expected_output = rows.checked_mul(output_width).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: mixed linear output shape overflow"))
+    })?;
+    if input.len() != expected_input || output.len() != expected_output {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: mixed linear shape mismatch: input={} (want {}), output={} (want {})",
+            input.len(),
+            expected_input,
+            output.len(),
+            expected_output
+        )));
+    }
+    let end_output = first_output.checked_add(output_width).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: mixed linear output range overflow"))
+    })?;
+    if end_output > source_rows {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: mixed linear output range {first_output}..{end_output} exceeds {source_rows}"
+        )));
+    }
+    if info.dtype != GgmlType::BF16 {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: mixed linear tensor `{}` has {:?}, expected BF16",
+            info.name, info.dtype
+        )));
+    }
+
+    // CPU SIMD retains the established <=8-column bounded tile. Metal keeps
+    // one complete logical linear as a raw-BF16 panel for one submission;
+    // widening a complete F32 matrix would defeat the mapped-weight contract.
+    let panel_width = mixed_panel_width(compute.is_cpu(), output_width);
+    if !compute.is_cpu() {
+        transpose_bf16_rows(
+            mapped,
+            info,
+            source_rows,
+            source_columns,
+            first_output,
+            panel_width,
+            &mut mixed_scratch.panel,
+        )?;
+        return compute.gemm_f32_bf16_bits(
+            rows,
+            panel_width,
+            source_columns,
+            input,
+            &mixed_scratch.panel,
+            output,
+        );
+    }
+
+    let mut column = 0;
+    while column < output_width {
+        let columns = mixed_panel_width(true, output_width - column);
+        let panel_first = first_output.checked_add(column).ok_or_else(|| {
+            VokraError::InvalidArgument(format!("{LABEL}: mixed linear panel offset overflow"))
+        })?;
+        transpose_bf16_rows(
+            mapped,
+            info,
+            source_rows,
+            source_columns,
+            panel_first,
+            columns,
+            &mut mixed_scratch.panel,
+        )?;
+        let output_panel = output.get_mut(column..).ok_or_else(|| {
+            VokraError::InvalidArgument(format!("{LABEL}: mixed linear output offset overflow"))
+        })?;
+        compute.gemm_f32_bf16_bits_strided_with_scratch(
+            rows,
+            columns,
+            source_columns,
+            input,
+            &mixed_scratch.panel,
+            output_panel,
+            output_width,
+            &mut mixed_scratch.kernel,
+        )?;
+        column += columns;
+    }
+    Ok(())
+}
+
+/// Selects the bounded panel width for the mapped-BF16 backend policy. CPU
+/// keeps the reusable eight-column SIMD tile; Metal consumes the requested
+/// logical range in one raw-BF16 panel. This function is deliberately pure so
+/// the policy stays pinned even when Metal tests are unavailable on CI hosts.
+fn mixed_panel_width(is_cpu: bool, requested: usize) -> usize {
+    if is_cpu {
+        BF16_CPU_PANEL_COLUMNS.min(requested)
+    } else {
+        requested
+    }
+}
+
+/// Transposes a bounded range of rows from a validated GGUF `[rows, columns]`
+/// BF16 payload into `[columns, selected_rows]` numeric `u16` bit patterns.
+/// The reader has already authenticated the tensor range; this helper repeats
+/// dtype, shape and byte-length checks before touching the destination.
+fn transpose_bf16_rows(
+    mapped: &UltravoxLlamaMappedDescriptors,
+    info: &GgufTensorInfo,
+    source_rows: usize,
+    source_columns: usize,
+    first_row: usize,
+    rows: usize,
+    output: &mut Vec<u16>,
+) -> Result<()> {
+    if info.dtype != GgmlType::BF16 {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: tensor `{}` has {:?}, expected BF16",
+            info.name, info.dtype
+        )));
+    }
+    let expected_dimensions = [
+        u64::try_from(source_rows).map_err(|_| {
+            VokraError::InvalidArgument(format!("{LABEL}: BF16 row dimension exceeds u64"))
+        })?,
+        u64::try_from(source_columns).map_err(|_| {
+            VokraError::InvalidArgument(format!("{LABEL}: BF16 column dimension exceeds u64"))
+        })?,
+    ];
+    if info.dimensions.as_slice() != expected_dimensions {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: tensor `{}` shape {:?}, expected {:?}",
+            info.name, info.dimensions, expected_dimensions
+        )));
+    }
+    let bytes = mapped.file().tensor_bytes(info);
+    transpose_bf16_payload(bytes, source_rows, source_columns, first_row, rows, output)
+}
+
+fn transpose_bf16_payload(
+    bytes: &[u8],
+    source_rows: usize,
+    source_columns: usize,
+    first_row: usize,
+    rows: usize,
+    output: &mut Vec<u16>,
+) -> Result<()> {
+    let elements = source_rows.checked_mul(source_columns).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: BF16 tensor shape overflow"))
+    })?;
+    let expected_bytes = elements.checked_mul(2).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: BF16 tensor byte length overflow"))
+    })?;
+    if bytes.len() != expected_bytes {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: BF16 payload has {} bytes, expected {expected_bytes}",
+            bytes.len()
+        )));
+    }
+    let end_row = first_row.checked_add(rows).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: BF16 transpose row range overflow"))
+    })?;
+    if end_row > source_rows {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: BF16 transpose rows {first_row}..{end_row} exceed {source_rows}"
+        )));
+    }
+    let panel_len = source_columns.checked_mul(rows).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: BF16 transpose panel overflow"))
+    })?;
+    output.clear();
+    output.resize(panel_len, 0);
+    for column in 0..source_columns {
+        for row in 0..rows {
+            let source_element = (first_row + row)
+                .checked_mul(source_columns)
+                .and_then(|value| value.checked_add(column))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "{LABEL}: BF16 transpose source index overflow"
+                    ))
+                })?;
+            let source_byte = source_element.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "{LABEL}: BF16 transpose source byte index overflow"
+                ))
+            })?;
+            output[column * rows + row] =
+                u16::from_le_bytes([bytes[source_byte], bytes[source_byte + 1]]);
+        }
+    }
+    Ok(())
+}
+
 fn fill_logits(
     compute: &Compute,
     mapped: &UltravoxLlamaMappedDescriptors,
@@ -671,19 +976,40 @@ fn fill_logits(
     let mut first_row = 0;
     while first_row < vocab {
         let rows = HEAD_CHUNK_ROWS.min(vocab - first_row);
-        widen_rows(
-            mapped,
-            mapped.embedding(),
-            first_row,
-            rows,
-            &mut head.weights,
-        )?;
         head.logits.clear();
         head.logits.resize(rows, 0.0);
-        let HeadScratch { weights, logits } = &mut *head;
-        compute.gemv_f32(rows, hidden_width, weights, hidden, None, logits)?;
-        reject_non_finite("vocabulary logits", logits)?;
-        output.extend_from_slice(logits);
+        if compute.supports_mixed_bf16() {
+            let HeadScratch { mixed, logits, .. } = &mut *head;
+            mixed_linear(
+                compute,
+                mapped,
+                mapped.embedding(),
+                vocab,
+                hidden_width,
+                first_row,
+                rows,
+                1,
+                hidden,
+                logits,
+                mixed,
+            )?;
+            reject_non_finite("vocabulary logits", logits)?;
+            output.extend_from_slice(logits);
+        } else {
+            widen_rows(
+                mapped,
+                mapped.embedding(),
+                first_row,
+                rows,
+                &mut head.weights,
+            )?;
+            let HeadScratch {
+                weights, logits, ..
+            } = &mut *head;
+            compute.gemv_f32(rows, hidden_width, weights, hidden, None, logits)?;
+            reject_non_finite("vocabulary logits", logits)?;
+            output.extend_from_slice(logits);
+        }
         first_row += rows;
     }
     debug_assert_eq!(output.len(), vocab);
@@ -824,6 +1150,64 @@ fn reject_non_finite(value_label: &str, values: &[f32]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_bf16_transpose_preserves_payload_and_orientation() {
+        let source: Vec<u16> = (0..15).map(|value| 0x3f80 + value).collect();
+        let bytes: Vec<u8> = source.iter().flat_map(|bits| bits.to_le_bytes()).collect();
+        let before = bytes.clone();
+        let mut scratch = MixedLinearScratch::default();
+        scratch.panel.push(0xdead_u16);
+        transpose_bf16_payload(&bytes, 3, 5, 1, 2, &mut scratch.panel).expect("transpose");
+        let panel_capacity = scratch.panel.capacity();
+        let panel_ptr = scratch.panel.as_ptr();
+        assert_eq!(
+            scratch.panel,
+            vec![
+                source[5], source[10], source[6], source[11], source[7], source[12], source[8],
+                source[13], source[9], source[14],
+            ]
+        );
+        transpose_bf16_payload(&bytes, 3, 5, 0, 1, &mut scratch.panel).expect("tail transpose");
+        assert_eq!(scratch.panel.capacity(), panel_capacity);
+        assert_eq!(scratch.panel.as_ptr(), panel_ptr);
+        assert_eq!(bytes, before);
+    }
+
+    #[test]
+    fn bounded_bf16_transpose_rejects_bad_length_and_overflow() {
+        let mut output = Vec::new();
+        assert!(matches!(
+            transpose_bf16_payload(&[0; 4], 2, 2, 0, 1, &mut output),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            transpose_bf16_payload(&[], usize::MAX, 2, 0, 0, &mut output),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let bytes = vec![0; 8];
+        assert!(matches!(
+            transpose_bf16_payload(&bytes, 2, 2, usize::MAX, 1, &mut output),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn bounded_bf16_transpose_rejects_out_of_range_rows() {
+        let bytes = vec![0; 8];
+        let mut output = Vec::new();
+        assert!(matches!(
+            transpose_bf16_payload(&bytes, 2, 2, 2, 1, &mut output),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn mixed_bf16_panel_policy_is_backend_specific() {
+        assert_eq!(mixed_panel_width(true, usize::MAX), BF16_CPU_PANEL_COLUMNS);
+        assert_eq!(mixed_panel_width(true, 3), 3);
+        assert_eq!(mixed_panel_width(false, 8192), 8192);
+    }
 
     #[test]
     fn llama3_scaling_keeps_high_band_and_divides_low_band() {

@@ -1,19 +1,22 @@
-//! **VoxCPM family** (0.5B + VoxCPM2-2B): safetensors checkpoint → GGUF
-//! conversion (SoTA plan Phase 4 initial land 2026-07-24; 2B variant land
-//! 2026-07-30, spec `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`
-//! Option C hybrid — single converter file with a
-//! [`VoxCpm2Variant`] enum + shared arch + name-based runtime dispatch).
+//! **VoxCPM family** (0.5B + VoxCPM2-2B) conversion boundary.
 //!
-//! Inputs (both apache-2.0 end-to-end):
+//! The 0.5B public conversion boundary is currently `INSPECTION_ONLY`: its
+//! released main file is not a complete runtime artifact without the
+//! separately authenticated AudioVAE and text-tokenizer contract. The
+//! independently authenticated 2B composite path remains available through
+//! the existing strict 2B gate.
+//!
+//! Inputs are separate upstream components whose model/source/dependency
+//! licenses must be audited independently; no end-to-end license claim is
+//! made by this inspection-only boundary:
 //!
 //! - `openbmb/VoxCPM-0.5B` → `model.safetensors` (BF16, single file).
 //! - `openbmb/VoxCPM2` → `model.safetensors` (BF16, 4.96 GB, single file at
 //!   pinned SHA `bffb3df5a29440629464e5e839f4d214c8714c3d`).
 //!
-//! Output: a GGUF carrying every float tensor plus the `vokra.voxcpm2.*`,
-//! `vokra.vae_continuous.*`, and `vokra.model.*` / `vokra.provenance.*`
-//! metadata chunks the native VoxCPM implementation
-//! (`crates/vokra-models/src/voxcpm2/`) reads.
+//! Production output is currently refused. A future authenticated composite
+//! may carry the `vokra.voxcpm2.*` and `vokra.vae_continuous.*` metadata used
+//! by the native runtime.
 //!
 //! # Variant detection (single-file converter, no side-car `--config`)
 //!
@@ -72,9 +75,8 @@
 //! # No ONNX (permanent)
 //!
 //! Both releases are distributed as safetensors + a Python pipeline; this
-//! converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in `crates/vokra-models/src/voxcpm2/`
-//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! converter **never** touches ONNX (FR-LD-05). Native implementation and
+//! parity remain follow-up work after the VAST composite inspection.
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{
@@ -93,8 +95,10 @@ use crate::safetensors::SafetensorsFile;
 /// Silently sharing an arch tag would mis-route the runtime dispatch.
 ///
 /// The same arch tag serves both VoxCPM-0.5B and VoxCPM2-2B — the LM
-/// backbone, encoder, DiT, CFM sampler and AudioVAE V2 topology are
-/// byte-parallel between the two releases (only the hparams change).
+/// backbone, encoder, DiT and CFM metadata schema is shared between the two
+/// releases. Their AudioVAE implementations are distinct: 0.5B uses the
+/// 16-kHz `audio_vae.py` path, while 2B uses its separately authenticated
+/// AudioVAE-v2 sidecar.
 /// The variant that produced a specific GGUF is recorded in
 /// `vokra.model.name` (see [`half_b_name`] / [`two_b_name`]).
 pub(crate) const ARCH: &str = "voxcpm2";
@@ -191,7 +195,7 @@ const KEY_CFM_SOLVER: &str = "vokra.voxcpm2.cfm.solver";
 const KEY_CFM_T_SCHEDULER: &str = "vokra.voxcpm2.cfm.t_scheduler";
 const KEY_CFM_INFERENCE_CFG_RATE: &str = "vokra.voxcpm2.cfm.inference_cfg_rate";
 
-// AudioVAE V2 axes — upstream `AudioVAEConfig` defaults (audio_vae_v2.py)
+// AudioVAE axes — upstream `AudioVAEConfig` defaults (audio_vae.py, 0.5B).
 const KEY_VAE_SAMPLE_RATE: &str = "vokra.vae_continuous.sample_rate_hz";
 const KEY_VAE_OUT_SAMPLE_RATE: &str = "vokra.vae_continuous.out_sample_rate_hz";
 const KEY_VAE_ENCODER_DIM: &str = "vokra.vae_continuous.encoder_dim";
@@ -299,7 +303,11 @@ pub(crate) struct VariantHparams {
     pub(crate) patch_size: u32,
     pub(crate) scalar_quant_latent_dim: u32,
     pub(crate) max_length: u32,
-    // VAE (audio_vae_v2.py `AudioVAEConfig` — 2B adds bandwidth-adaptive)
+    pub(crate) vae_out_sample_rate: u32,
+    pub(crate) vae_encoder_rates: &'static [u32],
+    pub(crate) vae_decoder_dim: u32,
+    pub(crate) vae_decoder_rates: &'static [u32],
+    // VAE (0.5B `audio_vae.py`; 2B adds its bandwidth-adaptive v2 head)
     pub(crate) vae_sr_bin_boundaries: Option<&'static [u32]>,
 }
 
@@ -329,6 +337,10 @@ impl VariantHparams {
             patch_size: 2,
             scalar_quant_latent_dim: 256,
             max_length: 4096,
+            vae_out_sample_rate: 16_000,
+            vae_encoder_rates: &[2, 5, 8, 8],
+            vae_decoder_dim: 1536,
+            vae_decoder_rates: &[8, 8, 5, 2],
             // 0.5B has no bandwidth-adaptive head — single decoder head,
             // full-band output. Key intentionally omitted from GGUF.
             vae_sr_bin_boundaries: None,
@@ -364,6 +376,10 @@ impl VariantHparams {
             patch_size: 4,
             scalar_quant_latent_dim: 512,
             max_length: 8192,
+            vae_out_sample_rate: 48_000,
+            vae_encoder_rates: &[2, 5, 8, 8],
+            vae_decoder_dim: 2048,
+            vae_decoder_rates: &[8, 6, 5, 2, 2, 2],
             vae_sr_bin_boundaries: Some(&VAE_SR_BIN_BOUNDARIES_2B),
         }
     }
@@ -371,7 +387,7 @@ impl VariantHparams {
 
 // --- Invariant constants (identical across 0.5B / 2B — primary sources:
 // `config.json.lm_config.*` (both variants agree byte-for-byte on these
-// axes) + `audio_vae_v2.py` `AudioVAEConfig` defaults) ------------------
+// axes) + the variant's authenticated AudioVAE source defaults) ----------
 
 // LM backbone (invariant)
 const LM_N_HEAD: u32 = 16;
@@ -407,16 +423,12 @@ const CFM_INFERENCE_CFG_RATE: f32 = 2.0;
 const FEAT_DIM: u32 = 64;
 const SCALAR_QUANT_SCALE: u32 = 9;
 
-// AudioVAE V2 (invariant — 2B primary source pins the same encoder /
-// decoder topology; only sr_bin_boundaries differs, carried per-variant
-// via `VariantHparams::vae_sr_bin_boundaries`)
+// AudioVAE invariants shared by the metadata schema. Topology is variant
+// specific: 0.5B uses `audio_vae.py` at 16 kHz; the separately authenticated
+// 2B route uses its AudioVAE-v2 topology.
 const VAE_SAMPLE_RATE: u32 = 16_000;
-const VAE_OUT_SAMPLE_RATE: u32 = 48_000;
 const VAE_ENCODER_DIM: u32 = 128;
-const VAE_ENCODER_RATES: [u32; 4] = [2, 5, 8, 8];
 const VAE_LATENT_DIM: u32 = 64;
-const VAE_DECODER_DIM: u32 = 2048;
-const VAE_DECODER_RATES: [u32; 6] = [8, 6, 5, 2, 2, 2];
 const VAE_DEPTHWISE: bool = true;
 const VAE_USE_NOISE_BLOCK: bool = false;
 
@@ -540,14 +552,19 @@ pub(crate) fn convert_with_tokenizer(
     convert_impl(bytes, tokenizer_bytes, false)
 }
 
-/// Converts an official release artifact.  The 2B route refuses unless the
-/// UV preparer supplied all 577 main + 311 AudioVAE float tensors and a
-/// non-empty tokenizer.  This prevents the old success-shaped conversion of
-/// `model.safetensors` alone.
+/// Converts an authenticated complete 2B composite, while refusing the
+/// incomplete public 0.5B main-only release. The 0.5B refusal is deliberate:
+/// a standalone `model.safetensors` cannot prove AudioVAE/tokenizer binding.
 pub(crate) fn convert_release(
     bytes: Vec<u8>,
     tokenizer_bytes: Option<Vec<u8>>,
 ) -> Result<(GgufBuilder, VoxCpm2Report), ConvertError> {
+    let st = SafetensorsFile::parse(bytes.clone())?;
+    if detect_variant(&st)? == VoxCpm2Variant::HalfB {
+        return Err(ConvertError::Usage(
+            "voxcpm2-0.5b: INSPECTION_ONLY — the main checkpoint is not an authenticated composite; AudioVAE, tokenizer, config/provenance and native parity remain pending VAST review; no GGUF is produced".to_owned(),
+        ));
+    }
     convert_impl(bytes, tokenizer_bytes, true)
 }
 
@@ -732,9 +749,9 @@ fn validate_complete_two_b(st: &SafetensorsFile) -> Result<(), ConvertError> {
 }
 
 /// Writes the `vokra.voxcpm2.*` + `vokra.vae_continuous.*` chunk groups
-/// from the variant's transcribed constants + the invariant module-level
-/// constants (primary sources: `config.json` per variant and
-/// `audio_vae_v2.py` `AudioVAEConfig` defaults).
+/// from the variant's transcribed constants + invariant module-level
+/// constants (primary sources: variant `config.json` and the corresponding
+/// `audio_vae.py`/AudioVAE-v2 source defaults).
 fn write_hparams(b: &mut GgufBuilder, hp: &VariantHparams) {
     // Top-level
     b.add_string(KEY_MODEL_FAMILY, MODEL_FAMILY);
@@ -785,27 +802,29 @@ fn write_hparams(b: &mut GgufBuilder, hp: &VariantHparams) {
     b.add_string(KEY_CFM_T_SCHEDULER, CFM_T_SCHEDULER);
     b.add_f32(KEY_CFM_INFERENCE_CFG_RATE, CFM_INFERENCE_CFG_RATE);
 
-    // AudioVAE V2
+    // AudioVAE (0.5B `audio_vae.py`; 2B authenticated v2 sidecar)
     b.add_u32(KEY_VAE_SAMPLE_RATE, VAE_SAMPLE_RATE);
-    b.add_u32(KEY_VAE_OUT_SAMPLE_RATE, VAE_OUT_SAMPLE_RATE);
+    b.add_u32(KEY_VAE_OUT_SAMPLE_RATE, hp.vae_out_sample_rate);
     b.add_u32(KEY_VAE_ENCODER_DIM, VAE_ENCODER_DIM);
     b.add_metadata(
         KEY_VAE_ENCODER_RATES,
         GgufMetadataValue::Array(GgufArray {
             element_type: GgufValueType::U32,
-            values: VAE_ENCODER_RATES
+            values: hp
+                .vae_encoder_rates
                 .iter()
                 .map(|&r| GgufMetadataValue::U32(r))
                 .collect(),
         }),
     );
     b.add_u32(KEY_VAE_LATENT_DIM, VAE_LATENT_DIM);
-    b.add_u32(KEY_VAE_DECODER_DIM, VAE_DECODER_DIM);
+    b.add_u32(KEY_VAE_DECODER_DIM, hp.vae_decoder_dim);
     b.add_metadata(
         KEY_VAE_DECODER_RATES,
         GgufMetadataValue::Array(GgufArray {
             element_type: GgufValueType::U32,
-            values: VAE_DECODER_RATES
+            values: hp
+                .vae_decoder_rates
                 .iter()
                 .map(|&r| GgufMetadataValue::U32(r))
                 .collect(),
@@ -1178,14 +1197,10 @@ mod tests {
         // Top-level (invariant)
         assert_eq!(FEAT_DIM, 64);
         assert_eq!(SCALAR_QUANT_SCALE, 9);
-        // VAE topology
+        // VAE topology shared axes; rates/dimensions are variant-specific.
         assert_eq!(VAE_SAMPLE_RATE, 16_000);
-        assert_eq!(VAE_OUT_SAMPLE_RATE, 48_000);
         assert_eq!(VAE_ENCODER_DIM, 128);
-        assert_eq!(VAE_ENCODER_RATES, [2, 5, 8, 8]);
         assert_eq!(VAE_LATENT_DIM, 64);
-        assert_eq!(VAE_DECODER_DIM, 2048);
-        assert_eq!(VAE_DECODER_RATES, [8, 6, 5, 2, 2, 2]);
         #[allow(clippy::assertions_on_constants)]
         {
             assert!(VAE_DEPTHWISE);
@@ -1279,10 +1294,18 @@ mod tests {
         assert!((get_f32(&file, KEY_CFM_INFERENCE_CFG_RATE) - CFM_INFERENCE_CFG_RATE).abs() < 1e-5);
         // VAE topology
         assert_eq!(get_u32(&file, KEY_VAE_SAMPLE_RATE), VAE_SAMPLE_RATE);
-        assert_eq!(get_u32(&file, KEY_VAE_OUT_SAMPLE_RATE), VAE_OUT_SAMPLE_RATE);
+        assert_eq!(get_u32(&file, KEY_VAE_OUT_SAMPLE_RATE), 16_000);
         assert_eq!(get_u32(&file, KEY_VAE_ENCODER_DIM), VAE_ENCODER_DIM);
+        assert_eq!(
+            get_u32_array(&file, KEY_VAE_ENCODER_RATES),
+            vec![2, 5, 8, 8]
+        );
         assert_eq!(get_u32(&file, KEY_VAE_LATENT_DIM), VAE_LATENT_DIM);
-        assert_eq!(get_u32(&file, KEY_VAE_DECODER_DIM), VAE_DECODER_DIM);
+        assert_eq!(get_u32(&file, KEY_VAE_DECODER_DIM), 1536);
+        assert_eq!(
+            get_u32_array(&file, KEY_VAE_DECODER_RATES),
+            vec![8, 8, 5, 2]
+        );
         assert_eq!(get_bool(&file, KEY_VAE_DEPTHWISE), VAE_DEPTHWISE);
         assert_eq!(
             get_bool(&file, KEY_VAE_USE_NOISE_BLOCK),
@@ -1389,24 +1412,23 @@ mod tests {
         assert_eq!(get_u8_array(&file, KEY_TOKENIZER_MODEL), tokenizer);
     }
 
-    /// The public release path must not turn the upstream main checkpoint
-    /// alone into a success-shaped 2B GGUF. The AudioVAE is a separately
-    /// shipped required weight file in the pinned release.
+    /// The public release path remains fail-closed until the complete
+    /// composite binder is reviewed; even a test-shaped main checkpoint and
+    /// tokenizer must not produce a success-shaped GGUF.
     #[test]
-    fn release_rejects_two_b_main_weights_without_audiovae() {
+    fn release_rejects_half_b_main_weights_without_audiovae() {
         let err = convert_release(
-            safetensors_full_vocab_lm_embed(2048),
+            safetensors_full_vocab_lm_embed(1024),
             Some(br#"{"model":{}}"#.to_vec()),
         )
-        .expect_err("main-only 2B release must fail");
-        match err {
-            ConvertError::Parse(message) => {
-                assert!(message.contains("incomplete pinned release"), "{message}");
-                assert!(message.contains("audiovae.pth"), "{message}");
-                assert!(message.contains("expected total=888"), "{message}");
-            }
-            other => panic!("expected Parse, got {other:?}"),
-        }
+        .expect_err("main-only 0.5B release must fail");
+        assert!(matches!(
+            err,
+            ConvertError::Usage(message)
+                if message.contains("INSPECTION_ONLY")
+                    && message.contains("AudioVAE")
+                    && message.contains("no GGUF")
+        ));
     }
 
     /// Detection must refuse loudly (never a silent default) when the

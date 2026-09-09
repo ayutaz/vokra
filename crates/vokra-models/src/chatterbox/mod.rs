@@ -74,6 +74,15 @@ use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
+pub use crate::chatterbox_family::{
+    BASE_BACKBONE_MAX_POSITION_EMBEDDINGS, BASE_LEARNED_SPEECH_POSITIONS,
+    BASE_LEARNED_TEXT_POSITIONS, BASE_PERCEIVER_OUTPUT_ROWS, BASE_V3_CHECKPOINT, ChatterboxVariant,
+    CompositeBinderEvidence, ConditioningRows, ConditioningStage, GenerationTopology,
+    Gpt2T3Contract, MultilingualTokenizer, Processor, RandomDraws, SOURCE_REVISION, SOURCE_URL,
+    SamplingConfig, T3Architecture, apply_processors, assemble_conditioning, combine_cfg_logits,
+    conditioning_stages, generation_topology, normalize_multilingual_input, processor_order,
+    punc_norm_multilingual, sample_with_draw, validate_base_position_lengths,
+};
 pub use bound::{ChatterboxCheckpoint, ChatterboxSpeakerProjection};
 
 // ---------------------------------------------------------------------------

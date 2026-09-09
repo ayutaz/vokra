@@ -285,7 +285,7 @@ fn sdp_noise_from_gaussian_splitmix_diverges_from_torch_philox() {
 ///        --checkpoint /root/sbv2-checkpoint --output-dir \
 ///        /root/vokra/tests/fixtures/sbv2 --seed 0 --T 50`.
 ///
-///   `tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf`
+///   `tests/fixtures/sbv2/sbv2-v2-jp-extra-base.gguf`
 ///     — the real SBV2 v2 base checkpoint (Task 28 real fixture), used
 ///       only for `SbV2Model::from_gguf` → `.sdp` extraction. Any
 ///       simpler fixture that pins the SDP weights would also work;
@@ -316,7 +316,7 @@ fn sdp_body_matches_torch_ref() {
     let hidden_path = real_fixture_path("sdp_body_hidden_seed0_T50.f32.bin");
     let speaker_path = real_fixture_path("sdp_body_g_seed0.f32.bin");
     let expected_path = real_fixture_path("sdp_body_seed0_T50.f32.bin");
-    let main_path = real_fixture_path("sbv2-v2-multilingual-base.gguf");
+    let main_path = real_fixture_path("sbv2-v2-jp-extra-base.gguf");
     let bert_ja_path = real_fixture_path("deberta-v2-large-japanese-char-wwm.gguf");
     let bert_en_path = real_fixture_path("deberta-v3-large.gguf");
     for path in [

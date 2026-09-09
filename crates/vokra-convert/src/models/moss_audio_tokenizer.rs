@@ -143,6 +143,7 @@
 //! converter surface is byte-exact provenance + tensor-name
 //! preservation only.
 
+use std::io::Write;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -196,6 +197,13 @@ pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
 /// Immutable public v2 revision audited on 2026-08-26.
 pub const V2_UPSTREAM_REVISION: &str = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169";
+/// Immutable Nano source revision used by the strict runtime identity gate.
+pub const NANO_UPSTREAM_REVISION: &str = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68";
+/// Existing runtime manifest digest for the canonical Nano tensor contract.
+const NANO_MANIFEST_SHA256: [u8; 32] = [
+    0xe5, 0xfd, 0xb1, 0xf1, 0x93, 0x8f, 0xdb, 0x52, 0x37, 0xd3, 0xae, 0x8b, 0x47, 0x06, 0xf2, 0x6c,
+    0x6b, 0x92, 0x6a, 0xb7, 0x9d, 0xcb, 0xff, 0xf0, 0x82, 0xcc, 0xc3, 0x38, 0x0c, 0x5d, 0x85, 0xd9,
+];
 /// SHA-256 of v2 `config.json` at [`V2_UPSTREAM_REVISION`].
 pub const V2_CONFIG_SHA256: &str =
     "aeb9a0e9d88c74bf9fbaa81ee54443d463e09b5f335b3306bb798e282a10e564";
@@ -270,8 +278,8 @@ pub enum MossAudioTokenizerVariant {
     /// distillation reference. This is a distinct 48 kHz
     /// stereo/interleaved topology, not a width-reduced Full checkpoint.
     /// Ships as 1 sharded safetensors +
-    /// `model.safetensors.index.json` weight-map (~88 MB — trivial to
-    /// convert locally on the M1 iMac dev machine).
+    /// `model.safetensors.index.json` weight-map (~88 MB; conversion remains
+    /// restricted to the approved remote validation workflow).
     /// `vokra.moss_audio_tokenizer.variant = "nano"`.
     Nano,
     /// `OpenMOSS-Team/MOSS-Audio-Tokenizer-v2`: 48 kHz stereo,
@@ -338,7 +346,8 @@ impl MossAudioTokenizerVariant {
     pub const fn upstream_revision(self) -> Option<&'static str> {
         match self {
             Self::V2 => Some(V2_UPSTREAM_REVISION),
-            Self::Full | Self::Nano => None,
+            Self::Nano => Some(NANO_UPSTREAM_REVISION),
+            Self::Full => None,
         }
     }
 }
@@ -389,8 +398,9 @@ pub struct MossAudioTokenizerReport {
 /// shard-index-json reader enters the Vokra runtime (NFR-DS-02 /
 /// FR-LD-05).
 ///
-/// Every F32 / F16 / BF16 tensor passes through under its upstream
-/// `MossAudioTokenizerModel` state-dict name; the `vokra.model.*`
+/// Full and v2 preserve every supported float tensor under its upstream
+/// `MossAudioTokenizerModel` state-dict name. Nano is stricter: only the
+/// authenticated 374-tensor F32 manifest is accepted. The `vokra.model.*`
 /// (arch / name / category), `vokra.provenance.*` (weight_license /
 /// license / model_id / source / upstream_hf), and
 /// `vokra.moss_audio_tokenizer.variant` chunks are stamped for the
@@ -442,13 +452,35 @@ pub fn convert_moss_audio_tokenizer_variant_file(
     variant: MossAudioTokenizerVariant,
     license: Option<&str>,
 ) -> Result<MossAudioTokenizerReport, ConvertError> {
+    if variant == MossAudioTokenizerVariant::Nano {
+        require_nano_paths(input, output)?;
+    }
     // Full's merged safetensors is ~6.6 GB (F32), so repository policy
     // requires this converter to run on vast.ai (all model artifacts >=2 GB
     // are remote work). This non-streaming reader remains valid there. Nano
-    // is ~88 MB and is safe for a focused local conversion, although parity
-    // generation still follows the model-family verification runbook.
+    // is also processed only in the approved remote validation workflow;
+    // local model conversion is intentionally out of scope for this campaign.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
+
+    // The first public Nano artifact was historically stamped as Full.  A
+    // caller selecting the backward-compatible Full entry must not be able
+    // to reproduce that identity by feeding the canonical Nano tensor set
+    // through the permissive Full/v2 pass-through arm.  The manifest digest
+    // is deliberately checked before any provenance is emitted and is
+    // independent of payload values or dtype, so malformed/NaN variants of
+    // the same tensor topology are rejected as well.
+    reject_nano_confusion(variant, nano_manifest_matches(&st))?;
+
+    if variant == MossAudioTokenizerVariant::Nano {
+        if st.tensors().len() != 374 {
+            return Err(ConvertError::Parse(format!(
+                "MOSS Audio Tokenizer Nano requires the exact 374-tensor checkpoint; found {}",
+                st.tensors().len()
+            )));
+        }
+        validate_nano_manifest(&st)?;
+    }
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
@@ -464,6 +496,11 @@ pub fn convert_moss_audio_tokenizer_variant_file(
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
         _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
     };
+    if variant == MossAudioTokenizerVariant::Nano && spdx != DEFAULT_LICENSE_SPDX {
+        return Err(ConvertError::Parse(
+            "MOSS Audio Tokenizer Nano requires the canonical apache-2.0 license stamp".to_owned(),
+        ));
+    }
     vokra_core::stamp_provenance(
         &mut b,
         class,
@@ -474,14 +511,16 @@ pub fn convert_moss_audio_tokenizer_variant_file(
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
     if let Some(revision) = variant.upstream_revision() {
         b.add_string(KEY_UPSTREAM_REVISION, revision);
-        b.add_string(KEY_CONFIG_SHA256, V2_CONFIG_SHA256);
-        b.add_string(
-            KEY_CONFIGURATION_SOURCE_SHA256,
-            V2_CONFIGURATION_SOURCE_SHA256,
-        );
-        b.add_string(KEY_MODELING_SOURCE_SHA256, V2_MODELING_SOURCE_SHA256);
-        b.add_string(KEY_INDEX_SHA256, V2_INDEX_SHA256);
-        b.add_string(KEY_LICENSE_SHA256, V2_LICENSE_SHA256);
+        if variant == MossAudioTokenizerVariant::V2 {
+            b.add_string(KEY_CONFIG_SHA256, V2_CONFIG_SHA256);
+            b.add_string(
+                KEY_CONFIGURATION_SOURCE_SHA256,
+                V2_CONFIGURATION_SOURCE_SHA256,
+            );
+            b.add_string(KEY_MODELING_SOURCE_SHA256, V2_MODELING_SOURCE_SHA256);
+            b.add_string(KEY_INDEX_SHA256, V2_INDEX_SHA256);
+            b.add_string(KEY_LICENSE_SHA256, V2_LICENSE_SHA256);
+        }
     }
 
     let mut report = MossAudioTokenizerReport {
@@ -518,13 +557,115 @@ pub fn convert_moss_audio_tokenizer_variant_file(
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    if variant == MossAudioTokenizerVariant::Nano {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)?
+            .write_all(&out_bytes)?;
+    } else {
+        std::fs::write(output, out_bytes)?;
+    }
     Ok(report)
+}
+
+fn require_nano_paths(input: &Path, output: &Path) -> Result<(), ConvertError> {
+    let input_metadata = std::fs::symlink_metadata(input)?;
+    if !input_metadata.file_type().is_file() {
+        return Err(ConvertError::Parse(
+            "MOSS Audio Tokenizer Nano input must be a regular non-symlink file".to_owned(),
+        ));
+    }
+    if output.exists() || output.symlink_metadata().is_ok() {
+        return Err(ConvertError::Parse(
+            "MOSS Audio Tokenizer Nano output must be absent (no clobber)".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_nano_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    if st
+        .tensors()
+        .iter()
+        .any(|tensor| tensor.dtype != GgmlType::F32)
+    {
+        return Err(ConvertError::Parse(
+            "MOSS Audio Tokenizer Nano requires the canonical F32 checkpoint".to_owned(),
+        ));
+    }
+    for tensor in st.tensors() {
+        if !nano_f32_payload_is_finite(&tensor.name, st.tensor_bytes(tensor))? {
+            return Err(ConvertError::Parse(format!(
+                "MOSS Audio Tokenizer Nano tensor `{}` contains a non-finite value",
+                tensor.name
+            )));
+        }
+    }
+    if !nano_manifest_matches(st) {
+        return Err(ConvertError::Parse(
+            "MOSS Audio Tokenizer Nano tensor name/shape manifest is not the authenticated release contract".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Returns whether the complete tensor name/shape set is the authenticated
+/// Nano release contract.  Dtype and payload checks remain in
+/// [`validate_nano_manifest`]; this topology-only predicate is also used to
+/// prevent the permissive Full/v2 pass-through entries from re-stamping Nano
+/// as a different release.
+fn nano_manifest_matches(st: &SafetensorsFile) -> bool {
+    if st.tensors().len() != 374 {
+        return false;
+    }
+    let mut tensors: Vec<_> = st.tensors().iter().collect();
+    tensors.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+    let capacity = tensors
+        .iter()
+        .map(|tensor| tensor.name.len() + 1 + 8 + tensor.shape.len() * 8)
+        .sum();
+    let mut canonical = Vec::with_capacity(capacity);
+    for tensor in tensors {
+        canonical.extend_from_slice(tensor.name.as_bytes());
+        canonical.push(0);
+        canonical.extend_from_slice(&(tensor.shape.len() as u64).to_le_bytes());
+        for dimension in &tensor.shape {
+            canonical.extend_from_slice(&dimension.to_le_bytes());
+        }
+    }
+    super::canary_1b_flash::sha256(&canonical) == NANO_MANIFEST_SHA256
+}
+
+fn reject_nano_confusion(
+    variant: MossAudioTokenizerVariant,
+    nano_manifest_matches: bool,
+) -> Result<(), ConvertError> {
+    if variant != MossAudioTokenizerVariant::Nano && nano_manifest_matches {
+        return Err(ConvertError::Parse(format!(
+            "MOSS Audio Tokenizer {:?} cannot stamp the canonical Nano tensor manifest",
+            variant
+        )));
+    }
+    Ok(())
+}
+
+fn nano_f32_payload_is_finite(name: &str, bytes: &[u8]) -> Result<bool, ConvertError> {
+    if !bytes.len().is_multiple_of(4) {
+        return Err(ConvertError::Parse(format!(
+            "MOSS Audio Tokenizer Nano tensor `{name}` has a truncated F32 payload"
+        )));
+    }
+    Ok(!bytes
+        .chunks_exact(4)
+        .any(|chunk| !f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]).is_finite()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     use vokra_core::gguf::{GgmlType, GgufFile};
 
     /// Builds a single-BF16-tensor safetensors buffer with a
@@ -793,13 +934,9 @@ mod tests {
         std::fs::remove_file(&output_path).ok();
     }
 
-    /// The Nano variant reuses the same converter body but the name /
-    /// variant / upstream stamps differ. Silently sharing stamps
-    /// would misroute a downstream loader that dispatches on
-    /// `vokra.model.name` or the variant discriminator — this test
-    /// guards the variant switch (the
-    /// `super::snac::tests::hz44_variant_emits_distinct_stamps`
-    /// precedent).
+    /// Nano conversion is fail-closed for non-canonical fixtures. A tiny
+    /// synthetic tensor must not receive release provenance merely because
+    /// the caller selected the Nano variant.
     #[test]
     fn nano_variant_emits_distinct_stamps() {
         let f32_bytes: Vec<u8> = [7.0_f32, -8.25]
@@ -809,43 +946,49 @@ mod tests {
         let input_bytes = safetensors_one_f32("decoder.conv.0.weight", &[1, 2], &f32_bytes);
         let input_path = write_temp("nano-in", &input_bytes);
         let output_path = write_temp("nano-out", &[]);
+        std::fs::remove_file(&output_path).expect("remove output so no-clobber gate can run");
 
-        let report = convert_moss_audio_tokenizer_variant_file(
+        let error = convert_moss_audio_tokenizer_variant_file(
             &input_path,
             &output_path,
             MossAudioTokenizerVariant::Nano,
             None,
         )
-        .expect("convert Nano variant");
-        assert_eq!(report.variant, Some(MossAudioTokenizerVariant::Nano));
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some("moss-audio-tokenizer-nano"),
-            "Nano must emit its own model.name, not fall back to Full"
-        );
-        assert_eq!(file.get(KEY_VARIANT).and_then(|v| v.as_str()), Some("nano"));
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some("OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano")
-        );
-        // Arch + category are shared with Full (same downstream
-        // dispatch — both variants route to the same
-        // MossAudioTokenizerModel class upstream).
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
-        );
+        .expect_err("non-canonical Nano fixture must be rejected");
+        assert!(error.to_string().contains("exact 374-tensor"));
 
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn historical_nano_manifest_cannot_be_restamped_as_full_or_v2() {
+        assert!(reject_nano_confusion(MossAudioTokenizerVariant::Nano, true).is_ok());
+        assert!(reject_nano_confusion(MossAudioTokenizerVariant::Full, true).is_err());
+        assert!(reject_nano_confusion(MossAudioTokenizerVariant::V2, true).is_err());
+        assert!(reject_nano_confusion(MossAudioTokenizerVariant::Full, false).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nano_payload_and_paths_fail_closed_without_model_fixture() {
+        assert!(nano_f32_payload_is_finite("finite", &1.0f32.to_le_bytes()).unwrap());
+        assert!(!nano_f32_payload_is_finite("nan", &f32::NAN.to_le_bytes()).unwrap());
+        assert!(nano_f32_payload_is_finite("truncated", &[0; 3]).is_err());
+
+        let input = write_temp("nano-path-input", b"fixture");
+        let output = write_temp("nano-path-output", b"existing");
+        assert!(require_nano_paths(&input, &output).is_err());
+        std::fs::remove_file(&output).expect("remove output fixture");
+        symlink(&input, &output).expect("create output symlink fixture");
+        assert!(require_nano_paths(&input, &output).is_err());
+        std::fs::remove_file(&output).expect("remove output symlink fixture");
+        let link = write_temp("nano-path-link", b"fixture");
+        std::fs::remove_file(&link).expect("remove link fixture");
+        symlink(&input, &link).expect("create input symlink fixture");
+        assert!(require_nano_paths(&link, &output).is_err());
+        std::fs::remove_file(&link).ok();
+        std::fs::remove_file(&input).ok();
     }
 
     #[test]

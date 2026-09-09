@@ -31,8 +31,13 @@ the line — "N/A: no new dependency" is a useful review signal.
 
 ### Always
 
-- [ ] `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` pass
-- [ ] `cargo test --workspace` passes
+- [ ] **Docs-only fast path:** `git diff --check` and the relevant repository
+      documentation gates pass; workspace Cargo checks are N/A for this PR.
+- [ ] **Rust/build changes:** `cargo fmt --all -- --check`,
+      `cargo clippy --all-targets -- -D warnings`, and `cargo test --workspace`
+      run in CI or on the authorized VAST runner. Record any check not run
+      yet in the verification notes; do not claim a local workspace pass on a
+      maintainer machine.
 - [ ] **Zero external dependencies** — `bash scripts/check-zero-deps.sh` passes.
       The root `Cargo.lock` still resolves to `vokra-*` crates only
       (`NFR-DS-02`). If this PR needed functionality from outside, it uses one
@@ -77,8 +82,9 @@ Confirm this PR crosses none of them
 ### If this PR touches `unsafe`
 
 - [ ] Every `unsafe` block carries a `// SAFETY:` comment
-- [ ] The crate is already on the opt-out list in the workspace manifest —
-      this PR does not add a new one (`NFR-RL-07`)
+- [ ] Any unsafe boundary is covered by the crate/module opt-out policy and
+      documented in the architecture unsafe-boundary inventory; this PR does
+      not add an unreviewed opt-out (`NFR-RL-07`)
 
 ---
 

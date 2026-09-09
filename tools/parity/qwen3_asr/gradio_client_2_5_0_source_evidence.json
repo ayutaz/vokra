@@ -1,0 +1,81 @@
+{
+  "schema": "vokra-qwen3-asr-gradio-client-source-evidence-v1",
+  "package": {
+    "name": "gradio-client",
+    "version": "2.5.0",
+    "pypi_project_url": "https://pypi.org/project/gradio-client/2.5.0/",
+    "artifacts": [
+      {
+        "kind": "sdist",
+        "filename": "gradio_client-2.5.0.tar.gz",
+        "url": "https://files.pythonhosted.org/packages/e8/e6/6b6029f5fe2ad7f1211105d530e34d991014c2cae463f9223033031cfc4f/gradio_client-2.5.0.tar.gz",
+        "bytes": 59013,
+        "sha256": "4cde99bad62149595c30c90876ca2e405e3a13687ecf895474f3412cb476673d",
+        "upload_time": "2026-04-20T23:16:21.518Z",
+        "sigstore_entry": 1343702326,
+        "integrity_url": "https://pypi.org/integrity/gradio-client/2.5.0/gradio_client-2.5.0.tar.gz/provenance"
+      },
+      {
+        "kind": "wheel",
+        "filename": "gradio_client-2.5.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/78/81/0a861b8e1ff42960139c6cd4c7dd591292fa09ea1ae2d87677441cba4c00/gradio_client-2.5.0-py3-none-any.whl",
+        "bytes": 59952,
+        "sha256": "d43e2179c29076292a76485ad7ed2e6eaa19d14ac58283bd7f5beabfe4ca958c",
+        "upload_time": "2026-04-20T23:16:20.186Z",
+        "sigstore_entry": 1343702371,
+        "integrity_url": "https://pypi.org/integrity/gradio-client/2.5.0/gradio_client-2.5.0-py3-none-any.whl/provenance"
+      }
+    ]
+  },
+  "trusted_publishing": {
+    "repository": "gradio-app/gradio",
+    "workflow": ".github/workflows/publish.yml",
+    "ref": "refs/heads/main",
+    "commit": "43f5de68579919b0632ceb6107a99c629483ea2f",
+    "event": "push"
+  },
+  "source_commit": "43f5de68579919b0632ceb6107a99c629483ea2f",
+  "source_files": [
+    {
+      "path": "client/python/gradio_client/package.json",
+      "git_blob": "aeaddd5b21f53e9b5d121f8a9cadb2a3e0e8700d",
+      "bytes": 132,
+      "sha256": "c5b4ca18417503a049c351fd5af142436f2464d4cd85d14cec4fe66239e07b90",
+      "url": "https://github.com/gradio-app/gradio/blob/43f5de68579919b0632ceb6107a99c629483ea2f/client/python/gradio_client/package.json",
+      "declarations": {"version": "2.5.0"}
+    },
+    {
+      "path": "client/python/pyproject.toml",
+      "git_blob": "c7dcf0846f28d69ae5ef19d35027eed15f10ec34",
+      "bytes": 2141,
+      "sha256": "6ae27b2aa511b1f84305d601e948dfb22021c8488d3025a66e01612879745787",
+      "url": "https://github.com/gradio-app/gradio/blob/43f5de68579919b0632ceb6107a99c629483ea2f/client/python/pyproject.toml",
+      "declarations": {
+        "project": "gradio_client",
+        "dynamic_version_path": "gradio_client/package.json",
+        "license": "Apache-2.0"
+      }
+    },
+    {
+      "path": "LICENSE",
+      "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "bytes": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "url": "https://github.com/gradio-app/gradio/blob/43f5de68579919b0632ceb6107a99c629483ea2f/LICENSE",
+      "declarations": {"license": "Apache-2.0"}
+    },
+    {
+      "path": ".github/workflows/publish.yml",
+      "git_blob": "90ce46c10e1d22311344aebc4def23049ab6a758",
+      "bytes": 3272,
+      "sha256": "c880b48223142ac679714df18e4f7ddb127e9cbc567125e11d1008231897e9a6",
+      "url": "https://github.com/gradio-app/gradio/blob/43f5de68579919b0632ceb6107a99c629483ea2f/.github/workflows/publish.yml",
+      "declarations": {"workflow": ".github/workflows/publish.yml"}
+    }
+  ],
+  "license": "Apache-2.0",
+  "factual_status": "SOURCE_MAPPING_EVIDENCE_COMPLETE",
+  "package_review_status": "PENDING_REVIEW",
+  "operator_approval": "PENDING",
+  "publication": "NO_UPLOAD"
+}

@@ -1065,18 +1065,100 @@ fn gemv2_i8mm(
 // ---------------------------------------------------------------------
 
 fn validate_gemm(m: usize, n: usize, k: usize, a: &[f32], b: &[f32], out: &[f32]) -> Result<()> {
-    if a.len() != m * k || b.len() != k * n || out.len() != m * n {
+    let Some(mk) = m.checked_mul(k) else {
+        return Err(VokraError::InvalidArgument(
+            "reduced-precision GEMM shape overflows usize".to_owned(),
+        ));
+    };
+    let Some(kn) = k.checked_mul(n) else {
+        return Err(VokraError::InvalidArgument(
+            "reduced-precision GEMM shape overflows usize".to_owned(),
+        ));
+    };
+    let Some(mn) = m.checked_mul(n) else {
+        return Err(VokraError::InvalidArgument(
+            "reduced-precision GEMM shape overflows usize".to_owned(),
+        ));
+    };
+    if a.len() != mk || b.len() != kn || out.len() != mn {
         return Err(VokraError::InvalidArgument(format!(
             "reduced-precision GEMM shape mismatch: a={} (want {}), b={} (want {}), out={} (want {})",
             a.len(),
-            m * k,
+            mk,
             b.len(),
-            k * n,
+            kn,
             out.len(),
-            m * n
+            mn
         )));
     }
     Ok(())
+}
+
+fn validate_gemm_bf16_bits(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[u16],
+    b: &[u16],
+    out: &[f32],
+) -> Result<()> {
+    let Some(mk) = m.checked_mul(k) else {
+        return Err(VokraError::InvalidArgument(
+            "BF16 GEMM shape overflows usize".to_owned(),
+        ));
+    };
+    let Some(kn) = k.checked_mul(n) else {
+        return Err(VokraError::InvalidArgument(
+            "BF16 GEMM shape overflows usize".to_owned(),
+        ));
+    };
+    let Some(mn) = m.checked_mul(n) else {
+        return Err(VokraError::InvalidArgument(
+            "BF16 GEMM shape overflows usize".to_owned(),
+        ));
+    };
+    if a.len() != mk || b.len() != kn || out.len() != mn {
+        return Err(VokraError::InvalidArgument(format!(
+            "BF16 GEMM shape mismatch: a={} (want {}), b={} (want {}), out={} (want {})",
+            a.len(),
+            mk,
+            b.len(),
+            kn,
+            out.len(),
+            mn
+        )));
+    }
+    Ok(())
+}
+
+fn validate_mixed_bf16_isa(isa: IsaPath) -> Result<()> {
+    match isa {
+        IsaPath::Rvv | IsaPath::Rvv071 => Err(VokraError::UnsupportedOp(format!(
+            "mixed BF16 GEMM has no dedicated f32 SIMD implementation on the {isa} path"
+        ))),
+        IsaPath::Scalar
+        | IsaPath::Avx2
+        | IsaPath::Neon
+        | IsaPath::WasmSimd128
+        | IsaPath::Avx512
+        | IsaPath::Avx512Vnni
+        | IsaPath::Avx512Bf16
+        | IsaPath::AvxVnni256
+        | IsaPath::NeonFp16
+        | IsaPath::NeonDotprod
+        | IsaPath::NeonI8mm
+        | IsaPath::NeonBf16 => Ok(()),
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn round_up_bf16_bits(value: usize, multiple: usize) -> Result<usize> {
+    let rem = value % multiple;
+    value
+        .checked_add(if rem == 0 { 0 } else { multiple - rem })
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("BF16 GEMM padded shape overflows usize".to_owned())
+        })
 }
 
 /// Input-derived architectural error bound for a bf16 dot product of length
@@ -1147,14 +1229,20 @@ pub fn gemm_bf16_on(
                 // Prepack: bf16 rows of `a` and columns of `b` (transposed),
                 // zero-padded to whole 32-element zmm blocks (bf16 zero
                 // products are exact zeros).
-                let kp = k.next_multiple_of(32).max(32);
-                let mut ap = vec![0u16; m * kp];
+                let kp = round_up_bf16_bits(k, 32)?.max(32);
+                let ap_len = m.checked_mul(kp).ok_or_else(|| {
+                    VokraError::InvalidArgument("BF16 GEMM padded shape overflows usize".to_owned())
+                })?;
+                let mut ap = vec![0u16; ap_len];
                 for i in 0..m {
                     for l in 0..k {
                         ap[i * kp + l] = f32_to_bf16_rne(a[i * k + l]);
                     }
                 }
-                let mut btp = vec![0u16; n * kp];
+                let btp_len = n.checked_mul(kp).ok_or_else(|| {
+                    VokraError::InvalidArgument("BF16 GEMM padded shape overflows usize".to_owned())
+                })?;
+                let mut btp = vec![0u16; btp_len];
                 for j in 0..n {
                     for l in 0..k {
                         btp[j * kp + l] = f32_to_bf16_rne(b[l * n + j]);
@@ -1242,6 +1330,441 @@ pub fn gemm_bf16_on(
             "no BF16 matmul kernel on the {other} path (bf16 tiers: avx512bf16 | neon-bf16 | scalar)"
         ))),
     }
+}
+
+/// BF16 GEMM over already-encoded BF16 bit patterns, with f32 accumulation.
+///
+/// This is the native-weight counterpart to [`gemm_bf16_on`]. `a` is an
+/// `m x k` row-major matrix and `b` is a `k x n` row-major matrix; neither is
+/// converted from f32 or widened before the kernel runs. The scalar path is
+/// the independent conversion oracle, while the AVX-512-BF16 and ARMv8.6
+/// BFMMLA paths consume the same raw bits directly. Unsupported forced paths
+/// return an explicit error.
+pub fn gemm_bf16_bits_on(
+    isa: IsaPath,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[u16],
+    b: &[u16],
+    out: &mut [f32],
+) -> Result<()> {
+    validate_gemm_bf16_bits(m, n, k, a, b, out)?;
+    if !CpuFeatures::detect().supports(isa) {
+        return Err(VokraError::BackendUnavailable(format!(
+            "the {isa} kernel path is not available on this host CPU"
+        )));
+    }
+    if m == 0 || n == 0 {
+        return Ok(());
+    }
+    if k == 0 {
+        out.fill(0.0);
+        return Ok(());
+    }
+    match isa {
+        IsaPath::Scalar => {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0f32;
+                    for l in 0..k {
+                        acc += bf16_to_f32(a[i * k + l]) * bf16_to_f32(b[l * n + j]);
+                    }
+                    out[i * n + j] = acc;
+                }
+            }
+            Ok(())
+        }
+        IsaPath::Avx512Bf16 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                let kp = round_up_bf16_bits(k, 32)?.max(32);
+                let ap_len = m.checked_mul(kp).ok_or_else(|| {
+                    VokraError::InvalidArgument("BF16 GEMM padded shape overflows usize".to_owned())
+                })?;
+                let mut ap = vec![0u16; ap_len];
+                for i in 0..m {
+                    ap[i * kp..i * kp + k].copy_from_slice(&a[i * k..(i + 1) * k]);
+                }
+                let btp_len = n.checked_mul(kp).ok_or_else(|| {
+                    VokraError::InvalidArgument("BF16 GEMM padded shape overflows usize".to_owned())
+                })?;
+                let mut btp = vec![0u16; btp_len];
+                for j in 0..n {
+                    for l in 0..k {
+                        btp[j * kp + l] = b[l * n + j];
+                    }
+                }
+                for i in 0..m {
+                    for j in 0..n {
+                        out[i * n + j] = super::avx512::bf16_dot(
+                            &ap[i * kp..(i + 1) * kp],
+                            &btp[j * kp..(j + 1) * kp],
+                        );
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                unreachable!("Avx512Bf16 passed `supports` off x86-64")
+            }
+        }
+        IsaPath::NeonBf16 => {
+            #[cfg(target_arch = "aarch64")]
+            {
+                let kp = round_up_bf16_bits(k, 4)?.max(4);
+                let k4 = kp / 4;
+                let mp = round_up_bf16_bits(m, 2)?;
+                let np = round_up_bf16_bits(n, 2)?;
+                let a_tiles_len = (mp / 2)
+                    .checked_mul(k4)
+                    .and_then(|v| v.checked_mul(8))
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "BF16 GEMM padded shape overflows usize".to_owned(),
+                        )
+                    })?;
+                let mut a_tiles = vec![0u16; a_tiles_len];
+                for p in 0..mp / 2 {
+                    for c in 0..k4 {
+                        for h in 0..2 {
+                            let i = 2 * p + h;
+                            for t in 0..4 {
+                                let l = 4 * c + t;
+                                a_tiles[(p * k4 + c) * 8 + 4 * h + t] =
+                                    if i < m && l < k { a[i * k + l] } else { 0 };
+                            }
+                        }
+                    }
+                }
+                let b_tiles_len = (np / 2)
+                    .checked_mul(k4)
+                    .and_then(|v| v.checked_mul(8))
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "BF16 GEMM padded shape overflows usize".to_owned(),
+                        )
+                    })?;
+                let mut b_tiles = vec![0u16; b_tiles_len];
+                for p in 0..np / 2 {
+                    for c in 0..k4 {
+                        for h in 0..2 {
+                            let j = 2 * p + h;
+                            for t in 0..4 {
+                                let l = 4 * c + t;
+                                b_tiles[(p * k4 + c) * 8 + 4 * h + t] =
+                                    if j < n && l < k { b[l * n + j] } else { 0 };
+                            }
+                        }
+                    }
+                }
+                for pi in 0..mp / 2 {
+                    for pj in 0..np / 2 {
+                        let mut ctile = [0.0f32; 4];
+                        super::neon_bf16::bfmmla_tile(
+                            &mut ctile,
+                            &a_tiles[pi * k4 * 8..(pi + 1) * k4 * 8],
+                            &b_tiles[pj * k4 * 8..(pj + 1) * k4 * 8],
+                            k4,
+                        );
+                        for h in 0..2 {
+                            for c in 0..2 {
+                                let (i, j) = (2 * pi + h, 2 * pj + c);
+                                if i < m && j < n {
+                                    out[i * n + j] = ctile[2 * h + c];
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                unreachable!("NeonBf16 passed `supports` off aarch64")
+            }
+        }
+        other => Err(VokraError::UnsupportedOp(format!(
+            "no BF16-bit matmul kernel on the {other} path (bf16 tiers: avx512bf16 | neon-bf16 | scalar)"
+        ))),
+    }
+}
+
+/// Row-major mixed-precision GEMM with exact BF16 weights and f32
+/// activations: `out[i,j] = Σ_l a[i,l] · bf16_to_f32(b[l,j])`.
+///
+/// This is a CPU-only foundation seam for mapped dense weights. `a` remains
+/// f32 (it is never rounded to BF16), while `b` contains caller-owned numeric
+/// BF16 bit patterns (`u16` values already decoded from storage byte order).
+/// The implementation widens one bounded `k × columns` weight panel at a
+/// time, with at most eight columns (`k * 8` f32 values), and an at-most
+/// `8 × 8` f32 output tile; it never materializes the complete weight matrix
+/// as f32. `Scalar` is the independent oracle. The ordinary f32 dispatch
+/// paths (including NEON and the x86 SIMD tiers) use those same exact widened
+/// panel values, so no unsupported ISA silently falls back to Scalar. This
+/// API does not alter model integration or Metal routes.
+pub fn gemm_f32_bf16_bits_on(
+    isa: IsaPath,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[u16],
+    out: &mut [f32],
+) -> Result<()> {
+    let mut scratch = GemmF32Bf16BitsScratch::new();
+    gemm_f32_bf16_bits_on_with_scratch(isa, m, n, k, a, b, out, &mut scratch)
+}
+
+/// Reusable bounded scratch for [`gemm_f32_bf16_bits_on`]. The largest live
+/// backend buffers are one widened `k × 8` f32 panel and one `8 × 8` output
+/// tile; capacities grow only when a caller first encounters a larger `k`.
+#[derive(Default)]
+pub struct GemmF32Bf16BitsScratch {
+    tile_b: Vec<f32>,
+    tile_out: Vec<f32>,
+}
+
+impl GemmF32Bf16BitsScratch {
+    /// Creates empty scratch which will grow to the largest requested shape.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            tile_b: Vec::new(),
+            tile_out: Vec::new(),
+        }
+    }
+
+    /// Current capacity of the widened f32 `k × 8` weight panel.
+    #[must_use]
+    pub fn tile_b_capacity(&self) -> usize {
+        self.tile_b.capacity()
+    }
+
+    /// Current capacity of the f32 output tile.
+    #[must_use]
+    pub fn tile_out_capacity(&self) -> usize {
+        self.tile_out.capacity()
+    }
+}
+
+/// Mixed-BF16 GEMM with caller-owned reusable backend scratch.
+#[allow(clippy::too_many_arguments)] // GEMM operands + forced ISA + caller-owned scratch
+pub fn gemm_f32_bf16_bits_on_with_scratch(
+    isa: IsaPath,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[u16],
+    out: &mut [f32],
+    scratch: &mut GemmF32Bf16BitsScratch,
+) -> Result<()> {
+    gemm_f32_bf16_bits_on_with_scratch_strided(isa, m, n, k, a, b, out, n, scratch)
+}
+
+/// Mixed-BF16 GEMM with reusable scratch and a row stride in `out`.
+///
+/// The first `n` values of each row are written; `out` may therefore be a
+/// larger row-major destination, which lets mapped model callers reuse the
+/// backend's single `8 × 8` output tile without allocating a second model tile.
+#[allow(clippy::too_many_arguments)] // GEMM operands + forced ISA + output stride + scratch
+pub fn gemm_f32_bf16_bits_on_with_scratch_strided(
+    isa: IsaPath,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[u16],
+    out: &mut [f32],
+    out_stride: usize,
+    scratch: &mut GemmF32Bf16BitsScratch,
+) -> Result<()> {
+    if out_stride < n {
+        return Err(VokraError::InvalidArgument(
+            "mixed BF16 GEMM output stride is smaller than n".to_owned(),
+        ));
+    }
+    let mk = m.checked_mul(k).ok_or_else(|| {
+        VokraError::InvalidArgument("mixed BF16 GEMM shape overflows usize".to_owned())
+    })?;
+    let kn = k.checked_mul(n).ok_or_else(|| {
+        VokraError::InvalidArgument("mixed BF16 GEMM shape overflows usize".to_owned())
+    })?;
+    let required_out = if m == 0 || n == 0 {
+        0
+    } else {
+        m.checked_sub(1)
+            .and_then(|last| last.checked_mul(out_stride))
+            .and_then(|last| last.checked_add(n))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "mixed BF16 GEMM output shape overflows usize".to_owned(),
+                )
+            })?
+    };
+    if a.len() != mk || b.len() != kn || out.len() < required_out {
+        return Err(VokraError::InvalidArgument(format!(
+            "mixed BF16 GEMM shape mismatch: a={} (want {}), b={} (want {}), out={} (want at least {})",
+            a.len(),
+            mk,
+            b.len(),
+            kn,
+            out.len(),
+            required_out
+        )));
+    }
+    if !CpuFeatures::detect().supports(isa) {
+        return Err(VokraError::BackendUnavailable(format!(
+            "the {isa} kernel path is not available on this host CPU"
+        )));
+    }
+    validate_mixed_bf16_isa(isa)?;
+    if m == 0 || n == 0 {
+        return Ok(());
+    }
+    if k == 0 {
+        for row in 0..m {
+            let start = row * out_stride;
+            out[start..start + n].fill(0.0);
+        }
+        return Ok(());
+    }
+    if isa == IsaPath::Scalar {
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = 0.0f32;
+                for l in 0..k {
+                    acc += a[i * k + l] * bf16_to_f32(b[l * n + j]);
+                }
+                out[i * out_stride + j] = acc;
+            }
+        }
+        return Ok(());
+    }
+
+    const TILE_M: usize = 8;
+    const TILE_N: usize = 8;
+    let table = super::dispatch::table_for(isa)?;
+    let tile_b_len = k.checked_mul(TILE_N).ok_or_else(|| {
+        VokraError::InvalidArgument("mixed BF16 GEMM tile shape overflows usize".to_owned())
+    })?;
+    let tile_out_len = TILE_M.checked_mul(TILE_N).ok_or_else(|| {
+        VokraError::InvalidArgument("mixed BF16 GEMM output tile overflows usize".to_owned())
+    })?;
+    scratch.tile_b.resize(tile_b_len, 0.0);
+    scratch.tile_out.resize(tile_out_len, 0.0);
+    let mut column_start = 0;
+    while column_start < n {
+        let columns = TILE_N.min(n - column_start);
+        let panel_len = k.checked_mul(columns).ok_or_else(|| {
+            VokraError::InvalidArgument("mixed BF16 GEMM weight panel overflows usize".to_owned())
+        })?;
+        for l in 0..k {
+            for j in 0..columns {
+                let panel_index = l
+                    .checked_mul(columns)
+                    .and_then(|value| value.checked_add(j))
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "mixed BF16 GEMM weight panel index overflows usize".to_owned(),
+                        )
+                    })?;
+                let source_index = l
+                    .checked_mul(n)
+                    .and_then(|value| value.checked_add(column_start))
+                    .and_then(|value| value.checked_add(j))
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "mixed BF16 GEMM weight index overflows usize".to_owned(),
+                        )
+                    })?;
+                scratch.tile_b[panel_index] = bf16_to_f32(b[source_index]);
+            }
+        }
+        let b_tile = &scratch.tile_b[..panel_len];
+        let mut row_start = 0;
+        while row_start < m {
+            let rows = TILE_M.min(m - row_start);
+            let a_start = row_start.checked_mul(k).ok_or_else(|| {
+                VokraError::InvalidArgument("mixed BF16 GEMM A index overflows usize".to_owned())
+            })?;
+            let rows_k = rows.checked_mul(k).ok_or_else(|| {
+                VokraError::InvalidArgument("mixed BF16 GEMM A tile overflows usize".to_owned())
+            })?;
+            let a_end = a_start.checked_add(rows_k).ok_or_else(|| {
+                VokraError::InvalidArgument("mixed BF16 GEMM A range overflows usize".to_owned())
+            })?;
+            let a_tile = &a[a_start..a_end];
+            let tile_len = rows.checked_mul(columns).ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "mixed BF16 GEMM output tile overflows usize".to_owned(),
+                )
+            })?;
+            let tile = &mut scratch.tile_out[..tile_len];
+            (table.gemm)(rows, columns, k, a_tile, b_tile, None, tile);
+            for i in 0..rows {
+                let dst = row_start
+                    .checked_add(i)
+                    .and_then(|value| value.checked_mul(out_stride))
+                    .and_then(|value| value.checked_add(column_start))
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "mixed BF16 GEMM output index overflows usize".to_owned(),
+                        )
+                    })?;
+                let tile_start = i.checked_mul(columns).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "mixed BF16 GEMM output tile index overflows usize".to_owned(),
+                    )
+                })?;
+                let tile_end = tile_start.checked_add(columns).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "mixed BF16 GEMM output tile range overflows usize".to_owned(),
+                    )
+                })?;
+                let dst_end = dst.checked_add(columns).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "mixed BF16 GEMM output range overflows usize".to_owned(),
+                    )
+                })?;
+                out[dst..dst_end].copy_from_slice(&tile[tile_start..tile_end]);
+            }
+            row_start += rows;
+        }
+        column_start += columns;
+    }
+    Ok(())
+}
+
+/// Auto-dispatched CPU entry point for [`gemm_f32_bf16_bits_on`].
+///
+/// This seam is intentionally CPU-only; callers selecting a GPU backend must
+/// reject the operation rather than route it through this function.
+pub fn gemm_f32_bf16_bits(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[u16],
+    out: &mut [f32],
+) -> Result<()> {
+    let mut scratch = GemmF32Bf16BitsScratch::new();
+    gemm_f32_bf16_bits_with_scratch(m, n, k, a, b, out, &mut scratch)
+}
+
+/// Auto-dispatched mixed-BF16 GEMM with reusable caller-owned scratch.
+pub fn gemm_f32_bf16_bits_with_scratch(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[u16],
+    out: &mut [f32],
+    scratch: &mut GemmF32Bf16BitsScratch,
+) -> Result<()> {
+    gemm_f32_bf16_bits_on_with_scratch(crate::active_isa(), m, n, k, a, b, out, scratch)
 }
 
 /// fp16 GEMM `out[m,n] = fp16(a) · fp16(b)` with a **genuine fp16 FMA
@@ -1640,6 +2163,8 @@ mod arm {
 
 #[cfg(test)]
 mod tests {
+    use crate::kernels::gemm_f32_on;
+
     use super::*;
     use crate::features::IsaPath;
 
@@ -1950,6 +2475,304 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bf16_bits_scalar_consumes_raw_patterns_with_tails() {
+        // 3x5 times 5x3 exercises non-vector-friendly matrix tails while
+        // proving the input API consumes pre-encoded values directly.
+        let a: Vec<u16> = [1.0f32, -2.0, 0.5, 3.25, -4.0]
+            .into_iter()
+            .cycle()
+            .take(15)
+            .map(f32_to_bf16_rne)
+            .collect();
+        let b: Vec<u16> = [0.25f32, -1.5, 2.0, 0.75, 3.0]
+            .into_iter()
+            .cycle()
+            .take(15)
+            .map(f32_to_bf16_rne)
+            .collect();
+        let mut got = vec![f32::NAN; 9];
+        gemm_bf16_bits_on(IsaPath::Scalar, 3, 3, 5, &a, &b, &mut got).unwrap();
+        for i in 0..3 {
+            for j in 0..3 {
+                let want: f32 = (0..5)
+                    .map(|l| bf16_to_f32(a[i * 5 + l]) * bf16_to_f32(b[l * 3 + j]))
+                    .sum();
+                assert_eq!(got[i * 3 + j], want);
+            }
+        }
+    }
+
+    #[test]
+    fn bf16_bits_reject_shape_mismatch_and_foreign_isa() {
+        let a = [0x3F80u16; 4];
+        let b = [0x3F80u16; 4];
+        let mut out = [0.0f32; 4];
+        assert!(matches!(
+            gemm_bf16_bits_on(IsaPath::Scalar, 2, 2, 3, &a, &b, &mut out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let host_f32 = CpuFeatures::detect().best_isa();
+        if matches!(host_f32, IsaPath::Avx2 | IsaPath::Neon) {
+            assert!(matches!(
+                gemm_bf16_bits_on(host_f32, 2, 2, 2, &a, &b, &mut out),
+                Err(VokraError::UnsupportedOp(_))
+            ));
+        }
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        assert!(round_up_bf16_bits(usize::MAX, 32).is_err());
+        assert!(matches!(
+            gemm_bf16_bits_on(IsaPath::Scalar, usize::MAX, 1, 2, &[], &[], &mut []),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn mixed_bf16_scalar_preserves_f32_activation_and_raw_weights() {
+        let a = [
+            1.0039062f32,
+            -2.0078125,
+            0.33325195,
+            4.125,
+            -0.0625,
+            -1.75,
+            2.03125,
+            0.125,
+            -3.5,
+            0.0078125,
+        ];
+        let b = [
+            0x3F80u16, 0x4000, 0x4040, // k=0
+            0x4080, 0x40A0, 0x40C0, // k=1
+            0x4100, 0x4120, 0x4140, // k=2
+            0x4180, 0x41A0, 0x41C0, // k=3
+            0x4200, 0x4220, 0x4240, // k=4
+        ];
+        let a_before = a;
+        let b_before = b;
+        let mut got = [f32::NAN; 6];
+        gemm_f32_bf16_bits_on(IsaPath::Scalar, 2, 3, 5, &a, &b, &mut got).unwrap();
+        for i in 0..2 {
+            for j in 0..3 {
+                let want = (0..5)
+                    .map(|l| a[i * 5 + l] * bf16_to_f32(b[l * 3 + j]))
+                    .sum::<f32>();
+                assert_eq!(got[i * 3 + j], want);
+            }
+        }
+        assert_eq!(a, a_before);
+        assert_eq!(b, b_before);
+        // 1.0039062 is not represented by BF16; this distinguishes the
+        // mixed seam from gemm_bf16_bits_on's activation-rounding contract.
+        assert_ne!(a[0], bf16_to_f32(f32_to_bf16_rne(a[0])));
+    }
+
+    #[test]
+    fn mixed_bf16_handles_nan_inf_zero_and_tails() {
+        let a = [f32::INFINITY, 0.0, f32::NAN, 2.0];
+        let b = [0x0000u16, 0x7F80];
+        let mut got = [f32::NAN, f32::NAN];
+        gemm_f32_bf16_bits_on(IsaPath::Scalar, 2, 1, 2, &a, &b, &mut got).unwrap();
+        assert!(got[0].is_nan()); // +inf * 0 is NaN
+        assert!(got[1].is_nan()); // NaN activation propagates
+
+        let mut empty = [];
+        gemm_f32_bf16_bits_on(IsaPath::Scalar, 0, 3, 2, &[], &[0; 6], &mut empty).unwrap();
+        let mut k_zero = [f32::NAN; 3];
+        gemm_f32_bf16_bits_on(IsaPath::Scalar, 1, 3, 0, &[], &[], &mut k_zero).unwrap();
+        assert_eq!(k_zero, [0.0; 3]);
+    }
+
+    #[test]
+    fn mixed_bf16_simd_path_matches_the_same_f32_tile_oracle() {
+        let isa = CpuFeatures::detect().best_isa();
+        if isa == IsaPath::Scalar {
+            return;
+        }
+        let neon_family = matches!(
+            isa,
+            IsaPath::Neon
+                | IsaPath::NeonFp16
+                | IsaPath::NeonDotprod
+                | IsaPath::NeonI8mm
+                | IsaPath::NeonBf16
+        );
+        if cfg!(target_arch = "aarch64") {
+            assert!(
+                neon_family,
+                "Darwin arm64 mixed-BF16 test selected non-NEON ISA {isa}"
+            );
+        }
+        if neon_family {
+            assert!(
+                CpuFeatures::detect().supports(isa),
+                "host-selected NEON family ISA {isa} must be supported"
+            );
+        }
+        println!("mixed-BF16 SIMD path selected host best ISA: {isa}");
+        let a = [1.0039062f32, -2.0078125, 0.33325195, 4.125, -0.0625, 2.5];
+        let b = [
+            0x3F80u16, 0x4000, // k=0
+            0x4040, 0x4080, // k=1
+            0x40A0, 0x40C0, // k=2
+        ];
+        let b_f32 = b.iter().map(|&bits| bf16_to_f32(bits)).collect::<Vec<_>>();
+        let mut mixed = [0.0f32; 4];
+        let mut oracle = [0.0f32; 4];
+        gemm_f32_bf16_bits_on(isa, 2, 2, 3, &a, &b, &mut mixed).unwrap();
+        gemm_f32_on(isa, 2, 2, 3, &a, &b_f32, None, &mut oracle).unwrap();
+        assert_eq!(mixed, oracle);
+    }
+
+    #[test]
+    fn mixed_bf16_rejects_shapes_overflow_and_foreign_isa() {
+        let a = [1.0f32; 2];
+        let b = [0x3F80u16; 2];
+        let mut out = [f32::NAN; 2];
+        assert!(matches!(
+            gemm_f32_bf16_bits_on(IsaPath::Scalar, 2, 2, 2, &a, &b, &mut out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            gemm_f32_bf16_bits_on(IsaPath::Scalar, usize::MAX, 1, 2, &[], &[], &mut []),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut scratch = GemmF32Bf16BitsScratch::new();
+        assert!(matches!(
+            gemm_f32_bf16_bits_on_with_scratch_strided(
+                IsaPath::Scalar,
+                1,
+                2,
+                1,
+                &[1.0],
+                &[0x3F80, 0x3F80],
+                &mut [0.0, 0.0],
+                1,
+                &mut scratch,
+            ),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        #[cfg(target_arch = "x86_64")]
+        let foreign = IsaPath::Neon;
+        #[cfg(target_arch = "aarch64")]
+        let foreign = IsaPath::Avx2;
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let foreign = IsaPath::Avx2;
+        assert!(matches!(
+            gemm_f32_bf16_bits_on(foreign, 1, 1, 1, &[1.0], &[0x3F80], &mut [0.0]),
+            Err(VokraError::BackendUnavailable(_))
+        ));
+        for rvv in [IsaPath::Rvv, IsaPath::Rvv071] {
+            assert!(matches!(
+                validate_mixed_bf16_isa(rvv),
+                Err(VokraError::UnsupportedOp(_))
+            ));
+            let result = gemm_f32_bf16_bits_on(rvv, 1, 1, 1, &[1.0], &[0x3F80], &mut [0.0]);
+            if CpuFeatures::detect().supports(rvv) {
+                assert!(matches!(result, Err(VokraError::UnsupportedOp(_))));
+            } else {
+                assert!(matches!(result, Err(VokraError::BackendUnavailable(_))));
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_bf16_auto_wrapper_matches_selected_active_isa() {
+        let isa = crate::active_isa();
+        let a = [1.0039062f32, -2.0078125, 0.5, 3.25];
+        let b = [0x3F80u16, 0x4000, 0x4040, 0x4080];
+        let mut auto_out = [f32::NAN; 4];
+        let mut forced_out = [f32::NAN; 4];
+        let mut auto_scratch = GemmF32Bf16BitsScratch::new();
+        let mut forced_scratch = GemmF32Bf16BitsScratch::new();
+        let auto =
+            gemm_f32_bf16_bits_with_scratch(2, 2, 2, &a, &b, &mut auto_out, &mut auto_scratch);
+        let forced = gemm_f32_bf16_bits_on_with_scratch(
+            isa,
+            2,
+            2,
+            2,
+            &a,
+            &b,
+            &mut forced_out,
+            &mut forced_scratch,
+        );
+        assert_eq!(
+            auto.is_ok(),
+            forced.is_ok(),
+            "auto wrapper did not use active ISA {isa}"
+        );
+        if auto.is_ok() {
+            assert_eq!(auto_out, forced_out);
+        }
+    }
+
+    #[test]
+    fn mixed_bf16_reuses_scratch_across_simd_tails() {
+        let isa = CpuFeatures::detect().best_isa();
+        if isa == IsaPath::Scalar {
+            return;
+        }
+        let a = vec![1.0039062f32; 3 * 5];
+        let b = vec![0x3F80u16; 5 * 10];
+        let mut out = vec![0.0f32; 3 * 10];
+        let mut scratch = GemmF32Bf16BitsScratch::new();
+        gemm_f32_bf16_bits_on_with_scratch(isa, 3, 10, 5, &a, &b, &mut out, &mut scratch).unwrap();
+        let tile_b_capacity = scratch.tile_b.capacity();
+        let tile_out_capacity = scratch.tile_out.capacity();
+        let tile_b_ptr = scratch.tile_b.as_ptr();
+        let tile_out_ptr = scratch.tile_out.as_ptr();
+        let b_tail = vec![0x4000u16; 5 * 3];
+        let mut out_tail = vec![f32::NAN; 3 * 10];
+        gemm_f32_bf16_bits_on_with_scratch_strided(
+            isa,
+            3,
+            3,
+            5,
+            &a,
+            &b_tail,
+            &mut out_tail,
+            10,
+            &mut scratch,
+        )
+        .unwrap();
+        for row in 0..3 {
+            assert!(
+                out_tail[row * 10..row * 10 + 3]
+                    .iter()
+                    .all(|value| value.is_finite())
+            );
+            assert!(
+                out_tail[row * 10 + 3..row * 10 + 10]
+                    .iter()
+                    .all(|value| value.is_nan())
+            );
+        }
+        assert_eq!(scratch.tile_b.capacity(), tile_b_capacity);
+        assert_eq!(scratch.tile_out.capacity(), tile_out_capacity);
+        assert_eq!(scratch.tile_b.as_ptr(), tile_b_ptr);
+        assert_eq!(scratch.tile_out.as_ptr(), tile_out_ptr);
+    }
+
+    #[test]
+    fn mixed_bf16_zero_n_does_not_overflow_stride() {
+        let mut scratch = GemmF32Bf16BitsScratch::new();
+        let mut untouched = [f32::from_bits(0x7FC0_0001)];
+        gemm_f32_bf16_bits_on_with_scratch_strided(
+            IsaPath::Scalar,
+            1,
+            0,
+            1,
+            &[1.0],
+            &[],
+            &mut untouched[..0],
+            usize::MAX,
+            &mut scratch,
+        )
+        .unwrap();
+        assert_eq!(untouched[0].to_bits(), 0x7FC0_0001);
     }
 
     #[test]

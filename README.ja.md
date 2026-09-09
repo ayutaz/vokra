@@ -14,10 +14,15 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **リリース状況:** `0.1.0` を最初のタグ付きリリースとして準備しています。
-> Rust API、C ABI、GGUF metadata、モデル対応範囲は引き続き pre-1.0 で、
-> 変更される可能性があります。他プロジェクトで評価するときは正確な release
-> を固定してください。
+> **開発状況（2026-09-09）:** workspace は `0.3.0` development です。PR #79 の
+> 文書 refresh 開始時点の head は `9efcd16e`（成功 110、想定 skip 13、失敗 0）で、Git tag と
+> 公開済み release はまだありません。読み取り専用 inventory では Mac CPU
+> complete が 131、Apple Metal source route complete が 131、未解決の public row
+> が 63 です。これは pre-1.0・Scaleway 前の snapshot であり、Apple Silicon
+> CPU/reference と Metal/reference/no-fallback の実機 evidence は未主張です。
+> Rust API、C ABI、GGUF metadata、モデル対応範囲は変更される可能性があります。
+> 他プロジェクトで評価するときは正確な commit を固定し、release 公開後は正確な
+> tag または release を固定してください。
 
 ## Vokra の特徴
 
@@ -83,8 +88,16 @@ numerical parity、公開 artefact はそれぞれ別の到達点です。どれ
   明示的な runtime routing / deferred-operation registry
 
 CPU が既定 backend です。Metal・CUDA・Vulkan・WebGPU は opt-in で、対応 op は
-backend ごとに異なります。CoreML / QNN は experimental delegate です。
-accelerator を選ぶ前に [backend guide](docs/backend-guide.ja.md) を確認してください。
+backend ごとに異なります。CoreML には Whisper encoder 全体を扱う experimental
+whole-submodel delegate 経路があり、QNN は SDK gate 下の experimental delegate
+scaffold のままです。accelerator を選ぶ前に
+[backend guide](docs/backend-guide.ja.md) を確認してください。
+
+現在の coverage は source/runtime readiness、numerical evidence、公開可否を分けて
+管理しています。不完全な経路は fail-closed で、未対応 op が CPU に暗黙 fallback
+することはありません。UTMOS の legacy Lightning checkpoint も制限付き
+`weights_only=True` loader が意図的に拒否するため、UTMOS の numeric parity 結果は
+主張していません。
 
 ## ライブラリ統合
 

@@ -1,9 +1,10 @@
-//! Hand-rolled proto3 parser for a **SentencePiece** `ModelProto` blob
+//! Hand-rolled proto2 parser for a **SentencePiece** `ModelProto` blob
 //! (`spm.model`), extracting only what a Vokra converter needs to stamp the
 //! `vokra.bert.tokenizer.pieces / .scores / .unk_id / .bos_id / .eos_id`
-//! metadata group. Everything else in the model — `trainer_spec`,
-//! `normalizer_spec`, `self_test_data`, `denormalizer_spec` — is skipped
-//! by proto3 unknown-field rules.
+//! metadata group. It also extracts the two normalizer flags needed for
+//! exact decode semantics and records denormalizer presence. Everything else
+//! in the model — `trainer_spec`, `self_test_data`, and the denormalizer
+//! contents — is skipped by protobuf unknown-field rules.
 //!
 //! # Why hand-rolled
 //!
@@ -11,14 +12,14 @@
 //! the `protobuf` crate here would drag it through `vokra-core`'s
 //! zero-dep boundary (NFR-DS-02 / FR-LD-05: the root `Cargo.lock` must
 //! stay `vokra-*`-only). The SentencePiece `ModelProto` we care about
-//! uses only three of proto3's wire types (varint / fixed32 /
-//! length-delimited), and only three fields inside `SentencePiece` and
-//! one repeated-message field inside `ModelProto`, so a full-featured
+//! uses only three of protobuf's wire types (varint / fixed32 /
+//! length-delimited), and only three fields inside `SentencePiece` plus the
+//! normalizer flags inside `ModelProto`, so a full-featured
 //! runtime library is not needed.
 //!
 //! # References (permissive only — SPEC ONLY, NO CODE COPIED)
 //!
-//! - Protocol Buffers 3 wire format spec (Google, Apache 2.0 spec — the
+//! - Protocol Buffers wire format spec (Google, Apache 2.0 spec — the
 //!   varint / fixed32 / length-delimited encodings are a wire-level
 //!   description independent of any implementation).
 //! - SentencePiece `sentencepiece_model.proto` field-number definitions
@@ -59,10 +60,10 @@ use std::fmt;
 /// One entry of the SentencePiece vocabulary — a subword string and the
 /// log-probability the SentencePiece Unigram search will consult.
 ///
-/// `piece_type` distinguishes the four SentencePiece categories: `Normal`
+/// `piece_type` distinguishes the SentencePiece categories: `Normal`
 /// (regular subword), `Unknown` (the `<unk>` sentinel), `Control` (the
-/// `<s>` / `</s>` sentinels), and `UserDefined` (byte-fallback,
-/// user-injected specials, and byte pieces like `<0x00>`).
+/// `<s>` / `</s>` sentinels), `UserDefined` (user-injected specials),
+/// `Unused`, and `Byte` (byte-fallback pieces like `<0x00>`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SentencePiece {
     /// UTF-8 bytes of the subword (SentencePiece uses U+2581 `▁` as the
@@ -71,8 +72,8 @@ pub struct SentencePiece {
     /// SentencePiece Unigram log-probability. `0.0` for `Control` /
     /// `Unknown` sentinels (upstream convention).
     pub score: f32,
-    /// SentencePiece piece type. Encoded as a proto3 enum: 1=Normal,
-    /// 2=Unknown, 3=Control, 4=UserDefined, 5=Byte, 6=Unused.
+    /// SentencePiece piece type. Encoded as a proto2 enum: 1=Normal,
+    /// 2=Unknown, 3=Control, 4=UserDefined, 5=Unused, 6=Byte.
     pub piece_type: PieceType,
 }
 
@@ -83,10 +84,10 @@ pub struct SentencePiece {
 /// variant (FR-EX-08).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PieceType {
-    /// Not seen — the SentencePiece default is `NORMAL = 1`, so a value
-    /// of `0` on the wire signals "field was omitted". Kept as an
-    /// explicit variant rather than folded into `Normal` so tests can
-    /// pin the distinction.
+    /// Explicit unknown/invalid zero value. The proto2 field default is
+    /// `NORMAL = 1`, so an absent field is materialized as [`Normal`]; a
+    /// wire value of zero is retained here so Kyutai conversion can reject
+    /// it rather than silently changing decode semantics.
     Unspecified,
     /// A regular subword.
     Normal,
@@ -97,27 +98,34 @@ pub enum PieceType {
     /// A user-defined token — treated by the Unigram search as an
     /// atomic subword regardless of score.
     UserDefined,
+    /// Reserved by SentencePiece; kept round-trippable.
+    Unused,
     /// A raw byte piece (`<0x00>` .. `<0xFF>`) used by SentencePiece's
     /// byte-fallback strategy.
     Byte,
-    /// Reserved by SentencePiece; kept round-trippable.
-    Unused,
     /// Any wire value the SentencePiece schema does not know about — a
     /// forward-compatibility escape hatch, carrying the raw varint value
     /// so a caller can decide whether to error or fall back.
     Other(u32),
 }
 
-/// Minimal SentencePiece `ModelProto` view: the `pieces` array only.
+/// Minimal SentencePiece `ModelProto` view: the vocabulary plus the
+/// normalizer/denormalizer facts required by an exact decode surface.
 ///
-/// Every other top-level field (`trainer_spec`, `normalizer_spec`,
-/// `self_test_data`, `denormalizer_spec`) is skipped losslessly. Adding
-/// them here later is additive.
+/// Every other top-level field (`trainer_spec`, `self_test_data`, and the
+/// denormalizer contents) is skipped losslessly. Adding further fields later
+/// is additive.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelProto {
     /// The vocabulary. Piece index = ID in every SentencePiece consumer;
     /// the on-disk order is preserved.
     pub pieces: Vec<SentencePiece>,
+    /// `NormalizerSpec.add_dummy_prefix` (proto2 default: true).
+    pub normalizer_add_dummy_prefix: bool,
+    /// `NormalizerSpec.remove_extra_whitespaces` (proto2 default: true).
+    pub normalizer_remove_extra_whitespaces: bool,
+    /// Whether the optional `ModelProto.denormalizer_spec` field was present.
+    pub denormalizer_present: bool,
 }
 
 /// A parse error, tagged with the byte offset where it was detected so a
@@ -148,8 +156,8 @@ pub enum SpmProtoError {
         remaining: usize,
     },
     /// A wire type outside `{0, 1, 2, 5}` was seen. Wire types `3` and
-    /// `4` (start_group / end_group) were removed in proto3, so their
-    /// appearance means the input is not a proto3 message.
+    /// `4` (start_group / end_group) are deprecated in proto2, so their
+    /// appearance is rejected by this narrow parser.
     UnsupportedWireType {
         /// Byte offset of the offending tag.
         at: usize,
@@ -184,7 +192,7 @@ impl fmt::Display for SpmProtoError {
             ),
             Self::UnsupportedWireType { at, wire_type } => write!(
                 f,
-                "spm_proto: unsupported proto wire type {wire_type} at byte {at} (proto3 admits \
+                "spm_proto: unsupported proto wire type {wire_type} at byte {at} (this parser admits \
                  only 0/1/2/5)"
             ),
             Self::InvalidUtf8 { at } => write!(
@@ -199,10 +207,13 @@ impl std::error::Error for SpmProtoError {}
 
 /// Parse a SentencePiece `ModelProto` from a raw `spm.model` byte buffer.
 ///
-/// Only `ModelProto.pieces` (field 1) and its inner `piece` / `score` /
-/// `type` (fields 1 / 2 / 3) are extracted — every other field is
-/// skipped losslessly. Returns [`SpmProtoError`] for malformed varints,
-/// truncated length-delimited fields, non-proto3 wire types, or
+/// `ModelProto.pieces` (field 1), its inner `piece` / `score` / `type`
+/// (fields 1 / 2 / 3), and the two normalizer booleans are extracted.
+/// The proto2 `type` default (`NORMAL = 1`) is materialized when field 3 is
+/// absent; an explicit wire value of zero remains invalid for Kyutai.
+/// `denormalizer_spec` presence is recorded; every other field is skipped
+/// losslessly. Returns [`SpmProtoError`] for malformed varints,
+/// truncated length-delimited fields, unsupported wire types, or
 /// non-UTF-8 piece strings.
 ///
 /// # Errors
@@ -211,6 +222,9 @@ impl std::error::Error for SpmProtoError {}
 pub fn parse_model(bytes: &[u8]) -> Result<ModelProto, SpmProtoError> {
     let mut cursor = Cursor::new(bytes);
     let mut pieces = Vec::new();
+    let mut normalizer_add_dummy_prefix = true;
+    let mut normalizer_remove_extra_whitespaces = true;
+    let mut denormalizer_present = false;
     while !cursor.is_empty() {
         let start = cursor.pos();
         let (field_number, wire_type) = cursor.read_tag()?;
@@ -220,10 +234,41 @@ pub fn parse_model(bytes: &[u8]) -> Result<ModelProto, SpmProtoError> {
                 let piece_bytes = cursor.read_length_delimited()?;
                 pieces.push(parse_sentence_piece(piece_bytes, start)?);
             }
+            (3, 2) => {
+                let normalizer = cursor.read_length_delimited()?;
+                let (add_dummy_prefix, remove_extra_whitespaces) =
+                    parse_normalizer_spec(normalizer)?;
+                normalizer_add_dummy_prefix = add_dummy_prefix;
+                normalizer_remove_extra_whitespaces = remove_extra_whitespaces;
+            }
+            (5, 2) => {
+                let _ = cursor.read_length_delimited()?;
+                denormalizer_present = true;
+            }
             _ => cursor.skip_field(wire_type)?,
         }
     }
-    Ok(ModelProto { pieces })
+    Ok(ModelProto {
+        pieces,
+        normalizer_add_dummy_prefix,
+        normalizer_remove_extra_whitespaces,
+        denormalizer_present,
+    })
+}
+
+fn parse_normalizer_spec(bytes: &[u8]) -> Result<(bool, bool), SpmProtoError> {
+    let mut cursor = Cursor::new(bytes);
+    let mut add_dummy_prefix = true;
+    let mut remove_extra_whitespaces = true;
+    while !cursor.is_empty() {
+        let (field_number, wire_type) = cursor.read_tag()?;
+        match (field_number, wire_type) {
+            (3, 0) => add_dummy_prefix = cursor.read_varint()? != 0,
+            (4, 0) => remove_extra_whitespaces = cursor.read_varint()? != 0,
+            _ => cursor.skip_field(wire_type)?,
+        }
+    }
+    Ok((add_dummy_prefix, remove_extra_whitespaces))
 }
 
 /// Parse one `SentencePiece` nested message.
@@ -235,7 +280,9 @@ fn parse_sentence_piece(bytes: &[u8], start_offset: usize) -> Result<SentencePie
     let mut cursor = Cursor::new(bytes);
     let mut piece: Option<String> = None;
     let mut score: f32 = 0.0;
-    let mut piece_type: PieceType = PieceType::Unspecified;
+    // sentencepiece_model.proto is proto2 and declares `optional Type type =
+    // 3 [default = NORMAL]`; materialize that default when the field is absent.
+    let mut piece_type: PieceType = PieceType::Normal;
     while !cursor.is_empty() {
         let (field_number, wire_type) = cursor.read_tag()?;
         match (field_number, wire_type) {
@@ -265,20 +312,20 @@ fn parse_sentence_piece(bytes: &[u8], start_offset: usize) -> Result<SentencePie
 
 fn decode_piece_type(raw: u64) -> PieceType {
     match raw {
-        // 0 = default / unset (SentencePiece treats absent field as NORMAL,
-        // but we preserve the "field was omitted" signal).
+        // Zero is not the proto2 default: it is an explicitly invalid enum
+        // value. Preserve it so Kyutai validation can fail closed.
         0 => PieceType::Unspecified,
         1 => PieceType::Normal,
         2 => PieceType::Unknown,
         3 => PieceType::Control,
         4 => PieceType::UserDefined,
-        5 => PieceType::Byte,
-        6 => PieceType::Unused,
+        5 => PieceType::Unused,
+        6 => PieceType::Byte,
         other => PieceType::Other(other as u32),
     }
 }
 
-/// Byte cursor over a proto3 message body — extracted so the outer and
+/// Byte cursor over a proto2 message body — extracted so the outer and
 /// nested parsers can reuse the same primitives (varint, tag, fixed32,
 /// length-delimited, skip-unknown).
 struct Cursor<'a> {
@@ -299,7 +346,7 @@ impl<'a> Cursor<'a> {
         self.pos
     }
 
-    /// Read one proto3 varint. Wire format: 7 low bits of each byte are
+    /// Read one protobuf varint. Wire format: 7 low bits of each byte are
     /// the payload; the high bit is set on every byte except the last.
     /// Capped at 10 bytes (64 bits + 1 continuation-bit worth of slack).
     fn read_varint(&mut self) -> Result<u64, SpmProtoError> {
@@ -317,7 +364,7 @@ impl<'a> Cursor<'a> {
             self.pos += 1;
             // Lower 7 bits are payload; shift into result. For the 10th
             // byte, only bit 0 is meaningful (bits 1-6 would overflow a
-            // u64) but proto3 encoders never set them, and we preserve
+            // u64) but standard encoders never set them, and we preserve
             // the full byte to match every existing SentencePiece
             // parser's behavior of "accept what fits, drop overflow"
             // rather than error on the 64-bit boundary.
@@ -386,7 +433,7 @@ impl<'a> Cursor<'a> {
         Ok(out)
     }
 
-    /// Skip an unknown field, respecting proto3 unknown-field forward
+    /// Skip an unknown field, respecting protobuf unknown-field forward
     /// compatibility rules.
     fn skip_field(&mut self, wire_type: u8) -> Result<(), SpmProtoError> {
         match wire_type {
@@ -415,7 +462,7 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
 
-    /// Hand-encode one proto3 varint into a byte vector.
+    /// Hand-encode one protobuf varint into a byte vector.
     fn encode_varint(mut value: u64, out: &mut Vec<u8>) {
         loop {
             let byte = (value & 0x7F) as u8;
@@ -428,7 +475,7 @@ mod tests {
         }
     }
 
-    /// Hand-encode a proto3 field tag `(field_number, wire_type)`.
+    /// Hand-encode a protobuf field tag `(field_number, wire_type)`.
     fn encode_tag(field_number: u32, wire_type: u8, out: &mut Vec<u8>) {
         encode_varint(((field_number as u64) << 3) | u64::from(wire_type), out);
     }
@@ -445,7 +492,7 @@ mod tests {
         encode_tag(2, 5, &mut inner);
         inner.extend_from_slice(&score.to_le_bytes());
         // type = field 3, varint — but only when caller specifies it,
-        // so the "missing type" case round-trips as Unspecified.
+        // so the missing proto2 type field materializes as Normal.
         if let Some(t) = type_value {
             encode_tag(3, 0, &mut inner);
             encode_varint(t, &mut inner);
@@ -461,6 +508,20 @@ mod tests {
     fn parse_empty_buffer_yields_empty_pieces() {
         let model = parse_model(&[]).expect("empty proto is valid");
         assert_eq!(model.pieces.len(), 0);
+        assert!(model.normalizer_add_dummy_prefix);
+        assert!(model.normalizer_remove_extra_whitespaces);
+        assert!(!model.denormalizer_present);
+    }
+
+    #[test]
+    fn parse_normalizer_flags_and_denormalizer_presence() {
+        // ModelProto.normalizer_spec = { add_dummy_prefix: false,
+        // remove_extra_whitespaces: true }, denormalizer_spec = {}.
+        let bytes = [0x1a, 0x04, 0x18, 0x00, 0x20, 0x01, 0x2a, 0x00];
+        let model = parse_model(&bytes).expect("normalizer metadata");
+        assert!(!model.normalizer_add_dummy_prefix);
+        assert!(model.normalizer_remove_extra_whitespaces);
+        assert!(model.denormalizer_present);
     }
 
     #[test]
@@ -483,22 +544,32 @@ mod tests {
         encode_sentence_piece(&mut buf, "</s>", 0.0, Some(3)); // Control
         encode_sentence_piece(&mut buf, "\u{2581}", -1.5, Some(1)); // Normal, word-start marker
         encode_sentence_piece(&mut buf, "he", -2.0, Some(1));
-        encode_sentence_piece(&mut buf, "<0x00>", 0.0, Some(5)); // Byte
+        encode_sentence_piece(&mut buf, "<0x00>", 0.0, Some(5)); // Unused
+        encode_sentence_piece(&mut buf, "<0x01>", 0.0, Some(6)); // Byte
 
         let model = parse_model(&buf).expect("valid model");
-        assert_eq!(model.pieces.len(), 6);
+        assert_eq!(model.pieces.len(), 7);
         assert_eq!(model.pieces[0].piece, "<unk>");
         assert_eq!(model.pieces[0].piece_type, PieceType::Unknown);
         assert_eq!(model.pieces[1].piece_type, PieceType::Control);
         assert_eq!(model.pieces[3].piece, "\u{2581}"); // U+2581 must survive UTF-8 round-trip
-        assert_eq!(model.pieces[5].piece_type, PieceType::Byte);
+        assert_eq!(model.pieces[5].piece_type, PieceType::Unused);
+        assert_eq!(model.pieces[6].piece_type, PieceType::Byte);
     }
 
     #[test]
-    fn missing_type_field_yields_unspecified() {
+    fn missing_type_field_materializes_proto2_normal_default() {
         let mut buf = Vec::new();
         encode_sentence_piece(&mut buf, "x", 0.5, None); // no type field
         let model = parse_model(&buf).expect("valid");
+        assert_eq!(model.pieces[0].piece_type, PieceType::Normal);
+    }
+
+    #[test]
+    fn explicit_zero_type_is_retained_as_invalid_unspecified() {
+        let mut buf = Vec::new();
+        encode_sentence_piece(&mut buf, "x", 0.5, Some(0)); // explicit invalid enum value
+        let model = parse_model(&buf).expect("wire enum is parseable");
         assert_eq!(model.pieces[0].piece_type, PieceType::Unspecified);
     }
 
@@ -556,7 +627,7 @@ mod tests {
 
     #[test]
     fn unknown_wire_type_is_loud_error() {
-        // wire_type = 3 (start_group) — deprecated in proto3, must not
+        // wire_type = 3 (start_group) — deprecated in proto2, must not
         // silently pass.
         let mut buf = Vec::new();
         encode_tag(1, 3, &mut buf);
@@ -602,7 +673,7 @@ mod tests {
 
     #[test]
     fn empty_piece_string_survives() {
-        // An empty `piece` field is legal (a proto3 length-delimited
+        // An empty `piece` field is legal (a proto2 length-delimited
         // string with length 0 encodes as tag + 0x00 + no bytes).
         let mut buf = Vec::new();
         encode_sentence_piece(&mut buf, "", 0.0, Some(1));

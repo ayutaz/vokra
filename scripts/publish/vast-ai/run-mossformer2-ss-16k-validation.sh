@@ -12,6 +12,8 @@ PARITY_PROJECT="$VOKRA_ROOT/tools/parity/mossformer2_ss_16k"
 AUDITOR="$VOKRA_ROOT/tools/audit/mossformer2_ss_16k_manifest.py"
 PREPARER="$VOKRA_ROOT/tools/parity/mossformer2_ss_16k_prepare_checkpoint.py"
 REFERENCE_DUMPER="$VOKRA_ROOT/tools/parity/mossformer2_ss_16k_dump_reference.py"
+PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
+PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 PUBLIC_REPO="vokra/mossformer2-ss-16k"
@@ -38,7 +40,7 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-mossformer2-ss-16k-validation.sh [--work-dir <empty-dir>]
+usage: run-mossformer2-ss-16k-validation.sh --approval-evidence <file> [--work-dir <absent-dir>]
        run-mossformer2-ss-16k-validation.sh --self-test
 
 VAST-only source-separation gate. It downloads and authenticates the exact
@@ -71,7 +73,7 @@ sha256_file() {
 
 verify_file() {
   local path="$1" expected_bytes="$2" expected_hash="$3" actual_bytes actual_hash
-  [[ -f "$path" ]] || die "missing pinned input: $path"
+  [[ -f "$path" && ! -L "$path" ]] || { die "missing, symlinked, or non-regular pinned input: $path"; return 2; }
   actual_bytes="$(wc -c < "$path" | tr -d '[:space:]')"
   if [[ "$actual_bytes" != "$expected_bytes" ]]; then
     die "byte-size mismatch for $path: got $actual_bytes, expected $expected_bytes"
@@ -101,8 +103,9 @@ require_vast_host() {
   if (( mem_kib < MIN_VAST_MEM_KIB )); then
     die "MemTotal=${mem_kib} KiB is below the 64-GB class guard"
   fi
-  mkdir -p "$VOKRA_SCRATCH"
-  free_kib="$(df -Pk "$VOKRA_SCRATCH" | awk 'NR == 2 {print $4}')"
+  local disk_path="$VOKRA_SCRATCH"
+  [[ -e "$disk_path" ]] || disk_path="$(dirname "$disk_path")"
+  free_kib="$(df -Pk "$disk_path" | awk 'NR == 2 {print $4}')"
   [[ -n "$free_kib" ]] || die "could not read free disk"
   if (( free_kib < MIN_FREE_DISK_KIB )); then
     die "free disk=${free_kib} KiB is below the 20-GB run guard"
@@ -122,12 +125,86 @@ require_tooling() {
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "MossFormer2 parity uv.lock is missing"
+  [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" ]] \
+    || die "MossFormer2 preflight inputs are missing"
   [[ -f "$AUDITOR" ]] || die "MossFormer2 manifest auditor is missing"
   [[ -f "$PREPARER" ]] || die "MossFormer2 checkpoint preparer is missing"
   [[ -f "$REFERENCE_DUMPER" ]] || die "MossFormer2 reference dumper is missing"
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
     die "VAST checkout must be clean so evidence names an exact commit"
   fi
+}
+
+pre_sync_gate() {
+  local approval="$1"
+  step "Validate exact MossFormer2 closure before synchronization"
+  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die "approval evidence is missing, symlinked, or empty"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+      --project "$PARITY_PROJECT" --manifest "$PREFLIGHT_MANIFEST" --evidence "$approval"
+}
+
+require_disjoint_work_dir() {
+  local work="$1" approval="$2" candidate root_real approval_parent approval_real
+  candidate="$(canonical_absent_path "$work")" || return 2
+  root_real="$(cd -P "$VOKRA_ROOT" 2>/dev/null && pwd)" || die "Vokra checkout is inaccessible"
+  approval_parent="$(cd -P "$(dirname "$approval")" 2>/dev/null && pwd)" || die "approval parent is inaccessible"
+  approval_real="$approval_parent/$(basename "$approval")"
+  [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && "$root_real/" != "$candidate/"* ]] || die "work-dir overlaps the checkout"
+  [[ "$candidate" != "$approval_real" && "$candidate/" != "$approval_real/"* && "$approval_real/" != "$candidate/"* ]] || die "work-dir overlaps approval evidence"
+}
+
+canonical_absent_path() {
+  local target="$1" current suffix component real lexical
+  [[ "$target" = /* ]] || target="$PWD/$target"
+  lexical="${target#/}"; current="/"
+  while [[ -n "$lexical" ]]; do
+    component="${lexical%%/*}"
+    if [[ "$lexical" == "$component" ]]; then lexical=""; else lexical="${lexical#*/}"; fi
+    [[ "$component" == "." || -z "$component" ]] && continue
+    [[ "$component" != ".." ]] || { die "work-dir path contains .."; return 2; }
+    current="${current%/}/$component"
+    if [[ -L "$current" ]]; then
+      real="$(cd -P "$current" 2>/dev/null && pwd)" || { die "work-dir path contains an inaccessible component"; return 2; }
+      case "$current:$real" in
+        /var:/private/var|/tmp:/private/tmp) current="$real" ;;
+        *) die "work-dir path contains a symlinked component"; return 2 ;;
+      esac
+    fi
+  done
+  current="$target"; suffix=""
+  while [[ ! -e "$current" && ! -L "$current" ]]; do
+    component="$(basename "$current")"; suffix="/$component$suffix"; current="$(dirname "$current")"
+  done
+  [[ -d "$current" && ! -L "$current" ]] || { die "work-dir has an inaccessible or symlinked existing parent"; return 2; }
+  real="$(cd -P "$current" 2>/dev/null && pwd)" || { die "work-dir parent is inaccessible"; return 2; }
+  printf '%s%s\n' "$real" "$suffix"
+}
+
+require_absent_work_dir() {
+  local work="$1" approval="$2"
+  require_disjoint_work_dir "$work" "$approval" || return 2
+  [[ ! -e "$work" && ! -L "$work" ]] || { die "--work-dir must be absent before validation: $work"; return 2; }
+}
+
+verify_checked_out_source() {
+  local checkout="$1"
+  step "Verify exact official source files before reference/preparation"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+    --verify-source "$checkout"
+}
+
+write_apple_verifier_command() {
+  local output="$1" reference_manifest_sha256="$2"
+  {
+    printf '%s\n' "VOKRA_REMOTE_APPLE_SILICON=1 \\"
+    printf '%s\n' "scripts/verify/apple-silicon-mossformer2-ss-16k.sh \\"
+    printf '%s\n' "  --gguf '<APPLE_GGUF_PATH>' \\"
+    printf '%s\n' "  --gguf-sha256 $PUBLIC_SHA256 \\"
+    printf '%s\n' "  --reference '<APPLE_REFERENCE_DIR>' \\"
+    printf '%s\n' "  --reference-sha256 $reference_manifest_sha256 \\"
+    printf '%s\n' "  --approval-evidence '<APPLE_APPROVAL_EVIDENCE>' \\"
+    printf '%s\n' "  --evidence-dir '<APPLE_EVIDENCE_DIR>'"
+  } > "$output"
 }
 
 checkout_exact_source() {
@@ -176,11 +253,43 @@ record_environment() {
   } | tee "$output"
 }
 
+require_one_named_test_passed() {
+  local log_path="$1" test_name="$2" backend="$3"
+  local test_count ok_count named_line_count result_count total_result_count marker_family_count marker_count
+  test_count="$(grep -Ec '^test .* \.\.\.' "$log_path" || true)"
+  ok_count="$(grep -Ec "^test ${test_name} \.\.\. ok$" "$log_path" || true)"
+  named_line_count="$(grep -Ec "^test ${test_name} \.\.\." "$log_path" || true)"
+  result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$log_path" || true)"
+  total_result_count="$(grep -Ec '^test result:' "$log_path" || true)"
+  marker_family_count="$(grep -Ec '^MOSSFORMER2_SS_16K_MEASUREMENT_ONLY ' "$log_path" || true)"
+  marker_count="$(grep -Ec "^MOSSFORMER2_SS_16K_MEASUREMENT_ONLY backend=${backend} numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=[0-9.e+-]+ rms=[0-9.e+-]+ relative_l1=[0-9.e+-]+ index=[0-9]+ (actual|metal)=[0-9.e+-]+ (reference|cpu)=[0-9.e+-]+$" "$log_path" || true)"
+  [[ "$test_count" == 1 && "$ok_count" == 1 && "$named_line_count" == 1 ]] || { die "expected exactly one total Cargo test line and one named $test_name pass line"; return 2; }
+  [[ "$result_count" == 1 && "$total_result_count" == 1 ]] || { die "expected exactly one exact Cargo result"; return 2; }
+  [[ "$marker_family_count" == 1 && "$marker_count" == 1 ]] || { die "expected exactly one full-line MossFormer2 measurement-family marker for ${backend}"; return 2; }
+  ! grep -Eq '^MOSSFORMER2_SS_16K_MEASUREMENT_ONLY .*FAIL$' "$log_path" \
+    || { die "a MossFormer2 FAIL marker is present"; return 2; }
+}
+
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0
+  local tmp payload actual script_path cases=0 fail=0 probe_root probe_output gate_line host_line tooling_line sync_line checkout_line source_verify_line prep_line
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
+  printf '{}\n' > "$tmp/path-approval.json"
+  mkdir -p "$tmp/nested-parent"
+  require_absent_work_dir "$tmp/nested-parent/model/work" "$tmp/path-approval.json" || fail=1
+  mkdir -p "$tmp/intermediate"
+  ln -s "$VOKRA_ROOT" "$tmp/intermediate/checkout-link"
+  if require_absent_work_dir "$tmp/intermediate/checkout-link/work" "$tmp/path-approval.json" >/dev/null 2>&1; then fail=1; fi
+  mkdir -p "$tmp/real/existing"
+  ln -s "$tmp/real" "$tmp/ancestor-link"
+  if require_absent_work_dir "$tmp/ancestor-link/existing/nested/new" "$tmp/path-approval.json" >/dev/null 2>&1; then fail=1; fi
+  ln -s "$tmp/missing-target" "$tmp/dangling-work"
+  if require_absent_work_dir "$tmp/dangling-work" "$tmp/path-approval.json" >/dev/null 2>&1; then fail=1; fi
+  if require_absent_work_dir "$VOKRA_ROOT/tools" "$tmp/path-approval.json" >/dev/null 2>&1; then fail=1; fi
+  if require_absent_work_dir "$tmp/path-approval.json/child" "$tmp/path-approval.json" >/dev/null 2>&1; then fail=1; fi
+  mkdir "$tmp/existing-empty"
+  if require_absent_work_dir "$tmp/existing-empty" "$tmp/path-approval.json" >/dev/null 2>&1; then fail=1; fi
   payload="$tmp/payload"
   printf 'vokra-mossformer2-self-test\n' > "$payload"
   actual="$(sha256_file "$payload")"
@@ -191,6 +300,11 @@ run_self_test() {
   cases=$((cases + 1))
   if verify_file "$payload" 1 "$actual" >/dev/null 2>&1; then
     log "self-test FAIL: invalid size accepted"
+    fail=1
+  fi
+  ln -s "$payload" "$tmp/payload-link"
+  if verify_file "$tmp/payload-link" "$(wc -c < "$payload" | tr -d '[:space:]')" "$actual" >/dev/null 2>&1; then
+    log "self-test FAIL: symlinked payload accepted"
     fail=1
   fi
   cases=$((cases + 1))
@@ -208,6 +322,64 @@ run_self_test() {
   VOKRA_PUBLISH_ON_VAST=1 require_vast_marker >/dev/null 2>&1 \
     || { log "self-test FAIL: explicit VAST marker rejected"; fail=1; }
 
+  gate_line="$(grep -n '^  pre_sync_gate' "$0" | tail -1 | cut -d: -f1)"
+  host_line="$(grep -n '^  require_vast_host$' "$0" | tail -1 | cut -d: -f1)"
+  tooling_line="$(grep -n '^  require_tooling$' "$0" | tail -1 | cut -d: -f1)"
+  sync_line="$(grep -n '^  uv sync --project' "$0" | tail -1 | cut -d: -f1)"
+  checkout_line="$(grep -n 'checkout_exact_source' "$0" | tail -1 | cut -d: -f1)"
+  source_verify_line="$(grep -n 'verify_checked_out_source' "$0" | tail -1 | cut -d: -f1)"
+  prep_line="$(grep -n 'PREPARER' "$0" | tail -1 | cut -d: -f1)"
+  (( gate_line < host_line && gate_line < tooling_line && gate_line < sync_line && checkout_line < source_verify_line && source_verify_line < prep_line )) || { log "self-test FAIL: preflight/source verification order drifted"; fail=1; }
+  probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vokra-mossformer2-sentinel.XXXXXX")"
+  printf '%s\n' \
+    'test mossformer2_ss_16k::tests::measure_real_cpu_and_optional_metal_against_official ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' \
+    'MOSSFORMER2_SS_16K_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-3 rms=1.0e-4 relative_l1=1.0e-4 index=0 actual=1.0e-1 reference=1.0e-1' > "$probe_root/valid.log"
+  require_one_named_test_passed "$probe_root/valid.log" 'mossformer2_ss_16k::tests::measure_real_cpu_and_optional_metal_against_official' cpu || fail=1
+  for malformed in duplicate_named different_test duplicate_result duplicate_marker result_suffix prefix suffix FAIL malformed_family; do
+    cp "$probe_root/valid.log" "$probe_root/$malformed.log"
+    case "$malformed" in
+      duplicate_named) printf '%s\n' 'test mossformer2_ss_16k::tests::measure_real_cpu_and_optional_metal_against_official ... FAILED' >> "$probe_root/$malformed.log" ;;
+      different_test) printf '%s\n' 'test another_test ... ok' >> "$probe_root/$malformed.log" ;;
+      duplicate_result) printf '%s\n' 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' >> "$probe_root/$malformed.log" ;;
+      duplicate_marker) printf '%s\n' 'MOSSFORMER2_SS_16K_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-3 rms=1.0e-4 relative_l1=1.0e-4 index=0 actual=1.0e-1 reference=1.0e-1' >> "$probe_root/$malformed.log" ;;
+      result_suffix) sed 's/filtered out; finished in 0.01s$/filtered out; finished in nonsense/' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+      prefix) sed 's/^MOSSFORMER2_/prefix MOSSFORMER2_/' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+      suffix) sed 's/numeric_bounds=UNSET /numeric_bounds=UNSET trailing /' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+      FAIL) sed 's/$/ FAIL/' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+      malformed_family) sed 's/backend=cpu numeric_bounds/backend=cpu malformed numeric_bounds/' "$probe_root/$malformed.log" > "$probe_root/$malformed.tmp" && mv "$probe_root/$malformed.tmp" "$probe_root/$malformed.log" ;;
+    esac
+    if require_one_named_test_passed "$probe_root/$malformed.log" 'mossformer2_ss_16k::tests::measure_real_cpu_and_optional_metal_against_official' cpu >/dev/null 2>&1; then fail=1; fi
+  done
+  rm -rf "$probe_root"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$REFERENCE_DUMPER" --self-test || fail=1
+  probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vokra-mossformer2-gate.XXXXXX")"
+  probe_output="$probe_root/worker.log"
+  printf '%s\n' 'invalid approval evidence' > "$probe_root/approval.json"
+  if VOKRA_PUBLISH_ON_VAST=0 VOKRA_SCRATCH="$probe_root/scratch" MOSSFORMER2_UV_CACHE_DIR="$probe_root/cache" bash "$0" --approval-evidence "$probe_root/approval.json" --work-dir "$probe_root/work" >"$probe_output" 2>&1; then fail=1; fi
+  grep -Fq 'preflight gate' "$probe_output" || fail=1
+  grep -Eq 'uv sync|download_hf_file|git -C .* fetch|cargo (build|test|check|clippy)' "$probe_output" && fail=1
+  [[ ! -e "$probe_root/scratch" && ! -e "$probe_root/work" ]] || fail=1
+  [[ ! -e "$probe_root/cache" ]] || fail=1
+  rm -rf "$probe_root"
+
+  local command_file expected_digest
+  command_file="$tmp/apple-verifier-command.txt"
+  expected_digest="$(printf '%064d' 7)"
+  write_apple_verifier_command "$command_file" "$expected_digest"
+  grep -Fq '<APPLE_GGUF_PATH>' "$command_file" || fail=1
+  grep -Fq '<APPLE_REFERENCE_DIR>' "$command_file" || fail=1
+  grep -Fq "'<APPLE_GGUF_PATH>'" "$command_file" || fail=1
+  grep -Fq "'<APPLE_REFERENCE_DIR>'" "$command_file" || fail=1
+  grep -Fq "'<APPLE_APPROVAL_EVIDENCE>'" "$command_file" || fail=1
+  grep -Fq "'<APPLE_EVIDENCE_DIR>'" "$command_file" || fail=1
+  bash -n "$command_file" || fail=1
+  grep -Fq -- "$PUBLIC_SHA256" "$command_file" || fail=1
+  grep -Fq -- "$expected_digest" "$command_file" || fail=1
+  grep -Fq -- "$VOKRA_SCRATCH" "$command_file" && fail=1
+  grep -Fq -- "  --gguf \$gguf" "$command_file" && fail=1
+  grep -Fq -- "  --reference \$reference" "$command_file" && fail=1
+
   cases=$((cases + 1))
   script_path="${BASH_SOURCE[0]}"
   for required in \
@@ -218,7 +390,10 @@ run_self_test() {
     "mossformer2_ss_16k_dump_reference.py" \
     "--device cuda" "--frozen --python 3.12" \
     "measure_real_cpu_and_optional_metal_against_official" \
-    "numeric_bounds=UNSET" "aarch64-apple-darwin"; do
+    "--approval-evidence" \
+    "numeric_bounds=UNSET" "aarch64-apple-darwin" \
+    "UV_NO_CACHE=1 uv run --no-cache" "--verify-source" \
+    "--validate-reference"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
@@ -234,6 +409,10 @@ run_self_test() {
     log "self-test FAIL: external publication operation found"
     fail=1
   fi
+  # shellcheck disable=SC2086 # Each case intentionally models argv tokenization.
+  for bad_args in "--self-test --approval-evidence x" "--self-test --self-test" "--work-dir x --work-dir y" "--approval-evidence" "--approval-evidence --work-dir x" "--unknown x"; do
+    if bash "$script_path" $bad_args >/dev/null 2>&1; then fail=1; fi
+  done
 
   rm -rf "$tmp"
   trap - EXIT
@@ -245,33 +424,44 @@ run_self_test() {
 }
 
 main() {
-  local self_test=0 requested_work_dir="" run_stamp work_dir inputs source stage logs reference
+  local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir inputs source stage logs reference
+  local seen_self_test=0 seen_work_dir=0 seen_approval=0
   local public_dir upstream_dir gguf checkpoint prepared prepared_manifest
-  local audit_json reference_manifest run_log env_log compile_log cpu_log cli_log cross_log summary_file
+  local audit_json reference_manifest run_log env_log compile_log cpu_log cli_log cross_log summary_file rc=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
-        [[ $# -ge 2 && -n "$2" ]] || { die "--work-dir requires a directory"; return 2; }
+        (( seen_work_dir == 0 )) || { die "duplicate --work-dir"; return 2; }
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--work-dir requires a nonempty value"; return 2; }
+        seen_work_dir=1
         requested_work_dir="$2"
         shift 2
         ;;
-      --self-test) self_test=1; shift ;;
+      --approval-evidence)
+        (( seen_approval == 0 )) || { die "duplicate --approval-evidence"; return 2; }
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--approval-evidence requires a nonempty value"; return 2; }
+        seen_approval=1; approval_evidence="$2"; shift 2
+        ;;
+      --self-test)
+        (( seen_self_test == 0 )) || { die "duplicate --self-test"; return 2; }
+        seen_self_test=1; self_test=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) die "unknown argument: $1"; usage; return 2 ;;
     esac
   done
   if [[ $self_test -eq 1 ]]; then
+    [[ -z "$approval_evidence$requested_work_dir" ]] || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test
     return $?
   fi
 
+  [[ -n "$approval_evidence" ]] || { usage; die "--approval-evidence is required"; return 2; }
+  pre_sync_gate "$approval_evidence"
   require_vast_host
   require_tooling
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${requested_work_dir:-$VOKRA_SCRATCH/mossformer2-ss-16k-validation/$run_stamp}"
-  if [[ -e "$work_dir" ]] && [[ -n "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-    die "--work-dir must be absent or empty: $work_dir"
-  fi
+  require_absent_work_dir "$work_dir" "$approval_evidence"
   inputs="$work_dir/inputs"
   source="$work_dir/source/ClearerVoice-Studio"
   stage="$work_dir/stage"
@@ -307,6 +497,7 @@ main() {
 
   step "Check out exact official ClearerVoice source"
   checkout_exact_source "$source"
+  verify_checked_out_source "$source"
 
   step "Authenticate all model inputs"
   verify_file "$gguf" "$PUBLIC_BYTES" "$PUBLIC_SHA256"
@@ -334,8 +525,8 @@ main() {
     --device cuda \
     --output "$reference"
   [[ -f "$reference_manifest" ]] || die "official reference manifest is missing"
-  grep -F 'UNSET_MEASURE_ON_VAST_BEFORE_RATIFICATION' "$reference_manifest" >/dev/null \
-    || die "reference manifest lost its measurement-only numeric state"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$REFERENCE_DUMPER" \
+    --validate-reference "$reference"
 
   step "Compile native model tests and the CLI on VAST"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
@@ -350,8 +541,9 @@ main() {
       -p vokra-models --lib \
       mossformer2_ss_16k::tests::measure_real_cpu_and_optional_metal_against_official \
       -- --ignored --exact --nocapture 2>&1 | tee "$cpu_log"
-  grep -F 'MOSSFORMER2_SS_16K_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET' \
-    "$cpu_log" >/dev/null || die "CPU measurement sentinel is missing"
+  require_one_named_test_passed "$cpu_log" \
+    'mossformer2_ss_16k::tests::measure_real_cpu_and_optional_metal_against_official' cpu
+  write_apple_verifier_command "$logs/apple-verifier-command.txt" "$(sha256_file "$reference_manifest")"
 
   step "Cross-check Apple Metal model and CLI compilation"
   rustup target add aarch64-apple-darwin

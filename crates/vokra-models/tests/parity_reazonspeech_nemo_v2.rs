@@ -45,7 +45,7 @@ fn inputs() -> Option<(String, String)> {
 }
 
 #[test]
-fn released_cpu_encoder_and_tokens_match_official_nemo() {
+fn released_cpu_encoder_and_alsd_tokens_text_match_official_nemo() {
     let Some((gguf, reference)) = inputs() else {
         return;
     };
@@ -62,6 +62,10 @@ fn released_cpu_encoder_and_tokens_match_official_nemo() {
     let pcm = read_f32(&reference.join("pcm.f32"));
     let expected_encoder = read_f32(&reference.join("encoder.f32"));
     let expected_tokens = read_u32(&reference.join("tokens.u32"));
+    let expected_text = std::fs::read_to_string(reference.join("text.txt"))
+        .expect("read official ALSD text")
+        .trim_end_matches(&['\r', '\n'][..])
+        .to_owned();
     assert!(
         !expected_tokens.is_empty(),
         "official tokens must not be empty"
@@ -102,36 +106,93 @@ fn released_cpu_encoder_and_tokens_match_official_nemo() {
             .transcribe_tokens(&pcm)
             .expect("native CPU RNN-T decode"),
         expected_tokens,
-        "greedy emitted token IDs must exactly match official NeMo"
+        "ALSD emitted token IDs must exactly match official NeMo"
+    );
+    assert_eq!(
+        model
+            .transcribe_text(&pcm)
+            .expect("native ALSD text decode"),
+        expected_text,
+        "ALSD decoded text must exactly match official NeMo"
     );
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[test]
-fn released_metal_matches_cpu_encoder_and_tokens() {
+fn released_metal_matches_cpu_encoder_and_alsd_tokens_text() {
     let Some((gguf, reference)) = inputs() else {
         return;
     };
+    let reference = Path::new(&reference);
+    assert!(reference.is_dir(), "reference path must be a directory");
     let file = GgufFile::open(&gguf).expect("open complete ReazonSpeech GGUF");
-    let pcm = read_f32(&Path::new(&reference).join("pcm.f32"));
+    let pcm = read_f32(&reference.join("pcm.f32"));
+    let expected_encoder = read_f32(&reference.join("encoder.f32"));
+    let expected_tokens = read_u32(&reference.join("tokens.u32"));
+    let expected_text = std::fs::read_to_string(reference.join("text.txt"))
+        .expect("read official ALSD text")
+        .trim_end_matches(&['\r', '\n'][..])
+        .to_owned();
+    let expected_frames = std::fs::read_to_string(reference.join("encoder.frames.txt"))
+        .expect("read official encoder frame count")
+        .trim()
+        .parse::<usize>()
+        .expect("decimal encoder frame count");
     let cpu = ReazonSpeechNemoV2::from_gguf(&file).expect("strict CPU bind");
     let (cpu_encoder, cpu_frames) = cpu.encode_pcm(&pcm).expect("CPU encoder");
     let cpu_tokens = cpu.transcribe_tokens(&pcm).expect("CPU tokens");
+    let cpu_text = cpu.transcribe_text(&pcm).expect("CPU text");
     let metal = cpu.with_backend(vokra_core::BackendKind::Metal);
     let (metal_encoder, metal_frames) = metal.encode_pcm(&pcm).expect("Metal encoder");
     assert_eq!(metal_frames, cpu_frames);
-    let max_abs = metal_encoder
+    assert_eq!(metal_frames, expected_frames, "Metal/reference frame count");
+    assert_eq!(metal_encoder.len(), expected_encoder.len());
+    let (reference_index, reference_max_abs) = metal_encoder
+        .iter()
+        .zip(&expected_encoder)
+        .enumerate()
+        .map(|(index, (metal, reference))| (index, (metal - reference).abs()))
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("non-empty Metal/reference encoder output");
+    eprintln!(
+        "ReazonSpeech-NeMo-v2 Metal encoder: frames={metal_frames}, max_abs={reference_max_abs:.9e} at {reference_index} (metal={:.9e}, reference={:.9e})",
+        metal_encoder[reference_index], expected_encoder[reference_index]
+    );
+    assert!(
+        reference_max_abs <= FP32_ATOL,
+        "Metal/reference encoder max_abs {reference_max_abs} exceeds {FP32_ATOL}"
+    );
+    let (max_index, max_abs) = metal_encoder
         .iter()
         .zip(&cpu_encoder)
-        .map(|(metal, cpu)| (metal - cpu).abs())
-        .fold(0.0f32, f32::max);
+        .enumerate()
+        .map(|(index, (metal, cpu))| (index, (metal - cpu).abs()))
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("non-empty Metal encoder output");
+    eprintln!(
+        "ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: frames={metal_frames}, max_abs={max_abs:.9e} at {max_index} (metal={:.9e}, cpu={:.9e})",
+        metal_encoder[max_index], cpu_encoder[max_index]
+    );
     assert!(
         max_abs <= FP32_ATOL,
         "Metal encoder max_abs {max_abs} exceeds {FP32_ATOL}"
     );
+    let metal_tokens = metal.transcribe_tokens(&pcm).expect("Metal tokens");
+    let metal_text = metal.transcribe_text(&pcm).expect("Metal text");
     assert_eq!(
-        metal.transcribe_tokens(&pcm).expect("Metal tokens"),
-        cpu_tokens,
-        "Metal RNN-T token sequence must match CPU exactly"
+        metal_tokens, expected_tokens,
+        "Metal ALSD token IDs must exactly match official NeMo"
+    );
+    assert_eq!(
+        metal_text, expected_text,
+        "Metal ALSD text must exactly match official NeMo"
+    );
+    assert_eq!(
+        metal_tokens, cpu_tokens,
+        "Metal ALSD RNN-T token sequence must match CPU exactly"
+    );
+    assert_eq!(
+        metal_text, cpu_text,
+        "Metal ALSD text must match CPU exactly"
     );
 }

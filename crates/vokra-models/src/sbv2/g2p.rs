@@ -1,16 +1,65 @@
 //! SBV2 G2P wrapper: piper-plus 8-language G2P を SBV2 phoneme table に mapping.
 //! (Clean-room comment: see mod.rs)
 
+use crate::strict_checkpoint::sha256_bytes;
 use std::collections::HashMap;
 use vokra_core::{Result, VokraError};
 use vokra_piper_plus::Phonemizer;
+
+/// Fixed SBV2 v2 language-row and global-tone facts from the authenticated
+/// upstream `text/symbols.py`/`text/__init__.py` sources. Piper mappings carry
+/// language-local raw tone ids; production bridges convert them to the global
+/// `tone_embed` rows used by the checkpoint.
+/// First global tone row reserved for ZH (raw tones 0 through 5).
+pub const SBV2_ZH_TONE_START: u8 = 0;
+/// First global tone row reserved for JP/JA (raw tones 0 through 1).
+pub const SBV2_JA_TONE_START: u8 = 6;
+/// First global tone row reserved for EN (raw tones 0 through 3).
+pub const SBV2_EN_TONE_START: u8 = 8;
+/// Number of global tone rows reserved for ZH.
+pub const SBV2_ZH_TONE_COUNT: u8 = 6;
+/// Number of global tone rows reserved for JP/JA.
+pub const SBV2_JA_TONE_COUNT: u8 = 2;
+/// Number of global tone rows reserved for EN.
+pub const SBV2_EN_TONE_COUNT: u8 = 4;
+/// Total number of global tone rows in the authenticated SBV2 checkpoint.
+pub const SBV2_N_TONES: usize = 12;
+/// Exact phone-vocabulary size in the authenticated JP-Extra checkpoint.
+pub const SBV2_JP_EXTRA_N_VOCAB: usize = 112;
+/// SHA-256 of the ordered JP-Extra symbols, canonicalized as each UTF-8
+/// symbol followed by one NUL byte. This was computed from the exact ordered
+/// `phoneme_symbols` array in the exact-head VAST evidence recorded in
+/// `docs/handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md` (SBV2
+/// evidence SHA-256
+/// `770e5481d0335a22b52ca511adcab2fa8a9231a74c6db49d8f60e0c6a3c4ea8f`).
+pub const SBV2_JP_EXTRA_SYMBOLS_CANONICAL_SHA256: [u8; 32] = [
+    0x7e, 0x1f, 0x45, 0x66, 0x31, 0x0f, 0x17, 0xb6, 0x19, 0x6d, 0x4b, 0x51, 0x30, 0x0c, 0x7e, 0x76,
+    0x0d, 0x5c, 0x5f, 0xe6, 0x0e, 0xf4, 0xdd, 0x49, 0xe0, 0xb7, 0xe1, 0xd4, 0x77, 0x74, 0x09, 0x60,
+];
+
+/// Authenticated live model identity for the production Japanese route.
+pub const SBV2_JP_EXTRA_MODEL_NAME: &str = "sbv2-v2-jp-extra-base";
+/// Authenticated upstream repository for the production Japanese route.
+pub const SBV2_JP_EXTRA_UPSTREAM_REPOSITORY: &str = "litagin/Style-Bert-VITS2-2.0-base-JP-Extra";
+/// Immutable HF revision used by the production JP-Extra contract.
+pub const SBV2_JP_EXTRA_HF_REVISION: &str = "a731761009f3c96d104487be6ad332bf1bb5a3a5";
+/// Immutable upstream source commit used by the production JP-Extra contract.
+pub const SBV2_JP_EXTRA_SOURCE_COMMIT: &str = "ef93f388fc1ddf0dc0f598126c1964923f1df94f";
+/// Git blob identity for the upstream phoneme/tone symbol table.
+pub const SBV2_JP_EXTRA_SYMBOLS_BLOB: &str = "846de64584e9ba4b8d96aab36d4efbcefb1a11e7";
+/// Git blob identity for the upstream Japanese G2P implementation.
+pub const SBV2_JP_EXTRA_JAPANESE_BLOB: &str = "5c055875626c16bd7d3489d02b4952ec90a3bbf6";
+/// Git blob identity for the upstream Japanese mora table.
+pub const SBV2_JP_EXTRA_MORA_BLOB: &str = "b43e54d8d8297cf1eac0e3e3f0eef6b4f1c24fa3";
+/// Git blob identity for the upstream shared sequence mapper.
+pub const SBV2_JP_EXTRA_SEQUENCE_BLOB: &str = "495e57b50d87a4ca3e8fe8dbaf003b4888581927";
 
 /// SBV2 input language selector — drives which char-level mapping table
 /// (and which tone convention) `SbV2Phonemizer::phonemize` uses, and
 /// selects which row of
 /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
 /// `language_embed` table
-/// ([`super::text_encoder::N_LANGUAGES`] = 3: JA/EN/ZH) is broadcast-added
+/// ([`super::text_encoder::N_LANGUAGES`] = 3: ZH/JA/EN) is broadcast-added
 /// to every position.
 ///
 /// `Hash` derives are required so [`Language`] can key a
@@ -21,16 +70,18 @@ use vokra_piper_plus::Phonemizer;
 ///
 /// The real SBV2 v2 base checkpoint
 /// (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`) ships a 3-row
-/// `enc_p.language_emb.weight` table (JA/EN/ZH), so this enum must expose
+/// `enc_p.language_emb.weight` table (ZH/JP/EN), so this enum must expose
 /// all three variants for [`super::text_encoder::SbV2TextEncoder::forward`]'s
-/// `language_id` argument to be constructible for a real ZH request.
+/// `language_id` argument to be constructible for a real ZH request. The
+/// authenticated upstream row order is ZH=0, JP=1, EN=2; the Rust `JA` name
+/// denotes that upstream JP row.
 /// **A production ZH G2P is not implemented in this crate** — Vokra's ZH
 /// G2P is out of scope for the M6 SBV2 v2 land. Selecting `ZH` at
 /// [`SbV2Phonemizer::phonemize`] currently returns a loud
 /// [`VokraError::NotImplemented`] (never a silent JA fallback — FR-EX-08);
 /// the ZH variant exists so future ZH G2P work can plug in without a
 /// second breaking enum change, and so a caller who has ZH phoneme ids
-/// from another source can still hit the `language_id = 2` code path via
+/// from another source can still hit the `language_id = 0` code path via
 /// [`SbV2Phonemizer::from_fixture`] or by constructing a
 /// [`PhonemizeResult`] directly.
 ///
@@ -38,9 +89,9 @@ use vokra_piper_plus::Phonemizer;
 ///
 /// **Forward pointer — additive to the M6 scope note above (which still
 /// describes the runtime `phonemize()` ZH arm's fail-closed state)**. The
-/// SBV2 v2 language-embed table's row-2 dispatch (`Language::ZH` →
-/// `language_id() = 2` → [`super::text_encoder::SbV2TextEncoder`]'s
-/// `language_embed` row 2) is downstream-ready as of WP-16 (three-row
+/// SBV2 v2 language-embed table's row-0 dispatch (`Language::ZH` →
+/// `language_id() = 0` → [`super::text_encoder::SbV2TextEncoder`]'s
+/// `language_embed` row 0) is downstream-ready as of WP-16 (three-row
 /// table landed) and exercised in synthetic-parity tests. What is still
 /// open is the phonemizer wiring itself.
 ///
@@ -60,14 +111,15 @@ use vokra_piper_plus::Phonemizer;
 /// (WP-20) and license sign-off. WP-21 is docs-only sweep, not gap-fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
-    /// Japanese input (SBV2 pitch-accent tones, 0-2). Maps to
+    /// Japanese input (SBV2 raw pitch-accent tones, 0-1; global rows 6-7).
+    /// Maps to
     /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
-    /// `language_embed` row 0.
+    /// `language_embed` row 1.
     JA,
-    /// English input (tones are always 0 — SBV2 has no EN pitch accent).
-    /// Maps to row 1.
+    /// English input (global tone band 8-11; SBV2 has no EN pitch accent).
+    /// Maps to row 2.
     EN,
-    /// Simplified Chinese input (SBV2 v2 language embed table id = 2 —
+    /// Simplified Chinese input (SBV2 v2 language embed table id = 0 —
     /// downstream-ready per WP-17). Owner decision 2026-08-09: the ZH G2P
     /// path reuses piper-plus's own 8-language phonemizer via the
     /// excluded-workspace `integrations/vokra-piper-g2p` crate (which
@@ -81,25 +133,25 @@ pub enum Language {
     /// G2P returns [`VokraError::NotImplemented`] (never a silent
     /// fall-through to a synthetic char-map — ZH deliberately has none, so
     /// a wiring miss cannot be hidden by "looks like it worked" output).
-    /// Tones are Mandarin lexical tones 0-4.
+    /// Raw tones are Mandarin lexical tones 0-5 and already occupy global
+    /// tone rows 0-5.
     ZH,
 }
 
 impl Language {
     /// Returns the row index into
     /// [`SbV2TextEncoder`](super::text_encoder::SbV2TextEncoder)'s
-    /// `language_embed` table that this language selects, per the
-    /// tentative row-ordering convention documented on
-    /// [`SbV2TextEncoder::forward`](super::text_encoder::SbV2TextEncoder::forward)'s
-    /// `language_id` doc (`JA = 0, EN = 1, ZH = 2`).
+    /// `language_embed` table that this language selects. The fixed upstream
+    /// `language_id_map` is `{ZH: 0, JP: 1, EN: 2}`; `JA` is Vokra's spelling
+    /// for the upstream JP row.
     ///
     /// The type is `u8` because the downstream text-encoder forward takes
     /// a `u8` `language_id`; 3 fits comfortably.
     pub fn language_id(self) -> u8 {
         match self {
-            Language::JA => 0,
-            Language::EN => 1,
-            Language::ZH => 2,
+            Language::ZH => 0,
+            Language::JA => 1,
+            Language::EN => 2,
         }
     }
 }
@@ -112,7 +164,8 @@ impl Language {
 /// [`SbV2Phonemizer::phonemize_ja_char_mapping`],
 /// [`SbV2Phonemizer::phonemize_en_via_piper`] and
 /// [`SbV2Phonemizer::phonemize_en_char_mapping`] — historically fell back
-/// silently to `sbv2_default_phoneme_id` (tone `0`) for any input the
+/// silently to `sbv2_default_phoneme_id` (the language's global default
+/// tone) for any input the
 /// active mapping did not cover, producing byte-valid but wrong TTS audio
 /// with no signal to the caller. FR-EX-08 forbids that class of silent
 /// failure, so every [`SbV2Phonemizer`] construction path now defaults to
@@ -133,7 +186,8 @@ pub enum OovPolicy {
     #[default]
     Strict,
     /// Any OOV input is silently replaced by `sbv2_default_phoneme_id`
-    /// (tone `0` on the JA paths). Matches the pre-WP-14 behavior. Opt in
+    /// (global tone row `6` on the real JA piper path; synthetic test paths
+    /// retain their local fixture row `0`). Matches the pre-WP-14 behavior. Opt in
     /// explicitly with [`SbV2Phonemizer::with_oov_policy`]; never the
     /// default, per FR-EX-08.
     Lenient,
@@ -158,12 +212,155 @@ pub enum OovPolicy {
 pub struct PhonemizeResult {
     /// Phoneme ids in SBV2 phoneme-table space (one per output phoneme).
     pub phoneme_ids: Vec<u16>,
-    /// Pitch-accent tone per phoneme: 0-2 for JA, all 0 for EN.
+    /// Global tone-embedding row per phoneme. Production G2P paths emit
+    /// JP=6 through 7, ZH=0 through 5, and EN=8 through 11; synthetic test mappings may use their
+    /// own deliberately small local fixture vocabulary.
     pub tones: Vec<u8>,
     /// Word-boundary flag per phoneme (true = first phoneme of a word).
     pub word_boundaries: Vec<bool>,
-    /// The original input text, passed through for the BERT bridge (Task 16+).
+    /// Text passed to the BERT bridge (Task 16+). Native JP providers supply
+    /// their returned normalized text; other paths preserve the request text.
     pub bert_input_text: String,
+}
+
+/// The authenticated source identities required by the JP-Extra production
+/// G2P route.  These are intentionally data-only: the AGPL upstream
+/// implementation and its dictionary never cross into the runtime crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SbV2JapaneseG2pSource {
+    /// Authenticated JP-Extra model identifier.
+    pub model_name: String,
+    /// Upstream repository URL that owns the model and source contract.
+    pub upstream_repository: String,
+    /// Immutable Hugging Face revision for the model artifact.
+    pub hf_revision: String,
+    /// Immutable source commit for the native G2P implementation.
+    pub source_commit: String,
+    /// Git blob identity for the ordered phone-symbol table.
+    pub symbols_blob: String,
+    /// Git blob identity for the Japanese lexicon resource.
+    pub japanese_blob: String,
+    /// Git blob identity for the mora resource.
+    pub mora_blob: String,
+    /// Git blob identity for the sequence resource.
+    pub sequence_blob: String,
+}
+
+impl SbV2JapaneseG2pSource {
+    /// Returns the source identity pinned by the JP-Extra audit.
+    pub fn authenticated() -> Self {
+        Self {
+            model_name: SBV2_JP_EXTRA_MODEL_NAME.to_owned(),
+            upstream_repository: SBV2_JP_EXTRA_UPSTREAM_REPOSITORY.to_owned(),
+            hf_revision: SBV2_JP_EXTRA_HF_REVISION.to_owned(),
+            source_commit: SBV2_JP_EXTRA_SOURCE_COMMIT.to_owned(),
+            symbols_blob: SBV2_JP_EXTRA_SYMBOLS_BLOB.to_owned(),
+            japanese_blob: SBV2_JP_EXTRA_JAPANESE_BLOB.to_owned(),
+            mora_blob: SBV2_JP_EXTRA_MORA_BLOB.to_owned(),
+            sequence_blob: SBV2_JP_EXTRA_SEQUENCE_BLOB.to_owned(),
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        let expected = Self::authenticated();
+        if self != &expected {
+            return Err(VokraError::InvalidArgument(
+                "SBV2 JP-Extra Japanese G2P source identity is not the authenticated \
+                 model/source contract; refusing to bind an unauthenticated frontend"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A validated JP-Extra phone vocabulary and source contract.
+///
+/// The symbol vector is supplied by the independently audited sidecar.  The
+/// runtime checks its exact dimensions, uniqueness and source identities, but
+/// never embeds a copied upstream table or reconstructs one from a guessed
+/// constant. The constructor authenticates the ordered symbol bytes against
+/// the fixed digest recovered from VAST evidence. This keeps the mapping
+/// usable by a native provider while retaining a fail-closed boundary for
+/// stale or forged sidecars.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SbV2JapaneseG2pContract {
+    source: SbV2JapaneseG2pSource,
+    symbols: Vec<String>,
+}
+
+impl SbV2JapaneseG2pContract {
+    /// Validates and binds the source identity and phone vocabulary.
+    pub fn new(source: SbV2JapaneseG2pSource, symbols: Vec<String>) -> Result<Self> {
+        source.validate()?;
+        if symbols.len() != SBV2_JP_EXTRA_N_VOCAB {
+            return Err(VokraError::InvalidArgument(format!(
+                "SBV2 JP-Extra phone vocabulary has {} symbols; authenticated contract requires {}",
+                symbols.len(),
+                SBV2_JP_EXTRA_N_VOCAB
+            )));
+        }
+        if symbols.iter().any(String::is_empty) {
+            return Err(VokraError::InvalidArgument(
+                "SBV2 JP-Extra phone vocabulary contains an empty symbol".to_owned(),
+            ));
+        }
+        let mut seen = std::collections::HashSet::with_capacity(symbols.len());
+        if symbols.iter().any(|symbol| !seen.insert(symbol)) {
+            return Err(VokraError::InvalidArgument(
+                "SBV2 JP-Extra phone vocabulary contains duplicate symbols".to_owned(),
+            ));
+        }
+        let canonical = canonical_symbol_bytes(&symbols);
+        let actual_digest = sha256_bytes(&canonical);
+        if actual_digest != SBV2_JP_EXTRA_SYMBOLS_CANONICAL_SHA256 {
+            return Err(VokraError::InvalidArgument(format!(
+                "SBV2 JP-Extra phone vocabulary digest mismatch: got {}, expected authenticated evidence digest {}",
+                hex_digest(&actual_digest),
+                hex_digest(&SBV2_JP_EXTRA_SYMBOLS_CANONICAL_SHA256)
+            )));
+        }
+        Ok(Self { source, symbols })
+    }
+
+    /// Returns the bound source identities for diagnostics and evidence.
+    pub fn source(&self) -> &SbV2JapaneseG2pSource {
+        &self.source
+    }
+
+    /// Returns the source-ordered SBV2 phone vocabulary.
+    pub fn symbols(&self) -> &[String] {
+        &self.symbols
+    }
+}
+
+/// Output of a native Japanese G2P provider before SBV2 vocabulary mapping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SbV2JapaneseG2pOutput {
+    /// Providerが返す正規化text。algorithm/parityはintegrationの責任で、この構造
+    /// 検証は意味論を認証しない。runtimeはnon-emptyだけを確認してBERTへ渡す。
+    pub normalized_text: String,
+    /// Phones in the exact source vocabulary spelling.
+    pub phones: Vec<String>,
+    /// Japanese-local pitch-accent values (only 0 and 1 are authenticated).
+    pub raw_tones: Vec<u8>,
+    /// Source-aligned phone counts for the normalized utterance, including
+    /// the boundary slots used by the authenticated JP-Extra frontend.
+    pub word2ph: Vec<usize>,
+}
+
+/// Native provider seam for production Japanese G2P.
+///
+/// The implementation belongs to a dedicated native integration that proves
+/// parity with the authenticated SBV2 JP-Extra source contract. The existing
+/// piper-plus integration is intentionally not such an implementation: its
+/// A1/A2/A3 prosody and token framing are a different model contract and it
+/// does not expose SBV2 `word2ph`. This crate owns only the zero-dependency
+/// SBV2 contract binding and conversion. Python, eSpeak, pyopenjtalk and
+/// dictionary downloads cannot implement this trait inside the runtime.
+pub trait SbV2JapaneseG2pProvider: Send + Sync {
+    /// Phonemizes one normalized utterance into source-aligned JP-Extra data.
+    fn phonemize(&self, text: &str) -> Result<SbV2JapaneseG2pOutput>;
 }
 
 /// A pre-computed G2P output table for [`SbV2Phonemizer::from_fixture`]
@@ -188,10 +385,11 @@ pub struct PhonemizeResult {
 /// `crates/vokra-models/tests/parity_sbv2_real.rs`) — falling back to a
 /// different G2P for a miss would validate nothing.
 ///
-/// Populating a real production G2P is instead
-/// [`SbV2Phonemizer::from_piper_g2p`]'s job (which takes a real
-/// `Box<dyn Phonemizer>` the caller — typically the excluded-workspace
-/// `integrations/vokra-piper-g2p` crate — owns).
+/// Populating a real production JP-Extra G2P is instead the job of a dedicated
+/// implementation of [`SbV2JapaneseG2pProvider`], attached through
+/// [`SbV2Phonemizer::from_authenticated_japanese_g2p`]. The generic
+/// [`SbV2Phonemizer::from_piper_g2p`] route is a different voice contract and
+/// must not be treated as a JP-Extra adapter.
 #[derive(Debug, Clone, Default)]
 pub struct PhonemizeFixture {
     // (language, text) -> the pre-computed [`PhonemizeResult`] the Python
@@ -262,8 +460,9 @@ impl PhonemizeFixture {
             "SbV2Phonemizer::from_fixture: no fixture entry for (language={language:?}, \
              text={text:?}). The fixture is a fixed-set lookup (not a G2P) and every miss is \
              a loud failure per FR-EX-08 — populate the fixture via PhonemizeFixture::insert \
-             at construction, or use SbV2Phonemizer::from_piper_g2p to route this call \
-             through a real piper-plus G2P instance."
+             at construction. For a generic Piper voice, use \
+             SbV2Phonemizer::from_piper_g2p; JP-Extra requires the audited \
+             native provider seam, which is not bundled in this crate."
         )))
     }
 }
@@ -272,7 +471,7 @@ impl PhonemizeFixture {
 /// vocabulary (ids, tones, word boundaries) for the JA, EN and ZH language
 /// families.
 ///
-/// Three construction paths select the routing strategy — checked in
+/// Four construction paths select the routing strategy — checked in
 /// priority order by [`phonemize`](Self::phonemize):
 ///
 /// 1. [`from_fixture`](Self::from_fixture) (Task 7) is checked **first**:
@@ -282,8 +481,13 @@ impl PhonemizeFixture {
 ///    synthetic paths below are never consulted while a fixture is
 ///    installed. A miss is a loud [`VokraError::InvalidArgument`], never a
 ///    silent fall-through to the other paths (FR-EX-08). Covers all three
-///    languages (JA / EN / ZH).
-/// 2. [`from_piper_g2p`](Self::from_piper_g2p) (Task 15) wires the real
+///    languages (ZH / JP / EN).
+/// 2. [`from_authenticated_japanese_g2p`](Self::from_authenticated_japanese_g2p)
+///    wires an isolated native Japanese provider to the audited JP-Extra
+///    source vocabulary. Its output is checked and mapped here; the provider
+///    must perform normalization and Japanese G2P outside this zero-dependency
+///    runtime crate. This route is checked before the generic piper-id bridge.
+/// 3. [`from_piper_g2p`](Self::from_piper_g2p) (Task 15) wires the real
 ///    piper-plus [`Phonemizer`] reuse boundary (M1-01-A,
 ///    `docs/piper-plus-integration.md` §7): input text is phonemized by
 ///    the injected `ja_g2p` / `en_g2p`, and the resulting piper-plus
@@ -292,7 +496,7 @@ impl PhonemizeFixture {
 ///    on top of this (see [`with_zh_g2p`](Self::with_zh_g2p), WP-18) —
 ///    kept off the 2-language `from_piper_g2p` signature for backward
 ///    compatibility with pre-WP-18 call sites.
-/// 3. [`synthetic_for_test`](Self::synthetic_for_test) (Task 14) uses a
+/// 4. [`synthetic_for_test`](Self::synthetic_for_test) (Task 14) uses a
 ///    deterministic char-level mapping instead, so this crate's own tests
 ///    can prove the module wiring without depending on a real G2P
 ///    instance or a real SBV2 phoneme table. Only JA and EN have a
@@ -305,6 +509,12 @@ pub struct SbV2Phonemizer {
     // piper-plus and synthetic paths entirely (a miss inside the fixture is
     // a loud FR-EX-08 error, not a fall-through).
     fixtures: Option<PhonemizeFixture>,
+    // Authenticated native JP route.  This is checked before the generic
+    // piper-id bridge so a production caller cannot accidentally run a voice
+    // vocabulary mapping against the SBV2 table.
+    ja_native_g2p: Option<Box<dyn SbV2JapaneseG2pProvider>>,
+    ja_native_symbols: HashMap<String, u16>,
+    ja_native_contract: Option<SbV2JapaneseG2pContract>,
     // Real piper-plus G2P (M1-01-A reuse boundary), when wired via
     // `from_piper_g2p`. `None` for `synthetic_for_test()` builds, where
     // `phonemize_ja`/`phonemize_en` fall back to the `*_char_mapping` tables
@@ -328,9 +538,10 @@ pub struct SbV2Phonemizer {
     // to `sbv2_default_phoneme_id` (a documented mapping fallback, not a
     // silent no-op — FR-EX-08).
     ja_mapping: HashMap<i64, (u16, u8)>,
-    en_mapping: HashMap<i64, u16>,
+    // Piper-plus id -> (SBV2 phoneme id, English language-local raw tone).
+    en_mapping: HashMap<i64, (u16, u8)>,
     // WP-18: ZH real-G2P mapping — same `(SBV2 phoneme id, tone)` shape as
-    // `ja_mapping`, since Mandarin carries lexical tones (0-4). Missing ids
+    // `ja_mapping`, since Mandarin carries lexical tones (raw 0 through 5). Missing ids
     // fall back to `(sbv2_default_phoneme_id, 0)` — the same documented
     // mapping fallback JA uses.
     zh_mapping: HashMap<i64, (u16, u8)>,
@@ -368,6 +579,9 @@ impl SbV2Phonemizer {
         }
         Self {
             fixtures: None,
+            ja_native_g2p: None,
+            ja_native_symbols: HashMap::new(),
+            ja_native_contract: None,
             ja_g2p: None,
             en_g2p: None,
             zh_g2p: None,
@@ -387,17 +601,26 @@ impl SbV2Phonemizer {
     /// phoneme id sequence is routed into SBV2 phoneme-table space through
     /// `ja_mapping` / `en_mapping`.
     ///
+    /// Each `ja_mapping` tone is a Japanese language-local raw value in
+    /// raw values 0 through 1, and this bridge converts them to the
+    /// authenticated global JP tone rows 6 through 7.
+    /// Each `en_mapping` tone is an English language-local raw value in
+    /// raw values 0 through 3, converted to global EN rows 8 through 11, because
+    /// upstream English stress refinement emits raw tones 1/2/3, raw 3 for
+    /// unstressed input, and raw 0 for punctuation/specials.
+    ///
     /// A piper-plus id produced by `ja_g2p` / `en_g2p` that is absent from
     /// the corresponding mapping falls back to the default SBV2 phoneme id
-    /// (`0`) — a documented mapping fallback, not a silent no-op. A `text`
+    /// (`0`) and that language's global default tone — a documented mapping
+    /// fallback, not a silent no-op. A `text`
     /// that `ja_g2p` / `en_g2p` itself cannot phonemize instead propagates
     /// that `Err` out of [`phonemize`](SbV2Phonemizer::phonemize): the
     /// real-G2P path never falls through to the synthetic char mapping
     /// (FR-EX-08).
     ///
-    /// **ZH is not wired here**: this constructor's 2-language surface is
-    /// unchanged for backward compatibility with pre-WP-18 call sites (JA
-    /// and EN are always present in the SBV2 v2 fleet, ZH is optional).
+    /// **ZH is not wired here**: this constructor's dispatch surface remains
+    /// two-language (JA and EN; ZH is optional), while its mapping values
+    /// carry the raw tone needed by the authenticated global-tone conversion.
     /// Chain [`with_zh_g2p`](Self::with_zh_g2p) on the returned value to
     /// enable [`Language::ZH`] dispatch; without that chained call
     /// `phonemize(_, Language::ZH)` fails loudly with
@@ -406,10 +629,13 @@ impl SbV2Phonemizer {
         ja_g2p: Box<dyn Phonemizer>,
         en_g2p: Box<dyn Phonemizer>,
         ja_mapping: HashMap<i64, (u16, u8)>,
-        en_mapping: HashMap<i64, u16>,
+        en_mapping: HashMap<i64, (u16, u8)>,
     ) -> Self {
         Self {
             fixtures: None,
+            ja_native_g2p: None,
+            ja_native_symbols: HashMap::new(),
+            ja_native_contract: None,
             ja_g2p: Some(ja_g2p),
             en_g2p: Some(en_g2p),
             zh_g2p: None,
@@ -423,9 +649,95 @@ impl SbV2Phonemizer {
         }
     }
 
+    /// Constructs a phonemizer with the authenticated native Japanese G2P
+    /// seam and JP-Extra phone contract. This does not bundle a provider;
+    /// end-to-end production G2P remains the integration layer's responsibility.
+    ///
+    /// The provider returns phones rather than pre-mapped ids.  This is
+    /// deliberate: ids are owned by the SBV2 source vocabulary and are bound
+    /// here, so a piper voice table or an arbitrary caller mapping cannot be
+    /// silently applied to the JP-Extra checkpoint.  The contract constructor
+    /// rejects stale source identities, wrong vocabulary dimensions and
+    /// duplicate/empty symbols before any request is accepted.
+    pub fn from_authenticated_japanese_g2p(
+        provider: Box<dyn SbV2JapaneseG2pProvider>,
+        contract: SbV2JapaneseG2pContract,
+    ) -> Result<Self> {
+        let mut symbol_to_id = HashMap::with_capacity(contract.symbols.len());
+        for (id, symbol) in contract.symbols.iter().enumerate() {
+            let id = u16::try_from(id).map_err(|_| {
+                VokraError::InvalidArgument(
+                    "SBV2 JP-Extra phone vocabulary id does not fit u16".to_owned(),
+                )
+            })?;
+            symbol_to_id.insert(symbol.clone(), id);
+        }
+        let phonemizer = Self {
+            fixtures: None,
+            ja_native_g2p: Some(provider),
+            ja_native_symbols: symbol_to_id,
+            ja_native_contract: Some(contract),
+            ja_g2p: None,
+            en_g2p: None,
+            zh_g2p: None,
+            ja_mapping: HashMap::new(),
+            en_mapping: HashMap::new(),
+            zh_mapping: HashMap::new(),
+            sbv2_default_phoneme_id: 0,
+            ja_char_mapping: HashMap::new(),
+            en_char_mapping: HashMap::new(),
+            oov_policy: OovPolicy::Strict,
+        };
+        // Keep the complete contract alive, including source identities, so a
+        // configured phonemizer remains auditable after construction.
+        if !phonemizer.ja_native_symbols.contains_key("_") {
+            return Err(VokraError::InvalidArgument(
+                "SBV2 JP-Extra phone vocabulary is missing the authenticated boundary symbol `_"
+                    .to_owned(),
+            ));
+        }
+        Ok(phonemizer)
+    }
+
+    /// Attaches the authenticated native Japanese route to an existing
+    /// phonemizer (for example one also carrying an English provider).
+    pub fn with_authenticated_japanese_g2p(
+        mut self,
+        provider: Box<dyn SbV2JapaneseG2pProvider>,
+        contract: SbV2JapaneseG2pContract,
+    ) -> Result<Self> {
+        let mut symbol_to_id = HashMap::with_capacity(contract.symbols.len());
+        for (id, symbol) in contract.symbols.iter().enumerate() {
+            let id = u16::try_from(id).map_err(|_| {
+                VokraError::InvalidArgument(
+                    "SBV2 JP-Extra phone vocabulary id does not fit u16".to_owned(),
+                )
+            })?;
+            symbol_to_id.insert(symbol.clone(), id);
+        }
+        if !symbol_to_id.contains_key("_") {
+            return Err(VokraError::InvalidArgument(
+                "SBV2 JP-Extra phone vocabulary is missing the authenticated boundary symbol `_"
+                    .to_owned(),
+            ));
+        }
+        self.ja_native_g2p = Some(provider);
+        self.ja_native_symbols = symbol_to_id;
+        self.ja_native_contract = Some(contract);
+        Ok(self)
+    }
+
+    /// Returns the authenticated native JP contract when this phonemizer has
+    /// one wired. This is intended for diagnostics and evidence reporting;
+    /// callers cannot replace the contract without rebuilding the route.
+    pub fn authenticated_japanese_contract(&self) -> Option<&SbV2JapaneseG2pContract> {
+        self.ja_native_contract.as_ref()
+    }
+
     /// WP-18: attaches a real piper-plus `Phonemizer` for the [`Language::ZH`]
     /// dispatch path, plus the piper-plus-id-to-SBV2-phoneme-id mapping
-    /// (Mandarin carries lexical tones 0-4, so the mapping's value is
+    /// (Mandarin carries language-local raw tones 0 through 5, converted to
+    /// global ZH rows 0 through 5; the mapping's value is
     /// `(sbv2_phoneme_id, tone)` — same shape as `ja_mapping`).
     ///
     /// Builder-style: returns `self` so it composes with any of the three
@@ -442,8 +754,8 @@ impl SbV2Phonemizer {
     /// fixture's `(Language::ZH, text)` entries always win over `zh_g2p`.
     ///
     /// A piper-plus id produced by `zh_g2p` that is absent from
-    /// `zh_mapping` falls back to `(sbv2_default_phoneme_id, 0)` — the same
-    /// documented mapping fallback JA uses (not a silent no-op, FR-EX-08).
+    /// `zh_mapping` falls back to `(sbv2_default_phoneme_id, 0)` — the
+    /// documented global ZH start row (not a silent no-op, FR-EX-08).
     /// A `text` that `zh_g2p` itself cannot phonemize propagates that `Err`
     /// out of [`phonemize`](Self::phonemize).
     ///
@@ -481,6 +793,9 @@ impl SbV2Phonemizer {
     pub fn from_fixture(fixture: PhonemizeFixture) -> Self {
         Self {
             fixtures: Some(fixture),
+            ja_native_g2p: None,
+            ja_native_symbols: HashMap::new(),
+            ja_native_contract: None,
             ja_g2p: None,
             en_g2p: None,
             zh_g2p: None,
@@ -574,10 +889,87 @@ impl SbV2Phonemizer {
     }
 
     fn phonemize_ja(&self, text: &str) -> Result<PhonemizeResult> {
+        if let Some(g2p) = &self.ja_native_g2p {
+            return self.phonemize_ja_via_native(g2p.as_ref(), text);
+        }
         match &self.ja_g2p {
             Some(g2p) => self.phonemize_ja_via_piper(g2p.as_ref(), text),
             None => self.phonemize_ja_char_mapping(text),
         }
+    }
+
+    fn phonemize_ja_via_native(
+        &self,
+        provider: &dyn SbV2JapaneseG2pProvider,
+        text: &str,
+    ) -> Result<PhonemizeResult> {
+        let output = provider.phonemize(text)?;
+        if output.normalized_text.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "SBV2 JP-Extra native Japanese G2P returned empty normalized text".to_owned(),
+            ));
+        }
+        if output.phones.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "SBV2 JP-Extra native Japanese G2P returned no phones".to_owned(),
+            ));
+        }
+        if output.raw_tones.len() != output.phones.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "SBV2 JP-Extra native Japanese G2P returned {} tones for {} phones",
+                output.raw_tones.len(),
+                output.phones.len()
+            )));
+        }
+        if output.word2ph.is_empty() || output.word2ph.contains(&0) {
+            return Err(VokraError::InvalidArgument(
+                "SBV2 JP-Extra native Japanese G2P returned an invalid word2ph sequence".to_owned(),
+            ));
+        }
+        let phone_count: usize = output
+            .word2ph
+            .iter()
+            .try_fold(0usize, |sum, &width| sum.checked_add(width))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "SBV2 JP-Extra native Japanese G2P word2ph length overflow".to_owned(),
+                )
+            })?;
+        if phone_count != output.phones.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "SBV2 JP-Extra native Japanese G2P word2ph covers {phone_count} phones, expected {}",
+                output.phones.len()
+            )));
+        }
+
+        let mut ids = Vec::with_capacity(output.phones.len());
+        let mut tones = Vec::with_capacity(output.phones.len());
+        for (position, (phone, &raw_tone)) in output
+            .phones
+            .iter()
+            .zip(output.raw_tones.iter())
+            .enumerate()
+        {
+            let id = self.ja_native_symbols.get(phone).copied().ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "SBV2 JP-Extra native Japanese G2P phone {phone:?} at position {position} is absent from the authenticated source vocabulary"
+                ))
+            })?;
+            ids.push(id);
+            tones.push(global_tone(Language::JA, raw_tone)?);
+        }
+        let mut word_boundaries = vec![false; ids.len()];
+        let mut position = 0usize;
+        for width in output.word2ph {
+            word_boundaries[position] = true;
+            position += width;
+        }
+        Ok(PhonemizeResult {
+            phoneme_ids: ids,
+            tones,
+            word_boundaries,
+            bert_input_text: output.normalized_text,
+        })
     }
 
     /// Real-G2P JA path: routes `g2p`'s piper-plus phoneme id sequence
@@ -589,9 +981,9 @@ impl SbV2Phonemizer {
         let mut wb = Vec::with_capacity(piper_ids.len());
         for (i, piper_id) in piper_ids.iter().enumerate() {
             let (id, tone) = match self.ja_mapping.get(piper_id).copied() {
-                Some(pair) => pair,
+                Some((id, raw_tone)) => (id, global_tone(Language::JA, raw_tone)?),
                 None => match self.oov_policy {
-                    OovPolicy::Lenient => (self.sbv2_default_phoneme_id, 0),
+                    OovPolicy::Lenient => (self.sbv2_default_phoneme_id, SBV2_JA_TONE_START),
                     OovPolicy::Strict => {
                         return Err(oov_error_piper(Language::JA, *piper_id, i, "ja_mapping"));
                     }
@@ -607,7 +999,7 @@ impl SbV2Phonemizer {
             // COSMETIC-BUNDLE (2026-08-09): the pre-fix `TODO(Task 17-19):
             // tighten word-boundary detection when text encoder lands` is
             // now moot — the SBV2 v2 real-checkpoint text encoder consumes
-            // a `language_embed` [3, d_model] table (JA/EN/ZH one-hot),
+            // a `language_embed` [3, d_model] table (ZH/JP/EN one-hot),
             // not the design-doc-guessed `wb_embed [2, d_model]` table
             // (see `sbv2::text_encoder::N_LANGUAGES`'s "Formerly the SBV2
             // v2 design doc §7 assumed a `word_boundary_emb` table" note
@@ -669,23 +1061,25 @@ impl SbV2Phonemizer {
     }
 
     /// Real-G2P EN path: routes `g2p`'s piper-plus phoneme id sequence
-    /// through `en_mapping` into SBV2 phoneme-table space. EN carries no
-    /// pitch-accent tone (SBV2 has none for English), so `tones` is all `0`.
+    /// through `en_mapping` into SBV2 phoneme-table space. English raw tones
+    /// are converted to the authenticated global EN band 8..11.
     fn phonemize_en_via_piper(&self, g2p: &dyn Phonemizer, text: &str) -> Result<PhonemizeResult> {
         let piper_ids = g2p.phonemize(text)?;
         let mut ids = Vec::with_capacity(piper_ids.len());
+        let mut tones = Vec::with_capacity(piper_ids.len());
         let mut wb = Vec::with_capacity(piper_ids.len());
         for (i, piper_id) in piper_ids.iter().enumerate() {
-            let id = match self.en_mapping.get(piper_id).copied() {
-                Some(id) => id,
+            let (id, tone) = match self.en_mapping.get(piper_id).copied() {
+                Some((id, raw_tone)) => (id, global_tone(Language::EN, raw_tone)?),
                 None => match self.oov_policy {
-                    OovPolicy::Lenient => self.sbv2_default_phoneme_id,
+                    OovPolicy::Lenient => (self.sbv2_default_phoneme_id, SBV2_EN_TONE_START),
                     OovPolicy::Strict => {
                         return Err(oov_error_piper(Language::EN, *piper_id, i, "en_mapping"));
                     }
                 },
             };
             ids.push(id);
+            tones.push(tone);
             // COSMETIC-BUNDLE (2026-08-09): the pre-fix
             // `TODO(Task 17-19): tighten word-boundary detection` is moot
             // for the same M6 reason documented on `phonemize_ja_via_piper`
@@ -695,7 +1089,6 @@ impl SbV2Phonemizer {
             // consumer reads it here.
             wb.push(i == 0);
         }
-        let tones = vec![0u8; ids.len()];
         Ok(PhonemizeResult {
             phoneme_ids: ids,
             tones,
@@ -769,7 +1162,7 @@ impl SbV2Phonemizer {
 
     /// Real-G2P ZH path: routes `g2p`'s piper-plus phoneme id sequence
     /// through `zh_mapping` into SBV2 phoneme-table space. ZH carries
-    /// Mandarin lexical tones (0-4), so `zh_mapping`'s value is
+    /// Mandarin lexical tones (raw 0 through 5), so `zh_mapping`'s value is
     /// `(sbv2_phoneme_id, tone)` — same shape as `ja_mapping`; a piper id
     /// missing from the mapping falls back to
     /// `(sbv2_default_phoneme_id, 0)`.
@@ -779,11 +1172,10 @@ impl SbV2Phonemizer {
         let mut tones = Vec::with_capacity(piper_ids.len());
         let mut wb = Vec::with_capacity(piper_ids.len());
         for (i, piper_id) in piper_ids.iter().enumerate() {
-            let (id, tone) = self
-                .zh_mapping
-                .get(piper_id)
-                .copied()
-                .unwrap_or((self.sbv2_default_phoneme_id, 0));
+            let (id, tone) = match self.zh_mapping.get(piper_id).copied() {
+                Some((id, raw_tone)) => (id, global_tone(Language::ZH, raw_tone)?),
+                None => (self.sbv2_default_phoneme_id, SBV2_ZH_TONE_START),
+            };
             ids.push(id);
             tones.push(tone);
             // TODO(WP-19+): tighten word-boundary detection when the
@@ -802,6 +1194,48 @@ impl SbV2Phonemizer {
             bert_input_text: text.to_string(),
         })
     }
+}
+
+/// Converts a language-local raw tone id from a piper mapping into the fixed
+/// global `tone_embed` row. Rejecting out-of-band values here prevents a
+/// caller-supplied mapping from accidentally indexing another language's
+/// tone rows.
+fn global_tone(language: Language, raw_tone: u8) -> Result<u8> {
+    let (start, count) = match language {
+        Language::ZH => (SBV2_ZH_TONE_START, SBV2_ZH_TONE_COUNT),
+        Language::JA => (SBV2_JA_TONE_START, SBV2_JA_TONE_COUNT),
+        Language::EN => (SBV2_EN_TONE_START, SBV2_EN_TONE_COUNT),
+    };
+    if raw_tone >= count {
+        return Err(VokraError::InvalidArgument(format!(
+            "SBV2 {language:?} raw tone {raw_tone} is outside the authenticated local range 0..{count}"
+        )));
+    }
+    start.checked_add(raw_tone).ok_or_else(|| {
+        VokraError::InvalidArgument(format!(
+            "SBV2 {language:?} tone offset overflow for raw tone {raw_tone}"
+        ))
+    })
+}
+
+fn canonical_symbol_bytes(symbols: &[String]) -> Vec<u8> {
+    let capacity = symbols.iter().map(|symbol| symbol.len() + 1).sum();
+    let mut canonical = Vec::with_capacity(capacity);
+    for symbol in symbols {
+        canonical.extend_from_slice(symbol.as_bytes());
+        canonical.push(0);
+    }
+    canonical
+}
+
+fn hex_digest(bytes: &[u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        output.push(char::from(DIGITS[(byte >> 4) as usize]));
+        output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 // WP-14 OOV error constructors, factored out so all four Strict-arm sites
@@ -835,4 +1269,42 @@ fn oov_error_piper(
          rejects this per FR-EX-08. Add a mapping entry, or opt into legacy silent fallback \
          via SbV2Phonemizer::with_oov_policy(OovPolicy::Lenient)."
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    struct MockJapaneseG2p {
+        output: SbV2JapaneseG2pOutput,
+    }
+
+    impl SbV2JapaneseG2pProvider for MockJapaneseG2p {
+        fn phonemize(&self, _text: &str) -> Result<SbV2JapaneseG2pOutput> {
+            Ok(self.output.clone())
+        }
+    }
+
+    #[test]
+    fn native_route_mapping_mechanics_are_independent_of_contract_validation() {
+        let provider = MockJapaneseG2p {
+            output: SbV2JapaneseG2pOutput {
+                normalized_text: "正規化".to_owned(),
+                phones: vec!["_".to_owned(), "test-symbol-1".to_owned()],
+                raw_tones: vec![0, 1],
+                word2ph: vec![1, 1],
+            },
+        };
+        let mut phonemizer = SbV2Phonemizer::synthetic_for_test();
+        phonemizer.ja_native_symbols =
+            HashMap::from([("_".to_owned(), 0), ("test-symbol-1".to_owned(), 1)]);
+        let result = phonemizer
+            .phonemize_ja_via_native(&provider, "入力")
+            .expect("native route mechanics");
+        assert_eq!(result.phoneme_ids, vec![0, 1]);
+        assert_eq!(result.tones, vec![6, 7]);
+        assert_eq!(result.word_boundaries, vec![true, true]);
+        assert_eq!(result.bert_input_text, "正規化");
+    }
 }

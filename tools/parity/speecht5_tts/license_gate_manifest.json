@@ -1,0 +1,547 @@
+{
+  "gate_version": 2,
+  "lock_sha256": "3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075",
+  "pyproject_sha256": "b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8",
+  "package_rows_sha256": "d49d3091fffcc8df5a0d75f0cf2a94e14ddd90a164698f37bc64bc788bc545bf",
+  "dependency_reviews_sha256": "8784596ff265ce012a0babd1e8963f03f274b4e5799d8da6c33d81bae5cd7eda",
+  "transformers_route": "previous isolated pin transformers==5.5.0; active isolated pin transformers==5.10.4 / SpeechT5ForTextToSpeech.generate_speech; BLOCKED_UNVERIFIED_API_SMOKE",
+  "tts_identity": {
+    "repo": "microsoft/speecht5_tts",
+    "revision": "30fcde30f19b87502b8435427b5f5068e401d5f6",
+    "files": {
+      "pytorch_model.bin": [
+        "585476837",
+        "d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190"
+      ],
+      "spm_char.model": [
+        "238473",
+        "7fcc48f3e225f627b1641db410ceb0c8649bd2b0c982e150b03f8be3728ab560"
+      ],
+      "config.json": [
+        "2062",
+        "2caf62dde93699a90cfc35ff2a8de27b02b479a0c98881cbc55f9682cc43e258"
+      ],
+      "tokenizer_config.json": [
+        "232",
+        "d589430c619db2d95ff0fa757a187b55ef5ea44eff7fb08a6fbf0e78e32a6247"
+      ],
+      "added_tokens.json": [
+        "40",
+        "74be21ecff0a1fb1f304fe7c72ab21e4f0c046f8359fdf2852eb1b80967069ad"
+      ],
+      "special_tokens_map.json": [
+        "234",
+        "2a098b61fe8ec4cfd7674832ca00b4268c07569743a4ad15c8164e8f60ebf981"
+      ]
+    }
+  },
+  "vocoder_identity": {
+    "repo": "microsoft/speecht5_hifigan",
+    "revision": "bb6f429406e86a9992357a972c0698b22043307d",
+    "pytorch_model_sha256": "b171e9bcd8a2b50dc9780040478dfa26783a9ee4be012cf5776914f091d6887b"
+  },
+  "public_tts_identity": {
+    "repo": "vokra/speecht5-tts",
+    "revision": "43cf6592038616d116a98fde4764d827ece59033",
+    "bytes": 585382432,
+    "sha256": "f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0"
+  },
+  "operator_approval": {
+    "decision": "PENDING_REVIEW",
+    "signer": null,
+    "digest": null
+  },
+  "dependency_reviews": [
+    {
+      "id": "anyio@4.14.2",
+      "name": "anyio",
+      "version": "4.14.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "certifi@2026.7.22",
+      "name": "certifi",
+      "version": "2026.7.22",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MPL-2.0",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "click@8.5.0",
+      "name": "click",
+      "version": "8.5.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "filelock@3.32.4",
+      "name": "filelock",
+      "version": "3.32.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "fsspec@2026.7.0",
+      "name": "fsspec",
+      "version": "2026.7.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "h11@0.16.0",
+      "name": "h11",
+      "version": "0.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "hf-xet@1.6.0",
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "Native artifacts audited; ELF dependencies are checked by the post-sync allowlist",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "httpcore@1.0.9",
+      "name": "httpcore",
+      "version": "1.0.9",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "httpx@0.28.1",
+      "name": "httpx",
+      "version": "0.28.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "huggingface-hub@1.5.0",
+      "name": "huggingface-hub",
+      "version": "1.5.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "idna@3.19",
+      "name": "idna",
+      "version": "3.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "jinja2@3.1.6",
+      "name": "jinja2",
+      "version": "3.1.6",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "markupsafe@3.0.3",
+      "name": "markupsafe",
+      "version": "3.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "mpmath@1.3.0",
+      "name": "mpmath",
+      "version": "1.3.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "networkx@3.6.1",
+      "name": "networkx",
+      "version": "3.6.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "numpy@1.26.4",
+      "name": "numpy",
+      "version": "1.26.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "Native artifacts audited; ELF dependencies are checked by the post-sync allowlist",
+      "bundled_review": "Source build produced no numpy.libs or bundled BLAS/LAPACK libraries"
+    },
+    {
+      "id": "packaging@26.3",
+      "name": "packaging",
+      "version": "26.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "pyyaml@6.0.3",
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "regex@2026.7.19",
+      "name": "regex",
+      "version": "2026.7.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0 AND CNRI-Python",
+      "native_review": "Native artifacts audited; ELF dependencies are checked by the post-sync allowlist",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "safetensors@0.8.0",
+      "name": "safetensors",
+      "version": "0.8.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "Native artifacts audited; ELF dependencies are checked by the post-sync allowlist",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "sentencepiece@0.2.2",
+      "name": "sentencepiece",
+      "version": "0.2.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "Native artifacts audited; ELF dependencies are checked by the post-sync allowlist",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "sympy@1.14.0",
+      "name": "sympy",
+      "version": "1.14.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "tokenizers@0.22.2",
+      "name": "tokenizers",
+      "version": "0.22.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "Native artifacts audited; ELF dependencies are checked by the post-sync allowlist",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "torch@2.4.1+cpu",
+      "name": "torch",
+      "version": "2.4.1+cpu",
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "REVIEWED",
+      "license": "BSD-3-Clause",
+      "native_review": "Native artifacts audited; ELF dependencies are checked by the post-sync allowlist",
+      "bundled_review": "Bundled libgomp-a34b3233.so.1 exact identity is checked; operator approval required"
+    },
+    {
+      "id": "tqdm@4.70.0",
+      "name": "tqdm",
+      "version": "4.70.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MPL-2.0 AND MIT",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "transformers@5.10.4",
+      "name": "transformers",
+      "version": "5.10.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "typer@0.9.0",
+      "name": "typer",
+      "version": "0.9.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "typing-extensions@4.16.0",
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "PSF-2.0",
+      "native_review": "No native extension files observed in VAST audit",
+      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "vokra-speecht5-tts-parity@0.1.0",
+      "name": "vokra-speecht5-tts-parity",
+      "version": "0.1.0",
+      "source": {
+        "virtual": "."
+      },
+      "status": "REVIEWED",
+      "license": "First-party reference-only",
+      "native_review": "No native artifacts; reference-only project",
+      "bundled_review": "First-party reference-only project; not redistributed"
+    }
+  ],
+  "model_reviews": [
+    {
+      "id": "tts:microsoft/speecht5_tts@30fcde30f19b87502b8435427b5f5068e401d5f6",
+      "kind": "model",
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "Official model artifact; no native code",
+      "bundled_review": "Microsoft HF model identity reviewed; owner publication gate remains separate"
+    },
+    {
+      "id": "tts-public:vokra/speecht5-tts@43cf6592038616d116a98fde4764d827ece59033",
+      "kind": "model",
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "GGUF contains model tensors only; no native code",
+      "bundled_review": "Public artifact identity reviewed against exact Microsoft TTS weight; owner publication gate remains separate"
+    },
+    {
+      "id": "vocoder:microsoft/speecht5_hifigan@bb6f429406e86a9992357a972c0698b22043307d",
+      "kind": "model",
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "Official vocoder artifact; no native code",
+      "bundled_review": "Microsoft HF model identity reviewed; owner publication gate remains separate"
+    },
+    {
+      "id": "source:previous-isolated-transformers@5.5.0",
+      "kind": "source",
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "Python source package native closure audited separately",
+      "bundled_review": "Publisher license text audited; no prohibited bundled code identified"
+    },
+    {
+      "id": "source:bin_to_safetensors",
+      "kind": "source",
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "First-party offline conversion tool; not runtime code",
+      "bundled_review": "First-party repository tooling; not redistributed"
+    }
+  ],
+  "approval_scope_sha256": "99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba",
+  "build_dependency_reviews": [
+    {
+      "id": "Cython@3.0.12",
+      "name": "Cython",
+      "version": "3.0.12",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "VAST isolated NumPy build dependency; not installed in final environment",
+      "bundled_review": "VAST build-only; not redistributed",
+      "approval_required": false
+    },
+    {
+      "id": "meson-python@0.15.0",
+      "name": "meson-python",
+      "version": "0.15.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "VAST isolated NumPy build dependency; not installed in final environment",
+      "bundled_review": "VAST build-only; not redistributed",
+      "approval_required": false
+    },
+    {
+      "id": "meson@1.12.0",
+      "name": "meson",
+      "version": "1.12.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "VAST isolated NumPy build dependency; not installed in final environment",
+      "bundled_review": "VAST build-only; not redistributed",
+      "approval_required": false
+    },
+    {
+      "id": "pyproject-metadata@0.12.1",
+      "name": "pyproject-metadata",
+      "version": "0.12.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "MIT",
+      "native_review": "VAST isolated NumPy build dependency; not installed in final environment",
+      "bundled_review": "VAST build-only; not redistributed",
+      "approval_required": false
+    },
+    {
+      "id": "ninja@1.13.0",
+      "name": "ninja",
+      "version": "1.13.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0",
+      "native_review": "VAST isolated NumPy build dependency; not installed in final environment",
+      "bundled_review": "VAST build-only; not redistributed",
+      "approval_required": false
+    },
+    {
+      "id": "patchelf@0.19.1.0",
+      "name": "patchelf",
+      "version": "0.19.1.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "GPL-3.0-or-later",
+      "native_review": "VAST isolated build-only tool; not installed in final environment",
+      "bundled_review": "GPL build tool is not redistributed by Vokra; operator approval required",
+      "approval_required": true
+    },
+    {
+      "id": "packaging@26.3",
+      "name": "packaging",
+      "version": "26.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "REVIEWED",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "native_review": "VAST isolated NumPy build dependency; not installed in final environment",
+      "bundled_review": "VAST build-only; not redistributed",
+      "approval_required": false
+    }
+  ],
+  "dependency_audit_evidence": {
+    "schema": "vokra-speecht5-dependency-audit-compact-v1",
+    "path": "dependency_audit_evidence.json",
+    "sha256": "dea09a072b095126dcb9e2dbd4acc03b7d9af2ab9a6c42654632f81d3a17a039",
+    "full_audit_sha256": "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
+  },
+  "build_dependency_reviews_sha256": "fb96fc36ad72378e301961762868ddc57b285ab4d2f74baa87064c0e5abb81d6"
+}

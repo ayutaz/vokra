@@ -38,6 +38,9 @@ const TIMESTAMP_ID: u32 = 10;
 const NO_TIMESTAMP_ID: u32 = 11;
 const DIARIZE_ID: u32 = 12;
 const NO_DIARIZE_ID: u32 = 13;
+/// Official aggregate-vocabulary word-boundary piece emitted for an empty
+/// Canary2 decoder-context slot by NeMo's prompt formatter.
+const EMPTY_DECODER_CONTEXT_BOUNDARY_ID: u32 = 16_053;
 
 /// The 25 languages in the official Canary-1B-v2 aggregate tokenizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -245,7 +248,7 @@ pub struct Canary1bV2Options {
     pub diarize: bool,
     /// Emotion prompt control.
     pub emotion: CanaryEmotion,
-    /// Optional bound on tokens generated after the nine-token prompt.
+    /// Optional bound on tokens generated after the ten-token prompt.
     pub max_new_tokens: Option<usize>,
 }
 
@@ -265,10 +268,16 @@ impl Default for Canary1bV2Options {
 }
 
 impl Canary1bV2Options {
-    /// Exact nine-token prompt with an empty decoder-context slot.
+    /// Exact ten-token prompt with an empty decoder-context slot.
+    ///
+    /// NeMo emits the ordinary aggregate-vocabulary `▁` piece before the
+    /// special prompt controls, even when `decodercontext` is empty. The
+    /// piece is authenticated by the pinned vocabulary hash and is not a
+    /// configurable control token.
     #[must_use]
-    pub fn prompt_tokens(self) -> [u32; 9] {
+    pub fn prompt_tokens(self) -> [u32; 10] {
         [
+            EMPTY_DECODER_CONTEXT_BOUNDARY_ID,
             START_OF_CONTEXT_ID,
             BOS_ID,
             self.emotion.token_id(),
@@ -500,7 +509,7 @@ mod tests {
     fn default_canary2_prompt_is_exact_english_asr() {
         assert_eq!(
             Canary1bV2Options::default().prompt_tokens(),
-            [7, 4, 16, 64, 64, 5, 9, 11, 13]
+            [16_053, 7, 4, 16, 64, 64, 5, 9, 11, 13]
         );
     }
 
@@ -543,6 +552,9 @@ mod tests {
             target_language: CanaryLanguage::German,
             ..Canary1bV2Options::default()
         };
-        assert_eq!(options.prompt_tokens(), [7, 4, 16, 64, 78, 5, 9, 11, 13]);
+        assert_eq!(
+            options.prompt_tokens(),
+            [16_053, 7, 4, 16, 64, 78, 5, 9, 11, 13]
+        );
     }
 }

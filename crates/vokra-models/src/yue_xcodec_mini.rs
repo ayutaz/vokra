@@ -481,6 +481,11 @@ mod tests {
     fn measure(label: &str, actual: &[f32], expected: &[f32]) {
         assert_eq!(actual.len(), expected.len(), "{label} length");
         assert!(!actual.is_empty(), "{label} must not be empty");
+        assert!(
+            actual.iter().all(|value| value.is_finite())
+                && expected.iter().all(|value| value.is_finite()),
+            "{label} contains non-finite values"
+        );
         let mut max_abs = 0.0f64;
         let mut sum_abs = 0.0f64;
         let mut sum_sq = 0.0f64;
@@ -503,14 +508,46 @@ mod tests {
             expected_sq += expected * expected;
         }
         let count = actual.len() as f64;
+        assert!(
+            actual_sq.is_finite() && actual_sq > 0.0,
+            "{label} actual L2 norm must be positive and finite"
+        );
+        assert!(
+            expected_sq.is_finite() && expected_sq > 0.0,
+            "{label} expected L2 norm must be positive and finite"
+        );
+        assert!(max_abs.is_finite() && sum_abs.is_finite() && sum_sq.is_finite());
+        let mean_abs = sum_abs / count;
+        let rms = (sum_sq / count).sqrt();
         let cosine = dot / (actual_sq.sqrt() * expected_sq.sqrt());
+        assert!(
+            mean_abs.is_finite() && rms.is_finite() && cosine.is_finite(),
+            "{label} produced a non-finite measurement"
+        );
         eprintln!(
             "YUE_XCODEC_MINI_MEASUREMENT label={label} values={} max_abs={max_abs:.9e} \
              worst_index={worst} mean_abs={:.9e} rms={:.9e} cosine={cosine:.12}",
             actual.len(),
-            sum_abs / count,
-            (sum_sq / count).sqrt(),
+            mean_abs,
+            rms,
         );
+    }
+
+    #[test]
+    fn measurement_rejects_nonfinite_and_zero_norm_inputs() {
+        for (actual, expected) in [
+            (vec![f32::NAN, 1.0], vec![1.0, 1.0]),
+            (vec![f32::INFINITY, 1.0], vec![1.0, 1.0]),
+            (vec![1.0, 1.0], vec![f32::NEG_INFINITY, 1.0]),
+            (vec![0.0, 0.0], vec![1.0, 1.0]),
+            (vec![1.0, 1.0], vec![0.0, 0.0]),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| measure("invalid_measurement", &actual, &expected))
+                    .is_err(),
+                "invalid measurement input reached the measurement marker"
+            );
+        }
     }
 
     fn real_case() -> (GgufFile, Vec<u32>, usize, Vec<f32>, Vec<f32>) {
@@ -519,6 +556,11 @@ mod tests {
         let reference = std::env::var_os("VOKRA_YUE_XCODEC_MINI_REFERENCE_DIR")
             .expect("VOKRA_YUE_XCODEC_MINI_REFERENCE_DIR must point at the official dump");
         let reference = std::path::PathBuf::from(reference);
+        let manifest = std::fs::read_to_string(reference.join("manifest.json"))
+            .expect("read YuE xcodec-mini reference manifest");
+        assert!(manifest.contains("\"format\": \"vokra-yue-xcodec-mini-reference-v2\""));
+        assert!(manifest.contains("\"pickle_load_policy\": \"weights_only=True_required\""));
+        assert!(manifest.contains(&format!("\"upstream_revision\": \"{UPSTREAM_REVISION}\"")));
         let file = GgufFile::open(gguf).expect("open real YuE xcodec-mini GGUF");
         let codes = read_u32(&reference.join("codes.u32le"));
         assert_eq!(codes.len() % CODEBOOKS, 0);
@@ -607,10 +649,8 @@ mod tests {
     #[test]
     #[ignore = "requires Apple Silicon, public GGUF and fixed official xcodec/Vocos fixture"]
     fn measure_real_metal_against_cpu_and_official_xcodec_and_vocos() {
-        if vokra_backend_metal::vokra_metal_probe().is_err() {
-            eprintln!("skipping YuE xcodec-mini Metal measurement: no system Metal device");
-            return;
-        }
+        vokra_backend_metal::vokra_metal_probe()
+            .expect("YuE xcodec-mini Metal validation requires a real Metal device");
         let (file, codes, frames, expected_features, expected_waveform) = real_case();
         let cpu_model = YueXcodecMini::from_gguf_with_backend(&file, BackendKind::Cpu)
             .expect("strict real YuE xcodec-mini CPU bind");

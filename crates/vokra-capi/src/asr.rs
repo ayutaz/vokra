@@ -22,8 +22,9 @@ use crate::{error, ffi_guard};
 /// - `pcm` / `num_samples`: mono `f32` samples (may be empty). `pcm` may be
 ///   `NULL` only when `num_samples == 0`.
 /// - `sample_rate`: the PCM sample rate in Hz. It must equal the model's front
-///   end sample rate — Vokra does not resample in M0 (FR-OP-04 is M1); a
-///   mismatch is `VOKRA_ERROR_INVALID_ARGUMENT`.
+///   end sample rate. A mismatch is rejected with
+///   `VOKRA_ERROR_INVALID_ARGUMENT`; callers must resample before calling the
+///   C API.
 /// - `out_text_utf8`: on `VOKRA_OK`, receives a NUL-terminated UTF-8 transcript
 ///   to be freed with `vokra_string_free`. Untouched on error.
 ///
@@ -55,8 +56,8 @@ pub unsafe extern "C" fn vokra_asr_transcribe(
         }
         if sample_rate as u32 != spec.sample_rate {
             return Err(error::fail_invalid(&format!(
-                "input sample_rate {} Hz != model {} Hz (Vokra does not resample in M0; \
-                 FR-OP-04 is M1 — resample the input offline)",
+                "input sample_rate {} Hz != model {} Hz (Vokra does not resample; \
+                 resample the input before calling this function)",
                 sample_rate, spec.sample_rate
             )));
         }

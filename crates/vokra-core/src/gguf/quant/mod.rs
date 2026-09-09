@@ -1,8 +1,8 @@
 //! Scalar, `unsafe`-free dequantization of GGUF tensor payloads to `f32`.
 //!
 //! This is the single canonical decode path (FR-LD-07 / FR-QT-01): dense
-//! `F32` / `F16` and the K-quant super-block types `Q4_K` / `Q5_K` / `Q6_K`
-//! all resolve through [`dequantize`], so native models decode weights once
+//! `F32` / `F16`, `Q8_0`, and the K-quant super-block types `Q4_K` / `Q5_K` /
+//! `Q6_K` all resolve through [`dequantize`], so native models decode weights once
 //! through one place instead of open-coding per-dtype byte loops.
 //!
 //! # Placement (deliberate)
@@ -15,6 +15,9 @@
 //!
 //! # On-disk layout provenance
 //!
+//! The Q8_0 `block_q8_0` declaration is pinned to official ggml commit
+//! `d4716378882593333721eb33f153144b6885caf2`, path `src/ggml-common.h`:
+//! <https://github.com/ggml-org/ggml/blob/d4716378882593333721eb33f153144b6885caf2/src/ggml-common.h>.
 //! The K-quant `block_q*_K` super-block layouts are transcribed from ggml
 //! `k_quants.h` / `dequantize_row_q*_K` (ggml / llama.cpp are MIT). This is a
 //! data-format specification, not a code copy — the exact byte layout is what
@@ -27,18 +30,21 @@ use super::tensor::{GgmlType, QK_K};
 // M5-03-T05: `Vec` and the `format!` macro are `alloc` (core-clean); the no_std
 // subset imports them (inert under std, where they are in the prelude).
 #[cfg(not(feature = "std"))]
-use alloc::{format, vec::Vec};
+use alloc::{borrow::ToOwned, format, vec::Vec};
 
 mod q4_k;
 mod q5_k;
 mod q6_k;
+mod q8_0;
 
 /// Decodes a tensor payload of the given dtype into owned `f32` values.
 ///
 /// `bytes` must be exactly [`GgmlType::payload_size`] for `n_elements` of
 /// `dtype` (the GGUF reader guarantees this for parsed tensors); a mismatch is
 /// rejected with [`GgufError::TensorSizeMismatch`] rather than panicking. The
-/// returned vector has exactly `n_elements` entries.
+/// returned vector has exactly `n_elements` entries. Dense I32 is deliberately
+/// rejected: callers must use the exact integer accessor instead of a lossy
+/// float conversion.
 pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Vec<f32>, GgufError> {
     let expected = dtype.payload_size(n_elements as u64)?;
     if bytes.len() as u64 != expected {
@@ -48,14 +54,58 @@ pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Ve
             actual: bytes.len() as u64,
         });
     }
+    if matches!(dtype, GgmlType::I8 | GgmlType::I32) {
+        return Err(GgufError::DtypeMismatch {
+            name: format!("<dequant {}>", dtype.tag()),
+            expected: GgmlType::F32.tag(),
+            actual: dtype.tag(),
+        });
+    }
     Ok(match dtype {
         GgmlType::F32 => decode_f32(bytes),
         GgmlType::F16 => decode_f16(bytes),
+        GgmlType::I8 | GgmlType::I32 => unreachable!("integer dtype rejected above"),
         GgmlType::BF16 => decode_bf16(bytes),
+        GgmlType::Q8_0 => q8_0::dequantize(bytes, n_elements),
         GgmlType::Q4K => q4_k::dequantize(bytes, n_elements),
         GgmlType::Q5K => q5_k::dequantize(bytes, n_elements),
         GgmlType::Q6K => q6_k::dequantize(bytes, n_elements),
     })
+}
+
+/// Decodes an on-disk little-endian BF16 payload to raw `u16` bit patterns
+/// without widening through `f32`.
+///
+/// The dtype, element count, and exact byte length are authenticated before
+/// any bytes are read. This deliberately uses `u16::from_le_bytes` per
+/// element instead of casting the byte slice: payload alignment is not a
+/// format guarantee, and the wire format is little-endian regardless of host
+/// endianness.
+pub fn decode_bf16_bits(
+    dtype: GgmlType,
+    bytes: &[u8],
+    n_elements: usize,
+) -> Result<Vec<u16>, GgufError> {
+    if dtype != GgmlType::BF16 {
+        return Err(GgufError::DtypeMismatch {
+            name: "<bf16 accessor>".to_owned(),
+            expected: GgmlType::BF16.tag(),
+            actual: dtype.tag(),
+        });
+    }
+    let element_count = u64::try_from(n_elements).map_err(|_| GgufError::Overflow)?;
+    let expected = dtype.payload_size(element_count)?;
+    if bytes.len() as u64 != expected {
+        return Err(GgufError::TensorSizeMismatch {
+            name: format!("<bf16 {}>", dtype.tag()),
+            expected,
+            actual: bytes.len() as u64,
+        });
+    }
+    Ok(bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect())
 }
 
 /// Decodes a little-endian `BF16` payload (length already validated):
@@ -184,6 +234,27 @@ mod tests {
     }
 
     #[test]
+    fn bf16_bits_decode_little_endian_without_alignment_assumption() {
+        // The payload starts at an odd address in this subslice. A safe
+        // element-wise decode must still recover the wire-order bit patterns.
+        let storage = [0xA5, 0x80, 0x3F, 0x20, 0xC0, 0x00];
+        let bits = decode_bf16_bits(GgmlType::BF16, &storage[1..5], 2).unwrap();
+        assert_eq!(bits, vec![0x3F80, 0xC020]);
+    }
+
+    #[test]
+    fn bf16_bits_reject_foreign_dtype_and_wrong_length() {
+        assert!(matches!(
+            decode_bf16_bits(GgmlType::F16, &[0; 2], 1),
+            Err(GgufError::DtypeMismatch { .. })
+        ));
+        assert!(matches!(
+            decode_bf16_bits(GgmlType::BF16, &[0; 2], 2),
+            Err(GgufError::TensorSizeMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn wrong_payload_length_is_rejected_not_panicked() {
         // One Q4_K block needs 144 bytes; hand a short buffer and require a
         // clean error rather than an out-of-bounds slice.
@@ -195,6 +266,22 @@ mod tests {
     fn partial_block_element_count_is_rejected() {
         let err = dequantize(GgmlType::Q6K, &[0u8; 210], 200).unwrap_err();
         assert!(matches!(err, GgufError::BlockSizeMisaligned { .. }));
+    }
+
+    #[test]
+    fn i32_is_rejected_by_float_dequantizer() {
+        assert!(matches!(
+            dequantize(GgmlType::I32, &[0; 4], 1),
+            Err(GgufError::DtypeMismatch {
+                expected: 0,
+                actual: 26,
+                ..
+            })
+        ));
+        assert!(matches!(
+            dequantize(GgmlType::I32, &[0; 3], 1),
+            Err(GgufError::TensorSizeMismatch { .. })
+        ));
     }
 
     #[test]

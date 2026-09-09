@@ -281,12 +281,21 @@ fn parity_from_env(gguf_variable: &str, reference_variable: &str, expected: Qwen
     };
     let reference = Reference::load(Path::new(&reference_dir), expected);
     let actual = execute(Path::new(&gguf), &reference, expected, BackendKind::Cpu);
+    assert_matches_official(&actual, &reference, expected, "CPU_vs_official");
+}
+
+fn assert_matches_official(
+    actual: &Actual,
+    reference: &Reference,
+    variant: Qwen3AsrVariant,
+    leg: &str,
+) {
     assert_eq!(actual.audio_frames, reference.audio_frames);
     assert_eq!(actual.hidden_size, reference.hidden_size);
     assert_close(
         &actual.audio_embeddings,
         &reference.audio_embeddings,
-        &format!("{} projected_audio CPU_vs_official", expected.model_name()),
+        &format!("{} projected_audio {leg}", variant.model_name()),
     );
     assert_eq!(
         actual.prompt_ids, reference.prompt_ids,
@@ -305,8 +314,8 @@ fn parity_from_env(gguf_variable: &str, reference_variable: &str, expected: Qwen
         "official parsed text"
     );
     eprintln!(
-        "QWEN3_ASR_PARITY {} CPU_vs_official token_ids=exact text=exact PASS",
-        expected.model_name()
+        "QWEN3_ASR_PARITY {} {leg} token_ids=exact text=exact PASS",
+        variant.model_name()
     );
 }
 
@@ -368,21 +377,38 @@ fn qwen3_asr_real_metal_matches_cpu_exact_greedy() {
             Qwen3AsrVariant::B17,
         ),
     ];
+
+    let all_variables = [
+        "VOKRA_QWEN3_ASR_0_6B_GGUF",
+        "VOKRA_QWEN3_ASR_0_6B_REFERENCE_DIR",
+        "VOKRA_QWEN3_ASR_1_7B_GGUF",
+        "VOKRA_QWEN3_ASR_1_7B_REFERENCE_DIR",
+    ];
+    let missing = all_variables
+        .iter()
+        .filter(|variable| std::env::var_os(variable).is_none())
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.len() == all_variables.len() {
+        eprintln!("skip Qwen3-ASR Metal parity: all four GGUF/reference variables are unset");
+        return;
+    }
+    assert!(
+        missing.is_empty(),
+        "Qwen3-ASR Metal parity requires all four GGUF/reference variables; missing: {missing:?}"
+    );
+
     for (gguf_variable, reference_variable, variant) in cases {
-        let (Ok(gguf), Ok(reference_dir)) = (
-            std::env::var(gguf_variable),
-            std::env::var(reference_variable),
-        ) else {
-            eprintln!(
-                "skip {} Metal parity: set both {gguf_variable} and {reference_variable}",
-                variant.model_name()
-            );
-            continue;
-        };
+        let gguf = std::env::var(gguf_variable)
+            .unwrap_or_else(|error| panic!("{gguf_variable} is not a valid path: {error}"));
+        let reference_dir = std::env::var(reference_variable)
+            .unwrap_or_else(|error| panic!("{reference_variable} is not a valid path: {error}"));
         let gguf = PathBuf::from(gguf);
         let reference = Reference::load(Path::new(&reference_dir), variant);
         let cpu = execute(&gguf, &reference, variant, BackendKind::Cpu);
         let metal = execute(&gguf, &reference, variant, BackendKind::Metal);
+        assert_matches_official(&cpu, &reference, variant, "CPU_vs_official");
+        assert_matches_official(&metal, &reference, variant, "Metal_vs_official");
         assert_eq!(metal.audio_frames, cpu.audio_frames);
         assert_eq!(metal.hidden_size, cpu.hidden_size);
         assert_close(

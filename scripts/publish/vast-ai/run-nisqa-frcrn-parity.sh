@@ -259,6 +259,15 @@ run_self_test() {
   return 1
 }
 
+write_failure_summary_on_exit() {
+  local rc=$?
+  local summary_path="${summary_file:-}"
+  if [[ -n "$summary_path" && ! -f "$summary_path" ]]; then
+    printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_path"
+  fi
+  exit "$rc"
+}
+
 main() {
   local self_test=0 requested_work_dir="" run_stamp work_dir logs_dir inputs_dir sources_dir
   local nisqa_dir frcrn_dir nisqa_source frcrn_source nisqa_gguf frcrn_gguf
@@ -303,7 +312,7 @@ main() {
   frcrn_log="$logs_dir/frcrn-cpu.log"
   summary_file="$logs_dir/summary.txt"
   exec > >(tee -a "$run_log") 2>&1
-  trap 'rc=$?; summary_path="${summary_file:-}"; if [[ -n "$summary_path" && ! -f "$summary_path" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_path"; fi; exit "$rc"' EXIT
+  trap write_failure_summary_on_exit EXIT
 
   nisqa_dir="$inputs_dir/nisqa"
   frcrn_dir="$inputs_dir/frcrn"

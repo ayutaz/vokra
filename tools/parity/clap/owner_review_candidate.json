@@ -1,0 +1,41 @@
+{
+  "schema": "vokra-clap-htsat-fused-owner-review-candidate-v1",
+  "candidate_status": "PENDING_OWNER_REVIEW",
+  "upstream": {
+    "repository": "laion/clap-htsat-fused",
+    "source_repository": "https://huggingface.co/laion/clap-htsat-fused",
+    "revision": "365dea6ef167def6676140ed93bbc43f84dabb28"
+  },
+  "evidence": {
+    "model_free_audit_sha256": "6270476e34fd53b5d12cbd9cc0cb672a0633e1e72b77ba50db05132b6f17563c",
+    "dependency_inventory_sha256": "ada4fb32ab79a9a5ed0385c303afbb23770cc3e0314a8d5dc2e8f4935c755259",
+    "summary_sha256": "d6c449e2d933702c6a516f460b73e91138b039d70de714d423f2703de477b3f6"
+  },
+  "license_signoff": {
+    "document": "docs/license-audit.md",
+    "record": "CLAP HTSAT-fused (laion/clap-htsat-fused)",
+    "date": "2026-07-30",
+    "handle": "yousan",
+    "decision": "COMMERCIAL",
+    "license": "apache-2.0",
+    "row_sha256": "3698402b9541de8e1836d60cbc52fc52de8305149c87172d0548113bc29ad833"
+  },
+  "disposition": {
+    "model_license_status": "SIGNED_COMMERCIAL",
+    "dependency_status": "PENDING_OWNER_REVIEW",
+    "runtime_status": "BLOCKED",
+    "publication": "NO_UPLOAD",
+    "weights": "NOT_ACQUIRED",
+    "model_load": "NOT_PERFORMED",
+    "model_forward": "NOT_PERFORMED",
+    "owner_approval": "PENDING_OWNER_APPROVAL"
+  },
+  "approval": {
+    "status": "NOT_PROVIDED",
+    "digest": null
+  },
+  "integrity": {
+    "canonicalization": "json-sort-keys-utf8-no-whitespace-v1",
+    "payload_sha256": "91a8a82f8c420ac5f456f12f021bd385c43b50f947e9e05e547272ae3cec85aa"
+  }
+}

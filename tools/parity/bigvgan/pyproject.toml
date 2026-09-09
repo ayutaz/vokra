@@ -1,0 +1,31 @@
+[project]
+name = "vokra-bigvgan-parity"
+version = "0.1.0"
+description = "Pinned CPU-only BigVGAN upstream oracle and safe checkpoint bridge; VAST-only"
+requires-python = "==3.12.*"
+dependencies = [
+    "torch==2.7.1",
+]
+
+[tool.uv]
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.vokra.bigvgan_reference]
+status = "BLOCKED_UNTIL_AUTHENTICATED_SOURCE_AND_CHECKPOINT_IDENTITY"
+source_repository = "https://github.com/NVIDIA/BigVGAN"
+checkpoint_identity = "FIXED_IN_license_gate_manifest; worker arguments must match"
+license_gate = "FAIL_CLOSED_UNTIL_NATIVE_AND_BUNDLED_DEPENDENCIES_ARE_AUDITED"
+forbidden_dependencies = ["librosa", "soxr", "soundfile", "triton", "nvidia-cuda"]
+publication = "NO_UPLOAD"

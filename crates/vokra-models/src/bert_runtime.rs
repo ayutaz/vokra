@@ -132,6 +132,35 @@ impl BertBackendOps for ComputeBertBackend<'_> {
     }
 }
 
+/// SBV2's BERT router uses these helpers to share the audited backend adapter
+/// without duplicating or exposing the adapter type itself.
+pub(crate) fn deberta_v2_forward_with_backend(
+    encoder: &DebertaV2Encoder,
+    token_ids: &[u32],
+    backend: BackendKind,
+) -> Result<Vec<f32>> {
+    let compute = Compute::for_backend(backend, DEBERTA_V2_HOT_OPS)?;
+    encoder.forward_with_backend(&ComputeBertBackend { compute: &compute }, token_ids)
+}
+
+pub(crate) fn deberta_v3_forward_with_backend(
+    encoder: &DebertaV3Encoder,
+    token_ids: &[u32],
+    backend: BackendKind,
+) -> Result<Vec<f32>> {
+    let compute = Compute::for_backend(backend, BERT_TRANSFORMER_HOT_OPS)?;
+    encoder.forward_with_backend(&ComputeBertBackend { compute: &compute }, token_ids)
+}
+
+pub(crate) fn bert_base_forward_with_backend(
+    encoder: &BertBaseEncoder,
+    token_ids: &[u32],
+    backend: BackendKind,
+) -> Result<Vec<f32>> {
+    let compute = Compute::for_backend(backend, BERT_TRANSFORMER_HOT_OPS)?;
+    encoder.forward_with_backend(&ComputeBertBackend { compute: &compute }, token_ids, None)
+}
+
 /// Runtime discriminator read strictly from `vokra.model.arch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BertRuntimeKind {

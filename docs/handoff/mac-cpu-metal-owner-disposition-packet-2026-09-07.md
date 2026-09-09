@@ -1,0 +1,171 @@
+# Mac CPU / Metal owner disposition packet (2026-09-07)
+
+Updated with owner-independent evidence on 2026-09-09.
+
+> **2026-09-09 audit-start snapshot:** PR #79 was at `9efcd16e`
+> (`CLEAN` / `MERGEABLE`), with 110 successful CI checks, 13 intentional skips
+> and 0 failures. The exact implementation VAST replay is `caf70eb1` (305
+> suites / 8,010 passed / 0 failed / 100 ignored). VAST `50320338` and its
+> 150-GB storage were destroyed. Scaleway has not started. This packet records
+> owner/legal decisions only; it does not authorize model execution, upload or
+> Scaleway allocation. HF upload remains unapproved.
+
+The earlier `80c17e...` and `504858...` VAST checkpoints in this packet are
+historical intermediate owner-review evidence. The final exact implementation
+replay is `caf70eb1` with 305 suites / 8,010 passed / 0 failed / 100 ignored;
+its disposable VAST instance `50320338` and 150-GB storage were destroyed.
+
+The closing model-free batch was verified on a clean VAST checkout at exact
+head `80c17e290cc163d639d88550ffaca2187f2870fb`. Workspace tests, all-target and
+all-feature Clippy with warnings denied, deny and audit were green; the
+preflight and full-run log SHA-256 values are
+`af90a3890c757533636ed594aaed18f5300dac8575e3756ebb8c4eb448c2144e` and
+`a746dd9aca6fc3615735356c464e4de6e6f034b64d4ddebf7136d1d73d7130b1`.
+
+The subsequent MOSS Nano, FireRed and CLAP binding batch was verified at clean
+exact head `504858bcfe4f7809090ef6b25f5105e40b42c509`. The workspace result was
+8,008 passed, zero failed and 100 explicitly ignored tests across 322 suites;
+Clippy, deny, audit and the focused fail-closed gates were green. This advances
+review evidence only and does not record an owner approval.
+
+## Purpose and decision boundary
+
+This packet records the owner/legal decisions that are still required before
+the affected model families may advance from `APPROVAL_BLOCKED` to
+`VAST_READY`. It is evidence for review, not approval. It does not authorize a
+model download, model execution, Hugging Face upload, public-repository
+withdrawal or Scaleway allocation.
+
+An approval applies only to the exact scope hash shown below. A changed source
+revision, model identity, lockfile, package row, native payload or license
+evidence invalidates that decision and requires a new scope. A blank or
+ambiguous decision remains fail-closed.
+
+The owner's uncommitted
+`tools/parity/cosyvoice2_llm_reference/license_gate_manifest.json` is outside
+this packet. Its contents were not inspected or modified while preparing this
+record.
+
+## Hash-bound scopes ready for an owner decision
+
+| Family | Manifest | Approval scope SHA-256 | Remaining decision |
+|---|---|---|---|
+| Qwen3-ASR 0.6B / 1.7B | `tools/parity/qwen3_asr/license_gate_manifest.json` | `da581832351b223b890814c0bf45ba036174da24dd7fd47a58236c1dde33ced1` | Review two model-license rows and 40 package rows; approve or withhold source/model/operator execution. |
+| Qwen3-TTS four variants | `tools/parity/qwen3_tts/license_gate_manifest.json` | `44daa1a9191e73a615e3ca32134a66a3619704b125587784afb4186a42b4f989` | This scope supersedes `46662c9a...` after vulnerable Accelerate was removed. Commit `0af34a7a` prepares an Accelerate-free ordinary CPU candidate with no `device_map` and `low_cpu_mem_usage=False`; its Linux dependency audit and real-weight behavior are not yet revalidated. Resolve the remaining component/dependency owner reviews and either approve a separately proved loader or withhold real-weight execution; no model was loaded and publication remains `NO_UPLOAD`. |
+| SpeechT5-TTS + HiFi-GAN | `tools/parity/speecht5_tts/license_gate_manifest.json` | `99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba` | Dependency/model rows are reviewed; operator approval and the still-unverified API smoke must close before execution. |
+| MOSS Audio 4B / 8B | `tools/parity/moss_audio/license_gate_manifest.json` | `cdda6be3a60e4b703c0d26d249a21703b69c2024f10bfabedf4896e2d7bb2b9a` | This scope supersedes `08eeab24...` after commit `417ed469` removed Accelerate and prepared an explicit `low_cpu_mem_usage=False` Linux x86_64 route with a 120,000,000-KiB RAM floor. The candidate has no real-weight or parity evidence. The source tree and model repositories have no license file at their fixed revisions; cardData `apache-2.0` remains provenance only. Resolve source/model SPDX, dependency rows and owner/operator decisions; no payload was acquired or loaded. |
+| Ultravox + Meta Llama companion | `tools/parity/ultravox/license_gate_manifest.json` | `35e73acdfdffa729464400a11cdc2f890b216dc59476a79acebd24bfe8ae555b` | Decide whether to accept the gated Meta conditional-license companion after its payload hash and Python closure are complete. |
+| WeSpeaker corrected replacement | `tools/parity/wespeaker/license_gate_manifest.json` | `0133cb13d4869903f89d6bbcaee9e784a69cf158804ae76bf4a52c7a0ca3efd0` | Review all five pending source/checkpoint/replacement rows and approve replacement or withholding. |
+| YuE XCodec Mini | `tools/parity/yue_xcodec_mini/license_gate_manifest.json` | `6f8378213db1ef19924c42cb76a194ed013093c048aba910808eb14e2dcef262` | Resolve the missing source license, mixed MIT/CC-BY-NC RepCodec scope, public-artifact/weight rows and package review. |
+| Parler-TTS English / Multilingual | model-free audit at `1cb33f19` | `18876e4d8198e76da3bd220e44033ca6754cca93dfd226a6b44c5551c9af329e` | The exact 35-package closure and four source/model/DAC review rows are bound and the dependency audit passes. Review those rows and record an operator decision; real model execution and publication remain unauthorized. |
+| BigVGAN four variants | `tools/parity/bigvgan/license_gate_manifest.json` | `73f8b60a0f71be420dfbaf1fc7213743701816a301303ff98ba46bbf2d09bce4` | Review the hash-bound Linux/Darwin package, license and native-payload rows and decide whether real-weight validation may run. The manifest remains `OWNER_SIGNOFF_REQUIRED` / `NO_UPLOAD`. |
+
+The presence of a scope hash means only that the proposed decision is
+immutable. None of these rows is owner-approved by this document.
+
+## Scopes that are not yet complete enough to sign
+
+| Family or issue | Missing evidence before a scope can be signed |
+|---|---|
+| MOSS Audio Tokenizer Nano | Commit `09f177f1` prepares the exact AutoConfig/PyTorch-meta source/API/tap route without Accelerate and rejects non-meta parameters/buffers. The route has not yet been replayed on VAST, so the tracked manifest remains security-blocked and no new signable scope is inferred. All 37 package rows still require owner review, the approval digest is absent, and no real-weight runtime or parity was executed. |
+| MOSS-TTS Local | The 438-tensor model plus exact v2 companion scope is bound at `8ca95ea8b8bb7e9b9c9c76afb6a8adff3aa94ced152b52868c0fb916eda90ad3`, but it is explicitly `PENDING_REVIEW_NOT_OWNER_SIGNABLE`. Complete package/native review and the official composite PCM boundary before sign-off. |
+| SpeechBrain Lang-ID | The source, weight, Python closure and fixed fixture scope is bound at `13978840f3d8e113a89fec75033d7e98c3ea7115ae6492744d4b392a27f79076`, but remains `PENDING_REVIEW_NOT_OWNER_SIGNABLE`. Complete package/native and source/model/fixture license review before any real-weight run. |
+| Conv-TasNet Libri1Mix | A legal disposition for the CC-BY-SA-3.0/4.0 and WHAM CC-BY-NC-4.0 conflict; publication remains `NO_UPLOAD`. |
+| HT-Demucs Multi | Weight redistribution terms, the MUSDB18/extra-training-data disposition and owner disposition for the exact Linux dependency evidence. The repaired Python 3.12 reference closure is reproducible, but its NumPy wheel bundles GPL-with-GCC-exception `libgfortran` and LGPL `libquadmath`, which the current fail-closed policy does not approve. |
+| CLAP HTSAT fused | The exact model-free audit, dependency inventory and summary are bound to candidate payload `91a8a82f8c420ac5f456f12f021bd385c43b50f947e9e05e547272ae3cec85aa`. The existing model-license row is commercial, but dependency review and explicit runtime owner approval remain pending; no checkpoint was acquired or executed. |
+| FireRedASR-AED-L | CMVN, output-dictionary and native source seams are authenticated/source-implemented, but the empty config, dependency/training provenance review, complete transcription route and real CPU parity remain blocked. No approval scope is inferred from the source-ready labels. |
+| AudioGen Medium | Model-free scope `ffa2cbe2de355229a5cb616410174aeaac9922e96a48b090c390c30feb32b50c` is deliberately `signable=false`: the dedicated lock is absent, historical T5 linkage and compression build provenance are unresolved, and the native codec/LM composite and real parity do not exist. |
+| XY-Tokenizer | Source/checkpoint/lock review scope `fc72e1c2ef76dbc77b53ea7076ebffc49a4df4430b12bfcbd949bf5c53a36d2e` is bound but not signable. Of 57 dependency rows, 51 were authenticated and six remain blocked by SciPy/SymPy legacy declarations, setuptools/soxr LGPL terms or missing unambiguous tokenizers/tqdm license bytes; an exact reviewed tensor manifest and native route are also absent. |
+| CosyVoice2 HiFT | Packet completeness is deliberately unassessed here because the owner manifest is dirty and outside this campaign's staging scope. |
+| BiCodec | A research-only/non-commercial execution and publication disposition. Decode evidence does not approve the missing PCM encode route or upload. |
+| NSNet2 / RMVPE / corrected SpeechBrain and WeSpeaker artifacts | Exact replacement-versus-withdrawal decision and missing provenance/license sign-off. RMVPE's absent exact-source license may not be inferred as permissive. |
+| SeamlessM4T-v2-Large | Decide between a real gated research-only artifact and withdrawal of the empty public repository. |
+| `dynet38`, `qwen-omni-utils`, `soynlp`, Triton/NVIDIA payload issues | Resolve the exact release/source mismatch, GPL/LGPL conflict or bundled native-payload review before the affected family can receive a scope hash. |
+
+### HT-Demucs Multi primary-source boundary (2026-09-08)
+
+The fixed source checkout remains `facebookresearch/demucs` at
+`e976d93ecc3865e5757426930257e200846a520a`. Its repository `LICENSE` is MIT
+and the repository README says that Demucs is released under that license.
+That proves the source-code boundary; it does not separately state
+redistribution terms for the five externally hosted `.th` checkpoint files.
+
+The same official README states that HT-Demucs was trained on MUSDB HQ plus an
+additional 800-song dataset. The official `sigsep-mus-db` README distinguishes
+its MIT-licensed parser from the full music dataset and says access to the
+tracks is restricted to academic-purpose use. Therefore this packet does not
+infer a commercial checkpoint-redistribution right from the source-code MIT
+license or from the parser license. Until the owner selects an exact
+disposition, the safe proposal is engine support plus direct-upstream,
+no-upload reference validation only; Vokra must not mirror the checkpoint
+bytes in its official model zoo.
+
+The Python 3.12 conflict is narrower than the upstream requirements snapshot:
+the pinned `demucs.audio` module imports `torchaudio` and `lameenc` at module
+load, but its reference-path `convert_audio` function calls the official
+`julius.resample_frac` implementation and does not access either package. The
+reference closure committed at `4c91f173` keeps the upstream snapshot
+byte-identical, loads the fixed PCM16 WAV fixture without `torchaudio`, and
+provides process-local fail-closed stubs for `lameenc`, `torchaudio` and the
+otherwise-unused `openunmix.filtering.wiener` import seam. Every fixed member
+must report `cac=true`, `wiener_iters=0` and `end_iters=0` before execution;
+any Wiener call fails. Unused `dora-search` is also absent from the active
+closure. These constraints remove all four packages from the exact lock
+without changing the official resampler or active model numerics.
+
+A model-free VAST audit at clean commit
+`baef9b9c8bb7559f8d9cb1dc714718030a138450` verified the Linux x86_64 Python
+3.12 lock as an exact 16-row closure, with zero factual collection failures
+and all model, weight, audio, source-repository, Cargo and upload activity
+false. The lock SHA-256 is
+`8d1b65d5c4a84e18c646d11539977797ec072620f75311077c65e41fa61d3bec`;
+candidate package/license row SHA-256 values are respectively
+`4b6fc6cc81a0da62b06c4c275a4b1cdc496e40796e28228f984c962ed6cb25d3`
+and `4b3cabcae55752a24cd23cd26a935a21f0020111d19594346055ead552ee8a9b`.
+The 829,655-byte evidence JSON has SHA-256
+`2ccc87081b52d2e8fc430421d17085fce4105d2515b95ff1118478a9a438e056`.
+
+That exact NumPy 2.5.3 wheel records bundled
+`numpy.libs/libgfortran-*.so` as `GPL-3.0-or-later WITH GCC-exception-3.1`
+and `numpy.libs/libquadmath-*.so` as `LGPL-2.1-or-later` in its own primary
+license bytes. The current dependency policy rejects GPL/LGPL rows, so the
+collector correctly remains `BLOCKED_OWNER_REVIEW` / `NO_UPLOAD`. This is not
+runtime parity evidence and does not authorize checkpoint acquisition,
+execution or publication.
+
+Primary sources:
+
+- <https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/LICENSE>
+- <https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/README.md>
+- <https://raw.githubusercontent.com/facebookresearch/demucs/e976d93ecc3865e5757426930257e200846a520a/demucs/audio.py>
+- <https://github.com/sigsep/sigsep-mus-db/blob/master/README.md>
+
+## Owner decision vocabulary
+
+Every eventual signed record must choose exactly one disposition for its exact
+scope:
+
+1. `APPROVE_COMMERCIAL_EXECUTION` — source, model, dependencies, native
+   payloads and operator execution are accepted for the hash-bound scope.
+2. `APPROVE_RESEARCH_ONLY_EXECUTION` — execution is accepted with the
+   non-commercial/research-only gate retained; this does not approve upload.
+3. `WITHHOLD_EXECUTION` — do not acquire or execute the affected model or
+   companion; retain the explicit unsupported result.
+4. `REPLACE_PUBLIC_ARTIFACT` — approve preparation and validation of corrected
+   bytes; publication still requires separate repository-scoped permission.
+5. `WITHDRAW_PUBLIC_REPOSITORY` — approve withdrawal instead of replacement;
+   this is a separate destructive action and must name the exact repository.
+
+For an approval, record the signer, UTC timestamp, decision, exact scope
+SHA-256 and any retained restrictions. For a withholding or withdrawal, record
+the reason and exact repositories. Until that record exists, all affected rows
+remain `APPROVAL_BLOCKED` or `SOURCE_BLOCKED` and remain in the 63-row
+denominator.
+
+## Current execution consequence
+
+The owner does not need to decide these rows while the remaining source and
+model-free work is still being completed. No row may be advanced merely to
+keep VAST busy. Once every incomplete scope above has either been completed or
+proved unresolvable, present a single consolidated sign-off request before any
+blocked real-weight job is started.

@@ -2,12 +2,33 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**Implementation baseline (reconciled 2026-08-22)**: the M5 implementation
-waves, release-surface work, and runtime-gap closure are on `main` through
-`42af7a90` (PR #44). This checklist is the remaining action ledger feeding the
-**v1.0 GA** decision (commercial GA + C ABI freeze). It is NOT a GA declaration
-and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13). The
-2026-08-18 branch/operation history remains in
+**2026-09-09 audit-start snapshot:** Before this documentation refresh, PR #79
+was at `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional skip /
+0 fail). Exact VAST implementation evidence was `caf70eb1` (305 suites / 8,010
+passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB storage were
+destroyed. Scaleway had not started. The 63 unresolved public rows and current
+external owner/legal/upstream versus VAST versus Scaleway boundaries are
+authoritative in [`mac-pre-scaleway-remaining-tasks-2026-09-05.md`](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md).
+This checklist is not a GA or ABI-freeze declaration; HF upload remains
+unapproved.
+
+**Pre-documentation implementation/code baseline (reconciled 2026-08-31)**:
+the branch observed before the documentation commits was
+`feat/mac-cpu-metal-full-coverage-2026-08-28` at
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
+evidence/package checkpoint was
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. Those authenticated runtime/VAST
+checkpoints are historical workspace `0.2.0` evidence. The active branch is
+workspace `0.3.0`; immediately before this documentation refresh its remote
+head was `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109
+passing checks, 13 expected skips, and no failures or pending checks. The
+current surface has 57 C ABI functions / 15 typedefs and 49 checked / 33
+unchecked literal boxes.
+The GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
+This checklist is the remaining action ledger feeding the **v1.0 GA** decision
+(commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze —
+the freeze FIRES at the owner's v1.0 GA tag (M5-13). The 2026-08-18
+branch/operation history remains in
 `docs/handoff/codex-operations-2026-08-18.md`; the later runtime evidence is in
 `docs/handoff/runtime-gap-execution-plan-2026-08-21.md`.
 
@@ -19,7 +40,17 @@ and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13). The
 
 **Verify snapshot at pre-merge branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). This is historical evidence; PR #27 is merged.
 
-**2026-08-20 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. The 2026-08-17 reconciliation found 41 literal unchecked boxes; the repeatable SBV2 SDP VAST gate, both misaki environment rows, the first corrected SBV2 GitHub Actions JA verdict, and the four-file ZH numerical leg closed on 2026-08-18, leaving **36 literal unchecked boxes**. Those 36 are not an exhaustive task count: the M5-03/M5-04/M5-05/M5-06 and M5-10…M5-15 GA gates were written as prose rather than Markdown boxes. The live index below includes both sets. A box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a condition complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total.
+**2026-08-31 current-state rule**: the earlier **94 unchecked boxes** and the
+2026-08-18 **42 checked / 36 unchecked** are historical owner ledgers, not
+current counts of missing implementations. The current literal ledger is
+**49 checked / 33 unchecked**. Those counts are not an exhaustive task count:
+the M5-03/M5-04/M5-05/M5-06 and M5-10…M5-15 GA gates were written as prose
+rather than Markdown boxes. The live index below includes both sets. A box can
+mean an external legal/infra decision, real-weight access, a deliberately
+fail-closed policy, a future backend, or a partially landed implementation that
+still lacks its real-checkpoint proof. Only mark a condition complete when its
+literal done-condition is evidenced; do not infer implementation status from
+the unchecked total.
 
 **Tracking**: this file (`docs/m5-owner-verification-checklist.md`) is **tracked (public)**, same convention as `docs/m3-` / `docs/m4-owner-verification-checklist.md`. Referenced handoffs `docs/handoff/m5-*.md` are tracked/public; specs `docs/tickets/m5/*.md` and ADRs `docs/adr/M5-*.md` are gitignore-local internal docs (referenced by ID).
 
@@ -27,9 +58,9 @@ Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** d
 
 ---
 
-## 0. Live remaining-work index (2026-08-20)
+## 0. Live remaining-work index (2026-08-31)
 
-This table is the complete M5 routing index. The 36 unchecked Markdown boxes
+This table is the complete M5 routing index. The 33 unchecked Markdown boxes
 live mainly in §1.5 and §6; the prose-only rows below are equally real and must
 not disappear from planning merely because `rg '\[ \]'` cannot count them.
 
@@ -49,7 +80,8 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| SoTA / parity / publish | Converters and many structural proofs landed | The 36 literal boxes cover NPU capture, nine parity families, five implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
+| Mac CPU/Metal model closure | Six Apple-ready model contracts have strict native CPU routes and independent official VAST evidence: GigaAM v3, GigaAM Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec and Voice Gender Classifier. Their transfer packets were intentionally deleted with VAST instances `49168183` and `49261078` on 2026-09-01 because the Scaleway run is long-horizon; both ids read back `instances: null`, so no storage billing or restart target remains. Live inventory is CPU `full=131`, `partial=45`, `no-runtime-binder=17`, `not-artifact=1`; Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`, with zero source-level CPU-only rows. GigaAM v3 and Multilingual have complete conservative Metal code routes, but all six rows still lack authenticated Apple-hardware verdicts. | When the Apple stage resumes, regenerate all required packets from the recorded fixed revisions/hashes on new disposable VAST workers, provision the 32 GiB-or-larger Scaleway Apple host, transfer and verify them, run the six Apple CPU/Metal workers, preserve evidence and destroy the new VAST instances. This closes only the prepared rows; it does not close the other 62 CPU-blocked repositories. |
+| SoTA / parity / publish | Converters and many structural proofs landed | The 33 literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab
 gaps are tracked outside this file in
@@ -315,8 +347,8 @@ Original SoTA Phase 1-4 seven families:
 
 2026-07-28 follow-up additions (bringing the variable-gated total to 9):
 
-- [ ] Family 8 (deepfilternet3, `VOKRA_DFN3_ENABLE`): HF-card read (Rikorose/DeepFilterNet MIT/Apache-2.0 dual; §3.1 Commercial decision recorded) → set `VOKRA_DFN3_ENABLE=1` → `gh workflow run parity-deepfilternet3-real.yml -f force_parity=true` → PASS verdict confirmed. The old `VOKRA_DFN3_DATA_URL` blocker is closed: the workflow now creates the independent upstream bundle from a checked-in uv lock. VAST `47955178` proved the exact path on 2026-08-18, then PR #33 run `32069035682` independently completed the first real GitHub Actions verdict with all 21 stage/output bounds green (`enhanced` max |Δ| `4.172e-7`, upstream/Vokra SI-SNR both `14.768 dB`, no tolerance change). The only remaining activation action is setting `VOKRA_DFN3_ENABLE=1` so scheduled runs execute the real leg; the first GitHub Actions proof itself is complete.
-- [ ] Family 9 (deberta-v3-large, `VOKRA_DEBERTA_V3_ENABLE`): HF-card read (microsoft/deberta-v3-large MIT; §3.1 Commercial decision recorded 2026-07-27) → set `VOKRA_DEBERTA_V3_ENABLE=1` → `gh workflow run parity-deberta-v3-large-real.yml` → PASS verdict confirmed. The old “no Rust consumer” description was stale: `crates/vokra-bert/tests/deberta_v3_real.rs` landed on 2026-07-29 and consumes the upstream `input_ids` + `final_hidden` dump. The workflow now uses a dedicated Linux-x86_64 uv lock, removes the obsolete `VOKRA_DEBERTA_V3_HARNESS_READY` gate, and defaults matching PRs / enabled schedules / manual dispatches to the real final-hidden numerical leg. VAST `47955178` proved the full path on 2026-08-18, then PR #33 run `32069035556` independently completed the first real GitHub Actions verdict: converter smoke passed, the tokenizer loaded 128,000 pieces, and final-hidden max |Δ| was `1.049042e-5` under the unchanged `6.0e-3` bound. The only remaining activation action is setting `VOKRA_DEBERTA_V3_ENABLE=1` so scheduled runs execute the real leg. Per-layer hidden/attention taps remain a separately disclosed extension, not a missing final-output consumer. See `docs/handoff/parity-deberta-v3-large-real.md`.
+- [x] Family 8 (deepfilternet3, `VOKRA_DFN3_ENABLE`): HF-card read (Rikorose/DeepFilterNet MIT/Apache-2.0 dual; §3.1 Commercial decision recorded) → set `VOKRA_DFN3_ENABLE=1` → `gh workflow run parity-deepfilternet3-real.yml -f force_parity=true` → PASS verdict confirmed. The old `VOKRA_DFN3_DATA_URL` blocker is closed: the workflow now creates the independent upstream bundle from a checked-in uv lock. VAST `47955178` proved the exact path on 2026-08-18, then PR #33 run `32069035682` independently completed the first real GitHub Actions verdict with all 21 stage/output bounds green (`enhanced` max |Δ| `4.172e-7`, upstream/Vokra SI-SNR both `14.768 dB`, no tolerance change). Repository variable `VOKRA_DFN3_ENABLE=1` was created and read back through the GitHub API on 2026-09-01, so scheduled runs now execute the real leg.
+- [x] Family 9 (deberta-v3-large, `VOKRA_DEBERTA_V3_ENABLE`): HF-card read (microsoft/deberta-v3-large MIT; §3.1 Commercial decision recorded 2026-07-27) → set `VOKRA_DEBERTA_V3_ENABLE=1` → `gh workflow run parity-deberta-v3-large-real.yml` → PASS verdict confirmed. The old “no Rust consumer” description was stale: `crates/vokra-bert/tests/deberta_v3_real.rs` landed on 2026-07-29 and consumes the upstream `input_ids` + `final_hidden` dump. The workflow now uses a dedicated Linux-x86_64 uv lock, removes the obsolete `VOKRA_DEBERTA_V3_HARNESS_READY` gate, and defaults matching PRs / enabled schedules / manual dispatches to the real final-hidden numerical leg. VAST `47955178` proved the full path on 2026-08-18, then PR #33 run `32069035556` independently completed the first real GitHub Actions verdict: converter smoke passed, the tokenizer loaded 128,000 pieces, and final-hidden max |Δ| was `1.049042e-5` under the unchanged `6.0e-3` bound. Repository variable `VOKRA_DEBERTA_V3_ENABLE=1` was created and read back through the GitHub API on 2026-09-01, so scheduled runs now execute the real leg. Per-layer hidden/attention taps remain a separately disclosed extension, not a missing final-output consumer. See `docs/handoff/parity-deberta-v3-large-real.md`.
 
 - [x] Family 10 (SBV2, sidecar-hash gate): the default `parity-sbv2-real.yml` leg validates main + JA BERT + EN BERT, while explicit `include_zh=true` adds the fourth ZH BERT sidecar and routes a `Language::ZH` request through the four-file loader. VAST `47955178` proved the JA path on 2026-08-18; PR #33 run `32069035448` then supplied the first corrected GitHub Actions verdict. VAST `47977839` subsequently proved the new ZH leg at commit `e564186`: all four regenerated GGUF hashes matched, the upstream `transformers` WordPiece/plain-BERT reference produced `bert_hidden_zh [5,1024]`, and the named non-ignored Rust consumer passed `1/1` in 1026.70 s with no tolerance change (`bert_hidden_zh` max |Δ| `1.907349e-5`, bridge/mel `5.960464e-6`, latent `1.096725e-5`, waveform `1.031446e-1`, mel-loss `1.820711e-1`). The optional UTMOS sub-gate was explicitly skipped and is not a quality PASS; the fixture-only Mandarin input row is numerical replay evidence, not production G2P validation. See `docs/handoff/parity-sbv2-real-vast-2026-08-18.md` and `docs/handoff/parity-ci-flip-switch.md`.
 
@@ -340,8 +372,12 @@ These are tracked on the CC side for future waves; listed here for owner visibil
 
 - [x] F0 / CREPE real 6-block CNN forward landed (`crates/vokra-models/src/f0/crepe.rs`); targeted F0 tests pass. Real external-checkpoint parity remains a separate §6.4 task.
 - [ ] Charsiu `align` real-checkpoint binding and reference parity. CTC segmentation/Viterbi and synthesized-weight forward are implemented; the remaining work is the upstream tensor manifest/GGUF bind, not a replacement of a placeholder Viterbi algorithm.
-- [ ] `vokra-kws-micro` upstream-model binding and real `hey_jarvis` fixture. The INT8 pipeline and synthetic/parity tests are landed; emitted quantization metadata plus a real checkpoint remain.
-- [ ] BF16 native compute in runtime (currently upcast-to-f32 shim).
+- [ ] `vokra-kws-micro` upstream-model binding and real `hey_jarvis` fixture. The fixed reviewed stateful GGUF binder, exact tensor fingerprints, and 512-stage trace harness are landed; the authenticated VAST fixture run and numerical verdict remain.
+- [ ] Model-level BF16 activation/runtime integration. Raw-BF16 CPU/Metal
+  storage and GEMM seams plus kernel-fixture parity are landed; Ultravox still
+  uses FP32 activations/accumulation and widens its projector, encoder, norm and
+  embedding paths. Close this only with an explicit precision design, a real
+  BF16 checkpoint, AVX512-BF16 model parity and Arm-BF16/Apple evidence.
 - [ ] Full HiFTNet GPU generator path. Metal primitives are landed, but the complete generator and non-Metal backends remain.
 - [ ] Full BigVGAN GPU path. Metal activation/upsampling primitives are landed, but the complete generator and non-Metal backends remain.
 - [x] SNAC Metal MSL kernel and CPU-parity coverage landed. CUDA/Vulkan/WebGPU equivalents remain future backend work.
@@ -444,6 +480,12 @@ destination-gated publish remain**:
   Full evidence/runbook: `docs/handoff/vast-ai-publish-voxcpm2-2b.md`.
 
 **Deferred by RAM constraint (implemented + signed, host infrastructure blocked)**:
+
+> **2026-09-09 audit-start correction:** The stopped `47955178` reference in
+> the historical Voxtral row is not a current restart or transfer target. Its
+> retained artifact/storage state is historical; any future authorized upload
+> must regenerate or verify on a new disposable VAST instance after credential
+> rotation. HF upload remains unapproved.
 
 - [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. **Adapter-aware 48-GB conversion, publish dry-run, and real ASR/runtime parity completed on vast.ai 2026-08-18** from pinned upstream commit `da5b42409f279fdd92febee0511a6c32828569c1` (11 shards only; duplicate `consolidated.safetensors` excluded). The first provenance-only dry-run artifact (`52f860…`) lacked active adapter metadata and was deliberately not uploaded. The corrected streaming conversion uses the tracked Small-24B side-car and produced 852 tensors / 54 metadata keys / 851 exact BF16 passthrough / 0 skipped / tokenizer embedded / `adapter=frame_stack_mlp` / 48,542,409,248 bytes / SHA-256 `91f2733492dd49b8e8f810192c77538d7d6d2f4c1c568098e11c3ad91f752c87`; peak RSS was 1,780.18 MiB with a 1,280 MiB largest tensor. Header, §3.1, model-card, LICENSE, NOTICE, SOURCE and all no-credential publish gates pass. Independent upstream fixtures are committed under `tests/parity/voxtral-small-24b-2507/`: mandatory two-layer orchestration self-check was bitwise; Vokra tower parity measured mel `1.311e-5` (atol `5e-5`), encoder `2.956e-5` (atol `1.5e-3`), projector `1.812e-5` (atol `6e-5`); decoder logits measured `6.356e-4` (unchanged atol `1e-2`), and all 27 greedy ids matched exactly with EOS in 5,292.21 s. Reference peak was 130.43 GiB; the cgroup peak was 139,312,283,648 bytes, entirely on VAST. Commit `7640a02` was fast-forwarded back to VAST and its bounded fixture smoke passed 4/4. The existing live HF artifact at `vokra/voxtral-small-24b-2507` remains invalid for completion because it carries stale false Mini-3B provenance. Instance `47955178` is stopped (`exited`) with the corrected staged artifact retained pending explicit authorization to transfer the HF credential and run `publish-one.sh --push`; never move the 48-GB artifact or upload work to the M1 iMac. The only remaining literal done-condition is corrected-artifact upload/live verification, so this box remains open and the action-ledger total remains 36.
 

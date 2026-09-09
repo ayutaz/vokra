@@ -1,9 +1,16 @@
 # tools/parity/firered_asr_llm_l
 
+> **Current status (2026-08-29): BLOCKED.** The pinned HF release is a
+> `model.pth.tar` bundle rather than the sharded safetensors index assumed by
+> this preparer, and the FireRed source revision needed to interpret it is not
+> authenticated here. Do not run `uv sync`, fetch weights, or convert locally;
+> use `scripts/publish/vast-ai/run-firered-asr-llm-l-validation.sh`, which exits
+> before acquisition until the blocker is resolved.
+
 Offline sidecar for **FireRedTeam/FireRedASR-LLM-L**
-(`FireRedTeam/FireRedASR-LLM-L`, Apache-2.0, ~16.6 GB BF16 = 8.3B
-params) — bridges the upstream **sharded safetensors** release to the
-flat safetensors the Rust converter
+(`FireRedTeam/FireRedASR-LLM-L`, Apache-2.0 weight record, ~16.6 GB BF16
+historical estimate) — the preparer is intended to bridge a future
+authenticated safetensors export to the flat safetensors the Rust converter
 (`crates/vokra-convert/src/models/firered_asr_llm_l.rs`) consumes.
 Sibling of the wave-B fast-track scripts
 `../higgs_audio_v3_tts_4b/prepare_checkpoint.py`,
@@ -40,21 +47,29 @@ Sibling of the wave-B fast-track scripts
   `[[feedback-large-models-on-vast-ai]]` and the runbook
   `docs/handoff/vast-ai-large-model-publish.md`.
 
-## vast.ai owner walkthrough — DL + prep + convert + publish
+## Historical VAST walkthrough (disabled; do not execute)
 
-Per memory `[[feedback-large-models-on-vast-ai]]` the ~16.6 GB scale
-puts this model far above the 2 GB CC-workflow local-convert
-threshold. The full path runs on a rented vast.ai GPU box.
+> The following is retained only as historical provenance from the earlier
+> fast-track. It is **not an execution recipe**. The current worker exits
+> before acquisition because the upstream format/source closure is unresolved;
+> no command in this section authorizes download, conversion, publication, or
+> credential use. Use `run-firered-asr-llm-l-validation.sh` as the only current
+> entry point.
 
-1. **Rent** a vast.ai box (≥ 32 GB RAM, e.g. RTX 4090 or A6000 —
+The historical notes below reflect the former ≥2 GB VAST planning path; they
+are retained for provenance only and are not an approved execution sequence.
+
+1. **Historical planning note — rent** a vast.ai box (≥ 32 GB RAM, e.g. RTX
+   4090 or A6000 —
    any CUDA image will do since the merger is CPU-only; a GPU box is
    only cheaper per-hour on vast.ai's market than a CPU box today).
    Reserve ≥ 100 GB SSD for the ~16.6 GB download + ~16.6 GB merged
    safetensors + ~16.6 GB GGUF output.
 
-2. **Provision** per `docs/handoff/vast-ai-large-model-publish.md`:
+2. **Historical planning note — provision** per
+   `docs/handoff/vast-ai-large-model-publish.md`:
 
-   ```bash
+```text
    # On the vast.ai host, from a fresh clone of the repo:
    cd /root/vokra
    bash scripts/publish/vast-ai/provision.sh  # torch, huggingface_hub<0.30 pin, etc.
@@ -67,10 +82,10 @@ threshold. The full path runs on a rented vast.ai GPU box.
    declares the range broadly (`>= 0.26`) so both environments work
    — the runbook enforces the vast.ai pin explicitly.
 
-3. **Download** the sharded upstream release (~16.6 GB across
+3. **Historical planning note — download** the upstream release (~16.6 GB across
    multiple shards):
 
-   ```bash
+```text
    export HF_TOKEN=<your-token>
    uv run huggingface-cli download \
        FireRedTeam/FireRedASR-LLM-L \
@@ -82,16 +97,16 @@ threshold. The full path runs on a rented vast.ai GPU box.
    works from safetensors only (FR-LD-05 no pickle in the runtime,
    and we don't need pickles here since safetensors is authoritative).
 
-4. **Sync** this sidecar's deps once:
+4. **Historical planning note — sync** this sidecar's deps once:
 
-   ```bash
+```text
    cd /root/vokra/tools/parity/firered_asr_llm_l
    uv sync
    ```
 
-5. **Merge** the shards into one flat safetensors:
+5. **Historical planning note — merge** the shards into one flat safetensors:
 
-   ```bash
+```text
    uv run python prepare_checkpoint.py \
        --input-dir /root/models/firered-asr-llm-l \
        --output    /root/models/firered-asr-llm-l/merged.safetensors
@@ -105,42 +120,37 @@ threshold. The full path runs on a rented vast.ai GPU box.
      lm_head — a Qwen family `tie_word_embeddings=true` posture
      and a plausible FireRedASR-LLM-L topology).
 
-6. **Convert** to Vokra GGUF (~16.6 GB in → ~16.6 GB out; BF16
+6. **Historical planning note — convert** to Vokra GGUF (~16.6 GB in → ~16.6 GB out; BF16
    stays BF16 verbatim per the ADR the sibling `qwen3_tts.rs` +
    `moshi.rs` share):
 
-   ```bash
+```text
    /root/vokra/target/release/vokra-cli convert \
        --model  firered-asr-llm-l \
        --input  /root/models/firered-asr-llm-l/merged.safetensors \
        --output /root/gguf/firered-asr-llm-l.gguf
    ```
 
-7. **Publish** through the 5-gate publish chain
+7. **Publication (withheld)** — no publication command is retained here.
    (`docs/license-audit.md` §3.1 sign-off must be marked ☑
    Commercial / ☑ Research-only by owner first — the row is added
    by this CC land, the sign-off is fail-closed until owner audits
    the HF card + FireRedTeam GitHub LICENSE + training-corpus
    commercial posture):
 
-   ```bash
-   bash scripts/publish/publish-one.sh \
-       --gguf /root/gguf/firered-asr-llm-l.gguf \
-       --repo vokra/firered-asr-llm-l \
-       --license-spdx apache-2.0 \
-       --allow-large \
-       --push
-   ```
+   The historical publish command has been intentionally removed. Upload is
+   not authorized by this task and remains `NO_UPLOAD`.
 
-8. **Destroy** the vast.ai instance to stop billing:
+8. **Historical planning note — destroy** the vast.ai instance to stop billing:
 
-   ```bash
+```text
    vastai destroy <instance-id>
    ```
 
-## Owner critical path — CLEARED (signed 2026-08-14)
+## Owner license sign-off (historical; does not clear execution)
 
-**The licensing gate is satisfied; step 7 above is runnable.**
+**The weight-license sign-off is recorded, but the current source-format,
+dependency, and runtime eligibility gates remain blocked.**
 `docs/license-audit.md` §3.1 records **☑ Commercial 2026-08-14
 yousan**, on primary-source `curl` verification of the HF `cardData`
 and the README frontmatter (both `license: apache-2.0`; the commands
@@ -161,16 +171,16 @@ What that sign-off did and did not cover:
    audit. Re-read it before publishing if that risk posture has moved.
 4. ✅ §3.1 row signed ☑ Commercial.
 
-`publish-one.sh` reads the sign-off via
-`scripts/publish/signoff_match.py`; a **blank** row would refuse at
-gate 4 (`upload.sh`), but this row is signed, so gate 4 passes.
+The historical sign-off covers the declared weight license only. It does not
+authenticate the current tarball extraction contract, source revision, Qwen
+license inheritance, or authorize an upload.
 
 ## Honest boundaries
 
-- **Real weight fetch + merge + convert is owner-triggered on
-  vast.ai**, not run by CC (memory
-  `[[feedback-large-models-on-vast-ai]]`). CC lands only the
-  converter code + this sidecar + the tests.
+- **Real weight fetch + merge + convert remains blocked** until the tarball
+  format and source closure are authenticated. If cleared later, the owner
+  must trigger it on vast.ai (memory
+  `[[feedback-large-models-on-vast-ai]]`); CC performs no acquisition here.
 - **Real audio inference accuracy verification is fixture-gated** —
   when the future runtime binder in
   `crates/vokra-models/src/firered_asr_llm_l/` lands, it will reach
@@ -191,12 +201,10 @@ gate 4 (`upload.sh`), but this row is signed, so gate 4 passes.
 
 ## License / distribution note
 
-The **`FireRedTeam/FireRedASR-LLM-L`** upstream release is
-Apache-2.0, **verified at primary source** (HF `cardData` + README
-frontmatter, CC `curl` 2026-08-13) and signed off as
-**☑ Commercial 2026-08-14 yousan** in `docs/license-audit.md` §3.1 —
-which is the authoritative record. See §Owner critical path above for
-the one carve-out (training-corpus posture).
+The **`FireRedTeam/FireRedASR-LLM-L`** weight-license record is Apache-2.0,
+verified at primary source and signed off as **☑ Commercial 2026-08-14
+yousan** in `docs/license-audit.md` §3.1. That record is not an approval to
+execute the blocked source conversion or publish a derived artifact.
 
 The Vokra runtime consumes the produced GGUF as an opaque numeric
 artefact; no Python / torch / safetensors code enters the runtime

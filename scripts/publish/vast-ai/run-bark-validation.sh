@@ -8,9 +8,12 @@ DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/bark"
+LICENSE_GATE="$PARITY_PROJECT/license_gate.py"
+LICENSE_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
+DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
-TRANSFORMERS_REVISION="e42587f596181396e1c4b63660abf0c736b10dae"
+TRANSFORMERS_REVISION="c1c34249fa27deefbd4a377dfbf883a39baf5c6d"
 GENERATION_CONFIG_BYTES=4908
 GENERATION_CONFIG_SHA256="ab2969fcd40e085bc924ad99ad419c27f62f5acb61afac5de7490ab0c796b5b9"
 
@@ -35,6 +38,10 @@ FULL_CHECKPOINT_BYTES=4486643861
 FULL_CHECKPOINT_SHA256="4e3d407b9b3b619da184c85786c88e5e35f90f9089303e16db696ed0be477989"
 FULL_CONFIG_BYTES=8806
 FULL_CONFIG_SHA256="48be144c0232acd8c55786d1eea9161ae6c973f21ec4a2f02627c844065ea695"
+TRANSFORMERS_SDIST_SHA256="c8db656cf51c600cd8c75f06b20ef85c72e8b8ff9abc880c5d3e8bc70e0ddcbd"
+TRANSFORMERS_WHEEL_SHA256="821a9ff0961abbb29eb1eb686d78df1c85929fdf213a3fe49dc6bd94f9efa944"
+SMALL_TEST="real_bark_small_matches_official_transformers"
+FULL_TEST="real_bark_full_matches_official_transformers"
 
 MIN_VAST_MEM_KIB=23000000
 MIN_FREE_DISK_KIB=40000000
@@ -45,12 +52,13 @@ die() { log "ERROR: $*"; return 2; }
 
 usage() {
   cat <<'EOF' >&2
-usage: run-bark-validation.sh [--work-dir <empty-dir>]
+usage: run-bark-validation.sh --approval-evidence <file> [--work-dir <absent-dir>]
        run-bark-validation.sh --self-test
 
 VAST-only, non-publishing Bark Small/Full validation. The worker downloads and
 verifies both exact public Vokra GGUFs and exact immutable Suno checkpoints,
-uses locked official Transformers 4.31.0 for independent greedy references,
+uses locked official Transformers 5.5.0 for independent greedy references,
+audits the already synchronized Python closure without importing model code,
 compiles the workspace plus Apple target, verifies CLI routing, and compares
 native CPU generated codes plus embedded-codec PCM.
 
@@ -74,7 +82,7 @@ sha256_file() {
 
 verify_file() {
   local path="$1" expected_bytes="$2" expected_hash="$3" actual_bytes actual_hash
-  [[ -f "$path" ]] || { die "missing pinned input: $path"; return 2; }
+  [[ -f "$path" && ! -L "$path" ]] || { die "missing, non-regular, or symlinked pinned input: $path"; return 2; }
   actual_bytes="$(wc -c < "$path" | tr -d '[:space:]')"
   [[ "$actual_bytes" == "$expected_bytes" ]] \
     || { die "byte-size mismatch for $path: got $actual_bytes, expected $expected_bytes"; return 2; }
@@ -82,6 +90,103 @@ verify_file() {
   [[ "$actual_hash" == "$expected_hash" ]] \
     || { die "SHA-256 mismatch for $path: got $actual_hash, expected $expected_hash"; return 2; }
   log "identity OK: $path bytes=$actual_bytes sha256=$actual_hash"
+}
+
+license_preflight() {
+  local approval="$1"
+  command -v uv >/dev/null 2>&1 || { die "required tool missing: uv"; return 2; }
+  [[ -f "$LICENSE_GATE" && ! -L "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && ! -L "$LICENSE_MANIFEST" ]] \
+    || { die "Bark license gate or tracked manifest is missing"; return 2; }
+  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] \
+    || { die "--approval-evidence must be a nonempty regular approval file"; return 2; }
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$LICENSE_GATE" \
+    --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
+    --manifest "$LICENSE_MANIFEST" \
+    --small-public-repo "$SMALL_PUBLIC_REPO" --small-upstream-repo "$SMALL_UPSTREAM_REPO" \
+    --full-public-repo "$FULL_PUBLIC_REPO" --full-upstream-repo "$FULL_UPSTREAM_REPO" \
+    --transformers-version 5.5.0 \
+    --small-public-bytes "$SMALL_PUBLIC_BYTES" --small-checkpoint-bytes "$SMALL_CHECKPOINT_BYTES" \
+    --small-config-bytes "$SMALL_CONFIG_BYTES" --full-public-bytes "$FULL_PUBLIC_BYTES" \
+    --full-checkpoint-bytes "$FULL_CHECKPOINT_BYTES" --full-config-bytes "$FULL_CONFIG_BYTES" \
+    --generation-config-bytes "$GENERATION_CONFIG_BYTES" \
+    --small-public-revision "$SMALL_PUBLIC_REVISION" \
+    --small-upstream-revision "$SMALL_UPSTREAM_REVISION" \
+    --full-public-revision "$FULL_PUBLIC_REVISION" \
+    --full-upstream-revision "$FULL_UPSTREAM_REVISION" \
+    --transformers-source-revision "$TRANSFORMERS_REVISION" \
+    --small-public-sha256 "$SMALL_PUBLIC_SHA256" \
+    --full-public-sha256 "$FULL_PUBLIC_SHA256" \
+    --small-checkpoint-sha256 "$SMALL_CHECKPOINT_SHA256" \
+    --full-checkpoint-sha256 "$FULL_CHECKPOINT_SHA256" \
+    --small-config-sha256 "$SMALL_CONFIG_SHA256" \
+    --full-config-sha256 "$FULL_CONFIG_SHA256" \
+    --generation-config-sha256 "$GENERATION_CONFIG_SHA256" \
+    --transformers-sdist-sha256 "$TRANSFORMERS_SDIST_SHA256" \
+    --transformers-wheel-sha256 "$TRANSFORMERS_WHEEL_SHA256" \
+    --approval "$approval"
+}
+
+require_disjoint_work_dir() {
+  local work="$1" approval="$2" candidate root_real approval_parent approval_real
+  candidate="$(canonical_absent_path "$work")" || return 2
+  root_real="$(cd -P "$VOKRA_ROOT" 2>/dev/null && pwd)" \
+    || { die "Vokra checkout is inaccessible"; return 2; }
+  approval_parent="$(cd -P "$(dirname "$approval")" 2>/dev/null && pwd)" \
+    || { die "approval parent is inaccessible"; return 2; }
+  approval_real="$approval_parent/$(basename "$approval")"
+  [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && "$root_real/" != "$candidate/"* ]] \
+    || { die "work-dir overlaps the checkout"; return 2; }
+  [[ "$candidate" != "$approval_real" && "$candidate/" != "$approval_real/"* && "$approval_real/" != "$candidate/"* ]] \
+    || { die "work-dir overlaps approval evidence"; return 2; }
+}
+
+canonical_absent_path() {
+  local target="$1" current suffix component real lexical
+  [[ "$target" = /* ]] || target="$PWD/$target"
+  lexical="${target#/}"; current="/"
+  while [[ -n "$lexical" ]]; do
+    component="${lexical%%/*}"
+    if [[ "$lexical" == "$component" ]]; then lexical=""; else lexical="${lexical#*/}"; fi
+    [[ "$component" == "." || -z "$component" ]] && continue
+    [[ "$component" != ".." ]] || { die "work-dir path contains '..'"; return 2; }
+    current="${current%/}/$component"
+    if [[ -L "$current" ]]; then
+      real="$(cd -P "$current" 2>/dev/null && pwd)" || { die "work-dir path contains an inaccessible component"; return 2; }
+      case "$current:$real" in
+        /var:/private/var|/tmp:/private/tmp) current="$real" ;;
+        *) die "work-dir path contains a symlinked component"; return 2 ;;
+      esac
+    fi
+  done
+  current="$target"
+  suffix=""
+  while [[ ! -e "$current" && ! -L "$current" ]]; do
+    component="$(basename "$current")"
+    suffix="/$component$suffix"
+    current="$(dirname "$current")"
+  done
+  [[ -d "$current" && ! -L "$current" ]] || { die "work-dir has an inaccessible or symlinked existing parent"; return 2; }
+  real="$(cd -P "$current" 2>/dev/null && pwd)" || { die "work-dir parent is inaccessible"; return 2; }
+  printf '%s%s\n' "$real" "$suffix"
+}
+
+require_absent_work_dir() {
+  local work="$1" approval="$2"
+  require_disjoint_work_dir "$work" "$approval" || return 2
+  [[ ! -e "$work" && ! -L "$work" ]] \
+    || { die "--work-dir must be absent before validation: $work"; return 2; }
+}
+
+require_one_test_pass() {
+  local log_path="$1" test_name="$2" marker="$3" test_count named_count result_count result_lines marker_count
+  test_count="$(grep -Ev '^test result:' "$log_path" | grep -Ec '^test ' || true)"
+  named_count="$(grep -Ec "^test ${test_name} \.\.\. ok$" "$log_path" || true)"
+  result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$log_path" || true)"
+  result_lines="$(grep -Ec '^test result:' "$log_path" || true)"
+  marker_count="$(grep -Ec "^${marker} frames=[0-9]+, codes=exact, decode_max_abs=[0-9.eE+-]+, decode_rmse=[0-9.eE+-]+, end_to_end_max_abs=[0-9.eE+-]+, end_to_end_rmse=[0-9.eE+-]+$" "$log_path" || true)"
+  if [[ "$test_count" != 1 || "$named_count" != 1 || "$result_count" != 1 || "$result_lines" != 1 || "$marker_count" != 1 ]]; then
+    die "${test_name} evidence must contain exactly one named pass, full result, and metric sentinel"; return 2
+  fi
 }
 
 download_hf_file() {
@@ -112,7 +217,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup git curl awk find tee wc tr; do
+  for tool in uv cargo rustc rustup git curl awk find tee wc tr readelf; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
@@ -145,13 +250,28 @@ record_environment() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0
+  local tmp payload actual script_path cases=0 fail=0 fake_root fake_home fake_log rc test_log audit_removed
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
   payload="$tmp/payload"
   printf 'vokra-bark-self-test\n' > "$payload"
   actual="$(sha256_file "$payload")"
+  printf '{}\n' > "$tmp/path-approval.json"
+  mkdir -p "$tmp/nested-parent"
+  require_absent_work_dir "$tmp/nested-parent/model/work" "$tmp/path-approval.json" || { log "self-test FAIL: nested absent work path rejected"; fail=1; }
+  mkdir -p "$tmp/intermediate"
+  ln -s "$VOKRA_ROOT" "$tmp/intermediate/checkout-link"
+  if require_absent_work_dir "$tmp/intermediate/checkout-link/work" "$tmp/path-approval.json" >/dev/null 2>&1; then log "self-test FAIL: intermediate checkout symlink accepted"; fail=1; fi
+  mkdir -p "$tmp/real/existing"
+  ln -s "$tmp/real" "$tmp/ancestor-link"
+  if require_absent_work_dir "$tmp/ancestor-link/existing/nested/new" "$tmp/path-approval.json" >/dev/null 2>&1; then log "self-test FAIL: symlinked ancestor bypass accepted"; fail=1; fi
+  ln -s "$tmp/missing-target" "$tmp/dangling-work"
+  if require_absent_work_dir "$tmp/dangling-work" "$tmp/path-approval.json" >/dev/null 2>&1; then log "self-test FAIL: dangling work symlink accepted"; fail=1; fi
+  if require_absent_work_dir "$VOKRA_ROOT/tools" "$tmp/path-approval.json" >/dev/null 2>&1; then log "self-test FAIL: checkout overlap accepted"; fail=1; fi
+  if require_absent_work_dir "$tmp/path-approval.json/child" "$tmp/path-approval.json" >/dev/null 2>&1; then log "self-test FAIL: approval overlap accepted"; fail=1; fi
+  mkdir "$tmp/existing-empty"
+  if require_absent_work_dir "$tmp/existing-empty" "$tmp/path-approval.json" >/dev/null 2>&1; then log "self-test FAIL: existing empty work directory accepted"; fail=1; fi
 
   cases=$((cases + 1))
   verify_file "$payload" "$(wc -c < "$payload" | tr -d '[:space:]')" "$actual" \
@@ -165,19 +285,65 @@ run_self_test() {
     "$(printf '%064d' 0)" >/dev/null 2>&1; then
     log "self-test FAIL: invalid SHA-256 accepted"; fail=1
   fi
+  ln -s "$payload" "$tmp/payload-link"
+  cases=$((cases + 1))
+  if verify_file "$tmp/payload-link" "$(wc -c < "$payload" | tr -d '[:space:]')" "$actual" >/dev/null 2>&1; then
+    log "self-test FAIL: symlinked identity accepted"; fail=1
+  fi
   cases=$((cases + 1))
   script_path="${BASH_SOURCE[0]}"
   for required in "$SMALL_PUBLIC_REVISION" "$FULL_PUBLIC_REVISION" \
     "$SMALL_UPSTREAM_REVISION" "$FULL_UPSTREAM_REVISION" \
     "$TRANSFORMERS_REVISION" "$SMALL_PUBLIC_SHA256" "$FULL_PUBLIC_SHA256" \
     "$SMALL_CHECKPOINT_SHA256" "$FULL_CHECKPOINT_SHA256" \
-    "bark/dump_reference.py" "parity_bark_real" \
+    "bark/dump_reference.py" "license_preflight" "dependency_audit.py" "--no-sync" "--offline" "scripts/verify/apple-silicon-bark.sh" \
+    "--approval-evidence" "<APPLE_APPROVAL_EVIDENCE>" "<APPLE_EVIDENCE_DIR>" \
+    "real_bark_small_matches_official_transformers" \
+    "real_bark_full_matches_official_transformers" \
+    "test result: ok. 1 passed; 0 failed; 0 ignored" "parity_bark_real" \
     "load_session_routes_only_named_bark_releases_to_tts" \
     "aarch64-apple-darwin" "--test-threads=1" "--frozen --python 3.12"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"; fail=1
     fi
   done
+  for bad_args in \
+    "--self-test --approval-evidence x" \
+    "--approval-evidence" \
+    "--approval-evidence --work-dir x" \
+    "--approval-evidence x --approval-evidence y" \
+    "--work-dir x --work-dir y" \
+    "--unknown x"; do
+    # shellcheck disable=SC2086
+    if "$script_path" $bad_args >/dev/null 2>&1; then
+      log "self-test FAIL: invalid argument accepted: $bad_args"; fail=1
+    fi
+  done
+  # Keep these checks tied to the actual command sites.  A function-definition
+  # mention is insufficient: removing or moving the production audit must
+  # fail this regression before a real VAST run can acquire model files.
+  local gate_call_line sync_call_line audit_call_line download_call_line cargo_call_line
+  gate_call_line="$(grep -nF "python \"\$LICENSE_GATE\"" "$script_path" | tail -n 1 | cut -d: -f1)"
+  sync_call_line="$(grep -nF 'uv sync --project' "$script_path" | tail -n 1 | cut -d: -f1)"
+  audit_call_line="$(grep -nF "python \"\$DEPENDENCY_AUDIT\"" "$script_path" | tail -n 1 | cut -d: -f1)"
+  download_call_line="$(grep -nF "download_hf_file \"\$SMALL_PUBLIC_REPO\"" "$script_path" | tail -n 1 | cut -d: -f1)"
+  cargo_call_line="$(grep -nF 'cargo test --manifest-path' "$script_path" | tail -n 1 | cut -d: -f1)"
+  if [[ -z "$gate_call_line" || -z "$sync_call_line" || -z "$audit_call_line" || -z "$download_call_line" || -z "$cargo_call_line" ]] \
+    || ! (( gate_call_line < sync_call_line && sync_call_line < audit_call_line \
+      && audit_call_line < download_call_line && download_call_line < cargo_call_line )); then
+    log "self-test FAIL: gate/sync/audit/download/Cargo actual-call order drifted"
+    fail=1
+  fi
+  # Delete the exact production audit invocation from a temporary worker and
+  # prove the self-test rejects that worker, catching deletion as well as
+  # simple command reordering.
+  audit_removed="$tmp/run-bark-without-audit.sh"
+  sed '/step "Audit the synchronized Python closure without model acquisition"/,+4d' "$script_path" > "$audit_removed"
+  chmod +x "$audit_removed"
+  if VOKRA_ROOT="$VOKRA_ROOT" "$audit_removed" --self-test >/dev/null 2>&1; then
+    log "self-test FAIL: deleting the production audit invocation was accepted"
+    fail=1
+  fi
   cases=$((cases + 1))
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test FAIL: direct Python/pip command found"; fail=1
@@ -185,6 +351,49 @@ run_self_test() {
   cases=$((cases + 1))
   if grep -En -- '^[[:space:]]*(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test FAIL: publishing command found"; fail=1
+  fi
+  test_log="$tmp/test.log"
+  printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nBark SMALL Cpu: frames=1, codes=exact, decode_max_abs=1.0e-9, decode_rmse=1.0e-9, end_to_end_max_abs=1.0e-9, end_to_end_rmse=1.0e-9\n' \
+    "$SMALL_TEST" > "$test_log"
+  if ! require_one_test_pass "$test_log" "$SMALL_TEST" 'Bark SMALL Cpu:'; then
+    log "self-test FAIL: valid singleton evidence rejected"; fail=1
+  fi
+  printf 'test %s ... ok\ntest %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nBark SMALL Cpu: frames=1, codes=exact, decode_max_abs=1.0e-9, decode_rmse=1.0e-9, end_to_end_max_abs=1.0e-9, end_to_end_rmse=1.0e-9\n' \
+    "$SMALL_TEST" "$SMALL_TEST" > "$test_log"
+  if require_one_test_pass "$test_log" "$SMALL_TEST" 'Bark SMALL Cpu:'; then
+    log "self-test FAIL: duplicate named test accepted"; fail=1
+  fi
+  printf 'test %s ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nBark SMALL Cpu: frames=1, codes=exact, decode_max_abs=1.0e-9, decode_rmse=1.0e-9, end_to_end_max_abs=1.0e-9, end_to_end_rmse=1.0e-9\n' \
+    "$SMALL_TEST" > "$test_log"
+  if require_one_test_pass "$test_log" "$SMALL_TEST" 'Bark SMALL Cpu:'; then
+    log "self-test FAIL: duplicate result accepted"; fail=1
+  fi
+
+  # A production-shaped invocation must stop in the dependency gate. The fake
+  # uv records calls and exits 2; reaching VAST probing/scratch would fail this
+  # assertion, proving ordering without network, sync, or Cargo.
+  fake_root="$tmp/root"
+  fake_home="$tmp/home"
+  fake_log="$tmp/fake-uv.log"
+  mkdir -p "$fake_root/tools/parity/bark" "$fake_home/.local/bin"
+  cp "$PARITY_PROJECT/license_gate.py" "$PARITY_PROJECT/license_gate_manifest.json" \
+    "$PARITY_PROJECT/uv.lock" "$PARITY_PROJECT/pyproject.toml" "$fake_root/tools/parity/bark/"
+  cat > "$fake_home/.local/bin/uv" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${BARK_SELF_TEST_UV_LOG:?}"
+exit 2
+EOF
+  chmod +x "$fake_home/.local/bin/uv"
+  printf '{"invalid":true}\n' > "$tmp/approval.json"
+  set +e
+  HOME="$fake_home" PATH="$fake_home/.local/bin:$PATH" \
+    BARK_SELF_TEST_UV_LOG="$fake_log" VOKRA_ROOT="$fake_root" \
+    VOKRA_SCRATCH="$tmp/scratch" "$script_path" \
+      --approval-evidence "$tmp/approval.json" --work-dir "$tmp/work" >"$tmp/worker.log" 2>&1
+  rc=$?
+  set -e
+  if [[ $rc -ne 2 || ! -s "$fake_log" || -e "$tmp/scratch" ]]; then
+    log "self-test FAIL: production gate did not block before host/scratch"; fail=1
   fi
 
   rm -rf "$tmp"
@@ -196,32 +405,52 @@ run_self_test() {
   return 1
 }
 
+write_failure_summary_on_exit() {
+  local rc=$?
+  if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then
+    printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"
+  fi
+  exit "$rc"
+}
+
 main() {
-  local self_test=0 requested_work_dir="" run_stamp work_dir inputs_dir logs_dir reference_dir
+  local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir inputs_dir logs_dir reference_dir
   local small_public small_upstream full_public full_upstream
-  local run_log env_log compile_log apple_log cli_log cpu_log summary_file
+  local run_log env_log compile_log apple_log cli_log dependency_audit_log small_cpu_log full_cpu_log summary_file
+  local seen_work_dir=0 seen_approval=0 seen_self_test=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
-        [[ $# -ge 2 && -n "$2" ]] || { die "--work-dir requires a directory"; return 2; }
+        (( seen_work_dir == 0 )) || die "duplicate --work-dir"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--work-dir requires a nonempty value"; return 2; }
+        seen_work_dir=1
         requested_work_dir="$2"; shift 2 ;;
-      --self-test) self_test=1; shift ;;
+      --approval-evidence)
+        (( seen_approval == 0 )) || die "duplicate --approval-evidence"
+        [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { die "--approval-evidence requires a nonempty value"; return 2; }
+        seen_approval=1
+        approval_evidence="$2"; shift 2 ;;
+      --self-test) (( seen_self_test == 0 )) || die "duplicate --self-test"; seen_self_test=1; self_test=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) die "unknown argument: $1"; usage; return 2 ;;
     esac
   done
   if [[ $self_test -eq 1 ]]; then
+    [[ $seen_approval -eq 0 && $seen_work_dir -eq 0 ]] || { die "--self-test accepts no other arguments"; return 2; }
     run_self_test
     return $?
   fi
+  [[ $seen_approval -eq 1 ]] || { usage; die "--approval-evidence is required"; return 2; }
 
-  require_vast_host
-  require_tooling
+  # This is deliberately the first substantive operation: unresolved package
+  # or model approval must stop before host probing, scratch creation, sync,
+  # downloads, compilation, or Cargo.
+  license_preflight "$approval_evidence"
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${requested_work_dir:-$VOKRA_SCRATCH/bark-validation/$run_stamp}"
-  if [[ -e "$work_dir" ]] && [[ -n "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-    die "--work-dir must be absent or empty: $work_dir"
-  fi
+  require_absent_work_dir "$work_dir" "$approval_evidence"
+  require_vast_host
+  require_tooling
   inputs_dir="$work_dir/inputs"
   logs_dir="$work_dir/logs"
   reference_dir="$work_dir/reference"
@@ -237,13 +466,20 @@ main() {
   compile_log="$logs_dir/compile.log"
   apple_log="$logs_dir/apple-cross-check.log"
   cli_log="$logs_dir/cli-route.log"
-  cpu_log="$logs_dir/cpu.log"
+  dependency_audit_log="$logs_dir/dependency-audit.log"
+  small_cpu_log="$logs_dir/small-cpu.log"
+  full_cpu_log="$logs_dir/full-cpu.log"
   summary_file="$logs_dir/summary.txt"
   exec > >(tee -a "$run_log") 2>&1
-  trap 'rc=$?; if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; exit "$rc"' EXIT
+  trap write_failure_summary_on_exit EXIT
 
   step "Sync locked Python 3.12 official-reference environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
+
+  step "Audit the synchronized Python closure without model acquisition"
+  UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 python "$DEPENDENCY_AUDIT" \
+    --project "$PARITY_PROJECT" \
+    --output "$logs_dir/dependency-audit.json" --fetch-model-licenses 2>&1 | tee "$dependency_audit_log"
 
   step "Download exact public and upstream Bark Small inputs"
   download_hf_file "$SMALL_PUBLIC_REPO" "$SMALL_PUBLIC_REVISION" model.gguf "$small_public"
@@ -279,6 +515,16 @@ main() {
     "$PARITY_PROJECT/dump_reference.py" --variant full \
     --model-dir "$full_upstream" --output "$reference_dir/full"
   cp "$reference_dir/full/manifest.json" "$logs_dir/reference-full-manifest.json"
+  {
+    printf '#!/usr/bin/env bash\nset -eu\n'
+    printf '%q ' scripts/verify/apple-silicon-bark.sh
+    printf '%q ' --small-gguf '<APPLE_BARK_SMALL_GGUF>' --small-reference '<APPLE_BARK_SMALL_REFERENCE>'
+    printf '%q ' --small-reference-manifest-sha256 "$(sha256_file "$reference_dir/small/manifest.json")"
+    printf '%q ' --full-gguf '<APPLE_BARK_FULL_GGUF>' --full-reference '<APPLE_BARK_FULL_REFERENCE>'
+    printf '%q ' --full-reference-manifest-sha256 "$(sha256_file "$reference_dir/full/manifest.json")"
+    printf '%q ' --approval-evidence '<APPLE_APPROVAL_EVIDENCE>'
+    printf '%q\n' --evidence-dir '<APPLE_EVIDENCE_DIR>'
+  } > "$logs_dir/apple-silicon-bark-args.sh"
 
   step "Compile all workspace targets on VAST"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
@@ -298,16 +544,18 @@ main() {
   step "Compare native CPU generation/codec with both official references"
   VOKRA_BARK_SMALL_GGUF="$small_public" \
   VOKRA_BARK_SMALL_PARITY_DIR="$reference_dir/small" \
+  VOKRA_BARK_BACKEND=cpu \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+      -p vokra-models --test parity_bark_real "$SMALL_TEST" \
+      -- --exact --nocapture --test-threads=1 2>&1 | tee "$small_cpu_log"
+  require_one_test_pass "$small_cpu_log" "$SMALL_TEST" 'Bark SMALL Cpu:'
   VOKRA_BARK_FULL_GGUF="$full_public" \
   VOKRA_BARK_FULL_PARITY_DIR="$reference_dir/full" \
   VOKRA_BARK_BACKEND=cpu \
     cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
-      -p vokra-models --test parity_bark_real -- --nocapture --test-threads=1 \
-      2>&1 | tee "$cpu_log"
-  grep -F "Bark SMALL Cpu:" "$cpu_log" >/dev/null \
-    || die "Bark Small CPU parity measurement sentinel missing"
-  grep -F "Bark FULL Cpu:" "$cpu_log" >/dev/null \
-    || die "Bark Full CPU parity measurement sentinel missing"
+      -p vokra-models --test parity_bark_real "$FULL_TEST" \
+      -- --exact --nocapture --test-threads=1 2>&1 | tee "$full_cpu_log"
+  require_one_test_pass "$full_cpu_log" "$FULL_TEST" 'Bark FULL Cpu:'
 
   {
     echo "execution_status=PASS"
@@ -325,6 +573,8 @@ main() {
     echo "transformers_source_revision=$TRANSFORMERS_REVISION"
     echo "small_reference_manifest_sha256=$(sha256_file "$reference_dir/small/manifest.json")"
     echo "full_reference_manifest_sha256=$(sha256_file "$reference_dir/full/manifest.json")"
+    echo "small_cpu_test=$SMALL_TEST"
+    echo "full_cpu_test=$FULL_TEST"
     echo "metal_runtime=REQUIRES_REMOTE_APPLE_SILICON"
   } | tee "$summary_file"
   trap - EXIT

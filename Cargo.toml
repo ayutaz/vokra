@@ -18,7 +18,7 @@ members = ["crates/*", "crates/vokra-bert", "crates/vokra-kws-micro", "tests/par
 exclude = ["integrations", "fuzz"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 # Proposal per M0-02-T01: edition 2024; to be pinned together with the CI
 # toolchain during the spike (verified locally with rustc 1.95.0).
 edition = "2024"
@@ -54,31 +54,31 @@ publish = false
 # version to resolve. All crates share the workspace version (Cargo.toml:21), so
 # the requirement tracks it. Adding these does NOT change Cargo.lock (path
 # resolution is unchanged — verified by the zero-dep tripwire).
-vokra-core = { path = "crates/vokra-core", version = "0.2.0" }
-vokra-ops = { path = "crates/vokra-ops", version = "0.2.0" }
-vokra-backend-cpu = { path = "crates/vokra-backend-cpu", version = "0.2.0" }
-vokra-backend-metal = { path = "crates/vokra-backend-metal", version = "0.2.0" }
-vokra-backend-cuda = { path = "crates/vokra-backend-cuda", version = "0.2.0" }
-vokra-backend-vulkan = { path = "crates/vokra-backend-vulkan", version = "0.2.0" }
-vokra-backend-webgpu = { path = "crates/vokra-backend-webgpu", version = "0.2.0" }
-vokra-backend-coreml = { path = "crates/vokra-backend-coreml", version = "0.2.0" }
-vokra-backend-qnn = { path = "crates/vokra-backend-qnn", version = "0.2.0" }
-vokra-models = { path = "crates/vokra-models", version = "0.2.0" }
-vokra-piper-plus = { path = "crates/vokra-piper-plus", version = "0.2.0" }
-vokra-capi = { path = "crates/vokra-capi", version = "0.2.0" }
-vokra-mmap = { path = "crates/vokra-mmap", version = "0.2.0" }
-vokra-convert = { path = "crates/vokra-convert", version = "0.2.0" }
+vokra-core = { path = "crates/vokra-core", version = "0.3.0" }
+vokra-ops = { path = "crates/vokra-ops", version = "0.3.0" }
+vokra-backend-cpu = { path = "crates/vokra-backend-cpu", version = "0.3.0" }
+vokra-backend-metal = { path = "crates/vokra-backend-metal", version = "0.3.0" }
+vokra-backend-cuda = { path = "crates/vokra-backend-cuda", version = "0.3.0" }
+vokra-backend-vulkan = { path = "crates/vokra-backend-vulkan", version = "0.3.0" }
+vokra-backend-webgpu = { path = "crates/vokra-backend-webgpu", version = "0.3.0" }
+vokra-backend-coreml = { path = "crates/vokra-backend-coreml", version = "0.3.0" }
+vokra-backend-qnn = { path = "crates/vokra-backend-qnn", version = "0.3.0" }
+vokra-models = { path = "crates/vokra-models", version = "0.3.0" }
+vokra-piper-plus = { path = "crates/vokra-piper-plus", version = "0.3.0" }
+vokra-capi = { path = "crates/vokra-capi", version = "0.3.0" }
+vokra-mmap = { path = "crates/vokra-mmap", version = "0.3.0" }
+vokra-convert = { path = "crates/vokra-convert", version = "0.3.0" }
 # M5-03 (案1): the no_std(+alloc) Silero VAD forward core. `vokra-models`
 # depends on it (default features) and re-exports it; the Cortex-M55 Tier-3
 # build uses it with `--no-default-features`. First-party `vokra-*` crate with
 # only a `vokra-core` dep, so the root Cargo.lock stays vokra-* only (NFR-DS-02).
-vokra-vad-micro = { path = "crates/vokra-vad-micro", version = "0.2.0" }
+vokra-vad-micro = { path = "crates/vokra-vad-micro", version = "0.3.0" }
 # SBV2 v2 Stage A/Task 23: the BERT-family encoder + SentencePiece tokenizer
 # `sbv2::SbV2Model` loads (both DeBERTa v2 JA and DeBERTa v3 EN, multilingual —
 # `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §6/§7). First-party
 # `vokra-*` crate with only a `vokra-core` + `vokra-mmap` dep, so the root
 # Cargo.lock stays vokra-* only (NFR-DS-02).
-vokra-bert = { path = "crates/vokra-bert", version = "0.2.0" }
+vokra-bert = { path = "crates/vokra-bert", version = "0.3.0" }
 # WP-07: the shared home for the scalar f32 transcendental primitives
 # (`exp`/`tanh`/`sqrt`/`sin`/`cos`/`log`/`log1p`) — extracted from
 # `crates/vokra-backend-cpu/src/kernels/scalar_transcendental.rs` so
@@ -88,7 +88,7 @@ vokra-bert = { path = "crates/vokra-bert", version = "0.2.0" }
 # — AVX-512, dotprod / i8mm, K-quants, thread pool — into every op crate).
 # Zero external deps (not even `vokra-core`): the whole crate is pure `core`
 # arithmetic, so the root Cargo.lock stays vokra-* only (NFR-DS-02).
-vokra-math = { path = "crates/vokra-math", version = "0.2.0" }
+vokra-math = { path = "crates/vokra-math", version = "0.3.0" }
 
 # Unsafe boundary policy (M0-02-T03; NFR-RL-07, SRS §5-(1)):
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +

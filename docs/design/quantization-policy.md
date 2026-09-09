@@ -1,8 +1,23 @@
 # 量子化ポリシー設計仕様書（Quantization Policy）
 
+> **2026-08-30 current implementation / supersession note:** The M2-08
+> design and scope recorded below are retained as history. The old statement
+> in §6 that UTMOS is `#[cfg(feature = "utmos")]` `NotImplemented` is no
+> longer current: `vokra-eval::check_degradation_with_utmos` now runs an
+> injected `AudioMosMetric` scorer over the reference and quantized audio and
+> returns `DegradationReport { mel_loss_only: false, .. }` when the scorer
+> succeeds. `check_degradation` remains the honest mel-only path when no scorer
+> or weight-backed metric is available. UTMOS/DNSMOS model weights and a
+> real-operation production gate still require separate authenticated weight,
+> provenance, numerical, and deployment evidence; this API capability alone
+> is not such evidence. The Vocos/BigVGAN/HiFi-GAN future list below is also
+> history-only: do not infer current kernel or model status from it. Consult
+> the current Rust code/API and `docs/m5-owner-verification-checklist.md` for
+> live routing and remaining gates.
+
 - **チケット**: M2-08-T15（WP 主成果物「quantization policy 設計 + CI 配線」）
 - **日付**: 2026-07-06（初版、M2-08-T15）
-- **正**: この文書は二次成果物。**SSOT はモジュール rustdoc**（`crates/vokra-core/src/quant/mod.rs`）およびキー定数（`crates/vokra-core/src/gguf/chunks.rs`）。乖離した場合はコードを修正して本書に合わせる。
+- **正**: この文書は M2-08 時点の二次成果物。設計時の参照元は**モジュール rustdoc**（`crates/vokra-core/src/quant/mod.rs`）およびキー定数（`crates/vokra-core/src/gguf/chunks.rs`）だが、歴史設計の文言を現行実装へ強制しない。現行の policy/API はコード、ABI changelog、fixtures を突合して判断し、意図的な schema/policy 変更は互換性手続きと証跡を経て反映する。
 - **要件トレース**: FR-QT-02（policy + resolve + `vokra.quant.*` chunk）／FR-QT-03（min-dtype registry、FR-OP-10/11/12/13 audit trail）／NFR-QL-01（FP16 atol=0.01）／NFR-QL-02（MEL loss 劣化 <5%）／NFR-DS-02（zero-dep）／FR-EX-08（silent fallback 禁止）。
 - **CI ゲート**（M2-08-T15、`.github/workflows/ci.yml` の `parity` job）:
   - `cargo test -p vokra-core --test quant_parity`（K-quant dequant → GEMM の F32 参照値との一致）
@@ -133,7 +148,14 @@ FR-OP-10/11/12/13 の kernel body が存在する前に**制約だけ**登録す
 
 ## 6. degradation ゲート（vokra-eval）
 
-`vokra-eval::degradation::check_degradation(reference, quantized, sample_rate, threshold)` は `MelLoss::new(sample_rate, 1024, 256, 80)` を内部構築し、`(quant - ref) / max(ref, ε)` を `threshold`（NFR-QL-02 = 0.05）と比較。UTMOS は `#[cfg(feature = "utmos")]` で `NotImplemented`（M1-09b の weight 未配信）。`DegradationReport { mel_loss_ref, mel_loss_quant, relative_delta, passes_5pct_gate, mel_loss_only }` の `mel_loss_only=true` は「UTMOS 未配線」を下流に伝える partial gate flag。
+`vokra-eval::degradation::check_degradation(reference, quantized, sample_rate, threshold)` は `MelLoss::new(sample_rate, 1024, 256, 80)` を内部構築し、`(quant - ref) / max(ref, ε)` を `threshold`（NFR-QL-02 = 0.05）と比較する、scorer なしの mel-only 経路である。`DegradationReport { mel_loss_ref, mel_loss_quant, relative_delta, passes_5pct_gate, mel_loss_only }` はこの経路では `mel_loss_only=true` となり、下流へ partial gate であることを明示する。
+
+`vokra-eval::degradation::check_degradation_with_utmos` は、呼び出し側から注入された `&dyn AudioMosMetric` を reference と quantized の双方へ適用する。scorer が成功すれば UTMOS assessment を含む `DegradationReport` を返し、`mel_loss_only=false` となる。MOS の判定は `MosDomain::TtsSynthesis` の in-distribution domain でのみ 5% gate に加わり、advisory-only domain ではスコアを報告するが mel gate を反転させない。UTMOS/DNSMOS の実運用 weight、provenance、数値 parity、deployment gate は別途証跡が必要であり、この注入 API の存在だけでは完了を意味しない。
+
+> **Historical M2-08 wording (2026-07-06):** The former statement that an
+> `#[cfg(feature = "utmos")]` branch was `NotImplemented` described the
+> weight-deferred state at that time; it is retained here only as history and
+> is superseded by the implementation above.
 
 HiFi-GAN INT8 opt-in（T12）:
 - opt-in + eval pass → 許可。

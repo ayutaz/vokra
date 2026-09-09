@@ -17,22 +17,13 @@
 //!
 //! The upstream repo (`huggingface.co/ResembleAI/chatterbox-nano`, fetched
 //! 2026-07-24) ships a `t3_nano_v1.yaml` config side-car whose T3 axes are
-//! **byte-parallel to Turbo** on every text / speech / prompt axis (same
-//! GPT-2 vocab, same 6563 speech vocab, same 402/604 low-latency limits,
-//! same 250-token speech-conditioning prompt, same 32 kHz S3Gen output
+//! **byte-parallel to Turbo** on every text / speech axis (same GPT-2 vocab,
+//! same 6563 speech vocab, same 2048/4096 limits, same 32 kHz S3Gen output
 //! rate) — **but the backbone family differs**:
 //!
-//! - **Backbone family**: **Llama_520M** (SwiGLU + RMSNorm + RoPE — the
-//!   same Llama-style backbone base Chatterbox uses), NOT the
-//!   `gpt2-medium` LayerNorm-with-bias / fused-QKV-with-bias / GELU FFN
-//!   backbone Turbo uses. The `t3_nano_v1.yaml` field
-//!   `llama_config_name: Llama_520M` is authoritative; the sibling
-//!   `gpt_transformer_type: gpt2` field is a training-side legacy flag
-//!   inherited from the base training config (base Chatterbox's yaml
-//!   ships it too, and `llama_config_name` takes precedence when set —
-//!   see `src/chatterbox/models/t3/llama_configs.py::LLAMA_520M_CONFIG_DICT`
-//!   for the axes). The layer / head / hidden shape stays at
-//!   (30, 16, 1024).
+//! - **Backbone family**: effective inference uses GPT-2-small: 12 layers ×
+//!   12 heads × 768 hidden, context/positions 8196. The YAML sidecar is a
+//!   stale training record and is not authoritative for runtime binding.
 //! - **Sample rate**: `32_000` Hz — same as Turbo, distinct from base
 //!   Chatterbox's 24 kHz.
 //! - **Text-token vocabulary**: 50 276 — same as Turbo (GPT-2 base
@@ -41,13 +32,9 @@
 //!   `bos/eos/pad/unk = <|endoftext|>` (all mapped to GPT-2 token id
 //!   50 256).
 //! - **Speech-token vocabulary**: 6563 — same as Turbo (distilled).
-//! - **Max text / speech tokens**: 402 / 604 — same as Turbo, matching
-//!   the low-latency serving profile.
-//! - **Stop-text token**: **50 256** (GPT-2 `<|endoftext|>`) — this is
-//!   **distinct** from both Turbo (`0`) and base Chatterbox (`0`).
-//!   Nano is the only member of the family whose T3 stop-text sentinel
-//!   is the GPT-2 EOT id rather than the T3 special-token slot 0. The
-//!   `stop_speech_token` stays at 6562 like every sibling.
+//! - **Max text / speech tokens**: effective inference uses 2048 / 4096.
+//! - **Stop-text token**: effective inference uses slot `0`; the stale
+//!   YAML's legacy sentinel is not authoritative.
 //! - **Paralinguistic tags** (`added_tokens.json`): `[angry]` /
 //!   `[fear]` / `[surprised]` / `[whispering]` / `[advertisement]` /
 //!   `[dramatic]` / `[narration]` / `[crying]` / `[happy]` /
@@ -57,16 +44,9 @@
 //!
 //! ## The 110M-parameter claim
 //!
-//! The upstream README calls Nano a "110M parameter architecture". A
-//! straightforward parameter count of the Llama_520M backbone under the
-//! declared 30 × 16 × 1024 shape adds up to well over 110M, so the
-//! marketing figure likely counts the **non-embedding** compute-path
-//! parameters (backbone + LoRA / distilled adapter path) rather than the
-//! full model including the 50 276 × 1024 text-embedding matrix. The
-//! Rust scaffold below transcribes the shapes verbatim from
-//! `t3_nano_v1.yaml`; the 110M figure is NOT used as a shape gate (the
-//! yaml axes are the primary source, per CLAUDE.md
-//! 「ハルシネーション厳禁」).
+//! The upstream README calls Nano a "110M parameter architecture". That
+//! marketing figure is not used as a shape gate. The effective inference
+//! axes above are recorded independently from the stale YAML.
 //!
 //! ## License and files
 //!
@@ -87,8 +67,8 @@
 //! # What lands in this Phase 3 slice
 //!
 //! - [`ChatterboxNanoConfig`] — every architectural hparam
-//!   **transcribed verbatim** from the primary source
-//!   (`t3_nano_v1.yaml` — Resemble AI, fetched 2026-07-24) plus the
+//!   recorded from the effective upstream inference source (the YAML is a
+//!   stale training record) plus the
 //!   fixed vocoder sample rate and predicates that pin the axes
 //!   distinguishing Nano from base + Turbo
 //!   ([`ChatterboxNanoConfig::is_nano_low_latency`],
@@ -100,7 +80,7 @@
 //! - [`ChatterboxNanoTts`] — engine handle carrying config plus weights
 //!   plus an optional [`HiFTChain`]. [`ChatterboxNanoTts::synthesize`]
 //!   returns [`VokraError::NotImplemented`] until real weights are
-//!   bound and the Llama_520M ⇒ distilled 1-step mel decoder ⇒
+//!   bound and the GPT-2-small ⇒ distilled 1-step mel decoder ⇒
 //!   S3Gen HiFT-GAN chain is wired end-to-end (T29-equivalent
 //!   follow-up wave).
 //!
@@ -116,6 +96,11 @@ use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
+pub use crate::chatterbox_family::{
+    ChatterboxVariant, CompositeBinderEvidence, GenerationTopology, Gpt2T3Contract, Gpt2Tokenizer,
+    RandomDraws, SOURCE_REVISION, SOURCE_URL, SamplingConfig, T3Architecture, apply_processors,
+    generation_topology, processor_order, punc_norm_gpt2, remove_terminal_eos, sample_with_draw,
+};
 pub use bound::{ChatterboxNanoCheckpoint, ChatterboxNanoSpeakerProjection};
 
 // ---------------------------------------------------------------------------
@@ -136,7 +121,7 @@ pub use crate::cosyvoice2::{HiFTChain, HiFTChainConfig, HiFTChainWeights};
 /// **distinct** from base Chatterbox's `"chatterbox"` and Turbo's
 /// `"chatterbox_turbo"` so the runtime can label the loaded model
 /// correctly in telemetry / logs / model cards (Nano keeps base's
-/// Llama_520M backbone but swaps sample rate + text vocab + stop-text
+/// GPT-2-small backbone but swaps sample rate + text vocab + stop-text
 /// token, so silently sharing either sibling's arch tag would
 /// misrepresent the loaded model). The compliance registry
 /// (`vokra_core::compliance`) knows every `chatterbox-nano*` spelling
@@ -165,15 +150,13 @@ pub const PARALINGUISTIC_TAG_COUNT: u32 = 19;
 
 /// Chatterbox-Nano T3 architectural hparams.
 ///
-/// Every field is transcribed **verbatim** from the primary source
-/// (`t3_nano_v1.yaml` at `huggingface.co/ResembleAI/chatterbox-nano`,
-/// fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). The
+/// Effective inference values are recorded from the upstream implementation;
+/// `t3_nano_v1.yaml` is retained as a stale training record only. The
 /// [`ChatterboxNanoConfig::chatterbox_nano_v1`] constructor is the
-/// canonical Nano config.
+/// canonical effective Nano config.
 ///
-/// The backbone is **Llama_520M** (SwiGLU + RMSNorm + RoPE — the same
-/// backbone family base Chatterbox uses), NOT gpt2-medium like Turbo.
-/// See the module docstring for the primary-source rationale.
+/// Effective inference uses GPT-2-small (12 layers, 12 heads, hidden 768).
+/// The YAML sidecar is a stale training record and is not runtime authority.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatterboxNanoConfig {
     /// Output PCM sample rate, Hz. Fixed at 32 kHz by the Nano S3Gen
@@ -188,12 +171,11 @@ pub struct ChatterboxNanoConfig {
     /// than base Chatterbox's 8194 (distilled, same size as Turbo).
     pub speech_vocab_size: u32,
     /// Max text-token positions the backbone can attend over
-    /// (`t3_nano_v1.yaml::max_text_tokens`). `402` — much shorter than
-    /// base's 2048, matching Turbo's low-latency serving profile.
+    /// Effective inference max text-token positions. `2048`; stale YAML
+    /// low-latency values are not authoritative.
     pub max_text_tokens: u32,
     /// Max speech-token positions the backbone can attend over
-    /// (`t3_nano_v1.yaml::max_speech_tokens`). `604` — much shorter
-    /// than base's 4096, matching Turbo.
+    /// Effective inference max speech-token positions. `4096`.
     pub max_speech_tokens: u32,
     /// Speaker-embedding dimension (`t3_nano_v1.yaml::speaker_embed_size`).
     /// `256`.
@@ -202,41 +184,22 @@ pub struct ChatterboxNanoConfig {
     /// `768`. Used by the voice-encoder branch feeding the speaker
     /// embedding.
     pub ve_hidden_size: u32,
-    /// Llama_520M backbone hidden dimension
-    /// (`t3_nano_v1.yaml::legacy_gpt_hidden_size` == `n_gpt_channels` ==
-    /// `LLAMA_520M_CONFIG_DICT.hidden_size`). `1024`.
+    /// Effective GPT-2-small backbone hidden dimension. `768`.
     pub hidden_dim: u32,
-    /// Llama_520M backbone transformer block count
-    /// (`t3_nano_v1.yaml::n_transformer_layers` ==
-    /// `LLAMA_520M_CONFIG_DICT.num_hidden_layers`). `30`.
+    /// Effective GPT-2-small transformer block count. `12`.
     pub n_layer: u32,
-    /// Llama_520M backbone attention head count
-    /// (`t3_nano_v1.yaml::n_transformer_heads` ==
-    /// `LLAMA_520M_CONFIG_DICT.num_attention_heads`). `16` — Llama_520M
-    /// is MHA (`num_key_value_heads == num_attention_heads`), so
-    /// `n_head_kv == n_head`.
+    /// Effective GPT-2-small attention head count. `12`.
     pub n_head: u32,
-    /// Llama_520M backbone KV-heads
-    /// (`LLAMA_520M_CONFIG_DICT.num_key_value_heads`). `16` — equal to
-    /// `n_head` (MHA, no GQA broadcast performed).
+    /// Effective GPT-2-small KV-heads. `12` (MHA).
     pub n_head_kv: u32,
-    /// Llama_520M backbone attention head dimension.
-    /// Derived: `hidden_dim / n_head = 1024 / 16 = 64`
-    /// (`LLAMA_520M_CONFIG_DICT.head_dim`).
+    /// Effective GPT-2-small attention head dimension, `768 / 12 = 64`.
     pub head_dim: u32,
-    /// Llama_520M SwiGLU FFN inner dimension
-    /// (`LLAMA_520M_CONFIG_DICT.intermediate_size`). `4096` — the Llama
-    /// backbone uses SwiGLU, so the ratio is not the fixed 4× of a
-    /// vanilla FFN, but for Llama_520M the value happens to be 4×
-    /// hidden = 4096.
+    /// Effective GPT-2-small FFN inner dimension. `3072`.
     pub ffn_dim: u32,
-    /// RoPE base θ (`LLAMA_520M_CONFIG_DICT.rope_theta`). `500_000.0`
-    /// — same as base Chatterbox, distinct from Turbo (which uses GPT-2
-    /// learned positional embeddings, no RoPE).
+    /// Deprecated compatibility field. GPT-2 uses learned `wpe` positions;
+    /// native T3 never reads a RoPE base.
     pub rope_base: f32,
-    /// RMSNorm epsilon (`LLAMA_520M_CONFIG_DICT.rms_norm_eps`). `1e-5`
-    /// — same as base Chatterbox, distinct from Turbo (which uses
-    /// LayerNorm with bias, not RMSNorm).
+    /// Deprecated compatibility field. Native T3 uses GPT-2 LayerNorm.
     pub rms_norm_eps: f32,
     /// STFT hop size (`t3_nano_v1.yaml::hop_size`). `320` samples
     /// (10 ms at 32 kHz — same as Turbo).
@@ -246,8 +209,7 @@ pub struct ChatterboxNanoConfig {
     /// Number of mel bins (`t3_nano_v1.yaml::num_mels`). `256`.
     pub num_mels: u32,
     /// Length of the speech-conditioning prompt in tokens
-    /// (`t3_nano_v1.yaml::speech_cond_prompt_len`). `250` — same as
-    /// Turbo, longer than base's 150.
+    /// Effective inference speech-conditioning prompt length. `375`.
     pub speech_cond_prompt_len: u32,
     /// Number of native paralinguistic tags in `added_tokens.json`.
     /// `19` — same set as Turbo.
@@ -255,11 +217,8 @@ pub struct ChatterboxNanoConfig {
     /// Start-of-text token id (`t3_nano_v1.yaml::start_text_token`).
     /// `255` — same as Turbo + base.
     pub start_text_token: u32,
-    /// End-of-text token id (`t3_nano_v1.yaml::stop_text_token`).
-    /// **`50256`** — this is Nano's distinguishing sentinel: it is the
-    /// GPT-2 `<|endoftext|>` token id, NOT the T3 slot `0` Turbo + base
-    /// use. Nano's tokenizer_config.json sets bos/eos/pad/unk all to
-    /// `<|endoftext|>`.
+    /// Effective inference end-of-text token id. `0`; the stale YAML
+    /// sentinel is not authoritative.
     pub stop_text_token: u32,
     /// Start-of-speech token id (`t3_nano_v1.yaml::start_speech_token`).
     /// `6561` — same as Turbo.
@@ -273,34 +232,33 @@ impl ChatterboxNanoConfig {
     /// Canonical Chatterbox-Nano T3 config
     /// (`ResembleAI/chatterbox-nano`, `t3_nano_v1.safetensors`).
     ///
-    /// Every value is transcribed verbatim from the primary source
-    /// `t3_nano_v1.yaml` (fetched 2026-07-24 — CLAUDE.md
-    /// 「ハルシネーション厳禁」).
+    /// Effective inference values are recorded from the upstream implementation;
+    /// the YAML sidecar is not runtime authority.
     #[must_use]
     pub fn chatterbox_nano_v1() -> Self {
         Self {
             sample_rate: CHATTERBOX_NANO_SAMPLE_RATE,
             text_vocab_size: TEXT_VOCAB_NANO,
             speech_vocab_size: 6563,
-            max_text_tokens: 402,
-            max_speech_tokens: 604,
+            max_text_tokens: 2048,
+            max_speech_tokens: 4096,
             speaker_embed_size: 256,
             ve_hidden_size: 768,
-            hidden_dim: 1024,
-            n_layer: 30,
-            n_head: 16,
-            n_head_kv: 16,
+            hidden_dim: 768,
+            n_layer: 12,
+            n_head: 12,
+            n_head_kv: 12,
             head_dim: 64,
-            ffn_dim: 4096,
+            ffn_dim: 3072,
             rope_base: 500_000.0,
             rms_norm_eps: 1e-5,
             hop_size: 320,
             win_size: 2048,
             num_mels: 256,
-            speech_cond_prompt_len: 250,
+            speech_cond_prompt_len: 375,
             paralinguistic_tag_count: PARALINGUISTIC_TAG_COUNT,
             start_text_token: 255,
-            stop_text_token: 50_256,
+            stop_text_token: 0,
             start_speech_token: 6561,
             stop_speech_token: 6562,
         }
@@ -356,13 +314,10 @@ impl ChatterboxNanoConfig {
 
     /// True iff the config carries Nano's low-latency (short-context)
     /// serving profile: GPT-2 text vocabulary (50 276) AND the
-    /// 402/604 short text/speech context (distinguishing the Nano +
-    /// Turbo family from base Chatterbox's 2048/4096 long-context
-    /// profile). A future Nano-v2 that widens the context should trip
-    /// this predicate to `false` and the runtime can then re-route.
+    /// 2048/4096 effective text/speech context used by Nano and Turbo.
     #[must_use]
     pub fn is_nano_low_latency(&self) -> bool {
-        self.has_gpt2_text_vocab() && self.max_text_tokens == 402 && self.max_speech_tokens == 604
+        self.has_gpt2_text_vocab() && self.max_text_tokens == 2048 && self.max_speech_tokens == 4096
     }
 
     /// True iff the config declares native paralinguistic tag support
@@ -390,10 +345,9 @@ impl ChatterboxNanoConfig {
     /// runs (FR-EX-08 — a shape-only converter path fails loudly here,
     /// not deep inside a GEMM).
     ///
-    /// Enforces the Llama_520M backbone cross-checks
-    /// (`hidden_dim == n_head * head_dim`, `n_head % n_head_kv == 0`,
-    /// even `head_dim` for RoPE pairs, positive finite RoPE base and
-    /// RMSNorm eps) plus positivity on every axis.
+    /// Enforces the GPT-2-small backbone cross-checks
+    /// (`hidden_dim == n_head * head_dim`, `n_head % n_head_kv == 0`) plus
+    /// positivity on every active axis. Nano has no RoPE/RMSNorm path.
     ///
     /// # Errors
     ///
@@ -423,9 +377,8 @@ impl ChatterboxNanoConfig {
                     .to_owned(),
             ));
         }
-        // Llama_520M backbone algebra: hidden_dim = n_head * head_dim (MHA)
-        // and n_head must be a whole multiple of n_head_kv (Llama_520M
-        // sets them equal — MHA, no GQA broadcast).
+        // GPT-2-small algebra: hidden_dim = n_head * head_dim (MHA) and
+        // n_head must be a whole multiple of n_head_kv.
         if self.hidden_dim != self.n_head * self.head_dim {
             return Err(VokraError::InvalidArgument(format!(
                 "chatterbox_nano config: hidden_dim ({}) must equal n_head ({}) * head_dim ({}) \
@@ -443,30 +396,9 @@ impl ChatterboxNanoConfig {
                 self.n_head_kv, self.n_head,
             )));
         }
-        // RoPE requires even head_dim (pairs).
-        if self.head_dim % 2 != 0 {
-            return Err(VokraError::InvalidArgument(format!(
-                "chatterbox_nano config: RoPE requires even head_dim (got {})",
-                self.head_dim,
-            )));
-        }
-        if !(self.rope_base.is_finite() && self.rope_base > 0.0) {
-            return Err(VokraError::InvalidArgument(format!(
-                "chatterbox_nano config: rope_base must be a positive finite f32 (got {})",
-                self.rope_base,
-            )));
-        }
-        if !(self.rms_norm_eps.is_finite() && self.rms_norm_eps > 0.0) {
-            return Err(VokraError::InvalidArgument(format!(
-                "chatterbox_nano config: rms_norm_eps must be a positive finite f32 (got {})",
-                self.rms_norm_eps,
-            )));
-        }
         // Speech / text stop tokens must be inside the corresponding
-        // vocabulary. Nano's `stop_text_token = 50256` is inside the
-        // 50 276 vocab (leaves indices 50257..50275 for the 19
-        // paralinguistic tags); a placeholder / mis-transcribed config
-        // must NOT slip through.
+        // vocabulary. The effective stop-text slot is 0; a stale YAML
+        // sentinel must not slip through.
         if self.stop_text_token >= self.text_vocab_size {
             return Err(VokraError::InvalidArgument(format!(
                 "chatterbox_nano config: stop_text_token ({}) must be < text_vocab_size ({})",
@@ -494,19 +426,20 @@ impl ChatterboxNanoConfig {
 // Weights (scaffold — real binding delegates to a follow-up wave)
 // ---------------------------------------------------------------------------
 
-/// Chatterbox-Nano Llama_520M weight store scaffold.
+/// Deprecated shape-only compatibility weight store.
 ///
 /// Carries the text-embedding + speech-embedding + speaker-embedding
-/// projection + voice-encoder projection + Llama_520M backbone stack.
+/// projection + voice-encoder projection. This compatibility fixture is not
+/// the production GPT-2 checkpoint and is never selected by a loader.
 /// [`Self::synthesized`] builds a deterministic fixture (SplitMix64 +
 /// Xavier) against `config` so shape / dtype / size can be exercised
 /// without the real HF checkpoint. Real-checkpoint binding is a
 /// follow-up (T29-equivalent, the CosyVoice2 / CSM / base Chatterbox
 /// pattern).
 ///
-/// The Llama_520M backbone sets `attention_bias = false` and
-/// `mlp_bias = false`, so no bias tensors are carried (distinct from
-/// Turbo, which uses GPT-2's LayerNorm-with-bias + fused-QKV-with-bias).
+/// This fixture is deliberately **not** topology-compatible with the
+/// authenticated effective GPT-2-small checkpoint. It exists only for local
+/// shape/container tests; no native Nano forward is implied.
 #[derive(Debug, Clone)]
 pub struct ChatterboxNanoWeights {
     /// Text-token embedding: `[text_vocab_size, hidden_dim]`.
@@ -524,18 +457,18 @@ pub struct ChatterboxNanoWeights {
     pub voice_encoder_proj: Vec<f32>,
     /// Per-layer transformer block scaffolds. Length = `n_layer`.
     pub blocks: Vec<ChatterboxNanoBlockWeights>,
-    /// Final RMSNorm γ, shape `[hidden_dim]` (Llama uses RMSNorm, not
-    /// LayerNorm — no bias).
+    /// Compatibility norm γ; the effective GPT-2 LayerNorm is not represented
+    /// in this deprecated fixture.
     pub final_norm: Vec<f32>,
     /// `true` when built by [`Self::synthesized`] — never a real
     /// upstream checkpoint.
     pub is_synthesized: bool,
 }
 
-/// Per-transformer-block weights (MHA self-attention + SwiGLU FFN, the
-/// Llama_520M block topology).
+/// Deprecated compatibility block weights (MHA + SwiGLU).
 ///
-/// Llama differs from GPT-2 in three material ways:
+/// This fixture differs from the authenticated GPT-2 checkpoint in three
+/// material ways and is retained only for old shape tests:
 /// * RMSNorm (no bias) instead of LayerNorm (with bias);
 /// * Separate Q / K / V projections without bias (GPT-2 packs QKV into
 ///   one `c_attn` with bias);
@@ -643,7 +576,7 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// [`HiFTChain`] terminal vocoder (SoTA plan §1(a) 訂正 seam shared
 /// with CosyVoice2 / CosyVoice3 / base Chatterbox / Chatterbox-Turbo).
 /// [`Self::synthesize`] is the primary text → PCM entry point; until
-/// real weights are bound and the Llama_520M ⇒ distilled 1-step mel
+/// real weights are bound and the GPT-2-small ⇒ distilled 1-step mel
 /// decoder ⇒ S3Gen HiFT-GAN chain is wired end-to-end (T29-equivalent
 /// follow-up wave), it returns [`VokraError::NotImplemented`] with a
 /// message naming the blocker (FR-EX-08 — never a silent zero-fill or
@@ -739,7 +672,7 @@ impl ChatterboxNanoTts {
 
     /// True iff the underlying config identifies as the Nano
     /// low-latency profile (`text_vocab_size == 50_276` AND the
-    /// 402/604 short context).
+    /// 2048/4096 effective context).
     #[must_use]
     pub fn is_nano_low_latency(&self) -> bool {
         self.cfg.is_nano_low_latency()
@@ -754,7 +687,7 @@ impl ChatterboxNanoTts {
     /// [`ChatterboxNanoTts::new`] +
     /// [`ChatterboxNanoWeights::synthesized`] today; a follow-up wave
     /// binds real Chatterbox-Nano weights and wires the forward
-    /// (Llama_520M → distilled 1-step mel decoder → S3Gen HiFT-GAN
+    /// (GPT-2-small → distilled 1-step mel decoder → S3Gen HiFT-GAN
     /// → PCM).
     ///
     /// # Errors
@@ -788,20 +721,18 @@ impl ChatterboxNanoTts {
                  The shape flow (config validation, weight-store construction, text-empty \
                  check) is exercised through ChatterboxNanoTts::new; real-checkpoint \
                  binding lands in a follow-up wave (T29-equivalent) that wires the \
-                 Llama_520M backbone → distilled 1-step mel decoder → S3Gen HiFT-GAN \
+                 GPT-2-small backbone → distilled 1-step mel decoder → S3Gen HiFT-GAN \
                  chain.",
             ));
         }
         Err(VokraError::NotImplemented(
-            "chatterbox_nano synthesize: real weights are bound but the Llama_520M \
+            "chatterbox_nano synthesize: real weights are bound but the GPT-2-small \
              backbone → speech-token AR sampling → distilled 1-step mel decoder → S3Gen \
              HiFT-GAN vocoder forward path has not landed yet. Follow-up wave: wire the \
-             shared Llama primitives (RoPE θ=500000 / RMSNorm ε=1e-5 / SwiGLU / MHA — \
-             n_head == n_head_kv — same op set as base Chatterbox / CosyVoice2 / \
-             CosyVoice3, distinct from Turbo's GPT-2 primitives) and feed the sampled \
-             speech tokens through the distilled 1-step S3Gen chain to the HiFTChain \
-             seam. No new op or backend kernel is added by Chatterbox-Nano — the entire \
-             op inventory is shared with base Chatterbox.",
+             checkpoint-specific GPT-2-small primitives and feed sampled speech tokens \
+             through the distilled 1-step S3Gen chain to the HiFTChain seam. This \
+             follow-up requires authenticated tensor binding and independent parity; \
+             the legacy synthesized scaffold above is not used for it.",
         ))
     }
 }
@@ -852,7 +783,7 @@ mod tests {
 
     #[test]
     fn arch_is_distinct_from_base_and_turbo() {
-        // Nano keeps base's Llama_520M backbone family but swaps sample
+        // Nano uses GPT-2-small and swaps sample
         // rate + text vocab + stop-text sentinel; silently sharing base's
         // or Turbo's arch tag would misrepresent the loaded model in
         // telemetry / logs / model cards.
@@ -909,34 +840,32 @@ mod tests {
         assert_eq!(PARALINGUISTIC_TAG_COUNT, 19);
     }
 
-    /// Every architectural axis carries its primary-source value verbatim,
-    /// and the Nano low-latency predicate fires.
+    /// Effective architectural axes are stable and the Nano predicate fires.
     #[test]
     fn nano_v1_config_matches_primary_source() {
         let c = ChatterboxNanoConfig::chatterbox_nano_v1();
         assert_eq!(c.sample_rate, 32_000);
         assert_eq!(c.text_vocab_size, 50_276);
         assert_eq!(c.speech_vocab_size, 6_563);
-        assert_eq!(c.max_text_tokens, 402);
-        assert_eq!(c.max_speech_tokens, 604);
+        assert_eq!(c.max_text_tokens, 2048);
+        assert_eq!(c.max_speech_tokens, 4096);
         assert_eq!(c.speaker_embed_size, 256);
         assert_eq!(c.ve_hidden_size, 768);
-        assert_eq!(c.hidden_dim, 1024);
-        assert_eq!(c.n_layer, 30);
-        assert_eq!(c.n_head, 16);
-        assert_eq!(c.n_head_kv, 16);
+        assert_eq!(c.hidden_dim, 768);
+        assert_eq!(c.n_layer, 12);
+        assert_eq!(c.n_head, 12);
+        assert_eq!(c.n_head_kv, 12);
         assert_eq!(c.head_dim, 64);
-        assert_eq!(c.ffn_dim, 4096);
+        assert_eq!(c.ffn_dim, 3072);
         assert!((c.rope_base - 500_000.0).abs() < 1e-3);
         assert!((c.rms_norm_eps - 1e-5).abs() < 1e-10);
         assert_eq!(c.hop_size, 320);
         assert_eq!(c.win_size, 2048);
         assert_eq!(c.num_mels, 256);
-        assert_eq!(c.speech_cond_prompt_len, 250);
+        assert_eq!(c.speech_cond_prompt_len, 375);
         assert_eq!(c.paralinguistic_tag_count, 19);
         assert_eq!(c.start_text_token, 255);
-        // Nano's DISTINGUISHING sentinel — the GPT-2 EOT token id.
-        assert_eq!(c.stop_text_token, 50_256);
+        assert_eq!(c.stop_text_token, 0);
         assert_eq!(c.start_speech_token, 6561);
         assert_eq!(c.stop_speech_token, 6562);
         assert!(c.has_gpt2_text_vocab());
@@ -949,17 +878,14 @@ mod tests {
         assert_eq!(c.hidden_dim, c.n_head * c.head_dim);
     }
 
-    /// Nano's `stop_text_token = 50256` is the primary-source
-    /// distinguishing sentinel; base + Turbo both use 0. A regression
-    /// where any of the three converge would silently misroute the
-    /// termination check.
+    /// Effective Nano, base, and Turbo use T3 stop-text slot 0.
     #[test]
     fn stop_text_token_is_gpt2_eot_and_distinct_from_siblings() {
         let c = ChatterboxNanoConfig::chatterbox_nano_v1();
-        assert_eq!(c.stop_text_token, 50_256, "GPT-2 <|endoftext|> token id");
-        // Turbo's stop_text_token is 0.
+        assert_eq!(c.stop_text_token, 0, "effective GPT-2 T3 stop token id");
+        // Turbo's stop_text_token is also 0.
         let turbo = crate::chatterbox_turbo::ChatterboxTurboConfig::chatterbox_turbo_v1();
-        assert_ne!(c.stop_text_token, turbo.stop_text_token);
+        assert_eq!(c.stop_text_token, turbo.stop_text_token);
     }
 
     #[test]
@@ -1078,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn config_rejects_odd_head_dim() {
+    fn config_accepts_odd_head_dim_without_rope_path() {
         let mut c = ChatterboxNanoConfig::tiny_for_tests();
         // MHA — keep n_head_kv == n_head so the n_head_kv-divides-n_head
         // gate stays satisfied and the odd-head_dim gate is the one that
@@ -1087,52 +1013,36 @@ mod tests {
         c.n_head_kv = 1;
         c.head_dim = 15; // odd
         c.hidden_dim = 15;
-        let err = c.validate_for_forward().expect_err("odd head_dim fails");
-        match err {
-            VokraError::InvalidArgument(msg) => {
-                assert!(msg.contains("head_dim"), "message: {msg}");
-                assert!(msg.contains("RoPE"), "message: {msg}");
-            }
-            other => panic!("unexpected variant: {other:?}"),
-        }
+        c.validate_for_forward()
+            .expect("GPT-2 has no RoPE head-dim gate");
     }
 
     #[test]
-    fn config_rejects_non_finite_rope_base() {
+    fn deprecated_rope_base_is_not_consumed() {
         let mut c = ChatterboxNanoConfig::tiny_for_tests();
         c.rope_base = f32::NAN;
-        assert!(matches!(
-            c.validate_for_forward(),
-            Err(VokraError::InvalidArgument(_))
-        ));
+        c.validate_for_forward()
+            .expect("deprecated field is ignored");
         let mut c = ChatterboxNanoConfig::tiny_for_tests();
         c.rope_base = 0.0;
-        assert!(matches!(
-            c.validate_for_forward(),
-            Err(VokraError::InvalidArgument(_))
-        ));
+        c.validate_for_forward()
+            .expect("deprecated field is ignored");
         let mut c = ChatterboxNanoConfig::tiny_for_tests();
         c.rope_base = -1.0;
-        assert!(matches!(
-            c.validate_for_forward(),
-            Err(VokraError::InvalidArgument(_))
-        ));
+        c.validate_for_forward()
+            .expect("deprecated field is ignored");
     }
 
     #[test]
-    fn config_rejects_non_finite_rms_norm_eps() {
+    fn deprecated_rms_norm_eps_is_not_consumed() {
         let mut c = ChatterboxNanoConfig::tiny_for_tests();
         c.rms_norm_eps = f32::INFINITY;
-        assert!(matches!(
-            c.validate_for_forward(),
-            Err(VokraError::InvalidArgument(_))
-        ));
+        c.validate_for_forward()
+            .expect("deprecated field is ignored");
         let mut c = ChatterboxNanoConfig::tiny_for_tests();
         c.rms_norm_eps = 0.0;
-        assert!(matches!(
-            c.validate_for_forward(),
-            Err(VokraError::InvalidArgument(_))
-        ));
+        c.validate_for_forward()
+            .expect("deprecated field is ignored");
     }
 
     #[test]
@@ -1152,17 +1062,14 @@ mod tests {
         assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
 
-    /// The canonical Nano config's `stop_text_token = 50256` is
-    /// **inside** the 50 276 vocab — validate_for_forward MUST accept
-    /// the real primary-source axes without any adjustment. A
-    /// regression that off-by-one'd the vocab bound would silently
-    /// fail the real config.
+    /// The canonical Nano config's effective stop-text slot is inside the
+    /// 50 276 vocabulary and validates without adjustment.
     #[test]
     fn canonical_config_stop_text_token_is_inside_vocabulary() {
         let c = ChatterboxNanoConfig::chatterbox_nano_v1();
         assert!(c.stop_text_token < c.text_vocab_size);
         c.validate_for_forward()
-            .expect("real Nano config must accept 50256 stop token");
+            .expect("real Nano config must accept effective stop token");
     }
 
     #[test]

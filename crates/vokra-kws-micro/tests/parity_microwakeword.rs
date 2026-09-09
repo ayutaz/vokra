@@ -20,32 +20,36 @@
 //!   `VOKRA_OPENWAKEWORD_REAL_GGUF` sibling precedent.
 //! * `VOKRA_KWS_REAL_FIXTURES` — path to the directory of reference
 //!   dumps emitted by `tools/parity/microwakeword/dump_reference.py`
-//!   (`input_pcm.bin` + `features_ref.bin` + `output_ref.bin` +
-//!   `manifest.json`). Owner triggers the dumper on the same source
+//!   (`input_pcm.bin` + `features_ref.bin` + per-invocation input/output
+//!   files + `manifest.json`). Owner triggers the dumper on the same source
 //!   `.tflite` the GGUF was converted from.
 //!
 //! # Fixture recipe (owner-side)
 //!
 //! ```text
-//! # 1. Fetch upstream `.tflite` and convert to Vokra GGUF
-//! #    (already documented in `tools/parity/microwakeword/README.md`):
-//! cd tools/parity/microwakeword
-//! uv sync
-//! uv run python prepare_checkpoint.py \
-//!     --url    https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_jarvis.tflite \
-//!     --name   hey_jarvis \
-//!     --output ~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.gguf
+//! # 0. On VAST, complete the isolated dependency/native-license audit.
+//! #    The current result is BLOCKED_PENDING_VAST_EVIDENCE; do not proceed
+//! #    until inspect.py reports fixture_generation_permitted=true.
+//! cd tools/parity/microwakeword-reference
+//! uv run --no-project --offline --python 3.12 python inspect.py
 //!
-//! # 2. Run the reference dumper (owner walkthrough — the DL from step 1
+//! # 1. Use the fixed candidate paths materialized by the VAST validation
+//! #    worker (regular files outside the checkout). Do not use a direct
+//! #    ad-hoc URL conversion recipe: production conversion remains blocked
+//! #    and candidate output is not an authenticated production bind.
+//! #    The worker's `--candidate` invocation consumes its fixed TFLite and
+//! #    raw-inventory paths and emits a separately named candidate GGUF.
+//! #    Keep those exact worker-reported paths for the environment below.
+//!
+//! # 2. After the audit is PASS, run the reference dumper (owner walkthrough
+//! #    — the DL from step 1
 //! #    lives in the tmpdir; use --input to keep it):
-//! uv run python prepare_checkpoint.py \
-//!     --url    https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_jarvis.tflite \
-//!     --name   hey_jarvis \
-//!     --output ~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.gguf
-//! # (repeat the DL, or curl the .tflite locally then use --input <path>)
-//! uv run python dump_reference.py \
+//! # (the regular .tflite path is owner-provided; no symlinks are accepted)
+//! cd ../microwakeword-reference
+//! uv run python ../microwakeword/dump_reference.py \
 //!     --tflite-path ~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.tflite \
-//!     --output-dir  ~/.cache/vokra-eval/fixtures/microwakeword
+//!     --output-dir  ~/.cache/vokra-eval/fixtures/microwakeword \
+//!     --dependency-evidence /absolute/path/to/dependency-evidence.json
 //!
 //! # 3. Point the parity harness at both artefacts:
 //! export VOKRA_KWS_REAL_GGUF=~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.gguf
@@ -70,44 +74,33 @@
 //! [`features::FeatureExtractor::compute_frame_f32`], and compares
 //! per-band `|Δ|` against the dumped `features_ref.bin`
 //! (numpy transcription of the standard log-mel algorithm) at
-//! `atol = 1e-3` (log-mel per-band tolerance).
+//! `atol = 5e-2` (registered f32/numpy architectural bound).
 //!
 //! The numpy reference is a transcription of the same algorithm the
 //! Rust code implements (Hann window, radix-2 FFT, mel filterbank,
 //! log10 with floor), so parity validates transcription faithfulness.
 //! It does not validate against the training-time TensorFlow
 //! `tf.signal` mel front-end used to train microWakeWord — that
-//! would require `tensorflow`, out of the sidecar's 3-dep footprint.
-//! Empirically the standard algorithm matches `tf.signal` to within
-//! `1e-3` for the same parameters (Whisper front-end sibling posture).
+//! would require `tensorflow`, out of the sidecar's two-dependency footprint.
+//! No TensorFlow `tf.signal` comparison is performed by this fixture. The
+//! registered `5e-2` boundary applies only to the independent numpy
+//! transcription versus Rust f32 comparison; training-time TensorFlow
+//! front-end parity remains unverified.
 //!
-//! ## Path C — end-to-end INT8 chain (both env vars set)
+//! ## Path C — authenticated streaming contract (both env vars set)
 //!
-//! **Honest UNMET**: the Rust INT8 [`crate::interpreter::ChainConfig`]
-//! needs per-tensor `(scale, zero_point)` quantisation params to bind
-//! against a real MC-MobileNet checkpoint. The Phase 1 sidecar
-//! dequantises INT8 → F32 losslessly before emit, so the current
-//! `vokra.kws.*` GGUF does NOT carry those params. Wiring end-to-end
-//! parity requires:
-//!
-//! 1. Sidecar emits Q8_0 tensors + per-tensor `(scale, zero_point)`
-//!    metadata (Phase 3.5 follow-up per
-//!    [`crate::model`]'s module doc);
-//! 2. [`crate::model::Model`] gains typed accessors for per-layer
-//!    conv / dense weights + quant params;
-//! 3. This test constructs a real [`crate::interpreter::ChainConfig`]
-//!    from those and runs it against the dumped input features,
-//!    comparing to `output_ref.bin` at `atol = 1e-2` (INT8 dequant
-//!    tolerance).
-//!
-//! Until then this path skips with a clear "end-to-end parity requires
-//! Q8_0 sidecar extension" message — the scaffold is here so the flip
-//! is a one-file diff when the sidecar lands.
+//! This path integrity-checks every independent `ai_edge_litert` invocation:
+//! exact `[1,3,40]` int8 input bytes, exact `[1,1]` uint8 output bytes,
+//! affine dequantisation, model identity, and fresh-interpreter replay. It
+//! then binds the authenticated stateful executor and compares every stress
+//! invocation and preserved intermediate stage before reset/replay. Artifact
+//! SHA recomputation remains an outer VAST evidence-gate responsibility.
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use vokra_core::json::{self, JsonValue};
 use vokra_kws_micro::features::{self, FeatureExtractor};
 use vokra_kws_micro::model::Model;
 
@@ -118,6 +111,811 @@ const GGUF_ENV: &str = "VOKRA_KWS_REAL_GGUF";
 /// Env var the owner sets to point Path B + Path C at the directory of
 /// reference dumps emitted by `dump_reference.py`. Absent = skip cleanly.
 const FIXTURES_ENV: &str = "VOKRA_KWS_REAL_FIXTURES";
+
+const AUTHENTICATED_TFLITE_SHA256: &str =
+    "21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77";
+const AUTHENTICATED_TFLITE_BYTES: i64 = 52_272;
+const INVOCATION_COUNT: usize = 4;
+const INPUT_BYTES: usize = 3 * 40;
+const OUTPUT_BYTES: usize = 1;
+const OUTPUT_SCALE: f32 = 1.0 / 256.0;
+const DEPENDENCY_EVIDENCE_SCHEMA: &str = "microwakeword-reference-dependency-evidence-v1";
+const DEPENDENCY_EVIDENCE_STATUS: &str = "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED";
+const DEPENDENCY_AUDIT_STATUS: &str = "PASS";
+const DEPENDENCY_REVIEW_STATUS: &str = "VALIDATED_EXACT_OWNER_REVIEWED";
+const REFERENCE_PROJECT_SHA256: &str =
+    "2438d719428e497cc7f101429ba31fb5016e72737659d55aa0269d0824b1183d";
+const REFERENCE_LOCK_SHA256: &str =
+    "736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3";
+const REFERENCE_DISTRIBUTIONS: &[(&str, &str)] = &[
+    ("ai-edge-litert", "2.1.5"),
+    ("backports-strenum", "1.3.1"),
+    ("flatbuffers", "25.12.19"),
+    ("numpy", "2.5.2"),
+    ("protobuf", "7.36.1"),
+    ("tqdm", "4.70.0"),
+    ("typing-extensions", "4.16.0"),
+];
+
+fn object<'a>(value: &'a JsonValue, label: &str) -> &'a [(String, JsonValue)] {
+    value
+        .as_object()
+        .unwrap_or_else(|| panic!("{label} must be a JSON object"))
+}
+
+fn field<'a>(value: &'a JsonValue, key: &str, label: &str) -> &'a JsonValue {
+    let entries = object(value, label);
+    let matches: Vec<&JsonValue> = entries
+        .iter()
+        .filter(|(name, _)| name == key)
+        .map(|(_, item)| item)
+        .collect();
+    assert_eq!(matches.len(), 1, "{label}.{key} must occur exactly once");
+    matches[0]
+}
+
+fn exact_keys(value: &JsonValue, expected: &[&str], label: &str) {
+    let entries = object(value, label);
+    assert_eq!(entries.len(), expected.len(), "{label} key count drift");
+    for key in expected {
+        assert_eq!(
+            entries.iter().filter(|(name, _)| name == key).count(),
+            1,
+            "{label}.{key} missing/duplicate"
+        );
+    }
+}
+
+fn reject_duplicate_keys(value: &JsonValue, label: &str) {
+    match value {
+        JsonValue::Object(entries) => {
+            for (index, (key, child)) in entries.iter().enumerate() {
+                assert_eq!(
+                    entries[index + 1..]
+                        .iter()
+                        .filter(|(name, _)| name == key)
+                        .count(),
+                    0,
+                    "duplicate JSON key {label}.{key}"
+                );
+                if matches!(child, JsonValue::Object(_) | JsonValue::Array(_)) {
+                    reject_duplicate_keys(child, label);
+                }
+            }
+        }
+        JsonValue::Array(items) => {
+            for item in items {
+                if matches!(item, JsonValue::Object(_) | JsonValue::Array(_)) {
+                    reject_duplicate_keys(item, label);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn string_field<'a>(value: &'a JsonValue, key: &str, label: &str) -> &'a str {
+    field(value, key, label)
+        .as_str()
+        .unwrap_or_else(|| panic!("{label}.{key} must be a string"))
+}
+
+fn sha256_text(value: &str, label: &str) {
+    assert_eq!(value.len(), 64, "{label} must be 64 hex characters");
+    assert!(
+        value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+        "{label} must be lowercase hex"
+    );
+}
+
+fn int_field(value: &JsonValue, key: &str, label: &str) -> i64 {
+    match field(value, key, label) {
+        JsonValue::Int(number) => *number,
+        other => panic!("{label}.{key} must be an integer, got {other:?}"),
+    }
+}
+
+fn bool_field(value: &JsonValue, key: &str, label: &str) -> bool {
+    match field(value, key, label) {
+        JsonValue::Bool(flag) => *flag,
+        other => panic!("{label}.{key} must be a boolean, got {other:?}"),
+    }
+}
+
+fn shape_field(value: &JsonValue, key: &str, label: &str) -> Vec<usize> {
+    match field(value, key, label) {
+        JsonValue::Array(items) => items
+            .iter()
+            .map(|item| match item {
+                JsonValue::Int(number) if *number >= 0 => *number as usize,
+                other => {
+                    panic!("{label}.{key} contains a non-negative integer violation: {other:?}")
+                }
+            })
+            .collect(),
+        other => panic!("{label}.{key} must be an array, got {other:?}"),
+    }
+}
+
+fn float_field(value: &JsonValue, key: &str, label: &str) -> f64 {
+    match field(value, key, label) {
+        JsonValue::Float(number) if number.is_finite() => *number,
+        JsonValue::Int(number) => *number as f64,
+        other => panic!("{label}.{key} must be a finite number, got {other:?}"),
+    }
+}
+
+fn verify_distribution_versions(value: &JsonValue, label: &str) {
+    exact_keys(
+        value,
+        &[
+            "ai-edge-litert",
+            "backports-strenum",
+            "flatbuffers",
+            "numpy",
+            "protobuf",
+            "tqdm",
+            "typing-extensions",
+        ],
+        label,
+    );
+    for &(name, expected) in REFERENCE_DISTRIBUTIONS {
+        assert_eq!(
+            string_field(value, name, label),
+            expected,
+            "{label}.{name} version drift"
+        );
+    }
+}
+
+fn verify_dependency_evidence(value: &JsonValue) {
+    exact_keys(
+        value,
+        &[
+            "schema",
+            "collection_status",
+            "audit_status",
+            "review_status",
+            "publication_permitted",
+            "fixture_generation_permitted",
+            "collector_owner_review_required",
+            "failures",
+            "path",
+            "sha256",
+            "project_sha256",
+            "uv_lock_sha256",
+            "platform",
+            "installed_distributions",
+        ],
+        "manifest.dependency_evidence",
+    );
+    assert_eq!(
+        string_field(value, "schema", "manifest.dependency_evidence"),
+        DEPENDENCY_EVIDENCE_SCHEMA
+    );
+    assert_eq!(
+        string_field(value, "collection_status", "manifest.dependency_evidence"),
+        DEPENDENCY_EVIDENCE_STATUS
+    );
+    assert_eq!(
+        string_field(value, "audit_status", "manifest.dependency_evidence"),
+        DEPENDENCY_AUDIT_STATUS
+    );
+    assert_eq!(
+        string_field(value, "review_status", "manifest.dependency_evidence"),
+        DEPENDENCY_REVIEW_STATUS
+    );
+    assert!(!bool_field(
+        value,
+        "publication_permitted",
+        "manifest.dependency_evidence"
+    ));
+    assert!(bool_field(
+        value,
+        "fixture_generation_permitted",
+        "manifest.dependency_evidence"
+    ));
+    assert!(bool_field(
+        value,
+        "collector_owner_review_required",
+        "manifest.dependency_evidence"
+    ));
+    assert!(matches!(
+        field(value, "failures", "manifest.dependency_evidence"),
+        JsonValue::Array(items) if items.is_empty()
+    ));
+    let path = string_field(value, "path", "manifest.dependency_evidence");
+    assert!(!path.is_empty() && !path.contains('/') && !path.contains('\\'));
+    sha256_text(
+        string_field(value, "sha256", "manifest.dependency_evidence"),
+        "manifest.dependency_evidence.sha256",
+    );
+    assert_eq!(
+        string_field(value, "project_sha256", "manifest.dependency_evidence"),
+        REFERENCE_PROJECT_SHA256
+    );
+    assert_eq!(
+        string_field(value, "uv_lock_sha256", "manifest.dependency_evidence"),
+        REFERENCE_LOCK_SHA256
+    );
+    let platform = field(value, "platform", "manifest.dependency_evidence");
+    exact_keys(
+        platform,
+        &["system", "machine", "python"],
+        "manifest.dependency_evidence.platform",
+    );
+    assert_eq!(
+        string_field(platform, "system", "manifest.dependency_evidence.platform"),
+        "Linux"
+    );
+    assert_eq!(
+        string_field(platform, "machine", "manifest.dependency_evidence.platform"),
+        "x86_64"
+    );
+    assert_eq!(
+        string_field(platform, "python", "manifest.dependency_evidence.platform"),
+        "3.12"
+    );
+    verify_distribution_versions(
+        field(
+            value,
+            "installed_distributions",
+            "manifest.dependency_evidence",
+        ),
+        "manifest.dependency_evidence.installed_distributions",
+    );
+}
+
+fn verify_reference_manifest(root: &JsonValue) {
+    reject_duplicate_keys(root, "manifest");
+    exact_keys(
+        root,
+        &[
+            "schema",
+            "status",
+            "generator",
+            "generator_version",
+            "oracle",
+            "source_tflite",
+            "source_tflite_sha256",
+            "source_tflite_bytes",
+            "authenticated_model_sha256",
+            "constants",
+            "pcm_synthesis",
+            "authenticated_io",
+            "persistent_sequence",
+            "direct_int8_stress",
+            "artefacts",
+            "tflite_topology",
+            "frontend_parity_boundary",
+            "reference_environment",
+            "dependency_evidence",
+        ],
+        "manifest",
+    );
+    assert_eq!(
+        string_field(root, "schema", "manifest"),
+        "microwakeword-reference-v2"
+    );
+    assert_eq!(
+        string_field(root, "status", "manifest"),
+        "REFERENCE_COMPLETE"
+    );
+    assert_eq!(
+        string_field(root, "oracle", "manifest"),
+        "ai_edge_litert.Interpreter running the pinned upstream TFLite; never a Vokra mirror"
+    );
+    for key in [
+        "generator",
+        "generator_version",
+        "source_tflite",
+        "frontend_parity_boundary",
+    ] {
+        let _ = string_field(root, key, "manifest");
+    }
+    let source_digest = string_field(root, "source_tflite_sha256", "manifest");
+    let auth_digest = string_field(root, "authenticated_model_sha256", "manifest");
+    sha256_text(source_digest, "manifest.source_tflite_sha256");
+    sha256_text(auth_digest, "manifest.authenticated_model_sha256");
+    assert_eq!(source_digest, AUTHENTICATED_TFLITE_SHA256);
+    assert_eq!(auth_digest, AUTHENTICATED_TFLITE_SHA256);
+    assert_eq!(
+        int_field(root, "source_tflite_bytes", "manifest"),
+        AUTHENTICATED_TFLITE_BYTES
+    );
+
+    let constants = field(root, "constants", "manifest");
+    exact_keys(
+        constants,
+        &[
+            "sample_rate",
+            "hop_ms",
+            "window_ms",
+            "n_mels",
+            "hop_samples",
+            "window_samples",
+            "n_fft",
+            "n_bins",
+            "log_mel_epsilon",
+        ],
+        "constants",
+    );
+    for key in [
+        "sample_rate",
+        "hop_ms",
+        "window_ms",
+        "n_mels",
+        "hop_samples",
+        "window_samples",
+        "n_fft",
+        "n_bins",
+    ] {
+        assert!(int_field(constants, key, "constants") > 0);
+    }
+    assert!(float_field(constants, "log_mel_epsilon", "constants") > 0.0);
+    let pcm = field(root, "pcm_synthesis", "manifest");
+    exact_keys(
+        pcm,
+        &[
+            "seed",
+            "sine_hz",
+            "sine_amplitude",
+            "noise_stddev",
+            "distinct_frame_schedule",
+        ],
+        "pcm_synthesis",
+    );
+    assert!(int_field(pcm, "seed", "pcm_synthesis") >= 0);
+    for key in ["sine_hz", "sine_amplitude", "noise_stddev"] {
+        assert!(float_field(pcm, key, "pcm_synthesis") > 0.0);
+    }
+    let _ = string_field(pcm, "distinct_frame_schedule", "pcm_synthesis");
+
+    let io = field(root, "authenticated_io", "manifest");
+    exact_keys(io, &["input", "output"], "authenticated_io");
+    let input = field(io, "input", "authenticated_io");
+    exact_keys(
+        input,
+        &["shape", "dtype", "scale", "zero_point"],
+        "authenticated_io.input",
+    );
+    assert_eq!(
+        shape_field(input, "shape", "authenticated_io.input"),
+        vec![1, 3, 40]
+    );
+    assert_eq!(
+        string_field(input, "dtype", "authenticated_io.input"),
+        "int8"
+    );
+    assert_eq!(
+        float_field(input, "scale", "authenticated_io.input"),
+        0.10196078568696976
+    );
+    assert_eq!(
+        int_field(input, "zero_point", "authenticated_io.input"),
+        -128
+    );
+    let output = field(io, "output", "authenticated_io");
+    exact_keys(
+        output,
+        &["shape", "dtype", "scale", "zero_point"],
+        "authenticated_io.output",
+    );
+    assert_eq!(
+        shape_field(output, "shape", "authenticated_io.output"),
+        vec![1, 1]
+    );
+    assert_eq!(
+        string_field(output, "dtype", "authenticated_io.output"),
+        "uint8"
+    );
+    assert_eq!(
+        float_field(output, "scale", "authenticated_io.output"),
+        0.00390625
+    );
+    assert_eq!(
+        int_field(output, "zero_point", "authenticated_io.output"),
+        0
+    );
+
+    let sequence = field(root, "persistent_sequence", "manifest");
+    exact_keys(
+        sequence,
+        &[
+            "invocation_count",
+            "frames_per_invocation",
+            "distinct_frames",
+            "single_persistent_interpreter",
+            "fresh_interpreter_reset_replay",
+        ],
+        "persistent_sequence",
+    );
+    assert_eq!(
+        int_field(sequence, "invocation_count", "persistent_sequence"),
+        INVOCATION_COUNT as i64
+    );
+    assert_eq!(
+        int_field(sequence, "frames_per_invocation", "persistent_sequence"),
+        3
+    );
+    assert!(bool_field(
+        sequence,
+        "distinct_frames",
+        "persistent_sequence"
+    ));
+    assert!(bool_field(
+        sequence,
+        "single_persistent_interpreter",
+        "persistent_sequence"
+    ));
+    let replay = field(
+        sequence,
+        "fresh_interpreter_reset_replay",
+        "persistent_sequence",
+    );
+    exact_keys(
+        replay,
+        &["status", "invocation_count", "raw_outputs_match"],
+        "fresh_interpreter_reset_replay",
+    );
+    assert_eq!(
+        string_field(replay, "status", "fresh_interpreter_reset_replay"),
+        "PASS"
+    );
+    assert_eq!(
+        int_field(replay, "invocation_count", "fresh_interpreter_reset_replay"),
+        INVOCATION_COUNT as i64
+    );
+    assert!(bool_field(
+        replay,
+        "raw_outputs_match",
+        "fresh_interpreter_reset_replay"
+    ));
+
+    let stress = field(root, "direct_int8_stress", "manifest");
+    exact_keys(
+        stress,
+        &[
+            "seed",
+            "invocation_count",
+            "input_shape",
+            "input_dtype",
+            "stage_tensor_indices",
+            "stage_shapes",
+            "stage_dtypes",
+            "preserve_all_tensors",
+            "normal_interpreter_final_output_equal",
+            "fresh_replay_equal",
+            "trace_runner",
+        ],
+        "direct_int8_stress",
+    );
+    assert_eq!(int_field(stress, "seed", "direct_int8_stress"), 4);
+    assert_eq!(
+        int_field(stress, "invocation_count", "direct_int8_stress"),
+        512
+    );
+    assert_eq!(
+        shape_field(stress, "input_shape", "direct_int8_stress"),
+        vec![1, 3, 40]
+    );
+    assert_eq!(
+        string_field(stress, "input_dtype", "direct_int8_stress"),
+        "int8"
+    );
+    assert!(bool_field(
+        stress,
+        "preserve_all_tensors",
+        "direct_int8_stress"
+    ));
+    assert!(bool_field(
+        stress,
+        "normal_interpreter_final_output_equal",
+        "direct_int8_stress"
+    ));
+    assert!(bool_field(
+        stress,
+        "fresh_replay_equal",
+        "direct_int8_stress"
+    ));
+    let stage_indices = field(stress, "stage_tensor_indices", "direct_int8_stress")
+        .as_array()
+        .expect("stage indices must be an array")
+        .iter()
+        .map(|value| value.as_u64().expect("stage index must be integer") as i64)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stage_indices,
+        vec![47, 50, 51, 54, 55, 58, 59, 62, 63, 67, 68, 69]
+    );
+    let stage_shapes = field(stress, "stage_shapes", "direct_int8_stress");
+    exact_keys(
+        stage_shapes,
+        &[
+            "47", "50", "51", "54", "55", "58", "59", "62", "63", "67", "68", "69",
+        ],
+        "direct_int8_stress.stage_shapes",
+    );
+    for (index, expected_shape) in [
+        ("47", vec![1, 1, 1, 30]),
+        ("50", vec![1, 1, 1, 30]),
+        ("51", vec![1, 1, 1, 60]),
+        ("54", vec![1, 1, 1, 60]),
+        ("55", vec![1, 1, 1, 60]),
+        ("58", vec![1, 1, 1, 60]),
+        ("59", vec![1, 1, 1, 60]),
+        ("62", vec![1, 1, 1, 60]),
+        ("63", vec![1, 1, 1, 60]),
+        ("67", vec![1, 1]),
+        ("68", vec![1, 1]),
+        ("69", vec![1, 1]),
+    ] {
+        assert_eq!(
+            shape_field(stage_shapes, index, "direct_int8_stress.stage_shapes"),
+            expected_shape,
+            "direct_int8_stress.stage_shapes.{index} drift"
+        );
+    }
+    let stage_dtypes = field(stress, "stage_dtypes", "direct_int8_stress");
+    exact_keys(
+        stage_dtypes,
+        &[
+            "47", "50", "51", "54", "55", "58", "59", "62", "63", "67", "68", "69",
+        ],
+        "direct_int8_stress.stage_dtypes",
+    );
+    for index in [
+        "47", "50", "51", "54", "55", "58", "59", "62", "63", "67", "68",
+    ] {
+        assert_eq!(
+            string_field(stage_dtypes, index, "direct_int8_stress.stage_dtypes"),
+            "int8",
+            "direct_int8_stress.stage_dtypes.{index} drift"
+        );
+    }
+    assert_eq!(
+        string_field(stage_dtypes, "69", "direct_int8_stress.stage_dtypes"),
+        "uint8"
+    );
+
+    let topology = field(root, "tflite_topology", "manifest");
+    exact_keys(
+        topology,
+        &[
+            "input_name",
+            "input_shape",
+            "input_dtype",
+            "input_scale",
+            "input_zero_point",
+            "output_name",
+            "output_shape",
+            "output_dtype",
+            "output_scale",
+            "output_zero_point",
+        ],
+        "tflite_topology",
+    );
+    let _ = string_field(topology, "input_name", "tflite_topology");
+    assert_eq!(
+        shape_field(topology, "input_shape", "tflite_topology"),
+        vec![1, 3, 40]
+    );
+    assert_eq!(
+        string_field(topology, "input_dtype", "tflite_topology"),
+        "int8"
+    );
+    assert_eq!(
+        float_field(topology, "input_scale", "tflite_topology"),
+        0.10196078568696976
+    );
+    assert_eq!(
+        int_field(topology, "input_zero_point", "tflite_topology"),
+        -128
+    );
+    let _ = string_field(topology, "output_name", "tflite_topology");
+    assert_eq!(
+        shape_field(topology, "output_shape", "tflite_topology"),
+        vec![1, 1]
+    );
+    assert_eq!(
+        string_field(topology, "output_dtype", "tflite_topology"),
+        "uint8"
+    );
+    assert_eq!(
+        float_field(topology, "output_scale", "tflite_topology"),
+        0.00390625
+    );
+    assert_eq!(
+        int_field(topology, "output_zero_point", "tflite_topology"),
+        0
+    );
+
+    let expected: Vec<(String, Vec<usize>, &str, usize)> = {
+        let mut rows = vec![
+            ("input_pcm".to_string(), vec![512], "int16", 1024),
+            ("features_ref".to_string(), vec![40], "float32", 160),
+        ];
+        for index in 0..INVOCATION_COUNT {
+            rows.extend([
+                (
+                    format!("features_invocation_{index:02}"),
+                    vec![3, 40],
+                    "float32",
+                    480,
+                ),
+                (
+                    format!("input_invocation_{index:02}"),
+                    vec![1, 3, 40],
+                    "int8",
+                    120,
+                ),
+                (
+                    format!("output_invocation_{index:02}"),
+                    vec![1, 1],
+                    "uint8",
+                    1,
+                ),
+                (
+                    format!("output_invocation_{index:02}_f32"),
+                    vec![1, 1],
+                    "float32",
+                    4,
+                ),
+            ]);
+        }
+        rows.push(("output_ref".to_string(), vec![4, 1], "float32", 16));
+        rows.push((
+            "stress_inputs".to_string(),
+            vec![512, 3, 40],
+            "int8",
+            512 * 120,
+        ));
+        for (index, shape, dtype) in [
+            (47, vec![512, 1, 1, 1, 30], "int8"),
+            (50, vec![512, 1, 1, 1, 30], "int8"),
+            (51, vec![512, 1, 1, 1, 60], "int8"),
+            (54, vec![512, 1, 1, 1, 60], "int8"),
+            (55, vec![512, 1, 1, 1, 60], "int8"),
+            (58, vec![512, 1, 1, 1, 60], "int8"),
+            (59, vec![512, 1, 1, 1, 60], "int8"),
+            (62, vec![512, 1, 1, 1, 60], "int8"),
+            (63, vec![512, 1, 1, 1, 60], "int8"),
+            (67, vec![512, 1, 1], "int8"),
+            (68, vec![512, 1, 1], "int8"),
+            (69, vec![512, 1, 1], "uint8"),
+        ] {
+            let bytes = shape.iter().product::<usize>();
+            rows.push((format!("stress_stage_tensor_{index}"), shape, dtype, bytes));
+        }
+        rows
+    };
+    let artefacts = field(root, "artefacts", "manifest")
+        .as_array()
+        .expect("artefacts must be an array");
+    assert_eq!(artefacts.len(), expected.len());
+    for (name, shape, dtype, bytes) in expected {
+        let matching: Vec<&JsonValue> = artefacts
+            .iter()
+            .filter(|item| string_field(item, "name", "artefact") == name)
+            .collect();
+        assert_eq!(matching.len(), 1, "artefact {name} missing/duplicated");
+        let item = matching[0];
+        exact_keys(
+            item,
+            &[
+                "name",
+                "path",
+                "shape",
+                "dtype",
+                "byte_order",
+                "bytes",
+                "sha256",
+                "role",
+            ],
+            &format!("artefact.{name}"),
+        );
+        assert_eq!(
+            string_field(item, "path", &format!("artefact.{name}")),
+            format!("{name}.bin")
+        );
+        assert_eq!(
+            shape_field(item, "shape", &format!("artefact.{name}")),
+            shape
+        );
+        assert_eq!(
+            string_field(item, "dtype", &format!("artefact.{name}")),
+            dtype
+        );
+        assert_eq!(
+            string_field(item, "byte_order", &format!("artefact.{name}")),
+            "little-endian"
+        );
+        let _ = string_field(item, "role", &format!("artefact.{name}"));
+        assert_eq!(
+            int_field(item, "bytes", &format!("artefact.{name}")),
+            bytes as i64
+        );
+        sha256_text(
+            string_field(item, "sha256", &format!("artefact.{name}")),
+            &format!("artefact.{name}.sha256"),
+        );
+    }
+    let reference_environment = field(root, "reference_environment", "manifest");
+    exact_keys(
+        reference_environment,
+        &["python", "system", "machine", "installed_distributions"],
+        "manifest.reference_environment",
+    );
+    assert_eq!(
+        string_field(
+            reference_environment,
+            "python",
+            "manifest.reference_environment"
+        ),
+        "3.12"
+    );
+    assert_eq!(
+        string_field(
+            reference_environment,
+            "system",
+            "manifest.reference_environment"
+        ),
+        "Linux"
+    );
+    assert_eq!(
+        string_field(
+            reference_environment,
+            "machine",
+            "manifest.reference_environment"
+        ),
+        "x86_64"
+    );
+    verify_distribution_versions(
+        field(
+            reference_environment,
+            "installed_distributions",
+            "manifest.reference_environment",
+        ),
+        "manifest.reference_environment.installed_distributions",
+    );
+    verify_dependency_evidence(field(root, "dependency_evidence", "manifest"));
+    // The outer VAST evidence gate is responsible for recomputing these
+    // hashes against the files and the pinned source bytes. This local
+    // contract checks their shape/type/presence without downloading data.
+}
+
+/// Future production integration contract. It intentionally has no
+/// implementation until the authenticated, stateful binder is exported;
+/// stateless `ChainConfig` cannot satisfy it.
+#[allow(dead_code)]
+trait AuthenticatedStreamingBinder {
+    fn step(&mut self, quantized_input: &[i8]) -> Result<Vec<u8>, String>;
+    fn reset(&mut self) -> Result<(), String>;
+}
+
+#[allow(dead_code)]
+fn compare_authenticated_sequence<B: AuthenticatedStreamingBinder>(
+    mut binder: B,
+    inputs: &[Vec<i8>],
+    expected_outputs: &[u8],
+) {
+    assert_eq!(inputs.len(), expected_outputs.len());
+    for (input, &expected) in inputs.iter().zip(expected_outputs.iter()) {
+        let output = binder
+            .step(input)
+            .expect("authenticated streaming step failed");
+        assert_eq!(output, vec![expected], "streaming output drift");
+    }
+    binder
+        .reset()
+        .expect("authenticated streaming reset failed");
+    for (input, &expected) in inputs.iter().zip(expected_outputs.iter()) {
+        let output = binder.step(input).expect("streaming replay failed");
+        assert_eq!(output, vec![expected], "streaming reset replay drift");
+    }
+}
 
 /// Per-band `|Δ|` gate for the log-mel feature extractor parity
 /// (Path B). `5e-2` is the honest architectural bound:
@@ -347,8 +1145,9 @@ fn parity_microwakeword_feature_extractor_matches_reference() {
         features::N_MELS,
     );
 
-    // Per-band |Δ| gate. FEATURES_ATOL = 1e-3 is the standard f32 log-mel
-    // tolerance across numpy / scipy / tf.signal transcriptions.
+    // Per-band |Δ| gate. FEATURES_ATOL = 5e-2 is the registered architectural
+    // bound for numpy's higher-precision FFT versus Vokra's f32 FFT path;
+    // see the constant's rationale above.
     let mut max_delta = 0.0f32;
     let mut worst_band = 0usize;
     for (i, (&v, &r)) in features_vokra.iter().zip(features_ref.iter()).enumerate() {
@@ -379,39 +1178,117 @@ fn parity_microwakeword_feature_extractor_matches_reference() {
     );
 }
 
-/// GATED (Path C): end-to-end INT8 chain parity — honest UNMET.
-///
-/// The Rust INT8 [`crate::interpreter::ChainConfig`] needs per-tensor
-/// `(scale, zero_point)` quantisation params to bind against a real
-/// MC-MobileNet checkpoint. The current Phase 1 sidecar dequantises
-/// INT8 → F32 losslessly at export time, so the emitted `vokra.kws.*`
-/// GGUF does NOT carry those params. Until the Q8_0 sidecar extension
-/// lands (Phase 3.5 follow-up per `crate::model`'s module doc), this
-/// path always skips with a clear defer message — even when both env
-/// vars are set. This is honest UNMET (never a fabricated pass).
-///
-/// The scaffold is here so that when the sidecar lands, wiring the
-/// real end-to-end parity is a one-file diff (load `output_ref.bin`,
-/// construct a real `ChainConfig` from `Model`, run, compare).
+/// GATED (Path C): authenticated streaming fixture contract.
 #[test]
 fn parity_microwakeword_end_to_end_output() {
-    let gguf = env::var(GGUF_ENV).ok();
-    let fixtures = env::var(FIXTURES_ENV).ok();
-    if gguf.is_none() || fixtures.is_none() {
+    let (Some(gguf_path), Some(fixtures_dir)) =
+        (env::var(GGUF_ENV).ok(), env::var(FIXTURES_ENV).ok())
+    else {
         eprintln!("Path-C: {GGUF_ENV} and/or {FIXTURES_ENV} unset — skipping cleanly.");
         return;
+    };
+    let gguf_bytes =
+        fs::read(&gguf_path).unwrap_or_else(|e| panic!("Path-C GGUF read failed: {e:?}"));
+    let model = Model::from_bytes(&gguf_bytes)
+        .unwrap_or_else(|e| panic!("Path-C GGUF parse failed: {e:?}"));
+    assert_eq!(model.header.tflite_sha256, AUTHENTICATED_TFLITE_SHA256);
+    let dir = Path::new(&fixtures_dir);
+    let manifest_bytes = fs::read(dir.join("manifest.json"))
+        .unwrap_or_else(|e| panic!("Path-C manifest read failed: {e:?}"));
+    let manifest = json::parse(&manifest_bytes)
+        .unwrap_or_else(|e| panic!("Path-C manifest JSON parse failed: {e:?}"));
+    verify_reference_manifest(&manifest);
+
+    let mut inputs: Vec<Vec<i8>> = Vec::with_capacity(INVOCATION_COUNT);
+    let mut outputs: Vec<u8> = Vec::with_capacity(INVOCATION_COUNT);
+    for index in 0..INVOCATION_COUNT {
+        let input = fs::read(dir.join(format!("input_invocation_{index:02}.bin")))
+            .unwrap_or_else(|e| panic!("Path-C input {index} read failed: {e:?}"));
+        assert_eq!(
+            input.len(),
+            INPUT_BYTES,
+            "input invocation {index} byte count"
+        );
+        inputs.push(input.into_iter().map(|x| x as i8).collect());
+        let output = fs::read(dir.join(format!("output_invocation_{index:02}.bin")))
+            .unwrap_or_else(|e| panic!("Path-C output {index} read failed: {e:?}"));
+        assert_eq!(
+            output.len(),
+            OUTPUT_BYTES,
+            "output invocation {index} byte count"
+        );
+        let dequant = fs::read(dir.join(format!("output_invocation_{index:02}_f32.bin")))
+            .unwrap_or_else(|e| panic!("Path-C dequant output {index} read failed: {e:?}"));
+        assert_eq!(dequant.len(), 4, "dequant output {index} byte count");
+        let expected_f32 = output[0] as f32 * OUTPUT_SCALE;
+        assert_eq!(
+            f32::from_le_bytes([dequant[0], dequant[1], dequant[2], dequant[3]]),
+            expected_f32
+        );
+        outputs.push(output[0]);
     }
-    // Both env vars set, but the sidecar has not yet been extended to emit
-    // Q8_0 + per-tensor quant params. Honest UNMET rather than a
-    // fabricated pass.
+    assert!(
+        inputs.windows(2).any(|pair| pair[0] != pair[1]),
+        "sequence must use distinct frames"
+    );
     eprintln!(
-        "Path-C: end-to-end INT8 chain parity is UNMET — the Phase 1 sidecar \
-         dequantises INT8 → F32 losslessly at export, so the current GGUF \
-         does not carry per-tensor (scale, zero_point). Wiring parity \
-         requires: (1) sidecar emits Q8_0 + quant params (Phase 3.5 \
-         follow-up, see `crate::model` module doc); (2) `Model` gains \
-         per-layer typed accessors; (3) this test constructs a real \
-         `ChainConfig` and runs it against `output_ref.bin` at atol=1e-2. \
-         Until then, this is a clean skip (never a fabricated pass)."
+        "Path-C fixture contract verified for {INVOCATION_COUNT} persistent invocations; outputs={outputs:?}"
+    );
+
+    let stress_inputs = fs::read(dir.join("stress_inputs.bin"))
+        .unwrap_or_else(|e| panic!("Path-C stress inputs read failed: {e:?}"));
+    assert_eq!(stress_inputs.len(), 512 * INPUT_BYTES);
+    let stage_indices = [47usize, 50, 51, 54, 55, 58, 59, 62, 63, 67, 68, 69];
+    let stage_sizes = [30usize, 30, 60, 60, 60, 60, 60, 60, 60, 1, 1, 1];
+    let stage_bytes: Vec<Vec<u8>> = stage_indices
+        .iter()
+        .enumerate()
+        .map(|(stage, index)| {
+            let bytes = fs::read(dir.join(format!("stress_stage_tensor_{index}.bin")))
+                .unwrap_or_else(|e| panic!("Path-C stage {index} read failed: {e:?}"));
+            assert_eq!(bytes.len(), 512 * stage_sizes[stage]);
+            bytes
+        })
+        .collect();
+    let mut binder = model
+        .bind_authenticated_streaming()
+        .unwrap_or_else(|e| panic!("Path-C authenticated streaming binder failed: {e:?}"));
+    for invocation in 0..512 {
+        let input = &stress_inputs[invocation * INPUT_BYTES..(invocation + 1) * INPUT_BYTES];
+        let input: Vec<i8> = input.iter().map(|value| *value as i8).collect();
+        let trace = binder
+            .step_with_trace(&input)
+            .unwrap_or_else(|e| panic!("Path-C stress invocation {invocation} failed: {e:?}"));
+        assert_eq!(trace.stages.len(), 11);
+        for stage in 0..11 {
+            let expected = &stage_bytes[stage]
+                [invocation * stage_sizes[stage]..(invocation + 1) * stage_sizes[stage]];
+            let actual: Vec<u8> = trace.stages[stage]
+                .iter()
+                .map(|value| *value as u8)
+                .collect();
+            assert_eq!(
+                &actual, expected,
+                "Path-C stage tensor {} invocation {} drift",
+                stage_indices[stage], invocation
+            );
+        }
+        assert_eq!(
+            trace.output, stage_bytes[11][invocation],
+            "Path-C final QUANTIZE invocation {invocation} drift"
+        );
+    }
+    binder.reset();
+    for invocation in 0..INVOCATION_COUNT {
+        let output = binder
+            .step(&inputs[invocation])
+            .unwrap_or_else(|e| panic!("Path-C reset replay {invocation} failed: {e:?}"));
+        assert_eq!(
+            output, outputs[invocation],
+            "Path-C reset replay invocation {invocation} drift"
+        );
+    }
+    eprintln!(
+        "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4"
     );
 }

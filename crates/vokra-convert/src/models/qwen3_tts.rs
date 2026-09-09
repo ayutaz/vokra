@@ -110,6 +110,7 @@
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -617,6 +618,7 @@ pub(crate) fn convert_file(
     license: Option<&str>,
 ) -> Result<Qwen3TtsReport, ConvertError> {
     validate_license(license, None)?;
+    reject_existing_output(output)?;
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
     let variant = detect_0_6b_variant(&st)?;
@@ -630,6 +632,7 @@ pub(crate) fn convert_file_with_variant(
     license: Option<&str>,
 ) -> Result<Qwen3TtsReport, ConvertError> {
     validate_license(license, Some(variant))?;
+    reject_existing_output(output)?;
     let st = SafetensorsFile::parse(std::fs::read(input)?)?;
     validate_checkpoint(&st, variant)?;
     convert_parsed_file(st, input, output, variant)
@@ -659,12 +662,31 @@ fn convert_parsed_file(
     output: &Path,
     variant: Qwen3TtsVariant,
 ) -> Result<Qwen3TtsReport, ConvertError> {
+    // Keep this guard at the final write boundary as well as at the public
+    // entry points: callers must not be able to turn a conversion into an
+    // overwrite by racing the input/sidecar validation.
+    reject_existing_output(output)?;
     let (mut builder, mut report) = convert_parsed(st, variant)?;
     ReleaseAssets::load(input, variant)?.embed(&mut builder);
     report.metadata_count = builder.metadata_count();
     let bytes = builder.to_bytes()?;
-    std::fs::write(output, bytes)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
     Ok(report)
+}
+
+fn reject_existing_output(output: &Path) -> Result<(), ConvertError> {
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "qwen3-tts: output path already exists or is a symlink: {}",
+            output.display()
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -710,6 +732,14 @@ fn read_exact_sidecar(
     variant: Qwen3TtsVariant,
 ) -> Result<Vec<u8>, ConvertError> {
     let path = directory.join(spec.name);
+    if path.is_symlink() || !path.is_file() {
+        return Err(ConvertError::Parse(format!(
+            "qwen3-tts: required {}@{} sidecar {} is missing, symlinked, or not a regular file",
+            variant.upstream_hf(),
+            variant.source_revision(),
+            path.display()
+        )));
+    }
     let bytes = std::fs::read(&path).map_err(|error| {
         ConvertError::Io(std::io::Error::new(
             error.kind(),
@@ -1417,6 +1447,45 @@ mod tests {
                 .to_string()
                 .contains("SHA-256")
         );
+
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&path).expect("remove sidecar before symlink test");
+            std::os::unix::fs::symlink("missing-target", &path).expect("create sidecar symlink");
+            assert!(
+                read_exact_sidecar(&directory, spec, variant)
+                    .expect_err("symlinked sidecar")
+                    .to_string()
+                    .contains("symlinked")
+            );
+        }
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn conversion_rejects_existing_output_before_checkpoint_io() {
+        let directory = scratch_directory("output");
+        let output = directory.join("model.gguf");
+        std::fs::write(&output, b"sentinel").expect("write output sentinel");
+        let missing_input = directory.join("missing.safetensors");
+        let error = convert_file(&missing_input, &output, None)
+            .expect_err("existing output must fail before input access");
+        assert!(error.to_string().contains("output path already exists"));
+        assert_eq!(
+            std::fs::read(&output).expect("read output sentinel"),
+            b"sentinel"
+        );
+
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&output).expect("remove regular output before symlink test");
+            let target = directory.join("existing-target.gguf");
+            std::fs::write(&target, b"target").expect("write symlink target");
+            std::os::unix::fs::symlink(&target, &output).expect("create output symlink");
+            let error = convert_file(&missing_input, &output, None)
+                .expect_err("symlink output must fail before input access");
+            assert!(error.to_string().contains("output path already exists"));
+        }
         std::fs::remove_dir_all(directory).ok();
     }
 

@@ -1,14 +1,17 @@
 # Installing the Vulkan shader-compile toolchain (developer-side, M3-02-T13)
 
-`scripts/compile-vulkan-shaders.sh` needs **`glslc`** (from the Vulkan SDK or a
-distro `glslang` package) plus a `sha256` tool (`sha256sum` on Linux, `shasum`
-on macOS — both preinstalled). This is a developer-side tool only:
+`scripts/compile-vulkan-shaders.sh` prefers **`glslc`** (from the Vulkan SDK or
+a package that explicitly provides shaderc) and falls back to
+**`glslangValidator`**. It also needs a `sha256` tool (`sha256sum` on Linux,
+`shasum` on macOS — both preinstalled). This is a developer-side tool only:
 `cargo build` never invokes it (NFR-DS-02: `Cargo.lock` stays `vokra-*`-only;
 NFR-RL-05: no CPU-side JIT — SPIR-V is produced ahead of time by the developer
 and committed to `crates/vokra-backend-vulkan/kernels/precompiled/*.spv`).
 
-CI is out of scope for this ADR: T36 follow-up will add a `glslc install` +
-`recompile → diff` gate.
+CI runs the Vulkan drift gate in `.github/workflows/gpu-vulkan-parity.yml`.
+The gate checks source hashes and then runs
+`scripts/compile-vulkan-shaders.sh --check` for a compiler/version-compatible
+byte diff. The same two-stage procedure is available to developers.
 
 ---
 
@@ -19,7 +22,7 @@ Two supported paths — pick one.
 ### Option 1: Homebrew (recommended for M1 iMac authoring host)
 
 ```bash
-brew install glslang
+brew install shaderc
 ```
 
 Verify:
@@ -33,7 +36,9 @@ glslc --version
 #   Target: SPIR-V 1.x
 ```
 
-Homebrew installs `glslc` on `PATH` as a peer of `glslangValidator`. No
+Homebrew's `shaderc` formula provides `glslc` on `PATH`. If only
+`glslangValidator` is needed, `brew install glslang` provides the fallback
+compiler. No
 environment variables needed. This does NOT install a Vulkan **loader** or
 ICD — Metal is the macOS GPU path in Vokra; `glslc` is used only to produce
 `.spv` bytecode for the Vulkan **backend** which runs on Linux / Android /
@@ -58,13 +63,18 @@ lets you dry-run the smoke dispatch test on macOS if desired (see
 
 ## Ubuntu / Debian
 
-`glslang-tools` ships `glslc`:
+`glslang-tools` provides `glslangValidator`, which is the supported fallback:
 
 ```bash
 sudo apt update
 sudo apt install glslang-tools
-glslc --version
+glslangValidator --version
 ```
+
+Do not assume that `glslang-tools` also installs `glslc`: check with
+`command -v glslc`. For the preferred compiler, install a Vulkan SDK or the
+distro package that explicitly provides `glslc`/shaderc, then verify it with
+`glslc --version`.
 
 For a Vulkan loader + lavapipe (the CPU-only ICD used in CI), also install:
 
@@ -72,10 +82,10 @@ For a Vulkan loader + lavapipe (the CPU-only ICD used in CI), also install:
 sudo apt install libvulkan1 mesa-vulkan-drivers
 ```
 
-CI-runner reproducibility: pin the Ubuntu release (`ubuntu-22.04` or later —
-`glslang-tools` on 22.04 provides SPIR-V 1.6 compatible with our `vulkan1.1`
-target). Older versions may lack `--target-env=vulkan1.1` support; if
-`compile-vulkan-shaders.sh` errors on that flag, upgrade.
+CI-runner reproducibility: pin the Ubuntu release and verify that the selected
+compiler accepts the per-source `--target-env=vulkan1.1` or `vulkan1.3` option.
+If it rejects a target option, use a current Vulkan SDK or distro package
+rather than weakening the shader target.
 
 ---
 

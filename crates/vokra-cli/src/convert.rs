@@ -15,9 +15,10 @@ use vokra_convert::{
     VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file,
     convert_canary_1b_flash_file_with_tokenizer, convert_canary_file_with_tokenizer,
     convert_chatterbox_file, convert_chatterbox_nano_file, convert_chatterbox_turbo_file,
-    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_crepe_file, convert_dac_file,
-    convert_deberta_v2_file, convert_deberta_v3_file, convert_file, convert_file_quantized,
-    convert_file_with_policy, convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
+    convert_cosyvoice2_file, convert_cosyvoice2_hift_file, convert_cosyvoice3_file,
+    convert_crepe_file, convert_dac_file, convert_deberta_v2_file, convert_deberta_v3_file,
+    convert_file, convert_file_quantized, convert_file_with_policy, convert_file_with_slug,
+    convert_firered_asr_aed_l_with_sidecars, convert_irodori_file, convert_kokoro_file,
     convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
     convert_moonshine_tiny_file_with_tokenizer, convert_nanocodec_file,
     convert_nemotron_asr_file_with_tokenizer, convert_openwakeword_op_file_with_config,
@@ -37,10 +38,11 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|qwen3-tts-tokenizer-12hz|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|sgmse-voicebank|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|qwen3-tts-tokenizer-12hz|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model cosyvoice2-hift --input <hift.safetensors> --config <cosyvoice2.yaml> --license apache-2.0 --output <out.gguf>
     vokra-cli convert --model cosyvoice3 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model chatterbox --input <t3.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
@@ -97,11 +99,13 @@ USAGE:
     vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model sgmse-voicebank --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model fsmn-vad --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model firered-vad --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model whisper-medusa-v1 --input <merged.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model firered-asr-aed-l --input <prepared.safetensors> --cmvn <cmvn.txt> --dict <dict.txt> --output <out.gguf>
     vokra-cli convert --model ultravox-llama-companion --input <model.safetensors> \
                       --config <config.json> --revision <audited-revision> \
                       --output <companion.gguf>
@@ -109,7 +113,7 @@ USAGE:
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac |
-                              csm | moshi | denoise | dia | zonos | kyutai-stt |
+                              csm | moshi | denoise | sgmse-voicebank | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-tdt-1.1b | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
                               reazonspeech-nemo-v2 |
                               distil-whisper | kotoba-whisper | whisper-medusa-v1 |
@@ -402,6 +406,8 @@ OPTIONS:
                               six axes no tensor shape carries) OR the exact
                               Parakeet-CTC config.json (required together with
                               --preprocessor and --tokenizer)
+    --cmvn <path>             FireRedASR-AED-L exact authenticated cmvn.txt sidecar
+    --dict <path>             FireRedASR-AED-L exact authenticated dict.txt sidecar
     --preprocessor <path>     Parakeet-CTC only: exact upstream
                               preprocessor_config.json (80-bin Slaney mel,
                               16 kHz, n_fft=512, hop=160, win=400,
@@ -484,6 +490,10 @@ struct Parsed {
     raw_model_slug: String,
     input: PathBuf,
     config: Option<PathBuf>,
+    /// FireRedASR-AED-L exact inspected CMVN sidecar.
+    cmvn: Option<PathBuf>,
+    /// FireRedASR-AED-L exact inspected output dictionary sidecar.
+    dict: Option<PathBuf>,
     /// Parakeet-CTC only: exact upstream `preprocessor_config.json`.
     preprocessor: Option<PathBuf>,
     /// M3-10 Wave 8 — Voxtral only. When present, `convert` routes through
@@ -530,11 +540,35 @@ fn parse_quant(s: &str) -> Option<GgmlType> {
     }
 }
 
+fn validate_firered_options(p: &Parsed) -> Result<(), String> {
+    if !matches!(p.model, ModelKind::FireredAsrAedL) && (p.cmvn.is_some() || p.dict.is_some()) {
+        return Err("--cmvn/--dict are only supported for --model firered-asr-aed-l".to_owned());
+    }
+    if matches!(p.model, ModelKind::FireredAsrAedL) && (p.cmvn.is_none() || p.dict.is_none()) {
+        return Err(
+            "--model firered-asr-aed-l requires both --cmvn <cmvn.txt> and --dict <dict.txt>"
+                .to_owned(),
+        );
+    }
+    if matches!(p.model, ModelKind::FireredAsrAedL) && p.config.is_some() {
+        return Err("--model firered-asr-aed-l uses --cmvn and --dict, not --config".to_owned());
+    }
+    if matches!(p.model, ModelKind::FireredAsrAedL) && p.quant.is_some() {
+        return Err("--quantize is not supported for --model firered-asr-aed-l".to_owned());
+    }
+    if matches!(p.model, ModelKind::FireredAsrAedL) && p.policy.is_some() {
+        return Err("--policy-preset is not supported for --model firered-asr-aed-l".to_owned());
+    }
+    Ok(())
+}
+
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
     let mut raw_model_slug: String = String::new();
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut cmvn: Option<PathBuf> = None;
+    let mut dict: Option<PathBuf> = None;
     let mut preprocessor: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
     let mut tokenizer: Option<PathBuf> = None;
@@ -555,7 +589,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` \
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
-                         campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac | \
+                         campplus | kokoro | cosyvoice2 | cosyvoice2-hift | cosyvoice3 | voxtral | mimi | nanocodec | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | \
@@ -580,6 +614,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--cmvn" => {
+                cmvn = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--cmvn requires a value")?,
+                ));
+                i += 2;
+            }
+            "--dict" => {
+                dict = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--dict requires a value")?,
                 ));
                 i += 2;
             }
@@ -660,6 +706,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         raw_model_slug,
         input: input.ok_or("--input is required")?,
         config,
+        cmvn,
+        dict,
         preprocessor,
         adapter_config,
         tokenizer,
@@ -759,6 +807,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
+    validate_firered_options(&p)?;
     // `--silero-variant` is Silero-VAD-only. Silently dropping it on other
     // models would misrepresent provenance (the flag would appear honored
     // in the CLI diagnostics but write nothing) — FR-EX-08 fail-closed.
@@ -771,6 +820,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
 
     let result = match model {
+        ModelKind::FireredAsrAedL => convert_firered_asr_aed_l_with_sidecars(
+            &p.input,
+            p.cmvn.as_deref().expect("validated FireRed CMVN sidecar"),
+            p.dict
+                .as_deref()
+                .expect("validated FireRed dictionary sidecar"),
+            &p.output,
+            p.license.as_deref(),
+        ),
         ModelKind::SileroVad => {
             // Silero VAD accepts an optional `--silero-variant` selector
             // that stamps `vokra.silero.version` and shifts the model
@@ -1163,6 +1221,31 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // runtime refuses the LLM bind (loud converter note).
             convert_cosyvoice2_file(&p.input, p.config.as_deref(), &p.output)
         }
+        ModelKind::CosyVoice2Hift => {
+            if p.quant.is_some() {
+                return Err("--quantize is not supported for cosyvoice2-hift".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is not supported for cosyvoice2-hift".to_owned());
+            }
+            if p.license.is_none() {
+                return Err(
+                    "--model cosyvoice2-hift requires --license apache-2.0 (explicit license attestation)"
+                        .to_owned(),
+                );
+            }
+            let config = p
+                .config
+                .as_deref()
+                .ok_or("--model cosyvoice2-hift requires --config <cosyvoice2.yaml>")?;
+            convert_cosyvoice2_hift_file(&p.input, config, &p.output, p.license.as_deref()).map(|r| ConvertSummary {
+                model,
+                tensor_count: r.written,
+                metadata_count: r.metadata_count,
+                output_bytes: r.output_bytes,
+                notes: vec!["strict standalone CosyVoice2 HiFT companion; no publication or parity claim".to_owned()],
+            })
+        }
         ModelKind::CosyVoice3 => {
             // Quantization surface is whisper-only; reject rather than
             // silently ignoring (same posture as CosyVoice2).
@@ -1299,7 +1382,8 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // both on VAST and this strict entry point refuses the raw,
             // main-only checkpoint.  The MiniCPM text tokenizer is also a
             // required side-car for the 2B release and is embedded verbatim.
-            // VoxCPM-0.5B remains compatible with the no-tokenizer path.
+            // VoxCPM-0.5B is inspection-only until its AudioVAE + tokenizer
+            // composite is authenticated; the converter emits no GGUF.
             // Quantization surface is whisper-only (same posture as
             // Qwen3-TTS / Chatterbox family / CosyVoice3 / dia / zonos).
             if p.quant.is_some() {
@@ -2120,6 +2204,96 @@ mod tests {
     }
 
     #[test]
+    fn firered_parse_and_option_contract_is_model_free() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "firered-asr-aed-l",
+            "--input",
+            "prepared.safetensors",
+            "--cmvn",
+            "cmvn.txt",
+            "--dict",
+            "dict.txt",
+            "--output",
+            "out.gguf",
+        ]))
+        .expect("both FireRed sidecars parse");
+        assert_eq!(
+            parsed.cmvn.as_deref(),
+            Some(std::path::Path::new("cmvn.txt"))
+        );
+        assert_eq!(
+            parsed.dict.as_deref(),
+            Some(std::path::Path::new("dict.txt"))
+        );
+        validate_firered_options(&parsed).expect("both sidecars accepted");
+
+        for argv in [
+            vec![
+                "--model",
+                "firered-asr-aed-l",
+                "--input",
+                "i",
+                "--cmvn",
+                "c",
+                "--output",
+                "o",
+            ],
+            vec![
+                "--model", "whisper", "--input", "i", "--cmvn", "c", "--dict", "d", "--output", "o",
+            ],
+            vec![
+                "--model",
+                "firered-asr-aed-l",
+                "--input",
+                "i",
+                "--cmvn",
+                "c",
+                "--dict",
+                "d",
+                "--config",
+                "cfg",
+                "--output",
+                "o",
+            ],
+            vec![
+                "--model",
+                "firered-asr-aed-l",
+                "--input",
+                "i",
+                "--cmvn",
+                "c",
+                "--dict",
+                "d",
+                "--quantize",
+                "q4_k",
+                "--output",
+                "o",
+            ],
+            vec![
+                "--model",
+                "firered-asr-aed-l",
+                "--input",
+                "i",
+                "--cmvn",
+                "c",
+                "--dict",
+                "d",
+                "--policy-preset",
+                "fp16",
+                "--output",
+                "o",
+            ],
+        ] {
+            let parsed = parse_args(&args(&argv)).expect("parse precedes option validation");
+            assert!(
+                validate_firered_options(&parsed).is_err(),
+                "invalid FireRed options accepted: {argv:?}"
+            );
+        }
+    }
+
+    #[test]
     fn vocos_success_label_preserves_selected_variant() {
         assert_eq!(
             conversion_display_model(ModelKind::Vocos, "vocos-encodec-24khz"),
@@ -2365,6 +2539,24 @@ mod tests {
     }
 
     #[test]
+    fn cosyvoice2_hift_requires_explicit_apache_attestation() {
+        assert!(USAGE.contains("--model cosyvoice2-hift"));
+        assert!(USAGE.contains("--license apache-2.0"));
+        let error = main(&args(&[
+            "--model",
+            "cosyvoice2-hift",
+            "--input",
+            "/definitely/nonexistent/hift.safetensors",
+            "--config",
+            "/definitely/nonexistent/cosyvoice2.yaml",
+            "--output",
+            "/definitely/nonexistent/out.gguf",
+        ]))
+        .expect_err("missing license must fail at CLI dispatch");
+        assert!(error.contains("requires --license apache-2.0"), "{error}");
+    }
+
+    #[test]
     fn parses_ultravox_companion_as_separate_revisioned_mode() {
         let revision = "0123456789abcdef0123456789abcdef01234567";
         let parsed = parse_args(&args(&[
@@ -2404,6 +2596,7 @@ mod tests {
             ("campplus", ModelKind::CamPlus),
             ("kokoro", ModelKind::Kokoro),
             ("cosyvoice2", ModelKind::CosyVoice2),
+            ("cosyvoice2-hift", ModelKind::CosyVoice2Hift),
             ("cosyvoice3", ModelKind::CosyVoice3),
             ("voxtral", ModelKind::Voxtral),
             ("mimi", ModelKind::Mimi),
@@ -2426,6 +2619,7 @@ mod tests {
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
             ("chatterbox-nano", ModelKind::ChatterboxNano),
             ("qwen3-tts", ModelKind::Qwen3Tts),
+            ("sgmse-voicebank", ModelKind::Sgmse),
             ("voxcpm", ModelKind::VoxCpm2),
             ("vibevoice", ModelKind::VibeVoice),
             ("irodori", ModelKind::Irodori),

@@ -34,8 +34,15 @@
 //! shared op. The Task 24-27 converter is what will read the real ladder
 //! out of an actual SBV2 JP-Extra checkpoint.
 
+use vokra_core::{BackendKind, Result};
 use vokra_ops::attrs::HifiGanAttrs;
-use vokra_ops::hifigan::{HifiGanConfig, HifiGanWeights, hifigan_generator_conditioned};
+use vokra_ops::hifigan::{
+    HifiGanConfig, HifiGanConvPadding, HifiGanWeights, hifigan_generator_conditioned,
+    hifigan_generator_conditioned_with_backend_ops,
+};
+
+use crate::compute::Compute;
+use crate::hifigan::{HIFIGAN_HOT_OPS, HifiGanComputeOps};
 
 /// Thin wrapper over [`hifigan_generator`]: owns a pre-trained HiFi-GAN
 /// weight / shape / precision bundle and exposes one
@@ -192,6 +199,45 @@ impl SbV2Decoder {
         .expect(
             "SbV2Decoder::generate: hifigan_generator failed on a validated attrs/config bundle",
         )
+    }
+
+    /// Backend-dispatched decoder. CPU delegates to the established scalar
+    /// path unchanged; Metal requires the complete HiFi-GAN Conv1D set and
+    /// never silently falls back to CPU.
+    pub(crate) fn generate_conditioned_with_backend(
+        &self,
+        mel_hidden: &[f32],
+        mel_seq_len: usize,
+        g: Option<&[f32]>,
+        backend: BackendKind,
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(mel_hidden.len(), mel_seq_len * self.attrs.n_mels);
+        if backend == BackendKind::Cpu {
+            return Ok(self.generate_conditioned(mel_hidden, mel_seq_len, g));
+        }
+        let compute = Compute::for_backend(backend, HIFIGAN_HOT_OPS)?;
+        let ops = HifiGanComputeOps { compute: &compute };
+        match g {
+            Some(conditioning) => hifigan_generator_conditioned_with_backend_ops(
+                mel_hidden,
+                mel_seq_len,
+                &self.weights,
+                &self.attrs,
+                &self.config,
+                conditioning,
+                HifiGanConvPadding::Zero,
+                &ops,
+            ),
+            None => vokra_ops::hifigan::hifigan_generator_with_backend_ops(
+                mel_hidden,
+                mel_seq_len,
+                &self.weights,
+                &self.attrs,
+                &self.config,
+                HifiGanConvPadding::Zero,
+                &ops,
+            ),
+        }
     }
 
     /// Returns `true` when this decoder carries a `cond` (speaker

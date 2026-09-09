@@ -88,6 +88,9 @@ pub(crate) mod chatterbox_nano;
 // weight norm, and stamps the official 42-entry phone inventory.
 pub(crate) mod charsiu;
 pub(crate) mod cosyvoice2;
+#[allow(dead_code)] // staged until the VAST-prepared flow digest is pinned
+pub(crate) mod cosyvoice2_flow;
+pub(crate) mod cosyvoice2_hift;
 // M5 gap follow-up (2026-07-30): marl/crepe (Kim et al. 2018) — a
 // monophonic F0 (fundamental-frequency) extractor. The upstream release
 // ships a Keras / TensorFlow `.h5`, so `tools/parity/keras_h5_to_safetensors.py`
@@ -135,6 +138,7 @@ pub mod deberta_v3;
 pub(crate) mod dia;
 pub mod ecapa_tdnn;
 pub mod emotion2vec;
+pub mod voice_gender_classifier;
 // M5-16 (FR-OP-83): FCPE — Fast Context-based Pitch Estimator (CNChTu/FCPE,
 // MIT permissive). safetensors → GGUF pass-through (F32 / F16 / BF16
 // verbatim, `vokra.fcpe.*` / `vokra.provenance.*` stamps). Reuses the
@@ -190,10 +194,9 @@ pub mod knn_vc;
 pub(crate) mod kokoro;
 // SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN (CC-BY 4.0 weight,
 // AttributionRequired) safetensors → GGUF with the `vokra.kyutai_stt.*`
-// chunk group. Every F32 / F16 tensor passes through verbatim; every
-// hparam is transcribed from the upstream config.json. The upstream
-// release is BF16 and the streaming-BF16 pass-through path is a follow-up
-// (T29-equivalent — the Moshi pattern).
+// chunk group. The converter accepts exactly the official 323-tensor BF16
+// decoder-component manifest and preserves payloads verbatim; Mimi,
+// tokenizer, streaming state, and complete ASR remain separate gates.
 pub(crate) mod kyutai_stt;
 // Wave 7 2026-08-14 coverage-audit-2026-08-03 wave-b follow-up
 // (streaming S2S runtime binder — LIB.RS RULE parallel: append near
@@ -430,9 +433,10 @@ pub mod pyannote_speaker_diarization_3_1;
 // not compatible, and qwen3_tts_codec alone is only the code-layout seam.
 pub(crate) mod qwen3_tts;
 pub(crate) mod qwen3_tts_tokenizer_12hz;
-// SBV2 v2 plan Task 25 (2026-07-26): Style-Bert-VITS2 v2
-// (`litagin02/style_bert_vits2` family, AGPL-3.0 -> LicenseClass::Copyleft
-// default) safetensors -> GGUF, category `tts`. BF16 pass-through mirror of
+// SBV2 v2 plan Task 25 (2026-07-26): Style-Bert-VITS2 v2 JP-Extra
+// (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`, AGPL-3.0 ->
+// LicenseClass::Copyleft default) safetensors -> GGUF, category `tts`.
+// BF16 pass-through mirror of
 // `deberta_v2` / `funcodec` / `wespeaker`; the `vokra.sbv2.*` hparam chunk
 // (22 required + 1 optional keys) is written only when a JSON config
 // side-car is supplied -- never filled with invented placeholders (see
@@ -606,7 +610,7 @@ pub(crate) mod whisper;
 // license default is NonCommercial (fail-closed) so a commercial-mode
 // caller cannot silently bring up NC weights.
 pub(crate) mod xcodec2;
-// SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
+// SoTA plan Phase 5 codec (2026-07-25): OpenMOSS XY_Tokenizer_TTSD_V0
 // (apache-2.0) safetensors → GGUF. 1 kbps RVQ-8 @ 12.5 Hz — the codec
 // half of MOSS-TTSD. F32 / F16 / BF16 pass-through following the
 // qwen3_tts / vibevoice / voxcpm2 landed contract.

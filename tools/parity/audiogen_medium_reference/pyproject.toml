@@ -1,0 +1,10 @@
+[project]
+name = "vokra-audiogen-medium-reference"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+# Official AudioCraft/T5/codec compatibility versions are not locally
+# authenticated. Keep this project non-executable until selected-source
+# requirements produce a complete transitive lock.

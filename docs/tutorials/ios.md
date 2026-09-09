@@ -11,7 +11,8 @@ getting from `git clone` to a running Vokra call on device.
 - **Xcode 14 or newer** on macOS.
 - **iOS 15+** target device or Simulator (iOS 14 and older is out of scope).
 - Apple Developer signing profile for device deployment.
-- The Vokra repository (or a tagged release URL).
+- The Vokra repository. A tagged release URL can be used after an authorized
+  release is published; no tagged release is currently available.
 
 ## 2. Build the XCFramework
 
@@ -36,9 +37,10 @@ scripts/verify-ios-xcframework.sh build/ios/Vokra.xcframework
 
 ### Path B — release download
 
-CD publishes `Vokra.xcframework.zip` + its SHA-256 as a GitHub Release
-asset. Update `Package.swift` to the URL form (the file already has the
-template commented out):
+After an authorized release, CD may publish `Vokra.xcframework.zip` + its
+SHA-256 as a GitHub Release asset. No such asset is available currently.
+Update `Package.swift` to the URL form (the file already has the template
+commented out) once a release exists:
 
 ```swift
 .binaryTarget(

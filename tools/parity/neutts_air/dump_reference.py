@@ -24,6 +24,7 @@ import os
 import platform
 import re
 import sys
+import tempfile
 import types
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ SCHEMA = "vokra-neutts-air-reference-v1"
 UPSTREAM_REPO = "neuphonic/neutts-air"
 UPSTREAM_REVISION = "3b58b776406b62fdc137e31ea53d728f5c22a4ed"
 SOURCE_REVISION = "3e9415df12633f8a74ac6f92418c7cd5c8c4bf0e"
+SOURCE_REPO = "https://github.com/neuphonic/neutts.git"
+SOURCE_PATH = "neuttsair/neutts.py"
 SOURCE_BYTES = 9_035
 SOURCE_SHA256 = "e68b87dae6718903337a08eff56afbd58ba261d829624ea5a00a343c8cefb7c1"
 TRANSFORMERS_VERSION = "5.5.0"
@@ -231,15 +234,78 @@ def cpu_model() -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-dir", type=Path, required=True)
-    parser.add_argument("--source-file", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--model-dir", type=Path)
+    parser.add_argument("--source-file", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--max-new-tokens", type=int, default=4)
+    parser.add_argument("--self-test", action="store_true")
     return parser.parse_args(argv)
+
+
+def self_test() -> int:
+    """Check the fixed oracle contract without importing ML packages or data."""
+    if not re.fullmatch(r"[0-9a-f]{40}", UPSTREAM_REVISION):
+        die("upstream revision invariant failed")
+    if not re.fullmatch(r"[0-9a-f]{40}", SOURCE_REVISION):
+        die("source revision invariant failed")
+    if SOURCE_BYTES != 9_035 or not re.fullmatch(r"[0-9a-f]{64}", SOURCE_SHA256):
+        die("source byte/hash invariant failed")
+    if VOCAB_SIZE != 217_652 or not all(0 <= code <= 65_535 for code in REFERENCE_CODES):
+        die("token/code range invariant failed")
+    if SPEECH_TOKEN_BASE + 65_535 != SPEECH_TOKEN_LAST:
+        die("speech token range invariant failed")
+    try:
+        safe_manifest_value("line\nbreak")
+        die("manifest newline safety invariant failed")
+    except ValueError:
+        pass
+    try:
+        safe_manifest_value("key=value")
+        die("manifest delimiter safety invariant failed")
+    except ValueError:
+        pass
+    with tempfile.TemporaryDirectory(prefix="neutts-air-dumper-") as directory:
+        root = Path(directory)
+        model_dir = root / "model"
+        model_dir.mkdir()
+        for name in (
+            "config.json", "generation_config.json", "model.safetensors",
+            "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json",
+            "vocab.json",
+        ):
+            (model_dir / name).write_bytes(name.encode())
+        source_file = root / SOURCE_PATH
+        source_file.parent.mkdir(parents=True)
+        source_file.write_bytes(b"source")
+        inventory = source_inventory(model_dir, source_file)
+        expected_names = {
+            "config.json", "generation_config.json", "model.safetensors",
+            "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json",
+            "vocab.json", SOURCE_PATH,
+        }
+        if set(inventory) != expected_names or any(
+            set(row) != {"bytes", "sha256"}
+            or not isinstance(row["bytes"], int)
+            or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+            for row in inventory.values()
+        ):
+            die("source inventory contract invariant failed")
+        manifest_path = root / "manifest.txt"
+        write_manifest(manifest_path, {"z": "last", "a": "first"})
+        if manifest_path.read_text(encoding="utf-8") != "a=first\nz=last\n":
+            die("deterministic manifest ordering invariant failed")
+    print("neutts_air reference: self-test PASS")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.self_test:
+        if args.model_dir is not None or args.source_file is not None or args.output is not None:
+            die("--self-test accepts no model/source/output arguments")
+        return self_test()
+    if args.model_dir is None or args.source_file is None or args.output is None:
+        die("--model-dir, --source-file and --output are required")
     model_dir = args.model_dir.resolve()
     source_file = args.source_file.resolve()
     output = args.output.resolve()
@@ -360,7 +426,10 @@ def main(argv: list[str] | None = None) -> int:
         "schema": SCHEMA,
         "upstream_repo": UPSTREAM_REPO,
         "upstream_revision": UPSTREAM_REVISION,
+        "source_repo": SOURCE_REPO,
         "source_revision": SOURCE_REVISION,
+        "source_path": SOURCE_PATH,
+        "source_bytes": SOURCE_BYTES,
         "source_sha256": SOURCE_SHA256,
         "source_config_sha256": sha256_file(model_dir / "config.json"),
         "source_weights_sha256": sha256_file(model_dir / "model.safetensors"),

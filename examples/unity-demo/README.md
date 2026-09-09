@@ -6,7 +6,7 @@ M0-09). It is the M0-10 work package deliverable (v0.1 spike).
 
 Inference goes **only** through Vokra — there is no Unity Sentis / Inference
 Engine dependency (`Packages/manifest.json` has none; SRS §5-(10),
-CLAUDE.md design note 5) — and the end-to-end path contains **no onnxruntime**
+the repository's no-ML-package policy) — and the end-to-end path contains **no onnxruntime**
 (the TTS is the piper-plus native MB-iSTFT-VITS2 implementation, 2026-07-02
 native decision).
 
@@ -100,9 +100,9 @@ the sentence spoken when ASR has no real text yet.
   `VokraCallbacks.cs` is a compile-checked **template** of the IL2CPP-safe pattern
   (`[MonoPInvokeCallback]` static method + `GCHandle` userdata, NFR-RL-02),
   carried to v0.5 (FR-API-04) — it is not wired to any current symbol.
-- **ASR text in M0** renders as bracketed token ids (the tokenizer is not yet
-  embedded in the GGUF — an M0-09 followup); the demo speaks a fallback sentence
-  in that case.
+- **ASR text** is UTF-8 decoded by `WhisperAsr::transcribe` through
+  `render_ids`; the converter embeds `vokra.tokenizer.model` in the GGUF. The
+  demo speaks a fallback sentence only when ASR returns no usable text.
 
 ## vokra.h ↔ C# mapping
 

@@ -86,13 +86,10 @@ fn committed_reference_has_pinned_shapes_and_provenance() {
 }
 
 #[test]
+#[ignore = "requires the VAST/Apple-staged ECAPA GGUF"]
 fn public_artifact_matches_speechbrain() {
-    let Some(path) = std::env::var_os("VOKRA_ECAPA_GGUF") else {
-        eprintln!(
-            "[parity_ecapa_tdnn_real] SKIP: set VOKRA_ECAPA_GGUF to a public canonical ECAPA-TDNN GGUF"
-        );
-        return;
-    };
+    let path = std::env::var_os("VOKRA_ECAPA_GGUF")
+        .expect("VOKRA_ECAPA_GGUF is required for the ignored real-artifact test");
     let model = EcapaTdnn::from_path(path).expect("strict public ECAPA-TDNN bind");
     let pcm = f32s(PCM);
     let expected_features = f32s(FEATURES);
@@ -130,6 +127,7 @@ fn public_artifact_matches_speechbrain() {
     assert!(end_to_end_metrics.max_abs <= 5.0e-4);
     assert!(end_to_end_metrics.relative_l1 <= 8.0e-6);
     assert!(end_to_end_metrics.cosine >= 0.999_999_5);
+    eprintln!("ECAPA-TDNN CPU_VS_UPSTREAM PASS");
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
     {
@@ -143,8 +141,19 @@ fn public_artifact_matches_speechbrain() {
         let metal_embedding = metal
             .embed_features(&features, frames)
             .expect("Metal ECAPA-TDNN network");
+        let metal_upstream_metrics = measure(
+            "Metal embedding vs SpeechBrain",
+            &metal_embedding,
+            &expected_embedding,
+        );
+        // No Apple Metal-vs-SpeechBrain measurement is committed yet. Keep
+        // the complete metric as evidence, but do not turn an unmeasured
+        // backend bound into a fabricated pass gate.
+        let _ = metal_upstream_metrics;
+        eprintln!("ECAPA-TDNN METAL_VS_UPSTREAM MEASUREMENT_ONLY");
         let metal_metrics = measure("Metal embedding vs CPU", &metal_embedding, &embedding);
         assert!(metal_metrics.relative_l1 <= 1.0e-3);
         assert!(metal_metrics.cosine >= 0.999);
+        eprintln!("ECAPA-TDNN METAL_VS_CPU PASS");
     }
 }

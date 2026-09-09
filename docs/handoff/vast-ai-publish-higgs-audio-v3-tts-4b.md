@@ -3,6 +3,11 @@
 **Owner-triggered.** CC は本 doc 作成のみ。実 vast.ai instance の起動・convert・
 publish は owner が本 runbook を追いながら実行する。
 
+> **2026-08-30 resource supersession:** The measured 8.67 GiB total is above
+> the current **>=2 GB VAST-required** boundary (model plus all shards). Any
+> legacy `LOCAL_BORDERLINE`/8 GB classification from older tooling is not a
+> local-processing authorization.
+
 **Related**:
 - 本 runbook は `docs/handoff/vast-ai-large-model-publish.md`（総論 = §2 recipe /
   §3 provision.sh gotcha / §4 lifecycle）を **前提** とする。共通手順は総論を参照
@@ -114,7 +119,7 @@ CC-write-doc の段で catch した = §3.1 sign-off gate + primary-source rule 
 | License (upstream weight) | 同上 (weight と code 一体) |
 | SPDX (Vokra 判定) | `LicenseRef-Boson-Higgs-TTS-3-Research-Non-Commercial` (SPDX 未登録 custom) |
 | Total safetensors size | **8.67 GiB (9,309,834,930 bytes) single-shard**（BF16、`model.safetensors` 単一ファイル + `model.safetensors.index.json` はメタデータ用 90 KB） |
-| 判定 (`check-model-size.sh`) | `LOCAL_BORDERLINE` (8-16 GiB range) — 依頼者ルール #1 で ≥2GB は vast.ai 推奨 |
+| Current handling | **VAST required**（合計 8.67 GiB、現行の「モデル本体 + 全 shard が 2 GB 以上」境界に該当。旧 `check-model-size.sh` の `LOCAL_BORDERLINE` / 8 GB 分類は履歴であり、ローカル処理を許可しない） |
 | Vokra ModelKind | `HiggsAudioV3Tts4b` (`--model higgs-audio-v3-tts-4b` / `higgs-audio-v3` / `higgs_audio_v3`) |
 | Arch tag | `vokra.model.arch = "higgs_audio_v3_tts_4b"` (sibling TTS と区別) |
 | Vokra HF slug | `vokra/higgs-audio-v3-tts-4b` (現時点は **publish 不可**、§0.3 参照) |

@@ -1,27 +1,67 @@
 [project]
-name = "magnet-medium-30secs-prep"
+name = "vokra-magnet-medium-30secs-reference"
 version = "0.1.0"
-description = "Offline sidecar: facebook/magnet-medium-30secs upstream checkpoint → flat safetensors (torch pickle bridge + dedup + int/f64/bool strip). Bridges the upstream Meta AudioCraft release (~5.7 GB, 1.5B params = non-autoregressive masked-LM transformer + audiocraft-bundled EnCodec 32 kHz codec + T5-base text encoder, sibling of `magnet-small-10secs` with wider hidden / more layers / 30 sec span vs 10 sec) to the Rust converter (crates/vokra-convert/src/models/magnet_medium_30secs.rs), which consumes single-file safetensors only. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
-requires-python = ">=3.12"
-dependencies = [
-    # torch: unwraps the audiocraft-published .th torch pickle bundle
-    #        (or a mirror-hosted safetensors) via `torch.load` + explicit
-    #        pickle_module gate, plus data-pointer tracking for the
-    #        shared-storage dedup pass (memory
-    #        `[[reference-safetensors-shared-tensor-dedup]]`) that
-    #        `safetensors.torch.save_file` demands. Range mirrors the
-    #        sibling `magnet_small_10secs/pyproject.toml` and
-    #        `firered_asr_llm_l/pyproject.toml`.
-    "torch>=2.0",
-    # safetensors: canonical Python writer for the flat output the Rust
-    #        converter consumes.
-    "safetensors>=0.4",
-    # huggingface-hub: convenience for the download path the README
-    #        documents (`hf download facebook/magnet-medium-30secs
-    #        --local-dir ...`). No vast.ai pin here — local convert
-    #        (~5.7 GB, below the 8 GB owner cutoff per memory
-    #        `[[feedback-large-models-on-vast-ai]]`) fits on M1 iMac
-    #        16 GB, so the lift-shift pin `<0.30` from the sibling
-    #        vast.ai runbook is not required.
-    "huggingface-hub>=0.26",
+description = "VAST-only AudioCraft MAGNeT Medium checkpoint bridge; no runtime dependency."
+requires-python = "==3.12.*"
+dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", "torch==2.7.1"]
+
+[tool.uv]
+package = false
+environments = ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.vokra.audiocraft_reference]
+operator_approval = { decision = "PENDING_OWNER_SIGNOFF", signer = "", digest = "" }
+model = "facebook/magnet-medium-30secs"
+source_license = "MIT"
+weight_license = "CC-BY-NC-4.0"
+source_repository = "facebookresearch/audiocraft"
+source_revision = "905371a779f608169353fe6ad42bb5fc10c5c9a8"
+source_license_evidence = "LICENSE:1088:da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+weight_license_evidence = "facebook/magnet-medium-30secs@2559c5978450f62782cf1d17826d384fb93fb64b"
+status = "BLOCKED_LICENSE_REVIEW_VAST_ONLY"
+publication = "NO_UPLOAD"
+runtime_status = "CONVERTER_ONLY_RUNTIME_BINDER_UNRESOLVED"
+lock_policy = "Every uv.lock package row (name/version/source, resolver markers when present, dependency name+source+version+marker, and complete artifact URL/hash/size rows) plus each version-keyed primary-source license record is audited before sync or acquisition."
+forbidden_packages = ["soxr", "rubberband", "triton", "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"]
+license_blocker = "Owner clearance is required for CC-BY-NC-4.0 weights and any non-Apache/MIT/BSD or bundled/native notices; no local model or pickle access is permitted."
+owner_clearance = "UNRESOLVED_OWNER_SIGNOFF"
+dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", "torch==2.7.1"]
+model_identity = { repo = "facebook/magnet-medium-30secs", revision = "2559c5978450f62782cf1d17826d384fb93fb64b", license_spdx = "CC-BY-NC-4.0", readme_bytes = 10695, readme_sha256 = "85f191c1d886dc8e907986a100f0415751cb86479d18268d2cfacd614b5fd6db", compression_bytes = 236003715, compression_sha256 = "91598c7da3d183eb8e0cc19cbbdc4f64f2d0c53069f9c8aa84185d0e33873c67", state_bytes = 3677670163, state_sha256 = "9bc89122b640f11394f51e6e77b4194d57da328ae81b2301ee316de916dbf4c5" }
+source_identity = { repo = "facebookresearch/audiocraft", revision = "905371a779f608169353fe6ad42bb5fc10c5c9a8", license_spdx = "MIT", license_path = "LICENSE", license_bytes = 1088, license_sha256 = "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93", roles = [{ path = "models/__init__.py", bytes = 669, sha256 = "75c8f32bd306a2df4203eb0cc4bf7edeaf831ea83100c176a481d31e14c5a531" }, { path = "models/magnet.py", bytes = 4400, sha256 = "d0307171a21fd96cb898fefff1190df124d5ce245823a71e1a62b8b8ffe8cdcf" }, { path = "models/loaders.py", bytes = 6699, sha256 = "91a79fcb028b2f1fafdac53b1060598bf0e4a6927467131f20055f6b8a33e4c2" }, { path = "models/lm_magnet.py", bytes = 24724, sha256 = "0c9349d1238d0a0aa276c921c3629de72bbadc9f19fa81b9429fa2e82678e06b" }] }
+license_records = [
+    { name = "filelock", version = "3.32.4", license = "Unlicense", primary_source = "https://pypi.org/pypi/filelock/3.32.4/json" },
+    { name = "fsspec", version = "2026.7.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/fsspec/2026.7.0/json" },
+    { name = "jinja2", version = "3.1.6", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/Jinja2/3.1.6/json" },
+    { name = "markupsafe", version = "3.0.3", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/MarkupSafe/3.0.3/json" },
+    { name = "mpmath", version = "1.3.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/mpmath/1.3.0/json" },
+    { name = "networkx", version = "3.6.1", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/networkx/3.6.1/json" },
+    { name = "safetensors", version = "0.7.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/safetensors/0.7.0/json" },
+    { name = "setuptools", version = "84.0.0", license = "MIT", primary_source = "https://pypi.org/pypi/setuptools/84.0.0/json" },
+    { name = "sympy", version = "1.14.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/sympy/1.14.0/json" },
+    { name = "torch", version = "2.7.1+cpu", license = "BSD-3-Clause", primary_source = "https://download.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" },
+    { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json" },
+    { name = "anyio", version = "4.14.2", license = "MIT", primary_source = "https://pypi.org/pypi/anyio/4.14.2/json" },
+    { name = "certifi", version = "2026.7.22", license = "MPL-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/certifi/2026.7.22/json" },
+    { name = "click", version = "8.5.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/click/8.5.0/json" },
+    { name = "h11", version = "0.16.0", license = "MIT", primary_source = "https://pypi.org/pypi/h11/0.16.0/json" },
+    { name = "hf-xet", version = "1.6.0", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/hf-xet/1.6.0/json" },
+    { name = "httpcore", version = "1.0.9", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/httpcore/1.0.9/json" },
+    { name = "httpx", version = "0.28.1", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/httpx/0.28.1/json" },
+    { name = "huggingface-hub", version = "1.27.0", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/huggingface-hub/1.27.0/json" },
+    { name = "idna", version = "3.19", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/idna/3.19/json" },
+    { name = "packaging", version = "26.3", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/packaging/26.3/json" },
+    { name = "pyyaml", version = "6.0.3", license = "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json" },
+    { name = "tqdm", version = "4.70.0", license = "MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/tqdm/4.70.0/json" },
 ]
+lock_sha256 = "9bde738a4aded86102e8df5d44b5342bd2aabf856ce0201535d8c465198ebb20"
+package_rows_sha256 = "431c4b1f65c02becb7f8346b64aa194dc870d373b14751c149dc7c429f2229c7"
+approval_scope_sha256 = "85b4a999b1b10e4deb9f9bcc9dc81247664d4ec486440152e1388290e4888eb5"
+license_rows_sha256 = "c19b1c2c9d4ec83d8ca6a0500b40c706f9fe5ea90d7fb63416d448b63c9c1d63"

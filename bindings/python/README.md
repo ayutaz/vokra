@@ -7,10 +7,13 @@ keeps third-party Python runtime dependencies at zero.
 
 ## Status: source implementation current, package unpublished
 
-**Reviewed:** 2026-08-22 against `main` `42af7a90` and the generated C header.
+**Reviewed:** 2026-09-09 against the audit-start PR #79 head
+`9efcd16eb63b857f48fc00d0b83d1113defd578b` (110 successful checks / 13
+expected skips / 0 failures) and the generated C header.
 
-The package metadata is `0.1.0.dev0`; this checkout must not be documented as
-an installed `vokra==0.1.0` release. The source tree exports `Session`,
+The workspace is `0.3.0` development with no Git tag or published release;
+the package metadata remains `0.1.0.dev0` for unpublished source wheels. This
+checkout must not be documented as an installed `vokra==0.1.0` release. The source tree exports `Session`,
 `Stream`, `Event`, and the typed `VokraError` hierarchy without loading the
 native library at import time. `vokra.__abi_version__` is not exposed: the C
 header has a runtime version function, not a separately versioned ABI symbol.
@@ -19,7 +22,7 @@ The source-side C-ABI drift is closed in this worktree:
 
 - `include/vokra.h` is the canonical `vokra_*` function set;
 - `src/vokra/_bindings.py` contains exactly one prototype for every function;
-- the generator discovers all four enums, both concrete structs, and all eight
+- the generator discovers all four enums, both concrete structs, and all nine
   opaque handles, including the `uint8_t`, `uint64_t`, plain-`bool`, and
   struct-pointer shapes that previously blocked generation;
 - the required `license` job runs the uv-only drift check, and the wheel smoke

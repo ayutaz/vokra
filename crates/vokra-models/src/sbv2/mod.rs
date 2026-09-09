@@ -31,9 +31,9 @@
 //! **Forward pointer — additive, does not contradict the JP-Extra caveat
 //! above (which still governs real-checkpoint audio quality).** As of the
 //! Phase D SBV2 v2 wave, the ZH code path is wired end-to-end at the
-//! scaffolding level: [`text_encoder::N_LANGUAGES`] = 3 (JA/EN/ZH),
-//! [`Language::ZH`] and its `language_id() = 2` dispatch to
-//! [`SbV2TextEncoder`]'s `language_embed` row 2 are exercised in
+//! scaffolding level: [`text_encoder::N_LANGUAGES`] = 3 (ZH/JP/EN),
+//! [`Language::ZH`] and its `language_id() = 0` dispatch to
+//! [`SbV2TextEncoder`]'s `language_embed` row 0 are exercised in
 //! synthetic-parity tests, and the WordPiece tokenizer aimed at the
 //! owner-approved ZH BERT checkpoint (`hfl/chinese-roberta-wwm-ext-large`,
 //! Apache-2.0) landed as [`vokra_bert::wordpiece::BertWordpieceTokenizer`]
@@ -89,7 +89,15 @@ pub use rng_mode::RngMode;
 pub use decoder::SbV2Decoder;
 pub use duration::{ConvFlow, DDSConv, ElementwiseAffine, SbV2SDP, SdpLayerNorm, length_regulate};
 pub use flow::{Flip, FlowLayer, SbV2Flow, SbV2TransformerCouplingLayer};
-pub use g2p::{Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
+pub use g2p::{
+    Language, OovPolicy, PhonemizeFixture, PhonemizeResult, SBV2_EN_TONE_COUNT, SBV2_EN_TONE_START,
+    SBV2_JA_TONE_COUNT, SBV2_JA_TONE_START, SBV2_JP_EXTRA_HF_REVISION, SBV2_JP_EXTRA_JAPANESE_BLOB,
+    SBV2_JP_EXTRA_MODEL_NAME, SBV2_JP_EXTRA_MORA_BLOB, SBV2_JP_EXTRA_N_VOCAB,
+    SBV2_JP_EXTRA_SEQUENCE_BLOB, SBV2_JP_EXTRA_SOURCE_COMMIT, SBV2_JP_EXTRA_SYMBOLS_BLOB,
+    SBV2_JP_EXTRA_SYMBOLS_CANONICAL_SHA256, SBV2_JP_EXTRA_UPSTREAM_REPOSITORY, SBV2_N_TONES,
+    SBV2_ZH_TONE_COUNT, SBV2_ZH_TONE_START, SbV2JapaneseG2pContract, SbV2JapaneseG2pOutput,
+    SbV2JapaneseG2pProvider, SbV2JapaneseG2pSource, SbV2Phonemizer,
+};
 pub use parity::{
     ATOL_DEFAULT, AtolCalibration, MEL_LOSS_ATOL, PER_TENSOR_ATOL, UTMOS_ATOL,
     atol_calibration_for, tolerance_for,
@@ -119,12 +127,33 @@ use vokra_bert::tokenizer::SbertTokenizer;
 use vokra_bert::wordpiece::BertWordpieceTokenizer;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::{GaussianSplitMix64, TorchRandnStream};
-use vokra_core::{BackendKind, Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
+use vokra_core::{
+    BackendKind, LicenseClass, Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError,
+};
 use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
     GinCondition, HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
     UpsampleStageWeights,
 };
+
+use crate::bert_runtime::{
+    bert_base_forward_with_backend, deberta_v2_forward_with_backend,
+    deberta_v3_forward_with_backend,
+};
+use crate::compute::{Compute, HotOp};
+
+/// Complete learned-op set used by the SBV2 Metal path. Host-side tokenization,
+/// indexing, layout transforms, residual adds and RNG are intentionally not
+/// listed because they are not learned kernels.
+pub(crate) const SBV2_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::Gelu,
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+    HotOp::Gemv,
+];
 
 /// The `vokra.model.arch` value the **main** Style-Bert-VITS2 GGUF must
 /// carry (the `bert_*` side-cars carry their own, different tags — see
@@ -143,6 +172,39 @@ use vokra_ops::hifigan::{
 /// here: they are the arch tags of this loader's *own* `bert_ja` /
 /// `bert_en` arguments, so an argument-order slip is a live failure mode.
 pub const EXPECTED_ARCH: &str = "sbv2";
+/// Exact live SBV2 JP-Extra artifact identity. The older multilingual
+/// placeholder is not an authenticated checkpoint and must not bind here.
+pub const EXPECTED_MODEL_NAME: &str = "sbv2-v2-jp-extra-base";
+/// Exact upstream HF source recorded for the JP-Extra checkpoint.
+pub const EXPECTED_UPSTREAM_HF: &str = "litagin/Style-Bert-VITS2-2.0-base-JP-Extra";
+
+fn require_main_string(main: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    match main.get(key).and_then(|value| value.as_str()) {
+        Some(value) if value == expected => Ok(()),
+        Some(value) => Err(VokraError::ModelLoad(format!(
+            "SbV2Model::from_gguf: `{key}` is `{value}`, expected authenticated JP-Extra value `{expected}`"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "SbV2Model::from_gguf: missing authenticated JP-Extra metadata key `{key}`"
+        ))),
+    }
+}
+
+/// Authenticates the fixed JP-Extra identity before any tensor binding. This
+/// prevents a generic `sbv2` arch stamp or a relabelled legacy GGUF from
+/// reaching the strict topology loader.
+fn verify_main_identity(main: &GgufFile) -> Result<()> {
+    require_main_string(main, chunks::KEY_MODEL_NAME, EXPECTED_MODEL_NAME)?;
+    require_main_string(main, chunks::KEY_PROVENANCE_MODEL_ID, EXPECTED_MODEL_NAME)?;
+    require_main_string(main, chunks::KEY_PROVENANCE_SOURCE, EXPECTED_UPSTREAM_HF)?;
+    require_main_string(main, chunks::KEY_PROVENANCE_LICENSE, "agpl-3.0")?;
+    require_main_string(
+        main,
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::Copyleft.as_str(),
+    )?;
+    Ok(())
+}
 
 /// Rejects a **main** GGUF whose `vokra.model.arch` is absent or is not
 /// [`EXPECTED_ARCH`].
@@ -413,6 +475,7 @@ pub struct SbV2Intermediates {
 /// 24-27 checkpoint weights that violate either will need a projection layer
 /// added at that point.
 pub struct SbV2Model {
+    backend: BackendKind,
     phonemizer: SbV2Phonemizer,
     text_encoder: SbV2TextEncoder,
     bert: SbV2BertContainer,
@@ -452,6 +515,7 @@ impl SbV2Model {
         decoder: SbV2Decoder,
     ) -> Self {
         Self {
+            backend: BackendKind::Cpu,
             phonemizer,
             text_encoder,
             bert,
@@ -493,6 +557,28 @@ impl SbV2Model {
     pub fn with_external_speaker_projection(mut self, proj: ExternalSpeakerProjection) -> Self {
         self.speaker_projection = Some(proj);
         self
+    }
+
+    /// Selects the backend for subsequent synthesis. The complete learned-op
+    /// registry is preflighted at synthesis entry, so unsupported devices fail
+    /// explicitly before any model operation runs.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected synthesis backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Changes the backend for the next synthesis. Callers that need to
+    /// compare CPU and Metal on one loaded checkpoint can reuse the same
+    /// immutable weight bundle and switch this selector between runs.
+    pub fn set_backend(&mut self, backend: BackendKind) {
+        self.backend = backend;
     }
 
     /// Returns a read-only handle to the loaded [`ExternalSpeakerProjection`]
@@ -1186,6 +1272,15 @@ impl SbV2Model {
             )));
         }
 
+        // Preflight the entire learned-op set before G2P or tensor work. This
+        // makes a requested Metal path fail closed rather than partially
+        // executing and silently falling back to CPU.
+        let compute = if self.backend == BackendKind::Cpu {
+            None
+        } else {
+            Some(Compute::for_backend(self.backend, SBV2_HOT_OPS)?)
+        };
+
         // 1. G2P
         let phon = self.phonemizer.phonemize(&req.text, req.language)?;
         if phon.phoneme_ids.is_empty() {
@@ -1198,7 +1293,7 @@ impl SbV2Model {
         // via [`Language::language_id`], which pins the row of
         // `SbV2TextEncoder::language_embed` that gets broadcast-added to
         // every position. See `SbV2TextEncoder::forward`'s `language_id`
-        // doc for the tentative JA=0/EN=1/ZH=2 row-ordering convention.
+        // doc for the authenticated ZH=0/JP(JA)=1/EN=2 row-ordering convention.
         //
         // Wave-4 INTERMEDIATE-ACCESSORS: capture both the pre-transformer
         // sum (`phoneme_embed`) and the post-transformer hidden state
@@ -1207,11 +1302,19 @@ impl SbV2Model {
         // `text_hidden.bin`. The full pipeline consumes only `text_hidden`
         // downstream; `phoneme_embed` is a pure snapshot of the sum
         // buffer taken before the in-place transformer stack.
-        let (phoneme_embed, text_hidden) = self.text_encoder.forward_with_embed(
-            &phon.phoneme_ids,
-            &phon.tones,
-            req.language.language_id(),
-        );
+        let (phoneme_embed, text_hidden) = match compute.as_ref() {
+            Some(compute) => self.text_encoder.forward_with_compute(
+                compute,
+                &phon.phoneme_ids,
+                &phon.tones,
+                req.language.language_id(),
+            )?,
+            None => self.text_encoder.forward_with_embed(
+                &phon.phoneme_ids,
+                &phon.tones,
+                req.language.language_id(),
+            ),
+        };
 
         // 3. BERT (per-language). ZH is optional (WP-19): the ZH arm below
         // routes through [`SbV2BertContainer::zh_tokenizer`] +
@@ -1268,17 +1371,26 @@ impl SbV2Model {
                     .to_string(),
             ));
         }
-        let bert_hidden = match req.language {
-            Language::JA => self.bert.ja.forward(&bert_ids),
-            Language::EN => self.bert.en.forward(&bert_ids),
-            Language::ZH => {
+        let bert_hidden = match (req.language, compute.as_ref()) {
+            (Language::JA, Some(_)) => {
+                deberta_v2_forward_with_backend(&self.bert.ja, &bert_ids, self.backend)?
+            }
+            (Language::EN, Some(_)) => {
+                deberta_v3_forward_with_backend(&self.bert.en, &bert_ids, self.backend)?
+            }
+            (Language::JA, None) => self.bert.ja.forward(&bert_ids),
+            (Language::EN, None) => self.bert.en.forward(&bert_ids),
+            (Language::ZH, compute) => {
                 let zh_enc = self.bert.zh.as_ref().ok_or(VokraError::NotImplemented(
                     "SbV2Model::synthesize: language ZH requested and ZH tokenizer \
                          is wired but the ZH encoder (SbV2BertContainer::zh) is None — \
                          one-sided ZH wiring is a caller bug (FR-EX-08). Use \
                          SbV2Model::from_gguf_with_zh_bert to load both sides together.",
                 ))?;
-                zh_enc.forward(&bert_ids, None)
+                match compute {
+                    Some(_) => bert_base_forward_with_backend(zh_enc, &bert_ids, self.backend)?,
+                    None => zh_enc.forward(&bert_ids, None),
+                }
             }
         };
 
@@ -1310,9 +1422,17 @@ impl SbV2Model {
         // (sum=24229/max=12036 on 8-phoneme "テスト"). Feeding SDP raw
         // text_hidden (±0.9 magnitude, bit-identical to Python
         // reference) restores sane durations (sum≤30/max≤10 range).
-        let bridged =
-            self.bert_bridge
-                .forward(&bert_hidden, phon.phoneme_ids.len(), bert_ids.len());
+        let bridged = match compute.as_ref() {
+            Some(compute) => self.bert_bridge.forward_with_compute(
+                compute,
+                &bert_hidden,
+                phon.phoneme_ids.len(),
+                bert_ids.len(),
+            )?,
+            None => self
+                .bert_bridge
+                .forward(&bert_hidden, phon.phoneme_ids.len(), bert_ids.len()),
+        };
         debug_assert_eq!(
             text_hidden.len(),
             bridged.len(),
@@ -1433,7 +1553,10 @@ impl SbV2Model {
                 // `proj.forward` still loudly rejects wrong-length input
                 // (FR-EX-08). The projected `[d_model]` result is
                 // discarded — see step 5's Bug 4 fix comment.
-                let projected = proj.forward(ext)?;
+                let projected = match compute.as_ref() {
+                    Some(compute) => proj.forward_with_compute(compute, ext)?,
+                    None => proj.forward(ext)?,
+                };
                 debug_assert_eq!(
                     projected.len(),
                     d_model,
@@ -1447,7 +1570,10 @@ impl SbV2Model {
                 // Deterministic zero-shot default. Projected result
                 // discarded — see Bug 4 fix.
                 let zeros = vec![0.0_f32; proj.d_in()];
-                let projected = proj.forward(&zeros)?;
+                let projected = match compute.as_ref() {
+                    Some(compute) => proj.forward_with_compute(compute, &zeros)?,
+                    None => proj.forward(&zeros)?,
+                };
                 debug_assert_eq!(
                     projected.len(),
                     d_model,
@@ -1496,7 +1622,12 @@ impl SbV2Model {
         // though it is not otherwise mixed into `hidden_for_flow` (see
         // STYLE-INJECTOR fix below) so parity harnesses can diff the
         // projection value directly.
-        let style_projected_snapshot = self.style_injector.project(&req.style_vec);
+        let style_projected_snapshot = match compute.as_ref() {
+            Some(compute) => self
+                .style_injector
+                .project_with_compute(compute, &req.style_vec)?,
+            None => self.style_injector.project(&req.style_vec),
+        };
         // STYLE-INJECTOR fix (2026-08-09): the Python reference
         // (`sbv2_dump_reference.py` step 9) explicitly does NOT mix
         // style into `text_hidden` on the base-checkpoint path — "style
@@ -1582,23 +1713,43 @@ impl SbV2Model {
         let mut durations = match req.rng_mode {
             RngMode::PhiloxRngEnginePyTorchParity => {
                 let mut rng = TorchRandnStream::new(req.seed);
-                self.sdp.sample(
-                    &text_hidden,
-                    phon.phoneme_ids.len(),
-                    sdp_g,
-                    &mut rng,
-                    req.noise_scale_w,
-                )
+                match compute.as_ref() {
+                    Some(compute) => self.sdp.sample_with_compute(
+                        compute,
+                        &text_hidden,
+                        phon.phoneme_ids.len(),
+                        sdp_g,
+                        &mut rng,
+                        req.noise_scale_w,
+                    )?,
+                    None => self.sdp.sample(
+                        &text_hidden,
+                        phon.phoneme_ids.len(),
+                        sdp_g,
+                        &mut rng,
+                        req.noise_scale_w,
+                    ),
+                }
             }
             RngMode::GaussianSplitMix64Legacy => {
                 let mut rng = GaussianSplitMix64::new(req.seed);
-                self.sdp.sample(
-                    &text_hidden,
-                    phon.phoneme_ids.len(),
-                    sdp_g,
-                    &mut rng,
-                    req.noise_scale_w,
-                )
+                match compute.as_ref() {
+                    Some(compute) => self.sdp.sample_with_compute(
+                        compute,
+                        &text_hidden,
+                        phon.phoneme_ids.len(),
+                        sdp_g,
+                        &mut rng,
+                        req.noise_scale_w,
+                    )?,
+                    None => self.sdp.sample(
+                        &text_hidden,
+                        phon.phoneme_ids.len(),
+                        sdp_g,
+                        &mut rng,
+                        req.noise_scale_w,
+                    ),
+                }
             }
         };
         for d in &mut durations {
@@ -1733,9 +1884,17 @@ impl SbV2Model {
             }
             buf
         };
-        let z = self
-            .flow
-            .inverse(&mel_hidden_with_noise, mel_seq_len, flow_g);
+        let z = match compute.as_ref() {
+            Some(compute) => self.flow.inverse_with_compute(
+                compute,
+                &mel_hidden_with_noise,
+                mel_seq_len,
+                flow_g,
+            )?,
+            None => self
+                .flow
+                .inverse(&mel_hidden_with_noise, mel_seq_len, flow_g),
+        };
         // Wave-4 INTERMEDIATE-ACCESSORS: snapshot the flow inverse
         // output BEFORE the transpose + decoder consume it — matches
         // Python dumper's `z_latent.bin` shape.
@@ -1779,10 +1938,19 @@ impl SbV2Model {
             } else {
                 &decoder_g_owned
             };
-            self.decoder
-                .generate_conditioned(&z_channel_major, mel_seq_len, Some(decoder_g))
+            self.decoder.generate_conditioned_with_backend(
+                &z_channel_major,
+                mel_seq_len,
+                Some(decoder_g),
+                self.backend,
+            )?
         } else {
-            self.decoder.generate(&z_channel_major, mel_seq_len)
+            self.decoder.generate_conditioned_with_backend(
+                &z_channel_major,
+                mel_seq_len,
+                None,
+                self.backend,
+            )?
         };
 
         let audio = SynthesizedAudio::new(pcm, self.decoder.sample_rate());
@@ -1960,7 +2128,7 @@ impl TtsEngine for SbV2Model {
         // everything else (including `None`) -> JA (SBV2 v2's base config
         // is Japanese-first, per its JP-Extra heritage — see
         // `decoder.rs`'s module doc). ZH selection routes to the
-        // language_embed row 2 code path but currently returns
+        // language_embed row 0 code path but currently returns
         // NotImplemented at either the phonemizer or the BERT tokenizer
         // step below — see `Language`'s ZH scope note.
         let language = match request.language.as_deref() {
@@ -2026,9 +2194,7 @@ impl TtsEngine for SbV2Model {
     }
 
     fn backend(&self) -> BackendKind {
-        // SBV2 has no Compute-seam selection yet. Keeping this explicit makes
-        // the CPU-only state observable until its Metal wiring lands.
-        BackendKind::Cpu
+        self.backend
     }
 
     /// SBV2 threads [`SynthesisRequest::style_vec`] into its
@@ -2401,6 +2567,7 @@ impl SbV2Model {
         // down; gating their tags too (which would also catch a JA/EN
         // argument swap) is a follow-up.
         verify_main_arch(main)?;
+        verify_main_identity(main)?;
         // Blocker 2c defensive check (2026-08-10): the converter
         // (`crates/vokra-convert/src/models/sbv2.rs::rewrite_sdp_tensor_name`)
         // maps even-index upstream `sdp.flows.<even>.*` production tensors
@@ -2613,7 +2780,7 @@ impl SbV2Model {
         let phoneme_embed = load_tensor_f32("sbv2.text_encoder.phoneme_embed")?;
         let tone_embed = load_tensor_f32("sbv2.text_encoder.tone_embed")?;
         // M6 refactor (2026-08-06): the real base checkpoint has
-        // `enc_p.language_emb.weight [3, 192]` (JA/EN/ZH), never a
+        // `enc_p.language_emb.weight [3, 192]` (ZH/JP/EN), never a
         // `word_boundary_emb`. The converter now emits this under
         // `sbv2.text_encoder.language_embed`; the runtime cross-checks
         // its length is exactly N_LANGUAGES * d_model so a stale
@@ -3909,7 +4076,8 @@ fn derive_flow_head_dim(d_model: usize, n_heads: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_flow_head_dim;
+    use super::{SBV2_HOT_OPS, derive_flow_head_dim};
+    use crate::compute::HotOp;
 
     /// COSMETIC-BUNDLE (d_head divide-by-zero, 2026-08-09): the pre-fix
     /// `.unwrap_or(0)` at the `d_head_flow` site silently returned `0` on
@@ -3936,5 +4104,28 @@ mod tests {
         assert_eq!(derive_flow_head_dim(192, 2), 96);
         assert_eq!(derive_flow_head_dim(768, 12), 64);
         assert_eq!(derive_flow_head_dim(4, 1), 4);
+    }
+
+    #[test]
+    fn metal_preflight_registry_covers_all_learned_sbv2_seams() {
+        // This is the complete set consumed by text attention/FFN, BERT
+        // bridges, speaker/style projections, SDP/flow convolutions, and the
+        // conditioned HiFi-GAN adapter. A missing entry would let a newly
+        // selected backend reach a learned operation without its capability
+        // check and is therefore a fail-closed regression.
+        for required in [
+            HotOp::Gemm,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+            HotOp::GroupedConv1d,
+            HotOp::Gemv,
+        ] {
+            assert!(
+                SBV2_HOT_OPS.contains(&required),
+                "SBV2 backend preflight omitted {required:?}"
+            );
+        }
     }
 }

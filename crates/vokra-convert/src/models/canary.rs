@@ -7,7 +7,9 @@
 //! aggregate `tokenizer.vocab`; it never emits a plausible partial GGUF.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Component, Path};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{
@@ -33,6 +35,7 @@ const TOKENIZER_VOCAB_SHA256: &str =
     "4d10723a8bef5b8b186c3d2bb1449c849cc25c6b811969a7d170261b0ceed178";
 const VOCAB_SIZE: usize = 16_384;
 const SPECIAL_VOCAB_SIZE: usize = 1_163;
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
@@ -107,6 +110,16 @@ pub fn convert_canary_file_with_tokenizer(
     license: Option<&str>,
     tokenizer_vocab: &Path,
 ) -> Result<CanaryReport, ConvertError> {
+    validate_io_paths(input, tokenizer_vocab, output)?;
+    // Authenticate the small tokenizer sidecar before touching or stat'ing
+    // the multi-gigabyte checkpoint. This keeps malformed/unauthenticated
+    // tokenizer inputs fail-closed without probing the large payload.
+    if tokenizer_vocab.is_symlink() || !tokenizer_vocab.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 tokenizer must be a regular non-symlink file: {}",
+            tokenizer_vocab.display()
+        )));
+    }
     if let Some(value) = license.filter(|value| !value.is_empty()) {
         if !value.eq_ignore_ascii_case(DEFAULT_LICENSE) {
             return Err(ConvertError::Usage(format!(
@@ -117,6 +130,20 @@ pub fn convert_canary_file_with_tokenizer(
 
     let tokenizer = std::fs::read(tokenizer_vocab).map_err(ConvertError::Io)?;
     validate_tokenizer_vocab(&tokenizer)?;
+
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 output already exists or is symlinked: {}",
+            output.display()
+        )));
+    }
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 checkpoint must be a regular non-symlink file: {}",
+            input.display()
+        )));
+    }
+
     let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
     let safetensors = SafetensorsFile::parse(bytes)?;
     validate_checkpoint(&safetensors)?;
@@ -149,7 +176,7 @@ pub fn convert_canary_file_with_tokenizer(
     let output_bytes = builder
         .to_bytes()
         .map_err(|error| ConvertError::Gguf(error.to_string()))?;
-    std::fs::write(output, output_bytes).map_err(ConvertError::Io)?;
+    write_output_no_clobber(output, &output_bytes)?;
 
     Ok(CanaryReport {
         read: TENSOR_COUNT,
@@ -157,6 +184,143 @@ pub fn convert_canary_file_with_tokenizer(
         skipped_non_float: 0,
         bf16_passthrough: 0,
     })
+}
+
+fn write_output_no_clobber(output: &Path, bytes: &[u8]) -> Result<(), ConvertError> {
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output must have a parent directory",
+        ))
+    })?;
+    let mut temporary = None;
+    for _ in 0..32_u64 {
+        let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("output"),
+            std::process::id(),
+            sequence
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+    }
+    let Some((temporary_path, mut temporary_file)) = temporary else {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique temporary output",
+        )));
+    };
+    let result = (|| {
+        temporary_file.write_all(bytes)?;
+        temporary_file.sync_all()?;
+        std::fs::hard_link(&temporary_path, output)?;
+        Ok::<(), std::io::Error>(())
+    })();
+    drop(temporary_file);
+    // hard_link publishes a complete, synced artifact. Cleanup is best effort
+    // so a post-publication unlink error never reports a false conversion
+    // failure alongside a valid final output.
+    match result {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&temporary_path);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary_path);
+            Err(ConvertError::Io(error))
+        }
+    }
+}
+
+fn validate_io_paths(
+    input: &Path,
+    tokenizer_vocab: &Path,
+    output: &Path,
+) -> Result<(), ConvertError> {
+    reject_unsafe_path(input, "checkpoint")?;
+    reject_unsafe_path(tokenizer_vocab, "tokenizer")?;
+    reject_unsafe_path(output, "output")?;
+    if tokenizer_vocab.is_symlink() || !tokenizer_vocab.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 tokenizer must be a regular non-symlink file: {}",
+            tokenizer_vocab.display()
+        )));
+    }
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 output already exists or is symlinked: {}",
+            output.display()
+        )));
+    }
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Usage("canary-1b-v2 output must have a parent directory".to_owned())
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 output parent must be an existing regular non-symlink directory: {}",
+            parent.display()
+        )));
+    }
+    Ok(())
+}
+
+fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
+    let raw = path.to_string_lossy();
+    #[cfg(windows)]
+    let has_lexical_dot = raw
+        .split(['/', '\\'])
+        .any(|component| matches!(component, "." | ".."));
+    #[cfg(not(windows))]
+    let has_lexical_dot = raw
+        .split('/')
+        .any(|component| matches!(component, "." | ".."));
+    if has_lexical_dot
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(ConvertError::Usage(format!(
+            "canary-1b-v2 {label} must not contain lexical dot components"
+        )));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(ConvertError::Io)?
+            .join(path)
+    };
+    let mut current = absolute.as_path();
+    loop {
+        if current.is_symlink() && current != Path::new("/var") {
+            return Err(ConvertError::Usage(format!(
+                "canary-1b-v2 {label} has symlink ancestry: {}",
+                current.display()
+            )));
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
 }
 
 fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
@@ -229,6 +393,18 @@ fn validate_checkpoint(safetensors: &SafetensorsFile) -> Result<(), ConvertError
         return Err(ConvertError::Parse(format!(
             "Canary-1B-v2 internal manifest drift: count={}, sha256={internal_hash}",
             expected.len()
+        )));
+    }
+
+    // Compare the descriptor count before collapsing names into a set.  The
+    // safetensors header is ordered JSON and the lightweight reader preserves
+    // duplicate keys; an exact count plus exact name set therefore makes the
+    // main-checkpoint contract reject duplicate/partial timestamp artifacts
+    // before any tensor payload is copied to GGUF.
+    if safetensors.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "Canary-1B-v2 prepared main-checkpoint tensor count {}, expected {TENSOR_COUNT}; the public 688-tensor timestamp auxiliary or duplicate/partial artifact is not executable",
+            safetensors.tensors().len()
         )));
     }
 
@@ -354,5 +530,75 @@ mod tests {
     fn wrong_tokenizer_hash_is_rejected() {
         let error = validate_tokenizer_vocab(b"<unk>\t0\n").expect_err("wrong hash");
         assert!(error.to_string().contains("SHA-256"));
+    }
+
+    #[test]
+    fn timestamp_or_duplicate_partial_checkpoint_is_rejected_by_exact_count() {
+        let header = br#"{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"x":{"dtype":"F32","shape":[1],"data_offsets":[4,8]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(&[0; 8]);
+        let checkpoint = SafetensorsFile::parse(bytes).expect("synthetic duplicate header");
+        let error = validate_checkpoint(&checkpoint).expect_err("partial checkpoint");
+        let message = error.to_string();
+        assert!(message.contains("tensor count 2"));
+        assert!(message.contains("timestamp auxiliary"));
+    }
+
+    #[test]
+    fn output_writer_never_clobbers_claimed_final_path() {
+        let root = std::env::temp_dir().join(format!("vokra-canary-output-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create output test directory");
+        let output = root.join("model.gguf");
+        write_output_no_clobber(&output, b"first").expect("publish first output");
+        assert!(write_output_no_clobber(&output, b"second").is_err());
+        assert_eq!(
+            std::fs::read(&output).expect("read preserved output"),
+            b"first"
+        );
+        std::fs::remove_dir_all(root).expect("remove output test directory");
+    }
+
+    #[test]
+    fn io_paths_reject_dot_components_and_symlink_ancestors() {
+        let root = std::env::temp_dir().join(format!("vokra-canary-paths-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create path-test directory");
+        let input = root.join("checkpoint.safetensors");
+        let tokenizer = root.join("tokenizer.vocab");
+        std::fs::write(&input, []).expect("write checkpoint placeholder");
+        std::fs::write(&tokenizer, []).expect("write tokenizer placeholder");
+        let output = root.join("output.gguf");
+        validate_io_paths(&input, &tokenizer, &output).expect("regular paths accepted");
+        let dotted = root.join(".").join("output.gguf");
+        assert!(reject_unsafe_path(&dotted, "output").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let real_parent = root.join("real-parent");
+            let link_parent = root.join("link-parent");
+            std::fs::create_dir(&real_parent).expect("create real parent");
+            symlink(&real_parent, &link_parent).expect("create symlink parent");
+            let linked_output = link_parent.join("output.gguf");
+            assert!(reject_unsafe_path(&linked_output, "output").is_err());
+        }
+        std::fs::remove_dir_all(root).expect("remove path-test directory");
+    }
+
+    #[test]
+    fn dedicated_path_authenticates_tokenizer_before_checkpoint_io() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-canary-tokenizer-first-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create test directory");
+        let checkpoint = root.join("does-not-exist.safetensors");
+        let tokenizer = root.join("tokenizer.vocab");
+        let output = root.join("output.gguf");
+        std::fs::write(&tokenizer, b"unauthenticated").expect("write tokenizer fixture");
+        let error = convert_canary_file_with_tokenizer(&checkpoint, &output, None, &tokenizer)
+            .expect_err("tokenizer authentication must precede checkpoint I/O");
+        assert!(error.to_string().contains("SHA-256"));
+        std::fs::remove_dir_all(root).expect("remove test directory");
     }
 }

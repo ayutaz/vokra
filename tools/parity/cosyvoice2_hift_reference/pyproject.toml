@@ -1,0 +1,26 @@
+[project]
+name = "cosyvoice2-hift-reference"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "numpy==2.3.5",
+    "scipy==1.16.3",
+    "torch==2.7.1",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Torch declares an unbounded setuptools runtime requirement. Keep the
+# resolver above the fixed versions for GHSA-5rjg-fvgr-3xxf and
+# GHSA-h35f-9h28-mq5c without making setuptools a runtime dependency of the
+# reference oracle.
+constraint-dependencies = ["setuptools>=83.0.0"]

@@ -16,8 +16,9 @@ ASR-WER** leg and explicitly scopes the other two out:
   leg today would need weights that do not exist there yet, or a fabricated
   score — both barred (NFR-QL-04, FR-EX-08).
 - **VCTK VC-similarity** — voice-conversion similarity is out of scope for the
-  core repo. This is **consistent with CLAUDE.md design decision 8**: voice
-  cloning / VC is fully separated into `vokra-voiceclone-experimental`. A VC
+  core repo. This is consistent with the current voice-cloning boundary in
+  `docs/legal-compliance.md` §§3–4 and `docs/system-requirements.md` FR-CP-04:
+  voice cloning / VC is fully separated into `vokra-voiceclone-experimental`. A VC
   quality corpus therefore does not belong in the core repo's nightly.
 
 Read literally, the three-corpus condition is permanently unmet — not because
@@ -34,13 +35,15 @@ Replace the three-corpus clause with:
 > see `docs/handoff/x-06-breach-response.md`). **LJSpeech TTS UTMOS/MOS** is
 > owned by **M5-15** (UTMOS un-defer) and referenced from there rather than
 > duplicated here. **VCTK VC-similarity is removed** from the core-repo X-06
-> scope per design decision 8 (voice conversion lives in
+> scope per `docs/legal-compliance.md` §§3–4 and
+> `docs/system-requirements.md` FR-CP-04 (voice conversion lives in
 > `vokra-voiceclone-experimental`); if a VC-quality nightly is wanted, it
 > belongs to that repo's CI, not this one.
 
 ## VCTK: two options (owner picks)
 
-1. **Delete** the VCTK clause outright. Cleanest; matches design decision 8
+1. **Delete** the VCTK clause outright. Cleanest; matches the current
+   `docs/legal-compliance.md` §§3–4 and `docs/system-requirements.md` FR-CP-04
    (VC is not a core-repo concern at all). *(CC recommendation.)*
 2. **Migrate-by-reference**: keep a one-line pointer that VC-quality nightly,
    if built, is a `vokra-voiceclone-experimental` CI task. Preserves the

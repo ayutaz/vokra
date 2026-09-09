@@ -1,5 +1,12 @@
 # M3-15 vokra-server 75 ms TTS Latency Measurement — Handover
 
+> **2026-09-09 audit-start snapshot:** This dated server-latency handover
+> retains its historical benchmark and owner procedure. Before this
+> documentation refresh, PR #79 was `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI
+> success / 13 intentional skip / 0 fail); Scaleway had not started, and VAST
+> `50320338` plus its 150-GB storage were destroyed. Current campaign truth is
+> in the canonical pre-Scaleway ledger.
+
 **Owner**: 依頼者 (実機 GPU 環境での reference 計測は本質的に依頼者側; CC が採取した in-process bench 参考値は既に land 済 = `integrations/vokra-server/benches/tts_latency.rs`).
 **Predecessor**: M3-15 = 100% CC 完成 (Wave 3.5 T01-T14 scaffold + Wave 11 Whisper beam server surface + Wave 12 core-side `no_repeat_ngram_size` plumbing、`docs/tickets/m3/M3-15-vokra-server-multi-session.md`)。
 **Requirement under measurement**: NFR-PF-05 (サーバ TTS レイテンシ 75 ms、v1.0 値)。

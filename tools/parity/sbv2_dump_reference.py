@@ -38,7 +38,7 @@ source was read, copied, or recalled from memory to write this file.
   ``deberta_v3``'s own paper is arXiv:2111.09543.
 - SentencePiece paper (Kudo & Richardson 2018) — informational only (the
   BERT tokenizers below come from ``transformers`` directly).
-  ``litagin02/style_bert_vits2``'s upstream ``config.json`` / safetensors
+  ``litagin/Style-Bert-VITS2-2.0-base-JP-Extra``'s upstream ``config.json`` / safetensors
   tensor-name metadata (structural facts only — names, shapes, dtypes —
   never the AGPL Python code itself, matching
   ``tools/parity/sbv2_prepare_checkpoint.py``'s own posture).
@@ -140,7 +140,7 @@ schema below.
 ``enc_p.word_boundary_emb.weight`` does NOT exist in the SBV2 v2 base
 checkpoint (``litagin/Style-Bert-VITS2-2.0-base-JP-Extra``); the tensor
 that exists at that slot is ``enc_p.language_emb.weight`` with shape
-``[3, 192]`` (three per-utterance language rows: JA / EN / ZH). The
+``[3, 192]`` (three per-utterance language rows: ZH / JP / EN). The
 dumper now performs a per-utterance ``language_embed[language_id]``
 broadcast-add into every position (matching
 ``crates/vokra-models/src/sbv2/text_encoder.rs`` ``SbV2TextEncoder::forward``
@@ -160,7 +160,7 @@ input the reference forward pass consumes.
       "generator_version": "1.1",
       "generator": "tools/parity/sbv2_dump_reference.py",
       "checkpoint": {
-        "sbv2_main": "sbv2-v2-multilingual-base.gguf",
+        "sbv2_main": "sbv2-v2-jp-extra-base.gguf",
         "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf",
         "bert_en": "deberta-v3-large.gguf",
         "bert_zh": "chinese-roberta-wwm-ext-large.gguf"  # ZH run only
@@ -278,7 +278,7 @@ GENERATOR_VERSION = "1.1"
 # module doc) — bare filenames, siblings of the manifest inside
 # tests/fixtures/sbv2/. Overridable per-run via --sbv2-main-filename etc. in
 # case a real fixture set ends up named differently.
-DEFAULT_SBV2_MAIN_FILENAME = "sbv2-v2-multilingual-base.gguf"
+DEFAULT_SBV2_MAIN_FILENAME = "sbv2-v2-jp-extra-base.gguf"
 DEFAULT_BERT_JA_FILENAME = "deberta-v2-large-japanese-char-wwm.gguf"
 DEFAULT_BERT_EN_FILENAME = "deberta-v3-large.gguf"
 DEFAULT_BERT_ZH_FILENAME = "chinese-roberta-wwm-ext-large.gguf"
@@ -331,9 +331,9 @@ CONV_POST_KERNEL: int = 7
 LEAKY_RELU_SLOPE: float = 0.1
 # Runtime-resolved scalars (populated by `_resolve_arch_constants`):
 N_PHONEME_VOCAB: "int | None" = None
-N_TONE_VOCAB: int = 6  # SBV2 JP-Extra tone alphabet: 0..4 pitch levels + silence
+N_TONE_VOCAB: int = 12  # Global SBV2 tone rows: ZH 0..5, JP 6..7, EN 8..11
 # `crates/vokra-models/src/sbv2/text_encoder.rs` `language_embed` is
-# `[N_LANGUAGES, d_model]`, rows = JA/EN/ZH (real checkpoint
+# `[N_LANGUAGES, d_model]`, rows = ZH/JP/EN (real checkpoint
 # `enc_p.language_emb.weight [3, 192]`). Post-b1e8f16 refactor: the earlier
 # `N_WORD_BOUNDARY_VOCAB = 2` (assumed `enc_p.word_boundary_emb.weight`)
 # did not survive the M6 real-checkpoint scout — that tensor does not exist
@@ -401,7 +401,7 @@ TENSOR_DTYPE = "float32"
 # M6 addition (2026-08-06): `language_id` is the fourth side file — a
 # per-utterance u8 scalar (`count == 1`, not `T_text`) matching the
 # `language_id: u8` argument `SbV2TextEncoder::forward` accepts
-# post-`b1e8f16`. Rows: `JA = 0`, `EN = 1`, `ZH = 2`
+# post-`b1e8f16`. Rows: `ZH = 0`, `JP/JA = 1`, `EN = 2`
 # (`crates/vokra-models/src/sbv2/g2p.rs` `Language::language_id`).
 PHONEMIZE_FIXTURE_SCHEMA: "list[dict]" = [
     {"name": "phoneme_ids", "dtype": "uint16", "count_template": "T_text"},
@@ -670,6 +670,8 @@ class MinimalG2P:
     # Owner-populated rows go here. Each value MUST be a dict with the
     # three keys below, each a list of length T_text. `phoneme_ids` values
     # must be in `[0, N_PHONEME_VOCAB)`, `tones` in `[0, N_TONE_VOCAB)`.
+    # Production sidecars use global tone bands (ZH 0..5, JP 6..7,
+    # EN 8..11), matching `text/__init__.py`'s raw-to-global offset.
     # `word_boundaries` is retained as a G2P output (Rust
     # `PhonemizeResult::word_boundaries` still carries it post-M6 for
     # fixture stability) even though the text encoder no longer consumes
@@ -706,7 +708,7 @@ class MinimalG2P:
     _JA_TABLE: "dict[str, dict[str, list[int]]]" = {
         "テスト": {
             "phoneme_ids":     [1, 10, 11, 12, 13, 14, 15, 2],
-            "tones":           [0,  1,  0,  1,  0,  1,  0, 0],
+            "tones":           [6,  7,  6,  7,  6,  7,  6, 6],
             "word_boundaries": [1,  0,  0,  0,  0,  0,  0, 0],
         },
     }
@@ -714,11 +716,11 @@ class MinimalG2P:
     # + s + space-elided-boundary + i + s + a + t + e + s + t + . + EOS
     # — the vanilla-VITS EN framing convention (`phonemize_en_char_mapping`
     # in `crates/vokra-models/src/sbv2/g2p.rs` also skips spaces this way).
-    # Tones are all 0 (`Language::EN` documented convention).
+    # EN has no pitch accent, but its global tone band starts at 8.
     _EN_TABLE: "dict[str, dict[str, list[int]]]" = {
         "This is a test.": {
             "phoneme_ids":     [1, 20, 21, 22, 23, 22, 23, 24, 25, 26, 27, 25, 26, 28, 29, 2],
-            "tones":           [0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 0],
+            "tones":           [8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8, 8],
             "word_boundaries": [1,  0,  0,  0,  0,  1,  0,  1,  1,  0,  0,  0,  0,  0,  0, 0],
         },
     }
@@ -1035,10 +1037,9 @@ def build_sbv2_extras(state_dict: dict, torch):
         # (`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`). Matches
         # `crates/vokra-models/src/sbv2/text_encoder.rs`
         # `SbV2TextEncoder::language_embed` (`[N_LANGUAGES, D_MODEL]`,
-        # post-`b1e8f16`). Row ordering: `JA = 0`, `EN = 1`, `ZH = 2`
+        # post-`b1e8f16`). Row ordering: `ZH = 0`, `JP/JA = 1`, `EN = 2`
         # (`crates/vokra-models/src/sbv2/g2p.rs` `Language::language_id`);
-        # pending real-checkpoint config verification per Rust
-        # `SbV2TextEncoder::forward`'s `language_id` doc note.
+        # authenticated by the fixed upstream symbols.py language map.
         lang_emb.weight.copy_(
             _load_tensor(
                 state_dict,
@@ -1071,7 +1072,7 @@ def run_text_encoder(encoder, tone_emb, lang_emb, phoneme_ids, tones,
     `language_id: u8` argument on the Rust side (post-`b1e8f16`;
     `crates/vokra-models/src/sbv2/text_encoder.rs`).
 
-    `language_id` is a plain `int` (0/1/2 for JA/EN/ZH, matching
+    `language_id` is a plain `int` (0/1/2 for ZH/JP/EN, matching
     `Language::language_id`), not a list — caller resolves it from
     `--language` once per invocation.
 
@@ -2109,8 +2110,8 @@ def run_pipeline_body(args: argparse.Namespace, torch, transformers) -> int:
     tone_emb, lang_emb = build_sbv2_extras(state_dict, torch)
     # Resolve per-utterance `language_id: u8` from `--language`. Matches
     # `crates/vokra-models/src/sbv2/g2p.rs` `Language::language_id` ordering
-    # (`JA = 0`, `EN = 1`, `ZH = 2`) 1:1.
-    _LANGUAGE_ID_BY_CLI: "dict[str, int]" = {"ja": 0, "en": 1, "zh": 2}
+    # (`ZH = 0`, `JP/JA = 1`, `EN = 2`) 1:1.
+    _LANGUAGE_ID_BY_CLI: "dict[str, int]" = {"zh": 0, "ja": 1, "jp": 1, "en": 2}
     language_id = _LANGUAGE_ID_BY_CLI[args.language.lower()]
     phoneme_embed, text_hidden, x_mask_text = run_text_encoder(
         encoder, tone_emb, lang_emb,

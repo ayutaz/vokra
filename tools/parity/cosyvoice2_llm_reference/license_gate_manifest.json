@@ -1,0 +1,18 @@
+{
+  "format": "vokra-cosyvoice2-llm-license-gate-v1",
+  "status": "PENDING_REVIEW",
+  "owner_signoff": "OWNER_SIGNOFF_REQUIRED",
+  "publication": "NO_UPLOAD",
+  "blockers": [
+    "Dedicated uv.lock resolution and primary-source package/native license evidence are not yet authenticated.",
+    "Execution remains VAST-only and blocked until owner signoff."
+  ],
+  "package_review": [],
+  "native_payload_review": "PENDING_PRIMARY_SOURCE_REVIEW",
+  "weight_review": "PENDING_PRIMARY_SOURCE_REVIEW",
+  "source_review": "PENDING_PRIMARY_SOURCE_REVIEW",
+  "approval": {
+    "signer": null,
+    "scope_sha256": null
+  }
+}

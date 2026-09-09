@@ -54,6 +54,13 @@ DEFAULT_REVISION = "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
 SAMPLE_RATE = 16_000
 
 
+def reject_symlink_ancestry(path: Path, label: str) -> None:
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    for ancestor in (absolute, *absolute.parents):
+        if ancestor.is_symlink():
+            raise SystemExit(f"{label} has symlink ancestry: {ancestor}")
+
+
 def write_f32(path: Path, values: np.ndarray) -> None:
     path.write_bytes(np.asarray(values, dtype="<f4").tobytes(order="C"))
 
@@ -89,6 +96,18 @@ def main() -> int:
     parser.add_argument("--revision", default=DEFAULT_REVISION)
     parser.add_argument("--savedir", type=Path, required=True)
     args = parser.parse_args()
+
+    reject_symlink_ancestry(args.wav, "--wav")
+    reject_symlink_ancestry(args.output_dir, "--output-dir")
+    reject_symlink_ancestry(args.savedir, "--savedir")
+    if args.wav.is_symlink() or not args.wav.is_file():
+        parser.error("--wav must be a regular non-symlink WAV")
+    if args.output_dir.is_symlink() or (args.output_dir.exists() and not args.output_dir.is_dir()):
+        parser.error("--output-dir must be a non-symlink directory")
+    if args.output_dir.exists() and any(args.output_dir.iterdir()):
+        parser.error("--output-dir must be empty to prevent fixture clobbering")
+    if args.savedir.is_symlink() or (args.savedir.exists() and not args.savedir.is_dir()):
+        parser.error("--savedir must be a non-symlink directory")
 
     torch.set_grad_enabled(False)
     torch.set_num_threads(1)

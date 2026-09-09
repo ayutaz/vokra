@@ -172,7 +172,13 @@ def flatten_pth_if_needed(local_dir: Path) -> None:
         print(f"{LOG_PREFIX} [SKIP] {st_out.name} already exists")
         return
     print(f"{LOG_PREFIX} [FLATTEN] {pth.name} -> {st_out.name}")
-    state = torch.load(pth, map_location="cpu")
+    try:
+        state = torch.load(pth, map_location="cpu", weights_only=True)
+    except Exception as exc:  # noqa: BLE001 - fail closed on unsafe pickle content
+        raise RuntimeError(
+            f"BLOCKED: {pth.name} cannot be loaded with torch weights_only=True; "
+            "no unsafe deserialization fallback is permitted"
+        ) from exc
     # SBV2-family checkpoints sometimes wrap under {"model": {...}} — unwrap.
     if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
         state = state["model"]
@@ -219,6 +225,22 @@ def dedupe_redundant_pytorch_bin(local_dir: Path) -> None:
         )
 
 
+def self_test() -> None:
+    """Check the deserialization contract without importing torch or loading data."""
+    source = Path(__file__).read_text(encoding="utf-8")
+    required = 'torch.load(pth, map_location="cpu", weights_only=True)'
+    if required not in source:
+        raise AssertionError("safe torch.load(weights_only=True) call is missing")
+    for forbidden in (
+        "torch.load(pth, map_location=" + '"cpu")',
+        "weights_only=" + "False",
+        "torch.load" + " =",
+    ):
+        if forbidden in source:
+            raise AssertionError(f"unsafe deserialization contract found: {forbidden}")
+    print("sbv2_v2_bundle_prepare_checkpoint self-test: PASS")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=(
@@ -235,7 +257,17 @@ def main() -> int:
         default=Path.home() / "vokra-checkpoints" / "sbv2-v2",
         help="Bundle root directory (default: ~/vokra-checkpoints/sbv2-v2).",
     )
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Check the safe deserialization contract without downloading or loading a checkpoint.",
+    )
     args = ap.parse_args()
+    if args.self_test:
+        if any(arg == "--out" or arg.startswith("--out=") for arg in sys.argv[1:]):
+            ap.error("--self-test accepts no other arguments")
+        self_test()
+        return 0
     args.out.mkdir(parents=True, exist_ok=True)
 
     for repo_id, slug in REPOS:

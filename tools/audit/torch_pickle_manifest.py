@@ -143,12 +143,18 @@ class RestrictedStateDictUnpickler(pickle.Unpickler):
         return StorageRef(storage_type.dtype, key, location, numel)
 
 
-def load_manifest(source: BinaryIO) -> collections.OrderedDict[str, TensorRef]:
-    """Load and validate a plain tensor state dict from ``data.pkl``."""
+def load_manifest(source: BinaryIO) -> dict[str, TensorRef]:
+    """Load and validate a plain tensor state dict from ``data.pkl``.
+
+    PyTorch checkpoints may encode the flat state dict as either a built-in
+    ``dict`` or ``collections.OrderedDict``.  Both containers are accepted,
+    but no other mapping-like object is allowed: the restricted unpickler
+    still admits no checkpoint-selected classes.
+    """
 
     root = RestrictedStateDictUnpickler(source).load()
-    if not isinstance(root, collections.OrderedDict) or not root:
-        raise ManifestError("pickle root must be a non-empty OrderedDict")
+    if type(root) not in (dict, collections.OrderedDict) or not root:
+        raise ManifestError("pickle root must be a non-empty plain dict or OrderedDict")
     for name, value in root.items():
         if not isinstance(name, str) or not name:
             raise ManifestError(f"state-dict key must be a non-empty string: {name!r}")
@@ -160,7 +166,7 @@ def load_manifest(source: BinaryIO) -> collections.OrderedDict[str, TensorRef]:
 
 
 def render_manifest(
-    state_dict: collections.OrderedDict[str, TensorRef],
+    state_dict: dict[str, TensorRef],
     source_label: str,
     pickle_sha256: str,
 ) -> dict[str, Any]:

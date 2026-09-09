@@ -6,9 +6,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
+PARITY_PROJECT="$VOKRA_ROOT/tools/parity/moss_audio"
+PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
+PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 
 MIN_MEMORY_BYTES=64000000000
 MIN_FREE_DISK_KIB=50000000
+SOURCE_REVISION="5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883"
+REFERENCE_FILES=(manifest.txt pcm.f32le prompt_ids.u32le primary_audio.f32le \
+  deepstack_audio_0.f32le deepstack_audio_1.f32le deepstack_audio_2.f32le \
+  generated_ids.u32le prompt.txt result_text.txt environment.json source_files.json)
+REFERENCE_MANIFEST_KEYS=(schema variant model_name upstream_repo upstream_revision \
+  source_code_revision configuration_source_sha256 modeling_source_sha256 \
+  processing_source_sha256 config_sha256 torch_version transformers_version \
+  sample_rate pcm_samples audio_frames hidden_size prompt_tokens generated_tokens \
+  max_new_tokens tensor_count config_model_type source_audio_sha256 \
+  sha256_pcm_f32le sha256_prompt_ids_u32le sha256_primary_audio_f32le \
+  sha256_deepstack_audio_0_f32le sha256_deepstack_audio_1_f32le \
+  sha256_deepstack_audio_2_f32le sha256_generated_ids_u32le sha256_prompt_txt \
+  sha256_result_text_txt sha256_environment_json sha256_source_files_json)
 
 log() { printf '[moss-audio-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -16,9 +32,10 @@ die() { log "ERROR: $*"; return 2; }
 usage() {
   cat <<'EOF' >&2
 usage: apple-silicon-moss-audio.sh \
-  --gguf-4b <path> --reference-4b <dir> \
-  --gguf-8b <path> --reference-8b <dir> \
-  --evidence-dir <empty-dir>
+  --gguf-4b <path> --gguf-4b-sha256 <hash> --reference-4b <dir> \
+  --reference-4b-sha256 <hash> --gguf-8b <path> --gguf-8b-sha256 <hash> \
+  --reference-8b <dir> --reference-8b-sha256 <hash> \
+  --approval-evidence <file> --expected-head <40-hex> --evidence-dir <absent-dir>
        apple-silicon-moss-audio.sh --self-test
 
 Runs projected-audio and exact-token CPU/Metal parity for both pinned
@@ -27,9 +44,11 @@ requires VOKRA_REMOTE_APPLE_SILICON=1, Darwin arm64, a clean checkout, at
 least 64 GB physical memory, and all four real inputs before Cargo starts.
 
 This script does not download, upload, convert, publish, or delete a model.
-Transfer VAST-produced inputs directly to a disposable Apple host. Pull only
-the evidence directory after the run, then remove the staged data or destroy
-the remote worker.
+Transfer VAST-produced GGUF/reference packets and approval evidence directly
+to a disposable Apple host. The evidence directory must be absent/nonexistent
+before validation and is created only after approval, exact-head, and input
+checks succeed. Pull only the small evidence/log directory after the run, then
+remove the staged data or destroy the remote worker.
 EOF
 }
 
@@ -37,33 +56,197 @@ sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
 
-require_empty_directory() {
-  local directory="$1"
-  if [[ -e "$directory" ]]; then
-    [[ -d "$directory" ]] || die "evidence path is not a directory: $directory"
-    [[ -z "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
-      || die "evidence directory must be empty: $directory"
-  else
-    mkdir -p "$directory"
+reference_packet_sha256() {
+  local directory="$1" listing file relative digest invalid=0
+  directory="${directory%/}"
+  [[ -d "$directory" && ! -L "$directory" ]] || die "reference packet is missing or symlinked: $directory"
+  listing="$(mktemp "${TMPDIR:-/tmp}/moss-audio-packet.XXXXXX")"
+  while IFS= read -r -d '' file; do
+    if [[ -f "$file" && ! -L "$file" ]]; then
+      relative="${file#"$directory"/}"
+      printf '%s  %s\n' "$(sha256_file "$file")" "$relative" >> "$listing"
+    else
+      invalid=1
+    fi
+  done < <(find -P "$directory" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  if (( invalid != 0 )); then
+    rm -f "$listing"
+    die "reference packet contains a directory or symlink"
+    return 2
   fi
+  digest="$(shasum -a 256 "$listing" | awk '{print $1}')"
+  rm -f "$listing"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "reference packet digest is malformed"
+  printf '%s\n' "$digest"
+}
+
+license_preflight() {
+  local approval="$1"
+  command -v uv >/dev/null 2>&1 || die "required tool missing: uv"
+  [[ -f "$PREFLIGHT_GATE" && ! -L "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" && ! -L "$PREFLIGHT_MANIFEST" ]] \
+    || die "MOSS-Audio preflight gate or manifest is missing"
+  require_file "approval evidence" "$approval" || return 2
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+    --project "$PARITY_PROJECT" --manifest "$PREFLIGHT_MANIFEST" --evidence "$approval"
+}
+
+require_disjoint_evidence() {
+  local evidence="$1" candidate parent other real other_parent
+  if [[ -e "$evidence" || -L "$evidence" ]]; then
+    die "evidence directory must be absent before validation: $evidence"
+    return 2
+  fi
+  if ! parent="$(cd -P "$(dirname "$evidence")" 2>/dev/null && pwd)"; then
+    die "evidence parent is inaccessible"
+    return 2
+  fi
+  candidate="$parent/$(basename "$evidence")"
+  shift
+  for other in "$@"; do
+    if [[ -L "$other" ]]; then
+      die "validation input is a symlink: $other"
+      return 2
+    fi
+    if ! other_parent="$(cd -P "$(dirname "$other")" 2>/dev/null && pwd)"; then
+      die "validation input is inaccessible: $other"
+      return 2
+    fi
+    real="$other_parent/$(basename "$other")"
+    if [[ "$candidate" == "$real" || "$candidate/" == "$real/"* || "$real/" == "$candidate/"* ]]; then
+      die "evidence directory overlaps validation input"
+      return 2
+    fi
+  done
+  mkdir -p "$evidence"
 }
 
 require_file() {
   local label="$1" path="$2"
-  [[ -f "$path" && -s "$path" ]] || die "$label is missing or empty: $path"
+  [[ -f "$path" && ! -L "$path" && -s "$path" ]] || die "$label is missing, symlinked, or empty: $path"
+}
+
+require_expected_sha256() {
+  local label="$1" path="$2" expected="$3" actual
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { die "$label expected SHA-256 is malformed"; return 2; }
+  require_file "$label" "$path" || return 2
+  actual="$(sha256_file "$path")"
+  [[ "$actual" == "$expected" ]] || { die "$label SHA-256 mismatch: $actual != $expected"; return 2; }
+}
+
+require_manifest_value() {
+  local manifest="$1" key="$2" expected="$3" count
+  count="$(grep -Ec "^${key}=${expected}$" "$manifest" || true)"
+  [[ "$count" == 1 ]] || { die "reference manifest field $key is missing, duplicated or wrong"; return 2; }
+}
+
+require_manifest_pattern() {
+  local manifest="$1" key="$2" pattern="$3" count
+  count="$(grep -Ec "^${key}=${pattern}$" "$manifest" || true)"
+  [[ "$count" == 1 ]] || { die "reference manifest field $key is missing, duplicated or malformed"; return 2; }
+}
+
+require_exact_manifest_keys() {
+  local manifest="$1" actual expected duplicate
+  if grep -Ev '^[A-Za-z0-9_]+=[^=[:space:]]*$' "$manifest" >/dev/null; then
+    die "reference manifest contains malformed or ambiguous lines"
+    return 2
+  fi
+  duplicate="$(cut -d= -f1 "$manifest" | sort | uniq -d | head -n 1)"
+  [[ -z "$duplicate" ]] || { die "reference manifest key is duplicated: $duplicate"; return 2; }
+  actual="$(cut -d= -f1 "$manifest" | sort)"
+  expected="$(printf '%s\n' "${REFERENCE_MANIFEST_KEYS[@]}" | sort)"
+  [[ "$actual" == "$expected" ]] || { die "reference manifest key set is not exact"; return 2; }
+}
+
+verify_manifest_file_hash() {
+  local manifest="$1" directory="$2" artifact="$3" key expected count
+  key="sha256_${artifact//./_}"
+  count="$(grep -Ec "^${key}=" "$manifest" || true)"
+  [[ "$count" == 1 ]] || { die "reference manifest hash field is missing or duplicated: $key"; return 2; }
+  expected="$(grep -E "^${key}=" "$manifest" | cut -d= -f2-)"
+  require_expected_sha256 "reference $artifact" "$directory/$artifact" "$expected"
 }
 
 require_reference() {
-  local label="$1" directory="$2" name
-  [[ -d "$directory" ]] || die "$label is not a directory: $directory"
-  for name in manifest.txt pcm.f32le prompt_ids.u32le primary_audio.f32le \
-    deepstack_audio_0.f32le deepstack_audio_1.f32le deepstack_audio_2.f32le \
-    generated_ids.u32le prompt.txt environment.json source_files.json; do
-    require_file "$label $name" "$directory/$name"
+  local label="$1" directory="$2" variant="$3" name manifest expected_files actual_files
+  [[ -d "$directory" && ! -L "$directory" ]] || { die "$label is missing or symlinked: $directory"; return 2; }
+  manifest="$directory/manifest.txt"
+  require_exact_manifest_keys "$manifest" || return 2
+  for name in "${REFERENCE_FILES[@]}"; do
+    if [[ "$name" == result_text.txt ]]; then
+      [[ -f "$directory/$name" && ! -L "$directory/$name" ]] || { die "$label $name is missing or symlinked"; return 2; }
+    else
+      require_file "$label $name" "$directory/$name" || return 2
+    fi
   done
-  # A valid greedy sequence can decode only to special tokens.
-  [[ -f "$directory/result_text.txt" ]] \
-    || die "$label result_text.txt is missing: $directory/result_text.txt"
+  expected_files="$(printf '%s\n' "${REFERENCE_FILES[@]}" | sort)"
+  actual_files="$(find -P "$directory" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort)"
+  [[ "$actual_files" == "$expected_files" ]] || { die "$label contains unexpected or missing files"; return 2; }
+  case "$variant" in
+    4b)
+      require_manifest_value "$manifest" variant 4b || return 2
+      require_manifest_value "$manifest" model_name moss-audio-4b-instruct || return 2
+      require_manifest_value "$manifest" upstream_repo OpenMOSS-Team/MOSS-Audio-4B-Instruct || return 2
+      require_manifest_value "$manifest" upstream_revision 6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d || return 2
+      require_manifest_value "$manifest" config_sha256 e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa || return 2
+      ;;
+    8b)
+      require_manifest_value "$manifest" variant 8b || return 2
+      require_manifest_value "$manifest" model_name moss-audio-8b-instruct || return 2
+      require_manifest_value "$manifest" upstream_repo OpenMOSS-Team/MOSS-Audio-8B-Instruct || return 2
+      require_manifest_value "$manifest" upstream_revision 6521a39181b47a18f2d9f4b3acfb5bca7b76b57f || return 2
+      require_manifest_value "$manifest" config_sha256 535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536 || return 2
+      ;;
+    *) die "unknown MOSS-Audio reference variant: $variant"; return 2 ;;
+  esac
+  require_manifest_value "$manifest" schema vokra-moss-audio-reference-v1 || return 2
+  require_manifest_value "$manifest" source_code_revision "$SOURCE_REVISION" || return 2
+  require_manifest_value "$manifest" configuration_source_sha256 e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd || return 2
+  require_manifest_value "$manifest" modeling_source_sha256 a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c || return 2
+  require_manifest_value "$manifest" processing_source_sha256 05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6 || return 2
+  require_manifest_value "$manifest" config_model_type moss_audio || return 2
+  require_manifest_value "$manifest" tensor_count 901 || return 2
+  require_manifest_value "$manifest" transformers_version 5.10.4 || return 2
+  require_manifest_pattern "$manifest" torch_version '2\.9\.1(\+cpu)?' || return 2
+  require_manifest_value "$manifest" sample_rate 16000 || return 2
+  require_manifest_value "$manifest" source_audio_sha256 241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a || return 2
+  require_manifest_pattern "$manifest" pcm_samples '[1-9][0-9]*' || return 2
+  require_manifest_pattern "$manifest" audio_frames '[1-9][0-9]*' || return 2
+  require_manifest_pattern "$manifest" prompt_tokens '[1-9][0-9]*' || return 2
+  require_manifest_pattern "$manifest" generated_tokens '[0-9]+' || return 2
+  require_manifest_value "$manifest" max_new_tokens 4 || return 2
+  case "$variant" in
+    4b) require_manifest_value "$manifest" hidden_size 2560 || return 2 ;;
+    8b) require_manifest_value "$manifest" hidden_size 4096 || return 2 ;;
+  esac
+  for name in "${REFERENCE_FILES[@]:1}"; do
+    verify_manifest_file_hash "$manifest" "$directory" "$name" || return 2
+  done
+}
+
+require_one_named_test_passed() {
+  local log_path="$1" test_name="$2" test_count named_count total_test_count result_count total_result_count
+  test_count="$(grep -Ec "^test ${test_name} \.\.\. ok$" "$log_path" || true)"
+  named_count="$(grep -Ec "^test ${test_name} \.\.\." "$log_path" || true)"
+  total_test_count="$(grep -Ec '^test [^ ]+ \.\.\.' "$log_path" || true)"
+  result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$log_path" || true)"
+  total_result_count="$(grep -Ec '^test result:' "$log_path" || true)"
+  [[ "$test_count" == 1 ]] || { die "expected exactly one passing named MOSS-Audio test"; return 2; }
+  [[ "$named_count" == 1 ]] || { die "expected exactly one total named MOSS-Audio test line"; return 2; }
+  [[ "$total_test_count" == 1 ]] || { die "expected exactly one total Cargo test line"; return 2; }
+  [[ "$result_count" == 1 ]] || { die "expected one standard Cargo result"; return 2; }
+  [[ "$total_result_count" == 1 ]] || { die "expected exactly one total Cargo result line"; return 2; }
+}
+
+require_exact_parity_sentinels() {
+  local log_path="$1" model leg family_count pass_count
+  for model in moss-audio-4b-instruct moss-audio-8b-instruct; do
+    for leg in CPU_vs_official Metal_vs_official Metal_vs_CPU; do
+      family_count="$(grep -Ec "^MOSS_AUDIO_PARITY ${model} ${leg} " "$log_path" || true)"
+      pass_count="$(grep -Ec "^MOSS_AUDIO_PARITY ${model} ${leg} token_ids=exact text=exact PASS$" "$log_path" || true)"
+      [[ "$family_count" == 1 && "$pass_count" == 1 ]] || { die "expected exactly one complete ${model} ${leg} sentinel family"; return 2; }
+    done
+  done
 }
 
 require_remote_apple_host() {
@@ -96,6 +279,16 @@ require_tooling() {
   xcrun -f metal >/dev/null 2>&1 || die "Xcode Metal compiler is unavailable"
 }
 
+require_expected_head() {
+  local expected="$1" actual
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head must be exactly 40 lowercase hex"
+  [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
+  actual="$(git -C "$VOKRA_ROOT" rev-parse HEAD 2>/dev/null)" || die "could not read checkout HEAD"
+  [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual does not match --expected-head $expected"
+  [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die "remote Apple checkout must be clean before evidence creation"
+}
+
 record_environment() {
   local output="$1"
   {
@@ -123,42 +316,234 @@ run_self_test() (
   [[ "$(sha256_file "$temporary/value")" == \
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ]] \
     || die "SHA-256 helper self-test failed"
-  require_empty_directory "$temporary/evidence"
-  [[ -d "$temporary/evidence" ]] || die "directory helper self-test failed"
+  require_expected_sha256 value "$temporary/value" \
+    ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+  if require_expected_sha256 value "$temporary/value" bad >/dev/null 2>&1; then
+    die "malformed expected SHA self-test failed"
+  fi
+  if require_expected_sha256 value "$temporary/value" \
+    0000000000000000000000000000000000000000000000000000000000000000 >/dev/null 2>&1; then
+    die "mismatched expected SHA self-test failed"
+  fi
+  local reference="$temporary/reference-4b" name
+  mkdir "$reference"
+  for name in "${REFERENCE_FILES[@]}"; do
+    [[ "$name" == manifest.txt ]] || printf 'abc' > "$reference/$name"
+  done
+  {
+    printf '%s\n' \
+      'schema=vokra-moss-audio-reference-v1' \
+      'variant=4b' \
+      'model_name=moss-audio-4b-instruct' \
+      'upstream_repo=OpenMOSS-Team/MOSS-Audio-4B-Instruct' \
+      'upstream_revision=6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d' \
+      'source_code_revision=5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883' \
+      'configuration_source_sha256=e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd' \
+      'modeling_source_sha256=a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c' \
+      'processing_source_sha256=05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6' \
+      'config_sha256=e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa' \
+      'config_model_type=moss_audio' \
+      'tensor_count=901' \
+      'transformers_version=5.10.4' \
+      'torch_version=2.9.1+cpu' \
+      'sample_rate=16000' \
+      'source_audio_sha256=241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a' \
+      'pcm_samples=1' \
+      'audio_frames=1' \
+      'prompt_tokens=1' \
+      'generated_tokens=0' \
+      'max_new_tokens=4' \
+      'hidden_size=2560'
+    for name in "${REFERENCE_FILES[@]:1}"; do
+      printf 'sha256_%s=%s\n' "${name//./_}" ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+    done
+  } > "$reference/manifest.txt"
+  require_reference "self-test 4B reference" "$reference" 4b
+  local packet_digest
+  packet_digest="$(reference_packet_sha256 "$reference")"
+  [[ "$packet_digest" =~ ^[0-9a-f]{64}$ ]] || die "reference packet digest self-test failed"
+  printf 'extra' > "$reference/extra.bin"
+  [[ "$(reference_packet_sha256 "$reference")" != "$packet_digest" ]] || die "reference packet extra-file digest self-test failed"
+  rm -f "$reference/extra.bin"
+  mv "$reference/pcm.f32le" "$reference/pcm.f32le.missing"
+  if require_reference "self-test missing reference" "$reference" 4b >/dev/null 2>&1; then
+    die "reference packet missing-file self-test failed"
+  fi
+  mv "$reference/pcm.f32le.missing" "$reference/pcm.f32le"
+  local reference_link="$temporary/reference-link"
+  ln -s "$reference" "$reference_link"
+  if require_reference "self-test symlinked reference" "$reference_link" 4b >/dev/null 2>&1; then
+    die "reference root symlink tamper self-test failed"
+  fi
+  rm "$reference_link"
+  local manifest_good="$temporary/manifest.good"
+  cp "$reference/manifest.txt" "$manifest_good"
+  printf '%s\n' 'extra_key=unexpected' >> "$reference/manifest.txt"
+  if require_reference "self-test 4B reference" "$reference" 4b >/dev/null 2>&1; then
+    die "inner reference extra-manifest-key tamper self-test failed"
+  fi
+  cp "$manifest_good" "$reference/manifest.txt"
+  printf '%s\n' 'schema=vokra-moss-audio-reference-v1' >> "$reference/manifest.txt"
+  if require_reference "self-test 4B reference" "$reference" 4b >/dev/null 2>&1; then
+    die "inner reference duplicate-manifest-key tamper self-test failed"
+  fi
+  cp "$manifest_good" "$reference/manifest.txt"
+  printf 'tampered' > "$reference/pcm.f32le"
+  if require_reference "self-test 4B reference" "$reference" 4b >/dev/null 2>&1; then
+    die "inner reference hash tamper self-test failed"
+  fi
+  printf 'abc' > "$reference/pcm.f32le"
+  printf 'extra' > "$reference/extra.bin"
+  if require_reference "self-test 4B reference" "$reference" 4b >/dev/null 2>&1; then
+    die "inner reference file-set tamper self-test failed"
+  fi
+  rm -f "$reference/extra.bin"
+  mkdir "$reference/extra-dir"
+  if require_reference "self-test 4B reference" "$reference" 4b >/dev/null 2>&1; then
+    die "inner reference directory tamper self-test failed"
+  fi
+  rmdir "$reference/extra-dir"
+  ln -s pcm.f32le "$reference/extra-link"
+  if require_reference "self-test 4B reference" "$reference" 4b >/dev/null 2>&1; then
+    die "inner reference symlink tamper self-test failed"
+  fi
+  local evidence_probe="$temporary/evidence"
+  if mkdir -p "$evidence_probe" && require_disjoint_evidence "$evidence_probe" "$VOKRA_ROOT" >/dev/null 2>&1; then
+    die "existing evidence directory was accepted"
+  fi
+  [[ ! -e "$evidence_probe" ]] || rmdir "$evidence_probe"
+  require_disjoint_evidence "$evidence_probe" "$VOKRA_ROOT"
+  [[ -d "$evidence_probe" ]] || die "absent evidence directory helper self-test failed"
+  local cargo_log="$temporary/cargo.log"
+  printf '%s\n%s\n' \
+    'test moss_audio_real_metal_matches_cpu_exact_greedy ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' > "$cargo_log"
+  require_one_named_test_passed "$cargo_log" moss_audio_real_metal_matches_cpu_exact_greedy
+  printf '%s\n%s\n%s\n' \
+    'test moss_audio_real_metal_matches_cpu_exact_greedy ... ok' \
+    'test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' > "$cargo_log"
+  if require_one_named_test_passed "$cargo_log" moss_audio_real_metal_matches_cpu_exact_greedy >/dev/null 2>&1; then
+    die "duplicate Cargo result self-test failed"
+  fi
+  printf '%s\n%s\n' \
+    'test moss_audio_real_metal_matches_cpu_exact_greedy ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.2x' > "$cargo_log"
+  if require_one_named_test_passed "$cargo_log" moss_audio_real_metal_matches_cpu_exact_greedy >/dev/null 2>&1; then
+    die "malformed Cargo timing self-test failed"
+  fi
+  printf '%s\n%s\n%s\n' \
+    'test moss_audio_real_metal_matches_cpu_exact_greedy ... ok' \
+    'test moss_audio_real_metal_matches_cpu_exact_greedy ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' > "$cargo_log"
+  if require_one_named_test_passed "$cargo_log" moss_audio_real_metal_matches_cpu_exact_greedy >/dev/null 2>&1; then
+    die "duplicate named Cargo test self-test failed"
+  fi
+  local sentinel_log="$temporary/sentinels.log"
+  printf '%s\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' > "$sentinel_log"
+  require_exact_parity_sentinels "$sentinel_log"
+  printf '%s\n%s\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_official token_ids=exact text=exact PASS' > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then
+    die "duplicate sentinel self-test failed"
+  fi
+  printf 'prefix%s\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then
+    die "prefix sentinel self-test failed"
+  fi
+  printf '%s suffix\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then
+    die "suffix sentinel self-test failed"
+  fi
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct CPU_vs_official token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_official token_ids=exact text=exact FAIL' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' \
+    'MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS' > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then
+    die "FAIL sentinel self-test failed"
+  fi
+  # shellcheck disable=SC2086 # Each case intentionally models argv tokenization.
+  for bad_args in "--self-test --approval-evidence x" "--self-test --self-test" "--expected-head 0000000000000000000000000000000000000000 --expected-head 0000000000000000000000000000000000000000" "--approval-evidence" "--evidence-dir" "--unknown x"; do
+    if bash "$0" $bad_args >/dev/null 2>&1; then die "accepted malformed parser case: $bad_args"; fi
+  done
   log "self-test PASS"
 )
 
 main() {
-  local gguf_4b='' reference_4b='' gguf_8b='' reference_8b=''
-  local evidence_dir='' self_test=0
+  local gguf_4b='' reference_4b='' gguf_8b='' reference_8b='' expected_head=''
+  local gguf_4b_sha='' reference_4b_sha='' gguf_8b_sha='' reference_8b_sha=''
+  local approval_evidence='' evidence_dir='' self_test=0
+  local seen_gguf_4b=0 seen_reference_4b=0 seen_gguf_4b_sha=0 seen_reference_4b_sha=0
+  local seen_gguf_8b=0 seen_reference_8b=0 seen_gguf_8b_sha=0 seen_reference_8b_sha=0
+  local seen_approval=0 seen_expected_head=0 seen_evidence=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
       --gguf-4b)
-        [[ $# -ge 2 ]] || { usage; return 2; }
+        (( seen_gguf_4b == 0 )) || die 'duplicate --gguf-4b'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--gguf-4b requires a nonempty value'; seen_gguf_4b=1
         gguf_4b="$2"
         shift 2
         ;;
       --reference-4b)
-        [[ $# -ge 2 ]] || { usage; return 2; }
+        (( seen_reference_4b == 0 )) || die 'duplicate --reference-4b'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--reference-4b requires a nonempty value'; seen_reference_4b=1
         reference_4b="$2"
         shift 2
         ;;
+      --gguf-4b-sha256)
+        (( seen_gguf_4b_sha == 0 )) || die 'duplicate --gguf-4b-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--gguf-4b-sha256 requires a nonempty value'; seen_gguf_4b_sha=1
+        gguf_4b_sha="$2"
+        shift 2
+        ;;
+      --reference-4b-sha256)
+        (( seen_reference_4b_sha == 0 )) || die 'duplicate --reference-4b-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--reference-4b-sha256 requires a nonempty value'; seen_reference_4b_sha=1
+        reference_4b_sha="$2"
+        shift 2
+        ;;
       --gguf-8b)
-        [[ $# -ge 2 ]] || { usage; return 2; }
+        (( seen_gguf_8b == 0 )) || die 'duplicate --gguf-8b'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--gguf-8b requires a nonempty value'; seen_gguf_8b=1
         gguf_8b="$2"
         shift 2
         ;;
       --reference-8b)
-        [[ $# -ge 2 ]] || { usage; return 2; }
+        (( seen_reference_8b == 0 )) || die 'duplicate --reference-8b'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--reference-8b requires a nonempty value'; seen_reference_8b=1
         reference_8b="$2"
         shift 2
         ;;
+      --gguf-8b-sha256)
+        (( seen_gguf_8b_sha == 0 )) || die 'duplicate --gguf-8b-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--gguf-8b-sha256 requires a nonempty value'; seen_gguf_8b_sha=1
+        gguf_8b_sha="$2"
+        shift 2
+        ;;
+      --reference-8b-sha256)
+        (( seen_reference_8b_sha == 0 )) || die 'duplicate --reference-8b-sha256'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--reference-8b-sha256 requires a nonempty value'; seen_reference_8b_sha=1
+        reference_8b_sha="$2"
+        shift 2
+        ;;
+      --approval-evidence)
+        (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a nonempty value'; seen_approval=1
+        approval_evidence="$2"; shift 2 ;;
+      --expected-head)
+        (( seen_expected_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--expected-head requires a nonempty value'; seen_expected_head=1
+        expected_head="$2"; shift 2 ;;
       --evidence-dir)
-        [[ $# -ge 2 ]] || { usage; return 2; }
+        (( seen_evidence == 0 )) || die 'duplicate --evidence-dir'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--evidence-dir requires a nonempty value'; seen_evidence=1
         evidence_dir="$2"
         shift 2
         ;;
       --self-test)
+        (( seen_self_test == 0 )) || die 'duplicate --self-test'; seen_self_test=1
         self_test=1
         shift
         ;;
@@ -174,22 +559,32 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ -z "$gguf_4b$reference_4b$gguf_8b$reference_8b$evidence_dir" ]] \
+    [[ -z "$gguf_4b$reference_4b$gguf_8b$reference_8b$gguf_4b_sha$reference_4b_sha$gguf_8b_sha$reference_8b_sha$approval_evidence$expected_head$evidence_dir" ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
   [[ -n "$gguf_4b" && -n "$reference_4b" && -n "$gguf_8b" && \
-    -n "$reference_8b" && -n "$evidence_dir" ]] \
-    || { usage; die "all two-variant model/reference arguments and --evidence-dir are required"; }
+    -n "$reference_8b" && -n "$gguf_4b_sha" && -n "$reference_4b_sha" && \
+    -n "$gguf_8b_sha" && -n "$reference_8b_sha" && -n "$approval_evidence" && -n "$expected_head" && -n "$evidence_dir" ]] \
+    || { usage; die "all model/reference arguments, --approval-evidence, and --evidence-dir are required"; }
+  for expected in "$gguf_4b_sha" "$reference_4b_sha" "$gguf_8b_sha" "$reference_8b_sha"; do
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "all four expected SHA-256 values must be lowercase 64-hex"
+  done
 
+  require_expected_head "$expected_head"
+  license_preflight "$approval_evidence"
   require_remote_apple_host
   require_tooling
   require_file "MOSS-Audio 4B GGUF" "$gguf_4b"
   require_file "MOSS-Audio 8B GGUF" "$gguf_8b"
-  require_reference "MOSS-Audio 4B reference" "$reference_4b"
-  require_reference "MOSS-Audio 8B reference" "$reference_8b"
-  require_empty_directory "$evidence_dir"
+  require_expected_sha256 "MOSS-Audio 4B GGUF" "$gguf_4b" "$gguf_4b_sha"
+  require_expected_sha256 "MOSS-Audio 8B GGUF" "$gguf_8b" "$gguf_8b_sha"
+  require_reference "MOSS-Audio 4B reference" "$reference_4b" 4b
+  require_reference "MOSS-Audio 8B reference" "$reference_8b" 8b
+  [[ "$(reference_packet_sha256 "$reference_4b")" == "$reference_4b_sha" ]] || die "MOSS-Audio 4B reference packet digest mismatch"
+  [[ "$(reference_packet_sha256 "$reference_8b")" == "$reference_8b_sha" ]] || die "MOSS-Audio 8B reference packet digest mismatch"
+  require_disjoint_evidence "$evidence_dir" "$VOKRA_ROOT" "$gguf_4b" "$reference_4b" "$gguf_8b" "$reference_8b" "$approval_evidence"
   record_environment "$evidence_dir/environment.txt"
 
   {
@@ -197,6 +592,10 @@ main() {
     echo "gguf_8b_sha256=$(sha256_file "$gguf_8b")"
     echo "reference_4b_manifest_sha256=$(sha256_file "$reference_4b/manifest.txt")"
     echo "reference_8b_manifest_sha256=$(sha256_file "$reference_8b/manifest.txt")"
+    echo "reference_4b_packet_sha256=$(reference_packet_sha256 "$reference_4b")"
+    echo "reference_8b_packet_sha256=$(reference_packet_sha256 "$reference_8b")"
+    echo "approval_sha256=$(sha256_file "$approval_evidence")"
+    echo "expected_head=$expected_head"
   } > "$evidence_dir/input-hashes.txt"
 
   log "running both real-weight CPU/Metal parity cases on remote Apple Silicon"
@@ -207,30 +606,30 @@ main() {
     VOKRA_MOSS_AUDIO_8B_REFERENCE_DIR="$reference_8b" \
     CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" \
     RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+  CARGO_NET_OFFLINE=true cargo test --offline --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
       -p vokra-models --features metal --test moss_audio_real \
-      moss_audio_real_metal_matches_cpu_exact_greedy -- --exact --nocapture \
+      moss_audio_real_metal_matches_cpu_exact_greedy -- --ignored --exact --nocapture --test-threads=1 \
       2>&1 | tee "$evidence_dir/parity.log"
+  require_one_named_test_passed "$evidence_dir/parity.log" moss_audio_real_metal_matches_cpu_exact_greedy
+  require_exact_parity_sentinels "$evidence_dir/parity.log"
 
-  local marker_4b marker_8b
-  marker_4b='MOSS_AUDIO_PARITY moss-audio-4b-instruct Metal_vs_CPU token_ids=exact text=exact PASS'
-  marker_8b='MOSS_AUDIO_PARITY moss-audio-8b-instruct Metal_vs_CPU token_ids=exact text=exact PASS'
-  grep -F "$marker_4b" "$evidence_dir/parity.log" >/dev/null \
-    || die "4B Metal PASS marker is absent"
-  grep -F "$marker_8b" "$evidence_dir/parity.log" >/dev/null \
-    || die "8B Metal PASS marker is absent"
 
   {
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+    echo "expected_head=$expected_head"
+    echo "cpu_vs_official=PASS"
+    echo "metal_vs_official=PASS"
+    echo "metal_vs_cpu=PASS"
     echo "moss_audio_4b_cpu_vs_metal=PASS"
     echo "moss_audio_8b_cpu_vs_metal=PASS"
     echo "audio_projection_atol=0.01"
     echo "greedy_ids=exact"
     echo "text=exact"
     echo "upload=NOT_PERFORMED"
+    echo "transfer=GGUF_AND_REFERENCE_PACKET_RECEIVED_DIRECTLY_FROM_VAST;SMALL_LOGS_ONLY_FOR_LOCAL_RECOVERY"
   } > "$evidence_dir/summary.txt"
-  log "PASS: pull only $evidence_dir, then remove staged data or destroy the remote worker"
+  log "PASS: transfer GGUF/reference packets directly VAST->Apple; recover only small logs from $evidence_dir, then remove staged data or destroy the remote worker"
 }
 
 main "$@"

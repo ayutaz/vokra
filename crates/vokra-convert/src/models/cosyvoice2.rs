@@ -1,1233 +1,860 @@
-//! CosyVoice2 (chunk-aware CFM → mel → HiFTNet vocoder): safetensors
-//! checkpoint → GGUF conversion (M3-09-T03 / T04).
+//! Strict CosyVoice2 LLM component converter.
 //!
-//! Input: the upstream `FunAudioLLM/CosyVoice2-0.5B` LLM checkpoint
-//! (`llm.pt` exported to safetensors with verbatim tensor names — upstream
-//! ships torch pickles, no monolithic safetensors; the export recipe is in
-//! `docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md` §6-2).
-//! Output: a GGUF carrying every float tensor plus the `vokra.model.*` and
-//! `vokra.cosyvoice2.*` metadata chunks the native CosyVoice2 implementation
-//! (`crates/vokra-models/src/cosyvoice2/`) reads.
-//!
-//! # Hparam derivation (T04, closed by the 2026-07-16 real-weight eval)
-//!
-//! The Qwen2-0.5B backbone hparams are written from two sources:
-//!
-//! - **Shape-derived (always)**: `vocab_size` / `hidden_dim` from the
-//!   `llm.model.model.embed_tokens.weight` shape, `n_layer` from the
-//!   contiguous `llm.model.model.layers.{i}.*` block count, `ffn_dim` from
-//!   the layer-0 `mlp.gate_proj.weight` shape. These are unambiguous.
-//! - **`--config` (upstream HF `config.json`)**: the attention head split
-//!   (`num_attention_heads` / `num_key_value_heads`) is **not**
-//!   shape-derivable — `q_out == hidden` and `kv_out = n_head_kv ×
-//!   head_dim` leave `head_dim` free (any divisor of `kv_out` yields a
-//!   consistent split, and RoPE θ striding + the softmax scale depend on
-//!   it). `rope_theta`, `rms_norm_eps` and `max_position_embeddings` come
-//!   from the same file. Without `--config` those keys stay `0`-absent and
-//!   the runtime refuses the LLM bind — loud, never guessed (FR-EX-08).
-//!
-//! Cross-checks between the config and the tensor shapes (hidden size,
-//! layer count, FFN width, vocab, GQA algebra) fail the conversion loudly —
-//! a config from a different model must not produce a silently-wrong GGUF.
-//!
-//! # Q/K/V attention biases
-//!
-//! The Qwen2 family ships attention Q/K/V biases (measured layer-0 max
-//! |bias|: q = 51.13, k = 62.49 — eval report §8 row 4) and they are copied
-//! verbatim like every other tensor. The converter validates that bias
-//! presence is uniform (all three per layer, all layers) so a truncated
-//! export fails here instead of at runtime bind.
-//!
-//! # Tensor naming contract (T03)
-//!
-//! GGUF tensor names are the **upstream safetensors names verbatim** (same
-//! contract Whisper / Kokoro use).
-//!
-//! # No ONNX (permanent constraint)
-//!
-//! The converter never touches an ONNX graph — CosyVoice2 ships as torch
-//! checkpoints + a Python-side pipeline; the pipeline is re-implemented in
-//! Rust by the runtime crate (whisper.cpp 型 self re-implementation,
-//! CLAUDE.md 設計判断 4).
+//! The full CosyVoice2 release is composite and remains `INSPECTION_ONLY` at
+//! the public composite entry point. The side-car-aware entry point accepts
+//! only the authenticated, prepared LLM safetensors component and preserves
+//! its runtime tensor names verbatim. Flow, HiFT, tokenizer, and speaker
+//! components are not synthesized or silently omitted.
 
-use vokra_core::compliance::LicenseClass;
-use vokra_core::gguf::{
-    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::path::Path;
+
+use vokra_core::LicenseClass;
+use vokra_core::gguf::{GgmlType, GgufBuilder, GgufMetadataValue, chunks};
 
 use crate::ConvertError;
-use crate::json::{self, JsonValue};
-use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
+use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` value written for CosyVoice2 GGUFs. Kept in sync with
-/// the runtime constant `crates/vokra-models/src/cosyvoice2::EXPECTED_ARCH`.
-pub(crate) const ARCH: &str = "cosyvoice2";
-/// `vokra.model.name` value written for the CosyVoice2 GGUF.
-pub(crate) const NAME: &str = "cosyvoice2-0.5b";
+pub const ARCH: &str = "cosyvoice2";
+pub const NAME: &str = "cosyvoice2-0.5b";
+pub const CATEGORY: &str = "llm";
+pub const UPSTREAM_HF: &str = "FunAudioLLM/CosyVoice2-0.5B";
+pub const UPSTREAM_REVISION: &str = "eec1ae6c79877dbd9379285cf8789c9e0879293d";
+pub const CHECKPOINT_FILE: &str = "llm.pt";
+pub const CHECKPOINT_BYTES: u64 = 2_023_316_821;
+pub const CHECKPOINT_SHA256: &str =
+    "b144ef55b51ce8cfb79a73c90dbba0bdaba4e451c0ebcfab20f769264f84a608";
+pub const CONFIG_FILE: &str = "cosyvoice2.yaml";
+pub const CONFIG_BYTES: usize = 7_330;
+pub const CONFIG_SHA256: &str = "0af2c0d010c477187c39f3e8fd5f1ae2e4e6f90ad03ba37c10ed6c6a87b05959";
+pub const CONFIG_GIT_BLOB_SHA1: &str = "bc19267bbfd373c9a760b7667a74349ddd487db1";
+pub const QWEN_CONFIG_FILE: &str = "CosyVoice-BlankEN/config.json";
+pub const QWEN_CONFIG_BYTES: usize = 659;
+pub const QWEN_CONFIG_SHA256: &str =
+    "168aa1bd401abc3bc262ba15ba4e499627a8b4e006e9d050b47c22de20660185";
+pub const QWEN_CONFIG_GIT_BLOB_SHA1: &str = "463b055262b6c66c4629a74a4b300bfe2ed31d3c";
+pub const SOURCE_REPOSITORY: &str = "https://github.com/FunAudioLLM/CosyVoice.git";
+pub const SOURCE_REVISION: &str = "8555549e882236e6541748b1042d95693caa82ba";
+pub const TENSOR_COUNT: usize = 295;
+pub const TENSOR_MANIFEST_SHA256: &str =
+    "07cf10ae088c27a7c88e1c08fb231d00b01bba0c13f312a74d2fd4b35403bda2";
 
-// --- vokra.cosyvoice2.* metadata keys (T04 chunk design) --------------------
-//
-// Kept as constants inside this module (mirror the piper-plus / kokoro
-// pattern): CosyVoice2-specific keys live with the CosyVoice2 model, not in
-// `vokra-core::gguf::chunks`.
-//
-// The runtime reads back the same keys via
-// `crates/vokra-models/src/cosyvoice2/config.rs` (+ `llm.rs` for the
-// `arch.n_head_kv` / `arch.rope_base` / `arch.rms_norm_eps` / `arch.n_ctx`
-// group); the two crates intentionally duplicate the constant strings (the
-// runtime crate cannot depend on `vokra-convert`, and `vokra-convert` cannot
-// depend on `vokra-models` — both depend only on `vokra-core`). Round-trip
-// tests on both sides catch any drift.
+const SOURCE_LICENSE_PATH: &str = "LICENSE";
+const SOURCE_LICENSE_BYTES: u64 = 11_357;
+const SOURCE_LICENSE_SHA256: &str =
+    "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4";
+const SOURCE_LICENSE_GIT_BLOB_SHA1: &str = "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64";
+const SOURCE_LICENSE_SPDX: &str = "Apache-2.0";
 
-const KEY_SAMPLE_RATE: &str = "vokra.cosyvoice2.sample_rate";
+const KEY_CATEGORY: &str = "vokra.model.category";
+const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_COMPONENT: &str = "vokra.cosyvoice2.component";
+const KEY_COMPOSITE_STATUS: &str = "vokra.cosyvoice2.composite_status";
+const KEY_UPSTREAM_COMPONENT_FILE: &str = "vokra.cosyvoice2.upstream_component.file";
+const KEY_UPSTREAM_COMPONENT_BYTES: &str = "vokra.cosyvoice2.upstream_component.bytes";
+const KEY_UPSTREAM_COMPONENT_SHA256: &str = "vokra.cosyvoice2.upstream_component.sha256";
+const KEY_SOURCE_LICENSE_PATH: &str = "vokra.cosyvoice2.source_license.path";
+const KEY_SOURCE_LICENSE_BYTES: &str = "vokra.cosyvoice2.source_license.bytes";
+const KEY_SOURCE_LICENSE_SHA256: &str = "vokra.cosyvoice2.source_license.sha256";
+const KEY_SOURCE_LICENSE_BLOB: &str = "vokra.cosyvoice2.source_license.git_blob_sha1";
+const KEY_SOURCE_LICENSE_SPDX: &str = "vokra.cosyvoice2.source_license.spdx";
+const KEY_PREPARED_BYTES: &str = "vokra.cosyvoice2.prepared_input.bytes";
+const KEY_PREPARED_SHA256: &str = "vokra.cosyvoice2.prepared_input.sha256";
+const KEY_PREPARED_STATUS: &str = "vokra.cosyvoice2.prepared_input.authentication_status";
+const KEY_CONFIG_FILE: &str = "vokra.cosyvoice2.config_file";
+const KEY_CONFIG_BYTES: &str = "vokra.cosyvoice2.config_bytes";
+const KEY_CONFIG_SHA256: &str = "vokra.cosyvoice2.config_sha256";
+const KEY_CONFIG_BLOB: &str = "vokra.cosyvoice2.config_git_blob_sha1";
+const KEY_QWEN_CONFIG_FILE: &str = "vokra.cosyvoice2.qwen_config_file";
+const KEY_QWEN_CONFIG_BYTES: &str = "vokra.cosyvoice2.qwen_config_bytes";
+const KEY_QWEN_CONFIG_SHA256: &str = "vokra.cosyvoice2.qwen_config_sha256";
+const KEY_QWEN_CONFIG_BLOB: &str = "vokra.cosyvoice2.qwen_config_git_blob_sha1";
+const KEY_SOURCE_REPOSITORY: &str = "vokra.cosyvoice2.source_repository";
+const KEY_SOURCE_REVISION: &str = "vokra.cosyvoice2.source_revision";
+const KEY_TENSOR_MANIFEST: &str = "vokra.cosyvoice2.tensor_manifest_sha256";
 const KEY_VOCAB_SIZE: &str = "vokra.cosyvoice2.arch.vocab_size";
 const KEY_HIDDEN_DIM: &str = "vokra.cosyvoice2.arch.hidden_dim";
 const KEY_N_LAYER: &str = "vokra.cosyvoice2.arch.n_layer";
-const KEY_N_HEAD: &str = "vokra.cosyvoice2.arch.n_head";
 const KEY_FFN_DIM: &str = "vokra.cosyvoice2.arch.ffn_dim";
+const KEY_N_HEAD: &str = "vokra.cosyvoice2.arch.n_head";
 const KEY_N_HEAD_KV: &str = "vokra.cosyvoice2.arch.n_head_kv";
+const KEY_N_CTX: &str = "vokra.cosyvoice2.arch.n_ctx";
 const KEY_ROPE_BASE: &str = "vokra.cosyvoice2.arch.rope_base";
 const KEY_RMS_NORM_EPS: &str = "vokra.cosyvoice2.arch.rms_norm_eps";
-const KEY_N_CTX: &str = "vokra.cosyvoice2.arch.n_ctx";
-const KEY_FLOW_NFE: &str = "vokra.cosyvoice2.flow.nfe";
-const KEY_FLOW_SCHEDULE: &str = "vokra.cosyvoice2.flow.schedule";
-const KEY_MIMI_N_CODEBOOKS: &str = "vokra.cosyvoice2.mimi.n_codebooks";
-const KEY_MIMI_CODEBOOK_SIZE: &str = "vokra.cosyvoice2.mimi.codebook_size";
-const KEY_MIMI_D_MODEL: &str = "vokra.cosyvoice2.mimi.d_model";
-const KEY_STREAMING_CHUNK_SIZE: &str = "vokra.cosyvoice2.streaming.chunk_size";
-const KEY_STREAMING_CHUNK_HOP: &str = "vokra.cosyvoice2.streaming.chunk_hop";
 
-// --- Text tokenizer (T06): raw Qwen2 vocab.json + merges.txt, U8 embed ------
-//
-// Mirrors the runtime constants in
-// `crates/vokra-models/src/cosyvoice2/text_encoder.rs`
-// (`KEY_TOKENIZER_VOCAB` / `KEY_TOKENIZER_MERGES`) under the two-crate
-// constant rule; a round-trip test on each side catches drift.
-const KEY_TOKENIZER_VOCAB: &str = "vokra.cosyvoice2.tokenizer.vocab";
-const KEY_TOKENIZER_MERGES: &str = "vokra.cosyvoice2.tokenizer.merges";
+const SOURCE_ROLES: &[(&str, &str, &str)] = &[
+    (
+        "cosyvoice/cli/cosyvoice.py",
+        "8e44f0f0144378561a00ebc065fdb15a843bc4650e68683bebb6624827731859",
+        "cc443bed44c651a47492fc7e2142e3a88fb47627",
+    ),
+    (
+        "cosyvoice/llm/llm.py",
+        "6439d57fcf78bcdcad6d31812f3f4b02bd34f513333711ee317d71d1fd14d2de",
+        "59ebd48fde1f1b69240391fdac6e2afc1035e123",
+    ),
+    (
+        "cosyvoice/tokenizer/tokenizer.py",
+        "94340fc7cdf270c69a3aeb63290c5241044e20714e01fea736f361f9e5a56df2",
+        "43fb39a2b543cc7ba4ec95fca9327596c34dcff0",
+    ),
+];
 
-// --- Upstream tensor names (eval-recorded, never invented) ------------------
-//
-// Source of truth: `docs/bench-baselines/m1-real-weight-eval-2026-07-16/`
-// (report §4 / §6-2 + `llm-pt-manifest.tsv`) — the deployed
-// `FunAudioLLM/CosyVoice2-0.5B` `llm.pt` state-dict names. Duplicated in
-// `crates/vokra-models/src/cosyvoice2/llm.rs` (`T_TOKEN_EMB` etc.) under the
-// two-crate constant rule above.
-
-const T_TOKEN_EMB: &str = "llm.model.model.embed_tokens.weight";
-
-/// Per-layer tensor-name prefix.
-fn layer_prefix(i: usize) -> String {
-    format!("llm.model.model.layers.{i}.")
-}
-
-/// CosyVoice2 output PCM sample rate (Hz).
-///
-/// Sourced from the CosyVoice2 model card (24 kHz output); this is the same
-/// "model-card invariant" exception Kokoro uses for its 24 kHz value.
-const COSYVOICE2_SAMPLE_RATE: u32 = 24_000;
-
-/// Canonical Mimi RVQ shape (8 codebooks × 2048 entries × 512 dim).
-///
-/// Sourced from the Mimi paper (Kyutai) / M3-06 module documentation —
-/// stable model-card invariants, not invented numbers. The runtime rejects
-/// a `0` codec shape at load (`MimiBridge::from_config`), so we do
-/// **not** emit `0` placeholders on these three axes.
-///
-/// # SoTA plan §1(a) 訂正 (2026-07-24) — wrong-premise decision resolved
-///
-/// The 2026-07-16 eval's open design item ("upstream CosyVoice2-0.5B does
-/// not ship Mimi — it ships FSQ + flow.pt + hift.pt") was settled by the
-/// 2026-07-22 SoTA plan §1(a) 訂正: CosyVoice2's terminal vocoder is
-/// **HiFTNet** (`cosyvoice/hifigan/generator.py:378 HiFTGenerator`), NOT
-/// the Mimi codec. `vokra-models::cosyvoice2::mimi_bridge` is now
-/// `#[deprecated]` and the correct chain is
-/// `cosyvoice2::hift_chain::HiFTChain`. This converter still emits the
-/// canonical Mimi shape constants to keep the load-side compliance gate's
-/// non-zero requirement satisfied for pre-migration test GGUFs; the
-/// `vokra.cosyvoice2.mimi.*` metadata will be dropped in the T13
-/// codec-migration follow-up. NEW converters must not add Mimi wiring for
-/// CosyVoice2.
-const MIMI_N_CODEBOOKS: u32 = 8;
-const MIMI_CODEBOOK_SIZE: u32 = 2048;
-const MIMI_D_MODEL: u32 = 512;
-
-/// Hparams derived while converting (surfaced through
-/// [`CosyVoice2Report`] so the CLI can print what was written).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct DerivedHparams {
-    /// Embedding rows (`llm.model.model.embed_tokens.weight` dim 0).
     pub(crate) vocab_size: u32,
-    /// Embedding cols / model width (dim 1).
     pub(crate) hidden_dim: u32,
-    /// Contiguous transformer block count.
     pub(crate) n_layer: u32,
-    /// SwiGLU inner width (`mlp.gate_proj.weight` dim 0).
     pub(crate) ffn_dim: u32,
-    /// Query heads — from `--config`; `0` = unknown (not shape-derivable).
     pub(crate) n_head: u32,
-    /// KV heads — from `--config`; `0` = unknown.
     pub(crate) n_head_kv: u32,
-    /// Max positions — from `--config`; `0` = unknown.
     pub(crate) n_ctx: u32,
-    /// True when the checkpoint ships Q/K/V attention biases (Qwen2).
     pub(crate) has_attn_bias: bool,
 }
 
-/// Outcome of a CosyVoice2 conversion.
 #[derive(Debug, Default)]
 pub(crate) struct CosyVoice2Report {
-    /// Number of float weight tensors written to the GGUF (F32 / F16 /
-    /// BF16 — all three go through the same byte-copy path since the BF16
-    /// pass-through land 2026-07-25, mirror of `qwen3-tts` / `vibevoice` /
-    /// `voxcpm2`).
     pub(crate) written: usize,
-    /// Tensors whose dtype falls outside the F32 / F16 / BF16 pass-through
-    /// range and were skipped.
-    ///
-    /// The upstream safetensors reader already rejects unknown dtypes at
-    /// parse time (`SafetensorsError::UnsupportedDtype`), so this counter
-    /// is defensive/forward-compat (same rationale as Kokoro).
     pub(crate) skipped_non_float: usize,
-    /// Of the tensors in `written`, how many were BF16 (subset counter).
-    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
-    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
-    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    #[allow(dead_code)]
     pub(crate) bf16_passthrough: usize,
-    /// Shape/config-derived hparams actually written; `None` when the
-    /// buffer does not carry the LLM backbone tensors (scaffold inputs).
     pub(crate) derived: Option<DerivedHparams>,
-    /// Whether the Qwen2 text tokenizer (`vocab.json` + `merges.txt`) was
-    /// embedded as the `vokra.cosyvoice2.tokenizer.*` U8 chunks (T06).
     pub(crate) tokenizer_embedded: bool,
-    /// Diagnostic notes surfaced to the CLI operator. The converter never
-    /// fails on a note — hard inconsistencies are `ConvertError`s instead —
-    /// but a loud warning is printed so the operator does not learn about
-    /// a degraded conversion only at load time.
     pub(crate) notes: Vec<String>,
 }
 
-/// Raw Qwen2 text-tokenizer side-car files (T06): the upstream `vocab.json`
-/// and `merges.txt` bytes, embedded verbatim as U8 arrays under
-/// `vokra.cosyvoice2.tokenizer.vocab` / `.merges` (the Whisper / Voxtral /
-/// CSM zero-dep embed pattern; the runtime tokenizer is self-implemented in
-/// `crates/vokra-models/src/cosyvoice2/text_encoder.rs`).
+/// Summary of a staged standalone LLM component conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConvertCosyVoice2LlmReport {
+    /// Number of authenticated F32 tensors copied verbatim.
+    pub written: usize,
+    /// Number of GGUF metadata entries stamped by the converter.
+    pub metadata_count: usize,
+    /// Serialized GGUF size in bytes.
+    pub output_bytes: u64,
+}
+
+#[allow(dead_code)]
 pub(crate) struct TokenizerFiles<'a> {
-    /// Raw `vocab.json` bytes (Qwen2 byte-level BPE vocabulary).
     pub(crate) vocab_json: &'a [u8],
-    /// Raw `merges.txt` bytes (BPE merge ranks, one `LEFT RIGHT` per line).
     pub(crate) merges_txt: &'a [u8],
 }
 
-/// Converts a CosyVoice2 safetensors buffer (no config / tokenizer side-car)
-/// — see [`convert_with_config_and_tokenizer`].
-pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, CosyVoice2Report), ConvertError> {
-    convert_with_config(bytes, None)
+fn inspection_only() -> ConvertError {
+    ConvertError::Usage(
+        "CosyVoice2 composite conversion is INSPECTION_ONLY: flow, HiFT, speech-tokenizer, and speaker components are not bound; no full TTS output was written"
+            .to_owned(),
+    )
 }
 
-/// Converts a CosyVoice2 safetensors buffer with no tokenizer side-car — see
-/// [`convert_with_config_and_tokenizer`].
+pub(crate) fn convert(_bytes: Vec<u8>) -> Result<(GgufBuilder, CosyVoice2Report), ConvertError> {
+    Err(inspection_only())
+}
+
+/// Shape-only legacy surface remains fail-closed; a real component requires
+/// the exact config sidecar through this config-aware path.
+#[allow(dead_code)]
 pub(crate) fn convert_with_config(
-    bytes: Vec<u8>,
-    config_json: Option<&[u8]>,
+    _bytes: Vec<u8>,
+    _config_json: Option<&[u8]>,
 ) -> Result<(GgufBuilder, CosyVoice2Report), ConvertError> {
-    convert_with_config_and_tokenizer(bytes, config_json, None)
+    Err(inspection_only())
 }
 
-/// Converts a CosyVoice2 safetensors buffer into a populated GGUF builder
-/// plus a report of what was written vs. skipped.
-///
-/// Every tensor is written verbatim (bytes, dtype and shape preserved); no
-/// FP16 → FP32 widening. `config_json` is the upstream HF `config.json`
-/// (Qwen2 schema) supplying the head split + RoPE/eps/n_ctx values that
-/// tensor shapes cannot determine; without it those keys are left `0` /
-/// unwritten with a loud note and the runtime will refuse the LLM bind.
-///
-/// `tokenizer` are the raw Qwen2 `vocab.json` + `merges.txt` bytes (T06);
-/// when present and non-empty they are embedded verbatim as the
-/// `vokra.cosyvoice2.tokenizer.*` U8 chunks. When absent (or empty) the
-/// runtime text path (`CosyVoice2Tts::encode`) fails loudly until a
-/// tokenizer-carrying GGUF is converted (FR-EX-08 — never a silent stub).
 pub(crate) fn convert_with_config_and_tokenizer(
-    bytes: Vec<u8>,
-    config_json: Option<&[u8]>,
-    tokenizer: Option<TokenizerFiles<'_>>,
+    _bytes: Vec<u8>,
+    _config_json: Option<&[u8]>,
+    _tokenizer: Option<TokenizerFiles<'_>>,
 ) -> Result<(GgufBuilder, CosyVoice2Report), ConvertError> {
-    let st = SafetensorsFile::parse(bytes)?;
-    let mut report = CosyVoice2Report::default();
-
-    let shape = derive_shape_hparams(&st)?;
-    let config = config_json.map(parse_hf_config).transpose()?;
-
-    // Cross-check config vs shapes; resolve the final hparam set.
-    let derived = match (&shape, &config) {
-        (Some(s), Some(c)) => {
-            cross_check(s, c)?;
-            Some(DerivedHparams {
-                n_head: c.num_attention_heads,
-                n_head_kv: c.num_key_value_heads,
-                n_ctx: c.max_position_embeddings,
-                ..*s
-            })
-        }
-        (Some(s), None) => {
-            report.notes.push(format!(
-                "attention head split (n_head / n_head_kv) is not derivable from tensor \
-                 shapes (q_out == hidden leaves head_dim free) — pass `--config \
-                 <upstream config.json>` to write it; until then \
-                 `{KEY_N_HEAD}` stays 0 and the runtime refuses the LLM bind"
-            ));
-            Some(*s)
-        }
-        (None, Some(_)) => {
-            return Err(ConvertError::Parse(format!(
-                "cosyvoice2: --config was passed but the safetensors buffer does not \
-                 carry the LLM backbone (`{T_TOKEN_EMB}` missing) — nothing to \
-                 cross-check the config against"
-            )));
-        }
-        (None, None) => {
-            report.notes.push(format!(
-                "`{T_TOKEN_EMB}` not found — no LLM backbone hparams derived; the \
-                 numeric hparams are 0-placeholders and the runtime rejects the LLM \
-                 bind at load"
-            ));
-            None
-        }
-    };
-    report.derived = derived;
-
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    // Self-describing redistribution (publishing to a public model hub): the
-    // artifact must carry its own licence, not rely on a consumer running
-    // Vokra's registry resolver. Values transcribed from
-    // docs/license-audit.md §3, which holds the primary-source citations.
-    vokra_core::stamp_provenance(
-        &mut b,
-        LicenseClass::Permissive,
-        "Apache-2.0",
-        Some("cosyvoice2"),
-        Some("FunAudioLLM/CosyVoice2-0.5B (Apache-2.0)"),
-    );
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    write_hparams(&mut b, derived.as_ref(), config.as_ref());
-    embed_tokenizer(&mut b, tokenizer, &mut report);
-
-    for t in st.tensors() {
-        match t.dtype {
-            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts /
-            // vibevoice / voxcpm2 / moshi): downstream BF16 quantizations
-            // of this Qwen2 backbone hit this arm. Emit as GGUF type 30
-            // verbatim; runtime widens on load via `decode_bf16` (exact,
-            // `bits << 16`).
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
-        }
-    }
-
-    Ok((b, report))
+    Err(inspection_only())
 }
 
-/// The `--config` subset the converter consumes — the HF Qwen2
-/// `config.json` schema fields the runtime needs and shapes cannot supply
-/// (plus the redundant shape fields used purely for cross-checking).
-#[derive(Debug, Clone, Copy)]
-struct HfQwen2Config {
-    num_attention_heads: u32,
-    num_key_value_heads: u32,
-    rope_theta: f32,
-    rms_norm_eps: f32,
-    max_position_embeddings: u32,
-    hidden_size: Option<u32>,
-    num_hidden_layers: Option<u32>,
-    intermediate_size: Option<u32>,
-    vocab_size: Option<u32>,
-}
-
-/// Parses the upstream HF `config.json`. The five load-bearing fields are
-/// required — a config missing them is the wrong file, and inventing a
-/// default here would bake a silent wrong value into the GGUF (FR-EX-08).
-fn parse_hf_config(bytes: &[u8]) -> Result<HfQwen2Config, ConvertError> {
-    let root = json::parse(bytes)
-        .map_err(|e| ConvertError::Parse(format!("cosyvoice2 --config: not valid JSON: {e}")))?;
-    let req_u32 = |key: &str| -> Result<u32, ConvertError> {
-        json_u32(&root, key)?.ok_or_else(|| {
-            ConvertError::Parse(format!(
-                "cosyvoice2 --config: `{key}` missing — pass the upstream HF config.json \
-                 (Qwen2 schema)"
-            ))
-        })
-    };
-    let req_f32 = |key: &str| -> Result<f32, ConvertError> {
-        json_f32(&root, key)?.ok_or_else(|| {
-            ConvertError::Parse(format!(
-                "cosyvoice2 --config: `{key}` missing — pass the upstream HF config.json \
-                 (Qwen2 schema)"
-            ))
-        })
-    };
-    Ok(HfQwen2Config {
-        num_attention_heads: req_u32("num_attention_heads")?,
-        num_key_value_heads: req_u32("num_key_value_heads")?,
-        rope_theta: req_f32("rope_theta")?,
-        rms_norm_eps: req_f32("rms_norm_eps")?,
-        max_position_embeddings: req_u32("max_position_embeddings")?,
-        hidden_size: json_u32(&root, "hidden_size")?,
-        num_hidden_layers: json_u32(&root, "num_hidden_layers")?,
-        intermediate_size: json_u32(&root, "intermediate_size")?,
-        vocab_size: json_u32(&root, "vocab_size")?,
+/// Converts the separately authenticated CosyVoice2 LLM component from
+/// prepared safetensors and the exact YAML plus Qwen config sidecars, publishing only to an
+/// absent output path. The raw PyTorch checkpoint is never accepted here;
+/// its identity is retained as provenance from the VAST preparation gate.
+#[allow(dead_code)]
+pub(crate) fn convert_cosyvoice2_llm_file(
+    input: &Path,
+    config: &Path,
+    qwen_config: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertCosyVoice2LlmReport, ConvertError> {
+    require_explicit_license(license)?;
+    require_regular_file(input, "prepared LLM safetensors")?;
+    require_regular_file(config, CONFIG_FILE)?;
+    require_regular_file(qwen_config, QWEN_CONFIG_FILE)?;
+    require_absent_output(output)?;
+    let input_bytes = std::fs::read(input).map_err(ConvertError::Io)?;
+    let config_bytes = std::fs::read(config).map_err(ConvertError::Io)?;
+    let qwen_config_bytes = std::fs::read(qwen_config).map_err(ConvertError::Io)?;
+    let (builder, report) = convert_component(
+        input_bytes,
+        Some(&config_bytes),
+        Some(&qwen_config_bytes),
+        None,
+    )?;
+    let output_bytes = builder.to_bytes()?;
+    write_no_replace(output, &output_bytes).map_err(ConvertError::Io)?;
+    Ok(ConvertCosyVoice2LlmReport {
+        written: report.written,
+        metadata_count: builder.metadata_count(),
+        output_bytes: output_bytes.len() as u64,
     })
 }
 
-/// Reads an optional non-negative integer field; present-with-wrong-type is
-/// a loud error, absent is `None`.
-fn json_u32(root: &JsonValue, key: &str) -> Result<Option<u32>, ConvertError> {
-    match root.get(key) {
-        None => Ok(None),
-        Some(v) => v
-            .as_u64()
-            .and_then(|x| u32::try_from(x).ok())
-            .map(Some)
-            .ok_or_else(|| {
-                ConvertError::Parse(format!(
-                    "cosyvoice2 --config: `{key}` is not a u32-range integer: {v:?}"
-                ))
-            }),
-    }
-}
-
-/// Reads an optional numeric field as f32 (JSON int or float); present-with-
-/// wrong-type is a loud error, absent is `None`.
-fn json_f32(root: &JsonValue, key: &str) -> Result<Option<f32>, ConvertError> {
-    match root.get(key) {
-        None => Ok(None),
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-        Some(JsonValue::Int(i)) => Ok(Some(*i as f32)),
-        #[allow(clippy::cast_possible_truncation)]
-        Some(JsonValue::Float(f)) => Ok(Some(*f as f32)),
-        Some(other) => Err(ConvertError::Parse(format!(
-            "cosyvoice2 --config: `{key}` is not a number: {other:?}"
-        ))),
-    }
-}
-
-/// Derives the unambiguous shape hparams from the tensor set, or `None`
-/// when the buffer does not carry the LLM backbone (scaffold inputs keep
-/// converting with 0-placeholders + a note).
-fn derive_shape_hparams(st: &SafetensorsFile) -> Result<Option<DerivedHparams>, ConvertError> {
-    let Some(emb) = find(st, T_TOKEN_EMB) else {
-        return Ok(None);
-    };
-    let [vocab, hidden] = rank2(emb)?;
-
-    // Contiguous layer count + no-gap validation.
-    let mut n_layer = 0usize;
-    while find(
-        st,
-        &format!("{}input_layernorm.weight", layer_prefix(n_layer)),
-    )
-    .is_some()
-    {
-        n_layer += 1;
-    }
-    if n_layer == 0 {
-        return Err(ConvertError::Parse(format!(
-            "cosyvoice2: `{T_TOKEN_EMB}` present but no \
-             `llm.model.model.layers.0.input_layernorm.weight` — not a CosyVoice2 \
-             LLM checkpoint layout"
+/// Validate the VAST handoff paths before reading any payload. Symlink paths
+/// are rejected at this handoff boundary; callers must keep the reviewed
+/// regular files in place for the conversion operation.
+fn require_regular_file(path: &Path, label: &str) -> Result<(), ConvertError> {
+    if !path.is_absolute() {
+        return Err(ConvertError::Usage(format!(
+            "{ARCH} LLM: {label} path must be absolute"
         )));
     }
-    for t in st.tensors() {
-        if let Some(idx) = parse_layer_index(&t.name) {
-            if idx >= n_layer {
-                return Err(ConvertError::Parse(format!(
-                    "cosyvoice2: `{}` implies layer {idx} but the contiguous block \
-                     count is {n_layer} (a gap in the layer indices means a broken \
-                     export)",
-                    t.name
-                )));
-            }
-        }
-    }
-
-    // FFN width + per-layer projection / bias consistency.
-    let gate0 = require(st, &format!("{}mlp.gate_proj.weight", layer_prefix(0)))?;
-    let [ffn, gate_in] = rank2(gate0)?;
-    check_eq(&gate0.name, "in width", gate_in, hidden)?;
-    let q0 = require(st, &format!("{}self_attn.q_proj.weight", layer_prefix(0)))?;
-    let [q_out, q_in] = rank2(q0)?;
-    check_eq(&q0.name, "in width", q_in, hidden)?;
-    check_eq(
-        &q0.name,
-        "out width (q_out must equal hidden)",
-        q_out,
-        hidden,
-    )?;
-    let k0 = require(st, &format!("{}self_attn.k_proj.weight", layer_prefix(0)))?;
-    let [kv_out, k_in] = rank2(k0)?;
-    check_eq(&k0.name, "in width", k_in, hidden)?;
-
-    let mut has_attn_bias: Option<bool> = None;
-    for i in 0..n_layer {
-        let p = layer_prefix(i);
-        let mut present = 0usize;
-        for (proj, want_out) in [("q", hidden), ("k", kv_out), ("v", kv_out)] {
-            let name = format!("{p}self_attn.{proj}_proj.bias");
-            if let Some(info) = find(st, &name) {
-                present += 1;
-                let dims: Vec<u64> = info.shape.clone();
-                if dims != [want_out] {
-                    return Err(ConvertError::Parse(format!(
-                        "cosyvoice2: `{name}` shape {dims:?} != expected [{want_out}]"
-                    )));
-                }
-            }
-        }
-        let layer_has = match present {
-            0 => false,
-            3 => true,
-            n => {
-                return Err(ConvertError::Parse(format!(
-                    "cosyvoice2: layer {i} ships {n}/3 Q/K/V bias tensors — a partial \
-                     bias set means a broken export (all three or none)"
-                )));
-            }
-        };
-        match has_attn_bias {
-            None => has_attn_bias = Some(layer_has),
-            Some(expected) if expected != layer_has => {
-                return Err(ConvertError::Parse(format!(
-                    "cosyvoice2: layer {i} bias presence ({layer_has}) differs from \
-                     layer 0 ({expected}) — mixed-bias checkpoints are a broken export"
-                )));
-            }
-            Some(_) => {}
-        }
-    }
-
-    Ok(Some(DerivedHparams {
-        vocab_size: u32::try_from(vocab).map_err(|_| overflow(T_TOKEN_EMB))?,
-        hidden_dim: u32::try_from(hidden).map_err(|_| overflow(T_TOKEN_EMB))?,
-        n_layer: u32::try_from(n_layer).map_err(|_| overflow("n_layer"))?,
-        ffn_dim: u32::try_from(ffn).map_err(|_| overflow(&gate0.name))?,
-        n_head: 0,
-        n_head_kv: 0,
-        n_ctx: 0,
-        has_attn_bias: has_attn_bias.unwrap_or(false),
-    }))
-}
-
-/// Hard cross-checks between the `--config` values and the tensor shapes —
-/// a config from a different model must not produce a silently-wrong GGUF.
-fn cross_check(s: &DerivedHparams, c: &HfQwen2Config) -> Result<(), ConvertError> {
-    let pairs = [
-        ("hidden_size", c.hidden_size, s.hidden_dim),
-        ("num_hidden_layers", c.num_hidden_layers, s.n_layer),
-        ("intermediate_size", c.intermediate_size, s.ffn_dim),
-        ("vocab_size", c.vocab_size, s.vocab_size),
-    ];
-    for (key, got, want) in pairs {
-        if let Some(got) = got {
-            if got != want {
-                return Err(ConvertError::Parse(format!(
-                    "cosyvoice2: --config `{key}` = {got} disagrees with the tensor \
-                     shapes ({want}) — wrong config.json for this checkpoint"
-                )));
-            }
-        }
-    }
-    // GQA algebra: hidden = n_head × head_dim; the K projection width must
-    // be n_head_kv × head_dim; and the head split must divide evenly.
-    let n_head = c.num_attention_heads;
-    let n_kv = c.num_key_value_heads;
-    if n_head == 0 || n_kv == 0 || n_head % n_kv != 0 || s.hidden_dim % n_head != 0 {
-        return Err(ConvertError::Parse(format!(
-            "cosyvoice2: --config head split (num_attention_heads = {n_head}, \
-             num_key_value_heads = {n_kv}) is not GQA-well-formed for hidden_dim {}",
-            s.hidden_dim
+    let metadata = std::fs::symlink_metadata(path).map_err(ConvertError::Io)?;
+    let file_type = metadata.file_type();
+    if !file_type.is_file() || file_type.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "{ARCH} LLM: {label} must be a regular non-symlink file"
         )));
     }
     Ok(())
 }
 
-fn find<'a>(st: &'a SafetensorsFile, name: &str) -> Option<&'a SafeTensorInfo> {
-    st.tensors().iter().find(|t| t.name == name)
+fn require_absent_output(path: &Path) -> Result<(), ConvertError> {
+    if !path.is_absolute() {
+        return Err(ConvertError::Usage(
+            "cosyvoice2 LLM: output path must be absolute".to_owned(),
+        ));
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(ConvertError::Usage(
+            "cosyvoice2 LLM: output path must be absent (no replacement)".to_owned(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ConvertError::Io(error)),
+    }
 }
 
-fn require<'a>(st: &'a SafetensorsFile, name: &str) -> Result<&'a SafeTensorInfo, ConvertError> {
-    find(st, name).ok_or_else(|| {
-        ConvertError::Parse(format!(
-            "cosyvoice2: `{name}` missing — not a CosyVoice2 LLM checkpoint layout"
-        ))
-    })
-}
-
-fn rank2(info: &SafeTensorInfo) -> Result<[u64; 2], ConvertError> {
-    match info.shape[..] {
-        [a, b] => Ok([a, b]),
-        ref other => Err(ConvertError::Parse(format!(
-            "cosyvoice2: `{}` rank {} (shape {other:?}) where a rank-2 matrix was \
-             expected",
-            info.name,
-            other.len(),
+fn require_explicit_license(license: Option<&str>) -> Result<(), ConvertError> {
+    match license {
+        Some(value) if value.eq_ignore_ascii_case("apache-2.0") => Ok(()),
+        Some(value) => Err(ConvertError::Usage(format!(
+            "{ARCH} LLM: explicit Apache-2.0 license attestation required; got `{value}`"
+        ))),
+        None => Err(ConvertError::Usage(format!(
+            "{ARCH} LLM: explicit Apache-2.0 license attestation is required"
         ))),
     }
 }
 
-fn check_eq(name: &str, what: &str, got: u64, want: u64) -> Result<(), ConvertError> {
-    if got == want {
-        Ok(())
-    } else {
-        Err(ConvertError::Parse(format!(
-            "cosyvoice2: `{name}` {what} = {got}, expected {want}"
-        )))
+/// Publish bytes to an absent path without replacement. A same-filesystem
+/// hard link is the std-only atomic no-replace primitive; the temporary
+/// sibling is cleaned up on both success and failure.
+fn write_no_replace(output: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let name = output.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "output has no file name")
+    })?;
+    let mut temporary = None;
+    for attempt in 0..100u32 {
+        let candidate = parent.join(format!(
+            ".{}.vokra-cosyvoice2-llm-{}-{}",
+            name.to_string_lossy(),
+            std::process::id(),
+            attempt
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let Some((temporary_path, mut file)) = temporary else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate temporary CosyVoice2 LLM output",
+        ));
+    };
+    let operation = (|| {
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::hard_link(&temporary_path, output)
+    })();
+    let cleanup = std::fs::remove_file(&temporary_path);
+    match operation {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = cleanup;
+            Err(error)
+        }
     }
 }
 
-fn overflow(name: &str) -> ConvertError {
-    ConvertError::Parse(format!("cosyvoice2: `{name}` dimension exceeds u32 range"))
-}
-
-/// Extracts `{i}` from `llm.model.model.layers.{i}.<rest>`, if the name is
-/// a layer tensor.
-fn parse_layer_index(name: &str) -> Option<usize> {
-    let rest = name.strip_prefix("llm.model.model.layers.")?;
-    let (idx, _) = rest.split_once('.')?;
-    idx.parse().ok()
-}
-
-/// Writes the `vokra.cosyvoice2.*` hparam chunk group.
-///
-/// The LLM arch hparams carry the shape/config-derived values when
-/// available; anything unknown stays a `0` placeholder that the runtime
-/// rejects at first use (loud fail rather than a silent zero-shape
-/// forward). The Flow Matching / streaming keys stay `0` / `"linear"` —
-/// they belong to the upstream `flow.pt` pipeline, which this converter
-/// does not consume yet.
-fn write_hparams(
-    b: &mut GgufBuilder,
-    derived: Option<&DerivedHparams>,
-    cfg: Option<&HfQwen2Config>,
-) {
-    b.add_u32(KEY_SAMPLE_RATE, COSYVOICE2_SAMPLE_RATE);
-    let d = derived.copied().unwrap_or_default();
-    b.add_u32(KEY_VOCAB_SIZE, d.vocab_size);
-    b.add_u32(KEY_HIDDEN_DIM, d.hidden_dim);
-    b.add_u32(KEY_N_LAYER, d.n_layer);
-    b.add_u32(KEY_N_HEAD, d.n_head);
-    b.add_u32(KEY_FFN_DIM, d.ffn_dim);
-    if let Some(c) = cfg {
-        // Only written when the upstream config supplied them — the
-        // runtime has documented fallbacks for absent keys, and a made-up
-        // value here would silently override them.
-        b.add_u32(KEY_N_HEAD_KV, c.num_key_value_heads);
-        b.add_f32(KEY_ROPE_BASE, c.rope_theta);
-        b.add_f32(KEY_RMS_NORM_EPS, c.rms_norm_eps);
-        b.add_u32(KEY_N_CTX, c.max_position_embeddings);
-    }
-    b.add_u32(KEY_FLOW_NFE, 0);
-    // The schedule tag has no meaningful `0`-placeholder — a missing
-    // schedule tag is what the runtime error is written to catch. We
-    // write `"linear"` (the M3-05 default schedule) until the flow.pt
-    // pipeline lands in the converter.
-    b.add_string(KEY_FLOW_SCHEDULE, "linear");
-    b.add_u32(KEY_MIMI_N_CODEBOOKS, MIMI_N_CODEBOOKS);
-    b.add_u32(KEY_MIMI_CODEBOOK_SIZE, MIMI_CODEBOOK_SIZE);
-    b.add_u32(KEY_MIMI_D_MODEL, MIMI_D_MODEL);
-    b.add_u32(KEY_STREAMING_CHUNK_SIZE, 0);
-    b.add_u32(KEY_STREAMING_CHUNK_HOP, 0);
-}
-
-/// Embeds the Qwen2 text tokenizer (`vocab.json` + `merges.txt`) as the two
-/// `vokra.cosyvoice2.tokenizer.*` U8 chunks (T06), or records a loud note
-/// when no (usable) tokenizer was supplied.
-///
-/// Both files are embedded together or not at all: a byte-level BPE needs the
-/// vocabulary *and* the merge ranks, so a half-supplied pair is treated as
-/// "no tokenizer" (noted) rather than written as a silently-unusable chunk.
-fn embed_tokenizer(
-    b: &mut GgufBuilder,
+fn convert_component(
+    bytes: Vec<u8>,
+    config: Option<&[u8]>,
+    qwen_config: Option<&[u8]>,
     tokenizer: Option<TokenizerFiles<'_>>,
-    report: &mut CosyVoice2Report,
-) {
-    match tokenizer {
-        Some(tok) if !tok.vocab_json.is_empty() && !tok.merges_txt.is_empty() => {
-            // U8 arrays, bytes verbatim (the M2-06 Whisper / M3-10 Voxtral /
-            // M4-05 CSM zero-dep embed pattern).
-            b.add_metadata(
-                KEY_TOKENIZER_VOCAB,
-                GgufMetadataValue::Array(GgufArray {
-                    element_type: GgufValueType::U8,
-                    values: tok
-                        .vocab_json
-                        .iter()
-                        .map(|&x| GgufMetadataValue::U8(x))
-                        .collect(),
-                }),
+) -> Result<(GgufBuilder, CosyVoice2Report), ConvertError> {
+    let config = config.ok_or_else(|| {
+        ConvertError::Usage(
+            "CosyVoice2 LLM component requires the exact cosyvoice2.yaml sidecar; no output was written"
+                .to_owned(),
+        )
+    })?;
+    validate_config(config)?;
+    let qwen_config = qwen_config.ok_or_else(|| {
+        ConvertError::Usage(
+            "CosyVoice2 LLM component requires the exact Qwen config.json sidecar; no output was written"
+                .to_owned(),
+        )
+    })?;
+    validate_qwen_config(qwen_config)?;
+    let prepared_bytes = bytes.len() as u64;
+    let prepared_sha256 =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(&bytes));
+    let st = SafetensorsFile::parse(bytes).map_err(ConvertError::from)?;
+    validate_manifest(&st)?;
+    let embedding = st
+        .tensor_info("llm.model.model.embed_tokens.weight")
+        .expect("validated manifest includes token embedding");
+    let head = st
+        .tensor_info("llm.model.lm_head.weight")
+        .expect("validated manifest includes lm head");
+    if st.tensor_bytes(embedding) != st.tensor_bytes(head) {
+        return Err(ConvertError::Parse(
+            "cosyvoice2 LLM: lm_head.weight is not byte-identical to embed_tokens.weight; tied-head contract rejected"
+                .to_owned(),
+        ));
+    }
+
+    let mut builder = GgufBuilder::new();
+    builder
+        .add_string(chunks::KEY_MODEL_ARCH, ARCH)
+        .add_string(chunks::KEY_MODEL_NAME, NAME)
+        .add_string(KEY_CATEGORY, CATEGORY)
+        .add_string(KEY_COMPONENT, "llm")
+        .add_string(KEY_COMPOSITE_STATUS, "INSPECTION_ONLY")
+        .add_string(KEY_UPSTREAM_HF, UPSTREAM_HF)
+        .add_string(KEY_UPSTREAM_REVISION, UPSTREAM_REVISION)
+        .add_string(KEY_UPSTREAM_COMPONENT_SHA256, CHECKPOINT_SHA256)
+        .add_string(KEY_UPSTREAM_COMPONENT_FILE, CHECKPOINT_FILE)
+        .add_u32(KEY_UPSTREAM_COMPONENT_BYTES, CHECKPOINT_BYTES as u32)
+        .add_string(KEY_CONFIG_FILE, CONFIG_FILE)
+        .add_u32(KEY_CONFIG_BYTES, CONFIG_BYTES as u32)
+        .add_string(KEY_CONFIG_SHA256, CONFIG_SHA256)
+        .add_string(KEY_CONFIG_BLOB, CONFIG_GIT_BLOB_SHA1)
+        .add_string(KEY_QWEN_CONFIG_FILE, QWEN_CONFIG_FILE)
+        .add_u32(KEY_QWEN_CONFIG_BYTES, QWEN_CONFIG_BYTES as u32)
+        .add_string(KEY_QWEN_CONFIG_SHA256, QWEN_CONFIG_SHA256)
+        .add_string(KEY_QWEN_CONFIG_BLOB, QWEN_CONFIG_GIT_BLOB_SHA1)
+        .add_string(KEY_SOURCE_REPOSITORY, SOURCE_REPOSITORY)
+        .add_string(KEY_SOURCE_REVISION, SOURCE_REVISION)
+        .add_string(KEY_TENSOR_MANIFEST, TENSOR_MANIFEST_SHA256)
+        .add_string(KEY_SOURCE_LICENSE_PATH, SOURCE_LICENSE_PATH)
+        .add_string(KEY_SOURCE_LICENSE_SHA256, SOURCE_LICENSE_SHA256)
+        .add_string(KEY_SOURCE_LICENSE_BLOB, SOURCE_LICENSE_GIT_BLOB_SHA1)
+        .add_string(KEY_SOURCE_LICENSE_SPDX, SOURCE_LICENSE_SPDX)
+        .add_metadata(
+            KEY_SOURCE_LICENSE_BYTES,
+            GgufMetadataValue::U64(SOURCE_LICENSE_BYTES),
+        )
+        .add_string(KEY_PREPARED_SHA256, &prepared_sha256)
+        .add_string(
+            KEY_PREPARED_STATUS,
+            "PREPARED_INPUT_DIGEST_RECORDED_NOT_PINNED",
+        )
+        .add_metadata(KEY_PREPARED_BYTES, GgufMetadataValue::U64(prepared_bytes))
+        .add_u32(KEY_VOCAB_SIZE, 151_936)
+        .add_u32(KEY_HIDDEN_DIM, 896)
+        .add_u32(KEY_N_LAYER, 24)
+        .add_u32(KEY_FFN_DIM, 4_864)
+        .add_u32(KEY_N_HEAD, 14)
+        .add_u32(KEY_N_HEAD_KV, 2)
+        .add_u32(KEY_N_CTX, 32_768)
+        .add_f32(KEY_ROPE_BASE, 1_000_000.0)
+        .add_f32(KEY_RMS_NORM_EPS, 1.0e-6);
+    vokra_core::stamp_provenance(
+        &mut builder,
+        LicenseClass::Permissive,
+        "apache-2.0",
+        Some(NAME),
+        Some(SOURCE_REPOSITORY),
+    );
+    for (path, sha256, blob) in SOURCE_ROLES {
+        builder
+            .add_string(&format!("vokra.cosyvoice2.source.{path}.sha256"), sha256)
+            .add_string(
+                &format!("vokra.cosyvoice2.source.{path}.git_blob_sha1"),
+                blob,
             );
-            b.add_metadata(
-                KEY_TOKENIZER_MERGES,
-                GgufMetadataValue::Array(GgufArray {
-                    element_type: GgufValueType::U8,
-                    values: tok
-                        .merges_txt
-                        .iter()
-                        .map(|&x| GgufMetadataValue::U8(x))
-                        .collect(),
-                }),
-            );
-            report.tokenizer_embedded = true;
+    }
+    for tensor in st.tensors() {
+        builder.add_tensor(
+            &tensor.name,
+            GgmlType::F32,
+            tensor.shape.clone(),
+            st.tensor_bytes(tensor).to_vec(),
+        )?;
+    }
+    let mut report = CosyVoice2Report {
+        written: TENSOR_COUNT,
+        derived: Some(DerivedHparams {
+            vocab_size: 151_936,
+            hidden_dim: 896,
+            n_layer: 24,
+            ffn_dim: 4_864,
+            n_head: 14,
+            n_head_kv: 2,
+            n_ctx: 32_768,
+            has_attn_bias: true,
+        }),
+        ..CosyVoice2Report::default()
+    };
+    if tokenizer.is_some() {
+        report.notes.push(
+            "tokenizer sidecars are not part of the standalone LLM component; they were not embedded"
+                .to_owned(),
+        );
+    }
+    Ok((builder, report))
+}
+
+fn validate_config(config: &[u8]) -> Result<(), ConvertError> {
+    if config.len() != CONFIG_BYTES {
+        return Err(ConvertError::Parse(format!(
+            "cosyvoice2 LLM: {CONFIG_FILE} is {} bytes, expected {CONFIG_BYTES}",
+            config.len()
+        )));
+    }
+    let sha256 =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(config));
+    let mut blob = format!("blob {}\0", config.len()).into_bytes();
+    blob.extend_from_slice(config);
+    let blob_sha1 = hex_bytes(&sha1(&blob));
+    if sha256 != CONFIG_SHA256 || blob_sha1 != CONFIG_GIT_BLOB_SHA1 {
+        return Err(ConvertError::Parse(format!(
+            "cosyvoice2 LLM: config identity mismatch (sha256={sha256}, blob_sha1={blob_sha1})"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_qwen_config(config: &[u8]) -> Result<(), ConvertError> {
+    if config.len() != QWEN_CONFIG_BYTES {
+        return Err(ConvertError::Parse(format!(
+            "cosyvoice2 LLM: {QWEN_CONFIG_FILE} is {} bytes, expected {QWEN_CONFIG_BYTES}",
+            config.len()
+        )));
+    }
+    let sha256 =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(config));
+    let mut blob = format!("blob {}\0", config.len()).into_bytes();
+    blob.extend_from_slice(config);
+    let blob_sha1 = hex_bytes(&sha1(&blob));
+    if sha256 != QWEN_CONFIG_SHA256 || blob_sha1 != QWEN_CONFIG_GIT_BLOB_SHA1 {
+        return Err(ConvertError::Parse(format!(
+            "cosyvoice2 LLM: Qwen config identity mismatch (sha256={sha256}, blob_sha1={blob_sha1})"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    let expected = expected_tensor_shapes();
+    let expected_digest = crate::models::canary_1b_flash::hex(
+        &crate::models::canary_1b_flash::manifest_sha256(&expected),
+    );
+    if expected_digest != TENSOR_MANIFEST_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "cosyvoice2 LLM: internal manifest drift (sha256={expected_digest})"
+        )));
+    }
+    if st.tensors().len() != expected.len() {
+        return Err(ConvertError::Parse(format!(
+            "cosyvoice2 LLM: authenticated manifest requires {} tensors, input has {}",
+            expected.len(),
+            st.tensors().len()
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for tensor in st.tensors() {
+        if !seen.insert(tensor.name.as_str()) {
+            return Err(ConvertError::Parse(format!(
+                "cosyvoice2 LLM: duplicate tensor `{}`",
+                tensor.name
+            )));
         }
-        Some(_) => {
-            report.notes.push(
-                "tokenizer side-car present but vocab.json or merges.txt was empty — \
-                 vokra.cosyvoice2.tokenizer.* not embedded"
-                    .to_owned(),
-            );
+        let Some(shape) = expected.get(tensor.name.as_str()) else {
+            return Err(ConvertError::Parse(format!(
+                "cosyvoice2 LLM: unexpected tensor `{}`",
+                tensor.name
+            )));
+        };
+        if tensor.dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "cosyvoice2 LLM: `{}` dtype {:?} != F32",
+                tensor.name, tensor.dtype
+            )));
         }
-        None => {
-            report.notes.push(
-                "no Qwen2 tokenizer side-car (vocab.json + merges.txt) supplied — \
-                 vokra.cosyvoice2.tokenizer.* not embedded; the runtime text path \
-                 (CosyVoice2Tts::encode) fails loudly until a tokenizer-carrying GGUF \
-                 is converted"
-                    .to_owned(),
-            );
+        if tensor.shape != *shape {
+            return Err(ConvertError::Parse(format!(
+                "cosyvoice2 LLM: `{}` shape {:?} != {:?}",
+                tensor.name, tensor.shape, shape
+            )));
         }
     }
+    if seen.len() != expected.len() {
+        let missing: Vec<_> = expected
+            .keys()
+            .filter(|name| !seen.contains(name.as_str()))
+            .collect();
+        return Err(ConvertError::Parse(format!(
+            "cosyvoice2 LLM: missing authenticated tensors {missing:?}"
+        )));
+    }
+    let actual = st
+        .tensors()
+        .iter()
+        .map(|tensor| (tensor.name.clone(), tensor.shape.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let actual_digest = crate::models::canary_1b_flash::hex(
+        &crate::models::canary_1b_flash::manifest_sha256(&actual),
+    );
+    if actual_digest != TENSOR_MANIFEST_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "cosyvoice2 LLM: input manifest digest {actual_digest} != pinned {TENSOR_MANIFEST_SHA256}"
+        )));
+    }
+    Ok(())
+}
+
+fn expected_tensor_shapes() -> BTreeMap<String, Vec<u64>> {
+    let mut expected = BTreeMap::new();
+    expected.insert("llm.model.lm_head.weight".into(), vec![151_936, 896]);
+    expected.insert(
+        "llm.model.model.embed_tokens.weight".into(),
+        vec![151_936, 896],
+    );
+    expected.insert("llm.model.model.norm.weight".into(), vec![896]);
+    for layer in 0..24 {
+        let prefix = format!("llm.model.model.layers.{layer}");
+        for (suffix, shape) in [
+            ("input_layernorm.weight", vec![896]),
+            ("mlp.down_proj.weight", vec![896, 4_864]),
+            ("mlp.gate_proj.weight", vec![4_864, 896]),
+            ("mlp.up_proj.weight", vec![4_864, 896]),
+            ("post_attention_layernorm.weight", vec![896]),
+            ("self_attn.k_proj.bias", vec![128]),
+            ("self_attn.k_proj.weight", vec![128, 896]),
+            ("self_attn.o_proj.weight", vec![896, 896]),
+            ("self_attn.q_proj.bias", vec![896]),
+            ("self_attn.q_proj.weight", vec![896, 896]),
+            ("self_attn.v_proj.bias", vec![128]),
+            ("self_attn.v_proj.weight", vec![128, 896]),
+        ] {
+            expected.insert(format!("{prefix}.{suffix}"), shape);
+        }
+    }
+    expected.insert("llm_decoder.bias".into(), vec![6_564]);
+    expected.insert("llm_decoder.weight".into(), vec![6_564, 896]);
+    expected.insert("llm_embedding.weight".into(), vec![2, 896]);
+    expected.insert("speech_embedding.weight".into(), vec![6_564, 896]);
+    expected
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h = [
+        0x67452301u32,
+        0xefcdab89,
+        0x98badcfe,
+        0x10325476,
+        0xc3d2e1f0,
+    ];
+    let bit_len = (data.len() as u64) * 8;
+    let mut padded = data.to_vec();
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in padded.chunks_exact(64) {
+        let mut words = [0u32; 80];
+        for index in 0..16 {
+            words[index] = u32::from_be_bytes(
+                chunk[index * 4..index * 4 + 4]
+                    .try_into()
+                    .expect("four-byte SHA-1 word"),
+            );
+        }
+        for index in 16..80 {
+            words[index] =
+                (words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16])
+                    .rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (index, word) in words.iter().enumerate() {
+            let (f, k) = match index {
+                0..=19 => ((b & c) | (!b & d), 0x5a827999),
+                20..=39 => (b ^ c ^ d, 0x6ed9eba1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdc),
+                _ => (b ^ c ^ d, 0xca62c1d6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut output = [0u8; 20];
+    for (index, value) in h.into_iter().enumerate() {
+        output[index * 4..index * 4 + 4].copy_from_slice(&value.to_be_bytes());
+    }
+    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+    use vokra_core::gguf::GgufFile;
 
-    /// Builds a minimal safetensors buffer with one F32 tensor. Payload is
-    /// deliberately trivial (all-zero) — only the header parsing and the
-    /// verbatim byte-copy path are exercised.
-    fn minimal_safetensors_one_f32() -> Vec<u8> {
-        // A single F32 tensor of shape [2, 3] = 6 elements = 24 bytes.
-        let header = r#"{"llm.wte":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(&[0u8; 24]);
-        out
-    }
-
-    /// Builds a minimal safetensors buffer with a single BF16 tensor. The
-    /// upstream `FunAudioLLM/CosyVoice2-0.5B` `llm.pt` ships FP32 weights,
-    /// but the shared MiniCPM / Qwen2 family lineage means BF16 releases
-    /// (and downstream BF16 quantizations) are in scope; this pins the
-    /// BF16 leg of the pass-through match arm. Non-zero payload bytes so
-    /// the round-trip byte-equality check is meaningful (all-zero would
-    /// alias silent-widen bugs).
-    fn minimal_safetensors_one_bf16() -> Vec<u8> {
-        // A single BF16 tensor of shape [2, 3] = 6 elements × 2 bytes = 12 bytes.
-        let header = r#"{"llm.wte":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let payload: [u8; 12] = [
-            0x00, 0x3f, // 1.0f32 → BF16 top-16-bits (little-endian)
-            0x00, 0xbf, // -1.0
-            0x80, 0x3f, // 1.03125
-            0x40, 0x40, // 3.0
-            0x00, 0xc0, // -2.0
-            0xc0, 0x3f, // 1.5
-        ];
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(&payload);
-        out
-    }
-
-    /// Builds a safetensors buffer with the full (tiny) Qwen2-shaped LLM
-    /// backbone: vocab 16, hidden 8, 2 layers, ffn 16, kv_out 4. With
-    /// `with_bias`, every layer ships the three Q/K/V bias tensors.
-    fn backbone_safetensors(with_bias: bool) -> Vec<u8> {
-        let (vocab, d, ffn, kv) = (16u64, 8u64, 16u64, 4u64);
-        let mut entries: Vec<(String, Vec<u64>)> = vec![(
-            "llm.model.model.embed_tokens.weight".to_owned(),
-            vec![vocab, d],
-        )];
-        for i in 0..2 {
-            let p = format!("llm.model.model.layers.{i}.");
-            entries.push((format!("{p}input_layernorm.weight"), vec![d]));
-            entries.push((format!("{p}self_attn.q_proj.weight"), vec![d, d]));
-            entries.push((format!("{p}self_attn.k_proj.weight"), vec![kv, d]));
-            entries.push((format!("{p}self_attn.v_proj.weight"), vec![kv, d]));
-            if with_bias {
-                entries.push((format!("{p}self_attn.q_proj.bias"), vec![d]));
-                entries.push((format!("{p}self_attn.k_proj.bias"), vec![kv]));
-                entries.push((format!("{p}self_attn.v_proj.bias"), vec![kv]));
-            }
-            entries.push((format!("{p}self_attn.o_proj.weight"), vec![d, d]));
-            entries.push((format!("{p}post_attention_layernorm.weight"), vec![d]));
-            entries.push((format!("{p}mlp.gate_proj.weight"), vec![ffn, d]));
-            entries.push((format!("{p}mlp.up_proj.weight"), vec![ffn, d]));
-            entries.push((format!("{p}mlp.down_proj.weight"), vec![d, ffn]));
-        }
-        entries.push(("llm.model.model.norm.weight".to_owned(), vec![d]));
-        build_safetensors(&entries)
-    }
-
-    /// Serializes `entries` (name, shape) as an all-zero F32 safetensors
-    /// buffer.
-    fn build_safetensors(entries: &[(String, Vec<u64>)]) -> Vec<u8> {
-        let mut header = String::from("{");
-        let mut offset = 0u64;
-        for (i, (name, shape)) in entries.iter().enumerate() {
-            let n: u64 = shape.iter().product();
-            let end = offset + n * 4;
-            if i > 0 {
-                header.push(',');
-            }
-            let dims = shape
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            header.push_str(&format!(
-                r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{offset},{end}]}}"#
-            ));
-            offset = end;
-        }
-        header.push('}');
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.resize(out.len() + offset as usize, 0u8);
-        out
-    }
-
-    /// The Qwen2-style config.json matching `backbone_safetensors` shapes
-    /// (head split 2/1, head_dim 4).
-    const TINY_CONFIG: &str = r#"{
-        "hidden_size": 8,
-        "num_hidden_layers": 2,
-        "num_attention_heads": 2,
-        "num_key_value_heads": 1,
-        "intermediate_size": 16,
-        "vocab_size": 16,
-        "rope_theta": 1000000.0,
-        "rms_norm_eps": 1e-06,
-        "max_position_embeddings": 32768
-    }"#;
-
-    fn get_u32(file: &GgufFile, key: &str) -> u32 {
-        match file.get(key) {
-            Some(GgufMetadataValue::U32(v)) => *v,
-            other => panic!("{key}: unexpected {other:?}"),
-        }
-    }
-
-    fn get_f32(file: &GgufFile, key: &str) -> f32 {
-        match file.get(key) {
-            Some(GgufMetadataValue::F32(v)) => *v,
-            other => panic!("{key}: unexpected {other:?}"),
-        }
+    #[test]
+    fn authenticated_manifest_has_exact_295_tensor_contract() {
+        let manifest = expected_tensor_shapes();
+        assert_eq!(manifest.len(), TENSOR_COUNT);
+        assert_eq!(
+            crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::manifest_sha256(
+                &manifest
+            )),
+            TENSOR_MANIFEST_SHA256
+        );
+        assert_eq!(
+            manifest["llm.model.model.layers.0.self_attn.k_proj.weight"],
+            [128, 896]
+        );
+        assert_eq!(manifest["llm_decoder.weight"], [6_564, 896]);
     }
 
     #[test]
-    fn round_trip_carries_arch_and_cosyvoice2_chunk_group() {
-        // A scaffold buffer (no backbone tensors) keeps converting with
-        // 0-placeholders + a note — the chunk group must round-trip so the
-        // runtime constants read the same values back.
-        let bytes = minimal_safetensors_one_f32();
-        let (builder, report) = convert(bytes).expect("convert");
-        assert_eq!(report.written, 1);
-        assert_eq!(report.skipped_non_float, 0);
-        assert!(report.derived.is_none());
-        assert!(
-            report.notes.iter().any(|n| n.contains("not found")),
-            "scaffold path must note the missing backbone: {:?}",
-            report.notes
-        );
+    fn wrong_or_partial_config_fails_closed() {
+        assert!(validate_config(&[]).is_err());
+        let mut wrong = vec![0u8; CONFIG_BYTES];
+        wrong[0] = 1;
+        assert!(validate_config(&wrong).is_err());
+    }
 
-        let out = builder.to_bytes().expect("serialize");
-        let file = GgufFile::parse(out).expect("parse");
-
-        // Arch / name.
+    #[test]
+    fn sha1_git_blob_vector_is_authenticated() {
+        let mut blob = b"blob 3\0".to_vec();
+        blob.extend_from_slice(b"abc");
         assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
-        );
-
-        // Sample rate: model-card invariant.
-        assert_eq!(get_u32(&file, KEY_SAMPLE_RATE), COSYVOICE2_SAMPLE_RATE);
-
-        // Mimi shape: canonical Kyutai defaults.
-        for (key, expected) in [
-            (KEY_MIMI_N_CODEBOOKS, MIMI_N_CODEBOOKS),
-            (KEY_MIMI_CODEBOOK_SIZE, MIMI_CODEBOOK_SIZE),
-            (KEY_MIMI_D_MODEL, MIMI_D_MODEL),
-        ] {
-            assert_eq!(get_u32(&file, key), expected, "{key}");
-        }
-
-        // Placeholder hparams: `0` (no backbone to derive from).
-        for key in [
-            KEY_VOCAB_SIZE,
-            KEY_HIDDEN_DIM,
-            KEY_N_LAYER,
-            KEY_N_HEAD,
-            KEY_FFN_DIM,
-            KEY_FLOW_NFE,
-            KEY_STREAMING_CHUNK_SIZE,
-            KEY_STREAMING_CHUNK_HOP,
-        ] {
-            assert_eq!(get_u32(&file, key), 0, "{key}");
-        }
-        // The config-only keys are unwritten without --config.
-        for key in [KEY_N_HEAD_KV, KEY_ROPE_BASE, KEY_RMS_NORM_EPS, KEY_N_CTX] {
-            assert!(file.get(key).is_none(), "{key} must be absent");
-        }
-
-        // Schedule tag: `linear` default.
-        assert_eq!(
-            file.get(KEY_FLOW_SCHEDULE).and_then(|v| v.as_str()),
-            Some("linear")
+            hex_bytes(&sha1(&blob)),
+            "f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f"
         );
     }
 
     #[test]
-    fn shape_hparams_derive_without_config() {
-        let (builder, report) = convert(backbone_safetensors(true)).expect("convert");
-        let d = report.derived.expect("backbone present → derived");
+    fn full_composite_surface_remains_inspection_only() {
+        let error = convert(Vec::new()).expect_err("composite must remain blocked");
+        assert!(error.to_string().contains("INSPECTION_ONLY"));
+    }
+
+    #[test]
+    fn standalone_component_requires_explicit_apache_attestation() {
+        assert!(require_explicit_license(None).is_err());
+        assert!(require_explicit_license(Some("mit")).is_err());
+        require_explicit_license(Some("Apache-2.0")).expect("fixed license is accepted");
+    }
+
+    #[test]
+    fn standalone_output_is_no_replace() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-cosyvoice2-llm-atomic-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).expect("temporary test directory");
+
+        let existing = root.join("existing.gguf");
+        std::fs::write(&existing, b"original").expect("seed existing output");
+        let error = write_no_replace(&existing, b"replacement").expect_err("must reject overwrite");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&existing).unwrap(), b"original");
+
+        let fresh = root.join("fresh.gguf");
+        write_no_replace(&fresh, b"complete").expect("publish fresh output");
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"complete");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn standalone_validation_failure_never_creates_or_replaces_output() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-cosyvoice2-llm-validation-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).expect("temporary test directory");
+        let input = root.join("llm.safetensors");
+        let config = root.join(CONFIG_FILE);
+        let qwen_config = root.join("qwen_config.json");
+        let output = root.join("model.gguf");
+        std::fs::write(&input, b"not a safetensors checkpoint").expect("seed input");
+        std::fs::write(&config, b"wrong config").expect("seed config");
+        std::fs::write(&qwen_config, b"wrong qwen config").expect("seed Qwen config");
+
+        std::fs::write(&output, b"original").expect("seed output");
+        let error =
+            convert_cosyvoice2_llm_file(&input, &config, &qwen_config, &output, Some("apache-2.0"))
+                .expect_err("wrong config must fail before publication");
+        let _ = error;
+        assert_eq!(std::fs::read(&output).unwrap(), b"original");
+
+        std::fs::remove_file(&output).expect("remove test output");
+        let _ =
+            convert_cosyvoice2_llm_file(&input, &config, &qwen_config, &output, Some("apache-2.0"));
+        assert!(!output.exists(), "validation failure must leave no output");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vast_handoff_paths_fail_closed_for_relative_missing_symlink_and_output() {
+        let root =
+            std::env::temp_dir().join(format!("vokra-cosyvoice2-llm-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).expect("temporary test directory");
+        let regular = root.join("prepared.safetensors");
+        std::fs::write(&regular, b"placeholder").expect("regular input");
+        assert!(require_regular_file(Path::new("relative.safetensors"), "input").is_err());
+        assert!(require_regular_file(&root.join("missing"), "input").is_err());
+        #[cfg(unix)]
+        {
+            let link = root.join("link.safetensors");
+            std::os::unix::fs::symlink(&regular, &link).expect("symlink");
+            assert!(require_regular_file(&link, "input").is_err());
+        }
+        let existing = root.join("existing.gguf");
+        std::fs::write(&existing, b"keep").expect("existing output");
+        assert!(require_absent_output(&existing).is_err());
+        assert!(require_absent_output(Path::new("relative.gguf")).is_err());
+        assert!(require_absent_output(&root.join("new.gguf")).is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn required_vast_path(name: &str) -> std::path::PathBuf {
+        let value = std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"));
+        let path = std::path::PathBuf::from(value);
+        require_regular_file(&path, name).unwrap_or_else(|error| panic!("{name}: {error}"));
+        path
+    }
+
+    fn required_vast_license(name: &str) -> String {
+        let license = std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"));
+        require_explicit_license(Some(&license)).unwrap_or_else(|error| panic!("{name}: {error}"));
+        license
+    }
+
+    fn validate_vast_prepared_manifest(path: &Path, component: &str, input: &Path) {
+        let bytes = std::fs::read(path).expect("prepared manifest");
+        let root = crate::json::parse(&bytes).expect("prepared manifest JSON");
+        fn string<'a>(object: &'a vokra_core::json::JsonValue, key: &str) -> Option<&'a str> {
+            object
+                .get(key)
+                .and_then(vokra_core::json::JsonValue::as_str)
+        }
         assert_eq!(
-            d,
-            DerivedHparams {
-                vocab_size: 16,
-                hidden_dim: 8,
-                n_layer: 2,
-                ffn_dim: 16,
-                n_head: 0,
-                n_head_kv: 0,
-                n_ctx: 0,
-                has_attn_bias: true,
-            }
+            string(&root, "format"),
+            Some("vokra-cosyvoice2-component-prepared-safetensors-v1")
+        );
+        assert_eq!(string(&root, "status"), Some("PREPARED_SAFETENSORS_READY"));
+        assert_eq!(string(&root, "component"), Some(component));
+        let output_record = root.get("output").expect("prepared output record");
+        assert_eq!(string(output_record, "path"), input.to_str());
+        assert_eq!(
+            output_record
+                .get("bytes")
+                .and_then(vokra_core::json::JsonValue::as_u64),
+            Some(std::fs::metadata(input).unwrap().len())
+        );
+        let sha = crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(
+            &std::fs::read(input).expect("prepared input"),
+        ));
+        assert_eq!(string(output_record, "sha256"), Some(sha.as_str()));
+        let execution = root.get("execution").expect("execution contract");
+        assert_eq!(string(execution, "model_execution"), Some("NOT_RUN"));
+        assert_eq!(string(execution, "torch_import"), Some("NOT_RUN"));
+        assert_eq!(string(execution, "publication"), Some("NO_UPLOAD"));
+    }
+
+    /// VAST-only: converts one authenticated prepared component and leaves
+    /// bind-only verification to the matching model-crate ignored test.
+    #[test]
+    #[ignore = "requires the authenticated VAST prepared CosyVoice2 LLM artifact"]
+    fn vast_real_prepared_llm_conversion() {
+        let input = required_vast_path("VOKRA_COSYVOICE2_LLM_PREPARED");
+        let config = required_vast_path("VOKRA_COSYVOICE2_LLM_CONFIG");
+        let qwen_config = required_vast_path("VOKRA_COSYVOICE2_LLM_QWEN_CONFIG");
+        let manifest = required_vast_path("VOKRA_COSYVOICE2_LLM_PREPARED_MANIFEST");
+        validate_vast_prepared_manifest(&manifest, "llm", &input);
+        let license = required_vast_license("VOKRA_COSYVOICE2_LLM_LICENSE");
+        let output = std::path::PathBuf::from(
+            std::env::var("VOKRA_COSYVOICE2_LLM_OUTPUT")
+                .expect("VOKRA_COSYVOICE2_LLM_OUTPUT is required"),
+        );
+        require_absent_output(&output).expect("LLM output must be an absent absolute path");
+        let report =
+            convert_cosyvoice2_llm_file(&input, &config, &qwen_config, &output, Some(&license))
+                .expect("VAST prepared LLM conversion");
+        let file = GgufFile::open(&output).expect("converted LLM GGUF");
+        assert_eq!(file.tensors().len(), TENSOR_COUNT);
+        assert_eq!(report.written, TENSOR_COUNT);
+        assert_eq!(
+            report.output_bytes,
+            std::fs::metadata(&output).unwrap().len()
+        );
+        assert_eq!(
+            file.get(KEY_COMPONENT).and_then(GgufMetadataValue::as_str),
+            Some("llm")
+        );
+        assert_eq!(
+            file.get(KEY_COMPOSITE_STATUS)
+                .and_then(GgufMetadataValue::as_str),
+            Some("INSPECTION_ONLY")
         );
         assert!(
-            report.notes.iter().any(|n| n.contains("head split")),
-            "must warn that the head split needs --config: {:?}",
-            report.notes
-        );
-        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
-        assert_eq!(get_u32(&file, KEY_VOCAB_SIZE), 16);
-        assert_eq!(get_u32(&file, KEY_HIDDEN_DIM), 8);
-        assert_eq!(get_u32(&file, KEY_N_LAYER), 2);
-        assert_eq!(get_u32(&file, KEY_FFN_DIM), 16);
-        assert_eq!(get_u32(&file, KEY_N_HEAD), 0, "not shape-derivable");
-        assert!(file.get(KEY_N_HEAD_KV).is_none());
-        // Every tensor rides along verbatim: embed + 2 layers × (9 weights
-        // + 3 biases) + final norm.
-        assert_eq!(report.written, 1 + 2 * (9 + 3) + 1);
-    }
-
-    #[test]
-    fn config_supplies_head_split_and_rope_group() {
-        let (builder, report) =
-            convert_with_config(backbone_safetensors(true), Some(TINY_CONFIG.as_bytes()))
-                .expect("convert");
-        let d = report.derived.expect("derived");
-        assert_eq!(d.n_head, 2);
-        assert_eq!(d.n_head_kv, 1);
-        assert_eq!(d.n_ctx, 32_768);
-        assert!(d.has_attn_bias);
-        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
-        assert_eq!(get_u32(&file, KEY_N_HEAD), 2);
-        assert_eq!(get_u32(&file, KEY_N_HEAD_KV), 1);
-        assert_eq!(get_u32(&file, KEY_N_CTX), 32_768);
-        assert!((get_f32(&file, KEY_ROPE_BASE) - 1_000_000.0).abs() < 1e-1);
-        assert!((get_f32(&file, KEY_RMS_NORM_EPS) - 1e-6).abs() < 1e-12);
-    }
-
-    #[test]
-    fn biasless_backbone_derives_has_attn_bias_false() {
-        let (_, report) =
-            convert_with_config(backbone_safetensors(false), Some(TINY_CONFIG.as_bytes()))
-                .expect("convert");
-        assert!(!report.derived.expect("derived").has_attn_bias);
-    }
-
-    #[test]
-    fn config_shape_mismatch_fails_loudly() {
-        let bad = TINY_CONFIG.replace("\"hidden_size\": 8", "\"hidden_size\": 896");
-        let err = convert_with_config(backbone_safetensors(true), Some(bad.as_bytes()))
-            .expect_err("wrong config must fail");
-        assert!(
-            err.to_string().contains("hidden_size"),
-            "must name the field: {err}"
-        );
-    }
-
-    #[test]
-    fn config_bad_gqa_split_fails_loudly() {
-        // 3 kv heads do not divide 2 query heads.
-        let bad = TINY_CONFIG.replace("\"num_key_value_heads\": 1", "\"num_key_value_heads\": 3");
-        let err = convert_with_config(backbone_safetensors(true), Some(bad.as_bytes()))
-            .expect_err("bad GQA split must fail");
-        assert!(err.to_string().contains("GQA"), "{err}");
-    }
-
-    #[test]
-    fn config_missing_required_field_fails_loudly() {
-        let bad = TINY_CONFIG.replace("\"num_attention_heads\": 2,", "");
-        let err = convert_with_config(backbone_safetensors(true), Some(bad.as_bytes()))
-            .expect_err("missing head count must fail");
-        assert!(err.to_string().contains("num_attention_heads"), "{err}");
-    }
-
-    #[test]
-    fn config_without_backbone_tensors_fails_loudly() {
-        let err = convert_with_config(minimal_safetensors_one_f32(), Some(TINY_CONFIG.as_bytes()))
-            .expect_err("nothing to cross-check");
-        assert!(err.to_string().contains("does not carry"), "{err}");
-    }
-
-    #[test]
-    fn partial_bias_export_fails_loudly() {
-        // Rebuild the biased layout but drop layer 1's k/v biases.
-        let (vocab, d, ffn, kv) = (16u64, 8u64, 16u64, 4u64);
-        let mut entries: Vec<(String, Vec<u64>)> = vec![(
-            "llm.model.model.embed_tokens.weight".to_owned(),
-            vec![vocab, d],
-        )];
-        for i in 0..2 {
-            let p = format!("llm.model.model.layers.{i}.");
-            entries.push((format!("{p}input_layernorm.weight"), vec![d]));
-            entries.push((format!("{p}self_attn.q_proj.weight"), vec![d, d]));
-            entries.push((format!("{p}self_attn.k_proj.weight"), vec![kv, d]));
-            entries.push((format!("{p}self_attn.v_proj.weight"), vec![kv, d]));
-            entries.push((format!("{p}self_attn.q_proj.bias"), vec![d]));
-            if i == 0 {
-                entries.push((format!("{p}self_attn.k_proj.bias"), vec![kv]));
-                entries.push((format!("{p}self_attn.v_proj.bias"), vec![kv]));
-            }
-            entries.push((format!("{p}self_attn.o_proj.weight"), vec![d, d]));
-            entries.push((format!("{p}post_attention_layernorm.weight"), vec![d]));
-            entries.push((format!("{p}mlp.gate_proj.weight"), vec![ffn, d]));
-            entries.push((format!("{p}mlp.up_proj.weight"), vec![ffn, d]));
-            entries.push((format!("{p}mlp.down_proj.weight"), vec![d, ffn]));
-        }
-        entries.push(("llm.model.model.norm.weight".to_owned(), vec![d]));
-        let err = convert(build_safetensors(&entries)).expect_err("partial bias set");
-        assert!(err.to_string().contains("bias"), "{err}");
-    }
-
-    #[test]
-    fn gapped_layer_indices_fail_loudly() {
-        let (vocab, d) = (16u64, 8u64);
-        // Layer 0 complete-ish, then a layers.5 stray.
-        let entries: Vec<(String, Vec<u64>)> = vec![
-            (
-                "llm.model.model.embed_tokens.weight".to_owned(),
-                vec![vocab, d],
-            ),
-            (
-                "llm.model.model.layers.0.input_layernorm.weight".to_owned(),
-                vec![d],
-            ),
-            (
-                "llm.model.model.layers.0.mlp.gate_proj.weight".to_owned(),
-                vec![16, d],
-            ),
-            (
-                "llm.model.model.layers.0.self_attn.q_proj.weight".to_owned(),
-                vec![d, d],
-            ),
-            (
-                "llm.model.model.layers.0.self_attn.k_proj.weight".to_owned(),
-                vec![4, d],
-            ),
-            (
-                "llm.model.model.layers.5.input_layernorm.weight".to_owned(),
-                vec![d],
-            ),
-        ];
-        let err = convert(build_safetensors(&entries)).expect_err("gap must fail");
-        assert!(err.to_string().contains("layer 5"), "{err}");
-    }
-
-    #[test]
-    fn arch_string_matches_runtime_constant() {
-        // Hard-coded sanity: the runtime's EXPECTED_ARCH is `cosyvoice2`;
-        // this file's ARCH constant must be identical. A drift is caught
-        // here rather than at load time.
-        assert_eq!(ARCH, "cosyvoice2");
-    }
-
-    #[test]
-    fn llm_key_strings_match_runtime_constants() {
-        // The runtime duplicates these strings in
-        // `vokra-models/src/cosyvoice2/llm.rs` (two-crate constant rule);
-        // pin them here so a drift is a test failure, not a load-time
-        // mystery.
-        assert_eq!(KEY_N_HEAD_KV, "vokra.cosyvoice2.arch.n_head_kv");
-        assert_eq!(KEY_ROPE_BASE, "vokra.cosyvoice2.arch.rope_base");
-        assert_eq!(KEY_RMS_NORM_EPS, "vokra.cosyvoice2.arch.rms_norm_eps");
-        assert_eq!(KEY_N_CTX, "vokra.cosyvoice2.arch.n_ctx");
-    }
-
-    #[test]
-    fn tokenizer_key_strings_match_runtime_constants() {
-        // Mirror of the runtime's KEY_TOKENIZER_VOCAB / KEY_TOKENIZER_MERGES
-        // in `vokra-models/src/cosyvoice2/text_encoder.rs` (two-crate rule).
-        assert_eq!(KEY_TOKENIZER_VOCAB, "vokra.cosyvoice2.tokenizer.vocab");
-        assert_eq!(KEY_TOKENIZER_MERGES, "vokra.cosyvoice2.tokenizer.merges");
-    }
-
-    /// Reads a `U8` GGUF array metadata value back into bytes (test-side
-    /// mirror of the runtime reader).
-    fn read_u8_array(file: &GgufFile, key: &str) -> Vec<u8> {
-        match file.get(key) {
-            Some(GgufMetadataValue::Array(arr)) => arr
-                .values
-                .iter()
-                .map(|v| match v {
-                    GgufMetadataValue::U8(x) => *x,
-                    other => panic!("{key}: non-U8 element {other:?}"),
-                })
-                .collect(),
-            other => panic!("{key}: expected U8 array, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn tokenizer_files_are_embedded_verbatim() {
-        // A scaffold buffer converts fine; the tokenizer chunks ride along
-        // verbatim so the runtime reads the exact upstream bytes back.
-        let vocab = br#"{"a":0,"b":1,"ab":2}"#.to_vec();
-        let merges = b"#version: 0.2\na b\n".to_vec();
-        let (builder, report) = convert_with_config_and_tokenizer(
-            minimal_safetensors_one_f32(),
-            None,
-            Some(TokenizerFiles {
-                vocab_json: &vocab,
-                merges_txt: &merges,
-            }),
-        )
-        .expect("convert");
-        assert!(report.tokenizer_embedded, "tokenizer must be embedded");
-
-        let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
-        assert_eq!(read_u8_array(&file, KEY_TOKENIZER_VOCAB), vocab);
-        assert_eq!(read_u8_array(&file, KEY_TOKENIZER_MERGES), merges);
-    }
-
-    #[test]
-    fn no_tokenizer_side_car_is_noted_and_not_embedded() {
-        let (builder, report) = convert(minimal_safetensors_one_f32()).expect("convert");
-        assert!(!report.tokenizer_embedded);
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|n| n.contains("no Qwen2 tokenizer")),
-            "missing tokenizer must be a loud note: {:?}",
-            report.notes
-        );
-        let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
-        assert!(file.get(KEY_TOKENIZER_VOCAB).is_none());
-        assert!(file.get(KEY_TOKENIZER_MERGES).is_none());
-    }
-
-    #[test]
-    fn half_supplied_tokenizer_is_not_embedded() {
-        // A byte-level BPE needs both files; an empty merges half is treated
-        // as "no tokenizer" (noted), never written as an unusable chunk.
-        let vocab = br#"{"a":0}"#.to_vec();
-        let (builder, report) = convert_with_config_and_tokenizer(
-            minimal_safetensors_one_f32(),
-            None,
-            Some(TokenizerFiles {
-                vocab_json: &vocab,
-                merges_txt: b"",
-            }),
-        )
-        .expect("convert");
-        assert!(!report.tokenizer_embedded);
-        let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
-        assert!(file.get(KEY_TOKENIZER_VOCAB).is_none());
-    }
-
-    /// Pins the BF16 leg of the `GgmlType::F32 | GgmlType::F16 |
-    /// GgmlType::BF16` pass-through union: BF16 tensors must reach the
-    /// pass-through arm, emit as GGUF type 30 verbatim (no convert-time
-    /// widening), and increment `bf16_passthrough`. Mirror of qwen3-tts /
-    /// vibevoice / voxcpm2 and moshi's `assert_eq!(info.dtype,
-    /// GgmlType::BF16, "no convert-time widening")`.
-    ///
-    /// The runtime widens BF16 → f32 losslessly on load via the single
-    /// choke point `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`
-    /// (BF16 = top 16 bits of an f32 — `bits << 16` is exact), so the
-    /// converter never widens at write time.
-    #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let bytes = minimal_safetensors_one_bf16();
-        // Capture the payload before ownership moves to `convert` so the
-        // byte-equality assertion below is against a known-good source.
-        let expected_payload = bytes[bytes.len() - 12..].to_vec();
-
-        let (builder, report) = convert(bytes).expect("convert");
-        assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm and increment `written`"
-        );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 subset counter must record the pass-through"
-        );
-
-        // Round-trip: the tensor survives under its upstream name, keeps
-        // its BF16 dtype (no convert-time widening), and its payload bytes
-        // are byte-identical.
-        let out = builder.to_bytes().expect("serialize");
-        let file = GgufFile::parse(out).expect("parse");
-        let info = file
-            .tensor_info("llm.wte")
-            .expect("BF16 tensor must be present after pass-through");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — GGUF dtype must remain BF16"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        let got = file.tensor_bytes(info);
-        assert_eq!(
-            got.len(),
-            12,
-            "BF16 payload = 6 elements × 2 bytes = 12 bytes"
-        );
-        assert_eq!(
-            got,
-            &expected_payload[..],
-            "BF16 payload must be byte-identical after round-trip"
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
+            manifest.is_file(),
+            "manifest was validated as a regular file"
         );
     }
 }

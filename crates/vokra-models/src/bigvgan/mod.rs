@@ -63,30 +63,45 @@
 //! - `vokra.provenance.*`: license class + raw license string, so the
 //!   runtime compliance gate (FR-CP-03) can classify the artifact.
 //!
-//! # Cross-crate constant duplication
+//! # Cross-crate metadata boundaries
 //!
-//! [`ARCH`] and the variant tag string constants below are intentionally
-//! duplicated between this binder and
-//! `crates/vokra-convert/src/models/bigvgan.rs` so `vokra-models` does
-//! not gain a dependency edge onto `vokra-convert` (mirror of the SNAC
-//! + FSMN-VAD + openwakeword + dnsmos + FocalCodec + WeSpeaker
-//!   binders — same rule keeps the layered convention `vokra-ops →
-//! nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models →
-//! GGUF binder`, `vokra-convert → GGUF writer`). Drift is caught by
-//!   the [`arch_and_variant_tags_match_converter`] regression pin below.
+//! GGUF-facing `ARCH`/metadata-key constants remain local so `vokra-models`
+//! does not depend on the offline converter. Variant identity, released
+//! configs, and the complete tensor manifest are shared from
+//! `vokra-ops::bigvgan_generator`; this keeps the converter and binder's
+//! shape contract on one first-party source of truth without putting GGUF
+//! concerns into the ops crate.
 
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{BackendKind, Result, VokraError};
 use vokra_ops::bigvgan_generator::{
     AliasFreeActivationWeights, AmpBlock1Weights, BigVGanConfig, BigVGanGenerator, BigVGanWeights,
-    BigVganBackendOps, SnakeKind,
+    BigVganBackendOps, SnakeKind, tensor_manifest_for_variant,
 };
+
+pub use vokra_ops::bigvgan_generator::{BigVGanVariant, config_for_variant};
 
 use crate::compute::{Compute, HotOp};
 use crate::hifigan::HifiGanComputeOps;
 
-/// Complete learned-op registry for every released BigVGAN variant.
-pub const BIGVGAN_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::SnakeActivation, HotOp::SnakeBeta];
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+mod metal_resident;
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+use metal_resident::MetalBigVganResidentOps;
+
+/// Complete backend-dispatched op registry for every released BigVGAN variant.
+///
+/// The scalar glue (alias-free filtering, MRF averaging, residual adds, and
+/// terminal clamp/tanh) remains outside [`Compute`], but the learned path also
+/// contains the per-stage transposed convolution. Keeping that op in the
+/// registry makes unsupported backends fail before the first dispatch instead
+/// of discovering the gap part-way through a decode.
+pub const BIGVGAN_HOT_OPS: &[HotOp] = &[
+    HotOp::Conv1d,
+    HotOp::ConvTranspose1d,
+    HotOp::SnakeActivation,
+    HotOp::SnakeBeta,
+];
 
 impl BigVganBackendOps for HifiGanComputeOps<'_> {
     fn snake(
@@ -175,171 +190,6 @@ fn synthesized_alias_free_filter() -> AliasFreeActivationWeights {
     AliasFreeActivationWeights {
         upsample_filter: SYNTHETIC_ALIAS_FREE_FILTER.to_vec(),
         downsample_filter: SYNTHETIC_ALIAS_FREE_FILTER.to_vec(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// BigVGanVariant — mirror of crates/vokra-convert/src/models/bigvgan.rs
-// ---------------------------------------------------------------------------
-
-/// Which BigVGAN release the loaded GGUF carries. Selected via the
-/// `vokra.bigvgan.variant` chunk written by the converter.
-///
-/// Mirror of `BigVGanVariant` in
-/// `crates/vokra-convert/src/models/bigvgan.rs` — the
-/// two enums are kept structurally identical (same order, same
-/// `#[derive]`s, same variant docstrings) so a reader that inspects
-/// one side has no drift risk on the other. The cross-crate constant
-/// duplication rule (see module doc) applies: adding a dependency
-/// edge `vokra-models → vokra-convert` would reverse the layer stack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BigVGanVariant {
-    /// `nvidia/bigvgan_v2_22khz_80band_256x` (D2): 22 050 Hz output,
-    /// 80-band mel input, 256× total upsample.
-    V2_22khz80Band256x,
-    /// `nvidia/bigvgan_v2_44khz_128band_512x` (D3): 44 100 Hz output,
-    /// 128-band mel input, 512× total upsample.
-    V2_44khz128Band512x,
-    /// `nvidia/bigvgan_v2_24khz_100band_256x` (D4): 24 000 Hz output,
-    /// 100-band mel input, 256× total upsample.
-    V2_24khz100Band256x,
-    /// `nvidia/bigvgan_base_24khz_100band` (D5): v1 base 24 000 Hz
-    /// output, 100-band mel input, 256× total upsample. Topologically
-    /// distinct from D4 — `upsample_initial_channel = 512` vs D4's
-    /// 1536, `upsample_rates = [8, 8, 2, 2]` vs D4's [4, 4, 2, 2, 2, 2]
-    /// (only 4 upsample stages vs 6). Both `use_bias_at_final` and
-    /// `use_tanh_at_final` are absent from base_v1's config.json and
-    /// pick up the upstream Python `.get(_, True)` default (see
-    /// `bigvgan.py:313` + `bigvgan.py:322`).
-    BaseV1_24khz100Band,
-}
-
-impl BigVGanVariant {
-    /// Wire tag written into `vokra.bigvgan.variant`.
-    ///
-    /// Kept `const fn` so the constant [`ARCH`] + variant-tag
-    /// [`arch_and_variant_tags_match_converter`] regression pin can
-    /// assert every mapping at compile time.
-    #[must_use]
-    pub const fn tag(self) -> &'static str {
-        match self {
-            Self::V2_22khz80Band256x => VARIANT_TAG_V2_22KHZ_80BAND_256X,
-            Self::V2_44khz128Band512x => VARIANT_TAG_V2_44KHZ_128BAND_512X,
-            Self::V2_24khz100Band256x => VARIANT_TAG_V2_24KHZ_100BAND_256X,
-            Self::BaseV1_24khz100Band => VARIANT_TAG_BASE_V1_24KHZ_100BAND,
-        }
-    }
-
-    /// Parses a `vokra.bigvgan.variant` chunk value into a variant, or
-    /// returns `None` for an unrecognized string.
-    ///
-    /// Kept as a free function (not a `TryFrom` impl) so the caller
-    /// keeps the ability to attach a per-key context prefix to the
-    /// loud error message — [`BigVGan::from_gguf`] uses that below.
-    #[must_use]
-    pub fn from_tag(tag: &str) -> Option<Self> {
-        match tag {
-            VARIANT_TAG_V2_22KHZ_80BAND_256X => Some(Self::V2_22khz80Band256x),
-            VARIANT_TAG_V2_44KHZ_128BAND_512X => Some(Self::V2_44khz128Band512x),
-            VARIANT_TAG_V2_24KHZ_100BAND_256X => Some(Self::V2_24khz100Band256x),
-            VARIANT_TAG_BASE_V1_24KHZ_100BAND => Some(Self::BaseV1_24khz100Band),
-            _ => None,
-        }
-    }
-
-    /// Output sample rate from the corresponding upstream `config.json`.
-    #[must_use]
-    pub const fn sample_rate(self) -> u32 {
-        match self {
-            Self::V2_22khz80Band256x => 22_050,
-            Self::V2_44khz128Band512x => 44_100,
-            Self::V2_24khz100Band256x | Self::BaseV1_24khz100Band => 24_000,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// config_for_variant — per-variant hardcoded table transcribed verbatim
-// from each variant's upstream `config.json`.
-// ---------------------------------------------------------------------------
-
-/// Resolves the [`BigVGanConfig`] for a given variant, transcribed
-/// verbatim from the upstream HF `config.json` files.
-///
-/// # Primary sources (verified 2026-08-14)
-///
-/// Each variant's `config.json` was fetched from Hugging Face; the
-/// axes below match those files field-for-field (CLAUDE.md
-/// 「ハルシネーション厳禁」).
-///
-/// - `V2_22khz80Band256x`: <https://huggingface.co/nvidia/bigvgan_v2_22khz_80band_256x/raw/main/config.json>
-/// - `V2_44khz128Band512x`: <https://huggingface.co/nvidia/bigvgan_v2_44khz_128band_512x/raw/main/config.json>
-/// - `V2_24khz100Band256x`: <https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x/raw/main/config.json>
-/// - `BaseV1_24khz100Band`: <https://huggingface.co/nvidia/bigvgan_base_24khz_100band/raw/main/config.json>
-///
-/// # base_v1 default fallbacks
-///
-/// The `use_bias_at_final` and `use_tanh_at_final` keys are **absent**
-/// from base_v1's `config.json`. Upstream `bigvgan.py:313` reads them
-/// as `h.get("use_bias_at_final", True)` and `bigvgan.py:322` as
-/// `h.get("use_tanh_at_final", True)` — both default to `True` when
-/// absent. Every other variant explicitly sets both to `false`, so
-/// this asymmetry is deliberate on upstream's part and mirrored here.
-///
-#[must_use]
-pub fn config_for_variant(variant: BigVGanVariant) -> BigVGanConfig {
-    match variant {
-        BigVGanVariant::V2_22khz80Band256x => BigVGanConfig {
-            in_channels: 80,
-            upsample_initial_channel: 1536,
-            upsample_rates: vec![4, 4, 2, 2, 2, 2],
-            upsample_kernel_sizes: vec![8, 8, 4, 4, 4, 4],
-            resblock_kernel_sizes: vec![3, 7, 11],
-            resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
-            activation: SnakeKind::SnakeBeta,
-            snake_logscale: true,
-            use_bias_at_final: false,
-            use_tanh_at_final: false,
-        },
-        BigVGanVariant::V2_44khz128Band512x => BigVGanConfig {
-            in_channels: 128,
-            upsample_initial_channel: 1536,
-            upsample_rates: vec![8, 4, 2, 2, 2, 2],
-            upsample_kernel_sizes: vec![16, 8, 4, 4, 4, 4],
-            resblock_kernel_sizes: vec![3, 7, 11],
-            resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
-            activation: SnakeKind::SnakeBeta,
-            snake_logscale: true,
-            use_bias_at_final: false,
-            use_tanh_at_final: false,
-        },
-        BigVGanVariant::V2_24khz100Band256x => BigVGanConfig {
-            in_channels: 100,
-            upsample_initial_channel: 1536,
-            upsample_rates: vec![4, 4, 2, 2, 2, 2],
-            upsample_kernel_sizes: vec![8, 8, 4, 4, 4, 4],
-            resblock_kernel_sizes: vec![3, 7, 11],
-            resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
-            activation: SnakeKind::SnakeBeta,
-            snake_logscale: true,
-            use_bias_at_final: false,
-            use_tanh_at_final: false,
-        },
-        BigVGanVariant::BaseV1_24khz100Band => BigVGanConfig {
-            in_channels: 100,
-            upsample_initial_channel: 512,
-            upsample_rates: vec![8, 8, 2, 2],
-            upsample_kernel_sizes: vec![16, 16, 4, 4],
-            resblock_kernel_sizes: vec![3, 7, 11],
-            resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
-            activation: SnakeKind::SnakeBeta,
-            snake_logscale: true,
-            // Both keys absent from base_v1's config.json → upstream
-            // Python defaults to True (see `bigvgan.py:313` +
-            // `bigvgan.py:322`).
-            use_bias_at_final: true,
-            use_tanh_at_final: true,
-        },
     }
 }
 
@@ -471,22 +321,52 @@ impl BigVGan {
     /// returns the raw PCM waveform bounded to `[-1, 1]` by the op's
     /// terminal `tanh` (or `clamp` when `use_tanh_at_final` is false).
     ///
-    /// Delegates verbatim to [`BigVGanGenerator::forward`] — this
-    /// binder adds no extra pre / post processing.
+    /// CPU and non-Metal backends delegate to the established host route.
+    /// On Apple with the `metal` feature, Metal uses the dedicated resident
+    /// route and performs exactly one final device-to-host readback; there is
+    /// no implicit CPU fallback.
     ///
     /// # Errors
     ///
-    /// See [`BigVGanGenerator::forward`]. In practice, once `self` has
-    /// passed [`Self::new`], the only reachable errors are
-    /// [`VokraError::InvalidArgument`] on a `mel.len()` mismatch or a
-    /// `t_mel == 0`.
+    /// See [`BigVGanGenerator::forward`]. Metal additionally reports
+    /// [`VokraError::BackendUnavailable`] when the feature/device is absent,
+    /// when the resident graph cannot be constructed, or when its final
+    /// readback count is not exactly one. No backend silently falls back to
+    /// CPU execution.
     pub fn decode(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
-        if self.backend == BackendKind::Cpu {
-            self.generator.forward(mel, t_mel)
-        } else {
-            let compute = Compute::for_backend(self.backend, BIGVGAN_HOT_OPS)?;
-            let ops = HifiGanComputeOps { compute: &compute };
-            self.generator.forward_with_backend_ops(mel, t_mel, &ops)
+        match self.backend {
+            BackendKind::Cpu => self.generator.forward(mel, t_mel),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            BackendKind::Metal => {
+                let context = vokra_backend_metal::MetalContext::new()?;
+                let mut ops = MetalBigVganResidentOps::new(&context);
+                let readbacks_before = context.readback_count();
+                let output_len = t_mel
+                    .checked_mul(self.config().total_upsample_factor() as usize)
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument("BigVGAN output length overflow".to_owned())
+                    })?;
+                let mut output = vec![0.0; output_len];
+                self.generator
+                    .forward_with_resident_ops(mel, t_mel, &mut ops, &mut output)?;
+                let readbacks = context.readback_count().saturating_sub(readbacks_before);
+                if readbacks != 1 {
+                    return Err(VokraError::BackendUnavailable(format!(
+                        "BigVGAN Metal resident forward performed {readbacks} readbacks; expected exactly one final readback"
+                    )));
+                }
+                Ok(output)
+            }
+            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+            BackendKind::Metal => Err(VokraError::BackendUnavailable(
+                "BigVGAN Metal resident execution requires the `metal` feature on Apple targets"
+                    .to_owned(),
+            )),
+            _ => {
+                let compute = Compute::for_backend(self.backend, BIGVGAN_HOT_OPS)?;
+                let ops = HifiGanComputeOps { compute: &compute };
+                self.generator.forward_with_backend_ops(mel, t_mel, &ops)
+            }
         }
     }
 
@@ -565,6 +445,7 @@ impl BigVGan {
         })?;
 
         let cfg = config_for_variant(variant);
+        validate_tensor_manifest(file, variant)?;
         let weights = load_weights(file, &cfg)?;
         Self::new(variant, weights).map_err(|error| {
             VokraError::ModelLoad(format!(
@@ -572,6 +453,42 @@ impl BigVGan {
             ))
         })
     }
+}
+
+fn validate_tensor_manifest(file: &GgufFile, variant: BigVGanVariant) -> Result<()> {
+    use std::collections::BTreeSet;
+
+    let manifest = tensor_manifest_for_variant(variant);
+    let expected_names: BTreeSet<&str> = manifest.iter().map(|spec| spec.name.as_str()).collect();
+    let actual_names: BTreeSet<&str> = file
+        .tensors()
+        .iter()
+        .map(|info| info.name.as_str())
+        .collect();
+    if actual_names != expected_names {
+        let missing: Vec<&&str> = expected_names.difference(&actual_names).take(4).collect();
+        let extra: Vec<&&str> = actual_names.difference(&expected_names).take(4).collect();
+        return Err(VokraError::ModelLoad(format!(
+            "BigVGan: shared tensor manifest mismatch (expected {}, found {}); missing={missing:?}, extra={extra:?}",
+            expected_names.len(),
+            actual_names.len()
+        )));
+    }
+    for spec in &manifest {
+        let info = file.tensor_info(&spec.name).ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "BigVGan: required tensor `{}` is missing",
+                spec.name
+            ))
+        })?;
+        if info.dimensions != spec.shape {
+            return Err(VokraError::ModelLoad(format!(
+                "BigVGan: tensor `{}` shape {:?}, expected {:?}",
+                spec.name, info.dimensions, spec.shape
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn load_tensor(
@@ -905,6 +822,18 @@ mod tests {
     use super::*;
     use vokra_core::gguf::GgufBuilder;
 
+    #[test]
+    fn backend_registry_covers_every_bigvgan_compute_op() {
+        for op in [
+            HotOp::Conv1d,
+            HotOp::ConvTranspose1d,
+            HotOp::SnakeActivation,
+            HotOp::SnakeBeta,
+        ] {
+            assert!(BIGVGAN_HOT_OPS.contains(&op), "missing BigVGAN op {op:?}");
+        }
+    }
+
     // ---- T1: constants pinned against the converter ------------------
 
     /// Task-spec pin: [`ARCH`] + [`KEY_BIGVGAN_VARIANT`] + every
@@ -1017,8 +946,8 @@ mod tests {
         assert_eq!(cfg.activation, SnakeKind::SnakeBeta);
         assert!(cfg.snake_logscale);
         // Primary source says `false` for both — this deliberately
-        // disagrees with `BigVGanConfig::default()` in ops (see the
-        // `config_for_variant` rustdoc "Divergence" section).
+        // deliberately disagrees with `BigVGanConfig::default()` in ops;
+        // the released v2 config is the source of truth here.
         assert!(!cfg.use_bias_at_final);
         assert!(!cfg.use_tanh_at_final);
         assert_eq!(cfg.total_upsample_factor(), 256);
@@ -1159,14 +1088,14 @@ mod tests {
         }
     }
 
-    // ---- T8: valid metadata reaches the strict tensor loader --------
+    // ---- T8: valid metadata reaches the shared manifest validator ----
 
     /// Metadata-only files for all four variants must pass dispatch and fail
-    /// at the first required tensor. This pins that no variant regresses to a
-    /// placeholder branch while keeping the unit fixture small; real-weight
-    /// verification covers the complete manifest.
+    /// at the shared manifest validator. This pins that no variant regresses
+    /// to a placeholder branch while keeping the unit fixture small; the
+    /// shared descriptor contract is checked before tensor decoding.
     #[test]
-    fn from_gguf_all_four_variants_reach_strict_tensor_loader() {
+    fn from_gguf_all_four_variants_reach_shared_manifest_validator() {
         for variant in [
             BigVGanVariant::V2_22khz80Band256x,
             BigVGanVariant::V2_44khz128Band512x,
@@ -1184,8 +1113,8 @@ mod tests {
             match err {
                 VokraError::ModelLoad(msg) => {
                     assert!(
-                        msg.contains("conv_pre.weight") && msg.contains("missing"),
-                        "strict loader must name the first missing tensor for {variant:?}: {msg}"
+                        msg.contains("shared tensor manifest mismatch") && msg.contains("missing"),
+                        "shared manifest validator must reject metadata-only {variant:?}: {msg}"
                     );
                 }
                 other => panic!("expected ModelLoad on {variant:?}, got: {other}"),

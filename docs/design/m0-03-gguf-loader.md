@@ -1,5 +1,15 @@
 # M0-03 設計メモ: GGUF ローダー / 変換ツールの対応範囲と決定事項
 
+> **2026-08-30 current-state boundary:** The tables and execution notes below
+> are the dated M0-03 snapshot. In the current reader, GGUF v3 supports the
+> on-disk tags `F32`, `F16`, `BF16`, `Q4_K`, `Q5_K`, and `Q6_K`; other quantized
+> families remain explicit errors. The current code is the authority for this
+> set (`crates/vokra-core/src/gguf/tensor.rs` and `reader.rs`). The dedicated
+> `vokra-mmap` accessor has its own supported-payload contract, so mmap support
+> must not be inferred from the general reader table. The M0 statement below
+> that only F32/F16 are in scope is historical and is superseded by the reader
+> implementation.
+
 - **チケット**: M0-03-T01（対応範囲の確定記録）。T12/T16 の tensor 命名契約、T05 の zero-copy 設計注記、T13/T16/T17 のローカル実行結果を含む
 - **日付**: 2026-07-02
 - **実装**: `crates/vokra-core/src/gguf/`（reader/writer/FrontendSpec/chunks）、`crates/vokra-convert/`（オフライン変換ツール、FR-TL-01）

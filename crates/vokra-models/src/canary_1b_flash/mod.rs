@@ -1724,6 +1724,8 @@ mod tests {
             .expect("set VOKRA_CANARY_REFERENCE_PCM from the NeMo dumper");
         let tokens_path = std::env::var("VOKRA_CANARY_REFERENCE_TOKENS")
             .expect("set VOKRA_CANARY_REFERENCE_TOKENS from the NeMo dumper");
+        let text_path = std::env::var("VOKRA_CANARY_REFERENCE_TEXT")
+            .expect("set VOKRA_CANARY_REFERENCE_TEXT from the NeMo dumper");
 
         let gguf_bytes = std::fs::read(&gguf_path).expect("read complete Canary GGUF on VAST");
         let gguf = GgufFile::parse(gguf_bytes).expect("parse complete Canary GGUF");
@@ -1748,6 +1750,14 @@ mod tests {
         assert!(
             !expected.is_empty(),
             "official NeMo tokens must not be empty"
+        );
+        let expected_text = std::fs::read_to_string(&text_path)
+            .expect("read official NeMo text fixture")
+            .trim_end_matches(['\r', '\n'])
+            .to_owned();
+        assert!(
+            !expected_text.is_empty(),
+            "official NeMo text fixture must not be empty"
         );
 
         let language = |variable: &str, default: CanaryLanguage| {
@@ -1775,5 +1785,42 @@ mod tests {
             actual, expected,
             "Vokra greedy token sequence must exactly match official NeMo"
         );
+        let actual_text = model
+            .tokenizer
+            .decode(&actual)
+            .expect("decode Canary CPU token output");
+        assert_eq!(
+            actual_text, expected_text,
+            "Vokra decoded text must exactly match official NeMo"
+        );
+        eprintln!("CANARY_1B_FLASH_CPU_VS_OFFICIAL PASS");
+
+        // The CPU result above is the independent official-NeMo oracle. On a
+        // disposable Apple Silicon host, bind the same authenticated GGUF
+        // again with the real Metal backend and compare the complete greedy
+        // token sequence. This branch is deliberately device-gated: Linux
+        // VAST keeps the existing CPU-only behavior, while a Metal build on
+        // macOS must execute Metal or fail loudly (never substitute CPU).
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            drop(model);
+            let metal_model = Canary1bFlashAsr::from_gguf_with_backend(&gguf, BackendKind::Metal)
+                .expect("bind complete Canary release on Metal");
+            let metal_actual = metal_model
+                .transcribe_with_options(&pcm, options)
+                .expect("run Canary Metal forward");
+            assert_eq!(metal_actual, actual, "Flash Metal IDs equal CPU");
+            let metal_text = metal_model
+                .tokenizer
+                .decode(&metal_actual)
+                .expect("decode Canary Metal token output");
+            assert_eq!(metal_text, actual_text, "Flash Metal text equals CPU");
+            assert_eq!(
+                metal_text, expected_text,
+                "Flash Metal text equals official"
+            );
+            eprintln!("CANARY_1B_FLASH_METAL_VS_OFFICIAL PASS");
+            eprintln!("CANARY_1B_FLASH_METAL_VS_CPU PASS");
+        }
     }
 }

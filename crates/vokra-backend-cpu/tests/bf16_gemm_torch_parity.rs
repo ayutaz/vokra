@@ -1,0 +1,170 @@
+//! Independent PyTorch-reference parity for the AVX-512 BF16 GEMM path.
+//!
+//! The fixtures are generated on VAST by
+//! `tools/parity/bf16_gemm/dump_reference.py`.  This test is intentionally
+//! ignored until that packet is populated.  It is never a model test: the
+//! only inputs are the small deterministic tensors committed with the parity
+//! fixture, and the reference output comes from PyTorch `torch.matmul` over
+//! BF16-rounded inputs.
+
+#[path = "support/bf16_gemm_fixture.rs"]
+mod fixture;
+
+use fixture::Fixture;
+use vokra_backend_cpu::kernels;
+use vokra_backend_cpu::{CpuFeatures, IsaPath};
+
+fn compare_case(case: &Fixture) {
+    let mut actual = vec![f32::NAN; case.m * case.n];
+    kernels::gemm_bf16_on(
+        IsaPath::Avx512Bf16,
+        case.m,
+        case.n,
+        case.k,
+        &case.a,
+        &case.b,
+        &mut actual,
+    )
+    .unwrap_or_else(|error| panic!("{}: AVX-512 BF16 GEMM failed: {error}", case.name));
+    assert!(
+        actual.iter().all(|value| value.is_finite()),
+        "{}: non-finite output",
+        case.name
+    );
+    assert_eq!(
+        actual.len(),
+        case.output.len(),
+        "{}: output length",
+        case.name
+    );
+    for (index, (&got, &expected)) in actual.iter().zip(&case.output).enumerate() {
+        let tolerance = case.atol + case.rtol * expected.abs();
+        assert!(
+            (got - expected).abs() <= tolerance,
+            "{}: index {index}: AVX512-BF16={got:?}, PyTorch={expected:?}, |diff|={} > tolerance {tolerance}",
+            case.name,
+            (got - expected).abs()
+        );
+    }
+}
+
+fn compare_neon_bf16_case(case: &Fixture) -> f32 {
+    let mut actual = vec![f32::NAN; case.m * case.n];
+    // This is deliberately the forced-path API.  Do not replace it with
+    // `best_bf16_isa` or the generic dispatch surface: the Apple verifier's
+    // purpose is to prove the BFMMLA implementation itself.
+    kernels::gemm_bf16_on(
+        IsaPath::NeonBf16,
+        case.m,
+        case.n,
+        case.k,
+        &case.a,
+        &case.b,
+        &mut actual,
+    )
+    .unwrap_or_else(|error| panic!("{}: Neon BF16 GEMM failed: {error}", case.name));
+    assert!(
+        actual.iter().all(|value| value.is_finite()),
+        "{}: non-finite output",
+        case.name
+    );
+    assert_eq!(
+        actual.len(),
+        case.output.len(),
+        "{}: output length",
+        case.name
+    );
+    actual
+        .iter()
+        .zip(&case.output)
+        .map(|(&got, &expected)| (got - expected).abs())
+        .enumerate()
+        .map(|(index, error)| {
+            let expected = case.output[index];
+            let tolerance = case.atol + case.rtol * expected.abs();
+            assert!(
+                error <= tolerance,
+                "{}: index {index}: Neon-BF16={:?}, PyTorch={expected:?}, |diff|={error} > tolerance {tolerance}",
+                case.name,
+                actual[index]
+            );
+            error
+        })
+        .fold(0.0f32, f32::max)
+}
+
+#[test]
+fn raw_bf16_bits_gemm_matches_existing_pytorch_fixture() {
+    // The committed fixture contract stores the pre-rounding f32 inputs, not
+    // raw bits.  Re-encode those inputs with the runtime's explicit RNE
+    // conversion and compare the raw-bit path with the same independent
+    // PyTorch output; no oracle values are invented here.
+    for case in fixture::load_all() {
+        let a: Vec<u16> = case
+            .a
+            .iter()
+            .copied()
+            .map(kernels::f32_to_bf16_rne)
+            .collect();
+        let b: Vec<u16> = case
+            .b
+            .iter()
+            .copied()
+            .map(kernels::f32_to_bf16_rne)
+            .collect();
+        let mut actual = vec![f32::NAN; case.m * case.n];
+        kernels::gemm_bf16_bits_on(IsaPath::Scalar, case.m, case.n, case.k, &a, &b, &mut actual)
+            .unwrap_or_else(|error| panic!("{}: raw BF16 GEMM failed: {error}", case.name));
+        for (index, (&got, &expected)) in actual.iter().zip(&case.output).enumerate() {
+            let tolerance = case.atol + case.rtol * expected.abs();
+            assert!(
+                (got - expected).abs() <= tolerance,
+                "{}: index {index}: raw BF16={got:?}, PyTorch={expected:?}, |diff|={} > tolerance {tolerance}",
+                case.name,
+                (got - expected).abs()
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "run after VAST PyTorch fixture generation; no local Torch/model execution"]
+fn avx512_bf16_gemm_matches_pytorch_reference() {
+    let features = CpuFeatures::detect();
+    if !features.supports(IsaPath::Avx512Bf16) {
+        eprintln!("skip: AVX-512 BF16 is unavailable on this host");
+        return;
+    }
+    for case in fixture::load_all() {
+        compare_case(&case);
+    }
+}
+
+#[test]
+#[ignore = "run on Darwin arm64 with hardware BF16 support; no local model/Torch execution"]
+fn apple_silicon_neon_bf16_gemm_matches_pytorch_reference() {
+    if !cfg!(target_os = "macos") {
+        panic!("Apple BF16 parity requires macOS; this explicit test must not skip");
+    }
+    if !cfg!(target_arch = "aarch64") {
+        panic!("Apple BF16 parity requires arm64; this explicit test must not skip");
+    }
+
+    let features = CpuFeatures::detect();
+    assert!(
+        features.supports(IsaPath::NeonBf16),
+        "Apple BF16 parity requires detected NeonBf16/BFMMLA support; refusing scalar or NEON fallback"
+    );
+
+    let cases = fixture::load_all();
+    assert_eq!(cases.len(), 3, "BF16 fixture case count must remain exact");
+    let max_abs_error = cases
+        .iter()
+        .map(compare_neon_bf16_case)
+        .fold(0.0f32, f32::max);
+    println!(
+        "APPLE_BF16_GEMM backend=neon-bf16 cases={} max_abs_error={max_abs_error:.9e} atol=1.000000000e-3 rtol=0.000000000e0",
+        cases.len()
+    );
+    println!("APPLE_BF16_GEMM_PASS");
+}

@@ -1,0 +1,24 @@
+[project]
+name = "vokra-wespeaker-parity"
+version = "0.1.0"
+description = "Pinned independent WeSpeaker ResNet34-LM parity oracle"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy==2.3.5",
+    "safetensors==0.7.0",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+]
+
+[tool.uv]
+package = false
+environments = ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

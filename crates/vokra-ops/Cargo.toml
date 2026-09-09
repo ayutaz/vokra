@@ -1,6 +1,6 @@
 [package]
 name = "vokra-ops"
-description = "Speech-specialized operators for the Vokra runtime (STFT/iSTFT, Mel, vocoder chains, ... — implemented from M0-04 onwards)"
+description = "Speech-specialized operators for the Vokra runtime, including STFT/iSTFT, Mel, vocoder chains, decoding, and enhancement"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

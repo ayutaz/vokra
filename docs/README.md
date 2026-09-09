@@ -1,8 +1,22 @@
 # Vokra documentation
 
-**Current-state review:** 2026-08-22
+**Current-state review:** 2026-09-09
 
-**Reviewed baseline:** `main` at `42af7a90`
+**Reviewed implementation baseline:** GitHub `main` at
+`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`; the pre-documentation code
+baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
+documentation/evidence checkpoint was
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
+
+The current checkout is workspace `0.3.0`. At the 2026-09-09 audit start, PR
+#79 was at head `9efcd16e`, with 110 successful, 13 intentionally skipped, and
+0 failed remote checks; the repository has 0 Git tags and 0 published releases.
+The hashes above are dated historical records, not the current version. The
+audit-start campaign inventory recorded 131 Mac-CPU-complete and
+131 Apple-Metal-source-complete repositories, with 63 public rows unresolved.
+Scaleway has not started; Apple hardware verdicts and
+UTMOS numeric parity are not claimed.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -27,6 +41,7 @@ environment they name.
 | Deployment policy and legal notes | [Legal compliance](legal-compliance.md) |
 | C ABI changes | [ABI changelog](abi-changelog.md) |
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
+| Current Mac CPU/Metal campaign | [Pre-Scaleway remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (audit-start snapshot: PR #79 head `9efcd16e`; use the dated ledger for live status) |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).
@@ -54,11 +69,11 @@ and the publication scripts for release eligibility.
 
 ## Current release posture
 
-The workspace version is `0.1.0`. Rust APIs, the C ABI, GGUF metadata, and the
-model roster remain pre-1.0 and may change. The C header and Python
-prototype table are checked for exact function-set equality; documentation
-therefore avoids copying a function count that would drift on the next ABI
-addition.
+The workspace version is `0.3.0` development; no Git tag or published release
+exists yet. Rust APIs, the C ABI, GGUF metadata, and the model roster remain
+pre-1.0 and may change. The C header and Python prototype table are checked for
+exact function-set equality; documentation therefore avoids copying a function
+count that would drift on the next ABI addition.
 
 The default runtime keeps the root `Cargo.lock` first-party-only. GPU and NPU
 features are opt-in, and unsupported operations must fail explicitly instead

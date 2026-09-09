@@ -14,7 +14,7 @@ verified in CI for every PR:
   parity suite must document its reference implementation, input fixtures
   and tolerance here (this README and/or a per-suite doc header).
 
-## Current status (reviewed 2026-08-18)
+## Current status (audit-start snapshot 2026-09-09)
 
 This crate now contains the FFT/window/reference harness tests under `tests/`
 and a broad committed fixture tree for front ends, VAD, TTS, codecs, and later
@@ -22,6 +22,14 @@ models. Model-specific Rust comparisons also live beside their owning model or
 operator crate; this directory is not a complete index of every parity test in
 the repository. Consult the model's SPEC/README and the numerical-parity skill
 before regenerating a reference.
+
+The pre-Scaleway security work is complete at implementation head `9efcd16e`:
+direct checkpoint loads use explicit restricted loading, unsafe pickle
+fallbacks are refused, and real-weight work remains remote-only. UTMOS's
+historical fixture is retained, but its current legacy checkpoint route is
+`BLOCKED_UNSAFE_PICKLE`; the current CI workflow runs model-free self-tests and
+the refusal boundary, not numeric UTMOS parity. Apple CPU/Metal parity remains
+a separate device-gated follow-up.
 
 ### Historical M0 rollout plan
 

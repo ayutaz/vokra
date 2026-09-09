@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -41,12 +43,69 @@ class DumperContractTests(unittest.TestCase):
                     "9b",
                     "--model-dir",
                     "/tmp/model",
+                    "--wheel",
+                    "/tmp/qwen_asr.whl",
                     "--audio",
                     "/tmp/audio.wav",
                     "--output",
                     "/tmp/out",
                 ]
             )
+
+    def test_direct_backend_path_has_no_legacy_wrapper_name(self) -> None:
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        loaded = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        self.assertNotIn("asr", loaded)
+
+    def test_main_refuses_non_vast_before_touching_inputs(self) -> None:
+        args = [
+            "--variant", "0.6b", "--model-dir", "/missing/model",
+            "--wheel", "/missing/wheel.whl", "--audio", "/missing/audio.wav",
+            "--output", "/missing/output",
+        ]
+        with mock.patch.dict(MODULE.os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit) as error:
+                MODULE.main(args)
+        self.assertIn("VOKRA_PUBLISH_ON_VAST", str(error.exception))
+
+    def test_input_and_output_paths_reject_symlink_ancestors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            real = root / "real"
+            real.mkdir()
+            link = root / "link"
+            link.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(SystemExit):
+                MODULE.require_no_symlink_ancestors(link / "model", "model")
+            with self.assertRaises(SystemExit):
+                MODULE.require_empty_output(link / "reference")
+
+    def test_source_inventory_requires_exact_index_shards_and_unique_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary)
+            (model_dir / "model-00001-of-00001.safetensors").write_bytes(b"shard")
+            (model_dir / "model.safetensors.index.json").write_text(
+                '{"metadata": {"total_size": 5}, "weight_map": '
+                '{"tensor": "model-00001-of-00001.safetensors"}}',
+                encoding="utf-8",
+            )
+            inventory = MODULE.source_inventory(model_dir)
+            self.assertIn("model-00001-of-00001.safetensors", inventory)
+            (model_dir / "extra.safetensors").write_bytes(b"extra")
+            with self.assertRaises(SystemExit):
+                MODULE.source_inventory(model_dir)
+            (model_dir / "extra.safetensors").unlink()
+            (model_dir / "model.safetensors.index.json").write_text(
+                '{"metadata": {}, "metadata": {}, "weight_map": '
+                '{"tensor": "model-00001-of-00001.safetensors"}}',
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit):
+                MODULE.source_inventory(model_dir)
 
 
 if __name__ == "__main__":

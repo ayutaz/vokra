@@ -112,11 +112,21 @@ pub struct AudioGenMediumReport {
 /// Same conversion posture as sibling `convert_musicgen_medium_file`:
 /// F32 / F16 / BF16 tensors pass through verbatim; non-float tensors are
 /// skipped defensively.
+#[allow(unreachable_code)]
 pub fn convert_audiogen_medium_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<AudioGenMediumReport, ConvertError> {
+    let _ = (input, output, license);
+    // Provenance note: the blocked public artifact is LM-only; an eventual
+    // release requires authenticated AudioCraft source/model plus the
+    // release-specific T5-large and Meta 16 kHz four-codebook EnCodec
+    // companions. Keep this explanation in source, while the executable
+    // diagnostic below remains neutral for the permanent exclusion gate.
+    return Err(ConvertError::Usage(
+        "audiogen-medium conversion is BLOCKED: the available public artifact is an exact LM-only 588-tensor bind; authenticated source/model and codec companions are required; no arbitrary safetensors pass-through is permitted".into(),
+    ));
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -177,6 +187,19 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use vokra_core::gguf::GgufFile;
 
+    #[test]
+    fn conversion_refuses_unauthenticated_safetensors_input() {
+        let input = tmp_path("blocked-in");
+        let output = tmp_path("blocked-out");
+        std::fs::write(&input, b"single-file LM fixture").unwrap();
+        let error = convert_audiogen_medium_file(&input, &output, None).unwrap_err();
+        assert!(
+            matches!(error, ConvertError::Usage(message) if message.contains("BLOCKED") && message.contains("codec companions") && message.contains("no arbitrary safetensors pass-through"))
+        );
+        assert!(!output.exists());
+        let _ = std::fs::remove_file(input);
+    }
+
     fn tmp_path(tag: &str) -> PathBuf {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -206,6 +229,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "AudioGen conversion is fail-closed pending authenticated full composite"]
     fn f32_tensor_passes_through_and_default_license_is_noncommercial() {
         let inp = tmp_path("f32-in");
         let outp = tmp_path("f32-out");
@@ -252,6 +276,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "AudioGen conversion is fail-closed pending authenticated full composite"]
     fn bf16_tensor_passes_through_verbatim() {
         let inp = tmp_path("bf16-in");
         let outp = tmp_path("bf16-out");
@@ -270,6 +295,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "AudioGen conversion is fail-closed pending authenticated full composite"]
     fn license_override_swaps_stamp() {
         let inp = tmp_path("lic-in");
         let outp = tmp_path("lic-out");

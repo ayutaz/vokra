@@ -1,0 +1,389 @@
+{
+  "approval_scope_sha256": "0133cb13d4869903f89d6bbcaee9e784a69cf158804ae76bf4a52c7a0ca3efd0",
+  "component_reviews": [
+    {
+      "approval_digest": null,
+      "id": "source",
+      "identity": {
+        "files": [
+          {
+            "bytes": 9564,
+            "git_blob_sha1": "17607e6d2c72627e15db4214cacfa9d7b89ca945",
+            "path": "wespeaker/models/resnet.py",
+            "role": "official_loader",
+            "sha256": "6f3c8219be2c9a8b9eabed8169c1abaec3e48670be7aaf1e792138b2b20e68c4"
+          },
+          {
+            "bytes": 10255,
+            "git_blob_sha1": "47120eead47a511939267470496539804c17b7d3",
+            "path": "wespeaker/models/pooling_layers.py",
+            "role": "official_pooling",
+            "sha256": "768910f8e88cb47e742274563339d7e780cb9d56c629c4d4124605296686f0f9"
+          }
+        ],
+        "license": {
+          "bytes": 11357,
+          "git_blob_sha1": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+          "path": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        "license_spdx": "apache-2.0",
+        "repo": "https://github.com/wenet-e2e/wespeaker.git",
+        "revision": "45941e7cba2c3ea99e232d02bedf617fc71b0dad"
+      },
+      "license": "apache-2.0",
+      "payload_sha256": null,
+      "role": "official_tooling",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "checkpoint",
+      "identity": {
+        "bytes": 45053131,
+        "config": {
+          "bytes": 1673,
+          "git_oid": "1941982501edc3909a56c9bca025fecf10cf28d2",
+          "path": "config.yaml",
+          "sha256": "3cf7d3243464cd939083e29d2be65c2abcdd954c1a64559bad73b74ffdb0db3e"
+        },
+        "git_oid": "7f92ddd059d244c7d2653650d3be85de9f136c41",
+        "license_spdx": "cc-by-4.0",
+        "owner_signoff_date": "2026-07-28",
+        "path": "avg_model.pt",
+        "repo": "Wespeaker/wespeaker-voxceleb-resnet34-LM",
+        "revision": "f0c48c298fd835726c27956a5d617bad7115627e",
+        "role": "official_checkpoint",
+        "sha256": "9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449"
+      },
+      "license": "cc-by-4.0",
+      "payload_sha256": null,
+      "role": "official_weight",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "corrected_replacement",
+      "identity": {
+        "bytes": 26584064,
+        "license_spdx": "cc-by-4.0",
+        "path": "pyannote-wespeaker.restamped.gguf",
+        "repo": "vokra/pyannote-wespeaker-voxceleb-resnet34-lm",
+        "revision": "8e27acd8a875088f1a7321f40610397bf964a446",
+        "role": "authorized_corrected_replacement",
+        "sha256": "6dccbc026e9c32a8f99f3441e64f1ff52e36afb055442595c86cda8021c78c39"
+      },
+      "license": "cc-by-4.0",
+      "payload_sha256": null,
+      "role": "replacement_public_artifact",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "legacy_mislicensed",
+      "identity": {
+        "accepted": false,
+        "actual_license_spdx": "cc-by-4.0",
+        "bytes": null,
+        "path": "wespeaker.gguf",
+        "repo": "vokra/wespeaker",
+        "revision": "a20ec15a61be1b5c5cb0f4805dbf72bb341e946f",
+        "role": "rejected_mislicensed_legacy",
+        "sha256": "d2dd9114179e28d14bd7c6ec372807823f1064c4f6cdc2349a83aa652635553d",
+        "stamped_license_spdx": "apache-2.0"
+      },
+      "license": "cc-by-4.0",
+      "payload_sha256": null,
+      "role": "rejected_legacy_artifact",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "fixture",
+      "identity": {
+        "bytes": 352078,
+        "license_spdx": "public-domain",
+        "path": "tests/fixtures/audio/jfk-30s.wav",
+        "role": "fixed_reference_input",
+        "sha256": "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+      },
+      "license": "public-domain",
+      "payload_sha256": null,
+      "role": "reference_input",
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    }
+  ],
+  "dependency_reviews": [
+    {
+      "bundled_review": null,
+      "id": "filelock@3.32.4",
+      "license": null,
+      "name": "filelock",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.32.4"
+    },
+    {
+      "bundled_review": null,
+      "id": "fsspec@2026.7.0",
+      "license": null,
+      "name": "fsspec",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2026.7.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "jinja2@3.1.6",
+      "license": null,
+      "name": "jinja2",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.1.6"
+    },
+    {
+      "bundled_review": null,
+      "id": "markupsafe@3.0.3",
+      "license": null,
+      "name": "markupsafe",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.0.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "mpmath@1.3.0",
+      "license": null,
+      "name": "mpmath",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.3.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "networkx@3.6.1",
+      "license": null,
+      "name": "networkx",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.6.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "numpy@2.3.5",
+      "license": null,
+      "name": "numpy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.3.5"
+    },
+    {
+      "bundled_review": null,
+      "id": "safetensors@0.7.0",
+      "license": null,
+      "name": "safetensors",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.7.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "setuptools@84.0.0",
+      "license": null,
+      "name": "setuptools",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "84.0.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "sympy@1.14.0",
+      "license": null,
+      "name": "sympy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.14.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "torch@2.9.1+cpu",
+      "license": null,
+      "name": "torch",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.9.1+cpu"
+    },
+    {
+      "bundled_review": null,
+      "id": "torchaudio@2.9.1+cpu",
+      "license": null,
+      "name": "torchaudio",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.9.1+cpu"
+    },
+    {
+      "bundled_review": null,
+      "id": "typing-extensions@4.16.0",
+      "license": null,
+      "name": "typing-extensions",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.16.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "vokra-wespeaker-parity@0.1.0",
+      "license": null,
+      "name": "vokra-wespeaker-parity",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "virtual": "."
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.1.0"
+    }
+  ],
+  "dependency_reviews_sha256": "31fa43cf8a18f6fef71d600bac73a1d1454180f6dc1b3e7fa962be51a2dddb4f",
+  "fixed_identities": {
+    "checkpoint": {
+      "bytes": 45053131,
+      "config": {
+        "bytes": 1673,
+        "git_oid": "1941982501edc3909a56c9bca025fecf10cf28d2",
+        "path": "config.yaml",
+        "sha256": "3cf7d3243464cd939083e29d2be65c2abcdd954c1a64559bad73b74ffdb0db3e"
+      },
+      "git_oid": "7f92ddd059d244c7d2653650d3be85de9f136c41",
+      "license_spdx": "cc-by-4.0",
+      "owner_signoff_date": "2026-07-28",
+      "path": "avg_model.pt",
+      "repo": "Wespeaker/wespeaker-voxceleb-resnet34-LM",
+      "revision": "f0c48c298fd835726c27956a5d617bad7115627e",
+      "role": "official_checkpoint",
+      "sha256": "9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449"
+    },
+    "corrected_replacement": {
+      "bytes": 26584064,
+      "license_spdx": "cc-by-4.0",
+      "path": "pyannote-wespeaker.restamped.gguf",
+      "repo": "vokra/pyannote-wespeaker-voxceleb-resnet34-lm",
+      "revision": "8e27acd8a875088f1a7321f40610397bf964a446",
+      "role": "authorized_corrected_replacement",
+      "sha256": "6dccbc026e9c32a8f99f3441e64f1ff52e36afb055442595c86cda8021c78c39"
+    },
+    "fixture": {
+      "bytes": 352078,
+      "license_spdx": "public-domain",
+      "path": "tests/fixtures/audio/jfk-30s.wav",
+      "role": "fixed_reference_input",
+      "sha256": "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+    },
+    "legacy_mislicensed": {
+      "accepted": false,
+      "actual_license_spdx": "cc-by-4.0",
+      "bytes": null,
+      "path": "wespeaker.gguf",
+      "repo": "vokra/wespeaker",
+      "revision": "a20ec15a61be1b5c5cb0f4805dbf72bb341e946f",
+      "role": "rejected_mislicensed_legacy",
+      "sha256": "d2dd9114179e28d14bd7c6ec372807823f1064c4f6cdc2349a83aa652635553d",
+      "stamped_license_spdx": "apache-2.0"
+    },
+    "source": {
+      "files": [
+        {
+          "bytes": 9564,
+          "git_blob_sha1": "17607e6d2c72627e15db4214cacfa9d7b89ca945",
+          "path": "wespeaker/models/resnet.py",
+          "role": "official_loader",
+          "sha256": "6f3c8219be2c9a8b9eabed8169c1abaec3e48670be7aaf1e792138b2b20e68c4"
+        },
+        {
+          "bytes": 10255,
+          "git_blob_sha1": "47120eead47a511939267470496539804c17b7d3",
+          "path": "wespeaker/models/pooling_layers.py",
+          "role": "official_pooling",
+          "sha256": "768910f8e88cb47e742274563339d7e780cb9d56c629c4d4124605296686f0f9"
+        }
+      ],
+      "license": {
+        "bytes": 11357,
+        "git_blob_sha1": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+        "path": "LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      "license_spdx": "apache-2.0",
+      "repo": "https://github.com/wenet-e2e/wespeaker.git",
+      "revision": "45941e7cba2c3ea99e232d02bedf617fc71b0dad"
+    }
+  },
+  "gate_version": 1,
+  "lock_sha256": "996f10762498f29a8f6c24d3403ebac4734118f8150137b716ddf5d54e512b6e",
+  "no_upload": "NO_UPLOAD",
+  "operator_approval": {
+    "decision": "PENDING_REVIEW",
+    "digest": null,
+    "signer": null
+  },
+  "package_rows_sha256": "5475a2836e48fc736446d4ea0deaeb24a0ef1307f34110d5ceea7248a3e04c59",
+  "pyproject_sha256": "4d5a2bae9fdd3dff3d1224235c6e125995f32e491e3f42bb2063281d2a9d1850"
+}

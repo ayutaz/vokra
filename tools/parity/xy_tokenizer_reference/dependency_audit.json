@@ -1,0 +1,7 @@
+{
+  "schema": "vokra-xy-tokenizer-dependency-audit-v1",
+  "status": "BLOCKED",
+  "lock_sha256": "ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049",
+  "pyproject_sha256": "167c19066e8c9debd08468d2ba556a9a4cf05f5cb1838a2c1f8664a0eb968640",
+  "packages": []
+}

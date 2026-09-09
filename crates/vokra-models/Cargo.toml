@@ -1,6 +1,6 @@
 [package]
 name = "vokra-models"
-description = "Native (whisper.cpp-style) model implementations for Vokra: Silero VAD, Whisper base, piper-plus MB-iSTFT-VITS2 native TTS, ..."
+description = "Native whisper.cpp-style model implementations for Vokra, including Silero VAD, Whisper, and piper-plus MB-iSTFT-VITS2 TTS"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

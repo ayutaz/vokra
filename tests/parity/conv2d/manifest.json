@@ -1,0 +1,239 @@
+{
+  "cases": {
+    "conv2d_grouped_d2_s21_p12": {
+      "attrs": {
+        "dilation": [
+          2,
+          1
+        ],
+        "groups": 2,
+        "in_channels": 4,
+        "kernel": [
+          3,
+          2
+        ],
+        "out_channels": 6,
+        "output_padding": [
+          0,
+          0
+        ],
+        "padding": [
+          1,
+          2
+        ],
+        "stride": [
+          2,
+          1
+        ]
+      },
+      "oracle": "torch.nn.functional.conv2d",
+      "tensors": {
+        "bias": {
+          "bytes": 24,
+          "dtype": "float32",
+          "path": "conv2d_grouped_d2_s21_p12_bias.f32",
+          "sha256": "f6c83198ddfefcc48a294013f6e7853935b57c098cc8b10705d08063a1cd722b",
+          "shape": [
+            6
+          ]
+        },
+        "input": {
+          "bytes": 480,
+          "dtype": "float32",
+          "path": "conv2d_grouped_d2_s21_p12_input.f32",
+          "sha256": "65491d7e25fddc3a3f3ba6dc28206a8ba1078be89f06db63c1e1e40ab3c4ca72",
+          "shape": [
+            1,
+            4,
+            5,
+            6
+          ]
+        },
+        "output": {
+          "bytes": 432,
+          "dtype": "float32",
+          "path": "conv2d_grouped_d2_s21_p12_output.f32",
+          "sha256": "7f18067d678da59a3b1de36961c6b1a100283e7f2127197f665c864d1c0720a7",
+          "shape": [
+            1,
+            6,
+            2,
+            9
+          ]
+        },
+        "weight": {
+          "bytes": 288,
+          "dtype": "float32",
+          "path": "conv2d_grouped_d2_s21_p12_weight.f32",
+          "sha256": "7c552419ea9f971513b22f199e7cf37591ee9f7f3c7ac395f08300d4bc53df16",
+          "shape": [
+            6,
+            2,
+            3,
+            2
+          ]
+        }
+      }
+    },
+    "conv_transpose2d_grouped_d21_s23_p12_op12": {
+      "attrs": {
+        "dilation": [
+          2,
+          1
+        ],
+        "groups": 2,
+        "in_channels": 4,
+        "kernel": [
+          2,
+          3
+        ],
+        "out_channels": 6,
+        "output_padding": [
+          1,
+          2
+        ],
+        "padding": [
+          1,
+          2
+        ],
+        "stride": [
+          2,
+          3
+        ]
+      },
+      "oracle": "torch.nn.functional.conv_transpose2d",
+      "tensors": {
+        "bias": {
+          "bytes": 24,
+          "dtype": "float32",
+          "path": "conv_transpose2d_grouped_d21_s23_p12_op12_bias.f32",
+          "sha256": "3988e0de17ad60b28f41a48b4d90bdb5cca168dce0875fa324b9f5f82a78f05b",
+          "shape": [
+            6
+          ]
+        },
+        "input": {
+          "bytes": 192,
+          "dtype": "float32",
+          "path": "conv_transpose2d_grouped_d21_s23_p12_op12_input.f32",
+          "sha256": "42815b0cd0e45e6d60a7bdb346ba3ac03b6ac0680fd4b522236af15dfe87f244",
+          "shape": [
+            1,
+            4,
+            3,
+            4
+          ]
+        },
+        "output": {
+          "bytes": 1440,
+          "dtype": "float32",
+          "path": "conv_transpose2d_grouped_d21_s23_p12_op12_output.f32",
+          "sha256": "4ce25b76bfcb589695d722b3ab765f6e30c2459b73bb4fdf3771c611de939aef",
+          "shape": [
+            1,
+            6,
+            6,
+            10
+          ]
+        },
+        "weight": {
+          "bytes": 288,
+          "dtype": "float32",
+          "path": "conv_transpose2d_grouped_d21_s23_p12_op12_weight.f32",
+          "sha256": "2820115a21a16b2caa6e57e766c2c0b947bf08b80829456bc856f84ad97ff380",
+          "shape": [
+            4,
+            3,
+            2,
+            3
+          ]
+        }
+      }
+    },
+    "conv_transpose2d_op1_lt_dilation": {
+      "attrs": {
+        "dilation": [
+          2,
+          1
+        ],
+        "groups": 1,
+        "in_channels": 1,
+        "kernel": [
+          2,
+          1
+        ],
+        "out_channels": 1,
+        "output_padding": [
+          1,
+          0
+        ],
+        "padding": [
+          0,
+          0
+        ],
+        "stride": [
+          1,
+          2
+        ]
+      },
+      "oracle": "torch.nn.functional.conv_transpose2d",
+      "tensors": {
+        "bias": {
+          "bytes": 4,
+          "dtype": "float32",
+          "path": "conv_transpose2d_op1_lt_dilation_bias.f32",
+          "sha256": "140efb356462f70dd1c7f1dfb10bcc07d0f14d439043fb9e9d50f4d7be71ea96",
+          "shape": [
+            1
+          ]
+        },
+        "input": {
+          "bytes": 4,
+          "dtype": "float32",
+          "path": "conv_transpose2d_op1_lt_dilation_input.f32",
+          "sha256": "4f4b9b7d8b86633e2824e2f439819357b0cd010ab410ea1a691b12c5f94e91e0",
+          "shape": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        "output": {
+          "bytes": 16,
+          "dtype": "float32",
+          "path": "conv_transpose2d_op1_lt_dilation_output.f32",
+          "sha256": "ce7d9a7a55cdace95006761d2c6b71392dd522ba74e77327a4865339741e148e",
+          "shape": [
+            1,
+            1,
+            4,
+            1
+          ]
+        },
+        "weight": {
+          "bytes": 8,
+          "dtype": "float32",
+          "path": "conv_transpose2d_op1_lt_dilation_weight.f32",
+          "sha256": "2ea78182ba8065730422f768f2d0c727c04cbb9eac3c3c16b975e9fd8716ea4d",
+          "shape": [
+            1,
+            1,
+            2,
+            1
+          ]
+        }
+      }
+    }
+  },
+  "provenance": {
+    "byte_order": "little-endian",
+    "dtype": "float32",
+    "generator": "tools/parity/conv2d_dump_reference.py",
+    "oracle": "PyTorch torch.nn.functional",
+    "randomness": "none",
+    "torch_version": "2.13.0+cu130",
+    "value_policy": "signed powers of two"
+  },
+  "schema": "vokra-conv2d-parity-v1"
+}

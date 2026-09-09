@@ -65,13 +65,14 @@
 //!
 //! # Loud-partial classification (design § — CLAUDE.md 教訓 (a))
 //!
-//! - **Real (this WP)**:
+//! - **Inspection-only (this WP)**:
 //!   - [`AudioLdm2Variant`] enum discrimination via
 //!     [`AudioLdm2Variant::from_name`] (Base + Large — the two
 //!     variants the converter emits with matching NAME_BASE / NAME_LARGE
 //!     stamps).
-//!   - [`AudioLdm2::from_gguf`] with strict `vokra.model.arch ==
-//!     "audioldm2"` validation + name-based variant dispatch. Unknown
+//!   - [`AudioLdm2::from_gguf`] performs strict arch/name diagnostics but
+//!     is unconditionally BLOCKED; self-declared hashes/status are never
+//!     accepted. Unknown
 //!     AudioLDM 2 family variants (`audioldm2-music` / `-music-665k`
 //!     shipped in the CVSSP release family but not bound here yet)
 //!     fail with a distinct error naming the "follow-up wave adds
@@ -88,10 +89,8 @@
 //!     stamped reads per-key with no runtime code change — mirror of
 //!     the Sortformer / PyanNet / MusicGen / Conv-TasNet fallback
 //!     precedent).
-//!   - [`AudioLdm2Weights::from_gguf`] with a floor of non-empty
-//!     tensor count enforced loud (a GGUF that carries zero tensors is
-//!     refused rather than silently running an all-zero forward —
-//!     FR-EX-08).
+//!   - [`AudioLdm2Weights::from_gguf`] retains the empty-manifest check for
+//!     diagnostics, but does not constitute a production bind.
 //!   - Weight-license class surfacing (defaults to
 //!     [`LicenseClass::NonCommercialShareAlike`] per the AudioLDM 2
 //!     converter's stamped `cc-by-nc-sa-4.0` — T4 tier, fail-closed at
@@ -262,6 +261,13 @@ pub const GGUF_KEY_SAMPLE_RATE: &str = "vokra.audioldm2.sample_rate";
 /// with). Primary-source default: 1000 (diffusers LDM family default,
 /// used by cvssp/audioldm2 per `scheduler/scheduler_config.json`).
 pub const GGUF_KEY_NUM_TRAIN_TIMESTEPS: &str = "vokra.audioldm2.num_train_timesteps";
+/// SHA-256 of the authenticated offline bundle manifest.  A plain
+/// non-empty tensor scan is deliberately insufficient to bind AudioLDM 2;
+/// the converter/preparer must provide this capability before a future
+/// runtime implementation can be enabled.
+pub const GGUF_KEY_BUNDLE_MANIFEST_SHA256: &str = "vokra.audioldm2.bundle_manifest_sha256";
+/// Fixed reference status carried by a strictly prepared inspection packet.
+pub const GGUF_KEY_BIND_STATUS: &str = "vokra.audioldm2.bind_status";
 
 /// Primary-source anchor for the AudioLDM 2 **Base** HF release.
 /// Cited in the loud-partial error so a reader diagnosing the gap
@@ -509,6 +515,26 @@ impl AudioLdm2Weights {
         Ok(Self { tensors })
     }
 
+    #[cfg(test)]
+    fn from_fixture(gguf: &GgufFile) -> Result<Self> {
+        let tensors = gguf
+            .tensors()
+            .iter()
+            .map(|info| {
+                (
+                    info.name.clone(),
+                    info.dimensions.iter().map(|&axis| axis as usize).collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if tensors.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "audioldm2 fixture: zero tensors".to_owned(),
+            ));
+        }
+        Ok(Self { tensors })
+    }
+
     /// Number of tensors bound from the GGUF. Purely a diagnostic
     /// accessor — the T5 + CLAP + U-Net + VAE + HiFi-GAN forward wave
     /// uses it to size its expectations.
@@ -547,11 +573,32 @@ pub struct AudioLdm2 {
 }
 
 impl AudioLdm2 {
-    /// Binds an AudioLDM 2 GGUF: validates arch, discriminates the
-    /// variant from `vokra.model.name`, reads the topology chunk group
-    /// (with primary-source constant fallback per key), discovers
-    /// tensors, and surfaces the stamped weight-license class for
-    /// compliance-gate cross-checks.
+    #[cfg(test)]
+    fn from_fixture(file: &GgufFile) -> Result<Self> {
+        let name = file
+            .get(chunks::KEY_MODEL_NAME)
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| VokraError::ModelLoad("audioldm2 fixture: missing name".into()))?;
+        let variant = AudioLdm2Variant::from_name(name)
+            .ok_or_else(|| VokraError::ModelLoad("audioldm2 fixture: unknown variant".into()))?;
+        let weights = AudioLdm2Weights::from_fixture(file)?;
+        let weight_license = file
+            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+            .and_then(|value| value.as_str())
+            .and_then(LicenseClass::from_class_str)
+            .unwrap_or(LicenseClass::Unknown);
+        Ok(Self {
+            config: AudioLdm2Config::from_gguf(file),
+            variant,
+            weights,
+            weight_license,
+        })
+    }
+
+    /// Performs diagnostic arch/name/license checks on an AudioLDM 2 GGUF.
+    /// Production binding is unconditionally BLOCKED until an independently
+    /// verified fixed component tree and compile-time manifest exist;
+    /// metadata strings cannot promote an artifact.
     ///
     /// This binder is a *loud* validation step. Every failure is a
     /// distinct [`VokraError::ModelLoad`] naming the missing / wrong
@@ -574,6 +621,7 @@ impl AudioLdm2 {
     /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors
     ///   ([`AudioLdm2Weights::from_gguf`] refuses to bind an all-zero
     ///   forward).
+    #[allow(unreachable_code)]
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         // 1. Arch check — always first so a mis-typed model handed
         //    here fails with a specific message instead of a
@@ -631,7 +679,7 @@ impl AudioLdm2 {
                         .to_owned(),
                 )
             })?;
-        let variant = AudioLdm2Variant::from_name(name).ok_or_else(|| {
+        let _variant = AudioLdm2Variant::from_name(name).ok_or_else(|| {
             if name == "audioldm2-music" || name == "audioldm2-music-665k" {
                 VokraError::ModelLoad(format!(
                     "audioldm2: NAME `{name}` is not yet bound in the runtime — the \
@@ -653,31 +701,17 @@ impl AudioLdm2 {
         // 3. Topology axes from the `vokra.audioldm2.*` chunk group
         //    (fallback-friendly — see the module doc for the
         //    AudioLDM 2 converter's stamp posture).
-        let config = AudioLdm2Config::from_gguf(file);
+        let _config = AudioLdm2Config::from_gguf(file);
 
-        // 4. Load the tensor manifest with the non-emptiness gate.
+        // 4. Count-only and self-declared metadata are not authentication.
+        // Keep the complete independent binder closed until a compile-time
+        // manifest and official execution evidence exist. In particular, a
+        // caller must not be able to mint a valid-looking SHA/status pair.
         let weights = AudioLdm2Weights::from_gguf(file)?;
-
-        // 5. Provenance surfacing — read the stamped weight-license
-        //    class for compliance-gate cross-checks. The AudioLDM 2
-        //    converter defaults to `NonCommercialShareAlike` per the
-        //    CVSSP `cc-by-nc-sa-4.0` primary source (doubly restrictive
-        //    T4 tier — NC gate + SA cascade both fail-closed). A GGUF
-        //    missing the stamp reads back as `LicenseClass::Unknown`
-        //    which is also fail-closed at the M2-13 compliance gate —
-        //    same posture as MusicGen / Conv-TasNet / MT3 / Sortformer.
-        let weight_license = file
-            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-            .and_then(|v| v.as_str())
-            .and_then(LicenseClass::from_class_str)
-            .unwrap_or(LicenseClass::Unknown);
-
-        Ok(Self {
-            config,
-            variant,
-            weights,
-            weight_license,
-        })
+        let _ = weights;
+        Err(VokraError::ModelLoad(
+            "audioldm2: BLOCKED — native binding is disabled until an independently verified fixed component tree, projection sidecar, source/model identity, and exact tensor manifest are compiled into the binder; self-declared manifest hashes/status are never accepted".to_owned(),
+        ))
     }
 
     /// The bound topology axes (from `vokra.audioldm2.*` chunk group
@@ -1012,7 +1046,7 @@ mod tests {
         // the NC-SA license class, and report at least one tensor
         // bound.
         let file = audioldm2_gguf(NAME_BASE, None, Some(LicenseClass::NonCommercialShareAlike));
-        let a = AudioLdm2::from_gguf(&file).expect("valid base GGUF must bind");
+        let a = AudioLdm2::from_fixture(&file).expect("fixture must bind for config assertions");
         // Variant discrimination: NAME_BASE → Base.
         assert_eq!(a.variant(), AudioLdm2Variant::Base);
         // Config fallback: absent topology chunks fall through to the
@@ -1054,7 +1088,7 @@ mod tests {
             Some(cfg),
             Some(LicenseClass::NonCommercialShareAlike),
         );
-        let a = AudioLdm2::from_gguf(&file).expect("valid large GGUF must bind");
+        let a = AudioLdm2::from_fixture(&file).expect("fixture must bind for config assertions");
         // Variant: LARGE.
         assert_eq!(a.variant(), AudioLdm2Variant::Large);
         // Stamped topology axes must round-trip exactly (no silent
@@ -1279,6 +1313,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn from_gguf_rejects_spoofed_manifest_status_and_hash() {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+        b.add_string(chunks::KEY_MODEL_NAME, NAME_BASE);
+        b.add_string(GGUF_KEY_BUNDLE_MANIFEST_SHA256, &"a".repeat(64));
+        b.add_string(GGUF_KEY_BIND_STATUS, "AUTHENTICATED_COMPLETE_BUNDLE");
+        b.add_tensor("fake.weight", GgmlType::F32, vec![1], vec![0; 4])
+            .expect("add tensor");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let Err(VokraError::ModelLoad(message)) = AudioLdm2::from_gguf(&file) else {
+            panic!("spoofed self-declared bundle must remain blocked");
+        };
+        assert!(message.contains("independently verified"));
+        assert!(message.contains("self-declared"));
+    }
+
     // -----------------------------------------------------------------------
     // Test 10 — generate loud-partial names five primitives + all three
     //           primary sources + config axes + FR-EX-08 + 教訓 (a)
@@ -1287,7 +1338,7 @@ mod tests {
     #[test]
     fn generate_loud_partial_names_five_primitives_and_primary_sources() {
         let file = audioldm2_gguf(NAME_BASE, None, Some(LicenseClass::NonCommercialShareAlike));
-        let a = AudioLdm2::from_gguf(&file).unwrap();
+        let a = AudioLdm2::from_fixture(&file).unwrap();
         // Legitimate inputs so the loud-partial gate fires (not the
         // input-validation gate).
         let Err(err) = a.generate("piano melody with soft drums", 5.0) else {
@@ -1379,7 +1430,7 @@ mod tests {
     #[test]
     fn generate_rejects_empty_prompt() {
         let file = audioldm2_gguf(NAME_BASE, None, Some(LicenseClass::NonCommercialShareAlike));
-        let a = AudioLdm2::from_gguf(&file).unwrap();
+        let a = AudioLdm2::from_fixture(&file).unwrap();
         let Err(err) = a.generate("", 5.0) else {
             panic!("generate must reject empty prompt with InvalidArgument, not fire loud-partial");
         };
@@ -1409,7 +1460,7 @@ mod tests {
     #[test]
     fn generate_rejects_nonpositive_duration() {
         let file = audioldm2_gguf(NAME_BASE, None, Some(LicenseClass::NonCommercialShareAlike));
-        let a = AudioLdm2::from_gguf(&file).unwrap();
+        let a = AudioLdm2::from_fixture(&file).unwrap();
         for &bad in &[0.0f32, -1.0, -0.001] {
             let Err(err) = a.generate("prompt", bad) else {
                 panic!("generate must reject non-positive duration {bad} with InvalidArgument");
@@ -1436,7 +1487,7 @@ mod tests {
     #[test]
     fn generate_rejects_nonfinite_duration() {
         let file = audioldm2_gguf(NAME_BASE, None, Some(LicenseClass::NonCommercialShareAlike));
-        let a = AudioLdm2::from_gguf(&file).unwrap();
+        let a = AudioLdm2::from_fixture(&file).unwrap();
         for &bad in &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let Err(err) = a.generate("prompt", bad) else {
                 panic!("generate must reject non-finite duration {bad} with InvalidArgument");
@@ -1471,7 +1522,7 @@ mod tests {
         // mis-stamped artifact cannot slip past commercial-mode
         // dispatch.
         let file = audioldm2_gguf(NAME_BASE, None, None);
-        let a = AudioLdm2::from_gguf(&file).expect("bind without provenance");
+        let a = AudioLdm2::from_fixture(&file).expect("fixture bind without provenance");
         assert_eq!(
             a.weight_license(),
             LicenseClass::Unknown,

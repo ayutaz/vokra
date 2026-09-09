@@ -1,5 +1,24 @@
 # Runtime gap execution plan (2026-08-21)
 
+> **2026-08-31 supersession notice:** this is a historical execution ledger.
+> Current model counts, remote evidence, packet inventory and remaining route
+> are authoritative in
+> [`mac-cpu-metal-full-coverage-2026-08-28.md`](mac-cpu-metal-full-coverage-2026-08-28.md)
+> and [`mac-cpu-metal-completion-plan-2026-08-30.md`](mac-cpu-metal-completion-plan-2026-08-30.md),
+> reconciled at code `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and
+> evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`;
+> those are historical workspace `0.2.0` checkpoints. The active branch is
+> workspace `0.3.0`; its remote head immediately before this documentation
+> refresh was `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79 (109 passing,
+> 13 expected skips, no failures or pending checks).
+
+> **2026-09-09 audit-start snapshot:** Before this documentation refresh, PR
+> #79 was at `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional
+> skip / 0 fail). Exact VAST implementation evidence was `caf70eb1` (305 suites
+> / 8,010 passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB
+> storage were destroyed. Scaleway had not started. This historical runtime
+> plan does not supersede the canonical 63-row pre-Scaleway ledger.
+
 This plan refines Phase C of
 `docs/handoff/remaining-work-plan-2026-08-20.md` from the live source tree. It
 is a task ledger, not a completion claim. The inventory source of truth is

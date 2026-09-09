@@ -1,0 +1,31 @@
+[project]
+name = "vokra-speechbrain-lang-id-parity"
+version = "0.1.0"
+description = "Dedicated official SpeechBrain VoxLingua107 CPU oracle; VAST only"
+requires-python = "==3.12.*"
+dependencies = [
+    "huggingface-hub==1.27.0",
+    "hyperpyyaml==1.2.2",
+    "numpy==2.3.5",
+    "scipy==1.16.3",
+    "sentencepiece==0.2.2",
+    "safetensors==0.8.0",
+    "soundfile==0.13.1",
+    "speechbrain==1.0.3",
+    "torch==2.7.1",
+    "torchaudio==2.7.1",
+    "requests==2.34.2",
+]
+
+[tool.uv]
+package = false
+environments = ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

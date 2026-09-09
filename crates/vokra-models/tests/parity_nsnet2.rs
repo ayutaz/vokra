@@ -1,18 +1,16 @@
 //! NSNet2 numerical parity harness — env-gated (denoise family, 2026-08-05).
 //!
 //! Sibling of `parity_nkf_aec.rs` / `parity_rmvpe.rs` /
-//! `parity_openwakeword.rs`: every test that needs a real NSNet2 GGUF +
-//! a paired noisy WAV is gated on [`GGUF_ENV`] / [`WAV_ENV`] and skips
-//! cleanly when unset (never a fabricated pass — memory
-//! `[[project-real-weight-eval]]`). Once opted in, every failure is
-//! hard: a missing / malformed / wrong-shaped fixture is a loud panic
-//! (FR-EX-08).
+//! `parity_openwakeword.rs`: the real-weight NSNet2 test is ignored by
+//! default and explicitly targeted by the VAST/Apple workers. Once opted
+//! in, every required env and fixture failure is hard: missing / malformed /
+//! wrong-shaped input is a loud panic (FR-EX-08), never a successful skip.
 //!
 //! # Fixture recipe (VAST / Apple-runner side)
 //!
-//! The existing public `vokra/nsnet2` file can be supplied directly: its exact
-//! historical numeric-initializer contract is repaired by the strict runtime
-//! binder. To regenerate the canonical semantic schema instead, the upstream
+//! The historical public `vokra/nsnet2` file is intentionally not accepted:
+//! its MIT/permissive stamp does not authenticate the audited released-model
+//! license. Generate the canonical semantic schema instead; the upstream
 //! Microsoft `DNS-Challenge` release ships
 //! `NSNet2-baseline/nsnet2-20ms-baseline.onnx` (~10.8 MB); bridge it offline via
 //! the landed sidecar + converter:
@@ -35,6 +33,7 @@
 //! # 4. Point the parity harness at the artefacts:
 //! export VOKRA_NSNET2_REAL_GGUF=~/gguf/nsnet2.gguf
 //! export VOKRA_NSNET2_REAL_WAV=<any 16 kHz mono noisy WAV>
+//! export VOKRA_NSNET2_REFERENCE_WAV=~/evidence/nsnet2-reference.wav
 //! cargo test -p vokra-models --test parity_nsnet2 -- --nocapture
 //! ```
 //!
@@ -51,12 +50,12 @@
 //!   snippet, and checks the output has the right length + is finite.
 //!   Catches wrong-shape / wrong-name binding regressions the
 //!   synthetic tests miss.
-//! - **Reference parity (side-car env `REFERENCE_WAV_ENV`)**: if the owner
-//!   provides a cleaned WAV emitted by
-//!   `tools/parity/nsnet2_dump_reference.py` from the pinned official ONNX,
-//!   the harness compares
-//!   per-sample max |Δ| against [`PCM_ATOL`]. Off by default because
-//!   the generated reference WAV is not committed.
+//! - **Reference parity (side-car env `REFERENCE_WAV_ENV`)**: a real-weight
+//!   run requires a cleaned WAV emitted by
+//!   `tools/parity/nsnet2_dump_reference.py` from the pinned official ONNX;
+//!   the harness compares per-sample max |Δ| against [`PCM_ATOL`]. It is
+//!   deliberately absent from the repository and supplied by the
+//!   authenticated VAST/Apple runner.
 //!
 //! Neither leg fabricates a pass on missing weights.
 
@@ -68,22 +67,22 @@ use vokra_eval::wav::read_wav;
 use vokra_models::nsnet2::{Nsnet2V1, SAMPLE_RATE_DEFAULT};
 
 /// Env var the owner sets to point the gated harness at a real
-/// NSNet2 GGUF. Absent = skip cleanly (never a fabricated pass).
+/// NSNet2 GGUF. It is mandatory for the explicitly targeted ignored test;
+/// absence is a hard failure (never a fabricated pass).
 const GGUF_ENV: &str = "VOKRA_NSNET2_REAL_GGUF";
 
 /// Env var pointing at a 16 kHz mono WAV — the noisy input used for
-/// the structural bind test + (when [`REFERENCE_WAV_ENV`] is set) the
-/// reference-bit-parity leg.
+/// the structural bind test and reference comparison.
 const WAV_ENV: &str = "VOKRA_NSNET2_REAL_WAV";
 
-/// Optional side-car: if set, points at a 16 kHz mono WAV containing
-/// the independent official-ONNX pipeline's cleaned output on the same
-/// noisy input. When present, the parity test also runs a per-sample
-/// max-|Δ| leg against it (bound [`PCM_ATOL`]).
+/// Required side-car for an opted-in real-weight run: points at a 16 kHz mono
+/// WAV containing the independent official-ONNX pipeline's cleaned output on
+/// the same noisy input. The VAST/Apple runners authenticate its exact SHA-256
+/// before setting this variable; a missing variable is a hard failure.
 #[allow(dead_code)]
 const REFERENCE_WAV_ENV: &str = "VOKRA_NSNET2_REFERENCE_WAV";
 
-/// Per-sample max-|Δ| tolerance when [`REFERENCE_WAV_ENV`] is set.
+/// Per-sample max-|Δ| tolerance for the required reference comparison.
 /// NSNet2's forward is a straight Linear + GRU + Linear chain plus
 /// sigmoid; float ordering differences between Vokra's row-major
 /// scalar GEMV and the independent ONNX evaluator produce ULP-scale
@@ -116,17 +115,19 @@ fn parity_nsnet2_harness_wired() {
 
 /// GATED: opens a real NSNet2 GGUF, binds it, runs the forward on a
 /// noisy WAV and pins structural properties (length, finite, bounded).
-/// Skips cleanly when [`GGUF_ENV`] / [`WAV_ENV`] are unset.
+/// This test is ignored by default because it requires authenticated real
+/// artifacts; targeted workers pass `--ignored --exact` and missing env is a
+/// hard failure rather than a green skip.
 #[test]
+#[ignore = "requires authenticated NSNet2 GGUF and WAV artifacts"]
 fn parity_nsnet2_gguf_smoke() {
-    let Ok(gguf_path) = env::var(GGUF_ENV) else {
-        eprintln!("{GGUF_ENV} unset — skipping NSNet2 GGUF smoke; set to a real GGUF path to run");
-        return;
-    };
-    let Ok(wav_path) = env::var(WAV_ENV) else {
-        eprintln!("{WAV_ENV} unset — skipping NSNet2 GGUF smoke; set to a 16 kHz mono WAV to run");
-        return;
-    };
+    let gguf_path = env::var(GGUF_ENV)
+        .unwrap_or_else(|_| panic!("{GGUF_ENV} is required for an opted-in NSNet2 parity run"));
+    let wav_path = env::var(WAV_ENV)
+        .unwrap_or_else(|_| panic!("{WAV_ENV} is required for an opted-in NSNet2 parity run"));
+    let reference_path = env::var(REFERENCE_WAV_ENV).unwrap_or_else(|_| {
+        panic!("{REFERENCE_WAV_ENV} is required for an opted-in NSNet2 parity run")
+    });
 
     let model = Nsnet2V1::open(&gguf_path)
         .unwrap_or_else(|e| panic!("Nsnet2V1::open({gguf_path}) failed: {e}"));
@@ -237,36 +238,57 @@ fn parity_nsnet2_gguf_smoke() {
             max_delta <= PCM_ATOL,
             "NSNet2 CPU/Metal PCM max |Δ| = {max_delta} exceeds {PCM_ATOL}"
         );
-    }
+        eprintln!("NSNet2_PARITY metal_vs_cpu=PASS");
 
-    #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
-    let _ = BackendKind::Cpu;
-
-    // Optional reference-parity leg. Enabled only when the owner
-    // provides a cleaned WAV from the upstream ONNX pipeline on the
-    // same input.
-    if let Ok(ref_path) = env::var(REFERENCE_WAV_ENV) {
-        let reference =
-            read_wav(&ref_path).unwrap_or_else(|e| panic!("read_wav({ref_path}) failed: {e}"));
+        let reference = read_wav(&reference_path)
+            .unwrap_or_else(|e| panic!("read_wav({reference_path}) failed: {e}"));
         assert_eq!(
             reference.sample_rate, cfg.sample_rate,
             "reference WAV must match the model sample rate"
         );
         assert_eq!(
             reference.samples.len(),
-            cleaned.len(),
-            "reference and native output lengths must match exactly"
+            metal_cleaned.len(),
+            "reference and Metal output lengths must match exactly"
         );
-        let mut max_delta = 0.0f32;
-        for (c, r) in cleaned.iter().zip(&reference.samples) {
-            let d = (c - r).abs();
-            if d > max_delta {
-                max_delta = d;
-            }
-        }
+        let reference_delta = metal_cleaned
+            .iter()
+            .zip(&reference.samples)
+            .map(|(metal, reference)| (metal - reference).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!("NSNet2 real Metal/reference PCM max_abs={reference_delta}");
         assert!(
-            max_delta <= PCM_ATOL,
-            "NSNet2 parity: max |Δ| = {max_delta} exceeds PCM_ATOL = {PCM_ATOL}"
+            reference_delta <= PCM_ATOL,
+            "NSNet2 Metal/reference PCM max |Δ| = {reference_delta} exceeds {PCM_ATOL}"
         );
+        eprintln!("NSNet2_PARITY metal_vs_reference=PASS");
     }
+
+    #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+    let _ = BackendKind::Cpu;
+
+    let reference = read_wav(&reference_path)
+        .unwrap_or_else(|e| panic!("read_wav({reference_path}) failed: {e}"));
+    assert_eq!(
+        reference.sample_rate, cfg.sample_rate,
+        "reference WAV must match the model sample rate"
+    );
+    assert_eq!(
+        reference.samples.len(),
+        cleaned.len(),
+        "reference and native output lengths must match exactly"
+    );
+    let mut max_delta = 0.0f32;
+    for (c, r) in cleaned.iter().zip(&reference.samples) {
+        let d = (c - r).abs();
+        if d > max_delta {
+            max_delta = d;
+        }
+    }
+    assert!(
+        max_delta <= PCM_ATOL,
+        "NSNet2 parity: max |Δ| = {max_delta} exceeds PCM_ATOL = {PCM_ATOL}"
+    );
+    eprintln!("NSNet2 real CPU/reference PCM max_abs={max_delta}");
+    eprintln!("NSNet2_PARITY cpu_reference=PASS");
 }

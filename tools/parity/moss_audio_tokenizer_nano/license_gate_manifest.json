@@ -1,0 +1,1193 @@
+{
+  "gate_version": 1,
+  "lock_sha256": "d124044b0c03ddc91dce362773d36c9ba4b187b78fcdd0c02826e1c6566ff74d",
+  "project_sha256": "94cc65df02993b01f8e9e0fa0eb4c1f7405a6087722eb5a7203a703c4e786611",
+  "package_rows_sha256": "aca70d723a55f63fa518683cc9a5a56995eb14601d0cb598dc5d7ed1f1a0d376",
+  "package_rows": [
+    {
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "anyio",
+      "version": "4.14.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "idna",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "typing-extensions",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "filelock",
+      "version": "3.32.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.7.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "certifi",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "h11",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "anyio",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "certifi",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "httpcore",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "idna",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "huggingface-hub",
+      "version": "1.27.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "click",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "filelock",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "fsspec",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "hf-xet",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "httpx",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "packaging",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "pyyaml",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "tqdm",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "typing-extensions",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "idna",
+      "version": "3.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "jinja2",
+      "version": "3.1.6",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "markupsafe",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "mdurl",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "markupsafe",
+      "version": "3.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "mdurl",
+      "version": "0.1.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "mpmath",
+      "version": "1.3.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "networkx",
+      "version": "3.6.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "numpy",
+      "version": "2.3.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "pygments",
+      "version": "2.21.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "regex",
+      "version": "2026.7.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "rich",
+      "version": "15.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "markdown-it-py",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "pygments",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "safetensors",
+      "version": "0.8.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "setuptools",
+      "version": "84.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "shellingham",
+      "version": "1.5.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "sympy",
+      "version": "1.14.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "mpmath",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.22.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "huggingface-hub",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "torch",
+      "version": "2.7.1+cpu",
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "filelock",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "fsspec",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "jinja2",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "networkx",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "setuptools",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "sympy",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "typing-extensions",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "transformers",
+      "version": "5.10.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "huggingface-hub",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "numpy",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "packaging",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "pyyaml",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "regex",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "safetensors",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "tokenizers",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "tqdm",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "typer",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "typer",
+      "version": "0.27.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "annotated-doc",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "rich",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "shellingham",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "resolution-markers": [],
+      "dependencies": []
+    },
+    {
+      "name": "vokra-moss-audio-tokenizer-nano-parity",
+      "version": "0.1.0",
+      "source": {
+        "virtual": "."
+      },
+      "resolution-markers": [],
+      "dependencies": [
+        {
+          "name": "huggingface-hub",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "numpy",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "safetensors",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "torch",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        },
+        {
+          "name": "transformers",
+          "marker": "platform_machine == 'x86_64' and sys_platform == 'linux'"
+        }
+      ]
+    }
+  ],
+  "package_review_rows": [
+    {
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "anyio",
+      "version": "4.14.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "filelock",
+      "version": "3.32.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.7.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "huggingface-hub",
+      "version": "1.27.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "idna",
+      "version": "3.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "jinja2",
+      "version": "3.1.6",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "markupsafe",
+      "version": "3.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "mdurl",
+      "version": "0.1.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "mpmath",
+      "version": "1.3.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "networkx",
+      "version": "3.6.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "numpy",
+      "version": "2.3.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "pygments",
+      "version": "2.21.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "regex",
+      "version": "2026.7.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "rich",
+      "version": "15.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "safetensors",
+      "version": "0.8.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "setuptools",
+      "version": "84.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "shellingham",
+      "version": "1.5.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "sympy",
+      "version": "1.14.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.22.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "torch",
+      "version": "2.7.1+cpu",
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "transformers",
+      "version": "5.10.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "typer",
+      "version": "0.27.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "name": "vokra-moss-audio-tokenizer-nano-parity",
+      "version": "0.1.0",
+      "source": {
+        "virtual": "."
+      },
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED"
+    }
+  ],
+  "package_review_rows_sha256": "8dc1be9119152e63f70e4f1774ba44a93a2fd8675a8521e6eaa299144b639f91",
+  "license_rows": [
+    {
+      "id": "source-apache",
+      "license": "Apache-2.0",
+      "status": "REVIEWED",
+      "conclusion": "Commercial",
+      "native_bundled_review": "OWNER_SIGNOFF_2026-08-01_YOUSAN",
+      "evidence": "docs/license-audit.md:671"
+    },
+    {
+      "id": "weights-apache",
+      "license": "Apache-2.0",
+      "status": "REVIEWED",
+      "conclusion": "Commercial",
+      "native_bundled_review": "OWNER_SIGNOFF_2026-08-01_YOUSAN",
+      "evidence": "docs/license-audit.md:671"
+    },
+    {
+      "id": "python-closure",
+      "license": "UNRESOLVED",
+      "status": "UNRESOLVED",
+      "conclusion": "OWNER_REVIEW_REQUIRED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED",
+      "evidence": "Owner review required for every locked dependency and native closure"
+    }
+  ],
+  "license_rows_sha256": "b045cb1b39ad5da024db06f155cb2540913472f6136cd55b9f10323980448512",
+  "model_rows": [
+    {
+      "path": ".gitattributes",
+      "role": "_gitattributes",
+      "bytes": 1519,
+      "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 1519,
+      "canonical_git_blob_sha1": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+      "git_blob_sha1": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
+    },
+    {
+      "path": "README.md",
+      "role": "readme_md",
+      "bytes": 12491,
+      "sha256": "83cae343211c7c482433c9758f16fc9d17046a0cd450d185b473542e87e35ef8",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 12491,
+      "canonical_git_blob_sha1": "a276b3e2e399916a0cda4c4145e48655ddd62faa",
+      "git_blob_sha1": "a276b3e2e399916a0cda4c4145e48655ddd62faa",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
+    },
+    {
+      "path": "__init__.py",
+      "role": "__init___py",
+      "bytes": 52,
+      "sha256": "ed0b4910a5e53b1dfc3234cfcf96e2c6890d339f9134a3dfed8481d01b3768fd",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 52,
+      "canonical_git_blob_sha1": "be87d805388ff76659c35e7273e8c3687b55eeff",
+      "git_blob_sha1": "be87d805388ff76659c35e7273e8c3687b55eeff",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
+    },
+    {
+      "path": "config.json",
+      "role": "config_json",
+      "bytes": 7385,
+      "sha256": "b38892f8ba00efc18af2ad9eca999c7603f871548c2e7f99258cb1cefc70ee06",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 7385,
+      "canonical_git_blob_sha1": "1789fbb15e81a782e83a726998b7c910aade93cf",
+      "git_blob_sha1": "1789fbb15e81a782e83a726998b7c910aade93cf",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
+    },
+    {
+      "path": "configuration_moss_audio_tokenizer.py",
+      "role": "configuration",
+      "bytes": 19249,
+      "sha256": "b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 19249,
+      "canonical_git_blob_sha1": "2efd84a7f1b9682d530616e434b13b8dec560136",
+      "git_blob_sha1": "2efd84a7f1b9682d530616e434b13b8dec560136",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
+    },
+    {
+      "path": "modeling_moss_audio_tokenizer.py",
+      "role": "modeling",
+      "bytes": 138814,
+      "sha256": "b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 138814,
+      "canonical_git_blob_sha1": "17fc9d059a1dc0fede4cfd1dfed2cffaef70a4c1",
+      "git_blob_sha1": "17fc9d059a1dc0fede4cfd1dfed2cffaef70a4c1",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "role": "model_safetensors_index_json",
+      "bytes": 34346,
+      "sha256": "2bf639e2c37c8502b1d0d92bf616b8108cb9975d42f587487a103682575b1d6d",
+      "status": "AUTHENTICATED",
+      "materialized": true,
+      "content_not_downloaded": false,
+      "server_size": 34346,
+      "canonical_git_blob_sha1": "c1e82d52cc62a951fa73edf0df3980215c516832",
+      "git_blob_sha1": "c1e82d52cc62a951fa73edf0df3980215c516832",
+      "lfs_payload_sha256": null,
+      "lfs_pointer_git_blob_sha1": null
+    },
+    {
+      "path": "model-00001-of-00001.safetensors",
+      "role": "weights",
+      "bytes": null,
+      "sha256": null,
+      "status": "AUTHENTICATED_SERVER_IDENTITY_ONLY",
+      "materialized": false,
+      "content_not_downloaded": true,
+      "server_bytes": 87922568,
+      "canonical_git_blob_sha1": null,
+      "git_blob_sha1": null,
+      "lfs_payload_sha256": "34d9880d805eecb21bde975202b1c256dbd0eb98c8680b9d3aeffd2bc6ac2f67",
+      "lfs_pointer_git_blob_sha1": "0eb20a3607f11c3070a66415c638cdf79af3e82a"
+    }
+  ],
+  "model_rows_sha256": "f41eff27dc4f8fdc0c8b2e4a3112857368995fb26106289806f38008ed0a248a",
+  "upstream_repo": "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano",
+  "upstream_revision": "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
+  "model_info": {
+    "id": "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano",
+    "sha": "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
+    "private": false,
+    "gated": false,
+    "disabled": false,
+    "cardData_license": "apache-2.0"
+  },
+  "license_file_present": false,
+  "reference_route": {
+    "status": "BLOCKED_SECURITY_ADVISORY",
+    "transformers_version": "5.10.4",
+    "previous_isolated_transformers_pin": "5.5.0",
+    "isolated_transformers_pin": "transformers==5.10.4",
+    "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
+    "transformers_security_patched_minimum": "5.10.0",
+    "transformers_compatibility_status": "BLOCKED_SECURITY_ADVISORY",
+    "reason": "official AutoModel meta construction requires VAST revalidation without the former vulnerable helper; source and weight access remain blocked",
+    "api_path": {
+      "config": "transformers.AutoConfig.from_pretrained",
+      "model": "transformers.AutoModel.from_config",
+      "trust_remote_code": true,
+      "local_files_only": true
+    },
+    "api_methods": [
+      "encode",
+      "decode",
+      "forward",
+      "create_decode_session"
+    ],
+    "model_type": "moss-audio-tokenizer",
+    "architectures": [
+      "MossAudioTokenizerModel"
+    ],
+    "auto_map": {
+      "AutoConfig": "configuration_moss_audio_tokenizer.MossAudioTokenizerConfig",
+      "AutoModel": "modeling_moss_audio_tokenizer.MossAudioTokenizerModel"
+    },
+    "source_files": {
+      "configuration": {
+        "path": "transformers_modules/hf/1f68fe91b6890e3e/configuration_moss_audio_tokenizer.py",
+        "filename": "configuration_moss_audio_tokenizer.py",
+        "sha256": "b2d67dc4581e70f4b69b2d7eccefe32581d0c5192fe4d97fe1830e94a255b8aa",
+        "bytes": 19249,
+        "status": "AUTHENTICATED"
+      },
+      "modeling": {
+        "path": "transformers_modules/hf/cfb29bb1bac555fe/modeling_moss_audio_tokenizer.py",
+        "filename": "modeling_moss_audio_tokenizer.py",
+        "sha256": "b14af7c188944da5101adbd4aaa9c3617d66b83507f0efbd6eb416381a105930",
+        "bytes": 138814,
+        "status": "AUTHENTICATED"
+      }
+    },
+    "frames": 2,
+    "quantizers": 16,
+    "taps": [
+      {
+        "name": "quantizer",
+        "shape": "1x768x2"
+      },
+      {
+        "name": "decoder_0",
+        "shape": "1x192x8"
+      },
+      {
+        "name": "decoder_1",
+        "shape": "1x768x8"
+      },
+      {
+        "name": "decoder_2",
+        "shape": "1x384x16"
+      },
+      {
+        "name": "decoder_3",
+        "shape": "1x768x16"
+      },
+      {
+        "name": "decoder_4",
+        "shape": "1x384x32"
+      },
+      {
+        "name": "decoder_5",
+        "shape": "1x768x32"
+      },
+      {
+        "name": "decoder_6",
+        "shape": "1x384x64"
+      },
+      {
+        "name": "decoder_7",
+        "shape": "1x240x64"
+      },
+      {
+        "name": "decoder_8",
+        "shape": "1x1x15360"
+      }
+    ],
+    "audio_shape": "1x2x7680",
+    "weights_loaded": false,
+    "weights_executed": false,
+    "evidence_binding": {
+      "inspection_manifest_sha256": "33c00a78d6e9fecd350feeb760ee36bc17960427bdd7807c598c2f4c325c157b",
+      "inspection_vokra_head": "aaace7e51cb42a2b4ea90319e7dd195d3952ae7b",
+      "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
+      "collection_status": "AUTHENTICATED",
+      "dependency_audit_report_sha256": "5cc7c9dc22331f081af6b50e80244f2805e4006590c4b2b9c828cc68e5dbc5ac",
+      "dependency_audit_status": "BLOCKED",
+      "dependency_audit_package_review_rows": 35,
+      "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
+      "cpu_status": "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY",
+      "metal_status": "BLOCKED_BY_CPU",
+      "parity_status": "NOT_RUN",
+      "publication": "NO_UPLOAD"
+    },
+    "source_access": false,
+    "weight_access": false
+  },
+  "reference_contract": {
+    "frames": 2,
+    "quantizers": 16,
+    "codebook_size": 1024,
+    "sample_rate": 48000,
+    "channels": 2,
+    "frame_hop": 3840,
+    "quantizer_shape": "1x768x2",
+    "decoder_tap_count": 9,
+    "decoder_tap_shapes": [
+      {
+        "name": "decoder_0",
+        "shape": "1x192x8"
+      },
+      {
+        "name": "decoder_1",
+        "shape": "1x768x8"
+      },
+      {
+        "name": "decoder_2",
+        "shape": "1x384x16"
+      },
+      {
+        "name": "decoder_3",
+        "shape": "1x768x16"
+      },
+      {
+        "name": "decoder_4",
+        "shape": "1x384x32"
+      },
+      {
+        "name": "decoder_5",
+        "shape": "1x768x32"
+      },
+      {
+        "name": "decoder_6",
+        "shape": "1x384x64"
+      },
+      {
+        "name": "decoder_7",
+        "shape": "1x240x64"
+      },
+      {
+        "name": "decoder_8",
+        "shape": "1x1x15360"
+      }
+    ]
+  },
+  "publication_decision": "NO_UPLOAD",
+  "approval": {
+    "status": "OWNER_SIGNOFF_REQUIRED",
+    "signer": null,
+    "digest": null
+  }
+}

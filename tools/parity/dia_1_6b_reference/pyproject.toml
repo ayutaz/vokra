@@ -1,0 +1,41 @@
+[project]
+name = "vokra-dia-1-6b-reference"
+version = "0.1.0"
+description = "VAST-only adapter for the pinned official Dia-1.6B and authenticated DAC source-shell execution"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "einops==0.8.2",
+    "gguf==0.19.0",
+    "huggingface-hub==0.30.2",
+    "numpy==2.2.5",
+    "pydantic==2.11.3",
+    "soundfile==0.13.1",
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+]
+
+[tool.uv]
+package = false
+# uv.lock is committed after metadata-only resolution and is required.  The
+# VAST worker fails before any model download when it is absent or changed.
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.vokra.reference]
+# This lock captures a reproducible Python resolution, but package and
+# transitive-license provenance has not yet received the required audit.
+# Workers must not treat presence of uv.lock as permission to install or run.
+# The CPU PyTorch index is explicit so Linux resolution does not pull the
+# NVIDIA/Triton closure.  The DAC wheel is intentionally absent: VAST supplies
+# a source-authenticated ``dac/`` shell containing only the official load path.
+dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"
+lock_schema = "uv-lock-v1-python312"
+use_torch_compile = false
+direct_dependency_versions = { einops = "0.8.2", gguf = "0.19.0", huggingface-hub = "0.30.2", numpy = "2.2.5", pydantic = "2.11.3", soundfile = "0.13.1", torch = "2.6.0", torchaudio = "2.6.0" }

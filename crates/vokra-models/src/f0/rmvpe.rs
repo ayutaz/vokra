@@ -362,6 +362,11 @@ impl RmvpeWeights {
             // contract for the encoder side of the neural chain.
             validate_tensor_shape(name, &dims)?;
             let payload = dequant_to_f32(gguf, info)?;
+            if payload.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "rmvpe: tensor `{name}` contains non-finite weight values; refusing to bind"
+                )));
+            }
             tensors.push((name.to_owned(), dims, payload));
         }
 

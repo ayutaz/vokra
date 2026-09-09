@@ -206,6 +206,8 @@ def main() -> int:
         parser.error("--input and --output-dir are required unless --self-test is used")
 
     require_vast()
+    if args.input.is_symlink():
+        parser.error(f"input must not be a symlink: {args.input}")
     archive = args.input.resolve()
     if not archive.is_file():
         parser.error(f"input is not a regular file: {archive}")

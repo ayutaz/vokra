@@ -14,6 +14,7 @@ ASR → TTS の 3 デモを CPU で動かします。GPU（Metal / CUDA）や配
   ため自身の下限を 1.89 に引き上げており、この crate は全ビルドに入ります。
   CI の `msrv` job で検証しています。
 - **git**: リポジトリの取得に使用
+- **curl または wget**: サンプルの変換レシピで checkpoint ファイルを取得するために使用
 - **uv + Python 3.12**: converter が読む checkpoint の準備にだけ使います。
   Python command はすべて uv 経由で実行し、Vokra runtime 自体は Python に
   依存しません（`FR-LD-05`）
@@ -143,8 +144,13 @@ cargo build --release -p vokra-cli --features cuda    # Linux with system CUDA
   --input speech30s.wav --backend cuda
 ```
 
-RTF < 1.0 でリアルタイム、CPU で Whisper base は RTF < 0.3、CUDA で
-Whisper large-v3 は RTF < 0.15（RTX 4090 実測 0.081〜0.115）が目安です。
+RTF < 1.0 がリアルタイムの目安です。以下の値は全環境で保証される結果
+ではなく受入目標です。RTX 4090 の 0.081〜0.115 は 2026-07-07 の
+VAST における single-shot 参照値で、
+[`docs/perf/cuda-large-v3-baseline.json`](perf/cuda-large-v3-baseline.json)
+と[変動レポート](m2-cuda-rtf-variance-2026-07-08.md)に履歴として保存して
+います。現在の CPU/Metal ベンチマーク値ではありません。性能を主張する
+前に、対象 hardware で `bench` を再実行してください。
 
 ## 5 分: C ABI からの呼び出し
 

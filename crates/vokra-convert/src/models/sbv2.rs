@@ -234,15 +234,13 @@ use crate::safetensors::SafetensorsFile;
 
 /// `vokra.model.arch` for SBV2 GGUFs.
 pub(crate) const ARCH: &str = "sbv2";
-/// `vokra.model.name` — short slug (design doc §9 SKU table:
-/// `vokra/sbv2-v2-multilingual-base`), distinct from the full HF
-/// `org/repo` path in [`UPSTREAM_HF`] (mirrors the `funcodec` /
-/// `wespeaker` / `deberta_v2` convention).
-pub(crate) const NAME: &str = "sbv2-v2-multilingual-base";
-/// Upstream source family — provenance breadcrumb. Not a single pinned HF
-/// repo id: `litagin02`'s SBV2 v2 releases span several checkpoint repos
-/// under this account (design doc §2/§9).
-pub(crate) const UPSTREAM_HF: &str = "litagin02/style_bert_vits2";
+/// `vokra.model.name` — exact live SKU slug for the JP-Extra base artifact.
+/// This must not use the retired multilingual placeholder: the inspected
+/// checkpoint and the four-file parity packet are specifically
+/// `litagin/Style-Bert-VITS2-2.0-base-JP-Extra`.
+pub(crate) const NAME: &str = "sbv2-v2-jp-extra-base";
+/// Exact upstream HF repository for the authenticated JP-Extra artifact.
+pub(crate) const UPSTREAM_HF: &str = "litagin/Style-Bert-VITS2-2.0-base-JP-Extra";
 /// Upstream declared weight license (SPDX id, lower-case per
 /// `docs/license-audit.md` §3.1). `agpl-3.0` classifies as
 /// [`LicenseClass::Copyleft`] (design doc §9 — redistribution is permitted
@@ -287,10 +285,12 @@ const KEY_N_SDP_LAYERS: &str = "vokra.sbv2.n_sdp_layers";
 const KEY_SAMPLE_RATE: &str = "vokra.sbv2.sample_rate";
 
 // M6 refactor (2026-08-06): the SBV2 v2 base checkpoint's real
-// `enc_p.language_emb.weight` table is `[3, 192]` (JA/EN/ZH). This value
+// `enc_p.language_emb.weight` table is `[3, 192]` (ZH/JP/EN). This value
 // is a fixed architectural constant, not a config-authored one — it
 // mirrors `crates/vokra-models/src/sbv2/text_encoder.rs`'s
-// `N_LANGUAGES = 3`. See the module doc's "M6 refactor" section for the
+// `N_LANGUAGES = 3`. The converter performs a direct 1:1 tensor rename; it
+// does not reorder language rows or tone rows. See the module doc's
+// "M6 refactor" section for the
 // primary-source verification behind it and why the metadata is stamped
 // forward-looking (the loader's own `language_embed` length check already
 // gates on the same value even without this metadata being present).
@@ -940,24 +940,30 @@ fn rewrite_sdp_tensor_name(tail: &str) -> String {
 /// `vokra.sbv2.*` hparam (see `SbV2Config::parse` for the schema); when
 /// `None`, tensors still pass through but the `vokra.sbv2.*` chunk is
 /// omitted entirely rather than filled with invented placeholders (module
-/// doc "Hparams" section). `license` overrides the upstream `agpl-3.0`
-/// stamp (mirror of the `convert_file --license <spdx>` boundary in
-/// `lib.rs`).
+/// doc "Hparams" section). `license`, when supplied, must be the canonical
+/// `agpl-3.0` value for this fixed JP-Extra artifact; attempts to relabel the
+/// weights with another license are rejected before the output is written.
 ///
 /// # Errors
 ///
-/// [`ConvertError::Io`] for I/O failures reading `input` / `config_side_car`
-/// or writing `output`; [`ConvertError::Parse`] for malformed safetensors
-/// input, or a malformed/incomplete config side-car (see
-/// `SbV2Config::parse`'s doc for the full list of required fields and
-/// consistency checks); [`ConvertError::Gguf`] if the GGUF serialization
-/// fails.
+/// [`ConvertError::Usage`] when `license` attempts to override the fixed
+/// `agpl-3.0` provenance; [`ConvertError::Io`] for I/O failures reading
+/// `input` / `config_side_car` or writing `output`; [`ConvertError::Parse`]
+/// for malformed safetensors input, or a malformed/incomplete config
+/// side-car (see `SbV2Config::parse`'s doc for the full list of required
+/// fields and consistency checks); [`ConvertError::Gguf`] if the GGUF
+/// serialization fails.
 pub fn convert_sbv2_file(
     input: &Path,
     output: &Path,
     config_side_car: Option<&Path>,
     license: Option<&str>,
 ) -> Result<ConvertReport, ConvertError> {
+    reject_sbv2_path(input, "SBV2 safetensors input", true)?;
+    reject_sbv2_path(output, "SBV2 GGUF output", false)?;
+    if let Some(config_path) = config_side_car {
+        reject_sbv2_path(config_path, "SBV2 config side-car", true)?;
+    }
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -1255,15 +1261,90 @@ pub fn convert_sbv2_file(
     emit_converter_zero_defaults(&mut b, cfg.as_ref(), &mut report)?;
 
     let spdx = license.unwrap_or(DEFAULT_LICENSE);
+    if spdx.trim().to_ascii_lowercase() != DEFAULT_LICENSE {
+        return Err(ConvertError::Usage(format!(
+            "SBV2 JP-Extra weights are {DEFAULT_LICENSE}; refusing license override `{spdx}`"
+        )));
+    }
     let class = LicenseClass::from_license_str(spdx);
     vokra_core::stamp_provenance(&mut b, class, spdx, Some(NAME), Some(UPSTREAM_HF));
 
     let out_bytes = b
         .to_bytes()
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    // Keep the preflight no-clobber check race-safe: create the final output
+    // with `create_new` and stream the already-built bytes into that exact
+    // inode.  A concurrent creator therefore fails instead of being
+    // overwritten by this conversion.
+    let mut output_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    std::io::Write::write_all(&mut output_file, &out_bytes)?;
+    output_file.sync_all()?;
 
     Ok(report)
+}
+
+/// Enforce the converter's no-follow/no-clobber boundary before any model
+/// bytes are read.  A generated GGUF must be a new regular file; accepting a
+/// pre-existing path would make a failed or mismatched conversion overwrite
+/// evidence outside the worker's authenticated packet.
+fn reject_sbv2_path(path: &Path, label: &str, must_exist: bool) -> Result<(), ConvertError> {
+    let raw = path.to_string_lossy();
+    if raw
+        .split(['/', '\\'])
+        .any(|part| part == "." || part == "..")
+    {
+        return Err(ConvertError::Parse(format!(
+            "{label} contains a dot path component: {}",
+            path.display()
+        )));
+    }
+    let absolute = (!path.is_absolute())
+        .then(|| {
+            std::env::current_dir()
+                .map_err(ConvertError::Io)
+                .map(|cwd| cwd.join(path))
+        })
+        .transpose()?;
+    let check_path = absolute.as_deref().unwrap_or(path);
+    let mut current = check_path;
+    loop {
+        match std::fs::symlink_metadata(current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(ConvertError::Parse(format!(
+                    "{label} or its ancestry is symlinked: {}",
+                    path.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !must_exist => {}
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    if must_exist {
+        let metadata = std::fs::metadata(path).map_err(ConvertError::Io)?;
+        if !metadata.is_file() {
+            return Err(ConvertError::Parse(format!(
+                "{label} is not a regular file: {}",
+                path.display()
+            )));
+        }
+    } else if path.exists() || path.is_symlink() {
+        return Err(ConvertError::Parse(format!(
+            "{label} must be absent before conversion: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Writes the 22 required + 1 optional `vokra.sbv2.*` keys from a parsed
@@ -1308,7 +1389,7 @@ fn write_hparams(b: &mut GgufBuilder, cfg: &SbV2Config) {
     b.add_bool(KEY_FLOW_MEAN_ONLY, cfg.flow_mean_only);
     b.add_u32(KEY_N_SDP_LAYERS, cfg.n_sdp_layers);
     b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
-    // Fixed-architecture: [`N_LANGUAGES`] = 3 (JA/EN/ZH); see its own doc
+    // Fixed-architecture: [`N_LANGUAGES`] = 3 (ZH/JP/EN); see its own doc
     // and the module doc's "M6 refactor" section.
     b.add_u32(KEY_N_LANGUAGES, N_LANGUAGES);
 
@@ -2172,7 +2253,12 @@ mod tests {
     }
 
     fn temp_path(label: &str, ext: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
+        // The production gate rejects symlinked ancestors. macOS exposes the
+        // temporary directory through `/var`, which is a symlink to
+        // `/private/var`; use the canonical test root so the fixture paths
+        // exercise the intended gate on every host.
+        let mut p = std::fs::canonicalize(std::env::temp_dir())
+            .expect("system temporary directory must be canonicalizable");
         p.push(format!("vokra-sbv2-{label}-{}.{ext}", std::process::id()));
         p
     }
@@ -2182,6 +2268,27 @@ mod tests {
             ("enc_p.emb.weight", "F32", &[6, 4], f32_bytes(&[0.01; 24])),
             ("dec.ups.0.weight", "BF16", &[4, 4], bf16_bytes(&[0.04; 16])),
         ]
+    }
+
+    #[test]
+    fn sbv2_path_gate_rejects_dot_components_and_clobber_targets() {
+        assert!(
+            reject_sbv2_path(Path::new("Cargo.toml"), "input", true).is_ok(),
+            "valid relative input paths must remain supported"
+        );
+        let dot = reject_sbv2_path(Path::new("/tmp/sbv2/../input.safetensors"), "input", true)
+            .expect_err("dot components must fail before filesystem access");
+        assert!(
+            matches!(dot, ConvertError::Parse(message) if message.contains("dot path component"))
+        );
+
+        let existing = std::fs::canonicalize(std::env::temp_dir())
+            .expect("system temporary directory must be canonicalizable");
+        let existing = reject_sbv2_path(&existing, "output", false)
+            .expect_err("an existing output path must never be clobbered");
+        assert!(
+            matches!(existing, ConvertError::Parse(message) if message.contains("must be absent"))
+        );
     }
 
     /// Minimal but complete config JSON covering every required field plus
@@ -2290,6 +2397,16 @@ mod tests {
             Some(NAME)
         );
         assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|v| v.as_str()),
+            Some(NAME)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_SOURCE)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF)
+        );
+        assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)
                 .and_then(|v| v.as_str()),
             Some(DEFAULT_LICENSE)
@@ -2359,7 +2476,7 @@ mod tests {
         assert_eq!(get_u32(KEY_DECODER_CONV_PRE_KERNEL), 7);
         assert_eq!(get_u32(KEY_DECODER_CONV_POST_KERNEL), 7);
         // M6 refactor (2026-08-06): `n_languages` is a fixed
-        // architectural constant (JA/EN/ZH = 3), not a config field, and
+        // architectural constant (ZH/JP/EN = 3), not a config field, and
         // is always stamped as long as the config side-car triggers the
         // hparam-writing path. See the module doc's "M6 refactor" section
         // for the primary-source verification.
@@ -2643,26 +2760,16 @@ mod tests {
     // ---- license override -------------------------------------------------
 
     #[test]
-    fn license_override_replaces_default() {
+    fn license_override_cannot_relabel_jp_extra_weights() {
         let blob = safetensors_multi(&base_fixture());
         let input = temp_path("license-override-in", "safetensors");
         let output = temp_path("license-override-out", "gguf");
         std::fs::write(&input, &blob).expect("write input");
 
-        convert_sbv2_file(&input, &output, None, Some("apache-2.0")).expect("convert");
-
-        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("apache-2.0")
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
+        let error = convert_sbv2_file(&input, &output, None, Some("apache-2.0"))
+            .expect_err("fixed JP-Extra provenance must not be relabelled");
+        assert!(error.to_string().contains("agpl-3.0"));
+        assert!(!output.exists());
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();

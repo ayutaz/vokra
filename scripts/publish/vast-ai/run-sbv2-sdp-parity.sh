@@ -143,7 +143,7 @@ require_tooling() {
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "$PARITY_PROJECT/uv.lock is missing"
-  [[ -f "$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf.sha256" ]] \
+  [[ -f "$FIXTURE_DIR/sbv2-v2-jp-extra-base.gguf.sha256" ]] \
     || die "SBV2 fixture sidecars are missing from $FIXTURE_DIR"
 }
 
@@ -320,7 +320,7 @@ main() {
   sbv2_dir="$checkpoints_dir/sbv2-v2-base"
   bert_ja_dir="$checkpoints_dir/deberta-v2-ja"
   bert_en_dir="$checkpoints_dir/deberta-v3-en"
-  sbv2_gguf="$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf"
+  sbv2_gguf="$FIXTURE_DIR/sbv2-v2-jp-extra-base.gguf"
   bert_ja_gguf="$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf"
   bert_en_gguf="$FIXTURE_DIR/deberta-v3-large.gguf"
 
@@ -386,7 +386,7 @@ main() {
     --tokenizer "$bert_en_tokenizer" --output "$bert_en_gguf"
 
   step "Verify committed GGUF sidecar hashes"
-  verify_sidecar "$sbv2_gguf" "$FIXTURE_DIR/sbv2-v2-multilingual-base.gguf.sha256"
+  verify_sidecar "$sbv2_gguf" "$FIXTURE_DIR/sbv2-v2-jp-extra-base.gguf.sha256"
   verify_sidecar "$bert_ja_gguf" "$FIXTURE_DIR/deberta-v2-large-japanese-char-wwm.gguf.sha256"
   verify_sidecar "$bert_en_gguf" "$FIXTURE_DIR/deberta-v3-large.gguf.sha256"
 

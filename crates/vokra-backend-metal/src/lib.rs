@@ -94,7 +94,7 @@ pub use backend::MetalBackend;
 pub use probe::{MetalCapabilities, vokra_metal_probe};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-pub use context::{MetalContext, MetalKvCache};
+pub use context::{MetalBf16DeviceTensor, MetalContext, MetalDeviceTensor, MetalKvCache};
 // `MetalDecodeSession` is the (already-authored, not-yet-wired) Phase-3 device
 // decode driver; re-exported so its subgraph is reachable (no dead-code) while
 // the model-layer wiring lands separately. Its logic is untouched here.

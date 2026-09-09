@@ -2,7 +2,7 @@
   "generator_version": "1.0",
   "generator": "tools/parity/sbv2_dump_reference.py",
   "checkpoint": {
-    "sbv2_main": "sbv2-v2-multilingual-base.gguf",
+    "sbv2_main": "sbv2-v2-jp-extra-base.gguf",
     "bert_ja": "deberta-v2-large-japanese-char-wwm.gguf",
     "bert_en": "deberta-v3-large.gguf"
   },

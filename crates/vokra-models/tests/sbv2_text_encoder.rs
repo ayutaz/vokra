@@ -42,7 +42,7 @@ fn phoneme_embed_snapshot_matches_pre_scale_sum() {
     let mut tone_embed = vec![0.0_f32; n_tones * d_model];
     tone_embed[..d_model].copy_from_slice(&[0.1, 0.1, 0.1, 0.1]);
     tone_embed[d_model..].copy_from_slice(&[-0.1, 0.0, 0.2, 0.3]);
-    // language_embed row 0 (JA) = [0.0, 0.1, 0.2, 0.3].
+    // language_embed row 0 (ZH) = [0.0, 0.1, 0.2, 0.3].
     let mut language_embed = vec![0.0_f32; N_LANGUAGES * d_model];
     language_embed[..d_model].copy_from_slice(&[0.0, 0.1, 0.2, 0.3]);
     let enc = SbV2TextEncoder::from_weights(
@@ -155,7 +155,7 @@ fn text_encoder_forward_deterministic() {
 #[test]
 fn text_encoder_forward_language_id_switches_embedding_row() {
     let (n_vocab, n_tones, d_model) = (8, 3, 4);
-    // Row 0 = 0.10s, row 1 = 0.20s, row 2 = 0.30s — three distinct
+    // ZH row 0 = 0.10, JA row 1 = 0.20, EN row 2 = 0.30 — three distinct
     // per-row constants so a swap between any two language ids produces
     // an easily-predictable per-element delta.
     let mut language_embed = Vec::with_capacity(N_LANGUAGES * d_model);
@@ -175,13 +175,13 @@ fn text_encoder_forward_language_id_switches_embedding_row() {
     let phoneme_ids: [u16; 3] = [0, 1, 2];
     let tones: [u8; 3] = [0, 0, 0];
 
-    let out_ja = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 0);
-    let out_en = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 1);
-    let out_zh = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 2);
+    let out_zh = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 0);
+    let out_ja = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 1);
+    let out_en = enc.forward(&phoneme_ids, &tones, /*language_id=*/ 2);
 
-    assert_ne!(out_ja, out_en, "language_id 0 vs 1 must differ");
-    assert_ne!(out_en, out_zh, "language_id 1 vs 2 must differ");
-    assert_ne!(out_ja, out_zh, "language_id 0 vs 2 must differ");
+    assert_ne!(out_zh, out_ja, "ZH row 0 vs JA row 1 must differ");
+    assert_ne!(out_ja, out_en, "JA row 1 vs EN row 2 must differ");
+    assert_ne!(out_zh, out_en, "ZH row 0 vs EN row 2 must differ");
 
     // With phoneme_embed / tone_embed / transformer stack all zero, the
     // output equals `language_embed[language_id]` broadcast to every
@@ -190,20 +190,20 @@ fn text_encoder_forward_language_id_switches_embedding_row() {
     // math.sqrt(self.hidden_channels)` (the M6 refactor added this scale
     // to match the real relative-position transformer encoder's forward
     // pass; see `SbV2TextEncoder::forward`'s doc). For `d_model = 4`,
-    // `sqrt(4) = 2` exactly, so row-0 (fill 0.10) → 0.20, row-1 (0.20)
-    // → 0.40, row-2 (0.30) → 0.60.
+    // `sqrt(4) = 2` exactly, so ZH row-0 (fill 0.10) → 0.20, JA row-1
+    // (0.20) → 0.40, and EN row-2 (0.30) → 0.60.
     let scale = (d_model as f32).sqrt();
     assert!(
-        out_ja.iter().all(|&v| (v - 0.10 * scale).abs() < 1e-6),
-        "with zero phoneme/tone weights, out_ja must be all 0.10 * sqrt(d_model) (row 0 fill)"
+        out_zh.iter().all(|&v| (v - 0.10 * scale).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_zh must be all 0.10 * sqrt(d_model) (ZH row 0)"
     );
     assert!(
-        out_en.iter().all(|&v| (v - 0.20 * scale).abs() < 1e-6),
-        "with zero phoneme/tone weights, out_en must be all 0.20 * sqrt(d_model) (row 1 fill)"
+        out_ja.iter().all(|&v| (v - 0.20 * scale).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_ja must be all 0.20 * sqrt(d_model) (JA row 1)"
     );
     assert!(
-        out_zh.iter().all(|&v| (v - 0.30 * scale).abs() < 1e-6),
-        "with zero phoneme/tone weights, out_zh must be all 0.30 * sqrt(d_model) (row 2 fill)"
+        out_en.iter().all(|&v| (v - 0.30 * scale).abs() < 1e-6),
+        "with zero phoneme/tone weights, out_en must be all 0.30 * sqrt(d_model) (EN row 2)"
     );
 }
 

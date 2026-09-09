@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Dump an independent official Qwen3-ASR real-checkpoint reference.
 
-This script imports the immutable official ``qwen-asr==0.0.6`` package.  It
-does not mirror any Qwen layer.  The tap named ``audio_embeddings.f32le`` is
-the return value of the package's
-``Qwen3ASRThinkerForConditionalGeneration.get_audio_features`` method.  Prompt
-construction, feature extraction, generation, batch decoding and output
-parsing all call the official package as well.
+The official backend source is loaded from an authenticated wheel.  The
+package root and its inference wrapper are deliberately never imported: the
+wrapper eagerly imports the optional forced-aligner/librosa closure.  Prompt
+helpers and output parsing are AST-lifted from the exact, hash-bound official
+source files, while the Transformers backend is imported unchanged.
 
 The model snapshot must already be local and must have been downloaded at the
 exact revision selected by ``--variant``.  Network fallback is disabled before
@@ -18,16 +17,24 @@ guard.  It never uploads or publishes anything.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
-import importlib.metadata
+import importlib.util
 import json
 import os
 import platform
 import re
 import sys
+import tempfile
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+try:
+    from wheel_audit import audit_wheel, extract_backend
+except ModuleNotFoundError:  # pragma: no cover - package import path
+    from tools.parity.qwen3_asr.wheel_audit import audit_wheel, extract_backend
 
 
 @dataclass(frozen=True)
@@ -69,12 +76,19 @@ EXPECTED_ASSETS = {
 
 SAMPLE_RATE = 16_000
 QWEN_ASR_VERSION = "0.0.6"
-TRANSFORMERS_VERSION = "4.57.6"
+TRANSFORMERS_VERSION = "5.10.4"
 SCHEMA = "vokra-qwen3-asr-reference-v1"
 
 
 def die(message: str) -> "None":
     raise SystemExit(f"qwen3_asr reference: {message}")
+
+
+def require_vast_x86_64() -> None:
+    if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
+        die("VOKRA_PUBLISH_ON_VAST=1 is required for model reference execution")
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        die("reference execution is restricted to Linux x86_64 VAST")
 
 
 def sha256_file(path: Path) -> str:
@@ -114,17 +128,37 @@ def cpu_flags() -> str:
 
 
 def require_empty_output(path: Path) -> None:
+    require_no_symlink_ancestors(path, "--output")
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        die(f"--output must be a regular directory path, not a symlink/file: {path}")
     path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        die(f"--output directory is symlinked: {path}")
     entries = list(path.iterdir())
     if entries:
         die(f"--output must be empty, found {entries[0]}")
 
 
+def require_no_symlink_ancestors(path: Path, label: str) -> None:
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    while True:
+        if candidate.is_symlink():
+            die(f"{label} path has a symlink ancestor: {candidate}")
+        parent = candidate.parent
+        if parent == candidate:
+            return
+        candidate = parent
+
+
 def require_model_identity(model_dir: Path, variant: Variant) -> dict[str, Any]:
+    if model_dir.is_symlink() or not model_dir.is_dir():
+        die(f"model directory must be a regular non-symlink directory: {model_dir}")
     config_path = model_dir / "config.json"
-    if not config_path.is_file():
+    if config_path.is_symlink() or not config_path.is_file():
         die(f"missing local config: {config_path}")
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config = strict_json_load(config_path, "config.json")
+    if not isinstance(config, dict):
+        die("config.json top-level value must be an object")
     if config.get("model_type") != "qwen3_asr":
         die(f"config model_type={config.get('model_type')!r}, expected 'qwen3_asr'")
     architectures = config.get("architectures")
@@ -139,7 +173,7 @@ def require_model_identity(model_dir: Path, variant: Variant) -> dict[str, Any]:
 
     for name, (expected_bytes, expected_hash) in EXPECTED_ASSETS.items():
         path = model_dir / name
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             die(f"missing pinned sidecar: {path}")
         actual_bytes = path.stat().st_size
         actual_hash = sha256_file(path)
@@ -151,21 +185,185 @@ def require_model_identity(model_dir: Path, variant: Variant) -> dict[str, Any]:
     return config
 
 
+def strict_json_load(path: Path, label: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{label} contains duplicate key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        die(f"{label} is not valid authenticated JSON: {error}")
+
+
 def source_inventory(model_dir: Path) -> dict[str, dict[str, object]]:
-    names = {
+    expected_names = {
+        ".gitattributes",
+        "LICENSE",
+        "README.md",
         "config.json",
         "model.safetensors.index.json",
+        "preprocessor_config.json",
         *EXPECTED_ASSETS.keys(),
     }
-    names.update(path.name for path in model_dir.glob("*.safetensors"))
+    index_path = model_dir / "model.safetensors.index.json"
+    single_checkpoint = model_dir / "model.safetensors"
+    if index_path.exists():
+        if index_path.is_symlink() or not index_path.is_file():
+            die(f"model shard index is symlinked or not a regular file: {index_path}")
+        index = strict_json_load(index_path, "model.safetensors.index.json")
+        if not isinstance(index, dict) or set(index) != {"metadata", "weight_map"}:
+            die("model.safetensors.index.json must contain exactly metadata and weight_map")
+        if not isinstance(index["metadata"], dict):
+            die("model.safetensors.index.json metadata must be an object")
+        weight_map = index.get("weight_map")
+        if not isinstance(weight_map, dict) or not weight_map:
+            die("model.safetensors.index.json weight_map is missing or empty")
+        expected_shards: set[str] = set()
+        for tensor, shard in weight_map.items():
+            if not isinstance(tensor, str) or not tensor or not isinstance(shard, str) or not shard:
+                die("model.safetensors.index.json weight_map has a non-string/empty entry")
+            shard_path = Path(shard)
+            if shard_path.name != shard or shard_path.is_absolute() or shard_path.suffix != ".safetensors":
+                die(f"model.safetensors.index.json uses unsafe shard path: {shard!r}")
+            expected_shards.add(shard)
+        actual_shards = {
+            path.name
+            for path in model_dir.iterdir()
+            if path.name.endswith(".safetensors")
+        }
+        if actual_shards != expected_shards:
+            die(
+                "model safetensors set differs from authenticated index: "
+                f"missing={sorted(expected_shards - actual_shards)} "
+                f"extra={sorted(actual_shards - expected_shards)}"
+            )
+    elif single_checkpoint.exists():
+        if single_checkpoint.is_symlink() or not single_checkpoint.is_file():
+            die(f"model checkpoint is symlinked or not a regular file: {single_checkpoint}")
+        expected_shards = {single_checkpoint.name}
+    else:
+        die("model snapshot lacks model.safetensors.index.json or model.safetensors")
+
     inventory: dict[str, dict[str, object]] = {}
-    for name in sorted(names):
-        path = model_dir / name
-        if path.is_file():
-            inventory[name] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
-    if not any(name.endswith(".safetensors") for name in inventory):
-        die(f"no local safetensors files found in {model_dir}")
+    for path in sorted(model_dir.iterdir(), key=lambda candidate: candidate.name):
+        if path.name == ".cache":
+            if path.is_symlink() or not path.is_dir():
+                die(f"model transport cache is symlinked or not a directory: {path}")
+            continue
+        if path.is_symlink():
+            die(f"model snapshot entry is symlinked: {path}")
+        if path.name not in expected_names and path.name not in expected_shards:
+            die(f"model snapshot contains unexpected entry: {path.name}")
+        if not path.is_file():
+            die(f"model snapshot entry is not a regular file: {path}")
+        inventory[path.name] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
+    if set(name for name in inventory if name.endswith(".safetensors")) != expected_shards:
+        die("model snapshot safetensors inventory does not match authenticated shard set")
     return inventory
+
+
+def _lift_official_functions(source: str, names: tuple[str, ...]) -> dict[str, Any]:
+    """Compile only named functions from a hash-authenticated official file.
+
+    No source body is copied into this project.  The wheel auditor authenticates
+    the complete file; this additionally rejects duplicate/missing definitions
+    and executes only the exact AST nodes needed by the reference.
+    """
+    tree = ast.parse(source, mode="exec")
+    found: dict[str, ast.AST] = {}
+    constants: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+            if node.name in found:
+                raise ValueError(f"duplicate official function: {node.name}")
+            found[node.name] = node
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in {"_ASR_TEXT_TAG", "_LANG_PREFIX"}:
+                    if target.id in constants:
+                        raise ValueError(f"duplicate official constant: {target.id}")
+                    constants[target.id] = node
+    if set(found) != set(names):
+        raise ValueError(f"official function set drifted: expected {names}, got {sorted(found)}")
+    if set(constants) != {"_ASR_TEXT_TAG", "_LANG_PREFIX"}:
+        raise ValueError("official parser constants drifted")
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(module="typing", names=[ast.alias(name="Optional"), ast.alias(name="Tuple")], level=0),
+            *constants.values(),
+            *[found[name] for name in names],
+        ],
+        type_ignores=[],
+    )
+    ast.fix_missing_locations(module)
+    namespace: dict[str, Any] = {}
+    exec(compile(module, "<authenticated-qwen3-asr-utils>", "exec"), namespace, namespace)
+    return {name: namespace[name] for name in names}
+
+
+def _lift_official_prompt_helpers(source: str) -> Any:
+    tree = ast.parse(source, mode="exec")
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Qwen3ASRModel"]
+    if len(classes) != 1:
+        raise ValueError("official Qwen3ASRModel class shape drifted")
+    wanted = ("_build_messages", "_build_text_prompt")
+    methods = [node for node in classes[0].body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    if {node.name for node in methods} != set(wanted) or len(methods) != len(wanted):
+        raise ValueError("official prompt helper method set drifted")
+    helper_class = ast.ClassDef(
+        name="AuthenticatedPromptHelpers",
+        bases=[],
+        keywords=[],
+        body=methods,
+        decorator_list=[],
+    )
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="typing",
+                names=[ast.alias(name="Any"), ast.alias(name="Dict"), ast.alias(name="List"), ast.alias(name="Optional")],
+                level=0,
+            ),
+            helper_class,
+        ],
+        type_ignores=[],
+    )
+    ast.fix_missing_locations(module)
+    namespace: dict[str, Any] = {}
+    exec(compile(module, "<authenticated-qwen3-asr-wrapper>", "exec"), namespace, namespace)
+    return namespace["AuthenticatedPromptHelpers"]
+
+
+def load_official_support(backend_root: Path) -> tuple[Any, Any]:
+    """Load backend unchanged and AST-lift wrapper utilities without imports."""
+    package_root = backend_root / "qwen_asr"
+    package = types.ModuleType("qwen_asr")
+    package.__path__ = [str(package_root)]
+    sys.modules["qwen_asr"] = package
+    core = types.ModuleType("qwen_asr.core")
+    core.__path__ = [str(package_root / "core")]
+    sys.modules["qwen_asr.core"] = core
+    backend_path = package_root / "core" / "transformers_backend" / "__init__.py"
+    spec = importlib.util.spec_from_file_location(
+        "qwen_asr.core.transformers_backend",
+        backend_path,
+        submodule_search_locations=[str(backend_path.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("unable to load authenticated Transformers backend")
+    backend = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = backend
+    spec.loader.exec_module(backend)
+    wrapper_source = (package_root / "inference" / "qwen3_asr.py").read_text(encoding="utf-8")
+    utils_source = (package_root / "inference" / "utils.py").read_text(encoding="utf-8")
+    prompt_helpers = _lift_official_prompt_helpers(wrapper_source)
+    utils = _lift_official_functions(utils_source, ("normalize_language_name", "detect_and_fix_repetitions", "parse_asr_output"))
+    return backend, (prompt_helpers, utils["parse_asr_output"])
 
 
 def write_f32(path: Path, array: Any, numpy: Any) -> None:
@@ -186,6 +384,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", choices=sorted(VARIANTS), required=True)
     parser.add_argument("--model-dir", type=Path, required=True)
+    parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--audio", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--context", default="")
@@ -200,19 +399,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    require_vast_x86_64()
     variant = VARIANTS[args.variant]
+    for label, path in (
+        ("--model-dir", args.model_dir),
+        ("--audio", args.audio),
+        ("--wheel", args.wheel),
+        ("--output", args.output),
+    ):
+        require_no_symlink_ancestors(path, label)
     model_dir = args.model_dir.resolve()
     audio_path = args.audio.resolve()
+    wheel_path = args.wheel.resolve()
     output = args.output.resolve()
     if not model_dir.is_dir():
         die(f"--model-dir is not a directory: {model_dir}")
     if not audio_path.is_file():
         die(f"--audio is not a file: {audio_path}")
+    if wheel_path.is_symlink() or not wheel_path.is_file():
+        die(f"--wheel is not a regular non-symlink file: {wheel_path}")
     if not 1 <= args.max_new_tokens <= 512:
         die("--max-new-tokens must be in 1..=512")
     language = None if args.language.lower() == "auto" else args.language
     require_empty_output(output)
     config = require_model_identity(model_dir, variant)
+    try:
+        wheel_evidence = audit_wheel(wheel_path)
+    except ValueError as error:
+        die(f"official wheel audit failed: {error}")
 
     # The official model and all reference dependencies must resolve from the
     # pinned uv environment and the already-downloaded exact snapshot.
@@ -224,19 +438,23 @@ def main(argv: list[str] | None = None) -> int:
         import soundfile
         import torch
         import transformers
-        from qwen_asr import Qwen3ASRModel
-        from qwen_asr.inference.utils import parse_asr_output
     except ImportError as error:
         die(
-            "official qwen-asr imports are required; run with "
+            "official reference dependencies are required; run with "
             f"`uv run --project tools/parity/qwen3_asr --frozen`: {error}"
         )
 
-    package_version = importlib.metadata.version("qwen-asr")
-    if package_version != QWEN_ASR_VERSION:
-        die(f"qwen-asr={package_version}, expected {QWEN_ASR_VERSION}")
     if transformers.__version__ != TRANSFORMERS_VERSION:
         die(f"transformers={transformers.__version__}, expected {TRANSFORMERS_VERSION}")
+
+    wheel_directory = tempfile.TemporaryDirectory(prefix="qwen3-asr-official-wheel-")
+    wheel_root = Path(wheel_directory.name)
+    try:
+        extract_backend(wheel_path, wheel_root)
+        backend, (prompt_helper_type, parse_asr_output) = load_official_support(wheel_root)
+    except (ImportError, SyntaxError, ValueError) as error:
+        wheel_directory.cleanup()
+        die(f"authenticated official backend/support load failed: {error}")
 
     pcm, sample_rate = soundfile.read(str(audio_path), dtype="float32", always_2d=True)
     if sample_rate != SAMPLE_RATE or pcm.shape[1] != 1:
@@ -266,39 +484,35 @@ def main(argv: list[str] | None = None) -> int:
         "numpy": numpy.__version__,
         "torch": torch.__version__,
         "transformers": transformers.__version__,
-        "qwen_asr": package_version,
+        "qwen_asr": QWEN_ASR_VERSION,
         "device": "cpu",
         "dtype": "float32",
     }
     print(json.dumps({"reference_environment": environment}, sort_keys=True), flush=True)
 
-    # Calling the official wrapper also registers its exact custom AutoModel
-    # and AutoProcessor classes.  No local layer implementation exists here.
-    asr = Qwen3ASRModel.from_pretrained(
+    # Load the official Transformers backend directly; no wrapper registration
+    # or optional forced-aligner/librosa closure is involved.
+    model = backend.Qwen3ASRForConditionalGeneration.from_pretrained(
         str(model_dir),
-        max_inference_batch_size=1,
-        max_new_tokens=args.max_new_tokens,
         local_files_only=True,
-        dtype=torch.float32,
-        device_map="cpu",
-        low_cpu_mem_usage=True,
+        torch_dtype=torch.float32,
     )
-    if asr.backend != "transformers" or asr.model.device.type != "cpu":
-        die(f"official wrapper selected unexpected backend/device: {asr.backend}/{asr.model.device}")
-    if asr.model.dtype != torch.float32:
-        die(f"official model dtype={asr.model.dtype}, expected torch.float32")
+    model.to("cpu").eval()
+    processor = backend.Qwen3ASRProcessor.from_pretrained(str(model_dir), local_files_only=True)
 
-    prompt = asr._build_text_prompt(context=args.context, force_language=language)
-    inputs = asr.processor(text=[prompt], audio=[pcm], return_tensors="pt", padding=True)
-    inputs = inputs.to(asr.model.device).to(asr.model.dtype)
+    prompt_helper = prompt_helper_type.__new__(prompt_helper_type)
+    prompt_helper.processor = processor
+    prompt = prompt_helper._build_text_prompt(context=args.context, force_language=language)
+    inputs = processor(text=[prompt], audio=[pcm], return_tensors="pt", padding=True)
+    inputs = inputs.to(model.device).to(torch.float32)
     prompt_ids = inputs["input_ids"][0].detach().cpu().to(torch.int64)
 
     with torch.inference_mode():
-        audio_embeddings = asr.model.thinker.get_audio_features(
+        audio_embeddings = model.thinker.get_audio_features(
             inputs["input_features"],
             feature_attention_mask=inputs["feature_attention_mask"],
         )
-        generated = asr.model.generate(**inputs, max_new_tokens=args.max_new_tokens)
+        generated = model.generate(**inputs, max_new_tokens=args.max_new_tokens)
     if audio_embeddings.ndim != 2 or audio_embeddings.shape[1] != variant.hidden_size:
         die(
             f"official audio tap shape={tuple(audio_embeddings.shape)}, "
@@ -308,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     if sequences.ndim != 2 or sequences.shape[0] != 1:
         die(f"official generate returned unexpected sequences shape={tuple(sequences.shape)}")
     generated_ids = sequences[0, prompt_ids.numel() :].detach().cpu().to(torch.int64)
-    raw_text = asr.processor.batch_decode(
+    raw_text = processor.batch_decode(
         generated_ids.unsqueeze(0),
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
@@ -357,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
         "model_name": variant.model_name,
         "upstream_repo": variant.repo,
         "upstream_revision": variant.revision,
-        "qwen_asr_version": package_version,
+        "qwen_asr_version": QWEN_ASR_VERSION,
         "transformers_version": transformers.__version__,
         "torch_version": torch.__version__,
         "sample_rate": SAMPLE_RATE,
@@ -371,6 +585,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_config_sha256": sha256_file(model_dir / "config.json"),
         "source_audio_sha256": sha256_file(audio_path),
         "config_model_type": config["model_type"],
+        "official_wheel": wheel_evidence,
     }
     for name in artifact_names:
         path = output / name

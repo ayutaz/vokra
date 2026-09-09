@@ -27,7 +27,7 @@
 
 **Trigger half は M5-residual**: `crates/vokra-core/src/m5_residual_ops.rs` の `DIARIZE_OP` (FR-OP-82) は op 未実装で residual anchor のまま。従前の "trigger + license (pyannote HF-gated) double blocker" は本 wave で "trigger only" に縮小 (blocker text 更新済)。
 
-本文書は、残 trigger 側 (converter + runtime + parity) を実装する follow-up wave のための **完全な blueprint** を primary source ベースで scope out する。想像や推定を含まない (CLAUDE.md 「ハルシネーション厳禁」)。
+本文書は、残 trigger 側 (converter + runtime + parity) を実装する follow-up wave のための **完全な blueprint** を primary source ベースで scope out する。想像や推定を含まない（現行の no-invention ルールは `AGENTS.md`）。
 
 ## モデル 2 種の position
 
@@ -63,7 +63,7 @@ pyannote は **2 種の HF asset で 1 pipeline を構成する** 特殊な位�
   - Speaker embedding → likely `pyannote/wespeaker-voxceleb-resnet34-LM` or similar
   - Clustering algorithm → runtime function (agglomerative hierarchical clustering)
 
-**Implication**: 実装スコープの最小単位は `pyannote/segmentation-3.0` = PyanNet single model。diarization-3.1 は segmentation output → speaker embedding → clustering の runtime pipeline で、CAM++ speaker encoder が既に land 済 = Vokra は独自 pipeline を組める。**pyannote-audio 側の pipeline を wrap する必要はない** (whisper.cpp 型 clean-room re-imp の判断、CLAUDE.md 設計判断 4)。
+**Implication**: 実装スコープの最小単位は `pyannote/segmentation-3.0` = PyanNet single model。diarization-3.1 は segmentation output → speaker embedding → clustering の runtime pipeline で、CAM++ speaker encoder が既に land 済 = Vokra は独自 pipeline を組める。**pyannote-audio 側の pipeline を wrap する必要はない**（whisper.cpp 型 clean-room re-imp の当時判断；現行の実装・依存境界は `AGENTS.md` と backend guide を参照）。
 
 ## PyanNet architecture (primary source: MIT LICENSE)
 
@@ -254,7 +254,7 @@ pyannote pipeline の Python 版に依存せず、Vokra native の diarization p
 
 - HF cardData license verified via authenticated API (`api/models/pyannote/segmentation-3.0` 2026-07-30 CC 直接 fetch = `license: mit, gated: auto`)
 - PyanNet.py source verified via GitHub API + raw fetch (`github.com/pyannote/pyannote-audio/develop/src/pyannote/audio/models/segmentation/PyanNet.py` = MIT LICENSE header + full class definition CC 直接 fetch 2026-07-30)
-- Powerset multiclass class count = docstring から algebraic (3 speakers × 2 overlap = 7)、実 config.yaml 確認は owner の HF gate accept 後 (推定を書かない = CLAUDE.md「ハルシネーション厳禁」)
+- Powerset multiclass class count = docstring から algebraic (3 speakers × 2 overlap = 7)、実 config.yaml 確認は owner の HF gate accept 後（推定を書かない = `AGENTS.md` no-invention rule）
 
 ## 参考
 

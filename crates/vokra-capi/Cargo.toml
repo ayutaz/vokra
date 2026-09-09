@@ -1,6 +1,6 @@
 [package]
 name = "vokra-capi"
-description = "C ABI surface of the Vokra runtime (cbindgen-generated header; extern \"C\" API lands in M0-09)"
+description = "C ABI surface of the Vokra runtime with a cbindgen-generated header and extern C API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

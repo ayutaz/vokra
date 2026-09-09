@@ -14,6 +14,7 @@ checkpoint plus prepared GGUF exceeds the local aggregate-artifact threshold.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import subprocess
@@ -29,6 +30,7 @@ CHECKPOINT_BYTES = 1_945_790_254
 CHECKPOINT_SHA256 = (
     "be501a01f26fcdc7663a062dff86af839afbaef7c4de32f5e42d7e1ad2784da4"
 )
+BLOCKED_UNSAFE_PICKLE = "BLOCKED_UNSAFE_PICKLE"
 CONFIG_BYTES = 5_552
 CONFIG_SHA256 = "f4fa0eb82cc78bfebb43c56d68791afb01788085a18897d20999af7bc45d51d3"
 TOKENS_BYTES = 119
@@ -85,6 +87,70 @@ def tensor_value(value: Any):
     return value.detach().to(device="cpu", dtype=value.dtype).contiguous()
 
 
+def _assert_checkpoint_loader_contract() -> None:
+    """Keep checkpoint deserialization restricted against future regressions."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    load_calls = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "load"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "torch"
+            ):
+                load_calls += 1
+                weights_only = [
+                    keyword
+                    for keyword in node.keywords
+                    if keyword.arg == "weights_only"
+                ]
+                assert len(weights_only) == 1
+                assert isinstance(weights_only[0].value, ast.Constant)
+                assert weights_only[0].value.value is True
+            if (
+                isinstance(function, ast.Name)
+                and function.id == "setattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "object"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "patch"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "load"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "torch"
+                ):
+                    raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, ast.ImportFrom):
+            assert all(alias.name != "Unpickler" for alias in node.names)
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            assert not name.endswith("Unpickler")
+    assert load_calls > 0
+
+
 def dump(args: argparse.Namespace) -> None:
     verify_funasr_checkout(args.funasr_source)
     verify_file(args.checkpoint, CHECKPOINT_BYTES, CHECKPOINT_SHA256, "checkpoint")
@@ -115,7 +181,14 @@ def dump(args: argparse.Namespace) -> None:
         model_conf=OmegaConf.to_container(config.model_conf, resolve=True),
         vocab_size=len(token_list),
     )
-    raw = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
+    try:
+        raw = torch.load(str(args.checkpoint), map_location="cpu", weights_only=True)
+    except Exception as error:  # noqa: BLE001 - fail-closed deserialization boundary
+        raise RuntimeError(
+            f"{BLOCKED_UNSAFE_PICKLE}: emotion2vec checkpoint requires pickle "
+            "globals outside PyTorch's restricted weights_only loader; unsafe "
+            "fallback is forbidden"
+        ) from error
     if not isinstance(raw, dict) or not isinstance(raw.get("model"), dict):
         sys.exit("checkpoint must contain a dict-valued top-level 'model'")
     incompatible = model.load_state_dict(raw["model"], strict=True)
@@ -214,6 +287,8 @@ def self_test() -> None:
     assert LABELS[-1] == "<unk>"
     assert len(FUNASR_REVISION) == 40
     assert len(CHECKPOINT_SHA256) == 64
+    assert BLOCKED_UNSAFE_PICKLE == "BLOCKED_UNSAFE_PICKLE"
+    _assert_checkpoint_loader_contract()
     print("emotion2vec_dump_reference: self-test PASS")
 
 

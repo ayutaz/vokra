@@ -180,6 +180,8 @@ impl LangIdContract {
         })?;
         require_string(file, GGUF_KEY_MODEL_CATEGORY, CATEGORY)?;
         require_string(file, GGUF_KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf())?;
+        require_string(file, chunks::KEY_PROVENANCE_LICENSE, "apache-2.0")?;
+        require_string(file, chunks::KEY_PROVENANCE_WEIGHT_LICENSE, "permissive")?;
         require_string(file, KEY_ARTIFACT_LAYOUT, ARTIFACT_LAYOUT)?;
 
         let upstream_revision = metadata_string(file, KEY_UPSTREAM_REVISION)?.to_owned();
@@ -975,11 +977,25 @@ mod tests {
     }
 
     fn contract_file(variant: LangIdVariant) -> GgufFile {
+        contract_file_with_provenance(variant, Some("apache-2.0"), Some("permissive"))
+    }
+
+    fn contract_file_with_provenance(
+        variant: LangIdVariant,
+        license: Option<&str>,
+        weight_license: Option<&str>,
+    ) -> GgufFile {
         let mut builder = GgufBuilder::new();
         builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         builder.add_string(chunks::KEY_MODEL_NAME, variant.name());
         builder.add_string(GGUF_KEY_MODEL_CATEGORY, CATEGORY);
         builder.add_string(GGUF_KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
+        if let Some(value) = license {
+            builder.add_string(chunks::KEY_PROVENANCE_LICENSE, value);
+        }
+        if let Some(value) = weight_license {
+            builder.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, value);
+        }
         builder.add_string(KEY_ARTIFACT_LAYOUT, ARTIFACT_LAYOUT);
         builder.add_string(
             KEY_UPSTREAM_REVISION,
@@ -1025,6 +1041,33 @@ mod tests {
     }
 
     #[test]
+    fn provenance_license_and_weight_class_are_exact() {
+        for (license, weight_license, expected) in [
+            (
+                Some("mit"),
+                Some("permissive"),
+                chunks::KEY_PROVENANCE_LICENSE,
+            ),
+            (
+                Some("apache-2.0"),
+                Some("copyleft"),
+                chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            ),
+            (None, Some("permissive"), chunks::KEY_PROVENANCE_LICENSE),
+            (
+                Some("apache-2.0"),
+                None,
+                chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            ),
+        ] {
+            let file =
+                contract_file_with_provenance(LangIdVariant::VoxLingua107, license, weight_license);
+            let error = LangIdContract::from_gguf(&file).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
     fn old_embedding_only_artifact_fails_before_forward() {
         let file = contract_file(LangIdVariant::VoxLingua107);
         let error = LangIdEcapa::from_gguf(&file).unwrap_err();
@@ -1044,6 +1087,8 @@ mod tests {
         builder.add_string(chunks::KEY_MODEL_NAME, NAME_VOXLINGUA107);
         builder.add_string(GGUF_KEY_MODEL_CATEGORY, CATEGORY);
         builder.add_string(GGUF_KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF_VOXLINGUA107);
+        builder.add_string(chunks::KEY_PROVENANCE_LICENSE, "apache-2.0");
+        builder.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, "permissive");
         builder.add_string(KEY_ARTIFACT_LAYOUT, ARTIFACT_LAYOUT);
         builder.add_string(
             KEY_UPSTREAM_REVISION,

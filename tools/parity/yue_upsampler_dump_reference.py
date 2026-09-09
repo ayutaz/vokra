@@ -4,7 +4,9 @@
 The oracle imports ``VocosBackbone`` and ``ISTFTHead`` directly from the
 released ``vocos==0.1.0`` wheel pinned by ``tools/parity/uv.lock``. It never
 calls Vokra code. The exact ``m-a-p/YuE-upsampler`` 151k checkpoint is pinned
-by revision, byte length, and SHA-256 before PyTorch deserialization.
+by revision, byte length, and SHA-256 before restricted PyTorch deserialization.
+No unsafe pickle fallback is permitted; unsupported pickle globals fail closed
+before any output is created.
 
 Run only through the repository parity environment, normally on VAST::
 
@@ -17,6 +19,7 @@ Run only through the repository parity environment, normally on VAST::
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -42,6 +45,7 @@ N_FFT = 3528
 HOP_LENGTH = 882
 SAMPLE_RATE = 44_100
 PADDING = "same"
+BLOCKED_UNSAFE_PICKLE = "BLOCKED_UNSAFE_PICKLE"
 
 
 def sha256_file(path: Path) -> str:
@@ -82,6 +86,70 @@ def unwrap_state_dict(raw: object) -> dict:
     return raw
 
 
+def _assert_checkpoint_loader_contract() -> None:
+    """Keep checkpoint deserialization restricted against future regressions."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    load_calls = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "load"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "torch"
+            ):
+                load_calls += 1
+                weights_only = [
+                    keyword
+                    for keyword in node.keywords
+                    if keyword.arg == "weights_only"
+                ]
+                assert len(weights_only) == 1
+                assert isinstance(weights_only[0].value, ast.Constant)
+                assert weights_only[0].value.value is True
+            if (
+                isinstance(function, ast.Name)
+                and function.id == "setattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "object"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "patch"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "torch"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "load"
+            ):
+                raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "load"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "torch"
+                ):
+                    raise AssertionError("torch.load monkeypatch is forbidden")
+        if isinstance(node, ast.ImportFrom):
+            assert all(alias.name != "Unpickler" for alias in node.names)
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            assert not name.endswith("Unpickler")
+    assert load_calls > 0
+
+
 def self_test() -> int:
     assert len(UPSTREAM_REVISION) == 40
     assert len(CHECKPOINT_SHA256) == 64
@@ -89,6 +157,8 @@ def self_test() -> int:
     assert N_FFT % 2 == 0
     assert N_FFT // HOP_LENGTH == 4
     assert SAMPLE_RATE // HOP_LENGTH == 50
+    assert BLOCKED_UNSAFE_PICKLE == "BLOCKED_UNSAFE_PICKLE"
+    _assert_checkpoint_loader_contract()
     print("yue_upsampler_dump_reference self-test: ok")
     return 0
 
@@ -117,9 +187,12 @@ def main() -> int:
     torch.manual_seed(0)
     try:
         raw = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
-    except Exception:
-        # This fallback is limited to the exact hash-verified official file.
-        raw = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    except Exception as error:  # noqa: BLE001 - fail-closed deserialization boundary
+        raise RuntimeError(
+            f"{BLOCKED_UNSAFE_PICKLE}: YuE-upsampler checkpoint requires pickle "
+            "globals outside PyTorch's restricted weights_only loader; unsafe "
+            "fallback is forbidden"
+        ) from error
     state = unwrap_state_dict(raw)
 
     backbone = VocosBackbone(

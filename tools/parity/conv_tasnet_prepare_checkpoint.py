@@ -13,14 +13,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
-
-import torch
-from safetensors.torch import save_file
-
 
 UPSTREAM_HF = "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k"
 UPSTREAM_REVISION = "bb8a876bc157b5cf3c405994accb798c49146016"
+CHECKPOINT_BYTES = 20_130_704
+CHECKPOINT_SHA256 = "dd8ddefe95a35761f8a48643a618eba908572d04d33208a8ed5451fb5a4378d0"
 EXPECTED_ARGS = {
     "fb_name": "FreeFB",
     "n_filters": 512,
@@ -90,12 +89,70 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def regular_absent(path: Path) -> bool:
+    return not path.exists() and not path.is_symlink()
+
+
+def clean_ancestors(path: Path) -> bool:
+    absolute = Path(os.path.abspath(path))
+    return all(not parent.is_symlink() for parent in absolute.parents)
+
+
+def disjoint(left: Path, right: Path) -> bool:
+    left, right = Path(os.path.abspath(left)), Path(os.path.abspath(right))
+    return left != right and left not in right.parents and right not in left.parents
+
+
+def self_test() -> None:
+    assert EXPECTED_ARGS["n_filters"] == 512
+    assert EXPECTED_ARGS["stride"] == 16
+    assert len(expected_shapes()) == 345
+    with __import__("tempfile").TemporaryDirectory(prefix="conv-tasnet-prep-") as raw:
+        root = Path(raw)
+        symlink_target = root / "target"
+        symlink_target.write_bytes(b"fixture")
+        link = root / "link"
+        link.symlink_to(symlink_target)
+        assert not regular_absent(link)
+        assert regular_absent(root / "new-output")
+        nested = root / "link" / "nested" / "output"
+        assert not clean_ancestors(nested)
+        assert disjoint(root / "new-output", symlink_target)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+
+    if args.self_test:
+        if any(value is not None for value in (args.checkpoint, args.output, args.manifest)):
+            parser.error("--self-test accepts no other arguments")
+        self_test()
+        print("conv_tasnet_prepare_checkpoint self-test: OK")
+        return 0
+
+    if any(value is None for value in (args.checkpoint, args.output, args.manifest)):
+        parser.error("normal runs require --checkpoint, --output, and --manifest")
+
+    if args.checkpoint.is_symlink() or not args.checkpoint.is_file():
+        raise SystemExit("checkpoint must be a regular non-symlink file")
+    if not clean_ancestors(args.checkpoint):
+        raise SystemExit("checkpoint has a symlinked lexical ancestor")
+    if args.checkpoint.stat().st_size != CHECKPOINT_BYTES or sha256(args.checkpoint) != CHECKPOINT_SHA256:
+        raise SystemExit("checkpoint bytes/SHA-256 do not match the authenticated official identity")
+    if not regular_absent(args.output) or not regular_absent(args.manifest):
+        raise SystemExit("output and manifest must be absent non-symlink paths")
+    if not clean_ancestors(args.output) or not clean_ancestors(args.manifest):
+        raise SystemExit("output paths have a symlinked lexical ancestor")
+    if not disjoint(args.output, args.checkpoint) or not disjoint(args.manifest, args.checkpoint):
+        raise SystemExit("output paths overlap the checkpoint")
+
+    import torch
+    from safetensors.torch import save_file
 
     payload = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if not isinstance(payload, dict):

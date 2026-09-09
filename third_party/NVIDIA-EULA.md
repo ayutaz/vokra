@@ -7,13 +7,13 @@ Apache-2.0 license (Vokra bundles no NVIDIA code, so no NVIDIA license text is
 vendored here). Cross-referenced from `NOTICE` and `docs/license-audit.md`.
 
 > Requirement source IDs: FR-BE-08, NFR-LG-04, `docs/milestones.md` §6 M2-03,
-> `docs/tickets/m2/M2-03-cuda-backend.md` (T02), CLAUDE.md
-> "NVIDIA CUDA / cuDNN EULA 準拠", `docs/onnx-alternative-research.md` §16.2.
+> `docs/tickets/m2/M2-03-cuda-backend.md` (T02), `AGENTS.md` memory-safety and
+> zero-dependency invariants, `docs/onnx-alternative-research.md` §16.2.
 
 ## Authoritative EULA texts
 
 Read the current text before shipping; **do not paraphrase clause numbers from
-memory** (they change between toolkit versions — CLAUDE.md hallucination
+memory** (they change between toolkit versions — repository no-invention
 red line). Confirm the applicable version at implementation / release time:
 
 - **CUDA Toolkit EULA** — <https://docs.nvidia.com/cuda/eula/index.html>

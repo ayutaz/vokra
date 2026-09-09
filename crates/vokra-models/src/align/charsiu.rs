@@ -31,16 +31,12 @@ use super::{AlignedToken, LoadError};
 
 /// The `vokra.model.arch` value a Charsiu GGUF must carry.
 ///
-/// This is the **reader** half of a writer contract whose writer has not
-/// landed yet: no `crates/vokra-convert/src/models/charsiu.rs` exists as
-/// of 2026-08-15, because the real-weight binder is itself a follow-up
-/// wave (see [`Charsiu::from_gguf`]). The tag is fixed here first so the
-/// converter, when it lands, has exactly one string to match — the same
-/// "two copies of the constant is deliberate" convention
-/// [`crate::pyannote`] documents for the pairs that already exist. It is
-/// **not** transcribed from any upstream artifact (upstream Charsiu ships
-/// HF `Wav2Vec2ForCTC` safetensors, which carry no Vokra arch tag at
-/// all).
+/// This is the **reader** half of the writer contract in
+/// `crates/vokra-convert/src/models/charsiu.rs`. The tag is deliberately
+/// duplicated across the writer and reader so each side fails closed if the
+/// other changes. It is **not** transcribed from any upstream artifact
+/// (upstream Charsiu ships HF `Wav2Vec2ForCTC` weights, which carry no Vokra
+/// arch tag at all).
 ///
 /// Deliberately distinct from `wav2vec2_ctc` (the generic Meta
 /// wav2vec2 + CTC ASR head, which emits characters/letters) even though

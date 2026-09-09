@@ -1,6 +1,16 @@
 # Binary-size budget & levers (M1-11a)
 
-Status: Draft (Claude Code, M1-11a). Enforced by
+> **2026-08-30 current-state boundary:** This document records the M1-11a
+> design and its dated calibration assumptions. The active gate is the current
+> [`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh): it uses
+> a 10 MiB hard cdylib budget and a 5 MiB informational mobile goal by default.
+> The shipped runtime profile and the standalone `release-min` exception are
+> defined by the current root [`Cargo.toml`](../../Cargo.toml). This note does
+> not claim a newly measured full-model artifact; use the gate's recorded
+> artifact or remote verification evidence for that claim. The “soft gate
+> today” wording below is historical M1-11a context.
+
+Historical status: Draft (Claude Code, M1-11a). Enforced by
 [`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh); levers live
 in the root [`Cargo.toml`](../../Cargo.toml) `[profile.release]` /
 `[profile.release-min]`.

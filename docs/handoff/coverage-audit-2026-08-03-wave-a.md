@@ -1,5 +1,12 @@
 # Coverage-audit 2026-08-03 Wave A + B + D handoff
 
+> **2026-08-30 supersession boundary:** This is a dated coverage campaign
+> record. Its old publication counts, branch/agent claims, and local-size
+> recommendations are historical. Current model inventory and license status
+> come from `docs/license-audit.md` and
+> `scripts/publish/check-catalog-reality.sh`; current resource handling is VAST
+> for model-plus-shard totals >=2 GB, with unknown size not `local-safe`.
+
 > **LICENSE CORRECTION 2026-08-22**: the older TEN-VAD entries below preserve
 > the 2026-08-04 execution history, but their plain `apache-2.0`
 > classification was wrong. The pinned upstream `LICENSE` adds

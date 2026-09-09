@@ -1,0 +1,26 @@
+[project]
+name = "vokra-mms-1b-all-parity"
+version = "0.1.0"
+description = "Authenticated MMS-1B-All model-free reference closure"
+requires-python = "==3.12.*"
+dependencies = [
+    "huggingface-hub==1.30.0",
+    "numpy==2.5.3",
+    "safetensors==0.8.0",
+    "torch==2.7.1",
+    "transformers==5.16.1",
+]
+
+[tool.uv]
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

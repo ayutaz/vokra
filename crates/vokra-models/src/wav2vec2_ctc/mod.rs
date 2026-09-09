@@ -58,6 +58,8 @@ const CONV_STRIDE: [usize; 7] = [5, 2, 2, 2, 2, 2, 2];
 
 const KEY_MODEL_ID: &str = "vokra.provenance.model_id";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const MMS_UPSTREAM_HF: &str = "facebook/mms-1b-all";
+const MMS_UPSTREAM_REVISION: &str = "3d33597edbdaaba14a8e858e2c8caa76e3cec0cd";
 const KEY_HIDDEN: &str = "vokra.wav2vec2_ctc.hidden_size";
 const KEY_LAYERS: &str = "vokra.wav2vec2_ctc.n_layer";
 const KEY_HEADS: &str = "vokra.wav2vec2_ctc.n_head";
@@ -331,10 +333,9 @@ impl Wav2Vec2Ctc {
         require_string(file, chunks::KEY_MODEL_ARCH, ARCH)?;
         let model_id = meta_string(file, KEY_MODEL_ID)?;
         if model_id == "mms-1b-all" {
-            return Err(VokraError::UnsupportedOp(
-                "wav2vec2_ctc: public `vokra/mms-1b-all-base` is an 8.9 MB adapter-only artifact, not the 1B backbone. Its stamped 1024/24 axes and permissive license are also incompatible with the verified facebook/mms-1b-all 1280/48 CC-BY-NC-4.0 contract. Bind is refused until a full, correctly licensed backbone+adapter GGUF is converted and published through the gated workflow."
-                    .to_owned(),
-            ));
+            return Err(VokraError::ModelLoad(format!(
+                "wav2vec2_ctc: MMS `mms-1b-all` is inspection-only; the public `vokra/mms-1b-all-base` file is an 8.9 MB adapter-only artifact, not the {MMS_UPSTREAM_HF} 1B backbone, and must not be repaired or aliased. A valid artifact must combine the full backbone with one explicitly selected official language adapter via `Wav2Vec2ForCTC.load_adapter`, carry CC-BY-NC-4.0/NonCommercial provenance, the exact revision {MMS_UPSTREAM_REVISION}, tokenizer and label sidecars, and an audited complete tensor manifest. Native CPU/Metal binding is refused until that VAST evidence exists; no fallback is permitted.",
+            )));
         }
         let spec = VARIANTS
             .iter()

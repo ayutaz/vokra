@@ -11,8 +11,8 @@
 //! embedding a Python interpreter and re-breaking the NFR-DS-02
 //! zero-dep posture). Output: a GGUF carrying every float tensor
 //! verbatim under its upstream safetensors name, plus the
-//! `vokra.provenance.*` / `vokra.model.*` metadata chunks a future
-//! native BigVGAN loader will read.
+//! `vokra.provenance.*` / `vokra.model.*` metadata chunks read by the strict
+//! native BigVGAN binder in `crates/vokra-models/src/bigvgan/`.
 //!
 //! # Provenance
 //!
@@ -81,6 +81,7 @@ use std::path::Path;
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_ops::bigvgan_generator::tensor_manifest_for_variant;
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -100,75 +101,21 @@ const KEY_BIGVGAN_VARIANT: &str = "vokra.bigvgan.variant";
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
-/// Which BigVGAN release this GGUF represents. The four variants share
-/// the AMPBlock1 + Snake/SnakeBeta topology byte-for-byte — only sample
-/// rate + num_mels + upsample_rates differ, so this tag is what the
-/// runtime checks to pick the shape-checked config bundle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BigVGanVariant {
-    /// `nvidia/bigvgan_v2_22khz_80band_256x` (D2): 22 050 Hz output,
-    /// 80-band mel input, 256× total upsample.
-    V2_22khz80Band256x,
-    /// `nvidia/bigvgan_v2_44khz_128band_512x` (D3): 44 100 Hz output,
-    /// 128-band mel input, 512× total upsample.
-    V2_44khz128Band512x,
-    /// `nvidia/bigvgan_v2_24khz_100band_256x` (D4): 24 000 Hz output,
-    /// 100-band mel input, 256× total upsample.
-    V2_24khz100Band256x,
-    /// `nvidia/bigvgan_base_24khz_100band` (D5): v1 base 24 000 Hz
-    /// output, 100-band mel input. Distinct from D4 by channel and stage
-    /// schedule; the released base config also uses SnakeBeta plus the
-    /// alias-free activation wrapper.
-    BaseV1_24khz100Band,
-}
+pub use vokra_ops::bigvgan_generator::BigVGanVariant;
 
-impl BigVGanVariant {
-    /// Wire tag written into `vokra.bigvgan.variant`.
-    pub fn tag(self) -> &'static str {
-        match self {
-            Self::V2_22khz80Band256x => "v2_22khz_80band_256x",
-            Self::V2_44khz128Band512x => "v2_44khz_128band_512x",
-            Self::V2_24khz100Band256x => "v2_24khz_100band_256x",
-            Self::BaseV1_24khz100Band => "base_v1_24khz_100band",
+fn source_description(variant: BigVGanVariant) -> &'static str {
+    match variant {
+        BigVGanVariant::V2_22khz80Band256x => {
+            "nvidia/bigvgan_v2_22khz_80band_256x (BigVGAN v2 vocoder, MIT)"
         }
-    }
-
-    /// `vokra.model.name` value for this variant.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::V2_22khz80Band256x => "bigvgan-v2-22khz-80band-256x",
-            Self::V2_44khz128Band512x => "bigvgan-v2-44khz-128band-512x",
-            Self::V2_24khz100Band256x => "bigvgan-v2-24khz-100band-256x",
-            Self::BaseV1_24khz100Band => "bigvgan-base-24khz-100band",
+        BigVGanVariant::V2_44khz128Band512x => {
+            "nvidia/bigvgan_v2_44khz_128band_512x (BigVGAN v2 vocoder, MIT)"
         }
-    }
-
-    /// Upstream HF path for this variant (the primary redistribution
-    /// source used by the model-card generator).
-    pub fn upstream_hf(self) -> &'static str {
-        match self {
-            Self::V2_22khz80Band256x => "nvidia/bigvgan_v2_22khz_80band_256x",
-            Self::V2_44khz128Band512x => "nvidia/bigvgan_v2_44khz_128band_512x",
-            Self::V2_24khz100Band256x => "nvidia/bigvgan_v2_24khz_100band_256x",
-            Self::BaseV1_24khz100Band => "nvidia/bigvgan_base_24khz_100band",
+        BigVGanVariant::V2_24khz100Band256x => {
+            "nvidia/bigvgan_v2_24khz_100band_256x (BigVGAN v2 vocoder, MIT)"
         }
-    }
-
-    /// Human-readable description for the provenance `source` field.
-    fn source_description(self) -> &'static str {
-        match self {
-            Self::V2_22khz80Band256x => {
-                "nvidia/bigvgan_v2_22khz_80band_256x (BigVGAN v2 vocoder, MIT)"
-            }
-            Self::V2_44khz128Band512x => {
-                "nvidia/bigvgan_v2_44khz_128band_512x (BigVGAN v2 vocoder, MIT)"
-            }
-            Self::V2_24khz100Band256x => {
-                "nvidia/bigvgan_v2_24khz_100band_256x (BigVGAN v2 vocoder, MIT)"
-            }
-            Self::BaseV1_24khz100Band => {
-                "nvidia/bigvgan_base_24khz_100band (BigVGAN v1 base vocoder, MIT)"
-            }
+        BigVGanVariant::BaseV1_24khz100Band => {
+            "nvidia/bigvgan_base_24khz_100band (BigVGAN v1 base vocoder, MIT)"
         }
     }
 }
@@ -193,6 +140,142 @@ pub struct BigVGanReport {
     /// BF16 tensors that landed on the pass-through arm (subset of
     /// [`Self::written`]).
     pub bf16_passthrough: usize,
+}
+
+fn validate_descriptor_manifest(
+    actual_descriptors: &[(&str, &[u64], GgmlType)],
+    variant: BigVGanVariant,
+) -> Result<(), ConvertError> {
+    use std::collections::BTreeMap;
+
+    let manifest = tensor_manifest_for_variant(variant);
+    let expected: BTreeMap<&str, &[u64]> = manifest
+        .iter()
+        .map(|spec| (spec.name.as_str(), spec.shape.as_slice()))
+        .collect();
+    let actual: BTreeMap<&str, (&[u64], GgmlType)> = actual_descriptors
+        .iter()
+        .map(|(name, shape, dtype)| (*name, (*shape, *dtype)))
+        .collect();
+
+    let missing: Vec<&str> = expected
+        .keys()
+        .filter(|name| !actual.contains_key(**name))
+        .copied()
+        .take(4)
+        .collect();
+    let extra: Vec<&str> = actual
+        .keys()
+        .filter(|name| !expected.contains_key(**name))
+        .copied()
+        .take(4)
+        .collect();
+    if !missing.is_empty() || !extra.is_empty() || expected.len() != actual.len() {
+        return Err(ConvertError::Parse(format!(
+            "BigVGAN {variant:?} tensor manifest mismatch (expected {}, found {}); missing={missing:?}, extra={extra:?}",
+            expected.len(),
+            actual_descriptors.len(),
+        )));
+    }
+
+    for (name, shape, dtype) in actual_descriptors {
+        let expected_shape = expected
+            .get(name)
+            .expect("manifest cardinality checked above");
+        if *shape != *expected_shape {
+            return Err(ConvertError::Parse(format!(
+                "BigVGAN tensor `{}` shape {:?}, expected {:?}",
+                name, shape, expected_shape
+            )));
+        }
+        if !matches!(dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) {
+            return Err(ConvertError::Parse(format!(
+                "BigVGAN tensor `{}` has unsupported dtype {:?}; expected F32, F16, or BF16",
+                name, dtype
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_safetensors_manifest(
+    st: &SafetensorsFile,
+    variant: BigVGanVariant,
+) -> Result<(), ConvertError> {
+    let descriptors: Vec<(&str, &[u64], GgmlType)> = st
+        .tensors()
+        .iter()
+        .map(|tensor| (tensor.name.as_str(), tensor.shape.as_slice(), tensor.dtype))
+        .collect();
+    validate_descriptor_manifest(&descriptors, variant)?;
+    for tensor in st.tensors() {
+        if let Some(index) = first_non_finite_index(st, tensor) {
+            return Err(ConvertError::Parse(format!(
+                "BigVGAN tensor `{}` contains a non-finite value at index {index}",
+                tensor.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn first_non_finite_index(
+    st: &SafetensorsFile,
+    tensor: &vokra_core::safetensors::SafeTensorInfo,
+) -> Option<usize> {
+    let bytes = st.tensor_bytes(tensor);
+    match tensor.dtype {
+        GgmlType::F32 => bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_bits(u32::from_le_bytes(chunk.try_into().unwrap())))
+            .position(|value| !value.is_finite()),
+        GgmlType::F16 => bytes
+            .chunks_exact(2)
+            .map(|chunk| {
+                vokra_core::gguf::quant::f16_to_f32(u16::from_le_bytes([chunk[0], chunk[1]]))
+            })
+            .position(|value| !value.is_finite()),
+        GgmlType::BF16 => bytes
+            .chunks_exact(2)
+            .map(|chunk| f32::from_bits(u32::from(u16::from_le_bytes([chunk[0], chunk[1]])) << 16))
+            .position(|value| !value.is_finite()),
+        _ => None,
+    }
+}
+
+fn stamp_metadata(b: &mut GgufBuilder, variant: BigVGanVariant, license: Option<&str>) {
+    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    b.add_string(chunks::KEY_MODEL_NAME, variant.name());
+    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    b.add_string(KEY_BIGVGAN_VARIANT, variant.tag());
+
+    let (spdx, class) = match license {
+        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
+        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
+    };
+    vokra_core::stamp_provenance(
+        b,
+        class,
+        &spdx,
+        Some(variant.name()),
+        Some(source_description(variant)),
+    );
+    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
+}
+
+fn append_passthrough_tensor(
+    b: &mut GgufBuilder,
+    st: &SafetensorsFile,
+    tensor: &vokra_core::safetensors::SafeTensorInfo,
+) -> Result<(), ConvertError> {
+    b.add_tensor(
+        &tensor.name,
+        tensor.dtype,
+        tensor.shape.clone(),
+        st.tensor_bytes(tensor).to_vec(),
+    )
+    .map_err(|e| ConvertError::Gguf(e.to_string()))?;
+    Ok(())
 }
 
 /// Converts a `nvidia/bigvgan_*` safetensors checkpoint at `input`
@@ -230,25 +313,13 @@ pub fn convert_bigvgan_file(
     // sibling non-streaming BF16 pass-through converters use applies.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
+    // Validate the complete descriptor and value contract before constructing
+    // metadata or writing any output. A malformed checkpoint must never leave
+    // behind a seemingly valid partial GGUF.
+    validate_safetensors_manifest(&st, variant)?;
 
     let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, variant.name());
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_BIGVGAN_VARIANT, variant.tag());
-
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
-    };
-    vokra_core::stamp_provenance(
-        &mut b,
-        class,
-        &spdx,
-        Some(variant.name()),
-        Some(variant.source_description()),
-    );
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
+    stamp_metadata(&mut b, variant, license);
 
     let mut report = BigVGanReport::default();
     // Float tensors pass through **verbatim** — no convert-time widening.
@@ -259,13 +330,7 @@ pub fn convert_bigvgan_file(
         report.read += 1;
         match t.dtype {
             GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )
-                .map_err(|e| ConvertError::Gguf(e.to_string()))?;
+                append_passthrough_tensor(&mut b, &st, t)?;
                 report.written += 1;
                 if t.dtype == GgmlType::BF16 {
                     report.bf16_passthrough += 1;
@@ -351,234 +416,157 @@ mod tests {
     }
 
     #[test]
-    fn bf16_tensor_passes_through_verbatim_v2_24khz() {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        assert_eq!(bf16.len(), 12);
-
-        // Mirror an actual upstream BigVGAN tensor name from
-        // bigvgan.py L235-245 (`ups.{i}.0.weight` is the ith
-        // ConvTranspose1d in the upsample stack).
-        let input_bytes = safetensors_one_bf16("ups.0.0.weight", &[2, 3], &bf16);
-        let input_path = write_temp("v2-24k-in", &input_bytes);
-        let output_path = write_temp("v2-24k-out", &[]);
-
-        let report = convert_bigvgan_file(
-            &input_path,
-            &output_path,
-            BigVGanVariant::V2_24khz100Band256x,
-            None,
-        )
-        .expect("convert_bigvgan_file must accept a well-formed BF16 checkpoint");
-        assert_eq!(report.read, 1);
-        assert_eq!(report.written, 1);
-        assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(report.bf16_passthrough, 1);
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
-        let info = file
-            .tensor_info("ups.0.0.weight")
-            .expect("BF16 tensor present in output");
-        assert_eq!(info.dtype, GgmlType::BF16, "no convert-time widening");
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            bf16.as_slice(),
-            "BF16 payload must be byte-identical"
-        );
-
-        // Variant discriminator was written.
-        assert_eq!(
-            file.get(KEY_BIGVGAN_VARIANT).and_then(|v| v.as_str()),
-            Some("v2_24khz_100band_256x"),
-        );
-        // Model name is variant-specific (mirror T3 pattern).
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some("bigvgan-v2-24khz-100band-256x"),
-        );
-        // Upstream HF is variant-specific.
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some("nvidia/bigvgan_v2_24khz_100band_256x"),
-        );
-        // License defaults to mit.
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("mit"),
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some("vocoder"),
-        );
-
-        std::fs::remove_file(&input_path).ok();
-        std::fs::remove_file(&output_path).ok();
-    }
-
-    #[test]
-    fn variant_v2_44khz_128band_lands_distinct_stamps() {
-        // Distinct variant surfaces a distinct name + upstream_hf + tag —
-        // guards against a regression that would map all four variants to
-        // the same wire tag.
-        let values: [f32; 2] = [1.0, -2.5];
-        let f32_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let input_bytes = safetensors_one_f32("conv_pre.weight", &[1, 2], &f32_bytes);
-        let input_path = write_temp("v2-44k-in", &input_bytes);
-        let output_path = write_temp("v2-44k-out", &[]);
-
-        convert_bigvgan_file(
-            &input_path,
-            &output_path,
+    fn shared_descriptor_manifest_covers_all_four_variants() {
+        let variants = [
+            BigVGanVariant::V2_22khz80Band256x,
             BigVGanVariant::V2_44khz128Band512x,
-            None,
-        )
-        .expect("convert must succeed");
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
-        assert_eq!(
-            file.get(KEY_BIGVGAN_VARIANT).and_then(|v| v.as_str()),
-            Some("v2_44khz_128band_512x"),
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some("bigvgan-v2-44khz-128band-512x"),
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some("nvidia/bigvgan_v2_44khz_128band_512x"),
-        );
-
-        std::fs::remove_file(&input_path).ok();
-        std::fs::remove_file(&output_path).ok();
-    }
-
-    #[test]
-    fn variant_v2_22khz_80band_lands_distinct_stamps() {
-        // Non-zero distinctive values (avoid `3.14` which triggers
-        // `clippy::approx_constant` against `f32::consts::PI`).
-        let f32_bytes: Vec<u8> = [7.25_f32, -1.0]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let input_bytes = safetensors_one_f32("conv_post.weight", &[1, 2], &f32_bytes);
-        let input_path = write_temp("v2-22k-in", &input_bytes);
-        let output_path = write_temp("v2-22k-out", &[]);
-
-        convert_bigvgan_file(
-            &input_path,
-            &output_path,
-            BigVGanVariant::V2_22khz80Band256x,
-            None,
-        )
-        .expect("convert must succeed");
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
-        assert_eq!(
-            file.get(KEY_BIGVGAN_VARIANT).and_then(|v| v.as_str()),
-            Some("v2_22khz_80band_256x"),
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some("bigvgan-v2-22khz-80band-256x"),
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some("nvidia/bigvgan_v2_22khz_80band_256x"),
-        );
-
-        std::fs::remove_file(&input_path).ok();
-        std::fs::remove_file(&output_path).ok();
-    }
-
-    #[test]
-    fn variant_base_v1_24khz_lands_distinct_stamps() {
-        // BaseV1_24khz100Band is functionally distinct from
-        // V2_24khz100Band256x because base v1 predates SnakeBeta + the
-        // v2 anti-aliased activation wrapper. Tag / name / upstream_hf
-        // must all be distinct.
-        let f32_bytes: Vec<u8> = [0.5_f32].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let input_bytes = safetensors_one_f32("conv_pre.bias", &[1], &f32_bytes);
-        let input_path = write_temp("base-v1-in", &input_bytes);
-        let output_path = write_temp("base-v1-out", &[]);
-
-        convert_bigvgan_file(
-            &input_path,
-            &output_path,
+            BigVGanVariant::V2_24khz100Band256x,
             BigVGanVariant::BaseV1_24khz100Band,
-            None,
-        )
-        .expect("convert must succeed");
+        ];
+        for variant in variants {
+            let manifest = tensor_manifest_for_variant(variant);
+            assert!(!manifest.is_empty());
+            assert_eq!(manifest[0].name, "conv_pre.weight");
+            assert_eq!(manifest[0].shape[2], 7);
+            assert!(manifest.iter().any(|spec| spec.name == "conv_post.weight"));
+            let descriptors: Vec<_> = manifest
+                .iter()
+                .map(|spec| (spec.name.as_str(), spec.shape.as_slice(), GgmlType::F32))
+                .collect();
+            validate_descriptor_manifest(&descriptors, variant).expect("shared manifest validates");
+        }
+    }
 
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
-        assert_eq!(
-            file.get(KEY_BIGVGAN_VARIANT).and_then(|v| v.as_str()),
-            Some("base_v1_24khz_100band"),
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some("bigvgan-base-24khz-100band"),
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some("nvidia/bigvgan_base_24khz_100band"),
-        );
+    fn complete_descriptors(variant: BigVGanVariant) -> Vec<(String, Vec<u64>, GgmlType)> {
+        tensor_manifest_for_variant(variant)
+            .into_iter()
+            .map(|spec| (spec.name, spec.shape, GgmlType::F32))
+            .collect()
+    }
 
-        std::fs::remove_file(&input_path).ok();
-        std::fs::remove_file(&output_path).ok();
+    fn descriptor_refs(
+        descriptors: &[(String, Vec<u64>, GgmlType)],
+    ) -> Vec<(&str, &[u64], GgmlType)> {
+        descriptors
+            .iter()
+            .map(|(name, shape, dtype)| (name.as_str(), shape.as_slice(), *dtype))
+            .collect()
     }
 
     #[test]
-    fn license_override_flows_through() {
-        let f32_bytes: Vec<u8> = [1.0_f32, 2.0]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let input_bytes = safetensors_one_f32("conv_pre.weight", &[1, 2], &f32_bytes);
-        let input_path = write_temp("license-in", &input_bytes);
-        let output_path = write_temp("license-out", &[]);
+    fn descriptor_manifest_rejects_missing_tensor() {
+        let variant = BigVGanVariant::V2_24khz100Band256x;
+        let mut descriptors = complete_descriptors(variant);
+        descriptors.pop();
+        let error = validate_descriptor_manifest(&descriptor_refs(&descriptors), variant)
+            .expect_err("missing tensor must fail");
+        assert!(error.to_string().contains("manifest mismatch"));
+        assert!(error.to_string().contains("conv_post"));
+    }
 
-        convert_bigvgan_file(
-            &input_path,
-            &output_path,
+    #[test]
+    fn descriptor_manifest_rejects_extra_tensor() {
+        let variant = BigVGanVariant::BaseV1_24khz100Band;
+        let mut descriptors = complete_descriptors(variant);
+        descriptors.push(("rogue.weight".to_owned(), vec![1], GgmlType::F32));
+        let error = validate_descriptor_manifest(&descriptor_refs(&descriptors), variant)
+            .expect_err("extra tensor must fail");
+        assert!(error.to_string().contains("rogue.weight"));
+    }
+
+    #[test]
+    fn descriptor_manifest_rejects_wrong_shape() {
+        let variant = BigVGanVariant::V2_22khz80Band256x;
+        let mut descriptors = complete_descriptors(variant);
+        descriptors[0].1[0] += 1;
+        let error = validate_descriptor_manifest(&descriptor_refs(&descriptors), variant)
+            .expect_err("wrong shape must fail");
+        assert!(error.to_string().contains("conv_pre.weight"));
+        assert!(error.to_string().contains("shape"));
+    }
+
+    #[test]
+    fn descriptor_manifest_rejects_unsupported_dtype() {
+        let variant = BigVGanVariant::V2_44khz128Band512x;
+        let mut descriptors = complete_descriptors(variant);
+        descriptors[0].2 = GgmlType::I8;
+        let error = validate_descriptor_manifest(&descriptor_refs(&descriptors), variant)
+            .expect_err("unsupported dtype must fail");
+        assert!(error.to_string().contains("unsupported dtype"));
+    }
+
+    #[test]
+    fn metadata_stamping_covers_all_variants_and_license_override() {
+        let variants = [
             BigVGanVariant::V2_22khz80Band256x,
-            Some("apache-2.0"),
-        )
-        .expect("license override must succeed");
+            BigVGanVariant::V2_44khz128Band512x,
+            BigVGanVariant::V2_24khz100Band256x,
+            BigVGanVariant::BaseV1_24khz100Band,
+        ];
+        for variant in variants {
+            let mut builder = GgufBuilder::new();
+            stamp_metadata(&mut builder, variant, Some("apache-2.0"));
+            let file = GgufFile::parse(builder.to_bytes().expect("metadata-only GGUF"))
+                .expect("metadata-only GGUF parses");
+            assert_eq!(
+                file.get(KEY_BIGVGAN_VARIANT).and_then(|v| v.as_str()),
+                Some(variant.tag())
+            );
+            assert_eq!(
+                file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+                Some(variant.name())
+            );
+            assert_eq!(
+                file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                    .and_then(|v| v.as_str()),
+                Some(variant.upstream_hf())
+            );
+            assert_eq!(
+                file.get(chunks::KEY_PROVENANCE_LICENSE)
+                    .and_then(|v| v.as_str()),
+                Some("apache-2.0")
+            );
+        }
+    }
 
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("apache-2.0"),
-            "license override must be honored"
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "apache-2.0 is Permissive class"
-        );
+    #[test]
+    fn bf16_passthrough_helper_preserves_wire_bytes() {
+        let values = [0x3f80_u16, 0xc020_u16];
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let input = safetensors_one_bf16("conv_pre.bias", &[2], &payload);
+        let st = SafetensorsFile::parse(input).expect("BF16 descriptor parses");
+        let mut builder = GgufBuilder::new();
+        append_passthrough_tensor(&mut builder, &st, &st.tensors()[0]).expect("append");
+        let file = GgufFile::parse(builder.to_bytes().expect("GGUF")).expect("GGUF parses");
+        let info = file.tensor_info("conv_pre.bias").expect("tensor present");
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(file.tensor_bytes(info), payload.as_slice());
+    }
 
-        std::fs::remove_file(&input_path).ok();
-        std::fs::remove_file(&output_path).ok();
+    #[test]
+    fn finite_value_scan_rejects_nan_without_widening_payload() {
+        let payload = f32::NAN.to_le_bytes();
+        let input = safetensors_one_f32("conv_pre.bias", &[1], &payload);
+        let st = SafetensorsFile::parse(input).expect("F32 descriptor parses");
+        assert_eq!(first_non_finite_index(&st, &st.tensors()[0]), Some(0));
+    }
+
+    #[test]
+    fn conversion_rejects_partial_checkpoint_before_writing_output() {
+        let input = write_temp(
+            "partial-in",
+            &safetensors_one_f32("conv_pre.bias", &[1], &1.0f32.to_le_bytes()),
+        );
+        let output = write_temp("partial-out", b"sentinel");
+        let error =
+            convert_bigvgan_file(&input, &output, BigVGanVariant::V2_24khz100Band256x, None)
+                .expect_err("partial checkpoint must be rejected");
+        assert!(error.to_string().contains("manifest mismatch"));
+        assert_eq!(
+            std::fs::read(&output).expect("sentinel remains"),
+            b"sentinel"
+        );
+        std::fs::remove_file(input).ok();
+        std::fs::remove_file(output).ok();
     }
 }

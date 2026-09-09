@@ -1,16 +1,18 @@
 # tools/parity/melodyflow_t24_30secs
 
 Offline sidecar for **facebook/melodyflow-t24-30secs** (Meta AudioCraft
-MelodyFlow T24 30secs, CC-BY-NC-4.0, ~4.0 GB bundle = 1 B flow-matching
+MelodyFlow T24 30secs, CC-BY-NC-4.0, 4,088,594,620-byte fixed bundle = 1 B flow-matching
 DiT transformer + 48 kHz RVQ codec + T5-base text encoder) — bridges the
 upstream torch-pickle bundle to the flat safetensors the Rust converter
 (`crates/vokra-convert/src/models/melodyflow_t24_30secs.rs`) consumes.
 
 Sibling of:
 
-- `../magnet_small_10secs/prepare_checkpoint.py` (~2 GB, 500 M / 10 sec
+- `../magnet_small_10secs/prepare_checkpoint.py` (1,076,848,566-byte,
+  300 M / 10 sec
   — non-autoregressive masked-LM decoding, entirely different sampler)
-- `../magnet_medium_30secs/prepare_checkpoint.py` (~5.7 GB, 1.5B / 30 sec
+- `../magnet_medium_30secs/prepare_checkpoint.py` (3,913,673,878-byte,
+  1.5B / 30 sec
   — non-autoregressive masked-LM decoding, same-scale sibling in the
   Meta music-gen catalog)
 - a future `../jasco_400m_chords_drums/` (not yet written — only the
@@ -24,138 +26,41 @@ Sibling of:
 
 ## What this directory contains
 
-- `prepare_checkpoint.py` — the actual torch-pickle → flat safetensors
-  bridge. Loads `state_dict.bin` (or `*.th` / `*.bin`) under
-  `--input-dir` via `torch.load(..., weights_only=True)` (safe path),
+- `prepare_checkpoint.py` — the VAST-only torch-pickle → flat safetensors
+  bridge. Loads only the exact authenticated `state_dict.bin` under
+  `--input-dir` only via `torch.load(..., weights_only=True)`; failures
+  stop without an unsafe retry,
   dedupes tied tensors (data_ptr collision → clone + audit trail),
   strips non-float training scaffold (`.num_batches_tracked` /
   `.total_ops` / `.total_params`), rejects unexpected non-float
   dtypes loudly (FR-EX-08). Emits `<output>` + `<output>.sha256` +
   `<output>.shared_pairs.json`. See the script's module docstring
   for the honest write-up.
-- `pyproject.toml` — uv project spec (Python 3.12 pinned per
-  `[[feedback-python-3-12]]`; deps = `torch>=2.0` + `safetensors>=0.4`
-  + `huggingface-hub>=0.26`).
+- `pyproject.toml` + `uv.lock` — exact Python 3.12 CPU-only reference
+  closure, including the pinned `huggingface-hub==1.27.0` acquisition
+  closure, with lock/package/license digests and a fail-closed audit. The
+  worker allows only `README.md`, `compression_state_dict.bin`, and the
+  exact `state_dict.bin` payload.
 - `.python-version` — `3.12`.
 
-## Prerequisites
+## VAST-only workflow
 
-- **`uv`** (`[[feedback-python-uses-uv]]`) — install via
-  `curl -LsSf https://astral.sh/uv/install.sh | sh` or
-  `brew install uv`.
-- **Python 3.12** — pinned in `.python-version`. `uv sync` downloads
-  it if absent.
-- **vast.ai per phase task** — the ~4.0 GB scale is at the CC / owner
-  cutoff per memory `[[feedback-large-models-on-vast-ai]]`. Local
-  convert on M1 iMac 16 GB is technically feasible (~4 GB sits below
-  the 8 GB local ceiling), but the phase task pins vast.ai as the
-  conservative default for weights ≥ 2 GB — the Voxtral-Small-24B
-  incident (mmap swap 40 GB → Mac forced-shutdown) is the precedent
-  that raised the local safety margin. Peak resident memory is
-  roughly the whole model plus a `safetensors.torch.save_file`
-  serialisation buffer; sibling `magnet_medium_30secs` (~5.7 GB,
-  ~12 GB working set) landed without vast.ai but the audiocraft
-  pickle format is heavier than a native safetensors of the same
-  bytesize, so ~4.0 GB MelodyFlow may push resident closer to
-  ~10 GB on the pickle-decode step. See
-  `docs/handoff/vast-ai-large-model-publish.md` for the vast.ai
-  runbook — provision.sh Wave 12 handles the hf_config.pth shim +
-  certifi + xet routing gotchas.
+The aggregate checkpoint exceeds the repository's 2 GB threshold. Do not
+download it, create a model work directory, run `uv sync`, load pickle,
+or run conversion on the maintainer Mac. On an authorized Linux x86_64
+VAST worker, first run `run-melodyflow-t24-30secs-inspection.sh` or
+`run-melodyflow-t24-30secs-validation.sh`; each invokes the stdlib-only
+`audiocraft_safe_gate.py` with `uv run --no-project` before any future
+sync/download/work step. The fixed model revision is
+`77bcfce24371bf29a06152c72169162c6f2791de`; the authenticated source is
+`facebook/MelodyFlow@9d0d223e9a63bbb8c20b9f57c5afcb4de297e6da`.
+Both workers intentionally exit 2 until external owner clearance is supplied,
+and perform no acquisition.
 
-## Owner walkthrough (vast.ai preferred, M1 iMac secondary)
-
-Per memory `[[feedback-large-models-on-vast-ai]]` the ~4.0 GB scale is
-at the CC / owner cutoff; the phase task pins vast.ai as the conservative
-default. If the owner elects to run local (~4 GB pickle-decode may push
-peak resident closer to ~10 GB), the steps are the same — only the
-provisioning surface changes.
-
-1. **Rent + provision** (vast.ai path; skip if running local):
-   ```bash
-   # See docs/handoff/vast-ai-large-model-publish.md §2 for the full
-   # runbook (image, budget, provision.sh Wave 12 handling).
-   vastai create instance <id> --image nvidia/cuda:13.0.0-devel-ubuntu24.04
-   vastai ssh <id>
-   # Once on the box, from a fresh clone of the repo:
-   cd /root/vokra
-   bash scripts/publish/vast-ai/provision.sh
-   # It installs uv, pins Python 3.12, pins huggingface_hub<0.30, and
-   # patches hf_config.pth to remove the malicious HF_ENDPOINT override.
-   ```
-
-2. **Download** the release:
-   ```bash
-   uv run huggingface-cli download facebook/melodyflow-t24-30secs \
-     --local-dir ./checkpoints/melodyflow-t24-30secs
-   ```
-
-   `huggingface-cli`, **not** `hf`. Step 1's `provision.sh` pins
-   `huggingface_hub<0.30` (per
-   `[[reference-huggingface-hub-lt-030-vast-ai]]`), and that release
-   series ships exactly one console script — `huggingface-cli`. The
-   shorter `hf` entry point does not exist there, so a `hf download`
-   on a freshly provisioned box dies with `command not found` after
-   the rental clock has already started. `huggingface-cli` is present
-   both under the pin and in the current `tools/parity` lockfile
-   (huggingface-hub 1.24.0), so this one spelling works everywhere.
-
-3. **Prepare (torch pickle → flat safetensors)** — from this
-   directory:
-   ```bash
-   cd tools/parity/melodyflow_t24_30secs
-   uv sync
-   uv run python prepare_checkpoint.py \
-     --input-dir ../../../checkpoints/melodyflow-t24-30secs \
-     --output    ../../../checkpoints/melodyflow-t24-30secs/flat.safetensors
-   ```
-
-   Alternatively, if the release ships as native safetensors from a
-   mirror publisher:
-   ```bash
-   uv run python prepare_checkpoint.py \
-     --input-safetensors ../../../checkpoints/melodyflow-t24-30secs/model.safetensors \
-     --output            ../../../checkpoints/melodyflow-t24-30secs/flat.safetensors
-   ```
-
-4. **Convert** to Vokra GGUF:
-   ```bash
-   cd ../../..
-   ./target/release/vokra-cli convert \
-     --model melodyflow-t24-30secs \
-     --input ./checkpoints/melodyflow-t24-30secs/flat.safetensors \
-     --output ./out/melodyflow-t24-30secs.gguf
-   ```
-
-5. **Publish** — T4 tier (Research-only), `--allow-noncommercial`
-   **mandatory** per MusicGen family / X-Codec-2 /
-   jasco_400m_chords_drums / sibling `magnet_small_10secs` /
-   `magnet_medium_30secs` precedent:
-   ```bash
-   bash scripts/publish/publish-one.sh \
-     --gguf ./out/melodyflow-t24-30secs.gguf \
-     --repo vokra/melodyflow-t24-30secs \
-     --license-spdx cc-by-nc-4.0 \
-     --allow-noncommercial \
-     --push
-   ```
-
-   **This gate is satisfied** — the `docs/license-audit.md` §3.1 row
-   `Meta MelodyFlow T24 30secs (\`facebook/melodyflow-t24-30secs\`)`
-   is signed **☑ Research-only 2026-08-14 yousan**, so the publish
-   proceeds. (Had it still been blank, `publish-one.sh` would refuse
-   at gate 4 — the fail-closed default per memory
-   `[[feedback-license-signoff-primary-source]]`.) `--allow-noncommercial`
-   remains **mandatory**: Research-only is a T4 tier, and omitting the
-   flag refuses at the non-commercial gate.
-
-   Note the training-data caveat under §Owner critical path below
-   survives the sign-off — it is a legal-review item, not a gate the
-   tooling enforces.
-
-6. **Verify**:
-   ```bash
-   curl -sI https://huggingface.co/vokra/melodyflow-t24-30secs | head -1
-   ```
+Publication is a separate permission and is currently prohibited by the
+worker (`NO_UPLOAD`). The weight is CC-BY-NC-4.0 / Research-only and the
+owner's license sign-off, training-data review, and publication gate must
+be handled independently.
 
 ## What the script does NOT do
 
@@ -181,18 +86,15 @@ provisioning surface changes.
 
 ## Owner critical path (post-land)
 
-- ~~**§3.1 sign-off**~~ — **DONE: ☑ Research-only 2026-08-14 yousan.**
-  Primary source = `https://huggingface.co/facebook/melodyflow-t24-30secs`
-  cardData `license: cc-by-nc-4.0` + audiocraft LICENSE file +
-  arXiv:2407.03648. (The bundling suggestion — one owner session
-  covering the MelodyFlow / MAGNeT / MusicGen family cluster, same
-  license and publisher — is retained as guidance for the remaining
-  unsigned rows in that family.)
+- **License/source gate**: the weight is CC-BY-NC-4.0 / Research-only,
+  but this sidecar remains blocked until the owner confirms the
+  versioned primary-source evidence and the fixed source/HF revisions.
 - **training-data audit** (medium-high risk): Meta MusicGen family
   shares training corpus with Suno / Udio litigation cloud, and the
   MelodyFlow **editing** use-case (existing audio rewritten under a
   new text prompt) is a direct target of the copyright-infringement
-  argument in those suits. Legal review before publish (higher
+  argument in those suits. Legal review before any separately authorized
+  distribution (higher
   scrutiny than text-to-music sibling releases).
 - **runtime binder ADR** (FR-OP-86): decide whether MelodyFlow's
   editing-specific ODE inversion path and the 48 kHz RVQ codec bundle
@@ -200,9 +102,9 @@ provisioning surface changes.
   judgement. The `vokra_ops::flow_sampler` from M3-05 is reusable for
   the core DiT forward; the incremental scope is the inversion path +
   the codec bundle.
-- **vast.ai vs local decision** (operational): the phase task pins
-  vast.ai as the conservative default for weights ≥ 2 GB, but the
-  actual bytesize (~4 GB) is below the 8 GB local ceiling. Owner may
-  elect to run local if vast.ai budget is tight; peak resident memory
-  during pickle-decode may push closer to ~10 GB, so factor in a
-  ~6 GB margin above `free -h` before starting.
+- **VAST-only operational gate**: the aggregate artefact is above the
+  repository threshold. Conversion and validation remain blocked until
+  an authenticated fixed revision, dependency clearance, and an
+  authorized VAST worker are available.
+- **parity**: no real-weight reference or runtime parity has run; this
+  remains an explicit blocker after the source and license gates clear.

@@ -5,9 +5,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [SemVer](https://semver.org/spec/v2.0.0.html) with UPM preview
 suffix conventions (`-preview.N` for pre-1.0 iterations).
 
-## [Unreleased]
+## Unreleased
 
-## [0.1.0] — 2026-08-23
+## 0.1.0 — 2026-08-23 (unpublished package baseline)
 
 ### Added
 - M4-02: **WebGL target** — `Plugins/WebGL/libvokra.a`
@@ -50,6 +50,3 @@ Initial package scaffold from the M2-11 workstream, included in `0.1.0`.
 - Model weights — fetched per-sample via
   `Samples~/VadAsrTts/scripts/fetch-demo-models.sh`.
 - CUDA runtime — resolved via `dlopen` at runtime per NVIDIA EULA.
-
-[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ayutaz/vokra/releases/tag/v0.1.0

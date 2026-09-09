@@ -3,7 +3,8 @@
 //! The reference directory is produced only on VAST by
 //! `tools/parity/moss_audio/dump_reference.py`, which imports the exact
 //! official OpenMOSS source commit and calls its model/processor classes.
-//! Unset GGUF/reference variables skip honestly; no synthetic model or
+//! The real-weight tests are explicitly ignored unless a VAST/Apple runner
+//! supplies the authenticated GGUF/reference packet; no synthetic model or
 //! fabricated numeric fixture is hidden here.
 
 use std::collections::BTreeMap;
@@ -24,6 +25,41 @@ const PROCESSING_SOURCE_SHA256: &str =
     "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6";
 const REFERENCE_AUDIO_SHA256: &str =
     "241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a";
+const REFERENCE_MANIFEST_KEYS: &[&str] = &[
+    "schema",
+    "variant",
+    "model_name",
+    "upstream_repo",
+    "upstream_revision",
+    "source_code_revision",
+    "configuration_source_sha256",
+    "modeling_source_sha256",
+    "processing_source_sha256",
+    "config_sha256",
+    "torch_version",
+    "transformers_version",
+    "sample_rate",
+    "pcm_samples",
+    "audio_frames",
+    "hidden_size",
+    "prompt_tokens",
+    "generated_tokens",
+    "max_new_tokens",
+    "tensor_count",
+    "config_model_type",
+    "source_audio_sha256",
+    "sha256_pcm_f32le",
+    "sha256_prompt_ids_u32le",
+    "sha256_primary_audio_f32le",
+    "sha256_deepstack_audio_0_f32le",
+    "sha256_deepstack_audio_1_f32le",
+    "sha256_deepstack_audio_2_f32le",
+    "sha256_generated_ids_u32le",
+    "sha256_prompt_txt",
+    "sha256_result_text_txt",
+    "sha256_environment_json",
+    "sha256_source_files_json",
+];
 const FP32_ATOL: f32 = 0.01;
 
 #[derive(Debug)]
@@ -55,18 +91,38 @@ fn read_manifest(path: &Path) -> BTreeMap<String, String> {
     let text = std::fs::read_to_string(path).expect("read MOSS-Audio reference manifest");
     let mut values = BTreeMap::new();
     for (line_number, line) in text.lines().enumerate() {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+        assert!(
+            !line.is_empty() && !line.starts_with('#'),
+            "manifest line {} is not a field",
+            line_number + 1
+        );
         let (key, value) = line
             .split_once('=')
             .unwrap_or_else(|| panic!("manifest line {} has no '=': {line:?}", line_number + 1));
-        assert!(!key.is_empty(), "empty manifest key");
+        assert!(
+            !key.is_empty() && !value.is_empty(),
+            "manifest line {} has an empty key/value",
+            line_number + 1
+        );
+        assert!(
+            key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "manifest line {} has an invalid key",
+            line_number + 1
+        );
+        assert!(
+            !value.contains('=') && !value.chars().any(char::is_whitespace),
+            "manifest line {} has an ambiguous value",
+            line_number + 1
+        );
         assert!(
             values.insert(key.to_owned(), value.to_owned()).is_none(),
             "duplicate manifest key {key:?}"
         );
     }
+    let actual = values.keys().map(String::as_str).collect::<Vec<_>>();
+    let mut expected = REFERENCE_MANIFEST_KEYS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(actual, expected, "reference manifest key set is not exact");
     values
 }
 
@@ -186,7 +242,7 @@ impl Reference {
             manifest_value(&manifest, "source_audio_sha256"),
             REFERENCE_AUDIO_SHA256
         );
-        assert_eq!(manifest_value(&manifest, "transformers_version"), "4.57.1");
+        assert_eq!(manifest_value(&manifest, "transformers_version"), "5.5.0");
         assert!(
             manifest_value(&manifest, "torch_version").starts_with("2.9.1"),
             "reference must use the pinned Torch 2.9.1 line"
@@ -232,6 +288,10 @@ impl Reference {
         assert_eq!(prompt, DEFAULT_USER_PROMPT, "official example prompt");
         let result_text =
             std::fs::read_to_string(directory.join("result_text.txt")).expect("read result text");
+        assert!(
+            !result_text.is_empty(),
+            "official decoded text must be non-empty"
+        );
         let max_new_tokens = manifest_usize(&manifest, "max_new_tokens");
         assert!(
             (1..=16).contains(&max_new_tokens),
@@ -296,15 +356,11 @@ fn execute(
 }
 
 fn parity_from_env(gguf_variable: &str, reference_variable: &str, variant: MossAudioVariant) {
-    let (Ok(gguf), Ok(reference_dir)) = (
-        std::env::var(gguf_variable),
-        std::env::var(reference_variable),
-    ) else {
-        eprintln!(
-            "skip MOSS-Audio official parity: set both {gguf_variable} and {reference_variable}"
-        );
-        return;
-    };
+    let gguf = std::env::var(gguf_variable)
+        .unwrap_or_else(|_| panic!("{gguf_variable} is required for ignored real-weight parity"));
+    let reference_dir = std::env::var(reference_variable).unwrap_or_else(|_| {
+        panic!("{reference_variable} is required for ignored real-weight parity")
+    });
     let reference = Reference::load(Path::new(&reference_dir), variant);
     let actual = execute(Path::new(&gguf), &reference, variant, BackendKind::Cpu);
     assert_eq!(actual.audio_frames, reference.audio_frames);
@@ -343,6 +399,7 @@ fn parity_from_env(gguf_variable: &str, reference_variable: &str, variant: MossA
 }
 
 #[test]
+#[ignore = "requires an authenticated VAST/Apple real-weight packet"]
 fn moss_audio_4b_cpu_matches_official_reference() {
     parity_from_env(
         "VOKRA_MOSS_AUDIO_4B_GGUF",
@@ -352,6 +409,7 @@ fn moss_audio_4b_cpu_matches_official_reference() {
 }
 
 #[test]
+#[ignore = "requires an authenticated VAST/Apple real-weight packet"]
 fn moss_audio_8b_cpu_matches_official_reference() {
     parity_from_env(
         "VOKRA_MOSS_AUDIO_8B_GGUF",
@@ -362,6 +420,7 @@ fn moss_audio_8b_cpu_matches_official_reference() {
 
 #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 #[test]
+#[ignore = "requires an authenticated VAST/Apple real-weight packet and Metal"]
 fn moss_audio_real_metal_matches_cpu_exact_greedy() {
     use std::path::PathBuf;
 
@@ -372,8 +431,7 @@ fn moss_audio_real_metal_matches_cpu_exact_greedy() {
     match Compute::for_backend(BackendKind::Metal, MOSS_AUDIO_HOT_OPS) {
         Ok(compute) => assert_eq!(compute.backend_name(), "metal"),
         Err(VokraError::BackendUnavailable(error)) => {
-            eprintln!("skip MOSS-Audio Metal parity: no Metal device ({error})");
-            return;
+            panic!("MOSS-Audio Metal parity requires an available Metal device: {error}");
         }
         Err(error) => panic!("MOSS-Audio claims Metal coverage but preflight failed: {error}"),
     }
@@ -391,20 +449,67 @@ fn moss_audio_real_metal_matches_cpu_exact_greedy() {
         ),
     ];
     for (gguf_variable, reference_variable, variant) in cases {
-        let (Ok(gguf), Ok(reference_dir)) = (
-            std::env::var(gguf_variable),
-            std::env::var(reference_variable),
-        ) else {
-            eprintln!(
-                "skip {} Metal parity: set both {gguf_variable} and {reference_variable}",
-                variant.model_name()
-            );
-            continue;
-        };
+        let gguf = std::env::var(gguf_variable)
+            .unwrap_or_else(|_| panic!("{gguf_variable} is required for Metal parity"));
+        let reference_dir = std::env::var(reference_variable)
+            .unwrap_or_else(|_| panic!("{reference_variable} is required for Metal parity"));
         let gguf = PathBuf::from(gguf);
         let reference = Reference::load(Path::new(&reference_dir), variant);
         let cpu = execute(&gguf, &reference, variant, BackendKind::Cpu);
         let metal = execute(&gguf, &reference, variant, BackendKind::Metal);
+        assert_close(
+            &cpu.primary_audio,
+            &reference.primary_audio,
+            &format!("{} primary_audio CPU_vs_official", variant.model_name()),
+        );
+        for index in 0..3 {
+            assert_close(
+                &cpu.deepstack_audio[index],
+                &reference.deepstack_audio[index],
+                &format!(
+                    "{} deepstack_audio_{index} CPU_vs_official",
+                    variant.model_name()
+                ),
+            );
+        }
+        assert_eq!(cpu.prompt_ids, reference.prompt_ids, "CPU prompt ids");
+        assert_eq!(
+            cpu.generated_ids, reference.generated_ids,
+            "CPU greedy token ids"
+        );
+        assert_eq!(cpu.result_text, reference.result_text, "CPU decoded text");
+        eprintln!(
+            "MOSS_AUDIO_PARITY {} CPU_vs_official token_ids=exact text=exact PASS",
+            variant.model_name()
+        );
+        assert_close(
+            &metal.primary_audio,
+            &reference.primary_audio,
+            &format!("{} primary_audio Metal_vs_official", variant.model_name()),
+        );
+        for index in 0..3 {
+            assert_close(
+                &metal.deepstack_audio[index],
+                &reference.deepstack_audio[index],
+                &format!(
+                    "{} deepstack_audio_{index} Metal_vs_official",
+                    variant.model_name()
+                ),
+            );
+        }
+        assert_eq!(metal.prompt_ids, reference.prompt_ids, "Metal prompt ids");
+        assert_eq!(
+            metal.generated_ids, reference.generated_ids,
+            "Metal greedy token ids"
+        );
+        assert_eq!(
+            metal.result_text, reference.result_text,
+            "Metal decoded text"
+        );
+        eprintln!(
+            "MOSS_AUDIO_PARITY {} Metal_vs_official token_ids=exact text=exact PASS",
+            variant.model_name()
+        );
         assert_eq!(metal.audio_frames, cpu.audio_frames);
         assert_eq!(metal.hidden_size, cpu.hidden_size);
         assert_close(

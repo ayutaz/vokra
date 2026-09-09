@@ -29,7 +29,7 @@ reproducible is.
 
 | file (in this directory) | role in the manifest | upstream | upstream license | `LicenseClass` | `vokra-cli convert --model` |
 |---|---|---|---|---|---|
-| `sbv2-v2-multilingual-base.gguf` | `checkpoint.sbv2_main` | [`litagin02/style_bert_vits2`](https://huggingface.co/litagin02) family (v2, JA+EN multilingual base) | AGPL-3.0 | `Copyleft` | `sbv2` |
+| `sbv2-v2-jp-extra-base.gguf` | `checkpoint.sbv2_main` | [`litagin/Style-Bert-VITS2-2.0-base-JP-Extra`](https://huggingface.co/litagin/Style-Bert-VITS2-2.0-base-JP-Extra) (v2 JP-Extra base) | AGPL-3.0 | `Copyleft` | `sbv2` |
 | `deberta-v2-large-japanese-char-wwm.gguf` | `checkpoint.bert_ja` | [`ku-nlp/deberta-v2-large-japanese-char-wwm`](https://huggingface.co/ku-nlp/deberta-v2-large-japanese-char-wwm) | cc-by-sa-4.0 | `Copyleft` (ShareAlike variant) | `deberta-v2` |
 | `deberta-v3-large.gguf` | `checkpoint.bert_en` | [`microsoft/deberta-v3-large`](https://huggingface.co/microsoft/deberta-v3-large) | MIT | `Permissive` | `deberta-v3` |
 | `chinese-roberta-wwm-ext-large.gguf` | `checkpoint.bert_zh` (ZH leg only) | [`hfl/chinese-roberta-wwm-ext-large`](https://huggingface.co/hfl/chinese-roberta-wwm-ext-large) | Apache-2.0 | `Permissive` | `bert-base` |
@@ -57,12 +57,12 @@ synthesis requires switching to a non-JP-Extra multilingual base. See
 tests/fixtures/sbv2/
 ├── README.md                                        # committed (this file)
 ├── reference_dump.manifest.json                     # committed (schema template)
-├── sbv2-v2-multilingual-base.gguf.sha256             # committed (real SHA256, `6580061`)
+├── sbv2-v2-jp-extra-base.gguf.sha256                # committed (real SHA256, `6580061`)
 ├── deberta-v2-large-japanese-char-wwm.gguf.sha256    # committed (real SHA256, `6580061`)
 ├── deberta-v3-large.gguf.sha256                      # committed (real SHA256, `6580061`)
 ├── chinese-roberta-wwm-ext-large.gguf.sha256         # committed (real SHA256, ZH leg)
 │
-├── sbv2-v2-multilingual-base.gguf                    # gitignored — produced locally
+├── sbv2-v2-jp-extra-base.gguf                       # gitignored — produced locally
 ├── deberta-v2-large-japanese-char-wwm.gguf           # gitignored — produced locally
 ├── deberta-v3-large.gguf                             # gitignored — produced locally
 ├── chinese-roberta-wwm-ext-large.gguf                # gitignored — produced on VAST
@@ -212,7 +212,7 @@ file only reads `sbv2_dump_reference.py`'s combined 11-tensor dump).
 vokra-cli convert --model sbv2 \
     --input /tmp/sbv2-checkpoint/<the-resolved>.safetensors \
     --config /tmp/sbv2-checkpoint/vokra-sbv2-config.json \
-    --output tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf
+    --output tests/fixtures/sbv2/sbv2-v2-jp-extra-base.gguf
 
 vokra-cli convert --model deberta-v2 \
     --input /tmp/deberta-v2-ja/<downloaded>.safetensors \
@@ -244,8 +244,8 @@ from the checkpoint's own tensor shapes.)
 ### 4. Hash and commit
 
 ```bash
-sha256sum tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf > \
-    tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256
+sha256sum tests/fixtures/sbv2/sbv2-v2-jp-extra-base.gguf > \
+    tests/fixtures/sbv2/sbv2-v2-jp-extra-base.gguf.sha256
 sha256sum tests/fixtures/sbv2/deberta-v2-large-japanese-char-wwm.gguf > \
     tests/fixtures/sbv2/deberta-v2-large-japanese-char-wwm.gguf.sha256
 sha256sum tests/fixtures/sbv2/deberta-v3-large.gguf > \
@@ -376,9 +376,17 @@ tensor listed in the real manifest:
 
 ## Sidecar format (the four `.gguf.sha256` files)
 
-**Status (updated 2026-08-18)**: all four sidecars carry **real
+**Status (updated 2026-09-07)**: all four sidecars carry **real
 `sha256sum`-format** lines. The original three were committed in `6580061`;
-the ZH sidecar belongs to the explicit four-file leg. The
+the ZH sidecar belongs to the explicit four-file leg. The JP-Extra sidecar
+was regenerated after commit `0ee8359c` corrected the embedded model/source
+identity from the retired multilingual placeholder to the exact
+`litagin/Style-Bert-VITS2-2.0-base-JP-Extra` artifact. GitHub Actions' pinned
+JA recipe (`SBV2_REVISION=a731761009f3c96d104487be6ad332bf1bb5a3a5`, job
+`101584763885`) produced
+`b544487b5e603e2012f7e056f2f836dc2eacd5af52e34f896581dc02ad5097b9`, now
+recorded in `sbv2-v2-jp-extra-base.gguf.sha256`; the prior `4f1c…` value was
+for the pre-identity-correction serialization and must not be reused. The
 gate `[ -s <sidecar> ] && ! grep -q "placeholder" <sidecar>` sketched in
 `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §10 ("fixture 管理"
 / "CI workflow") now evaluates TRUE for every sidecar, so
@@ -434,7 +442,7 @@ so an owner running the recipe isn't surprised):
      `"tests/fixtures/sbv2/main.gguf"` — both the **base path** (bare
      literal; resolves against `crates/vokra-models/`, not the repo root
      this directory actually lives at) and the **filename** (`main.gguf`,
-     not `sbv2-v2-multilingual-base.gguf`) disagree with this fixture set.
+     not `sbv2-v2-jp-extra-base.gguf`) disagree with this fixture set.
    - `crates/vokra-bert/tests/deberta_v2_loader.rs` opens
      `"tests/fixtures/sbv2/deberta-v2-large-japanese-char-wwm.gguf"` — the
      filename matches this fixture set, but the same bare-literal-path

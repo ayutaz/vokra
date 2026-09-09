@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Merge Coqui XTTS-v2 `.pth` release bundle → single `.safetensors`.
 
 Offline side-car (FR-LD-05: no Python / PyTorch ever enters the runtime).
@@ -63,15 +63,14 @@ object is a ``{str: Tensor | non_tensor_metadata}`` dict; the
 non-tensor metadata (training statistics, optimizer state) can carry
 arbitrary pickled objects that ``torch.load(weights_only=True)`` refuses.
 
-**Safety posture**: this script attempts ``weights_only=True`` first; if
-the loader raises ``UnpicklingError`` (or any subclass of ``Exception``
-tied to a class-blocklist), it falls back to ``weights_only=False`` with
-a visible warning. The upstream primary source is Coqui's CPML-licensed
-official XTTS-v2 release at ``huggingface.co/coqui/XTTS-v2``; per memory
-``[[feedback-license-signoff-primary-source]]`` the pickle-trust
-boundary is acknowledged at the point of running this offline sidecar
-(the runtime tree never touches pickle — FR-LD-05). Do not run this
-script against unverified .pth files from unknown sources.
+**Safety posture**: this script permits only ``weights_only=True``. If the
+safe loader refuses a bundle (for example because it contains arbitrary
+pickled objects), the bundle is explicitly blocked and no unsafe fallback is
+available. The upstream primary source is Coqui's CPML-licensed official
+XTTS-v2 release at ``huggingface.co/coqui/XTTS-v2``; source approval does not
+turn an unsafe pickle into an accepted input. The runtime tree never touches
+pickle — FR-LD-05. Do not run this script against unverified .pth files from
+unknown sources.
 
 # Redistribution
 
@@ -104,6 +103,8 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+from xtts_v2_gate import BLOCKED_MARKER, require_blocked_gate
 
 # Same dtype taxonomy as sepformer / demucs / nemo precedents.
 INT_DTYPES = {
@@ -191,28 +192,22 @@ def _extract_state_dict(raw: Any, sub_name: str) -> dict:
 
 
 def _load_pth(path: Path, sub_name: str) -> Any:
-    """Load a .pth with safe-first strategy.
+    """Load a .pth with the safe tensor-only unpickler.
 
-    Attempts ``weights_only=True`` first (torch >=2.0 safe-unpickler).
-    Coqui's model.pth is a trainer artifact that may embed non-tensor
-    metadata (optimizer state, training step counters) — if the safe
-    loader refuses, fall back to ``weights_only=False`` with a visible
-    warning. The pickle-trust boundary is acknowledged in the module
-    docstring; callers should have verified the upstream source
-    (``coqui/XTTS-v2`` HF repo per §3.1 sign-off) before running.
+    ``weights_only=True`` is mandatory. Coqui trainer artifacts may contain
+    non-tensor metadata that the safe loader refuses; that is a deliberate
+    fail-closed result, not permission to execute arbitrary pickle globals.
     """
     import torch
 
     try:
         return torch.load(str(path), map_location="cpu", weights_only=True)
-    except Exception as safe_err:  # noqa: BLE001 — any refusal triggers fallback
-        print(
-            f"  {sub_name}: weights_only=True refused ({type(safe_err).__name__}: "
-            f"{str(safe_err)[:80]}); falling back to weights_only=False "
-            f"(pickle-trust: upstream = coqui/XTTS-v2, §3.1 sign-off required)",
-            file=sys.stderr,
-        )
-        return torch.load(str(path), map_location="cpu", weights_only=False)
+    except Exception as safe_err:  # noqa: BLE001 — fail closed on any refusal
+        raise RuntimeError(
+            f"{sub_name}: weights_only=True refused ({type(safe_err).__name__}: "
+            f"{str(safe_err)[:160]}); XTTS-v2 bundle is BLOCKED because "
+            "unsafe pickle deserialization is not permitted"
+        ) from safe_err
 
 
 def _partition_and_dedup(sd: dict, seen: dict[int, str], strict: bool):
@@ -256,6 +251,7 @@ def _run_pipeline(bundles: dict[str, Any], output: Path, strict: bool) -> int:
     Shared body used by both ``main`` and ``--self-test`` so the two
     paths cannot drift.
     """
+    _ensure_output_absent(output)
     from safetensors.torch import save_file
 
     merged: dict = {}
@@ -337,6 +333,18 @@ def _run_pipeline(bundles: dict[str, Any], output: Path, strict: bool) -> int:
     return 0
 
 
+def _ensure_output_absent(output: Path) -> None:
+    """Reject output and symlinked ancestors before any serializer can write."""
+    current = Path(output.anchor) if output.is_absolute() else Path.cwd()
+    for component in output.parts[1:] if output.is_absolute() else output.parts:
+        current /= component
+        if current.is_symlink():
+            raise RuntimeError(f"refusing symlink output path component: {current}")
+    manifest = output.with_suffix(output.suffix + ".manifest.json")
+    if output.exists() or output.is_symlink() or manifest.exists() or manifest.is_symlink():
+        raise FileExistsError(f"output or manifest already exists: {output}")
+
+
 def _self_test() -> int:
     """Argparse + torch/safetensors import smoke; synthetic three-bundle merge.
 
@@ -344,7 +352,33 @@ def _self_test() -> int:
     creates in-memory dicts that mimic the model/dvae/speakers layouts
     and confirms the merge + prefix + dedup + write path all succeed.
     """
+    import ast
     import tempfile
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    torch_load_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "load"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+    ]
+    assert torch_load_calls, "safe loader contract has no torch.load call"
+    for call in torch_load_calls:
+        weights_only = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "weights_only"),
+            None,
+        )
+        assert isinstance(weights_only, ast.Constant) and weights_only.value is True, (
+            "every torch.load call must explicitly set weights_only=True"
+        )
+    main_source = source[source.index("def main") :]
+    assert main_source.index("require_blocked_gate(args.expected_head") < main_source.index("if not input_dir.is_dir()")
+    pipeline_source = source[source.index("def _run_pipeline") :]
+    assert pipeline_source.index("_ensure_output_absent(output)") < pipeline_source.index("from safetensors.torch import save_file")
 
     import torch
     from safetensors.torch import safe_open
@@ -387,10 +421,27 @@ def _self_test() -> int:
     }
 
     with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "test.safetensors"
+        tmp_root = Path(tmp).resolve()
+        out = tmp_root / "test.safetensors"
         rc = _run_pipeline(bundles, out, strict=False)
         if rc != 0:
             print("self-test: FAIL (_run_pipeline nonzero)", file=sys.stderr)
+            return 1
+        try:
+            _run_pipeline(bundles, out, strict=False)
+        except FileExistsError:
+            pass
+        else:
+            print("self-test: FAIL (existing output was clobbered)", file=sys.stderr)
+            return 1
+        link = tmp_root / "link.safetensors"
+        link.symlink_to(out)
+        try:
+            _run_pipeline(bundles, link, strict=False)
+        except (FileExistsError, RuntimeError):
+            pass
+        else:
+            print("self-test: FAIL (symlink output was accepted)", file=sys.stderr)
             return 1
         # Confirm the safetensors file is readable and contains the
         # expected prefixed keys.
@@ -455,6 +506,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "success, nonzero on failure."
         ),
     )
+    p.add_argument("--expected-head", help="Caller-bound clean checkout HEAD (HEX40).")
+    p.add_argument("--approval-evidence", help="Absolute external blocked approval JSON path.")
+    p.add_argument("--approval-sha256", help="SHA-256 of the approval JSON bytes (HEX64).")
     return p
 
 
@@ -462,14 +516,24 @@ def main() -> int:
     args = _build_parser().parse_args()
 
     if args.self_test:
+        if any(value is not None for value in (args.input_dir, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
+            print("xtts_v2_prepare_checkpoint: --self-test accepts no other arguments.", file=sys.stderr)
+            return 2
         return _self_test()
 
-    if args.input_dir is None or args.output is None:
+    if any(value is None for value in (args.input_dir, args.output, args.expected_head, args.approval_evidence, args.approval_sha256)):
         print(
-            "xtts_v2_prepare_checkpoint: --input-dir and --output are required "
-            "(use --self-test for smoke).",
+            "xtts_v2_prepare_checkpoint: --input-dir, --output, --expected-head, "
+            "--approval-evidence, and --approval-sha256 are required (use --self-test for smoke).",
             file=sys.stderr,
         )
+        return 2
+
+    root = Path(__file__).resolve().parents[2]
+    try:
+        require_blocked_gate(args.expected_head, args.approval_evidence, args.approval_sha256, root)
+    except RuntimeError as error:
+        print(str(error) if BLOCKED_MARKER in str(error) else f"XTTS_V2_BLOCKED_APPROVAL_INVALID: {error}", file=sys.stderr)
         return 2
 
     input_dir: Path = args.input_dir

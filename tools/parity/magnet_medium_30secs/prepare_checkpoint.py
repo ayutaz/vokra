@@ -3,27 +3,25 @@
 
 Offline sidecar tool (FR-LD-05: no Python / PyTorch ever enters the
 runtime). The upstream Meta AudioCraft ``facebook/magnet-medium-30secs``
-release ships as a **compressed torch pickle bundle** (`state_dict.bin`
-/ `.th` file) containing the **1.5B-parameter non-autoregressive
-masked-LM transformer** (medium sibling of the 500 M
+release ships as a **compressed torch pickle bundle** (`state_dict.bin`)
+containing the **1.5B-parameter non-autoregressive
+masked-LM transformer** (medium sibling of the 300 M
 ``magnet-small-10secs`` release with wider hidden / more layers to fit
 the 30 sec generation horizon matching MusicGen family's max), plus a
 bundled EnCodec 32 kHz audio codec, plus a frozen T5-base text encoder
-— total ~5.7 GB per HF cardData primary source (2026-08-13). The Rust
+— total 3,913,673,878 bytes per authenticated HF primary source. The Rust
 converter (``crates/vokra-convert/src/models/magnet_medium_30secs.rs``)
 consumes **single-file safetensors** by design — the runtime never
 grows a shard-index reader or a pickle parser (NFR-DS-02 zero-dep +
 FR-LD-05 no pickle in runtime). This script bridges the two by:
 
-1. **Downloading** the release via ``huggingface_hub.snapshot_download``
-   into the given local dir (or reads what's already there).
-2. **Loading** the ``state_dict.bin`` (or equivalent audiocraft dump)
-   via ``torch.load(..., weights_only=True)`` — an explicit safe-loader
-   gate: torch ≥ 2.6 defaults to ``weights_only=True`` but the older
-   ranges accepted in ``pyproject.toml`` may need the explicit kwarg.
-   If the release ships as native safetensors (mirror publishers do
-   sometimes), the ``--input-safetensors`` path skips torch pickle
-   entirely.
+1. **Reading** a previously authenticated VAST-local release directory;
+   this sidecar never performs model/source downloads itself.
+2. **Loading** the exact authenticated ``state_dict.bin``
+   via the one permitted ``torch.load(..., weights_only=True)`` path.
+   Unsupported/failed safe loading is a hard error; this bridge never
+   retries with an unsafe pickle loader. Native safetensors and mirror
+   substitutions are deliberately not accepted.
 3. **Dedupes shared-storage tensors** via a ``data_ptr → canonical
    name`` pass (memory ``[[reference-safetensors-shared-tensor-dedup]]``):
    ``safetensors.torch.save_file`` refuses two names pointing at the
@@ -54,14 +52,11 @@ FR-LD-05 no pickle in runtime). This script bridges the two by:
 
 # Memory footprint
 
-The ~5.7 GB checkpoint fits on M1 iMac 16 GB per memory
-``[[feedback-large-models-on-vast-ai]]`` (below the 8 GB owner cutoff
-that pushes work to vast.ai — sibling small was ~2 GB with ~4 GB
-working set, medium is ~5.7 GB with ~12 GB working set). Peak resident
-memory is roughly the whole model plus a ``safetensors.torch.save_file``
-serialisation buffer. No vast.ai handoff needed for this release
-(unlike sibling ``firered_asr_llm_l`` ~16.6 GB or ``musicgen_large``
-~19.5 GB which do require vast.ai).
+The checkpoint and its conversion are **VAST-only**: the aggregate
+checkpoint artefact exceeds the repository's 2 GB threshold. Do not
+download, pickle-load, prepare, or convert it on the maintainer Mac.
+The VAST worker performs the license and lock gates before creating a
+work directory, syncing, or acquiring any model/source data.
 
 # Usage
 
@@ -71,26 +66,16 @@ Managed through ``uv`` per the tools/parity contract (memory
 ::
 
     cd tools/parity/magnet_medium_30secs
+    # Execute only on an authorized VAST worker after its preflight gate.
     uv sync
 
-    # From a downloaded bundle (via `hf download`):
+    # From the authenticated three-file bundle collected by the VAST worker:
     uv run python prepare_checkpoint.py \\
         --input-dir /path/to/magnet-medium-30secs \\
         --output    /path/to/magnet-medium-30secs/flat.safetensors
 
-    # Then feed the Rust converter:
-    ./target/release/vokra-cli convert \\
-        --model magnet-medium-30secs \\
-        --input /path/to/magnet-medium-30secs/flat.safetensors \\
-        --output /path/to/out/magnet-medium-30secs.gguf
-
-    # Then publish (T4 tier: --allow-noncommercial MANDATORY):
-    bash scripts/publish/publish-one.sh \\
-        --gguf /path/to/out/magnet-medium-30secs.gguf \\
-        --repo vokra/magnet-medium-30secs \\
-        --license-spdx cc-by-nc-4.0 \\
-        --allow-noncommercial \\
-        --push
+    # The resulting file is handed to a separately authorized converter
+    # workflow. This sidecar never converts, uploads, or publishes artifacts.
 
 # Rust converter contract
 
@@ -101,10 +86,9 @@ F32 / F16 / BF16 tensor into GGUF, and stamps ``vokra.model.arch =
 "magnet_medium_30secs"`` + ``vokra.model.category = "music"`` +
 ``vokra.provenance.upstream_hf = "facebook/magnet-medium-30secs"`` +
 ``vokra.provenance.license = "cc-by-nc-4.0"`` +
-``vokra.provenance.weight_license = "noncommercial"``. Publishing
-requires ``publish-one.sh --allow-noncommercial`` (T4 tier fail-closed
-gate, MusicGen family / X-Codec-2 / jasco_400m_chords_drums / sibling
-``magnet_small_10secs`` precedent).
+``vokra.provenance.weight_license = "noncommercial"``. Conversion and
+publication are separate, owner-authorized workflows; this sidecar does
+not publish or upload artifacts.
 """
 
 from __future__ import annotations
@@ -112,6 +96,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -135,61 +120,78 @@ def _dtype_name(t: Any) -> str:
     return str(t.dtype) if hasattr(t, "dtype") else "unknown"
 
 
-def _load_state_dict(input_dir: Path, input_safetensors: Path | None) -> dict[str, Any]:
+EXPECTED_BUNDLE = {
+    "README.md": (10695, "85f191c1d886dc8e907986a100f0415751cb86479d18268d2cfacd614b5fd6db"),
+    "compression_state_dict.bin": (236003715, "91598c7da3d183eb8e0cc19cbbdc4f64f2d0c53069f9c8aa84185d0e33873c67"),
+    "state_dict.bin": (3677670163, "9bc89122b640f11394f51e6e77b4194d57da328ae81b2301ee316de916dbf4c5"),
+}
+
+
+def _reject_symlink_ancestors(path: Path) -> None:
+    candidate = Path(os.path.abspath(path))
+    while True:
+        if candidate.is_symlink():
+            raise SystemExit(f"prepare_checkpoint: symlink path component is forbidden: {candidate}")
+        parent = candidate.parent
+        if parent == candidate:
+            return
+        candidate = parent
+
+
+def _validate_input_bundle(input_dir: Path | None) -> Path:
+    if input_dir is not None:
+        _reject_symlink_ancestors(input_dir)
+    if input_dir is None or input_dir.is_symlink() or not input_dir.is_dir():
+        raise SystemExit("prepare_checkpoint: --input-dir must be a real directory")
+    entries = list(input_dir.iterdir())
+    if any(entry.is_symlink() or not entry.is_file() for entry in entries):
+        raise SystemExit("prepare_checkpoint: input bundle contains a symlink/non-regular entry")
+    if {entry.name for entry in entries} != set(EXPECTED_BUNDLE):
+        raise SystemExit("prepare_checkpoint: input bundle file set is not exact")
+    for name, (size, expected) in EXPECTED_BUNDLE.items():
+        path = input_dir / name
+        if path.stat().st_size != size or _sha256_file(path) != expected:
+            raise SystemExit(f"prepare_checkpoint: authenticated input identity mismatch: {name}")
+    return input_dir
+
+
+def _validate_output(output: Path, input_dir: Path) -> None:
+    sidecars = (output.with_suffix(output.suffix + ".sha256"), output.with_suffix(output.suffix + ".shared_pairs.json"))
+    _reject_symlink_ancestors(output)
+    for sidecar in sidecars:
+        _reject_symlink_ancestors(sidecar)
+    if any(path.exists() or path.is_symlink() for path in (output, *sidecars)):
+        raise SystemExit("prepare_checkpoint: output or sidecar already exists")
+    input_real = input_dir.resolve()
+    output_real = output.resolve(strict=False)
+    if output_real == input_real or input_real in output_real.parents or output_real in input_real.parents:
+        raise SystemExit("prepare_checkpoint: output overlaps authenticated input bundle")
+
+
+def _load_state_dict(input_dir: Path | None, *, validated: bool = False) -> dict[str, Any]:
     """Load the upstream checkpoint into a state dict.
 
-    Two paths:
-      - ``--input-safetensors PATH`` (skips torch pickle entirely).
-      - Discover a ``.bin`` / ``.th`` pickle under ``--input-dir``.
+    The only accepted input is the authenticated ``state_dict.bin`` in the
+    exact three-file release bundle.
     """
+    if not validated:
+        input_dir = _validate_input_bundle(input_dir)
+    assert input_dir is not None
+    ckpt_path = input_dir / "state_dict.bin"
     import torch  # deferred (uv-managed)
-
-    if input_safetensors is not None:
-        # Native safetensors — no pickle. Some mirror publishers ship
-        # audiocraft weights as safetensors; prefer that when possible.
-        from safetensors.torch import load_file as safe_load
-
-        print(f"[load] safetensors: {input_safetensors}", file=sys.stderr)
-        return safe_load(str(input_safetensors))
-
-    if input_dir is None or not input_dir.exists():
-        raise SystemExit(
-            f"prepare_checkpoint: neither --input-safetensors nor a "
-            f"valid --input-dir was provided (got {input_dir!r}) — "
-            f"FR-EX-08 no silent empty-output fallback"
-        )
-
-    # Discover a checkpoint bundle under input_dir. audiocraft releases
-    # commonly ship as ``state_dict.bin`` (torch pickle) or ``.th``.
-    candidates: list[Path] = []
-    for pat in ("state_dict.bin", "*.th", "*.bin", "pytorch_model.bin"):
-        candidates.extend(sorted(input_dir.glob(pat)))
-    # Deduplicate (glob overlap) preserving order.
-    seen = set()
-    unique_candidates = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            unique_candidates.append(c)
-
-    if not unique_candidates:
-        raise SystemExit(
-            f"prepare_checkpoint: no state_dict.bin / *.th / *.bin under "
-            f"{input_dir} — refusing to emit empty output (FR-EX-08)"
-        )
-
-    ckpt_path = unique_candidates[0]
     print(f"[load] torch pickle: {ckpt_path}", file=sys.stderr)
-    # weights_only=True is the safe path — refuses arbitrary pickle
-    # opcodes that could execute code, only permits tensor construction.
-    # torch <2.4 does not accept the kwarg; wrap for compat.
     try:
         obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
-    except TypeError:
-        # Older torch — no weights_only kwarg. This branch stays
-        # explicit so a future audit can still identify the unsafe
-        # load path if it triggers.
-        obj = torch.load(str(ckpt_path), map_location="cpu")
+    except TypeError as exc:
+        raise RuntimeError(
+            "prepare_checkpoint: torch.load(weights_only=True) is unsupported; "
+            "refusing an unsafe retry"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            "prepare_checkpoint: restricted torch.load(weights_only=True) failed; "
+            "refusing an unsafe retry"
+        ) from exc
 
     # audiocraft state_dict.bin sometimes wraps the raw state under a
     # ``"best_state"`` / ``"state_dict"`` / ``"model"`` key; unwrap.
@@ -279,22 +281,145 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _self_test_body(bundle: Path) -> int:
+    """Prove the restricted loader never retries after a TypeError."""
+    import types
+
+    checkpoint = bundle / "state_dict.bin"
+    original_bundle = EXPECTED_BUNDLE.copy()
+    EXPECTED_BUNDLE.clear()
+    EXPECTED_BUNDLE.update({name: (len(data), hashlib.sha256(data).hexdigest()) for name, data in (("README.md", b"readme"), ("compression_state_dict.bin", b"compression"), ("state_dict.bin", b"not-a-checkpoint"))})
+    for name, (_, _) in EXPECTED_BUNDLE.items():
+        bundle.joinpath(name).write_bytes({"README.md": b"readme", "compression_state_dict.bin": b"compression", "state_dict.bin": b"not-a-checkpoint"}[name])
+    # An unrelated pickle-looking file must never affect exact selection.
+    checkpoint.with_name("alternate.bin").write_bytes(b"not-a-checkpoint")
+    try:
+        _validate_input_bundle(bundle)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("extra checkpoint file was accepted")
+    checkpoint.with_name("alternate.bin").unlink()
+    original = checkpoint.read_bytes()
+    checkpoint.write_bytes(b"tampered")
+    try:
+        _validate_input_bundle(bundle)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("checkpoint hash/size tamper was accepted")
+    checkpoint.write_bytes(original)
+    input_link = bundle.with_name("bundle-link")
+    input_link.symlink_to(bundle, target_is_directory=True)
+    try:
+        _validate_input_bundle(input_link)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("input directory symlink was accepted")
+    input_link.unlink()
+    input_parent = bundle.parent / f"input-real-{bundle.name}"
+    input_parent.mkdir()
+    input_parent_link = bundle.parent / f"input-link-{bundle.name}"
+    input_parent_link.symlink_to(input_parent, target_is_directory=True)
+    try:
+        _validate_input_bundle(input_parent_link / "bundle")
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("input bundle under symlink ancestor was accepted")
+    input_parent_link.unlink()
+    output = bundle.parent / "flat.safetensors"
+    _validate_output(output, bundle)
+    output.with_suffix(output.suffix + ".sha256").write_text("occupied", encoding="utf-8")
+    try:
+        _validate_output(output, bundle)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("existing output sidecar was accepted")
+    output.with_suffix(output.suffix + ".sha256").unlink()
+    output.symlink_to(bundle / "missing-output")
+    try:
+        _validate_output(output, bundle)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("dangling output symlink was accepted")
+    output.unlink()
+    output_parent = bundle.parent / f"output-real-{bundle.name}"
+    output_parent.mkdir()
+    output_parent_link = bundle.parent / f"output-link-{bundle.name}"
+    output_parent_link.symlink_to(output_parent, target_is_directory=True)
+    try:
+        _validate_output(output_parent_link / "nested" / "flat.safetensors", bundle)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("output under symlink ancestor was accepted")
+    output_parent_link.unlink()
+    try:
+        _validate_output(bundle / "nested" / "flat.safetensors", bundle)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("overlapping output was accepted")
+    calls = 0
+
+    def load(*_args: Any, **_kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        raise TypeError("fake torch without weights_only")
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.load = load  # type: ignore[attr-defined]
+    previous = sys.modules.get("torch")
+    sys.modules["torch"] = fake_torch
+    try:
+        try:
+            _load_state_dict(checkpoint.parent)
+        except RuntimeError as exc:
+            assert "unsafe retry" in str(exc)
+        else:
+            raise AssertionError("restricted loader unexpectedly succeeded")
+        assert calls == 1, f"torch.load called {calls} times"
+        tampered = bundle / "state_dict.bad"
+        checkpoint.rename(tampered)
+        try:
+            _validate_input_bundle(bundle)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("missing exact state_dict.bin was accepted")
+    finally:
+        EXPECTED_BUNDLE.clear()
+        EXPECTED_BUNDLE.update(original_bundle)
+        if previous is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = previous
+    print("magnet-medium-30secs prepare self-test: PASS")
+    return 0
+
+
+def _self_test() -> int:
+    import tempfile
+
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    with tempfile.TemporaryDirectory(prefix="magnet-medium-prepare-", dir=temporary_root) as directory:
+        return _self_test_body(Path(directory))
+
+
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return _self_test()
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument(
         "--input-dir",
         type=Path,
         default=None,
         help="Directory containing the upstream checkpoint bundle "
-        "(state_dict.bin / *.th / *.bin). Discover mode.",
-    )
-    ap.add_argument(
-        "--input-safetensors",
-        type=Path,
-        default=None,
-        help="Explicit path to a native safetensors file (skips torch "
-        "pickle entirely — some mirror publishers ship audiocraft "
-        "weights as safetensors directly).",
+        "exact state_dict.bin is required; discovery is disabled.",
     )
     ap.add_argument(
         "--output",
@@ -304,15 +429,13 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if args.input_dir is None and args.input_safetensors is None:
-        print(
-            "prepare_checkpoint: exactly one of --input-dir or "
-            "--input-safetensors must be provided",
-            file=sys.stderr,
-        )
+    if args.input_dir is None:
+        print("prepare_checkpoint: --input-dir is required", file=sys.stderr)
         return 2
 
-    state_dict = _load_state_dict(args.input_dir, args.input_safetensors)
+    input_dir = _validate_input_bundle(args.input_dir)
+    _validate_output(args.output, input_dir)
+    state_dict = _load_state_dict(input_dir, validated=True)
     print(
         f"[load] loaded {len(state_dict)} raw entries",
         file=sys.stderr,

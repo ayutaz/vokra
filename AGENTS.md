@@ -77,6 +77,12 @@ Use the repository skills in `.agents/skills/` when the task matches:
 - `$publish-model-to-hf`: publish only through the repository's gated script.
 - `$vast-ai-workflow`: convert, validate, publish, or benchmark memory-heavy
   artifacts and workspace-scale Rust code remotely.
+- `$complete-mac-cpu-metal`: investigate and execute the public Mac CPU / Apple
+  Metal completion state machine, routing owner/legal, VAST, and final
+  Scaleway work with fail-closed completion auditing.
+- `$refresh-vokra-docs`: refresh current/public documentation and dated records
+  without rewriting historical evidence, while applying the repository's
+  read-only checks and protected-manifest boundary.
 
 Skills are guidance, not permission to skip tests or gates. Read the selected
 skill before acting and follow its referenced project files.

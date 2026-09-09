@@ -2285,7 +2285,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vokra-backend-cpu"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
  "vokra-math",
@@ -2293,28 +2293,28 @@ dependencies = [
 
 [[package]]
 name = "vokra-backend-cuda"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-backend-metal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-backend-vulkan"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-bert"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
  "vokra-math",
@@ -2323,22 +2323,22 @@ dependencies = [
 
 [[package]]
 name = "vokra-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "vokra-math"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "vokra-mmap"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-models"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-backend-cuda",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-ops"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
  "vokra-math",
@@ -2373,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-piper-plus"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]
@@ -2401,7 +2401,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-vad-micro"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]

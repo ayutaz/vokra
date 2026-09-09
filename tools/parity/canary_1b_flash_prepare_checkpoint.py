@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
 """Prepare the pinned NVIDIA Canary-1B-Flash `.nemo` release on VAST.
 
 This is a large-model sidecar, never a runtime dependency. It authenticates
@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 UPSTREAM_HF = "nvidia/canary-1b-flash"
@@ -44,6 +45,12 @@ COUNTER_COUNT = 32
 COUNTER = re.compile(
     r"^encoder\.layers\.(\d+)\.conv\.batch_norm\.num_batches_tracked$"
 )
+EXPECTED_SHARED_PAIRS = (
+    (
+        "transf_decoder._embedding.token_embedding.weight",
+        "log_softmax.mlp.layer0.weight",
+    ),
+)
 
 
 def digest_bytes(payload: bytes) -> str:
@@ -56,6 +63,16 @@ def digest_file(path: Path) -> str:
         while chunk := stream.read(8 * 1024 * 1024):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def write_bytes_exclusive(path: Path, payload: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(payload)
+
+
+def write_text_exclusive(path: Path, payload: str) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(payload)
 
 
 def require_vast() -> None:
@@ -82,8 +99,15 @@ def validate_stripped_manifest(manifest: dict[str, object]) -> list[int]:
         )
     if manifest.get("unknown_stripped"):
         raise ValueError("unknown tensor dtypes were stripped")
-    if manifest.get("shared_pairs"):
-        raise ValueError("released Canary checkpoint unexpectedly contains shared storages")
+    expected_shared_pairs = [
+        {"canonical": canonical, "cloned": cloned}
+        for canonical, cloned in EXPECTED_SHARED_PAIRS
+    ]
+    if manifest.get("shared_pairs") != expected_shared_pairs:
+        raise ValueError(
+            "Canary-1B-Flash shared_pairs must contain exactly the pinned pair "
+            f"{expected_shared_pairs}, got {manifest.get('shared_pairs')}"
+        )
 
     layers: list[int] = []
     dropped = manifest.get("dropped_tensors")
@@ -165,17 +189,29 @@ def extract_small_assets(archive: Path, output_dir: Path) -> tuple[list[str], Pa
     order, aggregate = resolve_aggregate_vocab(vocab)
     config_path = output_dir / "model_config.yaml"
     aggregate_path = output_dir / "canary-1b-flash.aggregate.vocab"
-    config_path.write_bytes(config)
-    aggregate_path.write_bytes(aggregate)
+    write_bytes_exclusive(config_path, config)
+    write_bytes_exclusive(aggregate_path, aggregate)
     return order, config_path, aggregate_path
 
 
 def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="canary-flash-prepare-") as directory:
+        path = Path(directory) / "sentinel"
+        write_bytes_exclusive(path, b"one")
+        try:
+            write_bytes_exclusive(path, b"two")
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("pre-existing output was clobbered")
     manifest: dict[str, object] = {
         "kept_count": FLOAT_TENSOR_COUNT,
         "dropped_count": COUNTER_COUNT,
         "unknown_stripped": [],
-        "shared_pairs": [],
+        "shared_pairs": [
+            {"canonical": canonical, "cloned": cloned}
+            for canonical, cloned in EXPECTED_SHARED_PAIRS
+        ],
         "dropped_tensors": [
             {
                 "name": f"encoder.layers.{layer}.conv.batch_norm.num_batches_tracked",
@@ -186,6 +222,44 @@ def self_test() -> None:
         ],
     }
     assert validate_stripped_manifest(manifest) == list(range(COUNTER_COUNT))
+
+    for invalid_pairs, label in (
+        ([], "missing shared pair"),
+        (
+            [
+                {
+                    "canonical": EXPECTED_SHARED_PAIRS[0][1],
+                    "cloned": EXPECTED_SHARED_PAIRS[0][0],
+                }
+            ],
+            "reversed shared pair",
+        ),
+        (
+            [
+                {
+                    "canonical": "transf_decoder.embedding.token_embedding.weight",
+                    "cloned": EXPECTED_SHARED_PAIRS[0][1],
+                }
+            ],
+            "aliased shared pair",
+        ),
+        (
+            [
+                {"canonical": canonical, "cloned": cloned}
+                for canonical, cloned in EXPECTED_SHARED_PAIRS
+            ]
+            + [{"canonical": "unexpected", "cloned": "unexpected"}],
+            "additional shared pair",
+        ),
+    ):
+        invalid_manifest = dict(manifest)
+        invalid_manifest["shared_pairs"] = invalid_pairs
+        try:
+            validate_stripped_manifest(invalid_manifest)
+        except ValueError as error:
+            assert "shared_pairs" in str(error), label
+        else:
+            raise AssertionError(f"{label} must fail")
 
     members = {
         "spl.vocab": b"s\n",
@@ -219,6 +293,8 @@ def main() -> int:
         parser.error("--input and --output-dir are required unless --self-test is used")
 
     require_vast()
+    if args.input.is_symlink():
+        parser.error(f"input must not be a symlink: {args.input}")
     archive = args.input.resolve()
     if not archive.is_file():
         parser.error(f"input is not a regular file: {archive}")
@@ -232,7 +308,11 @@ def main() -> int:
             f"archive SHA-256 {archive_sha256} != pinned {ARCHIVE_SHA256}"
         )
 
+    if args.output_dir.exists() and (args.output_dir.is_symlink() or not args.output_dir.is_dir()):
+        parser.error(f"output directory must be a non-symlink directory: {args.output_dir}")
     output_dir = args.output_dir.resolve()
+    if output_dir.exists() and any(output_dir.iterdir()):
+        parser.error(f"output directory must be empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     prepared = output_dir / "canary-1b-flash.prepared.safetensors"
     helper = Path(__file__).resolve().with_name("nemo_pt_to_safetensors.py")
@@ -274,8 +354,8 @@ def main() -> int:
         "aggregate_vocab_sha256": digest_file(aggregate_path),
         "aggregate_vocab_member_order": tokenizer_order,
     }
-    (output_dir / "prepare-audit.json").write_text(
-        json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    write_text_exclusive(
+        output_dir / "prepare-audit.json", json.dumps(audit, indent=2, sort_keys=True) + "\n"
     )
     print(json.dumps(audit, sort_keys=True))
     return 0

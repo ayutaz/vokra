@@ -258,14 +258,14 @@ mod tests {
             Ok(_) => panic!("Vulkan must not claim the complete UTMOS learned-op set"),
             Err(error) => error,
         };
-        let message = error.to_string().to_lowercase();
-        assert!(message.contains("vulkan"), "{message}");
-        assert!(
-            message.contains("unavailable")
-                || message.contains("does not cover")
-                || message.contains("not built"),
-            "{message}"
-        );
+        match error {
+            VokraError::UnsupportedOp(message) | VokraError::BackendUnavailable(message) => {
+                assert!(message.to_lowercase().contains("vulkan"), "{message}");
+            }
+            other => panic!(
+                "uncovered Vulkan backend must fail with UnsupportedOp or BackendUnavailable, got {other:?}"
+            ),
+        }
     }
 
     // Pre-registered before the first real-device run. The bound is wider

@@ -7,7 +7,9 @@
 //! checkpoint is never converted on the maintainer Mac.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{
@@ -38,6 +40,7 @@ pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
 const TENSOR_COUNT: usize = 965;
 const TOKENIZER_PIECES: usize = 3_000;
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
@@ -69,6 +72,17 @@ const KEY_DEC_D_MODEL: &str = "vokra.reazonspeech_nemo_v2.decoder.d_model";
 const KEY_JOINT_VOCAB_SIZE: &str = "vokra.reazonspeech_nemo_v2.joint.vocab_size";
 const KEY_JOINT_BLANK_ID: &str = "vokra.reazonspeech_nemo_v2.joint.blank_token_id";
 const KEY_JOINT_MAX_SYMBOLS: &str = "vokra.reazonspeech_nemo_v2.joint.max_symbols_per_step";
+const KEY_DECODING_STRATEGY: &str = "vokra.reazonspeech_nemo_v2.decoding.strategy";
+const KEY_DECODING_BEAM_SIZE: &str = "vokra.reazonspeech_nemo_v2.decoding.beam_size";
+const KEY_DECODING_ALSD_MAX_TARGET_LEN: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.alsd_max_target_len";
+const KEY_DECODING_SCORE_NORM: &str = "vokra.reazonspeech_nemo_v2.decoding.score_norm";
+const KEY_DECODING_BEAM_MODE: &str = "vokra.reazonspeech_nemo_v2.decoding.search_type";
+const KEY_DECODING_SOFTMAX_TEMPERATURE: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.softmax_temperature";
+const KEY_DECODING_RETURN_BEST: &str = "vokra.reazonspeech_nemo_v2.decoding.return_best_hypothesis";
+const KEY_DECODING_PRESERVE_ALIGNMENTS: &str =
+    "vokra.reazonspeech_nemo_v2.decoding.preserve_alignments";
 
 const KEY_FRONTEND_N_FFT: &str = "vokra.frontend.n_fft";
 const KEY_FRONTEND_HOP: &str = "vokra.frontend.hop_length";
@@ -113,6 +127,7 @@ pub fn convert_reazonspeech_nemo_v2_file_with_tokenizer(
     license: Option<&str>,
     tokenizer_vocab: &Path,
 ) -> Result<ReazonspeechNemoV2Report, ConvertError> {
+    validate_io_paths(input, tokenizer_vocab, output)?;
     if let Some(value) = license.filter(|value| !value.is_empty()) {
         if !value.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX) {
             return Err(ConvertError::Usage(format!(
@@ -155,7 +170,7 @@ pub fn convert_reazonspeech_nemo_v2_file_with_tokenizer(
     let output_bytes = builder
         .to_bytes()
         .map_err(|error| ConvertError::Gguf(error.to_string()))?;
-    std::fs::write(output, output_bytes).map_err(ConvertError::Io)?;
+    write_output_no_clobber(output, &output_bytes)?;
 
     Ok(ReazonspeechNemoV2Report {
         read: TENSOR_COUNT,
@@ -163,6 +178,169 @@ pub fn convert_reazonspeech_nemo_v2_file_with_tokenizer(
         skipped_non_float: 0,
         bf16_passthrough: 0,
     })
+}
+
+fn validate_io_paths(
+    input: &Path,
+    tokenizer_vocab: &Path,
+    output: &Path,
+) -> Result<(), ConvertError> {
+    reject_unsafe_path(input, "checkpoint")?;
+    reject_unsafe_path(tokenizer_vocab, "tokenizer")?;
+    reject_unsafe_path(output, "output")?;
+    require_regular_file(input, "checkpoint")?;
+    require_regular_file(tokenizer_vocab, "tokenizer")?;
+    if output.exists() || output.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "reazonspeech-nemo-v2 output must be absent and non-symlink: {}",
+            output.display()
+        )));
+    }
+    let parent = output.parent().ok_or_else(|| {
+        ConvertError::Usage("reazonspeech-nemo-v2 output must have a parent directory".to_owned())
+    })?;
+    if !parent.is_dir() || parent.is_symlink() {
+        return Err(ConvertError::Usage(format!(
+            "reazonspeech-nemo-v2 output parent must be an existing regular non-symlink directory: {}",
+            parent.display()
+        )));
+    }
+    Ok(())
+}
+
+fn reject_unsafe_path(path: &Path, label: &str) -> Result<(), ConvertError> {
+    let raw = path.to_string_lossy();
+    #[cfg(windows)]
+    let has_lexical_dot = raw
+        .split(['/', '\\'])
+        .any(|component| matches!(component, "." | ".."));
+    #[cfg(not(windows))]
+    let has_lexical_dot = raw
+        .split('/')
+        .any(|component| matches!(component, "." | ".."));
+    if has_lexical_dot
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(ConvertError::Usage(format!(
+            "reazonspeech-nemo-v2 {label} must not contain lexical dot components"
+        )));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(ConvertError::Io)?
+            .join(path)
+    };
+    let mut current = absolute.as_path();
+    loop {
+        if current.is_symlink() && current != Path::new("/var") {
+            return Err(ConvertError::Usage(format!(
+                "reazonspeech-nemo-v2 {label} has symlink ancestry: {}",
+                current.display()
+            )));
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
+}
+
+fn require_regular_file(path: &Path, label: &str) -> Result<(), ConvertError> {
+    if path.is_symlink() || !path.is_file() {
+        return Err(ConvertError::Usage(format!(
+            "reazonspeech-nemo-v2 {label} must be a regular non-symlink file: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn write_output_no_clobber(output: &Path, bytes: &[u8]) -> Result<(), ConvertError> {
+    write_output_no_clobber_with_allocator(output, bytes, || {
+        OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    })
+}
+
+fn write_output_no_clobber_with_allocator<F>(
+    output: &Path,
+    bytes: &[u8],
+    mut next_sequence: F,
+) -> Result<(), ConvertError>
+where
+    F: FnMut() -> u64,
+{
+    if output.parent().is_none() {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output must have a parent directory",
+        )));
+    }
+    let mut temporary = None;
+    for _ in 0..32_u64 {
+        let candidate = temporary_output_path(output, next_sequence());
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(ConvertError::Io(error)),
+        }
+    }
+    let Some((temporary_path, mut temporary_file)) = temporary else {
+        return Err(ConvertError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique temporary output",
+        )));
+    };
+    let result = (|| {
+        temporary_file.write_all(bytes)?;
+        temporary_file.sync_all()?;
+        std::fs::hard_link(&temporary_path, output)?;
+        Ok::<(), std::io::Error>(())
+    })();
+    drop(temporary_file);
+    let cleanup = std::fs::remove_file(&temporary_path);
+    // hard_link publishes a complete, synced artifact. Cleanup is best effort
+    // so a post-publication unlink error never reports a false conversion
+    // failure alongside a valid final output.
+    match result {
+        Ok(()) => {
+            let _ = cleanup;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = cleanup;
+            Err(ConvertError::Io(error))
+        }
+    }
+}
+
+fn temporary_output_path(output: &Path, sequence: u64) -> PathBuf {
+    output
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(
+            ".{}.{}.{}.tmp",
+            output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("output"),
+            std::process::id(),
+            sequence
+        ))
 }
 
 fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
@@ -174,6 +352,8 @@ fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
         (KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256),
         (KEY_FRONTEND_WINDOW, "hann"),
         (KEY_FRONTEND_NORMALIZE, "per_feature"),
+        (KEY_DECODING_STRATEGY, "alsd"),
+        (KEY_DECODING_BEAM_MODE, "default"),
     ] {
         builder.add_string(key, value);
     }
@@ -197,6 +377,7 @@ fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
         (KEY_JOINT_VOCAB_SIZE, 3_001),
         (KEY_JOINT_BLANK_ID, 3_000),
         (KEY_JOINT_MAX_SYMBOLS, 10),
+        (KEY_DECODING_BEAM_SIZE, 4),
         (KEY_FRONTEND_N_FFT, 512),
         (KEY_FRONTEND_HOP, 160),
         (KEY_FRONTEND_WIN, 400),
@@ -205,6 +386,11 @@ fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
         builder.add_u32(key, value);
     }
     builder.add_f32(KEY_FRONTEND_DITHER, 1.0e-5);
+    builder.add_f32(KEY_DECODING_ALSD_MAX_TARGET_LEN, 1.0);
+    builder.add_f32(KEY_DECODING_SOFTMAX_TEMPERATURE, 1.0);
+    builder.add_bool(KEY_DECODING_SCORE_NORM, true);
+    builder.add_bool(KEY_DECODING_RETURN_BEST, true);
+    builder.add_bool(KEY_DECODING_PRESERVE_ALIGNMENTS, false);
     builder.add_metadata(
         KEY_TOKENIZER_VOCAB,
         GgufMetadataValue::Array(GgufArray {
@@ -226,6 +412,12 @@ fn validate_checkpoint(checkpoint: &SafetensorsFile) -> Result<(), ConvertError>
         return Err(ConvertError::Parse(format!(
             "ReazonSpeech-NeMo-v2 internal manifest drift: count={}, sha256={internal_hash}",
             expected.len()
+        )));
+    }
+    if checkpoint.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "ReazonSpeech-NeMo-v2 checkpoint has {} tensor descriptors; expected exactly {TENSOR_COUNT} (duplicate or missing names are forbidden)",
+            checkpoint.tensors().len()
         )));
     }
 
@@ -456,6 +648,126 @@ mod tests {
     }
 
     #[test]
+    fn conversion_paths_reject_non_regular_inputs_and_existing_outputs() {
+        let root =
+            std::env::temp_dir().join(format!("vokra-reazonspeech-paths-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create path-test directory");
+        let input = root.join("checkpoint.safetensors");
+        let tokenizer = root.join("tokenizer.vocab");
+        let output = root.join("output.gguf");
+        std::fs::write(&input, b"checkpoint").expect("write checkpoint");
+        std::fs::write(&tokenizer, b"tokenizer").expect("write tokenizer");
+        assert!(require_regular_file(&input, "checkpoint").is_ok());
+        assert!(require_regular_file(&tokenizer, "tokenizer").is_ok());
+
+        std::fs::write(&output, b"existing").expect("write existing output");
+        let error =
+            convert_reazonspeech_nemo_v2_file_with_tokenizer(&input, &output, None, &tokenizer)
+                .expect_err("existing output must be refused before parsing");
+        assert!(error.to_string().contains("output must be absent"));
+        assert_eq!(
+            std::fs::read(&output).expect("read preserved output"),
+            b"existing"
+        );
+        std::fs::remove_file(&output).expect("remove output for atomic-write checks");
+
+        write_output_no_clobber(&output, b"fresh").expect("write fresh output");
+        let error = write_output_no_clobber(&output, b"replacement")
+            .expect_err("atomic writer must refuse a claimed final path");
+        assert!(matches!(
+            error,
+            ConvertError::Io(ref error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(
+            std::fs::read(&output).expect("read atomically published output"),
+            b"fresh"
+        );
+        std::fs::remove_file(&output).expect("remove atomic output");
+
+        let error =
+            convert_reazonspeech_nemo_v2_file_with_tokenizer(&input, &output, None, &tokenizer)
+                .expect_err("invalid tokenizer must fail before output publication");
+        assert!(error.to_string().contains("SHA-256"));
+        assert!(
+            !output.exists(),
+            "failed conversion must not leave a final output"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let input_link = root.join("checkpoint-link.safetensors");
+            symlink(&input, &input_link).expect("create checkpoint symlink");
+            let error = require_regular_file(&input_link, "checkpoint")
+                .expect_err("checkpoint symlink must be refused");
+            assert!(error.to_string().contains("non-symlink"));
+
+            let tokenizer_link = root.join("tokenizer-link.vocab");
+            symlink(&tokenizer, &tokenizer_link).expect("create tokenizer symlink");
+            let error = require_regular_file(&tokenizer_link, "tokenizer")
+                .expect_err("tokenizer symlink must be refused");
+            assert!(error.to_string().contains("non-symlink"));
+
+            let output_link = root.join("output-link.gguf");
+            symlink(&output, &output_link).expect("create output symlink");
+            let error = convert_reazonspeech_nemo_v2_file_with_tokenizer(
+                &input,
+                &output_link,
+                None,
+                &tokenizer,
+            )
+            .expect_err("output symlink must be refused");
+            assert!(error.to_string().contains("output has symlink ancestry"));
+        }
+
+        assert!(reject_unsafe_path(&root.join("./checkpoint.safetensors"), "checkpoint").is_err());
+        assert!(reject_unsafe_path(&root.join("../checkpoint.safetensors"), "checkpoint").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let real_parent = root.join("real-parent");
+            let link_parent = root.join("link-parent");
+            std::fs::create_dir(&real_parent).expect("create real parent");
+            symlink(&real_parent, &link_parent).expect("create symlink parent");
+            assert!(
+                reject_unsafe_path(&link_parent.join("checkpoint.safetensors"), "checkpoint")
+                    .is_err()
+            );
+            assert!(reject_unsafe_path(&link_parent.join("tokenizer.vocab"), "tokenizer").is_err());
+            assert!(reject_unsafe_path(&link_parent.join("output.gguf"), "output").is_err());
+        }
+
+        std::fs::remove_dir_all(root).expect("remove path-test directory");
+    }
+
+    #[test]
+    fn output_writer_advances_sequence_after_temp_collision() {
+        let root = std::env::temp_dir().join(format!(
+            "vokra-reazonspeech-sequence-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create sequence-test directory");
+        let output = root.join("output.gguf");
+        let blocked = temporary_output_path(&output, 41);
+        std::fs::write(&blocked, b"reserved").expect("reserve first temp candidate");
+        let mut sequences = [41_u64, 42].into_iter();
+        write_output_no_clobber_with_allocator(&output, b"published", || {
+            sequences.next().expect("allocator sequence")
+        })
+        .expect("advance to an unused temp candidate");
+        assert_eq!(
+            std::fs::read(&output).expect("read published output"),
+            b"published"
+        );
+        assert_eq!(
+            std::fs::read(&blocked).expect("read blocked candidate"),
+            b"reserved"
+        );
+        std::fs::remove_dir_all(root).expect("remove sequence-test directory");
+    }
+
+    #[test]
     fn runtime_metadata_axes_are_complete() {
         let mut builder = GgufBuilder::new();
         write_runtime_metadata(&mut builder, b"fixture");
@@ -475,6 +787,40 @@ mod tests {
         assert_eq!(
             file.get(KEY_JOINT_BLANK_ID),
             Some(&GgufMetadataValue::U32(3_000))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_STRATEGY)
+                .and_then(|value| value.as_str()),
+            Some("alsd")
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_BEAM_SIZE),
+            Some(&GgufMetadataValue::U32(4))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_ALSD_MAX_TARGET_LEN),
+            Some(&GgufMetadataValue::F32(1.0))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_SCORE_NORM),
+            Some(&GgufMetadataValue::Bool(true))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_BEAM_MODE)
+                .and_then(|value| value.as_str()),
+            Some("default")
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_SOFTMAX_TEMPERATURE),
+            Some(&GgufMetadataValue::F32(1.0))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_RETURN_BEST),
+            Some(&GgufMetadataValue::Bool(true))
+        );
+        assert_eq!(
+            file.get(KEY_DECODING_PRESERVE_ALIGNMENTS),
+            Some(&GgufMetadataValue::Bool(false))
         );
         assert_eq!(
             file.get(KEY_FRONTEND_DITHER),

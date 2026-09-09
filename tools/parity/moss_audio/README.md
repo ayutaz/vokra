@@ -18,9 +18,45 @@ The official calls used as reference are:
 
 The environment is locked by this directory's `uv.lock`. The model snapshot
 and official source checkout are downloaded at exact 40-hex revisions. Config,
-sidecars, source files and generated evidence are all hashed. A missing import,
-source path outside the official checkout, revision/shape drift, non-FP32 CPU
-reference, or modified sidecar aborts loudly.
+sidecars, the complete source tracked-tree path list, and generated evidence
+are all hashed. A missing import, source path outside the official checkout,
+revision/shape drift, non-FP32 CPU reference, or modified sidecar aborts
+loudly.
+
+The reference dumper uses ordinary CPU `from_pretrained` with
+`low_cpu_mem_usage=False`, so it disables Transformers' optional Accelerate
+path and has no Accelerate dependency. This is deliberately a high-memory
+route: both the dumper and VAST worker require Linux x86_64 and refuse hosts
+below 120,000,000 KiB (128-GB class) before any model loading.
+
+The VAST worker runs the dependency-free `preflight_gate.py` against the exact
+project/lock bytes before checking host capacity, checkout cleanliness, tokens,
+scratch paths, synchronization, or downloads. The checked-in manifest is
+intentionally pending review and therefore exits 2; no model or source
+acquisition is reachable until dependency, source-license-file absence,
+model-license, and exact checkpoint-file evidence is authenticated by a later
+owner review.
+
+The model-free API gate also validates the complete non-weight topology from
+each fixed `config.json`: the custom `moss_audio` root/`auto_map`, the
+Whisper-style `audio_config` (including its 32-layer/20-head tower, 12.5-Hz
+downsampling and DeepStack indexes `[8, 16, 24]`), and the nested Qwen3
+`language_config` (36 full-attention layers, 32 query heads/8 KV heads,
+40,960 positions). The two accepted releases are deliberately distinct at
+the language width axis: 4B uses hidden/FFN widths `2560/9728`, while 8B uses
+`4096/12288`; a drift in either nested topology or a root-level alias is a
+fail-closed error. This check is model-free and does not construct a model or
+touch a checkpoint shard.
+The historical main project lock remains pinned to Transformers 5.5.0 and is
+retained for its existing license and closure gates. The VAST worker now
+requires an owner-approved model-free API-smoke evidence path and SHA-256
+before any acquisition; it validates the exact requested variants,
+source/metadata identities, approval scope, Transformers 5.10.4, and
+`checkpoint_load=NOT_PERFORMED`. After that bridge passes, actual official
+reference execution uses the separate authenticated patched 5.10.4 project,
+not the historical environment. Model compatibility and numerical parity
+remain unexecuted until the real VAST run, and all historical license,
+checkpoint, and closure gates still apply.
 
 No numerical fixture is committed before an actual run. The Rust consumer in
 `crates/vokra-models/tests/moss_audio_real.rs` is environment-gated and uses
@@ -32,15 +68,22 @@ keeps the same `atol=0.01`, and also requires exact greedy ids.
 Run only through the VAST worker after provisioning:
 
 ```sh
-scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 4b
-scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 8b
+scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 4b \
+  --approval-evidence /path/to/approval.json \
+  --api-smoke-evidence /path/to/api-smoke-evidence.json \
+  --api-smoke-sha256 <64-hex> --expected-head <40-hex>
+scripts/publish/vast-ai/run-moss-audio-validation.sh --variant 8b \
+  --approval-evidence /path/to/approval.json \
+  --api-smoke-evidence /path/to/api-smoke-evidence.json \
+  --api-smoke-sha256 <64-hex> --expected-head <40-hex>
 ```
 
 The worker uses the committed two-second mono 16 kHz clip at
 `tests/parity/utmos/ref-clip.wav`, performs no upload, and leaves only the
-small reference/evidence directory to pull. Do not pull the source snapshot,
-merged safetensors, or GGUF to the maintainer Mac. Destroy the VAST instance
-after evidence is recovered.
+small logs/summaries to recover locally. Transfer the large GGUF and complete
+reference packets directly from VAST to the disposable Apple host; do not pull
+the source snapshot, merged safetensors, GGUF, or reference packet to the
+maintainer Mac. Destroy the VAST instance after the small logs are recovered.
 
 After both CPU runs pass, transfer the GGUF/reference pairs directly from
 VAST to a disposable Apple Silicon host with at least 64 GB RAM:
@@ -49,11 +92,68 @@ VAST to a disposable Apple Silicon host with at least 64 GB RAM:
 VOKRA_REMOTE_APPLE_SILICON=1 \
 scripts/verify/apple-silicon-moss-audio.sh \
   --gguf-4b /remote/stage/moss-audio-4b-instruct.gguf \
+  --gguf-4b-sha256 <VAST_GGUF_4B_SHA256> \
   --reference-4b /remote/stage/reference-4b \
+  --reference-4b-sha256 <VAST_REFERENCE_4B_PACKET_SHA256> \
   --gguf-8b /remote/stage/moss-audio-8b-instruct.gguf \
+  --gguf-8b-sha256 <VAST_GGUF_8B_SHA256> \
   --reference-8b /remote/stage/reference-8b \
+  --reference-8b-sha256 <VAST_REFERENCE_8B_PACKET_SHA256> \
+  --approval-evidence /remote/stage/approval.json \
+  --expected-head <VAST_EXPECTED_HEAD> \
   --evidence-dir /remote/evidence/moss-audio-metal
 ```
 
 That worker has no network, conversion, publication or deletion path. Pull
 only its evidence, then remove staged model data or destroy the remote host.
+
+## No-weight identity audit
+
+`identity_audit.py` collects owner-independent evidence for the fixed source
+and model revisions without downloading or opening checkpoint shards. It
+authenticates source bytes and the complete clean exact-revision Git tracked
+tree, proving that source `LICENSE`/`COPYING`/`NOTICE` filenames are absent,
+plus metadata bytes and remote Hugging Face Git blob IDs for configuration,
+tokenizer/processor sidecars, vocabulary assets, chat template, generation
+config, and checkpoint index. At each fixed model revision, the complete HF
+tree is required to prove that the repo-level model `LICENSE` is absent; the
+separate `HfApi.model_info(...).cardData.license` value is preserved as
+`HF_MODEL_INFO_CARD_DATA` provenance and is not treated as an SPDX decision.
+Every shard referenced by the index must have a remote size, Git blob SHA-1,
+and LFS SHA-256 OID; it is recorded as `IDENTITY_ONLY_NO_PAYLOAD`.
+
+License SPDX classification and owner approval remain
+`PENDING_OWNER_APPROVAL`. Missing, extra, or mismatched identity evidence is a
+blocking exit 2. The model-free self-test uses only synthetic metadata and no
+model payload:
+
+```sh
+uv run --project tools/parity/moss_audio/api_smoke --frozen --python 3.12 \
+  python tools/parity/moss_audio/identity_audit.py --self-test
+```
+
+On the disposable VAST worker, the `--collect` mode clones only the pinned
+official source checkout and materializes the explicit metadata/index
+allowlist. It queries the complete HF tree and fixed-revision cardData for both
+model revisions, but never requests a shard payload:
+
+```sh
+uv run --project tools/parity/moss_audio/api_smoke --frozen --python 3.12 \
+  python tools/parity/moss_audio/identity_audit.py --collect --variant all \
+  --source-dir /dev/shm/moss-audio-identity/source \
+  --metadata-root /dev/shm/moss-audio-identity/metadata \
+  --tree-root /dev/shm/moss-audio-identity/tree \
+  --output /dev/shm/moss-audio-identity/manifest.json
+```
+
+The output is an atomic candidate manifest; it is not an owner approval or a
+license sign-off.
+
+The VAST identity packet reviewed for the fixed revisions is checked in as
+`identity_audit_evidence.json`. Its gate binds the packet SHA-256,
+`manifest.json` SHA-256, source tracked-tree/license-file absence, model tree
+hashes, cardData `apache-2.0` provenance, metadata bytes/Git blobs, checkpoint
+index map count, and shard size/Git-LFS identities. It records no checkpoint
+payload, and its packet binding is included in the fixed approval scope so a
+later evidence replacement cannot reuse an older owner approval. It does not
+change the pending SPDX or owner-approval decisions.
