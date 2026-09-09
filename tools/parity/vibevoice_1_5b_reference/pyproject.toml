@@ -8,7 +8,7 @@ dependencies = [
     # inference roles, not the full upstream demo environment.  In
     # particular, the reference writes raw PCM with stdlib ``struct`` and
     # therefore must not pull soundfile/libsndfile (or librosa/soxr).
-    "diffusers==0.32.2",
+    "diffusers==0.38.0",
     "numpy==2.2.6",
     "torch==2.7.1",
     "transformers==5.10.4",
