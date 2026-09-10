@@ -152,7 +152,7 @@ analyse_command() {
 }
 
 self_test() {
-    local fails=0 got
+    local fails=0 got test_repo test_manifest
     check() {
         local name="$1" expected="$2" command="$3"
         if analyse_command /tmp "$command" dirty >/dev/null; then got=block; else got=allow; fi
@@ -226,13 +226,22 @@ self_test() {
     check_payload 'JSON prose extraction' allow \
         "{\"tool_input\":{\"command\":\"echo '$PROTECTED_REL'\"}}"
 
-    cwd_payload="$(jq -cn --arg cwd "$(git rev-parse --show-toplevel)/docs" '{cwd:$cwd,tool_input:{command:"git add ."}}')"
+    test_repo="$(mktemp -d "${TMPDIR:-/tmp}/vokra-protected-path.XXXXXX")"
+    test_manifest="$test_repo/$PROTECTED_REL"
+    mkdir -p "$(dirname "$test_manifest")" "$test_repo/docs"
+    printf 'baseline\n' > "$test_manifest"
+    git -C "$test_repo" init -q
+    git -C "$test_repo" add "$PROTECTED_REL"
+    git -C "$test_repo" -c user.name=self-test -c user.email=self-test@example.invalid commit -qm baseline
+    printf 'dirty\n' > "$test_manifest"
+    cwd_payload="$(jq -cn --arg cwd "$test_repo/docs" '{cwd:$cwd,tool_input:{command:"git add ."}}')"
     if printf '%s' "$cwd_payload" | bash "$0" >/dev/null 2>&1; then
         printf '  FAIL  %-56s expected block, got allow\n' 'subdirectory cwd resolves to git root'
         fails=$((fails + 1))
     else
         printf '  ok    %-56s block\n' 'subdirectory cwd resolves to git root'
     fi
+    rm -rf "$test_repo"
 
     if [ "$fails" -eq 0 ]; then
         echo 'guard-protected-path --self-test: OK'

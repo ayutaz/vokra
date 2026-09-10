@@ -38,13 +38,24 @@ if [ "${1:-}" = --self-test ]; then
         fi
     }
 
+    test_repo="$(mktemp -d "${TMPDIR:-/tmp}/vokra-pre-tool.XXXXXX")"
+    trap 'rm -rf "$test_repo"' EXIT
+    test_manifest="$test_repo/tools/parity/cosyvoice2_llm_reference/license_gate_manifest.json"
+    mkdir -p "$(dirname "$test_manifest")" "$test_repo/docs"
+    printf 'baseline\n' > "$test_manifest"
+    git -C "$test_repo" init -q
+    git -C "$test_repo" add tools/parity/cosyvoice2_llm_reference/license_gate_manifest.json
+    git -C "$test_repo" -c user.name=self-test -c user.email=self-test@example.invalid commit -qm baseline
+    printf 'dirty\n' > "$test_manifest"
+    dirty_broad_add_payload="$(jq -cn --arg cwd "$test_repo/docs" '{cwd:$cwd,tool_input:{command:"git add ."}}')"
+
     echo 'pre_tool_use dispatcher --self-test'
     check 'dispatcher blocks local model run' block \
         '{"tool_input":{"command":"vokra-cli run --model ./tiny.gguf"}}'
     check 'dispatcher blocks direct VAST mutation' block \
         '{"tool_input":{"command":"vastai destroy instance 123"}}'
     check 'dispatcher blocks dirty broad add' block \
-        '{"tool_input":{"command":"git add ."}}'
+        "$dirty_broad_add_payload"
     check 'dispatcher allows hash inspection' allow \
         '{"tool_input":{"command":"sha256sum ./tiny.gguf"}}'
     check 'dispatcher allows VAST status' allow \
