@@ -49,7 +49,7 @@ run_self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token
   for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'xcrun -f metal' \
     'sgmse_native_score_parity.py' '--verify-reference-only' 'SGMSE_REFERENCE_VERIFIED' \
-    'sgmse_native_enhancement_parity.py' '4096-sample crop' '60 sampler calls' \
+    'sgmse_native_enhancement_parity.py' '--verify-reference-portable' '4096-sample crop' '60 sampler calls' \
     'CARGO_BUILD_JOBS=1' 'SGMSE_APPLE_SCORE_PARITY' \
     'SGMSE_APPLE_ENHANCEMENT_PARITY' 'backend=cpu,metal' 'metal_device=present' 'atol=0.01' \
     'cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score' \
@@ -58,7 +58,7 @@ run_self_test() {
   done
   local score_verify_line enhancement_verify_line score_cargo_line
   local score_verify_pattern="\"\$PARITY_TOOL\" --verify-reference-only --reference-dir \"\$REFERENCE\""
-  local enhancement_verify_pattern="\"\$ENHANCEMENT_TOOL\" --verify-reference --reference-dir \"\$ENHANCEMENT_REFERENCE\" --vokra-root \"\$VOKRA_ROOT\""
+  local enhancement_verify_pattern="\"\$ENHANCEMENT_TOOL\" --verify-reference-portable --reference-dir \"\$ENHANCEMENT_REFERENCE\" --vokra-root \"\$VOKRA_ROOT\""
   local score_cargo_pattern="cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score \"\$TEST_NAME\""
   score_verify_line="$(grep -nF -- "$score_verify_pattern" "$script" | head -n1 | cut -d: -f1 || true)"
   enhancement_verify_line="$(grep -nF -- "$enhancement_verify_pattern" "$script" | head -n1 | cut -d: -f1 || true)"
@@ -113,7 +113,7 @@ done
 manifest_sha="$(sha256_file "$REFERENCE/manifest.json")"
 enhancement_manifest_sha="$(sha256_file "$ENHANCEMENT_REFERENCE/manifest.json")"
 UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python "$PARITY_TOOL" --verify-reference-only --reference-dir "$REFERENCE" >/dev/null
-UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python "$ENHANCEMENT_TOOL" --verify-reference --reference-dir "$ENHANCEMENT_REFERENCE" --vokra-root "$VOKRA_ROOT" >/dev/null
+UV_NO_CACHE=1 uv run --frozen --no-sync --project "$PARITY_PROJECT" --python 3.12 python "$ENHANCEMENT_TOOL" --verify-reference-portable --reference-dir "$ENHANCEMENT_REFERENCE" --vokra-root "$VOKRA_ROOT" >/dev/null
 log_file="$(mktemp "${TMPDIR:-/tmp}/sgmse-apple.XXXXXX")"; trap 'rm -f -- "$log_file"' EXIT
 export VOKRA_SGMSE_GGUF="$GGUF" VOKRA_SGMSE_GGUF_SHA256="$GGUF_SHA" VOKRA_SGMSE_REFERENCE_DIR="$REFERENCE" VOKRA_SGMSE_REFERENCE_MANIFEST_SHA256="$manifest_sha" VOKRA_SGMSE_APPLE_EVIDENCE_DIR="$EVIDENCE" VOKRA_SGMSE_ENHANCEMENT_REFERENCE_DIR="$ENHANCEMENT_REFERENCE" VOKRA_SGMSE_ENHANCEMENT_REFERENCE_MANIFEST_SHA256="$enhancement_manifest_sha" VOKRA_SGMSE_ENHANCEMENT_EVIDENCE_DIR="$ENHANCEMENT_EVIDENCE" VOKRA_REMOTE_APPLE_SILICON=1
 CARGO_BUILD_JOBS=1 cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score "$TEST_NAME" -- --ignored --exact --show-output 2>&1 | tee "$log_file"
