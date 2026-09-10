@@ -98,6 +98,15 @@ REVIEWED_SCORE_VARIANTS = (
         },
     },
     {
+        "cpu_model": "79",
+        "torch_version": "2.13.0+cu130",
+        "numpy_version": "2.3.5",
+        "scores": {
+            "score_imag": "78369b2727d24f9745529e3e21116060b0713d1e50ca04dc7d240af08d8ec4ed",
+            "score_real": "df5a0d9185852da2a969ceeb02ebf82098f589354775e3cc3d99eccaeee3278f",
+        },
+    },
+    {
         "cpu_model": "97",
         "torch_version": "2.13.0+cu130",
         "numpy_version": "2.3.5",
@@ -351,8 +360,8 @@ def self_test() -> None:
     assert REFERENCE_BYTES == 65_536
     assert FP32_ATOL == 0.01
     assert (set(REVIEWED_INPUT_SHA256) | set(SCORE_NAMES)) == REFERENCE_ARTIFACT_NAMES
-    assert len(REVIEWED_SCORE_VARIANTS) == 4
-    assert {variant["cpu_model"] for variant in REVIEWED_SCORE_VARIANTS} == {"1", "49", "63", "97"}
+    assert len(REVIEWED_SCORE_VARIANTS) == 5
+    assert {variant["cpu_model"] for variant in REVIEWED_SCORE_VARIANTS} == {"1", "49", "63", "79", "97"}
     assert REVIEWED_SCORE_VARIANTS[0]["scores"] == REVIEWED_SCORE_VARIANTS[1]["scores"]
     assert all(
         len(digest) == 64
@@ -434,6 +443,30 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("unknown reviewed score provenance was accepted")
+    for field, value in (
+        ("cpu_model", "79"),
+        ("torch_version", "2.13.0+cu130-drift"),
+        ("numpy_version", "2.3.5-drift"),
+    ):
+        invalid_runtime = alternate_runtime.copy()
+        invalid_runtime[field] = value
+        if field == "cpu_model":
+            invalid_runtime["torch_version"] = "2.13.0+cu130"
+            invalid_runtime["numpy_version"] = "2.3.5"
+            invalid_runtime["platform_node"] = "cpu79-with-known-payload"
+        else:
+            invalid_runtime["cpu_model"] = "79"
+        # The exact CPU-79 payload is reviewed only for the exact library
+        # versions; changing either library identity must remain blocked.
+        if field == "cpu_model":
+            assert reviewed_artifact_sha256(invalid_runtime)["score_real"] == REVIEWED_SCORE_VARIANTS[3]["scores"]["score_real"]
+        else:
+            try:
+                reviewed_artifact_sha256(invalid_runtime)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"unknown {field} provenance was accepted")
     assert REVIEWED_SCORE_VARIANTS[1]["scores"] != REVIEWED_SCORE_VARIANTS[2]["scores"]
     try:
         json.loads('{"x": 1, "x": 2}', object_pairs_hook=reject_duplicate_json)
