@@ -108,45 +108,110 @@ production_order_ok() {
 }
 
 require_cargo_result() {
-  local file="$1" test_name="$2" named tests results
-  named="$(grep -Ec "^test $test_name \.\.\. ok$" "$file" || true)"
-  tests="$(grep -Ec '^test [^ ]+ \.\.\.' "$file" || true)"
-  results="$(grep -Ec '^test result:' "$file" || true)"
-  [[ "$named" == 1 && "$tests" == 1 && "$results" == 1 ]] || die 'Cargo evidence has duplicate/missing test or result lines'
-  grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$file" || die 'Cargo result is not the exact one-pass result'
+  local file="$1" test_name="$2"
+  if ! awk -v expected_test="$test_name" '
+    BEGIN {
+      inline = "test " expected_test " ... ok"
+      start = "test " expected_test " ... "
+      result = "^test result: ok\\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out(; finished in [0-9]+\\.[0-9]+s)?$"
+      state = "before"
+      tests = 0
+      results = 0
+      standalone_ok = 0
+      invalid = 0
+      form = ""
+    }
+    /^test [^ ]+ \.\.\./ {
+      tests++
+      if ($0 == inline) {
+        if (state != "before") invalid = 1
+        state = "inline"
+        form = "inline"
+      } else if (index($0, start) == 1 && length($0) > length(start)) {
+        if (state != "before") invalid = 1
+        state = "named"
+        form = "split"
+      } else {
+        invalid = 1
+      }
+      next
+    }
+    $0 == "ok" {
+      standalone_ok++
+      if (state == "named") state = "split-ok"
+      else invalid = 1
+      next
+    }
+    /^test result:/ {
+      results++
+      if ($0 !~ result || (state != "inline" && state != "split-ok")) invalid = 1
+      state = "result"
+      next
+    }
+    END {
+      if (tests != 1 || results != 1 || invalid) exit 1
+      if (state == "result" && form == "inline" && standalone_ok == 0) exit 0
+      if (state == "result" && form == "split" && standalone_ok == 1) exit 0
+      exit 1
+    }
+  ' "$file"; then
+    die 'Cargo evidence has duplicate, missing, malformed, or incorrectly ordered test/result lines'
+  fi
+}
+
+extract_metric_line() {
+  local file="$1" test_name="$2" marker="$3"
+  awk -v expected_prefix="test $test_name ... $marker" -v marker="$marker" '
+    BEGIN { count = 0; invalid = 0; candidate = "" }
+    index($0, marker) == 1 {
+      count++
+      candidate = $0
+      next
+    }
+    index($0, expected_prefix) == 1 {
+      count++
+      candidate = substr($0, length(expected_prefix) - length(marker) + 1)
+      next
+    }
+    /^test [^ ]+ \.\.\. / && index($0, marker) > 0 { invalid = 1 }
+    END {
+      if (count != 1 || invalid) exit 1
+      print candidate
+    }
+  ' "$file"
 }
 
 require_cpu_sentinel() {
-  local file="$1"
-  [[ "$(grep -Ec '^ReazonSpeech-NeMo-v2 CPU encoder: .+$' "$file" || true)" == 1 ]] || die 'official CPU reference sentinel is missing, malformed, or duplicated'
+  local file="$1" line
+  line="$(extract_metric_line "$file" "$CPU_TEST" 'ReazonSpeech-NeMo-v2 CPU encoder:')" \
+    || die 'official CPU reference sentinel is missing, malformed, or duplicated'
+  [[ "$line" == 'ReazonSpeech-NeMo-v2 CPU encoder:'* ]] \
+    || die 'official CPU reference sentinel is malformed'
 }
 
 require_cpu_metric() {
-  local file="$1" count line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  local file="$1" line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
   local nonnegative='[+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
-  count="$(grep -Ec '^ReazonSpeech-NeMo-v2 CPU encoder: .+$' "$file" || true)"
-  [[ "$count" == 1 ]] || die 'CPU metric must occur exactly once'
-  line="$(grep -E '^ReazonSpeech-NeMo-v2 CPU encoder: .+$' "$file")"
+  line="$(extract_metric_line "$file" "$CPU_TEST" 'ReazonSpeech-NeMo-v2 CPU encoder:')" \
+    || die 'CPU metric must occur exactly once with the exact test prefix or no prefix'
   [[ "$line" =~ ^ReazonSpeech-NeMo-v2\ CPU\ encoder:\ frames=[1-9][0-9]*,\ max_abs=$nonnegative\ at\ [0-9]+\ \(actual=$number,\ official=$number\),\ mean_abs=$nonnegative$ ]] \
     || die 'CPU metric is malformed or non-finite'
 }
 
 require_metal_metric() {
-  local file="$1" count line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  local file="$1" line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
   local nonnegative='[+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
-  count="$(grep -Ec '^ReazonSpeech-NeMo-v2 Metal encoder: .+$' "$file" || true)"
-  [[ "$count" == 1 ]] || die 'Metal metric must occur exactly once'
-  line="$(grep -E '^ReazonSpeech-NeMo-v2 Metal encoder: .+$' "$file")"
+  line="$(extract_metric_line "$file" "$METAL_TEST" 'ReazonSpeech-NeMo-v2 Metal encoder:')" \
+    || die 'Metal metric must occur exactly once with the exact test prefix or no prefix'
   [[ "$line" =~ ^ReazonSpeech-NeMo-v2\ Metal\ encoder:\ frames=[1-9][0-9]*,\ max_abs=$nonnegative\ at\ [0-9]+\ \(metal=$number,\ reference=$number\)$ ]] \
     || die 'Metal metric is malformed or non-finite'
 }
 
 require_metal_cpu_metric() {
-  local file="$1" count line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
+  local file="$1" line number='[-+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
   local nonnegative='[+]?[0-9]+([.][0-9]+)?[eE][-+]?[0-9]+'
-  count="$(grep -Ec '^ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: .+$' "$file" || true)"
-  [[ "$count" == 1 ]] || die 'Metal-vs-CPU metric must occur exactly once'
-  line="$(grep -E '^ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: .+$' "$file")"
+  line="$(extract_metric_line "$file" "$METAL_TEST" 'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder:')" \
+    || die 'Metal-vs-CPU metric must occur exactly once with the exact test prefix or no prefix'
   [[ "$line" =~ ^ReazonSpeech-NeMo-v2\ Metal-vs-CPU\ encoder:\ frames=[1-9][0-9]*,\ max_abs=$nonnegative\ at\ [0-9]+\ \(metal=$number,\ cpu=$number\)$ ]] \
     || die 'Metal-vs-CPU metric is malformed or non-finite'
 }
@@ -416,23 +481,62 @@ hash_reference_directory() {
 
 # shellcheck disable=SC2016
 run_self_test() (
-  local script_path="${BASH_SOURCE[0]}" temporary fail=0 required
+  local script_path="${BASH_SOURCE[0]}" temporary fail=0 required cargo_result cargo_result_zero cargo_result_two
+  local cpu_metric metal_metric metal_cpu_metric
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-reazonspeech-apple.XXXXXX")"
   trap 'rm -rf -- "$temporary"' EXIT
   printf 'abc' > "$temporary/value"
   [[ "$(sha256_file "$temporary/value")" == \
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ]] \
     || die "SHA-256 helper self-test failed"
-  printf '%s\n' 'ReazonSpeech-NeMo-v2 CPU encoder: frames=12, max_abs=1.000000000e-03 at 3 (actual=-1.000000000e-03, official=-2.000000000e-03), mean_abs=2.000000000e-04' > "$temporary/cpu.log"
+  cpu_metric='ReazonSpeech-NeMo-v2 CPU encoder: frames=12, max_abs=1.000000000e-03 at 3 (actual=-1.000000000e-03, official=-2.000000000e-03), mean_abs=2.000000000e-04'
+  printf '%s\n' "$cpu_metric" > "$temporary/cpu.log"
+  require_cpu_sentinel "$temporary/cpu.log"
   require_cpu_metric "$temporary/cpu.log"
+  printf '%s\n' "test $CPU_TEST ... $cpu_metric" > "$temporary/cpu-prefixed.log"
+  require_cpu_sentinel "$temporary/cpu-prefixed.log"
+  require_cpu_metric "$temporary/cpu-prefixed.log"
+  printf '%s\n' "test unrelated_test ... $cpu_metric" > "$temporary/cpu-wrong-prefix.log"
+  if require_cpu_sentinel "$temporary/cpu-wrong-prefix.log" >/dev/null 2>&1 || require_cpu_metric "$temporary/cpu-wrong-prefix.log" >/dev/null 2>&1; then log 'self-test FAIL: wrong CPU test prefix accepted'; fail=1; fi
+  printf '%s\n' "test $CPU_TEST ... $cpu_metric" "$cpu_metric" > "$temporary/cpu-duplicate-prefix.log"
+  if require_cpu_sentinel "$temporary/cpu-duplicate-prefix.log" >/dev/null 2>&1 || require_cpu_metric "$temporary/cpu-duplicate-prefix.log" >/dev/null 2>&1; then log 'self-test FAIL: duplicate CPU metric accepted'; fail=1; fi
   printf '%s\n' 'ReazonSpeech-NeMo-v2 CPU encoder: frames=12, max_abs=NaN at 3 (actual=0.0e+00, official=0.0e+00), mean_abs=0.0e+00' > "$temporary/cpu-malformed.log"
   if require_cpu_metric "$temporary/cpu-malformed.log" >/dev/null 2>&1; then log 'self-test FAIL: malformed CPU metric accepted'; fail=1; fi
   printf '%s\n' 'ReazonSpeech-NeMo-v2 CPU encoder: frames=12, max_abs=NaN at 3 (actual=0.0e+00, official=0.0e+00), mean_abs=0.0e+00' >> "$temporary/cpu.log"
   if require_cpu_metric "$temporary/cpu.log" >/dev/null 2>&1; then log 'self-test FAIL: duplicate/nonfinite CPU metric accepted'; fail=1; fi
-  printf '%s\n' 'ReazonSpeech-NeMo-v2 Metal encoder: frames=12, max_abs=1.000000000e-03 at 3 (metal=-1.000000000e-03, reference=-2.000000000e-03)' > "$temporary/metal.log"
-  printf '%s\n' 'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: frames=12, max_abs=2.000000000e-04 at 3 (metal=-1.000000000e-03, cpu=-8.000000000e-04)' >> "$temporary/metal.log"
+  cargo_result='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 9.21s'
+  printf '%s\n' "test $CPU_TEST ... ok" "$cargo_result" > "$temporary/cargo-inline.log"
+  if ! require_cargo_result "$temporary/cargo-inline.log" "$CPU_TEST"; then log 'self-test FAIL: inline Cargo result rejected'; fail=1; fi
+  cargo_result='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out'
+  printf '%s\n' "test $CPU_TEST ... ReazonSpeech-NeMo-v2 CPU encoder: frames=12" ok "$cargo_result" > "$temporary/cargo-split.log"
+  if ! require_cargo_result "$temporary/cargo-split.log" "$CPU_TEST"; then log 'self-test FAIL: split Cargo result rejected'; fail=1; fi
+  cargo_result_zero='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.21s'
+  printf '%s\n' "test $CPU_TEST ... ReazonSpeech-NeMo-v2 CPU encoder: frames=12" ok "$cargo_result_zero" > "$temporary/cargo-filtered-zero.log"
+  if require_cargo_result "$temporary/cargo-filtered-zero.log" "$CPU_TEST" >/dev/null 2>&1; then log 'self-test FAIL: zero filtered Cargo result accepted'; fail=1; fi
+  cargo_result_two='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out'
+  printf '%s\n' "test $CPU_TEST ... ok" "$cargo_result_two" > "$temporary/cargo-filtered-two.log"
+  if require_cargo_result "$temporary/cargo-filtered-two.log" "$CPU_TEST" >/dev/null 2>&1; then log 'self-test FAIL: two filtered Cargo result accepted'; fail=1; fi
+  cargo_result='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out'
+  printf '%s\n' "test $CPU_TEST ... ReazonSpeech-NeMo-v2 CPU encoder: frames=12" "$cargo_result" ok > "$temporary/cargo-wrong-order.log"
+  if require_cargo_result "$temporary/cargo-wrong-order.log" "$CPU_TEST" >/dev/null 2>&1; then log 'self-test FAIL: out-of-order Cargo result accepted'; fail=1; fi
+  printf '%s\n' "test $CPU_TEST ... ReazonSpeech-NeMo-v2 CPU encoder: frames=12" ok ok "$cargo_result" > "$temporary/cargo-duplicate-ok.log"
+  if require_cargo_result "$temporary/cargo-duplicate-ok.log" "$CPU_TEST" >/dev/null 2>&1; then log 'self-test FAIL: duplicate standalone Cargo ok accepted'; fail=1; fi
+  printf '%s\n' "test $CPU_TEST ... ok" ok "$cargo_result" > "$temporary/cargo-unrelated-ok.log"
+  if require_cargo_result "$temporary/cargo-unrelated-ok.log" "$CPU_TEST" >/dev/null 2>&1; then log 'self-test FAIL: unrelated standalone Cargo ok accepted'; fail=1; fi
+  printf '%s\n' "test $CPU_TEST ... ok" "$cargo_result" "$cargo_result" > "$temporary/cargo-duplicate-result.log"
+  if require_cargo_result "$temporary/cargo-duplicate-result.log" "$CPU_TEST" >/dev/null 2>&1; then log 'self-test FAIL: duplicate Cargo result accepted'; fail=1; fi
+  metal_metric='ReazonSpeech-NeMo-v2 Metal encoder: frames=12, max_abs=1.000000000e-03 at 3 (metal=-1.000000000e-03, reference=-2.000000000e-03)'
+  metal_cpu_metric='ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: frames=12, max_abs=2.000000000e-04 at 3 (metal=-1.000000000e-03, cpu=-8.000000000e-04)'
+  printf '%s\n' "$metal_metric" "$metal_cpu_metric" > "$temporary/metal.log"
   require_metal_metric "$temporary/metal.log"
   require_metal_cpu_metric "$temporary/metal.log"
+  printf '%s\n' "test $METAL_TEST ... $metal_metric" "test $METAL_TEST ... $metal_cpu_metric" > "$temporary/metal-prefixed.log"
+  require_metal_metric "$temporary/metal-prefixed.log"
+  require_metal_cpu_metric "$temporary/metal-prefixed.log"
+  printf '%s\n' "test unrelated_test ... $metal_metric" "test unrelated_test ... $metal_cpu_metric" > "$temporary/metal-wrong-prefix.log"
+  if require_metal_metric "$temporary/metal-wrong-prefix.log" >/dev/null 2>&1 || require_metal_cpu_metric "$temporary/metal-wrong-prefix.log" >/dev/null 2>&1; then log 'self-test FAIL: wrong Metal test prefix accepted'; fail=1; fi
+  printf '%s\n' "test $METAL_TEST ... $metal_metric" "$metal_metric" "test $METAL_TEST ... $metal_cpu_metric" "$metal_cpu_metric" > "$temporary/metal-duplicate-prefix.log"
+  if require_metal_metric "$temporary/metal-duplicate-prefix.log" >/dev/null 2>&1 || require_metal_cpu_metric "$temporary/metal-duplicate-prefix.log" >/dev/null 2>&1; then log 'self-test FAIL: duplicate Metal metric accepted'; fail=1; fi
   printf '%s\n' 'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: frames=12, max_abs=inf at 3 (metal=0.0e+00, cpu=0.0e+00)' > "$temporary/metal-malformed.log"
   if require_metal_cpu_metric "$temporary/metal-malformed.log" >/dev/null 2>&1; then log 'self-test FAIL: malformed Metal metric accepted'; fail=1; fi
   printf '%s\n' 'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder: frames=12, max_abs=inf at 3 (metal=0.0e+00, cpu=0.0e+00)' >> "$temporary/metal.log"
