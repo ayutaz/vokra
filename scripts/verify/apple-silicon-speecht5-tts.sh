@@ -402,7 +402,7 @@ require_one_named_test_passed() {
   local result_count total_result_count failed_count
   test_count="$(grep -Ec "^test ${test_name} \.\.\. ok$" "$log_path" || true)"
   named_line_count="$(grep -Ec "^test ${test_name} \.\.\." "$log_path" || true)"
-  interleaved_line_count="$(grep -Ec "^test ${test_name} \.\.\. SPEECHT5_TTS_OFFICIAL_PARITY backend=(cpu|metal) " "$log_path" || true)"
+  interleaved_line_count="$(grep -Ec "^test ${test_name} \.\.\. SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu " "$log_path" || true)"
   completion_line_count=$((test_count + interleaved_line_count))
   standalone_ok_count="$(grep -Ec '^ok$' "$log_path" || true)"
   result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$log_path" || true)"
@@ -422,12 +422,15 @@ require_one_named_test_passed() {
 }
 
 require_exact_parity_sentinels() {
-  local log_path="$1" cpu_count metal_count
+  local log_path="$1" test_name="$2" cpu_count prefixed_cpu_count metal_count
   local cpu_pattern='^SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu frames=[0-9]+ decoder_steps=[0-9]+ before_max_abs=[-+0-9.eE]+ before_index=[0-9]+ after_max_abs=[-+0-9.eE]+ after_index=[0-9]+ bound=[-+0-9.eE]+ verdict=PASS$'
   local metal_pattern='^SPEECHT5_TTS_OFFICIAL_PARITY backend=metal frames=[0-9]+ decoder_steps=[0-9]+ before_max_abs=[-+0-9.eE]+ before_index=[0-9]+ after_max_abs=[-+0-9.eE]+ after_index=[0-9]+ cpu_max_abs=[-+0-9.eE]+ bound=[-+0-9.eE]+ verdict=PASS$'
+  local prefixed_cpu_pattern="^test ${test_name} \.\.\. ${cpu_pattern#^}"
   cpu_count="$(grep -Ec "$cpu_pattern" "$log_path" || true)"
+  prefixed_cpu_count="$(grep -Ec "$prefixed_cpu_pattern" "$log_path" || true)"
   metal_count="$(grep -Ec "$metal_pattern" "$log_path" || true)"
-  [[ "$cpu_count" == 1 && "$metal_count" == 1 ]] || die "expected exactly one complete CPU and Metal parity sentinel"
+  [[ $((cpu_count + prefixed_cpu_count)) == 1 && "$metal_count" == 1 ]] \
+    || die "expected exactly one CPU sentinel (standalone or named-line) and one standalone Metal sentinel"
 }
 
 require_remote_apple_host() {
@@ -712,6 +715,33 @@ EOF
     'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
     > "$cargo_log"
   require_one_named_test_passed "$cargo_log" released_cpu_mel_matches_official_transformers
+  require_exact_parity_sentinels "$cargo_log" released_cpu_mel_matches_official_transformers
+  printf '%s\n%s\n%s\n' \
+    "$sentinel_cpu" "test released_cpu_mel_matches_official_transformers ... $sentinel_cpu" \
+    "$sentinel_metal" > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then
+    die "mixed standalone and named-line CPU sentinel self-test failed"
+  fi
+  printf '%s\n%s\n' \
+    "test another_test ... $sentinel_cpu" "$sentinel_metal" > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then
+    die "wrong test name sentinel self-test failed"
+  fi
+  printf '%s\n%s\n' \
+    "test released_cpu_mel_matches_official_transformers ... prefix$sentinel_cpu" "$sentinel_metal" > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then
+    die "generic prefix sentinel self-test failed"
+  fi
+  printf '%s\n%s\n' \
+    "test released_cpu_mel_matches_official_transformers ... $sentinel_cpu suffix" "$sentinel_metal" > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then
+    die "generic suffix sentinel self-test failed"
+  fi
+  printf '%s\n%s\n' \
+    "$sentinel_cpu" "test released_cpu_mel_matches_official_transformers ... $sentinel_metal" > "$sentinel_log"
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then
+    die "named-line Metal sentinel self-test failed"
+  fi
   printf '%s\n%s\n%s\n%s\n%s\n' \
     "test released_cpu_mel_matches_official_transformers ... $sentinel_cpu" \
     "$sentinel_metal" 'ok' 'ok' \
@@ -735,15 +765,15 @@ EOF
     die "malformed interleaved named test self-test failed"
   fi
   printf '%s\n%s\n' "$sentinel_cpu" "$sentinel_metal" > "$sentinel_log"
-  require_exact_parity_sentinels "$sentinel_log"
+  require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers
   printf '%s\n%s\n%s\n' "$sentinel_cpu" "$sentinel_cpu" "$sentinel_metal" > "$sentinel_log"
-  if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then die "duplicate sentinel self-test failed"; fi
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then die "duplicate sentinel self-test failed"; fi
   printf 'prefix%s\n%s\n' "$sentinel_cpu" "$sentinel_metal" > "$sentinel_log"
-  if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then die "prefix sentinel self-test failed"; fi
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then die "prefix sentinel self-test failed"; fi
   printf '%s suffix\n%s\n' "$sentinel_cpu" "$sentinel_metal" > "$sentinel_log"
-  if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then die "suffix sentinel self-test failed"; fi
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then die "suffix sentinel self-test failed"; fi
   printf '%s\n%s\n' "${sentinel_cpu/verdict=PASS/verdict=FAIL}" "$sentinel_metal" > "$sentinel_log"
-  if require_exact_parity_sentinels "$sentinel_log" >/dev/null 2>&1; then die "FAIL sentinel self-test failed"; fi
+  if require_exact_parity_sentinels "$sentinel_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then die "FAIL sentinel self-test failed"; fi
   require_empty_directory "$temporary/evidence"
   script_path="${BASH_SOURCE[0]}"
   grep -F "$PUBLIC_GGUF_SHA256" "$script_path" >/dev/null \
@@ -869,7 +899,7 @@ main() {
 
   require_one_named_test_passed "$evidence_dir/parity.log" \
     released_cpu_mel_matches_official_transformers
-  require_exact_parity_sentinels "$evidence_dir/parity.log"
+  require_exact_parity_sentinels "$evidence_dir/parity.log" released_cpu_mel_matches_official_transformers
 
   {
     echo "verdict=PASS"
