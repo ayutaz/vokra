@@ -89,6 +89,15 @@ REVIEWED_SCORE_VARIANTS = (
         },
     },
     {
+        "cpu_model": "62",
+        "torch_version": "2.13.0+cu130",
+        "numpy_version": "2.3.5",
+        "scores": {
+            "score_imag": "d8dcfb188f4e30e042da2eda6fefb63af7f6fcd2383565ea6f25ffc85ae20692",
+            "score_real": "04ec8984f6840317f9c9676d0a56c5cf7768b87171715ac4e5fe767277848788",
+        },
+    },
+    {
         "cpu_model": "63",
         "torch_version": "2.13.0+cu130",
         "numpy_version": "2.3.5",
@@ -360,9 +369,14 @@ def self_test() -> None:
     assert REFERENCE_BYTES == 65_536
     assert FP32_ATOL == 0.01
     assert (set(REVIEWED_INPUT_SHA256) | set(SCORE_NAMES)) == REFERENCE_ARTIFACT_NAMES
-    assert len(REVIEWED_SCORE_VARIANTS) == 5
-    assert {variant["cpu_model"] for variant in REVIEWED_SCORE_VARIANTS} == {"1", "49", "63", "79", "97"}
+    assert len(REVIEWED_SCORE_VARIANTS) == 6
+    assert {variant["cpu_model"] for variant in REVIEWED_SCORE_VARIANTS} == {"1", "49", "62", "63", "79", "97"}
     assert REVIEWED_SCORE_VARIANTS[0]["scores"] == REVIEWED_SCORE_VARIANTS[1]["scores"]
+    cpu_62 = next(variant for variant in REVIEWED_SCORE_VARIANTS if variant["cpu_model"] == "62")
+    assert cpu_62["scores"] == {
+        "score_imag": "d8dcfb188f4e30e042da2eda6fefb63af7f6fcd2383565ea6f25ffc85ae20692",
+        "score_real": "04ec8984f6840317f9c9676d0a56c5cf7768b87171715ac4e5fe767277848788",
+    }
     assert all(
         len(digest) == 64
         and digest.isascii()
