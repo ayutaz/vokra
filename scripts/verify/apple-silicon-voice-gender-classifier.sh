@@ -279,14 +279,33 @@ hash_reference_directory() {
 }
 
 require_cargo_singleton() {
-  local log_path="$1" summary_pattern
+  local log_path="$1" summary_pattern test_line_count named_line_count inline_pass_count standalone_pass_count named_line standalone_line summary_line
   summary_pattern='^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$'
-  [[ "$(grep -Ec '^test [^[:space:]].* \.\.\. (ok|ignored|FAILED)$' "$log_path" || true)" == 1 ]] \
-    || die "Cargo did not report exactly one test case result"
-  [[ "$(grep -Ec '^test real_voice_gender_classifier_matches_official_reference \.\.\. ok$' "$log_path" || true)" == 1 ]] \
-    || die "official CPU parity test did not pass exactly once"
-  [[ "$(grep -Ec "$summary_pattern" "$log_path" || true)" == 1 ]] \
-    || die "parity log does not prove one exact passing result"
+  test_line_count="$(grep -Ec '^test [^[:space:]].* \.\.\.( ok)?[[:space:]]*$' "$log_path" || true)"
+  named_line_count="$(grep -Ec '^test real_voice_gender_classifier_matches_official_reference \.\.\.( ok)?[[:space:]]*$' "$log_path" || true)"
+  inline_pass_count="$(grep -Ec '^test real_voice_gender_classifier_matches_official_reference \.\.\. ok[[:space:]]*$' "$log_path" || true)"
+  standalone_pass_count="$(grep -Ec '^ok[[:space:]]*$' "$log_path" || true)"
+  if [[ "$test_line_count" != 1 || "$named_line_count" != 1 ]]; then
+    die "Cargo did not report exactly one test case result"
+    return 2
+  fi
+  if [[ $((inline_pass_count + standalone_pass_count)) != 1 ]]; then
+    die "official CPU parity test did not pass exactly once"
+    return 2
+  fi
+  if [[ "$(grep -Ec "$summary_pattern" "$log_path" || true)" != 1 ]]; then
+    die "parity log does not prove one exact passing result"
+    return 2
+  fi
+  if [[ "$inline_pass_count" == 0 ]]; then
+    named_line="$(grep -n '^test real_voice_gender_classifier_matches_official_reference \.\.\.' "$log_path" | cut -d: -f1)"
+    standalone_line="$(grep -n '^ok[[:space:]]*$' "$log_path" | cut -d: -f1)"
+    summary_line="$(grep -nE "$summary_pattern" "$log_path" | cut -d: -f1)"
+    if [[ -z "$named_line" || -z "$standalone_line" || -z "$summary_line" || "$standalone_line" -le "$named_line" || "$standalone_line" -ge "$summary_line" ]]; then
+      die "standalone Cargo status is not between the exact named test and result lines"
+      return 2
+    fi
+  fi
 }
 
 verify_parity_log() {
@@ -419,16 +438,40 @@ run_self_test() (
   printf '%s\n' 'test real_voice_gender_classifier_matches_official_reference ... ok' "$cargo_result_line" \
     > "$temporary/valid-cargo.log"
   require_cargo_singleton "$temporary/valid-cargo.log" || { log "self-test rejected a valid Cargo result"; fail=1; }
+  printf '%s\n%s\n%s\n' \
+    'test real_voice_gender_classifier_matches_official_reference ... ' \
+    'ok' "$cargo_result_line" \
+    > "$temporary/valid-nocapture-cargo.log"
+  require_cargo_singleton "$temporary/valid-nocapture-cargo.log" || { log "self-test rejected a valid nocapture Cargo result"; fail=1; }
+  printf '%s\n%s\n%s\n' \
+    'ok' 'test real_voice_gender_classifier_matches_official_reference ... ' "$cargo_result_line" \
+    > "$temporary/reordered-nocapture-cargo.log"
+  if require_cargo_singleton "$temporary/reordered-nocapture-cargo.log" >/dev/null 2>&1; then
+    log "self-test accepted an out-of-order standalone Cargo status"; fail=1
+  fi
   printf '%s\n' 'test real_voice_gender_classifier_matches_official_reference ... ok' "$cargo_result_line" "$cargo_result_line" \
     > "$temporary/duplicate-cargo.log"
   if require_cargo_singleton "$temporary/duplicate-cargo.log" >/dev/null 2>&1; then
     log "self-test accepted a duplicate Cargo summary"; fail=1
+  fi
+  printf '%s\n%s\n%s\n' \
+    'test real_voice_gender_classifier_matches_official_reference ... ' \
+    'ok' 'ok' \
+    > "$temporary/duplicate-nocapture-cargo.log"
+  if require_cargo_singleton "$temporary/duplicate-nocapture-cargo.log" >/dev/null 2>&1; then
+    log "self-test accepted a duplicate standalone Cargo status"; fail=1
   fi
   printf '%s\n' 'test real_voice_gender_classifier_matches_official_reference ... ok' \
     'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in .25s' \
     > "$temporary/malformed-cargo.log"
   if require_cargo_singleton "$temporary/malformed-cargo.log" >/dev/null 2>&1; then
     log "self-test accepted a malformed Cargo duration"; fail=1
+  fi
+  printf '%s\n%s\n' \
+    'test real_voice_gender_classifier_matches_official_reference ... ' "$cargo_result_line" \
+    > "$temporary/missing-nocapture-status.log"
+  if require_cargo_singleton "$temporary/missing-nocapture-status.log" >/dev/null 2>&1; then
+    log "self-test accepted a missing standalone Cargo status"; fail=1
   fi
   printf '%s\n' "$cpu_metrics_marker" "$cpu_pass_marker" "$metal_metrics_marker" "$nonpass_metal_pass_marker" "$metal_reference_metrics_marker" "$metal_reference_pass_marker" "$argmax_pass_marker" \
     > "$temporary/nonpass-parity.log"

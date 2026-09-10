@@ -176,7 +176,7 @@ api_smoke_gate() {
 }
 
 write_apple_invocation() {
-  local output="$1" public_gguf="$2" reference_dir="$3" reference_digest="$4"
+  local output="$1" public_gguf="$2" reference_dir="$3" reference_digest="$4" api_smoke_sha256="$5"
   : "$public_gguf" "$reference_dir"
   {
     printf '# Generated for the separate no-upload Apple validation step.\n'
@@ -185,6 +185,8 @@ write_apple_invocation() {
     printf '  --reference '\''<APPLE_SPEECHT5_REFERENCE>'\'' \\\n'
     printf '  --reference-sha256 %q \\\n' "$reference_digest"
     printf '  --approval-evidence '\''<APPLE_SPEECHT5_APPROVAL_EVIDENCE>'\'' \\\n'
+    printf '  --api-smoke-evidence '\''<APPLE_SPEECHT5_API_SMOKE_EVIDENCE>'\'' \\\n'
+    printf '  --api-smoke-sha256 %q \\\n' "$api_smoke_sha256"
     printf '  --evidence-dir '\''<APPLE_SPEECHT5_EVIDENCE_DIR>'\''\n'
   } > "$output"
 }
@@ -308,11 +310,14 @@ run_self_test() {
   local apple_args
   apple_args="$tmp/apple.args.sh"
   write_apple_invocation "$apple_args" "$tmp/public.gguf" "$tmp/reference" \
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" \
+    "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
   grep -F -- "--gguf '<APPLE_SPEECHT5_GGUF>'" "$apple_args" >/dev/null || fail=1
   grep -F -- "--reference '<APPLE_SPEECHT5_REFERENCE>'" "$apple_args" >/dev/null || fail=1
   grep -F -- "--reference-sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" "$apple_args" >/dev/null || fail=1
   grep -F -- "--approval-evidence '<APPLE_SPEECHT5_APPROVAL_EVIDENCE>'" "$apple_args" >/dev/null || fail=1
+  grep -F -- "--api-smoke-evidence '<APPLE_SPEECHT5_API_SMOKE_EVIDENCE>'" "$apple_args" >/dev/null || fail=1
+  grep -F -- "--api-smoke-sha256 fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210" "$apple_args" >/dev/null || fail=1
   grep -F -- "--evidence-dir '<APPLE_SPEECHT5_EVIDENCE_DIR>'" "$apple_args" >/dev/null || fail=1
   local api_gate_line gate_line sync_line audit_line build_line pre_gate_block
   api_gate_line="$(grep -n '^  api_smoke_gate ' "$script_path" | head -1 | cut -d: -f1)"
@@ -578,10 +583,11 @@ main() {
   {
     echo "reference_json_sha256=$reference_manifest_sha256"
     echo "reference_json_path=$reference_dir/reference.json"
+    echo "api_smoke_evidence_sha256=$api_smoke_sha256"
   } | tee "$input_hashes_file"
   apple_args_file="$logs_dir/apple-silicon-speecht5-tts.args.sh"
   write_apple_invocation "$apple_args_file" "$public_tts_gguf" "$reference_dir" \
-    "$reference_manifest_sha256"
+    "$reference_manifest_sha256" "$api_smoke_sha256"
 
   step "Compare native CPU mel with official encoder/decoder/postnet"
   VOKRA_SPEECHT5_TTS_GGUF="$tts_gguf" \
