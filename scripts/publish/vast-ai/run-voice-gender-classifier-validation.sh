@@ -11,6 +11,7 @@ VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 PARITY_DUMPER="$VOKRA_ROOT/tools/parity/voice_gender_classifier_dump_reference.py"
 PREPARE_CHECKPOINT="$VOKRA_ROOT/tools/parity/voice_gender_classifier_prepare_checkpoint.py"
+PARITY_TEST="$VOKRA_ROOT/crates/vokra-models/tests/parity_voice_gender_classifier.rs"
 MODEL_KIND="voice-gender-classifier"
 LICENSE_SPDX="mit"
 UPSTREAM_REPO="JaesungHuh/voice-gender-classifier"
@@ -222,6 +223,11 @@ require_tooling() {
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] || die "locked parity project is missing"
   [[ -f "$PARITY_DUMPER" ]] || die "dedicated reference dumper is missing"
   [[ -f "$PREPARE_CHECKPOINT" ]] || die "dedicated checkpoint preparation sidecar is missing"
+  [[ -f "$PARITY_TEST" ]] || die "dedicated parity test is missing"
+  grep -Fq 'libtest may print its `test ...` preamble without a trailing newline' "$PARITY_TEST" \
+    || die "parity marker newline contract is missing"
+  grep -Fq 'eprintln!();' "$PARITY_TEST" || die "parity marker separator is missing"
+  verify_marker_newline_contract
   grep -Fq 'EXPECTED_INPUT_TENSOR_COUNT = 233' "$PREPARE_CHECKPOINT" || die "checkpoint preparation tensor contract is missing"
   grep -Fq 'EXPECTED_COUNTER_COUNT = 31' "$PREPARE_CHECKPOINT" || die "checkpoint preparation counter contract is missing"
   grep -Fq 'model.ECAPA_gender' "$PARITY_DUMPER" || die "dumper is not importing official model"
@@ -273,6 +279,15 @@ print("corrected provenance confirmed: arch=voice_gender_classifier license=mit 
 PY
 }
 
+verify_marker_newline_contract() {
+  local separator_line marker_line
+  separator_line="$(grep -nF 'eprintln!();' "$PARITY_TEST" | head -1 | cut -d: -f1)"
+  marker_line="$(grep -nF 'VOICE_GENDER_OFFICIAL_PARITY_METRICS' "$PARITY_TEST" | head -1 | cut -d: -f1)"
+  [[ "$separator_line" =~ ^[0-9]+$ && "$marker_line" =~ ^[0-9]+$ ]] \
+    || die "parity marker newline contract is missing"
+  (( separator_line < marker_line )) || die "parity marker separator must precede the canonical marker"
+}
+
 verify_cpu_parity_log() {
   local log_path="$1" metrics marker_count pass_count
   marker_count="$(grep -Ec '^VOICE_GENDER_OFFICIAL_PARITY(_METRICS| ).*$' "$log_path" || true)"
@@ -315,6 +330,8 @@ run_self_test() (
     'VOKRA_VOICE_GENDER_REFERENCE_MANIFEST_SHA256="$reference_sha256"' \
     'VOKRA_VOICE_GENDER_EVIDENCE_DIR="$evidence_dir"' \
     'VOKRA_VOICE_GENDER_ARGMAX="$fixture_dir/argmax.u32"' \
+    'PARITY_TEST="$VOKRA_ROOT/crates/vokra-models/tests/parity_voice_gender_classifier.rs"' \
+    'libtest may print its `test ...` preamble without a trailing newline' 'eprintln!();' \
     'parity_voice_gender_classifier' 'VOKRA_VOICE_GENDER_FIXTURE_KIND' \
     'VOICE_GENDER_OFFICIAL_PARITY_METRICS' 'VOICE_GENDER_OFFICIAL_PARITY PASS' \
     'FP32_PARITY_BOUND' 'verify_cpu_parity_log' 'verify_corrected_provenance'; do
@@ -326,6 +343,12 @@ run_self_test() (
   done
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test found direct Python invocation"; fail=1
+  fi
+  if [[ ! -f "$PARITY_TEST" ]] || ! grep -Fq 'libtest may print its `test ...` preamble without a trailing newline' "$PARITY_TEST" \
+    || ! grep -Fq 'eprintln!();' "$PARITY_TEST"; then
+    log "self-test found a missing parity marker newline contract"; fail=1
+  elif ! verify_marker_newline_contract >/dev/null 2>&1; then
+    log "self-test found a parity marker separator ordering regression"; fail=1
   fi
   if grep -En -- '(^|[[:space:]])(git[[:space:]]+push|.*upload|.*publish|--push|--upload|--publish)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test found publication operation"; fail=1

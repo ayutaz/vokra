@@ -334,6 +334,9 @@ fn real_voice_gender_classifier_matches_official_reference() {
     let probability_error = max_abs(&actual_probabilities, &expected_probabilities);
     assert!(probability_error.is_finite());
     assert!(actual_probabilities.iter().all(|value| value.is_finite()));
+    // libtest may print its `test ...` preamble without a trailing newline
+    // before replaying captured stderr; keep the canonical marker line-based.
+    eprintln!();
     eprintln!(
         "VOICE_GENDER_OFFICIAL_PARITY_METRICS feature_max_abs={feature_error:.9} embedding_max_abs={embedding_error:.9} logits_max_abs={logit_error:.9} probability_max_abs={probability_error:.9} bound={FP32_PARITY_BOUND:.9} fixture={FIXTURE_KIND}"
     );
