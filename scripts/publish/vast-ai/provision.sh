@@ -12,10 +12,11 @@
 # site-packages shim that reroutes huggingface_hub through a broken
 # mirror, (B) a huggingface_hub >= 0.30 that regressed non-xet routes,
 # (C) an empty/stale certifi CA bundle, and (D) no torch/numpy/
-# safetensors at the system layer needed for image compatibility, and (E) no
-# libsndfile1 runtime needed by fairseq2 official reference imports. Vokra
+# safetensors at the system layer needed for image compatibility, (E) no
+# libsndfile1 runtime needed by fairseq2 official reference imports, and (F)
+# no ripgrep binary for worker contract self-tests. Vokra
 # scripts themselves always execute Python through uv. Waves 9-11 spent
-# ~day burning down these five root causes reactively. Fix is now
+# ~day burning down these six root causes reactively. Fix is now
 # pre-handled at provision time so a fresh box comes up clean.
 #
 # Idempotent: rerun-safe. Each step probes for its own artifact and skips
@@ -96,15 +97,17 @@ have_libsndfile() {
   command -v dpkg-query >/dev/null 2>&1 \
     && dpkg-query -W -f='${db:Status-Status}' libsndfile1 2>/dev/null | grep -qx installed
 }
+have_ripgrep() { command -v rg >/dev/null 2>&1; }
 
 # --- Wave 12 pre-handle (vast.ai nvidia/cuda:13.0.0 image hardening) ---
-# Fixes five root causes reactively burned down in Waves 9-11:
+# Fixes six root causes reactively burned down in Waves 9-11:
 #   (A) hf_config.pth mirror shim in site-packages reroutes hh downloads
 #   (B) huggingface_hub >= 0.30 regressed non-xet routes
 #   (C) stale/empty certifi CA bundle breaks urllib3/hh internals
 #   (D) system-layer torch/numpy/safetensors absent for image compatibility
 #       tools (Vokra's own Python execution remains uv-managed)
 #   (E) libsndfile1 absent, preventing fairseq2 official reference imports
+#   (F) ripgrep absent, preventing worker contract self-tests
 #
 # Idempotent. Non-vast guarded: bails cleanly on macOS/local dev via
 # `command -v apt-get` + EUID probe. Set VOKRA_FORCE_HARDEN=1 to force
@@ -112,7 +115,7 @@ have_libsndfile() {
 # Fix (A) is performed before its first Hugging Face package operation, while
 # every Python dependency operation itself stays on uv.
 harden_vast_docker_image() {
-  step "Harden Docker image (libsndfile1 / rm HF shim / refresh CA / pin hh<0.30)"
+  step "Harden Docker image (libsndfile1 / ripgrep / rm HF shim / refresh CA / pin hh<0.30)"
 
   # Non-vast guard: skip cleanly on macOS/local dev where apt is absent.
   if ! command -v apt-get >/dev/null 2>&1; then
@@ -173,6 +176,27 @@ harden_vast_docker_image() {
       return 1
     }
     log "libsndfile1 ready"
+  fi
+
+  # The VAST validation workers use rg for their fail-closed source contracts.
+  # Keep the binary present on minimal Debian images before any worker starts.
+  if have_ripgrep; then
+    log "ripgrep already installed"
+  else
+    log "ripgrep missing — installing Debian package"
+    if ! apt-get update -qq; then
+      log "ERROR: apt package index refresh failed; cannot install ripgrep"
+      return 1
+    fi
+    if ! apt-get install -y ripgrep; then
+      log "ERROR: ripgrep installation failed; validation self-tests cannot run"
+      return 1
+    fi
+    have_ripgrep || {
+      log "ERROR: ripgrep remains unavailable after apt install"
+      return 1
+    }
+    log "ripgrep ready"
   fi
 
   # Fix (A): remove HF mirror shim. Load-bearing: must fire before any
@@ -264,8 +288,24 @@ install_rust() {
   log "installed: $(cargo --version)"
 }
 
+persist_uv_path() {
+  local marker='export PATH="$HOME/.local/bin:$PATH"  # vokra provision.sh: uv path'
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+    [[ -e "$rc" ]] || touch "$rc"
+    if ! grep -Fqx "$marker" "$rc" && ! grep -Fqx 'export PATH="$HOME/.local/bin:$PATH"' "$rc"; then
+      printf '\n%s\n' "$marker" >> "$rc"
+      log "added uv path marker to $rc"
+    else
+      log "uv path already present in $rc — skipping"
+    fi
+  done
+  export PATH="$HOME/.local/bin:$PATH"
+}
+
 install_uv() {
   step "uv + Python 3.12"
+  persist_uv_path
   if have_uv; then
     log "uv already present ($(uv --version)) — skipping install"
   else
@@ -387,6 +427,15 @@ run_self_test() {
     echo "  [ok]   libsndfile1: installed"
   else
     echo "  [need] libsndfile1: not installed (rerun provision.sh as root)"
+  fi
+
+  cases=$((cases + 1))
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "  [skip] ripgrep:     apt-get unavailable (not a Debian/Ubuntu image)"
+  elif have_ripgrep; then
+    echo "  [ok]   ripgrep:     $(rg --version)"
+  else
+    echo "  [need] ripgrep:     not installed (rerun provision.sh as root)"
   fi
 
   # ~/.bashrc marker probe
