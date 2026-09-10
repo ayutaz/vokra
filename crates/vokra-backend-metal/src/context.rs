@@ -214,6 +214,35 @@ kernel void vokra_softmax_f32(
     }
 }
 
+// ---- log-softmax: stable score normalization without probability underflow -
+// This is deliberately a separate kernel from softmax.  Conformer's CTC/RNNT
+// score glue needs log probabilities; materialising probabilities first can
+// underflow a valid tiny entry to zero before the host logarithm runs.
+kernel void vokra_log_softmax_f32(
+    device const float*   inp [[buffer(0)]],
+    device float*         out [[buffer(1)]],
+    constant SoftmaxDims& d   [[buffer(2)]],
+    uint                  gid [[thread_position_in_grid]])
+{
+    const uint r = gid;
+    if (r >= d.rows) {
+        return;
+    }
+    const uint base = r * d.cols;
+    float m = inp[base];
+    for (uint j = 1; j < d.cols; ++j) {
+        m = fmax(m, inp[base + j]);
+    }
+    float sum = 0.0f;
+    for (uint j = 0; j < d.cols; ++j) {
+        sum += exp(inp[base + j] - m);
+    }
+    const float log_sum = m + log(sum);
+    for (uint j = 0; j < d.cols; ++j) {
+        out[base + j] = inp[base + j] - log_sum;
+    }
+}
+
 // ---- softmax_causal: row-wise softmax over the causally-visible key prefix ---
 // The decoder self-attention mask, fused into the softmax so the causal decode
 // step needs no separate mask write. Row `r` (query at absolute position
@@ -3625,6 +3654,7 @@ pub struct MetalContext {
     gemm_bf16_bits_pipeline: Id,
     gemv_pipeline: Id,
     softmax_pipeline: Id,
+    log_softmax_pipeline: Id,
     softmax_causal_pipeline: Id,
     layer_norm_pipeline: Id,
     group_norm_pipeline: Id,
@@ -3899,6 +3929,9 @@ impl MetalContext {
         // SAFETY: as above.
         let softmax_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_softmax_f32") }?;
         // SAFETY: as above.
+        let log_softmax_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_log_softmax_f32") }?;
+        // SAFETY: as above.
         let softmax_causal_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_softmax_causal_f32") }?;
         // SAFETY: as above.
@@ -4120,6 +4153,7 @@ impl MetalContext {
             gemm_bf16_bits_pipeline: gemm_bf16_bits_pipeline.into_raw(),
             gemv_pipeline: gemv_pipeline.into_raw(),
             softmax_pipeline: softmax_pipeline.into_raw(),
+            log_softmax_pipeline: log_softmax_pipeline.into_raw(),
             softmax_causal_pipeline: softmax_causal_pipeline.into_raw(),
             layer_norm_pipeline: layer_norm_pipeline.into_raw(),
             group_norm_pipeline: group_norm_pipeline.into_raw(),
@@ -4655,6 +4689,55 @@ impl MetalContext {
         // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         r
+    }
+
+    /// Row-wise stable log-softmax over the innermost axis of a `rows × cols`
+    /// buffer.  Unlike `softmax_f32` this computes the log-normalised score
+    /// directly on Metal, so a valid tiny probability cannot underflow to zero
+    /// before taking its logarithm on the host.
+    pub fn log_softmax_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        validate_rows_cols(input, out, rows, cols)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_log_softmax(input, out, rows, cols);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_log_softmax(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = SoftmaxDims {
+            rows: rows as u32,
+            cols: cols as u32,
+        };
+        let (grid, tg) = grid_1d(rows);
+        self.dispatch_compute(
+            self.log_softmax_pipeline,
+            &[&in_buf, &out_buf],
+            (&dims as *const SoftmaxDims).cast::<c_void>(),
+            size_of::<SoftmaxDims>(),
+            grid,
+            tg,
+            "log_softmax",
+        )?;
+        read_back(&out_buf, out)
     }
 
     fn run_softmax(&self, input: &[f32], out: &mut [f32], rows: usize, cols: usize) -> Result<()> {
@@ -11697,6 +11780,7 @@ impl Drop for MetalContext {
             release(self.group_norm_pipeline);
             release(self.layer_norm_pipeline);
             release(self.softmax_causal_pipeline);
+            release(self.log_softmax_pipeline);
             release(self.softmax_pipeline);
             release(self.gemv_pipeline);
             release(self.gemm_bf16_bits_pipeline);
