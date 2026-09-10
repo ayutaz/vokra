@@ -18,6 +18,7 @@ const GGUF_ENV: &str = "VOKRA_VOICE_GENDER_GGUF";
 const EVIDENCE_ENV: &str = "VOKRA_VOICE_GENDER_EVIDENCE_DIR";
 const ARGMAX_ENV: &str = "VOKRA_VOICE_GENDER_ARGMAX";
 const REMOTE_ENV: &str = "VOKRA_REMOTE_APPLE_SILICON";
+const VAST_ENV: &str = "VOKRA_REMOTE_VAST";
 // The PCM is the fixed synthetic tone emitted by the pinned independent
 // upstream dumper, not caller voice data; its aggregate errors are safe to
 // record as deterministic parity metrics.
@@ -159,13 +160,27 @@ fn max_abs(actual: &[f32], expected: &[f32]) -> f32 {
 #[test]
 #[ignore]
 fn real_voice_gender_classifier_matches_official_reference() {
-    assert_eq!(std::env::consts::OS, "macos", "Apple worker requires macOS");
-    assert_eq!(
-        std::env::consts::ARCH,
-        "aarch64",
-        "Apple worker requires arm64"
-    );
-    assert_eq!(std::env::var(REMOTE_ENV).as_deref(), Ok("1"));
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            std::env::consts::ARCH,
+            "aarch64",
+            "Apple worker requires arm64"
+        );
+        assert_eq!(std::env::var(REMOTE_ENV).as_deref(), Ok("1"));
+    } else {
+        assert!(cfg!(target_os = "linux"), "VAST worker requires Linux");
+        assert_eq!(
+            std::env::consts::ARCH,
+            "x86_64",
+            "VAST worker requires x86_64"
+        );
+        assert_eq!(std::env::var(VAST_ENV).as_deref(), Ok("1"));
+        assert_eq!(
+            std::env::var("VOKRA_PUBLISH_ON_VAST").as_deref(),
+            Ok("1"),
+            "VAST worker requires the explicit publish-on-VAST marker"
+        );
+    }
     let gguf = env_path(GGUF_ENV);
     required_file(&gguf, "GGUF");
     assert_eq!(std::env::var(GGUF_SHA_ENV).as_deref(), Ok(GGUF_SHA256));

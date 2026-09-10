@@ -295,7 +295,8 @@ run_self_test() (
     "voice_gender_classifier_prepare_checkpoint.py" 'checkpoint-prepare.log' \
     "$CHECKPOINT_SHA256" "$CHECKPOINT_BYTES" "$UPSTREAM_LICENSE_FILE" "$UPSTREAM_LICENSE_SPDX" \
     "$UPSTREAM_LICENSE_COPYRIGHT" "$UPSTREAM_HF_LICENSE" 'verify_hf_identity' 'verify_source_identity' \
-    "CARGO_BUILD_JOBS=\"\${CARGO_BUILD_JOBS:-1}\"" 'VOKRA_PUBLISH_ON_VAST' \
+    "CARGO_BUILD_JOBS=\"\${CARGO_BUILD_JOBS:-1}\"" 'VOKRA_PUBLISH_ON_VAST' 'VOKRA_REMOTE_VAST=1' \
+    'real_voice_gender_classifier_matches_official_reference' '--ignored --exact --nocapture --test-threads=1' \
     'MIN_VAST_MEM_KIB=67108864' 'MIN_FREE_DISK_KIB=150000000' \
     '"$VOKRA_ROOT/target/release/vokra-cli" convert' \
     'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked -p vokra-models' \
@@ -498,7 +499,7 @@ main() {
   verify_corrected_provenance "$corrected" | tee "$evidence_dir/corrected-contract.log"
   export VOKRA_VOICE_GENDER_GGUF="$corrected" VOKRA_VOICE_GENDER_PCM="$fixture_dir/pcm.f32" VOKRA_VOICE_GENDER_FEATURES="$fixture_dir/features.f32" VOKRA_VOICE_GENDER_EMBEDDING="$fixture_dir/embedding.f32" VOKRA_VOICE_GENDER_LOGITS="$fixture_dir/logits.f32" VOKRA_VOICE_GENDER_PROBABILITIES="$fixture_dir/probabilities.f32" VOKRA_VOICE_GENDER_FIXTURE_KIND="$FIXTURE_KIND"
   step "Run CPU parity"
-  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked -p vokra-models --test parity_voice_gender_classifier -- --nocapture 2>&1 | tee "$evidence_dir/parity.log"
+  VOKRA_REMOTE_VAST=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked -p vokra-models --test parity_voice_gender_classifier real_voice_gender_classifier_matches_official_reference -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence_dir/parity.log"
   verify_cpu_parity_log "$evidence_dir/parity.log" | tee "$evidence_dir/cpu-parity-gate.log"
   step "Run repository gates on VAST"
   bash "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh" | tee "$evidence_dir/gates.log"
