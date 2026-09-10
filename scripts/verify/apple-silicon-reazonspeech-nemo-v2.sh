@@ -277,6 +277,8 @@ try:
     for key in ("platform", "machine", "cpu_model", "torch_cpu_capability", "device"):
         if type(environment[key]) is not str:
             fail(f"environment.{key} must be a string")
+    if environment["device"] != "cpu":
+        fail("environment.device must be exactly cpu for the independent reference")
     if type(environment["logical_cpu_count"]) is not int or environment["logical_cpu_count"] <= 0:
         fail("environment.logical_cpu_count must be a positive integer")
     if environment["cuda_device"] is not None and type(environment["cuda_device"]) is not str:
@@ -456,6 +458,7 @@ run_self_test() (
     'nemo-toolkit[asr]==3.0.0' \
     'uv run --no-cache --no-project --offline --python 3.12' \
     'object_pairs_hook=reject_duplicates' 'reference.json schema is not exact' \
+    'environment["device"] must be exactly cpu' \
     'pcm_sha256' 'text_file_sha256' 'ReazonSpeech-NeMo-v2 Metal encoder:' \
     'ReazonSpeech-NeMo-v2 Metal-vs-CPU encoder:' \
     'xcrun -f metal' '--gguf-sha256' '--reference-sha256' '--expected-head' "$GGUF_ENV" "$REFERENCE_DIR_ENV" \
@@ -492,6 +495,81 @@ run_self_test() (
   fi
   if require_reference_metadata "$temporary/typed/reference.json" >/dev/null 2>&1; then
     log 'self-test FAIL: wrong typed/extra JSON field accepted'; fail=1
+  fi
+  mkdir "$temporary/reference-valid"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$temporary/reference-valid" <<'PY'
+import hashlib
+import json
+import pathlib
+import struct
+import sys
+
+root = pathlib.Path(sys.argv[1])
+files = {
+    "pcm.f32": struct.pack("<f", 0.0),
+    "encoder.f32": struct.pack("<f", 0.0) * 1024,
+    "tokens.u32": struct.pack("<I", 1),
+    "text.txt": b"x\n",
+    "encoder.frames.txt": b"1\n",
+}
+for name, payload in files.items():
+    (root / name).write_bytes(payload)
+digest = lambda name: hashlib.sha256(files[name]).hexdigest()
+report = {
+    "format": "vokra-reazonspeech-nemo-v2-reference-v1",
+    "reference_implementation": "nemo.collections.asr.models.EncDecRNNTBPEModel.restore_from",
+    "reference_package": "nemo-toolkit[asr]==3.0.0",
+    "nemo_version": "test",
+    "torch_version": "test",
+    "environment": {
+        "platform": "test",
+        "machine": "test",
+        "cpu_model": "test",
+        "logical_cpu_count": 1,
+        "torch_cpu_capability": "test",
+        "device": "cpu",
+        "cuda_device": None,
+    },
+    "upstream_hf": "reazon-research/reazonspeech-nemo-v2",
+    "upstream_revision": "33693408be76b7cba9fd4a7546a0a8772430211b",
+    "checkpoint_sha256": "d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae",
+    "audio": "tests/fixtures/audio/jfk-30s.wav",
+    "audio_sha256": "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f",
+    "sample_rate": 16000,
+    "sample_count": 1,
+    "pcm_sha256": digest("pcm.f32"),
+    "decoding_strategy": "alsd",
+    "decoding_beam_size": 4,
+    "decoding_alsd_max_target_len": 1.0,
+    "decoding_score_norm": True,
+    "decoding_search_type": "default",
+    "decoding_softmax_temperature": 1.0,
+    "decoding_return_best_hypothesis": True,
+    "decoding_preserve_alignments": False,
+    "encoder_frames": 1,
+    "encoder_width": 1024,
+    "encoder_sha256": digest("encoder.f32"),
+    "tokens": [1],
+    "tokens_sha256": digest("tokens.u32"),
+    "text": "x",
+    "text_file_sha256": digest("text.txt"),
+}
+(root / "reference.json").write_text(json.dumps(report), encoding="utf-8")
+PY
+  require_reference_metadata "$temporary/reference-valid/reference.json" \
+    || { log 'self-test FAIL: valid CPU reference metadata rejected'; fail=1; }
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$temporary/reference-valid/reference.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+report = json.loads(path.read_text(encoding="utf-8"))
+report["environment"]["device"] = "cuda"
+path.write_text(json.dumps(report), encoding="utf-8")
+PY
+  if require_reference_metadata "$temporary/reference-valid/reference.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: non-CPU reference device accepted'; fail=1
   fi
   mkdir "$temporary/reference"
   for required in pcm.f32 encoder.f32 tokens.u32 text.txt encoder.frames.txt reference.json; do
