@@ -398,13 +398,25 @@ verify_reference_scalars() {
 }
 
 require_one_named_test_passed() {
-  local log_path="$1" test_name="$2" test_count named_line_count result_count total_result_count
+  local log_path="$1" test_name="$2" test_count named_line_count interleaved_line_count completion_line_count standalone_ok_count
+  local result_count total_result_count failed_count
   test_count="$(grep -Ec "^test ${test_name} \.\.\. ok$" "$log_path" || true)"
   named_line_count="$(grep -Ec "^test ${test_name} \.\.\." "$log_path" || true)"
+  interleaved_line_count="$(grep -Ec "^test ${test_name} \.\.\. SPEECHT5_TTS_OFFICIAL_PARITY backend=(cpu|metal) " "$log_path" || true)"
+  completion_line_count=$((test_count + interleaved_line_count))
+  standalone_ok_count="$(grep -Ec '^ok$' "$log_path" || true)"
   result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$log_path" || true)"
   total_result_count="$(grep -Ec '^test result:' "$log_path" || true)"
-  [[ "$test_count" == 1 ]] || { die "expected exactly one passing named test, got $test_count"; return 2; }
+  failed_count="$(grep -Ec 'FAILED' "$log_path" || true)"
+  [[ "$failed_count" == 0 ]] || { die "named test log contains FAILED or a failed Cargo result"; return 2; }
+  [[ "$test_count" == 0 || "$test_count" == 1 ]] || { die "expected at most one same-line named test success, got $test_count"; return 2; }
   [[ "$named_line_count" == 1 ]] || { die "expected exactly one total named test line, got $named_line_count"; return 2; }
+  [[ "$completion_line_count" == 1 ]] || { die "named test completion line is malformed"; return 2; }
+  if [[ "$test_count" == 1 ]]; then
+    [[ "$standalone_ok_count" == 0 ]] || { die "same-line named success was followed by standalone ok"; return 2; }
+  else
+    [[ "$standalone_ok_count" == 1 ]] || { die "expected exactly one standalone ok for interleaved named test output"; return 2; }
+  fi
   [[ "$result_count" == 1 ]] || { die "expected exactly one Cargo result with 1 passed/0 failed/0 ignored"; return 2; }
   [[ "$total_result_count" == 1 ]] || { die "expected exactly one total Cargo result line, got $total_result_count"; return 2; }
 }
@@ -694,6 +706,34 @@ EOF
   sentinel_log="$temporary/sentinels.log"
   sentinel_cpu='SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu frames=2 decoder_steps=1 before_max_abs=1.000000000e-3 before_index=0 after_max_abs=2.000000000e-3 after_index=1 bound=1.000000000e-2 verdict=PASS'
   sentinel_metal='SPEECHT5_TTS_OFFICIAL_PARITY backend=metal frames=2 decoder_steps=1 before_max_abs=1.000000000e-3 before_index=0 after_max_abs=2.000000000e-3 after_index=1 cpu_max_abs=3.000000000e-3 bound=1.000000000e-2 verdict=PASS'
+  printf '%s\n%s\n%s\n%s\n' \
+    "test released_cpu_mel_matches_official_transformers ... $sentinel_cpu" \
+    "$sentinel_metal" 'ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    > "$cargo_log"
+  require_one_named_test_passed "$cargo_log" released_cpu_mel_matches_official_transformers
+  printf '%s\n%s\n%s\n%s\n%s\n' \
+    "test released_cpu_mel_matches_official_transformers ... $sentinel_cpu" \
+    "$sentinel_metal" 'ok' 'ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    > "$cargo_log"
+  if require_one_named_test_passed "$cargo_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then
+    die "duplicate standalone ok self-test failed"
+  fi
+  printf '%s\n%s\n%s\n' \
+    'test released_cpu_mel_matches_official_transformers ... ok' 'ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    > "$cargo_log"
+  if require_one_named_test_passed "$cargo_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then
+    die "same-line and standalone completion self-test failed"
+  fi
+  printf '%s\n%s\n%s\n' \
+    'test released_cpu_mel_matches_official_transformers ...' 'ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    > "$cargo_log"
+  if require_one_named_test_passed "$cargo_log" released_cpu_mel_matches_official_transformers >/dev/null 2>&1; then
+    die "malformed interleaved named test self-test failed"
+  fi
   printf '%s\n%s\n' "$sentinel_cpu" "$sentinel_metal" > "$sentinel_log"
   require_exact_parity_sentinels "$sentinel_log"
   printf '%s\n%s\n%s\n' "$sentinel_cpu" "$sentinel_cpu" "$sentinel_metal" > "$sentinel_log"
