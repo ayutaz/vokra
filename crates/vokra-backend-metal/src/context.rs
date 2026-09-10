@@ -762,7 +762,15 @@ kernel void vokra_tanh_f32(
     if (i >= d.n) {
         return;
     }
-    out[i] = tanh(x[i]);
+    // Do not call the MSL builtin here.  On Apple Silicon it can return NaN
+    // for some large, finite postnet activations.  This stable identity keeps
+    // the exponent non-positive, so finite inputs saturate to ±1 without an
+    // intermediate overflow, while NaN inputs remain NaN and are still
+    // surfaced by the model's fail-closed finiteness checks.
+    const float v = x[i];
+    const float e = exp(-2.0f * fabs(v));
+    const float magnitude = (1.0f - e) / (1.0f + e);
+    out[i] = copysign(magnitude, v);
 }
 
 struct LeakyReluDims {

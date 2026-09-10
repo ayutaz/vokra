@@ -367,8 +367,10 @@ fn tanh_metal_matches_cpu() {
             .into_iter()
             .map(|value| value * 8.0)
             .collect();
-        if n >= 5 {
-            x[..5].copy_from_slice(&[-20.0, -0.0, 0.0, 1.0, 20.0]);
+        if n >= 11 {
+            x[..11].copy_from_slice(&[
+                -1000.0, -100.0, -88.0, -20.0, -0.0, 0.0, 1.0, 20.0, 88.0, 100.0, 1000.0,
+            ]);
         }
         let mut gpu = vec![f32::NAN; n];
         ctx.tanh_f32(&x, &mut gpu).expect("metal tanh");
