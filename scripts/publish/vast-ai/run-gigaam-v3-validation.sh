@@ -96,6 +96,11 @@ if [[ "${1:-}" == --self-test ]]; then
     [[ -f "$ROOT/$path" ]] || die "missing contract: $path"
   done
   rg -n -- 'AUTHENTICATED_PREPARED_SHA256|GIT_COMMIT=|git_commit|--exact --ignored --nocapture --test-threads=1|PENDING_APPLE|GigaAM-v3' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-validation.sh" >/dev/null || die "phase/commit contract missing"
+  rg -n -- '^    "pyannote-core==6\.0\.\*",$' "$ROOT/tools/parity/gigaam_v3/pyproject.toml" >/dev/null || die "pyannote-core dependency pin missing"
+  rg -n -- '^name = "pyannote-core"$' "$ROOT/tools/parity/gigaam_v3/uv.lock" >/dev/null || die "pyannote-core lock entry missing"
+  if rg -n -- '^name = "(pyannote-audio|lightning|torchcodec)"$' "$ROOT/tools/parity/gigaam_v3/uv.lock" >/dev/null; then
+    die "optional pyannote.audio/Lightning/torchcodec closure leaked into the lock"
+  fi
   rg -n -- 'cargo run --locked -p vokra-cli -- convert --model sber-gigaam-v3|export GIGAAM_V3_GGUF|export GIGAAM_V3_REFERENCE_DIR|CONVERTER_APPROVED_SHA|RUNTIME_APPROVED_SHA' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-validation.sh" >/dev/null || die "converter/env approval chain missing"
   rg -n -- 'decision_argmax\.u32le|decision_frames.*decision_symbols|joint_output.*log_softmax' "$ROOT/tools/parity/sber_gigaam_v3_dump_reference.py" "$ROOT/tools/parity/gigaam_v3_validation.py" >/dev/null || die "decision trace contract missing"
   if rg -n -- 'git push|upload\.sh|publish-one\.sh' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-validation.sh" | grep -v 'if rg -n' >/dev/null; then die "upload command found"; fi
