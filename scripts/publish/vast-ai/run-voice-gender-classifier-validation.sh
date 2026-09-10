@@ -27,6 +27,7 @@ PUBLIC_REPO="vokra/voice-gender-classifier"
 PUBLIC_REVISION="94c8d0ba41cfe2f7b8a773eb4a7982cf4facbc84"
 PUBLIC_FILE="voice-gender-classifier.restamped.gguf"
 PUBLIC_SHA256="e1e61f1493601087f5db5867c4f750ec99d6b11223b5323bd120e3c21e8f957f"
+CORRECTED_GGUF_SHA256="afb03696d8a640d5d701ea0c136bb065cac648cbfe905a5dcc4eae04e0769b1a"
 CHECKPOINT_SHA256="2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5"
 FP32_PARITY_BOUND="0.010000000"
 FIXTURE_KIND="official_canned_synthetic_tone"
@@ -291,7 +292,7 @@ run_self_test() (
   # shellcheck disable=SC2016 # literal contract tokens intentionally keep quoting
   for required in "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$UPSTREAM_GITHUB_URL" \
     "$UPSTREAM_HF_REVISION" "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_FILE" \
-    "$PUBLIC_SHA256" "$MODEL_KIND" "$LICENSE_SPDX" "voice_gender_classifier_dump_reference.py" \
+    "$PUBLIC_SHA256" "$CORRECTED_GGUF_SHA256" "$MODEL_KIND" "$LICENSE_SPDX" "voice_gender_classifier_dump_reference.py" \
     "voice_gender_classifier_prepare_checkpoint.py" 'checkpoint-prepare.log' \
     "$CHECKPOINT_SHA256" "$CHECKPOINT_BYTES" "$UPSTREAM_LICENSE_FILE" "$UPSTREAM_LICENSE_SPDX" \
     "$UPSTREAM_LICENSE_COPYRIGHT" "$UPSTREAM_HF_LICENSE" 'verify_hf_identity' 'verify_source_identity' \
@@ -308,13 +309,19 @@ run_self_test() (
     'verify_prepared_audit "$prepare_audit" "$prepared_checkpoint" | tee "$evidence_dir/checkpoint-prepare-verified.log"' \
     'prepared checkpoint audit authenticated: status=AUTHENTICATED_NORMALIZED input=233 floating=202 counters=31 output=202' \
     '--input "$prepared_checkpoint" --output "$corrected"' \
+    'verify_file "$corrected" "$CORRECTED_GGUF_SHA256"' 'reference_sha256="$(sha256_file "$fixture_dir/meta.json")"' \
+    'VOKRA_VOICE_GENDER_GGUF_SHA256="$CORRECTED_GGUF_SHA256"' \
+    'VOKRA_VOICE_GENDER_REFERENCE_DIR="$fixture_dir"' \
+    'VOKRA_VOICE_GENDER_REFERENCE_MANIFEST_SHA256="$reference_sha256"' \
+    'VOKRA_VOICE_GENDER_EVIDENCE_DIR="$evidence_dir"' \
+    'VOKRA_VOICE_GENDER_ARGMAX="$fixture_dir/argmax.u32"' \
     'parity_voice_gender_classifier' 'VOKRA_VOICE_GENDER_FIXTURE_KIND' \
     'VOICE_GENDER_OFFICIAL_PARITY_METRICS' 'VOICE_GENDER_OFFICIAL_PARITY PASS' \
     'FP32_PARITY_BOUND' 'verify_cpu_parity_log' 'verify_corrected_provenance'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing: $required"; fail=1; }
   done
   # shellcheck disable=SC2016 # literal summary fields intentionally keep quoting
-  for required in 'prepared_checkpoint_sha256=$(sha256_file "$prepared_checkpoint")' 'prepare_audit_sha256=$(sha256_file "$prepare_audit")' 'publication=NOT_PERFORMED'; do
+  for required in 'prepared_checkpoint_sha256=$(sha256_file "$prepared_checkpoint")' 'prepare_audit_sha256=$(sha256_file "$prepare_audit")' 'reference_manifest_sha256=$reference_sha256' 'publication=NOT_PERFORMED'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing summary evidence: $required"; fail=1; }
   done
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
@@ -497,9 +504,12 @@ main() {
   cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli 2>&1 | tee "$evidence_dir/build.log"
   "$VOKRA_ROOT/target/release/vokra-cli" convert --model "$MODEL_KIND" --input "$prepared_checkpoint" --output "$corrected" --license "$LICENSE_SPDX" 2>&1 | tee "$evidence_dir/convert.log"
   verify_corrected_provenance "$corrected" | tee "$evidence_dir/corrected-contract.log"
-  export VOKRA_VOICE_GENDER_GGUF="$corrected" VOKRA_VOICE_GENDER_PCM="$fixture_dir/pcm.f32" VOKRA_VOICE_GENDER_FEATURES="$fixture_dir/features.f32" VOKRA_VOICE_GENDER_EMBEDDING="$fixture_dir/embedding.f32" VOKRA_VOICE_GENDER_LOGITS="$fixture_dir/logits.f32" VOKRA_VOICE_GENDER_PROBABILITIES="$fixture_dir/probabilities.f32" VOKRA_VOICE_GENDER_FIXTURE_KIND="$FIXTURE_KIND"
+  verify_file "$corrected" "$CORRECTED_GGUF_SHA256"
+  local reference_sha256
+  reference_sha256="$(sha256_file "$fixture_dir/meta.json")"
+  export VOKRA_REMOTE_VAST=1 VOKRA_VOICE_GENDER_GGUF="$corrected" VOKRA_VOICE_GENDER_GGUF_SHA256="$CORRECTED_GGUF_SHA256" VOKRA_VOICE_GENDER_REFERENCE_DIR="$fixture_dir" VOKRA_VOICE_GENDER_REFERENCE_MANIFEST_SHA256="$reference_sha256" VOKRA_VOICE_GENDER_EVIDENCE_DIR="$evidence_dir" VOKRA_VOICE_GENDER_PCM="$fixture_dir/pcm.f32" VOKRA_VOICE_GENDER_FEATURES="$fixture_dir/features.f32" VOKRA_VOICE_GENDER_EMBEDDING="$fixture_dir/embedding.f32" VOKRA_VOICE_GENDER_LOGITS="$fixture_dir/logits.f32" VOKRA_VOICE_GENDER_PROBABILITIES="$fixture_dir/probabilities.f32" VOKRA_VOICE_GENDER_ARGMAX="$fixture_dir/argmax.u32" VOKRA_VOICE_GENDER_FIXTURE_KIND="$FIXTURE_KIND"
   step "Run CPU parity"
-  VOKRA_REMOTE_VAST=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked -p vokra-models --test parity_voice_gender_classifier real_voice_gender_classifier_matches_official_reference -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence_dir/parity.log"
+  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked -p vokra-models --test parity_voice_gender_classifier real_voice_gender_classifier_matches_official_reference -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence_dir/parity.log"
   verify_cpu_parity_log "$evidence_dir/parity.log" | tee "$evidence_dir/cpu-parity-gate.log"
   step "Run repository gates on VAST"
   bash "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh" | tee "$evidence_dir/gates.log"
@@ -509,7 +519,7 @@ main() {
   cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace --all-targets -- -D warnings | tee -a "$evidence_dir/gates.log"
   (cd "$VOKRA_ROOT" && cargo deny check licenses advisories bans) | tee -a "$evidence_dir/gates.log"
   (cd "$VOKRA_ROOT" && cargo audit) | tee -a "$evidence_dir/gates.log"
-  { echo 'execution_status=CPU_PASS_METAL_NOT_RUN'; echo "corrected_sha256=$(sha256_file "$corrected")"; echo "public_sha256=$(sha256_file "$public_artifact")"; echo "prepared_checkpoint_sha256=$(sha256_file "$prepared_checkpoint")"; echo "prepare_audit_sha256=$(sha256_file "$prepare_audit")"; echo "upstream_revision=$UPSTREAM_REVISION"; echo "cpu_parity=PASS"; echo "cpu_parity_bound=$FP32_PARITY_BOUND"; echo 'publication=NOT_PERFORMED'; } | tee "$evidence_dir/summary.txt"
+  { echo 'execution_status=CPU_PASS_METAL_NOT_RUN'; echo "corrected_sha256=$(sha256_file "$corrected")"; echo "public_sha256=$(sha256_file "$public_artifact")"; echo "prepared_checkpoint_sha256=$(sha256_file "$prepared_checkpoint")"; echo "prepare_audit_sha256=$(sha256_file "$prepare_audit")"; echo "reference_manifest_sha256=$reference_sha256"; echo "upstream_revision=$UPSTREAM_REVISION"; echo "cpu_parity=PASS"; echo "cpu_parity_bound=$FP32_PARITY_BOUND"; echo 'publication=NOT_PERFORMED'; } | tee "$evidence_dir/summary.txt"
 }
 
 main "$@"
