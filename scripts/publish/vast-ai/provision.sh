@@ -12,9 +12,10 @@
 # site-packages shim that reroutes huggingface_hub through a broken
 # mirror, (B) a huggingface_hub >= 0.30 that regressed non-xet routes,
 # (C) an empty/stale certifi CA bundle, and (D) no torch/numpy/
-# safetensors at the system layer needed for image compatibility. Vokra
+# safetensors at the system layer needed for image compatibility, and (E) no
+# libsndfile1 runtime needed by fairseq2 official reference imports. Vokra
 # scripts themselves always execute Python through uv. Waves 9-11 spent
-# ~day burning down these four root causes reactively. Fix is now
+# ~day burning down these five root causes reactively. Fix is now
 # pre-handled at provision time so a fresh box comes up clean.
 #
 # Idempotent: rerun-safe. Each step probes for its own artifact and skips
@@ -91,14 +92,19 @@ have_native_build_tools() {
     && command -v c++ >/dev/null 2>&1 \
     && command -v g++ >/dev/null 2>&1
 }
+have_libsndfile() {
+  command -v dpkg-query >/dev/null 2>&1 \
+    && dpkg-query -W -f='${db:Status-Status}' libsndfile1 2>/dev/null | grep -qx installed
+}
 
 # --- Wave 12 pre-handle (vast.ai nvidia/cuda:13.0.0 image hardening) ---
-# Fixes four root causes reactively burned down in Waves 9-11:
+# Fixes five root causes reactively burned down in Waves 9-11:
 #   (A) hf_config.pth mirror shim in site-packages reroutes hh downloads
 #   (B) huggingface_hub >= 0.30 regressed non-xet routes
 #   (C) stale/empty certifi CA bundle breaks urllib3/hh internals
 #   (D) system-layer torch/numpy/safetensors absent for image compatibility
 #       tools (Vokra's own Python execution remains uv-managed)
+#   (E) libsndfile1 absent, preventing fairseq2 official reference imports
 #
 # Idempotent. Non-vast guarded: bails cleanly on macOS/local dev via
 # `command -v apt-get` + EUID probe. Set VOKRA_FORCE_HARDEN=1 to force
@@ -106,7 +112,7 @@ have_native_build_tools() {
 # Fix (A) is performed before its first Hugging Face package operation, while
 # every Python dependency operation itself stays on uv.
 harden_vast_docker_image() {
-  step "Harden Docker image (rm HF shim / refresh CA / pin hh<0.30)"
+  step "Harden Docker image (libsndfile1 / rm HF shim / refresh CA / pin hh<0.30)"
 
   # Non-vast guard: skip cleanly on macOS/local dev where apt is absent.
   if ! command -v apt-get >/dev/null 2>&1; then
@@ -144,6 +150,29 @@ harden_vast_docker_image() {
       return 1
     fi
     log "native build toolchain ready (cmake/ninja/make/cc/c++/g++)"
+  fi
+
+  # fairseq2 imports soundfile during official reference generation. Keep the
+  # Debian runtime library in the same fail-closed system dependency phase as
+  # the native build toolchain so a fresh VAST box cannot reach model work
+  # with a missing libsndfile shared object.
+  if have_libsndfile; then
+    log "libsndfile1 already installed"
+  else
+    log "libsndfile1 missing — installing Debian runtime package"
+    if ! apt-get update -qq; then
+      log "ERROR: apt package index refresh failed; cannot install libsndfile1"
+      return 1
+    fi
+    if ! apt-get install -y libsndfile1; then
+      log "ERROR: libsndfile1 installation failed; fairseq2 reference imports cannot run"
+      return 1
+    fi
+    have_libsndfile || {
+      log "ERROR: libsndfile1 remains unavailable after apt install"
+      return 1
+    }
+    log "libsndfile1 ready"
   fi
 
   # Fix (A): remove HF mirror shim. Load-bearing: must fire before any
@@ -349,6 +378,15 @@ run_self_test() {
     echo "  [ok]   native-build: cmake/ninja/make/cc/c++/g++ present"
   else
     echo "  [need] native-build: cmake/ninja/make/cc/c++/g++ incomplete (rerun as root on Debian/VAST)"
+  fi
+
+  cases=$((cases + 1))
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "  [skip] libsndfile1: apt-get unavailable (not a Debian/Ubuntu image)"
+  elif have_libsndfile; then
+    echo "  [ok]   libsndfile1: installed"
+  else
+    echo "  [need] libsndfile1: not installed (rerun provision.sh as root)"
   fi
 
   # ~/.bashrc marker probe

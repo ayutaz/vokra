@@ -21,6 +21,8 @@ if grep -Eq '(^|[[:space:]])uv[[:space:]]+add([[:space:]]|$)|uv[[:space:]]+run[[
 fi
 grep -Fq 'command -v ninja' "$provision" || fail "native build probe omits ninja"
 grep -Fq 'ninja-build' "$provision" || fail "Debian native build install omits ninja-build"
+grep -Fq 'have_libsndfile' "$provision" || fail "libsndfile probe is missing"
+grep -Fq 'apt-get install -y libsndfile1' "$provision" || fail "Debian libsndfile install is missing"
 
 fixture="$tmp_dir/checkout"
 fake_bin="$tmp_dir/bin"
