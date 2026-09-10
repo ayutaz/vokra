@@ -168,7 +168,7 @@ fn real_voice_gender_classifier_matches_official_reference() {
         );
         assert_eq!(std::env::var(REMOTE_ENV).as_deref(), Ok("1"));
     } else {
-        assert!(cfg!(target_os = "linux"), "VAST worker requires Linux");
+        assert_eq!(std::env::consts::OS, "linux", "VAST worker requires Linux");
         assert_eq!(
             std::env::consts::ARCH,
             "x86_64",
