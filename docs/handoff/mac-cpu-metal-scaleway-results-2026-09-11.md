@@ -158,11 +158,12 @@ individual API returned `instances: null`, and its old SSH endpoint refused
 connections. A full VAST inventory then found no remaining Vokra-labelled
 instance or retained Vokra storage.
 
-The Scaleway M4-M evidence has been recovered and matched against the remote
-SHA-256 values. The instance has no remaining compute task. Its control-plane
-deletion is the only resource-cleanup action still pending at the time of this
-record; powering down inside macOS is not treated as deletion or as proof that
-billing stopped.
+The Scaleway M4-M evidence was recovered and matched against the remote
+SHA-256 values before cleanup. The console then reported successful permanent
+deletion of instance `d2ce6428-82c9-438c-9640-bca76620b50c` and returned an
+empty Apple Silicon server list. After the control-plane change propagated, a
+fresh non-multiplexed SSH connection to the former endpoint timed out. No
+Scaleway compute resource remains for this batch.
 
 ## Accounting and remaining work
 
@@ -174,7 +175,6 @@ approval-blocked evidence, and a successful candidate packet is not treated as
 a corrected public artifact before the separately authorized publication
 workflow runs.
 
-Numerical execution, evidence recovery, and VAST destruction are complete.
-The remaining operational actions for this batch are Scaleway control-plane
-deletion, documentation gates, and the follow-up PR. Public artifact
-reconciliation remains a separate owner-approved action.
+Numerical execution, evidence recovery, VAST destruction, Scaleway deletion,
+and follow-up PR creation are complete. The follow-up is PR #88. Public
+artifact reconciliation remains a separate owner-approved action.
