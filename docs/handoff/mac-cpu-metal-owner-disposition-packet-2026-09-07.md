@@ -2,6 +2,14 @@
 
 Updated with owner-independent evidence on 2026-09-09.
 
+> **2026-09-11 disposition update:** the executable decisions used by the
+> bounded post-PR #79 batch are recorded in the
+> [2026-09-09 owner decision record](mac-cpu-metal-owner-decision-record-2026-09-09.md),
+> and their exact VAST/Apple outcomes are recorded in the
+> [2026-09-11 Apple results](mac-cpu-metal-scaleway-results-2026-09-11.md).
+> No decision is inferred for a withheld family, the 63-row unresolved-public
+> denominator is unchanged, and no artifact upload was authorized.
+
 > **2026-09-09 audit-start snapshot:** PR #79 was at `9efcd16e`
 > (`CLEAN` / `MERGEABLE`), with 110 successful CI checks, 13 intentional skips
 > and 0 failures. The exact implementation VAST replay is `caf70eb1` (305
